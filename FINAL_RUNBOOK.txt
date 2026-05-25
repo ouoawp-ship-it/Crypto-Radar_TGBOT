@@ -53,17 +53,17 @@ python main.py live --send --confirm-real-send
 查看运行心跳:
 python main.py runtime-status
 
-四、服务器部署简版
+四、服务器一键部署
 
-服务器上建议使用 venv + systemd，详细步骤见 SERVER_DEPLOY.md。
+服务器上建议使用一键脚本，详细步骤见 SERVER_DEPLOY.md。
 
-基本流程:
-1. GitHub 上传代码，不上传 .env.oi、data 状态文件、.venv、旧 crypto_monitor_merged.py。
-2. 服务器 git clone 项目。
-3. 创建 venv 并安装 requirements.txt。
-4. 在服务器手动创建 .env.oi，填 Telegram 和扫描参数。
-5. 先跑 readiness 和 telegram-test。
-6. 再用 systemd 或 tmux/screen 跑 live。
+最短流程:
+
+git clone https://github.com/ouoawp-ship-it/paopao-crypto-radar.git
+cd paopao-crypto-radar
+bash scripts/install_server.sh
+
+第一次运行会创建 .env.oi 并提示填写配置。填好后再运行同一个脚本，它会自动安装依赖、跑测试、生成 systemd 服务并启动。
 
 五、会推送的消息类型
 

@@ -1,36 +1,47 @@
 # 泡泡抓币 Crypto Radar
 
-轻量级加密市场观察雷达，保留命令行运行方式，默认 dry-run，不包含 Web/UI、admin 查询、自动交易。
+轻量级加密市场观察雷达。默认 dry-run，不包含 Web/UI、admin 查询、自动交易。
 
-## 快速开始
+## 服务器一键部署
+
+服务器能访问这个 GitHub 私有仓库后，直接运行:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.oi.example .env.oi
-python main.py status
-python main.py readiness
+git clone https://github.com/ouoawp-ship-it/paopao-crypto-radar.git
+cd paopao-crypto-radar
+bash scripts/install_server.sh
 ```
 
-Linux 服务器使用:
+第一次运行会自动创建 `.env.oi`。填好 Telegram 配置后，再跑同一条安装命令:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-cp .env.oi.example .env.oi
-python main.py status
-python main.py readiness
+nano .env.oi
+bash scripts/install_server.sh
 ```
 
-## 常用命令
+脚本会自动:
+
+- 安装系统依赖
+- 创建 `.venv`
+- 安装 Python 依赖
+- 编译检查
+- 跑单元测试
+- 生成 dry-run 启动观察历史
+- 通过 readiness 检查
+- 创建并启动 `paopao-radar` systemd 服务
+
+## 查看运行
 
 ```bash
-python main.py observe --duration-minutes 360 --launch-interval 180 --launch-scan-limit 40 --records 200 --top 12
-python main.py telegram-test --send --confirm-real-send
-python main.py live --send --confirm-real-send
+sudo systemctl status paopao-radar
+journalctl -u paopao-radar -f
 python main.py runtime-status
+```
+
+## 一键更新
+
+```bash
+bash scripts/update_server.sh
 ```
 
 ## 安全规则
@@ -43,4 +54,4 @@ python main.py runtime-status
 
 `.env.oi` 和 `data/` 状态文件不应提交到 GitHub。
 
-服务器部署步骤见 [SERVER_DEPLOY.md](SERVER_DEPLOY.md)。
+更详细说明见 [SERVER_DEPLOY.md](SERVER_DEPLOY.md)。

@@ -302,3 +302,10 @@ python main.py migrate-state --apply
 - Added `RUNTIME_STATUS_FILE=runtime_status.json` to `.env.oi.example`.
 - Added `FINAL_RUNBOOK.txt` as the clean operational handoff note.
 - Current test count: 26 passing.
+
+## 2026-05-25 deploy simplification
+
+- Removed manual multi-step server deployment from the primary docs.
+- Added `scripts/install_server.sh` for one-command Linux install, checks, systemd creation, and service start.
+- Added `scripts/update_server.sh` for one-command update, checks, and service restart.
+- Updated `README.md` and `SERVER_DEPLOY.md` to use the one-command deployment flow.

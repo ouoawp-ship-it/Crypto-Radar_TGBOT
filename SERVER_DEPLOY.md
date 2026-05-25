@@ -1,159 +1,107 @@
-# 服务器部署说明
+# 服务器一键部署说明
 
 更新时间: 2026-05-25
 
-## 1. 上传 GitHub 前
+## 最短部署命令
 
-建议上传新项目代码，不上传本地状态和旧原型。
-
-`.gitignore` 已忽略:
-
-- `.env.oi`
-- `.env`
-- `.venv/`
-- `data/*.json`
-- `data/*.db`
-- `data/*.txt`
-- `*.log`
-- `*.bat`
-- `crypto_monitor_merged.py`
-
-`crypto_monitor_merged.py` 可以继续留在本机当参考，但不建议部署到服务器。
-
-## 2. 初始化 Git 仓库
-
-在项目目录运行:
+服务器能访问这个 GitHub 私有仓库后，执行:
 
 ```bash
-git init
-git add .
-git commit -m "Initial crypto radar rebuild"
-git branch -M main
-git remote add origin git@github.com:你的用户名/你的仓库名.git
-git push -u origin main
+git clone https://github.com/ouoawp-ship-it/paopao-crypto-radar.git
+cd paopao-crypto-radar
+bash scripts/install_server.sh
 ```
 
-如果用 HTTPS:
+第一次运行时，如果 `.env.oi` 不存在，脚本会自动从 `.env.oi.example` 创建它，并停下来让你填写 Telegram 配置。
 
-```bash
-git remote add origin https://github.com/你的用户名/你的仓库名.git
-git push -u origin main
-```
-
-## 3. 服务器安装
-
-服务器建议使用 Linux。进入你准备放项目的目录:
-
-```bash
-git clone git@github.com:你的用户名/你的仓库名.git
-cd 你的仓库名
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-cp .env.oi.example .env.oi
-```
-
-然后编辑 `.env.oi`，填入服务器上的真实配置:
+填完后重新运行:
 
 ```bash
 nano .env.oi
+bash scripts/install_server.sh
 ```
 
-不要把 `.env.oi` 提交到 GitHub。
+## 脚本会自动做什么
 
-## 4. 服务器上线前验证
+`scripts/install_server.sh` 会自动执行:
+
+- 安装 Linux 系统依赖: `git`、`python3`、`python3-venv`、`python3-pip`
+- 创建 `.venv`
+- 安装 `requirements.txt`
+- 编译检查核心 Python 文件
+- 跑单元测试
+- 生成 dry-run 启动观察历史
+- 执行 `python main.py readiness`
+- 写入 systemd 服务 `/etc/systemd/system/paopao-radar.service`
+- 启动并设置开机自启
+
+如果 `.env.oi` 没填 `TG_BOT_TOKEN` 或 `TG_CHAT_ID`，脚本会停下，不会启动真实推送。
+
+## 私有仓库 clone 问题
+
+当前仓库是 private。服务器第一次 clone 需要具备 GitHub 访问权限。
+
+可以用以下任一方式:
+
+- 在服务器上配置 GitHub CLI: `gh auth login`
+- 使用 SSH key，把公钥加到 GitHub
+- 临时使用带权限的 HTTPS token clone
+
+服务器能正常 `git clone` 之后，后面部署就是一条命令。
+
+## 常用环境变量
+
+安装但不自动启动服务:
 
 ```bash
-. .venv/bin/activate
-python main.py status
-python main.py readiness
-python main.py observe --duration-minutes 0 --launch-interval 60 --launch-scan-limit 5 --records 20 --top 5
-python main.py telegram-test --send --confirm-real-send
+AUTO_START=0 bash scripts/install_server.sh
 ```
 
-确认 Telegram 收到测试消息后，再启动真实 live。
-
-## 5. 临时运行
-
-用 tmux:
+安装时发送一条 Telegram 测试消息:
 
 ```bash
-tmux new -s paopao
-. .venv/bin/activate
-python main.py live --send --confirm-real-send
+RUN_TELEGRAM_TEST=1 bash scripts/install_server.sh
 ```
 
-退出 tmux 但不停止程序:
-
-```text
-Ctrl+B 然后按 D
-```
-
-重新进入:
+减少 dry-run 预热轮数:
 
 ```bash
-tmux attach -t paopao
+BOOTSTRAP_CYCLES=2 bash scripts/install_server.sh
 ```
 
-## 6. systemd 长期运行
-
-创建服务文件:
+修改 systemd 服务名:
 
 ```bash
-sudo nano /etc/systemd/system/paopao-radar.service
+SERVICE_NAME=paopao-radar-prod bash scripts/install_server.sh
 ```
 
-示例内容，把路径和用户改成你服务器自己的:
-
-```ini
-[Unit]
-Description=Paopao Crypto Radar
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/paopao-radar
-ExecStart=/home/ubuntu/paopao-radar/.venv/bin/python /home/ubuntu/paopao-radar/main.py live --send --confirm-real-send
-Restart=always
-RestartSec=15
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启动:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable paopao-radar
-sudo systemctl start paopao-radar
-```
-
-查看状态:
+## 查看运行状态
 
 ```bash
 sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
-```
-
-查看程序自己的心跳:
-
-```bash
-. .venv/bin/activate
 python main.py runtime-status
 ```
 
-## 7. 更新部署
+## 一键更新
 
 ```bash
-cd /home/ubuntu/paopao-radar
-git pull
-. .venv/bin/activate
-pip install -r requirements.txt
-python -m py_compile main.py config.py storage.py data_sources.py telegram.py radar.py maintenance.py
-python -m unittest discover -s tests -v
+cd /home/ubuntu/paopao-crypto-radar
+bash scripts/update_server.sh
+```
+
+更新脚本会执行:
+
+- `git pull --ff-only`
+- 安装依赖
+- 编译检查
+- 单元测试
+- 重启 systemd 服务
+
+## 手动停止和启动
+
+```bash
+sudo systemctl stop paopao-radar
+sudo systemctl start paopao-radar
 sudo systemctl restart paopao-radar
 ```
