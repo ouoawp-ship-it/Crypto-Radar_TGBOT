@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import unittest
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.radar import RadarEngine, score_funding
+from paopao_radar.radar import CST, RadarEngine, score_funding
 from paopao_radar.storage import JsonStore
 
 
@@ -21,6 +23,18 @@ class _FakeQuality:
 class _FakeSource:
     budget = _FakeBudget()
     quality = _FakeQuality()
+
+
+class _FakeAnnouncementSource:
+    def __init__(self, articles: list[dict[str, object]], contract_bases: list[str]):
+        self._articles = articles
+        self._contract_bases = contract_bases
+
+    def announcements(self, page_size: int = 20) -> list[dict[str, object]]:
+        return self._articles[:page_size]
+
+    def usdt_perp_symbols(self) -> list[dict[str, str]]:
+        return [{"symbol": f"{base}USDT"} for base in self._contract_bases]
 
 
 class RadarAnnouncementTests(unittest.TestCase):
@@ -39,6 +53,115 @@ class RadarAnnouncementTests(unittest.TestCase):
 
     def test_real_token_parentheses_are_kept(self) -> None:
         self.assertEqual(RadarEngine._extract_symbols("Binance Will List Solana (SOL)"), ["SOL"])
+
+    def test_announcement_formats_each_symbol_and_skips_fake_links(self) -> None:
+        with TemporaryDirectory() as tmp:
+            today = datetime.now(CST).strftime("%Y-%m-%d")
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            source = _FakeAnnouncementSource(
+                [{
+                    "title": f"Binance Alpha Will Remove REX, XO, PHY ({today})",
+                    "code": "risk-today",
+                    "releaseDate": int(time.time() * 1000),
+                }],
+                ["REX", "PHY"],
+            )
+
+            result = engine.build_announcement_alerts(source)  # type: ignore[arg-type]
+            text = result["messages"][0]
+
+            self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_REXUSDT"', text)
+            self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_PHYUSDT"', text)
+            self.assertIn("<b>XO</b>（无合约）", text)
+            self.assertNotIn("UNKNOWN", text)
+            self.assertNotIn("Binance_REX,%20XO", text)
+
+    def test_announcement_skips_symbol_less_opportunity(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            source = _FakeAnnouncementSource(
+                [{
+                    "title": "Binance Wallet Launches Prediction Markets Trial Protection Campaign - Phase 2",
+                    "code": "generic-campaign",
+                    "releaseDate": int(time.time() * 1000),
+                }],
+                [],
+            )
+
+            result = engine.build_announcement_alerts(source)  # type: ignore[arg-type]
+
+            self.assertEqual(result["messages"], [])
+            self.assertEqual(result["alerts"], [])
+
+    def test_announcement_skips_past_dated_article_after_reinstall(self) -> None:
+        with TemporaryDirectory() as tmp:
+            old_date = (datetime.now(CST) - timedelta(days=1)).strftime("%Y-%m-%d")
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            source = _FakeAnnouncementSource(
+                [{
+                    "title": f"Binance Alpha Will Remove OLD ({old_date})",
+                    "code": "old-risk",
+                    "releaseDate": int(time.time() * 1000),
+                }],
+                ["OLD"],
+            )
+
+            result = engine.build_announcement_alerts(source)  # type: ignore[arg-type]
+
+            self.assertEqual(result["messages"], [])
+            self.assertEqual(result["alerts"], [])
+
+    def test_expired_announcement_cleanup_deletes_messages_and_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(data_dir=Path(tmp), announcement_state_path=Path(tmp) / "announcement_state.json")
+            store.save(settings.announcement_state_path, {
+                "seen": {
+                    "expired": {
+                        "title": "old",
+                        "seen_at": int(time.time()),
+                        "expires_at": int(time.time()) - 1,
+                        "message_ids": [101, 102],
+                    },
+                    "active": {
+                        "title": "new",
+                        "seen_at": int(time.time()),
+                        "expires_at": int(time.time()) + 3600,
+                        "message_ids": [201],
+                    },
+                }
+            })
+            engine = RadarEngine(settings, store)
+            deleted: list[int] = []
+
+            result = engine.cleanup_expired_announcements(lambda ids: deleted.extend(ids) or len(ids))
+
+            self.assertEqual(result, {"expired": 1, "deleted_messages": 2})
+            self.assertEqual(deleted, [101, 102])
+            state = store.load(settings.announcement_state_path, {})
+            self.assertEqual(list(state["seen"].keys()), ["active"])
+
+    def test_expired_announcement_cleanup_keeps_message_ids_until_real_delete(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(data_dir=Path(tmp), announcement_state_path=Path(tmp) / "announcement_state.json")
+            store.save(settings.announcement_state_path, {
+                "seen": {
+                    "expired": {
+                        "title": "old",
+                        "seen_at": int(time.time()),
+                        "expires_at": int(time.time()) - 1,
+                        "message_ids": [101],
+                    },
+                }
+            })
+            engine = RadarEngine(settings, store)
+
+            result = engine.cleanup_expired_announcements()
+
+            self.assertEqual(result, {"expired": 0, "deleted_messages": 0})
+            state = store.load(settings.announcement_state_path, {})
+            self.assertTrue(state["seen"]["expired"]["delete_pending"])
 
 
 class RadarScoringTests(unittest.TestCase):

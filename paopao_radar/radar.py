@@ -4,7 +4,7 @@ import time
 import re
 from datetime import datetime, timedelta, timezone
 from html import escape
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .config import Settings
 from .data_sources import BinanceDataSource
@@ -422,10 +422,12 @@ class RadarEngine:
         if not isinstance(seen, dict):
             seen = {}
 
+        contract_symbols = self._announcement_contract_symbols(source)
         alerts: list[dict[str, Any]] = []
-        now_ts = int(time.time())
         for article in articles:
-            alert = self._classify_announcement(article)
+            if not self._announcement_is_current(article):
+                continue
+            alert = self._classify_announcement(article, contract_symbols)
             if not alert:
                 continue
             code = alert["code"]
@@ -440,9 +442,63 @@ class RadarEngine:
             "alerts": alerts[:8],
         }
 
+    def cleanup_expired_announcements(
+        self,
+        delete_messages: Callable[[list[int]], int] | None = None,
+    ) -> dict[str, int]:
+        state = self.store.load(self.settings.announcement_state_path, {})
+        if not isinstance(state, dict):
+            return {"expired": 0, "deleted_messages": 0}
+        seen = state.get("seen", {})
+        if not isinstance(seen, dict):
+            return {"expired": 0, "deleted_messages": 0}
+
+        now_ts = int(time.time())
+        cutoff = now_ts - 14 * 24 * 3600
+        expired = 0
+        deleted_messages = 0
+        retained: dict[str, Any] = {}
+        changed = False
+        for key, value in seen.items():
+            if not isinstance(value, dict):
+                changed = True
+                continue
+            expires_at = int(value.get("expires_at", 0) or 0)
+            seen_at = int(value.get("seen_at", now_ts) or now_ts)
+            if expires_at > 0 and expires_at <= now_ts:
+                message_ids = [
+                    int(message_id)
+                    for message_id in value.get("message_ids", [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                ]
+                if message_ids and not delete_messages:
+                    retained[key] = {**value, "delete_pending": True}
+                    changed = True
+                    continue
+                if delete_messages and message_ids:
+                    deleted_now = delete_messages(message_ids)
+                    deleted_messages += deleted_now
+                    if deleted_now < len(message_ids):
+                        retained[key] = {
+                            **value,
+                            "delete_pending": True,
+                            "last_delete_attempt": now_ts,
+                        }
+                        changed = True
+                        continue
+                expired += 1
+                changed = True
+                continue
+            if seen_at < cutoff:
+                changed = True
+                continue
+            retained[key] = value
+
+        if changed:
+            self.store.save(self.settings.announcement_state_path, {"seen": retained})
+        return {"expired": expired, "deleted_messages": deleted_messages}
+
     def mark_announcements_seen(self, alerts: list[dict[str, Any]]) -> None:
-        if not alerts:
-            return
         state = self.store.load(self.settings.announcement_state_path, {})
         if not isinstance(state, dict):
             state = {}
@@ -456,6 +512,12 @@ class RadarEngine:
                 "kind": alert["kind"],
                 "symbol": alert.get("symbol", ""),
                 "symbols": alert.get("symbols", []),
+                "contract_symbols": alert.get("contract_symbols", []),
+                "non_contract_symbols": alert.get("non_contract_symbols", []),
+                "url": alert.get("url", ""),
+                "release_ts": int(alert.get("release_ts", 0) or 0),
+                "expires_at": int(alert.get("expires_at", 0) or 0),
+                "message_ids": alert.get("message_ids", []),
                 "seen_at": now_ts,
             }
         cutoff = now_ts - 14 * 24 * 3600
@@ -465,15 +527,32 @@ class RadarEngine:
         }
         self.store.save(self.settings.announcement_state_path, {"seen": seen})
 
-    def _classify_announcement(self, article: dict[str, Any]) -> Optional[dict[str, Any]]:
+    def _classify_announcement(
+        self,
+        article: dict[str, Any],
+        contract_symbols: set[str] | None = None,
+    ) -> Optional[dict[str, Any]]:
         title = str(article.get("title") or "")
         if not title:
             return None
         lowered = title.lower()
         code = str(article.get("code") or article.get("id") or title)
         symbols = self._extract_symbols(title)
+        if not symbols:
+            return None
+        contract_symbols = contract_symbols or set()
+        symbols_with_contract = [
+            symbol for symbol in symbols
+            if self._announcement_symbol_has_contract(symbol, contract_symbols)
+        ]
+        symbols_without_contract = [
+            symbol for symbol in symbols
+            if symbol not in symbols_with_contract
+        ]
         symbol = self._format_symbol_list(symbols)
         url = self._announcement_url(article)
+        release_ts = self._announcement_release_ts(article)
+        expires_at = self._announcement_expires_at(article)
         if any(keyword in lowered for keyword in RISK_KEYWORDS):
             return {
                 "kind": "risk",
@@ -481,7 +560,11 @@ class RadarEngine:
                 "title": title,
                 "symbol": symbol,
                 "symbols": symbols,
+                "contract_symbols": symbols_with_contract,
+                "non_contract_symbols": symbols_without_contract,
                 "url": url,
+                "release_ts": release_ts,
+                "expires_at": expires_at,
                 "priority": "high",
                 "reason": "命中下架/移除/停止交易关键词",
             }
@@ -494,7 +577,11 @@ class RadarEngine:
                 "title": title,
                 "symbol": symbol,
                 "symbols": symbols,
+                "contract_symbols": symbols_with_contract,
+                "non_contract_symbols": symbols_without_contract,
                 "url": url,
+                "release_ts": release_ts,
+                "expires_at": expires_at,
                 "priority": "normal",
                 "reason": "命中上新/Alpha/活动关键词",
             }
@@ -541,11 +628,116 @@ class RadarEngine:
     @staticmethod
     def _format_symbol_list(symbols: list[str], max_count: int = 8) -> str:
         if not symbols:
-            return "UNKNOWN"
+            return ""
         shown = ", ".join(symbols[:max_count])
         if len(symbols) > max_count:
             shown += f" +{len(symbols) - max_count}"
         return shown
+
+    def _announcement_contract_symbols(self, source: BinanceDataSource) -> set[str]:
+        try:
+            symbols_info = source.usdt_perp_symbols()
+        except Exception:
+            return set()
+        result: set[str] = set()
+        for item in symbols_info:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol.endswith("USDT"):
+                result.add(symbol[:-4])
+        return result
+
+    @staticmethod
+    def _announcement_symbol_has_contract(symbol: str, contract_symbols: set[str]) -> bool:
+        normalized = symbol.upper()
+        if normalized.endswith("USDT"):
+            normalized = normalized[:-4]
+        return normalized in contract_symbols
+
+    def _announcement_is_current(self, article: dict[str, Any]) -> bool:
+        if not self.settings.announcement_only_today:
+            return True
+        today = datetime.now(CST).date()
+        title_date = self._announcement_title_date(str(article.get("title") or ""))
+        if title_date and title_date.date() < today:
+            return False
+        release_ts = self._announcement_release_ts(article)
+        if release_ts <= 0:
+            return True
+        release_date = datetime.fromtimestamp(release_ts, CST).date()
+        return release_date >= today
+
+    def _announcement_expires_at(self, article: dict[str, Any]) -> int:
+        title_date = self._announcement_title_date(str(article.get("title") or ""))
+        if title_date:
+            return int(title_date.timestamp())
+        release_ts = self._announcement_release_ts(article)
+        if release_ts <= 0:
+            return 0
+        days = max(1, int(self.settings.announcement_default_ttl_days))
+        release_date = datetime.fromtimestamp(release_ts, CST).date()
+        expires = datetime(
+            release_date.year,
+            release_date.month,
+            release_date.day,
+            23,
+            59,
+            59,
+            tzinfo=CST,
+        ) + timedelta(days=days)
+        return int(expires.timestamp())
+
+    @staticmethod
+    def _announcement_title_date(title: str) -> Optional[datetime]:
+        match = re.search(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})", title)
+        if not match:
+            return None
+        try:
+            year, month, day = (int(match.group(index)) for index in (1, 2, 3))
+            return datetime(year, month, day, 23, 59, 59, tzinfo=CST)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _announcement_release_ts(article: dict[str, Any]) -> int:
+        for key in (
+            "releaseDate",
+            "releaseTime",
+            "publishDate",
+            "publishedAt",
+            "publishTime",
+            "createdAt",
+            "date",
+        ):
+            value = article.get(key)
+            if value in (None, ""):
+                continue
+            ts = RadarEngine._coerce_timestamp(value)
+            if ts > 0:
+                return ts
+        return 0
+
+    @staticmethod
+    def _coerce_timestamp(value: Any) -> int:
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 10_000_000_000:
+                ts /= 1000
+            return int(ts)
+        text = str(value).strip()
+        if not text:
+            return 0
+        if text.isdigit():
+            return RadarEngine._coerce_timestamp(int(text))
+        try:
+            normalized = text.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
+        except ValueError:
+            return 0
 
     @staticmethod
     def _announcement_url(article: dict[str, Any]) -> str:
@@ -558,13 +750,18 @@ class RadarEngine:
         return "https://www.binance.com/zh-CN/support/announcement"
 
     def _format_announcement(self, alert: dict[str, Any]) -> str:
-        symbol = coin_link({"coin": alert["symbol"]})
+        symbol_block = self._format_announcement_symbol_links(alert)
         title = tg_escape(alert["title"])
         url = escape(alert["url"], quote=True)
+        contract_count = len(alert.get("contract_symbols", []))
+        no_contract_count = len(alert.get("non_contract_symbols", []))
+        market_note = f"有合约{contract_count}个 | 无合约{no_contract_count}个"
         if alert["kind"] == "risk":
             return "\n".join([
-                f"⚠️ {tg_bold('风险提醒')} {symbol}",
+                f"⚠️ {tg_bold('风险提醒')}",
                 "",
+                f"{tg_bold('币种')}: {symbol_block}",
+                f"{tg_bold('合约状态')}: {market_note}",
                 f"{tg_bold('风险')}: 下架 / 移除交易对 / 停止交易",
                 f"{tg_bold('公告')}: {title}",
                 "",
@@ -577,8 +774,10 @@ class RadarEngine:
                 f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
             ])
         return "\n".join([
-            f"📢 {tg_bold('公告机会')} {symbol}",
+            f"📢 {tg_bold('公告机会')}",
             "",
+            f"{tg_bold('币种')}: {symbol_block}",
+            f"{tg_bold('合约状态')}: {market_note}",
             f"{tg_bold('事件')}: Binance Alpha / 上新 / 活动",
             f"{tg_bold('公告')}: {title}",
             f"{tg_bold('等级')}: 待资金面确认",
@@ -591,6 +790,27 @@ class RadarEngine:
             "已记录为机会事件，等待资金面确认",
             f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
         ])
+
+    def _format_announcement_symbol_links(self, alert: dict[str, Any], max_count: int = 20) -> str:
+        symbols = [str(symbol).upper() for symbol in alert.get("symbols", []) if str(symbol).strip()]
+        if not symbols:
+            return "未识别具体币种（不生成K线链接）"
+        contract_symbols = {
+            str(symbol).upper().replace("USDT", "")
+            for symbol in alert.get("contract_symbols", [])
+        }
+        parts: list[str] = []
+        for symbol in symbols[:max_count]:
+            base_symbol = symbol[:-4] if symbol.endswith("USDT") else symbol
+            if base_symbol in contract_symbols:
+                parts.append(f'<a href="{coinglass_tv_url(symbol)}"><b>{tg_escape(symbol)}</b></a>')
+            else:
+                parts.append(f"{tg_bold(symbol)}（无合约）")
+        if len(symbols) > max_count:
+            parts.append(f"+{len(symbols) - max_count}个")
+        if len(parts) <= 4:
+            return "、".join(parts)
+        return "\n" + "\n".join(f"- {part}" for part in parts)
 
     def _format_summary(
         self,

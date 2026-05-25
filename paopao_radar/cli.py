@@ -596,6 +596,15 @@ def run_once(args: argparse.Namespace) -> int:
         launch_scan_limit=settings.launch_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
     )
+    if not args.no_announcements:
+        delete_callback = gateway.delete_messages if args.send and args.confirm_real_send else None
+        cleanup_result = engine.cleanup_expired_announcements(delete_callback)
+        if cleanup_result.get("expired"):
+            print(
+                "announcement_cleanup: "
+                f"expired={cleanup_result.get('expired', 0)} "
+                f"deleted_messages={cleanup_result.get('deleted_messages', 0)}"
+            )
     result = engine.run_once(
         include_launch=not args.no_launch,
         include_announcements=not args.no_announcements,
@@ -663,6 +672,7 @@ def run_once(args: argparse.Namespace) -> int:
                 "reason": push.reason,
             })
             if push.status == "sent":
+                alert["message_ids"] = push.message_ids or []
                 sent_announcements.append(alert)
         engine.mark_announcements_seen(sent_announcements)
 

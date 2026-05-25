@@ -161,6 +161,8 @@ class Settings:
 
     announcement_state_path: Path = BASE_DIR / "data" / "announcement_state.json"
     announcement_page_size: int = 20
+    announcement_only_today: bool = True
+    announcement_default_ttl_days: int = 3
 
     divergence_state_path: Path = BASE_DIR / "data" / "oi_divergence_state.json"
     divergence_cooldown_path: Path = BASE_DIR / "data" / "oi_divergence_cooldown.json"
@@ -242,6 +244,8 @@ class Settings:
             launch_failed_ttl_sec=env_int("LAUNCH_FAILED_TTL_SEC", 24 * 3600),
             announcement_state_path=data_path(data_dir, "ANNOUNCEMENT_STATE_FILE", "announcement_state.json"),
             announcement_page_size=env_int("ANNOUNCEMENT_PAGE_SIZE", 20),
+            announcement_only_today=env_bool("ANNOUNCEMENT_ONLY_TODAY", True),
+            announcement_default_ttl_days=env_int("ANNOUNCEMENT_DEFAULT_TTL_DAYS", 3),
             divergence_state_path=data_path(data_dir, "OI_DIVERGENCE_STATE_FILE", "oi_divergence_state.json"),
             divergence_cooldown_path=data_path(data_dir, "OI_DIVERGENCE_COOLDOWN_FILE", "oi_divergence_cooldown.json"),
         )

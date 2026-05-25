@@ -19,6 +19,7 @@ class PushResult:
     status: str
     reason: str
     sent: bool = False
+    message_ids: list[int] | None = None
 
 
 def utc_ts() -> int:
@@ -167,8 +168,13 @@ class TelegramGateway:
 
         topic_id = self._ensure_topic_id_for_template(template_id)
         self._ensure_topic_intro(template_id, topic_id)
-        ok = self._send_real(text, parse_mode=parse_mode, topic_id=topic_id)
-        result = PushResult("sent" if ok else "failed", "telegram_api" if ok else "telegram_api_failed", ok)
+        ok, message_ids = self._send_real_message_ids(text, parse_mode=parse_mode, topic_id=topic_id)
+        result = PushResult(
+            "sent" if ok else "failed",
+            "telegram_api" if ok else "telegram_api_failed",
+            ok,
+            message_ids,
+        )
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
         return result
 
@@ -408,6 +414,31 @@ class TelegramGateway:
             return False
         return True
 
+    def delete_messages(self, message_ids: list[int]) -> int:
+        if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
+            return 0
+        deleted = 0
+        for message_id in message_ids:
+            if self._delete_message(message_id):
+                deleted += 1
+            time.sleep(0.15)
+        return deleted
+
+    def _delete_message(self, message_id: int) -> bool:
+        url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/deleteMessage"
+        payload: dict[str, Any] = {
+            "chat_id": self.settings.tg_chat_id,
+            "message_id": message_id,
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=self.settings.tg_push_timeout_sec)
+        except Exception:
+            return False
+        if response.status_code != 200:
+            print(f"[telegram] deleteMessage failed {response.status_code}: {response.text[:300]}", file=sys.stderr)
+            return False
+        return True
+
     def _load_history(self) -> list[dict[str, Any]]:
         data = self.store.load(self.settings.tg_push_history_path, [])
         return data if isinstance(data, list) else []
@@ -441,6 +472,7 @@ class TelegramGateway:
             "status": result.status,
             "reason": result.reason,
             "sent": result.sent,
+            "message_ids": result.message_ids or [],
             "preview": text[:240],
         })
         self._save_history(history)

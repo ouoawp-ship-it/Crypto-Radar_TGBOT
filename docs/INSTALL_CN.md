@@ -122,7 +122,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前从 `v1` 开始，后续功能更新按 `v1.1`、`v1.2` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.1`，后续功能更新按 `v1.2`、`v1.3` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 

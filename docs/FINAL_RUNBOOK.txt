@@ -85,6 +85,9 @@ bash scripts/install_server.sh
 周期: 跟随 once/loop 的主扫描。
 内容: Binance 公告中的 Alpha、上新、HODLer、Launchpool、Airdrop、下架、停止交易等。
 dry-run 不会把公告标记为已推送，只有真实发送成功才写入状态。
+默认只处理当天 CST 的公告；标题里带过去日期的历史公告会跳过，避免重装后重复推送旧消息。
+公告币种会按 Binance USDT 合约存在性分组：有合约才生成 CoinGlass 中文 K线链接，无合约只显示“无合约”，不会生成 UNKNOWN 或假链接。
+已推送公告会记录截止时间和 Telegram message_id；到期后真实运行会尝试删除过期推送并清理本地公告状态。
 
 4. Telegram 测试消息
 只在手动执行 telegram-test --send --confirm-real-send 时发送。
