@@ -96,6 +96,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 tg_launch_alert_topic_id="12",
                 tg_announcement_alert_topic_id="13",
                 tg_test_topic_id="14",
+                tg_flow_radar_topic_id="15",
             )
             gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
 
@@ -104,10 +105,11 @@ class TelegramGatewayTests(unittest.TestCase):
                 gateway.send("launch", "TG_LAUNCH_ALERT", "launch:key", send=False, confirm_real_send=False)
                 gateway.send("announcement", "TG_ANNOUNCEMENT_ALERT", "announcement:key", send=False, confirm_real_send=False)
                 gateway.send("test", "TG_TEST_MESSAGE", "test:key", send=False, confirm_real_send=False)
+                gateway.send("flow", "TG_FLOW_RADAR", "flow:key", send=False, confirm_real_send=False)
                 gateway.send("other", "OTHER_TEMPLATE", "other:key", send=False, confirm_real_send=False)
 
             history = JsonStore(Path(tmp)).load(history_path, [])
-            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "10"])
+            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "15", "10"])
 
     def test_auto_created_topic_is_reused_from_state(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -193,6 +195,58 @@ class TelegramGatewayTests(unittest.TestCase):
 
             with patch.object(gateway, "_create_forum_topic", return_value=""):
                 self.assertEqual(gateway._ensure_topic_id_for_template("TG_TEST_MESSAGE"), "10")
+
+    def test_real_send_posts_and_pins_topic_intro_once(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_use_topic=True,
+                tg_topic_intro_enable=True,
+                tg_topic_intro_pin=True,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(gateway, "_send_real_message_ids", side_effect=[(True, [100]), (True, [101]), (True, [102])]) as send_mock,
+                patch.object(gateway, "_pin_message", return_value=True) as pin_mock,
+            ):
+                first = gateway.send(
+                    "summary one",
+                    "TG_RADAR_SUMMARY",
+                    "summary:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                second = gateway.send(
+                    "summary two",
+                    "TG_RADAR_SUMMARY",
+                    "summary:two",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertTrue(first.sent)
+            self.assertTrue(second.sent)
+            self.assertEqual(send_mock.call_count, 3)
+            self.assertIn("资金摘要话题说明", send_mock.call_args_list[0].args[0])
+            self.assertEqual(send_mock.call_args_list[1].args[0], "summary one")
+            self.assertEqual(send_mock.call_args_list[2].args[0], "summary two")
+            pin_mock.assert_called_once_with(100)
+            data = store.load(route_path, {})
+            self.assertEqual(data["intros"]["TG_RADAR_SUMMARY:11"]["message_id"], 100)
+            self.assertTrue(data["intros"]["TG_RADAR_SUMMARY:11"]["pinned"])
 
 
 if __name__ == "__main__":

@@ -122,12 +122,13 @@ class MainCommandTests(unittest.TestCase):
 
     def test_make_runtime_for_args_applies_scan_limit_overrides(self) -> None:
         with TemporaryDirectory() as tmp:
-            args = argparse.Namespace(radar_scan_limit=4, launch_scan_limit=3)
+            args = argparse.Namespace(radar_scan_limit=4, launch_scan_limit=3, flow_scan_limit=2)
             with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
                 settings, _store, _engine, _gateway = main.make_runtime_for_args(args)
 
         self.assertEqual(settings.radar_scan_limit, 4)
         self.assertEqual(settings.launch_scan_limit, 3)
+        self.assertEqual(settings.flow_scan_limit, 2)
 
     def test_coinglass_test_blocks_when_disabled(self) -> None:
         with TemporaryDirectory() as tmp:

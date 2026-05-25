@@ -114,7 +114,7 @@ class RadarScoringTests(unittest.TestCase):
             )
 
             self.assertIn("<blockquote><b>📊 综合榜（评分=费率25 + 市值25 + 横盘25 + OI25）</b></blockquote>", text)
-            self.assertIn('href="https://www.coinglass.com/tv/Binance_TESTUSDT"', text)
+            self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_TESTUSDT"', text)
             self.assertIn("<b>TEST</b>", text)
             self.assertIn("</a>\n 88分", text)
             self.assertNotIn("<code>", text)

@@ -90,8 +90,11 @@ class Settings:
     tg_launch_alert_topic_id: str = ""
     tg_announcement_alert_topic_id: str = ""
     tg_test_topic_id: str = ""
+    tg_flow_radar_topic_id: str = ""
     tg_auto_create_topics: bool = True
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
+    tg_topic_intro_enable: bool = True
+    tg_topic_intro_pin: bool = True
     tg_use_topic: bool = False
     tg_push_history_path: Path = BASE_DIR / "data" / "tg_push_history.json"
     tg_push_split_limit: int = 3800
@@ -121,6 +124,7 @@ class Settings:
     coinglass_base_url: str = "https://open-api-v4.coinglass.com"
     coinglass_timeout_sec: int = 10
     coinglass_request_budget: int = 60
+    coinglass_exchange_list: str = "Binance"
 
     radar_scan_limit: int = 120
     radar_min_quote_volume: float = 5_000_000
@@ -129,6 +133,12 @@ class Settings:
     radar_summary_max_daily_push: int = 6
     radar_state_path: Path = BASE_DIR / "data" / "radar_state.json"
     funding_snapshot_path: Path = BASE_DIR / "data" / "funding_snapshot.json"
+
+    flow_scan_limit: int = 12
+    flow_candidate_pool: int = 50
+    flow_top_n: int = 8
+    flow_min_score: int = 50
+    flow_interval_sec: int = 15 * 60
 
     oi_hist_budget: int = 80
     kline_budget: int = 120
@@ -168,8 +178,11 @@ class Settings:
             tg_launch_alert_topic_id=env_first("TG_LAUNCH_ALERT_TOPIC_ID", "TELEGRAM_LAUNCH_ALERT_TOPIC_ID"),
             tg_announcement_alert_topic_id=env_first("TG_ANNOUNCEMENT_ALERT_TOPIC_ID", "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID"),
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
+            tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
+            tg_topic_intro_enable=env_bool("TG_TOPIC_INTRO_ENABLE", True),
+            tg_topic_intro_pin=env_bool("TG_TOPIC_INTRO_PIN", True),
             tg_use_topic=env_bool("TELEGRAM_USE_TOPIC", False),
             tg_push_history_path=data_path(data_dir, "TG_PUSH_HISTORY_FILE", "tg_push_history.json"),
             tg_push_split_limit=env_int("TG_PUSH_SPLIT_LIMIT", 3800),
@@ -197,6 +210,7 @@ class Settings:
             coinglass_base_url=os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com").rstrip("/"),
             coinglass_timeout_sec=env_int("COINGLASS_TIMEOUT_SEC", 10),
             coinglass_request_budget=env_int("COINGLASS_REQUEST_BUDGET", 60),
+            coinglass_exchange_list=os.getenv("COINGLASS_EXCHANGE_LIST", "Binance").strip() or "Binance",
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
@@ -204,6 +218,11 @@ class Settings:
             radar_summary_max_daily_push=env_int("RADAR_SUMMARY_MAX_DAILY_PUSH", 6),
             radar_state_path=data_path(data_dir, "RADAR_STATE_FILE", "radar_state.json"),
             funding_snapshot_path=data_path(data_dir, "FUNDING_SNAPSHOT_FILE", "funding_snapshot.json"),
+            flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 12),
+            flow_candidate_pool=env_int("FLOW_CANDIDATE_POOL", 50),
+            flow_top_n=env_int("FLOW_TOP_N", 8),
+            flow_min_score=env_int("FLOW_MIN_SCORE", 50),
+            flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 15 * 60),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
@@ -241,9 +260,12 @@ class Settings:
                     "launch_alert": bool(self.tg_launch_alert_topic_id),
                     "announcement_alert": bool(self.tg_announcement_alert_topic_id),
                     "test": bool(self.tg_test_topic_id),
+                    "flow_radar": bool(self.tg_flow_radar_topic_id),
                 },
                 "auto_create_topics": self.tg_auto_create_topics,
                 "topic_routes_file": str(self.tg_topic_routes_path),
+                "topic_intro_enable": self.tg_topic_intro_enable,
+                "topic_intro_pin": self.tg_topic_intro_pin,
                 "use_topic": self.tg_use_topic,
             },
             "runtime": {
@@ -265,6 +287,7 @@ class Settings:
                 "base_url": self.coinglass_base_url,
                 "timeout_sec": self.coinglass_timeout_sec,
                 "request_budget": self.coinglass_request_budget,
+                "exchange_list": self.coinglass_exchange_list,
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),
@@ -280,6 +303,13 @@ class Settings:
                 "top_n": self.radar_top_n,
                 "summary_min_interval_sec": self.radar_summary_min_interval_sec,
                 "summary_max_daily_push": self.radar_summary_max_daily_push,
+            },
+            "flow_radar": {
+                "scan_limit": self.flow_scan_limit,
+                "candidate_pool": self.flow_candidate_pool,
+                "top_n": self.flow_top_n,
+                "min_score": self.flow_min_score,
+                "interval_sec": self.flow_interval_sec,
             },
             "launch": {
                 "scan_limit": self.launch_scan_limit,

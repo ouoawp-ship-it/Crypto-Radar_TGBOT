@@ -386,6 +386,86 @@ class CoinglassDataSource:
         )
         return self.unwrap_data(payload)
 
+    def coins_markets(
+        self,
+        exchange_list: str = "",
+        per_page: int = 100,
+        page: int = 1,
+    ) -> Any:
+        params: dict[str, Any] = {
+            "per_page": max(1, int(per_page)),
+            "page": max(1, int(page)),
+        }
+        if exchange_list:
+            params["exchange_list"] = exchange_list
+        payload = self.get_json(
+            "/api/futures/coins-markets",
+            params,
+            quality_key="coinglassCoinsMarkets",
+        )
+        return self.unwrap_data(payload)
+
+    def futures_aggregated_cvd_history(
+        self,
+        symbol: str,
+        exchange_list: str = "Binance",
+        interval: str = "1h",
+        limit: int = 6,
+        unit: str = "usd",
+    ) -> Any:
+        payload = self.get_json(
+            "/api/futures/aggregated-cvd/history",
+            {
+                "exchange_list": exchange_list,
+                "symbol": symbol.upper().replace("USDT", ""),
+                "interval": interval,
+                "limit": limit,
+                "unit": unit,
+            },
+            quality_key="coinglassFuturesAggregatedCvd",
+        )
+        return self.unwrap_data(payload)
+
+    def spot_aggregated_cvd_history(
+        self,
+        symbol: str,
+        exchange_list: str = "Binance",
+        interval: str = "1h",
+        limit: int = 6,
+        unit: str = "usd",
+    ) -> Any:
+        payload = self.get_json(
+            "/api/spot/aggregated-cvd/history",
+            {
+                "exchange_list": exchange_list,
+                "symbol": symbol.upper().replace("USDT", ""),
+                "interval": interval,
+                "limit": limit,
+                "unit": unit,
+            },
+            quality_key="coinglassSpotAggregatedCvd",
+        )
+        return self.unwrap_data(payload)
+
+    def funding_rate_history(
+        self,
+        exchange: str,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 6,
+    ) -> Any:
+        payload = self.get_json(
+            "/api/futures/funding-rate/history",
+            {
+                "exchange": exchange,
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "limit": limit,
+            },
+            quality_key="coinglassFundingRateHistory",
+        )
+        return self.unwrap_data(payload)
+
     def diagnostics(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,

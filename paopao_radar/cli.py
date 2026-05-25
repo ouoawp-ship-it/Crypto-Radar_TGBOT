@@ -30,6 +30,7 @@ from datetime import datetime
 
 from .config import Settings
 from .data_sources import BinanceDataSource, CoinglassDataSource
+from .flow_radar import FlowRadarEngine
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine
 from .storage import JsonStore
@@ -122,8 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "flow-radar", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
@@ -137,8 +138,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--launch-interval", type=int, default=180, help="loop/daemon 的启动雷达间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
     parser.add_argument("--launch-scan-limit", type=int, default=None, help="临时覆盖启动雷达扫描上限")
+    parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
+    parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
     return parser
 
 
@@ -154,10 +157,13 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     updates: dict[str, int] = {}
     radar_scan_limit = getattr(args, "radar_scan_limit", None)
     launch_scan_limit = getattr(args, "launch_scan_limit", None)
+    flow_scan_limit = getattr(args, "flow_scan_limit", None)
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
     if launch_scan_limit is not None:
         updates["launch_scan_limit"] = max(0, int(launch_scan_limit))
+    if flow_scan_limit is not None:
+        updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
     if not updates:
         return settings
     return replace(settings, **updates)
@@ -309,6 +315,44 @@ def run_coinglass_test(_args: argparse.Namespace) -> int:
     elif isinstance(data, dict):
         print(f"sample_keys: {', '.join(list(data.keys())[:8])}")
     return 0 if ok else 1
+
+
+def run_flow_radar(args: argparse.Namespace) -> int:
+    settings, _store, _engine, gateway = make_runtime_for_args(args)
+    flow = FlowRadarEngine(settings).build(
+        BinanceDataSource(settings),
+        CoinglassDataSource(settings),
+    )
+    push = gateway.send(
+        flow["text"],
+        flow["template_id"],
+        flow["dedup_key"],
+        send=args.send,
+        confirm_real_send=args.confirm_real_send,
+        cooldown_sec=max(60, settings.flow_interval_sec),
+        parse_mode="HTML",
+    )
+    print(f"flow_push: {push.status} ({push.reason})")
+    print(json.dumps(flow["diagnostics"], ensure_ascii=False, indent=2))
+    return 0 if push.status != "failed" else 1
+
+
+def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse.Namespace) -> tuple[str, dict[str, object]]:
+    flow = FlowRadarEngine(settings).build(
+        BinanceDataSource(settings),
+        CoinglassDataSource(settings),
+    )
+    push = gateway.send(
+        flow["text"],
+        flow["template_id"],
+        flow["dedup_key"],
+        send=args.send,
+        confirm_real_send=args.confirm_real_send,
+        cooldown_sec=max(60, settings.flow_interval_sec),
+        parse_mode="HTML",
+    )
+    print(f"flow_push: {push.status} ({push.reason})")
+    return push.status, flow["diagnostics"]
 
 
 def print_readiness(settings: Settings, store: JsonStore) -> int:
@@ -547,8 +591,10 @@ def run_once(args: argparse.Namespace) -> int:
         real_send=bool(args.send and args.confirm_real_send),
         no_launch=bool(args.no_launch),
         no_announcements=bool(args.no_announcements),
+        no_flow=bool(args.no_flow),
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
+        flow_scan_limit=settings.flow_scan_limit,
     )
     result = engine.run_once(
         include_launch=not args.no_launch,
@@ -620,7 +666,17 @@ def run_once(args: argparse.Namespace) -> int:
                 sent_announcements.append(alert)
         engine.mark_announcements_seen(sent_announcements)
 
-    print(json.dumps(result["diagnostics"], ensure_ascii=False, indent=2))
+    diagnostics = dict(result["diagnostics"])
+    flow_push_status = "skipped"
+    if (
+        not args.no_flow
+        and settings.coinglass_enable
+        and bool(settings.coinglass_api_key)
+    ):
+        flow_push_status, flow_diag = push_flow_radar(settings, gateway, args)
+        diagnostics["flow"] = flow_diag
+
+    print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
     write_runtime_status(
         settings,
         store,
@@ -629,11 +685,13 @@ def run_once(args: argparse.Namespace) -> int:
         task="once",
         real_send=bool(args.send and args.confirm_real_send),
         summary_push=summary_push_status,
+        flow_push=flow_push_status,
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
+        flow_scan_limit=settings.flow_scan_limit,
         launch_pushes=launch_pushes,
         announcement_pushes=announcement_pushes,
-        diagnostics=result["diagnostics"],
+        diagnostics=diagnostics,
     )
     return 0
 
@@ -643,6 +701,7 @@ def run_loop(args: argparse.Namespace) -> int:
     mode = command_mode(args)
     next_summary = 0.0
     next_launch = 0.0
+    next_flow = 0.0
     write_runtime_status(
         settings,
         store,
@@ -652,9 +711,12 @@ def run_loop(args: argparse.Namespace) -> int:
         real_send=bool(args.send and args.confirm_real_send),
         interval_sec=max(60, args.interval),
         launch_interval_sec=max(60, args.launch_interval),
+        flow_interval_sec=max(60, settings.flow_interval_sec),
         no_launch=bool(args.no_launch),
+        no_flow=bool(args.no_flow),
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
+        flow_scan_limit=settings.flow_scan_limit,
     )
     while True:
         now = time.time()
@@ -663,7 +725,7 @@ def run_loop(args: argparse.Namespace) -> int:
             summary_ok = True
             summary_error = ""
             try:
-                run_once(argparse.Namespace(**{**vars(args), "no_launch": True}))
+                run_once(argparse.Namespace(**{**vars(args), "no_launch": True, "no_flow": True}))
             except Exception as exc:
                 summary_ok = False
                 summary_error = f"{type(exc).__name__}: {exc}"
@@ -680,6 +742,39 @@ def run_loop(args: argparse.Namespace) -> int:
                 next_summary_at=timestamp_from_epoch(next_summary),
                 last_error=summary_error,
                 no_launch=bool(args.no_launch),
+                no_flow=bool(args.no_flow),
+            )
+        if (
+            not args.no_flow
+            and settings.coinglass_enable
+            and bool(settings.coinglass_api_key)
+            and now >= next_flow
+        ):
+            flow_ok = True
+            flow_error = ""
+            flow_diag: dict[str, object] = {}
+            flow_push_status = "skipped"
+            try:
+                settings, _store, _engine, gateway = make_runtime_for_args(args)
+                flow_push_status, flow_diag = push_flow_radar(settings, gateway, args)
+                print(json.dumps({"flow": flow_diag}, ensure_ascii=False, indent=2))
+            except Exception as exc:
+                flow_ok = False
+                flow_error = f"{type(exc).__name__}: {exc}"
+                print(f"[loop] flow failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            next_flow = time.time() + max(60, settings.flow_interval_sec)
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running" if flow_ok else "flow_failed",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                last_flow_at=timestamp_from_epoch(time.time()),
+                next_flow_at=timestamp_from_epoch(next_flow),
+                flow_push=flow_push_status,
+                diagnostics={"flow": flow_diag},
+                last_error=flow_error,
             )
         if not args.no_launch and now >= next_launch:
             launch_ok = True
@@ -979,6 +1074,12 @@ def main(argv: list[str] | None = None) -> int:
         return run_telegram_test(args)
     if args.command == "coinglass-test":
         return run_coinglass_test(args)
+    if args.command == "flow-radar":
+        if args.send and args.confirm_real_send:
+            gate = require_real_send_gate(settings, store, args)
+            if gate != 0:
+                return gate
+        return run_flow_radar(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

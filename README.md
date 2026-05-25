@@ -36,6 +36,8 @@ TG_AUTO_CREATE_TOPICS=true
 
 没有配置专属话题的消息会先读取 `data/tg_topic_routes.json` 里已自动创建过的话题 ID；仍没有时，如果 `TG_AUTO_CREATE_TOPICS=true` 且 bot 有管理话题权限，会自动创建并记录话题。`TG_TOPIC_ID` 可作为默认兜底话题；所有话题都不可用时，消息发到群默认主聊天。
 
+每个推送话题第一次真实发送前，会自动发一条“本话题功能说明/信号阅读方式”，并尝试置顶；置顶需要 bot 具备置顶消息或管理话题权限。可用 `TG_TOPIC_INTRO_ENABLE=false` 或 `TG_TOPIC_INTRO_PIN=false` 关闭。
+
 ```bash
 bash scripts/install_server.sh
 ```

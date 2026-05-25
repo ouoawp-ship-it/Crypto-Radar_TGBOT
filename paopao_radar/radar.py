@@ -68,7 +68,7 @@ def coinglass_tv_url(coin_or_symbol: str) -> str:
     symbol = str(coin_or_symbol).upper()
     if not symbol.endswith("USDT"):
         symbol = f"{symbol}USDT"
-    return f"https://www.coinglass.com/tv/Binance_{escape(symbol, quote=True)}"
+    return f"https://www.coinglass.com/tv/zh/Binance_{escape(symbol, quote=True)}"
 
 
 def coin_link(item: dict[str, Any]) -> str:
