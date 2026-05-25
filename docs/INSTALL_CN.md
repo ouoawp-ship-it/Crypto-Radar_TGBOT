@@ -43,7 +43,40 @@ bash scripts/install_server.sh
 `COINGLASS_API_KEY`
 : CoinGlass API key。只在脚本提示 `COINGLASS_API_KEY 可选` 时填写。直接回车就是纯 Binance 数据版本。
 
-## 3. Telegram 话题推荐设置
+## 3. 修改 token、群 ID、CoinGlass key
+
+安装完成后，如果填错了 bot token、群 ID 或 CoinGlass key，不需要重新安装项目，直接运行配置修改向导:
+
+```bash
+cd ~/paopao-crypto-radar
+bash scripts/install_server.sh config
+```
+
+菜单会提供这些功能:
+
+```text
+1. 修改 TG_BOT_TOKEN
+2. 修改 TG_CHAT_ID / 群 ID
+3. 修改 COINGLASS_API_KEY
+4. 修改 Telegram 话题配置
+5. Telegram 和 CoinGlass 全部重新填写
+6. 清理旧 Telegram 话题路由
+0. 保存并退出
+```
+
+如果修改了 `TG_CHAT_ID`，脚本会自动删除 `data/tg_topic_routes.json`。这是必要的，因为旧群的话题 ID 不能继续用于新群。服务重启后，bot 会按新群重新自动创建话题。
+
+如果修改了 `TG_BOT_TOKEN`，建议确认新 bot 已经加入目标群，并且具备发送消息、管理话题、置顶消息权限。
+
+如果修改了 `COINGLASS_API_KEY`，直接回车表示关闭 CoinGlass，切回纯 Binance 数据版本；粘贴新 key 表示启用双源版本。
+
+修改完成后，向导会提示是否立即重启 systemd 服务。也可以手动重启:
+
+```bash
+sudo systemctl restart paopao-radar
+```
+
+## 4. Telegram 话题推荐设置
 
 推荐默认配置:
 
@@ -62,7 +95,7 @@ bot 需要在群里具备这些权限:
 
 每个话题第一次真实推送前，项目会先发送一条中文说明消息，并尝试置顶。说明消息会解释这个话题推什么、怎么看信号。
 
-## 4. 重新安装
+## 5. 重新安装
 
 如果你想完全重新安装，并备份旧目录:
 
@@ -93,7 +126,7 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-## 5. 更新现有项目
+## 6. 更新现有项目
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -108,7 +141,7 @@ bash scripts/update_server.sh
 - 单元测试
 - 如果存在 systemd 服务，则自动重启服务
 
-## 6. 常用检查命令
+## 7. 常用检查命令
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -128,7 +161,7 @@ sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
 ```
 
-## 7. 手动启动方式
+## 8. 手动启动方式
 
 如果你不想用 systemd，也可以手动后台运行:
 
@@ -140,7 +173,7 @@ nohup .venv/bin/python -u main.py daemon --send --confirm-real-send > data/runti
 tail -f data/runtime.log
 ```
 
-## 8. 排错
+## 9. 排错
 
 如果提示 `TG_BOT_TOKEN 缺失或格式无效`:
 

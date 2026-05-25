@@ -103,3 +103,9 @@ bash scripts/update_server.sh
 ## 中文安装目录
 
 第一次安装、重新安装、配置项说明和常见排错见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
+
+修改 bot token、群 ID、CoinGlass key 或 Telegram 话题配置:
+
+```bash
+bash scripts/install_server.sh config
+```

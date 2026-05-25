@@ -153,6 +153,15 @@ yes_no_default_no() {
   esac
 }
 
+yes_no_default_yes() {
+  local answer
+  read -r -p "$1 [Y/n]: " answer
+  case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+    n|no) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 prompt_topic_id() {
   local key="$1"
   local label="$2"
@@ -356,12 +365,174 @@ install_os_packages() {
   fi
 }
 
-ensure_env_file() {
+ensure_env_file_exists() {
   if [ ! -f "$ENV_FILE" ]; then
     log "创建 .env.oi 配置文件"
     cp "${APP_DIR}/.env.oi.example" "$ENV_FILE"
     chmod 600 "$ENV_FILE" || true
   fi
+}
+
+clear_topic_routes_file() {
+  rm -f "${APP_DIR}/data/tg_topic_routes.json"
+  log "已清理旧话题路由 data/tg_topic_routes.json，后续会按新群重新自动创建"
+}
+
+restart_service_if_requested() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if ! systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+    return 0
+  fi
+  if yes_no_default_yes "配置已修改，是否立即重启 ${SERVICE_NAME} 服务"; then
+    run_root systemctl restart "$SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
+  else
+    printf '未重启服务。稍后可手动执行: sudo systemctl restart %s\n' "$SERVICE_NAME"
+  fi
+}
+
+prompt_bot_token_only() {
+  local bot_token
+  while true; do
+    read -r -p "新的 TG_BOT_TOKEN: " bot_token
+    if is_valid_bot_token "$bot_token"; then
+      set_env_value TG_BOT_TOKEN "$bot_token"
+      chmod 600 "$ENV_FILE" || true
+      printf 'TG_BOT_TOKEN 已更新。\n'
+      return 0
+    fi
+    printf 'TG_BOT_TOKEN 格式不对，必须类似 123456:ABC...。按 Ctrl+C 可退出。\n'
+  done
+}
+
+prompt_chat_id_only() {
+  local old_chat_id chat_id
+  old_chat_id="$(get_env_value TG_CHAT_ID)"
+  while true; do
+    read -r -p "新的 TG_CHAT_ID: " chat_id
+    if is_valid_chat_id "$chat_id"; then
+      set_env_value TG_CHAT_ID "$chat_id"
+      chmod 600 "$ENV_FILE" || true
+      printf 'TG_CHAT_ID 已更新。\n'
+      if [ "$old_chat_id" != "$chat_id" ]; then
+        clear_topic_routes_file
+      fi
+      return 0
+    fi
+    printf 'TG_CHAT_ID 格式不对，通常是 -1001234567890 或 @channel_username。按 Ctrl+C 可退出。\n'
+  done
+}
+
+prompt_coinglass_config_force() {
+  local coinglass_key
+  cat <<EOF
+
+修改 CoinGlass API key:
+  - 直接回车: 关闭 CoinGlass，使用纯 Binance 数据版本
+  - 粘贴新 key: 启用 Binance + CoinGlass 双源版本
+
+EOF
+  while true; do
+    read -r -p "新的 COINGLASS_API_KEY，回车关闭: " coinglass_key
+    if [ -z "$coinglass_key" ]; then
+      set_env_value COINGLASS_ENABLE "false"
+      set_env_value COINGLASS_API_KEY ""
+      printf 'CoinGlass 已关闭，后续使用纯 Binance 数据版本。\n'
+      return 0
+    fi
+    if is_valid_coinglass_key "$coinglass_key"; then
+      set_env_value COINGLASS_ENABLE "true"
+      set_env_value COINGLASS_API_KEY "$coinglass_key"
+      set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
+      set_env_value COINGLASS_REQUEST_BUDGET "60"
+      printf 'COINGLASS_API_KEY 已更新。\n'
+      return 0
+    fi
+    printf 'COINGLASS_API_KEY 格式不对。回车可关闭，或重新粘贴有效 key。\n'
+  done
+}
+
+print_config_menu() {
+  cat <<EOF
+
+============================================================
+泡泡抓币 - 配置修改向导
+============================================================
+当前配置文件: ${ENV_FILE}
+
+  1. 修改 TG_BOT_TOKEN
+  2. 修改 TG_CHAT_ID / 群 ID
+  3. 修改 COINGLASS_API_KEY
+  4. 修改 Telegram 话题配置
+  5. Telegram 和 CoinGlass 全部重新填写
+  6. 清理旧 Telegram 话题路由
+  0. 保存并退出
+
+说明:
+  - 修改群 ID 后会自动清理旧话题路由。
+  - 清理旧话题路由后，机器人会在新群重新自动创建话题。
+  - 修改 token / 群 ID / key 后建议重启服务。
+============================================================
+
+EOF
+}
+
+run_config_wizard() {
+  cd "$APP_DIR"
+  if [ ! -t 0 ]; then
+    die "配置修改向导需要交互式终端"
+  fi
+  ensure_env_file_exists
+
+  local choice changed
+  changed=0
+  while true; do
+    print_config_menu
+    read -r -p "请选择: " choice
+    case "$choice" in
+      1)
+        prompt_bot_token_only
+        changed=1
+        ;;
+      2)
+        prompt_chat_id_only
+        changed=1
+        ;;
+      3)
+        prompt_coinglass_config_force
+        changed=1
+        ;;
+      4)
+        configure_topics
+        changed=1
+        ;;
+      5)
+        prompt_telegram_config
+        prompt_coinglass_config_force
+        changed=1
+        ;;
+      6)
+        clear_topic_routes_file
+        changed=1
+        ;;
+      0)
+        break
+        ;;
+      *)
+        printf '无效选项，请输入 0-6。\n'
+        ;;
+    esac
+  done
+
+  if [ "$changed" = "1" ]; then
+    restart_service_if_requested
+  else
+    printf '配置未修改。\n'
+  fi
+}
+
+ensure_env_file() {
+  ensure_env_file_exists
 
   local existing_token existing_chat
   existing_token="$(get_env_value TG_BOT_TOKEN)"
@@ -480,6 +651,26 @@ EOF
 
 main() {
   cd "$APP_DIR"
+  case "${1:-install}" in
+    install|"")
+      ;;
+    config|configure|--config)
+      run_config_wizard
+      return 0
+      ;;
+    help|-h|--help)
+      cat <<EOF
+用法:
+  bash scripts/install_server.sh          # 中文安装向导
+  bash scripts/install_server.sh config   # 修改 token / 群 ID / CoinGlass key / 话题配置
+EOF
+      return 0
+      ;;
+    *)
+      die "未知参数: $1。可用: install, config, --help"
+      ;;
+  esac
+
   print_banner
   install_os_packages
   ensure_env_file
