@@ -22,6 +22,18 @@ bash scripts/install_server.sh
 
 第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。
 
+Telegram 群开启话题后，可以把不同推送分到不同话题，避免消息交叉：
+
+```bash
+TELEGRAM_USE_TOPIC=true
+TG_RADAR_SUMMARY_TOPIC_ID=资金摘要话题ID
+TG_LAUNCH_ALERT_TOPIC_ID=启动预警话题ID
+TG_ANNOUNCEMENT_ALERT_TOPIC_ID=公告风险话题ID
+TG_TEST_TOPIC_ID=测试消息话题ID
+```
+
+没有配置专属话题的消息会回落到 `TG_TOPIC_ID`；`TG_TOPIC_ID` 也为空时，消息发到群默认主聊天。
+
 ```bash
 bash scripts/install_server.sh
 ```

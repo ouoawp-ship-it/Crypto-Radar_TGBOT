@@ -103,7 +103,7 @@ EOF
     exit 0
   fi
 
-  local bot_token chat_id topic_id
+  local bot_token chat_id topic_id summary_topic_id launch_topic_id announcement_topic_id test_topic_id
   printf '\nTelegram configuration is required before starting real push.\n'
   printf 'Tip: the token input is visible so terminal paste can be verified.\n'
   while true; do
@@ -122,12 +122,32 @@ EOF
     printf 'Invalid TG_CHAT_ID. Use a numeric id like -1001234567890 or @channel_username. Press Ctrl+C to stop.\n'
   done
 
-  read -r -p "TG_TOPIC_ID optional, press Enter to skip: " topic_id
+  read -r -p "TG_TOPIC_ID default topic optional, press Enter to skip: " topic_id
+  read -r -p "TG_RADAR_SUMMARY_TOPIC_ID scheduled summary optional, press Enter to skip: " summary_topic_id
+  read -r -p "TG_LAUNCH_ALERT_TOPIC_ID instant launch alerts optional, press Enter to skip: " launch_topic_id
+  read -r -p "TG_ANNOUNCEMENT_ALERT_TOPIC_ID announcements/risks optional, press Enter to skip: " announcement_topic_id
+  read -r -p "TG_TEST_TOPIC_ID test messages optional, press Enter to skip: " test_topic_id
 
   set_env_value TG_BOT_TOKEN "$bot_token"
   set_env_value TG_CHAT_ID "$chat_id"
   if [ -n "$topic_id" ]; then
     set_env_value TG_TOPIC_ID "$topic_id"
+    set_env_value TELEGRAM_USE_TOPIC "true"
+  fi
+  if [ -n "$summary_topic_id" ]; then
+    set_env_value TG_RADAR_SUMMARY_TOPIC_ID "$summary_topic_id"
+    set_env_value TELEGRAM_USE_TOPIC "true"
+  fi
+  if [ -n "$launch_topic_id" ]; then
+    set_env_value TG_LAUNCH_ALERT_TOPIC_ID "$launch_topic_id"
+    set_env_value TELEGRAM_USE_TOPIC "true"
+  fi
+  if [ -n "$announcement_topic_id" ]; then
+    set_env_value TG_ANNOUNCEMENT_ALERT_TOPIC_ID "$announcement_topic_id"
+    set_env_value TELEGRAM_USE_TOPIC "true"
+  fi
+  if [ -n "$test_topic_id" ]; then
+    set_env_value TG_TEST_TOPIC_ID "$test_topic_id"
     set_env_value TELEGRAM_USE_TOPIC "true"
   fi
   chmod 600 "$ENV_FILE" || true

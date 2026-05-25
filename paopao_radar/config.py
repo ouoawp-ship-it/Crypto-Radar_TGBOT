@@ -60,6 +60,14 @@ def env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(part.strip().upper() for part in value.split(",") if part.strip())
 
 
+def env_first(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "")
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
 def data_path(data_dir: Path, env_name: str, default_name: str) -> Path:
     value = os.getenv(env_name, default_name)
     path = Path(value)
@@ -78,6 +86,10 @@ class Settings:
     tg_bot_token: str = ""
     tg_chat_id: str = ""
     tg_topic_id: str = ""
+    tg_radar_summary_topic_id: str = ""
+    tg_launch_alert_topic_id: str = ""
+    tg_announcement_alert_topic_id: str = ""
+    tg_test_topic_id: str = ""
     tg_use_topic: bool = False
     tg_push_history_path: Path = BASE_DIR / "data" / "tg_push_history.json"
     tg_push_split_limit: int = 3800
@@ -143,7 +155,11 @@ class Settings:
             data_dir=data_dir,
             tg_bot_token=os.getenv("TG_BOT_TOKEN", ""),
             tg_chat_id=os.getenv("TG_CHAT_ID", ""),
-            tg_topic_id=(os.getenv("TG_TOPIC_ID", "") or os.getenv("TELEGRAM_MESSAGE_THREAD_ID", "")).strip(),
+            tg_topic_id=env_first("TG_TOPIC_ID", "TELEGRAM_MESSAGE_THREAD_ID"),
+            tg_radar_summary_topic_id=env_first("TG_RADAR_SUMMARY_TOPIC_ID", "TELEGRAM_RADAR_SUMMARY_TOPIC_ID"),
+            tg_launch_alert_topic_id=env_first("TG_LAUNCH_ALERT_TOPIC_ID", "TELEGRAM_LAUNCH_ALERT_TOPIC_ID"),
+            tg_announcement_alert_topic_id=env_first("TG_ANNOUNCEMENT_ALERT_TOPIC_ID", "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID"),
+            tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_use_topic=env_bool("TELEGRAM_USE_TOPIC", False),
             tg_push_history_path=data_path(data_dir, "TG_PUSH_HISTORY_FILE", "tg_push_history.json"),
             tg_push_split_limit=env_int("TG_PUSH_SPLIT_LIMIT", 3800),
@@ -205,6 +221,12 @@ class Settings:
                 "bot_token_configured": bool(self.tg_bot_token),
                 "chat_id_configured": bool(self.tg_chat_id),
                 "topic_id_configured": bool(self.tg_topic_id),
+                "topic_routes_configured": {
+                    "radar_summary": bool(self.tg_radar_summary_topic_id),
+                    "launch_alert": bool(self.tg_launch_alert_topic_id),
+                    "announcement_alert": bool(self.tg_announcement_alert_topic_id),
+                    "test": bool(self.tg_test_topic_id),
+                },
                 "use_topic": self.tg_use_topic,
             },
             "runtime": {

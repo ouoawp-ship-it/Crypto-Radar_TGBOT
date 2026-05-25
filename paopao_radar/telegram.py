@@ -64,49 +64,52 @@ class TelegramGateway:
         now = utc_ts()
         cooldown = self.settings.tg_default_cooldown_sec if cooldown_sec is None else cooldown_sec
         history = self._load_history()
+        topic_id = self._topic_id_for_template(template_id)
 
         duplicate = self._recent_match(history, dedup_key, cooldown)
         if duplicate:
             result = PushResult("skipped", "dedup_cooldown", False)
-            self._record(history, template_id, dedup_key, result, text)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
         if daily_limit is not None and daily_limit >= 0 and self._daily_sent_count(history, template_id, now) >= daily_limit:
             result = PushResult("skipped", "template_daily_limit", False)
-            self._record(history, template_id, dedup_key, result, text)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
         if self._hourly_sent_count(history, now) >= self.settings.tg_global_hourly_limit:
             result = PushResult("skipped", "global_hourly_limit", False)
-            self._record(history, template_id, dedup_key, result, text)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
         if not send:
             print("\n========== TELEGRAM DRY-RUN ==========")
             print(f"template_id: {template_id}")
             print(f"dedup_key: {dedup_key}")
+            if topic_id:
+                print(f"topic_id: {topic_id}")
             print(text)
             print("========== END DRY-RUN ==============\n")
             result = PushResult("dry_run", "send_flag_not_set", False)
-            self._record(history, template_id, dedup_key, result, text)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
         if not confirm_real_send:
             result = PushResult("blocked", "missing_confirm_real_send", False)
-            self._record(history, template_id, dedup_key, result, text)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
         if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
             result = PushResult("blocked", "telegram_not_configured", False)
-            self._record(history, template_id, dedup_key, result, text)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
-        ok = self._send_real(text, parse_mode=parse_mode)
+        ok = self._send_real(text, parse_mode=parse_mode, topic_id=topic_id)
         result = PushResult("sent" if ok else "failed", "telegram_api" if ok else "telegram_api_failed", ok)
-        self._record(history, template_id, dedup_key, result, text)
+        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
         return result
 
-    def _send_real(self, text: str, parse_mode: str) -> bool:
+    def _send_real(self, text: str, parse_mode: str, topic_id: str = "") -> bool:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendMessage"
         ok = True
         for chunk in chunk_text(text, self.settings.tg_push_split_limit):
@@ -116,11 +119,11 @@ class TelegramGateway:
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": True,
             }
-            if self.settings.tg_topic_id and (
+            if topic_id and (
                 self.settings.tg_use_topic or str(self.settings.tg_chat_id).startswith("-100")
             ):
                 try:
-                    payload["message_thread_id"] = int(self.settings.tg_topic_id)
+                    payload["message_thread_id"] = int(topic_id)
                 except ValueError:
                     pass
             sent = False
@@ -148,6 +151,15 @@ class TelegramGateway:
             time.sleep(0.25)
         return ok
 
+    def _topic_id_for_template(self, template_id: str) -> str:
+        topic_routes = {
+            "TG_RADAR_SUMMARY": self.settings.tg_radar_summary_topic_id,
+            "TG_LAUNCH_ALERT": self.settings.tg_launch_alert_topic_id,
+            "TG_ANNOUNCEMENT_ALERT": self.settings.tg_announcement_alert_topic_id,
+            "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
+        }
+        return topic_routes.get(template_id, "") or self.settings.tg_topic_id
+
     def _load_history(self) -> list[dict[str, Any]]:
         data = self.store.load(self.settings.tg_push_history_path, [])
         return data if isinstance(data, list) else []
@@ -170,12 +182,14 @@ class TelegramGateway:
         dedup_key: str,
         result: PushResult,
         text: str,
+        topic_id: str = "",
     ) -> None:
         history.append({
             "ts": utc_ts(),
             "time": datetime.now(timezone.utc).isoformat(),
             "template_id": template_id,
             "dedup_key": dedup_key,
+            "topic_id": topic_id,
             "status": result.status,
             "reason": result.reason,
             "sent": result.sent,

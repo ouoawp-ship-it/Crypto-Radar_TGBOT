@@ -84,6 +84,30 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(result.status, "skipped")
             self.assertEqual(result.reason, "template_daily_limit")
 
+    def test_template_specific_topic_routes_are_recorded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+                tg_topic_id="10",
+                tg_radar_summary_topic_id="11",
+                tg_launch_alert_topic_id="12",
+                tg_announcement_alert_topic_id="13",
+                tg_test_topic_id="14",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with redirect_stdout(StringIO()):
+                gateway.send("summary", "TG_RADAR_SUMMARY", "summary:key", send=False, confirm_real_send=False)
+                gateway.send("launch", "TG_LAUNCH_ALERT", "launch:key", send=False, confirm_real_send=False)
+                gateway.send("announcement", "TG_ANNOUNCEMENT_ALERT", "announcement:key", send=False, confirm_real_send=False)
+                gateway.send("test", "TG_TEST_MESSAGE", "test:key", send=False, confirm_real_send=False)
+                gateway.send("other", "OTHER_TEMPLATE", "other:key", send=False, confirm_real_send=False)
+
+            history = JsonStore(Path(tmp)).load(history_path, [])
+            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "10"])
+
 
 if __name__ == "__main__":
     unittest.main()
