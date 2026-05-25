@@ -4,6 +4,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html import unescape
 from typing import Any
 
 import requests
@@ -39,7 +40,8 @@ def chunk_text(text: str, limit: int) -> list[str]:
 
 
 def plain_fallback(text: str) -> str:
-    return re.sub(r"[*_`]", "", text)
+    without_tags = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"[*_`]", "", unescape(without_tags))
 
 
 class TelegramGateway:

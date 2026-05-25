@@ -9,6 +9,20 @@ from paopao_radar.radar import RadarEngine, score_funding
 from paopao_radar.storage import JsonStore
 
 
+class _FakeBudget:
+    used = {"open_interest_hist": 1, "klines": 2}
+    limits = {"open_interest_hist": 80, "klines": 120}
+
+
+class _FakeQuality:
+    failures: dict[str, int] = {}
+
+
+class _FakeSource:
+    budget = _FakeBudget()
+    quality = _FakeQuality()
+
+
 class RadarAnnouncementTests(unittest.TestCase):
     def test_extracts_multiple_listing_symbols(self) -> None:
         title = "Binance Will List Genius Terminal (GENIUS) and OpenGradient (OPG) with Seed Tag Applied"
@@ -61,6 +75,86 @@ class RadarScoringTests(unittest.TestCase):
             self.assertTrue(engine._is_excluded_symbol("XAUUSDT"))
             self.assertTrue(engine._is_excluded_symbol("XAGUSDT"))
             self.assertFalse(engine._is_excluded_symbol("BTCUSDT"))
+
+    def test_summary_uses_html_links_quotes_and_score_notes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            item = {
+                "symbol": "TESTUSDT",
+                "coin": "TEST",
+                "funding_pct": -0.12,
+                "funding_trend": "🔥加速",
+                "price_24h": 5.2,
+                "mcap": 42_000_000,
+                "price": 0.1234,
+                "combined_score": 88,
+                "ambush_score": 80,
+                "momentum_score": 70,
+                "new_score": 65,
+                "sideways_days": 96,
+                "oi_6h": 12.3,
+                "quote_volume": 55_000_000,
+                "history_days": 12,
+                "divergence": 7.1,
+                "level": "🟡中",
+                "status_text": "🆕 首次出现",
+            }
+
+            text = engine._format_summary(
+                "05-25 22:00 CST",
+                [item],
+                [item],
+                [item],
+                [item],
+                [item],
+                [item],
+                [item],
+                _FakeSource(),
+                {"first": 1, "continued": 0, "enhanced": 0, "reappeared": 0},
+            )
+
+            self.assertIn("<blockquote><b>📊 综合榜（评分=费率25 + 市值25 + 横盘25 + OI25）</b></blockquote>", text)
+            self.assertIn('href="https://www.coinglass.com/tv/Binance_TESTUSDT"', text)
+            self.assertIn("<b>TEST</b>", text)
+            self.assertIn("<code>", text)
+            self.assertIn("链接    = 点击币种打开 CoinGlass Binance K线", text)
+
+    def test_launch_alert_translates_state_and_explains_score(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            text = engine._format_launch_alert({
+                "symbol": "TESTUSDT",
+                "coin": "TEST",
+                "stage": "primed",
+                "previous_stage": "idle",
+                "score": 63,
+                "appear_count": 2,
+                "price_15m": 4.5,
+                "price_1h": 6.0,
+                "oi_15m": 3.2,
+                "oi_1h": 6.8,
+                "volume_ratio": 2.4,
+                "breakout": False,
+            })
+
+            self.assertIn("状态</b>: 未触发 -> 提前预警", text)
+            self.assertIn("分数图例", text)
+            self.assertIn("05-", text)
+            self.assertIn("CST", text)
+
+    def test_risk_announcement_uses_chinese_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            text = engine._format_announcement({
+                "kind": "risk",
+                "symbol": "TEST",
+                "title": "Binance Will Delist TEST",
+                "url": "https://www.binance.com/example",
+            })
+
+            self.assertIn("风险提醒", text)
+            self.assertIn("标记为 风险", text)
+            self.assertNotIn("risk", text)
 
 
 if __name__ == "__main__":

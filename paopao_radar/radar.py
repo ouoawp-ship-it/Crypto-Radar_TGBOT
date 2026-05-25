@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from html import escape
 from typing import Any, Optional
 
 from .config import Settings
@@ -44,6 +45,51 @@ CHAIN_SYMBOL_TOKEN_NAMES = {
     "SUI": {"sui"},
     "TON": {"toncoin"},
 }
+CST = timezone(timedelta(hours=8))
+
+
+def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
+    return datetime.now(CST).strftime(fmt)
+
+
+def tg_escape(value: Any) -> str:
+    return escape(str(value), quote=False)
+
+
+def tg_code(value: str) -> str:
+    return f"<code>{escape(value, quote=False)}</code>"
+
+
+def tg_bold(value: Any) -> str:
+    return f"<b>{tg_escape(value)}</b>"
+
+
+def tg_quote(title: str) -> str:
+    return f"<blockquote><b>{tg_escape(title)}</b></blockquote>"
+
+
+def coinglass_tv_url(coin_or_symbol: str) -> str:
+    symbol = str(coin_or_symbol).upper()
+    if not symbol.endswith("USDT"):
+        symbol = f"{symbol}USDT"
+    return f"https://www.coinglass.com/tv/Binance_{escape(symbol, quote=True)}"
+
+
+def coin_link(item: dict[str, Any], width: int | None = None) -> str:
+    raw = str(item.get("coin") or item.get("symbol") or "")
+    coin = raw[:-4] if raw.endswith("USDT") else raw
+    label = tg_escape(coin)
+    if width is not None:
+        label = f"{label}{'&nbsp;' * max(0, width - len(coin))}"
+    return f'<a href="{coinglass_tv_url(coin)}"><b>{label}</b></a>'
+
+
+def pct_cell(value: float, width: int = 7, decimals: int = 1) -> str:
+    return f"{value:+.{decimals}f}%".rjust(width)
+
+
+def score_cell(value: int) -> str:
+    return f"{value:>3}分"
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
@@ -205,12 +251,17 @@ class RadarEngine:
 
     def build_money_radar_summary(self, source: BinanceDataSource) -> dict[str, Any]:
         items = self._load_market_items(source)
-        now = datetime.now().strftime("%m-%d %H:%M")
+        now = cst_now_text()
         if not items:
             return {
                 "template_id": "TG_RADAR_SUMMARY",
-                "dedup_key": f"radar-summary:{datetime.now().strftime('%Y%m%d%H')}",
-                "text": f"🏦 资金雷达摘要\n⏰ {now}\n\n暂无有效数据，可能是接口失败或候选不足。",
+                "dedup_key": f"radar-summary:{datetime.now(CST).strftime('%Y%m%d%H')}",
+                "text": "\n".join([
+                    "🏦 <b>资金雷达摘要</b>",
+                    f"⏰ {now}",
+                    "",
+                    "暂无有效数据，可能是接口失败或候选不足。",
+                ]),
                 "quality": source.diagnostics(),
             }
 
@@ -272,7 +323,7 @@ class RadarEngine:
         text = self._format_summary(now, negative, combined, ambush, momentum, new_pool, divergence, items, source, divergence_stats)
         return {
             "template_id": "TG_RADAR_SUMMARY",
-            "dedup_key": f"radar-summary:{datetime.now().strftime('%Y%m%d%H')}",
+            "dedup_key": f"radar-summary:{datetime.now(CST).strftime('%Y%m%d%H')}",
             "text": text,
             "quality": source.diagnostics(),
         }
@@ -509,35 +560,38 @@ class RadarEngine:
         return "https://www.binance.com/zh-CN/support/announcement"
 
     def _format_announcement(self, alert: dict[str, Any]) -> str:
+        symbol = coin_link({"coin": alert["symbol"]})
+        title = tg_escape(alert["title"])
+        url = escape(alert["url"], quote=True)
         if alert["kind"] == "risk":
             return "\n".join([
-                f"⚠️ 风险提醒 {alert['symbol']}",
+                f"⚠️ {tg_bold('风险提醒')} {symbol}",
                 "",
-                "风险: 下架 / 移除交易对 / 停止交易",
-                f"公告: {alert['title']}",
+                f"{tg_bold('风险')}: 下架 / 移除交易对 / 停止交易",
+                f"{tg_bold('公告')}: {title}",
                 "",
-                "影响:",
+                tg_bold("影响"),
                 "- 合约或现货流动性可能快速下降",
-                "- 观察状态中该币应标记为 risk",
+                "- 观察状态中该币应标记为 风险",
                 "",
-                "处理:",
+                tg_bold("处理"),
                 "暂停新增观察，只保留风险记录",
-                f"链接: {alert['url']}",
+                f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
             ])
         return "\n".join([
-            f"📢 公告机会 {alert['symbol']}",
+            f"📢 {tg_bold('公告机会')} {symbol}",
             "",
-            "事件: Binance Alpha / 上新 / 活动",
-            f"公告: {alert['title']}",
-            "等级: 待资金面确认",
+            f"{tg_bold('事件')}: Binance Alpha / 上新 / 活动",
+            f"{tg_bold('公告')}: {title}",
+            f"{tg_bold('等级')}: 待资金面确认",
             "",
-            "原因:",
-            f"- {alert['reason']}",
+            tg_bold("原因"),
+            f"- {tg_escape(alert['reason'])}",
             "- Binance 官方公告触发",
             "",
-            "处理:",
+            tg_bold("处理"),
             "已记录为机会事件，等待资金面确认",
-            f"链接: {alert['url']}",
+            f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
         ])
 
     def _format_summary(
@@ -554,16 +608,16 @@ class RadarEngine:
         divergence_stats: dict[str, int],
     ) -> str:
         lines = [
-            "🏦 资金雷达摘要",
+            "🏦 <b>资金雷达摘要</b>",
             f"⏰ {now}",
             "",
-            "📊 本轮统计",
-            f"扫描合约: {len(all_items)}",
-            f"OI请求: {source.budget.used.get('open_interest_hist', 0)} / {source.budget.limits.get('open_interest_hist', 0)}",
-            f"K线请求: {source.budget.used.get('klines', 0)} / {source.budget.limits.get('klines', 0)}",
-            f"接口异常: {sum(source.quality.failures.values())}",
-            (
-                f"背离状态: 首次{divergence_stats.get('first', 0)} | "
+            tg_quote("📊 本轮统计"),
+            tg_code(f"扫描合约  : {len(all_items)}"),
+            tg_code(f"OI请求    : {source.budget.used.get('open_interest_hist', 0)} / {source.budget.limits.get('open_interest_hist', 0)}"),
+            tg_code(f"K线请求   : {source.budget.used.get('klines', 0)} / {source.budget.limits.get('klines', 0)}"),
+            tg_code(f"接口异常  : {sum(source.quality.failures.values())}"),
+            tg_code(
+                f"背离状态  : 首次{divergence_stats.get('first', 0)} | "
                 f"持续{divergence_stats.get('continued', 0)} | "
                 f"增强{divergence_stats.get('enhanced', 0)} | "
                 f"重新{divergence_stats.get('reappeared', 0)}"
@@ -579,79 +633,106 @@ class RadarEngine:
         self._append_highlights(lines, negative, combined, ambush, momentum, divergence)
         lines.extend([
             "",
-            "📖 图例",
-            "负费率=空头拥挤 | 🔥加速=费率更负 | ⬇️变负=刚转负 | ⬆️回升=负费率缓和",
-            "暗流=OI增加但价格没动 | 背离=OI变化% - 价格变化%",
+            tg_quote("📖 图例"),
+            tg_code("负费率  = 空头拥挤，可能形成反向燃料"),
+            tg_code("🔥加速 = 费率继续变负"),
+            tg_code("⬇️变负 = 刚从正费率转为负费率"),
+            tg_code("⬆️回升 = 负费率缓和"),
+            tg_code("暗流    = OI增加但价格没动"),
+            tg_code("背离    = OI变化% - 价格变化%"),
+            tg_code("链接    = 点击币种打开 CoinGlass Binance K线"),
         ])
         return "\n".join(lines)
 
     def _append_negative(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append("🔥 负费率榜")
+        lines.append(tg_quote("🔥 负费率榜（按费率由负到正，找空头拥挤燃料）"))
         if not items:
             lines.append("暂无明显负费率标的")
             lines.append("")
             return
         for item in items:
-            lines.append(
-                f"{item['coin']:<8} 费率 {item['funding_pct']:+.3f}% {item['funding_trend']} | "
-                f"24h {item['price_24h']:+.1f}% | 市值 ~{fmt_money(item['mcap'])} | 现价 {fmt_price(item['price'])}"
+            metrics = (
+                f"费率 {pct_cell(item['funding_pct'], 8, 3)} {item['funding_trend']:<4} | "
+                f"24h {pct_cell(item['price_24h'])} | "
+                f"市值 {fmt_money(item['mcap']).rjust(7)} | "
+                f"现价 {fmt_price(item['price']).rjust(10)}"
             )
+            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
         lines.append("")
 
     def _append_combined(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append("📊 综合榜")
+        lines.append(tg_quote("📊 综合榜（评分=费率25 + 市值25 + 横盘25 + OI25）"))
         for item in items:
-            lines.append(
-                f"{item['coin']:<8} {item['combined_score']:>3}分 | 费率 {item['funding_pct']:+.2f}% | "
-                f"市值 {fmt_money(item['mcap'])} | 横盘{item['sideways_days']}天 | "
-                f"OI {item['oi_6h']:+.1f}% | {fmt_price(item['price'])}"
+            metrics = (
+                f"{score_cell(item['combined_score'])} | "
+                f"费率 {pct_cell(item['funding_pct'], 7, 2)} | "
+                f"市值 {fmt_money(item['mcap']).rjust(7)} | "
+                f"横盘 {str(item['sideways_days']).rjust(3)}天 | "
+                f"OI {pct_cell(item['oi_6h'])} | "
+                f"{fmt_price(item['price']).rjust(10)}"
             )
+            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
 
     def _append_ambush(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append("🎯 埋伏池")
+        lines.append(tg_quote("🎯 埋伏池（评分=市值35 + OI30 + 横盘20 + 费率15）"))
         for item in items:
             tag = "暗流" if self._is_dark_flow(item) else "横盘"
-            lines.append(
-                f"{item['coin']:<8} {item['ambush_score']:>3}分 | 市值 {fmt_money(item['mcap'])} | "
-                f"OI {item['oi_6h']:+.1f}% | 横盘{item['sideways_days']}天 | "
-                f"费率 {item['funding_pct']:+.2f}% | {tag}"
+            metrics = (
+                f"{score_cell(item['ambush_score'])} | "
+                f"市值 {fmt_money(item['mcap']).rjust(7)} | "
+                f"OI {pct_cell(item['oi_6h'])} | "
+                f"横盘 {str(item['sideways_days']).rjust(3)}天 | "
+                f"费率 {pct_cell(item['funding_pct'], 7, 2)} | "
+                f"{tag}"
             )
+            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
 
     def _append_momentum(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append("⚡ 动量池")
+        lines.append(tg_quote("⚡ 动量池（评分=OI35 + 24h涨跌25 + 成交额25 + 负费率15）"))
         for item in items:
-            lines.append(
-                f"{item['coin']:<8} {item['momentum_score']:>3}分 | OI {item['oi_6h']:+.1f}% | "
-                f"24h {item['price_24h']:+.1f}% | Vol {fmt_money(item['quote_volume'])} | 历史{item['history_days']}天"
+            metrics = (
+                f"{score_cell(item['momentum_score'])} | "
+                f"OI {pct_cell(item['oi_6h'])} | "
+                f"24h {pct_cell(item['price_24h'])} | "
+                f"Vol {fmt_money(item['quote_volume']).rjust(7)} | "
+                f"历史 {str(item['history_days']).rjust(3)}天"
             )
+            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
 
     def _append_new_pool(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append("🆕 新币池")
+        lines.append(tg_quote("🆕 新币池（评分=OI30 + 24h涨跌25 + 成交额25 + 负费率20）"))
         for item in items:
-            lines.append(
-                f"{item['coin']:<8} {item['new_score']:>3}分 | 历史{item['history_days']}天 | "
-                f"OI {item['oi_6h']:+.1f}% | 24h {item['price_24h']:+.1f}% | Vol {fmt_money(item['quote_volume'])}"
+            metrics = (
+                f"{score_cell(item['new_score'])} | "
+                f"历史 {str(item['history_days']).rjust(3)}天 | "
+                f"OI {pct_cell(item['oi_6h'])} | "
+                f"24h {pct_cell(item['price_24h'])} | "
+                f"Vol {fmt_money(item['quote_volume']).rjust(7)}"
             )
+            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
 
     def _append_divergence(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append("⚖️ 背离雷达")
+        lines.append(tg_quote("⚖️ 背离雷达（背离=OI变化% - 价格变化%）"))
         for item in items:
-            lines.append(
-                f"{item['coin']:<8} OI {item['oi_6h']:+.1f}% | 价格 {item['price_24h']:+.1f}% | "
-                f"背离 {item['divergence']:+.1f} | {item['level']} | {item['status_text']}"
+            metrics = (
+                f"OI {pct_cell(item['oi_6h'])} | "
+                f"价格 {pct_cell(item['price_24h'])} | "
+                f"背离 {item['divergence']:+6.1f} | "
+                f"{item['level']} | {item['status_text']}"
             )
+            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -665,30 +746,41 @@ class RadarEngine:
         momentum: list[dict[str, Any]],
         divergence: list[dict[str, Any]],
     ) -> None:
-        highlights: list[str] = []
+        highlights: list[tuple[str, str]] = []
         combined_coins = {item["coin"] for item in combined[:5]}
         momentum_coins = {item["coin"] for item in momentum[:5]}
         for item in negative[:4]:
             if "加速" in item["funding_trend"] or item["coin"] in combined_coins:
-                highlights.append(f"🔥 {item['coin']} 费率{item['funding_pct']:+.3f}% {item['funding_trend']}，空头燃料明显")
+                highlights.append((
+                    item["coin"],
+                    f"🔥 {coin_link(item)} 费率{item['funding_pct']:+.3f}% {item['funding_trend']}，空头燃料明显",
+                ))
         for item in combined[:4]:
             if item["coin"] in momentum_coins:
-                highlights.append(f"⭐ {item['coin']} 综合榜+动量池同时出现")
+                highlights.append((
+                    item["coin"],
+                    f"⭐ {coin_link(item)} 综合榜+动量池同时出现",
+                ))
         for item in ambush[:4]:
             if self._is_dark_flow(item):
-                highlights.append(f"🎯 {item['coin']} OI{item['oi_6h']:+.1f}%但价格没动，低位暗流")
+                highlights.append((
+                    item["coin"],
+                    f"🎯 {coin_link(item)} OI{item['oi_6h']:+.1f}%但价格没动，低位暗流",
+                ))
         for item in divergence[:2]:
             if abs(item["divergence"]) >= 20:
-                highlights.append(f"⚠️ {item['coin']} 极端背离，先按风险处理")
+                highlights.append((
+                    item["coin"],
+                    f"⚠️ {coin_link(item)} 极端背离，先按风险处理",
+                ))
         deduped: list[str] = []
         seen: set[str] = set()
-        for line in highlights:
-            coin = line.split()[1] if len(line.split()) > 1 else line
+        for coin, line in highlights:
             if coin in seen:
                 continue
             seen.add(coin)
             deduped.append(line)
-        lines.append("💡 值得关注")
+        lines.append(tg_quote("💡 值得关注"))
         if deduped:
             lines.extend(deduped[:5])
         else:
@@ -754,7 +846,7 @@ class RadarEngine:
         if not isinstance(state, dict):
             state = {}
         stats = {"first": 0, "continued": 0, "enhanced": 0, "weakened": 0, "reappeared": 0}
-        now_text = datetime.now().strftime("%m-%d %H:%M")
+        now_text = cst_now_text()
         current_keys = {self._divergence_key(item) for item in results}
 
         enriched: list[dict[str, Any]] = []
@@ -1028,38 +1120,59 @@ class RadarEngine:
         return {
             "idle": 0,
             "failed": 0,
+            "risk": 0,
             "watching": 1,
             "primed": 2,
             "breakout": 3,
             "launched": 4,
         }.get(stage, 0)
 
-    def _format_launch_alert(self, item: dict[str, Any]) -> str:
-        stage_name = {
+    @staticmethod
+    def _stage_label(stage: str) -> str:
+        return {
+            "idle": "未触发",
+            "failed": "失效",
+            "risk": "风险",
             "watching": "提前观察",
             "primed": "提前预警",
             "breakout": "启动确认",
             "launched": "启动瞬间",
-        }.get(item.get("stage", ""), item.get("stage", "未知"))
+        }.get(stage, stage or "未知")
+
+    def _format_launch_alert(self, item: dict[str, Any]) -> str:
+        stage_name = self._stage_label(str(item.get("stage", "")))
+        previous_stage = self._stage_label(str(item.get("previous_stage", "idle")))
+        current_stage = self._stage_label(str(item.get("stage", "")))
+        score_legend = (
+            f"分数图例: <{self.settings.launch_watch_score}未触发 | "
+            f"{self.settings.launch_watch_score}-{self.settings.launch_primed_score - 1}提前观察 | "
+            f"{self.settings.launch_primed_score}-{self.settings.launch_breakout_score - 1}提前预警 | "
+            f"{self.settings.launch_breakout_score}-{self.settings.launch_launched_score - 1}启动确认 | "
+            f"≥{self.settings.launch_launched_score}启动瞬间"
+        )
         lines = [
-            f"🚀 启动雷达 {item['coin']}",
-            f"⏰ {datetime.now().strftime('%m-%d %H:%M')}",
+            f"🚀 {tg_bold('启动雷达')} {coin_link(item)}",
+            f"⏰ {cst_now_text()}",
             "",
-            f"阶段: {stage_name}",
-            f"分数: {item['score']}",
-            f"状态: {item.get('previous_stage', 'idle')} -> {item.get('stage', '')} | 累计{item.get('appear_count', 1)}次",
+            f"{tg_bold('阶段')}: {stage_name}",
+            f"{tg_bold('分数')}: {item['score']}",
+            f"{tg_bold('状态')}: {previous_stage} -> {current_stage} | 累计{item.get('appear_count', 1)}次",
             "",
-            "触发:",
-            f"- 15m价格 {item['price_15m']:+.1f}%",
-            f"- 1h价格 {item['price_1h']:+.1f}%",
-            f"- 15m OI {item['oi_15m']:+.1f}%",
-            f"- 1h OI {item['oi_1h']:+.1f}%",
-            f"- 成交量 {item['volume_ratio']:.1f}x 均值",
+            tg_quote("触发明细"),
+            tg_code(f"15m价格  : {item['price_15m']:+.1f}%"),
+            tg_code(f"1h价格   : {item['price_1h']:+.1f}%"),
+            tg_code(f"15m OI   : {item['oi_15m']:+.1f}%"),
+            tg_code(f"1h OI    : {item['oi_1h']:+.1f}%"),
+            tg_code(f"成交量   : {item['volume_ratio']:.1f}x 均值"),
             "",
-            "判断:",
+            tg_quote("判断"),
             "资金和价格开始共振，疑似进入启动阶段" if item.get("breakout") else "资金开始异动，进入观察状态",
             "",
-            "风险:",
+            tg_quote("分数说明"),
+            tg_code("构成(最高130): 15m价25 + 1h价15 + 突破25 + 成交20 + 15m OI15 + 1h OI15 + 暗流15"),
+            tg_code(score_legend),
+            "",
+            tg_quote("风险"),
             "跌回突破位则启动失败；同币同阶段会进入冷却",
         ]
         return "\n".join(lines)

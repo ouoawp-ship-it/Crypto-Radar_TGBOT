@@ -543,6 +543,7 @@ def run_once(args: argparse.Namespace) -> int:
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=settings.radar_summary_min_interval_sec,
         daily_limit=settings.radar_summary_max_daily_push,
+        parse_mode="HTML",
     )
     print(f"summary_push: {push.status} ({push.reason})")
     summary_push_status = push.status
@@ -559,6 +560,7 @@ def run_once(args: argparse.Namespace) -> int:
                 send=args.send,
                 confirm_real_send=args.confirm_real_send,
                 cooldown_sec=settings.launch_stage_cooldown_sec,
+                parse_mode="HTML",
             )
             print(f"launch_push[{idx}]: {push.status} ({push.reason})")
             launch_pushes.append({
@@ -584,6 +586,7 @@ def run_once(args: argparse.Namespace) -> int:
                 send=args.send,
                 confirm_real_send=args.confirm_real_send,
                 cooldown_sec=cooldown,
+                parse_mode="HTML",
             )
             print(f"announcement_push[{idx}]: {push.status} ({push.reason})")
             announcement_pushes.append({
@@ -676,6 +679,7 @@ def run_loop(args: argparse.Namespace) -> int:
                         send=args.send,
                         confirm_real_send=args.confirm_real_send,
                         cooldown_sec=settings.launch_stage_cooldown_sec,
+                        parse_mode="HTML",
                     )
                     print(f"launch_push[{idx}]: {push.status} ({push.reason})")
                     launch_pushes.append({
@@ -742,6 +746,7 @@ def run_trial(args: argparse.Namespace) -> int:
                 send=args.send,
                 confirm_real_send=args.confirm_real_send,
                 cooldown_sec=settings.launch_stage_cooldown_sec,
+                parse_mode="HTML",
             )
             print(f"launch_push[{idx}]: {push.status} ({push.reason})")
             launch_pushes.append({
