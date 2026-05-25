@@ -9,6 +9,7 @@
 - 启动雷达提醒：默认 3 分钟扫描一次，推送币种、阶段、分数、价格/OI/成交量变化和触发原因。
 - OI/价格背离扫描：跟随资金雷达，跟踪建仓背离、多头共振、极端背离、持续/增强/消失状态。
 - 自动清理：默认 1 小时检查一次，只清理可再生成的缓存、临时文件、坏 JSON 备份、过期日志和过长历史。
+- CoinGlass 增强源：可选启用，用于后续接入多交易所 OI、爆仓、资金费率和合约市场动态。
 
 ## 服务器一键部署
 
@@ -59,6 +60,23 @@ journalctl -u paopao-radar -f
 python main.py runtime-status
 python main.py about
 python main.py cleanup --force-cleanup
+```
+
+## CoinGlass 可选增强
+
+不要把 API key 写进代码或提交到 GitHub。只写入服务器 `.env.oi`：
+
+```bash
+COINGLASS_ENABLE=true
+COINGLASS_API_KEY=你的key
+COINGLASS_BASE_URL=https://open-api-v4.coinglass.com
+COINGLASS_REQUEST_BUDGET=60
+```
+
+验证 key 和接口连通：
+
+```bash
+python main.py coinglass-test
 ```
 
 ## 一键更新

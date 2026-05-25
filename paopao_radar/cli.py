@@ -29,7 +29,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from .config import Settings
-from .data_sources import BinanceDataSource
+from .data_sources import BinanceDataSource, CoinglassDataSource
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine
 from .storage import JsonStore
@@ -122,8 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
@@ -288,6 +288,27 @@ def run_telegram_test(args: argparse.Namespace) -> int:
     if result.status == "failed":
         return 1
     return 0
+
+
+def run_coinglass_test(_args: argparse.Namespace) -> int:
+    settings, _store, _engine, _gateway = make_runtime_for_args(_args)
+    if not settings.coinglass_enable:
+        print("coinglass_test: blocked (COINGLASS_ENABLE=false)")
+        return 2
+    if not settings.coinglass_api_key:
+        print("coinglass_test: blocked (missing COINGLASS_API_KEY)")
+        return 2
+
+    source = CoinglassDataSource(settings)
+    data = source.open_interest_exchange_list("BTC")
+    ok = data is not None
+    print(f"coinglass_test: {'ok' if ok else 'failed'}")
+    print(json.dumps(source.diagnostics(), ensure_ascii=False, indent=2))
+    if isinstance(data, list):
+        print(f"sample_items: {len(data)}")
+    elif isinstance(data, dict):
+        print(f"sample_keys: {', '.join(list(data.keys())[:8])}")
+    return 0 if ok else 1
 
 
 def print_readiness(settings: Settings, store: JsonStore) -> int:
@@ -956,6 +977,8 @@ def main(argv: list[str] | None = None) -> int:
         return print_readiness(settings, store)
     if args.command == "telegram-test":
         return run_telegram_test(args)
+    if args.command == "coinglass-test":
+        return run_coinglass_test(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

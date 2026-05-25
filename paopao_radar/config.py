@@ -116,6 +116,12 @@ class Settings:
     binance_fapi_base_url: str = "https://fapi.binance.com"
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
 
+    coinglass_enable: bool = False
+    coinglass_api_key: str = ""
+    coinglass_base_url: str = "https://open-api-v4.coinglass.com"
+    coinglass_timeout_sec: int = 10
+    coinglass_request_budget: int = 60
+
     radar_scan_limit: int = 120
     radar_min_quote_volume: float = 5_000_000
     radar_top_n: int = 8
@@ -186,6 +192,11 @@ class Settings:
             http_cache_ttl_sec=env_int("DATA_SOURCE_CACHE_TTL_SEC", 10),
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
+            coinglass_enable=env_bool("COINGLASS_ENABLE", False),
+            coinglass_api_key=os.getenv("COINGLASS_API_KEY", "").strip(),
+            coinglass_base_url=os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com").rstrip("/"),
+            coinglass_timeout_sec=env_int("COINGLASS_TIMEOUT_SEC", 10),
+            coinglass_request_budget=env_int("COINGLASS_REQUEST_BUDGET", 60),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
@@ -247,6 +258,13 @@ class Settings:
                 "retry": self.http_retry,
                 "cache_enable": self.http_cache_enable,
                 "cache_ttl_sec": self.http_cache_ttl_sec,
+            },
+            "coinglass": {
+                "enable": self.coinglass_enable,
+                "api_key_configured": bool(self.coinglass_api_key),
+                "base_url": self.coinglass_base_url,
+                "timeout_sec": self.coinglass_timeout_sec,
+                "request_budget": self.coinglass_request_budget,
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),

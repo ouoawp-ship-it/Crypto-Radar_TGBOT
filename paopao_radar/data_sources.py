@@ -276,3 +276,119 @@ class BinanceDataSource:
             "budget": self.budget.snapshot(),
             "quality": self.quality.snapshot(),
         }
+
+
+class CoinglassDataSource:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.quality = DataQuality()
+        self.budget = RequestBudget({"coinglass": settings.coinglass_request_budget})
+        self.http = HttpClient(settings, self.quality)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.settings.coinglass_enable and self.settings.coinglass_api_key)
+
+    def endpoint(self, path: str) -> str:
+        return f"{self.settings.coinglass_base_url}{path}"
+
+    def get_json(self, path: str, params: Optional[dict[str, Any]] = None, quality_key: str = "coinglass") -> Any:
+        if not self.enabled:
+            self.quality.fail(quality_key, "disabled_or_missing_api_key")
+            return None
+        if not self.budget.consume("coinglass"):
+            self.quality.fail(quality_key, "budget_exhausted")
+            return None
+        return self._request_json(path, params, quality_key)
+
+    def _request_json(self, path: str, params: Optional[dict[str, Any]], quality_key: str) -> Any:
+        url = self.endpoint(path)
+        cache_key = f"coinglass:{path}:{urlencode(sorted((params or {}).items()))}"
+        if self.settings.http_cache_enable:
+            cached = self.http.cache.get(cache_key)
+            if cached and time.time() - cached[0] <= self.settings.http_cache_ttl_sec:
+                return cached[1]
+        headers = {
+            **HTTP_HEADERS,
+            "CG-API-KEY": self.settings.coinglass_api_key,
+            "accept": "application/json",
+        }
+        last_reason = ""
+        for attempt in range(1, self.settings.http_retry + 1):
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.settings.coinglass_timeout_sec,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if self.settings.http_cache_enable:
+                        self.http.cache[cache_key] = (time.time(), data)
+                    self.quality.ok(quality_key)
+                    return data
+                last_reason = f"status={response.status_code}"
+                if response.status_code in {401, 403, 418, 429}:
+                    break
+            except Exception as exc:
+                last_reason = type(exc).__name__
+            if attempt < self.settings.http_retry:
+                time.sleep(self.settings.http_backoff_sec * attempt)
+        self.quality.fail(quality_key, last_reason or "unknown")
+        return None
+
+    @staticmethod
+    def unwrap_data(payload: Any) -> Any:
+        if isinstance(payload, dict):
+            for key in ("data", "result"):
+                if key in payload:
+                    return payload[key]
+        return payload
+
+    def open_interest_exchange_list(self, symbol: str) -> Any:
+        payload = self.get_json(
+            "/api/futures/open-interest/exchange-list",
+            {"symbol": symbol.upper().replace("USDT", "")},
+            quality_key="coinglassOpenInterestExchangeList",
+        )
+        return self.unwrap_data(payload)
+
+    def open_interest_history(
+        self,
+        exchange: str,
+        symbol: str,
+        interval: str = "1d",
+        limit: int = 10,
+        unit: str = "usd",
+    ) -> Any:
+        payload = self.get_json(
+            "/api/futures/open-interest/history",
+            {
+                "exchange": exchange,
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "limit": limit,
+                "unit": unit,
+            },
+            quality_key="coinglassOpenInterestHistory",
+        )
+        return self.unwrap_data(payload)
+
+    def liquidation_exchange_list(self, symbol: str = "", range_: str = "1h") -> Any:
+        params = {"range": range_}
+        if symbol:
+            params["symbol"] = symbol.upper().replace("USDT", "")
+        payload = self.get_json(
+            "/api/futures/liquidation/exchange-list",
+            params,
+            quality_key="coinglassLiquidationExchangeList",
+        )
+        return self.unwrap_data(payload)
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "budget": self.budget.snapshot(),
+            "quality": self.quality.snapshot(),
+        }

@@ -28,6 +28,7 @@ class MainCommandTests(unittest.TestCase):
             launch_watch_history_path=Path(tmp) / "launch_watch_history.json",
             divergence_state_path=Path(tmp) / "oi_divergence_state.json",
             divergence_cooldown_path=Path(tmp) / "oi_divergence_cooldown.json",
+            coinglass_api_key="",
         )
         store = JsonStore(Path(tmp))
         gateway = TelegramGateway(settings, store)
@@ -127,6 +128,15 @@ class MainCommandTests(unittest.TestCase):
 
         self.assertEqual(settings.radar_scan_limit, 4)
         self.assertEqual(settings.launch_scan_limit, 3)
+
+    def test_coinglass_test_blocks_when_disabled(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
+                with redirect_stdout(StringIO()) as output:
+                    code = main.main(["coinglass-test"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("COINGLASS_ENABLE=false", output.getvalue())
 
 
 if __name__ == "__main__":
