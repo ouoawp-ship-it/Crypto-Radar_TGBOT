@@ -30,9 +30,10 @@ TG_RADAR_SUMMARY_TOPIC_ID=资金摘要话题ID
 TG_LAUNCH_ALERT_TOPIC_ID=启动预警话题ID
 TG_ANNOUNCEMENT_ALERT_TOPIC_ID=公告风险话题ID
 TG_TEST_TOPIC_ID=测试消息话题ID
+TG_AUTO_CREATE_TOPICS=true
 ```
 
-没有配置专属话题的消息会回落到 `TG_TOPIC_ID`；`TG_TOPIC_ID` 也为空时，消息发到群默认主聊天。
+没有配置专属话题的消息会先读取 `data/tg_topic_routes.json` 里已自动创建过的话题 ID；仍没有时，如果 `TG_AUTO_CREATE_TOPICS=true` 且 bot 有管理话题权限，会自动创建并记录话题。`TG_TOPIC_ID` 可作为默认兜底话题；所有话题都不可用时，消息发到群默认主聊天。
 
 ```bash
 bash scripts/install_server.sh

@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.storage import JsonStore
@@ -107,6 +108,57 @@ class TelegramGatewayTests(unittest.TestCase):
 
             history = JsonStore(Path(tmp)).load(history_path, [])
             self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "10"])
+
+    def test_auto_created_topic_is_reused_from_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_bot_token="123456:ABCDEF",
+                tg_chat_id="-1001234567890",
+                tg_auto_create_topics=True,
+                tg_use_topic=True,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            created: list[str] = []
+
+            def fake_create(name: str) -> str:
+                created.append(name)
+                return "42"
+
+            with patch.object(gateway, "_create_forum_topic", side_effect=fake_create):
+                self.assertEqual(gateway._ensure_topic_id_for_template("TG_RADAR_SUMMARY"), "42")
+
+            self.assertEqual(created, ["资金摘要"])
+            self.assertEqual(gateway._ensure_topic_id_for_template("TG_RADAR_SUMMARY"), "42")
+            data = store.load(route_path, {})
+            self.assertEqual(data["routes"]["TG_RADAR_SUMMARY"]["topic_id"], "42")
+
+    def test_configured_topic_overrides_saved_route(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            store.save(route_path, {
+                "routes": {
+                    "TG_RADAR_SUMMARY": {
+                        "name": "资金摘要",
+                        "topic_id": "42",
+                    }
+                }
+            })
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_radar_summary_topic_id="99",
+            )
+            gateway = TelegramGateway(settings, store)
+
+            self.assertEqual(gateway._topic_id_for_template("TG_RADAR_SUMMARY"), "99")
 
 
 if __name__ == "__main__":

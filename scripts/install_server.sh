@@ -150,6 +150,7 @@ EOF
     set_env_value TG_TEST_TOPIC_ID "$test_topic_id"
     set_env_value TELEGRAM_USE_TOPIC "true"
   fi
+  set_env_value TG_AUTO_CREATE_TOPICS "true"
   chmod 600 "$ENV_FILE" || true
 }
 

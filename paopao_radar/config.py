@@ -90,6 +90,8 @@ class Settings:
     tg_launch_alert_topic_id: str = ""
     tg_announcement_alert_topic_id: str = ""
     tg_test_topic_id: str = ""
+    tg_auto_create_topics: bool = True
+    tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_use_topic: bool = False
     tg_push_history_path: Path = BASE_DIR / "data" / "tg_push_history.json"
     tg_push_split_limit: int = 3800
@@ -160,6 +162,8 @@ class Settings:
             tg_launch_alert_topic_id=env_first("TG_LAUNCH_ALERT_TOPIC_ID", "TELEGRAM_LAUNCH_ALERT_TOPIC_ID"),
             tg_announcement_alert_topic_id=env_first("TG_ANNOUNCEMENT_ALERT_TOPIC_ID", "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID"),
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
+            tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
+            tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_use_topic=env_bool("TELEGRAM_USE_TOPIC", False),
             tg_push_history_path=data_path(data_dir, "TG_PUSH_HISTORY_FILE", "tg_push_history.json"),
             tg_push_split_limit=env_int("TG_PUSH_SPLIT_LIMIT", 3800),
@@ -227,6 +231,8 @@ class Settings:
                     "announcement_alert": bool(self.tg_announcement_alert_topic_id),
                     "test": bool(self.tg_test_topic_id),
                 },
+                "auto_create_topics": self.tg_auto_create_topics,
+                "topic_routes_file": str(self.tg_topic_routes_path),
                 "use_topic": self.tg_use_topic,
             },
             "runtime": {

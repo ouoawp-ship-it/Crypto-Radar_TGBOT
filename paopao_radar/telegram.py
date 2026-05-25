@@ -44,6 +44,14 @@ def plain_fallback(text: str) -> str:
     return re.sub(r"[*_`]", "", unescape(without_tags))
 
 
+TOPIC_TEMPLATE_NAMES = {
+    "TG_RADAR_SUMMARY": "资金摘要",
+    "TG_LAUNCH_ALERT": "启动预警",
+    "TG_ANNOUNCEMENT_ALERT": "公告风险",
+    "TG_TEST_MESSAGE": "测试消息",
+}
+
+
 class TelegramGateway:
     def __init__(self, settings: Settings, store: JsonStore):
         self.settings = settings
@@ -104,6 +112,7 @@ class TelegramGateway:
             self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
             return result
 
+        topic_id = self._ensure_topic_id_for_template(template_id)
         ok = self._send_real(text, parse_mode=parse_mode, topic_id=topic_id)
         result = PushResult("sent" if ok else "failed", "telegram_api" if ok else "telegram_api_failed", ok)
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
@@ -158,7 +167,84 @@ class TelegramGateway:
             "TG_ANNOUNCEMENT_ALERT": self.settings.tg_announcement_alert_topic_id,
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
         }
-        return topic_routes.get(template_id, "") or self.settings.tg_topic_id
+        configured = topic_routes.get(template_id, "")
+        if configured:
+            return configured
+        saved = self._saved_topic_id_for_template(template_id)
+        return saved or self.settings.tg_topic_id
+
+    def _ensure_topic_id_for_template(self, template_id: str) -> str:
+        topic_id = self._topic_id_for_template(template_id)
+        if topic_id:
+            return topic_id
+        if not self._should_auto_create_topic(template_id):
+            return ""
+        return self._create_and_save_topic(template_id)
+
+    def _should_auto_create_topic(self, template_id: str) -> bool:
+        if template_id not in TOPIC_TEMPLATE_NAMES:
+            return False
+        if not self.settings.tg_auto_create_topics:
+            return False
+        chat_id = str(self.settings.tg_chat_id)
+        return self.settings.tg_use_topic or chat_id.startswith("-100")
+
+    def _saved_topic_id_for_template(self, template_id: str) -> str:
+        data = self.store.load(self.settings.tg_topic_routes_path, {})
+        if not isinstance(data, dict):
+            return ""
+        routes = data.get("routes", {})
+        if not isinstance(routes, dict):
+            return ""
+        record = routes.get(template_id, {})
+        if not isinstance(record, dict):
+            return ""
+        return str(record.get("topic_id") or "")
+
+    def _create_and_save_topic(self, template_id: str) -> str:
+        name = TOPIC_TEMPLATE_NAMES.get(template_id)
+        if not name:
+            return ""
+        topic_id = self._create_forum_topic(name)
+        if not topic_id:
+            return ""
+        data = self.store.load(self.settings.tg_topic_routes_path, {})
+        if not isinstance(data, dict):
+            data = {}
+        routes = data.get("routes", {})
+        if not isinstance(routes, dict):
+            routes = {}
+        routes[template_id] = {
+            "name": name,
+            "topic_id": topic_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        data["routes"] = routes
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.store.save(self.settings.tg_topic_routes_path, data)
+        return topic_id
+
+    def _create_forum_topic(self, name: str) -> str:
+        url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/createForumTopic"
+        payload: dict[str, Any] = {
+            "chat_id": self.settings.tg_chat_id,
+            "name": name,
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=self.settings.tg_push_timeout_sec)
+        except Exception:
+            return ""
+        if response.status_code != 200:
+            return ""
+        try:
+            data = response.json()
+        except ValueError:
+            return ""
+        result = data.get("result", {}) if isinstance(data, dict) else {}
+        if not isinstance(result, dict):
+            return ""
+        topic_id = result.get("message_thread_id")
+        return str(topic_id or "")
 
     def _load_history(self) -> list[dict[str, Any]]:
         data = self.store.load(self.settings.tg_push_history_path, [])
