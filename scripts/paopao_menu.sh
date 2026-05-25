@@ -41,7 +41,9 @@ show_help() {
   paopao restart         重启服务
   paopao start           启动服务
   paopao stop            停止服务
-  paopao update          拉取 GitHub 最新代码并重启
+  paopao update          检查 GitHub 版本，有更新时确认后更新
+  paopao update --yes    有更新时自动确认更新
+  paopao check-update    只检查当前版本和 GitHub 版本
   paopao test            发送 Telegram 测试消息
   paopao coinglass       测试 CoinGlass API
   paopao runtime         查看 runtime-status
@@ -102,7 +104,7 @@ stop_service() {
 
 update_project() {
   cd_app
-  bash scripts/update_server.sh
+  bash scripts/update_server.sh "$@"
 }
 
 edit_config() {
@@ -134,7 +136,7 @@ show_menu() {
   8. 重启服务
   9. 启动服务
  10. 停止服务
- 11. 更新项目代码
+ 11. 检查更新 / 更新项目代码
  12. 环境诊断 doctor
   0. 退出
 ============================================================
@@ -161,6 +163,9 @@ EOF
 }
 
 command="${1:-menu}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
 case "$command" in
   menu|"")
     show_menu
@@ -184,7 +189,10 @@ case "$command" in
     stop_service
     ;;
   update)
-    update_project
+    update_project "$@"
+    ;;
+  check-update|check|version)
+    update_project --check
     ;;
   test|telegram-test)
     run_main telegram-test --send --confirm-real-send

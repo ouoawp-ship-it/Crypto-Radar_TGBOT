@@ -708,6 +708,8 @@ EOF
   paopao config
   paopao logs
   paopao status
+  paopao check-update
+  paopao update
   sudo systemctl status ${SERVICE_NAME}
   journalctl -u ${SERVICE_NAME} -f
   cd ${APP_DIR} && . .venv/bin/activate && python main.py runtime-status

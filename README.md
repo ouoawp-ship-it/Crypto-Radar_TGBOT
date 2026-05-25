@@ -116,5 +116,6 @@ bash scripts/install_server.sh config
 paopao          # 打开中文操作菜单
 paopao config   # 修改配置
 paopao logs     # 查看实时日志
-paopao update   # 更新项目
+paopao check-update # 检查当前版本/GitHub版本
+paopao update   # 有更新时确认后更新项目
 ```

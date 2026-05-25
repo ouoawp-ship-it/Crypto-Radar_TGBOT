@@ -102,7 +102,9 @@ paopao status       # 查看服务状态和 runtime-status
 paopao restart      # 重启服务
 paopao start        # 启动服务
 paopao stop         # 停止服务
-paopao update       # 拉取最新代码、测试并重启
+paopao check-update # 只检查当前版本和 GitHub 版本
+paopao update       # 检查 GitHub 版本，有更新时确认后更新
+paopao update --yes # 有更新时自动确认更新
 paopao test         # 发送 Telegram 测试消息
 paopao coinglass    # 测试 CoinGlass API
 paopao readiness    # 检查真实推送准备度
@@ -174,8 +176,19 @@ cd ~/paopao-crypto-radar
 bash scripts/update_server.sh
 ```
 
+也可以用快捷命令:
+
+```bash
+paopao check-update   # 只检查，不更新
+paopao update         # 先显示当前版本/GitHub版本，有更新再询问
+paopao update --yes   # 有更新时自动确认
+```
+
 更新脚本会执行:
 
+- `git fetch` 检查 GitHub 最新版本
+- 显示当前版本和 GitHub 版本
+- 有更新时询问是否更新
 - `git pull --ff-only`
 - 安装/刷新依赖
 - 编译检查
