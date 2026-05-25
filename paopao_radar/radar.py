@@ -56,10 +56,6 @@ def tg_escape(value: Any) -> str:
     return escape(str(value), quote=False)
 
 
-def tg_code(value: str) -> str:
-    return f"<code>{escape(value, quote=False)}</code>"
-
-
 def tg_bold(value: Any) -> str:
     return f"<b>{tg_escape(value)}</b>"
 
@@ -75,13 +71,10 @@ def coinglass_tv_url(coin_or_symbol: str) -> str:
     return f"https://www.coinglass.com/tv/Binance_{escape(symbol, quote=True)}"
 
 
-def coin_link(item: dict[str, Any], width: int | None = None) -> str:
+def coin_link(item: dict[str, Any]) -> str:
     raw = str(item.get("coin") or item.get("symbol") or "")
     coin = raw[:-4] if raw.endswith("USDT") else raw
-    label = tg_escape(coin)
-    if width is not None:
-        label = f"{label}{'&nbsp;' * max(0, width - len(coin))}"
-    return f'<a href="{coinglass_tv_url(coin)}"><b>{label}</b></a>'
+    return f'<a href="{coinglass_tv_url(coin)}"><b>{tg_escape(coin)}</b></a>'
 
 
 def pct_cell(value: float, width: int = 7, decimals: int = 1) -> str:
@@ -612,11 +605,11 @@ class RadarEngine:
             f"⏰ {now}",
             "",
             tg_quote("📊 本轮统计"),
-            tg_code(f"扫描合约  : {len(all_items)}"),
-            tg_code(f"OI请求    : {source.budget.used.get('open_interest_hist', 0)} / {source.budget.limits.get('open_interest_hist', 0)}"),
-            tg_code(f"K线请求   : {source.budget.used.get('klines', 0)} / {source.budget.limits.get('klines', 0)}"),
-            tg_code(f"接口异常  : {sum(source.quality.failures.values())}"),
-            tg_code(
+            f"扫描合约: {len(all_items)}",
+            f"OI请求: {source.budget.used.get('open_interest_hist', 0)} / {source.budget.limits.get('open_interest_hist', 0)}",
+            f"K线请求: {source.budget.used.get('klines', 0)} / {source.budget.limits.get('klines', 0)}",
+            f"接口异常: {sum(source.quality.failures.values())}",
+            (
                 f"背离状态  : 首次{divergence_stats.get('first', 0)} | "
                 f"持续{divergence_stats.get('continued', 0)} | "
                 f"增强{divergence_stats.get('enhanced', 0)} | "
@@ -634,13 +627,13 @@ class RadarEngine:
         lines.extend([
             "",
             tg_quote("📖 图例"),
-            tg_code("负费率  = 空头拥挤，可能形成反向燃料"),
-            tg_code("🔥加速 = 费率继续变负"),
-            tg_code("⬇️变负 = 刚从正费率转为负费率"),
-            tg_code("⬆️回升 = 负费率缓和"),
-            tg_code("暗流    = OI增加但价格没动"),
-            tg_code("背离    = OI变化% - 价格变化%"),
-            tg_code("链接    = 点击币种打开 CoinGlass Binance K线"),
+            "负费率 = 空头拥挤，可能形成反向燃料",
+            "🔥加速 = 费率继续变负",
+            "⬇️变负 = 刚从正费率转为负费率",
+            "⬆️回升 = 负费率缓和",
+            "暗流 = OI增加但价格没动",
+            "背离 = OI变化% - 价格变化%",
+            "链接 = 点击币种打开 CoinGlass Binance K线",
         ])
         return "\n".join(lines)
 
@@ -657,7 +650,7 @@ class RadarEngine:
                 f"市值 {fmt_money(item['mcap']).rjust(7)} | "
                 f"现价 {fmt_price(item['price']).rjust(10)}"
             )
-            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
+            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
         lines.append("")
 
     def _append_combined(self, lines: list[str], items: list[dict[str, Any]]) -> None:
@@ -671,7 +664,7 @@ class RadarEngine:
                 f"OI {pct_cell(item['oi_6h'])} | "
                 f"{fmt_price(item['price']).rjust(10)}"
             )
-            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
+            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -688,7 +681,7 @@ class RadarEngine:
                 f"费率 {pct_cell(item['funding_pct'], 7, 2)} | "
                 f"{tag}"
             )
-            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
+            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -703,7 +696,7 @@ class RadarEngine:
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)} | "
                 f"历史 {str(item['history_days']).rjust(3)}天"
             )
-            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
+            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -718,7 +711,7 @@ class RadarEngine:
                 f"24h {pct_cell(item['price_24h'])} | "
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)}"
             )
-            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
+            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -732,7 +725,7 @@ class RadarEngine:
                 f"背离 {item['divergence']:+6.1f} | "
                 f"{item['level']} | {item['status_text']}"
             )
-            lines.append(f"{coin_link(item, 8)} {tg_code(metrics)}")
+            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -1159,18 +1152,18 @@ class RadarEngine:
             f"{tg_bold('状态')}: {previous_stage} -> {current_stage} | 累计{item.get('appear_count', 1)}次",
             "",
             tg_quote("触发明细"),
-            tg_code(f"15m价格  : {item['price_15m']:+.1f}%"),
-            tg_code(f"1h价格   : {item['price_1h']:+.1f}%"),
-            tg_code(f"15m OI   : {item['oi_15m']:+.1f}%"),
-            tg_code(f"1h OI    : {item['oi_1h']:+.1f}%"),
-            tg_code(f"成交量   : {item['volume_ratio']:.1f}x 均值"),
+            f"15m价格: {item['price_15m']:+.1f}%",
+            f"1h价格: {item['price_1h']:+.1f}%",
+            f"15m OI: {item['oi_15m']:+.1f}%",
+            f"1h OI: {item['oi_1h']:+.1f}%",
+            f"成交量: {item['volume_ratio']:.1f}x 均值",
             "",
             tg_quote("判断"),
             "资金和价格开始共振，疑似进入启动阶段" if item.get("breakout") else "资金开始异动，进入观察状态",
             "",
             tg_quote("分数说明"),
-            tg_code("构成(最高130): 15m价25 + 1h价15 + 突破25 + 成交20 + 15m OI15 + 1h OI15 + 暗流15"),
-            tg_code(score_legend),
+            "构成(最高130): 15m价25 + 1h价15 + 突破25 + 成交20 + 15m OI15 + 1h OI15 + 暗流15",
+            tg_escape(score_legend),
             "",
             tg_quote("风险"),
             "跌回突破位则启动失败；同币同阶段会进入冷却",
