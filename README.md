@@ -20,7 +20,7 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行会自动创建 `.env.oi`，如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`，然后继续下一步。
+第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；空回车或格式不对会反复提示，不会继续启动服务。
 
 ```bash
 bash scripts/install_server.sh

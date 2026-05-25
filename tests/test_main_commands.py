@@ -61,6 +61,36 @@ class MainCommandTests(unittest.TestCase):
         self.assertIn("真实推送准备度", output.getvalue())
         self.assertIn("WAIT", output.getvalue())
 
+    def test_readiness_rejects_invalid_telegram_token_even_with_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            settings = Settings(
+                base_dir=settings.base_dir,
+                data_dir=settings.data_dir,
+                tg_bot_token="",
+                tg_chat_id="-1001234567890",
+                tg_push_history_path=settings.tg_push_history_path,
+                runtime_status_path=settings.runtime_status_path,
+                launch_watch_history_path=settings.launch_watch_history_path,
+            )
+            for idx in range(5):
+                store.append_record(settings.launch_watch_history_path, {"top_score": 1, "scanned": 1, "alert_count": 0, "top_symbols": [f"T{idx}"]})
+
+            with redirect_stdout(StringIO()) as output:
+                code = main.print_readiness(settings, store)
+
+        self.assertEqual(code, 1)
+        self.assertIn("TG_BOT_TOKEN 缺失或格式无效", output.getvalue())
+
+    def test_telegram_test_blocks_invalid_config_before_real_send(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
+                with redirect_stdout(StringIO()) as output:
+                    code = main.main(["telegram-test", "--send", "--confirm-real-send"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("invalid Telegram config", output.getvalue())
+
     def test_live_requires_explicit_real_send_confirmation(self) -> None:
         with TemporaryDirectory() as tmp:
             with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):

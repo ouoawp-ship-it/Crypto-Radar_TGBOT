@@ -13,7 +13,7 @@ bash scripts/install_server.sh
 ```
 
 第一次运行时，如果 `.env.oi` 不存在，脚本会自动从 `.env.oi.example` 创建它。
-如果 `TG_BOT_TOKEN` 或 `TG_CHAT_ID` 为空，脚本会直接在终端提示你输入，然后继续安装。
+如果 `TG_BOT_TOKEN` 或 `TG_CHAT_ID` 为空，脚本会直接在终端提示你输入。空回车、占位符或格式不对会反复提示，不会继续安装或启动服务。
 
 ## 脚本会自动做什么
 

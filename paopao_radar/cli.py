@@ -20,6 +20,7 @@
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -62,6 +63,47 @@ PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 - 真实推送必须同时提供 --send --confirm-real-send。
 - live/真实 loop 会先经过 readiness 门禁。
 """
+
+PLACEHOLDER_WORDS = ("your", "token", "chat_id", "bot_token", "填写", "填入", "请输入", "xxx", "example")
+
+
+def _clean_config_value(value: str) -> str:
+    return (value or "").strip().strip('"').strip("'")
+
+
+def is_valid_telegram_bot_token(value: str) -> bool:
+    token = _clean_config_value(value)
+    lowered = token.lower()
+    if not token or any(word in lowered for word in PLACEHOLDER_WORDS):
+        return False
+    return bool(re.fullmatch(r"\d{5,}:[A-Za-z0-9_-]{25,}", token))
+
+
+def is_valid_telegram_chat_id(value: str) -> bool:
+    chat_id = _clean_config_value(value)
+    lowered = chat_id.lower()
+    if not chat_id or any(word in lowered for word in PLACEHOLDER_WORDS):
+        return False
+    if re.fullmatch(r"-?\d{5,20}", chat_id):
+        return True
+    return bool(re.fullmatch(r"@[A-Za-z0-9_]{5,32}", chat_id))
+
+
+def telegram_config_checks(settings: Settings) -> list[tuple[str, bool, str]]:
+    token_ok = is_valid_telegram_bot_token(settings.tg_bot_token)
+    chat_ok = is_valid_telegram_chat_id(settings.tg_chat_id)
+    return [
+        (
+            "telegram_bot_token",
+            token_ok,
+            "TG_BOT_TOKEN 格式有效" if token_ok else "TG_BOT_TOKEN 缺失或格式无效，必须类似 123456:ABC...",
+        ),
+        (
+            "telegram_chat_id",
+            chat_ok,
+            "TG_CHAT_ID 格式有效" if chat_ok else "TG_CHAT_ID 缺失或格式无效，通常是 -100... 或 @channel_username",
+        ),
+    ]
 
 
 def configure_console_encoding() -> None:
@@ -215,6 +257,14 @@ def print_doctor(settings: Settings, store: JsonStore) -> None:
 
 def run_telegram_test(args: argparse.Namespace) -> int:
     settings, _store, _engine, gateway = make_runtime()
+    if args.send and args.confirm_real_send:
+        checks = telegram_config_checks(settings)
+        failed = [(name, message) for name, ok, message in checks if not ok]
+        if failed:
+            print("telegram_test: blocked (invalid Telegram config)")
+            for name, message in failed:
+                print(f"- WAIT {name}: {message}")
+            return 2
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = "\n".join([
         "🧪 泡泡抓币 Telegram 测试",
@@ -245,8 +295,7 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
     record_count = len(records) if isinstance(records, list) else 0
     report = build_launch_report(records[-100:] if isinstance(records, list) else [], settings)
     checks = [
-        ("telegram_bot_token", bool(settings.tg_bot_token), "TG_BOT_TOKEN 已配置" if settings.tg_bot_token else "TG_BOT_TOKEN 未配置"),
-        ("telegram_chat_id", bool(settings.tg_chat_id), "TG_CHAT_ID 已配置" if settings.tg_chat_id else "TG_CHAT_ID 未配置"),
+        *telegram_config_checks(settings),
         ("observe_history", record_count >= 5, f"启动观察历史 {record_count} 轮"),
         ("launch_alert_pressure", int(report.get("total_alerts", 0) or 0) <= max(1, int(report.get("records", 0) or 0)), f"最近推送候选 {report.get('total_alerts', 0)} / {report.get('records', 0)} 轮"),
         ("history_file", settings.launch_watch_history_path.exists(), "启动观察历史文件存在" if settings.launch_watch_history_path.exists() else "启动观察历史文件不存在"),

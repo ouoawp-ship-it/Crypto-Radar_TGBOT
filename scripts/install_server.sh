@@ -32,16 +32,39 @@ run_root() {
   fi
 }
 
-has_env_value() {
+get_env_value() {
   local key="$1"
   local line value
   line="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n 1 || true)"
-  [[ "$line" == *=* ]] || return 1
+  [[ "$line" == *=* ]] || return 0
   value="${line#*=}"
   value="${value%$'\r'}"
   value="${value%\"}"
   value="${value#\"}"
-  [[ -n "$value" ]]
+  printf '%s' "$value"
+}
+
+is_placeholder_value() {
+  local value lower
+  value="${1:-}"
+  lower="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  [[ -z "$value" || "$lower" == *your* || "$lower" == *token* || "$lower" == *chat_id* || "$lower" == *bot_token* || "$lower" == *example* || "$lower" == *xxx* || "$value" == *填写* || "$value" == *填入* || "$value" == *请输入* ]]
+}
+
+is_valid_bot_token() {
+  local value="${1:-}"
+  if is_placeholder_value "$value"; then
+    return 1
+  fi
+  [[ "$value" =~ ^[0-9]{5,}:[A-Za-z0-9_-]{25,}$ ]]
+}
+
+is_valid_chat_id() {
+  local value="${1:-}"
+  if is_placeholder_value "$value"; then
+    return 1
+  fi
+  [[ "$value" =~ ^-?[0-9]{5,20}$ || "$value" =~ ^@[A-Za-z0-9_]{5,32}$ ]]
 }
 
 set_env_value() {
@@ -82,14 +105,24 @@ EOF
 
   local bot_token chat_id topic_id
   printf '\nTelegram configuration is required before starting real push.\n'
-  read -r -s -p "TG_BOT_TOKEN: " bot_token
-  printf '\n'
-  read -r -p "TG_CHAT_ID: " chat_id
-  read -r -p "TG_TOPIC_ID optional, press Enter to skip: " topic_id
+  while true; do
+    read -r -s -p "TG_BOT_TOKEN: " bot_token
+    printf '\n'
+    if is_valid_bot_token "$bot_token"; then
+      break
+    fi
+    printf 'Invalid TG_BOT_TOKEN. It must look like 123456:ABC... Press Ctrl+C to stop.\n'
+  done
 
-  if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
-    die "TG_BOT_TOKEN and TG_CHAT_ID cannot be empty"
-  fi
+  while true; do
+    read -r -p "TG_CHAT_ID: " chat_id
+    if is_valid_chat_id "$chat_id"; then
+      break
+    fi
+    printf 'Invalid TG_CHAT_ID. Use a numeric id like -1001234567890 or @channel_username. Press Ctrl+C to stop.\n'
+  done
+
+  read -r -p "TG_TOPIC_ID optional, press Enter to skip: " topic_id
 
   set_env_value TG_BOT_TOKEN "$bot_token"
   set_env_value TG_CHAT_ID "$chat_id"
@@ -118,7 +151,10 @@ ensure_env_file() {
     prompt_telegram_config
   fi
 
-  if ! has_env_value TG_BOT_TOKEN || ! has_env_value TG_CHAT_ID; then
+  local existing_token existing_chat
+  existing_token="$(get_env_value TG_BOT_TOKEN)"
+  existing_chat="$(get_env_value TG_CHAT_ID)"
+  if ! is_valid_bot_token "$existing_token" || ! is_valid_chat_id "$existing_chat"; then
     prompt_telegram_config
   fi
 }
