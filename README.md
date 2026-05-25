@@ -99,3 +99,7 @@ bash scripts/update_server.sh
 
 更详细说明见 [docs/SERVER_DEPLOY.md](docs/SERVER_DEPLOY.md)。
 项目结构说明见 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)。
+
+## 中文安装目录
+
+第一次安装、重新安装、配置项说明和常见排错见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。

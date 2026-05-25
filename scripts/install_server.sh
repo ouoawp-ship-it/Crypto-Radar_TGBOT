@@ -20,7 +20,7 @@ log() {
 }
 
 die() {
-  printf '\n[%s] ERROR: %s\n' "$APP_NAME" "$*" >&2
+  printf '\n[%s] 错误: %s\n' "$APP_NAME" "$*" >&2
   exit 1
 }
 
@@ -30,6 +30,35 @@ run_root() {
   else
     sudo "$@"
   fi
+}
+
+print_banner() {
+  cat <<EOF
+
+============================================================
+泡泡抓币 - 中文服务器安装向导
+============================================================
+安装目录: ${APP_DIR}
+配置文件: ${ENV_FILE}
+
+安装流程:
+  1. 安装 Linux 基础依赖
+  2. 创建/检查 .env.oi 配置文件
+  3. 输入 Telegram bot token 和群 ID
+  4. 选择是否启用 Telegram 话题自动分类
+  5. 可选输入 CoinGlass API key
+  6. 创建 Python 虚拟环境并安装依赖
+  7. 运行代码检查、单元测试和 readiness
+  8. 安装并启动 systemd 服务
+
+注意:
+  - TG_BOT_TOKEN 只填 Telegram bot token，例如 123456:ABC...
+  - TG_CHAT_ID 只填群 ID，例如 -1001234567890
+  - CoinGlass key 只在 COINGLASS_API_KEY 那一步填写
+  - 话题 ID 默认不需要填写，机器人有权限时会自动创建并记录
+============================================================
+
+EOF
 }
 
 get_env_value() {
@@ -48,7 +77,16 @@ is_placeholder_value() {
   local value lower
   value="${1:-}"
   lower="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-  [[ -z "$value" || "$lower" == *your* || "$lower" == *token* || "$lower" == *chat_id* || "$lower" == *bot_token* || "$lower" == *example* || "$lower" == *xxx* || "$value" == *填写* || "$value" == *填入* || "$value" == *请输入* ]]
+  [[ -z "$value" \
+    || "$lower" == *your* \
+    || "$lower" == *token* \
+    || "$lower" == *chat_id* \
+    || "$lower" == *bot_token* \
+    || "$lower" == *example* \
+    || "$lower" == *xxx* \
+    || "$value" == *填写* \
+    || "$value" == *填入* \
+    || "$value" == *请输入* ]]
 }
 
 is_valid_bot_token() {
@@ -65,6 +103,11 @@ is_valid_chat_id() {
     return 1
   fi
   [[ "$value" =~ ^-?[0-9]{5,20}$ || "$value" =~ ^@[A-Za-z0-9_]{5,32}$ ]]
+}
+
+is_valid_topic_id() {
+  local value="${1:-}"
+  [[ "$value" =~ ^[0-9]{1,20}$ ]]
 }
 
 is_valid_coinglass_key() {
@@ -97,12 +140,129 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
 
+clear_env_value() {
+  set_env_value "$1" ""
+}
+
+yes_no_default_no() {
+  local answer
+  read -r -p "$1 [y/N]: " answer
+  case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+    y|yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prompt_topic_id() {
+  local key="$1"
+  local label="$2"
+  local value
+  while true; do
+    read -r -p "${label}，只填数字 message_thread_id，回车跳过: " value
+    if [ -z "$value" ]; then
+      clear_env_value "$key"
+      return 0
+    fi
+    if is_valid_topic_id "$value"; then
+      set_env_value "$key" "$value"
+      return 0
+    fi
+    printf '格式不对：话题 ID 只能是数字。不要在这里填 bot token、群 ID 或 CoinGlass key。\n'
+  done
+}
+
+sanitize_topic_config() {
+  local key value
+  for key in \
+    TG_TOPIC_ID \
+    TG_RADAR_SUMMARY_TOPIC_ID \
+    TG_LAUNCH_ALERT_TOPIC_ID \
+    TG_ANNOUNCEMENT_ALERT_TOPIC_ID \
+    TG_FLOW_RADAR_TOPIC_ID \
+    TG_TEST_TOPIC_ID
+  do
+    value="$(get_env_value "$key")"
+    if [ -n "$value" ] && ! is_valid_topic_id "$value"; then
+      log "检测到 ${key} 不是数字话题 ID，已自动清空，避免误用其他 key"
+      clear_env_value "$key"
+    fi
+  done
+}
+
+configure_topics() {
+  set_env_value TELEGRAM_USE_TOPIC "true"
+  set_env_value TG_AUTO_CREATE_TOPICS "true"
+  set_env_value TG_TOPIC_INTRO_ENABLE "true"
+  set_env_value TG_TOPIC_INTRO_PIN "true"
+  sanitize_topic_config
+
+  if [ ! -t 0 ]; then
+    log "非交互式终端：保留现有话题配置，并启用自动话题模式"
+    return 0
+  fi
+
+  local key has_manual_topic
+  has_manual_topic=0
+  for key in \
+    TG_TOPIC_ID \
+    TG_RADAR_SUMMARY_TOPIC_ID \
+    TG_LAUNCH_ALERT_TOPIC_ID \
+    TG_ANNOUNCEMENT_ALERT_TOPIC_ID \
+    TG_FLOW_RADAR_TOPIC_ID \
+    TG_TEST_TOPIC_ID
+  do
+    if is_valid_topic_id "$(get_env_value "$key")"; then
+      has_manual_topic=1
+      break
+    fi
+  done
+
+  cat <<EOF
+
+Telegram 话题分类:
+  默认启用自动话题模式。
+  如果 bot 是群管理员，并且有管理话题/置顶消息权限，项目会自动创建:
+    - 资金摘要
+    - 启动预警
+    - 公告风险
+    - 资金流雷达
+    - 测试消息
+
+通常这里不需要手动填写任何话题 ID。
+只有你已经知道 Telegram 的 message_thread_id，才选择手动填写。
+
+EOF
+
+  if [ "$has_manual_topic" = "1" ]; then
+    printf '检测到已有手动话题 ID，默认保留。\n'
+    if ! yes_no_default_no "是否重新填写 Telegram 话题 ID"; then
+      return 0
+    fi
+  elif ! yes_no_default_no "是否手动填写 Telegram 话题 ID"; then
+    clear_env_value TG_TOPIC_ID
+    clear_env_value TG_RADAR_SUMMARY_TOPIC_ID
+    clear_env_value TG_LAUNCH_ALERT_TOPIC_ID
+    clear_env_value TG_ANNOUNCEMENT_ALERT_TOPIC_ID
+    clear_env_value TG_FLOW_RADAR_TOPIC_ID
+    clear_env_value TG_TEST_TOPIC_ID
+    printf '已选择自动话题模式：不手动写话题 ID。\n'
+    return 0
+  fi
+
+  prompt_topic_id TG_TOPIC_ID "默认兜底话题 TG_TOPIC_ID"
+  prompt_topic_id TG_RADAR_SUMMARY_TOPIC_ID "资金摘要话题 TG_RADAR_SUMMARY_TOPIC_ID"
+  prompt_topic_id TG_LAUNCH_ALERT_TOPIC_ID "启动预警话题 TG_LAUNCH_ALERT_TOPIC_ID"
+  prompt_topic_id TG_ANNOUNCEMENT_ALERT_TOPIC_ID "公告风险话题 TG_ANNOUNCEMENT_ALERT_TOPIC_ID"
+  prompt_topic_id TG_FLOW_RADAR_TOPIC_ID "资金流雷达话题 TG_FLOW_RADAR_TOPIC_ID"
+  prompt_topic_id TG_TEST_TOPIC_ID "测试消息话题 TG_TEST_TOPIC_ID"
+}
+
 prompt_telegram_config() {
   if [ ! -t 0 ]; then
     cat <<EOF
 
-.env.oi is missing TG_BOT_TOKEN or TG_CHAT_ID, but this shell is not interactive.
-Edit it manually, then rerun:
+.env.oi 缺少 TG_BOT_TOKEN 或 TG_CHAT_ID，但当前不是交互式终端。
+请手动编辑配置后重新运行:
 
   nano ${ENV_FILE}
   bash ${APP_DIR}/scripts/install_server.sh
@@ -111,75 +271,36 @@ EOF
     exit 0
   fi
 
-  local bot_token chat_id topic_id summary_topic_id launch_topic_id announcement_topic_id test_topic_id coinglass_key
-  printf '\nTelegram configuration is required before starting real push.\n'
-  printf 'Tip: the token input is visible so terminal paste can be verified.\n'
+  local bot_token chat_id
+  cat <<EOF
+
+Telegram 必填配置:
+  TG_BOT_TOKEN = BotFather 给你的机器人 token
+  TG_CHAT_ID   = 机器人要推送到的群 ID，通常是 -100... 或 @channel_username
+
+提示: token 输入会显示出来，方便确认粘贴成功。
+
+EOF
+
   while true; do
-    read -r -p "TG_BOT_TOKEN paste here: " bot_token
+    read -r -p "TG_BOT_TOKEN 粘贴到这里: " bot_token
     if is_valid_bot_token "$bot_token"; then
       break
     fi
-    printf 'Invalid TG_BOT_TOKEN. It must look like 123456:ABC... Press Ctrl+C to stop.\n'
+    printf 'TG_BOT_TOKEN 格式不对，必须类似 123456:ABC...。按 Ctrl+C 可退出安装。\n'
   done
 
   while true; do
-    read -r -p "TG_CHAT_ID: " chat_id
+    read -r -p "TG_CHAT_ID 填群 ID: " chat_id
     if is_valid_chat_id "$chat_id"; then
       break
     fi
-    printf 'Invalid TG_CHAT_ID. Use a numeric id like -1001234567890 or @channel_username. Press Ctrl+C to stop.\n'
+    printf 'TG_CHAT_ID 格式不对，通常是 -1001234567890 或 @channel_username。按 Ctrl+C 可退出安装。\n'
   done
-
-  read -r -p "TG_TOPIC_ID default topic optional, press Enter to skip: " topic_id
-  read -r -p "TG_RADAR_SUMMARY_TOPIC_ID scheduled summary optional, press Enter to skip: " summary_topic_id
-  read -r -p "TG_LAUNCH_ALERT_TOPIC_ID instant launch alerts optional, press Enter to skip: " launch_topic_id
-  read -r -p "TG_ANNOUNCEMENT_ALERT_TOPIC_ID announcements/risks optional, press Enter to skip: " announcement_topic_id
-  read -r -p "TG_TEST_TOPIC_ID test messages optional, press Enter to skip: " test_topic_id
 
   set_env_value TG_BOT_TOKEN "$bot_token"
   set_env_value TG_CHAT_ID "$chat_id"
-  if [ -n "$topic_id" ]; then
-    set_env_value TG_TOPIC_ID "$topic_id"
-    set_env_value TELEGRAM_USE_TOPIC "true"
-  fi
-  if [ -n "$summary_topic_id" ]; then
-    set_env_value TG_RADAR_SUMMARY_TOPIC_ID "$summary_topic_id"
-    set_env_value TELEGRAM_USE_TOPIC "true"
-  fi
-  if [ -n "$launch_topic_id" ]; then
-    set_env_value TG_LAUNCH_ALERT_TOPIC_ID "$launch_topic_id"
-    set_env_value TELEGRAM_USE_TOPIC "true"
-  fi
-  if [ -n "$announcement_topic_id" ]; then
-    set_env_value TG_ANNOUNCEMENT_ALERT_TOPIC_ID "$announcement_topic_id"
-    set_env_value TELEGRAM_USE_TOPIC "true"
-  fi
-  if [ -n "$test_topic_id" ]; then
-    set_env_value TG_TEST_TOPIC_ID "$test_topic_id"
-    set_env_value TELEGRAM_USE_TOPIC "true"
-  fi
-  set_env_value TG_AUTO_CREATE_TOPICS "true"
-
-  printf '\nCoinGlass API is optional.\n'
-  printf 'Press Enter to run Binance-only mode, or paste COINGLASS_API_KEY to enable dual-source mode.\n'
-  while true; do
-    read -r -p "COINGLASS_API_KEY optional: " coinglass_key
-    if [ -z "$coinglass_key" ]; then
-      set_env_value COINGLASS_ENABLE "false"
-      set_env_value COINGLASS_API_KEY ""
-      printf 'CoinGlass disabled; Binance-only mode will be used.\n'
-      break
-    fi
-    if is_valid_coinglass_key "$coinglass_key"; then
-      set_env_value COINGLASS_ENABLE "true"
-      set_env_value COINGLASS_API_KEY "$coinglass_key"
-      set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
-      set_env_value COINGLASS_REQUEST_BUDGET "60"
-      printf 'CoinGlass enabled; dual-source mode will be available after API test passes.\n'
-      break
-    fi
-    printf 'Invalid COINGLASS_API_KEY format. Press Enter to skip, or paste a valid key.\n'
-  done
+  configure_topics
   chmod 600 "$ENV_FILE" || true
 }
 
@@ -191,17 +312,26 @@ prompt_coinglass_config_if_needed() {
   enabled="$(get_env_value COINGLASS_ENABLE)"
   existing_key="$(get_env_value COINGLASS_API_KEY)"
   if [ "$enabled" = "true" ] && is_valid_coinglass_key "$existing_key"; then
+    log "CoinGlass 已配置，跳过 key 输入"
     return 0
   fi
 
-  printf '\nCoinGlass API is optional.\n'
-  printf 'Press Enter to keep Binance-only mode, or paste COINGLASS_API_KEY to enable dual-source mode.\n'
+  cat <<EOF
+
+CoinGlass 可选配置:
+  - 直接回车: 使用纯 Binance 数据版本
+  - 粘贴 COINGLASS_API_KEY: 启用 Binance + CoinGlass 双源版本
+
+注意: CoinGlass key 只在这里填写，不要填到 Telegram 话题 ID。
+
+EOF
+
   while true; do
-    read -r -p "COINGLASS_API_KEY optional: " coinglass_key
+    read -r -p "COINGLASS_API_KEY 可选，回车跳过: " coinglass_key
     if [ -z "$coinglass_key" ]; then
       set_env_value COINGLASS_ENABLE "false"
       set_env_value COINGLASS_API_KEY ""
-      printf 'CoinGlass disabled; Binance-only mode will be used.\n'
+      printf '已选择纯 Binance 数据版本。\n'
       return 0
     fi
     if is_valid_coinglass_key "$coinglass_key"; then
@@ -209,29 +339,28 @@ prompt_coinglass_config_if_needed() {
       set_env_value COINGLASS_API_KEY "$coinglass_key"
       set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
       set_env_value COINGLASS_REQUEST_BUDGET "60"
-      printf 'CoinGlass enabled; dual-source mode will be available after API test passes.\n'
+      printf '已启用 Binance + CoinGlass 双源版本。\n'
       return 0
     fi
-    printf 'Invalid COINGLASS_API_KEY format. Press Enter to skip, or paste a valid key.\n'
+    printf 'COINGLASS_API_KEY 格式不对。回车可跳过，或重新粘贴有效 key。\n'
   done
 }
 
 install_os_packages() {
   if command -v apt-get >/dev/null 2>&1; then
-    log "Installing OS packages"
+    log "安装 Linux 基础依赖"
     run_root apt-get update
     run_root apt-get install -y git python3 python3-venv python3-pip
   else
-    log "apt-get not found; skipping OS package installation"
+    log "未找到 apt-get，跳过系统依赖安装"
   fi
 }
 
 ensure_env_file() {
   if [ ! -f "$ENV_FILE" ]; then
-    log "Creating .env.oi from example"
+    log "创建 .env.oi 配置文件"
     cp "${APP_DIR}/.env.oi.example" "$ENV_FILE"
     chmod 600 "$ENV_FILE" || true
-    prompt_telegram_config
   fi
 
   local existing_token existing_chat
@@ -239,33 +368,27 @@ ensure_env_file() {
   existing_chat="$(get_env_value TG_CHAT_ID)"
   if ! is_valid_bot_token "$existing_token" || ! is_valid_chat_id "$existing_chat"; then
     prompt_telegram_config
+  else
+    configure_topics
   fi
   prompt_coinglass_config_if_needed
 }
 
 install_python_deps() {
-  log "Creating virtual environment"
+  log "创建 Python 虚拟环境"
   "$PYTHON_BIN" -m venv "${APP_DIR}/.venv"
 
-  log "Installing Python dependencies"
+  log "安装 Python 依赖"
   "${APP_DIR}/.venv/bin/python" -m pip install --upgrade pip
   "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
 }
 
 run_checks() {
-  log "Running compile check"
-  "${APP_DIR}/.venv/bin/python" -m py_compile \
-    "${APP_DIR}/main.py" \
-    "${APP_DIR}/paopao_radar/cli.py" \
-    "${APP_DIR}/paopao_radar/config.py" \
-    "${APP_DIR}/paopao_radar/storage.py" \
-    "${APP_DIR}/paopao_radar/data_sources.py" \
-    "${APP_DIR}/paopao_radar/telegram.py" \
-    "${APP_DIR}/paopao_radar/radar.py" \
-    "${APP_DIR}/paopao_radar/maintenance.py"
-
-  log "Running unit tests"
+  log "运行 Python 编译检查"
   cd "$APP_DIR"
+  "${APP_DIR}/.venv/bin/python" -m compileall paopao_radar main.py
+
+  log "运行单元测试"
   "${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -v
 }
 
@@ -276,11 +399,11 @@ bootstrap_history_if_needed() {
 
   cd "$APP_DIR"
   if "${APP_DIR}/.venv/bin/python" main.py readiness >/tmp/paopao-readiness.log 2>&1; then
-    log "Readiness already passes"
+    log "readiness 已通过，无需预热观察历史"
     return 0
   fi
 
-  log "Bootstrapping dry-run launch history (${BOOTSTRAP_CYCLES} cycles, scan limit ${BOOTSTRAP_LAUNCH_SCAN_LIMIT})"
+  log "生成 dry-run 启动观察历史 (${BOOTSTRAP_CYCLES} 轮，每轮扫描 ${BOOTSTRAP_LAUNCH_SCAN_LIMIT} 个)"
   local i
   for i in $(seq 1 "$BOOTSTRAP_CYCLES"); do
     "${APP_DIR}/.venv/bin/python" main.py observe \
@@ -293,35 +416,35 @@ bootstrap_history_if_needed() {
 }
 
 run_readiness() {
-  log "Running readiness"
+  log "运行真实推送 readiness 检查"
   cd "$APP_DIR"
   "${APP_DIR}/.venv/bin/python" main.py readiness
 
   if [ "$RUN_TELEGRAM_TEST" = "1" ]; then
-    log "Sending one Telegram test message"
+    log "发送一条 Telegram 测试消息"
     "${APP_DIR}/.venv/bin/python" main.py telegram-test --send --confirm-real-send
   else
-    log "Skipping Telegram test message; set RUN_TELEGRAM_TEST=1 to send one during install"
+    log "跳过安装阶段 Telegram 测试消息；如需发送，使用 RUN_TELEGRAM_TEST=1"
   fi
 
   if [ "$(get_env_value COINGLASS_ENABLE)" = "true" ]; then
-    log "Running CoinGlass API test"
+    log "测试 CoinGlass API"
     if ! "${APP_DIR}/.venv/bin/python" main.py coinglass-test; then
-      log "CoinGlass API test failed; disabling CoinGlass and continuing with Binance-only mode"
+      log "CoinGlass API 测试失败，自动切回纯 Binance 模式"
       set_env_value COINGLASS_ENABLE "false"
     fi
   else
-    log "CoinGlass disabled; Binance-only mode"
+    log "CoinGlass 未启用，使用纯 Binance 模式"
   fi
 }
 
 install_systemd_service() {
   command -v systemctl >/dev/null 2>&1 || {
-    log "systemctl not found; systemd service not installed"
+    log "未找到 systemctl，不安装 systemd 服务"
     return 0
   }
 
-  log "Installing systemd service: ${SERVICE_NAME}"
+  log "安装 systemd 服务: ${SERVICE_NAME}"
   local service_path="/etc/systemd/system/${SERVICE_NAME}.service"
   run_root tee "$service_path" >/dev/null <<EOF
 [Unit]
@@ -347,17 +470,17 @@ EOF
   run_root systemctl enable "$SERVICE_NAME"
 
   if [ "$AUTO_START" = "1" ]; then
-    log "Starting service"
+    log "启动服务"
     run_root systemctl restart "$SERVICE_NAME"
     run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
   else
-    log "AUTO_START=0; service installed but not started"
+    log "AUTO_START=0，服务已安装但未启动"
   fi
 }
 
 main() {
   cd "$APP_DIR"
-  log "App directory: ${APP_DIR}"
+  print_banner
   install_os_packages
   ensure_env_file
   install_python_deps
@@ -368,12 +491,16 @@ main() {
 
   cat <<EOF
 
-Done.
+安装完成。
 
-Useful commands:
+常用命令:
   sudo systemctl status ${SERVICE_NAME}
   journalctl -u ${SERVICE_NAME} -f
   cd ${APP_DIR} && . .venv/bin/activate && python main.py runtime-status
+  cd ${APP_DIR} && . .venv/bin/activate && python main.py telegram-test --send --confirm-real-send
+
+中文安装说明:
+  ${APP_DIR}/docs/INSTALL_CN.md
 
 EOF
 }
