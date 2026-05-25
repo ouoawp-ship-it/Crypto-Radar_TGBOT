@@ -12,14 +12,8 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行时，如果 `.env.oi` 不存在，脚本会自动从 `.env.oi.example` 创建它，并停下来让你填写 Telegram 配置。
-
-填完后重新运行:
-
-```bash
-nano .env.oi
-bash scripts/install_server.sh
-```
+第一次运行时，如果 `.env.oi` 不存在，脚本会自动从 `.env.oi.example` 创建它。
+如果 `TG_BOT_TOKEN` 或 `TG_CHAT_ID` 为空，脚本会直接在终端提示你输入，然后继续安装。
 
 ## 脚本会自动做什么
 
@@ -34,8 +28,9 @@ bash scripts/install_server.sh
 - 执行 `python main.py readiness`
 - 写入 systemd 服务 `/etc/systemd/system/paopao-radar.service`
 - 启动并设置开机自启
+- 启动后由程序定时清理临时文件、坏 JSON 备份、过期日志和过长历史
 
-如果 `.env.oi` 没填 `TG_BOT_TOKEN` 或 `TG_CHAT_ID`，脚本会停下，不会启动真实推送。
+如果当前不是交互式终端，脚本无法安全读取配置，会停下提示你手动编辑 `.env.oi`，不会启动真实推送。
 
 ## 私有仓库 clone 问题
 
@@ -81,6 +76,8 @@ SERVICE_NAME=paopao-radar-prod bash scripts/install_server.sh
 sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
 python main.py runtime-status
+python main.py about
+python main.py cleanup --force-cleanup
 ```
 
 ## 一键更新

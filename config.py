@@ -85,7 +85,14 @@ class Settings:
     tg_push_retry: int = 2
     tg_global_hourly_limit: int = 20
     tg_default_cooldown_sec: int = 6 * 3600
+    tg_push_history_limit: int = 2000
+    tg_push_history_retention_days: int = 30
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
+    cleanup_enable: bool = True
+    cleanup_interval_sec: int = 3600
+    cleanup_state_path: Path = BASE_DIR / "data" / "cleanup_state.json"
+    cleanup_corrupt_retention_days: int = 7
+    cleanup_log_retention_days: int = 14
 
     http_timeout_sec: int = 10
     http_retry: int = 2
@@ -144,7 +151,14 @@ class Settings:
             tg_push_retry=env_int("TG_PUSH_RETRY", 2),
             tg_global_hourly_limit=env_int("TG_GLOBAL_HOURLY_LIMIT", 20),
             tg_default_cooldown_sec=env_int("TG_DEFAULT_COOLDOWN_SEC", 6 * 3600),
+            tg_push_history_limit=env_int("TG_PUSH_HISTORY_LIMIT", 2000),
+            tg_push_history_retention_days=env_int("TG_PUSH_HISTORY_RETENTION_DAYS", 30),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
+            cleanup_enable=env_bool("CLEANUP_ENABLE", True),
+            cleanup_interval_sec=env_int("CLEANUP_INTERVAL_SEC", 3600),
+            cleanup_state_path=data_path(data_dir, "CLEANUP_STATE_FILE", "cleanup_state.json"),
+            cleanup_corrupt_retention_days=env_int("CLEANUP_CORRUPT_RETENTION_DAYS", 7),
+            cleanup_log_retention_days=env_int("CLEANUP_LOG_RETENTION_DAYS", 14),
             http_timeout_sec=env_int("BINANCE_API_TIMEOUT_SEC", env_int("HTTP_TIMEOUT_SEC", 10)),
             http_retry=env_int("BINANCE_API_RETRY", env_int("HTTP_RETRY", 2)),
             http_backoff_sec=env_float("BINANCE_API_BACKOFF_SEC", env_float("HTTP_BACKOFF_SEC", 0.8)),
@@ -195,6 +209,9 @@ class Settings:
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),
+                "cleanup_enable": self.cleanup_enable,
+                "cleanup_interval_sec": self.cleanup_interval_sec,
+                "cleanup_state_file": str(self.cleanup_state_path),
             },
             "http": {
                 "base_url": self.binance_fapi_base_url,

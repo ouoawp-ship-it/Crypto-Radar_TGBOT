@@ -1,5 +1,23 @@
 from __future__ import annotations
 
+"""
+泡泡抓币：精简版加密监控工具。
+
+核心功能：
+- Binance 公告机会/风险监听：Alpha、上新、HODLer、Launchpool、Airdrop、下架、停止交易等。
+- 费率/OI 异动扫描：负费率、资金费率趋势、持仓变化、价格变化、成交量变化。
+- 热度做多雷达：按涨幅、成交量、OI、资金费率筛选短线动量。
+- 庄家收筹/埋伏池：低市值、横盘、OI 暗流、负费率燃料的综合评分。
+- BN 行情启动预警：15m/1h 价格、OI、成交量、短周期突破分层提醒。
+- OI/价格背离扫描：识别建仓背离、多头共振、极端背离等状态。
+
+默认推送周期：
+- 资金雷达汇总：30 分钟一次。
+- 启动雷达提醒：3 分钟扫描一次。
+- 公告机会/风险：跟随主扫描。
+- 同币同阶段启动提醒：默认 6 小时冷却。
+"""
+
 import argparse
 import json
 import sys
@@ -11,10 +29,39 @@ from datetime import datetime
 
 from config import Settings
 from data_sources import BinanceDataSource
-from maintenance import legacy_state_report, migrate_legacy_state
+from maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from radar import RadarEngine
 from storage import JsonStore
 from telegram import TelegramGateway
+
+
+PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
+
+保留功能：
+- Binance 公告机会/风险监听：Alpha、上新、HODLer、Launchpool、Airdrop、下架、停止交易等。
+- 费率/OI 异动扫描：资金费率、持仓、价格、成交量、数据质量。
+- 热度做多雷达：涨幅、成交量、OI、资金费率综合筛选短线动量。
+- 庄家收筹/埋伏池：低市值、横盘、OI 暗流、负费率燃料综合评分。
+- BN 行情启动预警：15m/1h 价格、OI、成交量、短周期突破分层提醒。
+- OI/价格背离扫描：建仓背离、多头共振、极端背离、信号持续/增强/消失。
+
+推送内容：
+- 资金雷达汇总：负费率榜、综合榜、埋伏榜、动量池、新币池、值得关注、图例、数据质量。
+- 启动雷达提醒：币种、阶段、分数、价格变化、OI 变化、成交量放大、触发原因。
+- 公告提醒：公告类型、关联币种、机会/风险说明。
+- Telegram 测试消息：只在手动执行 telegram-test --send --confirm-real-send 时发送。
+
+默认周期：
+- 资金雷达汇总：30 分钟一次，可用 --interval 或 RADAR_SUMMARY_MIN_INTERVAL_SEC 调整。
+- 启动雷达扫描：3 分钟一次，可用 --launch-interval 调整。
+- 启动同币同阶段冷却：6 小时，可用 LAUNCH_STAGE_COOLDOWN_SEC 调整。
+- 自动清理：1 小时检查一次，可用 CLEANUP_INTERVAL_SEC 调整。
+
+安全规则：
+- 默认 dry-run，不真实推送 Telegram。
+- 真实推送必须同时提供 --send --confirm-real-send。
+- live/真实 loop 会先经过 readiness 门禁。
+"""
 
 
 def configure_console_encoding() -> None:
@@ -28,18 +75,19 @@ def configure_console_encoding() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="泡泡抓币：极简资金雷达")
+    parser = argparse.ArgumentParser(description="泡泡抓币：精简版加密监控工具")
     parser.add_argument(
         "command",
         nargs="?",
         default="status",
-        choices=["status", "doctor", "readiness", "telegram-test", "runtime-status", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；doctor 检查环境；readiness 检查真实推送准备度；telegram-test 测试 Telegram；watchlist 查看启动候选；launch-history 查看启动观察历史；launch-report 汇总启动历史；migrate-state 预览/复制旧状态；once 扫描一轮；trial 有限试跑启动雷达；observe 有限时长 dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
     parser.add_argument("--apply", action="store_true", help="用于 migrate-state：真正复制旧状态文件")
-    parser.add_argument("--top", type=int, default=12, help="用于 watchlist：显示前 N 个启动候选")
+    parser.add_argument("--force-cleanup", action="store_true", help="用于 cleanup：忽略清理间隔，立即执行")
+    parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
@@ -95,7 +143,7 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.launch_watch_history_path,
         settings.divergence_state_path,
         settings.divergence_cooldown_path,
-        settings.data_dir / "accumulation.db",
+        settings.cleanup_state_path,
     ]
 
 
@@ -149,13 +197,18 @@ def print_runtime_status(settings: Settings, store: JsonStore) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def print_cleanup(settings: Settings, store: JsonStore, force: bool) -> None:
+    result = cleanup_runtime_artifacts(settings, store, force=force)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def print_doctor(settings: Settings, store: JsonStore) -> None:
     status = build_status(settings, store)
     status["legacy_state"] = legacy_state_report(settings)
     status["runtime"] = {
         "safe_default": "dry_run",
         "real_send_requires": "--send --confirm-real-send",
-        "old_merged_script_kept_as_reference": str(settings.base_dir / "crypto_monitor_merged.py"),
+        "auto_cleanup": "enabled" if settings.cleanup_enable else "disabled",
     }
     print(json.dumps(status, ensure_ascii=False, indent=2))
 
@@ -532,6 +585,7 @@ def run_loop(args: argparse.Namespace) -> int:
     )
     while True:
         now = time.time()
+        cleanup_runtime_artifacts(settings, store)
         if now >= next_summary:
             summary_ok = True
             summary_error = ""
@@ -829,6 +883,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     settings, store, _engine, _gateway = make_runtime()
+
+    if args.command == "about":
+        print(PROJECT_ABOUT)
+        return 0
+    if args.command == "cleanup":
+        print_cleanup(settings, store, force=args.force_cleanup)
+        return 0
+    cleanup_runtime_artifacts(settings, store)
 
     if args.command == "status":
         print_status(settings, store)

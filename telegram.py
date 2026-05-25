@@ -151,7 +151,15 @@ class TelegramGateway:
         return data if isinstance(data, list) else []
 
     def _save_history(self, history: list[dict[str, Any]]) -> None:
-        self.store.save(self.settings.tg_push_history_path, history[-2000:])
+        now = int(time.time())
+        retention_days = max(1, int(self.settings.tg_push_history_retention_days))
+        cutoff = now - retention_days * 86400
+        retained = [
+            record for record in history
+            if int(record.get("ts", now)) >= cutoff
+        ]
+        limit = max(100, int(self.settings.tg_push_history_limit))
+        self.store.save(self.settings.tg_push_history_path, retained[-limit:])
 
     def _record(
         self,

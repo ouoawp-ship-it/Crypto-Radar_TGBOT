@@ -2,6 +2,14 @@
 
 轻量级加密市场观察雷达。默认 dry-run，不包含 Web/UI、admin 查询、自动交易。
 
+## 功能和推送周期
+
+- Binance 公告机会/风险监听：跟随主扫描，识别 Alpha、上新、HODLer、Launchpool、Airdrop、下架、停止交易等。
+- 资金雷达汇总：默认 30 分钟一次，推送负费率榜、综合榜、埋伏榜、动量池、新币池、值得关注和数据质量。
+- 启动雷达提醒：默认 3 分钟扫描一次，推送币种、阶段、分数、价格/OI/成交量变化和触发原因。
+- OI/价格背离扫描：跟随资金雷达，跟踪建仓背离、多头共振、极端背离、持续/增强/消失状态。
+- 自动清理：默认 1 小时检查一次，只清理可再生成的缓存、临时文件、坏 JSON 备份、过期日志和过长历史。
+
 ## 服务器一键部署
 
 服务器能访问这个 GitHub 私有仓库后，直接运行:
@@ -12,10 +20,9 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行会自动创建 `.env.oi`。填好 Telegram 配置后，再跑同一条安装命令:
+第一次运行会自动创建 `.env.oi`，如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`，然后继续下一步。
 
 ```bash
-nano .env.oi
 bash scripts/install_server.sh
 ```
 
@@ -29,6 +36,7 @@ bash scripts/install_server.sh
 - 生成 dry-run 启动观察历史
 - 通过 readiness 检查
 - 创建并启动 `paopao-radar` systemd 服务
+- 定时自动清理临时文件、坏 JSON 备份、过期日志和过长历史
 
 ## 查看运行
 
@@ -36,6 +44,8 @@ bash scripts/install_server.sh
 sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
 python main.py runtime-status
+python main.py about
+python main.py cleanup --force-cleanup
 ```
 
 ## 一键更新

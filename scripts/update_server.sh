@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
