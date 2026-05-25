@@ -85,6 +85,11 @@ def score_cell(value: int) -> str:
     return f"{value:>3}分"
 
 
+def append_metric_row(lines: list[str], item: dict[str, Any], metrics: str) -> None:
+    lines.append(coin_link(item))
+    lines.append(tg_escape(metrics))
+
+
 def to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -650,7 +655,7 @@ class RadarEngine:
                 f"市值 {fmt_money(item['mcap']).rjust(7)} | "
                 f"现价 {fmt_price(item['price']).rjust(10)}"
             )
-            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
+            append_metric_row(lines, item, metrics)
         lines.append("")
 
     def _append_combined(self, lines: list[str], items: list[dict[str, Any]]) -> None:
@@ -664,7 +669,7 @@ class RadarEngine:
                 f"OI {pct_cell(item['oi_6h'])} | "
                 f"{fmt_price(item['price']).rjust(10)}"
             )
-            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
+            append_metric_row(lines, item, metrics)
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -681,7 +686,7 @@ class RadarEngine:
                 f"费率 {pct_cell(item['funding_pct'], 7, 2)} | "
                 f"{tag}"
             )
-            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
+            append_metric_row(lines, item, metrics)
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -696,7 +701,7 @@ class RadarEngine:
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)} | "
                 f"历史 {str(item['history_days']).rjust(3)}天"
             )
-            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
+            append_metric_row(lines, item, metrics)
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -711,7 +716,7 @@ class RadarEngine:
                 f"24h {pct_cell(item['price_24h'])} | "
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)}"
             )
-            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
+            append_metric_row(lines, item, metrics)
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -725,7 +730,7 @@ class RadarEngine:
                 f"背离 {item['divergence']:+6.1f} | "
                 f"{item['level']} | {item['status_text']}"
             )
-            lines.append(f"{coin_link(item)} {tg_escape(metrics)}")
+            append_metric_row(lines, item, metrics)
         if not items:
             lines.append("暂无")
         lines.append("")
@@ -746,25 +751,25 @@ class RadarEngine:
             if "加速" in item["funding_trend"] or item["coin"] in combined_coins:
                 highlights.append((
                     item["coin"],
-                    f"🔥 {coin_link(item)} 费率{item['funding_pct']:+.3f}% {item['funding_trend']}，空头燃料明显",
+                    f"🔥 {coin_link(item)}\n费率{item['funding_pct']:+.3f}% {item['funding_trend']}，空头燃料明显",
                 ))
         for item in combined[:4]:
             if item["coin"] in momentum_coins:
                 highlights.append((
                     item["coin"],
-                    f"⭐ {coin_link(item)} 综合榜+动量池同时出现",
+                    f"⭐ {coin_link(item)}\n综合榜+动量池同时出现",
                 ))
         for item in ambush[:4]:
             if self._is_dark_flow(item):
                 highlights.append((
                     item["coin"],
-                    f"🎯 {coin_link(item)} OI{item['oi_6h']:+.1f}%但价格没动，低位暗流",
+                    f"🎯 {coin_link(item)}\nOI{item['oi_6h']:+.1f}%但价格没动，低位暗流",
                 ))
         for item in divergence[:2]:
             if abs(item["divergence"]) >= 20:
                 highlights.append((
                     item["coin"],
-                    f"⚠️ {coin_link(item)} 极端背离，先按风险处理",
+                    f"⚠️ {coin_link(item)}\n极端背离，先按风险处理",
                 ))
         deduped: list[str] = []
         seen: set[str] = set()
