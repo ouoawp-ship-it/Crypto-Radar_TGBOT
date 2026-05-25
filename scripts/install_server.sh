@@ -67,6 +67,14 @@ is_valid_chat_id() {
   [[ "$value" =~ ^-?[0-9]{5,20}$ || "$value" =~ ^@[A-Za-z0-9_]{5,32}$ ]]
 }
 
+is_valid_coinglass_key() {
+  local value="${1:-}"
+  if is_placeholder_value "$value"; then
+    return 1
+  fi
+  [[ "$value" =~ ^[A-Za-z0-9_-]{16,128}$ ]]
+}
+
 set_env_value() {
   local key="$1"
   local value="$2"
@@ -103,7 +111,7 @@ EOF
     exit 0
   fi
 
-  local bot_token chat_id topic_id summary_topic_id launch_topic_id announcement_topic_id test_topic_id
+  local bot_token chat_id topic_id summary_topic_id launch_topic_id announcement_topic_id test_topic_id coinglass_key
   printf '\nTelegram configuration is required before starting real push.\n'
   printf 'Tip: the token input is visible so terminal paste can be verified.\n'
   while true; do
@@ -151,7 +159,61 @@ EOF
     set_env_value TELEGRAM_USE_TOPIC "true"
   fi
   set_env_value TG_AUTO_CREATE_TOPICS "true"
+
+  printf '\nCoinGlass API is optional.\n'
+  printf 'Press Enter to run Binance-only mode, or paste COINGLASS_API_KEY to enable dual-source mode.\n'
+  while true; do
+    read -r -p "COINGLASS_API_KEY optional: " coinglass_key
+    if [ -z "$coinglass_key" ]; then
+      set_env_value COINGLASS_ENABLE "false"
+      set_env_value COINGLASS_API_KEY ""
+      printf 'CoinGlass disabled; Binance-only mode will be used.\n'
+      break
+    fi
+    if is_valid_coinglass_key "$coinglass_key"; then
+      set_env_value COINGLASS_ENABLE "true"
+      set_env_value COINGLASS_API_KEY "$coinglass_key"
+      set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
+      set_env_value COINGLASS_REQUEST_BUDGET "60"
+      printf 'CoinGlass enabled; dual-source mode will be available after API test passes.\n'
+      break
+    fi
+    printf 'Invalid COINGLASS_API_KEY format. Press Enter to skip, or paste a valid key.\n'
+  done
   chmod 600 "$ENV_FILE" || true
+}
+
+prompt_coinglass_config_if_needed() {
+  if [ ! -t 0 ]; then
+    return 0
+  fi
+  local enabled existing_key coinglass_key
+  enabled="$(get_env_value COINGLASS_ENABLE)"
+  existing_key="$(get_env_value COINGLASS_API_KEY)"
+  if [ "$enabled" = "true" ] && is_valid_coinglass_key "$existing_key"; then
+    return 0
+  fi
+
+  printf '\nCoinGlass API is optional.\n'
+  printf 'Press Enter to keep Binance-only mode, or paste COINGLASS_API_KEY to enable dual-source mode.\n'
+  while true; do
+    read -r -p "COINGLASS_API_KEY optional: " coinglass_key
+    if [ -z "$coinglass_key" ]; then
+      set_env_value COINGLASS_ENABLE "false"
+      set_env_value COINGLASS_API_KEY ""
+      printf 'CoinGlass disabled; Binance-only mode will be used.\n'
+      return 0
+    fi
+    if is_valid_coinglass_key "$coinglass_key"; then
+      set_env_value COINGLASS_ENABLE "true"
+      set_env_value COINGLASS_API_KEY "$coinglass_key"
+      set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
+      set_env_value COINGLASS_REQUEST_BUDGET "60"
+      printf 'CoinGlass enabled; dual-source mode will be available after API test passes.\n'
+      return 0
+    fi
+    printf 'Invalid COINGLASS_API_KEY format. Press Enter to skip, or paste a valid key.\n'
+  done
 }
 
 install_os_packages() {
@@ -178,6 +240,7 @@ ensure_env_file() {
   if ! is_valid_bot_token "$existing_token" || ! is_valid_chat_id "$existing_chat"; then
     prompt_telegram_config
   fi
+  prompt_coinglass_config_if_needed
 }
 
 install_python_deps() {
@@ -239,6 +302,16 @@ run_readiness() {
     "${APP_DIR}/.venv/bin/python" main.py telegram-test --send --confirm-real-send
   else
     log "Skipping Telegram test message; set RUN_TELEGRAM_TEST=1 to send one during install"
+  fi
+
+  if [ "$(get_env_value COINGLASS_ENABLE)" = "true" ]; then
+    log "Running CoinGlass API test"
+    if ! "${APP_DIR}/.venv/bin/python" main.py coinglass-test; then
+      log "CoinGlass API test failed; disabling CoinGlass and continuing with Binance-only mode"
+      set_env_value COINGLASS_ENABLE "false"
+    fi
+  else
+    log "CoinGlass disabled; Binance-only mode"
   fi
 }
 

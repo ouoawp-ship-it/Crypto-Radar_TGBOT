@@ -21,7 +21,7 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。
+第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。随后会提示 `COINGLASS_API_KEY`，直接回车就是纯 Binance 数据版本，填写 key 就启用 Binance + CoinGlass 双源版本；如果 CoinGlass 测试失败，安装脚本会自动退回纯 Binance。
 
 Telegram 群开启话题后，可以把不同推送分到不同话题，避免消息交叉：
 
