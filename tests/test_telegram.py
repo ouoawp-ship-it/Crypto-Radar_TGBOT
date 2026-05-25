@@ -160,6 +160,40 @@ class TelegramGatewayTests(unittest.TestCase):
 
             self.assertEqual(gateway._topic_id_for_template("TG_RADAR_SUMMARY"), "99")
 
+    def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_topic_id="10",
+                tg_bot_token="123456:ABCDEF",
+                tg_chat_id="-1001234567890",
+                tg_auto_create_topics=True,
+                tg_use_topic=True,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with patch.object(gateway, "_create_forum_topic", return_value="42"):
+                self.assertEqual(gateway._ensure_topic_id_for_template("TG_TEST_MESSAGE"), "42")
+
+    def test_default_topic_is_fallback_when_auto_create_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_topic_id="10",
+                tg_bot_token="123456:ABCDEF",
+                tg_chat_id="-1001234567890",
+                tg_auto_create_topics=True,
+                tg_use_topic=True,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with patch.object(gateway, "_create_forum_topic", return_value=""):
+                self.assertEqual(gateway._ensure_topic_id_for_template("TG_TEST_MESSAGE"), "10")
+
 
 if __name__ == "__main__":
     unittest.main()

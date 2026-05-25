@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -161,25 +162,31 @@ class TelegramGateway:
         return ok
 
     def _topic_id_for_template(self, template_id: str) -> str:
+        return (
+            self._configured_topic_id_for_template(template_id)
+            or self._saved_topic_id_for_template(template_id)
+            or self.settings.tg_topic_id
+        )
+
+    def _configured_topic_id_for_template(self, template_id: str) -> str:
         topic_routes = {
             "TG_RADAR_SUMMARY": self.settings.tg_radar_summary_topic_id,
             "TG_LAUNCH_ALERT": self.settings.tg_launch_alert_topic_id,
             "TG_ANNOUNCEMENT_ALERT": self.settings.tg_announcement_alert_topic_id,
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
         }
-        configured = topic_routes.get(template_id, "")
-        if configured:
-            return configured
-        saved = self._saved_topic_id_for_template(template_id)
-        return saved or self.settings.tg_topic_id
+        return topic_routes.get(template_id, "")
 
     def _ensure_topic_id_for_template(self, template_id: str) -> str:
-        topic_id = self._topic_id_for_template(template_id)
+        topic_id = self._configured_topic_id_for_template(template_id)
+        if topic_id:
+            return topic_id
+        topic_id = self._saved_topic_id_for_template(template_id)
         if topic_id:
             return topic_id
         if not self._should_auto_create_topic(template_id):
-            return ""
-        return self._create_and_save_topic(template_id)
+            return self.settings.tg_topic_id
+        return self._create_and_save_topic(template_id) or self.settings.tg_topic_id
 
     def _should_auto_create_topic(self, template_id: str) -> bool:
         if template_id not in TOPIC_TEMPLATE_NAMES:
@@ -235,6 +242,7 @@ class TelegramGateway:
         except Exception:
             return ""
         if response.status_code != 200:
+            print(f"[telegram] createForumTopic failed {response.status_code}: {response.text[:300]}", file=sys.stderr)
             return ""
         try:
             data = response.json()
