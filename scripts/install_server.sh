@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
 APP_NAME="${APP_NAME:-paopao-radar}"
@@ -105,9 +105,9 @@ EOF
 
   local bot_token chat_id topic_id
   printf '\nTelegram configuration is required before starting real push.\n'
+  printf 'Tip: the token input is visible so terminal paste can be verified.\n'
   while true; do
-    read -r -s -p "TG_BOT_TOKEN: " bot_token
-    printf '\n'
+    read -r -p "TG_BOT_TOKEN paste here: " bot_token
     if is_valid_bot_token "$bot_token"; then
       break
     fi

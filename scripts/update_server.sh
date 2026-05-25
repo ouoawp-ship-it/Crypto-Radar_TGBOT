@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"

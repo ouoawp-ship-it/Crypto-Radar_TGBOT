@@ -1,4 +1,4 @@
-﻿# 泡泡抓币 Crypto Radar
+# 泡泡抓币 Crypto Radar
 
 轻量级加密市场观察雷达。默认 dry-run，不包含 Web/UI、admin 查询、自动交易。
 
@@ -20,7 +20,7 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；空回车或格式不对会反复提示，不会继续启动服务。
+第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。
 
 ```bash
 bash scripts/install_server.sh
