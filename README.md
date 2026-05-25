@@ -116,6 +116,9 @@ bash scripts/install_server.sh config
 paopao          # 打开中文操作菜单
 paopao config   # 修改配置
 paopao logs     # 查看实时日志
+paopao version  # 查看当前版本号
 paopao check-update # 检查当前版本/GitHub版本
 paopao update   # 有更新时确认后更新项目
 ```
+
+项目版本号写在 `VERSION` 文件里，当前从 `v1` 开始，后续功能更新按 `v1.1`、`v1.2` 递增；`paopao update` 会同时显示版本号和 git 提交号。

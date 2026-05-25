@@ -29,6 +29,27 @@ service_exists() {
   command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1
 }
 
+project_version() {
+  cd_app
+  if [ -f VERSION ]; then
+    head -n 1 VERSION | tr -d '\r'
+  else
+    printf 'unknown'
+  fi
+}
+
+project_commit() {
+  cd_app
+  git rev-parse --short HEAD 2>/dev/null || printf 'unknown'
+}
+
+show_version() {
+  printf '当前版本: %s\n' "$(project_version)"
+  printf 'Git提交 : %s\n' "$(project_commit)"
+  cd_app
+  git log -1 --format='提交说明: %s' 2>/dev/null || true
+}
+
 show_help() {
   cat <<EOF
 泡泡抓币快捷命令:
@@ -44,6 +65,7 @@ show_help() {
   paopao update          检查 GitHub 版本，有更新时确认后更新
   paopao update --yes    有更新时自动确认更新
   paopao check-update    只检查当前版本和 GitHub 版本
+  paopao version         查看当前项目版本
   paopao test            发送 Telegram 测试消息
   paopao coinglass       测试 CoinGlass API
   paopao runtime         查看 runtime-status
@@ -125,8 +147,9 @@ show_menu() {
 泡泡抓币 - 快捷操作菜单
 ============================================================
 项目目录: ${APP_DIR}
+当前版本: $(project_version) ($(project_commit))
 
-  1. 查看服务状态
+ 1. 查看服务状态
   2. 查看实时日志
   3. 修改配置 token / 群 ID / CoinGlass key
   4. 发送 Telegram 测试消息
@@ -138,6 +161,7 @@ show_menu() {
  10. 停止服务
  11. 检查更新 / 更新项目代码
  12. 环境诊断 doctor
+ 13. 查看当前版本
   0. 退出
 ============================================================
 
@@ -156,8 +180,9 @@ EOF
       10) stop_service; pause_menu ;;
       11) update_project; pause_menu ;;
       12) run_main doctor; pause_menu ;;
+      13) show_version; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-12。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-13。\n'; pause_menu ;;
     esac
   done
 }
@@ -191,8 +216,11 @@ case "$command" in
   update)
     update_project "$@"
     ;;
-  check-update|check|version)
+  check-update|check)
     update_project --check
+    ;;
+  version|local-version|current-version)
+    show_version
     ;;
   test|telegram-test)
     run_main telegram-test --send --confirm-real-send

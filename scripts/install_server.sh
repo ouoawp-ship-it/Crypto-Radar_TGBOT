@@ -708,6 +708,7 @@ EOF
   paopao config
   paopao logs
   paopao status
+  paopao version
   paopao check-update
   paopao update
   sudo systemctl status ${SERVICE_NAME}

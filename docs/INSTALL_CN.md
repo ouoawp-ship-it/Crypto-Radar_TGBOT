@@ -99,6 +99,7 @@ paopao              # 打开中文操作菜单
 paopao config       # 修改 token / 群 ID / CoinGlass key / 话题配置
 paopao logs         # 查看实时日志
 paopao status       # 查看服务状态和 runtime-status
+paopao version      # 查看当前项目版本号
 paopao restart      # 重启服务
 paopao start        # 启动服务
 paopao stop         # 停止服务
@@ -119,7 +120,27 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh shortcut
 ```
 
-## 5. Telegram 话题推荐设置
+## 5. 版本号规则
+
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前从 `v1` 开始，后续功能更新按 `v1.1`、`v1.2` 这种方式递增。
+
+`paopao check-update` 和 `paopao update` 会同时显示:
+
+- 当前版本号
+- GitHub 最新版本号
+- 当前 git 提交号
+- GitHub 最新 git 提交号
+
+例如:
+
+```text
+当前版本 : v1 (d5a72c3)  Add interactive update check shortcut
+GitHub版本: v1.1 (xxxxxxx)  Add xxx feature
+```
+
+以后如果只是小修复，也会保留 git 提交号作为精确定位；如果是功能变化，会同步升级 `VERSION`。
+
+## 6. Telegram 话题推荐设置
 
 推荐默认配置:
 
@@ -138,7 +159,7 @@ bot 需要在群里具备这些权限:
 
 每个话题第一次真实推送前，项目会先发送一条中文说明消息，并尝试置顶。说明消息会解释这个话题推什么、怎么看信号。
 
-## 6. 重新安装
+## 7. 重新安装
 
 如果你想完全重新安装，并备份旧目录:
 
@@ -169,7 +190,7 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-## 7. 更新现有项目
+## 8. 更新现有项目
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -195,7 +216,7 @@ paopao update --yes   # 有更新时自动确认
 - 单元测试
 - 如果存在 systemd 服务，则自动重启服务
 
-## 8. 常用检查命令
+## 9. 常用检查命令
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -215,7 +236,7 @@ sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
 ```
 
-## 9. 手动启动方式
+## 10. 手动启动方式
 
 如果你不想用 systemd，也可以手动后台运行:
 
@@ -227,7 +248,7 @@ nohup .venv/bin/python -u main.py daemon --send --confirm-real-send > data/runti
 tail -f data/runtime.log
 ```
 
-## 10. 排错
+## 11. 排错
 
 如果提示 `TG_BOT_TOKEN 缺失或格式无效`:
 

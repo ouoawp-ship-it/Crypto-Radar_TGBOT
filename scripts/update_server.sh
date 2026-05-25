@@ -61,6 +61,16 @@ commit_title() {
   git log -1 --format=%s "$1"
 }
 
+version_for_ref() {
+  local ref="$1"
+  local version
+  version="$(git show "${ref}:VERSION" 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+  if [ -z "$version" ]; then
+    version="unknown"
+  fi
+  printf '%s' "$version"
+}
+
 confirm_update() {
   if [ "$AUTO_CONFIRM" = "1" ]; then
     return 0
@@ -87,9 +97,11 @@ REMOTE_REF="FETCH_HEAD"
 LOCAL_SHA="$(git rev-parse "$LOCAL_REF")"
 REMOTE_SHA="$(git rev-parse "$REMOTE_REF")"
 BASE_SHA="$(git merge-base "$LOCAL_REF" "$REMOTE_REF")"
+LOCAL_VERSION="$(version_for_ref "$LOCAL_REF")"
+REMOTE_VERSION="$(version_for_ref "$REMOTE_REF")"
 
-printf '当前版本 : %s  %s\n' "$(short_commit "$LOCAL_REF")" "$(commit_title "$LOCAL_REF")"
-printf 'GitHub版本: %s  %s\n' "$(short_commit "$REMOTE_REF")" "$(commit_title "$REMOTE_REF")"
+printf '当前版本 : %s (%s)  %s\n' "$LOCAL_VERSION" "$(short_commit "$LOCAL_REF")" "$(commit_title "$LOCAL_REF")"
+printf 'GitHub版本: %s (%s)  %s\n' "$REMOTE_VERSION" "$(short_commit "$REMOTE_REF")" "$(commit_title "$REMOTE_REF")"
 
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
   printf '\n当前已经是最新版本，不需要更新。\n'
@@ -107,7 +119,9 @@ if [ "$LOCAL_SHA" != "$BASE_SHA" ]; then
   exit 1
 fi
 
-printf '\n发现可更新版本: %s -> %s\n' "$(short_commit "$LOCAL_REF")" "$(short_commit "$REMOTE_REF")"
+printf '\n发现可更新版本: %s (%s) -> %s (%s)\n' \
+  "$LOCAL_VERSION" "$(short_commit "$LOCAL_REF")" \
+  "$REMOTE_VERSION" "$(short_commit "$REMOTE_REF")"
 
 if [ "$CHECK_ONLY" = "1" ]; then
   printf '当前是只检查模式，未执行更新。\n'
@@ -143,4 +157,4 @@ else
   printf 'systemd service not found; update completed without restart.\n'
 fi
 
-printf '\n[paopao-update] 更新完成: %s  %s\n' "$(short_commit HEAD)" "$(commit_title HEAD)"
+printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
