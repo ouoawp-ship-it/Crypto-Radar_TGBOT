@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import unittest
@@ -8,10 +8,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import main
-from config import Settings
-from storage import JsonStore
-from telegram import TelegramGateway
+import paopao_radar.cli as main
+from paopao_radar.config import Settings
+from paopao_radar.storage import JsonStore
+from paopao_radar.telegram import TelegramGateway
 
 
 class MainCommandTests(unittest.TestCase):

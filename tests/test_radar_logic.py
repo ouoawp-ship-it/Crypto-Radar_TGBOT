@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from config import Settings
-from radar import RadarEngine, score_funding
-from storage import JsonStore
+from paopao_radar.config import Settings
+from paopao_radar.radar import RadarEngine, score_funding
+from paopao_radar.storage import JsonStore
 
 
 class RadarAnnouncementTests(unittest.TestCase):

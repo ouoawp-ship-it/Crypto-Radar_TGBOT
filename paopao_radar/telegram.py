@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import time
@@ -8,8 +8,8 @@ from typing import Any
 
 import requests
 
-from config import Settings
-from storage import JsonStore
+from .config import Settings
+from .storage import JsonStore
 
 
 @dataclass

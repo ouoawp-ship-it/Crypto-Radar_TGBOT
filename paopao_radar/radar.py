@@ -1,13 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import time
 import re
 from datetime import datetime
 from typing import Any, Optional
 
-from config import Settings
-from data_sources import BinanceDataSource
-from storage import JsonStore
+from .config import Settings
+from .data_sources import BinanceDataSource
+from .storage import JsonStore
 
 
 OPPORTUNITY_KEYWORDS = [

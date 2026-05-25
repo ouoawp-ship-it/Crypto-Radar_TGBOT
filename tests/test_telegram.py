@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 from contextlib import redirect_stdout
@@ -6,9 +6,9 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from config import Settings
-from storage import JsonStore
-from telegram import TelegramGateway, utc_ts
+from paopao_radar.config import Settings
+from paopao_radar.storage import JsonStore
+from paopao_radar.telegram import TelegramGateway, utc_ts
 
 
 class TelegramGatewayTests(unittest.TestCase):

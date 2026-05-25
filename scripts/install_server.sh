@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -Eeuo pipefail
 
 APP_NAME="${APP_NAME:-paopao-radar}"
@@ -136,12 +136,13 @@ run_checks() {
   log "Running compile check"
   "${APP_DIR}/.venv/bin/python" -m py_compile \
     "${APP_DIR}/main.py" \
-    "${APP_DIR}/config.py" \
-    "${APP_DIR}/storage.py" \
-    "${APP_DIR}/data_sources.py" \
-    "${APP_DIR}/telegram.py" \
-    "${APP_DIR}/radar.py" \
-    "${APP_DIR}/maintenance.py"
+    "${APP_DIR}/paopao_radar/cli.py" \
+    "${APP_DIR}/paopao_radar/config.py" \
+    "${APP_DIR}/paopao_radar/storage.py" \
+    "${APP_DIR}/paopao_radar/data_sources.py" \
+    "${APP_DIR}/paopao_radar/telegram.py" \
+    "${APP_DIR}/paopao_radar/radar.py" \
+    "${APP_DIR}/paopao_radar/maintenance.py"
 
   log "Running unit tests"
   cd "$APP_DIR"

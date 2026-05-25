@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import time
@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from config import Settings
-from maintenance import cleanup_runtime_artifacts, migrate_legacy_state
-from storage import JsonStore
+from paopao_radar.config import Settings
+from paopao_radar.maintenance import cleanup_runtime_artifacts, migrate_legacy_state
+from paopao_radar.storage import JsonStore
 
 
 class MaintenanceTests(unittest.TestCase):

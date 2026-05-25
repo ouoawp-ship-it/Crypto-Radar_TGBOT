@@ -1,4 +1,4 @@
-泡泡抓币新项目最终运行说明
+﻿泡泡抓币新项目最终运行说明
 更新时间: 2026-05-25
 
 一、项目定位
@@ -10,13 +10,14 @@
 后续统一用命令行运行，方便上传 GitHub 后部署到服务器。
 
 核心文件:
-- main.py: 命令入口和运行流程
-- config.py: 配置和环境变量
-- data_sources.py: Binance 数据源、缓存、重试、预算、熔断
-- radar.py: 资金雷达、启动雷达、公告机会/风险、背离逻辑
-- telegram.py: Telegram 推送、安全确认、去重、限流
-- storage.py: JSON 状态读写、原子写入、损坏文件隔离
-- maintenance.py: 旧状态迁移
+- main.py: 保留的命令行兼容入口
+- paopao_radar/cli.py: 命令入口和运行流程
+- paopao_radar/config.py: 配置和环境变量
+- paopao_radar/data_sources.py: Binance 数据源、缓存、重试、预算、熔断
+- paopao_radar/radar.py: 资金雷达、启动雷达、公告机会/风险、背离逻辑
+- paopao_radar/telegram.py: Telegram 推送、安全确认、去重、限流
+- paopao_radar/storage.py: JSON 状态读写、原子写入、损坏文件隔离
+- paopao_radar/maintenance.py: 旧状态迁移和运行垃圾清理
 
 二、默认安全规则
 
@@ -113,7 +114,7 @@ dry-run 不会把公告标记为已推送，只有真实发送成功才写入状
 
 八、测试命令
 
-python -m py_compile main.py config.py storage.py data_sources.py telegram.py radar.py maintenance.py
+python -m py_compile main.py paopao_radar/cli.py paopao_radar/config.py paopao_radar/storage.py paopao_radar/data_sources.py paopao_radar/telegram.py paopao_radar/radar.py paopao_radar/maintenance.py
 python -m unittest discover -s tests -v
 
 当前验证目标: 26 条单元测试全部通过。

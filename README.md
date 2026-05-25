@@ -1,4 +1,4 @@
-# 泡泡抓币 Crypto Radar
+﻿# 泡泡抓币 Crypto Radar
 
 轻量级加密市场观察雷达。默认 dry-run，不包含 Web/UI、admin 查询、自动交易。
 
@@ -64,4 +64,5 @@ bash scripts/update_server.sh
 
 `.env.oi` 和 `data/` 状态文件不应提交到 GitHub。
 
-更详细说明见 [SERVER_DEPLOY.md](SERVER_DEPLOY.md)。
+更详细说明见 [docs/SERVER_DEPLOY.md](docs/SERVER_DEPLOY.md)。
+项目结构说明见 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)。

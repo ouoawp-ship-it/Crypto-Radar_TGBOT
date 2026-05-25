@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from config import Settings
-from main import build_launch_report, format_launch_report, format_observe_report
-from storage import JsonStore
+from paopao_radar.config import Settings
+from paopao_radar.cli import build_launch_report, format_launch_report, format_observe_report
+from paopao_radar.storage import JsonStore
 
 
 class LaunchReportTests(unittest.TestCase):

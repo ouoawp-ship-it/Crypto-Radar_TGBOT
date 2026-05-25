@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from config import Settings
+from .config import Settings
 
 
 HTTP_HEADERS = {
