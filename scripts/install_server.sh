@@ -649,6 +649,19 @@ EOF
   fi
 }
 
+install_shortcut_command() {
+  local shortcut="/usr/local/bin/paopao"
+  log "安装快捷命令: paopao"
+  run_root tee "$shortcut" >/dev/null <<EOF
+#!/usr/bin/env bash
+export PAOPAO_APP_DIR="${APP_DIR}"
+export SERVICE_NAME="${SERVICE_NAME}"
+exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
+EOF
+  run_root chmod +x "$shortcut"
+  chmod +x "${APP_DIR}/scripts/paopao_menu.sh" || true
+}
+
 main() {
   cd "$APP_DIR"
   case "${1:-install}" in
@@ -658,11 +671,16 @@ main() {
       run_config_wizard
       return 0
       ;;
+    shortcut|--shortcut)
+      install_shortcut_command
+      return 0
+      ;;
     help|-h|--help)
       cat <<EOF
 用法:
   bash scripts/install_server.sh          # 中文安装向导
   bash scripts/install_server.sh config   # 修改 token / 群 ID / CoinGlass key / 话题配置
+  bash scripts/install_server.sh shortcut # 只安装 paopao 快捷命令
 EOF
       return 0
       ;;
@@ -679,12 +697,17 @@ EOF
   bootstrap_history_if_needed
   run_readiness
   install_systemd_service
+  install_shortcut_command
 
   cat <<EOF
 
 安装完成。
 
 常用命令:
+  paopao
+  paopao config
+  paopao logs
+  paopao status
   sudo systemctl status ${SERVICE_NAME}
   journalctl -u ${SERVICE_NAME} -f
   cd ${APP_DIR} && . .venv/bin/activate && python main.py runtime-status

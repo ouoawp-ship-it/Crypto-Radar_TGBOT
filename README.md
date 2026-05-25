@@ -109,3 +109,12 @@ bash scripts/update_server.sh
 ```bash
 bash scripts/install_server.sh config
 ```
+
+服务器安装后会写入快捷命令:
+
+```bash
+paopao          # 打开中文操作菜单
+paopao config   # 修改配置
+paopao logs     # 查看实时日志
+paopao update   # 更新项目
+```

@@ -52,6 +52,12 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh config
 ```
 
+安装完成后也可以直接使用快捷命令:
+
+```bash
+paopao config
+```
+
 菜单会提供这些功能:
 
 ```text
@@ -76,7 +82,42 @@ bash scripts/install_server.sh config
 sudo systemctl restart paopao-radar
 ```
 
-## 4. Telegram 话题推荐设置
+## 4. 快捷操作命令
+
+安装脚本会自动写入 `/usr/local/bin/paopao`。以后在服务器任意目录输入:
+
+```bash
+paopao
+```
+
+就会弹出中文操作菜单。
+
+常用快捷指令:
+
+```bash
+paopao              # 打开中文操作菜单
+paopao config       # 修改 token / 群 ID / CoinGlass key / 话题配置
+paopao logs         # 查看实时日志
+paopao status       # 查看服务状态和 runtime-status
+paopao restart      # 重启服务
+paopao start        # 启动服务
+paopao stop         # 停止服务
+paopao update       # 拉取最新代码、测试并重启
+paopao test         # 发送 Telegram 测试消息
+paopao coinglass    # 测试 CoinGlass API
+paopao readiness    # 检查真实推送准备度
+paopao doctor       # 查看环境诊断
+paopao help         # 查看帮助
+```
+
+如果是从旧版本更新上来，想只安装快捷命令:
+
+```bash
+cd ~/paopao-crypto-radar
+bash scripts/install_server.sh shortcut
+```
+
+## 5. Telegram 话题推荐设置
 
 推荐默认配置:
 
@@ -95,7 +136,7 @@ bot 需要在群里具备这些权限:
 
 每个话题第一次真实推送前，项目会先发送一条中文说明消息，并尝试置顶。说明消息会解释这个话题推什么、怎么看信号。
 
-## 5. 重新安装
+## 6. 重新安装
 
 如果你想完全重新安装，并备份旧目录:
 
@@ -126,7 +167,7 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-## 6. 更新现有项目
+## 7. 更新现有项目
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -141,7 +182,7 @@ bash scripts/update_server.sh
 - 单元测试
 - 如果存在 systemd 服务，则自动重启服务
 
-## 7. 常用检查命令
+## 8. 常用检查命令
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -161,7 +202,7 @@ sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
 ```
 
-## 8. 手动启动方式
+## 9. 手动启动方式
 
 如果你不想用 systemd，也可以手动后台运行:
 
@@ -173,7 +214,7 @@ nohup .venv/bin/python -u main.py daemon --send --confirm-real-send > data/runti
 tail -f data/runtime.log
 ```
 
-## 9. 排错
+## 10. 排错
 
 如果提示 `TG_BOT_TOKEN 缺失或格式无效`:
 
