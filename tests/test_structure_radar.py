@@ -27,6 +27,7 @@ from paopao_radar.structure_radar import (
     score_level,
 )
 from paopao_radar.telegram import TelegramGateway
+from paopao_radar.telegram import PushResult
 
 
 def kline(
@@ -215,6 +216,25 @@ class StructureRadarTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("structure_push: dry_run", output.getvalue())
+
+    def test_delete_chart_after_success_only_for_real_sent_photo(self) -> None:
+        with TemporaryDirectory() as tmp:
+            chart = Path(tmp) / "chart.png"
+            settings = Settings(data_dir=Path(tmp), structure_delete_chart_after_send=True)
+
+            chart.write_bytes(b"\x89PNG\r\n\x1a\n")
+            deleted = cli.delete_chart_after_success(settings, PushResult("sent", "telegram_api", True), str(chart))
+            self.assertTrue(deleted["deleted"])
+            self.assertFalse(chart.exists())
+
+            chart.write_bytes(b"\x89PNG\r\n\x1a\n")
+            dry_run = cli.delete_chart_after_success(settings, PushResult("dry_run", "send_flag_not_set", False), str(chart))
+            self.assertEqual(dry_run["reason"], "not_sent")
+            self.assertTrue(chart.exists())
+
+            failed = cli.delete_chart_after_success(settings, PushResult("failed", "telegram_api_failed", False), str(chart))
+            self.assertEqual(failed["reason"], "not_sent")
+            self.assertTrue(chart.exists())
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ from datetime import datetime
 from .config import Settings
 from .data_sources import BinanceDataSource, CoinglassDataSource
 from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
-from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
+from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
 from .storage import JsonStore
 from .structure_radar import (
@@ -404,6 +404,21 @@ def structure_photo_caption(signal: StructureSignal) -> str:
     )
 
 
+def delete_chart_after_success(settings: Settings, photo_result: object, chart_path: str | None) -> dict[str, object]:
+    if not settings.structure_delete_chart_after_send:
+        return {"deleted": False, "reason": "disabled"}
+    if not chart_path:
+        return {"deleted": False, "reason": "missing_path"}
+    if getattr(photo_result, "status", "") != "sent" or not bool(getattr(photo_result, "sent", False)):
+        return {"deleted": False, "reason": "not_sent"}
+    path = Path(chart_path)
+    try:
+        path.unlink(missing_ok=True)
+        return {"deleted": True, "path": str(path)}
+    except OSError as exc:
+        return {"deleted": False, "reason": f"{type(exc).__name__}: {exc}", "path": str(path)}
+
+
 def run_structure_radar(args: argparse.Namespace) -> int:
     settings, store, _engine, gateway = make_runtime_for_args(args)
     if not settings.structure_radar_enable:
@@ -437,6 +452,7 @@ def run_structure_radar(args: argparse.Namespace) -> int:
     if push.status == "sent":
         sent_signals.extend(result.get("signal_objects") or [])
     photo_count = 0
+    chart_delete_results: list[dict[str, object]] = []
     for idx, signal in enumerate((result.get("signal_objects") or [])[: settings.structure_send_chart_top_n], start=1):
         if not signal.chart_path:
             continue
@@ -453,12 +469,25 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         print(f"structure_photo[{idx}]: {photo.status} ({photo.reason})")
         if photo.status in {"sent", "dry_run"}:
             photo_count += 1
+        delete_result = delete_chart_after_success(settings, photo, signal.chart_path)
+        if delete_result.get("deleted"):
+            print(f"structure_chart_delete[{idx}]: deleted")
+        elif delete_result.get("reason") not in {"disabled", "not_sent"}:
+            print(f"structure_chart_delete[{idx}]: skipped ({delete_result.get('reason')})")
+        chart_delete_results.append(delete_result)
     if sent_signals:
         radar.mark_pushed(sent_signals)
+    chart_cleanup = cleanup_structure_charts(
+        settings.structure_chart_dir,
+        settings.structure_chart_retention_hours,
+        settings.structure_max_chart_files,
+    )
     print(json.dumps({
         "report_path": str(report_path),
         "chart_paths": result.get("chart_paths", []),
         "photo_count": photo_count,
+        "chart_delete_results": chart_delete_results,
+        "chart_cleanup": chart_cleanup,
         "diagnostics": result.get("diagnostics", {}),
     }, ensure_ascii=False, indent=2))
     write_runtime_status(
@@ -474,6 +503,7 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         structure_signals=len(result.get("signals", [])),
         report_path=str(report_path),
         chart_paths=result.get("chart_paths", []),
+        chart_cleanup=chart_cleanup,
         diagnostics={"structure": result.get("diagnostics", {})},
     )
     return 0

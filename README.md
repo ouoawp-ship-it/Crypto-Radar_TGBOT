@@ -119,6 +119,13 @@ python main.py structure-radar --mode pre --send --confirm-real-send
 ```
 
 默认提前临界扫描在每小时 55 分附近运行，收线确认在整点后延迟 5 分钟运行。图片保存到 `data/charts/`，结构雷达状态保存到 `data/structure_state.json` 和 `data/structure_history.json`。
+真实 Telegram 图片发送成功后默认会立即删除本地 PNG；dry-run 和发送失败的图片会暂时保留，并由 cleanup 按保留时间和数量上限清理：
+
+```bash
+STRUCTURE_DELETE_CHART_AFTER_SEND=true
+STRUCTURE_CHART_RETENTION_HOURS=12
+STRUCTURE_MAX_CHART_FILES=200
+```
 
 ## 一键更新
 
@@ -162,4 +169,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.8`，后续功能更新按 `v1.9`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.8.1`，后续功能更新按 `v1.9`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

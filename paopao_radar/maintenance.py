@@ -120,6 +120,53 @@ def _prune_json_list_by_ts(
     return {"path": str(path), "before": before, "after": len(retained), "changed": changed}
 
 
+def cleanup_structure_charts(chart_dir: Path, retention_hours: int, max_files: int) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "chart_dir": str(chart_dir),
+        "scanned": 0,
+        "deleted_old": 0,
+        "deleted_over_limit": 0,
+        "kept": 0,
+        "errors": [],
+    }
+    if not chart_dir.exists():
+        return result
+    if not chart_dir.is_dir():
+        result["errors"].append(f"not_dir:{chart_dir}")
+        return result
+
+    now = time.time()
+    cutoff = now - max(1, int(retention_hours)) * 3600
+    png_files = [path for path in chart_dir.glob("*.png") if path.is_file()]
+    result["scanned"] = len(png_files)
+    kept: list[Path] = []
+
+    for path in png_files:
+        try:
+            if path.stat().st_mtime < cutoff:
+                if _remove_file(path):
+                    result["deleted_old"] += 1
+                continue
+            kept.append(path)
+        except OSError as exc:
+            result["errors"].append(f"{path.name}:{type(exc).__name__}")
+
+    limit = max(0, int(max_files))
+    if limit > 0 and len(kept) > limit:
+        kept.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0)
+        overflow = kept[: len(kept) - limit]
+        remaining = kept[len(kept) - limit:]
+        for path in overflow:
+            try:
+                if _remove_file(path):
+                    result["deleted_over_limit"] += 1
+            except OSError as exc:
+                result["errors"].append(f"{path.name}:{type(exc).__name__}")
+        kept = remaining
+    result["kept"] = sum(1 for path in kept if path.exists())
+    return result
+
+
 def cleanup_runtime_artifacts(
     settings: Settings,
     store: JsonStore,
@@ -186,6 +233,11 @@ def cleanup_runtime_artifacts(
             None,
         ),
     ]
+    structure_charts = cleanup_structure_charts(
+        settings.structure_chart_dir,
+        settings.structure_chart_retention_hours,
+        settings.structure_max_chart_files,
+    )
 
     result = {
         "enabled": settings.cleanup_enable,
@@ -194,6 +246,7 @@ def cleanup_runtime_artifacts(
         "removed_files": removed_files,
         "removed_dirs": removed_dirs,
         "pruned": pruned,
+        "structure_charts": structure_charts,
     }
     store.save(settings.cleanup_state_path, {
         "last_run_ts": now,

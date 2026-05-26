@@ -122,7 +122,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.8`，后续功能更新按 `v1.9`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.8.1`，后续功能更新按 `v1.9`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -280,6 +280,9 @@ FLOW_CLOSE_DELAY_SEC=300               # 收线后延迟 5 分钟
 LAUNCH_CLOSE_DELAY_SEC=60              # 启动雷达 15m 收线后延迟 1 分钟
 STRUCTURE_PRE_SCAN_MINUTE=55           # 结构突破雷达每小时提前临界扫描
 STRUCTURE_CONFIRM_DELAY_SEC=300        # 结构突破雷达收线后延迟 5 分钟确认
+STRUCTURE_DELETE_CHART_AFTER_SEND=true # 真实图片推送成功后立即删除本地 PNG
+STRUCTURE_CHART_RETENTION_HOURS=12     # dry-run/失败图片最多保留 12 小时
+STRUCTURE_MAX_CHART_FILES=200          # 超过 200 张时只保留最新图片
 ```
 
 如果修改这些参数，可以用 `paopao config` 打开配置文件；更新项目时脚本会保留 token、群 ID、CoinGlass key 和话题 ID。

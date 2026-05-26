@@ -152,6 +152,9 @@ class Settings:
     structure_min_score: int = 65
     structure_send_chart_top_n: int = 3
     structure_save_charts: bool = True
+    structure_delete_chart_after_send: bool = True
+    structure_chart_retention_hours: int = 12
+    structure_max_chart_files: int = 200
     structure_pre_scan_minute: int = 55
     structure_confirm_delay_sec: int = 300
     structure_cooldown_sec: int = 3600
@@ -257,6 +260,9 @@ class Settings:
             structure_min_score=env_int("STRUCTURE_MIN_SCORE", 65),
             structure_send_chart_top_n=env_int("STRUCTURE_SEND_CHART_TOP_N", 3),
             structure_save_charts=env_bool("STRUCTURE_SAVE_CHARTS", True),
+            structure_delete_chart_after_send=env_bool("STRUCTURE_DELETE_CHART_AFTER_SEND", True),
+            structure_chart_retention_hours=env_int("STRUCTURE_CHART_RETENTION_HOURS", 12),
+            structure_max_chart_files=env_int("STRUCTURE_MAX_CHART_FILES", 200),
             structure_pre_scan_minute=env_int("STRUCTURE_PRE_SCAN_MINUTE", 55),
             structure_confirm_delay_sec=env_int("STRUCTURE_CONFIRM_DELAY_SEC", 300),
             structure_cooldown_sec=env_int("STRUCTURE_COOLDOWN_SEC", 3600),
@@ -365,6 +371,9 @@ class Settings:
                 "min_score": self.structure_min_score,
                 "send_chart_top_n": self.structure_send_chart_top_n,
                 "save_charts": self.structure_save_charts,
+                "delete_chart_after_send": self.structure_delete_chart_after_send,
+                "chart_retention_hours": self.structure_chart_retention_hours,
+                "max_chart_files": self.structure_max_chart_files,
                 "pre_scan_minute": self.structure_pre_scan_minute,
                 "confirm_delay_sec": self.structure_confirm_delay_sec,
                 "cooldown_sec": self.structure_cooldown_sec,
