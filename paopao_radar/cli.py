@@ -12,8 +12,8 @@ from __future__ import annotations
 - OI/价格背离扫描：识别建仓背离、多头共振、极端背离等状态。
 
 默认推送周期：
-- 资金雷达汇总：6 小时一次，每天最多 4 次。
-- 启动雷达提醒：3 分钟扫描一次。
+- 资金雷达汇总：6 小时一次，每天最多 4 次；收线后延迟抓上一完整窗口。
+- 启动雷达提醒：3 分钟检查一次，按最近完整 15m 收线窗口判断。
 - 公告机会/风险：跟随主扫描。
 - 同币同阶段启动提醒：默认 6 小时冷却。
 """
@@ -35,6 +35,7 @@ from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate
 from .radar import RadarEngine
 from .storage import JsonStore
 from .telegram import TelegramGateway
+from .time_windows import next_closed_window_epoch
 
 
 PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
@@ -55,7 +56,7 @@ PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 
 默认周期：
 - 资金雷达汇总：6 小时一次，每天最多 4 次；可用 --interval 或 RADAR_SUMMARY_MIN_INTERVAL_SEC 调整。
-- 启动雷达扫描：3 分钟一次，可用 --launch-interval 调整。
+- 启动雷达扫描：3 分钟检查一次，按最近完整 15m 收线窗口判断；可用 --launch-interval 调整。
 - 启动同币同阶段冷却：6 小时，可用 LAUNCH_STAGE_COOLDOWN_SEC 调整。
 - 自动清理：1 小时检查一次，可用 CLEANUP_INTERVAL_SEC 调整。
 
@@ -727,9 +728,17 @@ def run_loop(args: argparse.Namespace) -> int:
         60,
         int(args.interval if args.interval is not None else settings.radar_summary_min_interval_sec),
     )
-    next_summary = 0.0
+    next_summary = next_closed_window_epoch(
+        time.time(),
+        interval_sec=summary_interval,
+        delay_sec=settings.radar_summary_close_delay_sec,
+    )
     next_launch = 0.0
-    next_flow = next_interval_epoch(time.time(), settings.flow_interval_sec)
+    next_flow = next_closed_window_epoch(
+        time.time(),
+        interval_sec=settings.flow_interval_sec,
+        delay_sec=settings.flow_close_delay_sec,
+    )
     write_runtime_status(
         settings,
         store,
@@ -740,6 +749,9 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=summary_interval,
         launch_interval_sec=max(60, args.launch_interval),
         flow_interval_sec=max(60, settings.flow_interval_sec),
+        summary_close_delay_sec=settings.radar_summary_close_delay_sec,
+        flow_close_delay_sec=settings.flow_close_delay_sec,
+        next_summary_at=timestamp_from_epoch(next_summary),
         next_flow_at=timestamp_from_epoch(next_flow),
         no_launch=bool(args.no_launch),
         no_flow=bool(args.no_flow),
@@ -759,7 +771,11 @@ def run_loop(args: argparse.Namespace) -> int:
                 summary_ok = False
                 summary_error = f"{type(exc).__name__}: {exc}"
                 print(f"[loop] summary failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            next_summary = time.time() + summary_interval
+            next_summary = next_closed_window_epoch(
+                time.time(),
+                interval_sec=summary_interval,
+                delay_sec=settings.radar_summary_close_delay_sec,
+            )
             write_runtime_status(
                 settings,
                 store,
@@ -791,7 +807,11 @@ def run_loop(args: argparse.Namespace) -> int:
                 flow_ok = False
                 flow_error = f"{type(exc).__name__}: {exc}"
                 print(f"[loop] flow failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            next_flow = next_interval_epoch(time.time(), settings.flow_interval_sec)
+            next_flow = next_closed_window_epoch(
+                time.time(),
+                interval_sec=settings.flow_interval_sec,
+                delay_sec=settings.flow_close_delay_sec,
+            )
             write_runtime_status(
                 settings,
                 store,

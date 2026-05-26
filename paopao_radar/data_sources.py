@@ -179,27 +179,51 @@ class BinanceDataSource:
         )
         return data if isinstance(data, list) else []
 
-    def open_interest_hist(self, symbol: str, period: str = "1h", limit: int = 6) -> list[dict[str, Any]]:
+    def open_interest_hist(
+        self,
+        symbol: str,
+        period: str = "1h",
+        limit: int = 6,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not self.budget.consume("open_interest_hist"):
             self.quality.fail("openInterestHist", "budget_exhausted")
             return []
+        params: dict[str, Any] = {"symbol": symbol, "period": period, "limit": limit}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
         data = self.http.get_json(
             self.endpoint("/futures/data/openInterestHist"),
-            {"symbol": symbol, "period": period, "limit": limit},
-            cache_key=f"oi:{symbol}:{period}:{limit}",
+            params,
+            cache_key=f"oi:{symbol}:{period}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="openInterestHist",
             retries=1,
         )
         return data if isinstance(data, list) else []
 
-    def klines(self, symbol: str, interval: str = "1d", limit: int = 120) -> list[list[Any]]:
+    def klines(
+        self,
+        symbol: str,
+        interval: str = "1d",
+        limit: int = 120,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]:
         if not self.budget.consume("klines"):
             self.quality.fail("klines", "budget_exhausted")
             return []
+        params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
         data = self.http.get_json(
             self.endpoint("/fapi/v1/klines"),
-            {"symbol": symbol, "interval": interval, "limit": limit},
-            cache_key=f"klines:{symbol}:{interval}:{limit}",
+            params,
+            cache_key=f"klines:{symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="klines",
             retries=1,
         )
@@ -412,16 +436,23 @@ class CoinglassDataSource:
         interval: str = "1h",
         limit: int = 6,
         unit: str = "usd",
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> Any:
+        params: dict[str, Any] = {
+            "exchange_list": exchange_list,
+            "symbol": symbol.upper().replace("USDT", ""),
+            "interval": interval,
+            "limit": limit,
+            "unit": unit,
+        }
+        if start_time is not None:
+            params["start_time"] = int(start_time)
+        if end_time is not None:
+            params["end_time"] = int(end_time)
         payload = self.get_json(
             "/api/futures/aggregated-cvd/history",
-            {
-                "exchange_list": exchange_list,
-                "symbol": symbol.upper().replace("USDT", ""),
-                "interval": interval,
-                "limit": limit,
-                "unit": unit,
-            },
+            params,
             quality_key="coinglassFuturesAggregatedCvd",
         )
         return self.unwrap_data(payload)
@@ -433,16 +464,23 @@ class CoinglassDataSource:
         interval: str = "1h",
         limit: int = 6,
         unit: str = "usd",
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> Any:
+        params: dict[str, Any] = {
+            "exchange_list": exchange_list,
+            "symbol": symbol.upper().replace("USDT", ""),
+            "interval": interval,
+            "limit": limit,
+            "unit": unit,
+        }
+        if start_time is not None:
+            params["start_time"] = int(start_time)
+        if end_time is not None:
+            params["end_time"] = int(end_time)
         payload = self.get_json(
             "/api/spot/aggregated-cvd/history",
-            {
-                "exchange_list": exchange_list,
-                "symbol": symbol.upper().replace("USDT", ""),
-                "interval": interval,
-                "limit": limit,
-                "unit": unit,
-            },
+            params,
             quality_key="coinglassSpotAggregatedCvd",
         )
         return self.unwrap_data(payload)

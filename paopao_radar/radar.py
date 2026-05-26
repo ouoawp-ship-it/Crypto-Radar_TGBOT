@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 from .config import Settings
 from .data_sources import BinanceDataSource
 from .storage import JsonStore
+from .time_windows import ClosedWindow, closed_window
 
 
 OPPORTUNITY_KEYWORDS = [
@@ -62,6 +63,15 @@ def tg_bold(value: Any) -> str:
 
 def tg_quote(title: str) -> str:
     return f"<blockquote><b>{tg_escape(title)}</b></blockquote>"
+
+
+def seconds_text(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600}小时"
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60}分钟"
+    return f"{seconds}秒"
 
 
 def coinglass_tv_url(coin_or_symbol: str) -> str:
@@ -248,15 +258,20 @@ class RadarEngine:
         }
 
     def build_money_radar_summary(self, source: BinanceDataSource) -> dict[str, Any]:
-        items = self._load_market_items(source)
+        window = closed_window(
+            interval_sec=self.settings.radar_summary_min_interval_sec,
+            delay_sec=self.settings.radar_summary_close_delay_sec,
+        )
+        items = self._load_market_items(source, window)
         now = cst_now_text()
         if not items:
             return {
                 "template_id": "TG_RADAR_SUMMARY",
-                "dedup_key": f"radar-summary:{datetime.now(CST).strftime('%Y%m%d%H')}",
+                "dedup_key": f"radar-summary:{window.end.strftime('%Y%m%d%H%M')}",
                 "text": "\n".join([
                     "🏦 <b>资金雷达摘要</b>",
                     f"⏰ {now}",
+                    f"统计窗口: {window.label()}",
                     "",
                     "暂无有效数据，可能是接口失败或候选不足。",
                 ]),
@@ -274,7 +289,7 @@ class RadarEngine:
                 + score_oi(item["oi_6h"])
             )
             ambush_oi_score = score_oi(item["oi_6h"], 30)
-            if item["oi_6h"] > 2 and abs(item["price_24h"]) < 5:
+            if item["oi_6h"] > 2 and abs(item["price_window"]) < 5:
                 ambush_oi_score = min(30, ambush_oi_score + 5)
             item["ambush_score"] = (
                 score_mcap(item["mcap"], 35)
@@ -284,17 +299,17 @@ class RadarEngine:
             )
             item["momentum_score"] = (
                 min(35, score_oi(item["oi_6h"], 35))
-                + min(25, int(abs(item["price_24h"]) * 1.8))
+                + min(25, int(abs(item["price_window"]) * 1.8))
                 + min(25, int(item["quote_volume"] / 20_000_000))
                 + (15 if item["funding_pct"] < 0 else 0)
             )
             item["new_score"] = (
                 min(30, score_oi(item["oi_6h"], 30))
-                + min(25, int(abs(item["price_24h"]) * 1.5))
+                + min(25, int(abs(item["price_window"]) * 1.5))
                 + min(25, int(item["quote_volume"] / 15_000_000))
                 + (20 if item["funding_pct"] < 0 else 0)
             )
-            item["divergence"] = item["oi_6h"] - item["price_24h"]
+            item["divergence"] = item["oi_6h"] - item["price_window"]
 
         combined = sorted([item for item in items if item["combined_score"] >= 25], key=lambda item: item["combined_score"], reverse=True)[:top_n]
         ambush = sorted(
@@ -318,16 +333,16 @@ class RadarEngine:
             reverse=True,
         )[:5]
 
-        text = self._format_summary(now, negative, combined, ambush, momentum, new_pool, divergence, items, source, divergence_stats)
+        text = self._format_summary(now, negative, combined, ambush, momentum, new_pool, divergence, items, source, divergence_stats, window)
         return {
             "template_id": "TG_RADAR_SUMMARY",
-            "dedup_key": f"radar-summary:{datetime.now(CST).strftime('%Y%m%d%H')}",
+            "dedup_key": f"radar-summary:{window.end.strftime('%Y%m%d%H%M')}",
             "text": text,
             "quality": source.diagnostics(),
         }
 
-    def _load_market_items(self, source: BinanceDataSource) -> list[dict[str, Any]]:
-        budget_cap = min(self.settings.oi_hist_budget, self.settings.kline_budget)
+    def _load_market_items(self, source: BinanceDataSource, window: ClosedWindow) -> list[dict[str, Any]]:
+        budget_cap = min(self.settings.oi_hist_budget, max(1, self.settings.kline_budget // 2))
         if self.settings.radar_scan_limit <= 0 or budget_cap <= 0:
             return []
         symbols_info = source.usdt_perp_symbols()
@@ -373,16 +388,43 @@ class RadarEngine:
             funding_pct = item["funding"] * 100
             current_funding[symbol] = funding_pct
 
-            oi_hist = source.open_interest_hist(symbol, period="1h", limit=6)
+            hours = max(1, int(window.interval_sec / 3600))
+            oi_hist = source.open_interest_hist(
+                symbol,
+                period="1h",
+                limit=hours + 2,
+                start_time=max(0, window.start_ms - 3_600_000),
+                end_time=window.end_ms,
+            )
             oi_6h = 0.0
             oi_usd = 0.0
             circulating_supply = 0.0
+            oi_ready = False
             if len(oi_hist) >= 2:
                 first = to_float(oi_hist[0].get("sumOpenInterestValue"))
                 last = to_float(oi_hist[-1].get("sumOpenInterestValue"))
                 oi_6h = pct(last, first)
                 oi_usd = last
                 circulating_supply = to_float(oi_hist[-1].get("CMCCirculatingSupply"))
+                oi_ready = first > 0 and last > 0
+
+            hourly = source.klines(
+                symbol,
+                interval="1h",
+                limit=hours + 1,
+                start_time=window.start_ms,
+                end_time=window.end_ms - 1,
+            )
+            price_window = 0.0
+            price_window_ready = False
+            if hourly:
+                first_open = to_float(hourly[0][1]) if len(hourly[0]) > 4 else 0.0
+                last_close = to_float(hourly[-1][4]) if len(hourly[-1]) > 4 else 0.0
+                if first_open > 0 and last_close > 0:
+                    price_window = pct(last_close, first_open)
+                    price_window_ready = True
+            if not oi_ready or not price_window_ready:
+                continue
 
             daily = source.klines(symbol, interval="1d", limit=140)
             history_days = len(daily)
@@ -403,11 +445,12 @@ class RadarEngine:
                 "funding_pct": funding_pct,
                 "funding_trend": funding_trend(previous_funding.get(symbol), funding_pct),
                 "oi_6h": oi_6h,
+                "price_window": price_window,
                 "oi_usd": oi_usd,
                 "mcap": mcap,
                 "sideways_days": sideways_days,
                 "history_days": history_days,
-                "dark_flow": oi_6h > 2 and abs(item["price_24h"]) < 5,
+                "dark_flow": oi_6h > 2 and abs(price_window) < 5,
             })
 
         self.store.save(self.settings.funding_snapshot_path, current_funding)
@@ -824,10 +867,13 @@ class RadarEngine:
         all_items: list[dict[str, Any]],
         source: BinanceDataSource,
         divergence_stats: dict[str, int],
+        window: ClosedWindow,
     ) -> str:
         lines = [
             "🏦 <b>资金雷达摘要</b>",
             f"⏰ {now}",
+            f"统计窗口: {window.label()}",
+            f"数据规则: 收线后延迟 {seconds_text(window.delay_sec)}抓取上一完整窗口",
             "",
             tg_quote("📊 本轮统计"),
             f"扫描合约: {len(all_items)}",
@@ -857,7 +903,8 @@ class RadarEngine:
             "⬇️变负 = 刚从正费率转为负费率",
             "⬆️回升 = 负费率缓和",
             "暗流 = OI增加但价格没动",
-            "背离 = OI变化% - 价格变化%",
+            "窗口 = 本次统计窗口内的完整收线数据",
+            "背离 = OI窗口变化% - 价格窗口变化%",
             "链接 = 点击币种打开 CoinGlass Binance K线",
         ])
         return "\n".join(lines)
@@ -912,12 +959,12 @@ class RadarEngine:
         lines.append("")
 
     def _append_momentum(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append(tg_quote("⚡ 动量池（评分=OI35 + 24h涨跌25 + 成交额25 + 负费率15）"))
+        lines.append(tg_quote("⚡ 动量池（评分=OI35 + 窗口涨跌25 + 成交额25 + 负费率15）"))
         for item in items:
             metrics = (
                 f"{score_cell(item['momentum_score'])} | "
                 f"OI {pct_cell(item['oi_6h'])} | "
-                f"24h {pct_cell(item['price_24h'])} | "
+                f"窗口 {pct_cell(item['price_window'])} | "
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)} | "
                 f"历史 {str(item['history_days']).rjust(3)}天"
             )
@@ -927,13 +974,13 @@ class RadarEngine:
         lines.append("")
 
     def _append_new_pool(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append(tg_quote("🆕 新币池（评分=OI30 + 24h涨跌25 + 成交额25 + 负费率20）"))
+        lines.append(tg_quote("🆕 新币池（评分=OI30 + 窗口涨跌25 + 成交额25 + 负费率20）"))
         for item in items:
             metrics = (
                 f"{score_cell(item['new_score'])} | "
                 f"历史 {str(item['history_days']).rjust(3)}天 | "
                 f"OI {pct_cell(item['oi_6h'])} | "
-                f"24h {pct_cell(item['price_24h'])} | "
+                f"窗口 {pct_cell(item['price_window'])} | "
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)}"
             )
             append_metric_row(lines, item, metrics)
@@ -942,11 +989,11 @@ class RadarEngine:
         lines.append("")
 
     def _append_divergence(self, lines: list[str], items: list[dict[str, Any]]) -> None:
-        lines.append(tg_quote("⚖️ 背离雷达（背离=OI变化% - 价格变化%）"))
+        lines.append(tg_quote("⚖️ 背离雷达（背离=OI窗口变化% - 价格窗口变化%）"))
         for item in items:
             metrics = (
                 f"OI {pct_cell(item['oi_6h'])} | "
-                f"价格 {pct_cell(item['price_24h'])} | "
+                f"价格 {pct_cell(item['price_window'])} | "
                 f"背离 {item['divergence']:+6.1f} | "
                 f"{item['level']} | {item['status_text']}"
             )
@@ -983,7 +1030,7 @@ class RadarEngine:
             if self._is_dark_flow(item):
                 highlights.append((
                     item["coin"],
-                    f"🎯 {coin_link(item)}\nOI{item['oi_6h']:+.1f}%但价格没动，低位暗流",
+                    f"🎯 {coin_link(item)}\nOI{item['oi_6h']:+.1f}%但窗口价格没动，低位暗流",
                 ))
         for item in divergence[:2]:
             if abs(item["divergence"]) >= 20:
@@ -1006,11 +1053,11 @@ class RadarEngine:
 
     @staticmethod
     def _is_dark_flow(item: dict[str, Any]) -> bool:
-        return item.get("oi_6h", 0) > 2 and abs(item.get("price_24h", 0)) < 5
+        return item.get("oi_6h", 0) > 2 and abs(item.get("price_window", item.get("price_24h", 0))) < 5
 
     def _classify_divergence_item(self, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         oi = item["oi_6h"]
-        price = item["price_24h"]
+        price = item.get("price_window", item.get("price_24h", 0))
         divergence = item["divergence"]
         if abs(divergence) < 6 and abs(oi) < 5:
             return None
@@ -1248,8 +1295,22 @@ class RadarEngine:
 
     def _analyze_launch_symbol(self, source: BinanceDataSource, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         symbol = item["symbol"]
-        klines = source.klines(symbol, interval="15m", limit=17)
-        oi_hist = source.open_interest_hist(symbol, period="15m", limit=17)
+        window = closed_window(interval_sec=15 * 60, delay_sec=self.settings.launch_close_delay_sec)
+        lookback_ms = 17 * 15 * 60 * 1000
+        klines = source.klines(
+            symbol,
+            interval="15m",
+            limit=17,
+            start_time=max(0, window.end_ms - lookback_ms),
+            end_time=window.end_ms - 1,
+        )
+        oi_hist = source.open_interest_hist(
+            symbol,
+            period="15m",
+            limit=17,
+            start_time=max(0, window.end_ms - lookback_ms),
+            end_time=window.end_ms,
+        )
         if len(klines) < 5 or len(oi_hist) < 5:
             return None
 

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
 from paopao_radar.radar import CST, RadarEngine, score_funding
 from paopao_radar.storage import JsonStore
+from paopao_radar.time_windows import closed_window
 
 
 class _FakeBudget:
@@ -208,6 +209,7 @@ class RadarScoringTests(unittest.TestCase):
                 "funding_pct": -0.12,
                 "funding_trend": "🔥加速",
                 "price_24h": 5.2,
+                "price_window": 4.8,
                 "mcap": 42_000_000,
                 "price": 0.1234,
                 "combined_score": 88,
@@ -234,6 +236,11 @@ class RadarScoringTests(unittest.TestCase):
                 [item],
                 _FakeSource(),
                 {"first": 1, "continued": 0, "enhanced": 0, "reappeared": 0},
+                closed_window(
+                    now=datetime(2026, 5, 25, 22, 5, 0, tzinfo=timezone(timedelta(hours=8))),
+                    interval_sec=21600,
+                    delay_sec=300,
+                ),
             )
 
             self.assertIn("<blockquote><b>📊 综合榜（评分=费率25 + 市值25 + 横盘25 + OI25）</b></blockquote>", text)

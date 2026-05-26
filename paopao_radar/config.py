@@ -130,6 +130,7 @@ class Settings:
     radar_min_quote_volume: float = 5_000_000
     radar_top_n: int = 8
     radar_summary_min_interval_sec: int = 6 * 3600
+    radar_summary_close_delay_sec: int = 300
     radar_summary_max_daily_push: int = 4
     radar_state_path: Path = BASE_DIR / "data" / "radar_state.json"
     funding_snapshot_path: Path = BASE_DIR / "data" / "funding_snapshot.json"
@@ -139,6 +140,7 @@ class Settings:
     flow_top_n: int = 8
     flow_min_score: int = 50
     flow_interval_sec: int = 3600
+    flow_close_delay_sec: int = 300
 
     oi_hist_budget: int = 80
     kline_budget: int = 120
@@ -155,6 +157,7 @@ class Settings:
     launch_primed_score: int = 60
     launch_breakout_score: int = 75
     launch_launched_score: int = 90
+    launch_close_delay_sec: int = 60
     launch_stage_cooldown_sec: int = 6 * 3600
     launch_state_ttl_sec: int = 48 * 3600
     launch_failed_ttl_sec: int = 24 * 3600
@@ -217,6 +220,7 @@ class Settings:
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
             radar_summary_min_interval_sec=env_int("RADAR_SUMMARY_MIN_INTERVAL_SEC", 6 * 3600),
+            radar_summary_close_delay_sec=env_int("RADAR_SUMMARY_CLOSE_DELAY_SEC", 300),
             radar_summary_max_daily_push=env_int("RADAR_SUMMARY_MAX_DAILY_PUSH", 4),
             radar_state_path=data_path(data_dir, "RADAR_STATE_FILE", "radar_state.json"),
             funding_snapshot_path=data_path(data_dir, "FUNDING_SNAPSHOT_FILE", "funding_snapshot.json"),
@@ -225,6 +229,7 @@ class Settings:
             flow_top_n=env_int("FLOW_TOP_N", 8),
             flow_min_score=env_int("FLOW_MIN_SCORE", 50),
             flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 3600),
+            flow_close_delay_sec=env_int("FLOW_CLOSE_DELAY_SEC", 300),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
@@ -239,6 +244,7 @@ class Settings:
             launch_primed_score=env_int("LAUNCH_PRIMED_SCORE", 60),
             launch_breakout_score=env_int("LAUNCH_BREAKOUT_SCORE", 75),
             launch_launched_score=env_int("LAUNCH_LAUNCHED_SCORE", 90),
+            launch_close_delay_sec=env_int("LAUNCH_CLOSE_DELAY_SEC", 60),
             launch_stage_cooldown_sec=env_int("LAUNCH_STAGE_COOLDOWN_SEC", 6 * 3600),
             launch_state_ttl_sec=env_int("LAUNCH_STATE_TTL_SEC", 48 * 3600),
             launch_failed_ttl_sec=env_int("LAUNCH_FAILED_TTL_SEC", 24 * 3600),

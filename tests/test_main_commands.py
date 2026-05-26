@@ -136,6 +136,19 @@ class MainCommandTests(unittest.TestCase):
 
         self.assertEqual(main.next_interval_epoch(base, 3600), expected)
 
+    def test_next_closed_window_epoch_adds_post_close_delay(self) -> None:
+        from datetime import timedelta, timezone
+        from paopao_radar.time_windows import next_closed_window_epoch
+
+        tz = timezone(timedelta(hours=8))
+        base = main.datetime(2026, 5, 26, 17, 46, 30, tzinfo=tz).timestamp()
+        expected = main.datetime(2026, 5, 26, 18, 5, 0, tzinfo=tz).timestamp()
+
+        self.assertEqual(
+            next_closed_window_epoch(base, interval_sec=3600, delay_sec=300),
+            expected,
+        )
+
     def test_coinglass_test_blocks_when_disabled(self) -> None:
         with TemporaryDirectory() as tmp:
             with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):

@@ -7,6 +7,7 @@ from typing import Any
 from .config import Settings
 from .data_sources import BinanceDataSource, CoinglassDataSource
 from .radar import fmt_money, pct_cell, to_float
+from .time_windows import ClosedWindow, closed_window
 
 
 CST = timezone(timedelta(hours=8))
@@ -27,6 +28,15 @@ def tg_bold(value: Any) -> str:
 
 def tg_quote(title: str) -> str:
     return f"<blockquote><b>{tg_escape(title)}</b></blockquote>"
+
+
+def seconds_text(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600}小时"
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60}分钟"
+    return f"{seconds}秒"
 
 
 def coinglass_tv_url(coin_or_symbol: str) -> str:
@@ -91,8 +101,68 @@ def numeric_from_point(point: Any) -> float:
     return to_float(point)
 
 
-def series_delta_info(data: Any) -> tuple[float, bool, int]:
+def normalize_timestamp_ms(value: Any) -> int:
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if ts <= 0:
+        return 0
+    if ts < 10_000_000_000:
+        ts *= 1000
+    return int(ts)
+
+
+def point_timestamp_ms(point: Any) -> int:
+    if isinstance(point, dict):
+        for key in (
+            "time",
+            "timestamp",
+            "t",
+            "T",
+            "openTime",
+            "open_time",
+            "createTime",
+            "create_time",
+            "dataTime",
+            "data_time",
+        ):
+            if key in point:
+                ts = normalize_timestamp_ms(point.get(key))
+                if ts:
+                    return ts
+    if isinstance(point, (list, tuple)):
+        for value in point[:2]:
+            ts = normalize_timestamp_ms(value)
+            if ts:
+                return ts
+    return 0
+
+
+def filter_points_by_time(data: Any, start_ms: int | None, end_ms: int | None) -> list[Any]:
     points = flatten_points(data)
+    if start_ms is None and end_ms is None:
+        return points
+    filtered: list[Any] = []
+    for point in points:
+        ts = point_timestamp_ms(point)
+        if not ts:
+            continue
+        if start_ms is not None and ts < start_ms:
+            continue
+        if end_ms is not None and ts > end_ms:
+            continue
+        filtered.append(point)
+    return filtered
+
+
+def series_delta_info(
+    data: Any,
+    *,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> tuple[float, bool, int]:
+    points = filter_points_by_time(data, start_ms, end_ms)
     values = [numeric_from_point(point) for point in points]
     values = [value for value in values if value == value]
     if len(values) < 2:
@@ -165,18 +235,67 @@ def fmt_cvd(value: float, ready: bool) -> str:
     return fmt_signed_money(value)
 
 
-def binance_oi_stats(source: BinanceDataSource, symbol: str) -> tuple[float, float]:
-    history = source.open_interest_hist(symbol, period="1h", limit=25)
+def binance_oi_stats(
+    source: BinanceDataSource,
+    symbol: str,
+    *,
+    window: ClosedWindow | None = None,
+    period: str = "1h",
+    limit: int = 25,
+) -> tuple[float, float, bool, int]:
+    start_time = None
+    end_time = None
+    if window is not None:
+        start_time = max(0, window.start_ms - window.interval_ms)
+        end_time = window.end_ms
+        limit = max(limit, 3)
+    history = source.open_interest_hist(
+        symbol,
+        period=period,
+        limit=limit,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if window is not None:
+        history = filter_points_by_time(history, start_time, end_time)
     if len(history) < 2:
-        return 0.0, 0.0
+        return 0.0, 0.0, False, len(history)
     first = to_float(history[0].get("sumOpenInterestValue") or history[0].get("sumOpenInterest"))
     last = to_float(history[-1].get("sumOpenInterestValue") or history[-1].get("sumOpenInterest"))
     if first <= 0:
-        return 0.0, last
-    return (last - first) / first * 100, last
+        return 0.0, last, False, len(history)
+    return (last - first) / first * 100, last, True, len(history)
+
+
+def binance_window_price_pct(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool]:
+    klines = source.klines(
+        symbol,
+        interval="1h",
+        limit=3,
+        start_time=window.start_ms,
+        end_time=window.end_ms - 1,
+    )
+    selected = [
+        kline for kline in klines
+        if isinstance(kline, list)
+        and kline
+        and window.start_ms <= normalize_timestamp_ms(kline[0]) < window.end_ms
+    ]
+    if not selected:
+        return 0.0, False
+    kline = selected[-1]
+    if len(kline) < 5:
+        return 0.0, False
+    open_price = to_float(kline[1])
+    close_price = to_float(kline[4])
+    if open_price <= 0:
+        return 0.0, False
+    return (close_price - open_price) / open_price * 100, True
 
 
 def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
+    if not item.get("price_ready", True) or not item.get("oi_ready", True):
+        return ("数据不足", 0, "价格或 OI 未覆盖完整统计窗口，暂不评分")
     price = item["price_24h"]
     oi = item["oi_24h"]
     spot = item["spot_cvd_delta"]
@@ -257,11 +376,15 @@ class FlowRadarEngine:
         self.settings = settings
 
     def build(self, binance: BinanceDataSource, coinglass: CoinglassDataSource) -> dict[str, Any]:
+        window = closed_window(
+            interval_sec=self.settings.flow_interval_sec,
+            delay_sec=self.settings.flow_close_delay_sec,
+        )
         if not coinglass.enabled:
             return {
                 "template_id": "TG_FLOW_RADAR",
-                "dedup_key": f"flow-radar:{datetime.now(CST).strftime('%Y%m%d%H')}",
-                "text": "🧭 五因子资金流雷达\n\nCoinGlass 未启用，无法计算 CVD。",
+                "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
+                "text": f"🧭 五因子资金流雷达\n\n统计窗口: {window.label()}\nCoinGlass 未启用，无法计算 CVD。",
                 "items": [],
                 "diagnostics": {"coinglass": coinglass.diagnostics(), "binance": binance.diagnostics()},
             }
@@ -278,41 +401,30 @@ class FlowRadarEngine:
             symbol = candidate["symbol"]
             coin = candidate["coin"]
             market = market_map.get(coin, {})
+            cvd_start_ms = max(0, window.start_ms - window.interval_ms)
             spot_cvd, spot_cvd_ready, spot_cvd_points = series_delta_info(coinglass.spot_aggregated_cvd_history(
                 coin,
                 exchange_list=self.settings.coinglass_exchange_list,
                 interval="1h",
-                limit=6,
-            ))
+                limit=4,
+                start_time=cvd_start_ms,
+                end_time=window.end_ms,
+            ), start_ms=cvd_start_ms, end_ms=window.end_ms)
             futures_cvd, futures_cvd_ready, futures_cvd_points = series_delta_info(coinglass.futures_aggregated_cvd_history(
                 coin,
                 exchange_list=self.settings.coinglass_exchange_list,
                 interval="1h",
-                limit=6,
-            ))
-            price_24h = first_value(
-                market,
-                (
-                    "price_change_percent_24h",
-                    "priceChangePercent24h",
-                    "price_change_percent",
-                    "priceChangePercent",
-                    "change_percent_24h",
-                    "changePercent24h",
-                ),
-                candidate["price_24h"],
-            )
-            oi_24h, oi_found = first_value_info(
-                market,
-                (
-                    "open_interest_change_percent_24h",
-                    "openInterestChangePercent24h",
-                    "open_interest_change_percent",
-                    "openInterestChangePercent",
-                    "oi_change_percent_24h",
-                    "oiChangePercent24h",
-                ),
-                0.0,
+                limit=4,
+                start_time=cvd_start_ms,
+                end_time=window.end_ms,
+            ), start_ms=cvd_start_ms, end_ms=window.end_ms)
+            price_pct, price_ready = binance_window_price_pct(binance, symbol, window)
+            oi_24h, oi_fallback_usd, oi_ready, oi_points = binance_oi_stats(
+                binance,
+                symbol,
+                window=window,
+                period="1h",
+                limit=4,
             )
             funding_pct = normalise_pct(first_value(
                 market,
@@ -342,17 +454,16 @@ class FlowRadarEngine:
                 ("open_interest_usd", "openInterestUsd", "open_interest", "openInterest"),
                 0.0,
             )
-            if not oi_found or not oi_usd_found:
-                oi_fallback_pct, oi_fallback_usd = binance_oi_stats(binance, symbol)
-                if not oi_found:
-                    oi_24h = oi_fallback_pct
-                if not oi_usd_found:
-                    oi_usd = oi_fallback_usd
+            if not oi_usd_found:
+                oi_usd = oi_fallback_usd
             item = {
                 "symbol": symbol,
                 "coin": coin,
-                "price_24h": price_24h,
+                "price_24h": price_pct,
+                "price_ready": price_ready,
                 "oi_24h": oi_24h,
+                "oi_ready": oi_ready,
+                "oi_points": oi_points,
                 "spot_cvd_delta": spot_cvd,
                 "futures_cvd_delta": futures_cvd,
                 "spot_cvd_ready": spot_cvd_ready,
@@ -373,8 +484,8 @@ class FlowRadarEngine:
         rows = rows[: max(1, self.settings.flow_top_n)]
         return {
             "template_id": "TG_FLOW_RADAR",
-            "dedup_key": f"flow-radar:{datetime.now(CST).strftime('%Y%m%d%H')}",
-            "text": self._format(rows, candidates, coinglass, scanned_items),
+            "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
+            "text": self._format(rows, candidates, coinglass, scanned_items, window),
             "items": rows,
             "diagnostics": {"coinglass": coinglass.diagnostics(), "binance": binance.diagnostics()},
         }
@@ -414,9 +525,12 @@ class FlowRadarEngine:
         candidates: list[dict[str, Any]],
         coinglass: CoinglassDataSource,
         scanned_items: list[dict[str, Any]],
+        window: ClosedWindow,
     ) -> str:
         spot_ready_count = sum(1 for item in scanned_items if item.get("spot_cvd_ready"))
         futures_ready_count = sum(1 for item in scanned_items if item.get("futures_cvd_ready"))
+        price_ready_count = sum(1 for item in scanned_items if item.get("price_ready"))
+        oi_ready_count = sum(1 for item in scanned_items if item.get("oi_ready"))
         spot_active_count = sum(
             1 for item in scanned_items
             if item.get("spot_cvd_ready") and abs(float(item.get("spot_cvd_delta") or 0.0)) > CVD_NEUTRAL_ABS
@@ -429,14 +543,22 @@ class FlowRadarEngine:
         lines = [
             "🧭 <b>五因子资金流雷达</b>",
             f"⏰ {cst_now_text()}",
+            f"统计窗口: {window.label()}",
+            f"数据规则: 整点收线后延迟 {seconds_text(window.delay_sec)}抓取上一完整窗口",
             "",
             tg_quote("📊 本轮统计"),
             f"候选币: {len(candidates)}",
             f"入选信号: {len(rows)}",
             f"CoinGlass请求: {coinglass.budget.used.get('coinglass', 0)} / {coinglass.budget.limits.get('coinglass', 0)}",
+            f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
             f"CVD数据: 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
             "",
         ]
+        if scanned_count and (price_ready_count < scanned_count or oi_ready_count < scanned_count):
+            lines.extend([
+                "⚠️ 部分价格/OI 未覆盖完整统计窗口；这些币不会进入资金流评分。",
+                "",
+            ])
         if scanned_count and (spot_ready_count < scanned_count or futures_ready_count < scanned_count):
             lines.extend([
                 "⚠️ 部分 CVD 数据缺失；缺失项不会按 0 参与资金流评分。",

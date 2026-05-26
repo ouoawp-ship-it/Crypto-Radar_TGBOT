@@ -10,6 +10,7 @@ from paopao_radar.flow_radar import (
     market_by_symbol,
     series_delta_info,
 )
+from paopao_radar.time_windows import closed_window
 
 
 class FlowRadarTests(unittest.TestCase):
@@ -36,19 +37,58 @@ class FlowRadarTests(unittest.TestCase):
 
     def test_binance_oi_stats_calculates_fallback_change(self) -> None:
         class Source:
-            def open_interest_hist(self, symbol: str, period: str = "1h", limit: int = 25):
-                self.args = (symbol, period, limit)
+            def open_interest_hist(
+                self,
+                symbol: str,
+                period: str = "1h",
+                limit: int = 25,
+                start_time: int | None = None,
+                end_time: int | None = None,
+            ):
+                self.args = (symbol, period, limit, start_time, end_time)
                 return [
                     {"sumOpenInterestValue": "100"},
                     {"sumOpenInterestValue": "115"},
                 ]
 
         source = Source()
-        pct, last = binance_oi_stats(source, "BTCUSDT")
+        pct, last, ready, points = binance_oi_stats(source, "BTCUSDT")
 
-        self.assertEqual(source.args, ("BTCUSDT", "1h", 25))
+        self.assertEqual(source.args, ("BTCUSDT", "1h", 25, None, None))
         self.assertEqual(pct, 15.0)
         self.assertEqual(last, 115.0)
+        self.assertTrue(ready)
+        self.assertEqual(points, 2)
+
+    def test_series_delta_filters_to_closed_window_timestamps(self) -> None:
+        data = {
+            "data": [
+                {"time": 1_771_965_600_000, "cvd": 10},
+                {"time": 1_771_969_200_000, "cvd": 30},
+                {"time": 1_771_972_800_000, "cvd": 99},
+            ]
+        }
+
+        delta, ready, points = series_delta_info(
+            data,
+            start_ms=1_771_965_600_000,
+            end_ms=1_771_969_200_000,
+        )
+
+        self.assertEqual(delta, 20.0)
+        self.assertTrue(ready)
+        self.assertEqual(points, 2)
+
+    def test_closed_window_waits_for_delay_before_using_latest_hour(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        window = closed_window(
+            now=datetime(2026, 5, 26, 18, 4, 0, tzinfo=timezone(timedelta(hours=8))),
+            interval_sec=3600,
+            delay_sec=300,
+        )
+
+        self.assertEqual(window.label(), "05-26 16:00-17:00 CST")
 
     def test_true_launch_category_scores_multi_factor_confirmation(self) -> None:
         category, score, _reason = flow_category({

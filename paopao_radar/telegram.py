@@ -55,7 +55,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_FLOW_RADAR": "资金流雷达",
 }
 
-TOPIC_INTRO_VERSION = "2026-05-26-flow-hourly-v2"
+TOPIC_INTRO_VERSION = "2026-05-26-closed-window-v3"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -85,6 +85,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "扫描和发送频率：",
         f"- 默认每{seconds_cn(settings.radar_summary_min_interval_sec)}检查并发送一次资金摘要。",
+        f"- 资金摘要会在收线后延迟{seconds_cn(settings.radar_summary_close_delay_sec)}抓取上一完整统计窗口，避免使用未收完的数据。",
         f"- 发送上限：{daily_text}，避免大段榜单刷屏。",
         "- 适合当作阶段性市场总览；启动瞬间由“启动预警”负责。",
         "",
@@ -101,7 +102,8 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "重点看：阶段、分数、15m/1h价格、15m/1h OI、成交量放大和触发原因。",
         "",
         "扫描和发送频率：",
-        f"- 默认每{seconds_cn(180)}扫描一次；服务启动参数 --launch-interval 可以覆盖。",
+        f"- 默认每{seconds_cn(180)}检查一次；服务启动参数 --launch-interval 可以覆盖。",
+        f"- 启动判断使用最近完整 15m 收线窗口，默认收线后延迟{seconds_cn(settings.launch_close_delay_sec)}再抓取。",
         f"- 同币同阶段默认冷却{seconds_cn(settings.launch_stage_cooldown_sec)}，避免重复刷同一阶段。",
         "",
         "阅读方式：",
@@ -132,8 +134,9 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "这里推送五因子资金流监控：价格、OI、现货CVD、合约CVD、资金费率。",
         "",
         "扫描和发送频率：",
-        f"- 默认每{seconds_cn(settings.flow_interval_sec)}扫描一次，并在整点附近发送。",
-        "- 手动执行 flow-radar 会立即扫描；daemon/live 循环按整点调度。",
+        f"- 默认每{seconds_cn(settings.flow_interval_sec)}扫描一次，并在整点收线后延迟{seconds_cn(settings.flow_close_delay_sec)}发送。",
+        "- 手动执行 flow-radar 会立即扫描，但仍统计上一完整闭合窗口；daemon/live 循环按闭合窗口调度。",
+        "- 推送正文会写明“统计窗口”，价格、OI、CVD 只在窗口数据完整时参与评分。",
         "- 需要 CoinGlass API key；如果 CVD/OI 数据缺失，应先按数据质量问题处理。",
         "",
         "阅读方式：",

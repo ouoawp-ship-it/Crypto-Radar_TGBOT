@@ -339,7 +339,8 @@ class TelegramGatewayTests(unittest.TestCase):
 
             self.assertTrue(result.sent)
             intro = send_mock.call_args_list[0].args[0]
-            self.assertIn("默认每1小时扫描一次，并在整点附近发送", intro)
+            self.assertIn("默认每1小时扫描一次，并在整点收线后延迟5分钟发送", intro)
+            self.assertIn("统计上一完整闭合窗口", intro)
             self.assertIn("真启动候选、吸筹观察、空头燃料、合约拉盘、挤空/止损、诱多/派发、恐慌下跌", intro)
 
 
