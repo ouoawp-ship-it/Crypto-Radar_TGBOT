@@ -122,7 +122,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.2`，后续功能更新按 `v1.3`、`v1.4` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.3`，后续功能更新按 `v1.4`、`v1.5` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -135,12 +135,29 @@ bash scripts/install_server.sh shortcut
 
 ```text
 当前版本 : v1 (d5a72c3)  Add interactive update check shortcut
-GitHub版本: v1.2 (xxxxxxx)  Add xxx feature
+GitHub版本: v1.3 (xxxxxxx)  Add xxx feature
 ```
 
 以后如果只是小修复，也会保留 git 提交号作为精确定位；如果是功能变化，会同步升级 `VERSION`。
 
-## 6. Telegram 话题推荐设置
+## 6. 更新时 `.env.oi` 的安全同步
+
+`paopao update` 会自动运行 `.env.oi` 安全同步:
+
+- 会补充 `.env.oi.example` 里新增的普通配置项。
+- 会自动升级明确写进迁移白名单的默认参数，例如资金摘要频率这类项目级默认值。
+- 不会覆盖 `TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY`、`TG_TOPIC_ID`、各类话题 ID。
+- 如果你自己把某个参数改成了自定义值，脚本会尽量保留，不会用新默认值强行覆盖。
+
+所以后续我优化配置参数后，你通常直接执行:
+
+```bash
+paopao update
+```
+
+即可完成代码更新、依赖检查、测试、`.env.oi` 安全同步和服务重启。
+
+## 7. Telegram 话题推荐设置
 
 推荐默认配置:
 
@@ -159,7 +176,7 @@ bot 需要在群里具备这些权限:
 
 每个话题第一次真实推送前，项目会先发送一条中文说明消息，并尝试置顶。说明消息会解释这个话题推什么、怎么看信号。
 
-## 7. 重新安装
+## 8. 重新安装
 
 如果你想完全重新安装，并备份旧目录:
 
@@ -190,7 +207,7 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-## 8. 更新现有项目
+## 9. 更新现有项目
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -211,12 +228,13 @@ paopao update --yes   # 有更新时自动确认
 - 显示当前版本和 GitHub 版本
 - 有更新时询问是否更新
 - `git pull --ff-only`
+- 安全同步 `.env.oi`，保留 token、群 ID、key 和话题 ID
 - 安装/刷新依赖
 - 编译检查
 - 单元测试
 - 如果存在 systemd 服务，则自动重启服务
 
-## 9. 常用检查命令
+## 10. 常用检查命令
 
 ```bash
 cd ~/paopao-crypto-radar
@@ -236,7 +254,7 @@ sudo systemctl status paopao-radar
 journalctl -u paopao-radar -f
 ```
 
-## 10. 手动启动方式
+## 11. 手动启动方式
 
 如果你不想用 systemd，也可以手动后台运行:
 
@@ -248,7 +266,7 @@ nohup .venv/bin/python -u main.py daemon --send --confirm-real-send > data/runti
 tail -f data/runtime.log
 ```
 
-## 11. 排错
+## 12. 排错
 
 如果提示 `TG_BOT_TOKEN 缺失或格式无效`:
 

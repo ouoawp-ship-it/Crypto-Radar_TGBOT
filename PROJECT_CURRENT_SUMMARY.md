@@ -3,7 +3,7 @@
 ## 1. 项目基本信息
 
 - 项目路径：`C:\Users\多多\Desktop\泡泡抓币`
-- 当前版本：`v1.2`，见 `VERSION`
+- 当前版本：`v1.3`，见 `VERSION`
 - Git 提交：以仓库当前 `git log --oneline -1` 为准，本报告按生成时项目结构整理。
 - 主入口：`main.py` -> `paopao_radar.cli.main()`
 - 依赖：`requests>=2.31.0`、`httpx>=0.27.0`

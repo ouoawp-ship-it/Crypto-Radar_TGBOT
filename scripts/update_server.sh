@@ -9,6 +9,10 @@ AUTO_CONFIRM="${AUTO_CONFIRM:-0}"
 CHECK_ONLY="${CHECK_ONLY:-0}"
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+PYTHON_BIN="${APP_DIR}/.venv/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
+fi
 
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -71,6 +75,12 @@ version_for_ref() {
   printf '%s' "$version"
 }
 
+sync_env_file() {
+  if [ -f "${APP_DIR}/scripts/sync_env.py" ]; then
+    "$PYTHON_BIN" scripts/sync_env.py --env .env.oi --example .env.oi.example
+  fi
+}
+
 confirm_update() {
   if [ "$AUTO_CONFIRM" = "1" ]; then
     return 0
@@ -104,6 +114,9 @@ printf '当前版本 : %s (%s)  %s\n' "$LOCAL_VERSION" "$(short_commit "$LOCAL_R
 printf 'GitHub版本: %s (%s)  %s\n' "$REMOTE_VERSION" "$(short_commit "$REMOTE_REF")" "$(commit_title "$REMOTE_REF")"
 
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
+  if [ "$CHECK_ONLY" != "1" ]; then
+    sync_env_file
+  fi
   printf '\n当前已经是最新版本，不需要更新。\n'
   exit 0
 fi
@@ -135,9 +148,10 @@ fi
 
 git pull --ff-only "$REMOTE" "$BRANCH"
 
+sync_env_file
 "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
-"${APP_DIR}/.venv/bin/python" -m compileall paopao_radar main.py
-"${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -v
+"$PYTHON_BIN" -m compileall paopao_radar main.py
+"$PYTHON_BIN" -m unittest discover -s tests -v
 
 if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
   run_root tee /usr/local/bin/paopao >/dev/null <<EOF
