@@ -162,6 +162,70 @@ class TelegramGatewayTests(unittest.TestCase):
 
             self.assertEqual(gateway._topic_id_for_template("TG_RADAR_SUMMARY"), "99")
 
+    def test_send_passes_reply_message_id_to_real_sender(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_launch_alert_topic_id="12",
+                tg_auto_create_topics=False,
+                tg_default_cooldown_sec=0,
+                tg_topic_intro_enable=False,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with patch.object(gateway, "_send_real_message_ids", return_value=(True, [222])) as send_mock:
+                result = gateway.send(
+                    "launch",
+                    "TG_LAUNCH_ALERT",
+                    "launch:key",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                    reply_to_message_id=111,
+                )
+
+            self.assertTrue(result.sent)
+            self.assertEqual(send_mock.call_args.kwargs["reply_to_message_id"], 111)
+
+    def test_real_sender_adds_reply_payload_on_first_chunk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_use_topic=True,
+                tg_push_split_limit=10,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            class Response:
+                status_code = 200
+
+                @staticmethod
+                def json() -> dict[str, object]:
+                    return {"result": {"message_id": 222}}
+
+            with patch("paopao_radar.telegram.requests.post", return_value=Response()) as post_mock:
+                ok, message_ids = gateway._send_real_message_ids(
+                    "first line\nsecond line",
+                    parse_mode="HTML",
+                    topic_id="12",
+                    reply_to_message_id=111,
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(message_ids, [222, 222])
+            first_payload = post_mock.call_args_list[0].kwargs["json"]
+            second_payload = post_mock.call_args_list[1].kwargs["json"]
+            self.assertEqual(first_payload["reply_to_message_id"], 111)
+            self.assertTrue(first_payload["allow_sending_without_reply"])
+            self.assertEqual(first_payload["message_thread_id"], 12)
+            self.assertNotIn("reply_to_message_id", second_payload)
+
     def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(

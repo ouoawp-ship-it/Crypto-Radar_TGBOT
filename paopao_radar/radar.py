@@ -1255,6 +1255,7 @@ class RadarEngine:
                 "last_seen": now_ts,
                 "appear_count": appear_count,
                 "previous_stage": previous_stage,
+                "reply_to_message_id": int(previous.get("last_message_id", 0) or 0),
             }
             if stage_changed and cooldown_ok and analyzed["score"] >= self.settings.launch_min_score_push:
                 alerts.append(record)
@@ -1291,6 +1292,15 @@ class RadarEngine:
             if symbol in state and isinstance(state[symbol], dict):
                 state[symbol]["last_pushed"] = now_ts
                 state[symbol]["last_pushed_stage"] = alert.get("stage")
+                message_ids = [
+                    int(message_id)
+                    for message_id in (alert.get("message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                ]
+                if message_ids:
+                    state[symbol]["last_message_id"] = message_ids[0]
+                    state[symbol]["last_message_ids"] = message_ids
+                    state[symbol]["last_message_stage"] = alert.get("stage")
         self.store.save(self.settings.launch_state_path, state)
 
     def _analyze_launch_symbol(self, source: BinanceDataSource, item: dict[str, Any]) -> Optional[dict[str, Any]]:

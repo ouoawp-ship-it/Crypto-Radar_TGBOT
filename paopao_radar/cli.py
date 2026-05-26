@@ -652,15 +652,18 @@ def run_once(args: argparse.Namespace) -> int:
                 confirm_real_send=args.confirm_real_send,
                 cooldown_sec=settings.launch_stage_cooldown_sec,
                 parse_mode="HTML",
+                reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
             )
             print(f"launch_push[{idx}]: {push.status} ({push.reason})")
             launch_pushes.append({
                 "symbol": str(alert.get("symbol", "")),
                 "stage": str(alert.get("stage", "")),
+                "reply_to": str(alert.get("reply_to_message_id") or ""),
                 "status": push.status,
                 "reason": push.reason,
             })
             if push.status == "sent":
+                alert["message_ids"] = push.message_ids or []
                 sent_launch_alerts.append(alert)
         engine.mark_launch_pushed(sent_launch_alerts)
 
@@ -845,15 +848,18 @@ def run_loop(args: argparse.Namespace) -> int:
                         confirm_real_send=args.confirm_real_send,
                         cooldown_sec=settings.launch_stage_cooldown_sec,
                         parse_mode="HTML",
+                        reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
                     )
                     print(f"launch_push[{idx}]: {push.status} ({push.reason})")
                     launch_pushes.append({
                         "symbol": str(alert.get("symbol", "")),
                         "stage": str(alert.get("stage", "")),
+                        "reply_to": str(alert.get("reply_to_message_id") or ""),
                         "status": push.status,
                         "reason": push.reason,
                     })
                     if push.status == "sent":
+                        alert["message_ids"] = push.message_ids or []
                         sent_launch_alerts.append(alert)
                 engine.mark_launch_pushed(sent_launch_alerts)
                 launch_diag = source.diagnostics()
@@ -912,15 +918,18 @@ def run_trial(args: argparse.Namespace) -> int:
                 confirm_real_send=args.confirm_real_send,
                 cooldown_sec=settings.launch_stage_cooldown_sec,
                 parse_mode="HTML",
+                reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
             )
             print(f"launch_push[{idx}]: {push.status} ({push.reason})")
             launch_pushes.append({
                 "symbol": str(alert.get("symbol", "")),
                 "stage": str(alert.get("stage", "")),
+                "reply_to": str(alert.get("reply_to_message_id") or ""),
                 "status": push.status,
                 "reason": push.reason,
             })
             if push.status == "sent":
+                alert["message_ids"] = push.message_ids or []
                 sent_launch_alerts.append(alert)
         engine.mark_launch_pushed(sent_launch_alerts)
         diagnostics = source.diagnostics()

@@ -274,6 +274,67 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn("05-", text)
             self.assertIn("CST", text)
 
+    def test_launch_alert_replies_to_previous_symbol_message(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp), radar_min_quote_volume=1)
+            store = JsonStore(Path(tmp))
+            store.save(settings.launch_state_path, {
+                "TESTUSDT": {
+                    "stage": "primed",
+                    "last_message_id": 123,
+                    "last_pushed": 0,
+                    "last_seen": int(time.time()),
+                    "appear_count": 1,
+                }
+            })
+            engine = RadarEngine(settings, store)
+
+            def fake_analyze(_source: object, item: dict[str, object]) -> dict[str, object]:
+                return {
+                    **item,
+                    "score": 95,
+                    "price_15m": 5.0,
+                    "price_1h": 8.0,
+                    "oi_15m": 4.0,
+                    "oi_1h": 8.0,
+                    "volume_ratio": 2.5,
+                    "breakout": True,
+                    "reasons": ["测试"],
+                }
+
+            class Source:
+                @staticmethod
+                def ticker_24h() -> list[dict[str, str]]:
+                    return [{
+                        "symbol": "TESTUSDT",
+                        "quoteVolume": "10000000",
+                        "priceChangePercent": "10",
+                        "lastPrice": "1",
+                    }]
+
+            engine._analyze_launch_symbol = fake_analyze  # type: ignore[method-assign]
+
+            result = engine.build_launch_alerts(Source())  # type: ignore[arg-type]
+
+            self.assertEqual(result["alerts"][0]["reply_to_message_id"], 123)
+
+    def test_mark_launch_pushed_stores_message_id_for_reply_chain(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            store = JsonStore(Path(tmp))
+            store.save(settings.launch_state_path, {"TESTUSDT": {"stage": "launched"}})
+            engine = RadarEngine(settings, store)
+
+            engine.mark_launch_pushed([{
+                "symbol": "TESTUSDT",
+                "stage": "launched",
+                "message_ids": [456],
+            }])
+
+            state = store.load(settings.launch_state_path, {})
+            self.assertEqual(state["TESTUSDT"]["last_message_id"], 456)
+            self.assertEqual(state["TESTUSDT"]["last_message_ids"], [456])
+
     def test_risk_announcement_uses_chinese_state(self) -> None:
         with TemporaryDirectory() as tmp:
             engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))

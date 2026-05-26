@@ -55,7 +55,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_FLOW_RADAR": "资金流雷达",
 }
 
-TOPIC_INTRO_VERSION = "2026-05-26-closed-window-v3"
+TOPIC_INTRO_VERSION = "2026-05-26-launch-reply-chain-v4"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -105,6 +105,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         f"- 默认每{seconds_cn(180)}检查一次；服务启动参数 --launch-interval 可以覆盖。",
         f"- 启动判断使用最近完整 15m 收线窗口，默认收线后延迟{seconds_cn(settings.launch_close_delay_sec)}再抓取。",
         f"- 同币同阶段默认冷却{seconds_cn(settings.launch_stage_cooldown_sec)}，避免重复刷同一阶段。",
+        "- 同一币种后续更高阶段信号会自动回复上一条该币启动消息，方便沿着一条消息链追踪。",
         "",
         "阅读方式：",
         "1. 提前预警 = 开始异动，适合加入盯盘。",
@@ -175,6 +176,7 @@ class TelegramGateway:
         cooldown_sec: int | None = None,
         daily_limit: int | None = None,
         parse_mode: str = "Markdown",
+        reply_to_message_id: int | None = None,
     ) -> PushResult:
         now = utc_ts()
         cooldown = self.settings.tg_default_cooldown_sec if cooldown_sec is None else cooldown_sec
@@ -184,17 +186,17 @@ class TelegramGateway:
         duplicate = self._recent_match(history, dedup_key, cooldown)
         if duplicate:
             result = PushResult("skipped", "dedup_cooldown", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
             return result
 
         if daily_limit is not None and daily_limit >= 0 and self._daily_sent_count(history, template_id, now) >= daily_limit:
             result = PushResult("skipped", "template_daily_limit", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
             return result
 
         if self._hourly_sent_count(history, now) >= self.settings.tg_global_hourly_limit:
             result = PushResult("skipped", "global_hourly_limit", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
             return result
 
         if not send:
@@ -203,49 +205,77 @@ class TelegramGateway:
             print(f"dedup_key: {dedup_key}")
             if topic_id:
                 print(f"topic_id: {topic_id}")
+            if reply_to_message_id:
+                print(f"reply_to_message_id: {reply_to_message_id}")
             print(text)
             print("========== END DRY-RUN ==============\n")
             result = PushResult("dry_run", "send_flag_not_set", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
             return result
 
         if not confirm_real_send:
             result = PushResult("blocked", "missing_confirm_real_send", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
             return result
 
         if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
             result = PushResult("blocked", "telegram_not_configured", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
             return result
 
         topic_id = self._ensure_topic_id_for_template(template_id)
         self._ensure_topic_intro(template_id, topic_id)
-        ok, message_ids = self._send_real_message_ids(text, parse_mode=parse_mode, topic_id=topic_id)
+        ok, message_ids = self._send_real_message_ids(
+            text,
+            parse_mode=parse_mode,
+            topic_id=topic_id,
+            reply_to_message_id=reply_to_message_id,
+        )
         result = PushResult(
             "sent" if ok else "failed",
             "telegram_api" if ok else "telegram_api_failed",
             ok,
             message_ids,
         )
-        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id)
+        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
         return result
 
-    def _send_real(self, text: str, parse_mode: str, topic_id: str = "") -> bool:
-        ok, _message_ids = self._send_real_message_ids(text, parse_mode=parse_mode, topic_id=topic_id)
+    def _send_real(
+        self,
+        text: str,
+        parse_mode: str,
+        topic_id: str = "",
+        reply_to_message_id: int | None = None,
+    ) -> bool:
+        ok, _message_ids = self._send_real_message_ids(
+            text,
+            parse_mode=parse_mode,
+            topic_id=topic_id,
+            reply_to_message_id=reply_to_message_id,
+        )
         return ok
 
-    def _send_real_message_ids(self, text: str, parse_mode: str, topic_id: str = "") -> tuple[bool, list[int]]:
+    def _send_real_message_ids(
+        self,
+        text: str,
+        parse_mode: str,
+        topic_id: str = "",
+        reply_to_message_id: int | None = None,
+    ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendMessage"
         ok = True
         message_ids: list[int] = []
-        for chunk in chunk_text(text, self.settings.tg_push_split_limit):
+        reply_id = int(reply_to_message_id or 0)
+        for idx, chunk in enumerate(chunk_text(text, self.settings.tg_push_split_limit)):
             payload: dict[str, Any] = {
                 "chat_id": self.settings.tg_chat_id,
                 "text": chunk,
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": True,
             }
+            if reply_id > 0 and idx == 0:
+                payload["reply_to_message_id"] = reply_id
+                payload["allow_sending_without_reply"] = True
             if topic_id and (
                 self.settings.tg_use_topic or str(self.settings.tg_chat_id).startswith("-100")
             ):
@@ -261,6 +291,15 @@ class TelegramGateway:
                         self._append_message_id(response, message_ids)
                         sent = True
                         break
+                    if response.status_code == 400 and payload.get("reply_to_message_id"):
+                        no_reply = dict(payload)
+                        no_reply.pop("reply_to_message_id", None)
+                        no_reply.pop("allow_sending_without_reply", None)
+                        response = requests.post(url, json=no_reply, timeout=self.settings.tg_push_timeout_sec)
+                        if response.status_code == 200:
+                            self._append_message_id(response, message_ids)
+                            sent = True
+                            break
                     if response.status_code == 400 and parse_mode:
                         fallback = dict(payload)
                         fallback.pop("parse_mode", None)
@@ -533,6 +572,7 @@ class TelegramGateway:
         result: PushResult,
         text: str,
         topic_id: str = "",
+        reply_to_message_id: int | None = None,
     ) -> None:
         history.append({
             "ts": utc_ts(),
@@ -544,6 +584,7 @@ class TelegramGateway:
             "reason": result.reason,
             "sent": result.sent,
             "message_ids": result.message_ids or [],
+            "reply_to_message_id": int(reply_to_message_id or 0),
             "preview": text[:240],
         })
         self._save_history(history)
