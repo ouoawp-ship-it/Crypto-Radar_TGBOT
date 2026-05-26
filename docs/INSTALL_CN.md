@@ -122,7 +122,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.1`，后续功能更新按 `v1.2`、`v1.3` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.2`，后续功能更新按 `v1.3`、`v1.4` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -135,7 +135,7 @@ bash scripts/install_server.sh shortcut
 
 ```text
 当前版本 : v1 (d5a72c3)  Add interactive update check shortcut
-GitHub版本: v1.1 (xxxxxxx)  Add xxx feature
+GitHub版本: v1.2 (xxxxxxx)  Add xxx feature
 ```
 
 以后如果只是小修复，也会保留 git 提交号作为精确定位；如果是功能变化，会同步升级 `VERSION`。

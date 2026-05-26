@@ -129,8 +129,8 @@ class Settings:
     radar_scan_limit: int = 120
     radar_min_quote_volume: float = 5_000_000
     radar_top_n: int = 8
-    radar_summary_min_interval_sec: int = 30 * 60
-    radar_summary_max_daily_push: int = 6
+    radar_summary_min_interval_sec: int = 6 * 3600
+    radar_summary_max_daily_push: int = 4
     radar_state_path: Path = BASE_DIR / "data" / "radar_state.json"
     funding_snapshot_path: Path = BASE_DIR / "data" / "funding_snapshot.json"
 
@@ -216,8 +216,8 @@ class Settings:
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
-            radar_summary_min_interval_sec=env_int("RADAR_SUMMARY_MIN_INTERVAL_SEC", 30 * 60),
-            radar_summary_max_daily_push=env_int("RADAR_SUMMARY_MAX_DAILY_PUSH", 6),
+            radar_summary_min_interval_sec=env_int("RADAR_SUMMARY_MIN_INTERVAL_SEC", 6 * 3600),
+            radar_summary_max_daily_push=env_int("RADAR_SUMMARY_MAX_DAILY_PUSH", 4),
             radar_state_path=data_path(data_dir, "RADAR_STATE_FILE", "radar_state.json"),
             funding_snapshot_path=data_path(data_dir, "FUNDING_SNAPSHOT_FILE", "funding_snapshot.json"),
             flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 12),

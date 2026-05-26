@@ -247,6 +247,65 @@ class TelegramGatewayTests(unittest.TestCase):
             data = store.load(route_path, {})
             self.assertEqual(data["intros"]["TG_RADAR_SUMMARY:11"]["message_id"], 100)
             self.assertTrue(data["intros"]["TG_RADAR_SUMMARY:11"]["pinned"])
+            self.assertIn("content_hash", data["intros"]["TG_RADAR_SUMMARY:11"])
+            self.assertIn("intro_version", data["intros"]["TG_RADAR_SUMMARY:11"])
+
+    def test_topic_intro_refreshes_when_content_version_changes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            store.save(route_path, {
+                "intros": {
+                    "TG_RADAR_SUMMARY:11": {
+                        "template_id": "TG_RADAR_SUMMARY",
+                        "topic_id": "11",
+                        "message_id": 99,
+                        "pinned": True,
+                        "intro_version": "old",
+                        "content_hash": "old",
+                    }
+                }
+            })
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_use_topic=True,
+                tg_topic_intro_enable=True,
+                tg_topic_intro_pin=True,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
+                patch.object(gateway, "_send_real_message_ids", side_effect=[(True, [100]), (True, [101])]) as send_mock,
+                patch.object(gateway, "_pin_message", return_value=True) as pin_mock,
+            ):
+                result = gateway.send(
+                    "summary",
+                    "TG_RADAR_SUMMARY",
+                    "summary:key",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertTrue(result.sent)
+            delete_mock.assert_called_once_with(99)
+            pin_mock.assert_called_once_with(100)
+            self.assertEqual(send_mock.call_count, 2)
+            self.assertIn("扫描和发送频率", send_mock.call_args_list[0].args[0])
+            self.assertEqual(send_mock.call_args_list[1].args[0], "summary")
+            data = store.load(route_path, {})
+            record = data["intros"]["TG_RADAR_SUMMARY:11"]
+            self.assertEqual(record["message_id"], 100)
+            self.assertTrue(record["pinned"])
+            self.assertNotEqual(record["content_hash"], "old")
 
 
 if __name__ == "__main__":

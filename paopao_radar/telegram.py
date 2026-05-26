@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 import time
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
@@ -54,56 +55,103 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_FLOW_RADAR": "资金流雷达",
 }
 
-TOPIC_INTRO_MESSAGES = {
-    "TG_RADAR_SUMMARY": "\n".join([
+TOPIC_INTRO_VERSION = "2026-05-26-frequency-v1"
+
+
+def seconds_cn(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds >= 86400 and seconds % 86400 == 0:
+        return f"{seconds // 86400}天"
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600}小时"
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60}分钟"
+    return f"{seconds}秒"
+
+
+def intro_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def topic_intro_message(template_id: str, settings: Settings) -> str:
+    if template_id == "TG_RADAR_SUMMARY":
+        daily = settings.radar_summary_max_daily_push
+        daily_text = "不限制" if daily < 0 else f"每天最多{daily}次"
+        return "\n".join([
         "📌 <b>资金摘要话题说明</b>",
         "",
         "这里推送定时资金雷达摘要，用来快速浏览市场机会池。",
         "重点看：负费率榜、综合榜、埋伏池、动量池、新币池、背离雷达和值得关注。",
         "",
+        "扫描和发送频率：",
+        f"- 默认每{seconds_cn(settings.radar_summary_min_interval_sec)}检查并发送一次资金摘要。",
+        f"- 发送上限：{daily_text}，避免大段榜单刷屏。",
+        "- 适合当作阶段性市场总览；启动瞬间由“启动预警”负责。",
+        "",
         "阅读方式：",
         "1. 先看“值得关注”，这是本轮浓缩结论。",
         "2. 综合榜偏多因子共振，埋伏池偏低位收筹，动量池偏短线活跃。",
         "3. 背离雷达只代表资金和价格不同步，不等于直接买卖信号。",
-    ]),
-    "TG_LAUNCH_ALERT": "\n".join([
+        ])
+    if template_id == "TG_LAUNCH_ALERT":
+        return "\n".join([
         "📌 <b>启动预警话题说明</b>",
         "",
         "这里推送即时启动雷达，偏短周期异动提醒。",
         "重点看：阶段、分数、15m/1h价格、15m/1h OI、成交量放大和触发原因。",
         "",
+        "扫描和发送频率：",
+        f"- 默认每{seconds_cn(180)}扫描一次；服务启动参数 --launch-interval 可以覆盖。",
+        f"- 同币同阶段默认冷却{seconds_cn(settings.launch_stage_cooldown_sec)}，避免重复刷同一阶段。",
+        "",
         "阅读方式：",
         "1. 提前预警 = 开始异动，适合加入盯盘。",
         "2. 启动确认 = 多因子共振更强，但仍要等结构确认。",
         "3. 启动瞬间 = 波动最大，避免盲目追高。",
-    ]),
-    "TG_ANNOUNCEMENT_ALERT": "\n".join([
+        ])
+    if template_id == "TG_ANNOUNCEMENT_ALERT":
+        ttl = max(1, int(settings.announcement_default_ttl_days))
+        return "\n".join([
         "📌 <b>公告风险话题说明</b>",
         "",
         "这里推送 Binance Alpha、上新、活动机会，以及下架/移除/停止交易等风险事件。",
         "",
+        "扫描和发送频率：",
+        "- 跟随资金摘要主扫描检查 Binance 公告。",
+        "- 默认只处理当天 CST 公告，已经推送过的公告不会重复推。",
+        f"- 没有明确截止日期的公告默认保留{ttl}天，过期后尝试删除旧推送。",
+        "",
         "阅读方式：",
         "1. 公告机会只代表事件触发，后续仍要等资金面确认。",
         "2. 风险提醒优先级更高，相关币种应暂停新增观察。",
-    ]),
-    "TG_FLOW_RADAR": "\n".join([
+        ])
+    if template_id == "TG_FLOW_RADAR":
+        return "\n".join([
         "📌 <b>资金流雷达话题说明</b>",
         "",
         "这里推送五因子资金流监控：价格、OI、现货CVD、合约CVD、资金费率。",
+        "",
+        "扫描和发送频率：",
+        f"- 默认每{seconds_cn(settings.flow_interval_sec)}扫描并发送一次。",
+        "- 需要 CoinGlass API key；如果 CVD/OI 数据缺失，应先按数据质量问题处理。",
         "",
         "阅读方式：",
         "1. 真启动候选 = 现货和合约资金共同推动，费率未过热。",
         "2. 吸筹观察 = 价格未大涨，但 OI 和现货CVD提前增强。",
         "3. 合约拉盘/诱多派发 = 合约强于现货，追高风险更高。",
         "4. CVD 为主动买入量减主动卖出量，正值代表主动买盘更强。",
-    ]),
-    "TG_TEST_MESSAGE": "\n".join([
+        ])
+    if template_id == "TG_TEST_MESSAGE":
+        return "\n".join([
         "📌 <b>测试消息话题说明</b>",
         "",
         "这里用于验证 bot token、群 ID、话题路由、置顶权限是否正常。",
+        "",
+        "扫描和发送频率：",
+        "- 不会自动发送，只在手动执行 telegram-test 时发送。",
         "如果这里能收到消息，说明 Telegram 基础推送链路可用。",
-    ]),
-}
+        ])
+    return ""
 
 
 class TelegramGateway:
@@ -337,9 +385,10 @@ class TelegramGateway:
     def _ensure_topic_intro(self, template_id: str, topic_id: str) -> None:
         if not self.settings.tg_topic_intro_enable:
             return
-        intro = TOPIC_INTRO_MESSAGES.get(template_id)
+        intro = topic_intro_message(template_id, self.settings)
         if not intro:
             return
+        current_hash = intro_hash(intro)
         intro_key = self._topic_intro_key(template_id, topic_id)
         record = self._topic_intro_record(intro_key)
         if record:
@@ -347,17 +396,31 @@ class TelegramGateway:
                 message_id = int(record.get("message_id") or 0)
             except (TypeError, ValueError):
                 message_id = 0
-            if self.settings.tg_topic_intro_pin and message_id > 0 and not record.get("pinned"):
-                pinned = self._pin_message(message_id)
-                if pinned:
-                    self._save_topic_intro_record(intro_key, template_id, topic_id, message_id, pinned)
-            return
+            is_current = (
+                record.get("intro_version") == TOPIC_INTRO_VERSION
+                and record.get("content_hash") == current_hash
+            )
+            if is_current:
+                if self.settings.tg_topic_intro_pin and message_id > 0 and not record.get("pinned"):
+                    pinned = self._pin_message(message_id)
+                    if pinned:
+                        self._save_topic_intro_record(
+                            intro_key,
+                            template_id,
+                            topic_id,
+                            message_id,
+                            pinned,
+                            current_hash,
+                        )
+                return
+            if message_id > 0:
+                self._delete_message(message_id)
         ok, message_ids = self._send_real_message_ids(intro, parse_mode="HTML", topic_id=topic_id)
         if not ok or not message_ids:
             return
         message_id = message_ids[0]
         pinned = self._pin_message(message_id) if self.settings.tg_topic_intro_pin else False
-        self._save_topic_intro_record(intro_key, template_id, topic_id, message_id, pinned)
+        self._save_topic_intro_record(intro_key, template_id, topic_id, message_id, pinned, current_hash)
 
     @staticmethod
     def _topic_intro_key(template_id: str, topic_id: str) -> str:
@@ -380,6 +443,7 @@ class TelegramGateway:
         topic_id: str,
         message_id: int,
         pinned: bool,
+        content_hash: str,
     ) -> None:
         data = self.store.load(self.settings.tg_topic_routes_path, {})
         if not isinstance(data, dict):
@@ -392,6 +456,8 @@ class TelegramGateway:
             "topic_id": topic_id,
             "message_id": message_id,
             "pinned": pinned,
+            "intro_version": TOPIC_INTRO_VERSION,
+            "content_hash": content_hash,
             "sent_at": datetime.now(timezone.utc).isoformat(),
         }
         data["intros"] = intros

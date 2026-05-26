@@ -12,7 +12,7 @@ from __future__ import annotations
 - OI/价格背离扫描：识别建仓背离、多头共振、极端背离等状态。
 
 默认推送周期：
-- 资金雷达汇总：30 分钟一次。
+- 资金雷达汇总：6 小时一次，每天最多 4 次。
 - 启动雷达提醒：3 分钟扫描一次。
 - 公告机会/风险：跟随主扫描。
 - 同币同阶段启动提醒：默认 6 小时冷却。
@@ -54,7 +54,7 @@ PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 - Telegram 测试消息：只在手动执行 telegram-test --send --confirm-real-send 时发送。
 
 默认周期：
-- 资金雷达汇总：30 分钟一次，可用 --interval 或 RADAR_SUMMARY_MIN_INTERVAL_SEC 调整。
+- 资金雷达汇总：6 小时一次，每天最多 4 次；可用 --interval 或 RADAR_SUMMARY_MIN_INTERVAL_SEC 调整。
 - 启动雷达扫描：3 分钟一次，可用 --launch-interval 调整。
 - 启动同币同阶段冷却：6 小时，可用 LAUNCH_STAGE_COOLDOWN_SEC 调整。
 - 自动清理：1 小时检查一次，可用 CLEANUP_INTERVAL_SEC 调整。
@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
-    parser.add_argument("--interval", type=int, default=1800, help="loop/daemon 的资金雷达摘要间隔秒数")
+    parser.add_argument("--interval", type=int, default=None, help="loop/daemon 的资金雷达摘要间隔秒数；默认读取 RADAR_SUMMARY_MIN_INTERVAL_SEC")
     parser.add_argument("--launch-interval", type=int, default=180, help="loop/daemon 的启动雷达间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
     parser.add_argument("--launch-scan-limit", type=int, default=None, help="临时覆盖启动雷达扫描上限")
@@ -709,6 +709,10 @@ def run_once(args: argparse.Namespace) -> int:
 def run_loop(args: argparse.Namespace) -> int:
     settings, store, _engine, _gateway = make_runtime_for_args(args)
     mode = command_mode(args)
+    summary_interval = max(
+        60,
+        int(args.interval if args.interval is not None else settings.radar_summary_min_interval_sec),
+    )
     next_summary = 0.0
     next_launch = 0.0
     next_flow = 0.0
@@ -719,7 +723,7 @@ def run_loop(args: argparse.Namespace) -> int:
         "running",
         task="loop",
         real_send=bool(args.send and args.confirm_real_send),
-        interval_sec=max(60, args.interval),
+        interval_sec=summary_interval,
         launch_interval_sec=max(60, args.launch_interval),
         flow_interval_sec=max(60, settings.flow_interval_sec),
         no_launch=bool(args.no_launch),
@@ -740,7 +744,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 summary_ok = False
                 summary_error = f"{type(exc).__name__}: {exc}"
                 print(f"[loop] summary failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            next_summary = time.time() + max(60, args.interval)
+            next_summary = time.time() + summary_interval
             write_runtime_status(
                 settings,
                 store,
