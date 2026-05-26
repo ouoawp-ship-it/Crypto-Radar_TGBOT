@@ -7,6 +7,8 @@ from tempfile import TemporaryDirectory
 from paopao_radar.coinglass_liquidity import (
     CoinglassLiquidityAnalyzer,
     LiquidityContext,
+    parsed_item_count,
+    payload_shape_summary,
     score_liquidity_context,
 )
 from paopao_radar.config import Settings
@@ -128,6 +130,29 @@ class CoinglassLiquidityTests(unittest.TestCase):
         self.assertEqual(context.upper_liquidation_zone, "$104")
         self.assertAlmostEqual(context.nearest_liquidation_above_pct, 4.0)
         self.assertEqual(context.lower_liquidity_wall, "$97")
+
+    def test_nested_result_payload_is_parsed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.make_settings(tmp)
+            source = FakeCoinglassSource(
+                liquidation={"result": {"levels": [{"priceUsd": 104, "liquidityUsd": 900}]}},
+                orderbook={"orderBook": {"bids": [{"price": 96, "bidSize": 700}]}},
+            )
+            context = CoinglassLiquidityAnalyzer(settings, source).context("TESTUSDT", 100)
+
+        self.assertTrue(context.available)
+        self.assertEqual(context.upper_liquidation_zone, "$104")
+        self.assertEqual(context.lower_liquidity_wall, "$96")
+
+    def test_payload_shape_summary_does_not_expose_raw_values(self) -> None:
+        payload = {"data": [{"price": "123.45", "token": "secret-like-text"}], "status": "ok"}
+
+        summary = payload_shape_summary(payload)
+
+        self.assertEqual(summary["type"], "dict")
+        self.assertIn("data", summary["keys"])
+        self.assertNotIn("secret-like-text", str(summary))
+        self.assertEqual(parsed_item_count(payload), 1)
 
     def test_up_signal_scores_higher_with_upper_liquidation_pool(self) -> None:
         with TemporaryDirectory() as tmp:

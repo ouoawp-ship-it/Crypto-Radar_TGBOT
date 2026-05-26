@@ -29,7 +29,11 @@ from dataclasses import replace
 from datetime import datetime
 
 from .config import Settings
-from .coinglass_liquidity import CoinglassLiquidityAnalyzer
+from .coinglass_liquidity import (
+    CoinglassLiquidityAnalyzer,
+    parsed_item_count,
+    payload_shape_summary,
+)
 from .data_sources import BinanceDataSource, CoinglassDataSource
 from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
@@ -395,15 +399,39 @@ def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
     source = CoinglassDataSource(test_settings)
     analyzer = CoinglassLiquidityAnalyzer(test_settings, source)
     context = analyzer.context("BTCUSDT", price)
+    extra: dict[str, object] = {}
+    if not context.available:
+        liquidation_payload = source.liquidation_heatmap(
+            test_settings.coinglass_exchange_list,
+            "BTCUSDT",
+            range_="24h",
+        )
+        orderbook_payload = source.orderbook_heatmap(
+            test_settings.coinglass_exchange_list,
+            "BTCUSDT",
+            range_="24h",
+        )
+        extra = {
+            "parsed_counts": {
+                "liquidation_items": parsed_item_count(liquidation_payload),
+                "orderbook_items": parsed_item_count(orderbook_payload),
+            },
+            "payload_shapes": {
+                "liquidation": payload_shape_summary(liquidation_payload),
+                "orderbook": payload_shape_summary(orderbook_payload),
+            },
+        }
     print(f"coinglass_liquidity_test: {'ok' if context.available else 'unavailable'}")
-    print(json.dumps({
+    payload = {
         "api_key_configured": bool(test_settings.coinglass_api_key),
         "liquidation_bias": context.liquidation_bias,
         "orderbook_bias": context.orderbook_bias,
         "liquidity_gap_direction": context.liquidity_gap_direction,
         "reason_lines": context.reason_lines,
         "diagnostics": analyzer.diagnostics(),
-    }, ensure_ascii=False, indent=2))
+    }
+    payload.update(extra)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if context.available else 1
 
 

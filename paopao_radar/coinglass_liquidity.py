@@ -70,7 +70,20 @@ def _sequence_item(values: list[Any]) -> dict[str, Any] | None:
 
 
 def _axis_values(payload: dict[str, Any]) -> list[float]:
-    for key in ("yAxis", "y_axis", "priceAxis", "price_axis", "prices", "priceList", "price_list"):
+    for key in (
+        "yAxis",
+        "y_axis",
+        "yaxis",
+        "axisY",
+        "priceAxis",
+        "price_axis",
+        "prices",
+        "priceList",
+        "price_list",
+        "priceLevels",
+        "price_levels",
+        "ticks",
+    ):
         value = payload.get(key)
         if isinstance(value, dict):
             value = value.get("data") or value.get("values") or value.get("list")
@@ -85,7 +98,17 @@ def _axis_values(payload: dict[str, Any]) -> list[float]:
 def _matrix_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     y_axis = _axis_values(payload)
     matrix = None
-    for key in ("data", "heatmap", "values", "series"):
+    for key in (
+        "data",
+        "heatmap",
+        "values",
+        "series",
+        "liquidationData",
+        "liquidation_data",
+        "orderbook",
+        "orderBook",
+        "points",
+    ):
         value = payload.get(key)
         if isinstance(value, list):
             matrix = value
@@ -131,17 +154,26 @@ def _as_items(payload: Any) -> list[dict[str, Any]]:
             return matrix_rows
         for key in (
             "data",
+            "result",
             "list",
             "items",
+            "records",
             "rows",
             "heatmap",
             "levels",
+            "points",
+            "liquidationData",
+            "liquidation_data",
+            "orderbook",
+            "orderBook",
             "asks",
             "bids",
             "long",
             "short",
             "buy",
             "sell",
+            "buyWall",
+            "sellWall",
         ):
             value = payload.get(key)
             if isinstance(value, list):
@@ -172,6 +204,9 @@ def _extract_price(item: dict[str, Any]) -> float | None:
         "liquidation_price",
         "wallPrice",
         "wall_price",
+        "priceUsd",
+        "price_usd",
+        "y",
         "p",
     ):
         value = to_float(item.get(key))
@@ -199,12 +234,73 @@ def _extract_strength(item: dict[str, Any]) -> float:
         "liquidation_amount",
         "openInterest",
         "open_interest",
+        "liquidity",
+        "liquidityUsd",
+        "liquidity_usd",
+        "bidSize",
+        "bid_size",
+        "askSize",
+        "ask_size",
+        "sum",
+        "total",
         "score",
     ):
         value = to_float(item.get(key))
         if value > 0:
             return value
     return 1.0
+
+
+def parsed_item_count(payload: Any) -> int:
+    """Return the number of parseable price/strength rows without exposing payload values."""
+    return len(_as_items(payload))
+
+
+def _scalar_shape(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "bool"}
+    if isinstance(value, (int, float)):
+        return {"type": "number"}
+    if isinstance(value, str):
+        numeric = to_float(value) > 0
+        return {"type": "str", "len": len(value), "numeric": numeric}
+    return {"type": type(value).__name__}
+
+
+def payload_shape_summary(payload: Any, *, max_depth: int = 3, max_keys: int = 12) -> dict[str, Any]:
+    """Summarize a CoinGlass response shape without printing raw market data or secrets."""
+
+    def walk(value: Any, depth: int) -> dict[str, Any]:
+        if depth >= max_depth:
+            if isinstance(value, dict):
+                return {"type": "dict", "keys": list(value.keys())[:max_keys]}
+            if isinstance(value, list):
+                return {"type": "list", "len": len(value)}
+            return _scalar_shape(value)
+
+        if isinstance(value, dict):
+            keys = list(value.keys())[:max_keys]
+            children: dict[str, Any] = {}
+            for key in keys[:6]:
+                children[str(key)] = walk(value.get(key), depth + 1)
+            return {"type": "dict", "keys": keys, "children": children}
+        if isinstance(value, list):
+            return {
+                "type": "list",
+                "len": len(value),
+                "first": walk(value[0], depth + 1) if value else None,
+            }
+        if isinstance(value, tuple):
+            return {
+                "type": "tuple",
+                "len": len(value),
+                "first": walk(value[0], depth + 1) if value else None,
+            }
+        return _scalar_shape(value)
+
+    return walk(payload, 0)
 
 
 def _zone_text(item: dict[str, Any], price: float) -> str:
