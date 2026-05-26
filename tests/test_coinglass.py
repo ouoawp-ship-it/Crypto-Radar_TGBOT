@@ -53,7 +53,7 @@ class CoinglassDataSourceTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["symbol"], "BTCUSDT")
         self.assertEqual(calls[0][1]["exchange"], "Binance")
 
-    def test_orderbook_heatmap_uses_spot_orderbook_history_endpoint(self) -> None:
+    def test_orderbook_heatmap_uses_futures_orderbook_history_endpoint(self) -> None:
         with TemporaryDirectory() as tmp:
             source = CoinglassDataSource(Settings(
                 data_dir=Path(tmp),
@@ -70,7 +70,7 @@ class CoinglassDataSourceTests(unittest.TestCase):
                 data = source.orderbook_heatmap("Binance", "BTCUSDT", "24h")
 
         self.assertEqual(data, [{"price": 100}])
-        self.assertEqual(calls[0][0], "/api/spot/orderbook/history")
+        self.assertEqual(calls[0][0], "/api/futures/orderbook/history")
         self.assertEqual(calls[0][1]["symbol"], "BTCUSDT")
         self.assertEqual(calls[0][1]["interval"], "1h")
 

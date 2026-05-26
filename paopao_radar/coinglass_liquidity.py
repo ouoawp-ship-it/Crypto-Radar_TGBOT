@@ -303,6 +303,20 @@ def payload_shape_summary(payload: Any, *, max_depth: int = 3, max_keys: int = 1
     return walk(payload, 0)
 
 
+def api_status_summary(payload: Any) -> dict[str, str] | None:
+    """Expose only CoinGlass business status fields; no API key or market payload is printed."""
+    if not isinstance(payload, dict):
+        return None
+    if "code" not in payload and "msg" not in payload:
+        return None
+    result: dict[str, str] = {}
+    if "code" in payload:
+        result["code"] = str(payload.get("code"))[:32]
+    if "msg" in payload:
+        result["msg"] = str(payload.get("msg"))[:120]
+    return result
+
+
 def _zone_text(item: dict[str, Any], price: float) -> str:
     for key in ("range", "zone", "priceRange", "price_range"):
         value = item.get(key)

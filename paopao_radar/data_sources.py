@@ -394,7 +394,7 @@ class CoinglassDataSource:
         self,
         exchange: str,
         symbol: str,
-        range_: str = "24h",
+        range_: str = "3d",
     ) -> Any:
         payload = self.get_json(
             "/api/futures/liquidation/heatmap/model1",
@@ -408,7 +408,7 @@ class CoinglassDataSource:
         )
         if payload is None:
             payload = self.get_json(
-                "/api/futures/liquidation/aggregated-heatmap/model2",
+                "/api/futures/liquidation/aggregated-heatmap/model1",
                 {
                     "symbol": symbol.upper().replace("USDT", ""),
                     "range": range_,
@@ -428,7 +428,7 @@ class CoinglassDataSource:
         if range_ in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "6h", "8h", "12h", "1d"}:
             interval = range_
         payload = self.get_json(
-            "/api/spot/orderbook/history",
+            "/api/futures/orderbook/history",
             {
                 "exchange": exchange,
                 "symbol": symbol.upper(),

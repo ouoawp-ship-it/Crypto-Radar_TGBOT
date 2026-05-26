@@ -31,6 +31,7 @@ from datetime import datetime
 from .config import Settings
 from .coinglass_liquidity import (
     CoinglassLiquidityAnalyzer,
+    api_status_summary,
     parsed_item_count,
     payload_shape_summary,
 )
@@ -419,6 +420,10 @@ def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
             "payload_shapes": {
                 "liquidation": payload_shape_summary(liquidation_payload),
                 "orderbook": payload_shape_summary(orderbook_payload),
+            },
+            "api_status": {
+                "liquidation": api_status_summary(liquidation_payload),
+                "orderbook": api_status_summary(orderbook_payload),
             },
         }
     print(f"coinglass_liquidity_test: {'ok' if context.available else 'unavailable'}")

@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from paopao_radar.coinglass_liquidity import (
     CoinglassLiquidityAnalyzer,
     LiquidityContext,
+    api_status_summary,
     parsed_item_count,
     payload_shape_summary,
     score_liquidity_context,
@@ -153,6 +154,14 @@ class CoinglassLiquidityTests(unittest.TestCase):
         self.assertIn("data", summary["keys"])
         self.assertNotIn("secret-like-text", str(summary))
         self.assertEqual(parsed_item_count(payload), 1)
+
+    def test_api_status_summary_exposes_only_code_and_msg(self) -> None:
+        payload = {"code": "400", "msg": "Params Error", "data": [{"price": 100}]}
+
+        self.assertEqual(
+            api_status_summary(payload),
+            {"code": "400", "msg": "Params Error"},
+        )
 
     def test_up_signal_scores_higher_with_upper_liquidation_pool(self) -> None:
         with TemporaryDirectory() as tmp:
