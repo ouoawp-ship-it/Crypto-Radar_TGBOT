@@ -115,6 +115,7 @@ paopao test         # 发送 Telegram 测试消息
 paopao coinglass    # 测试 CoinGlass API
 paopao liquidity    # 测试 CoinGlass 清算/盘口增强接口
 paopao announcements # 测试 Binance 公告抓取和分类
+paopao cleanup      # 立即清理运行垃圾
 paopao structure-review # 生成结构信号复盘报告
 paopao structure-status # 查看结构雷达独立服务状态
 paopao structure-logs   # 查看结构雷达独立服务日志
@@ -133,7 +134,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9.3`，后续功能更新按 `v1.9.4`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9.4`，后续功能更新按 `v1.9.5`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -247,7 +248,7 @@ paopao update --yes   # 有更新时自动确认
 - 单元测试
 - 自动清理 pycache、临时文件、过期日志、过期结构图和根目录临时报告
 - 安装/刷新 `paopao-radar.service` 主服务和 `paopao-structure.service` 结构雷达独立服务
-- 即使当前代码已经是最新版，也会刷新快捷命令、补装 `paopao-structure.service`，并重启已安装服务
+- 即使当前代码已经是最新版，也会刷新快捷命令、补装 `paopao-structure.service` 和 `paopao-cleanup.timer`，并重启已安装服务
 
 结构雷达独立服务由 `paopao-structure.service` 管理，专门运行 `structure-loop`，用于每小时 55 分提前临界扫描和整点后 5 分收线确认。常用命令:
 
@@ -255,6 +256,19 @@ paopao update --yes   # 有更新时自动确认
 paopao structure-status
 paopao structure-logs
 paopao structure-restart
+```
+
+自动清理由 `paopao-cleanup.timer` 管理，默认每小时执行一次 `python main.py cleanup --force-cleanup`。手动立即清理:
+
+```bash
+paopao cleanup
+```
+
+查看自动清理 timer:
+
+```bash
+systemctl list-timers paopao-cleanup.timer
+journalctl -u paopao-cleanup.service -n 80 --no-pager
 ```
 
 ## 10. 常用检查命令

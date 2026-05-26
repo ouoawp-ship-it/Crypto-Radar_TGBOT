@@ -76,6 +76,7 @@ show_help() {
   paopao coinglass       测试 CoinGlass API
   paopao liquidity       测试 CoinGlass 清算/盘口增强接口
   paopao announcements   测试 Binance 公告抓取和分类
+  paopao cleanup         立即清理运行垃圾
   paopao structure       dry-run 运行结构突破雷达
   paopao structure-review dry-run 生成结构信号复盘报告
   paopao structure-status 查看结构雷达独立服务状态
@@ -169,6 +170,10 @@ update_project() {
   bash scripts/update_server.sh "$@"
 }
 
+cleanup_project() {
+  run_main cleanup --force-cleanup
+}
+
 edit_config() {
   cd_app
   bash scripts/install_server.sh config
@@ -208,6 +213,7 @@ show_menu() {
  17. 结构雷达实时日志
  18. 重启结构雷达服务
  19. 测试 Binance 公告抓取
+ 20. 立即清理运行垃圾 cleanup
   0. 退出
 ============================================================
 
@@ -233,8 +239,9 @@ EOF
       17) show_structure_logs ;;
       18) restart_structure_service; pause_menu ;;
       19) run_main announcements-test; pause_menu ;;
+      20) cleanup_project; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-19。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-20。\n'; pause_menu ;;
     esac
   done
 }
@@ -285,6 +292,9 @@ case "$command" in
     ;;
   announcements|announcements-test)
     run_main announcements-test
+    ;;
+  cleanup|clean)
+    cleanup_project
     ;;
   structure|structure-radar)
     run_main structure-radar --save-charts "$@"

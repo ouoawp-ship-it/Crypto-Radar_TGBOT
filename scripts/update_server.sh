@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
+CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
@@ -35,6 +36,7 @@ usage() {
   REMOTE=origin
   SERVICE_NAME=paopao-radar
   STRUCTURE_SERVICE_NAME=paopao-structure
+  CLEANUP_SERVICE_NAME=paopao-cleanup
 EOF
 }
 
@@ -116,6 +118,40 @@ EOF
   run_root systemctl enable "$STRUCTURE_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
+install_or_update_cleanup_timer() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local service_path="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.service"
+  local timer_path="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.timer"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao runtime cleanup
+
+[Service]
+Type=oneshot
+User=${SUDO_USER:-$(id -un)}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py cleanup --force-cleanup
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+EOF
+
+  run_root tee "$timer_path" >/dev/null <<EOF
+[Unit]
+Description=Run Paopao cleanup hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=${CLEANUP_SERVICE_NAME}.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  run_root systemctl daemon-reload
+  run_root systemctl enable --now "${CLEANUP_SERVICE_NAME}.timer" >/dev/null 2>&1 || true
+}
+
 install_shortcut_command() {
   if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
     run_root tee /usr/local/bin/paopao >/dev/null <<EOF
@@ -123,6 +159,7 @@ install_shortcut_command() {
 export PAOPAO_APP_DIR="${APP_DIR}"
 export SERVICE_NAME="${SERVICE_NAME}"
 export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
+export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
     run_root chmod +x /usr/local/bin/paopao
@@ -188,6 +225,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     run_post_update_cleanup
     install_shortcut_command
     install_or_update_structure_service
+    install_or_update_cleanup_timer
     restart_services_if_present
   fi
   printf '\n当前已经是最新版本，不需要更新。\n'
@@ -229,6 +267,7 @@ run_post_update_cleanup
 
 install_shortcut_command
 install_or_update_structure_service
+install_or_update_cleanup_timer
 restart_services_if_present
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"

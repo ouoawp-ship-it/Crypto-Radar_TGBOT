@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_NAME="${APP_NAME:-paopao-radar}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
+CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ENV_FILE="${APP_DIR}/.env.oi"
@@ -801,6 +802,46 @@ EOF
   fi
 }
 
+install_cleanup_systemd_timer() {
+  command -v systemctl >/dev/null 2>&1 || {
+    log "未找到 systemctl，不安装自动清理 timer"
+    return 0
+  }
+
+  log "安装 systemd 自动清理: ${CLEANUP_SERVICE_NAME}.timer"
+  local service_path="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.service"
+  local timer_path="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.timer"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao runtime cleanup
+
+[Service]
+Type=oneshot
+User=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py cleanup --force-cleanup
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+EOF
+
+  run_root tee "$timer_path" >/dev/null <<EOF
+[Unit]
+Description=Run Paopao cleanup hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=${CLEANUP_SERVICE_NAME}.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  run_root systemctl daemon-reload
+  run_root systemctl enable --now "${CLEANUP_SERVICE_NAME}.timer"
+}
+
 install_shortcut_command() {
   local shortcut="/usr/local/bin/paopao"
   log "安装快捷命令: paopao"
@@ -809,6 +850,7 @@ install_shortcut_command() {
 export PAOPAO_APP_DIR="${APP_DIR}"
 export SERVICE_NAME="${SERVICE_NAME}"
 export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
+export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
   run_root chmod +x "$shortcut"
@@ -851,6 +893,7 @@ EOF
   run_readiness
   install_systemd_service
   install_structure_systemd_service
+  install_cleanup_systemd_timer
   install_shortcut_command
 
   cat <<EOF
@@ -866,10 +909,12 @@ EOF
   paopao check-update
   paopao update
   paopao announcements
+  paopao cleanup
   paopao structure-status
   paopao structure-logs
   sudo systemctl status ${SERVICE_NAME}
   sudo systemctl status ${STRUCTURE_SERVICE_NAME}
+  systemctl list-timers ${CLEANUP_SERVICE_NAME}.timer
   journalctl -u ${SERVICE_NAME} -f
   journalctl -u ${STRUCTURE_SERVICE_NAME} -f
   cd ${APP_DIR} && . .venv/bin/activate && python main.py runtime-status
