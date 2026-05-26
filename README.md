@@ -148,9 +148,9 @@ STRUCTURE_REVIEW_MIN_AGE_MINUTES=15
 STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600
 ```
 
-## 多源清算/盘口增强 v1.9.2
+## 多源清算/盘口增强 v1.9.3
 
-v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认；v1.9.1 增加免费源降级；v1.9.2 增加结构雷达独立服务和 Binance 公告抓取增强。它只增强结构雷达，不替代原有结构算法；CoinGlass 高级接口默认关闭，避免升级后立即消耗 API 额度。
+v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认；v1.9.1 增加免费源降级；v1.9.2 增加结构雷达独立服务和 Binance 公告抓取增强；v1.9.3 修复“代码已是最新版”时仍要刷新 systemd 服务的问题。它只增强结构雷达，不替代原有结构算法；CoinGlass 高级接口默认关闭，避免升级后立即消耗 API 额度。
 
 开启方式：
 ```bash
@@ -184,9 +184,9 @@ COINALYZE_API_KEY=
 
 流动性增强采用多源优先级：CoinGlass 清算热力图/盘口热力图优先；如果接口返回 `Upgrade plan`、无权限、空数据或超时，则自动降级到 Binance 免费合约盘口深度快照。可选配置 Coinalyze 免费 API Key 后，清算侧会补充 Coinalyze 历史清算量作为方向辅助；它不等同于 CoinGlass 预测清算池，推送里会标明数据源。
 
-## v1.9.2 服务和公告增强
+## v1.9.3 服务和公告增强
 
-更新脚本会安装/刷新两个 systemd 服务：
+更新脚本会安装/刷新两个 systemd 服务，即使当前代码已经是最新版，也会继续补装服务、刷新快捷命令并重启已安装服务：
 
 ```bash
 paopao-radar      # 主服务：资金摘要、启动雷达、公告、资金流等
@@ -260,4 +260,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.9.2`，后续功能更新按 `v1.9.3`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.9.3`，后续功能更新按 `v1.9.4`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

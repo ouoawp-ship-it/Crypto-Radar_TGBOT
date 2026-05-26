@@ -133,7 +133,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9.2`，后续功能更新按 `v1.9.3`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9.3`，后续功能更新按 `v1.9.4`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -247,7 +247,7 @@ paopao update --yes   # 有更新时自动确认
 - 单元测试
 - 自动清理 pycache、临时文件、过期日志、过期结构图和根目录临时报告
 - 安装/刷新 `paopao-radar.service` 主服务和 `paopao-structure.service` 结构雷达独立服务
-- 如果存在 systemd 服务，则自动重启服务
+- 即使当前代码已经是最新版，也会刷新快捷命令、补装 `paopao-structure.service`，并重启已安装服务
 
 结构雷达独立服务由 `paopao-structure.service` 管理，专门运行 `structure-loop`，用于每小时 55 分提前临界扫描和整点后 5 分收线确认。常用命令:
 

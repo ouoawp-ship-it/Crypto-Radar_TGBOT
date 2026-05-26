@@ -116,6 +116,40 @@ EOF
   run_root systemctl enable "$STRUCTURE_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
+install_shortcut_command() {
+  if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
+    run_root tee /usr/local/bin/paopao >/dev/null <<EOF
+#!/usr/bin/env bash
+export PAOPAO_APP_DIR="${APP_DIR}"
+export SERVICE_NAME="${SERVICE_NAME}"
+export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
+exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
+EOF
+    run_root chmod +x /usr/local/bin/paopao
+    chmod +x "${APP_DIR}/scripts/paopao_menu.sh" || true
+  fi
+}
+
+stop_legacy_structure_loops() {
+  pkill -f "${APP_DIR}/main.py structure-loop" >/dev/null 2>&1 || true
+  pkill -f "main.py structure-loop" >/dev/null 2>&1 || true
+}
+
+restart_services_if_present() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+    run_root systemctl restart "$SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
+  else
+    printf 'systemd service not found; update completed without main service restart.\n'
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${STRUCTURE_SERVICE_NAME}.service" >/dev/null 2>&1; then
+    stop_legacy_structure_loops
+    run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
+  fi
+}
+
 confirm_update() {
   if [ "$AUTO_CONFIRM" = "1" ]; then
     return 0
@@ -152,6 +186,9 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
   if [ "$CHECK_ONLY" != "1" ]; then
     sync_env_file
     run_post_update_cleanup
+    install_shortcut_command
+    install_or_update_structure_service
+    restart_services_if_present
   fi
   printf '\n当前已经是最新版本，不需要更新。\n'
   exit 0
@@ -190,30 +227,8 @@ sync_env_file
 "$PYTHON_BIN" -m unittest discover -s tests -v
 run_post_update_cleanup
 
-if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
-  run_root tee /usr/local/bin/paopao >/dev/null <<EOF
-#!/usr/bin/env bash
-export PAOPAO_APP_DIR="${APP_DIR}"
-export SERVICE_NAME="${SERVICE_NAME}"
-export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
-exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
-EOF
-  run_root chmod +x /usr/local/bin/paopao
-  chmod +x "${APP_DIR}/scripts/paopao_menu.sh" || true
-fi
-
+install_shortcut_command
 install_or_update_structure_service
-
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
-  run_root systemctl restart "$SERVICE_NAME"
-  run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
-else
-  printf 'systemd service not found; update completed without restart.\n'
-fi
-
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${STRUCTURE_SERVICE_NAME}.service" >/dev/null 2>&1; then
-  run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
-  run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
-fi
+restart_services_if_present
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
