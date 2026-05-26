@@ -316,16 +316,28 @@ class CoinglassDataSource:
     def endpoint(self, path: str) -> str:
         return f"{self.settings.coinglass_base_url}{path}"
 
-    def get_json(self, path: str, params: Optional[dict[str, Any]] = None, quality_key: str = "coinglass") -> Any:
+    def get_json(
+        self,
+        path: str,
+        params: Optional[dict[str, Any]] = None,
+        quality_key: str = "coinglass",
+        timeout_sec: int | None = None,
+    ) -> Any:
         if not self.enabled:
             self.quality.fail(quality_key, "disabled_or_missing_api_key")
             return None
         if not self.budget.consume("coinglass"):
             self.quality.fail(quality_key, "budget_exhausted")
             return None
-        return self._request_json(path, params, quality_key)
+        return self._request_json(path, params, quality_key, timeout_sec=timeout_sec)
 
-    def _request_json(self, path: str, params: Optional[dict[str, Any]], quality_key: str) -> Any:
+    def _request_json(
+        self,
+        path: str,
+        params: Optional[dict[str, Any]],
+        quality_key: str,
+        timeout_sec: int | None = None,
+    ) -> Any:
         url = self.endpoint(path)
         cache_key = f"coinglass:{path}:{urlencode(sorted((params or {}).items()))}"
         if self.settings.http_cache_enable:
@@ -344,7 +356,7 @@ class CoinglassDataSource:
                     url,
                     params=params,
                     headers=headers,
-                    timeout=self.settings.coinglass_timeout_sec,
+                    timeout=timeout_sec or self.settings.coinglass_timeout_sec,
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -375,6 +387,42 @@ class CoinglassDataSource:
             "/api/futures/open-interest/exchange-list",
             {"symbol": symbol.upper().replace("USDT", "")},
             quality_key="coinglassOpenInterestExchangeList",
+        )
+        return self.unwrap_data(payload)
+
+    def liquidation_heatmap(
+        self,
+        exchange: str,
+        symbol: str,
+        range_: str = "24h",
+    ) -> Any:
+        payload = self.get_json(
+            "/api/futures/liquidation/heatmap",
+            {
+                "exchange": exchange,
+                "symbol": symbol.upper().replace("USDT", ""),
+                "range": range_,
+            },
+            quality_key="coinglassLiquidationHeatmap",
+            timeout_sec=self.settings.coinglass_liquidity_timeout_sec,
+        )
+        return self.unwrap_data(payload)
+
+    def orderbook_heatmap(
+        self,
+        exchange: str,
+        symbol: str,
+        range_: str = "24h",
+    ) -> Any:
+        payload = self.get_json(
+            "/api/futures/orderbook/heatmap",
+            {
+                "exchange": exchange,
+                "symbol": symbol.upper().replace("USDT", ""),
+                "range": range_,
+            },
+            quality_key="coinglassOrderbookHeatmap",
+            timeout_sec=self.settings.coinglass_liquidity_timeout_sec,
         )
         return self.unwrap_data(payload)
 

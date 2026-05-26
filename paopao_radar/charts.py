@@ -104,6 +104,31 @@ def generate_structure_chart(
         f"vol {_fmt_ratio(signal.volume_ratio)}\n"
         f"OI1h {_fmt_pct(signal.oi_change_pct_1h)}"
     )
+    context = signal.liquidity_context
+    if context and context.available:
+        note += (
+            f"\nliq {context.liquidation_bias}"
+            f"\nbook {context.orderbook_bias}"
+            f"\nCG {context.score_delta:+.0f}"
+        )
+        if context.upper_liquidation_zone:
+            price_ax.axhline(
+                signal.price * (1 + (context.nearest_liquidation_above_pct or 0) / 100),
+                color="#f59e0b",
+                linestyle=":",
+                linewidth=1.1,
+                alpha=0.8,
+                label="upper liquidation",
+            )
+        if context.lower_liquidation_zone:
+            price_ax.axhline(
+                signal.price * (1 + (context.nearest_liquidation_below_pct or 0) / 100),
+                color="#0ea5e9",
+                linestyle=":",
+                linewidth=1.1,
+                alpha=0.8,
+                label="lower liquidation",
+            )
     price_ax.text(
         0.012,
         0.98,

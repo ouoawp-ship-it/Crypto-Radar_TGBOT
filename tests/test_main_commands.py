@@ -158,6 +158,15 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("COINGLASS_ENABLE=false", output.getvalue())
 
+    def test_coinglass_liquidity_test_blocks_without_key(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
+                with redirect_stdout(StringIO()) as output:
+                    code = main.main(["coinglass-liquidity-test"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("missing COINGLASS_API_KEY", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

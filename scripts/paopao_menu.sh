@@ -68,6 +68,7 @@ show_help() {
   paopao version         查看当前项目版本
   paopao test            发送 Telegram 测试消息
   paopao coinglass       测试 CoinGlass API
+  paopao liquidity       测试 CoinGlass 清算/盘口增强接口
   paopao structure       dry-run 运行结构突破雷达
   paopao structure-review dry-run 生成结构信号复盘报告
   paopao runtime         查看 runtime-status
@@ -156,15 +157,16 @@ show_menu() {
   3. 修改配置 token / 群 ID / CoinGlass key
   4. 发送 Telegram 测试消息
   5. 测试 CoinGlass API
-  6. 查看运行状态 runtime-status
-  7. 检查 readiness
-  8. 重启服务
-  9. 启动服务
- 10. 停止服务
- 11. 检查更新 / 更新项目代码
- 12. 环境诊断 doctor
- 13. 查看当前版本
- 14. 结构信号复盘 structure-review
+  6. 测试 CoinGlass 清算/盘口增强
+  7. 查看运行状态 runtime-status
+  8. 检查 readiness
+  9. 重启服务
+ 10. 启动服务
+ 11. 停止服务
+ 12. 检查更新 / 更新项目代码
+ 13. 环境诊断 doctor
+ 14. 查看当前版本
+ 15. 结构信号复盘 structure-review
   0. 退出
 ============================================================
 
@@ -176,15 +178,16 @@ EOF
       3) edit_config; pause_menu ;;
       4) run_main telegram-test --send --confirm-real-send; pause_menu ;;
       5) run_main coinglass-test; pause_menu ;;
-      6) run_main runtime-status; pause_menu ;;
-      7) run_main readiness; pause_menu ;;
-      8) restart_service; pause_menu ;;
-      9) start_service; pause_menu ;;
-      10) stop_service; pause_menu ;;
-      11) update_project; pause_menu ;;
-      12) run_main doctor; pause_menu ;;
-      13) show_version; pause_menu ;;
-      14) run_main structure-review; pause_menu ;;
+      6) run_main coinglass-liquidity-test; pause_menu ;;
+      7) run_main runtime-status; pause_menu ;;
+      8) run_main readiness; pause_menu ;;
+      9) restart_service; pause_menu ;;
+      10) start_service; pause_menu ;;
+      11) stop_service; pause_menu ;;
+      12) update_project; pause_menu ;;
+      13) run_main doctor; pause_menu ;;
+      14) show_version; pause_menu ;;
+      15) run_main structure-review; pause_menu ;;
       0) exit 0 ;;
       *) printf '无效选项，请输入 0-14。\n'; pause_menu ;;
     esac
@@ -231,6 +234,9 @@ case "$command" in
     ;;
   coinglass|coinglass-test)
     run_main coinglass-test
+    ;;
+  liquidity|coinglass-liquidity|coinglass-liquidity-test)
+    run_main coinglass-liquidity-test
     ;;
   structure|structure-radar)
     run_main structure-radar --save-charts "$@"

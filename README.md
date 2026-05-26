@@ -148,6 +148,35 @@ STRUCTURE_REVIEW_MIN_AGE_MINUTES=15
 STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600
 ```
 
+## CoinGlass 清算/盘口增强 v1.9
+
+v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认。它只增强结构雷达，不替代原有结构算法；默认关闭，避免升级后立即消耗 API 额度。
+
+开启方式：
+```bash
+COINGLASS_ENABLE=true
+COINGLASS_API_KEY=你的Key
+COINGLASS_LIQUIDITY_ENABLE=true
+```
+
+本地测试：
+```bash
+python main.py coinglass-liquidity-test
+python main.py structure-radar --mode pre --with-coinglass --save-charts
+```
+
+增强字段包括上方/下方清算区、距离清算池百分比、清算磁吸方向、上方卖墙、下方买墙、流动性缺口和分数修正。分数修正默认限制在 `-15 ~ +15`，CoinGlass 不可用或无权限时结构雷达会自动降级为 Binance 公共数据版。
+
+```bash
+COINGLASS_LIQUIDITY_ENABLE=false
+COINGLASS_LIQUIDITY_TIMEOUT_SEC=8
+COINGLASS_LIQUIDITY_MAX_SYMBOLS=30
+COINGLASS_LIQUIDITY_SCORE_MAX_DELTA=15
+COINGLASS_LIQUIDITY_MIN_DISTANCE_PCT=0.5
+COINGLASS_LIQUIDITY_MAX_DISTANCE_PCT=8.0
+COINGLASS_LIQUIDITY_CACHE_SEC=300
+```
+
 ## 一键更新
 
 ```bash
@@ -192,4 +221,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.8.3`，后续功能更新按 `v1.9`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.9`，后续功能更新按 `v1.9.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

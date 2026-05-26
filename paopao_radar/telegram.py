@@ -58,7 +58,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_STRUCTURE_REVIEW": "结构复盘",
 }
 
-TOPIC_INTRO_VERSION = "2026-05-26-structure-radar-v6"
+TOPIC_INTRO_VERSION = "2026-05-26-coinglass-liquidity-v1"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -170,6 +170,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "评分说明：",
         "- 评分 = 边缘距离20 + 结构15 + 触碰10 + 压缩15 + 成交量10 + OI10 + 主动买卖10 + 高周期5 + Funding5。",
+        "- CoinGlass增强默认关闭；开启后只作为清算热力图/盘口流动性的外部确认，分数修正限制在 -15~+15。",
         "- 等级 = S≥85，A≥70，B≥60，C≥50；低于 STRUCTURE_MIN_SCORE 不推送。",
         "",
         "阅读方式：",

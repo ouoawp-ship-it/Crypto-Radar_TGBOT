@@ -5,7 +5,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import Settings
 from .data_sources import BinanceDataSource
@@ -13,6 +13,9 @@ from .flow_radar import coin_link, tg_escape, tg_quote
 from .radar import fmt_price, pct_cell, to_float
 from .storage import JsonStore
 from .time_windows import CST, ClosedWindow, closed_window
+
+if TYPE_CHECKING:
+    from .coinglass_liquidity import LiquidityContext
 
 
 SIGNAL_PRE_BREAKOUT_NEAR = "PRE_BREAKOUT_NEAR"
@@ -79,6 +82,10 @@ class StructureSignal:
     taker_buy_ratio: float | None
     reason_lines: list[str]
     chart_path: str | None = None
+    liquidity_context: "LiquidityContext | None" = None
+    base_score: float | None = None
+    liquidity_score_delta: float = 0.0
+    final_score: float | None = None
 
 
 @dataclass
@@ -366,6 +373,7 @@ class StructureRadarEngine:
         min_score: float | None = None,
         interval: str | None = None,
         save_charts: bool | None = None,
+        liquidity_enhancer: Any | None = None,
     ) -> dict[str, Any]:
         mode = "confirm" if mode == "confirm" else "pre"
         interval = interval or self.settings.structure_interval
@@ -387,6 +395,8 @@ class StructureRadarEngine:
             if not analyzed:
                 continue
             signal, candles = analyzed
+            if liquidity_enhancer is not None:
+                signal = liquidity_enhancer.enhance(signal)
             all_signal_records.append(signal)
             if signal.score >= min_score and self._cooldown_ok(state, signal):
                 signals.append(signal)
@@ -398,7 +408,10 @@ class StructureRadarEngine:
 
         self._save_state(state, all_signal_records)
         self._append_history(mode, interval, window, candidates, signals)
-        text = self._format(signals, len(candidates), interval, mode, window, source.diagnostics())
+        diagnostics = source.diagnostics()
+        if liquidity_enhancer is not None and hasattr(liquidity_enhancer, "diagnostics"):
+            diagnostics["coinglass_liquidity"] = liquidity_enhancer.diagnostics()
+        text = self._format(signals, len(candidates), interval, mode, window, diagnostics)
         return {
             "template_id": "TG_STRUCTURE_RADAR",
             "dedup_key": f"structure:{mode}:{interval}:{int(window.end_ms / 1000)}",
@@ -406,7 +419,7 @@ class StructureRadarEngine:
             "signals": [asdict(signal) for signal in signals],
             "signal_objects": signals,
             "chart_paths": [signal.chart_path for signal in signals if signal.chart_path],
-            "diagnostics": source.diagnostics(),
+            "diagnostics": diagnostics,
             "mode": mode,
             "window": {
                 "start_ms": window.start_ms,
@@ -553,6 +566,8 @@ class StructureRadarEngine:
             oi_change_pct_4h=oi_change_pct_4h,
             taker_buy_ratio=taker_buy_ratio,
             reason_lines=reasons,
+            base_score=round(score, 2),
+            final_score=round(score, 2),
         )
         return signal, candles
 
@@ -869,6 +884,7 @@ class StructureRadarEngine:
                 )
                 if signal.reason_lines:
                     lines.append("原因: " + "；".join(tg_escape(item) for item in signal.reason_lines[:4]))
+                lines.extend(self._liquidity_lines(signal))
                 if signal.chart_path:
                     lines.append("图表: 已生成")
                 lines.append("")
@@ -878,9 +894,43 @@ class StructureRadarEngine:
             "突破确认/跌破确认 = 整点收线后延迟确认，使用完整闭合K线。",
             "假突破/假跌破 = 之前出现临界或突破信号，后续收回箱体内。",
             "评分 = 边缘距离20 + 结构15 + 触碰10 + 压缩15 + 量10 + OI10 + 主动买卖10 + 高周期5 + 费率5。",
+            "CoinGlass增强 = 默认关闭；启用后只在 -15~+15 内修正结构分，不会取代原结构算法。",
             "等级 = S≥85，A≥70，B≥60，C≥50；默认低于配置分数线不推送。",
         ])
         return "\n".join(lines)
+
+    @staticmethod
+    def _liquidity_lines(signal: StructureSignal) -> list[str]:
+        context = signal.liquidity_context
+        if context is None:
+            return ["🧲 CoinGlass 外部确认：未启用"]
+        if not context.available:
+            reason = "；".join(context.reason_lines[:2]) if context.reason_lines else "不可用"
+            return [f"🧲 CoinGlass 外部确认：{tg_escape(reason)}"]
+        lines = [
+            "🧲 <b>CoinGlass 外部确认</b>",
+            (
+                f"- 清算磁吸: {tg_escape(context.liquidation_bias)} | "
+                f"盘口: {tg_escape(context.orderbook_bias)} | "
+                f"流动性缺口: {tg_escape(context.liquidity_gap_direction)}"
+            ),
+        ]
+        if context.upper_liquidation_zone:
+            distance = StructureRadarEngine._optional_pct(context.nearest_liquidation_above_pct)
+            lines.append(f"- 上方清算区: {tg_escape(context.upper_liquidation_zone)}，距离 {distance}")
+        if context.lower_liquidation_zone:
+            distance = StructureRadarEngine._optional_pct(context.nearest_liquidation_below_pct)
+            lines.append(f"- 下方清算区: {tg_escape(context.lower_liquidation_zone)}，距离 {distance}")
+        if context.upper_liquidity_wall:
+            distance = StructureRadarEngine._optional_pct(context.upper_wall_distance_pct)
+            lines.append(f"- 上方卖墙: {tg_escape(context.upper_liquidity_wall)}，距离 {distance}")
+        if context.lower_liquidity_wall:
+            distance = StructureRadarEngine._optional_pct(context.lower_wall_distance_pct)
+            lines.append(f"- 下方买墙: {tg_escape(context.lower_liquidity_wall)}，距离 {distance}")
+        base = signal.base_score if signal.base_score is not None else signal.score
+        final = signal.final_score if signal.final_score is not None else signal.score
+        lines.append(f"- 分数修正: {context.score_delta:+.0f} | 基础 {base:.0f} -> 最终 {final:.0f}")
+        return lines
 
     @staticmethod
     def _group_signals(signals: list[StructureSignal]) -> list[tuple[str, list[StructureSignal]]]:

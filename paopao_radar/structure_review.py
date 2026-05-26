@@ -79,6 +79,7 @@ class StructureReviewEngine:
             record_id = review_record_id(signal.symbol, signal.signal_type, signal.interval, signal_ts)
             if record_id in existing:
                 continue
+            liquidity_context = signal.liquidity_context
             existing[record_id] = {
                 "id": record_id,
                 "symbol": signal.symbol,
@@ -87,6 +88,12 @@ class StructureReviewEngine:
                 "direction": structure_signal_direction(signal.signal_type),
                 "level": signal.level,
                 "score": signal.score,
+                "base_score": signal.base_score if signal.base_score is not None else signal.score,
+                "liquidity_score_delta": signal.liquidity_score_delta,
+                "final_score": signal.final_score if signal.final_score is not None else signal.score,
+                "liquidation_bias": liquidity_context.liquidation_bias if liquidity_context else "unavailable",
+                "orderbook_bias": liquidity_context.orderbook_bias if liquidity_context else "unavailable",
+                "coinglass_available": bool(liquidity_context.available) if liquidity_context else False,
                 "price": signal.price,
                 "box_high": signal.box_high,
                 "box_low": signal.box_low,

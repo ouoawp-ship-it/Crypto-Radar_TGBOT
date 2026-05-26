@@ -127,6 +127,13 @@ class Settings:
     coinglass_timeout_sec: int = 10
     coinglass_request_budget: int = 60
     coinglass_exchange_list: str = "Binance"
+    coinglass_liquidity_enable: bool = False
+    coinglass_liquidity_timeout_sec: int = 8
+    coinglass_liquidity_max_symbols: int = 30
+    coinglass_liquidity_score_max_delta: int = 15
+    coinglass_liquidity_min_distance_pct: float = 0.5
+    coinglass_liquidity_max_distance_pct: float = 8.0
+    coinglass_liquidity_cache_sec: int = 300
 
     radar_scan_limit: int = 120
     radar_min_quote_volume: float = 5_000_000
@@ -250,6 +257,13 @@ class Settings:
             coinglass_timeout_sec=env_int("COINGLASS_TIMEOUT_SEC", 10),
             coinglass_request_budget=env_int("COINGLASS_REQUEST_BUDGET", 60),
             coinglass_exchange_list=os.getenv("COINGLASS_EXCHANGE_LIST", "Binance").strip() or "Binance",
+            coinglass_liquidity_enable=env_bool("COINGLASS_LIQUIDITY_ENABLE", False),
+            coinglass_liquidity_timeout_sec=env_int("COINGLASS_LIQUIDITY_TIMEOUT_SEC", 8),
+            coinglass_liquidity_max_symbols=env_int("COINGLASS_LIQUIDITY_MAX_SYMBOLS", 30),
+            coinglass_liquidity_score_max_delta=env_int("COINGLASS_LIQUIDITY_SCORE_MAX_DELTA", 15),
+            coinglass_liquidity_min_distance_pct=env_float("COINGLASS_LIQUIDITY_MIN_DISTANCE_PCT", 0.5),
+            coinglass_liquidity_max_distance_pct=env_float("COINGLASS_LIQUIDITY_MAX_DISTANCE_PCT", 8.0),
+            coinglass_liquidity_cache_sec=env_int("COINGLASS_LIQUIDITY_CACHE_SEC", 300),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
@@ -363,6 +377,13 @@ class Settings:
                 "timeout_sec": self.coinglass_timeout_sec,
                 "request_budget": self.coinglass_request_budget,
                 "exchange_list": self.coinglass_exchange_list,
+                "liquidity_enable": self.coinglass_liquidity_enable,
+                "liquidity_timeout_sec": self.coinglass_liquidity_timeout_sec,
+                "liquidity_max_symbols": self.coinglass_liquidity_max_symbols,
+                "liquidity_score_max_delta": self.coinglass_liquidity_score_max_delta,
+                "liquidity_min_distance_pct": self.coinglass_liquidity_min_distance_pct,
+                "liquidity_max_distance_pct": self.coinglass_liquidity_max_distance_pct,
+                "liquidity_cache_sec": self.coinglass_liquidity_cache_sec,
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),

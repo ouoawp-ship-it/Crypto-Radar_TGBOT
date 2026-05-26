@@ -29,6 +29,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from .config import Settings
+from .coinglass_liquidity import CoinglassLiquidityAnalyzer
 from .data_sources import BinanceDataSource, CoinglassDataSource
 from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
@@ -132,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "coinglass-liquidity-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -151,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-symbols", type=int, default=None, help="structure-radar 临时覆盖扫描币种数量")
     parser.add_argument("--min-score", type=float, default=None, help="structure-radar 临时覆盖最低推送分数")
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
+    parser.add_argument("--with-coinglass", action="store_true", help="structure-radar 临时启用 CoinGlass 清算/盘口增强")
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 统计过去 N 小时的结构信号")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
@@ -176,6 +178,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     min_score = getattr(args, "min_score", None)
     interval = getattr(args, "interval", None)
     save_charts = getattr(args, "save_charts", False)
+    with_coinglass = getattr(args, "with_coinglass", False)
     lookback_hours = getattr(args, "lookback_hours", None)
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
@@ -191,6 +194,9 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
         updates["structure_interval"] = str(interval)
     if save_charts:
         updates["structure_save_charts"] = True
+    if with_coinglass:
+        updates["coinglass_enable"] = True
+        updates["coinglass_liquidity_enable"] = True
     if lookback_hours is not None:
         updates["structure_review_lookback_hours"] = max(1, int(lookback_hours))
     if not updates:
@@ -365,6 +371,42 @@ def run_coinglass_test(_args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
+    settings, _store, _engine, _gateway = make_runtime_for_args(args)
+    if not settings.coinglass_api_key:
+        print("coinglass_liquidity_test: blocked (missing COINGLASS_API_KEY)")
+        return 2
+    test_settings = replace(
+        settings,
+        coinglass_enable=True,
+        coinglass_liquidity_enable=True,
+        coinglass_request_budget=max(settings.coinglass_request_budget, 4),
+    )
+    price = 100.0
+    try:
+        for ticker in BinanceDataSource(test_settings).ticker_24h():
+            if str(ticker.get("symbol") or "").upper() == "BTCUSDT":
+                latest = float(ticker.get("lastPrice") or 0)
+                if latest > 0:
+                    price = latest
+                break
+    except Exception:
+        price = 100.0
+    source = CoinglassDataSource(test_settings)
+    analyzer = CoinglassLiquidityAnalyzer(test_settings, source)
+    context = analyzer.context("BTCUSDT", price)
+    print(f"coinglass_liquidity_test: {'ok' if context.available else 'unavailable'}")
+    print(json.dumps({
+        "api_key_configured": bool(test_settings.coinglass_api_key),
+        "liquidation_bias": context.liquidation_bias,
+        "orderbook_bias": context.orderbook_bias,
+        "liquidity_gap_direction": context.liquidity_gap_direction,
+        "reason_lines": context.reason_lines,
+        "diagnostics": analyzer.diagnostics(),
+    }, ensure_ascii=False, indent=2))
+    return 0 if context.available else 1
+
+
 def run_flow_radar(args: argparse.Namespace) -> int:
     settings, _store, _engine, gateway = make_runtime_for_args(args)
     flow = FlowRadarEngine(settings).build(
@@ -492,6 +534,9 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         return 2
     source = BinanceDataSource(settings)
     radar = StructureRadarEngine(settings, store)
+    liquidity_enhancer = None
+    if settings.coinglass_liquidity_enable:
+        liquidity_enhancer = CoinglassLiquidityAnalyzer(settings, CoinglassDataSource(settings))
     result = radar.build(
         source,
         mode=args.mode,
@@ -499,6 +544,7 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         min_score=args.min_score,
         interval=str(args.interval) if args.interval and not str(args.interval).isdigit() else settings.structure_interval,
         save_charts=True if args.save_charts else settings.structure_save_charts,
+        liquidity_enhancer=liquidity_enhancer,
     )
     report_path = settings.data_dir / "structure_report.txt"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1406,6 +1452,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_telegram_test(args)
     if args.command == "coinglass-test":
         return run_coinglass_test(args)
+    if args.command == "coinglass-liquidity-test":
+        return run_coinglass_liquidity_test(args)
     if args.command == "flow-radar":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)
