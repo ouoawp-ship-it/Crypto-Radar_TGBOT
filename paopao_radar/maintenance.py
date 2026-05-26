@@ -15,6 +15,15 @@ LEGACY_STATE_FILES = {
     "heat_history.json": "heat_history.legacy.json",
 }
 
+GENERATED_ROOT_ARTIFACT_PATTERNS = (
+    "PROJECT_CURRENT_SUMMARY.md",
+    "UPGRADE_*.md",
+    "*_REPORT.md",
+    "*_SUMMARY.md",
+    "*_REPORT.txt",
+    "*_SUMMARY.txt",
+)
+
 
 def legacy_state_report(settings: Settings) -> list[dict[str, Any]]:
     report: list[dict[str, Any]] = []
@@ -167,6 +176,31 @@ def cleanup_structure_charts(chart_dir: Path, retention_hours: int, max_files: i
     return result
 
 
+def cleanup_generated_root_artifacts(base_dir: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "base_dir": str(base_dir),
+        "scanned": 0,
+        "deleted": 0,
+        "kept": 0,
+        "errors": [],
+    }
+    seen: set[Path] = set()
+    for pattern in GENERATED_ROOT_ARTIFACT_PATTERNS:
+        for path in base_dir.glob(pattern):
+            if path in seen or not path.is_file() or path.parent != base_dir:
+                continue
+            seen.add(path)
+            result["scanned"] += 1
+            try:
+                if _remove_file(path):
+                    result["deleted"] += 1
+                else:
+                    result["kept"] += 1
+            except OSError as exc:
+                result["errors"].append(f"{path.name}:{type(exc).__name__}")
+    return result
+
+
 def cleanup_runtime_artifacts(
     settings: Settings,
     store: JsonStore,
@@ -238,6 +272,7 @@ def cleanup_runtime_artifacts(
         settings.structure_chart_retention_hours,
         settings.structure_max_chart_files,
     )
+    generated_root_artifacts = cleanup_generated_root_artifacts(settings.base_dir)
 
     result = {
         "enabled": settings.cleanup_enable,
@@ -247,6 +282,7 @@ def cleanup_runtime_artifacts(
         "removed_dirs": removed_dirs,
         "pruned": pruned,
         "structure_charts": structure_charts,
+        "generated_root_artifacts": generated_root_artifacts,
     }
     store.save(settings.cleanup_state_path, {
         "last_run_ts": now,

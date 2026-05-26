@@ -7,7 +7,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, migrate_legacy_state
+from paopao_radar.maintenance import (
+    cleanup_generated_root_artifacts,
+    cleanup_runtime_artifacts,
+    cleanup_structure_charts,
+    migrate_legacy_state,
+)
 from paopao_radar.storage import JsonStore
 
 
@@ -139,6 +144,34 @@ class MaintenanceTests(unittest.TestCase):
 
             self.assertFalse(chart.exists())
             self.assertEqual(result["structure_charts"]["deleted_old"], 1)
+
+    def test_cleanup_generated_root_artifacts_removes_reports_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            generated = [
+                base / "PROJECT_CURRENT_SUMMARY.md",
+                base / "UPGRADE_TEST.md",
+                base / "SOME_REPORT.md",
+                base / "SOME_SUMMARY.txt",
+            ]
+            keep = [
+                base / "README.md",
+                base / "requirements.txt",
+                base / ".env.oi",
+            ]
+            docs = base / "docs"
+            docs.mkdir()
+            docs_report = docs / "KEEP_REPORT.md"
+            for path in generated + keep + [docs_report]:
+                path.write_text("x", encoding="utf-8")
+
+            result = cleanup_generated_root_artifacts(base)
+
+            self.assertEqual(result["deleted"], len(generated))
+            for path in generated:
+                self.assertFalse(path.exists())
+            for path in keep + [docs_report]:
+                self.assertTrue(path.exists())
 
 
 if __name__ == "__main__":

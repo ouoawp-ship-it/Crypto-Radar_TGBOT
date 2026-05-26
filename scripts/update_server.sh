@@ -81,6 +81,13 @@ sync_env_file() {
   fi
 }
 
+run_post_update_cleanup() {
+  if [ -f "${APP_DIR}/main.py" ]; then
+    printf '\n[paopao-update] cleanup runtime artifacts\n'
+    "$PYTHON_BIN" main.py cleanup --force-cleanup || true
+  fi
+}
+
 confirm_update() {
   if [ "$AUTO_CONFIRM" = "1" ]; then
     return 0
@@ -116,6 +123,7 @@ printf 'GitHub版本: %s (%s)  %s\n' "$REMOTE_VERSION" "$(short_commit "$REMOTE_
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
   if [ "$CHECK_ONLY" != "1" ]; then
     sync_env_file
+    run_post_update_cleanup
   fi
   printf '\n当前已经是最新版本，不需要更新。\n'
   exit 0
@@ -152,6 +160,7 @@ sync_env_file
 "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
 "$PYTHON_BIN" -m compileall paopao_radar main.py
 "$PYTHON_BIN" -m unittest discover -s tests -v
+run_post_update_cleanup
 
 if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
   run_root tee /usr/local/bin/paopao >/dev/null <<EOF
