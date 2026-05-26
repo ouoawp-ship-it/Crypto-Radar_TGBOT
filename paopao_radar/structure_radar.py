@@ -905,17 +905,21 @@ class StructureRadarEngine:
         if context is None:
             return ["🧲 多源外部确认：未启用"]
         if not context.available:
-            reason = "；".join(context.reason_lines[:2]) if context.reason_lines else "不可用"
-            return [f"🧲 多源外部确认：{tg_escape(reason)}"]
+            reason = "；".join(context.reason_lines[:3]) if context.reason_lines else "暂无可靠外部确认数据"
+            return [
+                "🧲 <b>多源外部确认</b>",
+                "- 状态: 暂不可用",
+                f"- 原因: {tg_escape(reason)}",
+            ]
         lines = [
             "🧲 <b>多源外部确认</b>",
             f"- 数据源: {tg_escape(context.source)}",
-            (
-                f"- 清算磁吸: {tg_escape(context.liquidation_bias)} | "
-                f"盘口: {tg_escape(context.orderbook_bias)} | "
-                f"流动性缺口: {tg_escape(context.liquidity_gap_direction)}"
-            ),
+            f"- 清算磁吸: {tg_escape(StructureRadarEngine._liquidation_bias_text(context.liquidation_bias))}",
+            f"- 盘口流动性: {tg_escape(StructureRadarEngine._orderbook_bias_text(context.orderbook_bias))}",
+            f"- 流动性缺口: {tg_escape(StructureRadarEngine._liquidity_gap_text(context.liquidity_gap_direction))}",
         ]
+        if context.reason_lines:
+            lines.append("- 数据说明: " + "；".join(tg_escape(item) for item in context.reason_lines[:3]))
         if context.upper_liquidation_zone:
             distance = StructureRadarEngine._optional_pct(context.nearest_liquidation_above_pct)
             lines.append(f"- 上方清算区: {tg_escape(context.upper_liquidation_zone)}，距离 {distance}")
@@ -932,6 +936,36 @@ class StructureRadarEngine:
         final = signal.final_score if signal.final_score is not None else signal.score
         lines.append(f"- 分数修正: {context.score_delta:+.0f} | 基础 {base:.0f} -> 最终 {final:.0f}")
         return lines
+
+    @staticmethod
+    def _liquidation_bias_text(value: str) -> str:
+        return {
+            "up": "上方清算池更近或更强，价格向上时可能形成清算磁吸",
+            "down": "下方清算池更近或更强，价格向下时可能形成清算磁吸",
+            "neutral": "中性，未见明显上/下方向清算优势",
+            "none": "未识别到明显清算磁吸",
+            "unavailable": "不可用，暂无可靠清算热力数据",
+        }.get(value, value or "不可用，暂无可靠清算热力数据")
+
+    @staticmethod
+    def _orderbook_bias_text(value: str) -> str:
+        return {
+            "up": "下方买墙更强，盘口偏支撑",
+            "down": "上方卖墙更强，盘口偏压制",
+            "neutral": "中性，买卖墙强度接近",
+            "none": "未识别到明显买墙/卖墙",
+            "unavailable": "不可用，暂无有效买墙/卖墙",
+        }.get(value, value or "不可用，暂无有效买墙/卖墙")
+
+    @staticmethod
+    def _liquidity_gap_text(value: str) -> str:
+        return {
+            "up": "上方阻力较薄，价格可能更容易向上拉穿",
+            "down": "下方支撑较薄，价格可能更容易向下砸穿",
+            "neutral": "中性，未见明显流动性缺口",
+            "none": "未见明显流动性缺口",
+            "unavailable": "不可用，暂无可靠流动性缺口数据",
+        }.get(value, value or "不可用，暂无可靠流动性缺口数据")
 
     @staticmethod
     def _group_signals(signals: list[StructureSignal]) -> list[tuple[str, list[StructureSignal]]]:

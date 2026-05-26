@@ -234,6 +234,25 @@ class CoinglassLiquidityTests(unittest.TestCase):
 
         self.assertIn("未启用", "\n".join(lines))
 
+    def test_structure_template_localizes_liquidity_states(self) -> None:
+        signal = make_signal()
+        signal.liquidity_context = LiquidityContext(
+            symbol="TESTUSDT",
+            available=True,
+            source="unit",
+            liquidation_bias="down",
+            orderbook_bias="unavailable",
+            liquidity_gap_direction="unavailable",
+            reason_lines=["Binance盘口快照没有命中配置距离内的买卖墙"],
+        )
+
+        body = "\n".join(StructureRadarEngine._liquidity_lines(signal))
+
+        self.assertIn("清算磁吸: 下方清算池更近或更强", body)
+        self.assertIn("盘口流动性: 不可用，暂无有效买墙/卖墙", body)
+        self.assertIn("流动性缺口: 不可用，暂无可靠流动性缺口数据", body)
+        self.assertIn("Binance盘口快照没有命中配置距离内的买卖墙", body)
+
 
 if __name__ == "__main__":
     unittest.main()

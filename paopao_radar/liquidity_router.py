@@ -135,7 +135,7 @@ def merge_liquidity_contexts(
             orderbook_bias = orderbook.orderbook_bias
             reasons.extend(orderbook.reason_lines[:3])
         elif orderbook.reason_lines:
-            reasons.append(f"盘口降级不可用：{orderbook.reason_lines[0]}")
+            reasons.extend(f"盘口降级不可用：{line}" for line in orderbook.reason_lines[:3])
 
     available = bool(
         upper_liquidation_zone
