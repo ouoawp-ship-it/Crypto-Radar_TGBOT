@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from paopao_radar.flow_radar import binance_oi_stats, coinglass_tv_url, flow_category, market_by_symbol, series_delta_info
+from paopao_radar.flow_radar import (
+    binance_oi_stats,
+    coinglass_tv_url,
+    flow_category,
+    fmt_cvd,
+    market_by_symbol,
+    series_delta_info,
+)
 
 
 class FlowRadarTests(unittest.TestCase):
@@ -55,6 +62,27 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertEqual(category, "真启动候选")
         self.assertGreaterEqual(score, 90)
+
+    def test_neutral_cvd_does_not_trigger_distribution(self) -> None:
+        category, _score, _reason = flow_category({
+            "price_24h": -1.0,
+            "oi_24h": -1.0,
+            "spot_cvd_delta": 0.0,
+            "futures_cvd_delta": 0.0,
+            "spot_cvd_ready": True,
+            "futures_cvd_ready": True,
+            "funding_pct": 0.2,
+            "quote_volume": 100_000_000,
+        })
+
+        self.assertNotEqual(category, "诱多/派发")
+
+    def test_fmt_cvd_distinguishes_missing_neutral_and_signed_values(self) -> None:
+        self.assertEqual(fmt_cvd(0.0, True), "近0")
+        self.assertEqual(fmt_cvd(0.25, True), "近0")
+        self.assertEqual(fmt_cvd(1_250_000, True), "+$1.2M")
+        self.assertEqual(fmt_cvd(-2_500, True), "-$2.5K")
+        self.assertEqual(fmt_cvd(0.0, False), "缺失")
 
     def test_missing_cvd_does_not_create_fake_distribution_signal(self) -> None:
         category, score, reason = flow_category({

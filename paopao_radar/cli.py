@@ -30,7 +30,7 @@ from datetime import datetime
 
 from .config import Settings
 from .data_sources import BinanceDataSource, CoinglassDataSource
-from .flow_radar import FlowRadarEngine
+from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine
 from .storage import JsonStore
@@ -308,12 +308,19 @@ def run_coinglass_test(_args: argparse.Namespace) -> int:
     source = CoinglassDataSource(settings)
     data = source.open_interest_exchange_list("BTC")
     ok = data is not None
+    spot_cvd_delta, spot_cvd_ready, spot_cvd_points = series_delta_info(source.spot_aggregated_cvd_history("BTC"))
+    futures_cvd_delta, futures_cvd_ready, futures_cvd_points = series_delta_info(source.futures_aggregated_cvd_history("BTC"))
     print(f"coinglass_test: {'ok' if ok else 'failed'}")
     print(json.dumps(source.diagnostics(), ensure_ascii=False, indent=2))
     if isinstance(data, list):
         print(f"sample_items: {len(data)}")
     elif isinstance(data, dict):
         print(f"sample_keys: {', '.join(list(data.keys())[:8])}")
+    print(
+        "cvd_sample: "
+        f"spot points={spot_cvd_points} ready={spot_cvd_ready} delta={fmt_cvd(spot_cvd_delta, spot_cvd_ready)} | "
+        f"futures points={futures_cvd_points} ready={futures_cvd_ready} delta={fmt_cvd(futures_cvd_delta, futures_cvd_ready)}"
+    )
     return 0 if ok else 1
 
 

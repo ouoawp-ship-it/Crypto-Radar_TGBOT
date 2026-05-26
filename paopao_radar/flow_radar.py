@@ -10,6 +10,7 @@ from .radar import fmt_money, pct_cell, to_float
 
 
 CST = timezone(timedelta(hours=8))
+CVD_NEUTRAL_ABS = 1.0
 
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
@@ -134,8 +135,34 @@ def first_value(item: dict[str, Any], keys: tuple[str, ...], default: float = 0.
     return value
 
 
+def cvd_positive(value: float, ready: bool) -> bool:
+    return ready and value > CVD_NEUTRAL_ABS
+
+
+def cvd_negative(value: float, ready: bool) -> bool:
+    return ready and value < -CVD_NEUTRAL_ABS
+
+
+def fmt_signed_money(value: float) -> str:
+    sign = "+" if value > 0 else "-"
+    amount = abs(value)
+    if amount >= 1_000_000_000:
+        return f"{sign}${amount / 1_000_000_000:.1f}B"
+    if amount >= 1_000_000:
+        return f"{sign}${amount / 1_000_000:.1f}M"
+    if amount >= 1_000:
+        return f"{sign}${amount / 1_000:.1f}K"
+    if amount >= 1:
+        return f"{sign}${amount:.0f}"
+    return f"{sign}${amount:.3f}"
+
+
 def fmt_cvd(value: float, ready: bool) -> str:
-    return fmt_money(value) if ready else "缺失"
+    if not ready:
+        return "缺失"
+    if abs(value) <= CVD_NEUTRAL_ABS:
+        return "近0"
+    return fmt_signed_money(value)
 
 
 def binance_oi_stats(source: BinanceDataSource, symbol: str) -> tuple[float, float]:
@@ -159,10 +186,10 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     futures_ready = bool(item.get("futures_cvd_ready", True))
     if not spot_ready and not futures_ready:
         return ("数据不足", 0, "CoinGlass CVD 数据缺失，不能判断资金流")
-    spot_positive = spot_ready and spot > 0
-    spot_negative = spot_ready and spot < 0
-    futures_positive = futures_ready and futures > 0
-    futures_negative = futures_ready and futures < 0
+    spot_positive = cvd_positive(spot, spot_ready)
+    spot_negative = cvd_negative(spot, spot_ready)
+    futures_positive = cvd_positive(futures, futures_ready)
+    futures_negative = cvd_negative(futures, futures_ready)
 
     candidates: list[tuple[str, int, str]] = []
     true_launch = 0
@@ -179,7 +206,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     accumulation += 25 if oi >= 5 else 0
     accumulation += 25 if spot_positive else 0
     accumulation += 15 if funding <= 0.03 else 0
-    accumulation += 10 if futures >= 0 else 0
+    accumulation += 10 if futures_positive else 0
     candidates.append(("吸筹观察", accumulation, "价格未大幅启动但资金提前进入，适合提前盯盘"))
 
     short_fuel = 0
@@ -194,7 +221,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     perp_pump += 25 if price >= 5 else 0
     perp_pump += 20 if oi >= 5 else 0
     perp_pump += 25 if futures_positive else 0
-    perp_pump += 20 if spot_ready and not spot_positive else 0
+    perp_pump += 20 if price >= 5 and spot_negative else 0
     perp_pump += 10 if funding >= 0 else 0
     candidates.append(("合约拉盘", perp_pump, "合约主动买入强于现货，追高风险更高"))
 
@@ -202,16 +229,16 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     short_squeeze += 30 if price >= 5 else 0
     short_squeeze += 30 if oi <= -3 else 0
     short_squeeze += 20 if futures_positive else 0
-    short_squeeze += 10 if spot_ready and not spot_positive else 0
+    short_squeeze += 10 if price >= 5 and spot_negative else 0
     short_squeeze += 10 if funding <= 0.05 else 0
     candidates.append(("挤空/止损", short_squeeze, "上涨伴随OI下降，可能是空头止损推动"))
 
     distribution = 0
     distribution += 25 if price >= 5 else 0
-    distribution += 30 if spot_ready and not spot_positive else 0
-    distribution += 20 if futures_positive else 0
-    distribution += 15 if funding >= 0.05 else 0
-    distribution += 10 if oi <= 0 else 0
+    distribution += 30 if price >= 5 and spot_negative else 0
+    distribution += 20 if price >= 5 and futures_positive else 0
+    distribution += 15 if price >= 5 and funding >= 0.05 else 0
+    distribution += 10 if price >= 5 and oi <= 0 else 0
     candidates.append(("诱多/派发", distribution, "价格上涨但现货主动买入不足，持续性存疑"))
 
     panic = 0
@@ -390,6 +417,14 @@ class FlowRadarEngine:
     ) -> str:
         spot_ready_count = sum(1 for item in scanned_items if item.get("spot_cvd_ready"))
         futures_ready_count = sum(1 for item in scanned_items if item.get("futures_cvd_ready"))
+        spot_active_count = sum(
+            1 for item in scanned_items
+            if item.get("spot_cvd_ready") and abs(float(item.get("spot_cvd_delta") or 0.0)) > CVD_NEUTRAL_ABS
+        )
+        futures_active_count = sum(
+            1 for item in scanned_items
+            if item.get("futures_cvd_ready") and abs(float(item.get("futures_cvd_delta") or 0.0)) > CVD_NEUTRAL_ABS
+        )
         scanned_count = len(scanned_items)
         lines = [
             "🧭 <b>五因子资金流雷达</b>",
@@ -399,12 +434,17 @@ class FlowRadarEngine:
             f"候选币: {len(candidates)}",
             f"入选信号: {len(rows)}",
             f"CoinGlass请求: {coinglass.budget.used.get('coinglass', 0)} / {coinglass.budget.limits.get('coinglass', 0)}",
-            f"CVD数据: 现货 {spot_ready_count}/{scanned_count} | 合约 {futures_ready_count}/{scanned_count}",
+            f"CVD数据: 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
             "",
         ]
         if scanned_count and (spot_ready_count < scanned_count or futures_ready_count < scanned_count):
             lines.extend([
                 "⚠️ 部分 CVD 数据缺失；缺失项不会按 0 参与资金流评分。",
+                "",
+            ])
+        if scanned_count and (spot_active_count < spot_ready_count or futures_active_count < futures_ready_count):
+            lines.extend([
+                "ℹ️ 部分 CVD 近0；近0只作为中性状态，不按主动买入或主动卖出评分。",
                 "",
             ])
         grouped: dict[str, list[dict[str, Any]]] = {}
