@@ -68,6 +68,7 @@ show_help() {
   paopao version         查看当前项目版本
   paopao test            发送 Telegram 测试消息
   paopao coinglass       测试 CoinGlass API
+  paopao structure       dry-run 运行结构突破雷达
   paopao runtime         查看 runtime-status
   paopao readiness       检查真实推送准备度
   paopao doctor          查看环境诊断
@@ -227,6 +228,12 @@ case "$command" in
     ;;
   coinglass|coinglass-test)
     run_main coinglass-test
+    ;;
+  structure|structure-radar)
+    run_main structure-radar --save-charts "$@"
+    ;;
+  structure-loop)
+    run_main structure-loop "$@"
     ;;
   runtime|runtime-status)
     run_main runtime-status

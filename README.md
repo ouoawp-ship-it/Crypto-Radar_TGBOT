@@ -8,6 +8,7 @@
 - 资金雷达汇总：默认 6 小时一次、每天最多 4 次，推送负费率榜、综合榜、埋伏榜、动量池、新币池、值得关注和数据质量。
 - 启动雷达提醒：默认 3 分钟扫描一次，推送币种、阶段、分数、价格/OI/成交量变化和触发原因；同一币种后续更高阶段会回复上一条启动消息，形成连续追踪链。
 - 五因子资金流雷达：默认每 1 小时收线后延迟 5 分钟推送一次，按上一完整窗口内的价格、OI、现货 CVD、合约 CVD、资金费率过滤资金流信号。
+- 结构突破雷达：v1.8 新增，独立识别盘整箱体上沿/下沿、ATR/BB 压缩、临近突破、收线确认、假突破，并可生成 K线状态图。
 - OI/价格背离扫描：跟随资金雷达，跟踪建仓背离、多头共振、极端背离、持续/增强/消失状态。
 - 自动清理：默认 1 小时检查一次，只清理可再生成的缓存、临时文件、坏 JSON 备份、过期日志和过长历史。
 - CoinGlass 增强源：可选启用，用于后续接入多交易所 OI、爆仓、资金费率和合约市场动态。
@@ -92,7 +93,32 @@ RADAR_SUMMARY_CLOSE_DELAY_SEC=300
 FLOW_INTERVAL_SEC=3600
 FLOW_CLOSE_DELAY_SEC=300
 LAUNCH_CLOSE_DELAY_SEC=60
+STRUCTURE_PRE_SCAN_MINUTE=55
+STRUCTURE_CONFIRM_DELAY_SEC=300
 ```
+
+## 结构突破雷达 v1.8
+
+单次 dry-run：
+
+```bash
+python main.py structure-radar --mode pre --top-symbols 80 --min-score 65 --save-charts
+python main.py structure-radar --mode confirm --top-symbols 80 --min-score 65 --save-charts
+```
+
+独立循环：
+
+```bash
+python main.py structure-loop
+```
+
+真实推送仍必须显式确认：
+
+```bash
+python main.py structure-radar --mode pre --send --confirm-real-send
+```
+
+默认提前临界扫描在每小时 55 分附近运行，收线确认在整点后延迟 5 分钟运行。图片保存到 `data/charts/`，结构雷达状态保存到 `data/structure_state.json` 和 `data/structure_history.json`。
 
 ## 一键更新
 
@@ -136,4 +162,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.7`，后续功能更新按 `v1.8`、`v1.9` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.8`，后续功能更新按 `v1.9`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

@@ -32,8 +32,15 @@ from .config import Settings
 from .data_sources import BinanceDataSource, CoinglassDataSource
 from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
-from .radar import RadarEngine
+from .radar import RadarEngine, fmt_price
 from .storage import JsonStore
+from .structure_radar import (
+    SIGNAL_CN,
+    StructureRadarEngine,
+    StructureSignal,
+    next_structure_confirm_epoch,
+    next_structure_pre_epoch,
+)
 from .telegram import TelegramGateway
 from .time_windows import next_closed_window_epoch
 
@@ -124,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "flow-radar", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "flow-radar", "structure-radar", "structure-loop", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -135,11 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
-    parser.add_argument("--interval", type=int, default=None, help="loop/daemon 的资金雷达摘要间隔秒数；默认读取 RADAR_SUMMARY_MIN_INTERVAL_SEC")
+    parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数；structure-radar 使用 15m/1h 这类K线周期")
     parser.add_argument("--launch-interval", type=int, default=180, help="loop/daemon 的启动雷达间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
     parser.add_argument("--launch-scan-limit", type=int, default=None, help="临时覆盖启动雷达扫描上限")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
+    parser.add_argument("--top-symbols", type=int, default=None, help="structure-radar 临时覆盖扫描币种数量")
+    parser.add_argument("--min-score", type=float, default=None, help="structure-radar 临时覆盖最低推送分数")
+    parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
+    parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
@@ -155,16 +166,28 @@ def make_runtime() -> tuple[Settings, JsonStore, RadarEngine, TelegramGateway]:
 
 
 def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
-    updates: dict[str, int] = {}
+    updates: dict[str, object] = {}
     radar_scan_limit = getattr(args, "radar_scan_limit", None)
     launch_scan_limit = getattr(args, "launch_scan_limit", None)
     flow_scan_limit = getattr(args, "flow_scan_limit", None)
+    top_symbols = getattr(args, "top_symbols", None)
+    min_score = getattr(args, "min_score", None)
+    interval = getattr(args, "interval", None)
+    save_charts = getattr(args, "save_charts", False)
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
     if launch_scan_limit is not None:
         updates["launch_scan_limit"] = max(0, int(launch_scan_limit))
     if flow_scan_limit is not None:
         updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
+    if top_symbols is not None:
+        updates["structure_top_symbols"] = max(1, int(top_symbols))
+    if min_score is not None:
+        updates["structure_min_score"] = max(0, int(float(min_score)))
+    if interval is not None and not str(interval).isdigit():
+        updates["structure_interval"] = str(interval)
+    if save_charts:
+        updates["structure_save_charts"] = True
     if not updates:
         return settings
     return replace(settings, **updates)
@@ -190,6 +213,8 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.launch_state_path,
         settings.launch_watchlist_path,
         settings.launch_watch_history_path,
+        settings.structure_state_path,
+        settings.structure_history_path,
         settings.divergence_state_path,
         settings.divergence_cooldown_path,
         settings.cleanup_state_path,
@@ -368,6 +393,139 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
     )
     print(f"flow_push: {push.status} ({push.reason})")
     return push.status, flow["diagnostics"]
+
+
+def structure_photo_caption(signal: StructureSignal) -> str:
+    signal_name = SIGNAL_CN.get(signal.signal_type, signal.signal_type)
+    return (
+        f"🧱 <b>结构图</b> {signal.symbol}\n"
+        f"{signal_name} | {signal.level}级 {signal.score:.0f}分 | {signal.interval}\n"
+        f"上沿 {fmt_price(signal.box_high)} | 下沿 {fmt_price(signal.box_low)} | 现价 {fmt_price(signal.price)}"
+    )
+
+
+def run_structure_radar(args: argparse.Namespace) -> int:
+    settings, store, _engine, gateway = make_runtime_for_args(args)
+    if not settings.structure_radar_enable:
+        print("structure_radar: disabled (STRUCTURE_RADAR_ENABLE=false)")
+        return 2
+    source = BinanceDataSource(settings)
+    radar = StructureRadarEngine(settings, store)
+    result = radar.build(
+        source,
+        mode=args.mode,
+        top_symbols=args.top_symbols,
+        min_score=args.min_score,
+        interval=str(args.interval) if args.interval and not str(args.interval).isdigit() else settings.structure_interval,
+        save_charts=True if args.save_charts else settings.structure_save_charts,
+    )
+    report_path = settings.data_dir / "structure_report.txt"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(result["text"], encoding="utf-8")
+    push = gateway.send(
+        result["text"],
+        result["template_id"],
+        result["dedup_key"],
+        send=args.send,
+        confirm_real_send=args.confirm_real_send,
+        cooldown_sec=settings.structure_cooldown_sec,
+        parse_mode="HTML",
+    )
+    print(f"structure_push: {push.status} ({push.reason})")
+
+    sent_signals: list[StructureSignal] = []
+    if push.status == "sent":
+        sent_signals.extend(result.get("signal_objects") or [])
+    photo_count = 0
+    for idx, signal in enumerate((result.get("signal_objects") or [])[: settings.structure_send_chart_top_n], start=1):
+        if not signal.chart_path:
+            continue
+        photo = gateway.send_photo(
+            signal.chart_path,
+            structure_photo_caption(signal),
+            result["template_id"],
+            f"structure-chart:{signal.symbol}:{signal.signal_type}:{Path(signal.chart_path).stem}",
+            send=args.send,
+            confirm_real_send=args.confirm_real_send,
+            cooldown_sec=settings.structure_cooldown_sec,
+            parse_mode="HTML",
+        )
+        print(f"structure_photo[{idx}]: {photo.status} ({photo.reason})")
+        if photo.status in {"sent", "dry_run"}:
+            photo_count += 1
+    if sent_signals:
+        radar.mark_pushed(sent_signals)
+    print(json.dumps({
+        "report_path": str(report_path),
+        "chart_paths": result.get("chart_paths", []),
+        "photo_count": photo_count,
+        "diagnostics": result.get("diagnostics", {}),
+    }, ensure_ascii=False, indent=2))
+    write_runtime_status(
+        settings,
+        store,
+        command_mode(args),
+        "completed",
+        task="structure-radar",
+        real_send=bool(args.send and args.confirm_real_send),
+        structure_mode=args.mode,
+        structure_interval=settings.structure_interval,
+        structure_push=push.status,
+        structure_signals=len(result.get("signals", [])),
+        report_path=str(report_path),
+        chart_paths=result.get("chart_paths", []),
+        diagnostics={"structure": result.get("diagnostics", {})},
+    )
+    return 0
+
+
+def run_structure_loop(args: argparse.Namespace) -> int:
+    settings, store, _engine, _gateway = make_runtime_for_args(args)
+    mode = command_mode(args)
+    next_pre = next_structure_pre_epoch(time.time(), settings.structure_pre_scan_minute)
+    next_confirm = next_structure_confirm_epoch(time.time(), settings.structure_confirm_delay_sec)
+    write_runtime_status(
+        settings,
+        store,
+        mode,
+        "running",
+        task="structure-loop",
+        real_send=bool(args.send and args.confirm_real_send),
+        next_pre_at=timestamp_from_epoch(next_pre),
+        next_confirm_at=timestamp_from_epoch(next_confirm),
+        structure_interval=settings.structure_interval,
+    )
+    while True:
+        now = time.time()
+        print(
+            "[structure-loop] next pre="
+            f"{timestamp_from_epoch(next_pre)} | next confirm={timestamp_from_epoch(next_confirm)}",
+            flush=True,
+        )
+        if now >= next_pre:
+            try:
+                run_structure_radar(argparse.Namespace(**{**vars(args), "mode": "pre"}))
+            except Exception as exc:
+                print(f"[structure-loop] pre failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            next_pre = next_structure_pre_epoch(time.time(), settings.structure_pre_scan_minute)
+        if now >= next_confirm:
+            try:
+                run_structure_radar(argparse.Namespace(**{**vars(args), "mode": "confirm"}))
+            except Exception as exc:
+                print(f"[structure-loop] confirm failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            next_confirm = next_structure_confirm_epoch(time.time(), settings.structure_confirm_delay_sec)
+        write_runtime_status(
+            settings,
+            store,
+            mode,
+            "running",
+            task="structure-loop",
+            real_send=bool(args.send and args.confirm_real_send),
+            next_pre_at=timestamp_from_epoch(next_pre),
+            next_confirm_at=timestamp_from_epoch(next_confirm),
+            structure_interval=settings.structure_interval,
+        )
+        time.sleep(15)
 
 
 def print_readiness(settings: Settings, store: JsonStore) -> int:
@@ -1138,6 +1296,10 @@ def main(argv: list[str] | None = None) -> int:
             if gate != 0:
                 return gate
         return run_flow_radar(args)
+    if args.command == "structure-radar":
+        return run_structure_radar(args)
+    if args.command == "structure-loop":
+        return run_structure_loop(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

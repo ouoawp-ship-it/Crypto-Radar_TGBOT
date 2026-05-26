@@ -12,6 +12,7 @@ data/*.json
 data/*.db
 data/*.tmp
 data/*.txt
+data/charts/
 *.corrupt.*
 bn_signal_history.json
 fr_snapshot.json

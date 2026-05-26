@@ -13,6 +13,31 @@ from paopao_radar.telegram import TelegramGateway, utc_ts
 
 
 class TelegramGatewayTests(unittest.TestCase):
+    def test_send_photo_dry_run_records_without_real_send(self) -> None:
+        with TemporaryDirectory() as tmp:
+            photo = Path(tmp) / "chart.png"
+            photo.write_bytes(b"\x89PNG\r\n\x1a\n")
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "history.json",
+                tg_topic_routes_path=Path(tmp) / "routes.json",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            result = gateway.send_photo(
+                photo,
+                "caption",
+                "TG_STRUCTURE_RADAR",
+                "photo:unit",
+                send=False,
+                confirm_real_send=False,
+            )
+            history = JsonStore(Path(tmp)).load(settings.tg_push_history_path, [])
+
+        self.assertEqual(result.status, "dry_run")
+        self.assertFalse(result.sent)
+        self.assertEqual(history[-1]["template_id"], "TG_STRUCTURE_RADAR")
+
     def test_dry_run_records_without_real_send(self) -> None:
         with TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "push_history.json"

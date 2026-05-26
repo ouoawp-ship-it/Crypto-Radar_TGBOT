@@ -188,6 +188,7 @@ sanitize_topic_config() {
     TG_LAUNCH_ALERT_TOPIC_ID \
     TG_ANNOUNCEMENT_ALERT_TOPIC_ID \
     TG_FLOW_RADAR_TOPIC_ID \
+    STRUCTURE_TOPIC_ID \
     TG_TEST_TOPIC_ID
   do
     value="$(get_env_value "$key")"
@@ -218,6 +219,7 @@ configure_topics() {
     TG_LAUNCH_ALERT_TOPIC_ID \
     TG_ANNOUNCEMENT_ALERT_TOPIC_ID \
     TG_FLOW_RADAR_TOPIC_ID \
+    STRUCTURE_TOPIC_ID \
     TG_TEST_TOPIC_ID
   do
     if is_valid_topic_id "$(get_env_value "$key")"; then
@@ -253,6 +255,7 @@ EOF
     clear_env_value TG_LAUNCH_ALERT_TOPIC_ID
     clear_env_value TG_ANNOUNCEMENT_ALERT_TOPIC_ID
     clear_env_value TG_FLOW_RADAR_TOPIC_ID
+    clear_env_value STRUCTURE_TOPIC_ID
     clear_env_value TG_TEST_TOPIC_ID
     printf '已选择自动话题模式：不手动写话题 ID。\n'
     return 0
@@ -263,6 +266,7 @@ EOF
   prompt_topic_id TG_LAUNCH_ALERT_TOPIC_ID "启动预警话题 TG_LAUNCH_ALERT_TOPIC_ID"
   prompt_topic_id TG_ANNOUNCEMENT_ALERT_TOPIC_ID "公告风险话题 TG_ANNOUNCEMENT_ALERT_TOPIC_ID"
   prompt_topic_id TG_FLOW_RADAR_TOPIC_ID "资金流雷达话题 TG_FLOW_RADAR_TOPIC_ID"
+  prompt_topic_id STRUCTURE_TOPIC_ID "结构突破话题 STRUCTURE_TOPIC_ID"
   prompt_topic_id TG_TEST_TOPIC_ID "测试消息话题 TG_TEST_TOPIC_ID"
 }
 

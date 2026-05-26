@@ -91,6 +91,7 @@ class Settings:
     tg_announcement_alert_topic_id: str = ""
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
+    tg_structure_topic_id: str = ""
     tg_auto_create_topics: bool = True
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_topic_intro_enable: bool = True
@@ -142,6 +143,22 @@ class Settings:
     flow_interval_sec: int = 3600
     flow_close_delay_sec: int = 300
 
+    structure_radar_enable: bool = True
+    structure_interval: str = "15m"
+    structure_higher_interval: str = "1h"
+    structure_box_lookback: int = 36
+    structure_top_symbols: int = 80
+    structure_near_edge_pct: float = 1.5
+    structure_min_score: int = 65
+    structure_send_chart_top_n: int = 3
+    structure_save_charts: bool = True
+    structure_pre_scan_minute: int = 55
+    structure_confirm_delay_sec: int = 300
+    structure_cooldown_sec: int = 3600
+    structure_state_path: Path = BASE_DIR / "data" / "structure_state.json"
+    structure_history_path: Path = BASE_DIR / "data" / "structure_history.json"
+    structure_chart_dir: Path = BASE_DIR / "data" / "charts"
+
     oi_hist_budget: int = 80
     kline_budget: int = 120
     funding_history_budget: int = 25
@@ -184,6 +201,7 @@ class Settings:
             tg_announcement_alert_topic_id=env_first("TG_ANNOUNCEMENT_ALERT_TOPIC_ID", "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID"),
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
+            tg_structure_topic_id=env_first("STRUCTURE_TOPIC_ID", "TG_STRUCTURE_TOPIC_ID", "TELEGRAM_STRUCTURE_TOPIC_ID"),
             tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_topic_intro_enable=env_bool("TG_TOPIC_INTRO_ENABLE", True),
@@ -230,6 +248,21 @@ class Settings:
             flow_min_score=env_int("FLOW_MIN_SCORE", 50),
             flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 3600),
             flow_close_delay_sec=env_int("FLOW_CLOSE_DELAY_SEC", 300),
+            structure_radar_enable=env_bool("STRUCTURE_RADAR_ENABLE", True),
+            structure_interval=os.getenv("STRUCTURE_INTERVAL", "15m").strip() or "15m",
+            structure_higher_interval=os.getenv("STRUCTURE_HIGHER_INTERVAL", "1h").strip() or "1h",
+            structure_box_lookback=env_int("STRUCTURE_BOX_LOOKBACK", 36),
+            structure_top_symbols=env_int("STRUCTURE_TOP_SYMBOLS", 80),
+            structure_near_edge_pct=env_float("STRUCTURE_NEAR_EDGE_PCT", 1.5),
+            structure_min_score=env_int("STRUCTURE_MIN_SCORE", 65),
+            structure_send_chart_top_n=env_int("STRUCTURE_SEND_CHART_TOP_N", 3),
+            structure_save_charts=env_bool("STRUCTURE_SAVE_CHARTS", True),
+            structure_pre_scan_minute=env_int("STRUCTURE_PRE_SCAN_MINUTE", 55),
+            structure_confirm_delay_sec=env_int("STRUCTURE_CONFIRM_DELAY_SEC", 300),
+            structure_cooldown_sec=env_int("STRUCTURE_COOLDOWN_SEC", 3600),
+            structure_state_path=data_path(data_dir, "STRUCTURE_STATE_FILE", "structure_state.json"),
+            structure_history_path=data_path(data_dir, "STRUCTURE_HISTORY_FILE", "structure_history.json"),
+            structure_chart_dir=data_path(data_dir, "STRUCTURE_CHART_DIR", "charts"),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
@@ -271,6 +304,7 @@ class Settings:
                     "announcement_alert": bool(self.tg_announcement_alert_topic_id),
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
+                    "structure_radar": bool(self.tg_structure_topic_id),
                 },
                 "auto_create_topics": self.tg_auto_create_topics,
                 "topic_routes_file": str(self.tg_topic_routes_path),
@@ -320,6 +354,23 @@ class Settings:
                 "top_n": self.flow_top_n,
                 "min_score": self.flow_min_score,
                 "interval_sec": self.flow_interval_sec,
+            },
+            "structure_radar": {
+                "enable": self.structure_radar_enable,
+                "interval": self.structure_interval,
+                "higher_interval": self.structure_higher_interval,
+                "box_lookback": self.structure_box_lookback,
+                "top_symbols": self.structure_top_symbols,
+                "near_edge_pct": self.structure_near_edge_pct,
+                "min_score": self.structure_min_score,
+                "send_chart_top_n": self.structure_send_chart_top_n,
+                "save_charts": self.structure_save_charts,
+                "pre_scan_minute": self.structure_pre_scan_minute,
+                "confirm_delay_sec": self.structure_confirm_delay_sec,
+                "cooldown_sec": self.structure_cooldown_sec,
+                "state_file": str(self.structure_state_path),
+                "history_file": str(self.structure_history_path),
+                "chart_dir": str(self.structure_chart_dir),
             },
             "launch": {
                 "scan_limit": self.launch_scan_limit,
