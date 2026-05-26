@@ -415,11 +415,13 @@ class StructureRadarEngine:
             },
         }
 
-    def mark_pushed(self, signals: list[StructureSignal]) -> None:
+    def mark_pushed(self, signals: list[StructureSignal], message_ids: list[int] | None = None) -> None:
         if not signals:
             return
         state = self._load_state()
         now = int(time.time())
+        first_message_id = int(message_ids[0]) if message_ids else 0
+        pushed_at = datetime.now(CST).isoformat()
         for signal in signals:
             record = state.get(signal.symbol, {})
             if not isinstance(record, dict):
@@ -427,6 +429,15 @@ class StructureRadarEngine:
             record["last_pushed"] = now
             record["last_pushed_signal"] = signal.signal_type
             record["last_pushed_score"] = round(signal.score, 2)
+            record["last_pushed_at"] = pushed_at
+            if first_message_id > 0:
+                record["last_message_id"] = first_message_id
+                record["last_message_ids"] = message_ids or []
+                record["last_message_signal_type"] = signal.signal_type
+                record["last_message_score"] = round(signal.score, 2)
+                record["last_message_price"] = signal.price
+                record["last_message_box_high"] = signal.box_high
+                record["last_message_box_low"] = signal.box_low
             state[signal.symbol] = record
         self.store.save(self.settings.structure_state_path, state)
 

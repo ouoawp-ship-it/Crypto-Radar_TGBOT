@@ -108,6 +108,7 @@ paopao update       # 检查 GitHub 版本，有更新时确认后更新
 paopao update --yes # 有更新时自动确认更新
 paopao test         # 发送 Telegram 测试消息
 paopao coinglass    # 测试 CoinGlass API
+paopao structure-review # 生成结构信号复盘报告
 paopao readiness    # 检查真实推送准备度
 paopao doctor       # 查看环境诊断
 paopao help         # 查看帮助
@@ -122,7 +123,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.8.2`，后续功能更新按 `v1.9`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.8.3`，后续功能更新按 `v1.9`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -284,6 +285,12 @@ STRUCTURE_CONFIRM_DELAY_SEC=300        # 结构突破雷达收线后延迟 5 分
 STRUCTURE_DELETE_CHART_AFTER_SEND=true # 真实图片推送成功后立即删除本地 PNG
 STRUCTURE_CHART_RETENTION_HOURS=12     # dry-run/失败图片最多保留 12 小时
 STRUCTURE_MAX_CHART_FILES=200          # 超过 200 张时只保留最新图片
+STRUCTURE_REPLY_CHAIN_ENABLE=true      # 同币结构信号回复上一条结构消息
+STRUCTURE_REVIEW_ENABLE=true           # 启用结构信号复盘统计
+STRUCTURE_REVIEW_LOOKBACK_HOURS=24     # 默认复盘过去 24 小时信号
+STRUCTURE_REVIEW_FORWARD_HOURS=4       # 最多跟踪信号后 4 小时
+STRUCTURE_REVIEW_MIN_AGE_MINUTES=15    # 信号至少等待 15 分钟后复盘
+STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600 # 复盘报告真实推送最小间隔
 ```
 
 如果修改这些参数，可以用 `paopao config` 打开配置文件；更新项目时脚本会保留 token、群 ID、CoinGlass key 和话题 ID。
@@ -293,6 +300,7 @@ STRUCTURE_MAX_CHART_FILES=200          # 超过 200 张时只保留最新图片
 ```bash
 python main.py structure-radar --mode pre --save-charts
 python main.py structure-radar --mode confirm --save-charts
+python main.py structure-review
 ```
 
 独立循环：

@@ -92,6 +92,7 @@ class Settings:
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
     tg_structure_topic_id: str = ""
+    tg_structure_review_topic_id: str = ""
     tg_auto_create_topics: bool = True
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_topic_intro_enable: bool = True
@@ -161,6 +162,17 @@ class Settings:
     structure_state_path: Path = BASE_DIR / "data" / "structure_state.json"
     structure_history_path: Path = BASE_DIR / "data" / "structure_history.json"
     structure_chart_dir: Path = BASE_DIR / "data" / "charts"
+    structure_reply_chain_enable: bool = True
+    structure_review_enable: bool = True
+    structure_review_lookback_hours: int = 24
+    structure_review_forward_hours: int = 4
+    structure_review_min_age_minutes: int = 15
+    structure_review_report_top_n: int = 10
+    structure_review_min_sample: int = 10
+    structure_review_max_report_interval_sec: int = 3600
+    structure_review_path: Path = BASE_DIR / "data" / "structure_review.json"
+    structure_stats_path: Path = BASE_DIR / "data" / "structure_stats.json"
+    structure_review_report_path: Path = BASE_DIR / "data" / "structure_review_report.txt"
 
     oi_hist_budget: int = 80
     kline_budget: int = 120
@@ -205,6 +217,7 @@ class Settings:
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_structure_topic_id=env_first("STRUCTURE_TOPIC_ID", "TG_STRUCTURE_TOPIC_ID", "TELEGRAM_STRUCTURE_TOPIC_ID"),
+            tg_structure_review_topic_id=env_first("STRUCTURE_REVIEW_TOPIC_ID", "TG_STRUCTURE_REVIEW_TOPIC_ID", "TELEGRAM_STRUCTURE_REVIEW_TOPIC_ID"),
             tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_topic_intro_enable=env_bool("TG_TOPIC_INTRO_ENABLE", True),
@@ -269,6 +282,17 @@ class Settings:
             structure_state_path=data_path(data_dir, "STRUCTURE_STATE_FILE", "structure_state.json"),
             structure_history_path=data_path(data_dir, "STRUCTURE_HISTORY_FILE", "structure_history.json"),
             structure_chart_dir=data_path(data_dir, "STRUCTURE_CHART_DIR", "charts"),
+            structure_reply_chain_enable=env_bool("STRUCTURE_REPLY_CHAIN_ENABLE", True),
+            structure_review_enable=env_bool("STRUCTURE_REVIEW_ENABLE", True),
+            structure_review_lookback_hours=env_int("STRUCTURE_REVIEW_LOOKBACK_HOURS", 24),
+            structure_review_forward_hours=env_int("STRUCTURE_REVIEW_FORWARD_HOURS", 4),
+            structure_review_min_age_minutes=env_int("STRUCTURE_REVIEW_MIN_AGE_MINUTES", 15),
+            structure_review_report_top_n=env_int("STRUCTURE_REVIEW_REPORT_TOP_N", 10),
+            structure_review_min_sample=env_int("STRUCTURE_REVIEW_MIN_SAMPLE", 10),
+            structure_review_max_report_interval_sec=env_int("STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC", 3600),
+            structure_review_path=data_path(data_dir, "STRUCTURE_REVIEW_FILE", "structure_review.json"),
+            structure_stats_path=data_path(data_dir, "STRUCTURE_STATS_FILE", "structure_stats.json"),
+            structure_review_report_path=data_path(data_dir, "STRUCTURE_REVIEW_REPORT_FILE", "structure_review_report.txt"),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
@@ -311,6 +335,7 @@ class Settings:
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
                     "structure_radar": bool(self.tg_structure_topic_id),
+                    "structure_review": bool(self.tg_structure_review_topic_id),
                 },
                 "auto_create_topics": self.tg_auto_create_topics,
                 "topic_routes_file": str(self.tg_topic_routes_path),
@@ -380,6 +405,17 @@ class Settings:
                 "state_file": str(self.structure_state_path),
                 "history_file": str(self.structure_history_path),
                 "chart_dir": str(self.structure_chart_dir),
+                "reply_chain_enable": self.structure_reply_chain_enable,
+                "review_enable": self.structure_review_enable,
+                "review_lookback_hours": self.structure_review_lookback_hours,
+                "review_forward_hours": self.structure_review_forward_hours,
+                "review_min_age_minutes": self.structure_review_min_age_minutes,
+                "review_report_top_n": self.structure_review_report_top_n,
+                "review_min_sample": self.structure_review_min_sample,
+                "review_max_report_interval_sec": self.structure_review_max_report_interval_sec,
+                "review_file": str(self.structure_review_path),
+                "stats_file": str(self.structure_stats_path),
+                "review_report_file": str(self.structure_review_report_path),
             },
             "launch": {
                 "scan_limit": self.launch_scan_limit,

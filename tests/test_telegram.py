@@ -122,6 +122,8 @@ class TelegramGatewayTests(unittest.TestCase):
                 tg_announcement_alert_topic_id="13",
                 tg_test_topic_id="14",
                 tg_flow_radar_topic_id="15",
+                tg_structure_topic_id="16",
+                tg_structure_review_topic_id="17",
             )
             gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
 
@@ -131,10 +133,12 @@ class TelegramGatewayTests(unittest.TestCase):
                 gateway.send("announcement", "TG_ANNOUNCEMENT_ALERT", "announcement:key", send=False, confirm_real_send=False)
                 gateway.send("test", "TG_TEST_MESSAGE", "test:key", send=False, confirm_real_send=False)
                 gateway.send("flow", "TG_FLOW_RADAR", "flow:key", send=False, confirm_real_send=False)
+                gateway.send("structure", "TG_STRUCTURE_RADAR", "structure:key", send=False, confirm_real_send=False)
+                gateway.send("review", "TG_STRUCTURE_REVIEW", "review:key", send=False, confirm_real_send=False)
                 gateway.send("other", "OTHER_TEMPLATE", "other:key", send=False, confirm_real_send=False)
 
             history = JsonStore(Path(tmp)).load(history_path, [])
-            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "15", "10"])
+            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "15", "16", "17", "10"])
 
     def test_auto_created_topic_is_reused_from_state(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -249,6 +253,48 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(first_payload["reply_to_message_id"], 111)
             self.assertTrue(first_payload["allow_sending_without_reply"])
             self.assertEqual(first_payload["message_thread_id"], 12)
+            self.assertNotIn("reply_to_message_id", second_payload)
+
+    def test_real_sender_falls_back_when_reply_target_invalid(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_use_topic=True,
+                tg_push_retry=1,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            class Response400:
+                status_code = 400
+                text = "bad reply"
+
+                @staticmethod
+                def json() -> dict[str, object]:
+                    return {}
+
+            class Response200:
+                status_code = 200
+                text = "ok"
+
+                @staticmethod
+                def json() -> dict[str, object]:
+                    return {"result": {"message_id": 333}}
+
+            with patch("paopao_radar.telegram.requests.post", side_effect=[Response400(), Response200()]) as post_mock:
+                ok, message_ids = gateway._send_real_message_ids(
+                    "structure",
+                    parse_mode="HTML",
+                    topic_id="12",
+                    reply_to_message_id=111,
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(message_ids, [333])
+            first_payload = post_mock.call_args_list[0].kwargs["json"]
+            second_payload = post_mock.call_args_list[1].kwargs["json"]
+            self.assertEqual(first_payload["reply_to_message_id"], 111)
             self.assertNotIn("reply_to_message_id", second_payload)
 
     def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:

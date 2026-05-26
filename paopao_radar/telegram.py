@@ -55,9 +55,10 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_STRUCTURE_RADAR": "结构突破",
+    "TG_STRUCTURE_REVIEW": "结构复盘",
 }
 
-TOPIC_INTRO_VERSION = "2026-05-26-structure-radar-v5"
+TOPIC_INTRO_VERSION = "2026-05-26-structure-radar-v6"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -175,6 +176,22 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "1. 先看信号类型，再看距离上沿/下沿和箱体宽度。",
         "2. 临界信号不是做单确认，确认信号必须等整点后收线判断。",
         "3. 图表用于快速看箱体上下沿、当前价格、量能和 OI，不代表自动交易建议。",
+        ])
+    if template_id == "TG_STRUCTURE_REVIEW":
+        return "\n".join([
+        "📌 <b>结构复盘话题说明</b>",
+        "",
+        "这里推送结构雷达信号发出后的表现统计，用来判断临界、突破、假突破信号是否有效。",
+        "",
+        "扫描和发送频率：",
+        f"- 默认复盘过去 {int(settings.structure_review_lookback_hours)} 小时的结构信号。",
+        f"- 信号至少等待 {seconds_cn(settings.structure_review_min_age_minutes * 60)} 后开始复盘，最多跟踪 {int(settings.structure_review_forward_hours)} 小时。",
+        f"- 真实推送复盘报告最小间隔：{seconds_cn(settings.structure_review_max_report_interval_sec)}。",
+        "",
+        "阅读方式：",
+        "1. 先看总信号、已完成复盘、有效突破、假突破、无效震荡。",
+        "2. 再看 S/A/B/C 各等级命中率，判断当前分数线是否过松。",
+        "3. 参数建议只做参考，不会自动修改 .env.oi。",
         ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([
@@ -529,6 +546,7 @@ class TelegramGateway:
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_STRUCTURE_RADAR": self.settings.tg_structure_topic_id,
+            "TG_STRUCTURE_REVIEW": self.settings.tg_structure_review_topic_id or self.settings.tg_structure_topic_id,
         }
         return topic_routes.get(template_id, "")
 

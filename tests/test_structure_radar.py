@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -216,6 +217,62 @@ class StructureRadarTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("structure_push: dry_run", output.getvalue())
+
+    def test_structure_signal_replies_to_same_symbol_last_message(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                radar_min_quote_volume=1,
+                tg_push_history_path=Path(tmp) / "tg_push_history.json",
+                runtime_status_path=Path(tmp) / "runtime_status.json",
+                structure_state_path=Path(tmp) / "structure_state.json",
+                structure_history_path=Path(tmp) / "structure_history.json",
+                structure_review_path=Path(tmp) / "structure_review.json",
+                structure_chart_dir=Path(tmp) / "charts",
+                structure_min_score=50,
+                structure_review_enable=False,
+            )
+            store = JsonStore(Path(tmp))
+            store.save(settings.structure_state_path, {"TESTUSDT": {"last_message_id": 123}})
+            runtime = (settings, store, None, TelegramGateway(settings, store))
+
+            with patch.object(cli, "make_runtime", side_effect=lambda: runtime):
+                with patch.object(cli, "BinanceDataSource", FakeSource):
+                    with redirect_stdout(StringIO()):
+                        code = cli.main(["structure-radar", "--min-score", "50"])
+
+            history = store.load(settings.tg_push_history_path, [])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(history[0]["reply_to_message_id"], 123)
+
+    def test_structure_signal_does_not_reply_to_other_symbol(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                radar_min_quote_volume=1,
+                tg_push_history_path=Path(tmp) / "tg_push_history.json",
+                runtime_status_path=Path(tmp) / "runtime_status.json",
+                structure_state_path=Path(tmp) / "structure_state.json",
+                structure_history_path=Path(tmp) / "structure_history.json",
+                structure_review_path=Path(tmp) / "structure_review.json",
+                structure_chart_dir=Path(tmp) / "charts",
+                structure_min_score=50,
+                structure_review_enable=False,
+            )
+            store = JsonStore(Path(tmp))
+            store.save(settings.structure_state_path, {"OTHERUSDT": {"last_message_id": 456}})
+            runtime = (settings, store, None, TelegramGateway(settings, store))
+
+            with patch.object(cli, "make_runtime", side_effect=lambda: runtime):
+                with patch.object(cli, "BinanceDataSource", FakeSource):
+                    with redirect_stdout(StringIO()):
+                        code = cli.main(["structure-radar", "--min-score", "50"])
+
+            history = store.load(settings.tg_push_history_path, [])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(history[0]["reply_to_message_id"], 0)
 
     def test_delete_chart_after_success_only_for_real_sent_photo(self) -> None:
         with TemporaryDirectory() as tmp:

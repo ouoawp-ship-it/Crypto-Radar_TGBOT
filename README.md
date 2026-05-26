@@ -127,6 +127,27 @@ STRUCTURE_CHART_RETENTION_HOURS=12
 STRUCTURE_MAX_CHART_FILES=200
 ```
 
+## 结构信号复盘 v1.8.3
+
+结构雷达会把本轮信号写入 `data/structure_review.json`，后续通过 K 线渐进复盘 15m、1h、4h 后价格变化、有效突破、假突破、MFE/MAE，并生成聚合统计。
+
+```bash
+python main.py structure-review
+python main.py structure-review --lookback-hours 24
+python main.py structure-review --send --confirm-real-send
+```
+
+复盘报告保存到 `data/structure_review_report.txt`，聚合统计保存到 `data/structure_stats.json`。结构雷达同币种后续信号默认会回复上一条该币结构消息，形成 Telegram 追踪链。
+
+```bash
+STRUCTURE_REPLY_CHAIN_ENABLE=true
+STRUCTURE_REVIEW_ENABLE=true
+STRUCTURE_REVIEW_LOOKBACK_HOURS=24
+STRUCTURE_REVIEW_FORWARD_HOURS=4
+STRUCTURE_REVIEW_MIN_AGE_MINUTES=15
+STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600
+```
+
 ## 一键更新
 
 ```bash
@@ -171,4 +192,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.8.2`，后续功能更新按 `v1.9`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.8.3`，后续功能更新按 `v1.9`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

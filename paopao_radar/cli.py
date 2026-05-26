@@ -41,6 +41,7 @@ from .structure_radar import (
     next_structure_confirm_epoch,
     next_structure_pre_epoch,
 )
+from .structure_review import StructureReviewEngine
 from .telegram import TelegramGateway
 from .time_windows import next_closed_window_epoch
 
@@ -131,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "flow-radar", "structure-radar", "structure-loop", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -151,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-score", type=float, default=None, help="structure-radar 临时覆盖最低推送分数")
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
+    parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 统计过去 N 小时的结构信号")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
@@ -174,6 +176,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     min_score = getattr(args, "min_score", None)
     interval = getattr(args, "interval", None)
     save_charts = getattr(args, "save_charts", False)
+    lookback_hours = getattr(args, "lookback_hours", None)
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
     if launch_scan_limit is not None:
@@ -188,6 +191,8 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
         updates["structure_interval"] = str(interval)
     if save_charts:
         updates["structure_save_charts"] = True
+    if lookback_hours is not None:
+        updates["structure_review_lookback_hours"] = max(1, int(lookback_hours))
     if not updates:
         return settings
     return replace(settings, **updates)
@@ -215,6 +220,9 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.launch_watch_history_path,
         settings.structure_state_path,
         settings.structure_history_path,
+        settings.structure_review_path,
+        settings.structure_stats_path,
+        settings.structure_review_report_path,
         settings.divergence_state_path,
         settings.divergence_cooldown_path,
         settings.cleanup_state_path,
@@ -419,6 +427,64 @@ def delete_chart_after_success(settings: Settings, photo_result: object, chart_p
         return {"deleted": False, "reason": f"{type(exc).__name__}: {exc}", "path": str(path)}
 
 
+def structure_reply_to_message_id(settings: Settings, store: JsonStore, signals: list[StructureSignal]) -> int | None:
+    if not settings.structure_reply_chain_enable or len(signals) != 1:
+        return None
+    signal = signals[0]
+    state = store.load(settings.structure_state_path, {})
+    if not isinstance(state, dict):
+        return None
+    record = state.get(signal.symbol, {})
+    if not isinstance(record, dict):
+        symbols = state.get("symbols", {})
+        record = symbols.get(signal.symbol, {}) if isinstance(symbols, dict) else {}
+    if not isinstance(record, dict):
+        return None
+    try:
+        message_id = int(record.get("last_message_id", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return message_id if message_id > 0 else None
+
+
+def run_structure_review(args: argparse.Namespace) -> int:
+    settings, store, _engine, gateway = make_runtime_for_args(args)
+    if not settings.structure_review_enable:
+        print("structure_review: disabled (STRUCTURE_REVIEW_ENABLE=false)")
+        return 2
+    review = StructureReviewEngine(settings, store)
+    result = review.update(
+        BinanceDataSource(settings),
+        lookback_hours=args.lookback_hours or settings.structure_review_lookback_hours,
+    )
+    push = gateway.send(
+        result["text"],
+        result["template_id"],
+        result["dedup_key"],
+        send=args.send,
+        confirm_real_send=args.confirm_real_send,
+        cooldown_sec=settings.structure_review_max_report_interval_sec,
+        parse_mode="HTML",
+    )
+    print(f"structure_review_push: {push.status} ({push.reason})")
+    print(json.dumps({
+        "report_path": result["report_path"],
+        "summary": result["stats"].get("summary", {}),
+    }, ensure_ascii=False, indent=2))
+    write_runtime_status(
+        settings,
+        store,
+        command_mode(args),
+        "completed",
+        task="structure-review",
+        real_send=bool(args.send and args.confirm_real_send),
+        structure_review_push=push.status,
+        report_path=result["report_path"],
+        stats_summary=result["stats"].get("summary", {}),
+    )
+    return 0 if push.status != "failed" else 1
+
+
 def run_structure_radar(args: argparse.Namespace) -> int:
     settings, store, _engine, gateway = make_runtime_for_args(args)
     if not settings.structure_radar_enable:
@@ -437,6 +503,8 @@ def run_structure_radar(args: argparse.Namespace) -> int:
     report_path = settings.data_dir / "structure_report.txt"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(result["text"], encoding="utf-8")
+    signal_objects = result.get("signal_objects") or []
+    reply_to_message_id = structure_reply_to_message_id(settings, store, signal_objects)
     push = gateway.send(
         result["text"],
         result["template_id"],
@@ -445,12 +513,21 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=settings.structure_cooldown_sec,
         parse_mode="HTML",
+        reply_to_message_id=reply_to_message_id,
     )
     print(f"structure_push: {push.status} ({push.reason})")
 
     sent_signals: list[StructureSignal] = []
     if push.status == "sent":
-        sent_signals.extend(result.get("signal_objects") or [])
+        sent_signals.extend(signal_objects)
+    review_recorded = 0
+    if settings.structure_review_enable:
+        review_recorded = StructureReviewEngine(settings, store).record_signals(
+            signal_objects,
+            mode=str(result.get("mode") or args.mode),
+            window=result.get("window") if isinstance(result.get("window"), dict) else {},
+            push_status=push.status,
+        )
     photo_count = 0
     chart_delete_results: list[dict[str, object]] = []
     for idx, signal in enumerate((result.get("signal_objects") or [])[: settings.structure_send_chart_top_n], start=1):
@@ -476,7 +553,7 @@ def run_structure_radar(args: argparse.Namespace) -> int:
             print(f"structure_chart_delete[{idx}]: skipped ({delete_result.get('reason')})")
         chart_delete_results.append(delete_result)
     if sent_signals:
-        radar.mark_pushed(sent_signals)
+        radar.mark_pushed(sent_signals, push.message_ids or [])
     chart_cleanup = cleanup_structure_charts(
         settings.structure_chart_dir,
         settings.structure_chart_retention_hours,
@@ -486,6 +563,8 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         "report_path": str(report_path),
         "chart_paths": result.get("chart_paths", []),
         "photo_count": photo_count,
+        "reply_to_message_id": reply_to_message_id or 0,
+        "review_recorded": review_recorded,
         "chart_delete_results": chart_delete_results,
         "chart_cleanup": chart_cleanup,
         "diagnostics": result.get("diagnostics", {}),
@@ -500,7 +579,9 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         structure_mode=args.mode,
         structure_interval=settings.structure_interval,
         structure_push=push.status,
+        structure_reply_to_message_id=reply_to_message_id or 0,
         structure_signals=len(result.get("signals", [])),
+        structure_review_recorded=review_recorded,
         report_path=str(report_path),
         chart_paths=result.get("chart_paths", []),
         chart_cleanup=chart_cleanup,
@@ -541,6 +622,11 @@ def run_structure_loop(args: argparse.Namespace) -> int:
         if now >= next_confirm:
             try:
                 run_structure_radar(argparse.Namespace(**{**vars(args), "mode": "confirm"}))
+                if settings.structure_review_enable:
+                    run_structure_review(argparse.Namespace(**{
+                        **vars(args),
+                        "lookback_hours": settings.structure_review_lookback_hours,
+                    }))
             except Exception as exc:
                 print(f"[structure-loop] confirm failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             next_confirm = next_structure_confirm_epoch(time.time(), settings.structure_confirm_delay_sec)
@@ -1330,6 +1416,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_structure_radar(args)
     if args.command == "structure-loop":
         return run_structure_loop(args)
+    if args.command == "structure-review":
+        return run_structure_review(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0
