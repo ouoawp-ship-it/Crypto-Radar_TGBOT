@@ -61,15 +61,74 @@ def unavailable_context(symbol: str, reason: str, source: str = "CoinGlass") -> 
     )
 
 
+def _sequence_item(values: list[Any]) -> dict[str, Any] | None:
+    numeric = [to_float(value) for value in values]
+    numeric = [value for value in numeric if value > 0]
+    if len(numeric) < 2:
+        return None
+    return {"price": numeric[-2], "amount": numeric[-1]}
+
+
+def _axis_values(payload: dict[str, Any]) -> list[float]:
+    for key in ("yAxis", "y_axis", "priceAxis", "price_axis", "prices", "priceList", "price_list"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            value = value.get("data") or value.get("values") or value.get("list")
+        if isinstance(value, list):
+            result = [to_float(item) for item in value]
+            result = [item for item in result if item > 0]
+            if result:
+                return result
+    return []
+
+
+def _matrix_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    y_axis = _axis_values(payload)
+    matrix = None
+    for key in ("data", "heatmap", "values", "series"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            matrix = value
+            break
+    if not isinstance(matrix, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for row in matrix:
+        if isinstance(row, dict):
+            if _extract_price(row) is not None:
+                rows.append(row)
+            continue
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        if y_axis and len(row) >= 3:
+            index = int(to_float(row[1]))
+            if 0 <= index < len(y_axis):
+                amount = to_float(row[-1])
+                if amount > 0:
+                    rows.append({"price": y_axis[index], "amount": amount})
+                    continue
+        item = _sequence_item(list(row))
+        if item:
+            rows.append(item)
+    return rows
+
+
 def _as_items(payload: Any) -> list[dict[str, Any]]:
     if payload is None:
         return []
     if isinstance(payload, list):
+        if payload and all(not isinstance(item, (dict, list, tuple)) for item in payload):
+            item = _sequence_item(payload)
+            return [item] if item else []
         result: list[dict[str, Any]] = []
         for item in payload:
             result.extend(_as_items(item))
         return result
     if isinstance(payload, dict):
+        matrix_rows = _matrix_items(payload)
+        if matrix_rows:
+            return matrix_rows
         for key in (
             "data",
             "list",

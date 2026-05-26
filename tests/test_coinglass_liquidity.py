@@ -110,6 +110,25 @@ class CoinglassLiquidityTests(unittest.TestCase):
         self.assertEqual(context.liquidation_bias, "up")
         self.assertAlmostEqual(context.nearest_liquidation_above_pct, 4.0)
 
+    def test_heatmap_matrix_payload_is_parsed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.make_settings(tmp)
+            source = FakeCoinglassSource(
+                liquidation={
+                    "yAxis": [96, 100, 104],
+                    "data": [[1700000000, 2, 900], [1700000000, 0, 100]],
+                },
+                orderbook={
+                    "data": [[1700000000, 97, 700], [1700000000, 103, 50]],
+                },
+            )
+            context = CoinglassLiquidityAnalyzer(settings, source).context("TESTUSDT", 100)
+
+        self.assertTrue(context.available)
+        self.assertEqual(context.upper_liquidation_zone, "$104")
+        self.assertAlmostEqual(context.nearest_liquidation_above_pct, 4.0)
+        self.assertEqual(context.lower_liquidity_wall, "$97")
+
     def test_up_signal_scores_higher_with_upper_liquidation_pool(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.make_settings(tmp)
