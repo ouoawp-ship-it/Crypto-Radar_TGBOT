@@ -81,7 +81,11 @@ bash scripts/install_server.sh
 阶段: watching / primed / breakout / launched / failed。
 同币同阶段默认冷却 6 小时。
 
-3. 公告机会/风险
+3. 五因子资金流雷达
+周期: 默认每 1 小时整点推送一次。
+内容: 真启动候选、吸筹观察、空头燃料、合约拉盘、挤空/止损、诱多/派发、恐慌下跌；本轮只显示达标分类。
+
+4. 公告机会/风险
 周期: 跟随 once/loop 的主扫描。
 内容: Binance 公告中的 Alpha、上新、HODLer、Launchpool、Airdrop、下架、停止交易等。
 dry-run 不会把公告标记为已推送，只有真实发送成功才写入状态。

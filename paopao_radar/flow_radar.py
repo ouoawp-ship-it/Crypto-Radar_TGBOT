@@ -260,7 +260,7 @@ class FlowRadarEngine:
         if not coinglass.enabled:
             return {
                 "template_id": "TG_FLOW_RADAR",
-                "dedup_key": f"flow-radar:{datetime.now(CST).strftime('%Y%m%d%H%M')}",
+                "dedup_key": f"flow-radar:{datetime.now(CST).strftime('%Y%m%d%H')}",
                 "text": "🧭 五因子资金流雷达\n\nCoinGlass 未启用，无法计算 CVD。",
                 "items": [],
                 "diagnostics": {"coinglass": coinglass.diagnostics(), "binance": binance.diagnostics()},
@@ -373,7 +373,7 @@ class FlowRadarEngine:
         rows = rows[: max(1, self.settings.flow_top_n)]
         return {
             "template_id": "TG_FLOW_RADAR",
-            "dedup_key": f"flow-radar:{datetime.now(CST).strftime('%Y%m%d%H%M')}",
+            "dedup_key": f"flow-radar:{datetime.now(CST).strftime('%Y%m%d%H')}",
             "text": self._format(rows, candidates, coinglass, scanned_items),
             "items": rows,
             "diagnostics": {"coinglass": coinglass.diagnostics(), "binance": binance.diagnostics()},
@@ -474,10 +474,14 @@ class FlowRadarEngine:
             ])
         lines.extend([
             tg_quote("📖 图例"),
+            "显示分类 = 真启动候选 / 吸筹观察 / 空头燃料 / 合约拉盘 / 挤空/止损 / 诱多/派发 / 恐慌下跌；本轮只显示达标分类",
             "真启动 = 价格、OI、现货CVD、合约CVD共振且费率未过热",
             "吸筹 = 价格未明显启动，但OI和现货CVD提前增强",
+            "空头燃料 = 负费率叠加增仓，偏挤空候选",
             "合约拉盘 = 合约CVD强、现货CVD弱，追高风险更高",
+            "挤空/止损 = 上涨伴随OI下降，可能是空头止损推动",
             "诱多/派发 = 价格上涨但现货主动买入不足",
+            "恐慌下跌 = 下跌增仓且CVD走弱，先按风险处理",
             "CVD = 主动买入量 - 主动卖出量，正值代表主动买盘更强",
         ])
         return "\n".join(lines)

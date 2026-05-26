@@ -130,6 +130,12 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(settings.launch_scan_limit, 3)
         self.assertEqual(settings.flow_scan_limit, 2)
 
+    def test_next_interval_epoch_aligns_hourly_jobs_to_top_of_hour(self) -> None:
+        base = main.datetime(2026, 5, 26, 17, 46, 30).timestamp()
+        expected = main.datetime(2026, 5, 26, 18, 0, 0).timestamp()
+
+        self.assertEqual(main.next_interval_epoch(base, 3600), expected)
+
     def test_coinglass_test_blocks_when_disabled(self) -> None:
         with TemporaryDirectory() as tmp:
             with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):

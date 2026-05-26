@@ -138,7 +138,7 @@ class Settings:
     flow_candidate_pool: int = 50
     flow_top_n: int = 8
     flow_min_score: int = 50
-    flow_interval_sec: int = 15 * 60
+    flow_interval_sec: int = 3600
 
     oi_hist_budget: int = 80
     kline_budget: int = 120
@@ -224,7 +224,7 @@ class Settings:
             flow_candidate_pool=env_int("FLOW_CANDIDATE_POOL", 50),
             flow_top_n=env_int("FLOW_TOP_N", 8),
             flow_min_score=env_int("FLOW_MIN_SCORE", 50),
-            flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 15 * 60),
+            flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 3600),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),

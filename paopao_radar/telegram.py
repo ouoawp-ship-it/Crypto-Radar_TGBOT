@@ -55,7 +55,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_FLOW_RADAR": "资金流雷达",
 }
 
-TOPIC_INTRO_VERSION = "2026-05-26-frequency-v1"
+TOPIC_INTRO_VERSION = "2026-05-26-flow-hourly-v2"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -132,14 +132,16 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "这里推送五因子资金流监控：价格、OI、现货CVD、合约CVD、资金费率。",
         "",
         "扫描和发送频率：",
-        f"- 默认每{seconds_cn(settings.flow_interval_sec)}扫描并发送一次。",
+        f"- 默认每{seconds_cn(settings.flow_interval_sec)}扫描一次，并在整点附近发送。",
+        "- 手动执行 flow-radar 会立即扫描；daemon/live 循环按整点调度。",
         "- 需要 CoinGlass API key；如果 CVD/OI 数据缺失，应先按数据质量问题处理。",
         "",
         "阅读方式：",
         "1. 真启动候选 = 现货和合约资金共同推动，费率未过热。",
         "2. 吸筹观察 = 价格未大涨，但 OI 和现货CVD提前增强。",
         "3. 合约拉盘/诱多派发 = 合约强于现货，追高风险更高。",
-        "4. CVD 为主动买入量减主动卖出量，正值代表主动买盘更强。",
+        "4. 可出现 7 类标题：真启动候选、吸筹观察、空头燃料、合约拉盘、挤空/止损、诱多/派发、恐慌下跌；本轮只显示达标分类。",
+        "5. CVD 为主动买入量减主动卖出量；近0为中性，不按主动买入或主动卖出评分。",
         ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([

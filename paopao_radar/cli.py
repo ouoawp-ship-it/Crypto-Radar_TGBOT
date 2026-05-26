@@ -214,6 +214,13 @@ def timestamp_from_epoch(value: float) -> str:
     return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def next_interval_epoch(value: float, interval_sec: int) -> float:
+    interval = max(60, int(interval_sec))
+    if interval % 3600 == 0:
+        return float((int(value) // interval + 1) * interval)
+    return value + interval
+
+
 def write_runtime_status(
     settings: Settings,
     store: JsonStore,
@@ -722,7 +729,7 @@ def run_loop(args: argparse.Namespace) -> int:
     )
     next_summary = 0.0
     next_launch = 0.0
-    next_flow = 0.0
+    next_flow = next_interval_epoch(time.time(), settings.flow_interval_sec)
     write_runtime_status(
         settings,
         store,
@@ -733,6 +740,7 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=summary_interval,
         launch_interval_sec=max(60, args.launch_interval),
         flow_interval_sec=max(60, settings.flow_interval_sec),
+        next_flow_at=timestamp_from_epoch(next_flow),
         no_launch=bool(args.no_launch),
         no_flow=bool(args.no_flow),
         radar_scan_limit=settings.radar_scan_limit,
@@ -783,7 +791,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 flow_ok = False
                 flow_error = f"{type(exc).__name__}: {exc}"
                 print(f"[loop] flow failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            next_flow = time.time() + max(60, settings.flow_interval_sec)
+            next_flow = next_interval_epoch(time.time(), settings.flow_interval_sec)
             write_runtime_status(
                 settings,
                 store,

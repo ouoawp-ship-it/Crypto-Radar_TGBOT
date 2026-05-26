@@ -29,6 +29,7 @@ class EnvSyncTests(unittest.TestCase):
                     "COINGLASS_API_KEY=secret_key",
                     "RADAR_SUMMARY_MIN_INTERVAL_SEC=1800",
                     "RADAR_SUMMARY_MAX_DAILY_PUSH=6",
+                    "FLOW_INTERVAL_SEC=900",
                     "CUSTOM_KEEP=1",
                 ]) + "\n",
                 encoding="utf-8",
@@ -40,6 +41,7 @@ class EnvSyncTests(unittest.TestCase):
                     "COINGLASS_API_KEY=",
                     "RADAR_SUMMARY_MIN_INTERVAL_SEC=21600",
                     "RADAR_SUMMARY_MAX_DAILY_PUSH=4",
+                    "FLOW_INTERVAL_SEC=3600",
                     "NEW_NORMAL_SETTING=true",
                 ]) + "\n",
                 encoding="utf-8",
@@ -50,12 +52,13 @@ class EnvSyncTests(unittest.TestCase):
 
         self.assertIn("RADAR_SUMMARY_MIN_INTERVAL_SEC=21600", text)
         self.assertIn("RADAR_SUMMARY_MAX_DAILY_PUSH=4", text)
+        self.assertIn("FLOW_INTERVAL_SEC=3600", text)
         self.assertIn("NEW_NORMAL_SETTING=true", text)
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)
         self.assertIn("TG_CHAT_ID=-1001234567890", text)
         self.assertIn("COINGLASS_API_KEY=secret_key", text)
         self.assertIn("CUSTOM_KEEP=1", text)
-        self.assertEqual(set(result["updated"]), {"RADAR_SUMMARY_MIN_INTERVAL_SEC", "RADAR_SUMMARY_MAX_DAILY_PUSH"})
+        self.assertEqual(set(result["updated"]), {"RADAR_SUMMARY_MIN_INTERVAL_SEC", "RADAR_SUMMARY_MAX_DAILY_PUSH", "FLOW_INTERVAL_SEC"})
 
     def test_sync_keeps_custom_managed_value(self) -> None:
         module = load_sync_module()

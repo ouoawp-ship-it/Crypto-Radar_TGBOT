@@ -3,13 +3,13 @@
 ## 1. 项目基本信息
 
 - 项目路径：`C:\Users\多多\Desktop\泡泡抓币`
-- 当前版本：`v1.4`，见 `VERSION`
+- 当前版本：`v1.5`，见 `VERSION`
 - Git 提交：以仓库当前 `git log --oneline -1` 为准，本报告按生成时项目结构整理。
 - 主入口：`main.py` -> `paopao_radar.cli.main()`
 - 依赖：`requests>=2.31.0`、`httpx>=0.27.0`
 - 本次检查方式：只读扫描源码、文档、配置模板、测试文件；没有启动 daemon/live，没有真实发送 Telegram。
 - 本地 `.env.oi` 脱敏状态：`TG_BOT_TOKEN=已配置`，`TG_CHAT_ID=已配置`，各专属 topic ID 未配置，`COINGLASS_ENABLE=未设置`，`COINGLASS_API_KEY=未配置`。服务器配置可能不同，需要以服务器 `.env.oi` 为准。
-- 静态检查：AST 语法检查通过 10 个 Python 文件；单元测试 `python -m unittest discover -s tests` 通过 58 个测试。
+- 静态检查：AST 语法检查通过 10 个 Python 文件；单元测试 `python -m unittest discover -s tests` 通过 59 个测试。
 
 ## 2. 目录结构
 
@@ -130,11 +130,11 @@
 | 自动循环 | 已支持，`loop/daemon/live`。 |
 | 资金摘要周期 | 默认读取 `RADAR_SUMMARY_MIN_INTERVAL_SEC=21600`（6 小时）；模板每日上限默认 4 次。 |
 | 启动雷达周期 | `--launch-interval` 默认 180 秒。 |
-| flow 雷达周期 | `FLOW_INTERVAL_SEC` 默认 900 秒，需 CoinGlass 启用。 |
+| flow 雷达周期 | `FLOW_INTERVAL_SEC` 默认 3600 秒，daemon/live 对齐整点附近推送，需 CoinGlass 启用。 |
 | 自动清理周期 | `CLEANUP_INTERVAL_SEC` 默认 3600 秒。 |
 | 每天固定时间 | 未找到。 |
 | 每小时 55 分扫描 | 当前未接入。 |
-| 整点推送 | 当前未接入固定整点调度；只有相对间隔。 |
+| 整点推送 | 资金流雷达已对齐整点附近推送；其他周期仍按相对间隔。 |
 | Windows bat | 当前未找到，文档说明不保留 Windows 一键启动脚本。 |
 | systemd | 已支持，`install_server.sh` 写入 `paopao-radar.service`，`Restart=always`，`RestartSec=15`。 |
 | nohup 后台 | 文档中有手动 `nohup .venv/bin/python -u main.py daemon ...` 示例。 |
@@ -165,7 +165,7 @@
 | 价格接近箱体上沿/下沿 | 未实现 | 没有箱体边界字段。 |
 | 突破临界 | 部分已有 | 启动雷达判断 `close > previous_high`，但不是临界/接近预警。 |
 | 假突破识别 | 未实现 | 只有文案提示“跌回突破位则启动失败”，没有假突破状态机。 |
-| 每小时 55 分扫描 | 未实现 | loop 使用相对秒数，无按分钟对齐调度。 |
+| 每小时 55 分扫描 | 未实现 | 资金流雷达已支持整点推送，但没有 55 分钟扫描机制。 |
 | 推送 K线状态图 | 未实现 | 无图表生成和 `sendPhoto`。 |
 
 ## 11. 当前优点

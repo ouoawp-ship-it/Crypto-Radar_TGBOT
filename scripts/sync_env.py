@@ -30,6 +30,11 @@ MANAGED_MIGRATIONS = {
         "new": "4",
         "note": "资金摘要默认改为每天最多 4 次",
     },
+    "FLOW_INTERVAL_SEC": {
+        "old": {"", "900"},
+        "new": "3600",
+        "note": "资金流雷达默认改为每小时整点推送",
+    },
 }
 
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
