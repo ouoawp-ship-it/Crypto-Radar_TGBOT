@@ -9,7 +9,7 @@
 - 依赖：`requests>=2.31.0`、`httpx>=0.27.0`
 - 本次检查方式：只读扫描源码、文档、配置模板、测试文件；没有启动 daemon/live，没有真实发送 Telegram。
 - 本地 `.env.oi` 脱敏状态：`TG_BOT_TOKEN=已配置`，`TG_CHAT_ID=已配置`，各专属 topic ID 未配置，`COINGLASS_ENABLE=未设置`，`COINGLASS_API_KEY=未配置`。服务器配置可能不同，需要以服务器 `.env.oi` 为准。
-- 静态检查：AST 语法检查通过 10 个 Python 文件；单元测试 `python -m unittest discover -s tests` 通过 59 个测试。
+- 静态检查：AST 语法检查通过 10 个 Python 文件；单元测试 `python -m unittest discover -s tests` 通过 60 个测试。
 
 ## 2. 目录结构
 

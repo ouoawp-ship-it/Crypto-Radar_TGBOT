@@ -307,6 +307,41 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertTrue(record["pinned"])
             self.assertNotEqual(record["content_hash"], "old")
 
+    def test_flow_intro_mentions_hourly_schedule_and_all_categories(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_flow_radar_topic_id="15",
+                tg_use_topic=True,
+                tg_topic_intro_enable=True,
+                tg_topic_intro_pin=False,
+                tg_default_cooldown_sec=0,
+                flow_interval_sec=3600,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with patch.object(gateway, "_send_real_message_ids", side_effect=[(True, [100]), (True, [101])]) as send_mock:
+                result = gateway.send(
+                    "flow",
+                    "TG_FLOW_RADAR",
+                    "flow:key",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertTrue(result.sent)
+            intro = send_mock.call_args_list[0].args[0]
+            self.assertIn("默认每1小时扫描一次，并在整点附近发送", intro)
+            self.assertIn("真启动候选、吸筹观察、空头燃料、合约拉盘、挤空/止损、诱多/派发、恐慌下跌", intro)
+
 
 if __name__ == "__main__":
     unittest.main()
