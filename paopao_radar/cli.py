@@ -138,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "coinglass-liquidity-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "coinglass-liquidity-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -443,6 +443,36 @@ def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
     payload.update(extra)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if context.available else 1
+
+
+def run_announcements_test(args: argparse.Namespace) -> int:
+    settings, store, engine, _gateway = make_runtime_for_args(args)
+    source = BinanceDataSource(settings)
+    result = engine.build_announcement_alerts(source, include_seen=True)
+    alert_summaries = []
+    for alert in result.get("alerts", []):
+        if not isinstance(alert, dict):
+            continue
+        alert_summaries.append({
+            "kind": alert.get("kind", ""),
+            "code": alert.get("code", ""),
+            "title": alert.get("title", ""),
+            "symbols": alert.get("symbols", []),
+            "contract_symbols": alert.get("contract_symbols", []),
+            "non_contract_symbols": alert.get("non_contract_symbols", []),
+            "release_ts": alert.get("release_ts", 0),
+            "expires_at": alert.get("expires_at", 0),
+        })
+    print("announcements_test: ok")
+    print(json.dumps({
+        "page_size": settings.announcement_page_size,
+        "articles_scanned": result.get("articles_scanned", 0),
+        "alerts_classified": result.get("alerts_classified", 0),
+        "messages_ready": len(result.get("messages", [])),
+        "alerts": alert_summaries,
+        "diagnostics": source.diagnostics(),
+    }, ensure_ascii=False, indent=2))
+    return 0
 
 
 def run_flow_radar(args: argparse.Namespace) -> int:
@@ -1490,6 +1520,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_coinglass_test(args)
     if args.command == "coinglass-liquidity-test":
         return run_coinglass_liquidity_test(args)
+    if args.command == "announcements-test":
+        return run_announcements_test(args)
     if args.command == "flow-radar":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)

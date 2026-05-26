@@ -275,26 +275,32 @@ class BinanceDataSource:
                 result[symbol] = cap
         return result
 
-    def announcements(self, page_size: int = 20) -> list[dict[str, Any]]:
+    def announcements(self, page_size: int = 50) -> list[dict[str, Any]]:
         url = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
         articles: list[dict[str, Any]] = []
         for catalog_id in (48, 161, 93):
-            data = self.http.get_json(
-                url,
-                {"type": 1, "catalogId": catalog_id, "pageNo": 1, "pageSize": page_size},
-                cache_key=f"binance:announcements:{catalog_id}:{page_size}",
-                quality_key="announcements",
-            )
-            if not isinstance(data, dict):
-                continue
-            catalogs = data.get("data", {}).get("catalogs", [])
-            if not isinstance(catalogs, list):
-                continue
-            for catalog in catalogs:
-                for article in catalog.get("articles", []) if isinstance(catalog, dict) else []:
-                    if isinstance(article, dict):
-                        article["_catalog_id"] = catalog_id
-                        articles.append(article)
+            for page_no in range(1, 4):
+                data = self.http.get_json(
+                    url,
+                    {"type": 1, "catalogId": catalog_id, "pageNo": page_no, "pageSize": page_size},
+                    cache_key=f"binance:announcements:{catalog_id}:{page_size}:{page_no}",
+                    quality_key="announcements",
+                )
+                if not isinstance(data, dict):
+                    continue
+                catalogs = data.get("data", {}).get("catalogs", [])
+                if not isinstance(catalogs, list):
+                    continue
+                page_articles = 0
+                for catalog in catalogs:
+                    for article in catalog.get("articles", []) if isinstance(catalog, dict) else []:
+                        if isinstance(article, dict):
+                            article["_catalog_id"] = catalog_id
+                            article["_page_no"] = page_no
+                            articles.append(article)
+                            page_articles += 1
+                if page_articles <= 0:
+                    break
 
         unique: list[dict[str, Any]] = []
         seen: set[str] = set()

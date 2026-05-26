@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
+STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
@@ -27,6 +28,11 @@ run_main() {
 
 service_exists() {
   command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1
+}
+
+service_unit_exists() {
+  local name="$1"
+  command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${name}.service" >/dev/null 2>&1
 }
 
 project_version() {
@@ -69,8 +75,12 @@ show_help() {
   paopao test            发送 Telegram 测试消息
   paopao coinglass       测试 CoinGlass API
   paopao liquidity       测试 CoinGlass 清算/盘口增强接口
+  paopao announcements   测试 Binance 公告抓取和分类
   paopao structure       dry-run 运行结构突破雷达
   paopao structure-review dry-run 生成结构信号复盘报告
+  paopao structure-status 查看结构雷达独立服务状态
+  paopao structure-logs   查看结构雷达独立服务日志
+  paopao structure-restart 重启结构雷达独立服务
   paopao runtime         查看 runtime-status
   paopao readiness       检查真实推送准备度
   paopao doctor          查看环境诊断
@@ -97,6 +107,33 @@ show_logs() {
     printf '未找到 systemd 服务，改为查看 data/runtime.log:\n'
     cd_app
     tail -f data/runtime.log
+  fi
+}
+
+show_structure_status() {
+  if service_unit_exists "$STRUCTURE_SERVICE_NAME"; then
+    run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
+  else
+    printf '未找到结构雷达 systemd 服务: %s\n' "$STRUCTURE_SERVICE_NAME"
+  fi
+  printf '\n结构雷达运行状态:\n'
+  run_main runtime-status || true
+}
+
+show_structure_logs() {
+  if service_unit_exists "$STRUCTURE_SERVICE_NAME"; then
+    run_root journalctl -u "$STRUCTURE_SERVICE_NAME" -f
+  else
+    printf '未找到结构雷达 systemd 服务: %s\n' "$STRUCTURE_SERVICE_NAME"
+  fi
+}
+
+restart_structure_service() {
+  if service_unit_exists "$STRUCTURE_SERVICE_NAME"; then
+    run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
+  else
+    printf '未找到结构雷达 systemd 服务: %s\n' "$STRUCTURE_SERVICE_NAME"
   fi
 }
 
@@ -167,6 +204,10 @@ show_menu() {
  13. 环境诊断 doctor
  14. 查看当前版本
  15. 结构信号复盘 structure-review
+ 16. 结构雷达服务状态
+ 17. 结构雷达实时日志
+ 18. 重启结构雷达服务
+ 19. 测试 Binance 公告抓取
   0. 退出
 ============================================================
 
@@ -188,8 +229,12 @@ EOF
       13) run_main doctor; pause_menu ;;
       14) show_version; pause_menu ;;
       15) run_main structure-review; pause_menu ;;
+      16) show_structure_status; pause_menu ;;
+      17) show_structure_logs ;;
+      18) restart_structure_service; pause_menu ;;
+      19) run_main announcements-test; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-14。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-19。\n'; pause_menu ;;
     esac
   done
 }
@@ -238,6 +283,9 @@ case "$command" in
   liquidity|coinglass-liquidity|coinglass-liquidity-test)
     run_main coinglass-liquidity-test
     ;;
+  announcements|announcements-test)
+    run_main announcements-test
+    ;;
   structure|structure-radar)
     run_main structure-radar --save-charts "$@"
     ;;
@@ -246,6 +294,15 @@ case "$command" in
     ;;
   structure-review)
     run_main structure-review "$@"
+    ;;
+  structure-status)
+    show_structure_status
+    ;;
+  structure-logs|structure-log)
+    show_structure_logs
+    ;;
+  structure-restart)
+    restart_structure_service
     ;;
   runtime|runtime-status)
     run_main runtime-status

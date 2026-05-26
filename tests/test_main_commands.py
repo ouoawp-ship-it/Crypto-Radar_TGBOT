@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import paopao_radar.cli as main
 from paopao_radar.config import Settings
+from paopao_radar.radar import RadarEngine
 from paopao_radar.storage import JsonStore
 from paopao_radar.telegram import TelegramGateway
 
@@ -166,6 +167,20 @@ class MainCommandTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("missing COINGLASS_API_KEY", output.getvalue())
+
+    def test_announcements_test_prints_diagnostics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, gateway = self.make_runtime(tmp)
+            engine = RadarEngine(settings, store)
+            with patch.object(main, "make_runtime", return_value=(settings, store, engine, gateway)):
+                with patch.object(main.BinanceDataSource, "announcements", return_value=[]):
+                    with patch.object(main.BinanceDataSource, "usdt_perp_symbols", return_value=[]):
+                        with redirect_stdout(StringIO()) as output:
+                            code = main.main(["announcements-test"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("announcements_test: ok", output.getvalue())
+        self.assertIn("articles_scanned", output.getvalue())
 
 
 if __name__ == "__main__":

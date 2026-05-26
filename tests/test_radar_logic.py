@@ -94,6 +94,23 @@ class RadarAnnouncementTests(unittest.TestCase):
             self.assertEqual(result["messages"], [])
             self.assertEqual(result["alerts"], [])
 
+    def test_announcement_activity_keywords_with_symbol_are_opportunity(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            source = _FakeAnnouncementSource(
+                [{
+                    "title": "Binance Launches ABC Trading Tournament With Token Vouchers and Rewards",
+                    "code": "activity-abc",
+                    "releaseDate": int(time.time() * 1000),
+                }],
+                ["ABC"],
+            )
+
+            result = engine.build_announcement_alerts(source)  # type: ignore[arg-type]
+
+            self.assertEqual(result["alerts"][0]["kind"], "opportunity")
+            self.assertEqual(result["alerts"][0]["symbols"], ["ABC"])
+
     def test_announcement_skips_past_dated_article_after_reinstall(self) -> None:
         with TemporaryDirectory() as tmp:
             old_date = (datetime.now(CST) - timedelta(days=1)).strftime("%Y-%m-%d")

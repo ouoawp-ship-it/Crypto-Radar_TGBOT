@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
+STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
@@ -33,6 +34,7 @@ usage() {
   BRANCH=main
   REMOTE=origin
   SERVICE_NAME=paopao-radar
+  STRUCTURE_SERVICE_NAME=paopao-structure
 EOF
 }
 
@@ -86,6 +88,32 @@ run_post_update_cleanup() {
     printf '\n[paopao-update] cleanup runtime artifacts\n'
     "$PYTHON_BIN" main.py cleanup --force-cleanup || true
   fi
+}
+
+install_or_update_structure_service() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local service_path="/etc/systemd/system/${STRUCTURE_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao Structure Radar
+After=network-online.target ${SERVICE_NAME}.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SUDO_USER:-$(id -un)}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py structure-loop --send --confirm-real-send
+Restart=always
+RestartSec=15
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$STRUCTURE_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
 confirm_update() {
@@ -167,17 +195,25 @@ if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
 #!/usr/bin/env bash
 export PAOPAO_APP_DIR="${APP_DIR}"
 export SERVICE_NAME="${SERVICE_NAME}"
+export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
   run_root chmod +x /usr/local/bin/paopao
   chmod +x "${APP_DIR}/scripts/paopao_menu.sh" || true
 fi
 
+install_or_update_structure_service
+
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
   run_root systemctl restart "$SERVICE_NAME"
   run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
 else
   printf 'systemd service not found; update completed without restart.\n'
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${STRUCTURE_SERVICE_NAME}.service" >/dev/null 2>&1; then
+  run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
+  run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
 fi
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"

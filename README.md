@@ -23,7 +23,7 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。随后会提示 `COINGLASS_API_KEY`，直接回车就是纯 Binance 数据版本，填写 key 就启用 Binance + CoinGlass 双源版本；如果 CoinGlass 测试失败，安装脚本会自动退回纯 Binance。
+第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。随后会提示 `COINGLASS_API_KEY` 和可选 `COINALYZE_API_KEY`；CoinGlass 直接回车就是纯 Binance 数据版本，Coinalyze 直接回车就是不启用历史清算辅助。
 
 Telegram 群开启话题后，可以把不同推送分到不同话题，避免消息交叉：
 
@@ -148,9 +148,9 @@ STRUCTURE_REVIEW_MIN_AGE_MINUTES=15
 STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600
 ```
 
-## 多源清算/盘口增强 v1.9.1
+## 多源清算/盘口增强 v1.9.2
 
-v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认；v1.9.1 增加免费源降级。它只增强结构雷达，不替代原有结构算法；CoinGlass 高级接口默认关闭，避免升级后立即消耗 API 额度。
+v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认；v1.9.1 增加免费源降级；v1.9.2 增加结构雷达独立服务和 Binance 公告抓取增强。它只增强结构雷达，不替代原有结构算法；CoinGlass 高级接口默认关闭，避免升级后立即消耗 API 额度。
 
 开启方式：
 ```bash
@@ -184,6 +184,36 @@ COINALYZE_API_KEY=
 
 流动性增强采用多源优先级：CoinGlass 清算热力图/盘口热力图优先；如果接口返回 `Upgrade plan`、无权限、空数据或超时，则自动降级到 Binance 免费合约盘口深度快照。可选配置 Coinalyze 免费 API Key 后，清算侧会补充 Coinalyze 历史清算量作为方向辅助；它不等同于 CoinGlass 预测清算池，推送里会标明数据源。
 
+## v1.9.2 服务和公告增强
+
+更新脚本会安装/刷新两个 systemd 服务：
+
+```bash
+paopao-radar      # 主服务：资金摘要、启动雷达、公告、资金流等
+paopao-structure  # 结构雷达独立循环：55 分预警，整点后 5 分确认
+```
+
+常用结构服务命令：
+
+```bash
+paopao structure-status
+paopao structure-logs
+paopao structure-restart
+```
+
+Binance 公告抓取默认每个分类分页读取，单页数量从 20 提高到 50，并新增活动关键词识别。专门测试公告抓取和分类：
+
+```bash
+python main.py announcements-test
+paopao announcements
+```
+
+相关配置：
+
+```bash
+ANNOUNCEMENT_PAGE_SIZE=50
+```
+
 ## 一键更新
 
 ```bash
@@ -209,7 +239,7 @@ bash scripts/update_server.sh
 
 第一次安装、重新安装、配置项说明和常见排错见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
 
-修改 bot token、群 ID、CoinGlass key 或 Telegram 话题配置:
+修改 bot token、群 ID、CoinGlass key、Coinalyze key 或 Telegram 话题配置:
 
 ```bash
 bash scripts/install_server.sh config
@@ -222,10 +252,12 @@ paopao          # 打开中文操作菜单
 paopao config   # 修改配置
 paopao logs     # 查看实时日志
 paopao version  # 查看当前版本号
+paopao announcements # 测试 Binance 公告抓取和分类
+paopao structure-status # 查看结构雷达独立服务状态
 paopao check-update # 检查当前版本/GitHub版本
 paopao update   # 有更新时确认后更新项目
 ```
 
-`paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY` 和各类话题 ID 不会被覆盖。
+`paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.9.1`，后续功能更新按 `v1.9.2`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.9.2`，后续功能更新按 `v1.9.3`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

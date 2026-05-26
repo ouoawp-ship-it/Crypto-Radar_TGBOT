@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from paopao_radar.config import Settings
-from paopao_radar.data_sources import CoinglassDataSource
+from paopao_radar.data_sources import BinanceDataSource, CoinglassDataSource
 
 
 class CoinglassDataSourceTests(unittest.TestCase):
@@ -73,6 +73,27 @@ class CoinglassDataSourceTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "/api/futures/orderbook/history")
         self.assertEqual(calls[0][1]["symbol"], "BTCUSDT")
         self.assertEqual(calls[0][1]["interval"], "1h")
+
+    def test_binance_announcements_fetches_multiple_pages(self) -> None:
+        with TemporaryDirectory() as tmp:
+            source = BinanceDataSource(Settings(data_dir=Path(tmp)))
+            calls = []
+
+            def fake_get_json(url, params=None, cache_key=None, quality_key="http", timeout=None, retries=None):
+                params = params or {}
+                calls.append(params)
+                if params.get("pageNo") == 1:
+                    return {"data": {"catalogs": [{"articles": [{"code": f"{params['catalogId']}-a"}]}]}}
+                if params.get("pageNo") == 2:
+                    return {"data": {"catalogs": [{"articles": [{"code": f"{params['catalogId']}-b"}]}]}}
+                return {"data": {"catalogs": [{"articles": []}]}}
+
+            with patch.object(source.http, "get_json", side_effect=fake_get_json):
+                articles = source.announcements(page_size=50)
+
+        self.assertEqual(len(articles), 6)
+        self.assertIn(2, {call["pageNo"] for call in calls})
+        self.assertTrue(all(call["pageSize"] == 50 for call in calls))
 
 
 if __name__ == "__main__":

@@ -42,6 +42,11 @@ MANAGED_MIGRATIONS = {
         "new": "3600",
         "note": "资金流雷达默认改为每小时整点推送",
     },
+    "ANNOUNCEMENT_PAGE_SIZE": {
+        "old": {"", "20"},
+        "new": "50",
+        "note": "公告抓取默认扩大到 50 条",
+    },
 }
 
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")

@@ -15,6 +15,7 @@ from .time_windows import ClosedWindow, closed_window
 OPPORTUNITY_KEYWORDS = [
     "alpha", "airdrop", "tge", "token generation", "will list", "will launch", "将上线",
     "上线", "launchpool", "hodler", "megadrop", "binance wallet", "exclusive",
+    "trading tournament", "trade to share", "token vouchers", "campaign", "rewards",
 ]
 RISK_KEYWORDS = [
     "delist", "delisting", "remove", "will remove", "will delist", "下架", "移除",
@@ -456,7 +457,7 @@ class RadarEngine:
         self.store.save(self.settings.funding_snapshot_path, current_funding)
         return result
 
-    def build_announcement_alerts(self, source: BinanceDataSource) -> dict[str, Any]:
+    def build_announcement_alerts(self, source: BinanceDataSource, include_seen: bool = False) -> dict[str, Any]:
         articles = source.announcements(page_size=self.settings.announcement_page_size)
         state = self.store.load(self.settings.announcement_state_path, {})
         if not isinstance(state, dict):
@@ -474,7 +475,7 @@ class RadarEngine:
             if not alert:
                 continue
             code = alert["code"]
-            if code in seen:
+            if not include_seen and code in seen:
                 continue
             alerts.append(alert)
 
@@ -483,6 +484,8 @@ class RadarEngine:
             "template_id": "TG_ANNOUNCEMENT_ALERT",
             "messages": messages,
             "alerts": alerts[:8],
+            "articles_scanned": len(articles),
+            "alerts_classified": len(alerts),
         }
 
     def cleanup_expired_announcements(
