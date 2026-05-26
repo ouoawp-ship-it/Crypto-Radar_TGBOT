@@ -397,15 +397,25 @@ class CoinglassDataSource:
         range_: str = "24h",
     ) -> Any:
         payload = self.get_json(
-            "/api/futures/liquidation/heatmap",
+            "/api/futures/liquidation/heatmap/model1",
             {
                 "exchange": exchange,
-                "symbol": symbol.upper().replace("USDT", ""),
+                "symbol": symbol.upper(),
                 "range": range_,
             },
             quality_key="coinglassLiquidationHeatmap",
             timeout_sec=self.settings.coinglass_liquidity_timeout_sec,
         )
+        if payload is None:
+            payload = self.get_json(
+                "/api/futures/liquidation/aggregated-heatmap/model2",
+                {
+                    "symbol": symbol.upper().replace("USDT", ""),
+                    "range": range_,
+                },
+                quality_key="coinglassLiquidationAggregatedHeatmap",
+                timeout_sec=self.settings.coinglass_liquidity_timeout_sec,
+            )
         return self.unwrap_data(payload)
 
     def orderbook_heatmap(
@@ -414,12 +424,16 @@ class CoinglassDataSource:
         symbol: str,
         range_: str = "24h",
     ) -> Any:
+        interval = "1h"
+        if range_ in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "6h", "8h", "12h", "1d"}:
+            interval = range_
         payload = self.get_json(
-            "/api/futures/orderbook/heatmap",
+            "/api/spot/orderbook/history",
             {
                 "exchange": exchange,
-                "symbol": symbol.upper().replace("USDT", ""),
-                "range": range_,
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "limit": 100,
             },
             quality_key="coinglassOrderbookHeatmap",
             timeout_sec=self.settings.coinglass_liquidity_timeout_sec,
