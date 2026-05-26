@@ -220,7 +220,7 @@ ANNOUNCEMENT_PAGE_SIZE=50
 bash scripts/update_server.sh
 ```
 
-更新脚本每次运行后会自动执行一次安全清理：同步 `.env.oi`、清理 pycache/临时文件/过期日志/过期结构图/根目录临时报告，再重启服务。脚本不会删除 `.env.oi`、`data/*.json` 状态文件、README、`docs/` 文档或源码。
+更新脚本每次运行后会自动执行一次安全清理：同步 `.env.oi`、清理 pycache/临时文件/过期日志/过期结构图/根目录临时报告，再重启服务。脚本不会删除 `.env.oi`、`data/*.json` 状态文件、README、`docs/INSTALL_CN.md` 或源码。
 
 ## 安全规则
 
@@ -232,8 +232,7 @@ bash scripts/update_server.sh
 
 `.env.oi` 和 `data/` 状态文件不应提交到 GitHub。
 
-更详细说明见 [docs/SERVER_DEPLOY.md](docs/SERVER_DEPLOY.md)。
-项目结构说明见 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)。
+更详细的安装、更新、配置和排错说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
 
 ## 中文安装目录
 
