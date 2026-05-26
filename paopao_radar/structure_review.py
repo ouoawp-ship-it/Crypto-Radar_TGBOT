@@ -93,7 +93,10 @@ class StructureReviewEngine:
                 "final_score": signal.final_score if signal.final_score is not None else signal.score,
                 "liquidation_bias": liquidity_context.liquidation_bias if liquidity_context else "unavailable",
                 "orderbook_bias": liquidity_context.orderbook_bias if liquidity_context else "unavailable",
-                "coinglass_available": bool(liquidity_context.available) if liquidity_context else False,
+                "liquidity_source": liquidity_context.source if liquidity_context else "unavailable",
+                "coinglass_available": bool(
+                    liquidity_context and liquidity_context.available and "CoinGlass" in liquidity_context.source
+                ),
                 "price": signal.price,
                 "box_high": signal.box_high,
                 "box_low": signal.box_low,

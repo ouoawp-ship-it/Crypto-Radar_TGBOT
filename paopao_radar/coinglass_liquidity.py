@@ -317,6 +317,17 @@ def api_status_summary(payload: Any) -> dict[str, str] | None:
     return result
 
 
+def _api_status_reason(payload: Any, label: str) -> str:
+    status = api_status_summary(payload)
+    if not status:
+        return ""
+    code = status.get("code", "")
+    msg = status.get("msg", "")
+    if code in {"0", "200"} and msg.lower() in {"", "success", "ok"}:
+        return ""
+    return f"{label}返回 {code} {msg}".strip()
+
+
 def _zone_text(item: dict[str, Any], price: float) -> str:
     for key in ("range", "zone", "priceRange", "price_range"):
         value = item.get(key)
@@ -525,8 +536,10 @@ class CoinglassLiquidityAnalyzer:
             symbol,
             range_="24h",
         )
-        liquidation_unavailable = liquidation_payload is None
-        orderbook_unavailable = orderbook_payload is None
+        liquidation_status_reason = _api_status_reason(liquidation_payload, "CoinGlass清算热力图")
+        orderbook_status_reason = _api_status_reason(orderbook_payload, "CoinGlass盘口热力图")
+        liquidation_unavailable = liquidation_payload is None or bool(liquidation_status_reason)
+        orderbook_unavailable = orderbook_payload is None or bool(orderbook_status_reason)
         upper_liq, lower_liq = _levels_from_payload(liquidation_payload, price)
         upper_wall, lower_wall = _levels_from_payload(orderbook_payload, price)
 
@@ -539,9 +552,13 @@ class CoinglassLiquidityAnalyzer:
 
         available = any((upper_liq_level, lower_liq_level, upper_wall_level, lower_wall_level))
         reasons: list[str] = []
-        if liquidation_unavailable:
+        if liquidation_status_reason:
+            reasons.append(liquidation_status_reason)
+        elif liquidation_unavailable:
             reasons.append("清算热力图接口不可用或无权限")
-        if orderbook_unavailable:
+        if orderbook_status_reason:
+            reasons.append(orderbook_status_reason)
+        elif orderbook_unavailable:
             reasons.append("盘口流动性接口不可用或无权限")
         if not available and not reasons:
             reasons.append("CoinGlass返回数据为空或无法解析")

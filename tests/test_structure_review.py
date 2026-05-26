@@ -120,7 +120,7 @@ class StructureReviewTests(unittest.TestCase):
             signal.liquidity_context = LiquidityContext(
                 symbol=signal.symbol,
                 available=True,
-                source="unit",
+                source="CoinGlass",
                 liquidation_bias="up",
                 orderbook_bias="neutral",
             )
@@ -137,6 +137,7 @@ class StructureReviewTests(unittest.TestCase):
         self.assertEqual(records[0]["liquidity_score_delta"], 8)
         self.assertEqual(records[0]["final_score"], 78)
         self.assertEqual(records[0]["liquidation_bias"], "up")
+        self.assertEqual(records[0]["liquidity_source"], "CoinGlass")
         self.assertTrue(records[0]["coinglass_available"])
 
     def test_review_price_changes_and_valid_breakout(self) -> None:

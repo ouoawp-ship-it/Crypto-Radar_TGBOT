@@ -894,7 +894,7 @@ class StructureRadarEngine:
             "突破确认/跌破确认 = 整点收线后延迟确认，使用完整闭合K线。",
             "假突破/假跌破 = 之前出现临界或突破信号，后续收回箱体内。",
             "评分 = 边缘距离20 + 结构15 + 触碰10 + 压缩15 + 量10 + OI10 + 主动买卖10 + 高周期5 + 费率5。",
-            "CoinGlass增强 = 默认关闭；启用后只在 -15~+15 内修正结构分，不会取代原结构算法。",
+            "多源外部确认 = CoinGlass优先；不可用时降级到Binance盘口/Coinalyze历史清算，只在 -15~+15 内修正结构分。",
             "等级 = S≥85，A≥70，B≥60，C≥50；默认低于配置分数线不推送。",
         ])
         return "\n".join(lines)
@@ -903,12 +903,13 @@ class StructureRadarEngine:
     def _liquidity_lines(signal: StructureSignal) -> list[str]:
         context = signal.liquidity_context
         if context is None:
-            return ["🧲 CoinGlass 外部确认：未启用"]
+            return ["🧲 多源外部确认：未启用"]
         if not context.available:
             reason = "；".join(context.reason_lines[:2]) if context.reason_lines else "不可用"
-            return [f"🧲 CoinGlass 外部确认：{tg_escape(reason)}"]
+            return [f"🧲 多源外部确认：{tg_escape(reason)}"]
         lines = [
-            "🧲 <b>CoinGlass 外部确认</b>",
+            "🧲 <b>多源外部确认</b>",
+            f"- 数据源: {tg_escape(context.source)}",
             (
                 f"- 清算磁吸: {tg_escape(context.liquidation_bias)} | "
                 f"盘口: {tg_escape(context.orderbook_bias)} | "

@@ -242,6 +242,17 @@ class BinanceDataSource:
         )
         return data if isinstance(data, list) else []
 
+    def order_book(self, symbol: str, limit: int = 100) -> dict[str, Any]:
+        safe_limit = min(1000, max(5, int(limit or 100)))
+        data = self.http.get_json(
+            self.endpoint("/fapi/v1/depth"),
+            {"symbol": symbol.upper(), "limit": safe_limit},
+            cache_key=f"depth:{symbol.upper()}:{safe_limit}",
+            quality_key="depth",
+            retries=1,
+        )
+        return data if isinstance(data, dict) else {}
+
     def market_caps(self) -> dict[str, float]:
         url = "https://www.binance.com/bapi/composite/v1/public/marketing/symbol/list"
         data = self.http.get_json(url, cache_key="binance:marketing-symbol-list", quality_key="marketCaps")

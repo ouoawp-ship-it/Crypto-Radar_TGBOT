@@ -148,9 +148,9 @@ STRUCTURE_REVIEW_MIN_AGE_MINUTES=15
 STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600
 ```
 
-## CoinGlass 清算/盘口增强 v1.9
+## 多源清算/盘口增强 v1.9.1
 
-v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认。它只增强结构雷达，不替代原有结构算法；默认关闭，避免升级后立即消耗 API 额度。
+v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认；v1.9.1 增加免费源降级。它只增强结构雷达，不替代原有结构算法；CoinGlass 高级接口默认关闭，避免升级后立即消耗 API 额度。
 
 开启方式：
 ```bash
@@ -175,7 +175,14 @@ COINGLASS_LIQUIDITY_SCORE_MAX_DELTA=15
 COINGLASS_LIQUIDITY_MIN_DISTANCE_PCT=0.5
 COINGLASS_LIQUIDITY_MAX_DISTANCE_PCT=8.0
 COINGLASS_LIQUIDITY_CACHE_SEC=300
+LIQUIDITY_FALLBACK_ENABLE=true
+BINANCE_ORDERBOOK_LIQUIDITY_ENABLE=true
+BINANCE_ORDERBOOK_DEPTH_LIMIT=100
+COINALYZE_ENABLE=false
+COINALYZE_API_KEY=
 ```
+
+流动性增强采用多源优先级：CoinGlass 清算热力图/盘口热力图优先；如果接口返回 `Upgrade plan`、无权限、空数据或超时，则自动降级到 Binance 免费合约盘口深度快照。可选配置 Coinalyze 免费 API Key 后，清算侧会补充 Coinalyze 历史清算量作为方向辅助；它不等同于 CoinGlass 预测清算池，推送里会标明数据源。
 
 ## 一键更新
 
@@ -221,4 +228,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.9`，后续功能更新按 `v1.9.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.9.1`，后续功能更新按 `v1.9.2`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

@@ -124,7 +124,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9`，后续功能更新按 `v1.9.1`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9.1`，后续功能更新按 `v1.9.2`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -296,7 +296,14 @@ COINGLASS_LIQUIDITY_ENABLE=false       # 默认关闭 CoinGlass 清算/盘口增
 COINGLASS_LIQUIDITY_MAX_SYMBOLS=30     # 每轮最多增强前 30 个结构候选
 COINGLASS_LIQUIDITY_SCORE_MAX_DELTA=15 # 分数修正上限，避免压倒结构原始评分
 COINGLASS_LIQUIDITY_CACHE_SEC=300      # 增强数据至少缓存 300 秒
+LIQUIDITY_FALLBACK_ENABLE=true         # CoinGlass 不可用时启用免费降级源
+BINANCE_ORDERBOOK_LIQUIDITY_ENABLE=true # 使用 Binance 免费盘口深度估算买墙/卖墙
+BINANCE_ORDERBOOK_DEPTH_LIMIT=100      # 每个币读取的 Binance 盘口档位
+COINALYZE_ENABLE=false                 # 可选：开启 Coinalyze 免费 Key 的清算历史辅助
+COINALYZE_API_KEY=                     # 可选：Coinalyze 免费 API Key
 ```
+
+多源优先级：CoinGlass 可用时优先使用 CoinGlass；如果清算热力图或盘口热力图返回 `Upgrade plan`、无权限、空数据或超时，则自动降级。盘口侧默认使用 Binance 免费合约深度快照估算上方卖墙/下方买墙；清算侧可选使用 Coinalyze 历史清算量做方向辅助，但它不是预测清算池，推送里会标明数据源。
 
 如果修改这些参数，可以用 `paopao config` 打开配置文件；更新项目时脚本会保留 token、群 ID、CoinGlass key 和话题 ID。
 

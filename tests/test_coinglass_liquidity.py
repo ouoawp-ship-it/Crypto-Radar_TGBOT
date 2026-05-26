@@ -100,6 +100,18 @@ class CoinglassLiquidityTests(unittest.TestCase):
         self.assertFalse(signal.liquidity_context.available)
         self.assertEqual(signal.final_score, 70)
 
+    def test_upgrade_plan_status_is_reported_as_reason(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.make_settings(tmp)
+            source = FakeCoinglassSource(
+                liquidation={"code": "401", "msg": "Upgrade plan"},
+                orderbook={"code": "401", "msg": "Upgrade plan"},
+            )
+            context = CoinglassLiquidityAnalyzer(settings, source).context("TESTUSDT", 100)
+
+        self.assertFalse(context.available)
+        self.assertIn("Upgrade plan", " ".join(context.reason_lines))
+
     def test_available_payload_generates_liquidity_context(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.make_settings(tmp)

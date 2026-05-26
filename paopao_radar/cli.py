@@ -30,13 +30,13 @@ from datetime import datetime
 
 from .config import Settings
 from .coinglass_liquidity import (
-    CoinglassLiquidityAnalyzer,
     api_status_summary,
     parsed_item_count,
     payload_shape_summary,
 )
 from .data_sources import BinanceDataSource, CoinglassDataSource
 from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
+from .liquidity_router import MultiSourceLiquidityAnalyzer, build_liquidity_enhancer
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
 from .storage import JsonStore
@@ -385,11 +385,14 @@ def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
         settings,
         coinglass_enable=True,
         coinglass_liquidity_enable=True,
-        coinglass_request_budget=max(settings.coinglass_request_budget, 4),
+        liquidity_fallback_enable=True,
+        binance_orderbook_liquidity_enable=True,
+        coinglass_request_budget=max(settings.coinglass_request_budget, 8),
     )
     price = 100.0
+    binance_source = BinanceDataSource(test_settings)
     try:
-        for ticker in BinanceDataSource(test_settings).ticker_24h():
+        for ticker in binance_source.ticker_24h():
             if str(ticker.get("symbol") or "").upper() == "BTCUSDT":
                 latest = float(ticker.get("lastPrice") or 0)
                 if latest > 0:
@@ -398,10 +401,11 @@ def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
     except Exception:
         price = 100.0
     source = CoinglassDataSource(test_settings)
-    analyzer = CoinglassLiquidityAnalyzer(test_settings, source)
+    enhancer = build_liquidity_enhancer(test_settings, binance_source)
+    analyzer = enhancer if enhancer is not None else MultiSourceLiquidityAnalyzer(test_settings)
     context = analyzer.context("BTCUSDT", price)
     extra: dict[str, object] = {}
-    if not context.available:
+    if source.enabled:
         liquidation_payload = source.liquidation_heatmap(
             test_settings.coinglass_exchange_list,
             "BTCUSDT",
@@ -432,6 +436,7 @@ def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
         "liquidation_bias": context.liquidation_bias,
         "orderbook_bias": context.orderbook_bias,
         "liquidity_gap_direction": context.liquidity_gap_direction,
+        "source": context.source,
         "reason_lines": context.reason_lines,
         "diagnostics": analyzer.diagnostics(),
     }
@@ -567,9 +572,7 @@ def run_structure_radar(args: argparse.Namespace) -> int:
         return 2
     source = BinanceDataSource(settings)
     radar = StructureRadarEngine(settings, store)
-    liquidity_enhancer = None
-    if settings.coinglass_liquidity_enable:
-        liquidity_enhancer = CoinglassLiquidityAnalyzer(settings, CoinglassDataSource(settings))
+    liquidity_enhancer = build_liquidity_enhancer(settings, source)
     result = radar.build(
         source,
         mode=args.mode,

@@ -134,6 +134,16 @@ class Settings:
     coinglass_liquidity_min_distance_pct: float = 0.5
     coinglass_liquidity_max_distance_pct: float = 8.0
     coinglass_liquidity_cache_sec: int = 300
+    liquidity_fallback_enable: bool = True
+    binance_orderbook_liquidity_enable: bool = True
+    binance_orderbook_depth_limit: int = 100
+    coinalyze_enable: bool = False
+    coinalyze_api_key: str = ""
+    coinalyze_base_url: str = "https://api.coinalyze.net/v1"
+    coinalyze_request_budget: int = 40
+    coinalyze_symbol_suffix: str = "_PERP.A"
+    coinalyze_liquidation_interval: str = "1hour"
+    coinalyze_liquidation_lookback_hours: int = 24
 
     radar_scan_limit: int = 120
     radar_min_quote_volume: float = 5_000_000
@@ -264,6 +274,16 @@ class Settings:
             coinglass_liquidity_min_distance_pct=env_float("COINGLASS_LIQUIDITY_MIN_DISTANCE_PCT", 0.5),
             coinglass_liquidity_max_distance_pct=env_float("COINGLASS_LIQUIDITY_MAX_DISTANCE_PCT", 8.0),
             coinglass_liquidity_cache_sec=env_int("COINGLASS_LIQUIDITY_CACHE_SEC", 300),
+            liquidity_fallback_enable=env_bool("LIQUIDITY_FALLBACK_ENABLE", True),
+            binance_orderbook_liquidity_enable=env_bool("BINANCE_ORDERBOOK_LIQUIDITY_ENABLE", True),
+            binance_orderbook_depth_limit=env_int("BINANCE_ORDERBOOK_DEPTH_LIMIT", 100),
+            coinalyze_enable=env_bool("COINALYZE_ENABLE", False),
+            coinalyze_api_key=os.getenv("COINALYZE_API_KEY", "").strip(),
+            coinalyze_base_url=os.getenv("COINALYZE_BASE_URL", "https://api.coinalyze.net/v1").rstrip("/"),
+            coinalyze_request_budget=env_int("COINALYZE_REQUEST_BUDGET", 40),
+            coinalyze_symbol_suffix=os.getenv("COINALYZE_SYMBOL_SUFFIX", "_PERP.A").strip() or "_PERP.A",
+            coinalyze_liquidation_interval=os.getenv("COINALYZE_LIQUIDATION_INTERVAL", "1hour").strip() or "1hour",
+            coinalyze_liquidation_lookback_hours=env_int("COINALYZE_LIQUIDATION_LOOKBACK_HOURS", 24),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
@@ -384,6 +404,18 @@ class Settings:
                 "liquidity_min_distance_pct": self.coinglass_liquidity_min_distance_pct,
                 "liquidity_max_distance_pct": self.coinglass_liquidity_max_distance_pct,
                 "liquidity_cache_sec": self.coinglass_liquidity_cache_sec,
+                "fallback_enable": self.liquidity_fallback_enable,
+                "binance_orderbook_enable": self.binance_orderbook_liquidity_enable,
+                "binance_orderbook_depth_limit": self.binance_orderbook_depth_limit,
+            },
+            "coinalyze": {
+                "enable": self.coinalyze_enable,
+                "api_key_configured": bool(self.coinalyze_api_key),
+                "base_url": self.coinalyze_base_url,
+                "request_budget": self.coinalyze_request_budget,
+                "symbol_suffix": self.coinalyze_symbol_suffix,
+                "liquidation_interval": self.coinalyze_liquidation_interval,
+                "liquidation_lookback_hours": self.coinalyze_liquidation_lookback_hours,
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),
