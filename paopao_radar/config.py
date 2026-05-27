@@ -107,6 +107,7 @@ class Settings:
     tg_push_history_limit: int = 2000
     tg_push_history_retention_days: int = 30
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
+    structure_runtime_status_path: Path = BASE_DIR / "data" / "structure_runtime_status.json"
     cleanup_enable: bool = True
     cleanup_interval_sec: int = 3600
     cleanup_state_path: Path = BASE_DIR / "data" / "cleanup_state.json"
@@ -249,6 +250,7 @@ class Settings:
             tg_push_history_limit=env_int("TG_PUSH_HISTORY_LIMIT", 2000),
             tg_push_history_retention_days=env_int("TG_PUSH_HISTORY_RETENTION_DAYS", 30),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
+            structure_runtime_status_path=data_path(data_dir, "STRUCTURE_RUNTIME_STATUS_FILE", "structure_runtime_status.json"),
             cleanup_enable=env_bool("CLEANUP_ENABLE", True),
             cleanup_interval_sec=env_int("CLEANUP_INTERVAL_SEC", 3600),
             cleanup_state_path=data_path(data_dir, "CLEANUP_STATE_FILE", "cleanup_state.json"),
@@ -379,6 +381,7 @@ class Settings:
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),
+                "structure_status_file": str(self.structure_runtime_status_path),
                 "cleanup_enable": self.cleanup_enable,
                 "cleanup_interval_sec": self.cleanup_interval_sec,
                 "cleanup_state_file": str(self.cleanup_state_path),

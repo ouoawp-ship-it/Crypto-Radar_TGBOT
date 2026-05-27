@@ -224,6 +224,7 @@ def state_paths(settings: Settings) -> list[Path]:
     return [
         settings.tg_push_history_path,
         settings.runtime_status_path,
+        settings.structure_runtime_status_path,
         settings.radar_state_path,
         settings.funding_snapshot_path,
         settings.launch_state_path,
@@ -273,6 +274,12 @@ def write_runtime_status(
     status: str,
     **details: object,
 ) -> dict[str, object]:
+    task = str(details.get("task", ""))
+    status_path = (
+        settings.structure_runtime_status_path
+        if task.startswith("structure") or mode.startswith("structure")
+        else settings.runtime_status_path
+    )
     payload: dict[str, object] = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": mode,
@@ -280,21 +287,34 @@ def write_runtime_status(
     }
     payload.update(details)
     try:
-        store.save(settings.runtime_status_path, payload)
+        store.save(status_path, payload)
     except Exception as exc:
         print(f"[runtime-status] write failed: {type(exc).__name__}: {exc}", file=sys.stderr)
     return payload
 
 
+def _load_runtime_status_or_empty(store: JsonStore, path: Path, label: str) -> dict[str, object]:
+    data = store.load(path, {})
+    if isinstance(data, dict) and data:
+        return data
+    return {
+        "status": "empty",
+        "path": str(path),
+        "message": f"{label} runtime status has not been written yet",
+    }
+
+
 def print_runtime_status(settings: Settings, store: JsonStore) -> None:
-    data = store.load(settings.runtime_status_path, {})
-    if not isinstance(data, dict) or not data:
-        data = {
-            "status": "empty",
-            "path": str(settings.runtime_status_path),
-            "message": "runtime status has not been written yet",
-        }
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    main_status = _load_runtime_status_or_empty(store, settings.runtime_status_path, "main")
+    structure_status = _load_runtime_status_or_empty(
+        store,
+        settings.structure_runtime_status_path,
+        "structure",
+    )
+    print(json.dumps({
+        "main": main_status,
+        "structure": structure_status,
+    }, ensure_ascii=False, indent=2))
 
 
 def print_cleanup(settings: Settings, store: JsonStore, force: bool) -> None:

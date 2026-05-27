@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -120,6 +121,21 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "test")
         self.assertEqual(saved["status"], "running")
         self.assertEqual(saved["task"], "unit")
+
+    def test_structure_runtime_status_uses_separate_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            settings = replace(
+                settings,
+                structure_runtime_status_path=Path(tmp) / "structure_runtime_status.json",
+            )
+
+            main.write_runtime_status(settings, store, "structure-loop", "running", task="structure-loop")
+            main_saved = store.load(settings.runtime_status_path, {})
+            structure_saved = store.load(settings.structure_runtime_status_path, {})
+
+        self.assertEqual(main_saved, {})
+        self.assertEqual(structure_saved["task"], "structure-loop")
 
     def test_make_runtime_for_args_applies_scan_limit_overrides(self) -> None:
         with TemporaryDirectory() as tmp:

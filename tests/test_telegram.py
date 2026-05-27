@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,6 +11,9 @@ from unittest.mock import patch
 from paopao_radar.config import Settings
 from paopao_radar.storage import JsonStore
 from paopao_radar.telegram import TelegramGateway, utc_ts
+
+
+CST = timezone(timedelta(hours=8))
 
 
 class TelegramGatewayTests(unittest.TestCase):
@@ -109,6 +113,37 @@ class TelegramGatewayTests(unittest.TestCase):
 
             self.assertEqual(result.status, "skipped")
             self.assertEqual(result.reason, "template_daily_limit")
+
+    def test_template_daily_limit_uses_cst_day_boundary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            store = JsonStore(Path(tmp))
+            store.save(history_path, [{
+                "ts": int(datetime(2026, 5, 26, 10, 0, tzinfo=CST).timestamp()),
+                "template_id": "TG_RADAR_SUMMARY",
+                "dedup_key": "previous-cst-day",
+                "status": "sent",
+                "sent": True,
+            }])
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+            )
+            gateway = TelegramGateway(settings, store)
+            now = int(datetime(2026, 5, 27, 0, 5, tzinfo=CST).timestamp())
+
+            with patch("paopao_radar.telegram.utc_ts", return_value=now):
+                result = gateway.send(
+                    "hello",
+                    "TG_RADAR_SUMMARY",
+                    "new-cst-day",
+                    send=True,
+                    confirm_real_send=False,
+                    daily_limit=1,
+                )
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(result.reason, "missing_confirm_real_send")
 
     def test_template_specific_topic_routes_are_recorded(self) -> None:
         with TemporaryDirectory() as tmp:

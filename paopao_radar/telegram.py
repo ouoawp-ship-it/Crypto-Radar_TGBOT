@@ -14,6 +14,7 @@ import requests
 
 from .config import Settings
 from .storage import JsonStore
+from .time_windows import CST
 
 
 @dataclass
@@ -812,7 +813,11 @@ class TelegramGateway:
 
     @staticmethod
     def _daily_sent_count(history: list[dict[str, Any]], template_id: str, now: int) -> int:
-        start_of_day = int(datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        start_of_day = int(
+            datetime.fromtimestamp(now, CST)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp()
+        )
         return sum(
             1 for record in history
             if record.get("template_id") == template_id
