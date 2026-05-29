@@ -218,6 +218,40 @@ paopao announcements
 ANNOUNCEMENT_PAGE_SIZE=50
 ```
 
+## 山寨币启动雷达 Web 看板 v1.10.0
+
+新增轻量 Web API 和 `/launch-radar` 看板，用于把 OI/价格背离、Funding、主动买卖、OI/市值、刷量风险等字段产品化展示。前端只读取后端 API，不包含扫描逻辑，也不会暴露 CoinGlass key、Telegram token 或 Chat ID。
+
+本地启动 Mock 数据看板：
+
+```bash
+python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode mock
+```
+
+访问：
+
+```text
+http://localhost:18090/launch-radar
+http://localhost:18090/api/launch-radar?mode=mock
+```
+
+使用真实数据模式：
+
+```bash
+python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode real
+```
+
+新增接口：
+
+```text
+GET /api/launch-radar
+GET /api/oi-divergence
+GET /api/wash-risk
+GET /api/symbol/{symbol}
+```
+
+Web 状态文件写入 `data/launch_radar_latest.json`、`data/oi_divergence_latest.json`、`data/wash_risk_latest.json`、`data/signal_history.json`。真实扫描失败时 API 会返回上一次成功结果并标记 `stale=true`；没有数据时看板显示“暂无数据”，不会白屏。
+
 ## 一键更新
 
 ```bash
@@ -264,4 +298,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.9.6`，后续功能更新按 `v1.9.7`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

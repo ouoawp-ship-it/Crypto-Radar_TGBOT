@@ -201,6 +201,10 @@ class Settings:
     launch_state_path: Path = BASE_DIR / "data" / "launch_state.json"
     launch_watchlist_path: Path = BASE_DIR / "data" / "launch_watchlist.json"
     launch_watch_history_path: Path = BASE_DIR / "data" / "launch_watch_history.json"
+    launch_radar_latest_path: Path = BASE_DIR / "data" / "launch_radar_latest.json"
+    oi_divergence_latest_path: Path = BASE_DIR / "data" / "oi_divergence_latest.json"
+    wash_risk_latest_path: Path = BASE_DIR / "data" / "wash_risk_latest.json"
+    signal_history_path: Path = BASE_DIR / "data" / "signal_history.json"
     launch_watch_history_limit: int = 500
     launch_min_score_push: int = 60
     launch_watch_score: int = 45
@@ -211,6 +215,9 @@ class Settings:
     launch_stage_cooldown_sec: int = 6 * 3600
     launch_state_ttl_sec: int = 48 * 3600
     launch_failed_ttl_sec: int = 24 * 3600
+    launch_web_mode: str = "mock"
+    launch_web_host: str = "0.0.0.0"
+    launch_web_port: int = 18090
 
     announcement_state_path: Path = BASE_DIR / "data" / "announcement_state.json"
     announcement_page_size: int = 50
@@ -337,6 +344,10 @@ class Settings:
             launch_state_path=data_path(data_dir, "LAUNCH_STATE_FILE", "launch_state.json"),
             launch_watchlist_path=data_path(data_dir, "LAUNCH_WATCHLIST_FILE", "launch_watchlist.json"),
             launch_watch_history_path=data_path(data_dir, "LAUNCH_WATCH_HISTORY_FILE", "launch_watch_history.json"),
+            launch_radar_latest_path=data_path(data_dir, "LAUNCH_RADAR_LATEST_FILE", "launch_radar_latest.json"),
+            oi_divergence_latest_path=data_path(data_dir, "OI_DIVERGENCE_LATEST_FILE", "oi_divergence_latest.json"),
+            wash_risk_latest_path=data_path(data_dir, "WASH_RISK_LATEST_FILE", "wash_risk_latest.json"),
+            signal_history_path=data_path(data_dir, "SIGNAL_HISTORY_FILE", "signal_history.json"),
             launch_watch_history_limit=env_int("LAUNCH_WATCH_HISTORY_LIMIT", 500),
             launch_min_score_push=env_int("LAUNCH_MIN_SCORE_PUSH", 60),
             launch_watch_score=env_int("LAUNCH_WATCH_SCORE", 45),
@@ -347,6 +358,9 @@ class Settings:
             launch_stage_cooldown_sec=env_int("LAUNCH_STAGE_COOLDOWN_SEC", 6 * 3600),
             launch_state_ttl_sec=env_int("LAUNCH_STATE_TTL_SEC", 48 * 3600),
             launch_failed_ttl_sec=env_int("LAUNCH_FAILED_TTL_SEC", 24 * 3600),
+            launch_web_mode=os.getenv("LAUNCH_WEB_MODE", "mock").strip().lower() or "mock",
+            launch_web_host=os.getenv("LAUNCH_WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
+            launch_web_port=env_int("LAUNCH_WEB_PORT", 18090),
             announcement_state_path=data_path(data_dir, "ANNOUNCEMENT_STATE_FILE", "announcement_state.json"),
             announcement_page_size=env_int("ANNOUNCEMENT_PAGE_SIZE", 50),
             announcement_only_today=env_bool("ANNOUNCEMENT_ONLY_TODAY", True),
@@ -486,6 +500,13 @@ class Settings:
                 "state_ttl_sec": self.launch_state_ttl_sec,
                 "failed_ttl_sec": self.launch_failed_ttl_sec,
                 "watch_history_limit": self.launch_watch_history_limit,
+                "web_mode": self.launch_web_mode,
+                "web_host": self.launch_web_host,
+                "web_port": self.launch_web_port,
+                "latest_file": str(self.launch_radar_latest_path),
+                "oi_divergence_latest_file": str(self.oi_divergence_latest_path),
+                "wash_risk_latest_file": str(self.wash_risk_latest_path),
+                "signal_history_file": str(self.signal_history_path),
             },
             "announcements": {
                 "page_size": self.announcement_page_size,

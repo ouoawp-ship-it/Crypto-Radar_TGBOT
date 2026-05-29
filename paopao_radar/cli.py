@@ -138,8 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "coinglass-liquidity-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "coinglass-liquidity-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；web 启动启动雷达 Web API；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
@@ -163,6 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
+    parser.add_argument("--web-host", default=None, help="web 命令监听地址，默认读取 LAUNCH_WEB_HOST")
+    parser.add_argument("--web-port", type=int, default=None, help="web 命令监听端口，默认读取 LAUNCH_WEB_PORT")
+    parser.add_argument("--web-mode", choices=["auto", "mock", "real"], default=None, help="web 命令默认数据模式，默认读取 LAUNCH_WEB_MODE")
     return parser
 
 
@@ -230,6 +233,10 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.launch_state_path,
         settings.launch_watchlist_path,
         settings.launch_watch_history_path,
+        settings.launch_radar_latest_path,
+        settings.oi_divergence_latest_path,
+        settings.wash_risk_latest_path,
+        settings.signal_history_path,
         settings.structure_state_path,
         settings.structure_history_path,
         settings.structure_review_path,
@@ -1512,6 +1519,20 @@ def run_observe(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_web(args: argparse.Namespace) -> int:
+    settings, store, _engine, _gateway = make_runtime_for_args(args)
+    host = str(getattr(args, "web_host", None) or settings.launch_web_host)
+    port = int(getattr(args, "web_port", None) or settings.launch_web_port)
+    mode = str(getattr(args, "web_mode", None) or settings.launch_web_mode or "mock")
+    from .web_api import create_app
+    import uvicorn
+
+    app = create_app(settings=settings, store=store, default_mode=mode)
+    print(f"launch_radar_web: http://{host}:{port}/launch-radar mode={mode}")
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_console_encoding()
     parser = build_parser()
@@ -1569,6 +1590,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate-state":
         print(json.dumps(migrate_legacy_state(settings, apply=args.apply), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "web":
+        return run_web(args)
     if args.command == "once":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)
