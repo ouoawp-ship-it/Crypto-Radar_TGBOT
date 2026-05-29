@@ -134,7 +134,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.9.6`，后续功能更新按 `v1.9.7`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -360,55 +360,7 @@ python main.py structure-radar --mode pre --with-coinglass --save-charts
 python main.py structure-loop
 ```
 
-## 13. 山寨币启动雷达 Web 看板
-
-v1.10.0 新增 Web API 和 `/launch-radar` 看板。它只读取后端 API，扫描和评分都在后端模块完成；不要把 `COINGLASS_API_KEY`、`TG_BOT_TOKEN`、`TG_CHAT_ID` 写进前端或提交到 GitHub。
-
-Mock 数据启动方式：
-
-```bash
-cd ~/paopao-crypto-radar
-. .venv/bin/activate
-python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode mock
-```
-
-真实数据启动方式：
-
-```bash
-python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode real
-```
-
-访问地址：
-
-```text
-http://服务器IP:18090/launch-radar
-http://服务器IP:18090/api/launch-radar
-```
-
-新增配置项写在 `.env.oi`，示例值在 `.env.oi.example`：
-
-```bash
-LAUNCH_RADAR_LATEST_FILE=launch_radar_latest.json
-OI_DIVERGENCE_LATEST_FILE=oi_divergence_latest.json
-WASH_RISK_LATEST_FILE=wash_risk_latest.json
-SIGNAL_HISTORY_FILE=signal_history.json
-LAUNCH_WEB_MODE=mock
-LAUNCH_WEB_HOST=0.0.0.0
-LAUNCH_WEB_PORT=18090
-```
-
-API 列表：
-
-```text
-GET /api/launch-radar
-GET /api/oi-divergence
-GET /api/wash-risk
-GET /api/symbol/{symbol}
-```
-
-如果真实扫描失败，接口会读取最近一次成功写入的 `data/launch_radar_latest.json`，并返回 `stale=true`。如果还没有任何数据，页面会显示“暂无数据”，不会白屏。
-
-## 14. 排错
+## 13. 排错
 
 如果提示 `TG_BOT_TOKEN 缺失或格式无效`:
 
