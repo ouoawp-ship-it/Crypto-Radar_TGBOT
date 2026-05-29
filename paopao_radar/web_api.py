@@ -33,33 +33,6 @@ def _with_stats(payload: dict[str, Any]) -> dict[str, Any]:
     return {**payload, "stats": launch_stats(items)}
 
 
-def _read_version(settings: Settings) -> str:
-    path = settings.base_dir / "VERSION"
-    try:
-        value = path.read_text(encoding="utf-8-sig").strip()
-    except OSError:
-        return "unknown"
-    return value or "unknown"
-
-
-def _file_status(path: Path) -> dict[str, Any]:
-    exists = path.exists()
-    return {
-        "path": str(path),
-        "exists": exists,
-        "size": path.stat().st_size if exists else 0,
-    }
-
-
-def _data_files_status(settings: Settings) -> dict[str, dict[str, Any]]:
-    return {
-        "launch_radar_latest": _file_status(settings.launch_radar_latest_path),
-        "oi_divergence_latest": _file_status(settings.oi_divergence_latest_path),
-        "wash_risk_latest": _file_status(settings.wash_risk_latest_path),
-        "signal_history": _file_status(settings.signal_history_path),
-    }
-
-
 def _payload_for_mode(settings: Settings, store: JsonStore, mode: str) -> dict[str, Any]:
     try:
         payload = build_launch_radar_payload(settings, store, mode=mode)
@@ -93,19 +66,6 @@ def create_app(
     default_mode = (default_mode or settings.launch_web_mode or "mock").lower()
 
     app = FastAPI(title="泡泡抓币 Launch Radar API", version="1.0")
-
-    @app.get("/api/health")
-    def health() -> dict[str, Any]:
-        latest = load_latest_payload(settings, store)
-        has_items = bool(latest.get("items"))
-        return {
-            "ok": True,
-            "version": _read_version(settings),
-            "mode": default_mode,
-            "updated_at": latest.get("updated_at") or now_iso(),
-            "stale": bool(latest.get("stale", True)) or not has_items,
-            "data_files_status": _data_files_status(settings),
-        }
 
     @app.get("/api/launch-radar")
     def launch_radar(
@@ -236,7 +196,6 @@ LAUNCH_RADAR_HTML = r"""<!doctype html>
     .brand { font-weight:800; letter-spacing:0; }
     .brand span { color:var(--green); }
     .status { display:flex; gap:10px; color:var(--muted); font-size:12px; align-items:center; }
-    .stale-banner { position:relative; max-width:1500px; margin:16px auto 0; padding:10px 14px; border:1px solid #6b4b12; background:#241806; color:#ffe8ad; border-radius:8px; font-weight:700; }
     main { position:relative; max-width:1500px; margin:0 auto; padding:24px; }
     .toolbar { display:grid; grid-template-columns:repeat(6, minmax(120px, 1fr)); gap:10px; margin-bottom:16px; }
     select, input, button { width:100%; height:38px; border:1px solid var(--line); background:#080a0d; color:var(--text); border-radius:6px; padding:0 10px; }
@@ -278,7 +237,6 @@ LAUNCH_RADAR_HTML = r"""<!doctype html>
     <div class="brand">泡泡抓币 <span>启动雷达</span></div>
     <div class="status"><span id="modeText">读取中</span><span id="updatedAt">--</span><span id="staleText"></span></div>
   </header>
-  <div class="stale-banner" id="staleBanner" hidden>数据可能已过期，请检查扫描服务或数据源。</div>
   <main>
     <section class="toolbar">
       <select id="timeframe"><option value="">全部周期</option><option value="15m">15m</option></select>
@@ -345,7 +303,6 @@ LAUNCH_RADAR_HTML = r"""<!doctype html>
       document.querySelector('#modeText').textContent = data.mock ? 'Mock模式' : '真实数据';
       document.querySelector('#updatedAt').textContent = data.updated_at || '--';
       document.querySelector('#staleText').textContent = data.stale ? '已使用上次成功结果' : '';
-      document.querySelector('#staleBanner').hidden = !data.stale;
       const stats = data.stats || {};
       document.querySelector('#sCount').textContent = stats.s_count || 0;
       document.querySelector('#aCount').textContent = stats.a_count || 0;
@@ -406,7 +363,6 @@ LAUNCH_RADAR_HTML = r"""<!doctype html>
     document.querySelector('#closeDialog').addEventListener('click', () => document.querySelector('#detailDialog').close());
     document.querySelectorAll('select,input').forEach(el => el.addEventListener('change', load));
     load().catch(err => {
-      document.querySelector('#staleBanner').hidden = false;
       document.querySelector('#empty').hidden = false;
       document.querySelector('#empty').textContent = `加载失败：${err.message}`;
     });

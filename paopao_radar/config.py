@@ -216,7 +216,7 @@ class Settings:
     launch_state_ttl_sec: int = 48 * 3600
     launch_failed_ttl_sec: int = 24 * 3600
     launch_web_mode: str = "mock"
-    launch_web_host: str = "127.0.0.1"
+    launch_web_host: str = "0.0.0.0"
     launch_web_port: int = 18090
 
     announcement_state_path: Path = BASE_DIR / "data" / "announcement_state.json"
@@ -359,7 +359,7 @@ class Settings:
             launch_state_ttl_sec=env_int("LAUNCH_STATE_TTL_SEC", 48 * 3600),
             launch_failed_ttl_sec=env_int("LAUNCH_FAILED_TTL_SEC", 24 * 3600),
             launch_web_mode=os.getenv("LAUNCH_WEB_MODE", "mock").strip().lower() or "mock",
-            launch_web_host=os.getenv("LAUNCH_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            launch_web_host=os.getenv("LAUNCH_WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
             launch_web_port=env_int("LAUNCH_WEB_PORT", 18090),
             announcement_state_path=data_path(data_dir, "ANNOUNCEMENT_STATE_FILE", "announcement_state.json"),
             announcement_page_size=env_int("ANNOUNCEMENT_PAGE_SIZE", 50),

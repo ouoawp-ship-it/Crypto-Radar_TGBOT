@@ -218,14 +218,14 @@ paopao announcements
 ANNOUNCEMENT_PAGE_SIZE=50
 ```
 
-## 山寨币启动雷达 Web 看板 v1.10.1
+## 山寨币启动雷达 Web 看板 v1.10.0
 
 新增轻量 Web API 和 `/launch-radar` 看板，用于把 OI/价格背离、Funding、主动买卖、OI/市值、刷量风险等字段产品化展示。前端只读取后端 API，不包含扫描逻辑，也不会暴露 CoinGlass key、Telegram token 或 Chat ID。
 
 本地启动 Mock 数据看板：
 
 ```bash
-python main.py web --web-host 127.0.0.1 --web-port 18090 --web-mode mock
+python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode mock
 ```
 
 访问：
@@ -238,7 +238,7 @@ http://localhost:18090/api/launch-radar?mode=mock
 使用真实数据模式：
 
 ```bash
-python main.py web --web-host 127.0.0.1 --web-port 18090 --web-mode real
+python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode real
 ```
 
 新增接口：
@@ -251,39 +251,6 @@ GET /api/symbol/{symbol}
 ```
 
 Web 状态文件写入 `data/launch_radar_latest.json`、`data/oi_divergence_latest.json`、`data/wash_risk_latest.json`、`data/signal_history.json`。真实扫描失败时 API 会返回上一次成功结果并标记 `stale=true`；没有数据时看板显示“暂无数据”，不会白屏。
-
-### 部署到 paoxx.com/launch-radar
-
-v1.10.1 新增部署模板，生产默认只监听本机 `127.0.0.1:18090`，再由 Nginx 把 `paoxx.com/launch-radar` 和 `paoxx.com/api/` 反向代理到本地服务。
-
-在服务器项目目录执行：
-
-```bash
-cd ~/paopao-crypto-radar
-bash deploy/install_launch_radar_web.sh
-```
-
-脚本会检查项目目录和 `.venv/bin/python`，执行编译检查，安装并启动 `paopao-launch-radar.service`。它不会自动覆盖你的 Nginx 主站配置。
-
-本地健康检查：
-
-```bash
-curl http://127.0.0.1:18090/api/health
-curl http://127.0.0.1:18090/api/launch-radar
-```
-
-Nginx 模板在：
-
-```text
-deploy/nginx-paoxx-launch-radar.conf
-```
-
-把该模板 include 到 `paoxx.com` 的 HTTPS `server` 配置里，然后执行：
-
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
 
 ## 一键更新
 
@@ -331,4 +298,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.10.1`，后续功能更新按 `v1.10.2`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

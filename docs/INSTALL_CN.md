@@ -134,7 +134,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.10.1`，后续功能更新按 `v1.10.2`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 
@@ -362,20 +362,20 @@ python main.py structure-loop
 
 ## 13. 山寨币启动雷达 Web 看板
 
-v1.10.1 提供 Web API、`/launch-radar` 看板和生产部署模板。它只读取后端 API，扫描和评分都在后端模块完成；不要把 `COINGLASS_API_KEY`、`TG_BOT_TOKEN`、`TG_CHAT_ID` 写进前端或提交到 GitHub。
+v1.10.0 新增 Web API 和 `/launch-radar` 看板。它只读取后端 API，扫描和评分都在后端模块完成；不要把 `COINGLASS_API_KEY`、`TG_BOT_TOKEN`、`TG_CHAT_ID` 写进前端或提交到 GitHub。
 
 Mock 数据启动方式：
 
 ```bash
 cd ~/paopao-crypto-radar
 . .venv/bin/activate
-python main.py web --web-host 127.0.0.1 --web-port 18090 --web-mode mock
+python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode mock
 ```
 
 真实数据启动方式：
 
 ```bash
-python main.py web --web-host 127.0.0.1 --web-port 18090 --web-mode real
+python main.py web --web-host 0.0.0.0 --web-port 18090 --web-mode real
 ```
 
 访问地址：
@@ -393,7 +393,7 @@ OI_DIVERGENCE_LATEST_FILE=oi_divergence_latest.json
 WASH_RISK_LATEST_FILE=wash_risk_latest.json
 SIGNAL_HISTORY_FILE=signal_history.json
 LAUNCH_WEB_MODE=mock
-LAUNCH_WEB_HOST=127.0.0.1
+LAUNCH_WEB_HOST=0.0.0.0
 LAUNCH_WEB_PORT=18090
 ```
 
@@ -407,43 +407,6 @@ GET /api/symbol/{symbol}
 ```
 
 如果真实扫描失败，接口会读取最近一次成功写入的 `data/launch_radar_latest.json`，并返回 `stale=true`。如果还没有任何数据，页面会显示“暂无数据”，不会白屏。
-
-部署到 `paoxx.com/launch-radar`：
-
-```bash
-cd ~/paopao-crypto-radar
-bash deploy/install_launch_radar_web.sh
-```
-
-脚本会完成：
-
-1. 检查当前目录是否为泡泡抓币项目。
-2. 检查 `.venv/bin/python` 是否存在。
-3. 执行 `python -m compileall paopao_radar`。
-4. 生成并安装 `paopao-launch-radar.service`。
-5. 启动并 enable 服务。
-6. 输出 `journalctl` 查看命令。
-7. 输出 Nginx 模板安装提示。
-
-本地健康检查：
-
-```bash
-curl http://127.0.0.1:18090/api/health
-curl http://127.0.0.1:18090/api/launch-radar
-```
-
-Nginx 模板文件：
-
-```text
-deploy/nginx-paoxx-launch-radar.conf
-```
-
-它只包含 `/launch-radar` 和 `/api/` 的反向代理片段，需要手动 include 到 `paoxx.com` 的 HTTPS `server` 配置内。不要直接覆盖现有主站配置。修改后执行：
-
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
 
 ## 14. 排错
 
