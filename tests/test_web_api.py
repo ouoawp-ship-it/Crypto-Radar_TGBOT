@@ -57,8 +57,37 @@ class WebApiTests(unittest.TestCase):
         text = response.text
         self.assertIn("山寨币启动雷达", text)
         self.assertIn("暂无数据", text)
+        self.assertIn("数据可能已过期，请检查扫描服务或数据源。", text)
         self.assertNotIn("COINGLASS_API_KEY", text)
         self.assertNotIn("TG_BOT_TOKEN", text)
+
+    def test_health_reports_version_mode_stale_and_data_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "VERSION").write_text("v-test\n", encoding="utf-8")
+            settings = Settings(
+                base_dir=base,
+                data_dir=base,
+                launch_radar_latest_path=base / "launch_radar_latest.json",
+                oi_divergence_latest_path=base / "oi_divergence_latest.json",
+                wash_risk_latest_path=base / "wash_risk_latest.json",
+                signal_history_path=base / "signal_history.json",
+                launch_web_mode="real",
+            )
+            store = JsonStore(base)
+            payload = build_mock_payload()
+            payload["stale"] = True
+            save_launch_payload(settings, store, payload)
+            client = TestClient(create_app(settings=settings, store=store, default_mode="real"))
+            response = client.get("/api/health")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["version"], "v-test")
+        self.assertEqual(data["mode"], "real")
+        self.assertTrue(data["stale"])
+        self.assertTrue(data["data_files_status"]["launch_radar_latest"]["exists"])
 
     def test_scan_failure_returns_last_success_with_stale_flag(self) -> None:
         with TemporaryDirectory() as tmp:
