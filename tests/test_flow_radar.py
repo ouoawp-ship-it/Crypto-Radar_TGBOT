@@ -4,7 +4,7 @@ import unittest
 
 from paopao_radar.config import Settings
 from paopao_radar.flow_radar import (
-    binance_futures_url,
+    coinglass_tv_url,
     binance_oi_stats,
     FlowRadarEngine,
     flow_category,
@@ -16,10 +16,10 @@ from paopao_radar.time_windows import closed_window
 
 
 class FlowRadarTests(unittest.TestCase):
-    def test_coin_link_defaults_to_binance_futures_page(self) -> None:
+    def test_coin_link_defaults_to_coinglass_binance_tv_page(self) -> None:
         self.assertEqual(
-            binance_futures_url("BTC"),
-            "https://www.binance.com/zh-CN/futures/BTCUSDT",
+            coinglass_tv_url("BTC"),
+            "https://www.coinglass.com/tv/zh/Binance_BTCUSDT",
         )
 
     def test_series_delta_reports_missing_data(self) -> None:

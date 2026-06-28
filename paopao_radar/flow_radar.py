@@ -39,18 +39,18 @@ def seconds_text(seconds: int) -> str:
     return f"{seconds}秒"
 
 
-def binance_futures_url(coin_or_symbol: str) -> str:
+def coinglass_tv_url(coin_or_symbol: str) -> str:
     symbol = str(coin_or_symbol).upper()
     if not symbol.endswith("USDT"):
         symbol = f"{symbol}USDT"
-    return f"https://www.binance.com/zh-CN/futures/{escape(symbol, quote=True)}"
+    return f"https://www.coinglass.com/tv/zh/Binance_{escape(symbol, quote=True)}"
 
 
 def coin_link(symbol: str) -> str:
     coin = symbol.upper()
     if coin.endswith("USDT"):
         coin = coin[:-4]
-    return f'<a href="{binance_futures_url(coin)}"><b>{tg_escape(coin)}</b></a>'
+    return f'<a href="{coinglass_tv_url(coin)}"><b>{tg_escape(coin)}</b></a>'
 
 
 def flatten_points(data: Any) -> list[Any]:

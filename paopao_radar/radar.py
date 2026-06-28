@@ -75,17 +75,17 @@ def seconds_text(seconds: int) -> str:
     return f"{seconds}秒"
 
 
-def binance_futures_url(coin_or_symbol: str) -> str:
+def coinglass_tv_url(coin_or_symbol: str) -> str:
     symbol = str(coin_or_symbol).upper()
     if not symbol.endswith("USDT"):
         symbol = f"{symbol}USDT"
-    return f"https://www.binance.com/zh-CN/futures/{escape(symbol, quote=True)}"
+    return f"https://www.coinglass.com/tv/zh/Binance_{escape(symbol, quote=True)}"
 
 
 def coin_link(item: dict[str, Any]) -> str:
     raw = str(item.get("coin") or item.get("symbol") or "")
     coin = raw[:-4] if raw.endswith("USDT") else raw
-    return f'<a href="{binance_futures_url(coin)}"><b>{tg_escape(coin)}</b></a>'
+    return f'<a href="{coinglass_tv_url(coin)}"><b>{tg_escape(coin)}</b></a>'
 
 
 def pct_cell(value: float, width: int = 7, decimals: int = 1) -> str:
@@ -849,7 +849,7 @@ class RadarEngine:
         for symbol in symbols[:max_count]:
             base_symbol = symbol[:-4] if symbol.endswith("USDT") else symbol
             if base_symbol in contract_symbols:
-                parts.append(f'<a href="{binance_futures_url(symbol)}"><b>{tg_escape(symbol)}</b></a>')
+                parts.append(f'<a href="{coinglass_tv_url(symbol)}"><b>{tg_escape(symbol)}</b></a>')
             else:
                 parts.append(f"{tg_bold(symbol)}（无合约）")
         if len(symbols) > max_count:
@@ -908,7 +908,7 @@ class RadarEngine:
             "暗流 = OI增加但价格没动",
             "窗口 = 本次统计窗口内的完整收线数据",
             "背离 = OI窗口变化% - 价格窗口变化%",
-            "链接 = 点击币种打开 Binance 合约页面",
+            "链接 = 点击币种打开 CoinGlass Binance K线",
         ])
         return "\n".join(lines)
 
