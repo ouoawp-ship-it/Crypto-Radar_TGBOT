@@ -87,6 +87,67 @@ sync_env_file() {
   fi
 }
 
+get_env_value() {
+  local key="$1"
+  local line value
+  line="$(grep -E "^${key}=" "${APP_DIR}/.env.oi" 2>/dev/null | tail -n 1 || true)"
+  [[ "$line" == *=* ]] || return 0
+  value="${line#*=}"
+  value="${value%$'\r'}"
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s' "$value"
+}
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  "$PYTHON_BIN" - "${APP_DIR}/.env.oi" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+line = f"{key}={value}"
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+for idx, existing in enumerate(lines):
+    if existing.startswith(f"{key}="):
+        lines[idx] = line
+        break
+else:
+    lines.append(line)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+generate_web_admin_token() {
+  "$PYTHON_BIN" - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+}
+
+ensure_web_public_config() {
+  local host port token
+  host="$(get_env_value WEB_HOST)"
+  port="$(get_env_value WEB_PORT)"
+  token="$(get_env_value WEB_ADMIN_TOKEN)"
+
+  if [ -z "$host" ] || [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]; then
+    set_env_value WEB_HOST "0.0.0.0"
+  fi
+  if [ -z "$port" ] || [ "$port" = "8080" ]; then
+    set_env_value WEB_PORT "80"
+  fi
+  if [ -z "$token" ]; then
+    token="$(generate_web_admin_token)"
+    set_env_value WEB_ADMIN_TOKEN "$token"
+    chmod 600 "${APP_DIR}/.env.oi" || true
+    printf '[paopao-update] 已生成 Web 控制台访问令牌。查看令牌: paopao web-token\n'
+  fi
+}
+
 run_post_update_cleanup() {
   if [ -f "${APP_DIR}/main.py" ]; then
     printf '\n[paopao-update] cleanup runtime artifacts\n'
@@ -173,6 +234,9 @@ RestartSec=10
 EnvironmentFile=-${APP_DIR}/.env.oi
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -257,6 +321,7 @@ printf 'GitHub版本: %s (%s)  %s\n' "$REMOTE_VERSION" "$(short_commit "$REMOTE_
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
   if [ "$CHECK_ONLY" != "1" ]; then
     sync_env_file
+    ensure_web_public_config
     run_post_update_cleanup
     install_shortcut_command
     install_or_update_structure_service
@@ -296,6 +361,7 @@ fi
 git pull --ff-only "$REMOTE" "$BRANCH"
 
 sync_env_file
+ensure_web_public_config
 "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
 "$PYTHON_BIN" -m compileall paopao_radar main.py
 "$PYTHON_BIN" -m unittest discover -s tests -v
@@ -308,3 +374,4 @@ install_or_update_web_service
 restart_services_if_present
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
+printf '[paopao-update] Web 控制台: http://服务器IP/admin/，访问令牌: paopao web-token\n'

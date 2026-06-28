@@ -67,7 +67,13 @@ python main.py cleanup --force-cleanup
 
 ## Web 控制台
 
-Web 控制台默认作为 `paopao-web.service` 安装，监听本机地址，适合通过 SSH 隧道访问，不建议直接暴露公网。
+Web 控制台默认作为 `paopao-web.service` 安装，监听 `0.0.0.0:80`，浏览器直接访问:
+
+```text
+http://服务器IP/admin/
+```
+
+页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，可用 `paopao web-token` 查看。
 
 常用命令:
 
@@ -75,25 +81,26 @@ Web 控制台默认作为 `paopao-web.service` 安装，监听本机地址，适
 paopao web-status
 paopao web-logs
 paopao web-restart
+paopao web-token
 ```
 
-前台手动启动仍然可用:
+前台调试启动仍然可用:
 
 ```bash
-paopao web
+paopao web --host 127.0.0.1 --port 8080
 ```
 
 配置项:
 
 ```bash
-WEB_HOST=127.0.0.1
-WEB_PORT=8080
+WEB_HOST=0.0.0.0
+WEB_PORT=80
 WEB_ADMIN_TOKEN=
 ```
 
 控制台功能包括：服务状态、实时日志、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启，以及 `.env.oi` 关键配置编辑。保存配置前会自动备份 `.env.oi`。
 
-如果要绑定公网地址，必须设置 `WEB_ADMIN_TOKEN`，否则程序会拒绝监听非本机地址。
+如果 `WEB_ADMIN_TOKEN` 为空，程序会拒绝监听公网地址；安装/更新脚本会自动补齐。
 
 ## 闭合窗口参数
 
@@ -268,4 +275,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.10.1`，后续功能更新按 `v1.10.2`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

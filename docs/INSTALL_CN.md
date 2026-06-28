@@ -115,28 +115,35 @@ paopao structure-logs   # 查看结构雷达独立服务日志
 paopao structure-restart # 重启结构雷达独立服务
 paopao readiness    # 检查真实推送准备度
 paopao doctor       # 查看环境诊断
-paopao web          # 启动本地 Web 控制台，默认 127.0.0.1:8080
+paopao web          # 前台调试启动 Web 控制台
 paopao web-status   # 查看 Web 控制台服务状态
 paopao web-logs     # 查看 Web 控制台服务日志
 paopao web-restart  # 重启 Web 控制台服务
+paopao web-token    # 查看 Web 控制台访问令牌
 paopao help         # 查看帮助
 ```
 
-Web 控制台会作为 `paopao-web.service` 安装并启动，默认只监听服务器本机地址，推荐用 SSH 隧道访问，不要直接裸露到公网:
+Web 控制台会作为 `paopao-web.service` 安装并启动，浏览器直接打开:
+
+```text
+http://服务器IP/admin/
+```
+
+页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，查看令牌:
 
 ```bash
-paopao web-status
+paopao web-token
 ```
 
 相关配置项:
 
 ```bash
-WEB_HOST=127.0.0.1
-WEB_PORT=8080
+WEB_HOST=0.0.0.0
+WEB_PORT=80
 WEB_ADMIN_TOKEN=
 ```
 
-如果必须监听公网地址，必须设置 `WEB_ADMIN_TOKEN`，否则程序会拒绝启动非本机监听。
+如果 `WEB_ADMIN_TOKEN` 为空，程序会拒绝启动公网监听；安装/更新脚本会自动补齐。
 
 如果是从旧版本更新上来，想只安装快捷命令:
 
@@ -147,7 +154,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.10.1`，后续功能更新按 `v1.10.2`、`v2.0` 这种方式递增。
 
 `paopao check-update` 和 `paopao update` 会同时显示:
 

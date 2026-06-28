@@ -157,8 +157,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
-    parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST 或 127.0.0.1")
-    parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT 或 8080")
+    parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST")
+    parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
     parser.add_argument("--web-token", default="", help="web 控制台访问令牌；也可用 WEB_ADMIN_TOKEN")
     return parser
 

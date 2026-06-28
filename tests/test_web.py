@@ -73,6 +73,13 @@ class WebConsoleTests(unittest.TestCase):
         with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
             self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
 
+    def test_admin_prefixed_paths_are_normalized(self) -> None:
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/admin/api/summary?x=1"
+        self.assertEqual(handler.normalized_path(), "/api/summary")
+        handler.path = "/admin"
+        self.assertEqual(handler.normalized_path(), "/")
+
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             with patch.object(cli, "make_runtime", side_effect=AssertionError("should not init runtime")):

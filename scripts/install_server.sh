@@ -143,6 +143,33 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
 
+generate_web_admin_token() {
+  "$PYTHON_BIN" - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+}
+
+ensure_web_public_config() {
+  local host port token
+  host="$(get_env_value WEB_HOST)"
+  port="$(get_env_value WEB_PORT)"
+  token="$(get_env_value WEB_ADMIN_TOKEN)"
+
+  if [ -z "$host" ] || [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]; then
+    set_env_value WEB_HOST "0.0.0.0"
+  fi
+  if [ -z "$port" ] || [ "$port" = "8080" ]; then
+    set_env_value WEB_PORT "80"
+  fi
+  if [ -z "$token" ]; then
+    token="$(generate_web_admin_token)"
+    set_env_value WEB_ADMIN_TOKEN "$token"
+    chmod 600 "$ENV_FILE" || true
+    log "已生成 Web 控制台访问令牌。查看令牌: paopao web-token"
+  fi
+}
+
 clear_env_value() {
   set_env_value "$1" ""
 }
@@ -771,6 +798,9 @@ RestartSec=10
 EnvironmentFile=-${ENV_FILE}
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -834,6 +864,7 @@ EOF
   print_banner
   install_os_packages
   ensure_env_file
+  ensure_web_public_config
   install_python_deps
   run_checks
   bootstrap_history_if_needed
@@ -862,6 +893,7 @@ EOF
   paopao structure-logs
   paopao web-status
   paopao web-logs
+  paopao web-token
   sudo systemctl status ${SERVICE_NAME}
   sudo systemctl status ${STRUCTURE_SERVICE_NAME}
   sudo systemctl status ${WEB_SERVICE_NAME}
@@ -871,6 +903,10 @@ EOF
   journalctl -u ${WEB_SERVICE_NAME} -f
   cd ${APP_DIR} && . .venv/bin/activate && python main.py runtime-status
   cd ${APP_DIR} && . .venv/bin/activate && python main.py telegram-test --send --confirm-real-send
+
+Web 控制台:
+  http://服务器IP/admin/
+  访问令牌: paopao web-token
 
 中文安装说明:
   ${APP_DIR}/docs/INSTALL_CN.md

@@ -27,6 +27,19 @@ run_main() {
   "$PYTHON_BIN" main.py "$@"
 }
 
+get_env_value() {
+  local key="$1"
+  local env_file="${APP_DIR}/.env.oi"
+  local line value
+  line="$(grep -E "^${key}=" "$env_file" 2>/dev/null | tail -n 1 || true)"
+  [[ "$line" == *=* ]] || return 0
+  value="${line#*=}"
+  value="${value%$'\r'}"
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s' "$value"
+}
+
 service_exists() {
   command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1
 }
@@ -84,10 +97,11 @@ show_help() {
   paopao runtime         查看 runtime-status
   paopao readiness       检查真实推送准备度
   paopao doctor          查看环境诊断
-  paopao web             启动本地 Web 控制台，默认 127.0.0.1:8080
+  paopao web             前台调试启动 Web 控制台
   paopao web-status      查看 Web 控制台服务状态
   paopao web-logs        查看 Web 控制台服务日志
   paopao web-restart     重启 Web 控制台服务
+  paopao web-token       查看 Web 控制台访问令牌
   paopao help            查看这份帮助
 
 当前项目目录: ${APP_DIR}
@@ -163,6 +177,22 @@ restart_web_service() {
     run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
   else
     printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
+  fi
+}
+
+show_web_token() {
+  local host port token
+  host="$(get_env_value WEB_HOST)"
+  port="$(get_env_value WEB_PORT)"
+  token="$(get_env_value WEB_ADMIN_TOKEN)"
+  [ -n "$host" ] || host="0.0.0.0"
+  [ -n "$port" ] || port="80"
+  printf 'Web 控制台地址: http://服务器IP/admin/\n'
+  printf '监听配置: %s:%s\n' "$host" "$port"
+  if [ -n "$token" ]; then
+    printf '访问令牌: %s\n' "$token"
+  else
+    printf '访问令牌未配置。请执行: bash scripts/update_server.sh --yes\n'
   fi
 }
 
@@ -243,6 +273,7 @@ show_menu() {
  19. Web 控制台服务状态
  20. Web 控制台实时日志
  21. 重启 Web 控制台服务
+ 22. 查看 Web 控制台访问令牌
   0. 退出
 ============================================================
 
@@ -270,8 +301,9 @@ EOF
       19) show_web_status; pause_menu ;;
       20) show_web_logs ;;
       21) restart_web_service; pause_menu ;;
+      22) show_web_token; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-21。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-22。\n'; pause_menu ;;
     esac
   done
 }
@@ -358,6 +390,9 @@ case "$command" in
     ;;
   web-restart)
     restart_web_service
+    ;;
+  web-token)
+    show_web_token
     ;;
   help|-h|--help)
     show_help

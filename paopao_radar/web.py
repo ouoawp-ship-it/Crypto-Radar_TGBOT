@@ -706,6 +706,7 @@ INDEX_HTML = r"""<!doctype html>
       ["stop-web", "停止 Web 控制台", "paopao-web", "danger"]
     ];
     let currentView = "overview";
+    const basePath = window.location.pathname.startsWith("/admin") ? "/admin" : "";
 
     function token() { return localStorage.getItem("paopaoAdminToken") || ""; }
     function headers() {
@@ -721,7 +722,7 @@ INDEX_HTML = r"""<!doctype html>
       refreshCurrent();
     }
     async function api(path, options = {}) {
-      const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const res = await fetch(`${basePath}${path}`, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
       if (res.status === 401) {
         showAuth();
         throw new Error("需要访问令牌");
@@ -913,21 +914,30 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
         return False
 
+    def normalized_path(self) -> str:
+        path = urlparse(self.path).path
+        if path == "/admin":
+            return "/"
+        if path.startswith("/admin/"):
+            return path[len("/admin"):] or "/"
+        return path
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/":
+        path = self.normalized_path()
+        if path == "/":
             self.send_html(INDEX_HTML)
             return
         if not self.require_auth():
             return
         query = parse_qs(parsed.query)
-        if parsed.path == "/api/summary":
+        if path == "/api/summary":
             self.send_json(summary_payload())
             return
-        if parsed.path == "/api/config":
+        if path == "/api/config":
             self.send_json(config_payload())
             return
-        if parsed.path == "/api/logs":
+        if path == "/api/logs":
             target = query.get("target", ["main"])[0]
             lines = int(query.get("lines", ["200"])[0] or 200)
             self.send_json(logs_payload(target, lines))
@@ -937,20 +947,20 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self.require_auth():
             return
-        parsed = urlparse(self.path)
+        path = self.normalized_path()
         try:
             data = self.read_json()
-            if parsed.path == "/api/config":
+            if path == "/api/config":
                 updates = data.get("updates", {})
                 clear = data.get("clear", [])
                 if not isinstance(updates, dict) or not isinstance(clear, list):
                     raise ValueError("updates 必须是对象，clear 必须是数组")
                 self.send_json(write_env_updates(updates, clear=[str(item) for item in clear]))
                 return
-            if parsed.path == "/api/action":
+            if path == "/api/action":
                 self.send_json(run_cli_action(str(data.get("name", ""))))
                 return
-            if parsed.path == "/api/service":
+            if path == "/api/service":
                 self.send_json(run_service_action(str(data.get("name", ""))))
                 return
             self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)

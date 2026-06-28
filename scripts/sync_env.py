@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import secrets
 from pathlib import Path
 
 
@@ -21,8 +22,6 @@ PRESERVE_KEYS = {
     "TG_TEST_TOPIC_ID",
     "COINALYZE_API_KEY",
     "COINALYZE_ENABLE",
-    "WEB_HOST",
-    "WEB_PORT",
     "WEB_ADMIN_TOKEN",
 }
 
@@ -46,6 +45,16 @@ MANAGED_MIGRATIONS = {
         "old": {"", "20"},
         "new": "50",
         "note": "公告抓取默认扩大到 50 条",
+    },
+    "WEB_HOST": {
+        "old": {"", "127.0.0.1", "localhost"},
+        "new": "0.0.0.0",
+        "note": "Web 控制台默认开放 http://服务器IP/admin/",
+    },
+    "WEB_PORT": {
+        "old": {"", "8080"},
+        "new": "80",
+        "note": "Web 控制台默认使用 HTTP 80 端口",
     },
 }
 
@@ -111,6 +120,14 @@ def sync_env(env_path: Path, example_path: Path) -> dict[str, list[str]]:
         if current in rule["old"] and current != rule["new"]:
             lines[index[key]] = f"{key}={rule['new']}"
             updated.append(key)
+
+    token_key = "WEB_ADMIN_TOKEN"
+    if token_key in index:
+        parsed = split_env_line(lines[index[token_key]])
+        current = clean_value(parsed[1] if parsed else "")
+        if not current:
+            lines[index[token_key]] = f"{token_key}={secrets.token_urlsafe(24)}"
+            updated.append(token_key)
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"added": added, "updated": updated, "preserved": preserved}
