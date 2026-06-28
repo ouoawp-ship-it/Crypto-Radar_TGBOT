@@ -130,6 +130,19 @@ show_version() {
   git log -1 --format='提交说明: %s' 2>/dev/null || true
 }
 
+show_home() {
+  local token
+  token="$(get_env_value WEB_ADMIN_TOKEN)"
+  cat <<EOF
+泡泡雷达 Web 控制台
+地址: $(web_public_url)
+令牌: ${token:-未配置，请执行: bash scripts/update_server.sh --yes}
+
+常用: paopao update --yes | paopao web-status | paopao web-logs
+更多: paopao help
+EOF
+}
+
 show_help() {
   cat <<EOF
 泡泡雷达 Web 控制台
@@ -162,9 +175,7 @@ fi
 
 case "$command" in
   home|menu|"")
-    show_help
-    printf '\n'
-    show_web_token
+    show_home
     ;;
   web)
     run_main web "$@"
