@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
+WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
@@ -37,6 +38,7 @@ usage() {
   SERVICE_NAME=paopao-radar
   STRUCTURE_SERVICE_NAME=paopao-structure
   CLEANUP_SERVICE_NAME=paopao-cleanup
+  WEB_SERVICE_NAME=paopao-web
 EOF
 }
 
@@ -152,6 +154,33 @@ EOF
   run_root systemctl enable --now "${CLEANUP_SERVICE_NAME}.timer" >/dev/null 2>&1 || true
 }
 
+install_or_update_web_service() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local service_path="/etc/systemd/system/${WEB_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao Web Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SUDO_USER:-$(id -un)}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py web
+Restart=always
+RestartSec=10
+EnvironmentFile=-${APP_DIR}/.env.oi
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$WEB_SERVICE_NAME" >/dev/null 2>&1 || true
+}
+
 install_shortcut_command() {
   if [ -f "${APP_DIR}/scripts/paopao_menu.sh" ]; then
     run_root tee /usr/local/bin/paopao >/dev/null <<EOF
@@ -160,6 +189,7 @@ export PAOPAO_APP_DIR="${APP_DIR}"
 export SERVICE_NAME="${SERVICE_NAME}"
 export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
+export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
     run_root chmod +x /usr/local/bin/paopao
@@ -184,6 +214,11 @@ restart_services_if_present() {
     stop_legacy_structure_loops
     run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
     run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${WEB_SERVICE_NAME}.service" >/dev/null 2>&1; then
+    run_root systemctl restart "$WEB_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
   fi
 }
 
@@ -226,6 +261,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     install_shortcut_command
     install_or_update_structure_service
     install_or_update_cleanup_timer
+    install_or_update_web_service
     restart_services_if_present
   fi
   printf '\n当前已经是最新版本，不需要更新。\n'
@@ -268,6 +304,7 @@ run_post_update_cleanup
 install_shortcut_command
 install_or_update_structure_service
 install_or_update_cleanup_timer
+install_or_update_web_service
 restart_services_if_present
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"

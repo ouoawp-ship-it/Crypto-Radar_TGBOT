@@ -19,6 +19,7 @@ from .storage import JsonStore
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
 STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
+WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_FLOW_RADAR_TOPIC_ID", "资金流话题 ID", "Telegram"),
     ConfigField("STRUCTURE_TOPIC_ID", "结构雷达话题 ID", "Telegram"),
     ConfigField("STRUCTURE_REVIEW_TOPIC_ID", "结构复盘话题 ID", "Telegram"),
+    ConfigField("WEB_HOST", "Web 监听地址", "Web 控制台"),
+    ConfigField("WEB_PORT", "Web 端口", "Web 控制台", kind="int", minimum=1, maximum=65535),
+    ConfigField("WEB_ADMIN_TOKEN", "Web 访问令牌", "Web 控制台", secret=True),
     ConfigField("COINALYZE_ENABLE", "启用 Coinalyze", "Coinalyze", kind="bool"),
     ConfigField("COINALYZE_API_KEY", "Coinalyze API Key", "Coinalyze", secret=True),
     ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300),
@@ -82,6 +86,9 @@ SERVICE_ACTIONS: dict[str, tuple[str, str]] = {
     "restart-structure": (STRUCTURE_SERVICE, "restart"),
     "start-structure": (STRUCTURE_SERVICE, "start"),
     "stop-structure": (STRUCTURE_SERVICE, "stop"),
+    "restart-web": (WEB_SERVICE, "restart"),
+    "start-web": (WEB_SERVICE, "start"),
+    "stop-web": (WEB_SERVICE, "stop"),
 }
 
 
@@ -371,6 +378,7 @@ def summary_payload() -> dict[str, Any]:
         "services": {
             "main": service_status(MAIN_SERVICE),
             "structure": service_status(STRUCTURE_SERVICE),
+            "web": service_status(WEB_SERVICE),
         },
         "runtime": {
             "main": load_json_or_empty(settings.runtime_status_path),
@@ -404,6 +412,9 @@ def logs_payload(target: str, lines: int) -> dict[str, Any]:
     if target == "structure":
         service = STRUCTURE_SERVICE
         fallback_path = settings.data_dir / "structure.log"
+    elif target == "web":
+        service = WEB_SERVICE
+        fallback_path = settings.data_dir / "web.log"
     else:
         service = MAIN_SERVICE
         fallback_path = settings.data_dir / "runtime.log"
@@ -630,10 +641,11 @@ INDEX_HTML = r"""<!doctype html>
 
       <section id="logs" class="view hidden">
         <div class="toolbar">
-          <select id="logTarget">
-            <option value="main">主服务</option>
-            <option value="structure">结构雷达</option>
-          </select>
+      <select id="logTarget">
+        <option value="main">主服务</option>
+        <option value="structure">结构雷达</option>
+        <option value="web">Web 控制台</option>
+      </select>
           <select id="logLines">
             <option value="200">最近 200 行</option>
             <option value="500">最近 500 行</option>
@@ -688,7 +700,10 @@ INDEX_HTML = r"""<!doctype html>
       ["stop-main", "停止主服务", "paopao-radar", "danger"],
       ["restart-structure", "重启结构雷达", "paopao-structure", "warn"],
       ["start-structure", "启动结构雷达", "paopao-structure", ""],
-      ["stop-structure", "停止结构雷达", "paopao-structure", "danger"]
+      ["stop-structure", "停止结构雷达", "paopao-structure", "danger"],
+      ["restart-web", "重启 Web 控制台", "paopao-web", "warn"],
+      ["start-web", "启动 Web 控制台", "paopao-web", ""],
+      ["stop-web", "停止 Web 控制台", "paopao-web", "danger"]
     ];
     let currentView = "overview";
 
@@ -729,12 +744,14 @@ INDEX_HTML = r"""<!doctype html>
       setSubtitle(`更新时间 ${data.updated_at}`);
       const main = data.services.main || {};
       const structure = data.services.structure || {};
+      const web = data.services.web || {};
       const git = data.git || {};
       const runtime = data.runtime || {};
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
         metric("主服务", statusPill(main.active, main.active_ok), `<div class="muted">${escapeHtml(main.service)}</div>`),
         metric("结构雷达", statusPill(structure.active, structure.active_ok), `<div class="muted">${escapeHtml(structure.service)}</div>`),
+        metric("Web 控制台", statusPill(web.active, web.active_ok), `<div class="muted">${escapeHtml(web.service)}</div>`),
         metric("版本", escapeHtml(git.version || "unknown"), `<div class="muted">${escapeHtml(git.branch)} ${escapeHtml(git.commit)}</div>`),
         metric("配置文件", cfg.env_file_exists ? statusPill("存在", true) : statusPill("缺失", false), ""),
         `<div class="panel span-6"><h3 class="section-title">运行状态</h3><pre>${escapeHtml(JSON.stringify(runtime, null, 2))}</pre></div>`,
@@ -945,7 +962,10 @@ def is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
-def run_web_server(host: str = "127.0.0.1", port: int = 8080, admin_token: str = "") -> int:
+def run_web_server(host: str = "", port: int = 0, admin_token: str = "") -> int:
+    load_env_file()
+    host = host or os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(port or os.getenv("WEB_PORT", "8080") or 8080)
     token = admin_token or os.getenv("WEB_ADMIN_TOKEN", "")
     if not is_loopback_host(host) and not token:
         print("web: refused to bind non-loopback host without WEB_ADMIN_TOKEN", file=sys.stderr)
@@ -961,4 +981,3 @@ def run_web_server(host: str = "127.0.0.1", port: int = 8080, admin_token: str =
     finally:
         server.server_close()
     return 0
-

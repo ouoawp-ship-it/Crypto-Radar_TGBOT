@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
+WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
@@ -84,6 +85,9 @@ show_help() {
   paopao readiness       检查真实推送准备度
   paopao doctor          查看环境诊断
   paopao web             启动本地 Web 控制台，默认 127.0.0.1:8080
+  paopao web-status      查看 Web 控制台服务状态
+  paopao web-logs        查看 Web 控制台服务日志
+  paopao web-restart     重启 Web 控制台服务
   paopao help            查看这份帮助
 
 当前项目目录: ${APP_DIR}
@@ -134,6 +138,31 @@ restart_structure_service() {
     run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
   else
     printf '未找到结构雷达 systemd 服务: %s\n' "$STRUCTURE_SERVICE_NAME"
+  fi
+}
+
+show_web_status() {
+  if service_unit_exists "$WEB_SERVICE_NAME"; then
+    run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
+  else
+    printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
+  fi
+}
+
+show_web_logs() {
+  if service_unit_exists "$WEB_SERVICE_NAME"; then
+    run_root journalctl -u "$WEB_SERVICE_NAME" -f
+  else
+    printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
+  fi
+}
+
+restart_web_service() {
+  if service_unit_exists "$WEB_SERVICE_NAME"; then
+    run_root systemctl restart "$WEB_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
+  else
+    printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
   fi
 }
 
@@ -208,9 +237,12 @@ show_menu() {
  13. 结构信号复盘 structure-review
  14. 结构雷达服务状态
  15. 结构雷达实时日志
- 16. 重启结构雷达服务
- 17. 测试 Binance 公告抓取
- 18. 立即清理运行垃圾 cleanup
+  16. 重启结构雷达服务
+  17. 测试 Binance 公告抓取
+  18. 立即清理运行垃圾 cleanup
+ 19. Web 控制台服务状态
+ 20. Web 控制台实时日志
+ 21. 重启 Web 控制台服务
   0. 退出
 ============================================================
 
@@ -235,8 +267,11 @@ EOF
       16) restart_structure_service; pause_menu ;;
       17) run_main announcements-test; pause_menu ;;
       18) cleanup_project; pause_menu ;;
+      19) show_web_status; pause_menu ;;
+      20) show_web_logs ;;
+      21) restart_web_service; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-18。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-21。\n'; pause_menu ;;
     esac
   done
 }
@@ -314,6 +349,15 @@ case "$command" in
     ;;
   web)
     run_main web "$@"
+    ;;
+  web-status)
+    show_web_status
+    ;;
+  web-logs|web-log)
+    show_web_logs
+    ;;
+  web-restart)
+    restart_web_service
     ;;
   help|-h|--help)
     show_help

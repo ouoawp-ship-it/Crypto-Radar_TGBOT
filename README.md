@@ -52,7 +52,7 @@ bash scripts/install_server.sh
 - 跑单元测试
 - 生成 dry-run 启动观察历史
 - 通过 readiness 检查
-- 创建并启动 `paopao-radar` systemd 服务
+- 创建并启动 `paopao-radar`、`paopao-structure`、`paopao-web` systemd 服务
 - 定时自动清理临时文件、坏 JSON 备份、过期日志和过长历史
 
 ## 查看运行
@@ -67,23 +67,33 @@ python main.py cleanup --force-cleanup
 
 ## Web 控制台
 
-第一版 Web 控制台默认只监听本机地址，适合通过 SSH 隧道访问，不建议直接暴露公网。
+Web 控制台默认作为 `paopao-web.service` 安装，监听本机地址，适合通过 SSH 隧道访问，不建议直接暴露公网。
 
-服务器启动:
+常用命令:
+
+```bash
+paopao web-status
+paopao web-logs
+paopao web-restart
+```
+
+前台手动启动仍然可用:
 
 ```bash
 paopao web
-# 等价于
-python main.py web --host 127.0.0.1 --port 8080
 ```
 
-如果要绑定公网地址，必须设置访问令牌:
+配置项:
 
 ```bash
-WEB_ADMIN_TOKEN=换成你的强密码 python main.py web --host 0.0.0.0 --port 8080
+WEB_HOST=127.0.0.1
+WEB_PORT=8080
+WEB_ADMIN_TOKEN=
 ```
 
 控制台功能包括：服务状态、实时日志、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启，以及 `.env.oi` 关键配置编辑。保存配置前会自动备份 `.env.oi`。
+
+如果要绑定公网地址，必须设置 `WEB_ADMIN_TOKEN`，否则程序会拒绝监听非本机地址。
 
 ## 闭合窗口参数
 
@@ -183,6 +193,7 @@ COINALYZE_API_KEY=
 ```bash
 paopao-radar      # 主服务：资金摘要、启动雷达、公告、资金流等
 paopao-structure  # 结构雷达独立循环：55 分预警，整点后 5 分确认
+paopao-web        # Web 控制台：状态、日志、配置和维护操作
 paopao-cleanup.timer # 每小时自动清理运行垃圾
 ```
 
@@ -192,6 +203,9 @@ paopao-cleanup.timer # 每小时自动清理运行垃圾
 paopao structure-status
 paopao structure-logs
 paopao structure-restart
+paopao web-status
+paopao web-logs
+paopao web-restart
 paopao cleanup
 ```
 
@@ -214,7 +228,7 @@ ANNOUNCEMENT_PAGE_SIZE=50
 bash scripts/update_server.sh
 ```
 
-更新脚本每次运行后会自动执行一次安全清理：同步 `.env.oi`、清理 pycache/临时文件/过期日志/过期结构图/根目录临时报告，再重启服务。脚本还会安装 `paopao-cleanup.timer`，每小时自动执行一次 `python main.py cleanup --force-cleanup`。清理不会删除 `.env.oi`、`data/*.json` 状态文件、README、`docs/INSTALL_CN.md` 或源码。
+更新脚本每次运行后会自动执行一次安全清理：同步 `.env.oi`、清理 pycache/临时文件/过期日志/过期结构图/根目录临时报告，再重启服务。脚本还会安装/刷新 `paopao-structure.service`、`paopao-web.service` 和 `paopao-cleanup.timer`。清理不会删除 `.env.oi`、`data/*.json` 状态文件、README、`docs/INSTALL_CN.md` 或源码。
 
 ## 安全规则
 
@@ -254,4 +268,4 @@ paopao update   # 有更新时确认后更新项目
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.9.6`，后续功能更新按 `v1.9.7`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.10.0`，后续功能更新按 `v1.10.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
