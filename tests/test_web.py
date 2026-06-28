@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import os
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import paopao_radar.cli as cli
+from paopao_radar import web
+
+
+class WebConsoleTests(unittest.TestCase):
+    def test_config_payload_masks_secret_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text(
+                "TG_BOT_TOKEN=123456:abcdefghijklmnopqrstuvwxyz\n"
+                "TG_CHAT_ID=-1001234567890\n",
+                encoding="utf-8",
+            )
+
+            payload = web.config_payload(env_path)
+
+        telegram_fields = {
+            item["key"]: item
+            for item in payload["sections"]["Telegram"]
+        }
+        self.assertEqual(telegram_fields["TG_BOT_TOKEN"]["value"], "")
+        self.assertTrue(telegram_fields["TG_BOT_TOKEN"]["configured"])
+        self.assertIn("...", telegram_fields["TG_BOT_TOKEN"]["masked"])
+        self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
+
+    def test_write_env_updates_preserves_existing_lines_and_creates_backup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text(
+                "# header\n"
+                "TG_CHAT_ID=-1001111111111\n"
+                "UNCHANGED=value\n",
+                encoding="utf-8",
+            )
+
+            result = web.write_env_updates(
+                {
+                    "TG_CHAT_ID": "-1002222222222",
+                    "COINALYZE_ENABLE": True,
+                    "STRUCTURE_MIN_SCORE": "70",
+                },
+                path=env_path,
+            )
+            text = env_path.read_text(encoding="utf-8")
+            backups = list(Path(tmp).glob(".env.oi.bak.web.*"))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("TG_CHAT_ID=-1002222222222", text)
+        self.assertIn("UNCHANGED=value", text)
+        self.assertIn("COINALYZE_ENABLE=true", text)
+        self.assertIn("STRUCTURE_MIN_SCORE=70", text)
+        self.assertEqual(len(backups), 1)
+
+    def test_write_env_updates_rejects_unknown_key(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("TG_CHAT_ID=-1001111111111\n", encoding="utf-8")
+
+            result = web.write_env_updates({"DANGEROUS": "1"}, path=env_path)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("DANGEROUS", result["errors"])
+
+    def test_non_loopback_web_requires_token(self) -> None:
+        with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
+            self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
+
+    def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            with patch.object(cli, "make_runtime", side_effect=AssertionError("should not init runtime")):
+                with patch("paopao_radar.web.run_web_server", return_value=0) as run_web:
+                    code = cli.main(["web", "--host", "127.0.0.1", "--port", "8090", "--web-token", "secret"])
+
+        self.assertEqual(code, 0)
+        run_web.assert_called_once_with("127.0.0.1", 8090, "secret")
+
+
+if __name__ == "__main__":
+    unittest.main()

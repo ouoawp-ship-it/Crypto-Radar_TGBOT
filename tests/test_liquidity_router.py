@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from paopao_radar.coinglass_liquidity import LiquidityContext
 from paopao_radar.config import Settings
+from paopao_radar.liquidity_context import LiquidityContext
 from paopao_radar.liquidity_router import MultiSourceLiquidityAnalyzer, merge_liquidity_contexts
 from paopao_radar.structure_radar import SIGNAL_PRE_BREAKOUT_NEAR, StructureSignal
 
@@ -52,19 +52,21 @@ def make_signal() -> StructureSignal:
 
 
 class LiquidityRouterTests(unittest.TestCase):
-    def test_keeps_coinglass_when_it_has_full_context(self) -> None:
+    def test_merges_liquidation_and_orderbook_context(self) -> None:
         base = LiquidityContext(
             symbol="TESTUSDT",
+            available=False,
+            source="MultiSource",
+        )
+        liquidation = LiquidityContext(
+            symbol="TESTUSDT",
             available=True,
-            source="CoinGlass",
+            source="CoinalyzeHistory",
             upper_liquidation_zone="$104",
             nearest_liquidation_above_pct=4,
-            upper_liquidity_wall="$103",
-            upper_wall_distance_pct=3,
             liquidation_bias="up",
-            orderbook_bias="down",
         )
-        fallback = LiquidityContext(
+        orderbook = LiquidityContext(
             symbol="TESTUSDT",
             available=True,
             source="BinanceOrderBook",
@@ -73,14 +75,14 @@ class LiquidityRouterTests(unittest.TestCase):
             orderbook_bias="down",
         )
 
-        merged = merge_liquidity_contexts(base, None, fallback)
+        merged = merge_liquidity_contexts(base, liquidation, orderbook)
 
-        self.assertEqual(merged.source, "CoinGlass+BinanceOrderBook")
-        self.assertEqual(merged.upper_liquidity_wall, "$103")
+        self.assertEqual(merged.source, "CoinalyzeHistory+BinanceOrderBook")
+        self.assertEqual(merged.upper_liquidity_wall, "$101")
         self.assertEqual(merged.upper_liquidation_zone, "$104")
 
-    def test_falls_back_to_binance_orderbook_when_coinglass_has_no_wall(self) -> None:
-        base = LiquidityContext(symbol="TESTUSDT", available=False, source="CoinGlass", reason_lines=["Upgrade plan"])
+    def test_uses_binance_orderbook_when_only_orderbook_is_available(self) -> None:
+        base = LiquidityContext(symbol="TESTUSDT", available=False, source="MultiSource")
         orderbook = LiquidityContext(
             symbol="TESTUSDT",
             available=True,
@@ -101,8 +103,7 @@ class LiquidityRouterTests(unittest.TestCase):
 
     def test_enhance_scores_with_fallback_context(self) -> None:
         with TemporaryDirectory() as tmp:
-            settings = Settings(data_dir=Path(tmp), coinglass_liquidity_score_max_delta=15)
-            base = StaticProvider(LiquidityContext(symbol="TESTUSDT", available=False, source="CoinGlass"))
+            settings = Settings(data_dir=Path(tmp), liquidity_score_max_delta=15)
             orderbook = StaticProvider(LiquidityContext(
                 symbol="TESTUSDT",
                 available=True,
@@ -112,13 +113,13 @@ class LiquidityRouterTests(unittest.TestCase):
                 orderbook_bias="up",
                 liquidity_gap_direction="none",
             ))
-            analyzer = MultiSourceLiquidityAnalyzer(settings, coinglass=base, binance_orderbook=orderbook)
+            analyzer = MultiSourceLiquidityAnalyzer(settings, binance_orderbook=orderbook)
             signal = make_signal()
 
             analyzer.enhance(signal)
 
         self.assertGreater(signal.score, 70)
-        self.assertEqual(signal.liquidity_context.source, "CoinGlass+BinanceOrderBook")
+        self.assertEqual(signal.liquidity_context.source, "BinanceOrderBook")
 
 
 if __name__ == "__main__":

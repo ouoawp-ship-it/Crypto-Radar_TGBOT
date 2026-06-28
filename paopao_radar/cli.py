@@ -29,14 +29,9 @@ from dataclasses import replace
 from datetime import datetime
 
 from .config import Settings
-from .coinglass_liquidity import (
-    api_status_summary,
-    parsed_item_count,
-    payload_shape_summary,
-)
-from .data_sources import BinanceDataSource, CoinglassDataSource
-from .flow_radar import FlowRadarEngine, fmt_cvd, series_delta_info
-from .liquidity_router import MultiSourceLiquidityAnalyzer, build_liquidity_enhancer
+from .data_sources import BinanceDataSource
+from .flow_radar import FlowRadarEngine
+from .liquidity_router import build_liquidity_enhancer
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
 from .storage import JsonStore
@@ -138,8 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "coinglass-test", "coinglass-liquidity-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；coinglass-test 验证 CoinGlass；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
@@ -157,12 +152,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-symbols", type=int, default=None, help="structure-radar 临时覆盖扫描币种数量")
     parser.add_argument("--min-score", type=float, default=None, help="structure-radar 临时覆盖最低推送分数")
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
-    parser.add_argument("--with-coinglass", action="store_true", help="structure-radar 临时启用 CoinGlass 清算/盘口增强")
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 统计过去 N 小时的结构信号")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
+    parser.add_argument("--host", default="127.0.0.1", help="web 控制台监听地址，默认 127.0.0.1")
+    parser.add_argument("--port", type=int, default=8080, help="web 控制台端口，默认 8080")
+    parser.add_argument("--web-token", default="", help="web 控制台访问令牌；也可用 WEB_ADMIN_TOKEN")
     return parser
 
 
@@ -183,7 +180,6 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     min_score = getattr(args, "min_score", None)
     interval = getattr(args, "interval", None)
     save_charts = getattr(args, "save_charts", False)
-    with_coinglass = getattr(args, "with_coinglass", False)
     lookback_hours = getattr(args, "lookback_hours", None)
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
@@ -199,9 +195,6 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
         updates["structure_interval"] = str(interval)
     if save_charts:
         updates["structure_save_charts"] = True
-    if with_coinglass:
-        updates["coinglass_enable"] = True
-        updates["coinglass_liquidity_enable"] = True
     if lookback_hours is not None:
         updates["structure_review_lookback_hours"] = max(1, int(lookback_hours))
     if not updates:
@@ -366,104 +359,6 @@ def run_telegram_test(args: argparse.Namespace) -> int:
     if result.status == "failed":
         return 1
     return 0
-
-
-def run_coinglass_test(_args: argparse.Namespace) -> int:
-    settings, _store, _engine, _gateway = make_runtime_for_args(_args)
-    if not settings.coinglass_enable:
-        print("coinglass_test: blocked (COINGLASS_ENABLE=false)")
-        return 2
-    if not settings.coinglass_api_key:
-        print("coinglass_test: blocked (missing COINGLASS_API_KEY)")
-        return 2
-
-    source = CoinglassDataSource(settings)
-    data = source.open_interest_exchange_list("BTC")
-    ok = data is not None
-    spot_cvd_delta, spot_cvd_ready, spot_cvd_points = series_delta_info(source.spot_aggregated_cvd_history("BTC"))
-    futures_cvd_delta, futures_cvd_ready, futures_cvd_points = series_delta_info(source.futures_aggregated_cvd_history("BTC"))
-    print(f"coinglass_test: {'ok' if ok else 'failed'}")
-    print(json.dumps(source.diagnostics(), ensure_ascii=False, indent=2))
-    if isinstance(data, list):
-        print(f"sample_items: {len(data)}")
-    elif isinstance(data, dict):
-        print(f"sample_keys: {', '.join(list(data.keys())[:8])}")
-    print(
-        "cvd_sample: "
-        f"spot points={spot_cvd_points} ready={spot_cvd_ready} delta={fmt_cvd(spot_cvd_delta, spot_cvd_ready)} | "
-        f"futures points={futures_cvd_points} ready={futures_cvd_ready} delta={fmt_cvd(futures_cvd_delta, futures_cvd_ready)}"
-    )
-    return 0 if ok else 1
-
-
-def run_coinglass_liquidity_test(args: argparse.Namespace) -> int:
-    settings, _store, _engine, _gateway = make_runtime_for_args(args)
-    if not settings.coinglass_api_key:
-        print("coinglass_liquidity_test: blocked (missing COINGLASS_API_KEY)")
-        return 2
-    test_settings = replace(
-        settings,
-        coinglass_enable=True,
-        coinglass_liquidity_enable=True,
-        liquidity_fallback_enable=True,
-        binance_orderbook_liquidity_enable=True,
-        coinglass_request_budget=max(settings.coinglass_request_budget, 8),
-    )
-    price = 100.0
-    binance_source = BinanceDataSource(test_settings)
-    try:
-        for ticker in binance_source.ticker_24h():
-            if str(ticker.get("symbol") or "").upper() == "BTCUSDT":
-                latest = float(ticker.get("lastPrice") or 0)
-                if latest > 0:
-                    price = latest
-                break
-    except Exception:
-        price = 100.0
-    source = CoinglassDataSource(test_settings)
-    enhancer = build_liquidity_enhancer(test_settings, binance_source)
-    analyzer = enhancer if enhancer is not None else MultiSourceLiquidityAnalyzer(test_settings)
-    context = analyzer.context("BTCUSDT", price)
-    extra: dict[str, object] = {}
-    if source.enabled:
-        liquidation_payload = source.liquidation_heatmap(
-            test_settings.coinglass_exchange_list,
-            "BTCUSDT",
-            range_="24h",
-        )
-        orderbook_payload = source.orderbook_heatmap(
-            test_settings.coinglass_exchange_list,
-            "BTCUSDT",
-            range_="24h",
-        )
-        extra = {
-            "parsed_counts": {
-                "liquidation_items": parsed_item_count(liquidation_payload),
-                "orderbook_items": parsed_item_count(orderbook_payload),
-            },
-            "payload_shapes": {
-                "liquidation": payload_shape_summary(liquidation_payload),
-                "orderbook": payload_shape_summary(orderbook_payload),
-            },
-            "api_status": {
-                "liquidation": api_status_summary(liquidation_payload),
-                "orderbook": api_status_summary(orderbook_payload),
-            },
-        }
-    print(f"coinglass_liquidity_test: {'ok' if context.available else 'unavailable'}")
-    payload = {
-        "api_key_configured": bool(test_settings.coinglass_api_key),
-        "liquidation_bias": context.liquidation_bias,
-        "orderbook_bias": context.orderbook_bias,
-        "liquidity_gap_direction": context.liquidity_gap_direction,
-        "source": context.source,
-        "reason_lines": context.reason_lines,
-        "diagnostics": analyzer.diagnostics(),
-    }
-    payload.update(extra)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0 if context.available else 1
-
 
 def run_announcements_test(args: argparse.Namespace) -> int:
     settings, store, engine, _gateway = make_runtime_for_args(args)
@@ -1508,6 +1403,10 @@ def main(argv: list[str] | None = None) -> int:
     configure_console_encoding()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "web":
+        from .web import run_web_server
+
+        return run_web_server(args.host, args.port, args.web_token)
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":
@@ -1528,10 +1427,6 @@ def main(argv: list[str] | None = None) -> int:
         return print_readiness(settings, store)
     if args.command == "telegram-test":
         return run_telegram_test(args)
-    if args.command == "coinglass-test":
-        return run_coinglass_test(args)
-    if args.command == "coinglass-liquidity-test":
-        return run_coinglass_liquidity_test(args)
     if args.command == "announcements-test":
         return run_announcements_test(args)
     if args.command == "flow-radar":

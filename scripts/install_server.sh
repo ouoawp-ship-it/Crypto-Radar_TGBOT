@@ -48,16 +48,14 @@ print_banner() {
   2. 创建/检查 .env.oi 配置文件
   3. 输入 Telegram bot token 和群 ID
   4. 选择是否启用 Telegram 话题自动分类
-  5. 可选输入 CoinGlass API key
-  6. 可选输入 Coinalyze API key
-  7. 创建 Python 虚拟环境并安装依赖
-  8. 运行代码检查、单元测试和 readiness
-  9. 安装并启动 systemd 服务
+  5. 可选输入 Coinalyze API key
+  6. 创建 Python 虚拟环境并安装依赖
+  7. 运行代码检查、单元测试和 readiness
+  8. 安装并启动 systemd 服务
 
 注意:
   - TG_BOT_TOKEN 只填 Telegram bot token，例如 123456:ABC...
   - TG_CHAT_ID 只填群 ID，例如 -1001234567890
-  - CoinGlass key 只在 COINGLASS_API_KEY 那一步填写
   - Coinalyze key 只在 COINALYZE_API_KEY 那一步填写
   - 话题 ID 默认不需要填写，机器人有权限时会自动创建并记录
 ============================================================
@@ -112,14 +110,6 @@ is_valid_chat_id() {
 is_valid_topic_id() {
   local value="${1:-}"
   [[ "$value" =~ ^[0-9]{1,20}$ ]]
-}
-
-is_valid_coinglass_key() {
-  local value="${1:-}"
-  if is_placeholder_value "$value"; then
-    return 1
-  fi
-  [[ "$value" =~ ^[A-Za-z0-9_-]{16,128}$ ]]
 }
 
 is_valid_coinalyze_key() {
@@ -188,7 +178,7 @@ prompt_topic_id() {
       set_env_value "$key" "$value"
       return 0
     fi
-    printf '格式不对：话题 ID 只能是数字。不要在这里填 bot token、群 ID 或 CoinGlass key。\n'
+    printf '格式不对：话题 ID 只能是数字。不要在这里填 bot token、群 ID 或 API key。\n'
   done
 }
 
@@ -333,48 +323,6 @@ EOF
   chmod 600 "$ENV_FILE" || true
 }
 
-prompt_coinglass_config_if_needed() {
-  if [ ! -t 0 ]; then
-    return 0
-  fi
-  local enabled existing_key coinglass_key
-  enabled="$(get_env_value COINGLASS_ENABLE)"
-  existing_key="$(get_env_value COINGLASS_API_KEY)"
-  if [ "$enabled" = "true" ] && is_valid_coinglass_key "$existing_key"; then
-    log "CoinGlass 已配置，跳过 key 输入"
-    return 0
-  fi
-
-  cat <<EOF
-
-CoinGlass 可选配置:
-  - 直接回车: 使用纯 Binance 数据版本
-  - 粘贴 COINGLASS_API_KEY: 启用 Binance + CoinGlass 双源版本
-
-注意: CoinGlass key 只在这里填写，不要填到 Telegram 话题 ID。
-
-EOF
-
-  while true; do
-    read -r -p "COINGLASS_API_KEY 可选，回车跳过: " coinglass_key
-    if [ -z "$coinglass_key" ]; then
-      set_env_value COINGLASS_ENABLE "false"
-      set_env_value COINGLASS_API_KEY ""
-      printf '已选择纯 Binance 数据版本。\n'
-      return 0
-    fi
-    if is_valid_coinglass_key "$coinglass_key"; then
-      set_env_value COINGLASS_ENABLE "true"
-      set_env_value COINGLASS_API_KEY "$coinglass_key"
-      set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
-      set_env_value COINGLASS_REQUEST_BUDGET "60"
-      printf '已启用 Binance + CoinGlass 双源版本。\n'
-      return 0
-    fi
-    printf 'COINGLASS_API_KEY 格式不对。回车可跳过，或重新粘贴有效 key。\n'
-  done
-}
-
 prompt_coinalyze_config_if_needed() {
   if [ ! -t 0 ]; then
     return 0
@@ -393,7 +341,7 @@ Coinalyze 可选配置:
   - 直接回车: 不启用 Coinalyze 历史清算辅助
   - 粘贴 COINALYZE_API_KEY: 启用 Coinalyze 免费清算历史辅助
 
-说明: 这是 CoinGlass 高级清算热力图不可用时的免费降级辅助，不等同于预测清算池。
+说明: 这是结构雷达可选清算历史方向辅助，不等同于预测清算池。
 
 EOF
 
@@ -500,35 +448,6 @@ prompt_chat_id_only() {
   done
 }
 
-prompt_coinglass_config_force() {
-  local coinglass_key
-  cat <<EOF
-
-修改 CoinGlass API key:
-  - 直接回车: 关闭 CoinGlass，使用纯 Binance 数据版本
-  - 粘贴新 key: 启用 Binance + CoinGlass 双源版本
-
-EOF
-  while true; do
-    read -r -p "新的 COINGLASS_API_KEY，回车关闭: " coinglass_key
-    if [ -z "$coinglass_key" ]; then
-      set_env_value COINGLASS_ENABLE "false"
-      set_env_value COINGLASS_API_KEY ""
-      printf 'CoinGlass 已关闭，后续使用纯 Binance 数据版本。\n'
-      return 0
-    fi
-    if is_valid_coinglass_key "$coinglass_key"; then
-      set_env_value COINGLASS_ENABLE "true"
-      set_env_value COINGLASS_API_KEY "$coinglass_key"
-      set_env_value COINGLASS_BASE_URL "https://open-api-v4.coinglass.com"
-      set_env_value COINGLASS_REQUEST_BUDGET "60"
-      printf 'COINGLASS_API_KEY 已更新。\n'
-      return 0
-    fi
-    printf 'COINGLASS_API_KEY 格式不对。回车可关闭，或重新粘贴有效 key。\n'
-  done
-}
-
 prompt_coinalyze_config_force() {
   local coinalyze_key
   cat <<EOF
@@ -568,11 +487,10 @@ print_config_menu() {
 
   1. 修改 TG_BOT_TOKEN
   2. 修改 TG_CHAT_ID / 群 ID
-  3. 修改 COINGLASS_API_KEY
-  4. 修改 COINALYZE_API_KEY
-  5. 修改 Telegram 话题配置
-  6. Telegram / CoinGlass / Coinalyze 全部重新填写
-  7. 清理旧 Telegram 话题路由
+  3. 修改 COINALYZE_API_KEY
+  4. 修改 Telegram 话题配置
+  5. Telegram / Coinalyze 全部重新填写
+  6. 清理旧 Telegram 话题路由
   0. 保存并退出
 
 说明:
@@ -606,24 +524,19 @@ run_config_wizard() {
         changed=1
         ;;
       3)
-        prompt_coinglass_config_force
+        prompt_coinalyze_config_force
         changed=1
         ;;
       4)
-        prompt_coinalyze_config_force
-        changed=1
-        ;;
-      5)
         configure_topics
         changed=1
         ;;
-      6)
+      5)
         prompt_telegram_config
-        prompt_coinglass_config_force
         prompt_coinalyze_config_force
         changed=1
         ;;
-      7)
+      6)
         clear_topic_routes_file
         changed=1
         ;;
@@ -654,7 +567,6 @@ ensure_env_file() {
   else
     configure_topics
   fi
-  prompt_coinglass_config_if_needed
   prompt_coinalyze_config_if_needed
 }
 
@@ -711,15 +623,7 @@ run_readiness() {
     log "跳过安装阶段 Telegram 测试消息；如需发送，使用 RUN_TELEGRAM_TEST=1"
   fi
 
-  if [ "$(get_env_value COINGLASS_ENABLE)" = "true" ]; then
-    log "测试 CoinGlass API"
-    if ! "${APP_DIR}/.venv/bin/python" main.py coinglass-test; then
-      log "CoinGlass API 测试失败，自动切回纯 Binance 模式"
-      set_env_value COINGLASS_ENABLE "false"
-    fi
-  else
-    log "CoinGlass 未启用，使用纯 Binance 模式"
-  fi
+  log "结构外部确认使用 Binance 免费盘口，可选 Coinalyze 历史清算辅助"
 }
 
 install_systemd_service() {
@@ -874,7 +778,7 @@ main() {
       cat <<EOF
 用法:
   bash scripts/install_server.sh          # 中文安装向导
-  bash scripts/install_server.sh config   # 修改 token / 群 ID / CoinGlass key / Coinalyze key / 话题配置
+  bash scripts/install_server.sh config   # 修改 token / 群 ID / Coinalyze key / 话题配置
   bash scripts/install_server.sh shortcut # 只安装 paopao 快捷命令
 EOF
       return 0

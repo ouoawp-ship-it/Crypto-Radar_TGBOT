@@ -30,7 +30,6 @@ class MainCommandTests(unittest.TestCase):
             launch_watch_history_path=Path(tmp) / "launch_watch_history.json",
             divergence_state_path=Path(tmp) / "oi_divergence_state.json",
             divergence_cooldown_path=Path(tmp) / "oi_divergence_cooldown.json",
-            coinglass_api_key="",
         )
         store = JsonStore(Path(tmp))
         gateway = TelegramGateway(settings, store)
@@ -165,24 +164,6 @@ class MainCommandTests(unittest.TestCase):
             next_closed_window_epoch(base, interval_sec=3600, delay_sec=300),
             expected,
         )
-
-    def test_coinglass_test_blocks_when_disabled(self) -> None:
-        with TemporaryDirectory() as tmp:
-            with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
-                with redirect_stdout(StringIO()) as output:
-                    code = main.main(["coinglass-test"])
-
-        self.assertEqual(code, 2)
-        self.assertIn("COINGLASS_ENABLE=false", output.getvalue())
-
-    def test_coinglass_liquidity_test_blocks_without_key(self) -> None:
-        with TemporaryDirectory() as tmp:
-            with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
-                with redirect_stdout(StringIO()) as output:
-                    code = main.main(["coinglass-liquidity-test"])
-
-        self.assertEqual(code, 2)
-        self.assertIn("missing COINGLASS_API_KEY", output.getvalue())
 
     def test_announcements_test_prints_diagnostics(self) -> None:
         with TemporaryDirectory() as tmp:

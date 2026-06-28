@@ -3,9 +3,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from .coinglass_liquidity import LiquidityContext, unavailable_context
 from .coinalyze_source import CoinalyzeDataSource
 from .config import Settings
+from .liquidity_context import LiquidityContext, unavailable_context
 from .radar import to_float
 
 

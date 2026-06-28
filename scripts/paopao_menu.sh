@@ -62,7 +62,7 @@ show_help() {
 
   paopao                 打开中文操作菜单
   paopao menu            打开中文操作菜单
-  paopao config          修改 token / 群 ID / CoinGlass key / 话题配置
+  paopao config          修改 token / 群 ID / Coinalyze key / 话题配置
   paopao status          查看 systemd 服务和运行状态
   paopao logs            查看实时日志
   paopao restart         重启服务
@@ -73,8 +73,6 @@ show_help() {
   paopao check-update    只检查当前版本和 GitHub 版本
   paopao version         查看当前项目版本
   paopao test            发送 Telegram 测试消息
-  paopao coinglass       测试 CoinGlass API
-  paopao liquidity       测试 CoinGlass 清算/盘口增强接口
   paopao announcements   测试 Binance 公告抓取和分类
   paopao cleanup         立即清理运行垃圾
   paopao structure       dry-run 运行结构突破雷达
@@ -85,6 +83,7 @@ show_help() {
   paopao runtime         查看 runtime-status
   paopao readiness       检查真实推送准备度
   paopao doctor          查看环境诊断
+  paopao web             启动本地 Web 控制台，默认 127.0.0.1:8080
   paopao help            查看这份帮助
 
 当前项目目录: ${APP_DIR}
@@ -196,24 +195,22 @@ show_menu() {
 
  1. 查看服务状态
   2. 查看实时日志
-  3. 修改配置 token / 群 ID / CoinGlass key
+  3. 修改配置 token / 群 ID / Coinalyze key
   4. 发送 Telegram 测试消息
-  5. 测试 CoinGlass API
-  6. 测试 CoinGlass 清算/盘口增强
-  7. 查看运行状态 runtime-status
-  8. 检查 readiness
-  9. 重启服务
- 10. 启动服务
- 11. 停止服务
- 12. 检查更新 / 更新项目代码
- 13. 环境诊断 doctor
- 14. 查看当前版本
- 15. 结构信号复盘 structure-review
- 16. 结构雷达服务状态
- 17. 结构雷达实时日志
- 18. 重启结构雷达服务
- 19. 测试 Binance 公告抓取
- 20. 立即清理运行垃圾 cleanup
+  5. 查看运行状态 runtime-status
+  6. 检查 readiness
+  7. 重启服务
+  8. 启动服务
+  9. 停止服务
+ 10. 检查更新 / 更新项目代码
+ 11. 环境诊断 doctor
+ 12. 查看当前版本
+ 13. 结构信号复盘 structure-review
+ 14. 结构雷达服务状态
+ 15. 结构雷达实时日志
+ 16. 重启结构雷达服务
+ 17. 测试 Binance 公告抓取
+ 18. 立即清理运行垃圾 cleanup
   0. 退出
 ============================================================
 
@@ -224,24 +221,22 @@ EOF
       2) show_logs ;;
       3) edit_config; pause_menu ;;
       4) run_main telegram-test --send --confirm-real-send; pause_menu ;;
-      5) run_main coinglass-test; pause_menu ;;
-      6) run_main coinglass-liquidity-test; pause_menu ;;
-      7) run_main runtime-status; pause_menu ;;
-      8) run_main readiness; pause_menu ;;
-      9) restart_service; pause_menu ;;
-      10) start_service; pause_menu ;;
-      11) stop_service; pause_menu ;;
-      12) update_project; pause_menu ;;
-      13) run_main doctor; pause_menu ;;
-      14) show_version; pause_menu ;;
-      15) run_main structure-review; pause_menu ;;
-      16) show_structure_status; pause_menu ;;
-      17) show_structure_logs ;;
-      18) restart_structure_service; pause_menu ;;
-      19) run_main announcements-test; pause_menu ;;
-      20) cleanup_project; pause_menu ;;
+      5) run_main runtime-status; pause_menu ;;
+      6) run_main readiness; pause_menu ;;
+      7) restart_service; pause_menu ;;
+      8) start_service; pause_menu ;;
+      9) stop_service; pause_menu ;;
+      10) update_project; pause_menu ;;
+      11) run_main doctor; pause_menu ;;
+      12) show_version; pause_menu ;;
+      13) run_main structure-review; pause_menu ;;
+      14) show_structure_status; pause_menu ;;
+      15) show_structure_logs ;;
+      16) restart_structure_service; pause_menu ;;
+      17) run_main announcements-test; pause_menu ;;
+      18) cleanup_project; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-20。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-18。\n'; pause_menu ;;
     esac
   done
 }
@@ -284,12 +279,6 @@ case "$command" in
   test|telegram-test)
     run_main telegram-test --send --confirm-real-send
     ;;
-  coinglass|coinglass-test)
-    run_main coinglass-test
-    ;;
-  liquidity|coinglass-liquidity|coinglass-liquidity-test)
-    run_main coinglass-liquidity-test
-    ;;
   announcements|announcements-test)
     run_main announcements-test
     ;;
@@ -322,6 +311,9 @@ case "$command" in
     ;;
   doctor)
     run_main doctor
+    ;;
+  web)
+    run_main web "$@"
     ;;
   help|-h|--help)
     show_help

@@ -123,20 +123,10 @@ class Settings:
     binance_spot_base_url: str = "https://api.binance.com"
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
 
-    coinglass_enable: bool = False
-    coinglass_api_key: str = ""
-    coinglass_base_url: str = "https://open-api-v4.coinglass.com"
-    coinglass_timeout_sec: int = 10
-    coinglass_request_budget: int = 60
-    coinglass_exchange_list: str = "Binance"
-    coinglass_liquidity_enable: bool = False
-    coinglass_liquidity_timeout_sec: int = 8
-    coinglass_liquidity_max_symbols: int = 30
-    coinglass_liquidity_score_max_delta: int = 15
-    coinglass_liquidity_min_distance_pct: float = 0.5
-    coinglass_liquidity_max_distance_pct: float = 8.0
-    coinglass_liquidity_cache_sec: int = 300
     liquidity_fallback_enable: bool = True
+    liquidity_score_max_delta: int = 15
+    liquidity_min_distance_pct: float = 0.5
+    liquidity_max_distance_pct: float = 8.0
     binance_orderbook_liquidity_enable: bool = True
     binance_orderbook_depth_limit: int = 100
     coinalyze_enable: bool = False
@@ -265,20 +255,10 @@ class Settings:
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
-            coinglass_enable=env_bool("COINGLASS_ENABLE", False),
-            coinglass_api_key=os.getenv("COINGLASS_API_KEY", "").strip(),
-            coinglass_base_url=os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com").rstrip("/"),
-            coinglass_timeout_sec=env_int("COINGLASS_TIMEOUT_SEC", 10),
-            coinglass_request_budget=env_int("COINGLASS_REQUEST_BUDGET", 60),
-            coinglass_exchange_list=os.getenv("COINGLASS_EXCHANGE_LIST", "Binance").strip() or "Binance",
-            coinglass_liquidity_enable=env_bool("COINGLASS_LIQUIDITY_ENABLE", False),
-            coinglass_liquidity_timeout_sec=env_int("COINGLASS_LIQUIDITY_TIMEOUT_SEC", 8),
-            coinglass_liquidity_max_symbols=env_int("COINGLASS_LIQUIDITY_MAX_SYMBOLS", 30),
-            coinglass_liquidity_score_max_delta=env_int("COINGLASS_LIQUIDITY_SCORE_MAX_DELTA", 15),
-            coinglass_liquidity_min_distance_pct=env_float("COINGLASS_LIQUIDITY_MIN_DISTANCE_PCT", 0.5),
-            coinglass_liquidity_max_distance_pct=env_float("COINGLASS_LIQUIDITY_MAX_DISTANCE_PCT", 8.0),
-            coinglass_liquidity_cache_sec=env_int("COINGLASS_LIQUIDITY_CACHE_SEC", 300),
             liquidity_fallback_enable=env_bool("LIQUIDITY_FALLBACK_ENABLE", True),
+            liquidity_score_max_delta=env_int("LIQUIDITY_SCORE_MAX_DELTA", 15),
+            liquidity_min_distance_pct=env_float("LIQUIDITY_MIN_DISTANCE_PCT", 0.5),
+            liquidity_max_distance_pct=env_float("LIQUIDITY_MAX_DISTANCE_PCT", 8.0),
             binance_orderbook_liquidity_enable=env_bool("BINANCE_ORDERBOOK_LIQUIDITY_ENABLE", True),
             binance_orderbook_depth_limit=env_int("BINANCE_ORDERBOOK_DEPTH_LIMIT", 100),
             coinalyze_enable=env_bool("COINALYZE_ENABLE", False),
@@ -396,21 +376,11 @@ class Settings:
                 "cache_enable": self.http_cache_enable,
                 "cache_ttl_sec": self.http_cache_ttl_sec,
             },
-            "coinglass": {
-                "enable": self.coinglass_enable,
-                "api_key_configured": bool(self.coinglass_api_key),
-                "base_url": self.coinglass_base_url,
-                "timeout_sec": self.coinglass_timeout_sec,
-                "request_budget": self.coinglass_request_budget,
-                "exchange_list": self.coinglass_exchange_list,
-                "liquidity_enable": self.coinglass_liquidity_enable,
-                "liquidity_timeout_sec": self.coinglass_liquidity_timeout_sec,
-                "liquidity_max_symbols": self.coinglass_liquidity_max_symbols,
-                "liquidity_score_max_delta": self.coinglass_liquidity_score_max_delta,
-                "liquidity_min_distance_pct": self.coinglass_liquidity_min_distance_pct,
-                "liquidity_max_distance_pct": self.coinglass_liquidity_max_distance_pct,
-                "liquidity_cache_sec": self.coinglass_liquidity_cache_sec,
+            "liquidity": {
                 "fallback_enable": self.liquidity_fallback_enable,
+                "score_max_delta": self.liquidity_score_max_delta,
+                "min_distance_pct": self.liquidity_min_distance_pct,
+                "max_distance_pct": self.liquidity_max_distance_pct,
                 "binance_orderbook_enable": self.binance_orderbook_liquidity_enable,
                 "binance_orderbook_depth_limit": self.binance_orderbook_depth_limit,
             },

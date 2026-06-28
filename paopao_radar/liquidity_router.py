@@ -3,31 +3,24 @@ from __future__ import annotations
 from typing import Any
 
 from .binance_liquidity import BinanceOrderbookLiquidityProvider
-from .coinglass_liquidity import (
-    CoinglassLiquidityAnalyzer,
-    LiquidityContext,
-    score_liquidity_context,
-    unavailable_context,
-)
 from .coinalyze_liquidity import CoinalyzeLiquidationProvider
 from .coinalyze_source import CoinalyzeDataSource
 from .config import Settings
-from .data_sources import BinanceDataSource, CoinglassDataSource
+from .data_sources import BinanceDataSource
+from .liquidity_context import LiquidityContext, score_liquidity_context, unavailable_context
 from .structure_radar import StructureSignal, score_level
 
 
 class MultiSourceLiquidityAnalyzer:
-    """CoinGlass-first liquidity enhancer with free-source fallback."""
+    """Free-source liquidity enhancer for structure radar external confirmation."""
 
     def __init__(
         self,
         settings: Settings,
-        coinglass: CoinglassLiquidityAnalyzer | None = None,
         binance_orderbook: BinanceOrderbookLiquidityProvider | None = None,
         coinalyze_liquidation: CoinalyzeLiquidationProvider | None = None,
     ):
         self.settings = settings
-        self.coinglass = coinglass
         self.binance_orderbook = binance_orderbook
         self.coinalyze_liquidation = coinalyze_liquidation
         self.contexts: dict[str, LiquidityContext] = {}
@@ -38,7 +31,7 @@ class MultiSourceLiquidityAnalyzer:
         delta = score_liquidity_context(
             signal,
             context,
-            self.settings.coinglass_liquidity_score_max_delta,
+            self.settings.liquidity_score_max_delta,
         )
         context.score_delta = delta
         final_score = max(0.0, min(100.0, float(base_score) + delta))
@@ -52,32 +45,23 @@ class MultiSourceLiquidityAnalyzer:
 
     def context(self, symbol: str, price: float) -> LiquidityContext:
         symbol = symbol.upper()
-        base = self._coinglass_context(symbol, price)
-        needs_liquidation = not (base.upper_liquidation_zone or base.lower_liquidation_zone)
-        needs_orderbook = not (base.upper_liquidity_wall or base.lower_liquidity_wall)
-
+        base = unavailable_context(symbol, source="MultiSource")
         liquidation_fallback = None
         orderbook_fallback = None
-        if needs_liquidation and self.coinalyze_liquidation is not None:
+        if self.coinalyze_liquidation is not None:
             liquidation_fallback = self.coinalyze_liquidation.context(symbol, price)
-        if needs_orderbook and self.binance_orderbook is not None:
+        if self.binance_orderbook is not None:
             orderbook_fallback = self.binance_orderbook.context(symbol, price)
 
         context = merge_liquidity_contexts(base, liquidation_fallback, orderbook_fallback)
         self.contexts[symbol] = context
         return context
 
-    def _coinglass_context(self, symbol: str, price: float) -> LiquidityContext:
-        if self.coinglass is None:
-            return unavailable_context(symbol, "CoinGlass流动性增强未启用", source="CoinGlass")
-        return self.coinglass.context(symbol, price)
-
     def diagnostics(self) -> dict[str, Any]:
         return {
-            "enabled": bool(self.coinglass or self.binance_orderbook or self.coinalyze_liquidation),
+            "enabled": bool(self.binance_orderbook or self.coinalyze_liquidation),
             "available_contexts": sum(1 for ctx in self.contexts.values() if ctx.available),
             "sources": {
-                "coinglass": self.coinglass.diagnostics() if self.coinglass else {"enabled": False},
                 "binance_orderbook": self.binance_orderbook.diagnostics() if self.binance_orderbook else {"enabled": False},
                 "coinalyze": self.coinalyze_liquidation.diagnostics() if self.coinalyze_liquidation else {"enabled": False},
             },
@@ -93,7 +77,7 @@ def merge_liquidity_contexts(
     reasons: list[str] = []
 
     def add_source(ctx: LiquidityContext | None) -> None:
-        if ctx and ctx.source not in sources:
+        if ctx and ctx.available and ctx.source not in sources:
             sources.append(ctx.source)
 
     add_source(base)
@@ -113,6 +97,12 @@ def merge_liquidity_contexts(
 
     if not (upper_liquidation_zone or lower_liquidation_zone) and liquidation is not None:
         if liquidation.available:
+            upper_liquidation_zone = liquidation.upper_liquidation_zone
+            lower_liquidation_zone = liquidation.lower_liquidation_zone
+            upper_liquidation_score = liquidation.upper_liquidation_score
+            lower_liquidation_score = liquidation.lower_liquidation_score
+            nearest_liquidation_above_pct = liquidation.nearest_liquidation_above_pct
+            nearest_liquidation_below_pct = liquidation.nearest_liquidation_below_pct
             liquidation_bias = liquidation.liquidation_bias
             reasons.extend(liquidation.reason_lines[:3])
         elif liquidation.reason_lines:
@@ -145,7 +135,7 @@ def merge_liquidity_contexts(
         or liquidation_bias in {"up", "down"}
     )
     if not available and not reasons:
-        reasons.append("CoinGlass和免费降级源均不可用")
+        reasons.append("免费流动性数据源均不可用")
 
     return LiquidityContext(
         symbol=base.symbol,
@@ -169,10 +159,6 @@ def merge_liquidity_contexts(
 
 
 def build_liquidity_enhancer(settings: Settings, binance_source: BinanceDataSource) -> MultiSourceLiquidityAnalyzer | None:
-    coinglass = None
-    if settings.coinglass_liquidity_enable:
-        coinglass = CoinglassLiquidityAnalyzer(settings, CoinglassDataSource(settings))
-
     binance_orderbook = None
     coinalyze_liquidation = None
     if settings.liquidity_fallback_enable:
@@ -181,6 +167,6 @@ def build_liquidity_enhancer(settings: Settings, binance_source: BinanceDataSour
         if settings.coinalyze_enable:
             coinalyze_liquidation = CoinalyzeLiquidationProvider(settings, CoinalyzeDataSource(settings))
 
-    if not (coinglass or binance_orderbook or coinalyze_liquidation):
+    if not (binance_orderbook or coinalyze_liquidation):
         return None
-    return MultiSourceLiquidityAnalyzer(settings, coinglass, binance_orderbook, coinalyze_liquidation)
+    return MultiSourceLiquidityAnalyzer(settings, binance_orderbook, coinalyze_liquidation)

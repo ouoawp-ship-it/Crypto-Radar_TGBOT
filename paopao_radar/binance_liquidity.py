@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .coinglass_liquidity import LiquidityContext, LiquidityLevel, _bias, _choose_near_level, unavailable_context
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .liquidity_context import (
+    LiquidityContext,
+    LiquidityLevel,
+    choose_near_level,
+    liquidity_bias,
+    unavailable_context,
+)
 from .radar import fmt_price, to_float
 
 
@@ -30,17 +36,17 @@ class BinanceOrderbookLiquidityProvider:
         self.requested_symbols += 1
         payload = self.source.order_book(symbol, self.settings.binance_orderbook_depth_limit)
         upper, lower = self._levels(payload, price)
-        min_distance = self.settings.coinglass_liquidity_min_distance_pct
-        max_distance = self.settings.coinglass_liquidity_max_distance_pct
-        upper_wall = _choose_near_level(upper, min_distance, max_distance)
-        lower_wall = _choose_near_level(lower, min_distance, max_distance)
+        min_distance = self.settings.liquidity_min_distance_pct
+        max_distance = self.settings.liquidity_max_distance_pct
+        upper_wall = choose_near_level(upper, min_distance, max_distance)
+        lower_wall = choose_near_level(lower, min_distance, max_distance)
         available = bool(upper_wall or lower_wall)
         if available:
             self.available_contexts += 1
         else:
             self.warnings.append("Binance盘口快照没有命中配置距离内的买卖墙")
 
-        orderbook_bias = _bias(lower_wall, upper_wall, unavailable=not available)
+        orderbook_bias = liquidity_bias(lower_wall, upper_wall, unavailable=not available)
         if orderbook_bias == "up":
             gap_direction = "down" if upper_wall else "none"
         elif orderbook_bias == "down":

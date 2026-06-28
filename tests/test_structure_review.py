@@ -11,8 +11,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import paopao_radar.cli as cli
-from paopao_radar.coinglass_liquidity import LiquidityContext
 from paopao_radar.config import Settings
+from paopao_radar.liquidity_context import LiquidityContext
 from paopao_radar.storage import JsonStore
 from paopao_radar.structure_radar import (
     SIGNAL_PRE_BREAKDOWN_NEAR,
@@ -105,7 +105,7 @@ class StructureReviewTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["symbol"], "TESTUSDT")
 
-    def test_records_coinglass_liquidity_fields(self) -> None:
+    def test_records_liquidity_fields(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
                 data_dir=Path(tmp),
@@ -120,7 +120,7 @@ class StructureReviewTests(unittest.TestCase):
             signal.liquidity_context = LiquidityContext(
                 symbol=signal.symbol,
                 available=True,
-                source="CoinGlass",
+                source="BinanceOrderBook",
                 liquidation_bias="up",
                 orderbook_bias="neutral",
             )
@@ -137,8 +137,8 @@ class StructureReviewTests(unittest.TestCase):
         self.assertEqual(records[0]["liquidity_score_delta"], 8)
         self.assertEqual(records[0]["final_score"], 78)
         self.assertEqual(records[0]["liquidation_bias"], "up")
-        self.assertEqual(records[0]["liquidity_source"], "CoinGlass")
-        self.assertTrue(records[0]["coinglass_available"])
+        self.assertEqual(records[0]["liquidity_source"], "BinanceOrderBook")
+        self.assertTrue(records[0]["liquidity_available"])
 
     def test_review_price_changes_and_valid_breakout(self) -> None:
         with TemporaryDirectory() as tmp:

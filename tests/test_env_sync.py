@@ -26,7 +26,7 @@ class EnvSyncTests(unittest.TestCase):
                 "\n".join([
                     "TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                     "TG_CHAT_ID=-1001234567890",
-                    "COINGLASS_API_KEY=secret_key",
+                    "COINALYZE_API_KEY=secret_key",
                     "RADAR_SUMMARY_MIN_INTERVAL_SEC=1800",
                     "RADAR_SUMMARY_MAX_DAILY_PUSH=6",
                     "FLOW_INTERVAL_SEC=900",
@@ -38,7 +38,7 @@ class EnvSyncTests(unittest.TestCase):
                 "\n".join([
                     "TG_BOT_TOKEN=",
                     "TG_CHAT_ID=",
-                    "COINGLASS_API_KEY=",
+                    "COINALYZE_API_KEY=",
                     "RADAR_SUMMARY_MIN_INTERVAL_SEC=21600",
                     "RADAR_SUMMARY_MAX_DAILY_PUSH=4",
                     "FLOW_INTERVAL_SEC=3600",
@@ -56,7 +56,7 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("NEW_NORMAL_SETTING=true", text)
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)
         self.assertIn("TG_CHAT_ID=-1001234567890", text)
-        self.assertIn("COINGLASS_API_KEY=secret_key", text)
+        self.assertIn("COINALYZE_API_KEY=secret_key", text)
         self.assertIn("CUSTOM_KEEP=1", text)
         self.assertEqual(set(result["updated"]), {"RADAR_SUMMARY_MIN_INTERVAL_SEC", "RADAR_SUMMARY_MAX_DAILY_PUSH", "FLOW_INTERVAL_SEC"})
 

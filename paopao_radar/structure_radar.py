@@ -15,7 +15,7 @@ from .storage import JsonStore
 from .time_windows import CST, ClosedWindow, closed_window
 
 if TYPE_CHECKING:
-    from .coinglass_liquidity import LiquidityContext
+    from .liquidity_context import LiquidityContext
 
 
 SIGNAL_PRE_BREAKOUT_NEAR = "PRE_BREAKOUT_NEAR"
@@ -410,7 +410,7 @@ class StructureRadarEngine:
         self._append_history(mode, interval, window, candidates, signals)
         diagnostics = source.diagnostics()
         if liquidity_enhancer is not None and hasattr(liquidity_enhancer, "diagnostics"):
-            diagnostics["coinglass_liquidity"] = liquidity_enhancer.diagnostics()
+            diagnostics["liquidity"] = liquidity_enhancer.diagnostics()
         text = self._format(signals, len(candidates), interval, mode, window, diagnostics)
         return {
             "template_id": "TG_STRUCTURE_RADAR",
@@ -894,7 +894,7 @@ class StructureRadarEngine:
             "突破确认/跌破确认 = 整点收线后延迟确认，使用完整闭合K线。",
             "假突破/假跌破 = 之前出现临界或突破信号，后续收回箱体内。",
             "评分 = 边缘距离20 + 结构15 + 触碰10 + 压缩15 + 量10 + OI10 + 主动买卖10 + 高周期5 + 费率5。",
-            "多源外部确认 = CoinGlass优先；不可用时降级到Binance盘口/Coinalyze历史清算，只在 -15~+15 内修正结构分。",
+            "外部确认 = Binance盘口深度/Coinalyze历史清算辅助，只在 -15~+15 内修正结构分。",
             "等级 = S≥85，A≥70，B≥60，C≥50；默认低于配置分数线不推送。",
         ])
         return "\n".join(lines)

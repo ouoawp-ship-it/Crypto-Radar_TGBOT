@@ -71,8 +71,8 @@ class RadarAnnouncementTests(unittest.TestCase):
             result = engine.build_announcement_alerts(source)  # type: ignore[arg-type]
             text = result["messages"][0]
 
-            self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_REXUSDT"', text)
-            self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_PHYUSDT"', text)
+            self.assertIn('href="https://www.binance.com/zh-CN/futures/REXUSDT"', text)
+            self.assertIn('href="https://www.binance.com/zh-CN/futures/PHYUSDT"', text)
             self.assertIn("<b>XO</b>（无合约）", text)
             self.assertNotIn("UNKNOWN", text)
             self.assertNotIn("Binance_REX,%20XO", text)
@@ -261,12 +261,12 @@ class RadarScoringTests(unittest.TestCase):
             )
 
             self.assertIn("<blockquote><b>📊 综合榜（评分=费率25 + 市值25 + 横盘25 + OI25）</b></blockquote>", text)
-            self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_TESTUSDT"', text)
+            self.assertIn('href="https://www.binance.com/zh-CN/futures/TESTUSDT"', text)
             self.assertIn("<b>TEST</b>", text)
             self.assertIn("</a>\n 88分", text)
             self.assertNotIn("<code>", text)
             self.assertNotIn("&nbsp;", text)
-            self.assertIn("链接 = 点击币种打开 CoinGlass Binance K线", text)
+            self.assertIn("链接 = 点击币种打开 Binance 合约页面", text)
 
     def test_launch_alert_translates_state_and_explains_score(self) -> None:
         with TemporaryDirectory() as tmp:

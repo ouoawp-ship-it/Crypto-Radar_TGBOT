@@ -94,9 +94,7 @@ class StructureReviewEngine:
                 "liquidation_bias": liquidity_context.liquidation_bias if liquidity_context else "unavailable",
                 "orderbook_bias": liquidity_context.orderbook_bias if liquidity_context else "unavailable",
                 "liquidity_source": liquidity_context.source if liquidity_context else "unavailable",
-                "coinglass_available": bool(
-                    liquidity_context and liquidity_context.available and "CoinGlass" in liquidity_context.source
-                ),
+                "liquidity_available": bool(liquidity_context and liquidity_context.available),
                 "price": signal.price,
                 "box_high": signal.box_high,
                 "box_low": signal.box_low,

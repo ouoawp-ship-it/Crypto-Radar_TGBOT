@@ -171,7 +171,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "评分说明：",
         "- 评分 = 边缘距离20 + 结构15 + 触碰10 + 压缩15 + 成交量10 + OI10 + 主动买卖10 + 高周期5 + Funding5。",
-        "- 多源外部确认：CoinGlass优先，不可用时降级到Binance盘口/Coinalyze历史清算；推送会用中文说明清算磁吸、盘口流动性和流动性缺口，分数修正限制在 -15~+15。",
+        "- 外部确认：使用Binance盘口深度，可选叠加Coinalyze历史清算；推送会用中文说明盘口流动性和清算方向辅助，分数修正限制在 -15~+15。",
         "- 等级 = S≥85，A≥70，B≥60，C≥50；低于 STRUCTURE_MIN_SCORE 不推送。",
         "",
         "阅读方式：",

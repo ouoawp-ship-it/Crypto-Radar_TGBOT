@@ -1,6 +1,6 @@
 # 泡泡抓币 Crypto Radar
 
-轻量级加密市场观察雷达。默认 dry-run，不包含 Web/UI、admin 查询、自动交易。
+轻量级加密市场观察雷达。默认 dry-run，包含一个本地 Web 控制台用于查看状态、日志和修改关键配置，不包含自动交易。
 
 ## 功能和推送周期
 
@@ -11,7 +11,6 @@
 - 结构突破雷达：v1.8 新增，独立识别盘整箱体上沿/下沿、ATR/BB 压缩、临近突破、收线确认、假突破，并可生成 K线状态图。
 - OI/价格背离扫描：跟随资金雷达，跟踪建仓背离、多头共振、极端背离、持续/增强/消失状态。
 - 自动清理：默认 1 小时检查一次，只清理可再生成的缓存、临时文件、坏 JSON 备份、过期日志、过长历史、过期结构图和根目录临时报告。
-- CoinGlass 增强源：可选启用，用于后续接入多交易所 OI、爆仓、资金费率和合约市场动态。
 
 ## 服务器一键部署
 
@@ -23,7 +22,7 @@ cd paopao-crypto-radar
 bash scripts/install_server.sh
 ```
 
-第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。随后会提示 `COINGLASS_API_KEY` 和可选 `COINALYZE_API_KEY`；CoinGlass 直接回车就是纯 Binance 数据版本，Coinalyze 直接回车就是不启用历史清算辅助。
+第一次运行会自动创建 `.env.oi`。如果没有填写 Telegram 配置，会直接在终端提示输入 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`；token 输入会显示出来，方便确认粘贴成功。空回车或格式不对会反复提示，不会继续启动服务。随后会提示可选 `COINALYZE_API_KEY`；直接回车就是不启用历史清算辅助。
 
 Telegram 群开启话题后，可以把不同推送分到不同话题，避免消息交叉：
 
@@ -66,22 +65,25 @@ python main.py about
 python main.py cleanup --force-cleanup
 ```
 
-## CoinGlass 可选增强
+## Web 控制台
 
-不要把 API key 写进代码或提交到 GitHub。只写入服务器 `.env.oi`：
+第一版 Web 控制台默认只监听本机地址，适合通过 SSH 隧道访问，不建议直接暴露公网。
 
-```bash
-COINGLASS_ENABLE=true
-COINGLASS_API_KEY=你的key
-COINGLASS_BASE_URL=https://open-api-v4.coinglass.com
-COINGLASS_REQUEST_BUDGET=60
-```
-
-验证 key 和接口连通：
+服务器启动:
 
 ```bash
-python main.py coinglass-test
+paopao web
+# 等价于
+python main.py web --host 127.0.0.1 --port 8080
 ```
+
+如果要绑定公网地址，必须设置访问令牌:
+
+```bash
+WEB_ADMIN_TOKEN=换成你的强密码 python main.py web --host 0.0.0.0 --port 8080
+```
+
+控制台功能包括：服务状态、实时日志、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启，以及 `.env.oi` 关键配置编辑。保存配置前会自动备份 `.env.oi`。
 
 ## 闭合窗口参数
 
@@ -148,41 +150,29 @@ STRUCTURE_REVIEW_MIN_AGE_MINUTES=15
 STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC=3600
 ```
 
-## 多源清算/盘口增强 v1.9.6
+## 结构雷达外部确认
 
-v1.9 增加 CoinGlass 清算热力图和盘口流动性外部确认；v1.9.1 增加免费源降级；v1.9.2 增加结构雷达独立服务和 Binance 公告抓取增强；v1.9.3 修复“代码已是最新版”时仍要刷新 systemd 服务的问题；v1.9.4 增加手动清理快捷命令和服务器自动清理 timer；v1.9.5 将结构雷达外部确认推送改为完整中文说明，并补充 Binance 盘口降级未命中的原因；v1.9.6 修复资金摘要每日限额按 UTC 统计导致 CST 凌晨/早晨被误拦截的问题，并将主雷达和结构雷达运行状态拆分保存。它只增强结构雷达，不替代原有结构算法；CoinGlass 高级接口默认关闭，避免升级后立即消耗 API 额度。
-
-开启方式：
-```bash
-COINGLASS_ENABLE=true
-COINGLASS_API_KEY=你的Key
-COINGLASS_LIQUIDITY_ENABLE=true
-```
+结构雷达外部确认使用 Binance 免费合约盘口深度，可选叠加 Coinalyze 历史清算量。它只增强结构雷达，不替代原有结构算法。
 
 本地测试：
 ```bash
-python main.py coinglass-liquidity-test
-python main.py structure-radar --mode pre --with-coinglass --save-charts
+python main.py structure-radar --mode pre --save-charts
 ```
 
-增强字段包括上方/下方清算区、距离清算池百分比、清算磁吸方向、上方卖墙、下方买墙、流动性缺口和分数修正。分数修正默认限制在 `-15 ~ +15`，CoinGlass 不可用或无权限时结构雷达会自动降级为 Binance 公共数据版。
+增强字段包括上方卖墙、下方买墙、流动性缺口、清算历史方向辅助和分数修正。分数修正默认限制在 `-15 ~ +15`。
 
 ```bash
-COINGLASS_LIQUIDITY_ENABLE=false
-COINGLASS_LIQUIDITY_TIMEOUT_SEC=8
-COINGLASS_LIQUIDITY_MAX_SYMBOLS=30
-COINGLASS_LIQUIDITY_SCORE_MAX_DELTA=15
-COINGLASS_LIQUIDITY_MIN_DISTANCE_PCT=0.5
-COINGLASS_LIQUIDITY_MAX_DISTANCE_PCT=8.0
-COINGLASS_LIQUIDITY_CACHE_SEC=300
 LIQUIDITY_FALLBACK_ENABLE=true
+LIQUIDITY_SCORE_MAX_DELTA=15
+LIQUIDITY_MIN_DISTANCE_PCT=0.5
+LIQUIDITY_MAX_DISTANCE_PCT=8.0
 BINANCE_ORDERBOOK_LIQUIDITY_ENABLE=true
 BINANCE_ORDERBOOK_DEPTH_LIMIT=100
 COINALYZE_ENABLE=false
 COINALYZE_API_KEY=
 ```
 
-流动性增强采用多源优先级：CoinGlass 清算热力图/盘口热力图优先；如果接口返回 `Upgrade plan`、无权限、空数据或超时，则自动降级到 Binance 免费合约盘口深度快照。可选配置 Coinalyze 免费 API Key 后，清算侧会补充 Coinalyze 历史清算量作为方向辅助；它不等同于 CoinGlass 预测清算池，推送里会标明数据源。
+流动性增强默认读取 Binance 免费合约盘口深度快照。可选配置 Coinalyze 免费 API Key 后，清算侧会补充 Coinalyze 历史清算量作为方向辅助；它不是预测清算池，推送里会标明数据源。
 
 推送里的外部确认状态会使用中文解释：清算磁吸说明上方/下方清算池哪边更近或更强；盘口流动性说明当前是否识别到明显买墙/卖墙；流动性缺口说明订单簿哪一侧阻力或支撑更薄。Binance 免费盘口降级只读取当前深度快照，不是历史盘口热力图；如果订单挂单分散、距离不在配置范围内，或没有明显集中墙，就会显示“暂无有效买墙/卖墙”。
 
@@ -242,7 +232,7 @@ bash scripts/update_server.sh
 
 第一次安装、重新安装、配置项说明和常见排错见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
 
-修改 bot token、群 ID、CoinGlass key、Coinalyze key 或 Telegram 话题配置:
+修改 bot token、群 ID、Coinalyze key 或 Telegram 话题配置:
 
 ```bash
 bash scripts/install_server.sh config
@@ -262,6 +252,6 @@ paopao check-update # 检查当前版本/GitHub版本
 paopao update   # 有更新时确认后更新项目
 ```
 
-`paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINGLASS_API_KEY`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
+`paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
 项目版本号写在 `VERSION` 文件里，当前为 `v1.9.6`，后续功能更新按 `v1.9.7`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。

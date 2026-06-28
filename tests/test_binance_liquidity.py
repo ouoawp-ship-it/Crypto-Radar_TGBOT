@@ -26,8 +26,8 @@ class BinanceLiquidityTests(unittest.TestCase):
                 data_dir=Path(tmp),
                 liquidity_fallback_enable=True,
                 binance_orderbook_liquidity_enable=True,
-                coinglass_liquidity_min_distance_pct=0.1,
-                coinglass_liquidity_max_distance_pct=5,
+                liquidity_min_distance_pct=0.1,
+                liquidity_max_distance_pct=5,
             )
             source = FakeBinanceSource({
                 "asks": [["101", "10"], ["104", "1"]],
