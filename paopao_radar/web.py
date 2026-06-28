@@ -71,10 +71,10 @@ CLI_ACTIONS: dict[str, dict[str, Any]] = {
         "timeout": 60,
         "danger": True,
     },
-    "readiness": {"label": "检查 readiness", "argv": ["readiness"], "timeout": 45},
-    "doctor": {"label": "环境诊断 doctor", "argv": ["doctor"], "timeout": 45},
-    "runtime-status": {"label": "查看 runtime-status", "argv": ["runtime-status"], "timeout": 20},
-    "announcements-test": {"label": "测试 Binance 公告抓取", "argv": ["announcements-test"], "timeout": 90},
+    "readiness": {"label": "检查真实推送准备度", "argv": ["readiness"], "timeout": 45},
+    "doctor": {"label": "环境诊断", "argv": ["doctor"], "timeout": 45},
+    "runtime-status": {"label": "查看运行状态", "argv": ["runtime-status"], "timeout": 20},
+    "announcements-test": {"label": "测试 Binance 公告", "argv": ["announcements-test"], "timeout": 90},
     "structure-review": {"label": "结构信号复盘", "argv": ["structure-review"], "timeout": 120},
     "cleanup": {"label": "立即清理运行垃圾", "argv": ["cleanup", "--force-cleanup"], "timeout": 60},
 }
@@ -150,7 +150,7 @@ def normalize_bool(value: Any) -> str:
         return "true"
     if text in {"0", "false", "no", "off", "n"}:
         return "false"
-    raise ValueError("必须是 true 或 false")
+    raise ValueError("必须选择开启或关闭")
 
 
 def validate_config_value(field: ConfigField, value: Any) -> str:
@@ -587,6 +587,24 @@ INDEX_HTML = r"""<!doctype html>
       background: #fbfcfc;
     }
     .feature-item strong { display: block; margin-bottom: 4px; }
+    .action-card { display: grid; gap: 10px; align-content: start; }
+    .action-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.58;
+    }
+    .action-card li { margin: 4px 0; }
+    .action-badge {
+      display: inline-flex;
+      width: fit-content;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #f7f9fa;
+    }
     .kv {
       display: grid;
       grid-template-columns: 140px 1fr;
@@ -714,13 +732,84 @@ INDEX_HTML = r"""<!doctype html>
       guide: "功能说明"
     };
     const actionList = [
-      ["readiness", "检查 readiness", "读取真实推送准备度"],
-      ["runtime-status", "查看 runtime-status", "读取主服务和结构服务状态文件"],
-      ["doctor", "环境诊断 doctor", "输出配置和状态文件诊断"],
-      ["telegram-test", "发送 Telegram 测试", "真实发送一条测试消息"],
-      ["announcements-test", "测试 Binance 公告", "抓取并分类公告"],
-      ["structure-review", "结构信号复盘", "生成 dry-run 复盘报告"],
-      ["cleanup", "清理运行垃圾", "立即执行 cleanup"]
+      {
+        id: "readiness",
+        label: "检查真实推送准备度",
+        badge: "只检查，不发送",
+        desc: "readiness 是真实推送前的门禁检查，用来判断机器人现在是否具备安全推送条件。",
+        details: [
+          "检查 Telegram Token、群 ID、话题配置是否满足真实推送要求。",
+          "检查启动观察历史是否足够，避免刚部署就直接推送不稳定信号。",
+          "检查最近候选压力和历史文件状态；全部通过才适合开启真实推送。",
+          "结果里 OK 表示通过，WAIT 表示还需要补配置或继续 dry-run 观察。"
+        ]
+      },
+      {
+        id: "runtime-status",
+        label: "查看运行状态",
+        badge: "读取状态文件",
+        desc: "读取主服务和结构雷达写入的 runtime-status，快速看后台最近在做什么。",
+        details: [
+          "能看到当前任务、运行模式、最近扫描时间、下一次扫描时间和最后错误。",
+          "适合确认服务是否真的在循环运行，而不是只看 systemd 是否 active。",
+          "如果这里长时间不更新，再去日志页查看具体报错。"
+        ]
+      },
+      {
+        id: "doctor",
+        label: "环境诊断",
+        badge: "只读诊断",
+        desc: "输出配置、状态文件、历史文件、清理设置等诊断信息，适合排查部署问题。",
+        details: [
+          "用于确认 .env.oi 是否存在、关键路径是否正常、状态文件是否能读取。",
+          "不会发送 Telegram，也不会修改配置。",
+          "如果功能异常但日志不明显，先跑这个看环境是否缺文件或配置。"
+        ]
+      },
+      {
+        id: "telegram-test",
+        label: "发送 Telegram 测试",
+        badge: "会真实发送",
+        desc: "向配置的 Telegram 群或话题发送一条测试消息，用来验证 Token、群 ID、话题 ID 是否可用。",
+        details: [
+          "这个动作会真实发消息，不是 dry-run。",
+          "适合改完机器人 Token、群 ID、话题 ID 后立即验证。",
+          "失败时重点看输出里的 Telegram 错误，例如无权限、chat not found、topic not found。"
+        ]
+      },
+      {
+        id: "announcements-test",
+        label: "测试 Binance 公告",
+        badge: "抓取测试",
+        desc: "抓取 Binance 公告并按机会/风险分类，验证公告监听是否能正常读取数据。",
+        details: [
+          "用于检查 Alpha、上新、活动、下架、停止交易等公告识别。",
+          "只测试抓取和分类，不代表一定会推送新公告。",
+          "如果失败，多半是网络、Binance 页面接口或限频问题。"
+        ]
+      },
+      {
+        id: "structure-review",
+        label: "结构信号复盘",
+        badge: "生成报告",
+        desc: "对最近结构雷达信号做 dry-run 复盘，生成报告用于检查结构策略表现。",
+        details: [
+          "适合查看最近结构突破、临界预警、确认信号的后续表现。",
+          "默认生成复盘报告；是否发送 Telegram 仍受命令参数和配置门禁限制。",
+          "如果结构雷达刚部署不久，历史数据少，报告可能比较空。"
+        ]
+      },
+      {
+        id: "cleanup",
+        label: "清理运行垃圾",
+        badge: "会删除临时文件",
+        desc: "立即执行 cleanup，清理运行中产生的临时文件、过期图表和超限历史记录。",
+        details: [
+          "不会删除 .env.oi、源码、systemd 服务文件和关键配置。",
+          "适合磁盘空间变多、图表文件堆积、历史记录太长时手动执行。",
+          "输出会列出删除、保留和裁剪了哪些文件。"
+        ]
+      }
     ];
     const serviceList = [
       ["restart-main", "重启主服务", "paopao-radar", "warn"],
@@ -777,7 +866,7 @@ INDEX_HTML = r"""<!doctype html>
       const runtime = data.runtime || {};
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
-        `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的主要操作入口。</strong> 服务器命令行只保留查看令牌、查看 Web 服务状态、更新项目和应急日志；配置修改、测试、服务控制都在这里完成。</div>`,
+        `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的主要操作入口。</strong> 服务器只需要记住 paopao；地址、令牌、Web 服务状态、日志和更新入口都在中文菜单里。配置修改、测试、服务控制都在这里完成。</div>`,
         metric("主服务", statusPill(main.active, main.active_ok), `<div class="muted">${escapeHtml(main.service)}</div>`),
         metric("结构雷达", statusPill(structure.active, structure.active_ok), `<div class="muted">${escapeHtml(structure.service)}</div>`),
         metric("Web 控制台", statusPill(web.active, web.active_ok), `<div class="muted">${escapeHtml(web.service)}</div>`),
@@ -814,9 +903,10 @@ INDEX_HTML = r"""<!doctype html>
       const key = escapeHtml(field.key);
       const label = escapeHtml(field.label);
       if (field.kind === "bool") {
-        const selectedTrue = String(field.value).toLowerCase() === "true" ? "selected" : "";
-        const selectedFalse = String(field.value).toLowerCase() === "false" ? "selected" : "";
-        return `<div class="field"><label>${label}</label><select data-key="${key}"><option value="true" ${selectedTrue}>true</option><option value="false" ${selectedFalse}>false</option></select></div>`;
+        const current = String(field.value || "").trim().toLowerCase();
+        const selectedTrue = ["true", "1", "yes", "on", "y"].includes(current) ? "selected" : "";
+        const selectedFalse = ["false", "0", "no", "off", "n"].includes(current) ? "selected" : "";
+        return `<div class="field"><label>${label}</label><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select></div>`;
       }
       if (field.secret) {
         return `<div class="field"><label>${label} <span class="muted">${escapeHtml(field.masked || "未配置")}</span></label><div class="secret-row"><input data-key="${key}" type="password" placeholder="留空不修改"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div></div>`;
@@ -845,11 +935,20 @@ INDEX_HTML = r"""<!doctype html>
       await loadConfig();
     }
     function renderActions() {
-      document.getElementById("actionGrid").innerHTML = actionList.map(([id, label, desc]) => `
-        <div class="panel span-4">
-          <h3 class="section-title">${label}</h3>
-          <p class="muted">${desc}</p>
-          <button class="btn primary" onclick="runAction('${id}')">执行</button>
+      document.getElementById("actionGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>这里的按钮都是固定白名单动作。</strong>
+          不能输入任意命令；点击后只会执行页面写明的检查、测试或清理动作。会真实发送或删除文件的动作，卡片里会单独标明。
+        </div>
+      ` + actionList.map(action => `
+        <div class="panel span-6 action-card">
+          <div>
+            <h3 class="section-title">${escapeHtml(action.label)}</h3>
+            <span class="action-badge">${escapeHtml(action.badge)}</span>
+          </div>
+          <p class="muted">${escapeHtml(action.desc)}</p>
+          <ul>${action.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+          <button class="btn primary" onclick="runAction('${escapeHtml(action.id)}')">执行</button>
         </div>
       `).join("");
     }
@@ -885,7 +984,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>总览</strong><span class="muted">查看主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
             <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持复制。</span></div>
             <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、Coinalyze、雷达参数和 Web 访问配置；保存前自动备份 .env.oi。</span></div>
-            <div class="feature-item"><strong>检查测试</strong><span class="muted">执行 readiness、doctor、Telegram 测试、公告测试、结构复盘和 cleanup。</span></div>
+            <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
             <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；停止操作需要输入 STOP。</span></div>
           </div>
         </div>
@@ -893,9 +992,9 @@ INDEX_HTML = r"""<!doctype html>
           <h3 class="section-title">使用规则</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>访问地址</strong><span class="muted">默认使用 http://服务器IP:8080/。如果你改了 WEB_PORT，按配置里的端口访问。</span></div>
-            <div class="feature-item"><strong>登录令牌</strong><span class="muted">输入 WEB_ADMIN_TOKEN。服务器可用 paopao web-token 查看。不要把令牌发到公开群。</span></div>
+            <div class="feature-item"><strong>登录令牌</strong><span class="muted">输入 WEB_ADMIN_TOKEN。服务器输入 paopao 后选择 1 可查看。不要把令牌发到公开群。</span></div>
             <div class="feature-item"><strong>配置生效</strong><span class="muted">保存 .env.oi 后，后台运行中的服务通常需要重启才会读取新配置。</span></div>
-            <div class="feature-item"><strong>命令行变化</strong><span class="muted">原中文菜单已收敛为 Web 入口；常规控制请在 Web 页面完成。</span></div>
+            <div class="feature-item"><strong>服务器入口</strong><span class="muted">服务器只需要记住 paopao。进入中文菜单后查看 Web 地址、令牌、状态、日志和更新入口。</span></div>
             <div class="feature-item"><strong>安全边界</strong><span class="muted">Web 后端只执行白名单动作，不提供任意 shell 命令入口。</span></div>
           </div>
         </div>
@@ -924,7 +1023,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "overview") await loadSummary();
         if (currentView === "logs") await loadLogs();
         if (currentView === "config") await loadConfig();
-        if (currentView === "actions") { setSubtitle("白名单命令"); renderActions(); }
+        if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
         if (currentView === "services") { setSubtitle("systemd 白名单动作"); renderServices(); }
         if (currentView === "guide") await loadGuide();
       } catch (err) {

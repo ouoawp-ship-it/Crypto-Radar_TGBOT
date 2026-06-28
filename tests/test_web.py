@@ -73,6 +73,16 @@ class WebConsoleTests(unittest.TestCase):
         with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
             self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
 
+    def test_index_localizes_bool_options_and_explains_actions(self) -> None:
+        html = web.INDEX_HTML
+
+        self.assertIn('value="true" ${selectedTrue}>开启', html)
+        self.assertIn('value="false" ${selectedFalse}>关闭', html)
+        self.assertNotIn(">true</option>", html)
+        self.assertNotIn(">false</option>", html)
+        self.assertIn("readiness 是真实推送前的门禁检查", html)
+        self.assertIn("OK 表示通过，WAIT 表示还需要补配置或继续 dry-run 观察", html)
+
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             with patch.object(cli, "make_runtime", side_effect=AssertionError("should not init runtime")):
