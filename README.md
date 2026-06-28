@@ -73,22 +73,17 @@ Web 控制台默认作为 `paopao-web.service` 安装，监听 `0.0.0.0:8080`，
 http://服务器IP:8080/
 ```
 
-页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，可用 `paopao web-token` 查看。
+页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，可在服务器输入 `paopao`，选择“查看 Web 地址和令牌”。
 
-常用命令:
-
-```bash
-paopao web-status
-paopao web-logs
-paopao web-restart
-paopao web-token
-```
-
-前台调试启动仍然可用:
+服务器快捷入口只需要记住一个命令:
 
 ```bash
-paopao web --host 127.0.0.1 --port 8080
+paopao
 ```
+
+进入中文菜单后，用数字选择查看地址/令牌、Web 服务状态、Web 实时日志、重启 Web 服务、检查更新、更新项目和查看版本。配置修改、主服务/结构雷达控制、测试消息、readiness、doctor、cleanup、结构复盘等日常动作在 Web 页面里完成。
+
+前台调试启动仍然保留在脚本里，但正常使用不需要记任何 Web 子命令。
 
 配置项:
 
@@ -204,14 +199,13 @@ paopao-web        # Web 控制台：状态、日志、配置和维护操作
 paopao-cleanup.timer # 每小时自动清理运行垃圾
 ```
 
-常用 Web 控制台命令：
+服务器快捷入口：
 
 ```bash
-paopao web-status
-paopao web-logs
-paopao web-restart
-paopao web-token
+paopao
 ```
+
+进入中文菜单后按数字查看 Web 地址/令牌、Web 服务状态、Web 实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
 
 Binance 公告抓取默认每个分类分页读取，单页数量从 20 提高到 50，并新增活动关键词识别。专门测试公告抓取和分类：
 
@@ -258,16 +252,11 @@ bash scripts/install_server.sh config
 服务器安装后会写入快捷命令:
 
 ```bash
-paopao          # 显示 Web 控制台地址和访问令牌
-paopao web-token # 查看访问令牌
-paopao web-status # 查看 Web 服务状态
-paopao web-logs # 查看 Web 服务日志
-paopao web-restart # 重启 Web 服务
-paopao version  # 查看当前版本号
-paopao check-update # 检查当前版本/GitHub版本
-paopao update   # 有更新时确认后更新项目
+paopao
 ```
 
-`paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
+输入后会打开中文数字菜单。菜单里会详细说明 Web 地址、访问令牌、项目版本，以及每个编号的用途；日常使用不需要记其它长命令。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.11.2`，后续功能更新按 `v1.11.3`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
+
+项目版本号写在 `VERSION` 文件里，当前为 `v1.11.3`，后续功能更新按 `v1.11.4`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。

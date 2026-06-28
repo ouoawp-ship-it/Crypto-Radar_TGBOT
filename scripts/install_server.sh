@@ -166,7 +166,7 @@ ensure_web_public_config() {
     token="$(generate_web_admin_token)"
     set_env_value WEB_ADMIN_TOKEN "$token"
     chmod 600 "$ENV_FILE" || true
-    log "已生成 Web 控制台访问令牌。查看令牌: paopao web-token"
+    log "已生成 Web 控制台访问令牌。查看令牌: 输入 paopao 后选择 1"
   fi
 }
 
@@ -876,23 +876,17 @@ EOF
 
 安装完成。
 
-常用命令:
+入口命令:
   paopao
-  paopao version
-  paopao check-update
-  paopao update
-  paopao web-status
-  paopao web-logs
-  paopao web-token
-  sudo systemctl status ${WEB_SERVICE_NAME}
-  journalctl -u ${WEB_SERVICE_NAME} -f
 
 Web 控制台:
   http://服务器IP:8080/
-  访问令牌: paopao web-token
+  访问令牌: 输入 paopao 后选择 1
 
 说明:
-  配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
+  服务器只需要记住 paopao 这一个入口命令。
+  进入中文菜单后，用数字查看地址/令牌、Web 服务状态、实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
+  配置修改、主服务/结构雷达启停、测试消息、readiness、doctor、cleanup、结构复盘等控制功能在 Web 控制台完成。
 
 中文安装说明:
   ${APP_DIR}/docs/INSTALL_CN.md

@@ -90,25 +90,22 @@ sudo systemctl restart paopao-radar
 paopao
 ```
 
-会显示 Web 控制台地址、访问令牌和少量应急命令；不再弹出旧版中文控制菜单。
+会打开中文数字菜单。服务器日常只需要记住这一个入口命令。
 
-常用快捷指令:
+菜单会显示:
 
-```bash
-paopao              # 显示 Web 控制台地址和访问令牌
-paopao version      # 查看当前项目版本号
-paopao check-update # 只检查当前版本和 GitHub 版本
-paopao update       # 检查 GitHub 版本，有更新时确认后更新
-paopao update --yes # 有更新时自动确认更新
-paopao web          # 前台调试启动 Web 控制台
-paopao web-status   # 查看 Web 控制台服务状态
-paopao web-logs     # 查看 Web 控制台服务日志
-paopao web-restart  # 重启 Web 控制台服务
-paopao web-token    # 查看 Web 控制台访问令牌
-paopao help         # 查看帮助
+```text
+1. 查看 Web 地址和令牌
+2. 查看 Web 控制台服务状态
+3. 查看 Web 控制台实时日志
+4. 重启 Web 控制台服务
+5. 检查 GitHub 是否有更新
+6. 更新项目代码
+7. 查看当前版本
+0. 退出
 ```
 
-配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
+菜单顶部会详细说明 Web 地址、访问令牌、项目版本，以及哪些功能应该去 Web 页面操作。配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
 
 Web 控制台会作为 `paopao-web.service` 安装并启动，浏览器直接打开:
 
@@ -119,8 +116,10 @@ http://服务器IP:8080/
 页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，查看令牌:
 
 ```bash
-paopao web-token
+paopao
 ```
+
+进入菜单后选择 `1. 查看 Web 地址和令牌`。
 
 相关配置项:
 
@@ -141,9 +140,9 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.11.2`，后续功能更新按 `v1.11.3`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.11.3`，后续功能更新按 `v1.11.4`、`v2.0` 这种方式递增。
 
-`paopao check-update` 和 `paopao update` 会同时显示:
+中文菜单里的“检查 GitHub 是否有更新”和“更新项目代码”会同时显示:
 
 - 当前版本号
 - GitHub 最新版本号
@@ -161,7 +160,7 @@ GitHub版本: v1.5 (xxxxxxx)  Add xxx feature
 
 ## 6. 更新时 `.env.oi` 的安全同步
 
-`paopao update` 会自动运行 `.env.oi` 安全同步:
+中文菜单里的 `6. 更新项目代码` 会自动运行 `.env.oi` 安全同步:
 
 - 会补充 `.env.oi.example` 里新增的普通配置项。
 - 会自动升级明确写进迁移白名单的默认参数，例如资金摘要频率这类项目级默认值。
@@ -171,10 +170,10 @@ GitHub版本: v1.5 (xxxxxxx)  Add xxx feature
 所以后续我优化配置参数后，你通常直接执行:
 
 ```bash
-paopao update
+paopao
 ```
 
-即可完成代码更新、依赖检查、测试、`.env.oi` 安全同步和服务重启。
+然后选择 `6. 更新项目代码`，即可完成代码更新、依赖检查、测试、`.env.oi` 安全同步和服务重启。
 
 ## 7. Telegram 话题推荐设置
 
@@ -235,13 +234,13 @@ cd ~/paopao-crypto-radar
 bash scripts/update_server.sh
 ```
 
-也可以用快捷命令:
+也可以用中文菜单:
 
 ```bash
-paopao check-update   # 只检查，不更新
-paopao update         # 先显示当前版本/GitHub版本，有更新再询问
-paopao update --yes   # 有更新时自动确认
+paopao
 ```
+
+进入菜单后选择 `5. 检查 GitHub 是否有更新` 或 `6. 更新项目代码`。
 
 更新脚本会执行:
 

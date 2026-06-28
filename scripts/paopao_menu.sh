@@ -80,7 +80,7 @@ show_web_token() {
   if [ -n "$token" ]; then
     printf '访问令牌: %s\n' "$token"
   else
-    printf '访问令牌未配置。请执行: bash scripts/update_server.sh --yes\n'
+    printf '访问令牌未配置。请返回菜单选择 6 更新项目，或重新运行安装脚本。\n'
   fi
 }
 
@@ -130,39 +130,76 @@ show_version() {
   git log -1 --format='提交说明: %s' 2>/dev/null || true
 }
 
-show_home() {
+pause_menu() {
+  printf '\n按回车返回菜单...'
+  read -r _ || true
+}
+
+show_menu_header() {
   local token
   token="$(get_env_value WEB_ADMIN_TOKEN)"
   cat <<EOF
-泡泡雷达 Web 控制台
-地址: $(web_public_url)
-令牌: ${token:-未配置，请执行: bash scripts/update_server.sh --yes}
+============================================================
+泡泡雷达中文控制台
+============================================================
+项目目录: ${APP_DIR}
+当前版本: $(project_version) ($(project_commit))
 
-常用: paopao update --yes | paopao web-status | paopao web-logs
-更多: paopao help
+Web 地址: $(web_public_url)
+访问令牌: ${token:-未配置，请先选择 6 更新项目，或执行安装/更新脚本}
+
+说明:
+  1. 服务器只需要记住一个入口命令：paopao。
+  2. 打开上面的 Web 地址，输入访问令牌，就能进入网页控制台。
+  3. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
+     readiness、doctor、cleanup、结构复盘，都在 Web 页面里操作。
+  4. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
+
+请选择:
+  1. 查看 Web 地址和令牌
+  2. 查看 Web 控制台服务状态
+  3. 查看 Web 控制台实时日志
+  4. 重启 Web 控制台服务
+  5. 检查 GitHub 是否有更新
+  6. 更新项目代码
+  7. 查看当前版本
+  0. 退出
+============================================================
 EOF
+}
+
+show_menu() {
+  while true; do
+    show_menu_header
+    read -r -p "输入编号: " choice
+    case "$choice" in
+      1) show_web_token; pause_menu ;;
+      2) show_web_status; pause_menu ;;
+      3) show_web_logs ;;
+      4) restart_web_service; pause_menu ;;
+      5) update_project --check; pause_menu ;;
+      6) update_project --yes; pause_menu ;;
+      7) show_version; pause_menu ;;
+      0) exit 0 ;;
+      *) printf '无效选项，请输入 0-7。\n'; pause_menu ;;
+    esac
+  done
 }
 
 show_help() {
   cat <<EOF
-泡泡雷达 Web 控制台
+泡泡雷达中文控制台
 
-访问地址:
+入口指令:
+  paopao
+
+Web 地址:
   $(web_public_url)
 
-常用命令:
-  paopao              显示 Web 控制台地址和访问令牌
-  paopao web-token    查看 Web 控制台访问令牌
-  paopao web-status   查看 Web 控制台服务状态
-  paopao web-logs     查看 Web 控制台实时日志
-  paopao web-restart  重启 Web 控制台服务
-  paopao update --yes 更新项目代码
-  paopao check-update 只检查 GitHub 是否有更新
-  paopao version      查看当前版本
-
 说明:
-  配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
-  服务器命令行只保留 Web 入口、更新和应急排查命令。
+  输入 paopao 后，直接用数字选择功能。
+  配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等日常控制功能，都在 Web 页面里完成。
+  服务器菜单只保留 Web 地址/令牌、Web 服务排查、项目更新和版本查看。
 
 项目目录: ${APP_DIR}
 EOF
@@ -175,7 +212,7 @@ fi
 
 case "$command" in
   home|menu|"")
-    show_home
+    show_menu
     ;;
   web)
     run_main web "$@"

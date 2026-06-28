@@ -144,7 +144,7 @@ ensure_web_public_config() {
     token="$(generate_web_admin_token)"
     set_env_value WEB_ADMIN_TOKEN "$token"
     chmod 600 "${APP_DIR}/.env.oi" || true
-    printf '[paopao-update] 已生成 Web 控制台访问令牌。查看令牌: paopao web-token\n'
+    printf '[paopao-update] 已生成 Web 控制台访问令牌。查看令牌: 输入 paopao 后选择 1\n'
   fi
 }
 
@@ -371,4 +371,4 @@ install_or_update_web_service
 restart_services_if_present
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
-printf '[paopao-update] Web 控制台: http://服务器IP:8080/，访问令牌: paopao web-token\n'
+printf '[paopao-update] Web 控制台: http://服务器IP:8080/，访问令牌: 输入 paopao 后选择 1\n'
