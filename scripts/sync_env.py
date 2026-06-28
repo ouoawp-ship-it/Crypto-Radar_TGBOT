@@ -49,12 +49,12 @@ MANAGED_MIGRATIONS = {
     "WEB_HOST": {
         "old": {"", "127.0.0.1", "localhost"},
         "new": "0.0.0.0",
-        "note": "Web 控制台默认开放 http://服务器IP/admin/",
+        "note": "Web 控制台默认开放 http://服务器IP:8080/",
     },
     "WEB_PORT": {
-        "old": {"", "8080"},
-        "new": "80",
-        "note": "Web 控制台默认使用 HTTP 80 端口",
+        "old": {"", "80"},
+        "new": "8080",
+        "note": "Web 控制台默认使用 8080 端口",
     },
 }
 

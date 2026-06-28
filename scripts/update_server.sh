@@ -137,8 +137,8 @@ ensure_web_public_config() {
   if [ -z "$host" ] || [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]; then
     set_env_value WEB_HOST "0.0.0.0"
   fi
-  if [ -z "$port" ] || [ "$port" = "8080" ]; then
-    set_env_value WEB_PORT "80"
+  if [ -z "$port" ] || [ "$port" = "80" ]; then
+    set_env_value WEB_PORT "8080"
   fi
   if [ -z "$token" ]; then
     token="$(generate_web_admin_token)"
@@ -234,9 +234,6 @@ RestartSec=10
 EnvironmentFile=-${APP_DIR}/.env.oi
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -374,4 +371,4 @@ install_or_update_web_service
 restart_services_if_present
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
-printf '[paopao-update] Web 控制台: http://服务器IP/admin/，访问令牌: paopao web-token\n'
+printf '[paopao-update] Web 控制台: http://服务器IP:8080/，访问令牌: paopao web-token\n'

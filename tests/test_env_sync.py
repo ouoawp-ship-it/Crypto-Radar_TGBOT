@@ -31,7 +31,7 @@ class EnvSyncTests(unittest.TestCase):
                     "RADAR_SUMMARY_MAX_DAILY_PUSH=6",
                     "FLOW_INTERVAL_SEC=900",
                     "WEB_HOST=127.0.0.1",
-                    "WEB_PORT=8080",
+                    "WEB_PORT=80",
                     "WEB_ADMIN_TOKEN=",
                     "CUSTOM_KEEP=1",
                 ]) + "\n",
@@ -46,7 +46,7 @@ class EnvSyncTests(unittest.TestCase):
                     "RADAR_SUMMARY_MAX_DAILY_PUSH=4",
                     "FLOW_INTERVAL_SEC=3600",
                     "WEB_HOST=0.0.0.0",
-                    "WEB_PORT=80",
+                    "WEB_PORT=8080",
                     "WEB_ADMIN_TOKEN=",
                     "NEW_NORMAL_SETTING=true",
                 ]) + "\n",
@@ -60,7 +60,7 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("RADAR_SUMMARY_MAX_DAILY_PUSH=4", text)
         self.assertIn("FLOW_INTERVAL_SEC=3600", text)
         self.assertIn("WEB_HOST=0.0.0.0", text)
-        self.assertIn("WEB_PORT=80", text)
+        self.assertIn("WEB_PORT=8080", text)
         self.assertRegex(text, r"WEB_ADMIN_TOKEN=[A-Za-z0-9_-]{24,}")
         self.assertIn("NEW_NORMAL_SETTING=true", text)
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)

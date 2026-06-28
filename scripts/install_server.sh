@@ -159,8 +159,8 @@ ensure_web_public_config() {
   if [ -z "$host" ] || [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]; then
     set_env_value WEB_HOST "0.0.0.0"
   fi
-  if [ -z "$port" ] || [ "$port" = "8080" ]; then
-    set_env_value WEB_PORT "80"
+  if [ -z "$port" ] || [ "$port" = "80" ]; then
+    set_env_value WEB_PORT "8080"
   fi
   if [ -z "$token" ]; then
     token="$(generate_web_admin_token)"
@@ -798,9 +798,6 @@ RestartSec=10
 EnvironmentFile=-${ENV_FILE}
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -881,32 +878,21 @@ EOF
 
 常用命令:
   paopao
-  paopao config
-  paopao logs
-  paopao status
   paopao version
   paopao check-update
   paopao update
-  paopao announcements
-  paopao cleanup
-  paopao structure-status
-  paopao structure-logs
   paopao web-status
   paopao web-logs
   paopao web-token
-  sudo systemctl status ${SERVICE_NAME}
-  sudo systemctl status ${STRUCTURE_SERVICE_NAME}
   sudo systemctl status ${WEB_SERVICE_NAME}
-  systemctl list-timers ${CLEANUP_SERVICE_NAME}.timer
-  journalctl -u ${SERVICE_NAME} -f
-  journalctl -u ${STRUCTURE_SERVICE_NAME} -f
   journalctl -u ${WEB_SERVICE_NAME} -f
-  cd ${APP_DIR} && . .venv/bin/activate && python main.py runtime-status
-  cd ${APP_DIR} && . .venv/bin/activate && python main.py telegram-test --send --confirm-real-send
 
 Web 控制台:
-  http://服务器IP/admin/
+  http://服务器IP:8080/
   访问令牌: paopao web-token
+
+说明:
+  配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
 
 中文安装说明:
   ${APP_DIR}/docs/INSTALL_CN.md

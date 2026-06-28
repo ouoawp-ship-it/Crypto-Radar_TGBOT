@@ -572,6 +572,28 @@ INDEX_HTML = r"""<!doctype html>
     .secret-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
     .section-title { margin: 2px 0 10px; font-size: 15px; }
     .output { margin-top: 12px; }
+    .notice {
+      background: #eef7f6;
+      border: 1px solid #b9ddda;
+      color: #194844;
+      border-radius: 6px;
+      padding: 12px 14px;
+    }
+    .feature-list { display: grid; gap: 10px; }
+    .feature-item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 11px;
+      background: #fbfcfc;
+    }
+    .feature-item strong { display: block; margin-bottom: 4px; }
+    .kv {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 7px 12px;
+      font-size: 13px;
+    }
+    .kv div:nth-child(odd) { color: var(--muted); font-weight: 700; }
     .hidden { display: none !important; }
     .auth {
       position: fixed;
@@ -622,6 +644,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="config">配置</button>
         <button data-view="actions">检查测试</button>
         <button data-view="services">服务控制</button>
+        <button data-view="guide">功能说明</button>
       </nav>
     </aside>
     <main>
@@ -674,6 +697,10 @@ INDEX_HTML = r"""<!doctype html>
         <div class="grid" id="serviceGrid"></div>
         <pre id="serviceOutput" class="output"></pre>
       </section>
+
+      <section id="guide" class="view hidden">
+        <div class="grid" id="guideGrid"></div>
+      </section>
     </main>
   </div>
 
@@ -683,7 +710,8 @@ INDEX_HTML = r"""<!doctype html>
       logs: "日志",
       config: "配置",
       actions: "检查测试",
-      services: "服务控制"
+      services: "服务控制",
+      guide: "功能说明"
     };
     const actionList = [
       ["readiness", "检查 readiness", "读取真实推送准备度"],
@@ -706,7 +734,6 @@ INDEX_HTML = r"""<!doctype html>
       ["stop-web", "停止 Web 控制台", "paopao-web", "danger"]
     ];
     let currentView = "overview";
-    const basePath = window.location.pathname.startsWith("/admin") ? "/admin" : "";
 
     function token() { return localStorage.getItem("paopaoAdminToken") || ""; }
     function headers() {
@@ -722,7 +749,7 @@ INDEX_HTML = r"""<!doctype html>
       refreshCurrent();
     }
     async function api(path, options = {}) {
-      const res = await fetch(`${basePath}${path}`, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
       if (res.status === 401) {
         showAuth();
         throw new Error("需要访问令牌");
@@ -750,6 +777,7 @@ INDEX_HTML = r"""<!doctype html>
       const runtime = data.runtime || {};
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
+        `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的主要操作入口。</strong> 服务器命令行只保留查看令牌、查看 Web 服务状态、更新项目和应急日志；配置修改、测试、服务控制都在这里完成。</div>`,
         metric("主服务", statusPill(main.active, main.active_ok), `<div class="muted">${escapeHtml(main.service)}</div>`),
         metric("结构雷达", statusPill(structure.active, structure.active_ok), `<div class="muted">${escapeHtml(structure.service)}</div>`),
         metric("Web 控制台", statusPill(web.active, web.active_ok), `<div class="muted">${escapeHtml(web.service)}</div>`),
@@ -838,6 +866,42 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `).join("");
     }
+    async function loadGuide() {
+      const data = await api("/api/summary");
+      const git = data.git || {};
+      document.getElementById("guideGrid").innerHTML = `
+        <div class="panel span-12">
+          <h3 class="section-title">版本信息</h3>
+          <div class="kv">
+            <div>版本</div><div>${escapeHtml(git.version || "unknown")}</div>
+            <div>提交</div><div>${escapeHtml(git.commit || "unknown")}</div>
+            <div>分支</div><div>${escapeHtml(git.branch || "unknown")}</div>
+            <div>说明</div><div>${escapeHtml(git.subject || "")}</div>
+          </div>
+        </div>
+        <div class="panel span-6">
+          <h3 class="section-title">页面功能</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>总览</strong><span class="muted">查看主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
+            <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持复制。</span></div>
+            <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、Coinalyze、雷达参数和 Web 访问配置；保存前自动备份 .env.oi。</span></div>
+            <div class="feature-item"><strong>检查测试</strong><span class="muted">执行 readiness、doctor、Telegram 测试、公告测试、结构复盘和 cleanup。</span></div>
+            <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；停止操作需要输入 STOP。</span></div>
+          </div>
+        </div>
+        <div class="panel span-6">
+          <h3 class="section-title">使用规则</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>访问地址</strong><span class="muted">默认使用 http://服务器IP:8080/。如果你改了 WEB_PORT，按配置里的端口访问。</span></div>
+            <div class="feature-item"><strong>登录令牌</strong><span class="muted">输入 WEB_ADMIN_TOKEN。服务器可用 paopao web-token 查看。不要把令牌发到公开群。</span></div>
+            <div class="feature-item"><strong>配置生效</strong><span class="muted">保存 .env.oi 后，后台运行中的服务通常需要重启才会读取新配置。</span></div>
+            <div class="feature-item"><strong>命令行变化</strong><span class="muted">原中文菜单已收敛为 Web 入口；常规控制请在 Web 页面完成。</span></div>
+            <div class="feature-item"><strong>安全边界</strong><span class="muted">Web 后端只执行白名单动作，不提供任意 shell 命令入口。</span></div>
+          </div>
+        </div>
+      `;
+      setSubtitle(`版本 ${git.version || "unknown"} · ${git.commit || "unknown"}`);
+    }
     async function runService(name, label) {
       if (name.startsWith("stop-")) {
         const confirmText = prompt(`输入 STOP 确认：${label}`);
@@ -862,6 +926,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "config") await loadConfig();
         if (currentView === "actions") { setSubtitle("白名单命令"); renderActions(); }
         if (currentView === "services") { setSubtitle("systemd 白名单动作"); renderServices(); }
+        if (currentView === "guide") await loadGuide();
       } catch (err) {
         setSubtitle(err.message || String(err));
       }
@@ -914,17 +979,9 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
         return False
 
-    def normalized_path(self) -> str:
-        path = urlparse(self.path).path
-        if path == "/admin":
-            return "/"
-        if path.startswith("/admin/"):
-            return path[len("/admin"):] or "/"
-        return path
-
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        path = self.normalized_path()
+        path = parsed.path
         if path == "/":
             self.send_html(INDEX_HTML)
             return
@@ -947,7 +1004,7 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self.require_auth():
             return
-        path = self.normalized_path()
+        path = urlparse(self.path).path
         try:
             data = self.read_json()
             if path == "/api/config":

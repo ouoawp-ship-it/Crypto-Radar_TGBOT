@@ -67,10 +67,10 @@ python main.py cleanup --force-cleanup
 
 ## Web 控制台
 
-Web 控制台默认作为 `paopao-web.service` 安装，监听 `0.0.0.0:80`，浏览器直接访问:
+Web 控制台默认作为 `paopao-web.service` 安装，监听 `0.0.0.0:8080`，浏览器直接访问:
 
 ```text
-http://服务器IP/admin/
+http://服务器IP:8080/
 ```
 
 页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，可用 `paopao web-token` 查看。
@@ -94,11 +94,11 @@ paopao web --host 127.0.0.1 --port 8080
 
 ```bash
 WEB_HOST=0.0.0.0
-WEB_PORT=80
+WEB_PORT=8080
 WEB_ADMIN_TOKEN=
 ```
 
-控制台功能包括：服务状态、实时日志、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启，以及 `.env.oi` 关键配置编辑。保存配置前会自动备份 `.env.oi`。
+控制台功能包括：服务状态、实时日志、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启，以及 `.env.oi` 关键配置编辑。保存配置前会自动备份 `.env.oi`。Web 内置“功能说明”页，会说明每个页面的用途、版本号、提交号和安全规则。
 
 如果 `WEB_ADMIN_TOKEN` 为空，程序会拒绝监听公网地址；安装/更新脚本会自动补齐。
 
@@ -204,23 +204,19 @@ paopao-web        # Web 控制台：状态、日志、配置和维护操作
 paopao-cleanup.timer # 每小时自动清理运行垃圾
 ```
 
-常用结构服务命令：
+常用 Web 控制台命令：
 
 ```bash
-paopao structure-status
-paopao structure-logs
-paopao structure-restart
 paopao web-status
 paopao web-logs
 paopao web-restart
-paopao cleanup
+paopao web-token
 ```
 
 Binance 公告抓取默认每个分类分页读取，单页数量从 20 提高到 50，并新增活动关键词识别。专门测试公告抓取和分类：
 
 ```bash
 python main.py announcements-test
-paopao announcements
 ```
 
 相关配置：
@@ -253,7 +249,7 @@ bash scripts/update_server.sh
 
 第一次安装、重新安装、配置项说明和常见排错见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
 
-修改 bot token、群 ID、Coinalyze key 或 Telegram 话题配置:
+修改 bot token、群 ID、Coinalyze key 或 Telegram 话题配置，推荐在 Web 控制台的“配置”页完成。服务器命令行保留应急配置向导:
 
 ```bash
 bash scripts/install_server.sh config
@@ -262,17 +258,16 @@ bash scripts/install_server.sh config
 服务器安装后会写入快捷命令:
 
 ```bash
-paopao          # 打开中文操作菜单
-paopao config   # 修改配置
-paopao logs     # 查看实时日志
+paopao          # 显示 Web 控制台地址和访问令牌
+paopao web-token # 查看访问令牌
+paopao web-status # 查看 Web 服务状态
+paopao web-logs # 查看 Web 服务日志
+paopao web-restart # 重启 Web 服务
 paopao version  # 查看当前版本号
-paopao cleanup   # 立即清理运行垃圾
-paopao announcements # 测试 Binance 公告抓取和分类
-paopao structure-status # 查看结构雷达独立服务状态
 paopao check-update # 检查当前版本/GitHub版本
 paopao update   # 有更新时确认后更新项目
 ```
 
 `paopao update` 会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.10.1`，后续功能更新按 `v1.10.2`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.11.0`，后续功能更新按 `v1.11.1`、`v2.0` 递增；`paopao update` 会同时显示版本号和 git 提交号。
