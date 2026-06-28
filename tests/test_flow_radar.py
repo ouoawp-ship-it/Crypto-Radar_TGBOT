@@ -2,31 +2,25 @@ from __future__ import annotations
 
 import unittest
 
+from paopao_radar.config import Settings
 from paopao_radar.flow_radar import (
+    binance_futures_url,
     binance_oi_stats,
-    coinglass_tv_url,
+    FlowRadarEngine,
     flow_category,
     fmt_cvd,
-    market_by_symbol,
+    kline_cvd_delta_info,
     series_delta_info,
 )
 from paopao_radar.time_windows import closed_window
 
 
 class FlowRadarTests(unittest.TestCase):
-    def test_coinglass_link_defaults_to_chinese_tv_page(self) -> None:
+    def test_coin_link_defaults_to_binance_futures_page(self) -> None:
         self.assertEqual(
-            coinglass_tv_url("BTC"),
-            "https://www.coinglass.com/tv/zh/Binance_BTCUSDT",
+            binance_futures_url("BTC"),
+            "https://www.binance.com/zh-CN/futures/BTCUSDT",
         )
-
-    def test_market_map_accepts_coin_symbols(self) -> None:
-        data = {"data": [{"symbol": "BTC", "open_interest_usd": 1}, {"baseAsset": "ETHUSDT"}]}
-
-        mapped = market_by_symbol(data)
-
-        self.assertIn("BTC", mapped)
-        self.assertIn("ETH", mapped)
 
     def test_series_delta_reports_missing_data(self) -> None:
         delta, ready, count = series_delta_info({"data": [{"cvd": 100}]})
@@ -78,6 +72,45 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(delta, 20.0)
         self.assertTrue(ready)
         self.assertEqual(points, 2)
+
+    def test_kline_cvd_uses_taker_buy_quote_volume(self) -> None:
+        klines = [
+            [
+                1_771_965_600_000,
+                "1",
+                "1",
+                "1",
+                "1",
+                "100",
+                1_771_969_199_999,
+                "1000",
+                10,
+                "55",
+                "650",
+                "0",
+            ]
+        ]
+
+        delta, ready, points = kline_cvd_delta_info(klines)
+
+        self.assertEqual(delta, 300.0)
+        self.assertTrue(ready)
+        self.assertEqual(points, 1)
+
+    def test_candidate_symbols_keeps_binance_funding_percent_once(self) -> None:
+        class Source:
+            def usdt_perp_symbols(self):
+                return [{"symbol": "BTCUSDT"}]
+
+            def premium_index(self):
+                return [{"symbol": "BTCUSDT", "lastFundingRate": "0.0001"}]
+
+            def ticker_24h(self):
+                return [{"symbol": "BTCUSDT", "quoteVolume": "10000000", "priceChangePercent": "2"}]
+
+        candidates = FlowRadarEngine(Settings(radar_min_quote_volume=1))._candidate_symbols(Source())
+
+        self.assertEqual(candidates[0]["funding_pct"], 0.01)
 
     def test_closed_window_waits_for_delay_before_using_latest_hour(self) -> None:
         from datetime import datetime, timedelta, timezone
@@ -138,7 +171,7 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertEqual(category, "数据不足")
         self.assertEqual(score, 0)
-        self.assertIn("CVD 数据缺失", reason)
+        self.assertIn("Binance CVD 数据缺失", reason)
 
 
 if __name__ == "__main__":

@@ -120,6 +120,7 @@ class Settings:
     http_cache_enable: bool = True
     http_cache_ttl_sec: int = 10
     binance_fapi_base_url: str = "https://fapi.binance.com"
+    binance_spot_base_url: str = "https://api.binance.com"
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
 
     coinglass_enable: bool = False
@@ -262,6 +263,7 @@ class Settings:
             http_cache_enable=env_bool("DATA_SOURCE_CACHE_ENABLE", True),
             http_cache_ttl_sec=env_int("DATA_SOURCE_CACHE_TTL_SEC", 10),
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
+            binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
             coinglass_enable=env_bool("COINGLASS_ENABLE", False),
             coinglass_api_key=os.getenv("COINGLASS_API_KEY", "").strip(),
@@ -387,7 +389,8 @@ class Settings:
                 "cleanup_state_file": str(self.cleanup_state_path),
             },
             "http": {
-                "base_url": self.binance_fapi_base_url,
+                "futures_base_url": self.binance_fapi_base_url,
+                "spot_base_url": self.binance_spot_base_url,
                 "timeout_sec": self.http_timeout_sec,
                 "retry": self.http_retry,
                 "cache_enable": self.http_cache_enable,
@@ -426,6 +429,7 @@ class Settings:
             "budgets": {
                 "oi_hist": self.oi_hist_budget,
                 "klines": self.kline_budget,
+                "spot_klines": self.kline_budget,
                 "funding_history": self.funding_history_budget,
             },
             "radar": {

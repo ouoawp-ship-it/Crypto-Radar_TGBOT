@@ -499,7 +499,6 @@ def run_flow_radar(args: argparse.Namespace) -> int:
     settings, _store, _engine, gateway = make_runtime_for_args(args)
     flow = FlowRadarEngine(settings).build(
         BinanceDataSource(settings),
-        CoinglassDataSource(settings),
     )
     push = gateway.send(
         flow["text"],
@@ -518,7 +517,6 @@ def run_flow_radar(args: argparse.Namespace) -> int:
 def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse.Namespace) -> tuple[str, dict[str, object]]:
     flow = FlowRadarEngine(settings).build(
         BinanceDataSource(settings),
-        CoinglassDataSource(settings),
     )
     push = gateway.send(
         flow["text"],
@@ -1102,11 +1100,7 @@ def run_once(args: argparse.Namespace) -> int:
 
     diagnostics = dict(result["diagnostics"])
     flow_push_status = "skipped"
-    if (
-        not args.no_flow
-        and settings.coinglass_enable
-        and bool(settings.coinglass_api_key)
-    ):
+    if not args.no_flow:
         flow_push_status, flow_diag = push_flow_radar(settings, gateway, args)
         diagnostics["flow"] = flow_diag
 
@@ -1200,8 +1194,6 @@ def run_loop(args: argparse.Namespace) -> int:
             )
         if (
             not args.no_flow
-            and settings.coinglass_enable
-            and bool(settings.coinglass_api_key)
             and now >= next_flow
         ):
             flow_ok = True

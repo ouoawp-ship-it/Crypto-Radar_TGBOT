@@ -288,8 +288,7 @@ class RadarScoringTests(unittest.TestCase):
 
             self.assertIn("状态</b>: 未触发 -> 提前预警", text)
             self.assertIn("分数图例", text)
-            self.assertIn("05-", text)
-            self.assertIn("CST", text)
+            self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
 
     def test_launch_alert_replies_to_previous_symbol_message(self) -> None:
         with TemporaryDirectory() as tmp:

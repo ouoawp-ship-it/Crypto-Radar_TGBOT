@@ -5,7 +5,7 @@ from html import escape
 from typing import Any
 
 from .config import Settings
-from .data_sources import BinanceDataSource, CoinglassDataSource
+from .data_sources import BinanceDataSource
 from .radar import fmt_money, pct_cell, to_float
 from .time_windows import ClosedWindow, closed_window
 
@@ -39,18 +39,18 @@ def seconds_text(seconds: int) -> str:
     return f"{seconds}秒"
 
 
-def coinglass_tv_url(coin_or_symbol: str) -> str:
+def binance_futures_url(coin_or_symbol: str) -> str:
     symbol = str(coin_or_symbol).upper()
     if not symbol.endswith("USDT"):
         symbol = f"{symbol}USDT"
-    return f"https://www.coinglass.com/tv/zh/Binance_{escape(symbol, quote=True)}"
+    return f"https://www.binance.com/zh-CN/futures/{escape(symbol, quote=True)}"
 
 
 def coin_link(symbol: str) -> str:
     coin = symbol.upper()
     if coin.endswith("USDT"):
         coin = coin[:-4]
-    return f'<a href="{coinglass_tv_url(coin)}"><b>{tg_escape(coin)}</b></a>'
+    return f'<a href="{binance_futures_url(coin)}"><b>{tg_escape(coin)}</b></a>'
 
 
 def flatten_points(data: Any) -> list[Any]:
@@ -170,41 +170,6 @@ def series_delta_info(
     return values[-1] - values[0], True, len(values)
 
 
-def series_delta(data: Any) -> float:
-    delta, _ready, _count = series_delta_info(data)
-    return delta
-
-
-def normalise_pct(value: float) -> float:
-    if abs(value) < 1:
-        return value * 100
-    return value
-
-
-def market_by_symbol(data: Any) -> dict[str, dict[str, Any]]:
-    items = flatten_points(data)
-    result: dict[str, dict[str, Any]] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        symbol = str(item.get("symbol") or item.get("baseAsset") or "").upper().replace("USDT", "")
-        if symbol:
-            result[symbol] = item
-    return result
-
-
-def first_value_info(item: dict[str, Any], keys: tuple[str, ...], default: float = 0.0) -> tuple[float, bool]:
-    for key in keys:
-        if key in item and item.get(key) not in (None, ""):
-            return to_float(item.get(key), default), True
-    return default, False
-
-
-def first_value(item: dict[str, Any], keys: tuple[str, ...], default: float = 0.0) -> float:
-    value, _found = first_value_info(item, keys, default)
-    return value
-
-
 def cvd_positive(value: float, ready: bool) -> bool:
     return ready and value > CVD_NEUTRAL_ABS
 
@@ -293,6 +258,47 @@ def binance_window_price_pct(source: BinanceDataSource, symbol: str, window: Clo
     return (close_price - open_price) / open_price * 100, True
 
 
+def kline_cvd_delta_info(klines: list[list[Any]], window: ClosedWindow | None = None) -> tuple[float, bool, int]:
+    total = 0.0
+    count = 0
+    for kline in klines:
+        if not isinstance(kline, list) or len(kline) < 11:
+            continue
+        if window is not None:
+            ts = normalize_timestamp_ms(kline[0])
+            if not ts or ts < window.start_ms or ts >= window.end_ms:
+                continue
+        quote_volume = to_float(kline[7], default=float("nan"))
+        taker_buy_quote = to_float(kline[10], default=float("nan"))
+        if quote_volume != quote_volume or taker_buy_quote != taker_buy_quote:
+            continue
+        total += taker_buy_quote * 2 - quote_volume
+        count += 1
+    return total, count > 0, count
+
+
+def binance_spot_cvd_stats(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool, int]:
+    klines = source.spot_klines(
+        symbol,
+        interval="1h",
+        limit=3,
+        start_time=window.start_ms,
+        end_time=window.end_ms - 1,
+    )
+    return kline_cvd_delta_info(klines, window)
+
+
+def binance_futures_cvd_stats(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool, int]:
+    klines = source.klines(
+        symbol,
+        interval="1h",
+        limit=3,
+        start_time=window.start_ms,
+        end_time=window.end_ms - 1,
+    )
+    return kline_cvd_delta_info(klines, window)
+
+
 def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     if not item.get("price_ready", True) or not item.get("oi_ready", True):
         return ("数据不足", 0, "价格或 OI 未覆盖完整统计窗口，暂不评分")
@@ -304,7 +310,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     spot_ready = bool(item.get("spot_cvd_ready", True))
     futures_ready = bool(item.get("futures_cvd_ready", True))
     if not spot_ready and not futures_ready:
-        return ("数据不足", 0, "CoinGlass CVD 数据缺失，不能判断资金流")
+        return ("数据不足", 0, "Binance CVD 数据缺失，不能判断资金流")
     spot_positive = cvd_positive(spot, spot_ready)
     spot_negative = cvd_negative(spot, spot_ready)
     futures_positive = cvd_positive(futures, futures_ready)
@@ -375,49 +381,19 @@ class FlowRadarEngine:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def build(self, binance: BinanceDataSource, coinglass: CoinglassDataSource) -> dict[str, Any]:
+    def build(self, binance: BinanceDataSource) -> dict[str, Any]:
         window = closed_window(
             interval_sec=self.settings.flow_interval_sec,
             delay_sec=self.settings.flow_close_delay_sec,
         )
-        if not coinglass.enabled:
-            return {
-                "template_id": "TG_FLOW_RADAR",
-                "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
-                "text": f"🧭 五因子资金流雷达\n\n统计窗口: {window.label()}\nCoinGlass 未启用，无法计算 CVD。",
-                "items": [],
-                "diagnostics": {"coinglass": coinglass.diagnostics(), "binance": binance.diagnostics()},
-            }
-
         candidates = self._candidate_symbols(binance)
-        market_map = market_by_symbol(coinglass.coins_markets(
-            exchange_list=self.settings.coinglass_exchange_list,
-            per_page=max(10, self.settings.flow_candidate_pool),
-            page=1,
-        ))
         rows: list[dict[str, Any]] = []
         scanned_items: list[dict[str, Any]] = []
         for candidate in candidates[: max(1, self.settings.flow_scan_limit)]:
             symbol = candidate["symbol"]
             coin = candidate["coin"]
-            market = market_map.get(coin, {})
-            cvd_start_ms = max(0, window.start_ms - window.interval_ms)
-            spot_cvd, spot_cvd_ready, spot_cvd_points = series_delta_info(coinglass.spot_aggregated_cvd_history(
-                coin,
-                exchange_list=self.settings.coinglass_exchange_list,
-                interval="1h",
-                limit=4,
-                start_time=cvd_start_ms,
-                end_time=window.end_ms,
-            ), start_ms=cvd_start_ms, end_ms=window.end_ms)
-            futures_cvd, futures_cvd_ready, futures_cvd_points = series_delta_info(coinglass.futures_aggregated_cvd_history(
-                coin,
-                exchange_list=self.settings.coinglass_exchange_list,
-                interval="1h",
-                limit=4,
-                start_time=cvd_start_ms,
-                end_time=window.end_ms,
-            ), start_ms=cvd_start_ms, end_ms=window.end_ms)
+            spot_cvd, spot_cvd_ready, spot_cvd_points = binance_spot_cvd_stats(binance, symbol, window)
+            futures_cvd, futures_cvd_ready, futures_cvd_points = binance_futures_cvd_stats(binance, symbol, window)
             price_pct, price_ready = binance_window_price_pct(binance, symbol, window)
             oi_24h, oi_fallback_usd, oi_ready, oi_points = binance_oi_stats(
                 binance,
@@ -426,36 +402,9 @@ class FlowRadarEngine:
                 period="1h",
                 limit=4,
             )
-            funding_pct = normalise_pct(first_value(
-                market,
-                (
-                    "avg_funding_rate_by_oi",
-                    "avgFundingRateByOi",
-                    "funding_rate",
-                    "fundingRate",
-                    "funding_rate_percent",
-                    "fundingRatePercent",
-                ),
-                candidate.get("funding_pct", 0.0),
-            ))
-            quote_volume = to_float(
-                market.get("volume_change_usd_24h")
-                or market.get("volumeChangeUsd24h")
-                or market.get("volume_usd")
-                or market.get("volumeUsd")
-                or market.get("volume_24h")
-                or market.get("volume24h")
-                or market.get("turnover_usd_24h")
-                or market.get("turnoverUsd24h")
-                or candidate["quote_volume"]
-            )
-            oi_usd, oi_usd_found = first_value_info(
-                market,
-                ("open_interest_usd", "openInterestUsd", "open_interest", "openInterest"),
-                0.0,
-            )
-            if not oi_usd_found:
-                oi_usd = oi_fallback_usd
+            funding_pct = to_float(candidate.get("funding_pct", 0.0))
+            quote_volume = to_float(candidate["quote_volume"])
+            oi_usd = oi_fallback_usd
             item = {
                 "symbol": symbol,
                 "coin": coin,
@@ -485,9 +434,9 @@ class FlowRadarEngine:
         return {
             "template_id": "TG_FLOW_RADAR",
             "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
-            "text": self._format(rows, candidates, coinglass, scanned_items, window),
+            "text": self._format(rows, candidates, scanned_items, window),
             "items": rows,
-            "diagnostics": {"coinglass": coinglass.diagnostics(), "binance": binance.diagnostics()},
+            "diagnostics": {"binance": binance.diagnostics()},
         }
 
     def _candidate_symbols(self, source: BinanceDataSource) -> list[dict[str, Any]]:
@@ -523,7 +472,6 @@ class FlowRadarEngine:
         self,
         rows: list[dict[str, Any]],
         candidates: list[dict[str, Any]],
-        coinglass: CoinglassDataSource,
         scanned_items: list[dict[str, Any]],
         window: ClosedWindow,
     ) -> str:
@@ -549,9 +497,9 @@ class FlowRadarEngine:
             tg_quote("📊 本轮统计"),
             f"候选币: {len(candidates)}",
             f"入选信号: {len(rows)}",
-            f"CoinGlass请求: {coinglass.budget.used.get('coinglass', 0)} / {coinglass.budget.limits.get('coinglass', 0)}",
+            "数据源: Binance 免费公开接口（现货K线、合约K线、合约OI、资金费率）",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
-            f"CVD数据: 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
+            f"CVD数据(Binance估算): 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
             "",
         ]
         if scanned_count and (price_ready_count < scanned_count or oi_ready_count < scanned_count):
@@ -591,7 +539,7 @@ class FlowRadarEngine:
         if not rows:
             lines.extend([
                 "暂无达标信号",
-                "如果 CoinGlass请求正常但 CVD 长期缺失，通常是当前 API 权限、接口返回字段或交易所支持范围问题。",
+                "如果 CVD 长期缺失，通常是币种没有对应 Binance 现货交易对、接口限频或窗口数据尚未完整。",
                 "",
             ])
         lines.extend([

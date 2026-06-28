@@ -142,7 +142,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         f"- 默认每{seconds_cn(settings.flow_interval_sec)}扫描一次，并在整点收线后延迟{seconds_cn(settings.flow_close_delay_sec)}发送。",
         "- 手动执行 flow-radar 会立即扫描，但仍统计上一完整闭合窗口；daemon/live 循环按闭合窗口调度。",
         "- 推送正文会写明“统计窗口”，价格、OI、CVD 只在窗口数据完整时参与评分。",
-        "- 需要 CoinGlass API key；如果 CVD/OI 数据缺失，应先按数据质量问题处理。",
+        "- 使用 Binance 免费公开数据；CVD 由 K 线主动买入成交额估算，代表 Binance 内部资金流，不代表全市场聚合。",
         "",
         "阅读方式：",
         "1. 真启动候选 = 现货和合约资金共同推动，费率未过热。",

@@ -138,12 +138,16 @@ class BinanceDataSource:
         self.budget = RequestBudget({
             "open_interest_hist": settings.oi_hist_budget,
             "klines": settings.kline_budget,
+            "spot_klines": settings.kline_budget,
             "funding_history": settings.funding_history_budget,
         })
         self.http = HttpClient(settings, self.quality)
 
     def endpoint(self, path: str) -> str:
         return f"{self.settings.binance_fapi_base_url}{path}"
+
+    def spot_endpoint(self, path: str) -> str:
+        return f"{self.settings.binance_spot_base_url}{path}"
 
     def exchange_info(self) -> dict[str, Any] | None:
         return self.http.get_json(
@@ -225,6 +229,31 @@ class BinanceDataSource:
             params,
             cache_key=f"klines:{symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="klines",
+            retries=1,
+        )
+        return data if isinstance(data, list) else []
+
+    def spot_klines(
+        self,
+        symbol: str,
+        interval: str = "1d",
+        limit: int = 120,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]:
+        if not self.budget.consume("spot_klines"):
+            self.quality.fail("spotKlines", "budget_exhausted")
+            return []
+        params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+        data = self.http.get_json(
+            self.spot_endpoint("/api/v3/klines"),
+            params,
+            cache_key=f"spot:klines:{symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
+            quality_key="spotKlines",
             retries=1,
         )
         return data if isinstance(data, list) else []
