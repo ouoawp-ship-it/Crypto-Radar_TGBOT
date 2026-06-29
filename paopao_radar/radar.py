@@ -1222,23 +1222,39 @@ class RadarEngine:
             for item in source.ticker_24h()
             if str(item.get("symbol", "")).endswith("USDT")
         }
-        market_caps = source.market_caps() if hasattr(source, "market_caps") else {}
-        market_caps = market_caps or {}
-        candidates = [
-            {
+        binance_market_caps = source.market_caps() if hasattr(source, "market_caps") else {}
+        binance_market_caps = binance_market_caps or {}
+        candidates: list[dict[str, Any]] = []
+        missing_mcap_coins: set[str] = set()
+        for symbol, ticker in ticker_map.items():
+            quote_volume = to_float(ticker.get("quoteVolume"))
+            if quote_volume < self.settings.radar_min_quote_volume or self._is_excluded_symbol(str(symbol or "")):
+                continue
+            coin = str(symbol).replace("USDT", "")
+            mcap = to_float(binance_market_caps.get(coin))
+            if mcap <= 0:
+                missing_mcap_coins.add(coin)
+            candidates.append({
                 "symbol": symbol,
-                "coin": symbol.replace("USDT", ""),
-                "quote_volume": to_float(ticker.get("quoteVolume")),
+                "coin": coin,
+                "quote_volume": quote_volume,
                 "price_24h": to_float(ticker.get("priceChangePercent")),
                 "price": to_float(ticker.get("lastPrice")),
-                "mcap": market_caps.get(symbol.replace("USDT", ""), 0.0),
-                "market_cap_tier": market_cap_tier(market_caps.get(symbol.replace("USDT", ""), 0.0)),
-                "liquidity_tier": liquidity_tier(to_float(ticker.get("quoteVolume"))),
-            }
-            for symbol, ticker in ticker_map.items()
-            if to_float(ticker.get("quoteVolume")) >= self.settings.radar_min_quote_volume
-            and not self._is_excluded_symbol(str(symbol or ""))
-        ]
+                "mcap": mcap,
+                "mcap_source": "Binance" if mcap > 0 else "",
+                "market_cap_tier": market_cap_tier(mcap),
+                "liquidity_tier": liquidity_tier(quote_volume),
+            })
+        if missing_mcap_coins and hasattr(source, "coinpaprika_market_caps"):
+            coinpaprika_market_caps = source.coinpaprika_market_caps() or {}
+            for item in candidates:
+                if item["mcap"] > 0 or item["coin"] not in missing_mcap_coins:
+                    continue
+                mcap = to_float(coinpaprika_market_caps.get(item["coin"]))
+                if mcap > 0:
+                    item["mcap"] = mcap
+                    item["mcap_source"] = "CoinPaprika"
+                    item["market_cap_tier"] = market_cap_tier(mcap)
         candidates.sort(key=lambda item: item["quote_volume"], reverse=True)
         candidates = candidates[: self.settings.launch_scan_limit]
         candidates = candidates[:budget_cap]
@@ -1462,10 +1478,11 @@ class RadarEngine:
         current_stage = self._stage_label(str(item.get("stage", "")))
         market_cap = to_float(item.get("mcap"))
         quote_volume = to_float(item.get("quote_volume"))
+        market_cap_source = str(item.get("mcap_source") or "").strip()
         market_cap_text = (
-            f"{fmt_money(market_cap)}（{market_cap_tier(market_cap)}）"
+            f"{fmt_money(market_cap)}（{market_cap_tier(market_cap)}，来源 {market_cap_source or '未知'}）"
             if market_cap > 0
-            else "暂无数据（未知市值）"
+            else "未收录（Binance/CoinPaprika 均无）"
         )
         liquidity_text = (
             f"{fmt_money(quote_volume)}/24h（{liquidity_tier(quote_volume)}）"
@@ -1540,6 +1557,7 @@ class RadarEngine:
             "breakout": bool(item["breakout"]),
             "quote_volume": round(item["quote_volume"], 2),
             "mcap": round(to_float(item.get("mcap")), 2),
+            "mcap_source": str(item.get("mcap_source") or ""),
             "market_cap_tier": market_cap_tier(to_float(item.get("mcap"))),
             "liquidity_tier": liquidity_tier(to_float(item.get("quote_volume"))),
             "reasons": item.get("reasons", []),

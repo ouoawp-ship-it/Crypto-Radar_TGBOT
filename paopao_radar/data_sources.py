@@ -304,6 +304,45 @@ class BinanceDataSource:
                 result[symbol] = cap
         return result
 
+    def coinpaprika_market_caps(self) -> dict[str, float]:
+        data = self.http.get_json(
+            "https://api.coinpaprika.com/v1/tickers",
+            {"quotes": "USD"},
+            cache_key="coinpaprika:tickers:usd",
+            quality_key="coinpaprikaMarketCaps",
+            timeout=15,
+            retries=1,
+        )
+        result: dict[str, tuple[float, int]] = {}
+        if not isinstance(data, list):
+            return {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").upper().strip()
+            quotes = item.get("quotes") if isinstance(item.get("quotes"), dict) else {}
+            usd_quote = quotes.get("USD") if isinstance(quotes.get("USD"), dict) else {}
+            value = (
+                usd_quote.get("market_cap")
+                or usd_quote.get("market_cap_usd")
+                or item.get("market_cap")
+                or item.get("market_cap_usd")
+            )
+            try:
+                cap = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not symbol or cap <= 0:
+                continue
+            try:
+                rank = int(item.get("rank") or 999_999)
+            except (TypeError, ValueError):
+                rank = 999_999
+            current = result.get(symbol)
+            if current is None or rank < current[1]:
+                result[symbol] = (cap, rank)
+        return {symbol: cap for symbol, (cap, _rank) in result.items()}
+
     def announcements(self, page_size: int = 50) -> list[dict[str, Any]]:
         url = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
         articles: list[dict[str, Any]] = []

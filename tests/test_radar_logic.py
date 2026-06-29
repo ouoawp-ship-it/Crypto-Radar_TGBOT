@@ -285,12 +285,13 @@ class RadarScoringTests(unittest.TestCase):
                 "volume_ratio": 2.4,
                 "quote_volume": 55_000_000,
                 "mcap": 123_000_000,
+                "mcap_source": "CoinPaprika",
                 "breakout": False,
             })
 
             self.assertIn("状态</b>: 未触发 -> 提前预警", text)
             self.assertIn("<blockquote><b>市场概况</b></blockquote>", text)
-            self.assertIn("市值: $123M（低市值）", text)
+            self.assertIn("市值: $123M（低市值，来源 CoinPaprika）", text)
             self.assertIn("流动性: $55M/24h（中流动性）", text)
             self.assertIn("分数图例", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
@@ -343,8 +344,61 @@ class RadarScoringTests(unittest.TestCase):
 
             self.assertEqual(result["alerts"][0]["reply_to_message_id"], 123)
             self.assertEqual(result["alerts"][0]["mcap"], 2_500_000_000)
+            self.assertEqual(result["alerts"][0]["mcap_source"], "Binance")
             self.assertEqual(result["alerts"][0]["market_cap_tier"], "中市值")
             self.assertEqual(result["alerts"][0]["liquidity_tier"], "低流动性")
+
+    def test_launch_alert_uses_coinpaprika_market_cap_fallback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                radar_min_quote_volume=1,
+                launch_state_path=Path(tmp) / "launch_state.json",
+                launch_watchlist_path=Path(tmp) / "launch_watchlist.json",
+                launch_watch_history_path=Path(tmp) / "launch_watch_history.json",
+            )
+            engine = RadarEngine(settings, JsonStore(Path(tmp)))
+
+            def fake_analyze(_source: object, item: dict[str, object]) -> dict[str, object]:
+                return {
+                    **item,
+                    "score": 95,
+                    "price_15m": 5.0,
+                    "price_1h": 8.0,
+                    "oi_15m": 4.0,
+                    "oi_1h": 8.0,
+                    "volume_ratio": 2.5,
+                    "breakout": True,
+                    "reasons": ["测试"],
+                }
+
+            class Source:
+                @staticmethod
+                def ticker_24h() -> list[dict[str, str]]:
+                    return [{
+                        "symbol": "TESTUSDT",
+                        "quoteVolume": "65000000",
+                        "priceChangePercent": "10",
+                        "lastPrice": "1",
+                    }]
+
+                @staticmethod
+                def market_caps() -> dict[str, float]:
+                    return {}
+
+                @staticmethod
+                def coinpaprika_market_caps() -> dict[str, float]:
+                    return {"TEST": 123_000_000}
+
+            engine._analyze_launch_symbol = fake_analyze  # type: ignore[method-assign]
+
+            result = engine.build_launch_alerts(Source())  # type: ignore[arg-type]
+
+            alert = result["alerts"][0]
+            self.assertEqual(alert["mcap"], 123_000_000)
+            self.assertEqual(alert["mcap_source"], "CoinPaprika")
+            self.assertEqual(alert["market_cap_tier"], "低市值")
+            self.assertIn("市值: $123M（低市值，来源 CoinPaprika）", result["messages"][0])
 
     def test_mark_launch_pushed_stores_message_id_for_reply_chain(self) -> None:
         with TemporaryDirectory() as tmp:
