@@ -97,6 +97,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("高级排查：原始运行状态 JSON", html)
         self.assertIn('active: "运行中"', html)
         self.assertNotIn("systemd 是否 active", html)
+        self.assertNotIn("systemd", html)
 
     def test_service_page_explains_controls(self) -> None:
         html = web.INDEX_HTML
@@ -105,6 +106,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("建议优先使用“重启”", html)
         self.assertIn("会暂停对应功能。点击后需要输入 STOP 二次确认", html)
         self.assertIn("改完 .env.oi、推送配置、扫描参数后通常点这个", html)
+        self.assertIn("三个不同的后台服务", html)
+        self.assertIn('${neutralPill("系统服务")}', html)
         self.assertIn("${escapeHtml(action.button)}</button>", html)
         self.assertNotIn("serviceList.map", html)
 

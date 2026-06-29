@@ -283,10 +283,15 @@ class RadarScoringTests(unittest.TestCase):
                 "oi_15m": 3.2,
                 "oi_1h": 6.8,
                 "volume_ratio": 2.4,
+                "quote_volume": 55_000_000,
+                "mcap": 123_000_000,
                 "breakout": False,
             })
 
             self.assertIn("状态</b>: 未触发 -> 提前预警", text)
+            self.assertIn("<blockquote><b>市场概况</b></blockquote>", text)
+            self.assertIn("市值: $123M（低市值）", text)
+            self.assertIn("流动性: $55M/24h（中流动性）", text)
             self.assertIn("分数图例", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
 
@@ -328,11 +333,18 @@ class RadarScoringTests(unittest.TestCase):
                         "lastPrice": "1",
                     }]
 
+                @staticmethod
+                def market_caps() -> dict[str, float]:
+                    return {"TEST": 2_500_000_000}
+
             engine._analyze_launch_symbol = fake_analyze  # type: ignore[method-assign]
 
             result = engine.build_launch_alerts(Source())  # type: ignore[arg-type]
 
             self.assertEqual(result["alerts"][0]["reply_to_message_id"], 123)
+            self.assertEqual(result["alerts"][0]["mcap"], 2_500_000_000)
+            self.assertEqual(result["alerts"][0]["market_cap_tier"], "中市值")
+            self.assertEqual(result["alerts"][0]["liquidity_tier"], "低流动性")
 
     def test_mark_launch_pushed_stores_message_id_for_reply_chain(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -132,6 +132,26 @@ def fmt_money(value: float) -> str:
     return f"${value:.0f}"
 
 
+def market_cap_tier(value: float) -> str:
+    if value <= 0:
+        return "未知市值"
+    if value >= 10_000_000_000:
+        return "高市值"
+    if value >= 1_000_000_000:
+        return "中市值"
+    return "低市值"
+
+
+def liquidity_tier(value: float) -> str:
+    if value <= 0:
+        return "未知流动性"
+    if value >= 100_000_000:
+        return "高流动性"
+    if value >= 20_000_000:
+        return "中流动性"
+    return "低流动性"
+
+
 def funding_trend(previous: Optional[float], current: float) -> str:
     if previous is None:
         return "🆕"
@@ -1202,6 +1222,8 @@ class RadarEngine:
             for item in source.ticker_24h()
             if str(item.get("symbol", "")).endswith("USDT")
         }
+        market_caps = source.market_caps() if hasattr(source, "market_caps") else {}
+        market_caps = market_caps or {}
         candidates = [
             {
                 "symbol": symbol,
@@ -1209,6 +1231,9 @@ class RadarEngine:
                 "quote_volume": to_float(ticker.get("quoteVolume")),
                 "price_24h": to_float(ticker.get("priceChangePercent")),
                 "price": to_float(ticker.get("lastPrice")),
+                "mcap": market_caps.get(symbol.replace("USDT", ""), 0.0),
+                "market_cap_tier": market_cap_tier(market_caps.get(symbol.replace("USDT", ""), 0.0)),
+                "liquidity_tier": liquidity_tier(to_float(ticker.get("quoteVolume"))),
             }
             for symbol, ticker in ticker_map.items()
             if to_float(ticker.get("quoteVolume")) >= self.settings.radar_min_quote_volume
@@ -1435,6 +1460,18 @@ class RadarEngine:
         stage_name = self._stage_label(str(item.get("stage", "")))
         previous_stage = self._stage_label(str(item.get("previous_stage", "idle")))
         current_stage = self._stage_label(str(item.get("stage", "")))
+        market_cap = to_float(item.get("mcap"))
+        quote_volume = to_float(item.get("quote_volume"))
+        market_cap_text = (
+            f"{fmt_money(market_cap)}（{market_cap_tier(market_cap)}）"
+            if market_cap > 0
+            else "暂无数据（未知市值）"
+        )
+        liquidity_text = (
+            f"{fmt_money(quote_volume)}/24h（{liquidity_tier(quote_volume)}）"
+            if quote_volume > 0
+            else "暂无数据（未知流动性）"
+        )
         score_legend = (
             f"分数图例: <{self.settings.launch_watch_score}未触发 | "
             f"{self.settings.launch_watch_score}-{self.settings.launch_primed_score - 1}提前观察 | "
@@ -1449,6 +1486,10 @@ class RadarEngine:
             f"{tg_bold('阶段')}: {stage_name}",
             f"{tg_bold('分数')}: {item['score']}",
             f"{tg_bold('状态')}: {previous_stage} -> {current_stage} | 累计{item.get('appear_count', 1)}次",
+            "",
+            tg_quote("市场概况"),
+            f"市值: {market_cap_text}",
+            f"流动性: {liquidity_text}",
             "",
             tg_quote("触发明细"),
             f"15m价格: {item['price_15m']:+.1f}%",
@@ -1498,6 +1539,9 @@ class RadarEngine:
             "volume_ratio": round(item["volume_ratio"], 4),
             "breakout": bool(item["breakout"]),
             "quote_volume": round(item["quote_volume"], 2),
+            "mcap": round(to_float(item.get("mcap")), 2),
+            "market_cap_tier": market_cap_tier(to_float(item.get("mcap"))),
+            "liquidity_tier": liquidity_tier(to_float(item.get("quote_volume"))),
             "reasons": item.get("reasons", []),
         }
 

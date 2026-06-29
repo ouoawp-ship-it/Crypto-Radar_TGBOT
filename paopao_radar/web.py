@@ -868,7 +868,7 @@ INDEX_HTML = r"""<!doctype html>
         desc: "读取主服务和结构雷达写入的 runtime-status，快速看后台最近在做什么。",
         details: [
           "能看到当前任务、运行模式、最近扫描时间、下一次扫描时间和最后错误。",
-          "适合确认服务是否真的在循环运行，而不是只看 systemd 是否显示运行中。",
+          "适合确认服务是否真的在循环运行，而不是只看后台服务是否显示运行中。",
           "如果这里长时间不更新，再去日志页查看具体报错。"
         ]
       },
@@ -922,7 +922,7 @@ INDEX_HTML = r"""<!doctype html>
         badge: "会删除临时文件",
         desc: "立即执行 cleanup，清理运行中产生的临时文件、过期图表和超限历史记录。",
         details: [
-          "不会删除 .env.oi、源码、systemd 服务文件和关键配置。",
+          "不会删除 .env.oi、源码、后台服务文件和关键配置。",
           "适合磁盘空间变多、图表文件堆积、历史记录太长时手动执行。",
           "输出会列出删除、保留和裁剪了哪些文件。"
         ]
@@ -1292,7 +1292,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("serviceGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>这个页面是控制后台服务开关的，不是普通测试按钮。</strong>
-          主服务、结构雷达、Web 控制台是三个不同的 systemd 服务。建议优先使用“重启”，只有确认要暂停某类功能时才点“停止”。
+          主服务、结构雷达、Web 控制台是三个不同的后台服务。建议优先使用“重启”，只有确认要暂停某类功能时才点“停止”。
           <div class="service-guide">
             <div class="service-guide-item"><strong>重启</strong><span class="muted">最常用。用于更新代码、修改配置后让服务重新读取设置。</span></div>
             <div class="service-guide-item"><strong>启动</strong><span class="muted">服务已经停止时使用。不会修改配置，只是把服务拉起来。</span></div>
@@ -1306,7 +1306,7 @@ INDEX_HTML = r"""<!doctype html>
               <h3 class="section-title">${escapeHtml(group.name)}</h3>
               <div class="summary-meta">${escapeHtml(group.service)}</div>
             </div>
-            ${neutralPill("systemd")}
+            ${neutralPill("系统服务")}
           </div>
           <p class="muted">${escapeHtml(group.desc)}</p>
           ${group.actions.map(action => `
