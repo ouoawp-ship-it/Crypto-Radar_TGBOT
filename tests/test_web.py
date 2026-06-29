@@ -27,9 +27,11 @@ class WebConsoleTests(unittest.TestCase):
             for item in payload["sections"]["Telegram"]
         }
         self.assertEqual(telegram_fields["TG_BOT_TOKEN"]["value"], "")
+        self.assertIn("...", telegram_fields["TG_BOT_TOKEN"]["display_value"])
         self.assertTrue(telegram_fields["TG_BOT_TOKEN"]["configured"])
         self.assertIn("...", telegram_fields["TG_BOT_TOKEN"]["masked"])
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
+        self.assertEqual(telegram_fields["TG_CHAT_ID"]["display_value"], "-1001234567890")
 
     def test_write_env_updates_preserves_existing_lines_and_creates_backup(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -82,6 +84,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertNotIn(">false</option>", html)
         self.assertIn("readiness 是真实推送前的门禁检查", html)
         self.assertIn("OK 表示通过，WAIT 表示还需要补配置或继续 dry-run 观察", html)
+        self.assertIn("当前使用：", html)
+        self.assertIn("输入新值才会替换当前值", html)
+        self.assertIn("安全起见只显示遮罩值", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML

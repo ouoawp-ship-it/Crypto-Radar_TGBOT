@@ -134,6 +134,7 @@ def config_payload(path: Path | None = None) -> dict[str, Any]:
             "secret": field.secret,
             "configured": bool(raw_value),
             "value": "" if field.secret else raw_value,
+            "display_value": mask_secret(raw_value) if field.secret else raw_value,
             "masked": mask_secret(raw_value) if field.secret else "",
             "minimum": field.minimum,
             "maximum": field.maximum,
@@ -444,23 +445,29 @@ INDEX_HTML = r"""<!doctype html>
   <title>泡泡雷达控制台</title>
   <style>
     :root {
-      --bg: #f5f7f8;
-      --panel: #ffffff;
-      --panel-2: #eef3f4;
-      --text: #182024;
-      --muted: #66757d;
-      --line: #d7e0e3;
-      --accent: #0f766e;
-      --accent-2: #1d4ed8;
-      --warn: #a16207;
-      --bad: #b42318;
+      --bg: #e7ebee;
+      --bg-2: #f7f9fa;
+      --panel: rgba(255, 255, 255, .84);
+      --panel-2: #edf1f3;
+      --text: #171c1f;
+      --muted: #68747b;
+      --line: rgba(118, 132, 141, .32);
+      --line-strong: rgba(75, 86, 94, .42);
+      --accent: #0f6f68;
+      --accent-2: #34424a;
+      --warn: #9a6508;
+      --bad: #b3261e;
       --good: #087443;
-      --shadow: 0 1px 2px rgba(15, 23, 42, .06);
+      --shadow: 0 12px 28px rgba(30, 38, 43, .08), 0 1px 1px rgba(255, 255, 255, .7) inset;
+      --metal: linear-gradient(135deg, rgba(255,255,255,.92), rgba(240,244,246,.78) 44%, rgba(255,255,255,.86));
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.55), rgba(190,198,204,.36)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.22) 0, rgba(255,255,255,.22) 1px, rgba(143,153,160,.08) 1px, rgba(143,153,160,.08) 4px),
+        var(--bg);
       color: var(--text);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0;
@@ -468,18 +475,28 @@ INDEX_HTML = r"""<!doctype html>
     button, input, select { font: inherit; }
     .app { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
     aside {
-      background: #172126;
-      color: #dbe5e7;
+      background:
+        linear-gradient(180deg, rgba(41, 49, 55, .98), rgba(19, 24, 28, .98)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.05) 0, rgba(255,255,255,.05) 1px, transparent 1px, transparent 5px);
+      color: #e8eef0;
       padding: 18px 14px;
       position: sticky;
       top: 0;
       height: 100vh;
+      border-right: 1px solid rgba(255,255,255,.08);
+      box-shadow: 6px 0 18px rgba(20, 27, 31, .12);
     }
-    .brand { font-weight: 700; font-size: 18px; margin: 2px 8px 18px; }
+    .brand {
+      font-weight: 800;
+      font-size: 18px;
+      margin: 2px 8px 18px;
+      letter-spacing: .02em;
+      color: #f7fafb;
+    }
     nav { display: grid; gap: 4px; }
     nav button {
       width: 100%;
-      border: 0;
+      border: 1px solid transparent;
       border-radius: 6px;
       background: transparent;
       color: inherit;
@@ -487,8 +504,12 @@ INDEX_HTML = r"""<!doctype html>
       padding: 10px 11px;
       cursor: pointer;
     }
-    nav button.active, nav button:hover { background: #26343a; }
-    main { padding: 18px 22px 32px; min-width: 0; }
+    nav button.active, nav button:hover {
+      background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
+      border-color: rgba(255,255,255,.13);
+      box-shadow: 0 1px 0 rgba(255,255,255,.08) inset;
+    }
+    main { padding: 22px 26px 36px; min-width: 0; }
     header {
       display: flex;
       justify-content: space-between;
@@ -496,16 +517,17 @@ INDEX_HTML = r"""<!doctype html>
       align-items: center;
       margin-bottom: 16px;
     }
-    h1 { margin: 0; font-size: 22px; }
+    h1 { margin: 0; font-size: 23px; letter-spacing: .01em; }
     .muted { color: var(--muted); }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
     .panel {
-      background: var(--panel);
+      background: var(--metal);
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       box-shadow: var(--shadow);
       padding: 14px;
       min-width: 0;
+      backdrop-filter: blur(8px);
     }
     .span-3 { grid-column: span 3; }
     .span-4 { grid-column: span 4; }
@@ -524,29 +546,31 @@ INDEX_HTML = r"""<!doctype html>
       font-weight: 700;
       background: var(--panel-2);
       color: var(--muted);
+      border: 1px solid rgba(101, 113, 121, .18);
     }
-    .status.ok { background: #dff7ea; color: var(--good); }
-    .status.bad { background: #ffe4df; color: var(--bad); }
-    .status.neutral { background: #edf2f7; color: var(--muted); }
+    .status.ok { background: linear-gradient(135deg, #dff7ea, #f2fbf6); color: var(--good); }
+    .status.bad { background: linear-gradient(135deg, #ffe4df, #fff5f2); color: var(--bad); }
+    .status.neutral { background: linear-gradient(135deg, #eef2f4, #fafbfc); color: var(--muted); }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .btn {
       border: 1px solid var(--line);
-      background: var(--panel);
+      background: linear-gradient(135deg, rgba(255,255,255,.9), rgba(235,240,243,.82));
       color: var(--text);
       border-radius: 6px;
       padding: 8px 11px;
       cursor: pointer;
       min-height: 36px;
+      box-shadow: 0 1px 0 rgba(255,255,255,.75) inset, 0 6px 14px rgba(35, 43, 48, .06);
     }
-    .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
-    .btn.blue { background: var(--accent-2); border-color: var(--accent-2); color: white; }
+    .btn.primary { background: linear-gradient(135deg, #0f766e, #0b5f59); border-color: #0b5f59; color: white; }
+    .btn.blue { background: linear-gradient(135deg, #41515a, #2f3a41); border-color: #2f3a41; color: white; }
     .btn.warn { border-color: #d6a01d; color: var(--warn); }
     .btn.danger { border-color: #f2b8ad; color: var(--bad); }
     .btn:disabled { opacity: .55; cursor: not-allowed; }
     pre {
       margin: 0;
-      background: #0f1720;
-      color: #d7e3ea;
+      background: #11171b;
+      color: #dce7eb;
       border-radius: 6px;
       padding: 13px;
       min-height: 320px;
@@ -554,6 +578,7 @@ INDEX_HTML = r"""<!doctype html>
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
+      border: 1px solid rgba(255,255,255,.08);
     }
     .table { width: 100%; border-collapse: collapse; }
     .table th, .table td { border-bottom: 1px solid var(--line); text-align: left; padding: 9px 6px; vertical-align: top; }
@@ -566,11 +591,38 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 8px 9px;
-      background: white;
+      background: linear-gradient(180deg, #ffffff, #f7f9fa);
       color: var(--text);
       min-height: 36px;
+      box-shadow: 0 1px 0 rgba(255,255,255,.8) inset;
+    }
+    input:focus, select:focus {
+      outline: 2px solid rgba(15, 118, 110, .18);
+      border-color: rgba(15, 118, 110, .55);
     }
     .secret-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .field-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .field-current {
+      display: inline-flex;
+      align-items: center;
+      max-width: 62%;
+      border: 1px solid rgba(93, 106, 115, .24);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,.78), rgba(236,241,244,.72));
+      color: #48565d;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .field-help { color: var(--muted); font-size: 12px; }
     .section-title { margin: 2px 0 10px; font-size: 15px; }
     .output { margin-top: 12px; }
     .summary-card { display: grid; gap: 11px; align-content: start; }
@@ -605,18 +657,18 @@ INDEX_HTML = r"""<!doctype html>
     .raw-details .raw-body { padding: 14px; display: grid; gap: 12px; }
     .raw-details pre { min-height: 180px; max-height: 460px; }
     .notice {
-      background: #eef7f6;
+      background: linear-gradient(135deg, rgba(236, 247, 246, .92), rgba(249, 252, 252, .76));
       border: 1px solid #b9ddda;
       color: #194844;
-      border-radius: 6px;
+      border-radius: 8px;
       padding: 12px 14px;
     }
     .feature-list { display: grid; gap: 10px; }
     .feature-item {
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       padding: 11px;
-      background: #fbfcfc;
+      background: linear-gradient(135deg, rgba(255,255,255,.74), rgba(239,244,246,.7));
     }
     .feature-item strong { display: block; margin-bottom: 4px; }
     .action-card { display: grid; gap: 10px; align-content: start; }
@@ -635,7 +687,7 @@ INDEX_HTML = r"""<!doctype html>
       padding: 2px 8px;
       font-size: 12px;
       color: var(--muted);
-      background: #f7f9fa;
+      background: linear-gradient(135deg, #f8fafb, #edf2f4);
     }
     .kv {
       display: grid;
@@ -655,8 +707,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     .auth-box {
       width: min(420px, calc(100vw - 32px));
-      background: white;
-      border-radius: 6px;
+      background: var(--metal);
+      border-radius: 8px;
       border: 1px solid var(--line);
       padding: 18px;
       box-shadow: 0 12px 36px rgba(15, 23, 42, .2);
@@ -1118,19 +1170,26 @@ INDEX_HTML = r"""<!doctype html>
         root.appendChild(panel);
       });
     }
+    function configCurrentText(field) {
+      if (!field.configured && !field.value && !field.display_value) return "当前未配置";
+      if (field.kind === "bool") return `当前使用：${zhBool(field.value)}`;
+      const display = field.secret ? (field.masked || field.display_value || "已配置") : (field.display_value || field.value || "已配置");
+      return `当前使用：${display}`;
+    }
     function fieldHtml(field) {
       const key = escapeHtml(field.key);
       const label = escapeHtml(field.label);
+      const current = escapeHtml(configCurrentText(field));
       if (field.kind === "bool") {
-        const current = String(field.value || "").trim().toLowerCase();
-        const selectedTrue = ["true", "1", "yes", "on", "y"].includes(current) ? "selected" : "";
-        const selectedFalse = ["false", "0", "no", "off", "n"].includes(current) ? "selected" : "";
-        return `<div class="field"><label>${label}</label><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select></div>`;
+        const raw = String(field.value || "").trim().toLowerCase();
+        const selectedTrue = ["true", "1", "yes", "on", "y"].includes(raw) ? "selected" : "";
+        const selectedFalse = ["false", "0", "no", "off", "n"].includes(raw) ? "selected" : "";
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select></div>`;
       }
       if (field.secret) {
-        return `<div class="field"><label>${label} <span class="muted">${escapeHtml(field.masked || "未配置")}</span></label><div class="secret-row"><input data-key="${key}" type="password" placeholder="留空不修改"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div></div>`;
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">输入新值才会替换当前值；安全起见只显示遮罩值，留空保存不会改动。</div></div>`;
       }
-      return `<div class="field"><label>${label}</label><input data-key="${key}" value="${escapeHtml(field.value || "")}"></div>`;
+      return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}"></div>`;
     }
     const clearKeys = new Set();
     function clearSecret(key) {
