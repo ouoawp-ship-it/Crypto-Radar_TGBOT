@@ -679,6 +679,37 @@ INDEX_HTML = r"""<!doctype html>
       line-height: 1.58;
     }
     .action-card li { margin: 4px 0; }
+    .service-guide {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .service-guide-item {
+      border: 1px solid rgba(93, 106, 115, .22);
+      border-radius: 8px;
+      padding: 10px;
+      background: linear-gradient(135deg, rgba(255,255,255,.72), rgba(236,241,244,.64));
+    }
+    .service-guide-item strong { display: block; margin-bottom: 4px; }
+    .service-card { display: grid; gap: 12px; }
+    .service-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .service-action {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      border-top: 1px solid rgba(105, 118, 126, .18);
+      padding-top: 10px;
+    }
+    .service-action:first-of-type { border-top: 0; padding-top: 0; }
+    .service-action-title { font-weight: 800; }
+    .service-action-note { color: var(--muted); font-size: 13px; margin-top: 2px; }
     .action-badge {
       display: inline-flex;
       width: fit-content;
@@ -719,6 +750,8 @@ INDEX_HTML = r"""<!doctype html>
       nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       main { padding: 14px; }
       .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
+      .service-guide { grid-template-columns: 1fr; }
+      .service-action { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       header { align-items: flex-start; flex-direction: column; }
     }
@@ -895,16 +928,37 @@ INDEX_HTML = r"""<!doctype html>
         ]
       }
     ];
-    const serviceList = [
-      ["restart-main", "重启主服务", "paopao-radar", "warn"],
-      ["start-main", "启动主服务", "paopao-radar", ""],
-      ["stop-main", "停止主服务", "paopao-radar", "danger"],
-      ["restart-structure", "重启结构雷达", "paopao-structure", "warn"],
-      ["start-structure", "启动结构雷达", "paopao-structure", ""],
-      ["stop-structure", "停止结构雷达", "paopao-structure", "danger"],
-      ["restart-web", "重启 Web 控制台", "paopao-web", "warn"],
-      ["start-web", "启动 Web 控制台", "paopao-web", ""],
-      ["stop-web", "停止 Web 控制台", "paopao-web", "danger"]
+    const serviceGroups = [
+      {
+        name: "主服务",
+        service: "paopao-radar",
+        desc: "负责资金摘要、启动雷达、公告监听、资金流雷达等主要循环。它停了以后，主要 Telegram 推送会停止。",
+        actions: [
+          { id: "restart-main", label: "重启主服务", button: "重启", level: "warn", note: "改完 .env.oi、推送配置、扫描参数后通常点这个，让主服务重新读取配置。" },
+          { id: "start-main", label: "启动主服务", button: "启动", level: "", note: "主服务被停止或服务器重启后没有自动起来时使用。" },
+          { id: "stop-main", label: "停止主服务", button: "停止", level: "danger", note: "会暂停主要扫描和推送。只有维护、排错或避免继续发消息时使用。" }
+        ]
+      },
+      {
+        name: "结构雷达",
+        service: "paopao-structure",
+        desc: "负责结构突破雷达的独立循环，包括临界预警、收线确认和结构复盘相关状态。",
+        actions: [
+          { id: "restart-structure", label: "重启结构雷达", button: "重启", level: "warn", note: "改完结构雷达参数、话题 ID 或图表配置后使用。" },
+          { id: "start-structure", label: "启动结构雷达", button: "启动", level: "", note: "结构雷达状态显示已停止、但你希望继续结构信号监控时使用。" },
+          { id: "stop-structure", label: "停止结构雷达", button: "停止", level: "danger", note: "会暂停结构雷达预警和确认。主服务仍可继续运行。" }
+        ]
+      },
+      {
+        name: "Web 控制台",
+        service: "paopao-web",
+        desc: "就是当前这个网页后台服务。重启后页面会短暂断开，刷新浏览器即可。",
+        actions: [
+          { id: "restart-web", label: "重启 Web 控制台", button: "重启", level: "warn", note: "改完 Web 端口、Web 令牌或更新代码后使用。" },
+          { id: "start-web", label: "启动 Web 控制台", button: "启动", level: "", note: "浏览器打不开控制台，且服务器服务状态显示 Web 已停止时使用。" },
+          { id: "stop-web", label: "停止 Web 控制台", button: "停止", level: "danger", note: "会让网页控制台打不开。除非你明确要关闭 Web 入口，否则不建议点。" }
+        ]
+      }
     ];
     let currentView = "overview";
 
@@ -1235,11 +1289,35 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("actionOutput").textContent = JSON.stringify(data, null, 2);
     }
     function renderServices() {
-      document.getElementById("serviceGrid").innerHTML = serviceList.map(([id, label, desc, level]) => `
-        <div class="panel span-4">
-          <h3 class="section-title">${label}</h3>
-          <p class="muted">${desc}</p>
-          <button class="btn ${level}" onclick="runService('${id}', '${label}')">执行</button>
+      document.getElementById("serviceGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>这个页面是控制后台服务开关的，不是普通测试按钮。</strong>
+          主服务、结构雷达、Web 控制台是三个不同的 systemd 服务。建议优先使用“重启”，只有确认要暂停某类功能时才点“停止”。
+          <div class="service-guide">
+            <div class="service-guide-item"><strong>重启</strong><span class="muted">最常用。用于更新代码、修改配置后让服务重新读取设置。</span></div>
+            <div class="service-guide-item"><strong>启动</strong><span class="muted">服务已经停止时使用。不会修改配置，只是把服务拉起来。</span></div>
+            <div class="service-guide-item"><strong>停止</strong><span class="muted">会暂停对应功能。点击后需要输入 STOP 二次确认。</span></div>
+          </div>
+        </div>
+      ` + serviceGroups.map(group => `
+        <div class="panel span-4 service-card">
+          <div class="service-card-head">
+            <div>
+              <h3 class="section-title">${escapeHtml(group.name)}</h3>
+              <div class="summary-meta">${escapeHtml(group.service)}</div>
+            </div>
+            ${neutralPill("systemd")}
+          </div>
+          <p class="muted">${escapeHtml(group.desc)}</p>
+          ${group.actions.map(action => `
+            <div class="service-action">
+              <div>
+                <div class="service-action-title">${escapeHtml(action.label)}</div>
+                <div class="service-action-note">${escapeHtml(action.note)}</div>
+              </div>
+              <button class="btn ${escapeHtml(action.level)}" onclick="runService('${escapeHtml(action.id)}', '${escapeHtml(action.label)}')">${escapeHtml(action.button)}</button>
+            </div>
+          `).join("")}
         </div>
       `).join("");
     }
@@ -1263,7 +1341,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持复制。</span></div>
             <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、Coinalyze、雷达参数和 Web 访问配置；保存前自动备份 .env.oi。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
-            <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；停止操作需要输入 STOP。</span></div>
+            <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
           </div>
         </div>
         <div class="panel span-6">
@@ -1302,7 +1380,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "logs") await loadLogs();
         if (currentView === "config") await loadConfig();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
-        if (currentView === "services") { setSubtitle("systemd 白名单动作"); renderServices(); }
+        if (currentView === "services") { setSubtitle("后台服务开关，停止前会二次确认"); renderServices(); }
         if (currentView === "guide") await loadGuide();
       } catch (err) {
         setSubtitle(err.message || String(err));

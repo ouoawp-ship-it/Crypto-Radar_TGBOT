@@ -98,6 +98,16 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn('active: "运行中"', html)
         self.assertNotIn("systemd 是否 active", html)
 
+    def test_service_page_explains_controls(self) -> None:
+        html = web.INDEX_HTML
+
+        self.assertIn("这个页面是控制后台服务开关的，不是普通测试按钮", html)
+        self.assertIn("建议优先使用“重启”", html)
+        self.assertIn("会暂停对应功能。点击后需要输入 STOP 二次确认", html)
+        self.assertIn("改完 .env.oi、推送配置、扫描参数后通常点这个", html)
+        self.assertIn("${escapeHtml(action.button)}</button>", html)
+        self.assertNotIn("serviceList.map", html)
+
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             with patch.object(cli, "make_runtime", side_effect=AssertionError("should not init runtime")):
