@@ -527,6 +527,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .status.ok { background: #dff7ea; color: var(--good); }
     .status.bad { background: #ffe4df; color: var(--bad); }
+    .status.neutral { background: #edf2f7; color: var(--muted); }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .btn {
       border: 1px solid var(--line);
@@ -572,6 +573,37 @@ INDEX_HTML = r"""<!doctype html>
     .secret-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
     .section-title { margin: 2px 0 10px; font-size: 15px; }
     .output { margin-top: 12px; }
+    .summary-card { display: grid; gap: 11px; align-content: start; }
+    .summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .summary-title { margin: 0; font-size: 15px; }
+    .summary-meta { color: var(--muted); font-size: 12px; word-break: break-all; }
+    .readable-list { display: grid; gap: 8px; }
+    .readable-row {
+      display: grid;
+      grid-template-columns: 136px 1fr;
+      gap: 10px;
+      align-items: start;
+      border-top: 1px solid #edf1f3;
+      padding-top: 8px;
+    }
+    .readable-row:first-child { border-top: 0; padding-top: 0; }
+    .readable-label { color: var(--muted); font-weight: 700; }
+    .readable-value { color: var(--text); word-break: break-word; }
+    .hint { color: var(--muted); font-size: 13px; }
+    .raw-details {
+      grid-column: span 12;
+      padding: 0;
+      overflow: hidden;
+    }
+    .raw-details summary {
+      cursor: pointer;
+      padding: 13px 14px;
+      font-weight: 800;
+      border-bottom: 1px solid transparent;
+    }
+    .raw-details[open] summary { border-bottom-color: var(--line); }
+    .raw-details .raw-body { padding: 14px; display: grid; gap: 12px; }
+    .raw-details pre { min-height: 180px; max-height: 460px; }
     .notice {
       background: #eef7f6;
       border: 1px solid #b9ddda;
@@ -751,7 +783,7 @@ INDEX_HTML = r"""<!doctype html>
         desc: "读取主服务和结构雷达写入的 runtime-status，快速看后台最近在做什么。",
         details: [
           "能看到当前任务、运行模式、最近扫描时间、下一次扫描时间和最后错误。",
-          "适合确认服务是否真的在循环运行，而不是只看 systemd 是否 active。",
+          "适合确认服务是否真的在循环运行，而不是只看 systemd 是否显示运行中。",
           "如果这里长时间不更新，再去日志页查看具体报错。"
         ]
       },
@@ -847,14 +879,199 @@ INDEX_HTML = r"""<!doctype html>
       try { return JSON.parse(text); } catch { return { ok: res.ok, text }; }
     }
     function setSubtitle(text) { document.getElementById("subtitle").textContent = text; }
+    function zhStatus(value) {
+      const key = String(value || "unknown").toLowerCase();
+      const map = {
+        active: "运行中",
+        inactive: "已停止",
+        failed: "异常",
+        activating: "启动中",
+        deactivating: "停止中",
+        enabled: "开机自启",
+        disabled: "未开机自启",
+        static: "静态服务",
+        masked: "已屏蔽",
+        unknown: "未知",
+        running: "运行中",
+        completed: "已完成",
+        empty: "暂无状态",
+        invalid: "状态文件异常",
+        live: "真实推送",
+        observe: "观察模式",
+        loop: "循环运行",
+        daemon: "后台循环",
+        "structure-loop": "结构雷达循环",
+        "structure-review": "结构信号复盘",
+        "flow-radar": "资金流雷达",
+        "runtime-status": "查看运行状态",
+        "telegram-test": "Telegram 测试",
+        "announcements-test": "Binance 公告测试",
+        true: "开启",
+        false: "关闭"
+      };
+      return map[key] || String(value || "未知");
+    }
+    function zhTask(value) {
+      const key = String(value || "").toLowerCase();
+      const map = {
+        loop: "主循环",
+        live: "真实推送循环",
+        daemon: "后台循环",
+        "structure-loop": "结构雷达循环",
+        "structure-review": "结构信号复盘",
+        "flow-radar": "资金流雷达",
+        cleanup: "清理运行垃圾"
+      };
+      return map[key] || (value ? String(value) : "暂无");
+    }
+    function zhBool(value, enabledText = "开启", disabledText = "关闭") {
+      if (value === true || String(value).toLowerCase() === "true") return enabledText;
+      if (value === false || String(value).toLowerCase() === "false") return disabledText;
+      return "未知";
+    }
+    function configuredText(value) {
+      return value ? "已配置" : "未配置";
+    }
     function statusPill(text, ok) {
-      return `<span class="status ${ok ? "ok" : "bad"}">${escapeHtml(text || "unknown")}</span>`;
+      return `<span class="status ${ok ? "ok" : "bad"}">${escapeHtml(zhStatus(text))}</span>`;
+    }
+    function neutralPill(text) {
+      return `<span class="status neutral">${escapeHtml(text)}</span>`;
     }
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[s]));
     }
     function metric(label, value, extra = "") {
       return `<div class="panel span-3 metric"><div class="label">${label}</div><div class="value">${value}</div>${extra}</div>`;
+    }
+    function row(label, value) {
+      return `<div class="readable-row"><div class="readable-label">${escapeHtml(label)}</div><div class="readable-value">${value}</div></div>`;
+    }
+    function textValue(value, fallback = "暂无") {
+      const text = value === undefined || value === null || value === "" ? fallback : String(value);
+      return escapeHtml(text);
+    }
+    function serviceCard(title, service) {
+      const active = service.active || "unknown";
+      const enabled = service.enabled || "unknown";
+      const ok = Boolean(service.active_ok);
+      return `<div class="panel span-3 summary-card">
+        <div class="summary-head">
+          <h3 class="summary-title">${escapeHtml(title)}</h3>
+          ${statusPill(active, ok)}
+        </div>
+        <div class="summary-meta">${escapeHtml(service.service || "未找到服务名")}</div>
+        <div class="readable-list">
+          ${row("运行状态", statusPill(active, ok))}
+          ${row("开机启动", neutralPill(zhStatus(enabled)))}
+        </div>
+      </div>`;
+    }
+    function successSummary(runtimeItem) {
+      const found = [];
+      function walk(value) {
+        if (!value || typeof value !== "object") return;
+        if (value.successes && typeof value.successes === "object") {
+          Object.entries(value.successes).forEach(([name, count]) => found.push(`${name} ${count}`));
+        }
+        Object.values(value).forEach(walk);
+      }
+      walk(runtimeItem && runtimeItem.diagnostics);
+      return found.length ? found.slice(0, 6).join("，") : "暂无请求统计";
+    }
+    function runtimeCard(title, runtimeItem, kind) {
+      if (!runtimeItem || runtimeItem.status === "empty") {
+        return `<div class="panel span-6 summary-card">
+          <div class="summary-head"><h3 class="summary-title">${escapeHtml(title)}</h3>${neutralPill("暂无状态")}</div>
+          <div class="hint">还没有状态文件。服务刚启动、尚未完成第一轮扫描，或服务没有写入 runtime-status 时会这样显示。</div>
+        </div>`;
+      }
+      if (runtimeItem.status === "invalid") {
+        return `<div class="panel span-6 summary-card">
+          <div class="summary-head"><h3 class="summary-title">${escapeHtml(title)}</h3>${statusPill("异常", false)}</div>
+          <div class="hint">${textValue(runtimeItem.error || "状态文件无法解析")}</div>
+        </div>`;
+      }
+      const statusKey = String(runtimeItem.status || "").toLowerCase();
+      const ok = ["running", "completed"].includes(statusKey);
+      const commonRows = [
+        row("运行状态", statusPill(runtimeItem.status || "unknown", ok)),
+        row("当前任务", textValue(zhTask(runtimeItem.task))),
+        row("运行模式", textValue(zhStatus(runtimeItem.mode))),
+        row("真实推送", neutralPill(zhBool(runtimeItem.real_send, "已开启", "未开启"))),
+        row("最近更新", textValue(runtimeItem.updated_at)),
+        row("最后错误", runtimeItem.last_error ? `<span class="status bad">${escapeHtml(runtimeItem.last_error)}</span>` : neutralPill("无"))
+      ];
+      const mainRows = [
+        ...commonRows,
+        row("最近启动扫描", textValue(runtimeItem.last_launch_at)),
+        row("下次启动扫描", textValue(runtimeItem.next_launch_at)),
+        row("数据请求", textValue(successSummary(runtimeItem)))
+      ];
+      const structureRows = [
+        ...commonRows,
+        row("K线周期", textValue(runtimeItem.structure_interval)),
+        row("下次临界预警", textValue(runtimeItem.next_pre_at)),
+        row("下次收线确认", textValue(runtimeItem.next_confirm_at))
+      ];
+      return `<div class="panel span-6 summary-card">
+        <div class="summary-head"><h3 class="summary-title">${escapeHtml(title)}</h3>${statusPill(runtimeItem.status || "unknown", ok)}</div>
+        <div class="readable-list">${(kind === "structure" ? structureRows : mainRows).join("")}</div>
+      </div>`;
+    }
+    function configCard(title, rows, span = 4) {
+      return `<div class="panel span-${span} summary-card">
+        <h3 class="summary-title">${escapeHtml(title)}</h3>
+        <div class="readable-list">${rows.join("")}</div>
+      </div>`;
+    }
+    function configSummaryCards(cfg, stateFiles) {
+      const telegram = cfg.telegram || {};
+      const routes = telegram.topic_routes_configured || {};
+      const routeValues = Object.values(routes);
+      const routeReady = routeValues.filter(Boolean).length;
+      const routeTotal = routeValues.length || 0;
+      const liquidity = cfg.liquidity || {};
+      const coinalyze = cfg.coinalyze || {};
+      const existingFiles = (stateFiles || []).filter(item => item.exists).length;
+      return [
+        configCard("Telegram 配置", [
+          row("配置文件", cfg.env_file_exists ? statusPill("存在", true) : statusPill("缺失", false)),
+          row("机器人 Token", neutralPill(configuredText(telegram.bot_token_configured))),
+          row("群/频道 ID", neutralPill(configuredText(telegram.chat_id_configured))),
+          row("话题模式", neutralPill(zhBool(telegram.use_topic))),
+          row("已配置话题", neutralPill(routeTotal ? `${routeReady}/${routeTotal}` : "未使用话题")),
+          row("自动建话题", neutralPill(zhBool(telegram.auto_create_topics)))
+        ]),
+        configCard("外部确认配置", [
+          row("外部确认", neutralPill(zhBool(liquidity.fallback_enable))),
+          row("Binance 盘口", neutralPill(zhBool(liquidity.binance_orderbook_enable))),
+          row("分数修正上限", textValue(liquidity.score_max_delta)),
+          row("盘口距离范围", textValue(`${liquidity.min_distance_pct ?? "?"}% - ${liquidity.max_distance_pct ?? "?"}%`)),
+          row("盘口档位", textValue(liquidity.binance_orderbook_depth_limit))
+        ]),
+        configCard("Coinalyze 配置", [
+          row("功能开关", neutralPill(zhBool(coinalyze.enable))),
+          row("API Key", neutralPill(configuredText(coinalyze.api_key_configured))),
+          row("请求预算", textValue(coinalyze.request_budget)),
+          row("清算周期", textValue(coinalyze.liquidation_interval)),
+          row("回看小时", textValue(coinalyze.liquidation_lookback_hours))
+        ]),
+        configCard("状态文件", [
+          row("文件数量", neutralPill(`${existingFiles}/${(stateFiles || []).length || 0} 存在`)),
+          ...((stateFiles || []).slice(0, 4).map(item => {
+            const name = String(item.path || "").split(/[\\/]/).pop() || "状态文件";
+            const value = item.exists ? `存在，${item.size || 0} 字节` : "缺失";
+            return row(name, item.exists ? neutralPill(value) : statusPill(value, false));
+          }))
+        ], 12)
+      ].join("");
+    }
+    function rawDetails(title, data) {
+      return `<details class="panel raw-details">
+        <summary>${escapeHtml(title)}</summary>
+        <div class="raw-body"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
+      </details>`;
     }
     async function loadSummary() {
       const data = await api("/api/summary");
@@ -867,13 +1084,15 @@ INDEX_HTML = r"""<!doctype html>
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
         `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的主要操作入口。</strong> 服务器只需要记住 paopao；地址、令牌、Web 服务状态、日志和更新入口都在中文菜单里。配置修改、测试、服务控制都在这里完成。</div>`,
-        metric("主服务", statusPill(main.active, main.active_ok), `<div class="muted">${escapeHtml(main.service)}</div>`),
-        metric("结构雷达", statusPill(structure.active, structure.active_ok), `<div class="muted">${escapeHtml(structure.service)}</div>`),
-        metric("Web 控制台", statusPill(web.active, web.active_ok), `<div class="muted">${escapeHtml(web.service)}</div>`),
+        serviceCard("主服务", main),
+        serviceCard("结构雷达", structure),
+        serviceCard("Web 控制台", web),
         metric("版本", escapeHtml(git.version || "unknown"), `<div class="muted">${escapeHtml(git.branch)} ${escapeHtml(git.commit)}</div>`),
-        metric("配置文件", cfg.env_file_exists ? statusPill("存在", true) : statusPill("缺失", false), ""),
-        `<div class="panel span-6"><h3 class="section-title">运行状态</h3><pre>${escapeHtml(JSON.stringify(runtime, null, 2))}</pre></div>`,
-        `<div class="panel span-6"><h3 class="section-title">关键配置</h3><pre>${escapeHtml(JSON.stringify(cfg, null, 2))}</pre></div>`
+        runtimeCard("主服务运行摘要", runtime.main, "main"),
+        runtimeCard("结构雷达运行摘要", runtime.structure, "structure"),
+        configSummaryCards(cfg, data.state_files || []),
+        rawDetails("高级排查：原始运行状态 JSON", runtime),
+        rawDetails("高级排查：原始配置摘要 JSON", cfg)
       ].join("");
     }
     async function loadLogs() {

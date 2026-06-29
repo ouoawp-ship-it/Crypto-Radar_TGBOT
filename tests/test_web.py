@@ -83,6 +83,16 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("readiness 是真实推送前的门禁检查", html)
         self.assertIn("OK 表示通过，WAIT 表示还需要补配置或继续 dry-run 观察", html)
 
+    def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
+        html = web.INDEX_HTML
+
+        self.assertIn("主服务运行摘要", html)
+        self.assertIn("结构雷达运行摘要", html)
+        self.assertIn("Telegram 配置", html)
+        self.assertIn("高级排查：原始运行状态 JSON", html)
+        self.assertIn('active: "运行中"', html)
+        self.assertNotIn("systemd 是否 active", html)
+
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             with patch.object(cli, "make_runtime", side_effect=AssertionError("should not init runtime")):
