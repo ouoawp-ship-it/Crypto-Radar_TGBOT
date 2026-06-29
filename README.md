@@ -9,7 +9,7 @@
 - 启动雷达提醒：默认 3 分钟扫描一次，推送币种、阶段、分数、市值分档、流动性分档、价格/OI/成交量变化和触发原因；市值优先使用 Binance，缺失时用 CoinPaprika 免费数据兜底；同一币种后续更高阶段会回复上一条启动消息，形成连续追踪链。
 - 五因子资金流雷达：默认每 1 小时收线后延迟 5 分钟推送一次，使用 Binance 免费公开数据，按上一完整窗口内的价格、OI、现货 CVD、合约 CVD、资金费率过滤资金流信号。
 - 结构突破雷达：v1.8 新增，独立识别盘整箱体上沿/下沿、ATR/BB 压缩、临近突破、收线确认、假突破，并可生成 K线状态图。
-- Web 控制台会说明每个外部接口在本项目里的用途，并用平台标识区分 Telegram、Binance、CoinPaprika、Coinalyze、CoinMarketCap：Telegram 必填，Binance/CoinPaprika 无需 Key，Coinalyze 仅作结构雷达历史清算辅助，CoinMarketCap 当前只是预留未接入。
+- Web 控制台会说明每个外部接口在本项目里的用途，并用平台真实站点图标区分 Telegram、Binance、CoinPaprika、Coinalyze、CoinMarketCap：Telegram 必填，Binance/CoinPaprika 无需 Key，Coinalyze 仅作结构雷达历史清算辅助，CoinMarketCap 当前只是预留未接入；配置页会完整显示当前 Token / Key / Web 令牌。
 - OI/价格背离扫描：跟随资金雷达，跟踪建仓背离、多头共振、极端背离、持续/增强/消失状态。
 - 自动清理：默认 1 小时检查一次，只清理可再生成的缓存、临时文件、坏 JSON 备份、过期日志、过长历史、过期结构图和根目录临时报告。
 
@@ -260,4 +260,4 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.11.11`，后续功能更新按 `v1.11.12`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.11.12`，后续功能更新按 `v1.11.13`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。

@@ -11,11 +11,12 @@ from paopao_radar import web
 
 
 class WebConsoleTests(unittest.TestCase):
-    def test_config_payload_masks_secret_values(self) -> None:
+    def test_config_payload_exposes_current_secret_values_for_admin_ui(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
             env_path.write_text(
                 "TG_BOT_TOKEN=123456:abcdefghijklmnopqrstuvwxyz\n"
+                "WEB_ADMIN_TOKEN=admin-secret-token\n"
                 "TG_CHAT_ID=-1001234567890\n",
                 encoding="utf-8",
             )
@@ -26,10 +27,16 @@ class WebConsoleTests(unittest.TestCase):
             item["key"]: item
             for item in payload["sections"]["Telegram"]
         }
-        self.assertEqual(telegram_fields["TG_BOT_TOKEN"]["value"], "")
-        self.assertIn("...", telegram_fields["TG_BOT_TOKEN"]["display_value"])
+        web_fields = {
+            item["key"]: item
+            for item in payload["sections"]["Web 控制台"]
+        }
+        self.assertEqual(telegram_fields["TG_BOT_TOKEN"]["value"], "123456:abcdefghijklmnopqrstuvwxyz")
+        self.assertEqual(telegram_fields["TG_BOT_TOKEN"]["display_value"], "123456:abcdefghijklmnopqrstuvwxyz")
         self.assertTrue(telegram_fields["TG_BOT_TOKEN"]["configured"])
         self.assertIn("...", telegram_fields["TG_BOT_TOKEN"]["masked"])
+        self.assertEqual(web_fields["WEB_ADMIN_TOKEN"]["value"], "admin-secret-token")
+        self.assertEqual(web_fields["WEB_ADMIN_TOKEN"]["display_value"], "admin-secret-token")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["display_value"], "-1001234567890")
 
@@ -86,7 +93,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("OK 表示通过，WAIT 表示还需要补配置或继续 dry-run 观察", html)
         self.assertIn("当前使用：", html)
         self.assertIn("输入新值才会替换当前值", html)
-        self.assertIn("安全起见只显示遮罩值", html)
+        self.assertIn("当前值会完整显示", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
@@ -127,8 +134,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn('brand: "coinpaprika"', html)
         self.assertIn('brand: "coinalyze"', html)
         self.assertIn('brand: "coinmarketcap"', html)
-        self.assertIn(".api-logo.telegram", html)
-        self.assertIn("apiLogo(source.brand, source.name)", html)
+        self.assertIn("https://www.google.com/s2/favicons?domain=telegram.org&sz=64", html)
+        self.assertIn("https://www.google.com/s2/favicons?domain=binance.com&sz=64", html)
+        self.assertIn("https://www.google.com/s2/favicons?domain=coinpaprika.com&sz=64", html)
+        self.assertIn("https://www.google.com/s2/favicons?domain=coinalyze.net&sz=64", html)
+        self.assertIn("https://www.google.com/s2/favicons?domain=coinmarketcap.com&sz=64", html)
+        self.assertIn("apiLogo(source.brand, source.name, source.logoUrl)", html)
+        self.assertIn("<img src=\"${safeUrl}\"", html)
 
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):

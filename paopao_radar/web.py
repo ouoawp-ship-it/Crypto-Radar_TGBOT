@@ -133,8 +133,8 @@ def config_payload(path: Path | None = None) -> dict[str, Any]:
             "kind": field.kind,
             "secret": field.secret,
             "configured": bool(raw_value),
-            "value": "" if field.secret else raw_value,
-            "display_value": mask_secret(raw_value) if field.secret else raw_value,
+            "value": raw_value,
+            "display_value": raw_value,
             "masked": mask_secret(raw_value) if field.secret else "",
             "minimum": field.minimum,
             "maximum": field.maximum,
@@ -602,15 +602,16 @@ INDEX_HTML = r"""<!doctype html>
     }
     .secret-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
     .field-heading {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(120px, max-content) 1fr;
       align-items: flex-start;
-      justify-content: space-between;
       gap: 10px;
     }
     .field-current {
       display: inline-flex;
       align-items: center;
-      max-width: 62%;
+      justify-self: end;
+      max-width: 100%;
       border: 1px solid rgba(93, 106, 115, .24);
       border-radius: 999px;
       padding: 2px 8px;
@@ -618,9 +619,10 @@ INDEX_HTML = r"""<!doctype html>
       color: #48565d;
       font-size: 12px;
       font-weight: 700;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      text-align: right;
     }
     .field-help { color: var(--muted); font-size: 12px; }
     .section-title { margin: 2px 0 10px; font-size: 15px; }
@@ -705,19 +707,22 @@ INDEX_HTML = r"""<!doctype html>
       display: inline-grid;
       place-items: center;
       flex: 0 0 auto;
-      color: white;
+      color: #34424a;
       font-size: 10px;
       font-weight: 900;
       letter-spacing: 0;
+      background: linear-gradient(135deg, #ffffff, #edf2f4);
+      border: 1px solid rgba(93, 106, 115, .24);
       box-shadow: 0 1px 0 rgba(255,255,255,.55) inset, 0 8px 18px rgba(33, 42, 48, .12);
       overflow: hidden;
     }
-    .api-logo svg { width: 20px; height: 20px; display: block; }
-    .api-logo.telegram { background: linear-gradient(135deg, #37aee2, #1e88c8); }
-    .api-logo.binance { background: linear-gradient(135deg, #f3ba2f, #c99113); color: #1b1e23; }
-    .api-logo.coinpaprika { background: linear-gradient(135deg, #f05a28, #b93618); }
-    .api-logo.coinalyze { background: linear-gradient(135deg, #334155, #111827); }
-    .api-logo.coinmarketcap { background: linear-gradient(135deg, #3861fb, #1635b8); }
+    .api-logo img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      display: block;
+    }
+    .api-logo-fallback { display: none; }
     .api-card h4 { margin: 0; font-size: 14px; }
     .api-card p { margin: 0; color: var(--muted); line-height: 1.5; }
     .api-card ul { margin: 0; padding-left: 17px; color: var(--muted); line-height: 1.5; }
@@ -804,6 +809,8 @@ INDEX_HTML = r"""<!doctype html>
       .service-action { grid-template-columns: 1fr; }
       .api-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
+      .field-heading { grid-template-columns: 1fr; }
+      .field-current { justify-self: start; text-align: left; }
       header { align-items: flex-start; flex-direction: column; }
     }
   </style>
@@ -982,6 +989,7 @@ INDEX_HTML = r"""<!doctype html>
     const apiSourceList = [
       {
         brand: "telegram",
+        logoUrl: "https://www.google.com/s2/favicons?domain=telegram.org&sz=64",
         name: "Telegram Bot API",
         status: "必填",
         keyText: "需要填写 TG_BOT_TOKEN 和 TG_CHAT_ID",
@@ -991,6 +999,7 @@ INDEX_HTML = r"""<!doctype html>
       },
       {
         brand: "binance",
+        logoUrl: "https://www.google.com/s2/favicons?domain=binance.com&sz=64",
         name: "Binance 免费公开数据",
         status: "已接入，无需 Key",
         keyText: "不用填写 API Key",
@@ -1000,6 +1009,7 @@ INDEX_HTML = r"""<!doctype html>
       },
       {
         brand: "coinpaprika",
+        logoUrl: "https://www.google.com/s2/favicons?domain=coinpaprika.com&sz=64",
         name: "CoinPaprika 免费市值数据",
         status: "已接入，无需 Key",
         keyText: "不用填写 API Key",
@@ -1009,6 +1019,7 @@ INDEX_HTML = r"""<!doctype html>
       },
       {
         brand: "coinalyze",
+        logoUrl: "https://www.google.com/s2/favicons?domain=coinalyze.net&sz=64",
         name: "Coinalyze API",
         status: "可选",
         keyText: "可填写 COINALYZE_API_KEY，并开启 COINALYZE_ENABLE",
@@ -1018,6 +1029,7 @@ INDEX_HTML = r"""<!doctype html>
       },
       {
         brand: "coinmarketcap",
+        logoUrl: "https://www.google.com/s2/favicons?domain=coinmarketcap.com&sz=64",
         name: "CoinMarketCap API",
         status: "预留，未接入",
         keyText: "现在不需要填写，Web 里也没有这个 Key 的配置项",
@@ -1277,23 +1289,18 @@ INDEX_HTML = r"""<!doctype html>
         <div class="raw-body"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
       </details>`;
     }
-    function apiLogo(brand, label) {
+    function apiLogo(brand, label, logoUrl) {
       const safeBrand = escapeHtml(String(brand || "generic"));
       const safeLabel = escapeHtml(label || "");
-      const icons = {
-        telegram: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.8 4.2 3.7 10.9c-1.2.5-1.2 1.1-.2 1.4l4.4 1.4 1.7 5.2c.2.7.5.9 1 .9.5 0 .8-.2 1.2-.6l2.5-2.4 4.9 3.6c.9.5 1.5.3 1.7-.8l3.1-14.4c.3-1.3-.5-1.9-1.6-1.4Zm-3.1 3.2-7.9 7.1-.3 3.2-1.2-4 9.4-6.3Z"/></svg>`,
-        binance: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m12 2.7 3.2 3.2L12 9.1 8.8 5.9 12 2.7Zm-5.5 5.5 3.2 3.2-3.2 3.2-3.2-3.2 3.2-3.2Zm11 0 3.2 3.2-3.2 3.2-3.2-3.2 3.2-3.2ZM12 13.7l3.2 3.2L12 20.1l-3.2-3.2 3.2-3.2Zm0-6.4 4.1 4.1-4.1 4.1-4.1-4.1L12 7.3Z"/></svg>`,
-        coinpaprika: `<span aria-hidden="true">CP</span>`,
-        coinalyze: `<span aria-hidden="true">CA</span>`,
-        coinmarketcap: `<span aria-hidden="true">CMC</span>`,
-      };
-      return `<span class="api-logo ${safeBrand}" title="${safeLabel}">${icons[brand] || safeLabel.slice(0, 2).toUpperCase()}</span>`;
+      const safeUrl = escapeHtml(logoUrl || "");
+      const fallback = escapeHtml((label || "?").replace(/\s+/g, "").slice(0, 3).toUpperCase());
+      return `<span class="api-logo ${safeBrand}" title="${safeLabel}"><img src="${safeUrl}" alt="${safeLabel} logo" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='inline';"><span class="api-logo-fallback" aria-hidden="true">${fallback}</span></span>`;
     }
     function apiSourceCards() {
       return `<div class="api-grid">` + apiSourceList.map(source => `
         <div class="api-card">
           <div class="api-card-head">
-            <div class="api-title">${apiLogo(source.brand, source.name)}<h4>${escapeHtml(source.name)}</h4></div>
+            <div class="api-title">${apiLogo(source.brand, source.name, source.logoUrl)}<h4>${escapeHtml(source.name)}</h4></div>
             ${neutralPill(source.status)}
           </div>
           <p><strong>填写要求：</strong>${escapeHtml(source.keyText)}</p>
@@ -1358,7 +1365,7 @@ INDEX_HTML = r"""<!doctype html>
     function configCurrentText(field) {
       if (!field.configured && !field.value && !field.display_value) return "当前未配置";
       if (field.kind === "bool") return `当前使用：${zhBool(field.value)}`;
-      const display = field.secret ? (field.masked || field.display_value || "已配置") : (field.display_value || field.value || "已配置");
+      const display = field.display_value || field.value || "已配置";
       return `当前使用：${display}`;
     }
     function fieldHtml(field) {
@@ -1372,7 +1379,7 @@ INDEX_HTML = r"""<!doctype html>
         return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select></div>`;
       }
       if (field.secret) {
-        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">输入新值才会替换当前值；安全起见只显示遮罩值，留空保存不会改动。</div></div>`;
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">当前值会完整显示；输入新值才会替换当前值，留空保存不会改动。</div></div>`;
       }
       return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}"></div>`;
     }
