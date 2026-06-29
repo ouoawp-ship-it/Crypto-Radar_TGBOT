@@ -63,6 +63,26 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
 )
 EDITABLE_CONFIG: dict[str, ConfigField] = {field.key: field for field in EDITABLE_CONFIG_FIELDS}
 
+TOPIC_FIELD_ROUTES: dict[str, tuple[str, str]] = {
+    "TG_RADAR_SUMMARY_TOPIC_ID": ("TG_RADAR_SUMMARY", "资金摘要"),
+    "TG_LAUNCH_ALERT_TOPIC_ID": ("TG_LAUNCH_ALERT", "启动预警"),
+    "TG_ANNOUNCEMENT_ALERT_TOPIC_ID": ("TG_ANNOUNCEMENT_ALERT", "公告风险"),
+    "TG_TEST_TOPIC_ID": ("TG_TEST_MESSAGE", "测试消息"),
+    "TG_FLOW_RADAR_TOPIC_ID": ("TG_FLOW_RADAR", "资金流雷达"),
+    "STRUCTURE_TOPIC_ID": ("TG_STRUCTURE_RADAR", "结构突破"),
+    "STRUCTURE_REVIEW_TOPIC_ID": ("TG_STRUCTURE_REVIEW", "结构复盘"),
+}
+
+TOPIC_SUMMARY_ROUTE_KEYS: dict[str, str] = {
+    "TG_RADAR_SUMMARY": "radar_summary",
+    "TG_LAUNCH_ALERT": "launch_alert",
+    "TG_ANNOUNCEMENT_ALERT": "announcement_alert",
+    "TG_TEST_MESSAGE": "test",
+    "TG_FLOW_RADAR": "flow_radar",
+    "TG_STRUCTURE_RADAR": "structure_radar",
+    "TG_STRUCTURE_REVIEW": "structure_review",
+}
+
 
 CLI_ACTIONS: dict[str, dict[str, Any]] = {
     "telegram-test": {
@@ -122,25 +142,82 @@ def mask_secret(value: str) -> str:
     return f"{value[:4]}...{value[-4:]}"
 
 
-def config_payload(path: Path | None = None) -> dict[str, Any]:
-    values = read_env_values(path)
+def default_topic_routes_path(env_path: Path, values: dict[str, str]) -> Path:
+    configured = values.get("TG_TOPIC_ROUTES_FILE", "").strip()
+    if configured:
+        route_path = Path(configured)
+        if route_path.is_absolute():
+            return route_path
+        if route_path.parts and route_path.parts[0].lower() == "data":
+            return BASE_DIR / route_path
+        return env_path.parent / route_path
+    if env_path.resolve() == ENV_FILE.resolve():
+        return BASE_DIR / "data" / "tg_topic_routes.json"
+    return env_path.parent / "data" / "tg_topic_routes.json"
+
+
+def read_topic_routes(path: Path) -> dict[str, dict[str, str]]:
+    data = load_json_or_empty(path)
+    if not isinstance(data, dict):
+        return {}
+    routes = data.get("routes", {})
+    if not isinstance(routes, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for template_id, record in routes.items():
+        if not isinstance(record, dict):
+            continue
+        topic_id = str(record.get("topic_id") or "").strip()
+        if not topic_id:
+            continue
+        result[str(template_id)] = {
+            "topic_id": topic_id,
+            "name": str(record.get("name") or "").strip(),
+        }
+    return result
+
+
+def config_payload(path: Path | None = None, topic_routes_path: Path | None = None) -> dict[str, Any]:
+    env_path = path or ENV_FILE
+    values = read_env_values(env_path)
+    routes_path = topic_routes_path or default_topic_routes_path(env_path, values)
+    topic_routes = read_topic_routes(routes_path)
     sections: dict[str, list[dict[str, Any]]] = {}
     for field in EDITABLE_CONFIG_FIELDS:
         raw_value = values.get(field.key, "")
+        display_value = raw_value
+        source = "env" if raw_value else ""
+        route_name = ""
+        route = TOPIC_FIELD_ROUTES.get(field.key)
+        if not raw_value and route is not None:
+            template_id, default_name = route
+            saved_route = topic_routes.get(template_id, {})
+            saved_topic_id = saved_route.get("topic_id", "")
+            if saved_topic_id:
+                display_value = saved_topic_id
+                source = "auto_route"
+                route_name = saved_route.get("name") or default_name
         item = {
             "key": field.key,
             "label": field.label,
             "kind": field.kind,
             "secret": field.secret,
-            "configured": bool(raw_value),
+            "configured": bool(raw_value or display_value),
             "value": raw_value,
-            "display_value": raw_value,
+            "display_value": display_value,
             "masked": mask_secret(raw_value) if field.secret else "",
+            "source": source,
+            "route_name": route_name,
             "minimum": field.minimum,
             "maximum": field.maximum,
         }
         sections.setdefault(field.section, []).append(item)
-    return {"env_file": str(path or ENV_FILE), "sections": sections}
+    return {
+        "env_file": str(env_path),
+        "topic_routes_file": str(routes_path),
+        "topic_routes_found": bool(topic_routes),
+        "sections": sections,
+    }
 
 
 def normalize_bool(value: Any) -> str:
@@ -373,6 +450,18 @@ def summary_payload() -> dict[str, Any]:
     settings = Settings.load()
     store = JsonStore(settings.data_dir)
     redacted = settings.redacted_status()
+    telegram = dict(redacted.get("telegram") or {})
+    topic_routes = read_topic_routes(settings.tg_topic_routes_path)
+    configured_routes = dict(telegram.get("topic_routes_configured") or {})
+    saved_routes: dict[str, str] = {}
+    for template_id, route_key in TOPIC_SUMMARY_ROUTE_KEYS.items():
+        topic_id = topic_routes.get(template_id, {}).get("topic_id", "")
+        if topic_id:
+            configured_routes[route_key] = True
+            saved_routes[route_key] = topic_id
+    telegram["topic_routes_configured"] = configured_routes
+    telegram["topic_routes_saved"] = saved_routes
+    telegram["topic_routes_file_exists"] = settings.tg_topic_routes_path.exists()
     return {
         "updated_at": now_text(),
         "git": git_info(),
@@ -387,7 +476,7 @@ def summary_payload() -> dict[str, Any]:
         },
         "config": {
             "env_file_exists": redacted.get("env_file_exists"),
-            "telegram": redacted.get("telegram"),
+            "telegram": telegram,
             "liquidity": redacted.get("liquidity"),
             "coinalyze": redacted.get("coinalyze"),
         },
@@ -1366,6 +1455,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!field.configured && !field.value && !field.display_value) return "当前未配置";
       if (field.kind === "bool") return `当前使用：${zhBool(field.value)}`;
       const display = field.display_value || field.value || "已配置";
+      if (field.source === "auto_route") return `当前使用：${display}（自动话题：${field.route_name || "已记录"}）`;
       return `当前使用：${display}`;
     }
     function fieldHtml(field) {
@@ -1381,7 +1471,10 @@ INDEX_HTML = r"""<!doctype html>
       if (field.secret) {
         return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">当前值会完整显示；输入新值才会替换当前值，留空保存不会改动。</div></div>`;
       }
-      return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}"></div>`;
+      const help = field.source === "auto_route"
+        ? `<div class="field-help">当前 ID 来自自动创建的话题路由文件；输入新值并保存后会写入 .env.oi。</div>`
+        : "";
+      return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}">${help}</div>`;
     }
     const clearKeys = new Set();
     function clearSecret(key) {

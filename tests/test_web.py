@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -39,6 +40,39 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(web_fields["WEB_ADMIN_TOKEN"]["display_value"], "admin-secret-token")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["display_value"], "-1001234567890")
+
+    def test_config_payload_reads_auto_created_topic_routes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            route_path = Path(tmp) / "data" / "tg_topic_routes.json"
+            route_path.parent.mkdir()
+            env_path.write_text(
+                "TG_BOT_TOKEN=123456:abcdefghijklmnopqrstuvwxyz\n"
+                "TG_CHAT_ID=-1001234567890\n"
+                "TG_AUTO_CREATE_TOPICS=true\n",
+                encoding="utf-8",
+            )
+            route_path.write_text(json.dumps({
+                "routes": {
+                    "TG_RADAR_SUMMARY": {"name": "资金摘要", "topic_id": "11"},
+                    "TG_LAUNCH_ALERT": {"name": "启动预警", "topic_id": "12"},
+                    "TG_FLOW_RADAR": {"name": "资金流雷达", "topic_id": "15"},
+                }
+            }), encoding="utf-8")
+
+            payload = web.config_payload(env_path, topic_routes_path=route_path)
+
+        telegram_fields = {
+            item["key"]: item
+            for item in payload["sections"]["Telegram"]
+        }
+        self.assertEqual(telegram_fields["TG_RADAR_SUMMARY_TOPIC_ID"]["value"], "")
+        self.assertEqual(telegram_fields["TG_RADAR_SUMMARY_TOPIC_ID"]["display_value"], "11")
+        self.assertEqual(telegram_fields["TG_RADAR_SUMMARY_TOPIC_ID"]["source"], "auto_route")
+        self.assertEqual(telegram_fields["TG_RADAR_SUMMARY_TOPIC_ID"]["route_name"], "资金摘要")
+        self.assertTrue(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["configured"])
+        self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["display_value"], "12")
+        self.assertEqual(telegram_fields["TG_FLOW_RADAR_TOPIC_ID"]["display_value"], "15")
 
     def test_write_env_updates_preserves_existing_lines_and_creates_backup(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -94,6 +128,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("当前使用：", html)
         self.assertIn("输入新值才会替换当前值", html)
         self.assertIn("当前值会完整显示", html)
+        self.assertIn("自动话题：", html)
+        self.assertIn("当前 ID 来自自动创建的话题路由文件", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
