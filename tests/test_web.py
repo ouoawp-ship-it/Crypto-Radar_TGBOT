@@ -122,6 +122,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("CoinMarketCap API", html)
         self.assertIn("预留，未接入", html)
         self.assertIn("当前源码没有接入", html)
+        self.assertIn('brand: "telegram"', html)
+        self.assertIn('brand: "binance"', html)
+        self.assertIn('brand: "coinpaprika"', html)
+        self.assertIn('brand: "coinalyze"', html)
+        self.assertIn('brand: "coinmarketcap"', html)
+        self.assertIn(".api-logo.telegram", html)
+        self.assertIn("apiLogo(source.brand, source.name)", html)
 
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):

@@ -692,6 +692,32 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 10px;
     }
+    .api-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+    .api-logo {
+      width: 30px;
+      height: 30px;
+      border-radius: 9px;
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      color: white;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0;
+      box-shadow: 0 1px 0 rgba(255,255,255,.55) inset, 0 8px 18px rgba(33, 42, 48, .12);
+      overflow: hidden;
+    }
+    .api-logo svg { width: 20px; height: 20px; display: block; }
+    .api-logo.telegram { background: linear-gradient(135deg, #37aee2, #1e88c8); }
+    .api-logo.binance { background: linear-gradient(135deg, #f3ba2f, #c99113); color: #1b1e23; }
+    .api-logo.coinpaprika { background: linear-gradient(135deg, #f05a28, #b93618); }
+    .api-logo.coinalyze { background: linear-gradient(135deg, #334155, #111827); }
+    .api-logo.coinmarketcap { background: linear-gradient(135deg, #3861fb, #1635b8); }
     .api-card h4 { margin: 0; font-size: 14px; }
     .api-card p { margin: 0; color: var(--muted); line-height: 1.5; }
     .api-card ul { margin: 0; padding-left: 17px; color: var(--muted); line-height: 1.5; }
@@ -955,6 +981,7 @@ INDEX_HTML = r"""<!doctype html>
     ];
     const apiSourceList = [
       {
+        brand: "telegram",
         name: "Telegram Bot API",
         status: "必填",
         keyText: "需要填写 TG_BOT_TOKEN 和 TG_CHAT_ID",
@@ -963,6 +990,7 @@ INDEX_HTML = r"""<!doctype html>
         note: "这是机器人能不能发消息的核心配置。"
       },
       {
+        brand: "binance",
         name: "Binance 免费公开数据",
         status: "已接入，无需 Key",
         keyText: "不用填写 API Key",
@@ -971,6 +999,7 @@ INDEX_HTML = r"""<!doctype html>
         note: "只用公开接口；如果网络或限频异常，日志和数据质量里会显示。"
       },
       {
+        brand: "coinpaprika",
         name: "CoinPaprika 免费市值数据",
         status: "已接入，无需 Key",
         keyText: "不用填写 API Key",
@@ -979,6 +1008,7 @@ INDEX_HTML = r"""<!doctype html>
         note: "它只补市值，不参与价格、OI、成交量和交易信号计算。"
       },
       {
+        brand: "coinalyze",
         name: "Coinalyze API",
         status: "可选",
         keyText: "可填写 COINALYZE_API_KEY，并开启 COINALYZE_ENABLE",
@@ -987,6 +1017,7 @@ INDEX_HTML = r"""<!doctype html>
         note: "本项目没有用 Coinalyze 获取市值；它也不影响启动雷达市值。"
       },
       {
+        brand: "coinmarketcap",
         name: "CoinMarketCap API",
         status: "预留，未接入",
         keyText: "现在不需要填写，Web 里也没有这个 Key 的配置项",
@@ -1246,11 +1277,23 @@ INDEX_HTML = r"""<!doctype html>
         <div class="raw-body"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
       </details>`;
     }
+    function apiLogo(brand, label) {
+      const safeBrand = escapeHtml(String(brand || "generic"));
+      const safeLabel = escapeHtml(label || "");
+      const icons = {
+        telegram: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.8 4.2 3.7 10.9c-1.2.5-1.2 1.1-.2 1.4l4.4 1.4 1.7 5.2c.2.7.5.9 1 .9.5 0 .8-.2 1.2-.6l2.5-2.4 4.9 3.6c.9.5 1.5.3 1.7-.8l3.1-14.4c.3-1.3-.5-1.9-1.6-1.4Zm-3.1 3.2-7.9 7.1-.3 3.2-1.2-4 9.4-6.3Z"/></svg>`,
+        binance: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m12 2.7 3.2 3.2L12 9.1 8.8 5.9 12 2.7Zm-5.5 5.5 3.2 3.2-3.2 3.2-3.2-3.2 3.2-3.2Zm11 0 3.2 3.2-3.2 3.2-3.2-3.2 3.2-3.2ZM12 13.7l3.2 3.2L12 20.1l-3.2-3.2 3.2-3.2Zm0-6.4 4.1 4.1-4.1 4.1-4.1-4.1L12 7.3Z"/></svg>`,
+        coinpaprika: `<span aria-hidden="true">CP</span>`,
+        coinalyze: `<span aria-hidden="true">CA</span>`,
+        coinmarketcap: `<span aria-hidden="true">CMC</span>`,
+      };
+      return `<span class="api-logo ${safeBrand}" title="${safeLabel}">${icons[brand] || safeLabel.slice(0, 2).toUpperCase()}</span>`;
+    }
     function apiSourceCards() {
       return `<div class="api-grid">` + apiSourceList.map(source => `
         <div class="api-card">
           <div class="api-card-head">
-            <h4>${escapeHtml(source.name)}</h4>
+            <div class="api-title">${apiLogo(source.brand, source.name)}<h4>${escapeHtml(source.name)}</h4></div>
             ${neutralPill(source.status)}
           </div>
           <p><strong>填写要求：</strong>${escapeHtml(source.keyText)}</p>
