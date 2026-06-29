@@ -111,6 +111,18 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("${escapeHtml(action.button)}</button>", html)
         self.assertNotIn("serviceList.map", html)
 
+    def test_web_explains_external_api_sources(self) -> None:
+        html = web.INDEX_HTML
+
+        self.assertIn("外部接口和 API Key 说明", html)
+        self.assertIn("Binance 免费公开数据", html)
+        self.assertIn("CoinPaprika 免费市值数据", html)
+        self.assertIn("不用填写 API Key", html)
+        self.assertIn("本项目没有用 Coinalyze 获取市值", html)
+        self.assertIn("CoinMarketCap API", html)
+        self.assertIn("预留，未接入", html)
+        self.assertIn("当前源码没有接入", html)
+
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             with patch.object(cli, "make_runtime", side_effect=AssertionError("should not init runtime")):

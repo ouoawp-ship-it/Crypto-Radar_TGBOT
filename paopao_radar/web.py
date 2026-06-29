@@ -671,6 +671,30 @@ INDEX_HTML = r"""<!doctype html>
       background: linear-gradient(135deg, rgba(255,255,255,.74), rgba(239,244,246,.7));
     }
     .feature-item strong { display: block; margin-bottom: 4px; }
+    .api-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .api-card {
+      border: 1px solid rgba(93, 106, 115, .22);
+      border-radius: 8px;
+      padding: 11px;
+      background: linear-gradient(135deg, rgba(255,255,255,.76), rgba(238,243,245,.72));
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+    .api-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .api-card h4 { margin: 0; font-size: 14px; }
+    .api-card p { margin: 0; color: var(--muted); line-height: 1.5; }
+    .api-card ul { margin: 0; padding-left: 17px; color: var(--muted); line-height: 1.5; }
     .action-card { display: grid; gap: 10px; align-content: start; }
     .action-card ul {
       margin: 0;
@@ -752,6 +776,7 @@ INDEX_HTML = r"""<!doctype html>
       .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .service-guide { grid-template-columns: 1fr; }
       .service-action { grid-template-columns: 1fr; }
+      .api-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       header { align-items: flex-start; flex-direction: column; }
     }
@@ -926,6 +951,48 @@ INDEX_HTML = r"""<!doctype html>
           "适合磁盘空间变多、图表文件堆积、历史记录太长时手动执行。",
           "输出会列出删除、保留和裁剪了哪些文件。"
         ]
+      }
+    ];
+    const apiSourceList = [
+      {
+        name: "Telegram Bot API",
+        status: "必填",
+        keyText: "需要填写 TG_BOT_TOKEN 和 TG_CHAT_ID",
+        usage: "负责把雷达结果发送到 Telegram 群、频道或话题。",
+        supports: ["真实推送", "测试消息", "话题路由", "回复链追踪"],
+        note: "这是机器人能不能发消息的核心配置。"
+      },
+      {
+        name: "Binance 免费公开数据",
+        status: "已接入，无需 Key",
+        keyText: "不用填写 API Key",
+        usage: "项目的主数据源，负责行情、K线、OI、资金费率、成交额、盘口深度、公告抓取和优先市值数据。",
+        supports: ["资金摘要", "启动雷达", "资金流雷达", "结构雷达", "公告监听", "盘口流动性"],
+        note: "只用公开接口；如果网络或限频异常，日志和数据质量里会显示。"
+      },
+      {
+        name: "CoinPaprika 免费市值数据",
+        status: "已接入，无需 Key",
+        keyText: "不用填写 API Key",
+        usage: "当 Binance 没有返回币种市值时，给启动雷达补市值。",
+        supports: ["启动雷达市值兜底", "市值高/中/低分档", "市值来源显示"],
+        note: "它只补市值，不参与价格、OI、成交量和交易信号计算。"
+      },
+      {
+        name: "Coinalyze API",
+        status: "可选",
+        keyText: "可填写 COINALYZE_API_KEY，并开启 COINALYZE_ENABLE",
+        usage: "只用于结构雷达外部确认里的历史清算量方向辅助。",
+        supports: ["历史清算量", "清算方向辅助", "结构雷达分数小幅修正"],
+        note: "本项目没有用 Coinalyze 获取市值；它也不影响启动雷达市值。"
+      },
+      {
+        name: "CoinMarketCap API",
+        status: "预留，未接入",
+        keyText: "现在不需要填写，Web 里也没有这个 Key 的配置项",
+        usage: "可作为以后更高质量市值兜底的数据源。",
+        supports: ["暂未支持"],
+        note: "如果后续接入，会在配置页新增对应 API Key 输入框。"
       }
     ];
     const serviceGroups = [
@@ -1179,6 +1246,27 @@ INDEX_HTML = r"""<!doctype html>
         <div class="raw-body"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
       </details>`;
     }
+    function apiSourceCards() {
+      return `<div class="api-grid">` + apiSourceList.map(source => `
+        <div class="api-card">
+          <div class="api-card-head">
+            <h4>${escapeHtml(source.name)}</h4>
+            ${neutralPill(source.status)}
+          </div>
+          <p><strong>填写要求：</strong>${escapeHtml(source.keyText)}</p>
+          <p><strong>项目用途：</strong>${escapeHtml(source.usage)}</p>
+          <ul>${source.supports.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+          <p>${escapeHtml(source.note)}</p>
+        </div>
+      `).join("") + `</div>`;
+    }
+    function apiSourcePanel() {
+      return `<div class="panel span-12">
+        <h3 class="section-title">外部接口和 API Key 说明</h3>
+        <div class="notice"><strong>这里说明每个外部接口在本项目里到底做什么。</strong> 现在必须填写的是 Telegram；Coinalyze 是可选清算辅助；CoinMarketCap 只是预留方案，当前源码没有接入。</div>
+        ${apiSourceCards()}
+      </div>`;
+    }
     async function loadSummary() {
       const data = await api("/api/summary");
       setSubtitle(`更新时间 ${data.updated_at}`);
@@ -1215,7 +1303,7 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api("/api/config");
       setSubtitle(data.env_file);
       const root = document.getElementById("configForms");
-      root.innerHTML = "";
+      root.innerHTML = apiSourcePanel();
       Object.entries(data.sections || {}).forEach(([section, fields]) => {
         const panel = document.createElement("div");
         panel.className = "panel span-12";
@@ -1334,6 +1422,7 @@ INDEX_HTML = r"""<!doctype html>
             <div>说明</div><div>${escapeHtml(git.subject || "")}</div>
           </div>
         </div>
+        ${apiSourcePanel()}
         <div class="panel span-6">
           <h3 class="section-title">页面功能</h3>
           <div class="feature-list">
