@@ -74,6 +74,33 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["display_value"], "12")
         self.assertEqual(telegram_fields["TG_FLOW_RADAR_TOPIC_ID"]["display_value"], "15")
 
+    def test_config_payload_resolves_relative_topic_routes_file_under_data_dir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            route_path = Path(tmp) / "data" / "tg_topic_routes.json"
+            route_path.parent.mkdir()
+            env_path.write_text(
+                "TG_CHAT_ID=-1001234567890\n"
+                "TG_TOPIC_ROUTES_FILE=tg_topic_routes.json\n",
+                encoding="utf-8",
+            )
+            route_path.write_text(json.dumps({
+                "routes": {
+                    "TG_LAUNCH_ALERT": {"name": "启动预警", "topic_id": "30"},
+                }
+            }), encoding="utf-8")
+
+            payload = web.config_payload(env_path)
+
+        telegram_fields = {
+            item["key"]: item
+            for item in payload["sections"]["Telegram"]
+        }
+        self.assertEqual(payload["topic_routes_file"], str(route_path))
+        self.assertTrue(payload["topic_routes_found"])
+        self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["display_value"], "30")
+        self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["source"], "auto_route")
+
     def test_write_env_updates_preserves_existing_lines_and_creates_backup(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"

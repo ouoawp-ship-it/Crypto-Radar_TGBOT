@@ -150,7 +150,7 @@ def default_topic_routes_path(env_path: Path, values: dict[str, str]) -> Path:
             return route_path
         if route_path.parts and route_path.parts[0].lower() == "data":
             return BASE_DIR / route_path
-        return env_path.parent / route_path
+        return env_path.parent / "data" / route_path
     if env_path.resolve() == ENV_FILE.resolve():
         return BASE_DIR / "data" / "tg_topic_routes.json"
     return env_path.parent / "data" / "tg_topic_routes.json"
