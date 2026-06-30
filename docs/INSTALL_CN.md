@@ -140,7 +140,7 @@ bash scripts/install_server.sh shortcut
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.11.14`，后续功能更新按 `v1.11.15`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.11.15`，后续功能更新按 `v1.11.16`、`v2.0` 这种方式递增。
 
 中文菜单里的“检查 GitHub 是否有更新”和“更新项目代码”会同时显示:
 
@@ -311,6 +311,8 @@ FLOW_CLOSE_DELAY_SEC=300               # 收线后延迟 5 分钟
 LAUNCH_CLOSE_DELAY_SEC=60              # 启动雷达 15m 收线后延迟 1 分钟
 STRUCTURE_PRE_SCAN_MINUTE=55           # 结构突破雷达每小时提前临界扫描
 STRUCTURE_CONFIRM_DELAY_SEC=300        # 结构突破雷达收线后延迟 5 分钟确认
+STRUCTURE_MIN_SCORE=65                 # 结构雷达最低推送分，复盘提示假突破偏高时可提高
+STRUCTURE_SEND_CHART_TOP_N=3           # 每轮最多给前 N 个结构信号发送 K 线图，信号太多时可降低
 STRUCTURE_DELETE_CHART_AFTER_SEND=true # 真实图片推送成功后立即删除本地 PNG
 STRUCTURE_CHART_RETENTION_HOURS=12     # dry-run/失败图片最多保留 12 小时
 STRUCTURE_MAX_CHART_FILES=200          # 超过 200 张时只保留最新图片

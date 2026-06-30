@@ -101,6 +101,26 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["display_value"], "30")
         self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["source"], "auto_route")
 
+    def test_config_payload_exposes_structure_review_recommendation_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text(
+                "STRUCTURE_MIN_SCORE=65\n"
+                "STRUCTURE_SEND_CHART_TOP_N=3\n",
+                encoding="utf-8",
+            )
+
+            payload = web.config_payload(env_path)
+
+        radar_fields = {
+            item["key"]: item
+            for item in payload["sections"]["雷达参数"]
+        }
+        self.assertEqual(radar_fields["STRUCTURE_MIN_SCORE"]["display_value"], "65")
+        self.assertEqual(radar_fields["STRUCTURE_SEND_CHART_TOP_N"]["display_value"], "3")
+        self.assertIn("复盘建议", radar_fields["STRUCTURE_MIN_SCORE"]["help"])
+        self.assertIn("复盘建议", radar_fields["STRUCTURE_SEND_CHART_TOP_N"]["help"])
+
     def test_write_env_updates_preserves_existing_lines_and_creates_backup(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
@@ -116,6 +136,7 @@ class WebConsoleTests(unittest.TestCase):
                     "TG_CHAT_ID": "-1002222222222",
                     "COINALYZE_ENABLE": True,
                     "STRUCTURE_MIN_SCORE": "70",
+                    "STRUCTURE_SEND_CHART_TOP_N": "2",
                 },
                 path=env_path,
             )
@@ -127,6 +148,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("UNCHANGED=value", text)
         self.assertIn("COINALYZE_ENABLE=true", text)
         self.assertIn("STRUCTURE_MIN_SCORE=70", text)
+        self.assertIn("STRUCTURE_SEND_CHART_TOP_N=2", text)
         self.assertEqual(len(backups), 1)
 
     def test_write_env_updates_rejects_unknown_key(self) -> None:
@@ -157,6 +179,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("当前值会完整显示", html)
         self.assertIn("自动话题：", html)
         self.assertIn("当前 ID 来自自动创建的话题路由文件", html)
+        self.assertIn("对应复盘建议里的 STRUCTURE_MIN_SCORE", html)
+        self.assertIn("对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
@@ -164,6 +188,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("主服务运行摘要", html)
         self.assertIn("结构雷达运行摘要", html)
         self.assertIn("Telegram 配置", html)
+        self.assertIn("结构雷达参数", html)
+        self.assertIn("结构图数量", html)
         self.assertIn("高级排查：原始运行状态 JSON", html)
         self.assertIn('active: "运行中"', html)
         self.assertNotIn("systemd 是否 active", html)

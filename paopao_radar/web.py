@@ -31,6 +31,7 @@ class ConfigField:
     secret: bool = False
     minimum: float | None = None
     maximum: float | None = None
+    help: str = ""
 
 
 EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
@@ -55,7 +56,24 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("FLOW_INTERVAL_SEC", "资金流窗口秒", "雷达参数", kind="int", minimum=300),
     ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300),
     ConfigField("STRUCTURE_TOP_SYMBOLS", "结构雷达扫描数量", "雷达参数", kind="int", minimum=1, maximum=300),
-    ConfigField("STRUCTURE_MIN_SCORE", "结构雷达最低分", "雷达参数", kind="int", minimum=0, maximum=100),
+    ConfigField(
+        "STRUCTURE_MIN_SCORE",
+        "结构雷达最低分",
+        "雷达参数",
+        kind="int",
+        minimum=0,
+        maximum=100,
+        help="对应复盘建议里的 STRUCTURE_MIN_SCORE。提高会减少低分结构信号和假突破，降低会增加信号数量。",
+    ),
+    ConfigField(
+        "STRUCTURE_SEND_CHART_TOP_N",
+        "结构图发送数量",
+        "雷达参数",
+        kind="int",
+        minimum=0,
+        maximum=20,
+        help="对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N。每轮最多给前 N 个结构信号发送 K 线图；设为 0 表示不发结构图。",
+    ),
     ConfigField("LIQUIDITY_SCORE_MAX_DELTA", "外部确认修正上限", "雷达参数", kind="int", minimum=0, maximum=30),
     ConfigField("LIQUIDITY_MIN_DISTANCE_PCT", "盘口墙最小距离 %", "雷达参数", kind="float", minimum=0),
     ConfigField("LIQUIDITY_MAX_DISTANCE_PCT", "盘口墙最大距离 %", "雷达参数", kind="float", minimum=0.1),
@@ -210,6 +228,7 @@ def config_payload(path: Path | None = None, topic_routes_path: Path | None = No
             "route_name": route_name,
             "minimum": field.minimum,
             "maximum": field.maximum,
+            "help": field.help,
         }
         sections.setdefault(field.section, []).append(item)
     return {
@@ -479,6 +498,7 @@ def summary_payload() -> dict[str, Any]:
             "telegram": telegram,
             "liquidity": redacted.get("liquidity"),
             "coinalyze": redacted.get("coinalyze"),
+            "structure_radar": redacted.get("structure_radar"),
         },
         "state_files": store.exists_summary([
             settings.runtime_status_path,
@@ -1338,6 +1358,7 @@ INDEX_HTML = r"""<!doctype html>
       const routeTotal = routeValues.length || 0;
       const liquidity = cfg.liquidity || {};
       const coinalyze = cfg.coinalyze || {};
+      const structureRadar = cfg.structure_radar || {};
       const existingFiles = (stateFiles || []).filter(item => item.exists).length;
       return [
         configCard("Telegram 配置", [
@@ -1361,6 +1382,13 @@ INDEX_HTML = r"""<!doctype html>
           row("请求预算", textValue(coinalyze.request_budget)),
           row("清算周期", textValue(coinalyze.liquidation_interval)),
           row("回看小时", textValue(coinalyze.liquidation_lookback_hours))
+        ]),
+        configCard("结构雷达参数", [
+          row("最低推送分", textValue(structureRadar.min_score)),
+          row("结构图数量", textValue(structureRadar.send_chart_top_n)),
+          row("扫描数量", textValue(structureRadar.top_symbols)),
+          row("复盘统计", neutralPill(zhBool(structureRadar.review_enable))),
+          row("复盘回看", textValue(`${structureRadar.review_lookback_hours ?? "?"} 小时`))
         ]),
         configCard("状态文件", [
           row("文件数量", neutralPill(`${existingFiles}/${(stateFiles || []).length || 0} 存在`)),
@@ -1406,6 +1434,12 @@ INDEX_HTML = r"""<!doctype html>
         ${apiSourceCards()}
       </div>`;
     }
+    function structureRecommendationPanel() {
+      return `<div class="panel span-12 notice">
+        <strong>结构复盘推送里的参数建议，可以在本页“雷达参数”里直接改。</strong>
+        对应复盘建议里的 STRUCTURE_MIN_SCORE 控制结构雷达最低推送分；假突破偏高时提高它。对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N 控制每轮最多发送几张结构 K 线图；图片刷屏时降低它。保存后重启结构雷达生效。
+      </div>`;
+    }
     async function loadSummary() {
       const data = await api("/api/summary");
       setSubtitle(`更新时间 ${data.updated_at}`);
@@ -1442,7 +1476,7 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api("/api/config");
       setSubtitle(data.env_file);
       const root = document.getElementById("configForms");
-      root.innerHTML = apiSourcePanel();
+      root.innerHTML = apiSourcePanel() + structureRecommendationPanel();
       Object.entries(data.sections || {}).forEach(([section, fields]) => {
         const panel = document.createElement("div");
         panel.className = "panel span-12";
@@ -1462,18 +1496,19 @@ INDEX_HTML = r"""<!doctype html>
       const key = escapeHtml(field.key);
       const label = escapeHtml(field.label);
       const current = escapeHtml(configCurrentText(field));
+      const helpParts = [];
+      if (field.help) helpParts.push(escapeHtml(field.help));
+      if (field.source === "auto_route") helpParts.push("当前 ID 来自自动创建的话题路由文件；输入新值并保存后会写入 .env.oi。");
+      const help = helpParts.map(text => `<div class="field-help">${text}</div>`).join("");
       if (field.kind === "bool") {
         const raw = String(field.value || "").trim().toLowerCase();
         const selectedTrue = ["true", "1", "yes", "on", "y"].includes(raw) ? "selected" : "";
         const selectedFalse = ["false", "0", "no", "off", "n"].includes(raw) ? "selected" : "";
-        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select></div>`;
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select>${help}</div>`;
       }
       if (field.secret) {
-        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">当前值会完整显示；输入新值才会替换当前值，留空保存不会改动。</div></div>`;
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">当前值会完整显示；输入新值才会替换当前值，留空保存不会改动。</div>${help}</div>`;
       }
-      const help = field.source === "auto_route"
-        ? `<div class="field-help">当前 ID 来自自动创建的话题路由文件；输入新值并保存后会写入 .env.oi。</div>`
-        : "";
       return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}">${help}</div>`;
     }
     const clearKeys = new Set();
