@@ -60,6 +60,13 @@ def env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(part.strip().upper() for part in value.split(",") if part.strip())
 
 
+def env_list(name: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
 def env_first(*names: str) -> str:
     for name in names:
         value = os.getenv(name, "")
@@ -106,6 +113,20 @@ class Settings:
     tg_default_cooldown_sec: int = 6 * 3600
     tg_push_history_limit: int = 2000
     tg_push_history_retention_days: int = 30
+    ai_assistant_enable: bool = False
+    ai_bot_token: str = ""
+    ai_admin_user_ids: tuple[str, ...] = ()
+    ai_allow_group_chat: bool = False
+    ai_price_alerts_enable: bool = True
+    ai_price_alerts_db_path: Path = BASE_DIR / "data" / "price_alerts.db"
+    ai_default_chat_id: str = ""
+    ai_alert_check_interval_sec: int = 30
+    ai_poll_timeout_sec: int = 20
+    ai_provider_enable: bool = False
+    ai_api_key: str = ""
+    ai_base_url: str = "https://api.deepseek.com"
+    ai_model: str = "deepseek-chat"
+    ai_request_timeout_sec: int = 20
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
     structure_runtime_status_path: Path = BASE_DIR / "data" / "structure_runtime_status.json"
     cleanup_enable: bool = True
@@ -240,6 +261,20 @@ class Settings:
             tg_default_cooldown_sec=env_int("TG_DEFAULT_COOLDOWN_SEC", 6 * 3600),
             tg_push_history_limit=env_int("TG_PUSH_HISTORY_LIMIT", 2000),
             tg_push_history_retention_days=env_int("TG_PUSH_HISTORY_RETENTION_DAYS", 30),
+            ai_assistant_enable=env_bool("AI_ASSISTANT_ENABLE", False),
+            ai_bot_token=os.getenv("AI_BOT_TOKEN", "").strip(),
+            ai_admin_user_ids=env_list("AI_ADMIN_USER_IDS"),
+            ai_allow_group_chat=env_bool("AI_ALLOW_GROUP_CHAT", False),
+            ai_price_alerts_enable=env_bool("AI_PRICE_ALERTS_ENABLE", True),
+            ai_price_alerts_db_path=data_path(data_dir, "AI_PRICE_ALERTS_DB_FILE", "price_alerts.db"),
+            ai_default_chat_id=os.getenv("AI_DEFAULT_CHAT_ID", "").strip(),
+            ai_alert_check_interval_sec=env_int("AI_ALERT_CHECK_INTERVAL_SEC", 30),
+            ai_poll_timeout_sec=env_int("AI_POLL_TIMEOUT_SEC", 20),
+            ai_provider_enable=env_bool("AI_PROVIDER_ENABLE", False),
+            ai_api_key=os.getenv("AI_API_KEY", "").strip(),
+            ai_base_url=os.getenv("AI_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+            ai_model=os.getenv("AI_MODEL", "deepseek-chat").strip() or "deepseek-chat",
+            ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 20),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
             structure_runtime_status_path=data_path(data_dir, "STRUCTURE_RUNTIME_STATUS_FILE", "structure_runtime_status.json"),
             cleanup_enable=env_bool("CLEANUP_ENABLE", True),
@@ -360,6 +395,23 @@ class Settings:
                 "topic_intro_enable": self.tg_topic_intro_enable,
                 "topic_intro_pin": self.tg_topic_intro_pin,
                 "use_topic": self.tg_use_topic,
+            },
+            "ai_assistant": {
+                "enable": self.ai_assistant_enable,
+                "bot_token_configured": bool(self.ai_bot_token),
+                "admin_user_ids_configured": bool(self.ai_admin_user_ids),
+                "admin_user_count": len(self.ai_admin_user_ids),
+                "allow_group_chat": self.ai_allow_group_chat,
+                "price_alerts_enable": self.ai_price_alerts_enable,
+                "price_alerts_db_file": str(self.ai_price_alerts_db_path),
+                "default_chat_id_configured": bool(self.ai_default_chat_id),
+                "alert_check_interval_sec": self.ai_alert_check_interval_sec,
+                "poll_timeout_sec": self.ai_poll_timeout_sec,
+                "provider_enable": self.ai_provider_enable,
+                "api_key_configured": bool(self.ai_api_key),
+                "base_url": self.ai_base_url,
+                "model": self.ai_model,
+                "request_timeout_sec": self.ai_request_timeout_sec,
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),

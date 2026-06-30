@@ -21,7 +21,24 @@ from .storage import JsonStore
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
 STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
+AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
 WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}
+AI_CONFIG_KEYS = {
+    "AI_ASSISTANT_ENABLE",
+    "AI_BOT_TOKEN",
+    "AI_ADMIN_USER_IDS",
+    "AI_ALLOW_GROUP_CHAT",
+    "AI_PRICE_ALERTS_ENABLE",
+    "AI_PRICE_ALERTS_DB_FILE",
+    "AI_DEFAULT_CHAT_ID",
+    "AI_ALERT_CHECK_INTERVAL_SEC",
+    "AI_POLL_TIMEOUT_SEC",
+    "AI_PROVIDER_ENABLE",
+    "AI_API_KEY",
+    "AI_BASE_URL",
+    "AI_MODEL",
+    "AI_REQUEST_TIMEOUT_SEC",
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +66,17 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_FLOW_RADAR_TOPIC_ID", "资金流话题 ID", "Telegram"),
     ConfigField("STRUCTURE_TOPIC_ID", "结构雷达话题 ID", "Telegram"),
     ConfigField("STRUCTURE_REVIEW_TOPIC_ID", "结构复盘话题 ID", "Telegram"),
+    ConfigField("AI_ASSISTANT_ENABLE", "启用 AI 助手 Bot", "AI 助手", kind="bool", help="开启后 paopao-ai 服务会使用独立 AI_BOT_TOKEN 处理私聊和价格提醒。"),
+    ConfigField("AI_BOT_TOKEN", "AI 助手 Bot Token", "AI 助手", secret=True, help="建议用 BotFather 单独创建一个机器人，不要和群推送 Bot 共用。"),
+    ConfigField("AI_ADMIN_USER_IDS", "允许使用的 Telegram 用户 ID", "AI 助手", help="多个 ID 用英文逗号分隔。留空表示不限制用户，不建议公开使用。"),
+    ConfigField("AI_ALLOW_GROUP_CHAT", "允许群内调用 AI 助手", "AI 助手", kind="bool", help="默认关闭，建议先只允许私聊。"),
+    ConfigField("AI_PRICE_ALERTS_ENABLE", "启用价格提醒", "AI 助手", kind="bool", help="使用 Binance 免费合约价格检查提醒。"),
+    ConfigField("AI_DEFAULT_CHAT_ID", "Web 创建提醒默认接收 ID", "AI 助手", help="通常填你的 Telegram 用户 ID；Telegram 私聊创建提醒时会自动使用当前私聊。"),
+    ConfigField("AI_ALERT_CHECK_INTERVAL_SEC", "价格提醒检查间隔秒数", "AI 助手", kind="int", minimum=5, maximum=3600, help="建议 30-60 秒。越小越实时，但请求更频繁。"),
+    ConfigField("AI_PROVIDER_ENABLE", "启用 AI 问答接口", "AI 助手", kind="bool", help="关闭时仍可使用价格提醒和本地状态助手。"),
+    ConfigField("AI_API_KEY", "AI API Key", "AI 助手", secret=True, help="兼容 OpenAI 格式的接口 Key，例如 DeepSeek/OpenAI 兼容服务。"),
+    ConfigField("AI_BASE_URL", "AI 接口地址", "AI 助手", help="例如 https://api.deepseek.com 或其他 OpenAI-compatible 地址。"),
+    ConfigField("AI_MODEL", "AI 模型名称", "AI 助手", help="例如 deepseek-chat。"),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -154,6 +182,9 @@ SERVICE_ACTIONS: dict[str, tuple[str, str]] = {
     "restart-web": (WEB_SERVICE, "restart"),
     "start-web": (WEB_SERVICE, "start"),
     "stop-web": (WEB_SERVICE, "stop"),
+    "restart-ai": (AI_SERVICE, "restart"),
+    "start-ai": (AI_SERVICE, "start"),
+    "stop-ai": (AI_SERVICE, "stop"),
 }
 
 
@@ -627,12 +658,18 @@ def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
         return {"ok": True, "mode": "none", "results": [], "message": "没有配置变更，不需要自动应用"}
 
     results: list[dict[str, Any]] = []
-    if changed_set - WEB_CONFIG_KEYS:
+    standard_restart_keys = changed_set - WEB_CONFIG_KEYS - AI_CONFIG_KEYS
+    if standard_restart_keys:
         for action_name in ("restart-main", "restart-structure"):
             result = run_service_action(action_name)
             service, action = SERVICE_ACTIONS[action_name]
             result.update({"name": action_name, "service": service, "action": action})
             results.append(result)
+    if changed_set & AI_CONFIG_KEYS:
+        result = run_service_action("restart-ai")
+        service, action = SERVICE_ACTIONS["restart-ai"]
+        result.update({"name": "restart-ai", "service": service, "action": action})
+        results.append(result)
     if changed_set & WEB_CONFIG_KEYS:
         results.append(schedule_service_action("restart-web"))
 
@@ -734,6 +771,7 @@ def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
 
 def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
     telegram = config.get("telegram", {}) if isinstance(config.get("telegram"), dict) else {}
+    ai = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
     liquidity = config.get("liquidity", {}) if isinstance(config.get("liquidity"), dict) else {}
     structure = config.get("structure_radar", {}) if isinstance(config.get("structure_radar"), dict) else {}
 
@@ -751,11 +789,18 @@ def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config
         service_item("主服务", "main"),
         service_item("结构雷达", "structure"),
         service_item("Web 控制台", "web"),
+        service_item("AI 助手", "ai"),
         {
             "label": "Telegram 推送",
             "status": "ok" if telegram.get("bot_token_configured") and telegram.get("chat_id_configured") else "bad",
             "value": "已配置" if telegram.get("bot_token_configured") and telegram.get("chat_id_configured") else "缺 Token 或群 ID",
             "detail": "真实推送依赖 Telegram Token 和群 ID",
+        },
+        {
+            "label": "AI 助手 Bot",
+            "status": "ok" if ai.get("enable") and ai.get("bot_token_configured") else ("warn" if ai.get("enable") else "warn"),
+            "value": "已启用" if ai.get("enable") and ai.get("bot_token_configured") else ("缺 AI_BOT_TOKEN" if ai.get("enable") else "未启用"),
+            "detail": "AI 助手和价格提醒使用独立 Telegram Bot，不影响群推送 Bot",
         },
         {
             "label": "话题路由",
@@ -856,6 +901,7 @@ def summary_payload() -> dict[str, Any]:
         "main": service_status(MAIN_SERVICE),
         "structure": service_status(STRUCTURE_SERVICE),
         "web": service_status(WEB_SERVICE),
+        "ai": service_status(AI_SERVICE),
     }
     runtime = {
         "main": load_json_or_empty(settings.runtime_status_path),
@@ -867,6 +913,7 @@ def summary_payload() -> dict[str, Any]:
         "runtime": redacted.get("runtime"),
         "liquidity": redacted.get("liquidity"),
         "coinalyze": redacted.get("coinalyze"),
+        "ai_assistant": redacted.get("ai_assistant"),
         "structure_radar": redacted.get("structure_radar"),
     }
     return {
@@ -902,6 +949,9 @@ def logs_payload(target: str, lines: int) -> dict[str, Any]:
     elif target == "web":
         service = WEB_SERVICE
         fallback_path = settings.data_dir / "web.log"
+    elif target == "ai":
+        service = AI_SERVICE
+        fallback_path = settings.data_dir / "ai-assistant.log"
     else:
         service = MAIN_SERVICE
         fallback_path = settings.data_dir / "runtime.log"
@@ -1321,6 +1371,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="overview" class="active">总览</button>
         <button data-view="logs">日志</button>
         <button data-view="config">配置</button>
+        <button data-view="ai">AI 助手</button>
         <button data-view="actions">检查测试</button>
         <button data-view="services">服务控制</button>
         <button data-view="preview">预览更新</button>
@@ -1348,6 +1399,7 @@ INDEX_HTML = r"""<!doctype html>
         <option value="main">主服务</option>
         <option value="structure">结构雷达</option>
         <option value="web">Web 控制台</option>
+        <option value="ai">AI 助手</option>
       </select>
           <select id="logLines">
             <option value="200">最近 200 行</option>
@@ -1379,6 +1431,11 @@ INDEX_HTML = r"""<!doctype html>
         <pre id="configOutput" class="output"></pre>
       </section>
 
+      <section id="ai" class="view hidden">
+        <div class="grid" id="aiGrid"></div>
+        <pre id="aiOutput" class="output"></pre>
+      </section>
+
       <section id="actions" class="view hidden">
         <div class="grid" id="actionGrid"></div>
         <pre id="actionOutput" class="output"></pre>
@@ -1405,6 +1462,7 @@ INDEX_HTML = r"""<!doctype html>
       overview: "总览",
       logs: "日志",
       config: "配置",
+      ai: "AI 助手",
       actions: "检查测试",
       services: "服务控制",
       preview: "预览更新",
@@ -1502,6 +1560,16 @@ INDEX_HTML = r"""<!doctype html>
         note: "这是机器人能不能发消息的核心配置。"
       },
       {
+        brand: "ai",
+        logoUrl: "https://www.google.com/s2/favicons?domain=deepseek.com&sz=64",
+        name: "AI 问答接口",
+        status: "可选",
+        keyText: "可填写 AI_API_KEY、AI_BASE_URL、AI_MODEL，并开启 AI_PROVIDER_ENABLE",
+        usage: "负责 AI 助手 Bot 的 /ai 问答、运行状态解释和提醒说明；价格提醒本身不依赖 AI Key。",
+        supports: ["AI 私聊问答", "运行状态解释", "价格提醒说明", "后续策略助手扩展"],
+        note: "AI_BOT_TOKEN 是 Telegram 机器人令牌；AI_API_KEY 是模型接口令牌，二者不是同一个配置。"
+      },
+      {
         brand: "binance",
         logoUrl: "https://www.google.com/s2/favicons?domain=binance.com&sz=64",
         name: "Binance 免费公开数据",
@@ -1571,6 +1639,16 @@ INDEX_HTML = r"""<!doctype html>
           { id: "restart-web", label: "重启 Web 控制台", button: "重启", level: "warn", note: "改完 Web 端口、Web 令牌或更新代码后使用。" },
           { id: "start-web", label: "启动 Web 控制台", button: "启动", level: "", note: "浏览器打不开控制台，且服务器服务状态显示 Web 已停止时使用。" },
           { id: "stop-web", label: "停止 Web 控制台", button: "停止", level: "danger", note: "会让网页控制台打不开。除非你明确要关闭 Web 入口，否则不建议点。" }
+        ]
+      },
+      {
+        name: "AI 助手 Bot",
+        service: "paopao-ai",
+        desc: "负责独立 Telegram 私聊、自然语言价格提醒和 AI 问答。它停了以后，群里的雷达推送不会受影响。",
+        actions: [
+          { id: "restart-ai", label: "重启 AI 助手", button: "重启", level: "warn", note: "修改 AI_BOT_TOKEN、AI API Key、允许用户 ID 或提醒间隔后使用。" },
+          { id: "start-ai", label: "启动 AI 助手", button: "启动", level: "", note: "AI 助手服务停止后，想恢复私聊和价格提醒时使用。" },
+          { id: "stop-ai", label: "停止 AI 助手", button: "停止", level: "danger", note: "会暂停 AI 私聊和价格提醒检查，但不影响主雷达推送。" }
         ]
       }
     ];
@@ -1755,6 +1833,7 @@ INDEX_HTML = r"""<!doctype html>
       const routeTotal = routeValues.length || 0;
       const liquidity = cfg.liquidity || {};
       const coinalyze = cfg.coinalyze || {};
+      const ai = cfg.ai_assistant || {};
       const structureRadar = cfg.structure_radar || {};
       const existingFiles = (stateFiles || []).filter(item => item.exists).length;
       return [
@@ -1765,6 +1844,14 @@ INDEX_HTML = r"""<!doctype html>
           row("话题模式", neutralPill(zhBool(telegram.use_topic))),
           row("已配置话题", neutralPill(routeTotal ? `${routeReady}/${routeTotal}` : "未使用话题")),
           row("自动建话题", neutralPill(zhBool(telegram.auto_create_topics)))
+        ]),
+        configCard("AI 助手配置", [
+          row("AI 助手 Bot", neutralPill(zhBool(ai.enable))),
+          row("AI_BOT_TOKEN", neutralPill(configuredText(ai.bot_token_configured))),
+          row("允许用户", neutralPill(ai.admin_user_ids_configured ? `${ai.admin_user_count || 0} 个` : "未限制")),
+          row("价格提醒", neutralPill(zhBool(ai.price_alerts_enable))),
+          row("AI 问答接口", neutralPill(zhBool(ai.provider_enable))),
+          row("AI API Key", neutralPill(configuredText(ai.api_key_configured)))
         ]),
         configCard("外部确认配置", [
           row("外部确认", neutralPill(zhBool(liquidity.fallback_enable))),
@@ -1880,6 +1967,7 @@ INDEX_HTML = r"""<!doctype html>
       const main = data.services.main || {};
       const structure = data.services.structure || {};
       const web = data.services.web || {};
+      const ai = data.services.ai || {};
       const git = data.git || {};
       const runtime = data.runtime || {};
       const cfg = data.config || {};
@@ -1890,6 +1978,7 @@ INDEX_HTML = r"""<!doctype html>
         serviceCard("主服务", main),
         serviceCard("结构雷达", structure),
         serviceCard("Web 控制台", web),
+        serviceCard("AI 助手", ai),
         metric("版本", escapeHtml(git.version || "unknown"), `<div class="muted">${escapeHtml(git.branch)} ${escapeHtml(git.commit)}</div>`),
         runtimeCard("主服务运行摘要", runtime.main, "main"),
         runtimeCard("结构雷达运行摘要", runtime.structure, "structure"),
@@ -2260,6 +2349,93 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("serviceOutput").textContent = JSON.stringify(data, null, 2);
       await loadSummary();
     }
+    function zhDirection(value) {
+      return value === "below" ? "低于或等于" : "高于或等于";
+    }
+    function zhAlertStatus(value) {
+      const map = { active: "运行中", paused: "已暂停", triggered: "已触发" };
+      return map[value] || value || "未知";
+    }
+    function renderAlertRows(alerts) {
+      if (!alerts.length) {
+        return `<tr><td colspan="7" class="hint">还没有价格提醒。可以在 Telegram 私聊 AI 助手 Bot：BTC 跌破 58000 提醒我</td></tr>`;
+      }
+      return alerts.map(item => `
+        <tr>
+          <td>${escapeHtml(String(item.id))}</td>
+          <td><strong>${escapeHtml(item.symbol)}</strong></td>
+          <td>${escapeHtml(zhDirection(item.direction))}</td>
+          <td>${escapeHtml(item.target_price_text || item.target_price)}</td>
+          <td>${neutralPill(zhAlertStatus(item.status))}</td>
+          <td>${escapeHtml(item.last_price_text || "暂无")}</td>
+          <td>
+            <button class="btn" onclick="mutateAlert(${item.id}, '${item.status === "paused" ? "resume" : "pause"}')">${item.status === "paused" ? "恢复" : "暂停"}</button>
+            <button class="btn danger" onclick="mutateAlert(${item.id}, 'delete')">删除</button>
+          </td>
+        </tr>
+      `).join("");
+    }
+    async function loadAiAssistant() {
+      const summary = await api("/api/summary");
+      const alertsData = await api("/api/price-alerts");
+      const ai = ((summary.config || {}).ai_assistant || {});
+      const service = ((summary.services || {}).ai || {});
+      const stats = alertsData.stats || {};
+      document.getElementById("aiGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>AI 助手 Bot 和雷达推送 Bot 是分开的。</strong>
+          群里的启动雷达、资金流雷达、结构雷达继续走 TG_BOT_TOKEN；私聊 AI、自然语言价格提醒和个人提醒走 AI_BOT_TOKEN。
+        </div>
+        <div class="panel span-3 metric"><div class="label">AI 服务</div><div class="value">${statusPill(service.active || "unknown", Boolean(service.active_ok))}</div><div class="muted">${escapeHtml(service.service || "paopao-ai")}</div></div>
+        <div class="panel span-3 metric"><div class="label">AI Bot Token</div><div class="value">${neutralPill(configuredText(ai.bot_token_configured))}</div></div>
+        <div class="panel span-3 metric"><div class="label">AI 问答接口</div><div class="value">${neutralPill(zhBool(ai.provider_enable))}</div><div class="muted">${escapeHtml(ai.model || "deepseek-chat")}</div></div>
+        <div class="panel span-3 metric"><div class="label">价格提醒</div><div class="value">${neutralPill(`${stats.active || 0} 运行中`)}</div><div class="muted">暂停 ${stats.paused || 0}，已触发 ${stats.triggered || 0}</div></div>
+        <div class="panel span-12">
+          <h3 class="section-title">怎么用</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>推荐方式</strong><span class="muted">打开 AI 助手 Bot 私聊，发送：BTC 跌破 58000 提醒我。私聊创建会自动识别你的 Telegram 用户 ID。</span></div>
+            <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
+            <div class="feature-item"><strong>AI 问答</strong><span class="muted">没填 AI_API_KEY 时，Bot 仍能管理价格提醒；填了兼容 OpenAI 的 AI 接口后，可以使用 /ai 提问。</span></div>
+          </div>
+        </div>
+        <div class="panel span-12">
+          <h3 class="section-title">新增价格提醒</h3>
+          <div class="form-grid">
+            <div class="field"><label>币种</label><input id="newAlertSymbol" placeholder="BTC 或 BTCUSDT"></div>
+            <div class="field"><label>方向</label><select id="newAlertDirection"><option value="above">高于或等于</option><option value="below">低于或等于</option></select></div>
+            <div class="field"><label>目标价格</label><input id="newAlertPrice" placeholder="58000"></div>
+            <div class="field"><label>接收提醒的 Telegram 用户 ID</label><input id="newAlertChatId" placeholder="留空则使用 AI_DEFAULT_CHAT_ID"></div>
+          </div>
+          <div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="createWebAlert()">创建提醒</button></div>
+        </div>
+        <div class="panel span-12">
+          <h3 class="section-title">价格提醒列表</h3>
+          <table class="table">
+            <thead><tr><th>ID</th><th>币种</th><th>方向</th><th>目标价</th><th>状态</th><th>最后价格</th><th>操作</th></tr></thead>
+            <tbody>${renderAlertRows(alertsData.alerts || [])}</tbody>
+          </table>
+        </div>
+      `;
+      setSubtitle("AI 助手、独立 Bot 和价格提醒中心");
+    }
+    async function createWebAlert() {
+      const body = {
+        action: "create",
+        symbol: document.getElementById("newAlertSymbol").value,
+        direction: document.getElementById("newAlertDirection").value,
+        target_price: document.getElementById("newAlertPrice").value,
+        chat_id: document.getElementById("newAlertChatId").value
+      };
+      const data = await api("/api/price-alerts", { method: "POST", body: JSON.stringify(body) });
+      document.getElementById("aiOutput").textContent = JSON.stringify(data, null, 2);
+      await loadAiAssistant();
+    }
+    async function mutateAlert(id, action) {
+      if (action === "delete" && !confirm(`确认删除提醒 ${id}？`)) return;
+      const data = await api("/api/price-alerts", { method: "POST", body: JSON.stringify({ id, action }) });
+      document.getElementById("aiOutput").textContent = JSON.stringify(data, null, 2);
+      await loadAiAssistant();
+    }
     function switchView(view) {
       currentView = view;
       document.querySelectorAll(".view").forEach(el => el.classList.add("hidden"));
@@ -2273,6 +2449,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "overview") await loadSummary();
         if (currentView === "logs") await loadLogs();
         if (currentView === "config") await loadConfig();
+        if (currentView === "ai") await loadAiAssistant();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
         if (currentView === "services") { setSubtitle("后台服务开关，停止前会二次确认"); renderServices(); }
         if (currentView === "preview") await loadPreviewPanel();
@@ -2356,6 +2533,11 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/update-check":
             self.send_json(update_check_payload())
             return
+        if path == "/api/price-alerts":
+            from .ai_assistant import price_alerts_payload
+
+            self.send_json(price_alerts_payload())
+            return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]
             lines = int(query.get("lines", ["200"])[0] or 200)
@@ -2395,6 +2577,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/service":
                 self.send_json(run_service_action(str(data.get("name", ""))))
+                return
+            if path == "/api/price-alerts":
+                from .ai_assistant import create_price_alert_from_payload, mutate_price_alert_from_payload
+
+                action = str(data.get("action") or "create").strip().lower()
+                if action == "create":
+                    self.send_json(create_price_alert_from_payload(data))
+                else:
+                    self.send_json(mutate_price_alert_from_payload(data))
                 return
             self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:

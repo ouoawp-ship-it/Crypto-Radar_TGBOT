@@ -41,6 +41,26 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["display_value"], "-1001234567890")
 
+    def test_config_payload_exposes_ai_assistant_secret_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text(
+                "AI_ASSISTANT_ENABLE=true\n"
+                "AI_BOT_TOKEN=987654:ai-bot-token\n"
+                "AI_API_KEY=sk-ai-secret\n"
+                "AI_MODEL=deepseek-chat\n",
+                encoding="utf-8",
+            )
+
+            payload = web.config_payload(env_path)
+
+        ai_fields = {item["key"]: item for item in payload["sections"]["AI 助手"]}
+        self.assertEqual(ai_fields["AI_BOT_TOKEN"]["value"], "987654:ai-bot-token")
+        self.assertEqual(ai_fields["AI_BOT_TOKEN"]["display_value"], "987654:ai-bot-token")
+        self.assertEqual(ai_fields["AI_API_KEY"]["value"], "sk-ai-secret")
+        self.assertEqual(ai_fields["AI_API_KEY"]["display_value"], "sk-ai-secret")
+        self.assertEqual(ai_fields["AI_ASSISTANT_ENABLE"]["value"], "true")
+
     def test_config_payload_reads_auto_created_topic_routes(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
@@ -273,6 +293,15 @@ class WebConsoleTests(unittest.TestCase):
         )
         scheduled.assert_called_once_with("restart-web")
         self.assertIn("自动应用", result["message"])
+
+    def test_auto_apply_ai_config_restarts_only_ai_service(self) -> None:
+        with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
+            with patch.object(web, "schedule_service_action") as scheduled:
+                result = web.auto_apply_config_changes(["AI_BOT_TOKEN", "AI_PROVIDER_ENABLE"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([call.args[0] for call in service_action.call_args_list], ["restart-ai"])
+        scheduled.assert_not_called()
 
     def test_non_loopback_web_requires_token(self) -> None:
         with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):

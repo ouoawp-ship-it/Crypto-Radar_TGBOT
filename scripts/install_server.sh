@@ -6,6 +6,7 @@ SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
+AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ENV_FILE="${APP_DIR}/.env.oi"
@@ -815,6 +816,47 @@ EOF
   fi
 }
 
+install_ai_systemd_service() {
+  command -v systemctl >/dev/null 2>&1 || {
+    log "未找到 systemctl，不安装 AI 助手 systemd 服务"
+    return 0
+  }
+
+  log "安装 systemd 服务: ${AI_SERVICE_NAME}"
+  local service_path="/etc/systemd/system/${AI_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao AI Assistant Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py ai-assistant
+Restart=always
+RestartSec=10
+EnvironmentFile=-${ENV_FILE}
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$AI_SERVICE_NAME"
+
+  if [ "$AUTO_START" = "1" ]; then
+    log "启动 AI 助手服务"
+    run_root systemctl restart "$AI_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$AI_SERVICE_NAME" || true
+  else
+    log "AUTO_START=0，AI 助手服务已安装但未启动"
+  fi
+}
+
 install_shortcut_command() {
   local shortcut="/usr/local/bin/paopao"
   log "安装快捷命令: paopao"
@@ -825,6 +867,7 @@ export SERVICE_NAME="${SERVICE_NAME}"
 export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
+export AI_SERVICE_NAME="${AI_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
   run_root chmod +x "$shortcut"
@@ -870,6 +913,7 @@ EOF
   install_structure_systemd_service
   install_cleanup_systemd_timer
   install_web_systemd_service
+  install_ai_systemd_service
   install_shortcut_command
 
   cat <<EOF

@@ -54,7 +54,7 @@ bash scripts/install_server.sh
 - 跑单元测试
 - 生成 dry-run 启动观察历史
 - 通过 readiness 检查
-- 创建并启动 `paopao-radar`、`paopao-structure`、`paopao-web` systemd 服务
+- 创建并启动 `paopao-radar`、`paopao-structure`、`paopao-web`、`paopao-ai` systemd 服务
 - 定时自动清理临时文件、坏 JSON 备份、过期日志和过长历史
 
 ## 查看运行
@@ -98,6 +98,48 @@ WEB_ADMIN_TOKEN=
 控制台功能包括：服务状态、运行健康度、最近错误、实时日志、日志搜索筛选、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启、推送样例预览、GitHub 更新检查，以及 `.env.oi` 关键配置编辑。配置页支持保存前预览改动、保存后中文结果提示、最近 `.env.oi` 备份一键恢复、真实模块开关，以及结构复盘参数建议一键应用。结构复盘推送里建议调整的 `STRUCTURE_MIN_SCORE` 和 `STRUCTURE_SEND_CHART_TOP_N` 可以在 Web 的“配置 -> 雷达参数”里直接修改。保存配置前会自动备份 `.env.oi`，保存成功后会自动应用新配置；主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。Web 内置“功能说明”页，会说明每个页面的用途、版本号、提交号和安全规则。
 
 如果 `WEB_ADMIN_TOKEN` 为空，程序会拒绝监听公网地址；安装/更新脚本会自动补齐。
+
+## AI 助手 Bot 和价格提醒
+
+v1.13.0 新增独立 AI 助手服务 `paopao-ai.service`。它和群里的雷达推送 Bot 分开：
+
+```text
+TG_BOT_TOKEN  = 群话题推送雷达信号
+AI_BOT_TOKEN  = 私聊 AI 助手、自然语言价格提醒、个人提醒
+```
+
+推荐用 BotFather 单独创建一个新的 Telegram Bot，填到 Web 控制台的「配置 -> AI 助手」里：
+
+```bash
+AI_ASSISTANT_ENABLE=true
+AI_BOT_TOKEN=
+AI_ADMIN_USER_IDS=你的Telegram用户ID
+AI_PRICE_ALERTS_ENABLE=true
+AI_ALERT_CHECK_INTERVAL_SEC=30
+```
+
+价格提醒不需要 AI API Key，使用 Binance 免费合约价格。打开 AI 助手 Bot 私聊后可以直接发送：
+
+```text
+BTC 跌破 58000 提醒我
+ETH 突破 4200 提醒我
+/alerts
+/price BTC
+/pause 12
+/resume 12
+/delete 12
+```
+
+如果需要真正的 AI 问答，再开启兼容 OpenAI 格式的模型接口：
+
+```bash
+AI_PROVIDER_ENABLE=true
+AI_API_KEY=
+AI_BASE_URL=https://api.deepseek.com
+AI_MODEL=deepseek-chat
+```
+
+Web 控制台新增「AI 助手」页面，可以查看 `paopao-ai` 服务状态、提醒统计、新增 Web 提醒、暂停/恢复/删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。
 
 ## 闭合窗口参数
 
@@ -198,6 +240,7 @@ COINALYZE_API_KEY=
 paopao-radar      # 主服务：资金摘要、启动雷达、公告、资金流等
 paopao-structure  # 结构雷达独立循环：55 分预警，整点后 5 分确认
 paopao-web        # Web 控制台：状态、日志、配置和维护操作
+paopao-ai         # AI 助手 Bot：私聊问答、自然语言价格提醒、个人提醒
 paopao-cleanup.timer # 每小时自动清理运行垃圾
 ```
 
@@ -227,7 +270,7 @@ ANNOUNCEMENT_PAGE_SIZE=50
 bash scripts/update_server.sh
 ```
 
-更新脚本每次运行后会自动执行一次安全清理：同步 `.env.oi`、清理 pycache/临时文件/过期日志/过期结构图/根目录临时报告，再重启服务。脚本还会安装/刷新 `paopao-structure.service`、`paopao-web.service` 和 `paopao-cleanup.timer`。清理不会删除 `.env.oi`、`data/*.json` 状态文件、README、`docs/INSTALL_CN.md` 或源码。
+更新脚本每次运行后会自动执行一次安全清理：同步 `.env.oi`、清理 pycache/临时文件/过期日志/过期结构图/根目录临时报告，再重启服务。脚本还会安装/刷新 `paopao-structure.service`、`paopao-web.service`、`paopao-ai.service` 和 `paopao-cleanup.timer`。清理不会删除 `.env.oi`、`data/*.json` 状态文件、README、`docs/INSTALL_CN.md` 或源码。
 
 ## 安全规则
 
@@ -261,4 +304,4 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.12.0`，后续功能更新按 `v1.12.1`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.13.0`，后续功能更新按 `v1.13.1`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。

@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -216,6 +216,7 @@ def make_runtime_for_args(args: argparse.Namespace) -> tuple[Settings, JsonStore
 def state_paths(settings: Settings) -> list[Path]:
     return [
         settings.tg_push_history_path,
+        settings.ai_price_alerts_db_path,
         settings.runtime_status_path,
         settings.structure_runtime_status_path,
         settings.radar_state_path,
@@ -1407,6 +1408,10 @@ def main(argv: list[str] | None = None) -> int:
         from .web import run_web_server
 
         return run_web_server(args.host, args.port, args.web_token)
+    if args.command == "ai-assistant":
+        from .ai_assistant import run_ai_assistant_service
+
+        return run_ai_assistant_service()
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":
@@ -1443,6 +1448,11 @@ def main(argv: list[str] | None = None) -> int:
         return run_structure_review(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
+        return 0
+    if args.command == "price-alerts":
+        from .ai_assistant import price_alerts_payload
+
+        print(json.dumps(price_alerts_payload(settings), ensure_ascii=False, indent=2))
         return 0
     if args.command == "watchlist":
         print_watchlist(settings, store, args.top)

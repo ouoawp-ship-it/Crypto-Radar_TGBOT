@@ -140,9 +140,51 @@ cd ~/paopao-crypto-radar
 bash scripts/install_server.sh shortcut
 ```
 
+### AI 助手 Bot 和价格提醒
+
+v1.13.0 新增 `paopao-ai.service`。它使用独立的 `AI_BOT_TOKEN`，和群里推送雷达信号的 `TG_BOT_TOKEN` 分开：
+
+```text
+TG_BOT_TOKEN = 群话题推送雷达信号
+AI_BOT_TOKEN = 私聊 AI 助手、自然语言价格提醒、个人提醒
+```
+
+推荐在 Web 控制台的「配置 -> AI 助手」里填写：
+
+```bash
+AI_ASSISTANT_ENABLE=true
+AI_BOT_TOKEN=
+AI_ADMIN_USER_IDS=你的Telegram用户ID
+AI_PRICE_ALERTS_ENABLE=true
+AI_ALERT_CHECK_INTERVAL_SEC=30
+```
+
+价格提醒不需要 AI API Key，使用 Binance 免费合约价格。打开 AI 助手 Bot 私聊后可以发送：
+
+```text
+BTC 跌破 58000 提醒我
+ETH 突破 4200 提醒我
+/alerts
+/price BTC
+/pause 12
+/resume 12
+/delete 12
+```
+
+如果要启用真正 AI 问答，再配置：
+
+```bash
+AI_PROVIDER_ENABLE=true
+AI_API_KEY=
+AI_BASE_URL=https://api.deepseek.com
+AI_MODEL=deepseek-chat
+```
+
+没配置 `AI_BOT_TOKEN` 时，`paopao-ai.service` 会保持等待状态，不影响主雷达推送。
+
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.12.0`，后续功能更新按 `v1.12.1`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.13.0`，后续功能更新按 `v1.13.1`、`v2.0` 这种方式递增。
 
 中文菜单里的“检查 GitHub 是否有更新”和“更新项目代码”会同时显示:
 
@@ -255,8 +297,8 @@ paopao
 - 编译检查
 - 单元测试
 - 自动清理 pycache、临时文件、过期日志、过期结构图和根目录临时报告
-- 安装/刷新 `paopao-radar.service` 主服务、`paopao-structure.service` 结构雷达独立服务和 `paopao-web.service` Web 控制台服务
-- 即使当前代码已经是最新版，也会刷新快捷命令、补装 `paopao-structure.service`、`paopao-web.service` 和 `paopao-cleanup.timer`，并重启已安装服务
+- 安装/刷新 `paopao-radar.service` 主服务、`paopao-structure.service` 结构雷达独立服务、`paopao-web.service` Web 控制台服务和 `paopao-ai.service` AI 助手服务
+- 即使当前代码已经是最新版，也会刷新快捷命令、补装 `paopao-structure.service`、`paopao-web.service`、`paopao-ai.service` 和 `paopao-cleanup.timer`，并重启已安装服务
 
 结构雷达独立服务由 `paopao-structure.service` 管理，专门运行 `structure-loop`，用于每小时 55 分提前临界扫描和整点后 5 分收线确认。服务状态、日志和重启操作统一在 Web 控制台完成。
 

@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
+AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
