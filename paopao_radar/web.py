@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -20,6 +21,7 @@ from .storage import JsonStore
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
 STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
+WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}
 
 
 @dataclass(frozen=True)
@@ -422,6 +424,56 @@ def run_service_action(name: str) -> dict[str, Any]:
     if action == "stop" and not name.startswith("stop-"):
         return {"ok": False, "returncode": 2, "stderr": "停止服务需要明确动作", "stdout": ""}
     return run_subprocess(sudo_systemctl_command(service, action), timeout=30)
+
+
+def schedule_service_action(name: str, *, delay_sec: float = 1.2) -> dict[str, Any]:
+    item = SERVICE_ACTIONS.get(name)
+    if item is None:
+        return {"ok": False, "returncode": 2, "stderr": "未知服务动作", "stdout": ""}
+    service, action = item
+
+    def worker() -> None:
+        time.sleep(delay_sec)
+        result = run_subprocess(sudo_systemctl_command(service, action), timeout=30)
+        sys.stderr.write(
+            f"[web] delayed {action} {service}: ok={result.get('ok')} returncode={result.get('returncode')}\n"
+        )
+
+    thread = threading.Thread(target=worker, name=f"web-{action}-{service}", daemon=True)
+    thread.start()
+    return {
+        "ok": True,
+        "scheduled": True,
+        "service": service,
+        "action": action,
+        "delay_sec": delay_sec,
+        "message": "已安排延迟执行，当前请求会先返回结果",
+    }
+
+
+def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
+    changed_set = set(changed)
+    if not changed_set:
+        return {"ok": True, "mode": "none", "results": [], "message": "没有配置变更，不需要自动应用"}
+
+    results: list[dict[str, Any]] = []
+    if changed_set - WEB_CONFIG_KEYS:
+        for action_name in ("restart-main", "restart-structure"):
+            result = run_service_action(action_name)
+            service, action = SERVICE_ACTIONS[action_name]
+            result.update({"name": action_name, "service": service, "action": action})
+            results.append(result)
+    if changed_set & WEB_CONFIG_KEYS:
+        results.append(schedule_service_action("restart-web"))
+
+    ok = all(bool(item.get("ok")) for item in results)
+    if not results:
+        message = "没有需要自动重启的服务"
+    elif ok:
+        message = "配置已保存并自动应用；Web 控制台配置变更会在返回结果后短暂重启"
+    else:
+        message = "配置已保存，但部分服务自动应用失败；可到服务控制页手动重启"
+    return {"ok": ok, "mode": "auto_restart", "results": results, "message": message}
 
 
 def command_exists(name: str) -> bool:
@@ -1529,8 +1581,14 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({ updates, clear: Array.from(clearKeys) })
       });
       document.getElementById("configOutput").textContent = JSON.stringify(data, null, 2);
+      if (data.ok && updates.WEB_ADMIN_TOKEN) localStorage.setItem("paopaoAdminToken", updates.WEB_ADMIN_TOKEN);
+      if (data.ok && clearKeys.has("WEB_ADMIN_TOKEN")) localStorage.removeItem("paopaoAdminToken");
       clearKeys.clear();
-      await loadConfig();
+      try {
+        await loadConfig();
+      } catch (err) {
+        setSubtitle("配置已保存，后台服务正在自动应用；如果页面短暂断开，稍后刷新即可");
+      }
     }
     function renderActions() {
       document.getElementById("actionGrid").innerHTML = `
@@ -1616,7 +1674,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="feature-list">
             <div class="feature-item"><strong>访问地址</strong><span class="muted">默认使用 http://服务器IP:8080/。如果你改了 WEB_PORT，按配置里的端口访问。</span></div>
             <div class="feature-item"><strong>登录令牌</strong><span class="muted">输入 WEB_ADMIN_TOKEN。服务器输入 paopao 后选择 1 可查看。不要把令牌发到公开群。</span></div>
-            <div class="feature-item"><strong>配置生效</strong><span class="muted">保存 .env.oi 后，后台运行中的服务通常需要重启才会读取新配置。</span></div>
+            <div class="feature-item"><strong>配置生效</strong><span class="muted">保存配置后会自动应用：主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。</span></div>
             <div class="feature-item"><strong>服务器入口</strong><span class="muted">服务器只需要记住 paopao。进入中文菜单后查看 Web 地址、令牌、状态、日志和更新入口。</span></div>
             <div class="feature-item"><strong>安全边界</strong><span class="muted">Web 后端只执行白名单动作，不提供任意 shell 命令入口。</span></div>
           </div>
@@ -1734,7 +1792,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 clear = data.get("clear", [])
                 if not isinstance(updates, dict) or not isinstance(clear, list):
                     raise ValueError("updates 必须是对象，clear 必须是数组")
-                self.send_json(write_env_updates(updates, clear=[str(item) for item in clear]))
+                result = write_env_updates(updates, clear=[str(item) for item in clear])
+                if result.get("ok") and result.get("changed"):
+                    apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
+                    result["apply"] = apply_result
+                    result["message"] = apply_result.get("message", result.get("message"))
+                self.send_json(result)
                 return
             if path == "/api/action":
                 self.send_json(run_cli_action(str(data.get("name", ""))))

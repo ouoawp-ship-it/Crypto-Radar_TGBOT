@@ -161,6 +161,19 @@ class WebConsoleTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("DANGEROUS", result["errors"])
 
+    def test_auto_apply_config_changes_restarts_needed_services(self) -> None:
+        with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
+            with patch.object(web, "schedule_service_action", return_value={"ok": True, "scheduled": True}) as scheduled:
+                result = web.auto_apply_config_changes(["STRUCTURE_MIN_SCORE", "WEB_PORT"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [call.args[0] for call in service_action.call_args_list],
+            ["restart-main", "restart-structure"],
+        )
+        scheduled.assert_called_once_with("restart-web")
+        self.assertIn("自动应用", result["message"])
+
     def test_non_loopback_web_requires_token(self) -> None:
         with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
             self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
@@ -181,6 +194,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("当前 ID 来自自动创建的话题路由文件", html)
         self.assertIn("对应复盘建议里的 STRUCTURE_MIN_SCORE", html)
         self.assertIn("对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N", html)
+        self.assertIn("配置已保存，后台服务正在自动应用", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
