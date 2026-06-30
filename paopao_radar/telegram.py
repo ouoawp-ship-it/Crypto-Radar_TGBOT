@@ -193,7 +193,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "阅读方式：",
         "1. 先看总信号、已完成复盘、有效突破、假突破、无效震荡。",
         "2. 再看 S/A/B/C 各等级命中率，判断当前分数线是否过松。",
-        "3. 参数建议只做参考，不会自动修改 .env.oi。",
+        "3. 参数建议不会未经确认自动修改 .env.oi；需要时可在 Web 控制台一键应用。",
         ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([

@@ -59,6 +59,15 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300),
     ConfigField("STRUCTURE_TOP_SYMBOLS", "结构雷达扫描数量", "雷达参数", kind="int", minimum=1, maximum=300),
     ConfigField(
+        "STRUCTURE_NEAR_EDGE_PCT",
+        "结构临界距离 %",
+        "雷达参数",
+        kind="float",
+        minimum=0.1,
+        maximum=10,
+        help="结构临近突破/跌破的边缘距离。降低会减少临界观察信号，提高会放宽临界信号。",
+    ),
+    ConfigField(
         "STRUCTURE_MIN_SCORE",
         "结构雷达最低分",
         "雷达参数",
@@ -75,6 +84,15 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
         minimum=0,
         maximum=20,
         help="对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N。每轮最多给前 N 个结构信号发送 K 线图；设为 0 表示不发结构图。",
+    ),
+    ConfigField(
+        "STRUCTURE_COOLDOWN_SEC",
+        "同币冷却秒数",
+        "雷达参数",
+        kind="int",
+        minimum=0,
+        maximum=86400,
+        help="同一个币种结构信号的冷却时间。提高会减少同币重复推送。",
     ),
     ConfigField("LIQUIDITY_SCORE_MAX_DELTA", "外部确认修正上限", "雷达参数", kind="int", minimum=0, maximum=30),
     ConfigField("LIQUIDITY_MIN_DISTANCE_PCT", "盘口墙最小距离 %", "雷达参数", kind="float", minimum=0),
@@ -291,8 +309,153 @@ def backup_env_file(path: Path) -> Path | None:
     if not path.exists():
         return None
     backup = path.with_name(f"{path.name}.bak.web.{time.strftime('%Y%m%d_%H%M%S')}")
+    index = 1
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.bak.web.{time.strftime('%Y%m%d_%H%M%S')}.{index}")
+        index += 1
     shutil.copy2(path, backup)
     return backup
+
+
+def env_backup_payload(path: Path | None = None, *, limit: int = 20) -> dict[str, Any]:
+    env_path = path or ENV_FILE
+    backups: list[dict[str, Any]] = []
+    candidates: list[tuple[float, Path, os.stat_result]] = []
+    for backup in env_path.parent.glob(f"{env_path.name}.bak.web.*"):
+        try:
+            stat = backup.stat()
+        except OSError:
+            continue
+        candidates.append((stat.st_mtime, backup, stat))
+    for _, backup, stat in sorted(candidates, key=lambda item: item[0], reverse=True):
+        backups.append(
+            {
+                "name": backup.name,
+                "path": str(backup),
+                "size": stat.st_size,
+                "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+            }
+        )
+        if len(backups) >= limit:
+            break
+    return {"env_file": str(env_path), "backups": backups}
+
+
+def restore_env_backup(name: str, *, path: Path | None = None) -> dict[str, Any]:
+    env_path = path or ENV_FILE
+    safe_name = Path(name).name
+    backup = env_path.with_name(safe_name)
+    if safe_name != name or backup.parent.resolve() != env_path.parent.resolve():
+        return {"ok": False, "error": "备份文件名不合法"}
+    if not safe_name.startswith(f"{env_path.name}.bak.web."):
+        return {"ok": False, "error": "只能恢复 Web 自动创建的 .env.oi 备份"}
+    if not backup.exists() or not backup.is_file():
+        return {"ok": False, "error": "备份文件不存在"}
+
+    before = read_env_values(env_path)
+    current_backup = backup_env_file(env_path)
+    shutil.copy2(backup, env_path)
+    load_env_file(env_path)
+    after = read_env_values(env_path)
+    changed = sorted(key for key in set(before) | set(after) if before.get(key, "") != after.get(key, ""))
+    return {
+        "ok": True,
+        "restored": backup.name,
+        "backup": str(current_backup) if current_backup else "",
+        "changed": changed,
+        "message": "配置备份已恢复，正在自动应用",
+    }
+
+
+def structure_review_recommendations_payload(path: Path | None = None) -> dict[str, Any]:
+    settings = Settings.load()
+    stats_path = path or settings.structure_stats_path
+    stats = load_json_or_empty(stats_path)
+    if not isinstance(stats, dict):
+        return {"ok": False, "stats_file": str(stats_path), "recommendations": [], "updates": {}, "message": "结构复盘统计文件不可读"}
+
+    summary = stats.get("summary", {}) if isinstance(stats.get("summary"), dict) else {}
+    total = int(summary.get("total", 0) or 0)
+    reviewed = int(summary.get("reviewed", 0) or 0)
+    min_sample = max(1, int(settings.structure_review_min_sample or 1))
+    recommendations: list[dict[str, Any]] = []
+
+    def add_recommendation(key: str, suggested: int | float, reason: str) -> None:
+        current = {
+            "STRUCTURE_MIN_SCORE": settings.structure_min_score,
+            "STRUCTURE_SEND_CHART_TOP_N": settings.structure_send_chart_top_n,
+            "STRUCTURE_NEAR_EDGE_PCT": settings.structure_near_edge_pct,
+            "STRUCTURE_COOLDOWN_SEC": settings.structure_cooldown_sec,
+        }.get(key)
+        if current is None or str(current) == str(suggested):
+            return
+        recommendations.append(
+            {
+                "key": key,
+                "label": EDITABLE_CONFIG.get(key, ConfigField(key, key, "雷达参数")).label,
+                "current": current,
+                "suggested": suggested,
+                "reason": reason,
+            }
+        )
+
+    if reviewed < min_sample:
+        return {
+            "ok": True,
+            "stats_file": str(stats_path),
+            "summary": summary,
+            "recommendations": [],
+            "updates": {},
+            "message": f"已复盘样本 {reviewed} 条，少于最小样本 {min_sample} 条，暂不建议自动调整。",
+        }
+
+    by_level = stats.get("by_level", {}) if isinstance(stats.get("by_level"), dict) else {}
+    b_bucket = by_level.get("B", {}) if isinstance(by_level.get("B"), dict) else {}
+    if int(b_bucket.get("reviewed", 0) or 0) >= 3 and float(b_bucket.get("fake_rate", 0) or 0) >= 0.45:
+        add_recommendation(
+            "STRUCTURE_MIN_SCORE",
+            max(int(settings.structure_min_score) + 5, 70),
+            "B级假突破率偏高，提高最低分可以过滤低质量结构信号。",
+        )
+
+    by_type = stats.get("by_signal_type", {}) if isinstance(stats.get("by_signal_type"), dict) else {}
+    pre_total = sum(
+        int((by_type.get(key, {}) if isinstance(by_type.get(key), dict) else {}).get("total", 0) or 0)
+        for key in ("PRE_BREAKOUT_NEAR", "PRE_BREAKDOWN_NEAR")
+    )
+    if total and pre_total / total >= 0.7 and float(summary.get("hit_rate", 0) or 0) < 0.35:
+        add_recommendation(
+            "STRUCTURE_NEAR_EDGE_PCT",
+            round(max(0.5, float(settings.structure_near_edge_pct) - 0.3), 1),
+            "临界信号占比偏高且命中率不足，收紧临界距离可以减少提前观察噪音。",
+        )
+
+    by_symbol = stats.get("by_symbol", {}) if isinstance(stats.get("by_symbol"), dict) else {}
+    symbol_counts = [int(bucket.get("total", 0) or 0) for bucket in by_symbol.values() if isinstance(bucket, dict)]
+    if symbol_counts and max(symbol_counts) >= max(4, total // 4):
+        add_recommendation(
+            "STRUCTURE_COOLDOWN_SEC",
+            max(int(settings.structure_cooldown_sec) * 2, 7200),
+            "同币重复信号较多，提高冷却时间可以减少同一个币连续刷屏。",
+        )
+
+    if total >= 30 and int(settings.structure_send_chart_top_n) > 2:
+        add_recommendation(
+            "STRUCTURE_SEND_CHART_TOP_N",
+            2,
+            "结构信号数量较多，降低每轮发图数量可以减少图片刷屏。",
+        )
+
+    updates = {item["key"]: str(item["suggested"]) for item in recommendations}
+    message = "已生成可应用的结构复盘参数建议" if updates else "当前样本未显示明显参数问题，暂不建议调整。"
+    return {
+        "ok": True,
+        "stats_file": str(stats_path),
+        "summary": summary,
+        "recommendations": recommendations,
+        "updates": updates,
+        "message": message,
+    }
 
 
 def write_env_updates(
@@ -1037,8 +1200,11 @@ INDEX_HTML = r"""<!doctype html>
       <section id="config" class="view hidden">
         <div id="configForms" class="grid"></div>
         <div class="toolbar" style="margin-top:12px">
+          <button class="btn" onclick="previewConfig()">预览改动</button>
+          <button class="btn blue" onclick="applyStructureRecommendations()">应用复盘建议</button>
           <button class="btn primary" onclick="saveConfig()">保存配置</button>
         </div>
+        <div id="configPreview" class="panel hidden"></div>
         <pre id="configOutput" class="output"></pre>
       </section>
 
@@ -1232,6 +1398,7 @@ INDEX_HTML = r"""<!doctype html>
       }
     ];
     let currentView = "overview";
+    let latestConfigData = null;
 
     function token() { return localStorage.getItem("paopaoAdminToken") || ""; }
     function headers() {
@@ -1489,7 +1656,18 @@ INDEX_HTML = r"""<!doctype html>
     function structureRecommendationPanel() {
       return `<div class="panel span-12 notice">
         <strong>结构复盘推送里的参数建议，可以在本页“雷达参数”里直接改。</strong>
-        对应复盘建议里的 STRUCTURE_MIN_SCORE 控制结构雷达最低推送分；假突破偏高时提高它。对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N 控制每轮最多发送几张结构 K 线图；图片刷屏时降低它。保存后重启结构雷达生效。
+        对应复盘建议里的 STRUCTURE_MIN_SCORE 控制结构雷达最低推送分；假突破偏高时提高它。对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N 控制每轮最多发送几张结构 K 线图；图片刷屏时降低它。保存后会自动应用。
+        <div id="structureRecommendationBox" class="feature-list" style="margin-top:10px"></div>
+      </div>`;
+    }
+    function configBackupPanel() {
+      return `<div class="panel span-12">
+        <div class="summary-head">
+          <h3 class="section-title">配置备份和恢复</h3>
+          <button class="btn" type="button" onclick="loadConfigBackups()">刷新备份</button>
+        </div>
+        <div class="notice"><strong>每次保存配置前都会自动备份 .env.oi。</strong> 如果参数改错，可以在这里恢复最近一次 Web 备份；恢复后也会自动应用。</div>
+        <div id="configBackupList" class="feature-list" style="margin-top:10px"></div>
       </div>`;
     }
     async function loadSummary() {
@@ -1526,9 +1704,10 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function loadConfig() {
       const data = await api("/api/config");
+      latestConfigData = data;
       setSubtitle(data.env_file);
       const root = document.getElementById("configForms");
-      root.innerHTML = apiSourcePanel() + structureRecommendationPanel();
+      root.innerHTML = apiSourcePanel() + structureRecommendationPanel() + configBackupPanel();
       Object.entries(data.sections || {}).forEach(([section, fields]) => {
         const panel = document.createElement("div");
         panel.className = "panel span-12";
@@ -1536,6 +1715,8 @@ INDEX_HTML = r"""<!doctype html>
         panel.innerHTML = `<h3 class="section-title">${escapeHtml(section)}</h3><div class="form-grid">${body}</div>`;
         root.appendChild(panel);
       });
+      await loadStructureRecommendations();
+      await loadConfigBackups();
     }
     function configCurrentText(field) {
       if (!field.configured && !field.value && !field.display_value) return "当前未配置";
@@ -1570,17 +1751,141 @@ INDEX_HTML = r"""<!doctype html>
       if (input) input.value = "";
       document.getElementById("configOutput").textContent = `${key} 已标记为清空，保存后生效`;
     }
-    async function saveConfig() {
+    function configFieldMap() {
+      const map = {};
+      Object.values((latestConfigData && latestConfigData.sections) || {}).flat().forEach(field => {
+        map[field.key] = field;
+      });
+      return map;
+    }
+    function gatherConfigUpdates() {
       const updates = {};
       document.querySelectorAll("#configForms [data-key]").forEach(el => {
         if (el.type === "password" && !el.value && !clearKeys.has(el.dataset.key)) return;
         updates[el.dataset.key] = el.value;
       });
+      return updates;
+    }
+    function buildConfigChanges(updates) {
+      const fields = configFieldMap();
+      return Object.entries(updates).flatMap(([key, value]) => {
+        const field = fields[key] || { key, label: key, value: "" };
+        const oldValue = String(field.value || "");
+        const newValue = clearKeys.has(key) ? "" : String(value || "");
+        if (oldValue === newValue) return [];
+        const oldText = oldValue || (field.source === "auto_route" ? `${field.display_value}（自动话题）` : "空");
+        const newText = newValue || "空";
+        return [{ key, label: field.label || key, oldText, newText }];
+      });
+    }
+    function renderConfigChanges(changes) {
+      const target = document.getElementById("configPreview");
+      if (!changes.length) {
+        target.classList.remove("hidden");
+        target.innerHTML = `<h3 class="section-title">配置改动预览</h3><div class="hint">没有检测到需要保存的改动。</div>`;
+        return;
+      }
+      target.classList.remove("hidden");
+      target.innerHTML = `<h3 class="section-title">配置改动预览</h3>
+        <div class="readable-list">${changes.map(item => row(`${item.label} (${item.key})`, `<strong>${escapeHtml(item.oldText)}</strong> -> <strong>${escapeHtml(item.newText)}</strong>`)).join("")}</div>`;
+    }
+    function previewConfig() {
+      const updates = gatherConfigUpdates();
+      const changes = buildConfigChanges(updates);
+      renderConfigChanges(changes);
+      return changes;
+    }
+    function formatSaveResult(data, changes) {
+      const lines = [];
+      lines.push(data.ok ? "配置保存成功" : "配置保存失败");
+      if (data.message) lines.push(`结果：${data.message}`);
+      if (changes && changes.length) {
+        lines.push("");
+        lines.push("本次改动：");
+        changes.forEach(item => lines.push(`- ${item.label} (${item.key}): ${item.oldText} -> ${item.newText}`));
+      }
+      if (data.backup) lines.push(`备份文件：${data.backup}`);
+      const applyResults = (data.apply && data.apply.results) || [];
+      if (applyResults.length) {
+        lines.push("");
+        lines.push("自动应用：");
+        applyResults.forEach(item => lines.push(`- ${item.service || item.name || "服务"} ${item.action || ""}: ${item.ok ? "成功" : "失败"}`));
+      }
+      if (!data.ok && data.errors) {
+        lines.push("");
+        lines.push("错误：");
+        Object.entries(data.errors).forEach(([key, value]) => lines.push(`- ${key}: ${value}`));
+      }
+      return lines.join("\n");
+    }
+    async function loadConfigBackups() {
+      const box = document.getElementById("configBackupList");
+      if (!box) return;
+      const data = await api("/api/config-backups");
+      const backups = data.backups || [];
+      box.innerHTML = backups.length ? backups.map(item => `
+        <div class="feature-item">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span class="muted">${escapeHtml(item.modified_at || "")} · ${escapeHtml(String(item.size || 0))} 字节</span>
+          <div class="toolbar" style="margin:8px 0 0">
+            <button class="btn warn" type="button" onclick="restoreConfigBackup('${escapeHtml(item.name)}')">恢复这个备份</button>
+          </div>
+        </div>
+      `).join("") : `<div class="hint">还没有 Web 保存产生的配置备份。</div>`;
+    }
+    async function restoreConfigBackup(name) {
+      const confirmText = prompt(`恢复配置备份会覆盖当前 .env.oi，并自动应用。输入 RESTORE 确认：${name}`);
+      if (confirmText !== "RESTORE") return;
+      const data = await api("/api/config-restore", { method: "POST", body: JSON.stringify({ name }) });
+      document.getElementById("configOutput").textContent = formatSaveResult(data, []);
+      await loadConfig();
+    }
+    async function loadStructureRecommendations() {
+      const box = document.getElementById("structureRecommendationBox");
+      if (!box) return;
+      const data = await api("/api/structure-recommendations");
+      const items = data.recommendations || [];
+      if (!items.length) {
+        box.innerHTML = `<div class="hint">${escapeHtml(data.message || "暂无可应用建议。")}</div>`;
+        return;
+      }
+      box.innerHTML = items.map(item => `
+        <div class="feature-item">
+          <strong>${escapeHtml(item.label || item.key)} (${escapeHtml(item.key)})</strong>
+          <span class="muted">建议：${escapeHtml(String(item.current))} -> ${escapeHtml(String(item.suggested))}</span>
+          <div class="hint">${escapeHtml(item.reason || "")}</div>
+        </div>
+      `).join("") + `<div class="toolbar" style="margin:8px 0 0"><button class="btn primary" type="button" onclick="applyStructureRecommendations()">应用这些建议并保存</button></div>`;
+    }
+    async function applyStructureRecommendations() {
+      const data = await api("/api/structure-recommendations");
+      const updates = data.updates || {};
+      const keys = Object.keys(updates);
+      if (!keys.length) {
+        document.getElementById("configOutput").textContent = data.message || "暂无可应用建议";
+        return;
+      }
+      if (!confirm(`将应用 ${keys.length} 条结构复盘建议并自动保存，是否继续？`)) return;
+      Object.entries(updates).forEach(([key, value]) => {
+        const input = document.querySelector(`#configForms [data-key="${key}"]`);
+        if (input) input.value = value;
+      });
+      await saveConfig();
+    }
+    async function saveConfig() {
+      const updates = gatherConfigUpdates();
+      const changes = buildConfigChanges(updates);
+      renderConfigChanges(changes);
+      if (!changes.length) {
+        document.getElementById("configOutput").textContent = "没有检测到需要保存的改动。";
+        return;
+      }
+      if (!confirm(`即将保存 ${changes.length} 项配置改动，并自动应用。是否继续？`)) return;
       const data = await api("/api/config", {
         method: "POST",
         body: JSON.stringify({ updates, clear: Array.from(clearKeys) })
       });
-      document.getElementById("configOutput").textContent = JSON.stringify(data, null, 2);
+      document.getElementById("configOutput").textContent = formatSaveResult(data, changes);
       if (data.ok && updates.WEB_ADMIN_TOKEN) localStorage.setItem("paopaoAdminToken", updates.WEB_ADMIN_TOKEN);
       if (data.ok && clearKeys.has("WEB_ADMIN_TOKEN")) localStorage.removeItem("paopaoAdminToken");
       clearKeys.clear();
@@ -1774,6 +2079,12 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/config":
             self.send_json(config_payload())
             return
+        if path == "/api/config-backups":
+            self.send_json(env_backup_payload())
+            return
+        if path == "/api/structure-recommendations":
+            self.send_json(structure_review_recommendations_payload())
+            return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]
             lines = int(query.get("lines", ["200"])[0] or 200)
@@ -1793,6 +2104,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 if not isinstance(updates, dict) or not isinstance(clear, list):
                     raise ValueError("updates 必须是对象，clear 必须是数组")
                 result = write_env_updates(updates, clear=[str(item) for item in clear])
+                if result.get("ok") and result.get("changed"):
+                    apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
+                    result["apply"] = apply_result
+                    result["message"] = apply_result.get("message", result.get("message"))
+                self.send_json(result)
+                return
+            if path == "/api/config-restore":
+                name = str(data.get("name", ""))
+                result = restore_env_backup(name)
                 if result.get("ok") and result.get("changed"):
                     apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
                     result["apply"] = apply_result

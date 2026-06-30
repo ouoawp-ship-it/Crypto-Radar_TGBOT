@@ -161,6 +161,59 @@ class WebConsoleTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("DANGEROUS", result["errors"])
 
+    def test_restore_env_backup_restores_file_and_reports_changes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            backup_path = Path(tmp) / ".env.oi.bak.web.20260630_010203"
+            env_path.write_text("TG_CHAT_ID=-1001111111111\nSTRUCTURE_MIN_SCORE=65\n", encoding="utf-8")
+            backup_path.write_text("TG_CHAT_ID=-1002222222222\nSTRUCTURE_MIN_SCORE=70\n", encoding="utf-8")
+
+            result = web.restore_env_backup(backup_path.name, path=env_path)
+            text = env_path.read_text(encoding="utf-8")
+            backups = list(Path(tmp).glob(".env.oi.bak.web.*"))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("TG_CHAT_ID=-1002222222222", text)
+        self.assertIn("STRUCTURE_MIN_SCORE=70", text)
+        self.assertIn("TG_CHAT_ID", result["changed"])
+        self.assertIn("STRUCTURE_MIN_SCORE", result["changed"])
+        self.assertGreaterEqual(len(backups), 2)
+
+    def test_structure_review_recommendations_payload_returns_updates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            stats_path = Path(tmp) / "structure_stats.json"
+            stats_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {"total": 40, "reviewed": 12, "hit_rate": 0.1},
+                        "by_level": {"B": {"reviewed": 4, "fake_rate": 0.5}},
+                        "by_signal_type": {
+                            "PRE_BREAKOUT_NEAR": {"total": 16},
+                            "PRE_BREAKDOWN_NEAR": {"total": 14},
+                        },
+                        "by_symbol": {"BTCUSDT": {"total": 12}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class DummySettings:
+                structure_stats_path = stats_path
+                structure_review_min_sample = 1
+                structure_min_score = 65
+                structure_send_chart_top_n = 3
+                structure_near_edge_pct = 1.5
+                structure_cooldown_sec = 3600
+
+            with patch.object(web.Settings, "load", return_value=DummySettings()):
+                payload = web.structure_review_recommendations_payload(stats_path)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["updates"]["STRUCTURE_MIN_SCORE"], "70")
+        self.assertEqual(payload["updates"]["STRUCTURE_SEND_CHART_TOP_N"], "2")
+        self.assertEqual(payload["updates"]["STRUCTURE_NEAR_EDGE_PCT"], "1.2")
+        self.assertEqual(payload["updates"]["STRUCTURE_COOLDOWN_SEC"], "7200")
+
     def test_auto_apply_config_changes_restarts_needed_services(self) -> None:
         with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
             with patch.object(web, "schedule_service_action", return_value={"ok": True, "scheduled": True}) as scheduled:
@@ -195,6 +248,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("对应复盘建议里的 STRUCTURE_MIN_SCORE", html)
         self.assertIn("对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N", html)
         self.assertIn("配置已保存，后台服务正在自动应用", html)
+        self.assertIn("配置改动预览", html)
+        self.assertIn("配置备份和恢复", html)
+        self.assertIn("应用这些建议并保存", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
