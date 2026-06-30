@@ -121,6 +121,23 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("复盘建议", radar_fields["STRUCTURE_MIN_SCORE"]["help"])
         self.assertIn("复盘建议", radar_fields["STRUCTURE_SEND_CHART_TOP_N"]["help"])
 
+    def test_config_payload_exposes_module_switches(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text(
+                "STRUCTURE_RADAR_ENABLE=true\n"
+                "STRUCTURE_REVIEW_ENABLE=true\n"
+                "CLEANUP_ENABLE=true\n",
+                encoding="utf-8",
+            )
+
+            payload = web.config_payload(env_path)
+
+        switch_fields = {item["key"]: item for item in payload["sections"]["模块开关"]}
+        self.assertEqual(switch_fields["STRUCTURE_RADAR_ENABLE"]["kind"], "bool")
+        self.assertEqual(switch_fields["STRUCTURE_REVIEW_ENABLE"]["kind"], "bool")
+        self.assertEqual(switch_fields["CLEANUP_ENABLE"]["kind"], "bool")
+
     def test_write_env_updates_preserves_existing_lines_and_creates_backup(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
@@ -214,6 +231,36 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["updates"]["STRUCTURE_NEAR_EDGE_PCT"], "1.2")
         self.assertEqual(payload["updates"]["STRUCTURE_COOLDOWN_SEC"], "7200")
 
+    def test_health_items_and_recent_errors_summarize_runtime(self) -> None:
+        services = {
+            "main": {"active_ok": True, "active": "active", "service": "paopao-radar"},
+            "structure": {"active_ok": False, "active": "failed", "service": "paopao-structure"},
+            "web": {"active_ok": True, "active": "active", "service": "paopao-web"},
+        }
+        runtime = {
+            "main": {"status": "running", "updated_at": "2026-06-30 01:00:00"},
+            "structure": {"status": "running", "last_error": "boom"},
+        }
+        config = {
+            "telegram": {"bot_token_configured": True, "chat_id_configured": True, "use_topic": False},
+            "liquidity": {"fallback_enable": True},
+            "structure_radar": {"enable": True},
+        }
+
+        health = web.build_health_items(services, runtime, config)
+        errors = web.recent_errors_payload(runtime)
+
+        self.assertTrue(any(item["label"] == "结构雷达" and item["status"] == "bad" for item in health))
+        self.assertEqual(errors[0]["source"], "结构雷达")
+        self.assertIn("boom", errors[0]["message"])
+
+    def test_push_preview_payload_is_static_and_safe(self) -> None:
+        payload = web.push_preview_payload()
+
+        self.assertTrue(payload["ok"])
+        self.assertGreaterEqual(len(payload["previews"]), 3)
+        self.assertIn("不会真实发送", payload["message"])
+
     def test_auto_apply_config_changes_restarts_needed_services(self) -> None:
         with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
             with patch.object(web, "schedule_service_action", return_value={"ok": True, "scheduled": True}) as scheduled:
@@ -251,6 +298,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("配置改动预览", html)
         self.assertIn("配置备份和恢复", html)
         self.assertIn("应用这些建议并保存", html)
+        self.assertIn("运行健康度", html)
+        self.assertIn("最近错误", html)
+        self.assertIn("预览更新", html)
+        self.assertIn("只看错误", html)
+        self.assertIn("搜索币种、错误或关键词", html)
+        self.assertIn("检查 GitHub 更新", html)
+        self.assertIn("推送预览只展示格式", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML

@@ -49,15 +49,22 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_FLOW_RADAR_TOPIC_ID", "资金流话题 ID", "Telegram"),
     ConfigField("STRUCTURE_TOPIC_ID", "结构雷达话题 ID", "Telegram"),
     ConfigField("STRUCTURE_REVIEW_TOPIC_ID", "结构复盘话题 ID", "Telegram"),
+    ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
+    ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
+    ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
+    ConfigField("LIQUIDITY_FALLBACK_ENABLE", "结构外部确认", "模块开关", kind="bool"),
+    ConfigField("BINANCE_ORDERBOOK_LIQUIDITY_ENABLE", "Binance 盘口确认", "模块开关", kind="bool"),
+    ConfigField("STRUCTURE_RADAR_ENABLE", "结构雷达", "模块开关", kind="bool"),
+    ConfigField("STRUCTURE_REVIEW_ENABLE", "结构复盘", "模块开关", kind="bool"),
     ConfigField("WEB_HOST", "Web 监听地址", "Web 控制台"),
     ConfigField("WEB_PORT", "Web 端口", "Web 控制台", kind="int", minimum=1, maximum=65535),
     ConfigField("WEB_ADMIN_TOKEN", "Web 访问令牌", "Web 控制台", secret=True),
     ConfigField("COINALYZE_ENABLE", "启用 Coinalyze", "Coinalyze", kind="bool"),
     ConfigField("COINALYZE_API_KEY", "Coinalyze API Key", "Coinalyze", secret=True),
-    ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300),
-    ConfigField("FLOW_INTERVAL_SEC", "资金流窗口秒", "雷达参数", kind="int", minimum=300),
-    ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300),
-    ConfigField("STRUCTURE_TOP_SYMBOLS", "结构雷达扫描数量", "雷达参数", kind="int", minimum=1, maximum=300),
+    ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300, help="建议 21600 秒（6 小时）。越小推送越频繁，越大越安静。"),
+    ConfigField("FLOW_INTERVAL_SEC", "资金流窗口秒", "雷达参数", kind="int", minimum=300, help="建议 3600 秒（1 小时）。资金流按完整闭合窗口统计。"),
+    ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 8-30。越大覆盖越多币，但请求和计算更重。"),
+    ConfigField("STRUCTURE_TOP_SYMBOLS", "结构雷达扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 50-120。越大覆盖越多币，但结构扫描耗时更长。"),
     ConfigField(
         "STRUCTURE_NEAR_EDGE_PCT",
         "结构临界距离 %",
@@ -94,10 +101,10 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
         maximum=86400,
         help="同一个币种结构信号的冷却时间。提高会减少同币重复推送。",
     ),
-    ConfigField("LIQUIDITY_SCORE_MAX_DELTA", "外部确认修正上限", "雷达参数", kind="int", minimum=0, maximum=30),
-    ConfigField("LIQUIDITY_MIN_DISTANCE_PCT", "盘口墙最小距离 %", "雷达参数", kind="float", minimum=0),
-    ConfigField("LIQUIDITY_MAX_DISTANCE_PCT", "盘口墙最大距离 %", "雷达参数", kind="float", minimum=0.1),
-    ConfigField("BINANCE_ORDERBOOK_DEPTH_LIMIT", "Binance 盘口档位", "雷达参数", kind="int", minimum=5, maximum=1000),
+    ConfigField("LIQUIDITY_SCORE_MAX_DELTA", "外部确认修正上限", "雷达参数", kind="int", minimum=0, maximum=30, help="建议 10-15。越高外部确认对结构分数影响越大。"),
+    ConfigField("LIQUIDITY_MIN_DISTANCE_PCT", "盘口墙最小距离 %", "雷达参数", kind="float", minimum=0, help="建议 0.5。忽略距离现价太近的盘口墙，减少噪音。"),
+    ConfigField("LIQUIDITY_MAX_DISTANCE_PCT", "盘口墙最大距离 %", "雷达参数", kind="float", minimum=0.1, help="建议 5-8。越大越容易找到远处盘口墙，但参考价值会下降。"),
+    ConfigField("BINANCE_ORDERBOOK_DEPTH_LIMIT", "Binance 盘口档位", "雷达参数", kind="int", minimum=5, maximum=1000, help="建议 100。越大盘口更完整，但请求数据更重。"),
 )
 EDITABLE_CONFIG: dict[str, ConfigField] = {field.key: field for field in EDITABLE_CONFIG_FIELDS}
 
@@ -671,6 +678,22 @@ def git_info() -> dict[str, str]:
     }
 
 
+def update_check_payload() -> dict[str, Any]:
+    script = BASE_DIR / "scripts" / "update_server.sh"
+    if not script.exists():
+        return {"ok": False, "message": "未找到更新脚本 scripts/update_server.sh", "stdout": "", "stderr": ""}
+    if not command_exists("bash"):
+        return {"ok": False, "message": "当前环境没有 bash，服务器上可以使用 paopao update --yes 更新", "stdout": "", "stderr": ""}
+    result = run_subprocess(["bash", str(script), "--check"], timeout=120)
+    return {
+        "ok": bool(result.get("ok")),
+        "message": "更新检查完成" if result.get("ok") else "更新检查失败",
+        "stdout": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+        "command": result.get("command", ""),
+    }
+
+
 def load_json_or_empty(path: Path) -> Any:
     if not path.exists():
         return {"status": "empty", "path": str(path)}
@@ -678,6 +701,139 @@ def load_json_or_empty(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         return {"status": "invalid", "path": str(path), "error": f"{type(exc).__name__}: {exc}"}
+
+
+def collect_nested_keys(value: Any, key_name: str) -> list[Any]:
+    found: list[Any] = []
+    if isinstance(value, dict):
+        if key_name in value:
+            found.append(value[key_name])
+        for child in value.values():
+            found.extend(collect_nested_keys(child, key_name))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(collect_nested_keys(child, key_name))
+    return found
+
+
+def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
+    if not isinstance(runtime, dict):
+        return None
+    status = str(runtime.get("status") or "")
+    if status == "invalid":
+        return {"source": name, "level": "异常", "message": str(runtime.get("error") or "状态文件无法解析")}
+    last_error = str(runtime.get("last_error") or "").strip()
+    if last_error:
+        return {"source": name, "level": "异常", "message": last_error}
+    failures = collect_nested_keys(runtime, "failures")
+    for failure in failures:
+        if isinstance(failure, dict) and failure:
+            return {"source": name, "level": "警告", "message": json.dumps(failure, ensure_ascii=False)}
+    return None
+
+
+def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
+    telegram = config.get("telegram", {}) if isinstance(config.get("telegram"), dict) else {}
+    liquidity = config.get("liquidity", {}) if isinstance(config.get("liquidity"), dict) else {}
+    structure = config.get("structure_radar", {}) if isinstance(config.get("structure_radar"), dict) else {}
+
+    def service_item(label: str, key: str) -> dict[str, Any]:
+        service = services.get(key, {}) if isinstance(services.get(key), dict) else {}
+        ok = bool(service.get("active_ok"))
+        return {
+            "label": label,
+            "status": "ok" if ok else "bad",
+            "value": "运行中" if ok else str(service.get("active") or "未知"),
+            "detail": str(service.get("service") or ""),
+        }
+
+    items = [
+        service_item("主服务", "main"),
+        service_item("结构雷达", "structure"),
+        service_item("Web 控制台", "web"),
+        {
+            "label": "Telegram 推送",
+            "status": "ok" if telegram.get("bot_token_configured") and telegram.get("chat_id_configured") else "bad",
+            "value": "已配置" if telegram.get("bot_token_configured") and telegram.get("chat_id_configured") else "缺 Token 或群 ID",
+            "detail": "真实推送依赖 Telegram Token 和群 ID",
+        },
+        {
+            "label": "话题路由",
+            "status": "ok" if (not telegram.get("use_topic") or telegram.get("topic_routes_file_exists") or any((telegram.get("topic_routes_configured") or {}).values())) else "warn",
+            "value": "正常" if (not telegram.get("use_topic") or telegram.get("topic_routes_file_exists") or any((telegram.get("topic_routes_configured") or {}).values())) else "未检测到话题 ID",
+            "detail": "自动话题会读取 data/tg_topic_routes.json",
+        },
+        {
+            "label": "结构雷达开关",
+            "status": "ok" if structure.get("enable") else "warn",
+            "value": "开启" if structure.get("enable") else "关闭",
+            "detail": "关闭后结构雷达不会发送结构信号",
+        },
+        {
+            "label": "外部确认",
+            "status": "ok" if liquidity.get("fallback_enable") else "warn",
+            "value": "开启" if liquidity.get("fallback_enable") else "关闭",
+            "detail": "用于结构雷达盘口和清算辅助确认",
+        },
+    ]
+    for label, key in (("主服务状态文件", "main"), ("结构状态文件", "structure")):
+        item = runtime.get(key, {}) if isinstance(runtime.get(key), dict) else {}
+        status = str(item.get("status") or "")
+        last_error = str(item.get("last_error") or "")
+        items.append(
+            {
+                "label": label,
+                "status": "bad" if status == "invalid" or last_error else ("warn" if status == "empty" else "ok"),
+                "value": "正常" if status and status not in {"empty", "invalid"} and not last_error else ("暂无" if status == "empty" else "异常"),
+                "detail": last_error or str(item.get("updated_at") or item.get("error") or ""),
+            }
+        )
+    return items
+
+
+def recent_errors_payload(runtime: dict[str, Any]) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    for name, item in (("主服务", runtime.get("main")), ("结构雷达", runtime.get("structure"))):
+        error = runtime_last_error(name, item)
+        if error:
+            errors.append(error)
+    return errors
+
+
+def push_preview_payload() -> dict[str, Any]:
+    settings = Settings.load()
+    previews = [
+        {
+            "title": "启动雷达样例",
+            "text": (
+                "🚀 启动雷达 [BTC](https://www.coinglass.com/tv/zh/Binance_BTCUSDT)\n"
+                "阶段: 提前预警\n"
+                f"分数: {settings.launch_primed_score}\n"
+                "市场概况\n市值: $1.2T（高市值）\n流动性: $2.5B/24h（高流动性）\n"
+                "说明: 这是静态预览，不会真实发送。"
+            ),
+        },
+        {
+            "title": "资金流雷达样例",
+            "text": (
+                "📌 资金流雷达｜统计窗口 1h\n"
+                "真启动候选: BTCUSDT\n"
+                f"扫描数量: {settings.flow_scan_limit}\n"
+                "说明: CVD、OI、费率字段会按真实数据填充；这里仅展示版式。"
+            ),
+        },
+        {
+            "title": "结构雷达样例",
+            "text": (
+                "📐 结构雷达 BTCUSDT\n"
+                f"最低推送分: {settings.structure_min_score}\n"
+                f"每轮结构图数量: {settings.structure_send_chart_top_n}\n"
+                "外部确认: Binance 盘口 / 可选 Coinalyze 清算辅助\n"
+                "说明: 这是静态预览，不会真实发送。"
+            ),
+        },
+    ]
+    return {"ok": True, "previews": previews, "message": "推送预览只展示格式，不会调用 Telegram，也不会真实发送"}
 
 
 def summary_payload() -> dict[str, Any]:
@@ -696,25 +852,31 @@ def summary_payload() -> dict[str, Any]:
     telegram["topic_routes_configured"] = configured_routes
     telegram["topic_routes_saved"] = saved_routes
     telegram["topic_routes_file_exists"] = settings.tg_topic_routes_path.exists()
+    services = {
+        "main": service_status(MAIN_SERVICE),
+        "structure": service_status(STRUCTURE_SERVICE),
+        "web": service_status(WEB_SERVICE),
+    }
+    runtime = {
+        "main": load_json_or_empty(settings.runtime_status_path),
+        "structure": load_json_or_empty(settings.structure_runtime_status_path),
+    }
+    config = {
+        "env_file_exists": redacted.get("env_file_exists"),
+        "telegram": telegram,
+        "runtime": redacted.get("runtime"),
+        "liquidity": redacted.get("liquidity"),
+        "coinalyze": redacted.get("coinalyze"),
+        "structure_radar": redacted.get("structure_radar"),
+    }
     return {
         "updated_at": now_text(),
         "git": git_info(),
-        "services": {
-            "main": service_status(MAIN_SERVICE),
-            "structure": service_status(STRUCTURE_SERVICE),
-            "web": service_status(WEB_SERVICE),
-        },
-        "runtime": {
-            "main": load_json_or_empty(settings.runtime_status_path),
-            "structure": load_json_or_empty(settings.structure_runtime_status_path),
-        },
-        "config": {
-            "env_file_exists": redacted.get("env_file_exists"),
-            "telegram": telegram,
-            "liquidity": redacted.get("liquidity"),
-            "coinalyze": redacted.get("coinalyze"),
-            "structure_radar": redacted.get("structure_radar"),
-        },
+        "services": services,
+        "runtime": runtime,
+        "config": config,
+        "health": build_health_items(services, runtime, config),
+        "recent_errors": recent_errors_payload(runtime),
         "state_files": store.exists_summary([
             settings.runtime_status_path,
             settings.structure_runtime_status_path,
@@ -1161,6 +1323,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="config">配置</button>
         <button data-view="actions">检查测试</button>
         <button data-view="services">服务控制</button>
+        <button data-view="preview">预览更新</button>
         <button data-view="guide">功能说明</button>
       </nav>
     </aside>
@@ -1191,6 +1354,14 @@ INDEX_HTML = r"""<!doctype html>
             <option value="500">最近 500 行</option>
             <option value="1000">最近 1000 行</option>
           </select>
+          <select id="logFilter" onchange="renderFilteredLogs()">
+            <option value="all">全部日志</option>
+            <option value="error">只看错误</option>
+            <option value="telegram">Telegram</option>
+            <option value="binance">Binance</option>
+            <option value="structure">结构雷达</option>
+          </select>
+          <input id="logSearch" placeholder="搜索币种、错误或关键词" oninput="renderFilteredLogs()">
           <button class="btn primary" onclick="loadLogs()">读取日志</button>
           <button class="btn" onclick="copyLogs()">复制</button>
         </div>
@@ -1218,6 +1389,11 @@ INDEX_HTML = r"""<!doctype html>
         <pre id="serviceOutput" class="output"></pre>
       </section>
 
+      <section id="preview" class="view hidden">
+        <div class="grid" id="previewGrid"></div>
+        <pre id="updateOutput" class="output"></pre>
+      </section>
+
       <section id="guide" class="view hidden">
         <div class="grid" id="guideGrid"></div>
       </section>
@@ -1231,6 +1407,7 @@ INDEX_HTML = r"""<!doctype html>
       config: "配置",
       actions: "检查测试",
       services: "服务控制",
+      preview: "预览更新",
       guide: "功能说明"
     };
     const actionList = [
@@ -1399,6 +1576,7 @@ INDEX_HTML = r"""<!doctype html>
     ];
     let currentView = "overview";
     let latestConfigData = null;
+    let latestLogData = null;
 
     function token() { return localStorage.getItem("paopaoAdminToken") || ""; }
     function headers() {
@@ -1619,6 +1797,32 @@ INDEX_HTML = r"""<!doctype html>
         ], 12)
       ].join("");
     }
+    function healthPanel(items) {
+      const list = (items || []).map(item => {
+        const ok = item.status === "ok";
+        const warn = item.status === "warn";
+        const pill = warn ? `<span class="status">${escapeHtml(item.value || "需关注")}</span>` : statusPill(item.value || item.status, ok);
+        return `<div class="feature-item">
+          <strong>${escapeHtml(item.label || "检查项")}</strong>
+          ${pill}
+          <div class="hint">${escapeHtml(item.detail || "")}</div>
+        </div>`;
+      }).join("");
+      return `<div class="panel span-12">
+        <h3 class="section-title">运行健康度</h3>
+        <div class="api-grid">${list || '<div class="hint">暂无健康度数据</div>'}</div>
+      </div>`;
+    }
+    function recentErrorsPanel(errors) {
+      const list = (errors || []).map(item => `<div class="feature-item">
+        <strong>${escapeHtml(item.source || "来源未知")} · ${escapeHtml(item.level || "错误")}</strong>
+        <span class="muted">${escapeHtml(item.message || "")}</span>
+      </div>`).join("");
+      return `<div class="panel span-12">
+        <h3 class="section-title">最近错误</h3>
+        ${list ? `<div class="feature-list">${list}</div>` : `<div class="notice"><strong>当前没有检测到 runtime-status 里的最近错误。</strong> 如果仍怀疑异常，可以去日志页按“只看错误”筛选。</div>`}
+      </div>`;
+    }
     function rawDetails(title, data) {
       return `<details class="panel raw-details">
         <summary>${escapeHtml(title)}</summary>
@@ -1681,6 +1885,8 @@ INDEX_HTML = r"""<!doctype html>
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
         `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的主要操作入口。</strong> 服务器只需要记住 paopao；地址、令牌、Web 服务状态、日志和更新入口都在中文菜单里。配置修改、测试、服务控制都在这里完成。</div>`,
+        healthPanel(data.health || []),
+        recentErrorsPanel(data.recent_errors || []),
         serviceCard("主服务", main),
         serviceCard("结构雷达", structure),
         serviceCard("Web 控制台", web),
@@ -1697,7 +1903,27 @@ INDEX_HTML = r"""<!doctype html>
       const lines = document.getElementById("logLines").value;
       const data = await api(`/api/logs?target=${encodeURIComponent(target)}&lines=${encodeURIComponent(lines)}`);
       setSubtitle(`日志来源 ${data.source || ""}`);
-      document.getElementById("logOutput").textContent = data.text || "暂无日志";
+      latestLogData = data;
+      renderFilteredLogs();
+    }
+    function renderFilteredLogs() {
+      const raw = (latestLogData && latestLogData.text) || "";
+      const search = String(document.getElementById("logSearch")?.value || "").trim().toLowerCase();
+      const filter = String(document.getElementById("logFilter")?.value || "all").toLowerCase();
+      const patterns = {
+        error: /(error|traceback|exception|failed|失败|异常|错误)/i,
+        telegram: /(telegram|bot|chat|topic|message_thread_id)/i,
+        binance: /(binance|fapi|api\.binance|ticker|klines|openinterest)/i,
+        structure: /(structure|结构|breakout|breakdown|squeeze)/i
+      };
+      const lines = raw.split(/\r?\n/).filter(line => {
+        const lower = line.toLowerCase();
+        if (filter !== "all" && patterns[filter] && !patterns[filter].test(line)) return false;
+        if (search && !lower.includes(search)) return false;
+        return true;
+      });
+      const header = latestLogData ? `来源: ${latestLogData.source || ""}\n筛选后: ${lines.length} 行\n\n` : "";
+      document.getElementById("logOutput").textContent = header + (lines.join("\n") || "没有匹配的日志");
     }
     function copyLogs() {
       navigator.clipboard.writeText(document.getElementById("logOutput").textContent || "");
@@ -1950,6 +2176,43 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `).join("");
     }
+    async function loadPreviewPanel() {
+      const data = await api("/api/push-preview");
+      const previews = data.previews || [];
+      document.getElementById("previewGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>这个页面只做预览和检查。</strong>
+          推送预览只展示格式，不会调用 Telegram；更新检查只看 GitHub 是否有新版本，不会自动更新服务器代码。
+        </div>
+        ${previews.map(item => `
+          <div class="panel span-4">
+            <h3 class="section-title">${escapeHtml(item.title || "预览")}</h3>
+            <pre style="min-height:220px;max-height:360px">${escapeHtml(item.text || "")}</pre>
+          </div>
+        `).join("")}
+        <div class="panel span-12">
+          <h3 class="section-title">版本更新检查</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>只检查</strong><span class="muted">读取当前版本和 GitHub 版本，不会拉代码。</span></div>
+            <div class="feature-item"><strong>真正更新</strong><span class="muted">等我通知你完整版本完成后，再在服务器执行 paopao update --yes。</span></div>
+          </div>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn primary" onclick="checkUpdate()">检查 GitHub 更新</button>
+          </div>
+        </div>
+      `;
+      setSubtitle(data.message || "推送预览和更新检查");
+    }
+    async function checkUpdate() {
+      document.getElementById("updateOutput").textContent = "正在检查 GitHub 更新...";
+      const data = await api("/api/update-check");
+      document.getElementById("updateOutput").textContent = [
+        data.message || "更新检查完成",
+        "",
+        data.stdout || "",
+        data.stderr ? `\n错误输出:\n${data.stderr}` : ""
+      ].join("\n").trim();
+    }
     async function loadGuide() {
       const data = await api("/api/summary");
       const git = data.git || {};
@@ -1967,11 +2230,12 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-6">
           <h3 class="section-title">页面功能</h3>
           <div class="feature-list">
-            <div class="feature-item"><strong>总览</strong><span class="muted">查看主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
-            <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持复制。</span></div>
-            <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、Coinalyze、雷达参数和 Web 访问配置；保存前自动备份 .env.oi。</span></div>
+            <div class="feature-item"><strong>总览</strong><span class="muted">查看运行健康度、最近错误、主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
+            <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
+            <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、模块开关、Coinalyze、雷达参数和 Web 访问配置；保存前预览，保存前自动备份 .env.oi。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
             <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
+            <div class="feature-item"><strong>预览更新</strong><span class="muted">查看静态推送样例和 GitHub 更新检查；不会真实发送 Telegram，也不会自动更新代码。</span></div>
           </div>
         </div>
         <div class="panel span-6">
@@ -2011,6 +2275,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "config") await loadConfig();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
         if (currentView === "services") { setSubtitle("后台服务开关，停止前会二次确认"); renderServices(); }
+        if (currentView === "preview") await loadPreviewPanel();
         if (currentView === "guide") await loadGuide();
       } catch (err) {
         setSubtitle(err.message || String(err));
@@ -2084,6 +2349,12 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/structure-recommendations":
             self.send_json(structure_review_recommendations_payload())
+            return
+        if path == "/api/push-preview":
+            self.send_json(push_preview_payload())
+            return
+        if path == "/api/update-check":
+            self.send_json(update_check_payload())
             return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]
