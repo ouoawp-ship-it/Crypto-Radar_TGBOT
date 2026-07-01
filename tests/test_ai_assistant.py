@@ -4,12 +4,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from paopao_radar.ai_assistant import handle_message, parse_alert_request
+from paopao_radar.ai_assistant import handle_message, parse_alert_request, telegram_plain_text
 from paopao_radar.config import Settings
 from paopao_radar.price_alerts import PriceAlertStore
 
 
 class AiAssistantTests(unittest.TestCase):
+    def test_telegram_plain_text_removes_common_markdown(self) -> None:
+        cleaned = telegram_plain_text(
+            "## 标题\n1. **解释运行状态**：查看 `runtime-status`\n[文档](https://example.com)\n\n\n"
+        )
+
+        self.assertEqual(cleaned.splitlines()[0], "标题")
+        self.assertIn("解释运行状态：查看 runtime-status", cleaned)
+        self.assertIn("文档（https://example.com）", cleaned)
+        self.assertNotIn("**", cleaned)
+        self.assertNotIn("`", cleaned)
+
     def test_parse_chinese_alert_request(self) -> None:
         parsed = parse_alert_request("BTC 跌破 58000 提醒我")
         self.assertIsNotNone(parsed)

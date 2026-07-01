@@ -43,6 +43,19 @@ ETH 突破 4200 提醒我
 """
 
 
+def telegram_plain_text(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1（\2）", cleaned)
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned, flags=re.S)
+    cleaned = re.sub(r"__(.*?)__", r"\1", cleaned, flags=re.S)
+    cleaned = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"\1", cleaned)
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+    cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.M)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 @dataclass(frozen=True)
 class ParsedAlertRequest:
     symbol: str
@@ -77,11 +90,12 @@ class TelegramBotClient:
         return result if isinstance(result, list) else []
 
     def send_message(self, chat_id: str | int, text: str) -> bool:
+        safe_text = telegram_plain_text(text) or "（无内容）"
         response = requests.post(
             f"{self.base_url}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": text,
+                "text": safe_text,
                 "disable_web_page_preview": True,
             },
             headers=HTTP_HEADERS,
