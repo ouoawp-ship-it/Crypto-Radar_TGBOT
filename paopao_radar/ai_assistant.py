@@ -43,6 +43,9 @@ ETH 突破 4200 提醒我
 """
 
 
+GROUP_CHAT_TYPES = {"group", "supergroup"}
+
+
 def telegram_plain_text(text: str) -> str:
     cleaned = str(text or "")
     cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1（\2）", cleaned)
@@ -53,6 +56,51 @@ def telegram_plain_text(text: str) -> str:
     cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
     cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.M)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _normalize_bot_username(bot_username: str) -> str:
+    return str(bot_username or "").strip().lstrip("@").lower()
+
+
+def text_mentions_bot(text: str, bot_username: str) -> bool:
+    username = _normalize_bot_username(bot_username)
+    if not username:
+        return False
+    return bool(re.search(rf"(?i)@{re.escape(username)}\b", str(text or "")))
+
+
+def reply_targets_bot(message: dict[str, Any], bot_username: str = "", bot_user_id: str = "") -> bool:
+    reply = message.get("reply_to_message")
+    if not isinstance(reply, dict):
+        return False
+    user = reply.get("from")
+    if not isinstance(user, dict):
+        return False
+    if bot_user_id and str(user.get("id") or "") == str(bot_user_id):
+        return True
+    username = _normalize_bot_username(bot_username)
+    reply_username = _normalize_bot_username(str(user.get("username") or ""))
+    return bool(username and reply_username == username)
+
+
+def message_targets_bot(message: dict[str, Any], bot_username: str = "", bot_user_id: str = "") -> bool:
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    chat_type = str(chat.get("type") or "")
+    if chat_type not in GROUP_CHAT_TYPES:
+        return True
+    text = str(message.get("text") or "")
+    return text_mentions_bot(text, bot_username) or reply_targets_bot(message, bot_username, bot_user_id)
+
+
+def strip_bot_addressing(text: str, bot_username: str) -> str:
+    username = _normalize_bot_username(bot_username)
+    cleaned = str(text or "").strip()
+    if not username:
+        return cleaned
+    cleaned = re.sub(rf"(?i)^/([A-Za-z0-9_]+)@{re.escape(username)}\b", r"/\1", cleaned)
+    cleaned = re.sub(rf"(?i)(^|\s)@{re.escape(username)}\b", " ", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip()
 
 
@@ -68,6 +116,19 @@ class TelegramBotClient:
         self.token = token
         self.timeout_sec = max(3, int(timeout_sec))
         self.base_url = f"https://api.telegram.org/bot{token}"
+
+    def get_me(self) -> dict[str, Any]:
+        response = requests.get(
+            f"{self.base_url}/getMe",
+            headers=HTTP_HEADERS,
+            timeout=self.timeout_sec,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(str(data))
+        result = data.get("result", {})
+        return result if isinstance(result, dict) else {}
 
     def get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
@@ -292,9 +353,15 @@ def local_assistant_reply(settings: Settings, store: PriceAlertStore, user_id: s
     )
 
 
-def handle_message(settings: Settings, store: PriceAlertStore, message: dict[str, Any]) -> str | None:
-    text = str(message.get("text") or "").strip()
-    if not text:
+def handle_message(
+    settings: Settings,
+    store: PriceAlertStore,
+    message: dict[str, Any],
+    bot_username: str = "",
+    bot_user_id: str = "",
+) -> str | None:
+    raw_text = str(message.get("text") or "").strip()
+    if not raw_text:
         return None
     chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
     chat_id = str(chat.get("id") or "")
@@ -302,8 +369,14 @@ def handle_message(settings: Settings, store: PriceAlertStore, message: dict[str
     user_id, username = user_label(message)
     if not user_id or not chat_id:
         return None
+    if chat_type in GROUP_CHAT_TYPES and not message_targets_bot(message, bot_username, bot_user_id):
+        return None
     if not is_authorized(settings, user_id, chat_type):
         return "你没有使用这个 AI 助手 Bot 的权限。请在 Web 后台配置 AI_ADMIN_USER_IDS。"
+
+    text = strip_bot_addressing(raw_text, bot_username)
+    if not text:
+        return HELP_TEXT
 
     lowered = text.lower()
     if lowered in {"/start", "/help", "help", "帮助"}:
@@ -413,11 +486,20 @@ def run_ai_assistant_service() -> int:
             continue
         store = PriceAlertStore(settings.ai_price_alerts_db_path)
         bot = TelegramBotClient(settings.ai_bot_token, timeout_sec=settings.tg_push_timeout_sec)
+        bot_username = ""
+        bot_user_id = ""
+        try:
+            bot_info = bot.get_me()
+            bot_username = str(bot_info.get("username") or "")
+            bot_user_id = str(bot_info.get("id") or "")
+        except Exception as exc:
+            print(f"ai-assistant: getMe failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         poll_timeout = max(1, int(settings.ai_poll_timeout_sec))
         alert_interval = max(5, int(settings.ai_alert_check_interval_sec))
         next_alert_check = 0.0
         print(
-            f"ai-assistant: running poll_timeout={poll_timeout}s alert_interval={alert_interval}s db={settings.ai_price_alerts_db_path}",
+            f"ai-assistant: running username={bot_username or '-'} poll_timeout={poll_timeout}s "
+            f"alert_interval={alert_interval}s db={settings.ai_price_alerts_db_path}",
             flush=True,
         )
         while True:
@@ -448,7 +530,7 @@ def run_ai_assistant_service() -> int:
                 if not isinstance(message, dict):
                     continue
                 try:
-                    reply = handle_message(settings, store, message)
+                    reply = handle_message(settings, store, message, bot_username=bot_username, bot_user_id=bot_user_id)
                     if reply:
                         chat_id = message.get("chat", {}).get("id")
                         bot.send_message(chat_id, reply)

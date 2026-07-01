@@ -55,6 +55,100 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(alerts[0].symbol, "ETHUSDT")
             self.assertEqual(alerts[0].direction, "above")
 
+    def test_group_message_without_bot_mention_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "ETH 突破 4200 提醒我",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup"},
+            }
+
+            reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+            self.assertIsNone(reply)
+            self.assertEqual(store.stats()["total"], 0)
+
+    def test_group_message_with_bot_mention_creates_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "@v8pao_bot ETH 突破 4200 提醒我",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup"},
+            }
+
+            reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+            self.assertIn("已创建价格提醒", reply or "")
+            alerts = store.list_alerts(user_id="42")
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0].chat_id, "-1001")
+            self.assertEqual(alerts[0].symbol, "ETHUSDT")
+
+    def test_group_reply_to_bot_message_is_handled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/alerts",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup"},
+                "reply_to_message": {"from": {"id": 819, "is_bot": True, "username": "v8pao_bot"}},
+            }
+
+            reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+            self.assertIn("当前没有价格提醒", reply or "")
+
+    def test_group_command_with_bot_suffix_is_handled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/alerts@v8pao_bot",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup"},
+            }
+
+            reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+            self.assertIn("当前没有价格提醒", reply or "")
+
     def test_handle_message_rejects_unlisted_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
