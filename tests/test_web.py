@@ -214,6 +214,18 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("AI_ALLOWED_CHAT_IDS=-1001111111111,@vip_channel,-1002222222222", text)
 
+    def test_write_env_updates_normalizes_ai_model_assignment(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("AI_MODEL=deepseek-v4-flash\n", encoding="utf-8")
+
+            result = web.write_env_updates({"AI_MODEL": "AIMODEL=deepseek-v4-pro"}, path=env_path)
+            text = env_path.read_text(encoding="utf-8")
+
+        self.assertTrue(result["ok"])
+        self.assertIn("AI_MODEL=deepseek-v4-pro", text)
+        self.assertNotIn("AI_MODEL=AIMODEL=", text)
+
     def test_restore_env_backup_restores_file_and_reports_changes(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"

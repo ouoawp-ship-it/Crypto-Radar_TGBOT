@@ -31,7 +31,7 @@ class AiAssistantTests(unittest.TestCase):
         self.assertNotIn("`", cleaned)
 
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
-        settings = Settings(ai_model="deepseek-v4-pro")
+        settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")
 
         payload = build_chat_completion_payload(settings, "系统提示", "用户内容")
 

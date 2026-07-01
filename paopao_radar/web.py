@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
-from .config import BASE_DIR, ENV_FILE, Settings, load_env_file
+from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
 from .data_sources import HTTP_HEADERS
 from .storage import JsonStore
 
@@ -357,6 +357,8 @@ def validate_config_value(field: ConfigField, value: Any) -> str:
             if not (part.startswith("@") or part.lstrip("-").isdigit()):
                 raise ValueError("群/频道 ID 应该是 -100... 或 @channel_username，多个用逗号分隔")
         return ",".join(parts)
+    if field.key == "AI_MODEL":
+        return normalize_ai_model(text)
     return text
 
 

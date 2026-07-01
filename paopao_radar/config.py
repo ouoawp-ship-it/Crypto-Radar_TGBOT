@@ -75,6 +75,18 @@ def env_first(*names: str) -> str:
     return ""
 
 
+def normalize_ai_model(value: str) -> str:
+    text = str(value or "").strip().strip('"').strip("'")
+    for _ in range(3):
+        key, sep, rest = text.partition("=")
+        normalized_key = key.strip().upper().replace("_", "")
+        if sep and normalized_key in {"AIMODEL", "MODEL"}:
+            text = rest.strip().strip('"').strip("'")
+            continue
+        break
+    return text or "deepseek-v4-pro"
+
+
 def data_path(data_dir: Path, env_name: str, default_name: str) -> Path:
     value = os.getenv(env_name, default_name)
     path = Path(value)
@@ -276,7 +288,7 @@ class Settings:
             ai_provider_enable=env_bool("AI_PROVIDER_ENABLE", False),
             ai_api_key=os.getenv("AI_API_KEY", "").strip(),
             ai_base_url=os.getenv("AI_BASE_URL", "https://api.deepseek.com").rstrip("/"),
-            ai_model=os.getenv("AI_MODEL", "deepseek-v4-pro").strip() or "deepseek-v4-pro",
+            ai_model=normalize_ai_model(os.getenv("AI_MODEL", "deepseek-v4-pro")),
             ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 20),
             ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),

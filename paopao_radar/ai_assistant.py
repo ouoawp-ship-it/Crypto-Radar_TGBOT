@@ -10,7 +10,7 @@ from typing import Any
 import requests
 
 from .ai_prompts import load_ai_prompts
-from .config import Settings
+from .config import Settings, normalize_ai_model
 from .data_sources import HTTP_HEADERS
 from .price_alerts import (
     PriceAlert,
@@ -337,8 +337,9 @@ def runtime_context(settings: Settings) -> str:
 
 
 def build_chat_completion_payload(settings: Settings, system_prompt: str, user_content: str) -> dict[str, Any]:
+    model = normalize_ai_model(settings.ai_model)
     payload: dict[str, Any] = {
-        "model": settings.ai_model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -346,7 +347,7 @@ def build_chat_completion_payload(settings: Settings, system_prompt: str, user_c
         "temperature": 0.2,
         "stream": False,
     }
-    if str(settings.ai_model or "").startswith("deepseek-v4"):
+    if model.startswith("deepseek-v4"):
         payload["thinking"] = {"type": "enabled"}
         payload["reasoning_effort"] = "high"
     return payload
