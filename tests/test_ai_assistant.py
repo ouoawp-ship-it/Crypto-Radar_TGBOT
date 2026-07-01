@@ -64,6 +64,7 @@ class AiAssistantTests(unittest.TestCase):
                 ai_bot_token="123456:test",
                 ai_admin_user_ids=("42",),
                 ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
                 ai_price_alerts_db_path=db_path,
             )
             store = PriceAlertStore(db_path)
@@ -87,6 +88,7 @@ class AiAssistantTests(unittest.TestCase):
                 ai_bot_token="123456:test",
                 ai_admin_user_ids=("42",),
                 ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
                 ai_price_alerts_db_path=db_path,
             )
             store = PriceAlertStore(db_path)
@@ -104,6 +106,53 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(alerts[0].chat_id, "-1001")
             self.assertEqual(alerts[0].symbol, "ETHUSDT")
 
+    def test_group_mention_is_rejected_when_chat_is_not_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1002",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "@v8pao_bot ETH 突破 4200 提醒我",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup"},
+            }
+
+            reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+            self.assertIn("这个群没有开通", reply or "")
+            self.assertEqual(store.stats()["total"], 0)
+
+    def test_group_allowed_chat_can_match_username(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("@allowed_group",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "@v8pao_bot /alerts",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup", "username": "allowed_group"},
+            }
+
+            reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+            self.assertIn("当前没有价格提醒", reply or "")
+
     def test_group_reply_to_bot_message_is_handled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
@@ -113,6 +162,7 @@ class AiAssistantTests(unittest.TestCase):
                 ai_bot_token="123456:test",
                 ai_admin_user_ids=("42",),
                 ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
                 ai_price_alerts_db_path=db_path,
             )
             store = PriceAlertStore(db_path)
@@ -136,6 +186,7 @@ class AiAssistantTests(unittest.TestCase):
                 ai_bot_token="123456:test",
                 ai_admin_user_ids=("42",),
                 ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
                 ai_price_alerts_db_path=db_path,
             )
             store = PriceAlertStore(db_path)

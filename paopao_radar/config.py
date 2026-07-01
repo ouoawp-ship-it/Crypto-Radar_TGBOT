@@ -117,6 +117,7 @@ class Settings:
     ai_bot_token: str = ""
     ai_admin_user_ids: tuple[str, ...] = ()
     ai_allow_group_chat: bool = False
+    ai_allowed_chat_ids: tuple[str, ...] = ()
     ai_price_alerts_enable: bool = True
     ai_price_alerts_db_path: Path = BASE_DIR / "data" / "price_alerts.db"
     ai_default_chat_id: str = ""
@@ -265,6 +266,7 @@ class Settings:
             ai_bot_token=os.getenv("AI_BOT_TOKEN", "").strip(),
             ai_admin_user_ids=env_list("AI_ADMIN_USER_IDS"),
             ai_allow_group_chat=env_bool("AI_ALLOW_GROUP_CHAT", False),
+            ai_allowed_chat_ids=env_list("AI_ALLOWED_CHAT_IDS"),
             ai_price_alerts_enable=env_bool("AI_PRICE_ALERTS_ENABLE", True),
             ai_price_alerts_db_path=data_path(data_dir, "AI_PRICE_ALERTS_DB_FILE", "price_alerts.db"),
             ai_default_chat_id=os.getenv("AI_DEFAULT_CHAT_ID", "").strip(),
@@ -402,6 +404,8 @@ class Settings:
                 "admin_user_ids_configured": bool(self.ai_admin_user_ids),
                 "admin_user_count": len(self.ai_admin_user_ids),
                 "allow_group_chat": self.ai_allow_group_chat,
+                "allowed_chat_ids_configured": bool(self.ai_allowed_chat_ids),
+                "allowed_chat_count": len(self.ai_allowed_chat_ids),
                 "price_alerts_enable": self.ai_price_alerts_enable,
                 "price_alerts_db_file": str(self.ai_price_alerts_db_path),
                 "default_chat_id_configured": bool(self.ai_default_chat_id),

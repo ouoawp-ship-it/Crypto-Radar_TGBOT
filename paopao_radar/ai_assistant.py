@@ -44,6 +44,7 @@ ETH 突破 4200 提醒我
 
 
 GROUP_CHAT_TYPES = {"group", "supergroup"}
+NON_PRIVATE_CHAT_TYPES = GROUP_CHAT_TYPES | {"channel"}
 
 
 def telegram_plain_text(text: str) -> str:
@@ -87,7 +88,7 @@ def reply_targets_bot(message: dict[str, Any], bot_username: str = "", bot_user_
 def message_targets_bot(message: dict[str, Any], bot_username: str = "", bot_user_id: str = "") -> bool:
     chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
     chat_type = str(chat.get("type") or "")
-    if chat_type not in GROUP_CHAT_TYPES:
+    if chat_type not in NON_PRIVATE_CHAT_TYPES:
         return True
     text = str(message.get("text") or "")
     return text_mentions_bot(text, bot_username) or reply_targets_bot(message, bot_username, bot_user_id)
@@ -102,6 +103,33 @@ def strip_bot_addressing(text: str, bot_username: str) -> str:
     cleaned = re.sub(rf"(?i)(^|\s)@{re.escape(username)}\b", " ", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip()
+
+
+def _normalize_chat_ref(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text.startswith("@"):
+        return "@" + text.lstrip("@")
+    return text
+
+
+def chat_identifier_candidates(chat: dict[str, Any]) -> set[str]:
+    chat_id = str(chat.get("id") or "").strip()
+    username = str(chat.get("username") or "").strip()
+    candidates = {_normalize_chat_ref(chat_id)}
+    normalized_username = _normalize_chat_ref(username)
+    if normalized_username:
+        candidates.add(normalized_username)
+        candidates.add(_normalize_chat_ref(f"@{normalized_username.lstrip('@')}"))
+    return {item for item in candidates if item}
+
+
+def chat_is_allowed(settings: Settings, chat: dict[str, Any]) -> bool:
+    allowed = {_normalize_chat_ref(item) for item in settings.ai_allowed_chat_ids if _normalize_chat_ref(item)}
+    if not allowed:
+        return False
+    return bool(chat_identifier_candidates(chat) & allowed)
 
 
 @dataclass(frozen=True)
@@ -198,11 +226,9 @@ def is_alert_intent(text: str) -> bool:
     return bool(re.search(r"(提醒|alert|跌破|低于|涨到|高于|突破|above|below|>=|<=)", text, re.IGNORECASE))
 
 
-def is_authorized(settings: Settings, user_id: str, chat_type: str) -> bool:
+def is_authorized(settings: Settings, user_id: str) -> bool:
     allowed = set(settings.ai_admin_user_ids)
     if allowed and user_id not in allowed:
-        return False
-    if chat_type != "private" and not settings.ai_allow_group_chat:
         return False
     return True
 
@@ -369,9 +395,14 @@ def handle_message(
     user_id, username = user_label(message)
     if not user_id or not chat_id:
         return None
-    if chat_type in GROUP_CHAT_TYPES and not message_targets_bot(message, bot_username, bot_user_id):
+    if chat_type in NON_PRIVATE_CHAT_TYPES and not message_targets_bot(message, bot_username, bot_user_id):
         return None
-    if not is_authorized(settings, user_id, chat_type):
+    if chat_type in NON_PRIVATE_CHAT_TYPES:
+        if not settings.ai_allow_group_chat:
+            return "AI 助手还没有开启群内调用。请在 Web 后台开启 AI_ALLOW_GROUP_CHAT。"
+        if not chat_is_allowed(settings, chat):
+            return "这个群没有开通 AI 助手。请在 Web 后台的 AI_ALLOWED_CHAT_IDS 里加入当前群 ID 或频道用户名。"
+    if not is_authorized(settings, user_id):
         return "你没有使用这个 AI 助手 Bot 的权限。请在 Web 后台配置 AI_ADMIN_USER_IDS。"
 
     text = strip_bot_addressing(raw_text, bot_username)

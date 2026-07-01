@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ AI_CONFIG_KEYS = {
     "AI_BOT_TOKEN",
     "AI_ADMIN_USER_IDS",
     "AI_ALLOW_GROUP_CHAT",
+    "AI_ALLOWED_CHAT_IDS",
     "AI_PRICE_ALERTS_ENABLE",
     "AI_PRICE_ALERTS_DB_FILE",
     "AI_DEFAULT_CHAT_ID",
@@ -70,6 +72,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_BOT_TOKEN", "AI 助手 Bot Token", "AI 助手", secret=True, help="建议用 BotFather 单独创建一个机器人，不要和群推送 Bot 共用。"),
     ConfigField("AI_ADMIN_USER_IDS", "允许使用的 Telegram 用户 ID", "AI 助手", help="多个 ID 用英文逗号分隔。留空表示不限制用户，不建议公开使用。"),
     ConfigField("AI_ALLOW_GROUP_CHAT", "允许群内调用 AI 助手", "AI 助手", kind="bool", help="默认关闭。开启后群里也必须 @机器人 或回复机器人消息才会处理，普通群聊不会触发。"),
+    ConfigField("AI_ALLOWED_CHAT_IDS", "允许调用的群/频道 ID", "AI 助手", help="开启群内调用后必须填写。多个用英文逗号分隔，例如 -1001234567890,-1009876543210 或 @channel_username。"),
     ConfigField("AI_PRICE_ALERTS_ENABLE", "启用价格提醒", "AI 助手", kind="bool", help="使用 Binance 免费合约价格检查提醒。"),
     ConfigField("AI_DEFAULT_CHAT_ID", "Web 创建提醒默认接收 ID", "AI 助手", help="通常填你的 Telegram 用户 ID；Telegram 私聊创建提醒时会自动使用当前私聊。"),
     ConfigField("AI_ALERT_CHECK_INTERVAL_SEC", "价格提醒检查间隔秒数", "AI 助手", kind="int", minimum=5, maximum=3600, help="建议 30-60 秒。越小越实时，但请求更频繁。"),
@@ -340,6 +343,14 @@ def validate_config_value(field: ConfigField, value: Any) -> str:
     if field.key == "TG_CHAT_ID":
         if text and not (text.startswith("@") or text.lstrip("-").isdigit()):
             raise ValueError("群 ID 应该是 -100... 或 @channel_username")
+    if field.key == "AI_ALLOWED_CHAT_IDS":
+        if not text:
+            return ""
+        parts = [part.strip() for part in re.split(r"[,，\s]+", text) if part.strip()]
+        for part in parts:
+            if not (part.startswith("@") or part.lstrip("-").isdigit()):
+                raise ValueError("群/频道 ID 应该是 -100... 或 @channel_username，多个用逗号分隔")
+        return ",".join(parts)
     return text
 
 
@@ -1849,6 +1860,7 @@ INDEX_HTML = r"""<!doctype html>
           row("AI 助手 Bot", neutralPill(zhBool(ai.enable))),
           row("AI_BOT_TOKEN", neutralPill(configuredText(ai.bot_token_configured))),
           row("允许用户", neutralPill(ai.admin_user_ids_configured ? `${ai.admin_user_count || 0} 个` : "未限制")),
+          row("允许群/频道", neutralPill(ai.allowed_chat_ids_configured ? `${ai.allowed_chat_count || 0} 个` : "未配置")),
           row("价格提醒", neutralPill(zhBool(ai.price_alerts_enable))),
           row("AI 问答接口", neutralPill(zhBool(ai.provider_enable))),
           row("AI API Key", neutralPill(configuredText(ai.api_key_configured)))
@@ -2385,6 +2397,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-12 notice">
           <strong>AI 助手 Bot 和雷达推送 Bot 是分开的。</strong>
           群里的启动雷达、资金流雷达、结构雷达继续走 TG_BOT_TOKEN；私聊 AI、自然语言价格提醒和个人提醒走 AI_BOT_TOKEN。
+          开启群内调用时，还必须在配置里填写允许调用的群/频道 ID，并且用户需要 @机器人或回复机器人消息。
         </div>
         <div class="panel span-3 metric"><div class="label">AI 服务</div><div class="value">${statusPill(service.active || "unknown", Boolean(service.active_ok))}</div><div class="muted">${escapeHtml(service.service || "paopao-ai")}</div></div>
         <div class="panel span-3 metric"><div class="label">AI Bot Token</div><div class="value">${neutralPill(configuredText(ai.bot_token_configured))}</div></div>
@@ -2394,6 +2407,7 @@ INDEX_HTML = r"""<!doctype html>
           <h3 class="section-title">怎么用</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>推荐方式</strong><span class="muted">打开 AI 助手 Bot 私聊，发送：BTC 跌破 58000 提醒我。私聊创建会自动识别你的 Telegram 用户 ID。</span></div>
+            <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
             <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
             <div class="feature-item"><strong>AI 问答</strong><span class="muted">没填 AI_API_KEY 时，Bot 仍能管理价格提醒；填了兼容 OpenAI 的 AI 接口后，可以使用 /ai 提问。</span></div>
           </div>

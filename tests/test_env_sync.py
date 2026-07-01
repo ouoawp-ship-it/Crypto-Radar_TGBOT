@@ -33,6 +33,7 @@ class EnvSyncTests(unittest.TestCase):
                     "WEB_HOST=127.0.0.1",
                     "WEB_PORT=80",
                     "WEB_ADMIN_TOKEN=",
+                    "AI_ALLOWED_CHAT_IDS=-1001111111111,@vip_channel",
                     "CUSTOM_KEEP=1",
                 ]) + "\n",
                 encoding="utf-8",
@@ -48,6 +49,7 @@ class EnvSyncTests(unittest.TestCase):
                     "WEB_HOST=0.0.0.0",
                     "WEB_PORT=8080",
                     "WEB_ADMIN_TOKEN=",
+                    "AI_ALLOWED_CHAT_IDS=",
                     "NEW_NORMAL_SETTING=true",
                 ]) + "\n",
                 encoding="utf-8",
@@ -66,6 +68,7 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)
         self.assertIn("TG_CHAT_ID=-1001234567890", text)
         self.assertIn("COINALYZE_API_KEY=secret_key", text)
+        self.assertIn("AI_ALLOWED_CHAT_IDS=-1001111111111,@vip_channel", text)
         self.assertIn("CUSTOM_KEEP=1", text)
         self.assertEqual(set(result["updated"]), {
             "RADAR_SUMMARY_MIN_INTERVAL_SEC",

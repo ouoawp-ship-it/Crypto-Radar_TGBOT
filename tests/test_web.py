@@ -48,6 +48,7 @@ class WebConsoleTests(unittest.TestCase):
                 "AI_ASSISTANT_ENABLE=true\n"
                 "AI_BOT_TOKEN=987654:ai-bot-token\n"
                 "AI_API_KEY=sk-ai-secret\n"
+                "AI_ALLOWED_CHAT_IDS=-1001234567890,@vip_channel\n"
                 "AI_MODEL=deepseek-chat\n",
                 encoding="utf-8",
             )
@@ -59,6 +60,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(ai_fields["AI_BOT_TOKEN"]["display_value"], "987654:ai-bot-token")
         self.assertEqual(ai_fields["AI_API_KEY"]["value"], "sk-ai-secret")
         self.assertEqual(ai_fields["AI_API_KEY"]["display_value"], "sk-ai-secret")
+        self.assertEqual(ai_fields["AI_ALLOWED_CHAT_IDS"]["value"], "-1001234567890,@vip_channel")
         self.assertEqual(ai_fields["AI_ASSISTANT_ENABLE"]["value"], "true")
 
     def test_config_payload_reads_auto_created_topic_routes(self) -> None:
@@ -198,6 +200,20 @@ class WebConsoleTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("DANGEROUS", result["errors"])
 
+    def test_write_env_updates_normalizes_ai_allowed_chat_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("AI_ALLOWED_CHAT_IDS=\n", encoding="utf-8")
+
+            result = web.write_env_updates(
+                {"AI_ALLOWED_CHAT_IDS": "-1001111111111 @vip_channel，-1002222222222"},
+                path=env_path,
+            )
+            text = env_path.read_text(encoding="utf-8")
+
+        self.assertTrue(result["ok"])
+        self.assertIn("AI_ALLOWED_CHAT_IDS=-1001111111111,@vip_channel,-1002222222222", text)
+
     def test_restore_env_backup_restores_file_and_reports_changes(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
@@ -297,7 +313,7 @@ class WebConsoleTests(unittest.TestCase):
     def test_auto_apply_ai_config_restarts_only_ai_service(self) -> None:
         with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
             with patch.object(web, "schedule_service_action") as scheduled:
-                result = web.auto_apply_config_changes(["AI_BOT_TOKEN", "AI_PROVIDER_ENABLE"])
+                result = web.auto_apply_config_changes(["AI_BOT_TOKEN", "AI_PROVIDER_ENABLE", "AI_ALLOWED_CHAT_IDS"])
 
         self.assertTrue(result["ok"])
         self.assertEqual([call.args[0] for call in service_action.call_args_list], ["restart-ai"])
