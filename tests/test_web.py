@@ -436,6 +436,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(result["reply"], "测试回复")
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "deepseek-v4-pro")
+        self.assertEqual(payload["thinking"], {"type": "enabled"})
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertIs(payload["stream"], False)
         self.assertEqual(payload["messages"][0]["content"], "专业分析师")
         self.assertEqual(payload["messages"][1]["content"], "BTC 数据")
 

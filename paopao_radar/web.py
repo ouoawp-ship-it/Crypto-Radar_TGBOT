@@ -911,6 +911,9 @@ def ai_prompts_test_payload(data: dict[str, Any]) -> dict[str, Any]:
     prompt = str(data.get("analyst_prompt" if mode == "analyst" else "assistant_prompt") or "").strip()
     if not prompt:
         return {"ok": False, "error": "测试提示词不能为空"}
+    from .ai_assistant import build_chat_completion_payload, raise_for_ai_response
+
+    payload = build_chat_completion_payload(settings, prompt, text)
     response = requests.post(
         f"{settings.ai_base_url.rstrip('/')}/chat/completions",
         headers={
@@ -918,17 +921,10 @@ def ai_prompts_test_payload(data: dict[str, Any]) -> dict[str, Any]:
             "Authorization": f"Bearer {settings.ai_api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": settings.ai_model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": text},
-            ],
-            "temperature": 0.2,
-        },
+        json=payload,
         timeout=max(5, int(settings.ai_request_timeout_sec)),
     )
-    response.raise_for_status()
+    raise_for_ai_response(response)
     payload = response.json()
     choices = payload.get("choices") if isinstance(payload, dict) else None
     reply = str(choices[0].get("message", {}).get("content", "")).strip() if choices else ""

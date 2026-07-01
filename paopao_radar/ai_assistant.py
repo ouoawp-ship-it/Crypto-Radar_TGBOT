@@ -336,6 +336,36 @@ def runtime_context(settings: Settings) -> str:
     return "\n".join(parts) or "暂时没有 runtime-status 数据。"
 
 
+def build_chat_completion_payload(settings: Settings, system_prompt: str, user_content: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": settings.ai_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.2,
+        "stream": False,
+    }
+    if str(settings.ai_model or "").startswith("deepseek-v4"):
+        payload["thinking"] = {"type": "enabled"}
+        payload["reasoning_effort"] = "high"
+    return payload
+
+
+def raise_for_ai_response(response: requests.Response) -> None:
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        body = str(getattr(response, "text", "") or "").strip()
+        if len(body) > 800:
+            body = body[:800] + "..."
+        status = getattr(response, "status_code", "")
+        reason = str(getattr(response, "reason", "") or "").strip()
+        prefix = f"{status} {reason}".strip()
+        detail = body or str(exc)
+        raise RuntimeError(f"{prefix}: {detail}" if prefix else detail) from exc
+
+
 def call_ai_provider(
     settings: Settings,
     user_text: str,
@@ -369,6 +399,7 @@ def call_ai_provider(
                 "\n".join(alert_lines) if alert_lines else "暂无",
             ]
         )
+    payload = build_chat_completion_payload(settings, system_prompt, f"{context}\n\n用户问题：{user_text}")
     response = requests.post(
         f"{settings.ai_base_url.rstrip('/')}/chat/completions",
         headers={
@@ -376,17 +407,10 @@ def call_ai_provider(
             "Authorization": f"Bearer {settings.ai_api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": settings.ai_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"{context}\n\n用户问题：{user_text}"},
-            ],
-            "temperature": 0.2,
-        },
+        json=payload,
         timeout=max(5, int(settings.ai_request_timeout_sec)),
     )
-    response.raise_for_status()
+    raise_for_ai_response(response)
     data = response.json()
     choices = data.get("choices") if isinstance(data, dict) else None
     if not choices:

@@ -194,13 +194,15 @@ AI_MODEL=deepseek-v4-pro
 AI_PROMPTS_FILE=ai_prompts.json
 ```
 
+使用 `deepseek-v4-pro` 或 `deepseek-v4-flash` 时，请求会自动按 DeepSeek v4 接口带上思考模式参数；如果接口返回 400，Web 和 AI Bot 会显示服务端返回的具体错误正文。
+
 Web 控制台有「AI 提示词」页面，可以编辑普通助手提示词和专业分析师提示词。普通助手用于 `/ai`，专业分析师用于 `/analyze`、`分析这段：...`、`帮我分析...`。提示词默认保存在 `data/ai_prompts.json`，保存后会自动重启 `paopao-ai`。
 
 没配置 `AI_BOT_TOKEN` 时，`paopao-ai.service` 会保持等待状态，不影响主雷达推送。
 
 ## 5. 版本号规则
 
-项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.13.5`，后续功能更新按 `v1.13.6`、`v2.0` 这种方式递增。
+项目根目录有一个 `VERSION` 文件，用来记录用户可读的版本号。当前为 `v1.13.6`，后续功能更新按 `v1.13.7`、`v2.0` 这种方式递增。
 
 中文菜单里的“检查 GitHub 是否有更新”和“更新项目代码”会同时显示:
 

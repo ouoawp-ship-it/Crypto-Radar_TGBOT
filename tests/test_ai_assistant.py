@@ -5,7 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from paopao_radar.ai_assistant import handle_message, is_alert_intent, parse_alert_request, telegram_plain_text
+import requests
+
+from paopao_radar.ai_assistant import (
+    build_chat_completion_payload,
+    handle_message,
+    is_alert_intent,
+    parse_alert_request,
+    telegram_plain_text,
+)
 from paopao_radar.config import Settings
 from paopao_radar.price_alerts import PriceAlertStore
 
@@ -21,6 +29,16 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn("文档（https://example.com）", cleaned)
         self.assertNotIn("**", cleaned)
         self.assertNotIn("`", cleaned)
+
+    def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
+        settings = Settings(ai_model="deepseek-v4-pro")
+
+        payload = build_chat_completion_payload(settings, "系统提示", "用户内容")
+
+        self.assertEqual(payload["model"], "deepseek-v4-pro")
+        self.assertEqual(payload["thinking"], {"type": "enabled"})
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertIs(payload["stream"], False)
 
     def test_parse_chinese_alert_request(self) -> None:
         parsed = parse_alert_request("BTC 跌破 58000 提醒我")
@@ -137,9 +155,44 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(store.stats()["total"], 0)
             payload = post.call_args.kwargs["json"]
             self.assertEqual(payload["model"], "deepseek-v4-pro")
+            self.assertEqual(payload["thinking"], {"type": "enabled"})
+            self.assertEqual(payload["reasoning_effort"], "high")
+            self.assertIs(payload["stream"], False)
             self.assertEqual(payload["messages"][0]["content"], "专业分析师提示词")
             self.assertIn("用户提供的数据：", payload["messages"][1]["content"])
             self.assertIn("BTC 跌破 58000 提醒我", payload["messages"][1]["content"])
+
+    def test_ai_provider_error_includes_response_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+                ai_base_url="https://api.example.com",
+                ai_model="deepseek-v4-pro",
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/ai 测试",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+            response = Mock()
+            response.status_code = 400
+            response.reason = "Bad Request"
+            response.text = '{"error":"invalid model"}'
+            response.raise_for_status.side_effect = requests.HTTPError("bad request")
+
+            with patch("paopao_radar.ai_assistant.requests.post", return_value=response):
+                reply = handle_message(settings, store, message)
+
+            self.assertIn("invalid model", reply or "")
+            self.assertIn("400 Bad Request", reply or "")
 
     def test_handle_message_creates_alert_from_explicit_to_price_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
