@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from paopao_radar.ai_assistant import handle_message, parse_alert_request, telegram_plain_text
+from paopao_radar.ai_assistant import handle_message, is_alert_intent, parse_alert_request, telegram_plain_text
 from paopao_radar.config import Settings
 from paopao_radar.price_alerts import PriceAlertStore
 
@@ -29,6 +29,12 @@ class AiAssistantTests(unittest.TestCase):
         self.assertEqual(parsed.direction, "below")
         self.assertEqual(parsed.target_price, 58000)
 
+    def test_alert_intent_requires_explicit_create_words(self) -> None:
+        self.assertFalse(is_alert_intent("BTC 跌破 58000"))
+        self.assertFalse(is_alert_intent("ETH 突破 4200"))
+        self.assertTrue(is_alert_intent("BTC 跌破 58000 提醒我"))
+        self.assertTrue(is_alert_intent("ETH 涨到 4200 通知我"))
+
     def test_handle_message_creates_alert_for_allowed_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
@@ -49,6 +55,95 @@ class AiAssistantTests(unittest.TestCase):
             reply = handle_message(settings, store, message)
 
             self.assertIsNotNone(reply)
+            self.assertIn("已创建价格提醒", reply or "")
+            alerts = store.list_alerts(user_id="42")
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0].symbol, "ETHUSDT")
+            self.assertEqual(alerts[0].direction, "above")
+
+    def test_handle_message_does_not_create_alert_from_forwarded_signal(self) -> None:
+        signal_text = "\n".join(
+            [
+                "🚀 启动雷达 [GWEI](https://www.coinglass.com/tv/zh/Binance_GWEIUSDT)",
+                "阶段: 提前预警",
+                "分数: 70",
+                "",
+                "触发明细",
+                "15m价格: +3.0%",
+                "1h价格: +11.0%",
+                "15m OI: +3.3%",
+                "1h OI: +13.1%",
+                "成交量: 1.2x 均值",
+                "",
+                "风险",
+                "跌回突破位则启动失败；同币同阶段会进入冷却",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": signal_text,
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            reply = handle_message(settings, store, message)
+
+            self.assertNotIn("已创建价格提醒", reply or "")
+            self.assertEqual(store.stats()["total"], 0)
+
+    def test_handle_message_creates_alert_from_explicit_to_price_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "BTC 跌到 58000 通知我",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            reply = handle_message(settings, store, message)
+
+            self.assertIn("已创建价格提醒", reply or "")
+            alerts = store.list_alerts(user_id="42")
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0].symbol, "BTCUSDT")
+            self.assertEqual(alerts[0].direction, "below")
+
+    def test_alert_command_creates_alert_without_natural_language_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/alert ETH 高于 4200",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            reply = handle_message(settings, store, message)
+
             self.assertIn("已创建价格提醒", reply or "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 1)

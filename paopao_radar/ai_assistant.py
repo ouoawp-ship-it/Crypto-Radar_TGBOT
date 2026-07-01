@@ -45,6 +45,10 @@ ETH 突破 4200 提醒我
 
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 NON_PRIVATE_CHAT_TYPES = GROUP_CHAT_TYPES | {"channel"}
+ALERT_CREATE_INTENT_RE = re.compile(
+    r"(提醒我|提醒一下|提醒|通知我|通知一下|通知|叫我|设置|设个|创建|添加|到价|到了|达到|涨到|跌到|alert)",
+    re.IGNORECASE,
+)
 
 
 def telegram_plain_text(text: str) -> str:
@@ -203,7 +207,7 @@ def parse_alert_request(text: str) -> ParsedAlertRequest | None:
         return None
 
     direction = ""
-    if re.search(r"(跌破|低于|小于|below|down|<=|<)", clean, flags=re.IGNORECASE):
+    if re.search(r"(跌破|跌到|低于|小于|below|down|<=|<)", clean, flags=re.IGNORECASE):
         direction = "below"
     elif re.search(r"(涨到|高于|突破|大于|above|up|>=|>)", clean, flags=re.IGNORECASE):
         direction = "above"
@@ -223,7 +227,7 @@ def parse_alert_request(text: str) -> ParsedAlertRequest | None:
 
 
 def is_alert_intent(text: str) -> bool:
-    return bool(re.search(r"(提醒|alert|跌破|低于|涨到|高于|突破|above|below|>=|<=)", text, re.IGNORECASE))
+    return bool(ALERT_CREATE_INTENT_RE.search(text))
 
 
 def is_authorized(settings: Settings, user_id: str) -> bool:

@@ -2408,6 +2408,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="feature-list">
             <div class="feature-item"><strong>推荐方式</strong><span class="muted">打开 AI 助手 Bot 私聊，发送：BTC 跌破 58000 提醒我。私聊创建会自动识别你的 Telegram 用户 ID。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
+            <div class="feature-item"><strong>提醒识别</strong><span class="muted">创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。转发雷达信号或只写突破、跌破，不会自动创建提醒。</span></div>
             <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
             <div class="feature-item"><strong>AI 问答</strong><span class="muted">没填 AI_API_KEY 时，Bot 仍能管理价格提醒；填了兼容 OpenAI 的 AI 接口后，可以使用 /ai 提问。</span></div>
           </div>
