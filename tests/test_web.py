@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import paopao_radar.cli as cli
 from paopao_radar import web
@@ -350,6 +350,10 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("搜索币种、错误或关键词", html)
         self.assertIn("检查 GitHub 更新", html)
         self.assertIn("推送预览只展示格式", html)
+        self.assertIn("AI 提示词", html)
+        self.assertIn("saveAiPrompts", html)
+        self.assertIn("专业分析师提示词", html)
+        self.assertIn("创建提醒必须明确说", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
@@ -399,6 +403,41 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("https://www.google.com/s2/favicons?domain=coinmarketcap.com&sz=64", html)
         self.assertIn("apiLogo(source.brand, source.name, source.logoUrl)", html)
         self.assertIn("<img src=\"${safeUrl}\"", html)
+
+    def test_ai_prompts_test_requires_provider(self) -> None:
+        with patch.object(web.Settings, "load", return_value=web.Settings(ai_provider_enable=False, ai_api_key="")):
+            result = web.ai_prompts_test_payload({"mode": "analyst", "text": "BTC"})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("AI 问答接口未启用", result["error"])
+
+    def test_ai_prompts_test_uses_current_editor_prompt(self) -> None:
+        settings = web.Settings(
+            ai_provider_enable=True,
+            ai_api_key="sk-test",
+            ai_base_url="https://api.example.com",
+            ai_model="deepseek-v4-pro",
+        )
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "测试回复"}}]}
+
+        with patch.object(web.Settings, "load", return_value=settings):
+            with patch.object(web.requests, "post", return_value=response) as post:
+                result = web.ai_prompts_test_payload(
+                    {
+                        "mode": "analyst",
+                        "text": "BTC 数据",
+                        "assistant_prompt": "普通助手",
+                        "analyst_prompt": "专业分析师",
+                    }
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reply"], "测试回复")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["model"], "deepseek-v4-pro")
+        self.assertEqual(payload["messages"][0]["content"], "专业分析师")
+        self.assertEqual(payload["messages"][1]["content"], "BTC 数据")
 
     def test_cli_web_command_starts_web_without_runtime_init(self) -> None:
         with patch.dict(os.environ, {}, clear=False):

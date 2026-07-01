@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import requests
+
+from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file
+from .data_sources import HTTP_HEADERS
 from .storage import JsonStore
 
 
@@ -40,6 +44,7 @@ AI_CONFIG_KEYS = {
     "AI_BASE_URL",
     "AI_MODEL",
     "AI_REQUEST_TIMEOUT_SEC",
+    "AI_PROMPTS_FILE",
 }
 
 
@@ -79,7 +84,8 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_PROVIDER_ENABLE", "启用 AI 问答接口", "AI 助手", kind="bool", help="关闭时仍可使用价格提醒和本地状态助手。"),
     ConfigField("AI_API_KEY", "AI API Key", "AI 助手", secret=True, help="兼容 OpenAI 格式的接口 Key，例如 DeepSeek/OpenAI 兼容服务。"),
     ConfigField("AI_BASE_URL", "AI 接口地址", "AI 助手", help="例如 https://api.deepseek.com 或其他 OpenAI-compatible 地址。"),
-    ConfigField("AI_MODEL", "AI 模型名称", "AI 助手", help="例如 deepseek-chat。"),
+    ConfigField("AI_MODEL", "AI 模型名称", "AI 助手", help="例如 deepseek-v4-pro。"),
+    ConfigField("AI_PROMPTS_FILE", "AI 提示词文件", "AI 助手", help="默认 ai_prompts.json，存放在 data 目录下。一般不需要修改。"),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -892,6 +898,49 @@ def push_preview_payload() -> dict[str, Any]:
     return {"ok": True, "previews": previews, "message": "推送预览只展示格式，不会调用 Telegram，也不会真实发送"}
 
 
+def ai_prompts_test_payload(data: dict[str, Any]) -> dict[str, Any]:
+    settings = Settings.load()
+    if not settings.ai_provider_enable or not settings.ai_api_key:
+        return {"ok": False, "error": "AI 问答接口未启用，请先配置 AI_PROVIDER_ENABLE 和 AI_API_KEY"}
+    mode = str(data.get("mode") or "analyst").strip().lower()
+    if mode not in {"assistant", "analyst"}:
+        mode = "analyst"
+    text = str(data.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "测试内容不能为空"}
+    prompt = str(data.get("analyst_prompt" if mode == "analyst" else "assistant_prompt") or "").strip()
+    if not prompt:
+        return {"ok": False, "error": "测试提示词不能为空"}
+    response = requests.post(
+        f"{settings.ai_base_url.rstrip('/')}/chat/completions",
+        headers={
+            **HTTP_HEADERS,
+            "Authorization": f"Bearer {settings.ai_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": settings.ai_model,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.2,
+        },
+        timeout=max(5, int(settings.ai_request_timeout_sec)),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    reply = str(choices[0].get("message", {}).get("content", "")).strip() if choices else ""
+    return {
+        "ok": True,
+        "mode": mode,
+        "model": settings.ai_model,
+        "reply": reply or "AI 接口没有返回正文。",
+        "message": "测试完成；测试不会保存提示词，确认后请点击保存提示词",
+    }
+
+
 def summary_payload() -> dict[str, Any]:
     settings = Settings.load()
     store = JsonStore(settings.data_dir)
@@ -1019,7 +1068,7 @@ INDEX_HTML = r"""<!doctype html>
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0;
     }
-    button, input, select { font: inherit; }
+    button, input, select, textarea { font: inherit; }
     .app { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
     aside {
       background:
@@ -1133,7 +1182,7 @@ INDEX_HTML = r"""<!doctype html>
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .field { display: grid; gap: 6px; }
     label { font-weight: 700; font-size: 13px; }
-    input, select {
+    input, select, textarea {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -1143,7 +1192,14 @@ INDEX_HTML = r"""<!doctype html>
       min-height: 36px;
       box-shadow: 0 1px 0 rgba(255,255,255,.8) inset;
     }
-    input:focus, select:focus {
+    textarea {
+      min-height: 320px;
+      resize: vertical;
+      line-height: 1.55;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+    }
+    input:focus, select:focus, textarea:focus {
       outline: 2px solid rgba(15, 118, 110, .18);
       border-color: rgba(15, 118, 110, .55);
     }
@@ -1383,6 +1439,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="logs">日志</button>
         <button data-view="config">配置</button>
         <button data-view="ai">AI 助手</button>
+        <button data-view="prompts">AI 提示词</button>
         <button data-view="actions">检查测试</button>
         <button data-view="services">服务控制</button>
         <button data-view="preview">预览更新</button>
@@ -1447,6 +1504,11 @@ INDEX_HTML = r"""<!doctype html>
         <pre id="aiOutput" class="output"></pre>
       </section>
 
+      <section id="prompts" class="view hidden">
+        <div class="grid" id="promptGrid"></div>
+        <pre id="promptOutput" class="output"></pre>
+      </section>
+
       <section id="actions" class="view hidden">
         <div class="grid" id="actionGrid"></div>
         <pre id="actionOutput" class="output"></pre>
@@ -1474,6 +1536,7 @@ INDEX_HTML = r"""<!doctype html>
       logs: "日志",
       config: "配置",
       ai: "AI 助手",
+      prompts: "AI 提示词",
       actions: "检查测试",
       services: "服务控制",
       preview: "预览更新",
@@ -2334,6 +2397,8 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>总览</strong><span class="muted">查看运行健康度、最近错误、主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
             <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
             <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、模块开关、Coinalyze、雷达参数和 Web 访问配置；保存前预览，保存前自动备份 .env.oi。</span></div>
+            <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、价格提醒统计，新增、暂停、恢复和删除 Web 价格提醒。</span></div>
+            <div class="feature-item"><strong>AI 提示词</strong><span class="muted">编辑普通助手提示词和专业分析师提示词；保存后自动重启 AI 助手服务。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
             <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
             <div class="feature-item"><strong>预览更新</strong><span class="muted">查看静态推送样例和 GitHub 更新检查；不会真实发送 Telegram，也不会自动更新代码。</span></div>
@@ -2401,7 +2466,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="panel span-3 metric"><div class="label">AI 服务</div><div class="value">${statusPill(service.active || "unknown", Boolean(service.active_ok))}</div><div class="muted">${escapeHtml(service.service || "paopao-ai")}</div></div>
         <div class="panel span-3 metric"><div class="label">AI Bot Token</div><div class="value">${neutralPill(configuredText(ai.bot_token_configured))}</div></div>
-        <div class="panel span-3 metric"><div class="label">AI 问答接口</div><div class="value">${neutralPill(zhBool(ai.provider_enable))}</div><div class="muted">${escapeHtml(ai.model || "deepseek-chat")}</div></div>
+        <div class="panel span-3 metric"><div class="label">AI 问答接口</div><div class="value">${neutralPill(zhBool(ai.provider_enable))}</div><div class="muted">${escapeHtml(ai.model || "deepseek-v4-pro")}</div></div>
         <div class="panel span-3 metric"><div class="label">价格提醒</div><div class="value">${neutralPill(`${stats.active || 0} 运行中`)}</div><div class="muted">暂停 ${stats.paused || 0}，已触发 ${stats.triggered || 0}</div></div>
         <div class="panel span-12">
           <h3 class="section-title">怎么用</h3>
@@ -2432,6 +2497,73 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `;
       setSubtitle("AI 助手、独立 Bot 和价格提醒中心");
+    }
+    async function loadAiPrompts() {
+      const data = await api("/api/ai-prompts");
+      const prompts = data.prompts || {};
+      setSubtitle(data.path || "AI 提示词文件");
+      document.getElementById("promptGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>AI 提示词会直接影响机器人回答风格。</strong>
+          普通助手用于 /ai、状态解释和日常问答；专业分析师用于 /analyze、分析这段、帮我分析等数据解读场景。
+          保存或恢复默认后会自动重启 AI 助手服务。
+        </div>
+        <div class="panel span-6">
+          <h3 class="section-title">普通助手提示词</h3>
+          <div class="hint">用于 /ai 问答、运行状态解释、价格提醒说明。适合保持克制、清楚、少废话。</div>
+          <textarea id="assistantPrompt">${escapeHtml(prompts.assistant_prompt || "")}</textarea>
+        </div>
+        <div class="panel span-6">
+          <h3 class="section-title">专业分析师提示词</h3>
+          <div class="hint">用于 /analyze 和“分析这段”。适合分析雷达信号、资金流、OI、市值、流动性和链上/交易所数据。</div>
+          <textarea id="analystPrompt">${escapeHtml(prompts.analyst_prompt || "")}</textarea>
+        </div>
+        <div class="panel span-12">
+          <h3 class="section-title">测试提示词</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>测试模式</label>
+              <select id="promptTestMode"><option value="analyst">专业分析师</option><option value="assistant">普通助手</option></select>
+            </div>
+            <div class="field">
+              <label>测试内容</label>
+              <input id="promptTestInput" value="启动雷达 BTCUSDT：15m价格 +4.2%，1h OI +8.1%，成交量 3.4x，资金费率偏高。">
+            </div>
+          </div>
+          <div class="toolbar" style="margin-top:12px">
+            <button class="btn primary" onclick="saveAiPrompts()">保存提示词</button>
+            <button class="btn" onclick="resetAiPrompts()">恢复默认</button>
+            <button class="btn blue" onclick="testAiPrompt()">测试当前提示词</button>
+          </div>
+        </div>
+      `;
+    }
+    async function saveAiPrompts() {
+      const body = {
+        action: "save",
+        assistant_prompt: document.getElementById("assistantPrompt").value,
+        analyst_prompt: document.getElementById("analystPrompt").value
+      };
+      const data = await api("/api/ai-prompts", { method: "POST", body: JSON.stringify(body) });
+      document.getElementById("promptOutput").textContent = JSON.stringify(data, null, 2);
+      await loadAiPrompts();
+    }
+    async function resetAiPrompts() {
+      if (!confirm("确认恢复默认 AI 提示词？当前自定义内容会被覆盖。")) return;
+      const data = await api("/api/ai-prompts", { method: "POST", body: JSON.stringify({ action: "reset" }) });
+      document.getElementById("promptOutput").textContent = JSON.stringify(data, null, 2);
+      await loadAiPrompts();
+    }
+    async function testAiPrompt() {
+      const body = {
+        action: "test",
+        mode: document.getElementById("promptTestMode").value,
+        text: document.getElementById("promptTestInput").value,
+        assistant_prompt: document.getElementById("assistantPrompt").value,
+        analyst_prompt: document.getElementById("analystPrompt").value
+      };
+      const data = await api("/api/ai-prompts", { method: "POST", body: JSON.stringify(body) });
+      document.getElementById("promptOutput").textContent = JSON.stringify(data, null, 2);
     }
     async function createWebAlert() {
       const body = {
@@ -2465,6 +2597,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "logs") await loadLogs();
         if (currentView === "config") await loadConfig();
         if (currentView === "ai") await loadAiAssistant();
+        if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
         if (currentView === "services") { setSubtitle("后台服务开关，停止前会二次确认"); renderServices(); }
         if (currentView === "preview") await loadPreviewPanel();
@@ -2553,6 +2686,9 @@ class WebHandler(BaseHTTPRequestHandler):
 
             self.send_json(price_alerts_payload())
             return
+        if path == "/api/ai-prompts":
+            self.send_json(load_ai_prompts(Settings.load()))
+            return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]
             lines = int(query.get("lines", ["200"])[0] or 200)
@@ -2601,6 +2737,28 @@ class WebHandler(BaseHTTPRequestHandler):
                     self.send_json(create_price_alert_from_payload(data))
                 else:
                     self.send_json(mutate_price_alert_from_payload(data))
+                return
+            if path == "/api/ai-prompts":
+                action = str(data.get("action") or "save").strip().lower()
+                settings = Settings.load()
+                if action == "reset":
+                    result = reset_ai_prompts(settings)
+                elif action == "test":
+                    self.send_json(ai_prompts_test_payload(data))
+                    return
+                else:
+                    result = save_ai_prompts(
+                        {
+                            "assistant_prompt": data.get("assistant_prompt", ""),
+                            "analyst_prompt": data.get("analyst_prompt", ""),
+                        },
+                        settings,
+                    )
+                if result.get("ok"):
+                    apply_result = auto_apply_config_changes(["AI_PROMPTS_FILE"])
+                    result["apply"] = apply_result
+                    result["message"] = apply_result.get("message", result.get("message"))
+                self.send_json(result)
                 return
             self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:

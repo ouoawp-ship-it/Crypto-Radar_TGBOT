@@ -126,8 +126,9 @@ class Settings:
     ai_provider_enable: bool = False
     ai_api_key: str = ""
     ai_base_url: str = "https://api.deepseek.com"
-    ai_model: str = "deepseek-chat"
+    ai_model: str = "deepseek-v4-pro"
     ai_request_timeout_sec: int = 20
+    ai_prompts_path: Path = BASE_DIR / "data" / "ai_prompts.json"
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
     structure_runtime_status_path: Path = BASE_DIR / "data" / "structure_runtime_status.json"
     cleanup_enable: bool = True
@@ -275,8 +276,9 @@ class Settings:
             ai_provider_enable=env_bool("AI_PROVIDER_ENABLE", False),
             ai_api_key=os.getenv("AI_API_KEY", "").strip(),
             ai_base_url=os.getenv("AI_BASE_URL", "https://api.deepseek.com").rstrip("/"),
-            ai_model=os.getenv("AI_MODEL", "deepseek-chat").strip() or "deepseek-chat",
+            ai_model=os.getenv("AI_MODEL", "deepseek-v4-pro").strip() or "deepseek-v4-pro",
             ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 20),
+            ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
             structure_runtime_status_path=data_path(data_dir, "STRUCTURE_RUNTIME_STATUS_FILE", "structure_runtime_status.json"),
             cleanup_enable=env_bool("CLEANUP_ENABLE", True),
@@ -416,6 +418,7 @@ class Settings:
                 "base_url": self.ai_base_url,
                 "model": self.ai_model,
                 "request_timeout_sec": self.ai_request_timeout_sec,
+                "prompts_file": str(self.ai_prompts_path),
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),

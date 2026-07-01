@@ -9,6 +9,7 @@ from typing import Any
 
 import requests
 
+from .ai_prompts import load_ai_prompts
 from .config import Settings
 from .data_sources import HTTP_HEADERS
 from .price_alerts import (
@@ -36,10 +37,12 @@ HELP_TEXT = """泡泡 AI 助手 Bot
 /resume 12
 /delete 12
 /ai 帮我解释最近雷达状态
+/analyze 粘贴雷达信号或市场数据
 
 也可以直接说：
 BTC 跌破 58000 提醒我
 ETH 突破 4200 提醒我
+分析这段：粘贴雷达信号或市场数据
 """
 
 
@@ -47,6 +50,10 @@ GROUP_CHAT_TYPES = {"group", "supergroup"}
 NON_PRIVATE_CHAT_TYPES = GROUP_CHAT_TYPES | {"channel"}
 ALERT_CREATE_INTENT_RE = re.compile(
     r"(提醒我|提醒一下|提醒|通知我|通知一下|通知|叫我|设置|设个|创建|添加|到价|到了|达到|涨到|跌到|alert)",
+    re.IGNORECASE,
+)
+ANALYSIS_INTENT_RE = re.compile(
+    r"^\s*(/analyze(?:@\w+)?\b|/analysis(?:@\w+)?\b|分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)",
     re.IGNORECASE,
 )
 
@@ -230,6 +237,18 @@ def is_alert_intent(text: str) -> bool:
     return bool(ALERT_CREATE_INTENT_RE.search(text))
 
 
+def is_analysis_intent(text: str) -> bool:
+    return bool(ANALYSIS_INTENT_RE.search(text))
+
+
+def strip_analysis_request(text: str) -> str:
+    clean = str(text or "").strip()
+    clean = re.sub(r"^/(analyze|analysis)(?:@\w+)?\b", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"^(分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)", "", clean).strip()
+    clean = clean.lstrip("：:，, \n\t")
+    return clean
+
+
 def is_authorized(settings: Settings, user_id: str) -> bool:
     allowed = set(settings.ai_admin_user_ids)
     if allowed and user_id not in allowed:
@@ -317,28 +336,39 @@ def runtime_context(settings: Settings) -> str:
     return "\n".join(parts) or "暂时没有 runtime-status 数据。"
 
 
-def call_ai_provider(settings: Settings, user_text: str, store: PriceAlertStore, user_id: str) -> str:
+def call_ai_provider(
+    settings: Settings,
+    user_text: str,
+    store: PriceAlertStore,
+    user_id: str,
+    *,
+    mode: str = "assistant",
+) -> str:
     if not settings.ai_provider_enable or not settings.ai_api_key:
+        if mode == "analyst":
+            return "AI 分析接口还没有启用。请在 Web 后台配置 AI_API_KEY、AI_BASE_URL、AI_MODEL，并开启 AI_PROVIDER_ENABLE。"
         return local_assistant_reply(settings, store, user_id)
     alerts = store.list_alerts(user_id=user_id, limit=20)
     alert_lines = [
         f"{item.id}. {item.symbol} {item.direction_label} {format_price(item.target_price)} {item.status}"
         for item in alerts
     ]
-    system_prompt = (
-        "你是泡泡雷达的 AI 助手。回答必须用中文，简洁直接。"
-        "你可以解释运行状态、价格提醒和雷达信号，但不能声称自己能直接交易。"
-        "涉及投资判断时强调风险，不给确定收益承诺。"
-    )
-    context = "\n".join(
-        [
-            "当前运行状态：",
-            runtime_context(settings),
-            "",
-            "用户价格提醒：",
-            "\n".join(alert_lines) if alert_lines else "暂无",
-        ]
-    )
+    prompts = load_ai_prompts(settings)
+    prompt_map = prompts.get("prompts", {}) if isinstance(prompts.get("prompts"), dict) else {}
+    if mode == "analyst":
+        system_prompt = str(prompt_map.get("analyst_prompt") or "").strip()
+        context = "用户提供的数据："
+    else:
+        system_prompt = str(prompt_map.get("assistant_prompt") or "").strip()
+        context = "\n".join(
+            [
+                "当前运行状态：",
+                runtime_context(settings),
+                "",
+                "用户价格提醒：",
+                "\n".join(alert_lines) if alert_lines else "暂无",
+            ]
+        )
     response = requests.post(
         f"{settings.ai_base_url.rstrip('/')}/chat/completions",
         headers={
@@ -446,6 +476,15 @@ def handle_message(
             return "用法：/delete 提醒编号"
         ok = store.delete_alert(int(parts[1]), user_id=user_id)
         return f"提醒 {parts[1]} 已删除。" if ok else "没有找到这条提醒。"
+
+    if is_analysis_intent(text):
+        prompt = strip_analysis_request(text)
+        if not prompt:
+            return "用法：/analyze 粘贴雷达信号或市场数据"
+        try:
+            return call_ai_provider(settings, prompt, store, user_id, mode="analyst")
+        except Exception as exc:
+            return f"AI 分析失败：{type(exc).__name__}: {exc}"
 
     if lowered.startswith("/alert") or is_alert_intent(text):
         parsed = parse_alert_request(text)

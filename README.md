@@ -133,6 +133,7 @@ AI_ALLOWED_CHAT_IDS=-1001234567890,-1009876543210
 BTC 跌破 58000 提醒我
 ETH 突破 4200 提醒我
 /alert BTC 高于 58000
+/analyze 粘贴雷达信号或市场数据
 /alerts
 /price BTC
 /pause 12
@@ -148,10 +149,13 @@ ETH 突破 4200 提醒我
 AI_PROVIDER_ENABLE=true
 AI_API_KEY=
 AI_BASE_URL=https://api.deepseek.com
-AI_MODEL=deepseek-chat
+AI_MODEL=deepseek-v4-pro
+AI_PROMPTS_FILE=ai_prompts.json
 ```
 
 Web 控制台新增「AI 助手」页面，可以查看 `paopao-ai` 服务状态、提醒统计、新增 Web 提醒、暂停/恢复/删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。
+
+Web 控制台新增「AI 提示词」页面，可以编辑普通助手提示词和专业分析师提示词。普通助手用于 `/ai`，专业分析师用于 `/analyze`、`分析这段：...`、`帮我分析...`。提示词默认保存在 `data/ai_prompts.json`，保存后会自动重启 `paopao-ai`。
 
 ## 闭合窗口参数
 
@@ -316,4 +320,4 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.13.4`，后续功能更新按 `v1.13.5`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.13.5`，后续功能更新按 `v1.13.6`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from paopao_radar.ai_assistant import handle_message, is_alert_intent, parse_alert_request, telegram_plain_text
 from paopao_radar.config import Settings
@@ -99,6 +100,46 @@ class AiAssistantTests(unittest.TestCase):
 
             self.assertNotIn("已创建价格提醒", reply or "")
             self.assertEqual(store.stats()["total"], 0)
+
+    def test_analyze_command_uses_analyst_prompt_without_creating_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            prompt_path = Path(tmp) / "ai_prompts.json"
+            prompt_path.write_text(
+                '{"assistant_prompt":"普通助手提示词","analyst_prompt":"专业分析师提示词"}',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+                ai_base_url="https://api.example.com",
+                ai_model="deepseek-v4-pro",
+                ai_prompts_path=prompt_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/analyze BTC 跌破 58000 提醒我",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+            response = Mock()
+            response.json.return_value = {"choices": [{"message": {"content": "分析结果"}}]}
+
+            with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
+                reply = handle_message(settings, store, message)
+
+            self.assertEqual(reply, "分析结果")
+            self.assertEqual(store.stats()["total"], 0)
+            payload = post.call_args.kwargs["json"]
+            self.assertEqual(payload["model"], "deepseek-v4-pro")
+            self.assertEqual(payload["messages"][0]["content"], "专业分析师提示词")
+            self.assertIn("用户提供的数据：", payload["messages"][1]["content"])
+            self.assertIn("BTC 跌破 58000 提醒我", payload["messages"][1]["content"])
 
     def test_handle_message_creates_alert_from_explicit_to_price_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
