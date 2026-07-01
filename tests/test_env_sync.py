@@ -33,6 +33,7 @@ class EnvSyncTests(unittest.TestCase):
                     "WEB_HOST=127.0.0.1",
                     "WEB_PORT=80",
                     "WEB_ADMIN_TOKEN=",
+                    "AI_REQUEST_TIMEOUT_SEC=20",
                     "AI_ALLOWED_CHAT_IDS=-1001111111111,@vip_channel",
                     "CUSTOM_KEEP=1",
                 ]) + "\n",
@@ -49,6 +50,7 @@ class EnvSyncTests(unittest.TestCase):
                     "WEB_HOST=0.0.0.0",
                     "WEB_PORT=8080",
                     "WEB_ADMIN_TOKEN=",
+                    "AI_REQUEST_TIMEOUT_SEC=90",
                     "AI_ALLOWED_CHAT_IDS=",
                     "NEW_NORMAL_SETTING=true",
                 ]) + "\n",
@@ -64,6 +66,7 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("WEB_HOST=0.0.0.0", text)
         self.assertIn("WEB_PORT=8080", text)
         self.assertRegex(text, r"WEB_ADMIN_TOKEN=[A-Za-z0-9_-]{24,}")
+        self.assertIn("AI_REQUEST_TIMEOUT_SEC=90", text)
         self.assertIn("NEW_NORMAL_SETTING=true", text)
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)
         self.assertIn("TG_CHAT_ID=-1001234567890", text)
@@ -77,6 +80,7 @@ class EnvSyncTests(unittest.TestCase):
             "WEB_HOST",
             "WEB_PORT",
             "WEB_ADMIN_TOKEN",
+            "AI_REQUEST_TIMEOUT_SEC",
         })
 
     def test_sync_keeps_custom_managed_value(self) -> None:

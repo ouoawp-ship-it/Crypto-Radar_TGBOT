@@ -49,7 +49,8 @@ class WebConsoleTests(unittest.TestCase):
                 "AI_BOT_TOKEN=987654:ai-bot-token\n"
                 "AI_API_KEY=sk-ai-secret\n"
                 "AI_ALLOWED_CHAT_IDS=-1001234567890,@vip_channel\n"
-                "AI_MODEL=deepseek-chat\n",
+                "AI_MODEL=deepseek-chat\n"
+                "AI_REQUEST_TIMEOUT_SEC=120\n",
                 encoding="utf-8",
             )
 
@@ -62,6 +63,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(ai_fields["AI_API_KEY"]["display_value"], "sk-ai-secret")
         self.assertEqual(ai_fields["AI_ALLOWED_CHAT_IDS"]["value"], "-1001234567890,@vip_channel")
         self.assertEqual(ai_fields["AI_ASSISTANT_ENABLE"]["value"], "true")
+        self.assertEqual(ai_fields["AI_REQUEST_TIMEOUT_SEC"]["value"], "120")
+        self.assertEqual(ai_fields["AI_REQUEST_TIMEOUT_SEC"]["kind"], "int")
 
     def test_config_payload_reads_auto_created_topic_routes(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -434,7 +437,7 @@ class WebConsoleTests(unittest.TestCase):
         response.json.return_value = {"choices": [{"message": {"content": "测试回复"}}]}
 
         with patch.object(web.Settings, "load", return_value=settings):
-            with patch.object(web.requests, "post", return_value=response) as post:
+            with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
                 result = web.ai_prompts_test_payload(
                     {
                         "mode": "analyst",

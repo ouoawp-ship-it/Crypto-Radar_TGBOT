@@ -139,7 +139,7 @@ class Settings:
     ai_api_key: str = ""
     ai_base_url: str = "https://api.deepseek.com"
     ai_model: str = "deepseek-v4-pro"
-    ai_request_timeout_sec: int = 20
+    ai_request_timeout_sec: int = 90
     ai_prompts_path: Path = BASE_DIR / "data" / "ai_prompts.json"
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
     structure_runtime_status_path: Path = BASE_DIR / "data" / "structure_runtime_status.json"
@@ -289,7 +289,7 @@ class Settings:
             ai_api_key=os.getenv("AI_API_KEY", "").strip(),
             ai_base_url=os.getenv("AI_BASE_URL", "https://api.deepseek.com").rstrip("/"),
             ai_model=normalize_ai_model(os.getenv("AI_MODEL", "deepseek-v4-pro")),
-            ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 20),
+            ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 90),
             ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
             structure_runtime_status_path=data_path(data_dir, "STRUCTURE_RUNTIME_STATUS_FILE", "structure_runtime_status.json"),

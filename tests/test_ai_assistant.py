@@ -194,6 +194,38 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("invalid model", reply or "")
             self.assertIn("400 Bad Request", reply or "")
 
+    def test_ai_provider_timeout_uses_readable_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+                ai_base_url="https://api.example.com",
+                ai_model="deepseek-v4-pro",
+                ai_request_timeout_sec=90,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/ai 测试",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            with patch(
+                "paopao_radar.ai_assistant.requests.post",
+                side_effect=requests.exceptions.ReadTimeout("Read timed out."),
+            ):
+                reply = handle_message(settings, store, message)
+
+            self.assertIn("AI 接口响应超时", reply or "")
+            self.assertIn("90 秒", reply or "")
+            self.assertIn("deepseek-v4-flash", reply or "")
+
     def test_handle_message_creates_alert_from_explicit_to_price_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"

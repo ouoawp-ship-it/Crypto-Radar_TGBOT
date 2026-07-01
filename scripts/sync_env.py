@@ -65,6 +65,11 @@ MANAGED_MIGRATIONS = {
         "new": "8080",
         "note": "Web 控制台默认使用 8080 端口",
     },
+    "AI_REQUEST_TIMEOUT_SEC": {
+        "old": {"", "20"},
+        "new": "90",
+        "note": "DeepSeek v4-pro 思考模式默认超时提高到 90 秒",
+    },
 }
 
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")

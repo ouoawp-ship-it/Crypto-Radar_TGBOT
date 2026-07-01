@@ -15,11 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import requests
-
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
-from .data_sources import HTTP_HEADERS
 from .storage import JsonStore
 
 
@@ -85,6 +82,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_API_KEY", "AI API Key", "AI 助手", secret=True, help="兼容 OpenAI 格式的接口 Key，例如 DeepSeek/OpenAI 兼容服务。"),
     ConfigField("AI_BASE_URL", "AI 接口地址", "AI 助手", help="例如 https://api.deepseek.com 或其他 OpenAI-compatible 地址。"),
     ConfigField("AI_MODEL", "AI 模型名称", "AI 助手", help="例如 deepseek-v4-pro。"),
+    ConfigField("AI_REQUEST_TIMEOUT_SEC", "AI 请求超时秒数", "AI 助手", kind="int", minimum=5, maximum=300, help="deepseek-v4-pro 思考模式建议 90-180 秒；如果经常超时就调大，或者改用 deepseek-v4-flash。"),
     ConfigField("AI_PROMPTS_FILE", "AI 提示词文件", "AI 助手", help="默认 ai_prompts.json，存放在 data 目录下。一般不需要修改。"),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
@@ -913,22 +911,11 @@ def ai_prompts_test_payload(data: dict[str, Any]) -> dict[str, Any]:
     prompt = str(data.get("analyst_prompt" if mode == "analyst" else "assistant_prompt") or "").strip()
     if not prompt:
         return {"ok": False, "error": "测试提示词不能为空"}
-    from .ai_assistant import build_chat_completion_payload, raise_for_ai_response
+    from .ai_assistant import build_chat_completion_payload, post_chat_completion
 
     payload = build_chat_completion_payload(settings, prompt, text)
-    response = requests.post(
-        f"{settings.ai_base_url.rstrip('/')}/chat/completions",
-        headers={
-            **HTTP_HEADERS,
-            "Authorization": f"Bearer {settings.ai_api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=max(5, int(settings.ai_request_timeout_sec)),
-    )
-    raise_for_ai_response(response)
-    payload = response.json()
-    choices = payload.get("choices") if isinstance(payload, dict) else None
+    response_payload = post_chat_completion(settings, payload)
+    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
     reply = str(choices[0].get("message", {}).get("content", "")).strip() if choices else ""
     return {
         "ok": True,

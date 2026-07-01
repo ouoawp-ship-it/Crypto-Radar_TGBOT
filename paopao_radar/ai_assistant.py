@@ -367,6 +367,42 @@ def raise_for_ai_response(response: requests.Response) -> None:
         raise RuntimeError(f"{prefix}: {detail}" if prefix else detail) from exc
 
 
+def ai_request_timeout_sec(settings: Settings) -> int:
+    return max(5, int(settings.ai_request_timeout_sec))
+
+
+def raise_for_ai_request_exception(exc: requests.RequestException, timeout_sec: int) -> None:
+    message = str(exc)
+    lower = message.lower()
+    if isinstance(exc, requests.Timeout) or "timed out" in lower or "read timeout" in lower:
+        raise RuntimeError(
+            f"AI 接口响应超时（已等待 {timeout_sec} 秒）。"
+            "deepseek-v4-pro 思考模式可能需要更久；"
+            "请在 Web 后台把“AI 请求超时秒数”设为 90-180，或临时改用 deepseek-v4-flash。"
+        ) from exc
+    raise RuntimeError(f"AI 接口连接失败：{message}") from exc
+
+
+def post_chat_completion(settings: Settings, payload: dict[str, Any]) -> dict[str, Any]:
+    timeout_sec = ai_request_timeout_sec(settings)
+    try:
+        response = requests.post(
+            f"{settings.ai_base_url.rstrip('/')}/chat/completions",
+            headers={
+                **HTTP_HEADERS,
+                "Authorization": f"Bearer {settings.ai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=timeout_sec,
+        )
+    except requests.RequestException as exc:
+        raise_for_ai_request_exception(exc, timeout_sec)
+    raise_for_ai_response(response)
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
 def call_ai_provider(
     settings: Settings,
     user_text: str,
@@ -401,18 +437,7 @@ def call_ai_provider(
             ]
         )
     payload = build_chat_completion_payload(settings, system_prompt, f"{context}\n\n用户问题：{user_text}")
-    response = requests.post(
-        f"{settings.ai_base_url.rstrip('/')}/chat/completions",
-        headers={
-            **HTTP_HEADERS,
-            "Authorization": f"Bearer {settings.ai_api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=max(5, int(settings.ai_request_timeout_sec)),
-    )
-    raise_for_ai_response(response)
-    data = response.json()
+    data = post_chat_completion(settings, payload)
     choices = data.get("choices") if isinstance(data, dict) else None
     if not choices:
         return "AI 接口返回为空。"
