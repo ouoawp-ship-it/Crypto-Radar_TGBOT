@@ -2766,9 +2766,10 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-12">
           <h3 class="section-title">怎么用</h3>
           <div class="feature-list">
-            <div class="feature-item"><strong>自然语言</strong><span class="muted">打开 AI 助手 Bot 私聊，直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、BTC 跌破 58000 提醒我。</span></div>
+            <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 或 /paopao 会出现中文按钮首页，可进入查币、分析数据、设置提醒、查看提醒和群内规则。</span></div>
+            <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、查 BTC、GWEI 怎么看。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
-            <div class="feature-item"><strong>提醒识别</strong><span class="muted">创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。只写突破、跌破会先反问确认，不会乱建提醒。</span></div>
+            <div class="feature-item"><strong>提醒确认</strong><span class="muted">创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”，并且真实创建前会显示确认按钮；只转发带价格的雷达信号不会乱建提醒。</span></div>
             <div class="feature-item"><strong>自动分析</strong><span class="muted">直接粘贴启动雷达、结构雷达、资金流、OI、CVD、成交量等数据，会自动走专业分析师提示词。</span></div>
             <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
             <div class="feature-item"><strong>备用命令</strong><span class="muted">/alert、/price、/alerts、/pause、/resume、/delete、/ai、/analyze 仍然保留，方便精确操作和排查。</span></div>

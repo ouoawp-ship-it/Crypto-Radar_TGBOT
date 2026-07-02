@@ -10,7 +10,9 @@ import requests
 from paopao_radar.ai_assistant import (
     build_chat_completion_payload,
     extract_ai_reply_text,
+    handle_callback_query,
     handle_message,
+    handle_message_reply,
     is_alert_intent,
     parse_alert_request,
     telegram_plain_text,
@@ -77,6 +79,8 @@ class AiAssistantTests(unittest.TestCase):
                 ai_assistant_enable=True,
                 ai_bot_token="123456:test",
                 ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
                 ai_price_alerts_db_path=db_path,
             )
             store = PriceAlertStore(db_path)
@@ -95,6 +99,149 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn("设置价格提醒", reply)
         self.assertIn("群里使用规则", reply)
         self.assertIn("创建提醒必须明确说", reply)
+
+    def test_handle_message_reply_start_has_home_buttons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/start",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            reply = handle_message_reply(settings, store, message, sessions={})
+
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("查币雷达档案", reply.text)
+        self.assertIsNotNone(reply.reply_markup)
+        buttons = reply.reply_markup["inline_keyboard"]
+        flat = [button["callback_data"] for row in buttons for button in row]
+        self.assertIn("flow:alert_setup", flat)
+        self.assertIn("menu:analysis", flat)
+
+    def test_button_alert_setup_flow_requires_final_confirm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            sessions: dict[str, dict[str, object]] = {}
+            callback = {
+                "data": "flow:alert_setup",
+                "from": {"id": 42, "username": "tester"},
+                "message": {"chat": {"id": 42, "type": "private"}},
+            }
+
+            first = handle_callback_query(settings, store, callback, sessions=sessions)  # type: ignore[arg-type]
+            self.assertIsNotNone(first)
+            self.assertIn("请先发送币种", first.text if first else "")
+            self.assertEqual(sessions["42:42"]["state"], "alert_symbol")
+
+            coin_reply = handle_message_reply(
+                settings,
+                store,
+                {"text": "BTC", "from": {"id": 42, "username": "tester"}, "chat": {"id": 42, "type": "private"}},
+                sessions=sessions,  # type: ignore[arg-type]
+            )
+            self.assertIn("已识别币种：BTCUSDT", coin_reply.text if coin_reply else "")
+            self.assertEqual(sessions["42:42"]["state"], "alert_price")
+
+            with patch("paopao_radar.ai_assistant.fetch_binance_prices", return_value={"BTCUSDT": 61234.5}):
+                confirm_reply = handle_message_reply(
+                    settings,
+                    store,
+                    {"text": "58000", "from": {"id": 42, "username": "tester"}, "chat": {"id": 42, "type": "private"}},
+                    sessions=sessions,  # type: ignore[arg-type]
+                )
+
+            self.assertIn("请确认添加价格提醒", confirm_reply.text if confirm_reply else "")
+            self.assertIn("价格 低于或等于 $58,000.00", confirm_reply.text if confirm_reply else "")
+            self.assertEqual(store.stats()["total"], 0)
+
+            create_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": "alert:confirm:BTCUSDT:below:58000",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions=sessions,  # type: ignore[arg-type]
+            )
+
+            self.assertIn("已创建价格提醒", create_reply.text if create_reply else "")
+            alerts = store.list_alerts(user_id="42")
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0].direction, "below")
+
+    def test_handle_message_reply_natural_alert_waits_for_confirm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            reply = handle_message_reply(
+                settings,
+                store,
+                {
+                    "text": "ETH 突破 4200 提醒我",
+                    "from": {"id": 42, "username": "tester"},
+                    "chat": {"id": 42, "type": "private"},
+                },
+                sessions={},
+            )
+
+            self.assertIn("请确认添加价格提醒", reply.text if reply else "")
+            self.assertEqual(store.stats()["total"], 0)
+            markup = reply.reply_markup if reply else {}
+            flat = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
+            self.assertIn("alert:confirm:ETHUSDT:above:4200", flat)
+
+    def test_id_command_returns_user_and_chat_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_allow_group_chat=True,
+                ai_allowed_chat_ids=("-1001",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/id",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": -1001, "type": "supergroup"},
+                "reply_to_message": {"from": {"id": 819, "is_bot": True, "username": "v8pao_bot"}},
+            }
+
+            reply = handle_message_reply(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
+
+        self.assertIn("你的用户 ID：42", reply.text if reply else "")
+        self.assertIn("当前聊天 ID：-1001", reply.text if reply else "")
 
     def test_handle_message_routes_symbol_dossier_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

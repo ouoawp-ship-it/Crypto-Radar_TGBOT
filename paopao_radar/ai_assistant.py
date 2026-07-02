@@ -31,7 +31,30 @@ from .symbol_dossier import (
 )
 
 
-HELP_TEXT = """泡泡 AI 助手 Bot
+HOME_TEXT = """泡泡 AI 助手 Bot
+
+这是泡泡雷达的独立 AI 助手，和群里自动推送雷达信号的 Bot 分开。
+它主要负责：查币雷达档案、解读雷达数据、设置价格提醒、查询价格、回答运行状态问题。
+
+常用入口：
+1. 查币雷达档案
+查 BTC
+GWEI 怎么看
+SOL 可以做多吗
+
+2. 分析你粘贴的数据
+分析这段：粘贴启动雷达、结构雷达、资金流、资金费率或市场数据
+
+3. 设置价格提醒
+可以点击“设置价格提醒”，按提示输入币种和目标价。创建前会让你确认。
+
+创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。只转发带价格的雷达信号，不会自动创建提醒。
+
+群里使用规则：
+只有 Web 后台允许的群/频道才能使用；在群里必须 @我，或者回复我的消息，我才会处理，普通聊天不会触发。
+"""
+
+HELP_TEXT = """泡泡 AI 助手 Bot 完整帮助
 
 这个 Bot 和群里自动推送雷达信号的 Bot 是分开的。
 它主要负责：查币、解读数据、设置价格提醒、回答泡泡雷达运行问题。
@@ -84,6 +107,126 @@ ETH 突破 4200 通知我
 /delete 12
 /ai 帮我解释最近雷达状态
 """
+
+PRICE_HELP_TEXT = """价格提醒说明
+
+当前泡泡 AI 助手的价格提醒使用 Binance USDT 合约价格。
+
+按钮模式：
+1. 点击“设置价格提醒”
+2. 输入币种，例如 BTC、ETH、DOGE
+3. 输入目标价格，例如 58000
+4. 机器人读取当前价格并自动判断方向
+5. 点击“确认添加”后才会创建提醒
+
+方向判断：
+目标价高于当前价：价格高于或等于目标价时提醒
+目标价低于当前价：价格低于或等于目标价时提醒
+
+命令模式：
+/alert BTC 高于 58000
+/alert ETH 跌破 3200
+
+提醒触发后会自动标记为已触发，不会反复轰炸。
+"""
+
+ANALYSIS_HELP_TEXT = """AI 分析说明
+
+支持两类分析：
+
+1. 查币雷达档案
+发送：查 BTC、GWEI 怎么看、SOL 可以做多吗
+我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率。
+
+2. 分析你粘贴的数据
+发送：分析这段：粘贴雷达信号或市场数据
+也可以直接粘贴启动雷达、结构雷达、资金流、资金费率等内容，我会自动识别。
+
+AI 分析只做数据解读，不承诺涨跌，不是自动交易指令。
+"""
+
+ASSISTANT_HELP_TEXT = """AI 助手说明
+
+可以直接问：
+BTC 现在多少钱
+查 BTC
+GWEI 怎么看
+我的提醒有哪些
+帮我解释最近雷达状态
+
+备用命令：
+/price BTC
+/coin BTC
+/analyze 粘贴雷达信号
+/alerts
+/pause 12
+/resume 12
+/delete 12
+/id
+
+普通私聊会自动识别意图。群里必须 @机器人或回复机器人消息，并且群 ID 已经在 Web 后台白名单里。
+"""
+
+GROUP_RULES_TEXT = """群里使用规则
+
+默认情况下，AI 助手不会读取群里每一句普通聊天。
+
+群内调用需要同时满足：
+1. Web 后台开启 AI_ALLOW_GROUP_CHAT
+2. 当前群/频道 ID 填入 AI_ALLOWED_CHAT_IDS
+3. 用户 @机器人，或回复机器人消息
+
+这样做是为了避免误触发，也避免个人价格提醒设置泄露到不该使用的群里。
+"""
+
+ALERT_SETUP_TEXT = """设置价格提醒
+
+请先发送币种简称，例如：
+BTC
+ETH
+DOGE
+
+当前版本使用 Binance USDT 合约价格。下一步会让你输入目标价，并在创建前确认。
+"""
+
+
+@dataclass(frozen=True)
+class BotReply:
+    text: str
+    reply_markup: dict[str, Any] | None = None
+
+
+def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": text, "callback_data": data} for text, data in row]
+            for row in rows
+        ]
+    }
+
+
+def main_menu_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("查币雷达档案", "menu:dossier"), ("设置价格提醒", "flow:alert_setup")],
+        [("我的提醒", "menu:alerts"), ("查询价格", "menu:price_query")],
+        [("分析雷达数据", "menu:analysis"), ("AI 助手说明", "menu:assistant")],
+        [("群里使用规则", "menu:group"), ("完整帮助", "menu:help")],
+    ])
+
+
+def back_home_markup() -> dict[str, Any]:
+    return inline_keyboard([[("返回首页", "menu:home")]])
+
+
+def alert_confirm_markup(symbol: str, direction: str, target_price: float) -> dict[str, Any]:
+    return inline_keyboard([
+        [("确认添加提醒", f"alert:confirm:{symbol}:{direction}:{target_price:g}")],
+        [("重新设置", "flow:alert_setup"), ("取消", "flow:cancel")],
+    ])
+
+
+def cancel_markup() -> dict[str, Any]:
+    return inline_keyboard([[("取消", "flow:cancel")]])
 
 
 GROUP_CHAT_TYPES = {"group", "supergroup"}
@@ -162,6 +305,25 @@ def telegram_plain_text(text: str) -> str:
     cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.M)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
+    remaining = str(text or "").strip()
+    if not remaining:
+        return []
+    chunks: list[str] = []
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining.strip())
+            break
+        split_at = remaining.rfind("\n", 0, limit)
+        if split_at < 800:
+            split_at = limit
+        chunk = remaining[:split_at].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_at:].strip()
+    return chunks
 
 
 def _normalize_bot_username(bot_username: str) -> str:
@@ -265,7 +427,7 @@ class TelegramBotClient:
     def get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "timeout": max(1, int(timeout)),
-            "allowed_updates": json.dumps(["message"]),
+            "allowed_updates": json.dumps(["message", "callback_query"]),
         }
         if offset is not None:
             params["offset"] = int(offset)
@@ -282,15 +444,41 @@ class TelegramBotClient:
         result = data.get("result", [])
         return result if isinstance(result, list) else []
 
-    def send_message(self, chat_id: str | int, text: str) -> bool:
+    def send_message(
+        self,
+        chat_id: str | int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
         safe_text = telegram_plain_text(text) or "（无内容）"
-        response = requests.post(
-            f"{self.base_url}/sendMessage",
-            json={
+        chunks = split_telegram_text(safe_text) or ["（无内容）"]
+        ok = True
+        for index, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {
                 "chat_id": chat_id,
-                "text": safe_text,
+                "text": chunk,
                 "disable_web_page_preview": True,
-            },
+            }
+            if reply_markup and index == len(chunks) - 1:
+                payload["reply_markup"] = reply_markup
+            response = requests.post(
+                f"{self.base_url}/sendMessage",
+                json=payload,
+                headers=HTTP_HEADERS,
+                timeout=self.timeout_sec,
+            )
+            response.raise_for_status()
+            data = response.json()
+            ok = ok and bool(data.get("ok"))
+        return ok
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text[:180]
+        response = requests.post(
+            f"{self.base_url}/answerCallbackQuery",
+            json=payload,
             headers=HTTP_HEADERS,
             timeout=self.timeout_sec,
         )
@@ -490,6 +678,173 @@ def price_text(settings: Settings, symbol_text: str) -> str:
     if price is None:
         return f"没有从 Binance 合约行情里读到 {symbol} 的价格。"
     return f"{symbol} 当前 Binance 合约价格：{format_price(price)}"
+
+
+def id_text(message: dict[str, Any]) -> str:
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    user_id, username = user_label(message)
+    lines = [
+        "当前 Telegram ID",
+        "",
+        f"你的用户 ID：{user_id or '未知'}",
+        f"当前聊天 ID：{chat.get('id') or '未知'}",
+        f"当前聊天类型：{chat.get('type') or '未知'}",
+    ]
+    if username:
+        lines.append(f"用户名：{username}")
+    return "\n".join(lines)
+
+
+def session_key(chat_id: str | int, user_id: str | int) -> str:
+    return f"{chat_id}:{user_id}"
+
+
+def message_session_key(message: dict[str, Any]) -> str:
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    user_id, _ = user_label(message)
+    return session_key(str(chat.get("id") or ""), user_id)
+
+
+def callback_session_key(query: dict[str, Any]) -> str:
+    message = query.get("message", {}) if isinstance(query.get("message"), dict) else {}
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    user = query.get("from", {}) if isinstance(query.get("from"), dict) else {}
+    return session_key(str(chat.get("id") or ""), str(user.get("id") or ""))
+
+
+def current_price_for_symbol(settings: Settings, symbol: str) -> float | None:
+    try:
+        prices = fetch_binance_prices(settings, [symbol])
+    except Exception:
+        return None
+    price = prices.get(symbol)
+    return float(price) if isinstance(price, (int, float)) else None
+
+
+def infer_alert_direction(target_price: float, current_price: float | None = None, fallback: str = "above") -> str:
+    if fallback in {"above", "below"}:
+        return fallback
+    if current_price is not None and current_price > 0:
+        return "above" if target_price >= current_price else "below"
+    return "above"
+
+
+def alert_confirmation_text(
+    symbol: str,
+    direction: str,
+    target_price: float,
+    current_price: float | None = None,
+) -> str:
+    direction_label = "高于或等于" if direction == "above" else "低于或等于"
+    lines = [
+        "请确认添加价格提醒",
+        "",
+        f"币种：{symbol}",
+        "数据源：Binance USDT 合约",
+    ]
+    if current_price is not None:
+        lines.append(f"当前价：{format_price(current_price)}")
+    lines.extend([
+        f"目标价：{format_price(target_price)}",
+        f"触发条件：价格 {direction_label} {format_price(target_price)}",
+        "",
+        "确认后才会创建提醒；取消则不会保存。",
+    ])
+    return "\n".join(lines)
+
+
+def alert_confirmation_reply(
+    settings: Settings,
+    parsed: ParsedAlertRequest,
+    current_price: float | None = None,
+) -> BotReply:
+    direction = infer_alert_direction(parsed.target_price, current_price, parsed.direction)
+    return BotReply(
+        alert_confirmation_text(parsed.symbol, direction, parsed.target_price, current_price),
+        alert_confirm_markup(parsed.symbol, direction, parsed.target_price),
+    )
+
+
+def start_alert_setup_session(sessions: dict[str, dict[str, Any]], key: str) -> BotReply:
+    sessions[key] = {"state": "alert_symbol", "created_at": int(time.time())}
+    return BotReply(ALERT_SETUP_TEXT, cancel_markup())
+
+
+def handle_alert_setup_session(
+    settings: Settings,
+    sessions: dict[str, dict[str, Any]],
+    message: dict[str, Any],
+    text: str,
+) -> BotReply | None:
+    key = message_session_key(message)
+    session = sessions.get(key)
+    if not session:
+        return None
+    lowered = text.strip().lower()
+    if lowered in {"/cancel", "取消"}:
+        sessions.pop(key, None)
+        return BotReply("已取消价格提醒设置。", main_menu_markup())
+
+    state = str(session.get("state") or "")
+    if state == "alert_symbol":
+        symbol_text = extract_symbol_text(text) or text
+        try:
+            symbol = normalize_symbol(symbol_text)
+        except Exception as exc:
+            return BotReply(f"没有识别出币种：{exc}\n请只输入币种简称，例如 BTC、ETH、DOGE。", cancel_markup())
+        session.update({"state": "alert_price", "symbol": symbol})
+        return BotReply(
+            "\n".join([
+                f"已识别币种：{symbol}",
+                "",
+                "请发送目标价格，例如：58000",
+                "目标价高于当前价会按上涨提醒；低于当前价会按下跌提醒。",
+            ]),
+            cancel_markup(),
+        )
+
+    if state == "alert_price":
+        symbol = str(session.get("symbol") or "")
+        if not symbol:
+            sessions.pop(key, None)
+            return BotReply("会话已失效，请重新设置价格提醒。", main_menu_markup())
+        try:
+            target_price = parse_price(text)
+        except Exception as exc:
+            return BotReply(f"价格格式不正确：{exc}\n请发送数字，例如 58000 或 0.35。", cancel_markup())
+        current_price = current_price_for_symbol(settings, symbol)
+        direction = infer_alert_direction(target_price, current_price, fallback="")
+        sessions.pop(key, None)
+        return BotReply(
+            alert_confirmation_text(symbol, direction, target_price, current_price),
+            alert_confirm_markup(symbol, direction, target_price),
+        )
+
+    sessions.pop(key, None)
+    return BotReply("会话已失效，请重新设置价格提醒。", main_menu_markup())
+
+
+def create_alert_from_context(
+    store: PriceAlertStore,
+    user_id: str,
+    chat_id: str,
+    username: str,
+    symbol: str,
+    direction: str,
+    target_price: float,
+    source: str,
+    note: str,
+) -> PriceAlert:
+    return store.create_alert(
+        user_id=user_id,
+        chat_id=chat_id,
+        username=username,
+        symbol=symbol,
+        direction=direction,
+        target_price=target_price,
+        source=source,
+        note=note,
+    )
 
 
 def runtime_context(settings: Settings) -> str:
@@ -767,11 +1122,17 @@ def handle_message(
 
     text = strip_bot_addressing(raw_text, bot_username)
     if not text:
-        return HELP_TEXT
+        return HOME_TEXT
 
     lowered = text.lower()
-    if lowered in {"/start", "/help", "help", "帮助"}:
+    if lowered in {"/start", "/paopao"}:
+        return HOME_TEXT
+    if lowered in {"/help", "help", "帮助"}:
         return HELP_TEXT
+    if lowered == "/id":
+        return id_text(message)
+    if lowered.startswith("/setup"):
+        return ALERT_SETUP_TEXT
 
     if lowered.startswith("/price"):
         parts = text.split(maxsplit=1)
@@ -896,6 +1257,162 @@ def handle_message(
     return local_assistant_reply(settings, store, user_id)
 
 
+def handle_message_reply(
+    settings: Settings,
+    store: PriceAlertStore,
+    message: dict[str, Any],
+    bot_username: str = "",
+    bot_user_id: str = "",
+    sessions: dict[str, dict[str, Any]] | None = None,
+) -> BotReply | None:
+    raw_text = str(message.get("text") or "").strip()
+    if not raw_text:
+        return None
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or "")
+    chat_type = str(chat.get("type") or "")
+    user_id, username = user_label(message)
+    if not user_id or not chat_id:
+        return None
+    if chat_type in NON_PRIVATE_CHAT_TYPES and not message_targets_bot(message, bot_username, bot_user_id):
+        return None
+    if chat_type in NON_PRIVATE_CHAT_TYPES:
+        if not settings.ai_allow_group_chat:
+            return BotReply("AI 助手还没有开启群内调用。请在 Web 后台开启 AI_ALLOW_GROUP_CHAT。")
+        if not chat_is_allowed(settings, chat):
+            return BotReply("这个群没有开通 AI 助手。请在 Web 后台的 AI_ALLOWED_CHAT_IDS 里加入当前群 ID 或频道用户名。")
+    if not is_authorized(settings, user_id):
+        return BotReply("你没有使用这个 AI 助手 Bot 的权限。请在 Web 后台配置 AI_ADMIN_USER_IDS。")
+
+    text = strip_bot_addressing(raw_text, bot_username)
+    key = session_key(chat_id, user_id)
+    active_sessions = sessions if sessions is not None else {}
+    lowered = text.lower()
+
+    if lowered in {"/cancel", "取消"}:
+        active_sessions.pop(key, None)
+        return BotReply("已取消。", main_menu_markup())
+    if lowered in {"/start", "/paopao"} or not text:
+        active_sessions.pop(key, None)
+        return BotReply(HOME_TEXT, main_menu_markup())
+    if lowered in {"/help", "help", "帮助"}:
+        return BotReply(HELP_TEXT, main_menu_markup())
+    if lowered == "/id":
+        return BotReply(id_text(message))
+    if lowered.startswith("/setup"):
+        return start_alert_setup_session(active_sessions, key)
+
+    session_reply = handle_alert_setup_session(settings, active_sessions, message, text)
+    if session_reply:
+        return session_reply
+
+    if not lowered.startswith("/alert") and is_alert_intent(text):
+        parsed = parse_alert_request(text)
+        if parsed:
+            return alert_confirmation_reply(settings, parsed)
+
+    reply = handle_message(settings, store, message, bot_username=bot_username, bot_user_id=bot_user_id)
+    if not reply:
+        return None
+    if reply == HOME_TEXT:
+        return BotReply(reply, main_menu_markup())
+    if reply == HELP_TEXT:
+        return BotReply(reply, main_menu_markup())
+    return BotReply(reply)
+
+
+def handle_callback_query(
+    settings: Settings,
+    store: PriceAlertStore,
+    query: dict[str, Any],
+    sessions: dict[str, dict[str, Any]] | None = None,
+) -> BotReply | None:
+    data = str(query.get("data") or "").strip()
+    message = query.get("message", {}) if isinstance(query.get("message"), dict) else {}
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or "")
+    chat_type = str(chat.get("type") or "")
+    user = query.get("from", {}) if isinstance(query.get("from"), dict) else {}
+    user_id = str(user.get("id") or "")
+    username = str(user.get("username") or user.get("first_name") or "")
+    if not data or not chat_id or not user_id:
+        return None
+    if chat_type in NON_PRIVATE_CHAT_TYPES:
+        if not settings.ai_allow_group_chat:
+            return BotReply("AI 助手还没有开启群内调用。请在 Web 后台开启 AI_ALLOW_GROUP_CHAT。")
+        if not chat_is_allowed(settings, chat):
+            return BotReply("这个群没有开通 AI 助手。请在 Web 后台的 AI_ALLOWED_CHAT_IDS 里加入当前群 ID 或频道用户名。")
+    if not is_authorized(settings, user_id):
+        return BotReply("你没有使用这个 AI 助手 Bot 的权限。请在 Web 后台配置 AI_ADMIN_USER_IDS。")
+
+    active_sessions = sessions if sessions is not None else {}
+    key = callback_session_key(query)
+
+    if data == "menu:home":
+        return BotReply(HOME_TEXT, main_menu_markup())
+    if data == "menu:help":
+        return BotReply(HELP_TEXT, main_menu_markup())
+    if data == "menu:dossier":
+        return BotReply(
+            "\n".join([
+                "查币雷达档案",
+                "",
+                "直接发送：查 BTC、GWEI 怎么看、SOL 可以做多吗。",
+                "我会汇总这个币最近的雷达信号、价格、OI、成交量、市值、流动性、结构状态和资金费率，再给出偏多、偏空、观望或高风险观望结论。",
+            ]),
+            back_home_markup(),
+        )
+    if data == "menu:alerts":
+        return BotReply(list_alerts_text(store.list_alerts(user_id=user_id, limit=50)), back_home_markup())
+    if data == "menu:price_query":
+        return BotReply(
+            "\n".join([
+                "查询价格",
+                "",
+                "可以直接发送：BTC 现在多少钱、ETH 当前价格。",
+                "备用命令：/price BTC",
+                "",
+                "当前读取 Binance USDT 合约价格。",
+            ]),
+            back_home_markup(),
+        )
+    if data == "menu:analysis":
+        return BotReply(ANALYSIS_HELP_TEXT, back_home_markup())
+    if data == "menu:assistant":
+        return BotReply(ASSISTANT_HELP_TEXT, back_home_markup())
+    if data == "menu:group":
+        return BotReply(GROUP_RULES_TEXT, back_home_markup())
+    if data == "flow:alert_setup":
+        return start_alert_setup_session(active_sessions, key)
+    if data == "flow:cancel":
+        active_sessions.pop(key, None)
+        return BotReply("已取消。", main_menu_markup())
+    if data.startswith("alert:confirm:"):
+        parts = data.split(":", 4)
+        if len(parts) != 5:
+            return BotReply("这个确认按钮已失效，请重新设置。", main_menu_markup())
+        _, _, symbol, direction, target_text = parts
+        try:
+            target_price = parse_price(target_text)
+            alert = create_alert_from_context(
+                store,
+                user_id=user_id,
+                chat_id=chat_id,
+                username=username,
+                symbol=symbol,
+                direction=direction,
+                target_price=target_price,
+                source="telegram-button",
+                note="button-confirm",
+            )
+        except Exception as exc:
+            return BotReply(f"创建提醒失败：{type(exc).__name__}: {exc}", main_menu_markup())
+        active_sessions.pop(key, None)
+        return BotReply(alert_created_text(alert), main_menu_markup())
+
+    return BotReply("这个按钮暂时无法识别，请返回首页重新选择。", main_menu_markup())
+
+
 def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot: TelegramBotClient) -> dict[str, Any]:
     if not settings.ai_price_alerts_enable:
         return {"ok": True, "enabled": False, "checked": 0, "triggered": 0}
@@ -948,6 +1465,7 @@ def run_ai_assistant_service() -> int:
         poll_timeout = max(1, int(settings.ai_poll_timeout_sec))
         alert_interval = max(5, int(settings.ai_alert_check_interval_sec))
         next_alert_check = 0.0
+        sessions: dict[str, dict[str, Any]] = {}
         print(
             f"ai-assistant: running username={bot_username or '-'} poll_timeout={poll_timeout}s "
             f"alert_interval={alert_interval}s db={settings.ai_price_alerts_db_path}",
@@ -977,14 +1495,46 @@ def run_ai_assistant_service() -> int:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     offset = update_id + 1
+                callback_query = update.get("callback_query")
+                if isinstance(callback_query, dict):
+                    try:
+                        callback_id = str(callback_query.get("id") or "")
+                        if callback_id:
+                            try:
+                                bot.answer_callback_query(callback_id)
+                            except Exception:
+                                pass
+                        reply = handle_callback_query(settings, store, callback_query, sessions=sessions)
+                        if reply:
+                            callback_message = callback_query.get("message", {})
+                            chat_id = callback_message.get("chat", {}).get("id") if isinstance(callback_message, dict) else None
+                            if chat_id is not None:
+                                bot.send_message(chat_id, reply.text, reply_markup=reply.reply_markup)
+                    except Exception as exc:
+                        print(f"ai-assistant: callback failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                        try:
+                            callback_message = callback_query.get("message", {})
+                            chat_id = callback_message.get("chat", {}).get("id") if isinstance(callback_message, dict) else None
+                            if chat_id is not None:
+                                bot.send_message(chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}")
+                        except Exception:
+                            pass
+                    continue
                 message = update.get("message")
                 if not isinstance(message, dict):
                     continue
                 try:
-                    reply = handle_message(settings, store, message, bot_username=bot_username, bot_user_id=bot_user_id)
+                    reply = handle_message_reply(
+                        settings,
+                        store,
+                        message,
+                        bot_username=bot_username,
+                        bot_user_id=bot_user_id,
+                        sessions=sessions,
+                    )
                     if reply:
                         chat_id = message.get("chat", {}).get("id")
-                        bot.send_message(chat_id, reply)
+                        bot.send_message(chat_id, reply.text, reply_markup=reply.reply_markup)
                 except Exception as exc:
                     print(f"ai-assistant: message failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                     try:
