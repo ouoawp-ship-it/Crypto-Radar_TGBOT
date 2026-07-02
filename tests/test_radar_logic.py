@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.radar import CST, RadarEngine, score_funding
+from paopao_radar.radar import CST, RadarEngine, funding_interval_transition, score_funding
 from paopao_radar.storage import JsonStore
 from paopao_radar.time_windows import closed_window
 
@@ -208,6 +208,21 @@ class RadarScoringTests(unittest.TestCase):
         self.assertGreater(score_funding(-0.5), score_funding(-0.01))
         self.assertEqual(score_funding(0.01), 0)
 
+    def test_funding_interval_transition_detects_shorter_cycle(self) -> None:
+        def ms_at(hour: int) -> int:
+            return int(datetime(2026, 7, 1, hour, 0, 0, tzinfo=CST).timestamp() * 1000)
+
+        transition = funding_interval_transition([
+            {"fundingTime": ms_at(12), "fundingRate": "-0.001"},
+            {"fundingTime": ms_at(16), "fundingRate": "-0.006"},
+            {"fundingTime": ms_at(17), "fundingRate": "-0.020"},
+        ])
+
+        self.assertEqual(transition["previous_interval_hours"], 4)
+        self.assertEqual(transition["current_interval_hours"], 1)
+        self.assertIn("2026-07-01 16:00:00 4H结算一次", transition["transition_text"])
+        self.assertIn("2026-07-01 17:00:00 1H结算一次", transition["transition_text"])
+
     def test_excluded_base_assets_filter_non_crypto_symbols(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp), excluded_base_assets=("XAU", "XAG"))
@@ -287,12 +302,17 @@ class RadarScoringTests(unittest.TestCase):
                 "mcap": 123_000_000,
                 "mcap_source": "CoinPaprika",
                 "breakout": False,
+                "funding_pct": -2.0,
+                "funding_interval_hours": 1,
+                "funding_interval_transition": "2026-07-01 16:00:00 4H结算一次 → 2026-07-01 17:00:00 1H结算一次",
             })
 
             self.assertIn("状态</b>: 未触发 -> 提前预警", text)
             self.assertIn("<blockquote><b>市场概况</b></blockquote>", text)
             self.assertIn("市值: $123M（低市值，来源 CoinPaprika）", text)
             self.assertIn("流动性: $55M/24h（中流动性）", text)
+            self.assertIn("资金费率: -2.000%/1H（极负）", text)
+            self.assertIn("结算周期: 2026-07-01 16:00:00 4H结算一次 → 2026-07-01 17:00:00 1H结算一次", text)
             self.assertIn("分数图例", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
 

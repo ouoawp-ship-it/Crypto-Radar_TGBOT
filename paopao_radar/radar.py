@@ -165,6 +165,73 @@ def funding_trend(previous: Optional[float], current: float) -> str:
     return "➡️"
 
 
+def funding_time_text(value_ms: float) -> str:
+    if value_ms <= 0:
+        return ""
+    return datetime.fromtimestamp(value_ms / 1000, CST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def funding_interval_hours(value_ms: float) -> int:
+    if value_ms <= 0:
+        return 0
+    hours = int(round(value_ms / 3_600_000))
+    return hours if hours > 0 else 0
+
+
+def funding_interval_label(hours: int) -> str:
+    if hours <= 0:
+        return "未知周期"
+    return f"{hours}H"
+
+
+def funding_cycle_text(funding_pct: float, interval_hours: int) -> str:
+    if interval_hours > 0:
+        return f"{funding_pct:+.3f}%/{funding_interval_label(interval_hours)}"
+    return f"{funding_pct:+.3f}%"
+
+
+def funding_extreme_label(funding_pct: float) -> str:
+    if funding_pct <= -1.0:
+        return "极负"
+    if funding_pct <= -0.5:
+        return "极负"
+    return ""
+
+
+def funding_interval_transition(history: list[dict[str, Any]]) -> dict[str, Any]:
+    points = sorted(
+        [
+            {
+                "time": int(to_float(item.get("fundingTime"))),
+                "rate": to_float(item.get("fundingRate")) * 100,
+            }
+            for item in history
+            if to_float(item.get("fundingTime")) > 0
+        ],
+        key=lambda item: item["time"],
+    )
+    if len(points) < 3:
+        return {}
+    previous_interval = funding_interval_hours(points[-2]["time"] - points[-3]["time"])
+    current_interval = funding_interval_hours(points[-1]["time"] - points[-2]["time"])
+    if previous_interval <= 0 or current_interval <= 0:
+        return {}
+    if current_interval >= previous_interval:
+        return {"current_interval_hours": current_interval}
+    previous_time = points[-2]["time"]
+    current_time = points[-1]["time"]
+    return {
+        "current_interval_hours": current_interval,
+        "previous_interval_hours": previous_interval,
+        "previous_funding_time_ms": previous_time,
+        "current_funding_time_ms": current_time,
+        "transition_text": (
+            f"{funding_time_text(previous_time)} {funding_interval_label(previous_interval)}结算一次"
+            f" → {funding_time_text(current_time)} {funding_interval_label(current_interval)}结算一次"
+        ),
+    }
+
+
 def estimate_sideways_days(klines: list[list[Any]], max_range_pct: float = 80.0) -> int:
     if not klines:
         return 0
@@ -1222,6 +1289,15 @@ class RadarEngine:
             for item in source.ticker_24h()
             if str(item.get("symbol", "")).endswith("USDT")
         }
+        try:
+            premium_items = source.premium_index() if hasattr(source, "premium_index") else []
+        except Exception:
+            premium_items = []
+        premium_map = {
+            item.get("symbol"): item
+            for item in premium_items
+            if str(item.get("symbol", "")).endswith("USDT")
+        }
         binance_market_caps = source.market_caps() if hasattr(source, "market_caps") else {}
         binance_market_caps = binance_market_caps or {}
         candidates: list[dict[str, Any]] = []
@@ -1234,12 +1310,16 @@ class RadarEngine:
             mcap = to_float(binance_market_caps.get(coin))
             if mcap <= 0:
                 missing_mcap_coins.add(coin)
+            premium = premium_map.get(symbol, {}) if isinstance(premium_map, dict) else {}
             candidates.append({
                 "symbol": symbol,
                 "coin": coin,
                 "quote_volume": quote_volume,
                 "price_24h": to_float(ticker.get("priceChangePercent")),
                 "price": to_float(ticker.get("lastPrice")),
+                "funding_available": isinstance(premium, dict) and bool(premium),
+                "funding_pct": to_float(premium.get("lastFundingRate")) * 100 if isinstance(premium, dict) else 0.0,
+                "funding_next_time_ms": int(to_float(premium.get("nextFundingTime"))) if isinstance(premium, dict) else 0,
                 "mcap": mcap,
                 "mcap_source": "Binance" if mcap > 0 else "",
                 "market_cap_tier": market_cap_tier(mcap),
@@ -1408,6 +1488,23 @@ class RadarEngine:
             score += 15
             reasons.append("资金暗流但价格未大动")
 
+        funding_pct = to_float(item.get("funding_pct"))
+        next_funding_time_ms = int(to_float(item.get("funding_next_time_ms")))
+        if score >= self.settings.launch_watch_score or funding_pct <= -0.5:
+            funding_context = self._launch_funding_context(source, symbol, funding_pct, next_funding_time_ms)
+        else:
+            funding_context = {
+                "funding_available": bool(item.get("funding_available")),
+                "funding_pct": funding_pct,
+                "funding_next_time_ms": next_funding_time_ms,
+                "funding_interval_hours": 0,
+                "funding_interval_transition": "",
+            }
+        if funding_pct <= -0.5:
+            reasons.append(f"资金费率{funding_cycle_text(funding_pct, int(funding_context.get('funding_interval_hours', 0) or 0))}极负")
+        elif funding_context.get("funding_interval_transition"):
+            reasons.append("资金费率结算周期缩短")
+
         return {
             **item,
             "score": score,
@@ -1418,7 +1515,48 @@ class RadarEngine:
             "volume_ratio": volume_ratio,
             "breakout": breakout,
             "reasons": reasons[:5],
+            **funding_context,
         }
+
+    def _launch_funding_context(
+        self,
+        source: BinanceDataSource,
+        symbol: str,
+        funding_pct: float,
+        next_funding_time_ms: int = 0,
+    ) -> dict[str, Any]:
+        context: dict[str, Any] = {
+            "funding_available": True,
+            "funding_pct": funding_pct,
+            "funding_next_time_ms": next_funding_time_ms,
+            "funding_interval_hours": 0,
+            "funding_interval_transition": "",
+        }
+        if not hasattr(source, "funding_rate"):
+            return context
+        try:
+            history = source.funding_rate(symbol, limit=4)
+        except Exception:
+            history = []
+        if not isinstance(history, list):
+            history = []
+        transition = funding_interval_transition(history)
+        if transition:
+            context["funding_interval_hours"] = int(transition.get("current_interval_hours", 0) or 0)
+            context["funding_interval_transition"] = str(transition.get("transition_text") or "")
+            context["funding_previous_interval_hours"] = int(transition.get("previous_interval_hours", 0) or 0)
+            context["funding_previous_time_ms"] = int(transition.get("previous_funding_time_ms", 0) or 0)
+            context["funding_current_time_ms"] = int(transition.get("current_funding_time_ms", 0) or 0)
+            return context
+
+        points = sorted(
+            [int(to_float(item.get("fundingTime"))) for item in history if to_float(item.get("fundingTime")) > 0]
+        )
+        if len(points) >= 2:
+            context["funding_interval_hours"] = funding_interval_hours(points[-1] - points[-2])
+        elif len(points) == 1 and next_funding_time_ms > points[-1]:
+            context["funding_interval_hours"] = funding_interval_hours(next_funding_time_ms - points[-1])
+        return context
 
     def _launch_stage(self, score: int) -> str:
         return self.launch_stage_for_score(
@@ -1489,6 +1627,14 @@ class RadarEngine:
             if quote_volume > 0
             else "暂无数据（未知流动性）"
         )
+        funding_pct = to_float(item.get("funding_pct"))
+        funding_interval = int(to_float(item.get("funding_interval_hours")))
+        funding_text = funding_cycle_text(funding_pct, funding_interval)
+        funding_label = funding_extreme_label(funding_pct)
+        if funding_label:
+            funding_text = f"{funding_text}（{funding_label}）"
+        funding_transition = str(item.get("funding_interval_transition") or "").strip()
+        funding_available = bool(item.get("funding_available")) or funding_interval > 0 or bool(funding_transition)
         score_legend = (
             f"分数图例: <{self.settings.launch_watch_score}未触发 | "
             f"{self.settings.launch_watch_score}-{self.settings.launch_primed_score - 1}提前观察 | "
@@ -1514,6 +1660,8 @@ class RadarEngine:
             f"15m OI: {item['oi_15m']:+.1f}%",
             f"1h OI: {item['oi_1h']:+.1f}%",
             f"成交量: {item['volume_ratio']:.1f}x 均值",
+            *([f"资金费率: {funding_text}"] if funding_available else []),
+            *([f"结算周期: {funding_transition}"] if funding_transition else []),
             "",
             tg_quote("判断"),
             "资金和价格开始共振，疑似进入启动阶段" if item.get("breakout") else "资金开始异动，进入观察状态",
@@ -1560,6 +1708,10 @@ class RadarEngine:
             "mcap_source": str(item.get("mcap_source") or ""),
             "market_cap_tier": market_cap_tier(to_float(item.get("mcap"))),
             "liquidity_tier": liquidity_tier(to_float(item.get("quote_volume"))),
+            "funding_available": bool(item.get("funding_available")),
+            "funding_pct": round(to_float(item.get("funding_pct")), 6),
+            "funding_interval_hours": int(to_float(item.get("funding_interval_hours"))),
+            "funding_interval_transition": str(item.get("funding_interval_transition") or ""),
             "reasons": item.get("reasons", []),
         }
 
