@@ -164,13 +164,16 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         f"- 默认扫描 Binance 成交额前 {int(settings.funding_alert_scan_limit)} 个 USDT 合约。",
         f"- 默认交易所：{', '.join(settings.funding_alert_exchanges)}。",
         f"- 同币同类警报默认冷却 {seconds_cn(settings.funding_alert_cooldown_sec)}，风险升级或新类型警报会重新推送。",
+        "- 同一个币再次出现信号时，会回复上一条该币资金费率警报，方便沿着同一条消息链追踪。",
         "",
         "阅读方式：",
         "1. 极负费率 = 空头拥挤；如果价格不继续跌，容易变成挤空燃料。",
         "2. 极正费率 = 多头拥挤；如果价格滞涨，追高风险更大。",
         "3. 多交易所共振比单交易所异常更重要，说明不是孤立盘口问题。",
         "4. 结算周期从 8H 到 4H 或 4H 到 1H，代表交易所提高结算频率，应按高风险事件处理。",
-        "5. 资金费率只代表合约拥挤程度，不等于直接买卖方向。",
+        "5. 阶段会从首次异动、拥挤加剧、高危活跃、风险释放到热度衰减逐步跟踪。",
+        "6. 交易所偏离 = 最高资金费率 - 最低资金费率，用来判断是否存在单所盘口异常、局部清算压力或套利资金迁移。",
+        "7. 资金费率只代表合约拥挤程度，不等于直接买卖方向。",
         ])
     if template_id == "TG_STRUCTURE_RADAR":
         return "\n".join([

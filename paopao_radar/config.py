@@ -201,6 +201,9 @@ class Settings:
     funding_alert_extreme_positive_pct: float = 0.5
     funding_alert_min_exchange_count: int = 2
     funding_alert_divergence_pct: float = 0.75
+    funding_alert_reply_chain_enable: bool = True
+    funding_alert_decay_quiet_scans: int = 2
+    funding_alert_end_quiet_scans: int = 5
     funding_alert_state_path: Path = BASE_DIR / "data" / "funding_alert_state.json"
 
     structure_radar_enable: bool = True
@@ -364,6 +367,9 @@ class Settings:
             funding_alert_extreme_positive_pct=env_float("FUNDING_ALERT_EXTREME_POSITIVE_PCT", 0.5),
             funding_alert_min_exchange_count=env_int("FUNDING_ALERT_MIN_EXCHANGE_COUNT", 2),
             funding_alert_divergence_pct=env_float("FUNDING_ALERT_DIVERGENCE_PCT", 0.75),
+            funding_alert_reply_chain_enable=env_bool("FUNDING_ALERT_REPLY_CHAIN_ENABLE", True),
+            funding_alert_decay_quiet_scans=env_int("FUNDING_ALERT_DECAY_QUIET_SCANS", 2),
+            funding_alert_end_quiet_scans=env_int("FUNDING_ALERT_END_QUIET_SCANS", 5),
             funding_alert_state_path=data_path(data_dir, "FUNDING_ALERT_STATE_FILE", "funding_alert_state.json"),
             structure_radar_enable=env_bool("STRUCTURE_RADAR_ENABLE", True),
             structure_interval=os.getenv("STRUCTURE_INTERVAL", "15m").strip() or "15m",
@@ -536,6 +542,9 @@ class Settings:
                 "extreme_positive_pct": self.funding_alert_extreme_positive_pct,
                 "min_exchange_count": self.funding_alert_min_exchange_count,
                 "divergence_pct": self.funding_alert_divergence_pct,
+                "reply_chain_enable": self.funding_alert_reply_chain_enable,
+                "decay_quiet_scans": self.funding_alert_decay_quiet_scans,
+                "end_quiet_scans": self.funding_alert_end_quiet_scans,
                 "state_file": str(self.funding_alert_state_path),
             },
             "structure_radar": {

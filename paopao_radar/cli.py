@@ -447,8 +447,10 @@ def push_funding_alert(
     gateway: TelegramGateway,
     args: argparse.Namespace,
 ) -> tuple[str, dict[str, object]]:
-    result = FundingAlertEngine(settings, store).build(BinanceDataSource(settings))
+    funding_engine = FundingAlertEngine(settings, store)
+    result = funding_engine.build(BinanceDataSource(settings))
     push_status = "skipped"
+    sent_alerts: list[dict[str, object]] = []
     for idx, message in enumerate(result["messages"], start=1):
         alert = result["alerts"][idx - 1]
         push = gateway.send(
@@ -459,9 +461,14 @@ def push_funding_alert(
             confirm_real_send=args.confirm_real_send,
             cooldown_sec=max(60, settings.funding_alert_cooldown_sec),
             parse_mode="HTML",
+            reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
         )
         print(f"funding_alert_push[{idx}]: {push.status} ({push.reason})")
         push_status = push.status
+        if push.status == "sent":
+            alert["message_ids"] = push.message_ids or []
+            sent_alerts.append(alert)
+    funding_engine.mark_pushed(sent_alerts)
     return push_status, result["diagnostics"]
 
 
