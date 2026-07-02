@@ -142,6 +142,9 @@ class Settings:
     ai_model: str = "deepseek-v4-pro"
     ai_request_timeout_sec: int = 90
     ai_prompts_path: Path = BASE_DIR / "data" / "ai_prompts.json"
+    signal_events_path: Path = BASE_DIR / "data" / "signal_events.json"
+    signal_events_limit: int = 5000
+    signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
     structure_runtime_status_path: Path = BASE_DIR / "data" / "structure_runtime_status.json"
     cleanup_enable: bool = True
@@ -267,6 +270,11 @@ class Settings:
     divergence_state_path: Path = BASE_DIR / "data" / "oi_divergence_state.json"
     divergence_cooldown_path: Path = BASE_DIR / "data" / "oi_divergence_cooldown.json"
 
+    def __post_init__(self) -> None:
+        default_signal_path = BASE_DIR / "data" / "signal_events.json"
+        if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
+            object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
+
     @classmethod
     def load(cls) -> "Settings":
         load_env_file()
@@ -313,6 +321,9 @@ class Settings:
             ai_model=normalize_ai_model(os.getenv("AI_MODEL", "deepseek-v4-pro")),
             ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 90),
             ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
+            signal_events_path=data_path(data_dir, "SIGNAL_EVENTS_FILE", "signal_events.json"),
+            signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
+            signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
             structure_runtime_status_path=data_path(data_dir, "STRUCTURE_RUNTIME_STATUS_FILE", "structure_runtime_status.json"),
             cleanup_enable=env_bool("CLEANUP_ENABLE", True),
@@ -473,6 +484,9 @@ class Settings:
                 "model": self.ai_model,
                 "request_timeout_sec": self.ai_request_timeout_sec,
                 "prompts_file": str(self.ai_prompts_path),
+                "signal_events_file": str(self.signal_events_path),
+                "signal_events_limit": self.signal_events_limit,
+                "signal_events_retention_days": self.signal_events_retention_days,
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),

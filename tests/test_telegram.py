@@ -66,6 +66,33 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(len(history), 1)
             self.assertFalse(history[0]["sent"])
 
+    def test_signal_push_records_symbol_event_index(self) -> None:
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            events_path = Path(tmp) / "signal_events.json"
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+                signal_events_path=events_path,
+                tg_default_cooldown_sec=0,
+            )
+            store = JsonStore(Path(tmp))
+            gateway = TelegramGateway(settings, store)
+
+            with redirect_stdout(StringIO()):
+                gateway.send(
+                    "🚀 启动雷达 [GWEI](https://www.coinglass.com/tv/zh/Binance_GWEIUSDT)\n分数: 90",
+                    "TG_LAUNCH_ALERT",
+                    "launch:GWEI",
+                    send=False,
+                    confirm_real_send=False,
+                )
+            events = store.load(events_path, [])
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["symbol"], "GWEIUSDT")
+        self.assertEqual(events[0]["signal_type"], "启动雷达")
+
     def test_real_send_requires_explicit_confirmation(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(

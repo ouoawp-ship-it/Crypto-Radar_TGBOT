@@ -25,6 +25,11 @@ STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
 AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
 WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}
+SIGNAL_EVENT_CONFIG_KEYS = {
+    "SIGNAL_EVENTS_FILE",
+    "SIGNAL_EVENTS_LIMIT",
+    "SIGNAL_EVENTS_RETENTION_DAYS",
+}
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
     "AI_BOT_TOKEN",
@@ -42,7 +47,7 @@ AI_CONFIG_KEYS = {
     "AI_MODEL",
     "AI_REQUEST_TIMEOUT_SEC",
     "AI_PROMPTS_FILE",
-}
+} | SIGNAL_EVENT_CONFIG_KEYS
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,9 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_MODEL", "AI 模型名称", "AI 助手", help="例如 deepseek-v4-pro。"),
     ConfigField("AI_REQUEST_TIMEOUT_SEC", "AI 请求超时秒数", "AI 助手", kind="int", minimum=5, maximum=300, help="deepseek-v4-pro 思考模式建议 90-180 秒；如果经常超时就调大，或者改用 deepseek-v4-flash。"),
     ConfigField("AI_PROMPTS_FILE", "AI 提示词文件", "AI 助手", help="默认 ai_prompts.json，存放在 data 目录下。一般不需要修改。"),
+    ConfigField("SIGNAL_EVENTS_FILE", "币种档案信号索引文件", "AI 助手", help="默认 signal_events.json，存放在 data 目录下。一般不需要修改。"),
+    ConfigField("SIGNAL_EVENTS_LIMIT", "币种档案信号保留数量", "AI 助手", kind="int", minimum=100, maximum=50000, help="AI 查询币种时会读取最近的结构化信号事件。建议 5000。"),
+    ConfigField("SIGNAL_EVENTS_RETENTION_DAYS", "币种档案信号保留天数", "AI 助手", kind="int", minimum=1, maximum=365, help="超过该天数的信号事件会在新事件写入时自动清理。建议 60。"),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -721,7 +729,7 @@ def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     standard_restart_keys = changed_set - WEB_CONFIG_KEYS - AI_CONFIG_KEYS
-    if standard_restart_keys:
+    if standard_restart_keys or (changed_set & SIGNAL_EVENT_CONFIG_KEYS):
         for action_name in ("restart-main", "restart-structure"):
             result = run_service_action(action_name)
             service, action = SERVICE_ACTIONS[action_name]
@@ -2684,7 +2692,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>总览</strong><span class="muted">查看运行健康度、最近错误、主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
             <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
             <div class="feature-item"><strong>配置</strong><span class="muted">按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类修改设置；保存前预览，保存前自动备份 .env.oi。</span></div>
-            <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、价格提醒统计，新增、暂停、恢复和删除 Web 价格提醒。</span></div>
+            <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、价格提醒统计，新增、暂停、恢复和删除 Web 价格提醒；Telegram 私聊里可用“查 BTC”“GWEI 怎么看”查询币种雷达档案。</span></div>
             <div class="feature-item"><strong>AI 提示词</strong><span class="muted">编辑普通助手提示词和专业分析师提示词；保存后自动重启 AI 助手服务。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
             <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>

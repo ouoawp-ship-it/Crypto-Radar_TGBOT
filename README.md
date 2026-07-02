@@ -11,6 +11,7 @@
 - 五因子资金流雷达：默认每 1 小时收线后延迟 5 分钟推送一次，使用 Binance 免费公开数据，按上一完整窗口内的价格、OI、现货 CVD、合约 CVD、资金费率过滤资金流信号。
 - 结构突破雷达：v1.8 新增，独立识别盘整箱体上沿/下沿、ATR/BB 压缩、临近突破、收线确认、假突破，并可生成 K线状态图。
 - Web 控制台会说明每个外部接口在本项目里的用途，并用平台真实站点图标区分 Telegram、Binance、CoinPaprika、Coinalyze、CoinMarketCap：Telegram 必填，Binance/CoinPaprika 无需 Key，Coinalyze 仅作结构雷达历史清算辅助，CoinMarketCap 当前只是预留未接入；配置页按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类显示，并完整显示当前 Token / Key / Web 令牌。
+- AI 币种档案：v1.16.0 新增 AI Bot 自然语言查币。发送“查 BTC”“GWEI 怎么看”“SOL 可以做多吗”时，机器人会读取历史雷达信号、当前价格/OI/成交量/资金费率/市值/流动性和结构状态，先给本地多空证据结论，AI Key 开启后再生成增强研判。
 - Web 配置页会同时识别 `.env.oi` 里的手动话题 ID 和 `data/tg_topic_routes.json` 里的自动创建话题 ID；自动话题会标注“自动话题”，避免误以为没有配置。
 - OI/价格背离扫描：跟随资金雷达，跟踪建仓背离、多头共振、极端背离、持续/增强/消失状态。
 - 自动清理：默认 1 小时检查一次，只清理可再生成的缓存、临时文件、坏 JSON 备份、过期日志、过长历史、过期结构图和根目录临时报告。
@@ -133,6 +134,9 @@ AI_ALLOWED_CHAT_IDS=-1001234567890,-1009876543210
 
 ```text
 BTC 现在多少钱
+查 BTC
+GWEI 怎么看
+SOL 可以做多吗
 我的提醒有哪些
 暂停提醒 12
 恢复提醒 12
@@ -148,6 +152,7 @@ ETH 突破 4200 提醒我
 ```text
 /alert BTC 高于 58000
 /analyze 粘贴雷达信号或市场数据
+/coin BTC
 /alerts
 /price BTC
 /pause 12
@@ -166,11 +171,14 @@ AI_BASE_URL=https://api.deepseek.com
 AI_MODEL=deepseek-v4-pro
 AI_REQUEST_TIMEOUT_SEC=90
 AI_PROMPTS_FILE=ai_prompts.json
+SIGNAL_EVENTS_FILE=signal_events.json
+SIGNAL_EVENTS_LIMIT=5000
+SIGNAL_EVENTS_RETENTION_DAYS=60
 ```
 
 `AI_MODEL` 只填写模型名本身，比如 `deepseek-v4-pro`，不要填写成 `AI_MODEL=deepseek-v4-pro`。使用 `deepseek-v4-pro` 或 `deepseek-v4-flash` 时，请求会自动按 DeepSeek v4 接口带上思考模式参数；如果接口返回 400，Web 和 AI Bot 会显示服务端返回的具体错误正文。`deepseek-v4-pro` 思考模式响应较慢，超时时可在 Web 后台把 `AI_REQUEST_TIMEOUT_SEC` 调到 120-180，或者临时改用 `deepseek-v4-flash`。
 
-Web 控制台新增「AI 助手」页面，可以查看 `paopao-ai` 服务状态、提醒统计、新增 Web 提醒、暂停/恢复/删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。
+Web 控制台新增「AI 助手」页面，可以查看 `paopao-ai` 服务状态、提醒统计、新增 Web 提醒、暂停/恢复/删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。`SIGNAL_EVENTS_*` 控制 AI 币种档案读取的结构化信号索引，通常保持默认即可。
 
 Web 控制台新增「AI 提示词」页面，可以编辑普通助手提示词和专业分析师提示词。普通助手用于日常问答和状态解释，专业分析师用于 `/analyze`、`分析这段：...`、`帮我分析...` 以及自动识别出的雷达/市场数据。提示词默认保存在 `data/ai_prompts.json`，保存后会自动重启 `paopao-ai`。
 
@@ -337,4 +345,4 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.15.6`，后续功能更新按 `v1.15.7`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.16.0`，后续功能更新按 `v1.16.1`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。

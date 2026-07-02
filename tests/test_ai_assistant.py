@@ -69,6 +69,29 @@ class AiAssistantTests(unittest.TestCase):
         self.assertTrue(is_alert_intent("BTC 跌破 58000 提醒我"))
         self.assertTrue(is_alert_intent("ETH 涨到 4200 通知我"))
 
+    def test_handle_message_routes_symbol_dossier_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "GWEI 怎么看",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            with patch("paopao_radar.ai_assistant.build_symbol_dossier_reply", return_value="GWEI 档案") as dossier:
+                reply = handle_message(settings, store, message)
+
+            self.assertEqual(reply, "GWEI 档案")
+            dossier.assert_called_once()
+
     def test_handle_message_creates_alert_for_allowed_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"

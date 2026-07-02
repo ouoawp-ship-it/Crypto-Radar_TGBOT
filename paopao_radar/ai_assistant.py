@@ -22,6 +22,13 @@ from .price_alerts import (
     parse_price,
     triggered_alerts,
 )
+from .symbol_dossier import (
+    build_symbol_dossier,
+    extract_symbol_from_query,
+    format_symbol_dossier_ai_context,
+    format_symbol_dossier_report,
+    is_symbol_dossier_request,
+)
 
 
 HELP_TEXT = """泡泡 AI 助手 Bot
@@ -30,6 +37,9 @@ HELP_TEXT = """泡泡 AI 助手 Bot
 
 直接对话即可：
 BTC 现在多少钱
+查 BTC
+GWEI 怎么看
+SOL 可以做多吗
 我的提醒有哪些
 暂停提醒 12
 恢复提醒 12
@@ -42,6 +52,7 @@ BTC 跌破 58000 提醒我
 /alert BTC 高于 58000
 /alert ETH 跌破 3200
 /price BTC
+/coin BTC
 /alerts
 /pause 12
 /resume 12
@@ -670,6 +681,22 @@ def call_ai_provider(
     return complete_ai_text(settings, payload)
 
 
+def build_symbol_dossier_reply(settings: Settings, store: PriceAlertStore, user_id: str, user_text: str) -> str:
+    dossier = build_symbol_dossier(settings, user_text)
+    local_report = format_symbol_dossier_report(dossier)
+    if not settings.ai_provider_enable or not settings.ai_api_key:
+        return local_report
+    context = format_symbol_dossier_ai_context(dossier, user_text)
+    try:
+        return call_ai_provider(settings, context, store, user_id, mode="analyst")
+    except Exception as exc:
+        return "\n".join([
+            local_report,
+            "",
+            f"AI 增强分析失败：{type(exc).__name__}: {exc}",
+        ])
+
+
 def local_assistant_reply(settings: Settings, store: PriceAlertStore, user_id: str) -> str:
     stats = store.stats()
     return "\n".join(
@@ -731,6 +758,15 @@ def handle_message(
         except Exception as exc:
             return f"价格查询失败：{type(exc).__name__}: {exc}"
 
+    if lowered.startswith("/coin") or lowered.startswith("/dossier"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not extract_symbol_from_query(parts[1]):
+            return "用法：/coin BTC，或直接发送：GWEI 怎么看"
+        try:
+            return build_symbol_dossier_reply(settings, store, user_id, parts[1])
+        except Exception as exc:
+            return f"币种档案查询失败：{type(exc).__name__}: {exc}"
+
     if lowered in {"/alerts", "/list", "我的提醒", "提醒列表"}:
         return list_alerts_text(store.list_alerts(user_id=user_id, limit=50))
 
@@ -773,6 +809,12 @@ def handle_message(
         status, label = ("paused", "已暂停") if action == "pause" else ("active", "已恢复")
         ok = store.set_status(alert_id, status, user_id=user_id)
         return f"提醒 {alert_id} {label}。" if ok else "没有找到这条提醒。"
+
+    if is_symbol_dossier_request(text) and not is_price_query(text) and not is_market_data_intent(text):
+        try:
+            return build_symbol_dossier_reply(settings, store, user_id, text)
+        except Exception as exc:
+            return f"币种档案查询失败：{type(exc).__name__}: {exc}"
 
     if is_analysis_intent(text):
         prompt = strip_analysis_request(text)

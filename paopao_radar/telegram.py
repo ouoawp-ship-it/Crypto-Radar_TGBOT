@@ -802,8 +802,9 @@ class TelegramGateway:
         topic_id: str = "",
         reply_to_message_id: int | None = None,
     ) -> None:
+        now = utc_ts()
         history.append({
-            "ts": utc_ts(),
+            "ts": now,
             "time": datetime.now(timezone.utc).isoformat(),
             "template_id": template_id,
             "dedup_key": dedup_key,
@@ -816,6 +817,24 @@ class TelegramGateway:
             "preview": text[:240],
         })
         self._save_history(history)
+        try:
+            from .symbol_dossier import append_signal_events_from_push
+
+            append_signal_events_from_push(
+                self.settings,
+                self.store,
+                template_id=template_id,
+                dedup_key=dedup_key,
+                status=result.status,
+                sent=result.sent,
+                text=text,
+                ts=now,
+                topic_id=topic_id,
+                message_ids=result.message_ids or [],
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception as exc:
+            print(f"[telegram] signal event index failed {type(exc).__name__}: {exc}", file=sys.stderr)
 
     @staticmethod
     def _recent_match(history: list[dict[str, Any]], dedup_key: str, cooldown_sec: int) -> bool:

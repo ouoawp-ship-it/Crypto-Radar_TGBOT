@@ -65,6 +65,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(ai_fields["AI_ASSISTANT_ENABLE"]["value"], "true")
         self.assertEqual(ai_fields["AI_REQUEST_TIMEOUT_SEC"]["value"], "120")
         self.assertEqual(ai_fields["AI_REQUEST_TIMEOUT_SEC"]["kind"], "int")
+        self.assertIn("SIGNAL_EVENTS_FILE", ai_fields)
+        self.assertEqual(ai_fields["SIGNAL_EVENTS_LIMIT"]["kind"], "int")
+        self.assertEqual(ai_fields["SIGNAL_EVENTS_RETENTION_DAYS"]["kind"], "int")
 
     def test_config_payload_reads_auto_created_topic_routes(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -407,6 +410,16 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([call.args[0] for call in service_action.call_args_list], ["restart-ai"])
         scheduled.assert_not_called()
+
+    def test_auto_apply_signal_event_config_restarts_writers_and_ai(self) -> None:
+        with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
+            result = web.auto_apply_config_changes(["SIGNAL_EVENTS_LIMIT"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [call.args[0] for call in service_action.call_args_list],
+            ["restart-main", "restart-structure", "restart-ai"],
+        )
 
     def test_non_loopback_web_requires_token(self) -> None:
         with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
