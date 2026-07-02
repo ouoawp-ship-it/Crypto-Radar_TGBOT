@@ -2456,11 +2456,12 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-12">
           <h3 class="section-title">怎么用</h3>
           <div class="feature-list">
-            <div class="feature-item"><strong>推荐方式</strong><span class="muted">打开 AI 助手 Bot 私聊，发送：BTC 跌破 58000 提醒我。私聊创建会自动识别你的 Telegram 用户 ID。</span></div>
+            <div class="feature-item"><strong>自然语言</strong><span class="muted">打开 AI 助手 Bot 私聊，直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、BTC 跌破 58000 提醒我。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
-            <div class="feature-item"><strong>提醒识别</strong><span class="muted">创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。转发雷达信号或只写突破、跌破，不会自动创建提醒。</span></div>
+            <div class="feature-item"><strong>提醒识别</strong><span class="muted">创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。只写突破、跌破会先反问确认，不会乱建提醒。</span></div>
+            <div class="feature-item"><strong>自动分析</strong><span class="muted">直接粘贴启动雷达、结构雷达、资金流、OI、CVD、成交量等数据，会自动走专业分析师提示词。</span></div>
             <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
-            <div class="feature-item"><strong>AI 问答</strong><span class="muted">没填 AI_API_KEY 时，Bot 仍能管理价格提醒；填了兼容 OpenAI 的 AI 接口后，可以使用 /ai 提问。</span></div>
+            <div class="feature-item"><strong>备用命令</strong><span class="muted">/alert、/price、/alerts、/pause、/resume、/delete、/ai、/analyze 仍然保留，方便精确操作和排查。</span></div>
           </div>
         </div>
         <div class="panel span-12">
@@ -2490,17 +2491,17 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("promptGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>AI 提示词会直接影响机器人回答风格。</strong>
-          普通助手用于 /ai、状态解释和日常问答；专业分析师用于 /analyze、分析这段、帮我分析等数据解读场景。
+          普通助手用于日常问答、状态解释和提醒说明；专业分析师用于 /analyze、分析这段、帮我分析，以及自动识别出的雷达/市场数据。
           保存或恢复默认后会自动重启 AI 助手服务。
         </div>
         <div class="panel span-6">
           <h3 class="section-title">普通助手提示词</h3>
-          <div class="hint">用于 /ai 问答、运行状态解释、价格提醒说明。适合保持克制、清楚、少废话。</div>
+          <div class="hint">用于日常问答、运行状态解释、价格提醒说明。适合保持克制、清楚、少废话。</div>
           <textarea id="assistantPrompt">${escapeHtml(prompts.assistant_prompt || "")}</textarea>
         </div>
         <div class="panel span-6">
           <h3 class="section-title">专业分析师提示词</h3>
-          <div class="hint">用于 /analyze 和“分析这段”。适合分析雷达信号、资金流、OI、市值、流动性和链上/交易所数据。</div>
+          <div class="hint">用于 /analyze、“分析这段”，以及自动识别出的雷达信号、资金流、OI、市值、流动性和链上/交易所数据。</div>
           <textarea id="analystPrompt">${escapeHtml(prompts.analyst_prompt || "")}</textarea>
         </div>
         <div class="panel span-12">

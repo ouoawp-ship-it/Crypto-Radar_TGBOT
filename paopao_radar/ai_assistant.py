@@ -28,7 +28,17 @@ HELP_TEXT = """泡泡 AI 助手 Bot
 
 这个机器人和群里推送雷达信号的 Bot 分开，主要负责私聊交互和价格提醒。
 
-常用命令：
+直接对话即可：
+BTC 现在多少钱
+我的提醒有哪些
+暂停提醒 12
+恢复提醒 12
+删除提醒 12
+BTC 跌破 58000 提醒我
+分析这段：粘贴雷达信号或市场数据
+粘贴启动雷达/结构雷达/资金流数据后，机器人会自动按数据分析处理
+
+备用命令：
 /alert BTC 高于 58000
 /alert ETH 跌破 3200
 /price BTC
@@ -38,24 +48,72 @@ HELP_TEXT = """泡泡 AI 助手 Bot
 /delete 12
 /ai 帮我解释最近雷达状态
 /analyze 粘贴雷达信号或市场数据
-
-也可以直接说：
-BTC 跌破 58000 提醒我
-ETH 突破 4200 提醒我
-分析这段：粘贴雷达信号或市场数据
 """
 
 
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 NON_PRIVATE_CHAT_TYPES = GROUP_CHAT_TYPES | {"channel"}
 ALERT_CREATE_INTENT_RE = re.compile(
-    r"(提醒我|提醒一下|提醒|通知我|通知一下|通知|叫我|设置|设个|创建|添加|到价|到了|达到|涨到|跌到|alert)",
+    r"(提醒我|提醒一下|提醒下|通知我|通知一下|通知下|叫我|帮我盯|盯一下|设置提醒|设个提醒|创建提醒|添加提醒|到价|到了叫我|达到.*提醒|涨到.*(提醒|通知|叫)|跌到.*(提醒|通知|叫)|alert)",
     re.IGNORECASE,
 )
 ANALYSIS_INTENT_RE = re.compile(
     r"^\s*(/analyze(?:@\w+)?\b|/analysis(?:@\w+)?\b|分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)",
     re.IGNORECASE,
 )
+PRICE_QUERY_RE = re.compile(r"(价格|现价|报价|行情|多少钱|多少|查价|查一下|看一下|price)", re.IGNORECASE)
+ALERT_LIST_RE = re.compile(
+    r"(/alerts\b|/list\b|我的提醒|提醒列表|警报列表|价格提醒列表|查看.*提醒|看看.*提醒|查.*提醒|提醒.*有哪些|提醒.*清单|alerts)",
+    re.IGNORECASE,
+)
+ALERT_DELETE_RE = re.compile(r"(删除|删掉|移除|取消|delete|remove)", re.IGNORECASE)
+ALERT_PAUSE_RE = re.compile(r"(暂停|停用|关闭|pause)", re.IGNORECASE)
+ALERT_RESUME_RE = re.compile(r"(恢复|继续|启用|开启|resume)", re.IGNORECASE)
+MARKET_DATA_KEYWORDS = (
+    "启动雷达",
+    "结构雷达",
+    "资金流",
+    "雷达信号",
+    "触发明细",
+    "阶段:",
+    "阶段：",
+    "分数:",
+    "分数：",
+    "oi",
+    "cvd",
+    "成交量",
+    "资金费率",
+    "市值",
+    "流动性",
+    "清算",
+    "多空",
+    "coinglass",
+)
+SYMBOL_ALIASES = {
+    "比特币": "BTC",
+    "大饼": "BTC",
+    "以太坊": "ETH",
+    "以太": "ETH",
+    "币安币": "BNB",
+    "索拉纳": "SOL",
+    "狗狗币": "DOGE",
+    "狗狗": "DOGE",
+}
+SYMBOL_STOP_WORDS = {
+    "AI",
+    "API",
+    "USDT",
+    "USD",
+    "CVD",
+    "OI",
+    "TV",
+    "K",
+    "WEB",
+    "BOT",
+    "HELP",
+    "ALERT",
+    "PRICE",
+}
 
 
 def telegram_plain_text(text: str) -> str:
@@ -247,6 +305,88 @@ def strip_analysis_request(text: str) -> str:
     clean = re.sub(r"^(分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)", "", clean).strip()
     clean = clean.lstrip("：:，, \n\t")
     return clean
+
+
+def compact_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def extract_symbol_text(text: str) -> str:
+    clean = str(text or "").strip()
+    for alias, symbol in SYMBOL_ALIASES.items():
+        if alias in clean:
+            return symbol
+    for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9]{1,20})(?:USDT)?\b", clean):
+        token = match.group(1).upper()
+        if token in SYMBOL_STOP_WORDS:
+            continue
+        return token
+    return ""
+
+
+def is_price_query(text: str) -> bool:
+    clean = compact_text(text)
+    if not clean:
+        return False
+    symbol = extract_symbol_text(clean)
+    if not symbol:
+        return False
+    if PRICE_QUERY_RE.search(clean):
+        return True
+    return bool(re.fullmatch(r"(?i)[A-Z][A-Z0-9]{1,20}(?:USDT)?", clean))
+
+
+def parse_alert_id(text: str) -> int | None:
+    match = re.search(r"(?:提醒|警报|alert|编号|#|第)?\s*(\d{1,8})\s*(?:号|个)?", str(text or ""), flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def parse_alert_mutation(text: str) -> tuple[str, int] | None:
+    clean = compact_text(text)
+    alert_id = parse_alert_id(clean)
+    if alert_id is None:
+        return None
+    if ALERT_DELETE_RE.search(clean):
+        return "delete", alert_id
+    if ALERT_PAUSE_RE.search(clean):
+        return "pause", alert_id
+    if ALERT_RESUME_RE.search(clean):
+        return "resume", alert_id
+    return None
+
+
+def is_alert_list_request(text: str) -> bool:
+    clean = compact_text(text)
+    return bool(ALERT_LIST_RE.search(clean))
+
+
+def is_market_data_intent(text: str) -> bool:
+    clean = str(text or "").strip()
+    if not clean:
+        return False
+    lowered = clean.lower()
+    keyword_hits = sum(1 for item in MARKET_DATA_KEYWORDS if item.lower() in lowered)
+    if keyword_hits >= 2:
+        return True
+    if "\n" in clean and keyword_hits >= 1:
+        return True
+    if re.search(r"\b(?:15m|30m|1h|4h|24h)\b", clean, flags=re.IGNORECASE) and "%" in clean:
+        return True
+    metric_hits = len(re.findall(r"[-+]?\d+(?:\.\d+)?\s*%", clean))
+    if metric_hits >= 2 and re.search(r"(价格|成交|OI|CVD|费率|市值|流动性)", clean, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def ambiguous_alert_text(text: str) -> ParsedAlertRequest | None:
+    if is_alert_intent(text):
+        return None
+    return parse_alert_request(text)
 
 
 def is_authorized(settings: Settings, user_id: str) -> bool:
@@ -527,6 +667,28 @@ def handle_message(
         ok = store.delete_alert(int(parts[1]), user_id=user_id)
         return f"提醒 {parts[1]} 已删除。" if ok else "没有找到这条提醒。"
 
+    if lowered.startswith("/ai"):
+        prompt = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+        if not prompt:
+            return "用法：/ai 你的问题"
+        try:
+            return call_ai_provider(settings, prompt, store, user_id)
+        except Exception as exc:
+            return f"AI 回答失败：{type(exc).__name__}: {exc}"
+
+    if is_alert_list_request(text):
+        return list_alerts_text(store.list_alerts(user_id=user_id, limit=50))
+
+    mutation = parse_alert_mutation(text)
+    if mutation:
+        action, alert_id = mutation
+        if action == "delete":
+            ok = store.delete_alert(alert_id, user_id=user_id)
+            return f"提醒 {alert_id} 已删除。" if ok else "没有找到这条提醒。"
+        status, label = ("paused", "已暂停") if action == "pause" else ("active", "已恢复")
+        ok = store.set_status(alert_id, status, user_id=user_id)
+        return f"提醒 {alert_id} {label}。" if ok else "没有找到这条提醒。"
+
     if is_analysis_intent(text):
         prompt = strip_analysis_request(text)
         if not prompt:
@@ -552,14 +714,28 @@ def handle_message(
         )
         return alert_created_text(alert)
 
-    if lowered.startswith("/ai"):
-        prompt = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
-        if not prompt:
-            return "用法：/ai 你的问题"
+    if is_market_data_intent(text):
         try:
-            return call_ai_provider(settings, prompt, store, user_id)
+            return call_ai_provider(settings, text, store, user_id, mode="analyst")
         except Exception as exc:
-            return f"AI 回答失败：{type(exc).__name__}: {exc}"
+            return f"AI 分析失败：{type(exc).__name__}: {exc}"
+
+    if is_price_query(text):
+        symbol = extract_symbol_text(text)
+        try:
+            return price_text(settings, symbol)
+        except Exception as exc:
+            return f"价格查询失败：{type(exc).__name__}: {exc}"
+
+    ambiguous = ambiguous_alert_text(text)
+    if ambiguous:
+        direction_label = "高于或等于" if ambiguous.direction == "above" else "低于或等于"
+        return (
+            f"你是想设置 {ambiguous.symbol} 价格 {direction_label} "
+            f"{format_price(ambiguous.target_price)} 的提醒吗？"
+            f"如果是，请发送：{ambiguous.symbol.replace('USDT', '')} "
+            f"{direction_label} {format_price(ambiguous.target_price)} 提醒我"
+        )
 
     if settings.ai_provider_enable and settings.ai_api_key:
         try:

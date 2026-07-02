@@ -119,6 +119,82 @@ class AiAssistantTests(unittest.TestCase):
             self.assertNotIn("已创建价格提醒", reply or "")
             self.assertEqual(store.stats()["total"], 0)
 
+    def test_forwarded_signal_without_command_uses_analyst_prompt(self) -> None:
+        signal_text = "\n".join(
+            [
+                "🚀 启动雷达 GWEI",
+                "阶段: 提前预警",
+                "分数: 70",
+                "15m价格: +3.0%",
+                "1h OI: +13.1%",
+                "成交量: 1.2x 均值",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            prompt_path = Path(tmp) / "ai_prompts.json"
+            prompt_path.write_text(
+                '{"assistant_prompt":"普通助手提示词","analyst_prompt":"专业分析师提示词"}',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+                ai_base_url="https://api.example.com",
+                ai_model="deepseek-v4-pro",
+                ai_prompts_path=prompt_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": signal_text,
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+            response = Mock()
+            response.json.return_value = {"choices": [{"message": {"content": "自动分析结果"}}]}
+
+            with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
+                reply = handle_message(settings, store, message)
+
+            self.assertEqual(reply, "自动分析结果")
+            self.assertEqual(store.stats()["total"], 0)
+            payload = post.call_args.kwargs["json"]
+            self.assertEqual(payload["messages"][0]["content"], "专业分析师提示词")
+            self.assertIn("用户提供的数据：", payload["messages"][1]["content"])
+            self.assertIn("GWEI", payload["messages"][1]["content"])
+
+    def test_ambiguous_alert_like_text_asks_for_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "BTC 跌破 58000",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            with patch("paopao_radar.ai_assistant.requests.post") as post:
+                reply = handle_message(settings, store, message)
+
+            post.assert_not_called()
+            self.assertIn("你是想设置 BTCUSDT", reply or "")
+            self.assertIn("提醒我", reply or "")
+            self.assertEqual(store.stats()["total"], 0)
+
     def test_analyze_command_uses_analyst_prompt_without_creating_alert(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
@@ -250,6 +326,97 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0].symbol, "BTCUSDT")
             self.assertEqual(alerts[0].direction, "below")
+
+    def test_natural_language_price_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "BTC 现在多少钱",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            with patch("paopao_radar.ai_assistant.fetch_binance_prices", return_value={"BTCUSDT": 61234.5}):
+                reply = handle_message(settings, store, message)
+
+            self.assertIn("BTCUSDT 当前 Binance 合约价格", reply or "")
+            self.assertIn("$61,234.50", reply or "")
+
+    def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+                ai_base_url="https://api.example.com",
+                ai_model="deepseek-v4-pro",
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/ai BTC 现在多少钱",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+            response = Mock()
+            response.json.return_value = {"choices": [{"message": {"content": "AI 问答结果"}}]}
+
+            with patch("paopao_radar.ai_assistant.fetch_binance_prices") as prices:
+                with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
+                    reply = handle_message(settings, store, message)
+
+            self.assertEqual(reply, "AI 问答结果")
+            prices.assert_not_called()
+            self.assertIn("用户问题：BTC 现在多少钱", post.call_args.kwargs["json"]["messages"][1]["content"])
+
+    def test_natural_language_alert_list_pause_resume_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            created = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="BTC",
+                direction="above",
+                target_price=60000,
+                source="test",
+                note="unit",
+            )
+
+            def reply_for(text: str) -> str | None:
+                return handle_message(
+                    settings,
+                    store,
+                    {"text": text, "from": {"id": 42, "username": "tester"}, "chat": {"id": 42, "type": "private"}},
+                )
+
+            self.assertIn("BTCUSDT", reply_for("我的提醒有哪些") or "")
+            self.assertIn("已暂停", reply_for(f"暂停提醒 {created.id}") or "")
+            self.assertEqual(store.list_alerts(user_id="42")[0].status, "paused")
+            self.assertIn("已恢复", reply_for(f"恢复提醒 {created.id}") or "")
+            self.assertEqual(store.list_alerts(user_id="42")[0].status, "active")
+            self.assertIn("已删除", reply_for(f"删除提醒 {created.id}") or "")
+            self.assertEqual(store.stats()["total"], 0)
 
     def test_alert_command_creates_alert_without_natural_language_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
