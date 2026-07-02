@@ -250,6 +250,35 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("STRUCTURE_MIN_SCORE", result["changed"])
         self.assertGreaterEqual(len(backups), 2)
 
+    def test_delete_env_backup_removes_web_backup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            backup_path = Path(tmp) / ".env.oi.bak.web.20260630_010203"
+            env_path.write_text("TG_CHAT_ID=-1001111111111\n", encoding="utf-8")
+            backup_path.write_text("TG_CHAT_ID=-1002222222222\n", encoding="utf-8")
+
+            result = web.delete_env_backup(backup_path.name, path=env_path)
+            backup_exists_after = backup_path.exists()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deleted"], ".env.oi.bak.web.20260630_010203")
+        self.assertFalse(backup_exists_after)
+
+    def test_delete_env_backup_rejects_unsafe_or_manual_backup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            manual_backup = Path(tmp) / ".env.oi.bak.manual"
+            env_path.write_text("TG_CHAT_ID=-1001111111111\n", encoding="utf-8")
+            manual_backup.write_text("TG_CHAT_ID=-1002222222222\n", encoding="utf-8")
+
+            unsafe_result = web.delete_env_backup("../.env.oi", path=env_path)
+            manual_result = web.delete_env_backup(manual_backup.name, path=env_path)
+            manual_backup_exists_after = manual_backup.exists()
+
+        self.assertFalse(unsafe_result["ok"])
+        self.assertFalse(manual_result["ok"])
+        self.assertTrue(manual_backup_exists_after)
+
     def test_structure_review_recommendations_payload_returns_updates(self) -> None:
         with TemporaryDirectory() as tmp:
             stats_path = Path(tmp) / "structure_stats.json"
@@ -402,6 +431,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("配置已保存，后台服务正在自动应用", html)
         self.assertIn("配置改动预览", html)
         self.assertIn("配置备份和恢复", html)
+        self.assertIn("删除备份", html)
         self.assertIn("应用这些建议并保存", html)
         self.assertIn("运行健康度", html)
         self.assertIn("最近错误", html)

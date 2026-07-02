@@ -442,6 +442,31 @@ def restore_env_backup(name: str, *, path: Path | None = None) -> dict[str, Any]
     }
 
 
+def delete_env_backup(name: str, *, path: Path | None = None) -> dict[str, Any]:
+    env_path = path or ENV_FILE
+    safe_name = Path(name).name
+    backup = env_path.with_name(safe_name)
+    if safe_name != name or backup.parent.resolve() != env_path.parent.resolve():
+        return {"ok": False, "error": "备份文件名不合法"}
+    if not safe_name.startswith(f"{env_path.name}.bak.web."):
+        return {"ok": False, "error": "只能删除 Web 自动创建的 .env.oi 备份"}
+    if not backup.exists() or not backup.is_file():
+        return {"ok": False, "error": "备份文件不存在"}
+
+    try:
+        size = backup.stat().st_size
+        backup.unlink()
+    except OSError as exc:
+        return {"ok": False, "error": f"删除备份失败：{type(exc).__name__}: {exc}"}
+
+    return {
+        "ok": True,
+        "deleted": backup.name,
+        "size": size,
+        "message": f"已删除备份 {backup.name}",
+    }
+
+
 def structure_review_recommendations_payload(path: Path | None = None) -> dict[str, Any]:
     settings = Settings.load()
     stats_path = path or settings.structure_stats_path
@@ -2282,15 +2307,20 @@ INDEX_HTML = r"""<!doctype html>
       if (!box) return;
       const data = await api("/api/config-backups");
       const backups = data.backups || [];
-      box.innerHTML = backups.length ? backups.map(item => `
-        <div class="feature-item">
-          <strong>${escapeHtml(item.name)}</strong>
-          <span class="muted">${escapeHtml(item.modified_at || "")} · ${escapeHtml(String(item.size || 0))} 字节</span>
-          <div class="toolbar" style="margin:8px 0 0">
-            <button class="btn warn" type="button" onclick="restoreConfigBackup('${escapeHtml(item.name)}')">恢复这个备份</button>
+      box.innerHTML = backups.length ? backups.map(item => {
+        const name = item.name || "";
+        const nameArg = escapeHtml(JSON.stringify(name));
+        return `
+          <div class="feature-item">
+            <strong>${escapeHtml(name)}</strong>
+            <span class="muted">${escapeHtml(item.modified_at || "")} · ${escapeHtml(String(item.size || 0))} 字节</span>
+            <div class="toolbar" style="margin:8px 0 0">
+              <button class="btn warn" type="button" onclick="restoreConfigBackup(${nameArg})">恢复这个备份</button>
+              <button class="btn danger" type="button" onclick="deleteConfigBackup(${nameArg})">删除备份</button>
+            </div>
           </div>
-        </div>
-      `).join("") : `<div class="hint">还没有 Web 保存产生的配置备份。</div>`;
+        `;
+      }).join("") : `<div class="hint">还没有 Web 保存产生的配置备份。</div>`;
     }
     async function restoreConfigBackup(name) {
       const confirmText = prompt(`恢复配置备份会覆盖当前 .env.oi，并自动应用。输入 RESTORE 确认：${name}`);
@@ -2298,6 +2328,13 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api("/api/config-restore", { method: "POST", body: JSON.stringify({ name }) });
       document.getElementById("configOutput").textContent = formatSaveResult(data, []);
       await loadConfig();
+    }
+    async function deleteConfigBackup(name) {
+      const confirmText = prompt(`删除配置备份不可恢复。输入 DELETE 确认：${name}`);
+      if (confirmText !== "DELETE") return;
+      const data = await api("/api/config-backup-delete", { method: "POST", body: JSON.stringify({ name }) });
+      document.getElementById("configOutput").textContent = data.message || data.error || "删除请求已处理";
+      await loadConfigBackups();
     }
     async function loadStructureRecommendations() {
       const box = document.getElementById("structureRecommendationBox");
@@ -2792,6 +2829,10 @@ class WebHandler(BaseHTTPRequestHandler):
                     result["apply"] = apply_result
                     result["message"] = apply_result.get("message", result.get("message"))
                 self.send_json(result)
+                return
+            if path == "/api/config-backup-delete":
+                name = str(data.get("name", ""))
+                self.send_json(delete_env_backup(name))
                 return
             if path == "/api/action":
                 self.send_json(run_cli_action(str(data.get("name", ""))))
