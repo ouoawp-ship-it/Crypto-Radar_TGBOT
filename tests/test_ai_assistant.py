@@ -69,6 +69,33 @@ class AiAssistantTests(unittest.TestCase):
         self.assertTrue(is_alert_intent("BTC 跌破 58000 提醒我"))
         self.assertTrue(is_alert_intent("ETH 涨到 4200 通知我"))
 
+    def test_start_message_explains_core_features(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/start",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            reply = handle_message(settings, store, message)
+
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("查币雷达档案", reply)
+        self.assertIn("分析你粘贴的数据", reply)
+        self.assertIn("设置价格提醒", reply)
+        self.assertIn("群里使用规则", reply)
+        self.assertIn("创建提醒必须明确说", reply)
+
     def test_handle_message_routes_symbol_dossier_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
