@@ -982,17 +982,15 @@ def ai_prompts_test_payload(data: dict[str, Any]) -> dict[str, Any]:
     prompt = str(data.get("analyst_prompt" if mode == "analyst" else "assistant_prompt") or "").strip()
     if not prompt:
         return {"ok": False, "error": "测试提示词不能为空"}
-    from .ai_assistant import build_chat_completion_payload, post_chat_completion
+    from .ai_assistant import build_chat_completion_payload, complete_ai_text
 
     payload = build_chat_completion_payload(settings, prompt, text)
-    response_payload = post_chat_completion(settings, payload)
-    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
-    reply = str(choices[0].get("message", {}).get("content", "")).strip() if choices else ""
+    reply = complete_ai_text(settings, payload)
     return {
         "ok": True,
         "mode": mode,
         "model": settings.ai_model,
-        "reply": reply or "AI 接口没有返回正文。",
+        "reply": reply,
         "message": "测试完成；测试不会保存提示词，确认后请点击保存提示词",
     }
 

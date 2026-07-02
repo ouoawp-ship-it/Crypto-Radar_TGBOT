@@ -543,6 +543,96 @@ def post_chat_completion(settings: Settings, payload: dict[str, Any]) -> dict[st
     return data if isinstance(data, dict) else {}
 
 
+def content_to_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+        return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+    return ""
+
+
+def extract_ai_reply_text(response_payload: dict[str, Any]) -> str:
+    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
+    if isinstance(choices, list) and choices:
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        for value in (
+            message.get("content"),
+            choice.get("text"),
+            message.get("output_text"),
+        ):
+            text = content_to_text(value)
+            if text:
+                return text
+    for value in (response_payload.get("output_text"), response_payload.get("text")):
+        text = content_to_text(value)
+        if text:
+            return text
+    return ""
+
+
+def ai_response_has_reasoning_only(response_payload: dict[str, Any]) -> bool:
+    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return False
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    return bool(str(message.get("reasoning_content") or message.get("reasoning") or "").strip())
+
+
+def empty_ai_response_message(response_payload: dict[str, Any]) -> str:
+    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
+    finish_reason = ""
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        finish_reason = str(choices[0].get("finish_reason") or "").strip()
+    if ai_response_has_reasoning_only(response_payload):
+        return (
+            "AI 接口只返回了思考过程，没有返回正式正文。"
+            "程序已经自动重试一次仍未拿到正文；可以在 Web 后台把模型临时改成 deepseek-v4-flash，"
+            "或稍后重新发送分析。"
+        )
+    if finish_reason:
+        return f"AI 接口没有返回正文（finish_reason={finish_reason}）。请稍后重试，或切换模型。"
+    return "AI 接口没有返回正文。请稍后重试，或切换模型。"
+
+
+def retry_payload_without_thinking(payload: dict[str, Any]) -> dict[str, Any]:
+    retry_payload = dict(payload)
+    retry_payload["messages"] = [
+        dict(message)
+        for message in payload.get("messages", [])
+        if isinstance(message, dict)
+    ]
+    retry_payload["thinking"] = {"type": "disabled"}
+    retry_payload.pop("reasoning_effort", None)
+    retry_payload["messages"].append({
+        "role": "user",
+        "content": "上一次接口没有返回正式正文。请直接输出最终回复正文，不要只返回思考过程。",
+    })
+    return retry_payload
+
+
+def complete_ai_text(settings: Settings, payload: dict[str, Any]) -> str:
+    data = post_chat_completion(settings, payload)
+    reply = extract_ai_reply_text(data)
+    if reply:
+        return reply
+    model = str(payload.get("model") or "")
+    if payload.get("thinking") or model.startswith("deepseek-v4"):
+        retry_data = post_chat_completion(settings, retry_payload_without_thinking(payload))
+        retry_reply = extract_ai_reply_text(retry_data)
+        if retry_reply:
+            return retry_reply
+        return empty_ai_response_message(retry_data)
+    return empty_ai_response_message(data)
+
+
 def call_ai_provider(
     settings: Settings,
     user_text: str,
@@ -577,12 +667,7 @@ def call_ai_provider(
             ]
         )
     payload = build_chat_completion_payload(settings, system_prompt, f"{context}\n\n用户问题：{user_text}")
-    data = post_chat_completion(settings, payload)
-    choices = data.get("choices") if isinstance(data, dict) else None
-    if not choices:
-        return "AI 接口返回为空。"
-    content = choices[0].get("message", {}).get("content", "")
-    return str(content).strip() or "AI 接口没有返回正文。"
+    return complete_ai_text(settings, payload)
 
 
 def local_assistant_reply(settings: Settings, store: PriceAlertStore, user_id: str) -> str:

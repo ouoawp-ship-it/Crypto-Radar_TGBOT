@@ -9,6 +9,7 @@ import requests
 
 from paopao_radar.ai_assistant import (
     build_chat_completion_payload,
+    extract_ai_reply_text,
     handle_message,
     is_alert_intent,
     parse_alert_request,
@@ -39,6 +40,20 @@ class AiAssistantTests(unittest.TestCase):
         self.assertEqual(payload["thinking"], {"type": "enabled"})
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertIs(payload["stream"], False)
+
+    def test_extract_ai_reply_text_accepts_list_content(self) -> None:
+        text = extract_ai_reply_text({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "第一段"},
+                        {"type": "text", "text": "第二段"},
+                    ]
+                }
+            }]
+        })
+
+        self.assertEqual(text, "第一段\n第二段")
 
     def test_parse_chinese_alert_request(self) -> None:
         parsed = parse_alert_request("BTC 跌破 58000 提醒我")
@@ -237,6 +252,45 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(payload["messages"][0]["content"], "专业分析师提示词")
             self.assertIn("用户提供的数据：", payload["messages"][1]["content"])
             self.assertIn("BTC 跌破 58000 提醒我", payload["messages"][1]["content"])
+
+    def test_empty_ai_content_retries_without_thinking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+                ai_base_url="https://api.example.com",
+                ai_model="deepseek-v4-pro",
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/analyze BTC 资金费率 -2%/1H",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+            first = Mock()
+            first.json.return_value = {
+                "choices": [{
+                    "message": {"content": "", "reasoning_content": "内部思考"},
+                    "finish_reason": "stop",
+                }]
+            }
+            second = Mock()
+            second.json.return_value = {"choices": [{"message": {"content": "最终分析正文"}}]}
+
+            with patch("paopao_radar.ai_assistant.requests.post", side_effect=[first, second]) as post:
+                reply = handle_message(settings, store, message)
+
+            self.assertEqual(reply, "最终分析正文")
+            self.assertEqual(post.call_count, 2)
+            retry_payload = post.call_args.kwargs["json"]
+            self.assertEqual(retry_payload["thinking"], {"type": "disabled"})
+            self.assertNotIn("reasoning_effort", retry_payload)
 
     def test_ai_provider_error_includes_response_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
