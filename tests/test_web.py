@@ -308,7 +308,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(errors[0]["source"], "结构雷达")
         self.assertIn("boom", errors[0]["message"])
 
-    def test_recent_errors_translates_funding_failures(self) -> None:
+    def test_recent_errors_suppresses_low_count_funding_failures(self) -> None:
         runtime = {
             "main": {
                 "status": "running",
@@ -325,9 +325,28 @@ class WebConsoleTests(unittest.TestCase):
 
         errors = web.recent_errors_payload(runtime)
 
+        self.assertEqual(errors, [])
+
+    def test_recent_errors_translates_repeated_funding_failures(self) -> None:
+        runtime = {
+            "main": {
+                "status": "running",
+                "diagnostics": {
+                    "funding_alert": {
+                        "quality": {
+                            "failures": {"funding:Gate": 4}
+                        }
+                    }
+                },
+            },
+            "structure": {"status": "running"},
+        }
+
+        errors = web.recent_errors_payload(runtime)
+
         self.assertEqual(errors[0]["source"], "主服务")
         self.assertEqual(errors[0]["level"], "警告")
-        self.assertIn("Gate 资金费率接口失败 1 次", errors[0]["message"])
+        self.assertIn("Gate 资金费率接口失败 4 次", errors[0]["message"])
         self.assertIn("主服务仍在运行", errors[0]["message"])
         self.assertNotIn("{", errors[0]["message"])
 

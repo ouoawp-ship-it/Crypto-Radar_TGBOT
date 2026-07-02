@@ -822,6 +822,20 @@ def format_runtime_failure(failure: dict[str, Any]) -> str:
     return "；".join(items[:6]) + "。" + suffix
 
 
+def is_low_priority_funding_failure(failure: dict[str, Any]) -> bool:
+    if not failure:
+        return False
+    total = 0
+    for key, count in failure.items():
+        if not str(key).startswith("funding:"):
+            return False
+        try:
+            total += int(count)
+        except (TypeError, ValueError):
+            total += 1
+    return total <= 3
+
+
 def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
     if not isinstance(runtime, dict):
         return None
@@ -834,6 +848,8 @@ def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
     failures = collect_nested_keys(runtime, "failures")
     for failure in failures:
         if isinstance(failure, dict) and failure:
+            if is_low_priority_funding_failure(failure):
+                continue
             return {"source": name, "level": "警告", "message": format_runtime_failure(failure)}
     return None
 
