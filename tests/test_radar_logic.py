@@ -223,6 +223,21 @@ class RadarScoringTests(unittest.TestCase):
         self.assertIn("2026-07-01 16:00:00 4H结算一次", transition["transition_text"])
         self.assertIn("2026-07-01 17:00:00 1H结算一次", transition["transition_text"])
 
+    def test_funding_interval_transition_detects_next_cycle_shortening(self) -> None:
+        def ms_at(hour: int) -> int:
+            return int(datetime(2026, 7, 1, hour, 0, 0, tzinfo=CST).timestamp() * 1000)
+
+        transition = funding_interval_transition([
+            {"fundingTime": ms_at(8), "fundingRate": "-0.001"},
+            {"fundingTime": ms_at(12), "fundingRate": "-0.002"},
+            {"fundingTime": ms_at(16), "fundingRate": "-0.004"},
+        ], next_time_ms=ms_at(17))
+
+        self.assertEqual(transition["previous_interval_hours"], 4)
+        self.assertEqual(transition["current_interval_hours"], 1)
+        self.assertIn("2026-07-01 16:00:00 4H结算一次", transition["transition_text"])
+        self.assertIn("2026-07-01 17:00:00 1H结算一次", transition["transition_text"])
+
     def test_excluded_base_assets_filter_non_crypto_symbols(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp), excluded_base_assets=("XAU", "XAG"))
@@ -315,6 +330,53 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn("结算周期: 2026-07-01 16:00:00 4H结算一次 → 2026-07-01 17:00:00 1H结算一次", text)
             self.assertIn("分数图例", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
+
+    def test_launch_alert_formats_multi_exchange_funding(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            text = engine._format_launch_alert({
+                "symbol": "TESTUSDT",
+                "coin": "TEST",
+                "stage": "primed",
+                "previous_stage": "idle",
+                "score": 63,
+                "appear_count": 2,
+                "price_15m": 4.5,
+                "price_1h": 6.0,
+                "oi_15m": 3.2,
+                "oi_1h": 6.8,
+                "volume_ratio": 2.4,
+                "quote_volume": 55_000_000,
+                "mcap": 123_000_000,
+                "mcap_source": "CoinPaprika",
+                "breakout": False,
+                "funding_pct": -2.0,
+                "funding_interval_hours": 1,
+                "funding_exchanges": [
+                    {
+                        "exchange": "Binance",
+                        "funding_pct": -2.0,
+                        "interval_hours": 1,
+                        "next_funding_time": "2026-07-01 17:00:00",
+                        "extreme_label": "极负",
+                        "funding_interval_transition": (
+                            "2026-07-01 16:00:00 4H结算一次 → "
+                            "2026-07-01 17:00:00 1H结算一次"
+                        ),
+                    },
+                    {
+                        "exchange": "OKX",
+                        "funding_pct": 0.01,
+                        "interval_hours": 8,
+                        "next_funding_time": "2026-07-02 00:00:00",
+                    },
+                ],
+            })
+
+            self.assertIn("<blockquote><b>多交易所资金费率</b></blockquote>", text)
+            self.assertIn("Binance: -2.000%/1H（极负）｜下次结算 2026-07-01 17:00:00", text)
+            self.assertIn("OKX: +0.010%/8H｜下次结算 2026-07-02 00:00:00", text)
+            self.assertIn("Binance周期: 2026-07-01 16:00:00 4H结算一次", text)
 
     def test_launch_alert_replies_to_previous_symbol_message(self) -> None:
         with TemporaryDirectory() as tmp:

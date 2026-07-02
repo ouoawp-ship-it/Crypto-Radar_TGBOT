@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .funding_sources import MultiExchangeFundingClient
 from .storage import JsonStore
 from .time_windows import ClosedWindow, closed_window
 
@@ -198,7 +199,7 @@ def funding_extreme_label(funding_pct: float) -> str:
     return ""
 
 
-def funding_interval_transition(history: list[dict[str, Any]]) -> dict[str, Any]:
+def funding_interval_transition(history: list[dict[str, Any]], next_time_ms: int = 0) -> dict[str, Any]:
     points = sorted(
         [
             {
@@ -210,6 +211,8 @@ def funding_interval_transition(history: list[dict[str, Any]]) -> dict[str, Any]
         ],
         key=lambda item: item["time"],
     )
+    if next_time_ms > 0 and (not points or next_time_ms > points[-1]["time"]):
+        points.append({"time": next_time_ms, "rate": 0.0})
     if len(points) < 3:
         return {}
     previous_interval = funding_interval_hours(points[-2]["time"] - points[-3]["time"])
@@ -1396,13 +1399,39 @@ class RadarEngine:
             self._launch_history_record(watchlist, alerts, now_ts),
             limit=self.settings.launch_watch_history_limit,
         )
-        messages = [self._format_launch_alert(alert) for alert in alerts[:5]]
+        alerts = alerts[:5]
+        self._enrich_launch_funding(source, alerts)
+        messages = [self._format_launch_alert(alert) for alert in alerts]
         return {
             "template_id": "TG_LAUNCH_ALERT",
             "messages": messages,
-            "alerts": alerts[:5],
+            "alerts": alerts,
             "watchlist_count": len(watchlist),
         }
+
+    def _enrich_launch_funding(self, source: BinanceDataSource, alerts: list[dict[str, Any]]) -> None:
+        if not alerts or not self.settings.launch_multi_exchange_funding_enable:
+            return
+        http = getattr(source, "http", None)
+        if http is None:
+            return
+        client = MultiExchangeFundingClient(self.settings, http)
+        for alert in alerts:
+            symbol = str(alert.get("symbol") or "")
+            if not symbol:
+                continue
+            rows = client.snapshot(symbol)
+            if not rows:
+                continue
+            alert["funding_exchanges"] = rows
+            if any(row.get("extreme_label") for row in rows):
+                reasons = list(alert.get("reasons") or [])
+                reasons.append("多交易所资金费率极负")
+                alert["reasons"] = reasons[:6]
+            if any(row.get("funding_interval_transition") for row in rows):
+                reasons = list(alert.get("reasons") or [])
+                reasons.append("多交易所资金费率结算周期缩短")
+                alert["reasons"] = reasons[:6]
 
     def mark_launch_pushed(self, alerts: list[dict[str, Any]]) -> None:
         if not alerts:
@@ -1540,7 +1569,7 @@ class RadarEngine:
             history = []
         if not isinstance(history, list):
             history = []
-        transition = funding_interval_transition(history)
+        transition = funding_interval_transition(history, next_funding_time_ms)
         if transition:
             context["funding_interval_hours"] = int(transition.get("current_interval_hours", 0) or 0)
             context["funding_interval_transition"] = str(transition.get("transition_text") or "")
@@ -1610,6 +1639,28 @@ class RadarEngine:
             "launched": "启动瞬间",
         }.get(stage, stage or "未知")
 
+    @staticmethod
+    def _format_launch_funding_exchange(row: dict[str, Any]) -> str:
+        funding_pct = to_float(row.get("funding_pct"))
+        interval_hours = int(to_float(row.get("interval_hours")))
+        text = funding_cycle_text(funding_pct, interval_hours)
+        label = str(row.get("extreme_label") or "").strip()
+        if label:
+            text = f"{text}（{label}）"
+        next_time = str(row.get("next_funding_time") or "").strip() or "未知"
+        exchange = str(row.get("exchange") or "Unknown").strip()
+        return f"{exchange}: {text}｜下次结算 {next_time}"
+
+    @staticmethod
+    def _format_launch_funding_transitions(rows: list[dict[str, Any]]) -> list[str]:
+        lines: list[str] = []
+        for row in rows:
+            transition = str(row.get("funding_interval_transition") or "").strip()
+            if transition:
+                exchange = str(row.get("exchange") or "Unknown").strip()
+                lines.append(f"{exchange}周期: {transition}")
+        return lines
+
     def _format_launch_alert(self, item: dict[str, Any]) -> str:
         stage_name = self._stage_label(str(item.get("stage", "")))
         previous_stage = self._stage_label(str(item.get("previous_stage", "idle")))
@@ -1635,6 +1686,16 @@ class RadarEngine:
             funding_text = f"{funding_text}（{funding_label}）"
         funding_transition = str(item.get("funding_interval_transition") or "").strip()
         funding_available = bool(item.get("funding_available")) or funding_interval > 0 or bool(funding_transition)
+        raw_funding_exchanges = item.get("funding_exchanges", [])
+        if not isinstance(raw_funding_exchanges, list):
+            raw_funding_exchanges = []
+        funding_exchanges = [
+            row for row in raw_funding_exchanges
+            if isinstance(row, dict) and row.get("exchange")
+        ]
+        funding_exchange_lines = [self._format_launch_funding_exchange(row) for row in funding_exchanges]
+        funding_transition_lines = self._format_launch_funding_transitions(funding_exchanges)
+        single_funding_available = funding_available and not funding_exchange_lines
         score_legend = (
             f"分数图例: <{self.settings.launch_watch_score}未触发 | "
             f"{self.settings.launch_watch_score}-{self.settings.launch_primed_score - 1}提前观察 | "
@@ -1660,8 +1721,13 @@ class RadarEngine:
             f"15m OI: {item['oi_15m']:+.1f}%",
             f"1h OI: {item['oi_1h']:+.1f}%",
             f"成交量: {item['volume_ratio']:.1f}x 均值",
-            *([f"资金费率: {funding_text}"] if funding_available else []),
-            *([f"结算周期: {funding_transition}"] if funding_transition else []),
+            *([f"资金费率: {funding_text}"] if single_funding_available else []),
+            *([f"结算周期: {funding_transition}"] if funding_transition and single_funding_available else []),
+            *(
+                ["", tg_quote("多交易所资金费率"), *funding_exchange_lines, *funding_transition_lines]
+                if funding_exchange_lines
+                else []
+            ),
             "",
             tg_quote("判断"),
             "资金和价格开始共振，疑似进入启动阶段" if item.get("breakout") else "资金开始异动，进入观察状态",

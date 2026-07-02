@@ -224,6 +224,9 @@ class Settings:
     fuse_seconds: int = 15 * 60
 
     launch_scan_limit: int = 80
+    launch_multi_exchange_funding_enable: bool = True
+    launch_funding_exchanges: tuple[str, ...] = ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")
+    launch_funding_history_limit: int = 4
     launch_state_path: Path = BASE_DIR / "data" / "launch_state.json"
     launch_watchlist_path: Path = BASE_DIR / "data" / "launch_watchlist.json"
     launch_watch_history_path: Path = BASE_DIR / "data" / "launch_watch_history.json"
@@ -367,6 +370,9 @@ class Settings:
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
             fuse_seconds=env_int("DATA_SOURCE_FUSE_SECONDS", 15 * 60),
             launch_scan_limit=env_int("LAUNCH_SCAN_LIMIT", 80),
+            launch_multi_exchange_funding_enable=env_bool("LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE", True),
+            launch_funding_exchanges=env_csv("LAUNCH_FUNDING_EXCHANGES", ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")),
+            launch_funding_history_limit=env_int("LAUNCH_FUNDING_HISTORY_LIMIT", 4),
             launch_state_path=data_path(data_dir, "LAUNCH_STATE_FILE", "launch_state.json"),
             launch_watchlist_path=data_path(data_dir, "LAUNCH_WATCHLIST_FILE", "launch_watchlist.json"),
             launch_watch_history_path=data_path(data_dir, "LAUNCH_WATCH_HISTORY_FILE", "launch_watch_history.json"),
@@ -520,6 +526,9 @@ class Settings:
             },
             "launch": {
                 "scan_limit": self.launch_scan_limit,
+                "multi_exchange_funding_enable": self.launch_multi_exchange_funding_enable,
+                "funding_exchanges": list(self.launch_funding_exchanges),
+                "funding_history_limit": self.launch_funding_history_limit,
                 "min_score_push": self.launch_min_score_push,
                 "thresholds": {
                     "watching": self.launch_watch_score,

@@ -99,6 +99,9 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300, help="建议 21600 秒（6 小时）。越小推送越频繁，越大越安静。"),
     ConfigField("FLOW_INTERVAL_SEC", "资金流窗口秒", "雷达参数", kind="int", minimum=300, help="建议 3600 秒（1 小时）。资金流按完整闭合窗口统计。"),
     ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 8-30。越大覆盖越多币，但请求和计算更重。"),
+    ConfigField("LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE", "启动多交易所资金费率", "雷达参数", kind="bool", help="开启后，启动预警推送会显示 Binance、OKX、Bybit、Bitget、Gate 的实时资金费率和结算时间。"),
+    ConfigField("LAUNCH_FUNDING_EXCHANGES", "启动资金费率交易所", "雷达参数", help="英文逗号分隔，默认 BINANCE,OKX,BYBIT,BITGET,GATE。可删掉你不想请求的交易所。"),
+    ConfigField("LAUNCH_FUNDING_HISTORY_LIMIT", "资金费率历史条数", "雷达参数", kind="int", minimum=3, maximum=20, help="用于判断结算周期是否从 8H 缩短到 4H 或 1H。建议 4-6。"),
     ConfigField("STRUCTURE_TOP_SYMBOLS", "结构雷达扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 50-120。越大覆盖越多币，但结构扫描耗时更长。"),
     ConfigField(
         "STRUCTURE_NEAR_EDGE_PCT",
