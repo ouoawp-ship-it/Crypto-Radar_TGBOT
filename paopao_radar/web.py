@@ -68,6 +68,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_ANNOUNCEMENT_ALERT_TOPIC_ID", "公告话题 ID", "Telegram"),
     ConfigField("TG_TEST_TOPIC_ID", "测试消息话题 ID", "Telegram"),
     ConfigField("TG_FLOW_RADAR_TOPIC_ID", "资金流话题 ID", "Telegram"),
+    ConfigField("TG_FUNDING_ALERT_TOPIC_ID", "资金费率警报话题 ID", "Telegram"),
     ConfigField("STRUCTURE_TOPIC_ID", "结构雷达话题 ID", "Telegram"),
     ConfigField("STRUCTURE_REVIEW_TOPIC_ID", "结构复盘话题 ID", "Telegram"),
     ConfigField("AI_ASSISTANT_ENABLE", "启用 AI 助手 Bot", "AI 助手", kind="bool", help="开启后 paopao-ai 服务会使用独立 AI_BOT_TOKEN 处理私聊和价格提醒。"),
@@ -99,6 +100,16 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300, help="建议 21600 秒（6 小时）。越小推送越频繁，越大越安静。"),
     ConfigField("FLOW_INTERVAL_SEC", "资金流窗口秒", "雷达参数", kind="int", minimum=300, help="建议 3600 秒（1 小时）。资金流按完整闭合窗口统计。"),
     ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 8-30。越大覆盖越多币，但请求和计算更重。"),
+    ConfigField("FUNDING_ALERT_ENABLE", "启用资金费率警报", "资金费率警报", kind="bool", help="独立扫描多交易所资金费率异常，并推送到资金费率警报话题。"),
+    ConfigField("FUNDING_ALERT_INTERVAL_SEC", "资金费率扫描间隔秒", "资金费率警报", kind="int", minimum=60, maximum=86400, help="建议 180-300 秒。越小越及时，但请求更多。"),
+    ConfigField("FUNDING_ALERT_SCAN_LIMIT", "资金费率扫描数量", "资金费率警报", kind="int", minimum=1, maximum=300, help="按 Binance 24h 成交额排序扫描前 N 个 USDT 合约。"),
+    ConfigField("FUNDING_ALERT_EXCHANGES", "资金费率交易所", "资金费率警报", help="英文逗号分隔，默认 BINANCE,OKX,BYBIT,BITGET,GATE。"),
+    ConfigField("FUNDING_ALERT_EXTREME_NEGATIVE_PCT", "极负阈值 %", "资金费率警报", kind="float", maximum=0, help="低于该值触发极负警报，默认 -0.5。"),
+    ConfigField("FUNDING_ALERT_SUPER_NEGATIVE_PCT", "超极负阈值 %", "资金费率警报", kind="float", maximum=0, help="低于该值标为极端风险，默认 -1.0。"),
+    ConfigField("FUNDING_ALERT_EXTREME_POSITIVE_PCT", "极正阈值 %", "资金费率警报", kind="float", minimum=0, help="高于该值触发多头过热警报，默认 0.5。"),
+    ConfigField("FUNDING_ALERT_MIN_EXCHANGE_COUNT", "共振交易所数量", "资金费率警报", kind="int", minimum=1, maximum=5, help="达到多少家交易所同时异常时标为共振，默认 2。"),
+    ConfigField("FUNDING_ALERT_DIVERGENCE_PCT", "交易所偏离阈值 %", "资金费率警报", kind="float", minimum=0, help="最高费率和最低费率差超过该值时提示单所偏离，默认 0.75。"),
+    ConfigField("FUNDING_ALERT_COOLDOWN_SEC", "资金费率警报冷却秒", "资金费率警报", kind="int", minimum=60, help="同币同类警报冷却时间，默认 3600 秒。"),
     ConfigField("LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE", "启动多交易所资金费率", "雷达参数", kind="bool", help="开启后，启动预警推送会显示 Binance、OKX、Bybit、Bitget、Gate 的实时资金费率和结算时间。"),
     ConfigField("LAUNCH_FUNDING_EXCHANGES", "启动资金费率交易所", "雷达参数", help="英文逗号分隔，默认 BINANCE,OKX,BYBIT,BITGET,GATE。可删掉你不想请求的交易所。"),
     ConfigField("LAUNCH_FUNDING_HISTORY_LIMIT", "资金费率历史条数", "雷达参数", kind="int", minimum=3, maximum=20, help="用于判断结算周期是否从 8H 缩短到 4H 或 1H。建议 4-6。"),
@@ -152,6 +163,7 @@ TOPIC_FIELD_ROUTES: dict[str, tuple[str, str]] = {
     "TG_ANNOUNCEMENT_ALERT_TOPIC_ID": ("TG_ANNOUNCEMENT_ALERT", "公告风险"),
     "TG_TEST_TOPIC_ID": ("TG_TEST_MESSAGE", "测试消息"),
     "TG_FLOW_RADAR_TOPIC_ID": ("TG_FLOW_RADAR", "资金流雷达"),
+    "TG_FUNDING_ALERT_TOPIC_ID": ("TG_FUNDING_ALERT", "资金费率警报"),
     "STRUCTURE_TOPIC_ID": ("TG_STRUCTURE_RADAR", "结构突破"),
     "STRUCTURE_REVIEW_TOPIC_ID": ("TG_STRUCTURE_REVIEW", "结构复盘"),
 }
@@ -162,6 +174,7 @@ TOPIC_SUMMARY_ROUTE_KEYS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "announcement_alert",
     "TG_TEST_MESSAGE": "test",
     "TG_FLOW_RADAR": "flow_radar",
+    "TG_FUNDING_ALERT": "funding_alert",
     "TG_STRUCTURE_RADAR": "structure_radar",
     "TG_STRUCTURE_REVIEW": "structure_review",
 }
@@ -178,6 +191,7 @@ CLI_ACTIONS: dict[str, dict[str, Any]] = {
     "doctor": {"label": "环境诊断", "argv": ["doctor"], "timeout": 45},
     "runtime-status": {"label": "查看运行状态", "argv": ["runtime-status"], "timeout": 20},
     "announcements-test": {"label": "测试 Binance 公告", "argv": ["announcements-test"], "timeout": 90},
+    "funding-alert": {"label": "扫描资金费率警报", "argv": ["funding-alert"], "timeout": 180},
     "structure-review": {"label": "结构信号复盘", "argv": ["structure-review"], "timeout": 120},
     "cleanup": {"label": "立即清理运行垃圾", "argv": ["cleanup", "--force-cleanup"], "timeout": 60},
 }
@@ -1588,6 +1602,17 @@ INDEX_HTML = r"""<!doctype html>
         ]
       },
       {
+        id: "funding-alert",
+        label: "扫描资金费率警报",
+        badge: "多交易所扫描",
+        desc: "立即执行一轮资金费率警报扫描，检查 Binance、OKX、Bybit、Bitget、Gate 是否出现极端费率、周期缩短或交易所偏离。",
+        details: [
+          "默认只在达到警报阈值时生成推送内容；没有异常时输出会显示扫描数量和 alerts=0。",
+          "真实发送仍受 Telegram 配置、话题 ID、冷却时间和 readiness 门禁影响。",
+          "适合修改资金费率阈值、交易所列表或话题 ID 后手动验证。"
+        ]
+      },
+      {
         id: "structure-review",
         label: "结构信号复盘",
         badge: "生成报告",
@@ -1765,6 +1790,7 @@ INDEX_HTML = r"""<!doctype html>
         "structure-loop": "结构雷达循环",
         "structure-review": "结构信号复盘",
         "flow-radar": "资金流雷达",
+        "funding-alert": "资金费率警报",
         "runtime-status": "查看运行状态",
         "telegram-test": "Telegram 测试",
         "announcements-test": "Binance 公告测试",
@@ -1782,6 +1808,7 @@ INDEX_HTML = r"""<!doctype html>
         "structure-loop": "结构雷达循环",
         "structure-review": "结构信号复盘",
         "flow-radar": "资金流雷达",
+        "funding-alert": "资金费率警报",
         cleanup: "清理运行垃圾"
       };
       return map[key] || (value ? String(value) : "暂无");
@@ -1868,6 +1895,8 @@ INDEX_HTML = r"""<!doctype html>
         ...commonRows,
         row("最近启动扫描", textValue(runtimeItem.last_launch_at)),
         row("下次启动扫描", textValue(runtimeItem.next_launch_at)),
+        row("最近费率警报", textValue(runtimeItem.last_funding_alert_at)),
+        row("下次费率警报", textValue(runtimeItem.next_funding_alert_at)),
         row("数据请求", textValue(successSummary(runtimeItem)))
       ];
       const structureRows = [

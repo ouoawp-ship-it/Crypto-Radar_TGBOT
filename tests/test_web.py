@@ -82,6 +82,7 @@ class WebConsoleTests(unittest.TestCase):
                     "TG_RADAR_SUMMARY": {"name": "资金摘要", "topic_id": "11"},
                     "TG_LAUNCH_ALERT": {"name": "启动预警", "topic_id": "12"},
                     "TG_FLOW_RADAR": {"name": "资金流雷达", "topic_id": "15"},
+                    "TG_FUNDING_ALERT": {"name": "资金费率警报", "topic_id": "18"},
                 }
             }), encoding="utf-8")
 
@@ -98,6 +99,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["configured"])
         self.assertEqual(telegram_fields["TG_LAUNCH_ALERT_TOPIC_ID"]["display_value"], "12")
         self.assertEqual(telegram_fields["TG_FLOW_RADAR_TOPIC_ID"]["display_value"], "15")
+        self.assertEqual(telegram_fields["TG_FUNDING_ALERT_TOPIC_ID"]["display_value"], "18")
+        self.assertEqual(telegram_fields["TG_FUNDING_ALERT_TOPIC_ID"]["source"], "auto_route")
 
     def test_config_payload_resolves_relative_topic_routes_file_under_data_dir(self) -> None:
         with TemporaryDirectory() as tmp:

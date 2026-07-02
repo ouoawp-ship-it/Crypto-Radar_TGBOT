@@ -7,6 +7,7 @@
 - Binance 公告机会/风险监听：跟随主扫描，只推当天 CST 的可行动公告；识别 Alpha、上新、HODLer、Launchpool、Airdrop、下架、停止交易等，并按币种区分有无 Binance USDT 合约。
 - 资金雷达汇总：默认 6 小时一次、每天最多 4 次，推送负费率榜、综合榜、埋伏榜、动量池、新币池、值得关注和数据质量。
 - 启动雷达提醒：默认 3 分钟扫描一次，推送币种、阶段、分数、市值分档、流动性分档、价格/OI/成交量变化、资金费率/结算周期和触发原因；推送前会拉 Binance、OKX、Bybit、Bitget、Gate 五家公开资金费率，显示每家实时费率、当前周期和下次结算时间；资金费率极负会标注当前周期，例如 `-2.000%/1H`，结算周期从 8H→4H 或 4H→1H 会在信号里提示；同一币种后续更高阶段会回复上一条启动消息。
+- 资金费率警报：v1.15 新增独立话题，默认每 3 分钟扫描 Binance 成交额前 120 个 USDT 合约，使用 Binance、OKX、Bybit、Bitget、Gate 免费公开数据，专门提示极负/极正费率、多交易所共振、结算周期缩短和交易所费率偏离。
 - 五因子资金流雷达：默认每 1 小时收线后延迟 5 分钟推送一次，使用 Binance 免费公开数据，按上一完整窗口内的价格、OI、现货 CVD、合约 CVD、资金费率过滤资金流信号。
 - 结构突破雷达：v1.8 新增，独立识别盘整箱体上沿/下沿、ATR/BB 压缩、临近突破、收线确认、假突破，并可生成 K线状态图。
 - Web 控制台会说明每个外部接口在本项目里的用途，并用平台真实站点图标区分 Telegram、Binance、CoinPaprika、Coinalyze、CoinMarketCap：Telegram 必填，Binance/CoinPaprika 无需 Key，Coinalyze 仅作结构雷达历史清算辅助，CoinMarketCap 当前只是预留未接入；配置页会完整显示当前 Token / Key / Web 令牌。
@@ -34,6 +35,7 @@ TG_RADAR_SUMMARY_TOPIC_ID=资金摘要话题ID
 TG_LAUNCH_ALERT_TOPIC_ID=启动预警话题ID
 TG_ANNOUNCEMENT_ALERT_TOPIC_ID=公告风险话题ID
 TG_TEST_TOPIC_ID=测试消息话题ID
+TG_FUNDING_ALERT_TOPIC_ID=资金费率警报话题ID
 TG_AUTO_CREATE_TOPICS=true
 ```
 
@@ -95,7 +97,7 @@ WEB_PORT=8080
 WEB_ADMIN_TOKEN=
 ```
 
-控制台功能包括：服务状态、运行健康度、最近错误、实时日志、日志搜索筛选、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、结构信号复盘、cleanup、主服务/结构雷达重启、推送样例预览、GitHub 更新检查，以及 `.env.oi` 关键配置编辑。配置页支持保存前预览改动、保存后中文结果提示、最近 `.env.oi` 备份一键恢复、真实模块开关，以及结构复盘参数建议一键应用。结构复盘推送里建议调整的 `STRUCTURE_MIN_SCORE` 和 `STRUCTURE_SEND_CHART_TOP_N` 可以在 Web 的“配置 -> 雷达参数”里直接修改。保存配置前会自动备份 `.env.oi`，保存成功后会自动应用新配置；主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。Web 内置“功能说明”页，会说明每个页面的用途、版本号、提交号和安全规则。
+控制台功能包括：服务状态、运行健康度、最近错误、实时日志、日志搜索筛选、runtime-status、readiness、Telegram 测试消息、doctor、Binance 公告测试、资金费率警报扫描、结构信号复盘、cleanup、主服务/结构雷达重启、推送样例预览、GitHub 更新检查，以及 `.env.oi` 关键配置编辑。配置页支持保存前预览改动、保存后中文结果提示、最近 `.env.oi` 备份一键恢复、真实模块开关，以及结构复盘参数建议一键应用。结构复盘推送里建议调整的 `STRUCTURE_MIN_SCORE` 和 `STRUCTURE_SEND_CHART_TOP_N` 可以在 Web 的“配置 -> 雷达参数”里直接修改。保存配置前会自动备份 `.env.oi`，保存成功后会自动应用新配置；主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。Web 内置“功能说明”页，会说明每个页面的用途、版本号、提交号和安全规则。
 
 如果 `WEB_ADMIN_TOKEN` 为空，程序会拒绝监听公网地址；安装/更新脚本会自动补齐。
 
@@ -335,4 +337,4 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.14.2`，后续功能更新按 `v1.14.3`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.15.0`，后续功能更新按 `v1.15.1`、`v2.0` 递增；中文菜单检查/更新时会同时显示版本号和 git 提交号。

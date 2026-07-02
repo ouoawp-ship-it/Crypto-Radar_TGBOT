@@ -55,6 +55,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_ANNOUNCEMENT_ALERT": "公告风险",
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
+    "TG_FUNDING_ALERT": "资金费率警报",
     "TG_STRUCTURE_RADAR": "结构突破",
     "TG_STRUCTURE_REVIEW": "结构复盘",
 }
@@ -150,6 +151,26 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "3. 合约拉盘/诱多派发 = 合约强于现货，追高风险更高。",
         "4. 可出现 7 类标题：真启动候选、吸筹观察、空头燃料、合约拉盘、挤空/止损、诱多/派发、恐慌下跌；本轮只显示达标分类。",
         "5. CVD 为主动买入量减主动卖出量；近0为中性，不按主动买入或主动卖出评分。",
+        ])
+    if template_id == "TG_FUNDING_ALERT":
+        return "\n".join([
+        "📌 <b>资金费率警报话题说明</b>",
+        "",
+        "这里专门推送资金费率异常，不和启动雷达、资金流雷达混在一起。",
+        "重点看：极负费率、极正费率、多交易所共振、结算周期缩短、单交易所费率明显偏离。",
+        "",
+        "扫描和发送频率：",
+        f"- 默认每{seconds_cn(settings.funding_alert_interval_sec)}扫描一次。",
+        f"- 默认扫描 Binance 成交额前 {int(settings.funding_alert_scan_limit)} 个 USDT 合约。",
+        f"- 默认交易所：{', '.join(settings.funding_alert_exchanges)}。",
+        f"- 同币同类警报默认冷却 {seconds_cn(settings.funding_alert_cooldown_sec)}，风险升级或新类型警报会重新推送。",
+        "",
+        "阅读方式：",
+        "1. 极负费率 = 空头拥挤；如果价格不继续跌，容易变成挤空燃料。",
+        "2. 极正费率 = 多头拥挤；如果价格滞涨，追高风险更大。",
+        "3. 多交易所共振比单交易所异常更重要，说明不是孤立盘口问题。",
+        "4. 结算周期从 8H 到 4H 或 4H 到 1H，代表交易所提高结算频率，应按高风险事件处理。",
+        "5. 资金费率只代表合约拥挤程度，不等于直接买卖方向。",
         ])
     if template_id == "TG_STRUCTURE_RADAR":
         return "\n".join([
@@ -547,6 +568,7 @@ class TelegramGateway:
             "TG_ANNOUNCEMENT_ALERT": self.settings.tg_announcement_alert_topic_id,
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
+            "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
             "TG_STRUCTURE_RADAR": self.settings.tg_structure_topic_id,
             "TG_STRUCTURE_REVIEW": self.settings.tg_structure_review_topic_id or self.settings.tg_structure_topic_id,
         }

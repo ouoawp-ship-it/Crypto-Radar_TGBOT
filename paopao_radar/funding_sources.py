@@ -126,10 +126,10 @@ class MultiExchangeFundingClient:
         self.settings = settings
         self.http = http
 
-    def snapshot(self, symbol: str) -> list[dict[str, Any]]:
+    def snapshot(self, symbol: str, include_history: bool = True) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for exchange in self._enabled_exchanges():
-            row = self._snapshot_one(symbol, exchange)
+            row = self._snapshot_one(symbol, exchange, include_history=include_history)
             if row:
                 rows.append(row)
         return rows
@@ -143,7 +143,7 @@ class MultiExchangeFundingClient:
                 result.append(name)
         return tuple(result or DEFAULT_FUNDING_EXCHANGES)
 
-    def _snapshot_one(self, symbol: str, exchange: str) -> dict[str, Any]:
+    def _snapshot_one(self, symbol: str, exchange: str, include_history: bool = True) -> dict[str, Any]:
         methods = {
             "BINANCE": self._binance_snapshot,
             "OKX": self._okx_snapshot,
@@ -155,7 +155,7 @@ class MultiExchangeFundingClient:
         if method is None:
             return {}
         try:
-            return method(symbol)
+            return method(symbol, include_history=include_history)
         except Exception:
             return {}
 
@@ -195,7 +195,7 @@ class MultiExchangeFundingClient:
             "extreme_label": funding_extreme_label(funding_pct),
         }
 
-    def _binance_snapshot(self, symbol: str) -> dict[str, Any]:
+    def _binance_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "BINANCE")
         base_url = self.settings.binance_fapi_base_url.rstrip("/")
         current = self._get_json(
@@ -208,7 +208,7 @@ class MultiExchangeFundingClient:
             current = next((item for item in current if item.get("symbol") == display_symbol), {})
         if not isinstance(current, dict) or not current:
             return {}
-        history = self._binance_history(display_symbol)
+        history = self._binance_history(display_symbol) if include_history else []
         return self._record(
             "Binance",
             display_symbol,
@@ -231,7 +231,7 @@ class MultiExchangeFundingClient:
             if isinstance(item, dict)
         ] if isinstance(data, list) else []
 
-    def _okx_snapshot(self, symbol: str) -> dict[str, Any]:
+    def _okx_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "OKX")
         current = self._get_json(
             "OKX",
@@ -242,7 +242,7 @@ class MultiExchangeFundingClient:
         item = self._first_data_item(current)
         if not item:
             return {}
-        history = self._okx_history(display_symbol)
+        history = self._okx_history(display_symbol) if include_history else []
         interval = funding_interval_hours(to_int(item.get("fundingTime")) - to_int(item.get("prevFundingTime")))
         return self._record(
             "OKX",
@@ -268,7 +268,7 @@ class MultiExchangeFundingClient:
             if isinstance(item, dict)
         ] if isinstance(items, list) else []
 
-    def _bybit_snapshot(self, symbol: str) -> dict[str, Any]:
+    def _bybit_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "BYBIT")
         current = self._get_json(
             "Bybit",
@@ -279,7 +279,7 @@ class MultiExchangeFundingClient:
         item = self._bybit_first_item(current)
         if not item:
             return {}
-        history = self._bybit_history(display_symbol)
+        history = self._bybit_history(display_symbol) if include_history else []
         return self._record(
             "Bybit",
             display_symbol,
@@ -305,7 +305,7 @@ class MultiExchangeFundingClient:
             if isinstance(item, dict)
         ] if isinstance(items, list) else []
 
-    def _bitget_snapshot(self, symbol: str) -> dict[str, Any]:
+    def _bitget_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "BITGET")
         current = self._get_json(
             "Bitget",
@@ -316,7 +316,7 @@ class MultiExchangeFundingClient:
         item = self._first_data_item(current)
         if not item:
             return {}
-        history = self._bitget_history(display_symbol)
+        history = self._bitget_history(display_symbol) if include_history else []
         return self._record(
             "Bitget",
             display_symbol,
@@ -341,7 +341,7 @@ class MultiExchangeFundingClient:
             if isinstance(item, dict)
         ] if isinstance(items, list) else []
 
-    def _gate_snapshot(self, symbol: str) -> dict[str, Any]:
+    def _gate_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "GATE")
         current = self._get_json(
             "Gate",
@@ -351,7 +351,7 @@ class MultiExchangeFundingClient:
         )
         if not isinstance(current, dict) or not current:
             return {}
-        history = self._gate_history(display_symbol)
+        history = self._gate_history(display_symbol) if include_history else []
         return self._record(
             "Gate",
             display_symbol,

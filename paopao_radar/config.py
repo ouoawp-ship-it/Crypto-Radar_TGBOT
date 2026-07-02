@@ -110,6 +110,7 @@ class Settings:
     tg_announcement_alert_topic_id: str = ""
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
+    tg_funding_alert_topic_id: str = ""
     tg_structure_topic_id: str = ""
     tg_structure_review_topic_id: str = ""
     tg_auto_create_topics: bool = True
@@ -188,6 +189,20 @@ class Settings:
     flow_interval_sec: int = 3600
     flow_close_delay_sec: int = 300
 
+    funding_alert_enable: bool = True
+    funding_alert_interval_sec: int = 180
+    funding_alert_scan_limit: int = 120
+    funding_alert_min_quote_volume: float = 5_000_000
+    funding_alert_exchanges: tuple[str, ...] = ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")
+    funding_alert_history_limit: int = 4
+    funding_alert_cooldown_sec: int = 3600
+    funding_alert_extreme_negative_pct: float = -0.5
+    funding_alert_super_negative_pct: float = -1.0
+    funding_alert_extreme_positive_pct: float = 0.5
+    funding_alert_min_exchange_count: int = 2
+    funding_alert_divergence_pct: float = 0.75
+    funding_alert_state_path: Path = BASE_DIR / "data" / "funding_alert_state.json"
+
     structure_radar_enable: bool = True
     structure_interval: str = "15m"
     structure_higher_interval: str = "1h"
@@ -263,6 +278,7 @@ class Settings:
             tg_announcement_alert_topic_id=env_first("TG_ANNOUNCEMENT_ALERT_TOPIC_ID", "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID"),
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
+            tg_funding_alert_topic_id=env_first("TG_FUNDING_ALERT_TOPIC_ID", "TELEGRAM_FUNDING_ALERT_TOPIC_ID"),
             tg_structure_topic_id=env_first("STRUCTURE_TOPIC_ID", "TG_STRUCTURE_TOPIC_ID", "TELEGRAM_STRUCTURE_TOPIC_ID"),
             tg_structure_review_topic_id=env_first("STRUCTURE_REVIEW_TOPIC_ID", "TG_STRUCTURE_REVIEW_TOPIC_ID", "TELEGRAM_STRUCTURE_REVIEW_TOPIC_ID"),
             tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
@@ -336,6 +352,19 @@ class Settings:
             flow_min_score=env_int("FLOW_MIN_SCORE", 50),
             flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 3600),
             flow_close_delay_sec=env_int("FLOW_CLOSE_DELAY_SEC", 300),
+            funding_alert_enable=env_bool("FUNDING_ALERT_ENABLE", True),
+            funding_alert_interval_sec=env_int("FUNDING_ALERT_INTERVAL_SEC", 180),
+            funding_alert_scan_limit=env_int("FUNDING_ALERT_SCAN_LIMIT", 120),
+            funding_alert_min_quote_volume=env_float("FUNDING_ALERT_MIN_QUOTE_VOLUME", 5_000_000),
+            funding_alert_exchanges=env_csv("FUNDING_ALERT_EXCHANGES", ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")),
+            funding_alert_history_limit=env_int("FUNDING_ALERT_HISTORY_LIMIT", 4),
+            funding_alert_cooldown_sec=env_int("FUNDING_ALERT_COOLDOWN_SEC", 3600),
+            funding_alert_extreme_negative_pct=env_float("FUNDING_ALERT_EXTREME_NEGATIVE_PCT", -0.5),
+            funding_alert_super_negative_pct=env_float("FUNDING_ALERT_SUPER_NEGATIVE_PCT", -1.0),
+            funding_alert_extreme_positive_pct=env_float("FUNDING_ALERT_EXTREME_POSITIVE_PCT", 0.5),
+            funding_alert_min_exchange_count=env_int("FUNDING_ALERT_MIN_EXCHANGE_COUNT", 2),
+            funding_alert_divergence_pct=env_float("FUNDING_ALERT_DIVERGENCE_PCT", 0.75),
+            funding_alert_state_path=data_path(data_dir, "FUNDING_ALERT_STATE_FILE", "funding_alert_state.json"),
             structure_radar_enable=env_bool("STRUCTURE_RADAR_ENABLE", True),
             structure_interval=os.getenv("STRUCTURE_INTERVAL", "15m").strip() or "15m",
             structure_higher_interval=os.getenv("STRUCTURE_HIGHER_INTERVAL", "1h").strip() or "1h",
@@ -409,6 +438,7 @@ class Settings:
                     "announcement_alert": bool(self.tg_announcement_alert_topic_id),
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
+                    "funding_alert": bool(self.tg_funding_alert_topic_id),
                     "structure_radar": bool(self.tg_structure_topic_id),
                     "structure_review": bool(self.tg_structure_review_topic_id),
                 },
@@ -492,6 +522,21 @@ class Settings:
                 "top_n": self.flow_top_n,
                 "min_score": self.flow_min_score,
                 "interval_sec": self.flow_interval_sec,
+            },
+            "funding_alert": {
+                "enable": self.funding_alert_enable,
+                "interval_sec": self.funding_alert_interval_sec,
+                "scan_limit": self.funding_alert_scan_limit,
+                "min_quote_volume": self.funding_alert_min_quote_volume,
+                "exchanges": list(self.funding_alert_exchanges),
+                "history_limit": self.funding_alert_history_limit,
+                "cooldown_sec": self.funding_alert_cooldown_sec,
+                "extreme_negative_pct": self.funding_alert_extreme_negative_pct,
+                "super_negative_pct": self.funding_alert_super_negative_pct,
+                "extreme_positive_pct": self.funding_alert_extreme_positive_pct,
+                "min_exchange_count": self.funding_alert_min_exchange_count,
+                "divergence_pct": self.funding_alert_divergence_pct,
+                "state_file": str(self.funding_alert_state_path),
             },
             "structure_radar": {
                 "enable": self.structure_radar_enable,

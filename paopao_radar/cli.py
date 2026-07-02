@@ -31,6 +31,7 @@ from datetime import datetime
 from .config import Settings
 from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
+from .funding_alert import FundingAlertEngine
 from .liquidity_router import build_liquidity_enhancer
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
@@ -133,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "announcements-test", "flow-radar", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -149,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
     parser.add_argument("--launch-scan-limit", type=int, default=None, help="临时覆盖启动雷达扫描上限")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
+    parser.add_argument("--funding-scan-limit", type=int, default=None, help="临时覆盖资金费率警报扫描上限")
     parser.add_argument("--top-symbols", type=int, default=None, help="structure-radar 临时覆盖扫描币种数量")
     parser.add_argument("--min-score", type=float, default=None, help="structure-radar 临时覆盖最低推送分数")
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
@@ -157,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
+    parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
     parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST")
     parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
     parser.add_argument("--web-token", default="", help="web 控制台访问令牌；也可用 WEB_ADMIN_TOKEN")
@@ -176,6 +179,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     radar_scan_limit = getattr(args, "radar_scan_limit", None)
     launch_scan_limit = getattr(args, "launch_scan_limit", None)
     flow_scan_limit = getattr(args, "flow_scan_limit", None)
+    funding_scan_limit = getattr(args, "funding_scan_limit", None)
     top_symbols = getattr(args, "top_symbols", None)
     min_score = getattr(args, "min_score", None)
     interval = getattr(args, "interval", None)
@@ -187,6 +191,8 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
         updates["launch_scan_limit"] = max(0, int(launch_scan_limit))
     if flow_scan_limit is not None:
         updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
+    if funding_scan_limit is not None:
+        updates["funding_alert_scan_limit"] = max(0, int(funding_scan_limit))
     if top_symbols is not None:
         updates["structure_top_symbols"] = max(1, int(top_symbols))
     if min_score is not None:
@@ -221,6 +227,7 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.structure_runtime_status_path,
         settings.radar_state_path,
         settings.funding_snapshot_path,
+        settings.funding_alert_state_path,
         settings.launch_state_path,
         settings.launch_watchlist_path,
         settings.launch_watch_history_path,
@@ -425,6 +432,37 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
     )
     print(f"flow_push: {push.status} ({push.reason})")
     return push.status, flow["diagnostics"]
+
+
+def run_funding_alert(args: argparse.Namespace) -> int:
+    settings, store, _engine, gateway = make_runtime_for_args(args)
+    push_status, diagnostics = push_funding_alert(settings, store, gateway, args)
+    print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
+    return 0 if push_status != "failed" else 1
+
+
+def push_funding_alert(
+    settings: Settings,
+    store: JsonStore,
+    gateway: TelegramGateway,
+    args: argparse.Namespace,
+) -> tuple[str, dict[str, object]]:
+    result = FundingAlertEngine(settings, store).build(BinanceDataSource(settings))
+    push_status = "skipped"
+    for idx, message in enumerate(result["messages"], start=1):
+        alert = result["alerts"][idx - 1]
+        push = gateway.send(
+            message,
+            result["template_id"],
+            str(alert.get("dedup_key") or f"funding-alert:{idx}"),
+            send=args.send,
+            confirm_real_send=args.confirm_real_send,
+            cooldown_sec=max(60, settings.funding_alert_cooldown_sec),
+            parse_mode="HTML",
+        )
+        print(f"funding_alert_push[{idx}]: {push.status} ({push.reason})")
+        push_status = push.status
+    return push_status, result["diagnostics"]
 
 
 def structure_photo_caption(signal: StructureSignal) -> str:
@@ -999,6 +1037,10 @@ def run_once(args: argparse.Namespace) -> int:
     if not args.no_flow:
         flow_push_status, flow_diag = push_flow_radar(settings, gateway, args)
         diagnostics["flow"] = flow_diag
+    funding_alert_push_status = "skipped"
+    if not getattr(args, "no_funding_alert", False):
+        funding_alert_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
+        diagnostics["funding_alert"] = funding_diag
 
     print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
     write_runtime_status(
@@ -1010,9 +1052,11 @@ def run_once(args: argparse.Namespace) -> int:
         real_send=bool(args.send and args.confirm_real_send),
         summary_push=summary_push_status,
         flow_push=flow_push_status,
+        funding_alert_push=funding_alert_push_status,
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
+        funding_alert_scan_limit=settings.funding_alert_scan_limit,
         launch_pushes=launch_pushes,
         announcement_pushes=announcement_pushes,
         diagnostics=diagnostics,
@@ -1038,6 +1082,7 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=settings.flow_interval_sec,
         delay_sec=settings.flow_close_delay_sec,
     )
+    next_funding_alert = time.time()
     write_runtime_status(
         settings,
         store,
@@ -1048,15 +1093,19 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=summary_interval,
         launch_interval_sec=max(60, args.launch_interval),
         flow_interval_sec=max(60, settings.flow_interval_sec),
+        funding_alert_interval_sec=max(60, settings.funding_alert_interval_sec),
         summary_close_delay_sec=settings.radar_summary_close_delay_sec,
         flow_close_delay_sec=settings.flow_close_delay_sec,
         next_summary_at=timestamp_from_epoch(next_summary),
         next_flow_at=timestamp_from_epoch(next_flow),
+        next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
         no_launch=bool(args.no_launch),
         no_flow=bool(args.no_flow),
+        no_funding_alert=bool(getattr(args, "no_funding_alert", False)),
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
+        funding_alert_scan_limit=settings.funding_alert_scan_limit,
     )
     while True:
         now = time.time()
@@ -1121,6 +1170,33 @@ def run_loop(args: argparse.Namespace) -> int:
                 flow_push=flow_push_status,
                 diagnostics={"flow": flow_diag},
                 last_error=flow_error,
+            )
+        if not getattr(args, "no_funding_alert", False) and now >= next_funding_alert:
+            funding_ok = True
+            funding_error = ""
+            funding_diag: dict[str, object] = {}
+            funding_push_status = "skipped"
+            try:
+                settings, store, _engine, gateway = make_runtime_for_args(args)
+                funding_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
+                print(json.dumps({"funding_alert": funding_diag}, ensure_ascii=False, indent=2))
+            except Exception as exc:
+                funding_ok = False
+                funding_error = f"{type(exc).__name__}: {exc}"
+                print(f"[loop] funding alert failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            next_funding_alert = time.time() + max(60, settings.funding_alert_interval_sec)
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running" if funding_ok else "funding_alert_failed",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                last_funding_alert_at=timestamp_from_epoch(time.time()),
+                next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
+                funding_alert_push=funding_push_status,
+                diagnostics={"funding_alert": funding_diag},
+                last_error=funding_error,
             )
         if not args.no_launch and now >= next_launch:
             launch_ok = True
@@ -1440,6 +1516,12 @@ def main(argv: list[str] | None = None) -> int:
             if gate != 0:
                 return gate
         return run_flow_radar(args)
+    if args.command == "funding-alert":
+        if args.send and args.confirm_real_send:
+            gate = require_real_send_gate(settings, store, args)
+            if gate != 0:
+                return gate
+        return run_funding_alert(args)
     if args.command == "structure-radar":
         return run_structure_radar(args)
     if args.command == "structure-loop":

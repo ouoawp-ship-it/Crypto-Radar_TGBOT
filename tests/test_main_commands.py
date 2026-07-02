@@ -138,13 +138,14 @@ class MainCommandTests(unittest.TestCase):
 
     def test_make_runtime_for_args_applies_scan_limit_overrides(self) -> None:
         with TemporaryDirectory() as tmp:
-            args = argparse.Namespace(radar_scan_limit=4, launch_scan_limit=3, flow_scan_limit=2)
+            args = argparse.Namespace(radar_scan_limit=4, launch_scan_limit=3, flow_scan_limit=2, funding_scan_limit=5)
             with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
                 settings, _store, _engine, _gateway = main.make_runtime_for_args(args)
 
         self.assertEqual(settings.radar_scan_limit, 4)
         self.assertEqual(settings.launch_scan_limit, 3)
         self.assertEqual(settings.flow_scan_limit, 2)
+        self.assertEqual(settings.funding_alert_scan_limit, 5)
 
     def test_next_interval_epoch_aligns_hourly_jobs_to_top_of_hour(self) -> None:
         base = main.datetime(2026, 5, 26, 17, 46, 30).timestamp()
