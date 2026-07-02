@@ -1355,6 +1355,49 @@ INDEX_HTML = r"""<!doctype html>
       background: linear-gradient(135deg, rgba(255,255,255,.74), rgba(239,244,246,.7));
     }
     .feature-item strong { display: block; margin-bottom: 4px; }
+    .config-category-bar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .config-category-bar .btn.active {
+      background: linear-gradient(135deg, #34424a, #202a30);
+      border-color: #202a30;
+      color: #fff;
+    }
+    .config-module-grid {
+      grid-column: span 12;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .config-module-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: var(--metal);
+      box-shadow: var(--shadow);
+      text-align: left;
+      cursor: pointer;
+      color: var(--text);
+      min-height: 126px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+    .config-module-card:hover {
+      border-color: rgba(15, 118, 110, .42);
+      box-shadow: 0 14px 30px rgba(20, 31, 36, .12), 0 1px 1px rgba(255,255,255,.75) inset;
+    }
+    .config-module-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      font-weight: 800;
+      font-size: 15px;
+    }
     .api-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1490,6 +1533,7 @@ INDEX_HTML = r"""<!doctype html>
       .service-guide { grid-template-columns: 1fr; }
       .service-action { grid-template-columns: 1fr; }
       .api-grid { grid-template-columns: 1fr; }
+      .config-module-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       .field-heading { grid-template-columns: 1fr; }
       .field-current { justify-self: start; text-align: left; }
@@ -1568,10 +1612,11 @@ INDEX_HTML = r"""<!doctype html>
       </section>
 
       <section id="config" class="view hidden">
+        <div id="configCategoryBar" class="config-category-bar"></div>
         <div id="configForms" class="grid"></div>
-        <div class="toolbar" style="margin-top:12px">
+        <div id="configSaveToolbar" class="toolbar hidden" style="margin-top:12px">
           <button class="btn" onclick="previewConfig()">预览改动</button>
-          <button class="btn blue" onclick="applyStructureRecommendations()">应用复盘建议</button>
+          <button id="applyStructureButton" class="btn blue hidden" onclick="applyStructureRecommendations()">应用复盘建议</button>
           <button class="btn primary" onclick="saveConfig()">保存配置</button>
         </div>
         <div id="configPreview" class="panel hidden"></div>
@@ -1817,8 +1862,68 @@ INDEX_HTML = r"""<!doctype html>
       }
     ];
     let currentView = "overview";
+    let currentConfigCategory = "home";
     let latestConfigData = null;
     let latestLogData = null;
+    const configCategories = [
+      {
+        id: "home",
+        label: "配置首页",
+        desc: "按功能模块进入配置，不再把所有项目设置堆在同一页。",
+        sections: []
+      },
+      {
+        id: "telegram",
+        label: "Telegram 推送",
+        desc: "群推送机器人 Token、群 ID、话题 ID、自动创建话题等消息入口配置。",
+        sections: ["Telegram"]
+      },
+      {
+        id: "ai",
+        label: "AI 助手配置",
+        desc: "独立 AI Bot、允许用户/群组、价格提醒、AI 接口地址、模型和超时配置。",
+        sections: ["AI 助手"]
+      },
+      {
+        id: "radar",
+        label: "雷达参数",
+        desc: "资金摘要、资金流、启动雷达、结构雷达、盘口确认和结构复盘建议参数。",
+        sections: ["雷达参数"],
+        special: "structure"
+      },
+      {
+        id: "funding",
+        label: "资金费率警报",
+        desc: "独立资金费率警报的扫描间隔、交易所、极端阈值、回复追踪和衰减规则。",
+        sections: ["资金费率警报"]
+      },
+      {
+        id: "switches",
+        label: "模块开关",
+        desc: "话题说明、自动清理、结构雷达、结构复盘、外部确认等总开关。",
+        sections: ["模块开关"]
+      },
+      {
+        id: "external",
+        label: "外部接口",
+        desc: "查看 Binance、CoinPaprika、Coinalyze、CoinMarketCap 等数据源用途，并配置可选 Coinalyze Key。",
+        sections: ["Coinalyze"],
+        special: "api"
+      },
+      {
+        id: "web",
+        label: "Web 控制台",
+        desc: "Web 后台监听地址、访问端口和访问令牌配置。",
+        sections: ["Web 控制台"]
+      },
+      {
+        id: "backup",
+        label: "备份恢复",
+        desc: "查看、恢复或删除 Web 自动生成的 .env.oi 配置备份。",
+        sections: [],
+        special: "backup"
+      }
+    ];
 
     function token() { return localStorage.getItem("paopaoAdminToken") || ""; }
     function headers() {
@@ -2190,17 +2295,91 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api("/api/config");
       latestConfigData = data;
       setSubtitle(data.env_file);
+      await renderConfigPage();
+    }
+    async function selectConfigCategory(id) {
+      currentConfigCategory = id;
+      clearKeys.clear();
+      document.getElementById("configOutput").textContent = "";
+      await renderConfigPage();
+    }
+    function configCategoryById(id) {
+      return configCategories.find(item => item.id === id) || configCategories[0];
+    }
+    function configFieldsForCategory(category) {
+      const sections = (latestConfigData && latestConfigData.sections) || {};
+      return category.sections.flatMap(section => sections[section] || []);
+    }
+    function renderConfigCategoryBar() {
+      const bar = document.getElementById("configCategoryBar");
+      if (!bar) return;
+      bar.innerHTML = configCategories.map(item => `
+        <button class="btn ${item.id === currentConfigCategory ? "active" : ""}" type="button" onclick="selectConfigCategory('${escapeHtml(item.id)}')">${escapeHtml(item.label)}</button>
+      `).join("");
+    }
+    function renderConfigHome() {
+      const modules = configCategories.filter(item => item.id !== "home");
+      return `
+        <div class="panel span-12 notice">
+          <strong>配置现在按功能模块分开管理。</strong>
+          先选择要修改的功能，再进入对应设置；这样不会把 Telegram、AI、雷达参数、资金费率、Web 端口和备份恢复全部堆在一个页面。
+        </div>
+        <div class="config-module-grid">
+          ${modules.map(item => {
+            const count = configFieldsForCategory(item).length;
+            const countText = count ? `${count} 项设置` : "工具页面";
+            return `<button class="config-module-card" type="button" onclick="selectConfigCategory('${escapeHtml(item.id)}')">
+              <span class="config-module-title"><span>${escapeHtml(item.label)}</span>${neutralPill(countText)}</span>
+              <span class="muted">${escapeHtml(item.desc)}</span>
+            </button>`;
+          }).join("")}
+        </div>
+      `;
+    }
+    function renderConfigSection(section, fields) {
+      return `<div class="panel span-12">
+        <h3 class="section-title">${escapeHtml(section)}</h3>
+        <div class="form-grid">${fields.map(fieldHtml).join("")}</div>
+      </div>`;
+    }
+    async function renderConfigPage() {
       const root = document.getElementById("configForms");
-      root.innerHTML = apiSourcePanel() + structureRecommendationPanel() + configBackupPanel();
-      Object.entries(data.sections || {}).forEach(([section, fields]) => {
-        const panel = document.createElement("div");
-        panel.className = "panel span-12";
-        const body = fields.map(fieldHtml).join("");
-        panel.innerHTML = `<h3 class="section-title">${escapeHtml(section)}</h3><div class="form-grid">${body}</div>`;
-        root.appendChild(panel);
+      const toolbar = document.getElementById("configSaveToolbar");
+      const structureButton = document.getElementById("applyStructureButton");
+      const category = configCategoryById(currentConfigCategory);
+      const hasEditableFields = configFieldsForCategory(category).length > 0;
+      renderConfigCategoryBar();
+      if (toolbar) toolbar.classList.toggle("hidden", !hasEditableFields);
+      if (structureButton) structureButton.classList.toggle("hidden", category.special !== "structure");
+      document.getElementById("configPreview").classList.add("hidden");
+
+      if (category.id === "home") {
+        root.innerHTML = renderConfigHome();
+        setSubtitle("配置中心：按功能模块选择要修改的设置");
+        return;
+      }
+
+      const sections = (latestConfigData && latestConfigData.sections) || {};
+      const parts = [
+        `<div class="panel span-12">
+          <div class="summary-head">
+            <h3 class="section-title">${escapeHtml(category.label)}</h3>
+            <button class="btn" type="button" onclick="selectConfigCategory('home')">返回配置首页</button>
+          </div>
+          <div class="hint">${escapeHtml(category.desc)}</div>
+        </div>`
+      ];
+      if (category.special === "api") parts.push(apiSourcePanel());
+      if (category.special === "structure") parts.push(structureRecommendationPanel());
+      category.sections.forEach(section => {
+        const fields = sections[section] || [];
+        if (fields.length) parts.push(renderConfigSection(section, fields));
       });
-      await loadStructureRecommendations();
-      await loadConfigBackups();
+      if (category.special === "backup") parts.push(configBackupPanel());
+      root.innerHTML = parts.join("");
+      setSubtitle(`${category.label} · ${latestConfigData ? latestConfigData.env_file : ""}`);
+      if (category.special === "structure") await loadStructureRecommendations();
+      if (category.special === "backup") await loadConfigBackups();
     }
     function configCurrentText(field) {
       if (!field.configured && !field.value && !field.display_value) return "当前未配置";
@@ -2370,6 +2549,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function saveConfig() {
       const updates = gatherConfigUpdates();
+      const visibleKeys = new Set(Object.keys(updates));
+      const clear = Array.from(clearKeys).filter(key => visibleKeys.has(key));
       const changes = buildConfigChanges(updates);
       renderConfigChanges(changes);
       if (!changes.length) {
@@ -2379,7 +2560,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!confirm(`即将保存 ${changes.length} 项配置改动，并自动应用。是否继续？`)) return;
       const data = await api("/api/config", {
         method: "POST",
-        body: JSON.stringify({ updates, clear: Array.from(clearKeys) })
+        body: JSON.stringify({ updates, clear })
       });
       document.getElementById("configOutput").textContent = formatSaveResult(data, changes);
       if (data.ok && updates.WEB_ADMIN_TOKEN) localStorage.setItem("paopaoAdminToken", updates.WEB_ADMIN_TOKEN);
@@ -2502,7 +2683,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="feature-list">
             <div class="feature-item"><strong>总览</strong><span class="muted">查看运行健康度、最近错误、主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
             <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
-            <div class="feature-item"><strong>配置</strong><span class="muted">修改 Telegram、话题、模块开关、Coinalyze、雷达参数和 Web 访问配置；保存前预览，保存前自动备份 .env.oi。</span></div>
+            <div class="feature-item"><strong>配置</strong><span class="muted">按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类修改设置；保存前预览，保存前自动备份 .env.oi。</span></div>
             <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、价格提醒统计，新增、暂停、恢复和删除 Web 价格提醒。</span></div>
             <div class="feature-item"><strong>AI 提示词</strong><span class="muted">编辑普通助手提示词和专业分析师提示词；保存后自动重启 AI 助手服务。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
