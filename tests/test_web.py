@@ -308,6 +308,29 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(errors[0]["source"], "结构雷达")
         self.assertIn("boom", errors[0]["message"])
 
+    def test_recent_errors_translates_funding_failures(self) -> None:
+        runtime = {
+            "main": {
+                "status": "running",
+                "diagnostics": {
+                    "funding_alert": {
+                        "quality": {
+                            "failures": {"funding:Gate": 1}
+                        }
+                    }
+                },
+            },
+            "structure": {"status": "running"},
+        }
+
+        errors = web.recent_errors_payload(runtime)
+
+        self.assertEqual(errors[0]["source"], "主服务")
+        self.assertEqual(errors[0]["level"], "警告")
+        self.assertIn("Gate 资金费率接口失败 1 次", errors[0]["message"])
+        self.assertIn("主服务仍在运行", errors[0]["message"])
+        self.assertNotIn("{", errors[0]["message"])
+
     def test_push_preview_payload_is_static_and_safe(self) -> None:
         payload = web.push_preview_payload()
 

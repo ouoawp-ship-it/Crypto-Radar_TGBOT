@@ -787,6 +787,41 @@ def collect_nested_keys(value: Any, key_name: str) -> list[Any]:
     return found
 
 
+def format_failure_key(key: str) -> str:
+    text = str(key or "").strip()
+    if text.startswith("funding:"):
+        exchange = text.split(":", 1)[1] or "未知交易所"
+        return f"{exchange} 资金费率接口"
+    names = {
+        "exchangeInfo": "Binance 合约信息接口",
+        "ticker24hr": "Binance 24小时成交额接口",
+        "premiumIndex": "Binance 资金费率接口",
+        "openInterestHist": "Binance OI 历史接口",
+        "klines": "Binance 合约K线接口",
+        "spotKlines": "Binance 现货K线接口",
+        "fundingRate": "Binance 历史资金费率接口",
+        "depth": "Binance 盘口接口",
+        "marketCaps": "Binance 市值接口",
+        "coinpaprikaMarketCaps": "CoinPaprika 市值接口",
+        "announcements": "Binance 公告接口",
+    }
+    return names.get(text, text)
+
+
+def format_runtime_failure(failure: dict[str, Any]) -> str:
+    items: list[str] = []
+    for key, count in failure.items():
+        try:
+            value = int(count)
+        except (TypeError, ValueError):
+            value = 1
+        items.append(f"{format_failure_key(str(key))}失败 {value} 次")
+    if not items:
+        return "检测到接口失败计数"
+    suffix = "主服务仍在运行；本轮只会少用对应数据源，后续扫描会自动重试。"
+    return "；".join(items[:6]) + "。" + suffix
+
+
 def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
     if not isinstance(runtime, dict):
         return None
@@ -799,7 +834,7 @@ def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
     failures = collect_nested_keys(runtime, "failures")
     for failure in failures:
         if isinstance(failure, dict) and failure:
-            return {"source": name, "level": "警告", "message": json.dumps(failure, ensure_ascii=False)}
+            return {"source": name, "level": "警告", "message": format_runtime_failure(failure)}
     return None
 
 
@@ -1998,8 +2033,8 @@ INDEX_HTML = r"""<!doctype html>
         <span class="muted">${escapeHtml(item.message || "")}</span>
       </div>`).join("");
       return `<div class="panel span-12">
-        <h3 class="section-title">最近错误</h3>
-        ${list ? `<div class="feature-list">${list}</div>` : `<div class="notice"><strong>当前没有检测到 runtime-status 里的最近错误。</strong> 如果仍怀疑异常，可以去日志页按“只看错误”筛选。</div>`}
+        <h3 class="section-title">最近错误 / 警告</h3>
+        ${list ? `<div class="feature-list">${list}</div>` : `<div class="notice"><strong>当前没有检测到 runtime-status 里的错误或接口警告。</strong> 如果仍怀疑异常，可以去日志页按“只看错误”筛选。</div>`}
       </div>`;
     }
     function rawDetails(title, data) {
