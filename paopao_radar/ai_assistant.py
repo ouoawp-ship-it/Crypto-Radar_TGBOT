@@ -963,14 +963,26 @@ def coinglass_quote_url(quote: AlertMarketQuote) -> str:
     return f"https://www.coinglass.com/tv/zh/{url_quote(path, safe='-_')}"
 
 
+def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
+    exchange_width = max([len("交易所"), *(len(quote.exchange_label) for quote in quotes)], default=len("交易所"))
+    pair_width = max([len("交易对"), *(len(quote.pair) for quote in quotes)], default=len("交易对"))
+    price_width = max([len("价格"), *(len(format_price(quote.price)) for quote in quotes)], default=len("价格"))
+    return exchange_width, pair_width, price_width
+
+
 def price_quote_link_rows(quotes: list[AlertMarketQuote]) -> str:
-    lines = ["交易所 | 交易对 | 价格"]
+    exchange_width, pair_width, price_width = price_quote_widths(quotes)
+    lines = [
+        f"<code>{html.escape('交易所'.ljust(exchange_width))}</code> "
+        f"<code>{html.escape('交易对'.ljust(pair_width))}</code> "
+        f"<code>{html.escape('价格'.rjust(price_width))}</code>"
+    ]
     for quote in quotes:
-        exchange = html.escape(quote.exchange_label)
-        pair = html.escape(quote.pair)
-        price = html.escape(format_price(quote.price))
+        exchange = html.escape(quote.exchange_label.ljust(exchange_width))
+        pair = html.escape(quote.pair.ljust(pair_width))
+        price = html.escape(format_price(quote.price).rjust(price_width))
         url = html.escape(coinglass_quote_url(quote), quote=True)
-        lines.append(f'<a href="{url}"><b>{exchange}</b></a> | <code>{pair}</code> | <code>{price}</code>')
+        lines.append(f'<a href="{url}"><b><code>{exchange}</code></b></a> <code>{pair}</code> <code>{price}</code>')
     return "\n".join(lines)
 
 
