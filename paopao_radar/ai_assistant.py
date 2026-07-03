@@ -212,6 +212,15 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
     }
 
 
+def url_inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": text, "url": url} for text, url in row]
+            for row in rows
+        ]
+    }
+
+
 def main_menu_markup() -> dict[str, Any]:
     return inline_keyboard([
         [("AI 正常对话", "menu:assistant"), ("AI 分析行情", "menu:analysis")],
@@ -963,33 +972,54 @@ def coinglass_quote_url(quote: AlertMarketQuote) -> str:
     return f"https://www.coinglass.com/tv/zh/{url_quote(path, safe='-_')}"
 
 
+def text_display_width(text: str) -> int:
+    return sum(2 if ord(char) > 127 else 1 for char in str(text or ""))
+
+
+def pad_display_right(text: str, width: int) -> str:
+    value = str(text or "")
+    return value + " " * max(0, width - text_display_width(value))
+
+
+def pad_display_left(text: str, width: int) -> str:
+    value = str(text or "")
+    return " " * max(0, width - text_display_width(value)) + value
+
+
 def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
-    exchange_width = max([len("交易所"), *(len(quote.exchange_label) for quote in quotes)], default=len("交易所"))
-    pair_width = max([len("交易对"), *(len(quote.pair) for quote in quotes)], default=len("交易对"))
-    price_width = max([len("价格"), *(len(format_price(quote.price)) for quote in quotes)], default=len("价格"))
+    exchange_width = max([text_display_width("交易所"), *(text_display_width(quote.exchange_label) for quote in quotes)], default=text_display_width("交易所"))
+    pair_width = max([text_display_width("交易对"), *(text_display_width(quote.pair) for quote in quotes)], default=text_display_width("交易对"))
+    price_width = max([text_display_width("价格"), *(text_display_width(format_price(quote.price)) for quote in quotes)], default=text_display_width("价格"))
     return exchange_width, pair_width, price_width
 
 
-def price_quote_link_rows(quotes: list[AlertMarketQuote]) -> str:
+def price_quote_table_block(quotes: list[AlertMarketQuote]) -> str:
     exchange_width, pair_width, price_width = price_quote_widths(quotes)
-    lines = [
-        f"<b>交易所</b><code>{html.escape(' ' * max(0, exchange_width - len('交易所')))}</code> "
-        f"<b>交易对</b><code>{html.escape(' ' * max(0, pair_width - len('交易对')))}</code> "
-        f"<b>价格</b>"
-    ]
+    rows = [f"{pad_display_right('交易所', exchange_width)}  {pad_display_right('交易对', pair_width)}  {pad_display_left('价格', price_width)}"]
     for quote in quotes:
-        exchange = html.escape(quote.exchange_label)
-        exchange_pad = html.escape(" " * max(0, exchange_width - len(quote.exchange_label)))
-        pair = html.escape(quote.pair.ljust(pair_width))
-        price = html.escape(format_price(quote.price).rjust(price_width))
-        url = html.escape(coinglass_quote_url(quote), quote=True)
-        lines.append(f'<a href="{url}"><b>{exchange}</b></a><code>{exchange_pad}</code> <code>{pair}</code> <code>{price}</code>')
-    return "\n".join(lines)
+        rows.append(
+            f"{pad_display_right(quote.exchange_label, exchange_width)}  "
+            f"{pad_display_right(quote.pair, pair_width)}  "
+            f"{pad_display_left(format_price(quote.price), price_width)}"
+        )
+    return f"<pre>{html.escape(chr(10).join(rows))}</pre>"
 
 
-def price_text(settings: Settings, symbol_text: str) -> str:
-    symbol = normalize_symbol(symbol_text)
-    quotes = discover_alert_markets(settings, symbol)
+def price_quote_link_markup(quotes: list[AlertMarketQuote]) -> dict[str, Any] | None:
+    rows: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    for quote in quotes[:10]:
+        label_prefix = "合约" if quote.market_type == "futures" else "现货"
+        current.append((f"{label_prefix} {quote.exchange_label}", coinglass_quote_url(quote)))
+        if len(current) >= 2:
+            rows.append(current)
+            current = []
+    if current:
+        rows.append(current)
+    return url_inline_keyboard(rows) if rows else None
+
+
+def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
     if not quotes:
         return f"没有从 Binance、Bybit、OKX、Bitget、Gate 里读到 {symbol} 的现货或合约价格。"
     futures = [quote for quote in quotes if quote.market_type == "futures"]
@@ -997,18 +1027,31 @@ def price_text(settings: Settings, symbol_text: str) -> str:
     lines = [f"{symbol} 多交易所价格", ""]
     if futures:
         lines.append("合约：")
-        lines.append(price_quote_link_rows(futures))
+        lines.append(price_quote_table_block(futures))
         lines.append("")
     if spot:
         lines.append("现货：")
-        lines.append(price_quote_link_rows(spot))
+        lines.append(price_quote_table_block(spot))
         lines.append("")
     lines.extend([
         "可继续发送：",
         f"{symbol.replace('USDT', '')} 怎么看",
         "或点击首页“设置价格提醒”。",
+        "",
+        "下方按钮可打开对应 CoinGlass K线。",
     ])
     return "\n".join(lines).strip()
+
+
+def price_text(settings: Settings, symbol_text: str) -> str:
+    symbol = normalize_symbol(symbol_text)
+    return price_text_from_quotes(symbol, discover_alert_markets(settings, symbol))
+
+
+def price_reply(settings: Settings, symbol_text: str) -> BotReply:
+    symbol = normalize_symbol(symbol_text)
+    quotes = discover_alert_markets(settings, symbol)
+    return BotReply(price_text_from_quotes(symbol, quotes), price_quote_link_markup(quotes))
 
 
 def session_key(chat_id: str | int, user_id: str | int) -> str:
@@ -1723,12 +1766,28 @@ def handle_message_reply(
     if session_reply:
         return session_reply
 
+    if lowered.startswith("/price"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            return BotReply("用法：/price BTC", main_menu_markup())
+        try:
+            return price_reply(settings, parts[1])
+        except Exception as exc:
+            return BotReply(f"价格查询失败：{type(exc).__name__}: {exc}")
+
     if lowered.startswith("/alert") or is_alert_intent(text):
         active_sessions.pop(key, None)
         return BotReply(
             "价格提醒已经改成手动选择模式。\n\n请点击首页里的「设置价格提醒」，然后按流程选择现货/合约、交易所和目标价。",
             main_menu_markup(),
         )
+
+    if is_price_query(text):
+        symbol = extract_symbol_text(text)
+        try:
+            return price_reply(settings, symbol)
+        except Exception as exc:
+            return BotReply(f"价格查询失败：{type(exc).__name__}: {exc}")
 
     reply = handle_message(settings, store, message, bot_username=bot_username, bot_user_id=bot_user_id)
     if not reply:

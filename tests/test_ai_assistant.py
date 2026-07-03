@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from paopao_radar.ai_assistant import (
+    BotReply,
     SessionLockRegistry,
     TelegramBotClient,
     build_chat_completion_payload,
@@ -19,7 +20,7 @@ from paopao_radar.ai_assistant import (
     infer_telegram_parse_mode,
     is_alert_intent,
     parse_alert_request,
-    price_quote_link_rows,
+    price_quote_table_block,
     process_ai_update,
     telegram_plain_text,
 )
@@ -72,15 +73,16 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', payload["text"])
         self.assertEqual(infer_telegram_parse_mode(text), "HTML")
 
-    def test_price_quote_rows_pad_exchange_pair_and_price_columns(self) -> None:
-        rows = price_quote_link_rows([
+    def test_price_quote_table_block_aligns_pair_and_price_columns(self) -> None:
+        rows = price_quote_table_block([
             AlertMarketQuote(exchange="binance", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=62178.2),
             AlertMarketQuote(exchange="okx", market_type="futures", symbol="BTCUSDT", pair="BTC-USDT-SWAP", price=62181),
         ])
 
-        self.assertIn("<b>交易所</b><code>    </code> <b>交易对</b><code>          </code> <b>价格</b>", rows)
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a><code></code> <code>BTCUSDT      </code> <code>$62,178.20</code>', rows)
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/OKX_BTC-USDT-SWAP"><b>OKX</b></a><code>    </code> <code>BTC-USDT-SWAP</code> <code>$62,181.00</code>', rows)
+        self.assertIn("<pre>", rows)
+        self.assertIn("交易所   交易对               价格", rows)
+        self.assertIn("Binance  BTCUSDT        $62,178.20", rows)
+        self.assertIn("OKX      BTC-USDT-SWAP  $62,181.00", rows)
 
     def test_coinglass_quote_url_keeps_exchange_pair_format(self) -> None:
         self.assertEqual(
@@ -113,7 +115,7 @@ class AiAssistantTests(unittest.TestCase):
 
             class FakeSender:
                 def __init__(self) -> None:
-                    self.messages: list[tuple[str | int, str, str]] = []
+                    self.messages: list[tuple[str | int, str, str, dict | None]] = []
 
                 def send_message(
                     self,
@@ -123,7 +125,7 @@ class AiAssistantTests(unittest.TestCase):
                     *,
                     context: str = "queued",
                 ) -> bool:
-                    self.messages.append((chat_id, text, context))
+                    self.messages.append((chat_id, text, context, reply_markup))
                     return True
 
             sender = FakeSender()
@@ -136,7 +138,13 @@ class AiAssistantTests(unittest.TestCase):
             }
 
             with patch("paopao_radar.ai_assistant.Settings.load", return_value=settings):
-                with patch("paopao_radar.ai_assistant.price_text", return_value="BTCUSDT 多交易所价格\n$61,234.50"):
+                with patch(
+                    "paopao_radar.ai_assistant.price_reply",
+                    return_value=BotReply(
+                        "BTCUSDT 多交易所价格\n<pre>交易所 交易对 价格</pre>",
+                        {"inline_keyboard": [[{"text": "合约 Binance", "url": "https://www.coinglass.com/tv/zh/Binance_BTCUSDT"}]]},
+                    ),
+                ):
                     process_ai_update(
                         update,
                         FakeBot(),  # type: ignore[arg-type]
@@ -152,6 +160,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(sender.messages[0][2], "message_processing_notice")
             self.assertIn("BTCUSDT 多交易所价格", sender.messages[-1][1])
             self.assertEqual(sender.messages[-1][2], "message_reply")
+            self.assertEqual(sender.messages[-1][3]["inline_keyboard"][0][0]["text"], "合约 Binance")
 
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
         settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")
@@ -856,9 +865,10 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("BTCUSDT 多交易所价格", reply or "")
             self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
-            self.assertIn("<b>交易所</b>", reply or "")
-            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
-            self.assertIn("<code>BTCUSDT</code>", reply or "")
+            self.assertIn("<pre>", reply or "")
+            self.assertIn("交易所", reply or "")
+            self.assertIn("Binance", reply or "")
+            self.assertIn("BTCUSDT", reply or "")
 
     def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
