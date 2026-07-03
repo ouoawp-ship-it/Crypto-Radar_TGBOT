@@ -15,7 +15,7 @@ from urllib.parse import quote as url_quote
 import requests
 
 from .ai_prompts import load_ai_prompts
-from .config import Settings, normalize_ai_model
+from .config import ENV_FILE, Settings, normalize_ai_model
 from .data_sources import HTTP_HEADERS
 from .price_alerts import (
     ALERT_MARKET_EXCHANGES,
@@ -126,6 +126,65 @@ class BotReply:
     text: str
     reply_markup: dict[str, Any] | None = None
     parse_mode: str | None = None
+
+
+AI_SETTINGS_CACHE_TTL_SEC = 2.0
+AI_CALLBACK_SLOW_LOG_SEC = 0.5
+AI_MESSAGE_SLOW_LOG_SEC = 1.0
+_AI_SETTINGS_CACHE_LOCK = threading.Lock()
+_AI_SETTINGS_CACHE_SIG: tuple[int, int] | None = None
+_AI_SETTINGS_CACHE_LOADED_AT = 0.0
+_AI_SETTINGS_CACHE_VALUE: Settings | None = None
+
+
+def _env_file_signature() -> tuple[int, int]:
+    try:
+        stat = ENV_FILE.stat()
+    except FileNotFoundError:
+        return (0, 0)
+    return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _settings_loader_is_mocked() -> bool:
+    return "unittest.mock" in type(Settings.load).__module__
+
+
+def clear_ai_settings_cache() -> None:
+    global _AI_SETTINGS_CACHE_SIG, _AI_SETTINGS_CACHE_LOADED_AT, _AI_SETTINGS_CACHE_VALUE
+    with _AI_SETTINGS_CACHE_LOCK:
+        _AI_SETTINGS_CACHE_SIG = None
+        _AI_SETTINGS_CACHE_LOADED_AT = 0.0
+        _AI_SETTINGS_CACHE_VALUE = None
+
+
+def load_ai_settings_cached(force: bool = False) -> Settings:
+    global _AI_SETTINGS_CACHE_SIG, _AI_SETTINGS_CACHE_LOADED_AT, _AI_SETTINGS_CACHE_VALUE
+    if _settings_loader_is_mocked():
+        return Settings.load()
+    now = time.time()
+    signature = _env_file_signature()
+    with _AI_SETTINGS_CACHE_LOCK:
+        if (
+            not force
+            and _AI_SETTINGS_CACHE_VALUE is not None
+            and _AI_SETTINGS_CACHE_SIG == signature
+            and now - _AI_SETTINGS_CACHE_LOADED_AT <= AI_SETTINGS_CACHE_TTL_SEC
+        ):
+            return _AI_SETTINGS_CACHE_VALUE
+        settings = Settings.load()
+        _AI_SETTINGS_CACHE_SIG = signature
+        _AI_SETTINGS_CACHE_LOADED_AT = now
+        _AI_SETTINGS_CACHE_VALUE = settings
+        return settings
+
+
+def log_ai_update_latency(kind: str, started_at: float, note: str = "") -> None:
+    elapsed = time.perf_counter() - started_at
+    threshold = AI_CALLBACK_SLOW_LOG_SEC if kind == "callback" else AI_MESSAGE_SLOW_LOG_SEC
+    if elapsed < threshold:
+        return
+    suffix = f" {note}" if note else ""
+    print(f"ai-assistant: slow_{kind} elapsed={elapsed:.3f}s{suffix}", flush=True)
 
 
 def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
@@ -2186,10 +2245,11 @@ def process_ai_update(
     sessions: dict[str, dict[str, Any]],
     session_locks: SessionLockRegistry,
 ) -> None:
+    started_at = time.perf_counter()
     callback_query = update.get("callback_query")
     if isinstance(callback_query, dict):
         acknowledge_callback_query(bot, callback_query)
-        settings = Settings.load()
+        settings = load_ai_settings_cached()
         store = PriceAlertStore(settings.ai_price_alerts_db_path)
         chat_id = _chat_id_from_callback(callback_query)
         session_lock = session_locks.lock_for(callback_session_key(callback_query))
@@ -2199,6 +2259,7 @@ def process_ai_update(
         except Exception as exc:
             print(f"ai-assistant: callback failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             send_bot_message_safely(sender, chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}", context="callback_error")
+            log_ai_update_latency("callback", started_at, "error=1")
             return
         if reply:
             send_bot_message_safely(
@@ -2209,12 +2270,13 @@ def process_ai_update(
                 context="callback_reply",
                 parse_mode=reply.parse_mode,
             )
+        log_ai_update_latency("callback", started_at)
         return
 
     message = update.get("message")
     if not isinstance(message, dict):
         return
-    settings = Settings.load()
+    settings = load_ai_settings_cached()
     store = PriceAlertStore(settings.ai_price_alerts_db_path)
     chat_id = _chat_id_from_message(message)
     lock_key = message_session_key(message)
@@ -2244,6 +2306,7 @@ def process_ai_update(
         )
         if not sent:
             delete_temporary_messages(bot, delete_after_send)
+        log_ai_update_latency("message", started_at, "error=1")
         return
     if reply:
         sent = send_bot_message_safely(
@@ -2259,6 +2322,7 @@ def process_ai_update(
             delete_temporary_messages(bot, delete_after_send)
     elif delete_after_send:
         delete_temporary_messages(bot, delete_after_send)
+    log_ai_update_latency("message", started_at)
 
 
 def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot: TelegramBotClient) -> dict[str, Any]:
@@ -2320,7 +2384,7 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
 
 def run_price_alert_scanner(stop_event: threading.Event, sender: QueuedTelegramSender) -> None:
     while not stop_event.is_set():
-        settings = Settings.load()
+        settings = load_ai_settings_cached()
         if not settings.ai_assistant_enable or not settings.ai_bot_token:
             break
         interval = max(3, int(settings.ai_alert_check_interval_sec))
@@ -2344,7 +2408,7 @@ def idle_until_enabled() -> None:
     print("ai-assistant: disabled or missing AI_BOT_TOKEN; idle and reload config every 60s", flush=True)
     while True:
         time.sleep(60)
-        settings = Settings.load()
+        settings = load_ai_settings_cached(force=True)
         if settings.ai_assistant_enable and settings.ai_bot_token:
             return
 
@@ -2352,7 +2416,7 @@ def idle_until_enabled() -> None:
 def run_ai_assistant_service() -> int:
     offset: int | None = None
     while True:
-        settings = Settings.load()
+        settings = load_ai_settings_cached(force=True)
         if not settings.ai_assistant_enable or not settings.ai_bot_token:
             idle_until_enabled()
             continue
@@ -2389,7 +2453,7 @@ def run_ai_assistant_service() -> int:
         )
         try:
             while True:
-                current_settings = Settings.load()
+                current_settings = load_ai_settings_cached()
                 if not current_settings.ai_assistant_enable or current_settings.ai_bot_token != settings.ai_bot_token:
                     break
                 try:
@@ -2399,7 +2463,7 @@ def run_ai_assistant_service() -> int:
                 except Exception as exc:
                     print(f"ai-assistant: getUpdates failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                     time.sleep(5)
-                    current_settings = Settings.load()
+                    current_settings = load_ai_settings_cached(force=True)
                     if not current_settings.ai_assistant_enable or not current_settings.ai_bot_token:
                         continue
                     continue

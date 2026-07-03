@@ -206,6 +206,30 @@ class PriceAlertStoreTests(unittest.TestCase):
             self.assertEqual(quote.pair, "1000000MOGUSDT")
             self.assertEqual(quote.symbol, "MOGUSDT")
 
+    def test_fetch_alert_market_quote_caches_exact_quote_briefly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            clear_alert_market_cache()
+            calls: list[str] = []
+
+            def fake_fetch(settings: Settings, exchange: str, market_type: str, pair: str, timeout: int) -> float | None:
+                calls.append(pair)
+                return 61234.5
+
+            try:
+                with patch("paopao_radar.price_alerts._fetch_alert_market_price", side_effect=fake_fetch):
+                    first = fetch_alert_market_quote(settings, "BTC", exchange="binance", market_type="futures", pair="BTCUSDT", cache_ttl_sec=30)
+                    second = fetch_alert_market_quote(settings, "BTC", exchange="binance", market_type="futures", pair="BTCUSDT", cache_ttl_sec=30)
+            finally:
+                clear_alert_market_cache()
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            assert first is not None and second is not None
+            self.assertEqual(first.price, 61234.5)
+            self.assertEqual(second.price, 61234.5)
+            self.assertEqual(calls, ["BTCUSDT"])
+
     def test_discover_alert_markets_fetches_concurrently_and_caches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))

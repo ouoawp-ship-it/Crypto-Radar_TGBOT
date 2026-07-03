@@ -14,6 +14,7 @@ from paopao_radar.ai_assistant import (
     TelegramBotClient,
     alert_created_text,
     build_chat_completion_payload,
+    clear_ai_settings_cache,
     coinglass_quote_url,
     extract_ai_reply_text,
     handle_callback_query,
@@ -27,6 +28,7 @@ from paopao_radar.ai_assistant import (
     price_text_from_quotes,
     price_reply,
     process_ai_update,
+    load_ai_settings_cached,
     telegram_plain_text,
 )
 from paopao_radar.config import Settings
@@ -34,6 +36,22 @@ from paopao_radar.price_alerts import AlertMarketQuote, PriceAlertStore
 
 
 class AiAssistantTests(unittest.TestCase):
+    def test_load_ai_settings_cached_reuses_value_until_env_signature_changes(self) -> None:
+        first = Settings(ai_bot_token="first")
+        second = Settings(ai_bot_token="second")
+        clear_ai_settings_cache()
+        try:
+            with patch("paopao_radar.ai_assistant._settings_loader_is_mocked", return_value=False):
+                with patch("paopao_radar.ai_assistant._env_file_signature", side_effect=[(1, 100), (1, 100), (2, 100)]):
+                    with patch("paopao_radar.ai_assistant.Settings.load", side_effect=[first, second]) as load:
+                        self.assertIs(load_ai_settings_cached(), first)
+                        self.assertIs(load_ai_settings_cached(), first)
+                        self.assertIs(load_ai_settings_cached(), second)
+
+            self.assertEqual(load.call_count, 2)
+        finally:
+            clear_ai_settings_cache()
+
     def test_telegram_plain_text_removes_common_markdown(self) -> None:
         cleaned = telegram_plain_text(
             "## 标题\n1. **解释运行状态**：查看 `runtime-status`\n[文档](https://example.com)\n\n\n"

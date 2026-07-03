@@ -24,6 +24,7 @@ VALID_MARKET_TYPES = {"spot", "futures"}
 ALERT_MARKET_EXCHANGES = ("binance", "bybit", "okx", "bitget", "gate")
 ALERT_MARKET_TYPES = ("spot", "futures")
 ALERT_MARKET_CACHE_TTL_SEC = 30
+ALERT_QUOTE_CACHE_TTL_SEC = 3
 ALERT_MARKET_WORKERS = 10
 FUTURES_CONTRACT_PREFIXES = ("1000", "10000", "1000000")
 TIMEFRAME_LABELS = {
@@ -56,6 +57,8 @@ MARKET_TYPE_LABELS = {
 
 _ALERT_MARKET_CACHE_LOCK = threading.Lock()
 _ALERT_MARKET_CACHE: dict[tuple[Any, ...], tuple[float, list["AlertMarketQuote"]]] = {}
+_ALERT_QUOTE_CACHE_LOCK = threading.Lock()
+_ALERT_QUOTE_CACHE: dict[tuple[Any, ...], tuple[float, AlertMarketQuote | None]] = {}
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,8 @@ class AlertMarketQuote:
 def clear_alert_market_cache() -> None:
     with _ALERT_MARKET_CACHE_LOCK:
         _ALERT_MARKET_CACHE.clear()
+    with _ALERT_QUOTE_CACHE_LOCK:
+        _ALERT_QUOTE_CACHE.clear()
 
 
 def normalize_symbol(value: str) -> str:
@@ -893,10 +898,18 @@ def fetch_alert_market_quote(
     exchange: str = "binance",
     market_type: str = "futures",
     pair: str | None = None,
+    cache_ttl_sec: int = ALERT_QUOTE_CACHE_TTL_SEC,
 ) -> AlertMarketQuote | None:
     normalized_symbol = normalize_symbol(symbol)
     normalized_exchange = normalize_exchange(exchange)
     normalized_market = normalize_market_type(market_type)
+    cache_key = _alert_quote_cache_key(settings, normalized_symbol, normalized_exchange, normalized_market, pair)
+    now = time.time()
+    if cache_ttl_sec > 0:
+        with _ALERT_QUOTE_CACHE_LOCK:
+            cached = _ALERT_QUOTE_CACHE.get(cache_key)
+            if cached and now - cached[0] <= cache_ttl_sec:
+                return cached[1]
     pair_candidates = alert_market_pair_candidates(normalized_symbol, normalized_exchange, normalized_market, pair)
     timeout = max(3, int(settings.http_timeout_sec))
     matched_pair = ""
@@ -913,14 +926,21 @@ def fetch_alert_market_quote(
             price = candidate_price
             break
     if not matched_pair or price is None or price <= 0:
+        if cache_ttl_sec > 0:
+            with _ALERT_QUOTE_CACHE_LOCK:
+                _ALERT_QUOTE_CACHE[cache_key] = (now, None)
         return None
-    return AlertMarketQuote(
+    quote = AlertMarketQuote(
         exchange=normalized_exchange,
         market_type=normalized_market,
         symbol=normalized_symbol,
         pair=matched_pair,
         price=price,
     )
+    if cache_ttl_sec > 0:
+        with _ALERT_QUOTE_CACHE_LOCK:
+            _ALERT_QUOTE_CACHE[cache_key] = (now, quote)
+    return quote
 
 
 def _fetch_alert_market_price(
@@ -1014,6 +1034,28 @@ def _fetch_alert_market_price(
 def _alert_market_cache_key(settings: Settings, symbol: str) -> tuple[Any, ...]:
     return (
         normalize_symbol(symbol),
+        settings.binance_spot_base_url.rstrip("/"),
+        settings.binance_fapi_base_url.rstrip("/"),
+        int(settings.http_timeout_sec),
+    )
+
+
+def _alert_quote_cache_key(
+    settings: Settings,
+    symbol: str,
+    exchange: str,
+    market_type: str,
+    pair: str | None,
+) -> tuple[Any, ...]:
+    normalized_symbol = normalize_symbol(symbol)
+    normalized_exchange = normalize_exchange(exchange)
+    normalized_market = normalize_market_type(market_type)
+    normalized_pair = normalize_pair(normalized_symbol, pair, normalized_exchange, normalized_market) if pair else ""
+    return (
+        normalized_symbol,
+        normalized_exchange,
+        normalized_market,
+        normalized_pair,
         settings.binance_spot_base_url.rstrip("/"),
         settings.binance_fapi_base_url.rstrip("/"),
         int(settings.http_timeout_sec),
