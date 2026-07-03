@@ -18,6 +18,8 @@ from .ai_prompts import load_ai_prompts
 from .config import Settings, normalize_ai_model
 from .data_sources import HTTP_HEADERS
 from .price_alerts import (
+    ALERT_MARKET_EXCHANGES,
+    ALERT_MARKET_TYPES,
     AlertMarketQuote,
     PriceAlert,
     PriceAlertStore,
@@ -953,6 +955,7 @@ COINGLASS_EXCHANGE_SLUGS = {
     "bitget": "Bitget",
     "gate": "Gate",
 }
+PRICE_TABLE_PRICE_HEADER = "价格"
 
 
 def coinglass_quote_url(quote: AlertMarketQuote) -> str:
@@ -991,10 +994,23 @@ def price_quote_display_price(quote: AlertMarketQuote) -> float:
     return quote.price / multiplier
 
 
+def sort_price_quotes(quotes: list[AlertMarketQuote]) -> list[AlertMarketQuote]:
+    exchange_order = {exchange: index for index, exchange in enumerate(ALERT_MARKET_EXCHANGES)}
+    market_order = {market_type: index for index, market_type in enumerate(ALERT_MARKET_TYPES)}
+    return sorted(
+        quotes,
+        key=lambda quote: (
+            market_order.get(quote.market_type, 99),
+            exchange_order.get(quote.exchange, 99),
+            quote.pair,
+        ),
+    )
+
+
 def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
     exchange_width = max([text_display_width("交易所"), *(text_display_width(quote.exchange_label) for quote in quotes)], default=text_display_width("交易所"))
     pair_width = max([text_display_width("交易对"), *(text_display_width(quote.pair) for quote in quotes)], default=text_display_width("交易对"))
-    price_width = max([text_display_width("单币价格"), *(text_display_width(format_price(price_quote_display_price(quote))) for quote in quotes)], default=text_display_width("单币价格"))
+    price_width = max([text_display_width(PRICE_TABLE_PRICE_HEADER), *(text_display_width(format_price(price_quote_display_price(quote))) for quote in quotes)], default=text_display_width(PRICE_TABLE_PRICE_HEADER))
     return exchange_width, pair_width, price_width
 
 
@@ -1006,14 +1022,15 @@ def price_quote_exchange_link(quote: AlertMarketQuote, *, bold: bool = False) ->
     return f'<a href="{url}">{label}</a>'
 
 
-def price_quote_table_block(quotes: list[AlertMarketQuote]) -> str:
-    exchange_width, pair_width, price_width = price_quote_widths(quotes)
+def price_quote_table_block(quotes: list[AlertMarketQuote], widths: tuple[int, int, int] | None = None) -> str:
+    sorted_quotes = sort_price_quotes(quotes)
+    exchange_width, pair_width, price_width = widths or price_quote_widths(sorted_quotes)
     rows = [
         f"{pad_display_right('交易所', exchange_width)}  "
         f"{pad_display_right('交易对', pair_width)}  "
-        f"{pad_display_left('单币价格', price_width)}"
+        f"{pad_display_left(PRICE_TABLE_PRICE_HEADER, price_width)}"
     ]
-    for quote in quotes:
+    for quote in sorted_quotes:
         rows.append(
             f"{pad_display_right(quote.exchange_label, exchange_width)}  "
             f"{pad_display_right(quote.pair, pair_width)}  "
@@ -1023,32 +1040,34 @@ def price_quote_table_block(quotes: list[AlertMarketQuote]) -> str:
 
 
 def price_quote_links_line(quotes: list[AlertMarketQuote]) -> str:
-    links = [price_quote_exchange_link(quote, bold=True) for quote in quotes]
+    links = [price_quote_exchange_link(quote, bold=True) for quote in sort_price_quotes(quotes)]
     return f"K线：{' / '.join(links)}" if links else ""
 
 
 def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
     if not quotes:
         return f"没有从 Binance、Bybit、OKX、Bitget、Gate 里读到 {symbol} 的现货或合约价格。"
-    futures = [quote for quote in quotes if quote.market_type == "futures"]
-    spot = [quote for quote in quotes if quote.market_type == "spot"]
+    sorted_quotes = sort_price_quotes(quotes)
+    widths = price_quote_widths(sorted_quotes)
+    futures = [quote for quote in sorted_quotes if quote.market_type == "futures"]
+    spot = [quote for quote in sorted_quotes if quote.market_type == "spot"]
     lines = [f"{symbol} 多交易所价格", ""]
     if futures:
         lines.append("合约：")
-        lines.append(price_quote_table_block(futures))
+        lines.append(price_quote_table_block(futures, widths))
         links = price_quote_links_line(futures)
         if links:
             lines.append(links)
         lines.append("")
     if spot:
         lines.append("现货：")
-        lines.append(price_quote_table_block(spot))
+        lines.append(price_quote_table_block(spot, widths))
         links = price_quote_links_line(spot)
         if links:
             lines.append(links)
         lines.append("")
-    if any(price_quote_multiplier(quote) > 1 for quote in quotes):
-        lines.append("说明：1000/10000/1000000 合约已折算为单币价格，交易对仍保留交易所原始名称。")
+    if any(price_quote_multiplier(quote) > 1 for quote in sorted_quotes):
+        lines.append("说明：价格列已折算为单币价格；1000/10000/1000000 合约交易对仍保留交易所原始名称。")
         lines.append("")
     lines.extend([
         "可继续发送：",

@@ -22,6 +22,7 @@ from paopao_radar.ai_assistant import (
     parse_alert_request,
     price_quote_links_line,
     price_quote_table_block,
+    price_text_from_quotes,
     price_reply,
     process_ai_update,
     telegram_plain_text,
@@ -81,7 +82,7 @@ class AiAssistantTests(unittest.TestCase):
         ])
 
         self.assertIn("<pre>", rows)
-        self.assertIn("交易所   交易对           单币价格", rows)
+        self.assertIn("交易所   交易对               价格", rows)
         self.assertIn("Binance  BTCUSDT        $62,178.20", rows)
         self.assertIn("OKX      BTC-USDT-SWAP  $62,181.00", rows)
         self.assertNotIn("<a href=", rows)
@@ -92,10 +93,24 @@ class AiAssistantTests(unittest.TestCase):
             AlertMarketQuote(exchange="gate", market_type="futures", symbol="MOGUSDT", pair="MOG_USDT", price=0.00000012),
         ])
 
-        self.assertIn("单币价格", rows)
+        self.assertIn("价格", rows)
         self.assertIn("Binance  1000000MOGUSDT  $0.0000001176", rows)
         self.assertIn("Gate     MOG_USDT          $0.00000012", rows)
         self.assertNotIn("$0.1176", rows)
+
+    def test_price_text_from_quotes_uses_shared_widths_and_exchange_order(self) -> None:
+        text = price_text_from_quotes("MOGUSDT", [
+            AlertMarketQuote(exchange="gate", market_type="spot", symbol="MOGUSDT", pair="MOG_USDT", price=0.0000001185),
+            AlertMarketQuote(exchange="bybit", market_type="futures", symbol="MOGUSDT", pair="1000000MOGUSDT", price=0.11834),
+            AlertMarketQuote(exchange="binance", market_type="futures", symbol="MOGUSDT", pair="1000000MOGUSDT", price=0.1184),
+            AlertMarketQuote(exchange="bybit", market_type="spot", symbol="MOGUSDT", pair="MOGUSDT", price=0.000000118),
+        ])
+
+        self.assertIn("Binance  1000000MOGUSDT   $0.0000001184", text)
+        self.assertIn("Bybit    1000000MOGUSDT  $0.00000011834", text)
+        self.assertIn("Bybit    MOGUSDT           $0.000000118", text)
+        self.assertIn("Gate     MOG_USDT         $0.0000001185", text)
+        self.assertLess(text.index("Binance  1000000MOGUSDT"), text.index("Bybit    1000000MOGUSDT"))
 
     def test_price_quote_links_line_keeps_links_outside_aligned_table(self) -> None:
         links = price_quote_links_line([
