@@ -973,9 +973,9 @@ def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
 def price_quote_link_rows(quotes: list[AlertMarketQuote]) -> str:
     exchange_width, pair_width, price_width = price_quote_widths(quotes)
     lines = [
-        f"<code>{html.escape('交易所'.ljust(exchange_width))}</code> "
-        f"<code>{html.escape('交易对'.ljust(pair_width))}</code> "
-        f"<code>{html.escape('价格'.rjust(price_width))}</code>"
+        f"<b>交易所</b><code>{html.escape(' ' * max(0, exchange_width - len('交易所')))}</code> "
+        f"<b>交易对</b><code>{html.escape(' ' * max(0, pair_width - len('交易对')))}</code> "
+        f"<b>价格</b>"
     ]
     for quote in quotes:
         exchange = html.escape(quote.exchange_label)

@@ -9,9 +9,11 @@ from unittest.mock import patch
 from paopao_radar.price_alerts import (
     AlertMarketQuote,
     PriceAlertStore,
+    alert_market_pair_candidates,
     alert_to_dict,
     clear_alert_market_cache,
     discover_alert_markets,
+    fetch_alert_market_quote,
     fetch_price_alert_prices,
     format_price,
     normalize_symbol,
@@ -142,6 +144,42 @@ class PriceAlertStoreTests(unittest.TestCase):
             self.assertEqual(prices, {"bybit:futures:BTCUSDT": 61234.5})
             hits = triggered_alerts([alert], prices)
             self.assertEqual([(item.exchange, item.market_type, price) for item, price in hits], [("bybit", "futures", 61234.5)])
+
+    def test_futures_pair_candidates_include_1000_prefix_for_binance_bybit(self) -> None:
+        self.assertEqual(
+            alert_market_pair_candidates("PEPE", exchange="binance", market_type="futures"),
+            ["PEPEUSDT", "1000PEPEUSDT"],
+        )
+        self.assertEqual(
+            alert_market_pair_candidates("PEPE", exchange="bybit", market_type="futures"),
+            ["PEPEUSDT", "1000PEPEUSDT"],
+        )
+        self.assertEqual(
+            alert_market_pair_candidates("PEPE", exchange="okx", market_type="futures"),
+            ["PEPE-USDT-SWAP"],
+        )
+        self.assertEqual(
+            alert_market_pair_candidates("PEPE", exchange="binance", market_type="spot"),
+            ["PEPEUSDT"],
+        )
+
+    def test_fetch_alert_market_quote_falls_back_to_1000_futures_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            requested_pairs: list[str] = []
+
+            def fake_fetch(settings: Settings, exchange: str, market_type: str, pair: str, timeout: int) -> float | None:
+                requested_pairs.append(pair)
+                return 0.00256 if pair == "1000PEPEUSDT" else None
+
+            with patch("paopao_radar.price_alerts._fetch_alert_market_price", side_effect=fake_fetch):
+                quote = fetch_alert_market_quote(settings, "PEPE", exchange="binance", market_type="futures")
+
+            self.assertEqual(requested_pairs, ["PEPEUSDT", "1000PEPEUSDT"])
+            self.assertIsNotNone(quote)
+            assert quote is not None
+            self.assertEqual(quote.pair, "1000PEPEUSDT")
+            self.assertEqual(quote.symbol, "PEPEUSDT")
 
     def test_discover_alert_markets_fetches_concurrently_and_caches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -341,6 +341,22 @@ def normalize_pair(symbol: str, pair: str | None, exchange: str = "binance", mar
     return re.sub(r"[^A-Z0-9]", "", clean)
 
 
+def alert_market_pair_candidates(symbol: str, exchange: str = "binance", market_type: str = "futures", pair: str | None = None) -> list[str]:
+    normalized_symbol = normalize_symbol(symbol)
+    normalized_exchange = normalize_exchange(exchange)
+    normalized_market = normalize_market_type(market_type)
+    primary = normalize_pair(normalized_symbol, pair, normalized_exchange, normalized_market)
+    candidates = [primary]
+    if pair:
+        return candidates
+    if normalized_market == "futures" and normalized_exchange in {"binance", "bybit"}:
+        base = base_symbol(normalized_symbol)
+        prefixed = f"1000{base}USDT"
+        if prefixed != primary:
+            candidates.append(prefixed)
+    return candidates
+
+
 def price_key(exchange: str, market_type: str, pair: str) -> str:
     return f"{normalize_exchange(exchange)}:{normalize_market_type(market_type)}:{str(pair or '').upper()}"
 
@@ -862,21 +878,28 @@ def fetch_alert_market_quote(
     normalized_symbol = normalize_symbol(symbol)
     normalized_exchange = normalize_exchange(exchange)
     normalized_market = normalize_market_type(market_type)
-    normalized_pair = normalize_pair(normalized_symbol, pair, normalized_exchange, normalized_market)
+    pair_candidates = alert_market_pair_candidates(normalized_symbol, normalized_exchange, normalized_market, pair)
     timeout = max(3, int(settings.http_timeout_sec))
-    try:
-        price = _fetch_alert_market_price(settings, normalized_exchange, normalized_market, normalized_pair, timeout)
-    except requests.RequestException:
-        return None
-    except (TypeError, ValueError, KeyError):
-        return None
-    if price is None or price <= 0:
+    matched_pair = ""
+    price: float | None = None
+    for candidate_pair in pair_candidates:
+        try:
+            candidate_price = _fetch_alert_market_price(settings, normalized_exchange, normalized_market, candidate_pair, timeout)
+        except requests.RequestException:
+            continue
+        except (TypeError, ValueError, KeyError):
+            continue
+        if candidate_price is not None and candidate_price > 0:
+            matched_pair = candidate_pair
+            price = candidate_price
+            break
+    if not matched_pair or price is None or price <= 0:
         return None
     return AlertMarketQuote(
         exchange=normalized_exchange,
         market_type=normalized_market,
         symbol=normalized_symbol,
-        pair=normalized_pair,
+        pair=matched_pair,
         price=price,
     )
 

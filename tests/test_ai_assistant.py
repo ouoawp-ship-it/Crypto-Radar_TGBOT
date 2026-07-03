@@ -78,7 +78,7 @@ class AiAssistantTests(unittest.TestCase):
             AlertMarketQuote(exchange="okx", market_type="futures", symbol="BTCUSDT", pair="BTC-USDT-SWAP", price=62181),
         ])
 
-        self.assertIn("<code>交易所    </code> <code>交易对          </code> <code>        价格</code>", rows)
+        self.assertIn("<b>交易所</b><code>    </code> <b>交易对</b><code>          </code> <b>价格</b>", rows)
         self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a><code></code> <code>BTCUSDT      </code> <code>$62,178.20</code>', rows)
         self.assertIn('<a href="https://www.coinglass.com/tv/zh/OKX_BTC-USDT-SWAP"><b>OKX</b></a><code>    </code> <code>BTC-USDT-SWAP</code> <code>$62,181.00</code>', rows)
 
@@ -856,7 +856,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("BTCUSDT 多交易所价格", reply or "")
             self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
-            self.assertIn("<code>交易所", reply or "")
+            self.assertIn("<b>交易所</b>", reply or "")
             self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
             self.assertIn("<code>BTCUSDT</code>", reply or "")
 
