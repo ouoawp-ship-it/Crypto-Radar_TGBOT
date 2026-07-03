@@ -20,6 +20,7 @@ from paopao_radar.ai_assistant import (
     infer_telegram_parse_mode,
     is_alert_intent,
     parse_alert_request,
+    price_quote_links_line,
     price_quote_table_block,
     price_reply,
     process_ai_update,
@@ -73,17 +74,17 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', payload["text"])
         self.assertEqual(infer_telegram_parse_mode(text), "HTML")
 
-    def test_price_quote_table_block_aligns_pair_and_price_columns(self) -> None:
+    def test_price_quote_table_block_aligns_all_columns_in_pre_block(self) -> None:
         rows = price_quote_table_block([
             AlertMarketQuote(exchange="binance", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=62178.2),
             AlertMarketQuote(exchange="okx", market_type="futures", symbol="BTCUSDT", pair="BTC-USDT-SWAP", price=62181),
         ])
 
-        self.assertNotIn("<pre>", rows)
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', rows)
-        self.assertIn("<code>交易对           单币价格</code>", rows)
-        self.assertIn("<code>BTCUSDT        $62,178.20</code>", rows)
-        self.assertIn("<code>BTC-USDT-SWAP  $62,181.00</code>", rows)
+        self.assertIn("<pre>", rows)
+        self.assertIn("交易所   交易对           单币价格", rows)
+        self.assertIn("Binance  BTCUSDT        $62,178.20", rows)
+        self.assertIn("OKX      BTC-USDT-SWAP  $62,181.00", rows)
+        self.assertNotIn("<a href=", rows)
 
     def test_price_quote_table_block_normalizes_prefixed_contract_price(self) -> None:
         rows = price_quote_table_block([
@@ -92,11 +93,18 @@ class AiAssistantTests(unittest.TestCase):
         ])
 
         self.assertIn("单币价格", rows)
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_1000000MOGUSDT"><b>Binance</b></a>', rows)
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Gate_MOG_USDT"><b>Gate</b></a>', rows)
-        self.assertIn("<code>1000000MOGUSDT  $0.0000001176</code>", rows)
-        self.assertIn("<code>MOG_USDT          $0.00000012</code>", rows)
+        self.assertIn("Binance  1000000MOGUSDT  $0.0000001176", rows)
+        self.assertIn("Gate     MOG_USDT          $0.00000012", rows)
         self.assertNotIn("$0.1176", rows)
+
+    def test_price_quote_links_line_keeps_links_outside_aligned_table(self) -> None:
+        links = price_quote_links_line([
+            AlertMarketQuote(exchange="binance", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=62178.2),
+            AlertMarketQuote(exchange="okx", market_type="futures", symbol="BTCUSDT", pair="BTC-USDT-SWAP", price=62181),
+        ])
+
+        self.assertIn('K线：<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', links)
+        self.assertIn('<a href="https://www.coinglass.com/tv/zh/OKX_BTC-USDT-SWAP"><b>OKX</b></a>', links)
 
     def test_coinglass_quote_url_keeps_exchange_pair_format(self) -> None:
         self.assertEqual(
@@ -121,7 +129,8 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertEqual(reply.parse_mode, "HTML")
         self.assertIsNone(reply.reply_markup)
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply.text)
+        self.assertIn("<pre>", reply.text)
+        self.assertIn('K线：<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply.text)
         self.assertNotIn("[Binance]", reply.text)
 
     def test_process_ai_update_sends_processing_notice_before_slow_reply(self) -> None:
@@ -890,10 +899,10 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("BTCUSDT 多交易所价格", reply or "")
             self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
-            self.assertNotIn("<pre>", reply or "")
+            self.assertIn("<pre>", reply or "")
             self.assertIn("交易所", reply or "")
-            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
-            self.assertIn("<code>BTCUSDT  $61,234.50</code>", reply or "")
+            self.assertIn("Binance  BTCUSDT  $61,234.50", reply or "")
+            self.assertIn('K线：<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
 
     def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

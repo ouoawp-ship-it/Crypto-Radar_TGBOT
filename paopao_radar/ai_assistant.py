@@ -998,28 +998,33 @@ def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
     return exchange_width, pair_width, price_width
 
 
-def price_quote_exchange_link(quote: AlertMarketQuote) -> str:
+def price_quote_exchange_link(quote: AlertMarketQuote, *, bold: bool = False) -> str:
     url = html.escape(coinglass_quote_url(quote), quote=True)
     label = html.escape(quote.exchange_label)
-    return f'<a href="{url}"><b>{label}</b></a>'
+    if bold:
+        label = f"<b>{label}</b>"
+    return f'<a href="{url}">{label}</a>'
 
 
 def price_quote_table_block(quotes: list[AlertMarketQuote]) -> str:
     exchange_width, pair_width, price_width = price_quote_widths(quotes)
-    header_exchange_pad = " " * max(0, exchange_width - text_display_width("交易所"))
-    header_tail = f"{pad_display_right('交易对', pair_width)}  {pad_display_left('单币价格', price_width)}"
     rows = [
-        f"<b>交易所</b>{header_exchange_pad}  "
-        f"<code>{html.escape(header_tail)}</code>"
+        f"{pad_display_right('交易所', exchange_width)}  "
+        f"{pad_display_right('交易对', pair_width)}  "
+        f"{pad_display_left('单币价格', price_width)}"
     ]
     for quote in quotes:
-        exchange_pad = " " * max(0, exchange_width - text_display_width(quote.exchange_label))
-        value_tail = f"{pad_display_right(quote.pair, pair_width)}  {pad_display_left(format_price(price_quote_display_price(quote)), price_width)}"
         rows.append(
-            f"{price_quote_exchange_link(quote)}{exchange_pad}  "
-            f"<code>{html.escape(value_tail)}</code>"
+            f"{pad_display_right(quote.exchange_label, exchange_width)}  "
+            f"{pad_display_right(quote.pair, pair_width)}  "
+            f"{pad_display_left(format_price(price_quote_display_price(quote)), price_width)}"
         )
-    return "\n".join(rows)
+    return f"<pre>{html.escape(chr(10).join(rows))}</pre>"
+
+
+def price_quote_links_line(quotes: list[AlertMarketQuote]) -> str:
+    links = [price_quote_exchange_link(quote, bold=True) for quote in quotes]
+    return f"K线：{' / '.join(links)}" if links else ""
 
 
 def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
@@ -1031,10 +1036,16 @@ def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
     if futures:
         lines.append("合约：")
         lines.append(price_quote_table_block(futures))
+        links = price_quote_links_line(futures)
+        if links:
+            lines.append(links)
         lines.append("")
     if spot:
         lines.append("现货：")
         lines.append(price_quote_table_block(spot))
+        links = price_quote_links_line(spot)
+        if links:
+            lines.append(links)
         lines.append("")
     if any(price_quote_multiplier(quote) > 1 for quote in quotes):
         lines.append("说明：1000/10000/1000000 合约已折算为单币价格，交易对仍保留交易所原始名称。")
@@ -1043,8 +1054,6 @@ def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
         "可继续发送：",
         f"{symbol.replace('USDT', '')} 怎么看",
         "或点击首页“设置价格提醒”。",
-        "",
-        "点击交易所名称可打开对应 CoinGlass K线。",
     ])
     return "\n".join(lines).strip()
 
