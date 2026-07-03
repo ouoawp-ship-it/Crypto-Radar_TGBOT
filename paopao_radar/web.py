@@ -1782,7 +1782,7 @@ INDEX_HTML = r"""<!doctype html>
         name: "AI 问答接口",
         status: "可选",
         keyText: "可填写 AI_API_KEY、AI_BASE_URL、AI_MODEL，并开启 AI_PROVIDER_ENABLE",
-        usage: "负责 AI 助手 Bot 的 /ai 问答、运行状态解释和提醒说明；价格提醒本身不依赖 AI Key。",
+        usage: "负责 AI 助手 Bot 的自然语言问答、运行状态解释和提醒说明；价格提醒本身不依赖 AI Key。",
         supports: ["AI 私聊问答", "运行状态解释", "价格提醒说明", "后续策略助手扩展"],
         note: "AI_BOT_TOKEN 是 Telegram 机器人令牌；AI_API_KEY 是模型接口令牌，二者不是同一个配置。"
       },
@@ -2766,13 +2766,13 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-12">
           <h3 class="section-title">怎么用</h3>
           <div class="feature-list">
-            <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 会出现中文按钮首页；首页只保留设置价格提醒、我的提醒、查询价格和完整帮助。AI 对话不需要按钮，直接发消息即可自动分流。</span></div>
-            <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、查 BTC、GWEI 怎么看，也可以问生活和功能问题。自然语言不会直接创建价格提醒。</span></div>
+            <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 会出现中文按钮首页；首页只保留设置价格提醒、我的提醒、查询价格和使用说明。AI 对话不需要按钮，直接发消息即可自动分流。</span></div>
+            <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC、BTC 现在多少钱、查 BTC、GWEI 怎么看，也可以问生活和功能问题。自然语言不会直接创建价格提醒。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
             <div class="feature-item"><strong>手动提醒</strong><span class="muted">价格提醒不再靠自然语言猜，私聊里点“设置价格提醒”，输入币种后手动选择现货/合约和 Binance、Bybit、OKX、Bitget、Gate 的价格源，最后确认添加。</span></div>
             <div class="feature-item"><strong>自动分析</strong><span class="muted">直接粘贴启动雷达、结构雷达、资金流、OI、CVD、成交量等数据，会自动走专业分析师提示词。</span></div>
             <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
-            <div class="feature-item"><strong>备用命令</strong><span class="muted">/price、/alerts、/pause、/resume、/delete、/ai、/analyze 仍然保留，方便查询和排查；创建提醒请走按钮流程。</span></div>
+            <div class="feature-item"><strong>去命令化</strong><span class="muted">AI Bot 只保留 /start 打开首页；查价格、看行情、AI 分析都直接发消息，提醒管理在“我的提醒”按钮里完成。</span></div>
           </div>
         </div>
         <div class="panel span-12">
@@ -2802,7 +2802,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("promptGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>AI 提示词会直接影响机器人回答风格。</strong>
-          泡泡 AI 助手用于日常问答、生活问题、状态解释和提醒说明；专业分析师用于 /analyze、分析这段、帮我分析，以及自动识别出的雷达/市场数据。
+          泡泡 AI 助手用于日常问答、生活问题、状态解释和提醒说明；专业分析师用于“分析这段”“帮我分析”，以及自动识别出的雷达/市场数据。
           保存或恢复默认后会自动重启 AI 助手服务。
         </div>
         <div class="panel span-6">
@@ -2812,7 +2812,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="panel span-6">
           <h3 class="section-title">专业分析师提示词</h3>
-          <div class="hint">用于 /analyze、“分析这段”，以及自动识别出的雷达信号、资金流、OI、市值、流动性和链上/交易所数据。</div>
+          <div class="hint">用于“分析这段”“帮我分析”，以及自动识别出的雷达信号、资金流、OI、市值、流动性和链上/交易所数据。</div>
           <textarea id="analystPrompt">${escapeHtml(prompts.analyst_prompt || "")}</textarea>
         </div>
         <div class="panel span-12">

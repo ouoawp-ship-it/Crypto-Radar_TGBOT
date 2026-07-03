@@ -343,9 +343,9 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIsNotNone(reply)
         assert reply is not None
         self.assertIn("泡泡 AI 助手", reply)
-        self.assertIn("专业行情分析", reply)
+        self.assertIn("看行情", reply)
         self.assertIn("设置价格提醒", reply)
-        self.assertIn("自然语言不再创建提醒", reply)
+        self.assertIn("按钮确认", reply)
 
     def test_handle_message_reply_start_has_home_buttons(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -379,6 +379,7 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn("menu:price_query", flat)
         self.assertIn("menu:alerts", flat)
         self.assertIn("menu:help", flat)
+        self.assertIn("使用说明", labels)
         self.assertNotIn("menu:assistant", flat)
         self.assertNotIn("泡泡 AI 助手", labels)
         self.assertNotIn("menu:analysis", flat)
@@ -405,8 +406,8 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         assert reply is not None
-        self.assertIn("命令当前不支持", reply.text)
-        self.assertIsNone(reply.reply_markup)
+        self.assertIn("只保留 /start", reply.text)
+        self.assertIsNotNone(reply.reply_markup)
 
     def test_button_alert_setup_flow_requires_final_confirm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -561,7 +562,42 @@ class AiAssistantTests(unittest.TestCase):
             assert reply is not None
             self.assertIn("你的价格提醒", reply.text)
             flat = [button for row in reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
+            self.assertIn({"text": f"暂停{created.id}", "callback_data": f"alert:pause:{created.id}"}, flat)
             self.assertIn({"text": f"删除{created.id}", "callback_data": f"alert:delete:{created.id}"}, flat)
+
+            pause_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": f"alert:pause:{created.id}",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions={},
+            )
+
+            self.assertIsNotNone(pause_reply)
+            assert pause_reply is not None
+            self.assertIn(f"提醒 {created.id} 已暂停", pause_reply.text)
+            self.assertEqual(store.list_alerts(user_id="42")[0].status, "paused")
+            pause_flat = [button for row in pause_reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
+            self.assertIn({"text": f"恢复{created.id}", "callback_data": f"alert:resume:{created.id}"}, pause_flat)
+
+            resume_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": f"alert:resume:{created.id}",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions={},
+            )
+
+            self.assertIsNotNone(resume_reply)
+            assert resume_reply is not None
+            self.assertIn(f"提醒 {created.id} 已恢复", resume_reply.text)
+            self.assertEqual(store.list_alerts(user_id="42")[0].status, "active")
 
             delete_reply = handle_callback_query(
                 settings,
@@ -601,7 +637,7 @@ class AiAssistantTests(unittest.TestCase):
                 sessions={},
             )
 
-            self.assertIn("价格提醒已经改成手动选择模式", reply.text if reply else "")
+            self.assertIn("手动选择交易所", reply.text if reply else "")
             self.assertEqual(store.stats()["total"], 0)
             markup = reply.reply_markup if reply else {}
             flat = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
@@ -631,7 +667,7 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         assert reply is not None
-        self.assertIn("命令当前不支持", reply.text)
+        self.assertIn("只保留 /start", reply.text)
         self.assertNotIn("你的用户 ID", reply.text)
         self.assertNotIn("当前聊天 ID", reply.text)
 
@@ -678,7 +714,7 @@ class AiAssistantTests(unittest.TestCase):
             reply = handle_message(settings, store, message)
 
             self.assertIsNotNone(reply)
-            self.assertIn("手动选择模式", reply or "")
+            self.assertIn("手动选择交易所", reply or "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 0)
 
@@ -793,11 +829,11 @@ class AiAssistantTests(unittest.TestCase):
                 reply = handle_message(settings, store, message)
 
             post.assert_not_called()
-            self.assertIn("你是想设置 BTCUSDT", reply or "")
-            self.assertIn("提醒我", reply or "")
+            self.assertIn("设置价格提醒", reply or "")
+            self.assertIn("帮我分析这段", reply or "")
             self.assertEqual(store.stats()["total"], 0)
 
-    def test_analyze_command_uses_analyst_prompt_without_creating_alert(self) -> None:
+    def test_analysis_intent_uses_analyst_prompt_without_creating_alert(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             prompt_path = Path(tmp) / "ai_prompts.json"
@@ -819,7 +855,7 @@ class AiAssistantTests(unittest.TestCase):
             )
             store = PriceAlertStore(db_path)
             message = {
-                "text": "/analyze BTC 跌破 58000 提醒我",
+                "text": "分析这段：BTC 跌破 58000 提醒我",
                 "from": {"id": 42, "username": "tester"},
                 "chat": {"id": 42, "type": "private"},
             }
@@ -856,7 +892,7 @@ class AiAssistantTests(unittest.TestCase):
             )
             store = PriceAlertStore(db_path)
             message = {
-                "text": "/analyze BTC 资金费率 -2%/1H",
+                "text": "分析这段：BTC 资金费率 -2%/1H",
                 "from": {"id": 42, "username": "tester"},
                 "chat": {"id": 42, "type": "private"},
             }
@@ -895,7 +931,7 @@ class AiAssistantTests(unittest.TestCase):
             )
             store = PriceAlertStore(db_path)
             message = {
-                "text": "/ai 测试",
+                "text": "测试 AI 接口",
                 "from": {"id": 42, "username": "tester"},
                 "chat": {"id": 42, "type": "private"},
             }
@@ -928,7 +964,7 @@ class AiAssistantTests(unittest.TestCase):
             )
             store = PriceAlertStore(db_path)
             message = {
-                "text": "/ai 测试",
+                "text": "测试 AI 接口",
                 "from": {"id": 42, "username": "tester"},
                 "chat": {"id": 42, "type": "private"},
             }
@@ -962,7 +998,7 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message)
 
-            self.assertIn("手动选择模式", reply or "")
+            self.assertIn("手动选择交易所", reply or "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 0)
 
@@ -995,7 +1031,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("Binance  BTCUSDT  $61,234.50", reply or "")
             self.assertIn('K线：<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
 
-    def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
+    def test_slash_ai_command_no_longer_routes_to_ai_or_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -1015,18 +1051,15 @@ class AiAssistantTests(unittest.TestCase):
                 "from": {"id": 42, "username": "tester"},
                 "chat": {"id": 42, "type": "private"},
             }
-            response = Mock()
-            response.json.return_value = {"choices": [{"message": {"content": "AI 问答结果"}}]}
-
             with patch("paopao_radar.ai_assistant.fetch_binance_prices") as prices:
-                with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
+                with patch("paopao_radar.ai_assistant.requests.post") as post:
                     reply = handle_message(settings, store, message)
 
-            self.assertEqual(reply, "AI 问答结果")
+            self.assertIn("只保留 /start", reply or "")
             prices.assert_not_called()
-            self.assertIn("用户问题：BTC 现在多少钱", post.call_args.kwargs["json"]["messages"][1]["content"])
+            post.assert_not_called()
 
-    def test_natural_language_alert_list_pause_resume_delete(self) -> None:
+    def test_natural_language_no_longer_mutates_alerts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -1055,13 +1088,11 @@ class AiAssistantTests(unittest.TestCase):
                     {"text": text, "from": {"id": 42, "username": "tester"}, "chat": {"id": 42, "type": "private"}},
                 )
 
-            self.assertIn("BTCUSDT", reply_for("我的提醒有哪些") or "")
-            self.assertIn("已暂停", reply_for(f"暂停提醒 {created.id}") or "")
-            self.assertEqual(store.list_alerts(user_id="42")[0].status, "paused")
-            self.assertIn("已恢复", reply_for(f"恢复提醒 {created.id}") or "")
+            self.assertIn("我的提醒", reply_for("我的提醒有哪些") or "")
+            self.assertNotIn("已暂停", reply_for(f"暂停提醒 {created.id}") or "")
             self.assertEqual(store.list_alerts(user_id="42")[0].status, "active")
-            self.assertIn("已删除", reply_for(f"删除提醒 {created.id}") or "")
-            self.assertEqual(store.stats()["total"], 0)
+            self.assertNotIn("已删除", reply_for(f"删除提醒 {created.id}") or "")
+            self.assertEqual(store.stats()["total"], 1)
 
     def test_alert_command_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1082,7 +1113,7 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message)
 
-            self.assertIn("手动选择模式", reply or "")
+            self.assertIn("只保留 /start", reply or "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 0)
 
@@ -1131,7 +1162,7 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
 
-            self.assertIn("手动选择模式", reply or "")
+            self.assertIn("手动选择交易所", reply or "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 0)
 
@@ -1180,7 +1211,7 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
 
-            self.assertIn("当前没有价格提醒", reply or "")
+            self.assertIn("只保留 /start", reply or "")
 
     def test_group_reply_to_bot_message_is_handled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1204,7 +1235,7 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
 
-            self.assertIn("当前没有价格提醒", reply or "")
+            self.assertIn("只保留 /start", reply or "")
 
     def test_group_command_with_bot_suffix_is_handled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1227,7 +1258,7 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
 
-            self.assertIn("当前没有价格提醒", reply or "")
+            self.assertIn("只保留 /start", reply or "")
 
     def test_handle_message_rejects_unlisted_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

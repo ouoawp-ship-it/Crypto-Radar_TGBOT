@@ -38,7 +38,6 @@ from .price_alerts import (
 )
 from .symbol_dossier import (
     build_symbol_dossier,
-    extract_symbol_from_query,
     format_symbol_dossier_ai_context,
     format_symbol_dossier_report,
     is_symbol_dossier_request,
@@ -52,136 +51,48 @@ HOME_TEXT = """泡泡 AI 助手 Bot
 
 这是泡泡雷达的独立 AI 助手，和群里自动推送雷达信号的 Bot 分开。
 
-它现在是统一入口：你直接问，它自动判断该怎么处理。
+现在只保留一个命令：/start。其它功能都直接发消息或点按钮完成。
 
-1. 泡泡 AI 助手
-可以问生活问题、功能用法、运行状态、雷达信号术语。
-回答风格会轻松一点，但不会瞎吹。
+1. 查价格
+直接发送 BTC、ETH、PEPE，或发送“BTC 现在多少钱”。
 
-2. 专业行情分析
-你发“查 BTC”“GWEI 怎么看”“分析这段：粘贴雷达信号或市场数据”，会自动走专业分析师模式。
-我会结合历史信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率做解读。
+2. 看行情
+直接发送“BTC 怎么看”，或粘贴雷达信号、资金费率、市场数据。
+交易问题会自动走专业分析师模式。
 
 3. 价格提醒
 点击“设置价格提醒”，选择目标价、价格急涨急跌、持仓量变化或资金费率变化。
 创建前会让你确认，确认后才会保存。
 
-注意：自然语言不再创建提醒。只转发带价格的雷达信号，不会自动创建提醒。
+4. 管理提醒
+点击“我的提醒”，可以查看、暂停、恢复、删除。
+
+注意：价格提醒必须走按钮确认，自然语言不会直接创建提醒。
 """
 
-HELP_TEXT = """泡泡 AI 助手 Bot 完整帮助
+HELP_TEXT = """泡泡 AI 助手使用说明
 
-这个 Bot 和群里自动推送雷达信号的 Bot 是分开的。
-现在是统一 AI 助手入口：普通问题轻松答，交易问题自动走专业分析，价格提醒走手动按钮流程。
+这个 Bot 不是命令型机器人。
+除了 /start 打开首页，其它功能都靠“直接发消息 + 按钮确认”。
 
-1. 泡泡 AI 助手
-可以直接问：
-最近雷达状态正常吗
-这个启动信号是什么意思
-资金费率极负代表什么
-今天我应该先处理什么
-帮我把这段话说得直白点
+1. 查价格
+直接发送：BTC、ETH、PEPE
+我会返回五大交易所现货/合约价格。
 
-2. 专业行情分析
-可以直接发：
-查 BTC
-GWEI 怎么看
-SOL 可以做多吗
-分析这段：粘贴启动雷达、结构雷达、资金流、资金费率或市场数据
+2. 看行情
+直接发送：BTC 怎么看、SOL 可以做多吗
+也可以粘贴启动雷达、结构雷达、资金流、资金费率或市场数据。
 
 我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率，给出偏多 / 偏空 / 观望 / 高风险观望。
 
 3. 价格提醒
-点击首页“设置价格提醒”
-输入币种
-选择现货/合约
-选择交易所
-输入目标价
-确认添加
-
-注意：自然语言不再创建提醒。你说“BTC 跌破 58000 提醒我”时，我会提示你去按钮流程手动选择价格源。
+点击首页“设置价格提醒”，按步骤选择：
+币种 -> 现货/合约 -> 交易所 -> 条件 -> 确认。
 
 4. 管理提醒
-我的提醒有哪些
-暂停提醒 12
-恢复提醒 12
-删除提醒 12
+点击首页“我的提醒”，可以查看、暂停、恢复、删除。
 
-备用命令：
-/coin BTC
-/price BTC
-/analyze 粘贴雷达信号或市场数据
-/alerts
-/pause 12
-/resume 12
-/delete 12
-/ai 你的问题
-"""
-
-PRICE_HELP_TEXT = """价格提醒说明
-
-当前泡泡 AI 助手的价格提醒是手动选择模式，不靠 AI 猜。
-
-按钮模式：
-1. 点击“设置价格提醒”
-2. 选择监控类型：目标价、价格急涨急跌、持仓量变化、资金费率变化
-3. 输入币种，例如 BTC、ETH、DOGE
-4. 系统自动识别五大交易所里这个币可用的现货/USDT 合约
-5. 手动选择市场和交易所：Binance、Bybit、OKX、Bitget、Gate
-6. 按类型输入目标价，或选择 5/15/60 分钟窗口、1%-5% 阈值和方向
-7. 选择提醒方式：提醒一次、重复提醒、持续每5分钟提醒
-8. 点击“确认添加”后才会创建提醒
-
-方向判断：
-目标价高于当前价：价格高于或等于目标价时提醒
-目标价低于当前价：价格低于或等于目标价时提醒
-
-不同交易所价格可能不同，提醒触发时会按你选择的交易所和市场价格检查。
-提醒触发后会自动标记为已触发，不会反复轰炸。
-"""
-
-ANALYSIS_HELP_TEXT = """AI 分析说明
-
-支持两类分析：
-
-1. 单币行情分析
-发送：查 BTC、GWEI 怎么看、SOL 可以做多吗
-我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率。
-
-2. 分析你粘贴的数据
-发送：分析这段：粘贴雷达信号或市场数据
-也可以直接粘贴启动雷达、结构雷达、资金流、资金费率等内容，我会自动识别。
-
-AI 分析只做数据解读，不承诺涨跌，不是自动交易指令。
-"""
-
-ASSISTANT_HELP_TEXT = """泡泡 AI 助手说明
-
-可以直接问：
-BTC 现在多少钱
-查 BTC
-GWEI 怎么看
-我的提醒有哪些
-帮我解释最近雷达状态
-生活问题也可以问，我会用轻松一点的语气回答。
-
-自动分流规则：
-- 价格问题：走五大交易所价格查询
-- 某币怎么看、能不能做多做空：走专业行情分析
-- 粘贴雷达/市场数据：走专业分析师提示词
-- 设置价格提醒：必须点“设置价格提醒”走手动流程
-- 功能说明、运行状态、生活问题：走泡泡 AI 助手
-
-备用命令：
-/price BTC
-/coin BTC
-/analyze 粘贴雷达信号
-/alerts
-/pause 12
-/resume 12
-/delete 12
-
-普通私聊会自动识别意图。群里必须 @机器人或回复机器人消息，并且群 ID 已经在 Web 后台白名单里。
+注意：价格提醒不靠一句话创建，必须走按钮确认，避免设置错交易所或价格源。
 """
 
 ALERT_SETUP_TEXT = """设置价格提醒
@@ -229,19 +140,12 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 def main_menu_markup() -> dict[str, Any]:
     return inline_keyboard([
         [("设置价格提醒", "flow:alert_setup"), ("我的提醒", "menu:alerts")],
-        [("查询价格", "menu:price_query"), ("完整帮助", "menu:help")],
+        [("查询价格", "menu:price_query"), ("使用说明", "menu:help")],
     ])
 
 
 def back_home_markup() -> dict[str, Any]:
     return inline_keyboard([[("返回首页", "menu:home")]])
-
-
-def alert_confirm_markup(symbol: str, direction: str, target_price: float) -> dict[str, Any]:
-    return inline_keyboard([
-        [("确认添加提醒", f"alert:confirm:{symbol}:{direction}:{target_price:g}")],
-        [("重新设置", "flow:alert_setup"), ("取消", "flow:cancel")],
-    ])
 
 
 def alert_kind_markup() -> dict[str, Any]:
@@ -319,13 +223,13 @@ def repeat_policy_markup() -> dict[str, Any]:
 
 def alerts_manage_markup(alerts: list[PriceAlert]) -> dict[str, Any]:
     rows: list[list[tuple[str, str]]] = []
-    row: list[tuple[str, str]] = []
     for alert in alerts[:30]:
+        row: list[tuple[str, str]] = []
+        if alert.status == "paused":
+            row.append((f"恢复{alert.id}", f"alert:resume:{alert.id}"))
+        elif alert.status == "active":
+            row.append((f"暂停{alert.id}", f"alert:pause:{alert.id}"))
         row.append((f"删除{alert.id}", f"alert:delete:{alert.id}"))
-        if len(row) >= 3:
-            rows.append(row)
-            row = []
-    if row:
         rows.append(row)
     rows.append([("返回首页", "menu:home")])
     return inline_keyboard(rows)
@@ -367,17 +271,10 @@ ALERT_CREATE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 ANALYSIS_INTENT_RE = re.compile(
-    r"^\s*(/analyze(?:@\w+)?\b|/analysis(?:@\w+)?\b|分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)",
+    r"^\s*(分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)",
     re.IGNORECASE,
 )
 PRICE_QUERY_RE = re.compile(r"(价格|现价|报价|行情|多少钱|多少|查价|查一下|看一下|price)", re.IGNORECASE)
-ALERT_LIST_RE = re.compile(
-    r"(/alerts\b|/list\b|我的提醒|提醒列表|警报列表|价格提醒列表|查看.*提醒|看看.*提醒|查.*提醒|提醒.*有哪些|提醒.*清单|alerts)",
-    re.IGNORECASE,
-)
-ALERT_DELETE_RE = re.compile(r"(删除|删掉|移除|取消|delete|remove)", re.IGNORECASE)
-ALERT_PAUSE_RE = re.compile(r"(暂停|停用|关闭|pause)", re.IGNORECASE)
-ALERT_RESUME_RE = re.compile(r"(恢复|继续|启用|开启|resume)", re.IGNORECASE)
 MARKET_DATA_KEYWORDS = (
     "启动雷达",
     "结构雷达",
@@ -832,8 +729,6 @@ class SessionLockRegistry:
 
 def parse_alert_request(text: str) -> ParsedAlertRequest | None:
     clean = text.strip()
-    if clean.startswith("/alert"):
-        clean = clean.split(maxsplit=1)[1] if len(clean.split(maxsplit=1)) > 1 else ""
     if not clean:
         return None
 
@@ -867,7 +762,6 @@ def is_analysis_intent(text: str) -> bool:
 
 def strip_analysis_request(text: str) -> str:
     clean = str(text or "").strip()
-    clean = re.sub(r"^/(analyze|analysis)(?:@\w+)?\b", "", clean, flags=re.IGNORECASE).strip()
     clean = re.sub(r"^(分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)", "", clean).strip()
     clean = clean.lstrip("：:，, \n\t")
     return clean
@@ -900,35 +794,6 @@ def is_price_query(text: str) -> bool:
     if PRICE_QUERY_RE.search(clean):
         return True
     return bool(re.fullmatch(r"(?i)[A-Z][A-Z0-9]{1,20}(?:USDT)?", clean))
-
-
-def parse_alert_id(text: str) -> int | None:
-    match = re.search(r"(?:提醒|警报|alert|编号|#|第)?\s*(\d{1,8})\s*(?:号|个)?", str(text or ""), flags=re.IGNORECASE)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
-
-
-def parse_alert_mutation(text: str) -> tuple[str, int] | None:
-    clean = compact_text(text)
-    alert_id = parse_alert_id(clean)
-    if alert_id is None:
-        return None
-    if ALERT_DELETE_RE.search(clean):
-        return "delete", alert_id
-    if ALERT_PAUSE_RE.search(clean):
-        return "pause", alert_id
-    if ALERT_RESUME_RE.search(clean):
-        return "resume", alert_id
-    return None
-
-
-def is_alert_list_request(text: str) -> bool:
-    clean = compact_text(text)
-    return bool(ALERT_LIST_RE.search(clean))
 
 
 def is_market_data_intent(text: str) -> bool:
@@ -989,9 +854,7 @@ def alert_created_text(alert: PriceAlert) -> str:
             f"交易对：{alert.pair}",
             *detail,
             "",
-            f"查看：/alerts",
-            f"暂停：/pause {alert.id}",
-            f"删除：/delete {alert.id}",
+            "管理：点击首页“我的提醒”，可以暂停、恢复或删除。",
         ]
     )
 
@@ -1018,7 +881,7 @@ def alert_trigger_text(alert: PriceAlert, price: float, detail: str = "") -> str
 
 def list_alerts_text(alerts: list[PriceAlert]) -> str:
     if not alerts:
-        return "当前没有价格提醒。可以发送 /start，然后点击“设置价格提醒”。"
+        return "当前没有价格提醒。点击首页“设置价格提醒”即可创建。"
     lines = ["你的价格提醒：", ""]
     status_map = {"active": "运行中", "paused": "已暂停", "triggered": "已触发"}
     for alert in alerts[:30]:
@@ -1186,15 +1049,6 @@ def callback_session_key(query: dict[str, Any]) -> str:
     return session_key(str(chat.get("id") or ""), str(user.get("id") or ""))
 
 
-def current_price_for_symbol(settings: Settings, symbol: str) -> float | None:
-    try:
-        prices = fetch_binance_prices(settings, [symbol])
-    except Exception:
-        return None
-    price = prices.get(symbol)
-    return float(price) if isinstance(price, (int, float)) else None
-
-
 def current_price_for_alert_market(settings: Settings, quote: AlertMarketQuote) -> AlertMarketQuote | None:
     return fetch_alert_market_quote(settings, quote.symbol, quote.exchange, quote.market_type, quote.pair)
 
@@ -1205,35 +1059,6 @@ def infer_alert_direction(target_price: float, current_price: float | None = Non
     if current_price is not None and current_price > 0:
         return "above" if target_price >= current_price else "below"
     return "above"
-
-
-def alert_confirmation_text(
-    symbol: str,
-    direction: str,
-    target_price: float,
-    current_price: float | None = None,
-    exchange: str = "Binance",
-    market_type: str = "USDT 合约",
-    pair: str | None = None,
-) -> str:
-    direction_label = "高于或等于" if direction == "above" else "低于或等于"
-    lines = [
-        "请确认添加价格提醒",
-        "",
-        f"币种：{symbol}",
-        f"交易所：{exchange}",
-        f"市场：{market_type}",
-        f"交易对：{pair or symbol}",
-    ]
-    if current_price is not None:
-        lines.append(f"当前价：{format_price(current_price)}")
-    lines.extend([
-        f"目标价：{format_price(target_price)}",
-        f"触发条件：价格 {direction_label} {format_price(target_price)}",
-        "",
-        "确认后才会创建提醒；取消则不会保存。",
-    ])
-    return "\n".join(lines)
 
 
 def monitor_confirmation_text(pending: dict[str, Any]) -> str:
@@ -1278,18 +1103,6 @@ def monitor_confirmation_text(pending: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def alert_confirmation_reply(
-    settings: Settings,
-    parsed: ParsedAlertRequest,
-    current_price: float | None = None,
-) -> BotReply:
-    direction = infer_alert_direction(parsed.target_price, current_price, parsed.direction)
-    return BotReply(
-        alert_confirmation_text(parsed.symbol, direction, parsed.target_price, current_price),
-        alert_confirm_markup(parsed.symbol, direction, parsed.target_price),
-    )
-
-
 def start_alert_setup_session(sessions: dict[str, dict[str, Any]], key: str) -> BotReply:
     sessions[key] = {"state": "alert_kind", "created_at": int(time.time())}
     return BotReply(ALERT_SETUP_TEXT, alert_kind_markup())
@@ -1306,7 +1119,7 @@ def handle_alert_setup_session(
     if not session:
         return None
     lowered = text.strip().lower()
-    if lowered in {"/cancel", "取消"}:
+    if lowered == "取消":
         sessions.pop(key, None)
         return BotReply("已取消价格提醒设置。", main_menu_markup())
 
@@ -1672,9 +1485,9 @@ def local_assistant_reply(settings: Settings, store: PriceAlertStore, user_id: s
             "AI 对话接口还没有启用。",
             "",
             "现在已经可以使用价格提醒和本地状态助手：",
-            "- 发送：/start 后点击“设置价格提醒”",
-            "- 发送：/alerts 查看提醒",
-            "- 发送：/price BTC 查看价格",
+            "- 点击首页“设置价格提醒”创建提醒",
+            "- 点击首页“我的提醒”管理提醒",
+            "- 直接发送 BTC 查询五大交易所价格",
             "",
             f"提醒统计：运行中 {stats.get('active', 0)}，暂停 {stats.get('paused', 0)}，已触发 {stats.get('triggered', 0)}。",
             "",
@@ -1716,71 +1529,8 @@ def handle_message(
     lowered = text.lower()
     if lowered == "/start":
         return HOME_TEXT
-    if lowered in {"/help", "help", "帮助"}:
-        return HELP_TEXT
-    if lowered.startswith("/setup"):
-        return ALERT_SETUP_TEXT
-
-    if lowered.startswith("/price"):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            return "用法：/price BTC"
-        try:
-            return price_text(settings, parts[1])
-        except Exception as exc:
-            return f"价格查询失败：{type(exc).__name__}: {exc}"
-
-    if lowered.startswith("/coin") or lowered.startswith("/dossier"):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2 or not extract_symbol_from_query(parts[1]):
-            return "用法：/coin BTC，或直接发送：GWEI 怎么看"
-        try:
-            return build_symbol_dossier_reply(settings, store, user_id, parts[1])
-        except Exception as exc:
-            return f"币种档案查询失败：{type(exc).__name__}: {exc}"
-
-    if lowered in {"/alerts", "/list", "我的提醒", "提醒列表"}:
-        return list_alerts_text(store.list_alerts(user_id=user_id, limit=50))
-
-    for command, status, label in (
-        ("/pause", "paused", "已暂停"),
-        ("/resume", "active", "已恢复"),
-    ):
-        if lowered.startswith(command):
-            parts = text.split()
-            if len(parts) < 2 or not parts[1].isdigit():
-                return f"用法：{command} 提醒编号"
-            ok = store.set_status(int(parts[1]), status, user_id=user_id)
-            return f"提醒 {parts[1]} {label}。" if ok else "没有找到这条提醒。"
-
-    if lowered.startswith("/delete") or lowered.startswith("/remove"):
-        parts = text.split()
-        if len(parts) < 2 or not parts[1].isdigit():
-            return "用法：/delete 提醒编号"
-        ok = store.delete_alert(int(parts[1]), user_id=user_id)
-        return f"提醒 {parts[1]} 已删除。" if ok else "没有找到这条提醒。"
-
-    if lowered.startswith("/ai"):
-        prompt = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
-        if not prompt:
-            return "用法：/ai 你的问题"
-        try:
-            return call_ai_provider(settings, prompt, store, user_id)
-        except Exception as exc:
-            return f"AI 回答失败：{type(exc).__name__}: {exc}"
-
-    if is_alert_list_request(text):
-        return list_alerts_text(store.list_alerts(user_id=user_id, limit=50))
-
-    mutation = parse_alert_mutation(text)
-    if mutation:
-        action, alert_id = mutation
-        if action == "delete":
-            ok = store.delete_alert(alert_id, user_id=user_id)
-            return f"提醒 {alert_id} 已删除。" if ok else "没有找到这条提醒。"
-        status, label = ("paused", "已暂停") if action == "pause" else ("active", "已恢复")
-        ok = store.set_status(alert_id, status, user_id=user_id)
-        return f"提醒 {alert_id} {label}。" if ok else "没有找到这条提醒。"
+    if text.startswith("/"):
+        return "现在只保留 /start。查价格直接发送 BTC；看行情直接发送 BTC 怎么看；提醒请点击首页“设置价格提醒”。"
 
     if is_symbol_dossier_request(text) and not is_price_query(text) and not is_market_data_intent(text):
         try:
@@ -1791,14 +1541,14 @@ def handle_message(
     if is_analysis_intent(text):
         prompt = strip_analysis_request(text)
         if not prompt:
-            return "用法：/analyze 粘贴雷达信号或市场数据"
+            return "请把要分析的雷达信号、资金费率或市场数据一起发过来。"
         try:
             return call_ai_provider(settings, prompt, store, user_id, mode="analyst")
         except Exception as exc:
             return f"AI 分析失败：{type(exc).__name__}: {exc}"
 
-    if lowered.startswith("/alert") or is_alert_intent(text):
-        return "价格提醒已经改成手动选择模式。请发送 /start，然后点击“设置价格提醒”。"
+    if is_alert_intent(text):
+        return "价格提醒需要手动选择交易所和价格源。请点击首页“设置价格提醒”，按步骤确认后才会创建。"
 
     if is_market_data_intent(text):
         try:
@@ -1815,16 +1565,7 @@ def handle_message(
 
     ambiguous = ambiguous_alert_text(text)
     if ambiguous:
-        direction_label = "高于或等于" if ambiguous.direction == "above" else "低于或等于"
-        return (
-            f"你是想设置 {ambiguous.symbol} 价格 {direction_label} "
-            f"{format_price(ambiguous.target_price)} 的提醒吗？"
-            f"如果是，请发送：{ambiguous.symbol.replace('USDT', '')} "
-            f"{direction_label} {format_price(ambiguous.target_price)} 提醒我"
-        )
-
-    if text.startswith("/"):
-        return "这个命令当前不支持。请发送 /start 打开首页，或直接输入你的问题。"
+        return "如果这是价格提醒，请点击首页“设置价格提醒”。如果你想让我分析这句话，可以直接说“帮我分析这段：...”再粘贴内容。"
 
     if settings.ai_provider_enable and settings.ai_api_key:
         try:
@@ -1866,34 +1607,26 @@ def handle_message_reply(
     active_sessions = sessions if sessions is not None else {}
     lowered = text.lower()
 
-    if lowered in {"/cancel", "取消"}:
+    if lowered == "取消":
         active_sessions.pop(key, None)
         return BotReply("已取消。", main_menu_markup())
     if lowered == "/start" or not text:
         active_sessions.pop(key, None)
         return BotReply(HOME_TEXT, main_menu_markup())
-    if lowered in {"/help", "help", "帮助"}:
-        return BotReply(HELP_TEXT, main_menu_markup())
-    if lowered.startswith("/setup"):
-        return start_alert_setup_session(active_sessions, key)
+    if text.startswith("/"):
+        return BotReply(
+            "现在只保留 /start。查价格直接发送 BTC；看行情直接发送 BTC 怎么看；提醒请点击首页“设置价格提醒”。",
+            main_menu_markup(),
+        )
 
     session_reply = handle_alert_setup_session(settings, active_sessions, message, text)
     if session_reply:
         return session_reply
 
-    if lowered.startswith("/price"):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            return BotReply("用法：/price BTC", main_menu_markup())
-        try:
-            return price_reply(settings, parts[1])
-        except Exception as exc:
-            return BotReply(f"价格查询失败：{type(exc).__name__}: {exc}")
-
-    if lowered.startswith("/alert") or is_alert_intent(text):
+    if is_alert_intent(text):
         active_sessions.pop(key, None)
         return BotReply(
-            "价格提醒已经改成手动选择模式。\n\n请点击首页里的「设置价格提醒」，然后按流程选择现货/合约、交易所和目标价。",
+            "价格提醒需要手动选择交易所和价格源。\n\n请点击首页里的「设置价格提醒」，然后按流程选择现货/合约、交易所和目标价。",
             main_menu_markup(),
         )
 
@@ -1908,8 +1641,6 @@ def handle_message_reply(
     if not reply:
         return None
     if reply == HOME_TEXT:
-        return BotReply(reply, main_menu_markup())
-    if reply == HELP_TEXT:
         return BotReply(reply, main_menu_markup())
     return BotReply(reply)
 
@@ -1945,8 +1676,6 @@ def handle_callback_query(
         return BotReply(HOME_TEXT, main_menu_markup())
     if data == "menu:help":
         return BotReply(HELP_TEXT, main_menu_markup())
-    if data == "menu:dossier":
-        return BotReply(ANALYSIS_HELP_TEXT, back_home_markup())
     if data == "menu:alerts":
         alerts = store.list_alerts(user_id=user_id, limit=50)
         return BotReply(list_alerts_text(alerts), alerts_manage_markup(alerts))
@@ -1961,12 +1690,6 @@ def handle_callback_query(
             ]),
             back_home_markup(),
         )
-    if data == "menu:analysis":
-        return BotReply(ANALYSIS_HELP_TEXT, back_home_markup())
-    if data == "menu:assistant":
-        return BotReply(ASSISTANT_HELP_TEXT, back_home_markup())
-    if data == "menu:group":
-        return BotReply("这个旧入口已经取消。现在首页只保留设置价格提醒、我的提醒、查询价格和完整帮助。直接发消息就会自动进入 AI 助手分流。", back_home_markup())
     if data == "flow:alert_setup":
         return start_alert_setup_session(active_sessions, key)
     if data == "flow:cancel":
@@ -1980,6 +1703,16 @@ def handle_callback_query(
         ok = store.delete_alert(alert_id, user_id=user_id)
         alerts = store.list_alerts(user_id=user_id, limit=50)
         prefix = f"已删除提醒 {alert_id}。" if ok else f"没有找到提醒 {alert_id}，可能已经删除。"
+        return BotReply(f"{prefix}\n\n{list_alerts_text(alerts)}", alerts_manage_markup(alerts))
+    if data.startswith("alert:pause:") or data.startswith("alert:resume:"):
+        action, alert_id_text = data.split(":", 2)[1:]
+        if not alert_id_text.isdigit():
+            return BotReply("这个按钮已失效，请重新打开“我的提醒”。", main_menu_markup())
+        alert_id = int(alert_id_text)
+        status, label = ("paused", "已暂停") if action == "pause" else ("active", "已恢复")
+        ok = store.set_status(alert_id, status, user_id=user_id)
+        alerts = store.list_alerts(user_id=user_id, limit=50)
+        prefix = f"提醒 {alert_id} {label}。" if ok else f"没有找到提醒 {alert_id}，可能已经删除。"
         return BotReply(f"{prefix}\n\n{list_alerts_text(alerts)}", alerts_manage_markup(alerts))
     if data.startswith("alert:kind:"):
         session = active_sessions.get(key)
@@ -2178,29 +1911,6 @@ def handle_callback_query(
             return BotReply(f"创建提醒失败：{type(exc).__name__}: {exc}", main_menu_markup())
         active_sessions.pop(key, None)
         return BotReply(alert_created_text(alert), main_menu_markup())
-    if data.startswith("alert:confirm:"):
-        parts = data.split(":", 4)
-        if len(parts) != 5:
-            return BotReply("这个确认按钮已失效，请重新设置。", main_menu_markup())
-        _, _, symbol, direction, target_text = parts
-        try:
-            target_price = parse_price(target_text)
-            alert = create_alert_from_context(
-                store,
-                user_id=user_id,
-                chat_id=chat_id,
-                username=username,
-                symbol=symbol,
-                direction=direction,
-                target_price=target_price,
-                source="telegram-button",
-                note="button-confirm",
-            )
-        except Exception as exc:
-            return BotReply(f"创建提醒失败：{type(exc).__name__}: {exc}", main_menu_markup())
-        active_sessions.pop(key, None)
-        return BotReply(alert_created_text(alert), main_menu_markup())
-
     return BotReply("这个按钮暂时无法识别，请返回首页重新选择。", main_menu_markup())
 
 
@@ -2336,17 +2046,19 @@ def processing_notice_for_message(
 
     text = strip_bot_addressing(raw_text, bot_username)
     lowered = text.lower()
+    if lowered == "/start" or text.startswith("/"):
+        return ""
     session = (sessions or {}).get(session_key(chat_id, user_id)) or {}
     state = str(session.get("state") or "")
     if state == "alert_symbol":
         return "已收到币种，正在并发识别五大交易所的现货和合约价格源..."
     if state == "alert_price":
         return "已收到目标价，正在读取所选交易所的最新价格..."
-    if lowered.startswith("/price") or is_price_query(text):
+    if is_price_query(text):
         return "已收到，正在并发查询五大交易所价格..."
-    if lowered.startswith(("/ai", "/analyze")) or is_analysis_intent(text) or is_market_data_intent(text):
+    if is_analysis_intent(text) or is_market_data_intent(text):
         return "已收到，正在调用 AI 分析；结果出来后会单独发给你。"
-    if lowered.startswith(("/coin", "/dossier")) or (is_symbol_dossier_request(text) and not is_price_query(text)):
+    if is_symbol_dossier_request(text) and not is_price_query(text):
         return "已收到，正在读取历史信号和当前行情，生成币种档案..."
     if settings.ai_provider_enable and settings.ai_api_key and not lowered.startswith("/"):
         return "已收到，正在思考；如果问题较复杂会稍慢一点。"

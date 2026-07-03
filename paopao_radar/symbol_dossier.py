@@ -195,8 +195,6 @@ def is_symbol_dossier_request(text: str) -> bool:
         return False
     if not extract_symbol_from_query(clean):
         return False
-    if re.fullmatch(r"(?i)(/coin|/dossier)\s+[A-Z0-9]{2,20}(?:USDT)?", clean):
-        return True
     return bool(DOSSIER_INTENT_RE.search(clean))
 
 
