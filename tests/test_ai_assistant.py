@@ -274,6 +274,58 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(alerts[0].market_type, "futures")
             self.assertEqual(alerts[0].alert_type, "target_price")
 
+    def test_alerts_menu_has_delete_buttons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            created = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="FIL",
+                exchange="bybit",
+                market_type="futures",
+                pair="FILUSDT",
+                direction="above",
+                target_price=0.784,
+            )
+            query = {
+                "data": "menu:alerts",
+                "from": {"id": 42, "username": "tester"},
+                "message": {"chat": {"id": 42, "type": "private"}},
+            }
+
+            reply = handle_callback_query(settings, store, query, sessions={})
+
+            self.assertIsNotNone(reply)
+            assert reply is not None
+            self.assertIn("你的价格提醒", reply.text)
+            flat = [button for row in reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
+            self.assertIn({"text": f"删除{created.id}", "callback_data": f"alert:delete:{created.id}"}, flat)
+
+            delete_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": f"alert:delete:{created.id}",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions={},
+            )
+
+            self.assertIsNotNone(delete_reply)
+            assert delete_reply is not None
+            self.assertIn(f"已删除提醒 {created.id}", delete_reply.text)
+            self.assertEqual(store.stats()["total"], 0)
+
     def test_handle_message_reply_natural_alert_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"

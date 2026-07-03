@@ -298,6 +298,20 @@ def repeat_policy_markup() -> dict[str, Any]:
     ])
 
 
+def alerts_manage_markup(alerts: list[PriceAlert]) -> dict[str, Any]:
+    rows: list[list[tuple[str, str]]] = []
+    row: list[tuple[str, str]] = []
+    for alert in alerts[:30]:
+        row.append((f"删除{alert.id}", f"alert:delete:{alert.id}"))
+        if len(row) >= 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([("返回首页", "menu:home")])
+    return inline_keyboard(rows)
+
+
 def quote_to_dict(quote: AlertMarketQuote) -> dict[str, Any]:
     return {
         "exchange": quote.exchange,
@@ -1573,7 +1587,8 @@ def handle_callback_query(
     if data == "menu:dossier":
         return BotReply(ANALYSIS_HELP_TEXT, back_home_markup())
     if data == "menu:alerts":
-        return BotReply(list_alerts_text(store.list_alerts(user_id=user_id, limit=50)), back_home_markup())
+        alerts = store.list_alerts(user_id=user_id, limit=50)
+        return BotReply(list_alerts_text(alerts), alerts_manage_markup(alerts))
     if data == "menu:price_query":
         return BotReply(
             "\n".join([
@@ -1596,6 +1611,15 @@ def handle_callback_query(
     if data == "flow:cancel":
         active_sessions.pop(key, None)
         return BotReply("已取消。", main_menu_markup())
+    if data.startswith("alert:delete:"):
+        alert_id_text = data.rsplit(":", 1)[-1]
+        if not alert_id_text.isdigit():
+            return BotReply("删除按钮已失效，请重新打开“我的提醒”。", main_menu_markup())
+        alert_id = int(alert_id_text)
+        ok = store.delete_alert(alert_id, user_id=user_id)
+        alerts = store.list_alerts(user_id=user_id, limit=50)
+        prefix = f"已删除提醒 {alert_id}。" if ok else f"没有找到提醒 {alert_id}，可能已经删除。"
+        return BotReply(f"{prefix}\n\n{list_alerts_text(alerts)}", alerts_manage_markup(alerts))
     if data.startswith("alert:kind:"):
         session = active_sessions.get(key)
         if session is None:
