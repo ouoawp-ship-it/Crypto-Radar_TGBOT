@@ -14,9 +14,27 @@ from .config import Settings
 from .data_sources import HTTP_HEADERS
 
 
-VALID_DIRECTIONS = {"above", "below"}
+VALID_DIRECTIONS = {"above", "below", "up", "down", "both"}
+VALID_ALERT_TYPES = {"target_price", "price_change", "oi_change", "funding_change"}
+VALID_REPEAT_POLICIES = {"once", "repeat", "interval"}
 VALID_EXCHANGES = {"binance", "bybit", "okx", "bitget", "gate"}
 VALID_MARKET_TYPES = {"spot", "futures"}
+TIMEFRAME_LABELS = {
+    300: "5分钟",
+    900: "15分钟",
+    3600: "60分钟",
+}
+REPEAT_POLICY_LABELS = {
+    "once": "提醒一次",
+    "repeat": "重复提醒",
+    "interval": "持续提醒",
+}
+ALERT_TYPE_LABELS = {
+    "target_price": "目标价提醒",
+    "price_change": "价格急涨急跌监控",
+    "oi_change": "持仓量变化监控",
+    "funding_change": "资金费率变化监控",
+}
 EXCHANGE_LABELS = {
     "binance": "Binance",
     "bybit": "Bybit",
@@ -49,15 +67,52 @@ class PriceAlert:
     updated_at: int
     triggered_at: int | None = None
     last_price: float | None = None
+    alert_type: str = "target_price"
+    timeframe_sec: int = 0
+    threshold_pct: float = 0.0
+    repeat_policy: str = "once"
+    repeat_interval_sec: int = 0
+    last_triggered_at: int | None = None
+    trigger_count: int = 0
+    last_value: float | None = None
+    last_baseline: float | None = None
+    metadata: str = ""
 
     @property
     def direction_label(self) -> str:
-        return "高于或等于" if self.direction == "above" else "低于或等于"
+        return {
+            "above": "高于或等于",
+            "below": "低于或等于",
+            "up": "上涨",
+            "down": "下跌",
+            "both": "双向",
+        }.get(self.direction, self.direction)
 
     @property
     def condition_text(self) -> str:
+        if self.alert_type == "price_change":
+            return f"{self.venue_label} {self.pair} {self.timeframe_label}价格{self.direction_label}超过 {self.threshold_pct:g}%"
+        if self.alert_type == "oi_change":
+            return f"{self.exchange_label} 合约 {self.pair} {self.timeframe_label}持仓量{self.direction_label}超过 {self.threshold_pct:g}%"
+        if self.alert_type == "funding_change":
+            return f"{self.exchange_label} 合约 {self.pair} 监控资金费率周期缩短或极端正负费率"
         op = ">=" if self.direction == "above" else "<="
         return f"{self.venue_label} {self.pair} {op} {format_price(self.target_price)}"
+
+    @property
+    def alert_type_label(self) -> str:
+        return ALERT_TYPE_LABELS.get(self.alert_type, self.alert_type)
+
+    @property
+    def timeframe_label(self) -> str:
+        return TIMEFRAME_LABELS.get(self.timeframe_sec, f"{self.timeframe_sec}秒" if self.timeframe_sec else "-")
+
+    @property
+    def repeat_policy_label(self) -> str:
+        if self.repeat_policy == "interval":
+            minutes = max(1, int(self.repeat_interval_sec or 300) // 60)
+            return f"持续提醒，每{minutes}分钟一次"
+        return REPEAT_POLICY_LABELS.get(self.repeat_policy, self.repeat_policy)
 
     @property
     def exchange_label(self) -> str:
@@ -139,6 +194,111 @@ def normalize_market_type(value: str | None) -> str:
     return market_type
 
 
+def normalize_alert_type(value: str | None) -> str:
+    alert_type = (value or "target_price").strip().lower()
+    aliases = {
+        "target": "target_price",
+        "price": "target_price",
+        "price_alert": "target_price",
+        "change": "price_change",
+        "volatility": "price_change",
+        "price_volatility": "price_change",
+        "oi": "oi_change",
+        "open_interest": "oi_change",
+        "funding": "funding_change",
+        "funding_rate": "funding_change",
+    }
+    alert_type = aliases.get(alert_type, alert_type)
+    if alert_type not in VALID_ALERT_TYPES:
+        raise ValueError("提醒类型不正确")
+    return alert_type
+
+
+def normalize_timeframe_sec(value: int | str | None) -> int:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "5": 300,
+        "5m": 300,
+        "5min": 300,
+        "5分钟": 300,
+        "15": 900,
+        "15m": 900,
+        "15min": 900,
+        "15分钟": 900,
+        "60": 3600,
+        "60m": 3600,
+        "1h": 3600,
+        "1小时": 3600,
+        "小时": 3600,
+    }
+    if text in aliases:
+        return aliases[text]
+    try:
+        seconds = int(float(text))
+    except ValueError:
+        seconds = 0
+    if seconds in {0, 300, 900, 3600}:
+        return seconds
+    if seconds in {5, 15, 60}:
+        return seconds * 60
+    raise ValueError("时间窗口只支持 5分钟、15分钟、60分钟")
+
+
+def normalize_repeat_policy(value: str | None) -> str:
+    policy = (value or "once").strip().lower()
+    aliases = {
+        "one": "once",
+        "single": "once",
+        "一次": "once",
+        "提醒一次": "once",
+        "repeat": "repeat",
+        "rearm": "repeat",
+        "重复": "repeat",
+        "重复提醒": "repeat",
+        "interval": "interval",
+        "continuous": "interval",
+        "持续": "interval",
+        "持续提醒": "interval",
+        "5min": "interval",
+    }
+    policy = aliases.get(policy, policy)
+    if policy not in VALID_REPEAT_POLICIES:
+        raise ValueError("提醒方式不正确")
+    return policy
+
+
+def normalize_repeat_interval_sec(value: int | str | None, repeat_policy: str = "once") -> int:
+    if repeat_policy != "interval":
+        return 0
+    text = str(value or "").strip().lower()
+    aliases = {
+        "": 300,
+        "5": 300,
+        "5m": 300,
+        "5min": 300,
+        "5分钟": 300,
+        "15": 900,
+        "15m": 900,
+        "15分钟": 900,
+        "30": 1800,
+        "30m": 1800,
+        "30分钟": 1800,
+        "60": 3600,
+        "60m": 3600,
+        "1h": 3600,
+        "1小时": 3600,
+    }
+    if text in aliases:
+        return aliases[text]
+    try:
+        seconds = int(float(text))
+    except ValueError:
+        seconds = 300
+    if seconds in {5, 15, 30, 60}:
+        seconds *= 60
+    return max(60, min(24 * 3600, seconds))
+
+
 def default_pair_for_symbol(symbol: str, exchange: str = "binance", market_type: str = "futures") -> str:
     normalized_symbol = normalize_symbol(symbol)
     base = base_symbol(normalized_symbol)
@@ -190,8 +350,16 @@ def parse_price(value: str | float | int) -> float:
     return price
 
 
-def normalize_direction(value: str) -> str:
+def normalize_direction(value: str, alert_type: str = "target_price") -> str:
     direction = (value or "").strip().lower()
+    if normalize_alert_type(alert_type) != "target_price":
+        if direction in {"up", "above", "gte", ">=", ">", "上涨", "急涨", "增加", "变大", "高于"}:
+            return "up"
+        if direction in {"down", "below", "lte", "<=", "<", "下跌", "急跌", "减少", "变小", "低于"}:
+            return "down"
+        if direction in {"", "both", "any", "双向", "涨跌都提醒", "全部"}:
+            return "both"
+        raise ValueError("方向只能是上涨、下跌或双向")
     if direction in {"above", "up", "gte", ">=", ">", "高于", "突破", "涨到", "大于"}:
         return "above"
     if direction in {"below", "down", "lte", "<=", "<", "低于", "跌破", "小于"}:
@@ -258,7 +426,17 @@ class PriceAlertStore:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     triggered_at INTEGER,
-                    last_price REAL
+                    last_price REAL,
+                    alert_type TEXT NOT NULL DEFAULT 'target_price',
+                    timeframe_sec INTEGER NOT NULL DEFAULT 0,
+                    threshold_pct REAL NOT NULL DEFAULT 0,
+                    repeat_policy TEXT NOT NULL DEFAULT 'once',
+                    repeat_interval_sec INTEGER NOT NULL DEFAULT 0,
+                    last_triggered_at INTEGER,
+                    trigger_count INTEGER NOT NULL DEFAULT 0,
+                    last_value REAL,
+                    last_baseline REAL,
+                    metadata TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -290,9 +468,36 @@ class PriceAlertStore:
             conn.execute("ALTER TABLE price_alerts ADD COLUMN market_type TEXT NOT NULL DEFAULT 'futures'")
         if "pair" not in columns:
             conn.execute("ALTER TABLE price_alerts ADD COLUMN pair TEXT NOT NULL DEFAULT ''")
+        if "alert_type" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN alert_type TEXT NOT NULL DEFAULT 'target_price'")
+        if "timeframe_sec" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN timeframe_sec INTEGER NOT NULL DEFAULT 0")
+        if "threshold_pct" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN threshold_pct REAL NOT NULL DEFAULT 0")
+        if "repeat_policy" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN repeat_policy TEXT NOT NULL DEFAULT 'once'")
+        if "repeat_interval_sec" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN repeat_interval_sec INTEGER NOT NULL DEFAULT 0")
+        if "last_triggered_at" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN last_triggered_at INTEGER")
+        if "trigger_count" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN trigger_count INTEGER NOT NULL DEFAULT 0")
+        if "last_value" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN last_value REAL")
+        if "last_baseline" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN last_baseline REAL")
+        if "metadata" not in columns:
+            conn.execute("ALTER TABLE price_alerts ADD COLUMN metadata TEXT NOT NULL DEFAULT ''")
         conn.execute("UPDATE price_alerts SET exchange = 'binance' WHERE exchange IS NULL OR exchange = ''")
         conn.execute("UPDATE price_alerts SET market_type = 'futures' WHERE market_type IS NULL OR market_type = ''")
         conn.execute("UPDATE price_alerts SET pair = symbol WHERE pair IS NULL OR pair = ''")
+        conn.execute("UPDATE price_alerts SET alert_type = 'target_price' WHERE alert_type IS NULL OR alert_type = ''")
+        conn.execute("UPDATE price_alerts SET repeat_policy = 'once' WHERE repeat_policy IS NULL OR repeat_policy = ''")
+        conn.execute("UPDATE price_alerts SET timeframe_sec = 0 WHERE timeframe_sec IS NULL")
+        conn.execute("UPDATE price_alerts SET threshold_pct = 0 WHERE threshold_pct IS NULL")
+        conn.execute("UPDATE price_alerts SET repeat_interval_sec = 0 WHERE repeat_interval_sec IS NULL")
+        conn.execute("UPDATE price_alerts SET trigger_count = 0 WHERE trigger_count IS NULL")
+        conn.execute("UPDATE price_alerts SET metadata = '' WHERE metadata IS NULL")
 
     def create_alert(
         self,
@@ -308,20 +513,35 @@ class PriceAlertStore:
         username: str = "",
         source: str = "telegram",
         note: str = "",
+        alert_type: str = "target_price",
+        timeframe_sec: int = 0,
+        threshold_pct: float = 0.0,
+        repeat_policy: str = "once",
+        repeat_interval_sec: int = 0,
+        metadata: str = "",
     ) -> PriceAlert:
         now = int(time.time())
         normalized_symbol = normalize_symbol(symbol)
         normalized_exchange = normalize_exchange(exchange)
         normalized_market_type = normalize_market_type(market_type)
         normalized_pair = normalize_pair(normalized_symbol, pair, normalized_exchange, normalized_market_type)
-        normalized_direction = normalize_direction(direction)
-        price = parse_price(target_price)
+        normalized_alert_type = normalize_alert_type(alert_type)
+        normalized_direction = normalize_direction(direction, normalized_alert_type)
+        price = parse_price(target_price) if normalized_alert_type == "target_price" else float(target_price or 0)
+        normalized_timeframe = normalize_timeframe_sec(timeframe_sec)
+        normalized_threshold = max(0.0, float(threshold_pct or 0))
+        normalized_repeat_policy = normalize_repeat_policy(repeat_policy)
+        normalized_repeat_interval = normalize_repeat_interval_sec(repeat_interval_sec, normalized_repeat_policy)
         with self.connection() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO price_alerts
-                (user_id, chat_id, username, symbol, exchange, market_type, pair, direction, target_price, status, source, note, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                (
+                    user_id, chat_id, username, symbol, exchange, market_type, pair,
+                    direction, target_price, status, source, note, created_at, updated_at,
+                    alert_type, timeframe_sec, threshold_pct, repeat_policy, repeat_interval_sec, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(user_id),
@@ -337,10 +557,16 @@ class PriceAlertStore:
                     note or "",
                     now,
                     now,
+                    normalized_alert_type,
+                    normalized_timeframe,
+                    normalized_threshold,
+                    normalized_repeat_policy,
+                    normalized_repeat_interval,
+                    metadata or "",
                 ),
             )
             alert_id = int(cursor.lastrowid)
-            self._record_event(conn, alert_id, "created", None, f"created {normalized_exchange}:{normalized_market_type}:{normalized_pair}")
+            self._record_event(conn, alert_id, "created", None, f"created {normalized_alert_type}:{normalized_exchange}:{normalized_market_type}:{normalized_pair}")
         alert = self.get_alert(alert_id)
         if alert is None:
             raise RuntimeError("提醒创建后无法读取")
@@ -458,20 +684,57 @@ class PriceAlertStore:
                 (float(price), now, normalized_symbol, normalized_exchange, normalized_market_type, normalized_pair),
             )
 
-    def mark_triggered(self, alert_id: int, price: float) -> bool:
+    def update_monitor_state(
+        self,
+        alert_id: int,
+        *,
+        last_value: float | None = None,
+        last_baseline: float | None = None,
+        last_price: float | None = None,
+        metadata: str | None = None,
+    ) -> None:
         now = int(time.time())
+        assignments = ["updated_at = ?"]
+        args: list[Any] = [now]
+        if last_value is not None:
+            assignments.append("last_value = ?")
+            args.append(float(last_value))
+        if last_baseline is not None:
+            assignments.append("last_baseline = ?")
+            args.append(float(last_baseline))
+        if last_price is not None:
+            assignments.append("last_price = ?")
+            args.append(float(last_price))
+        if metadata is not None:
+            assignments.append("metadata = ?")
+            args.append(str(metadata))
+        args.append(int(alert_id))
+        with self.connection() as conn:
+            conn.execute(
+                f"UPDATE price_alerts SET {', '.join(assignments)} WHERE id = ?",
+                args,
+            )
+
+    def mark_triggered(self, alert_or_id: PriceAlert | int, price: float, message: str = "triggered") -> bool:
+        alert = alert_or_id if isinstance(alert_or_id, PriceAlert) else self.get_alert(int(alert_or_id))
+        if alert is None:
+            return False
+        now = int(time.time())
+        next_status = "triggered" if alert.repeat_policy == "once" else "active"
         with self.connection() as conn:
             cursor = conn.execute(
                 """
                 UPDATE price_alerts
-                SET status = 'triggered', triggered_at = ?, last_price = ?, updated_at = ?
+                SET status = ?, triggered_at = COALESCE(triggered_at, ?),
+                    last_triggered_at = ?, trigger_count = trigger_count + 1,
+                    last_price = ?, updated_at = ?
                 WHERE id = ? AND status = 'active'
                 """,
-                (now, float(price), now, int(alert_id)),
+                (next_status, now, now, float(price), now, int(alert.id)),
             )
             changed = cursor.rowcount > 0
             if changed:
-                self._record_event(conn, int(alert_id), "triggered", float(price), "triggered")
+                self._record_event(conn, int(alert.id), "triggered", float(price), message or "triggered")
         return changed
 
     def stats(self) -> dict[str, int]:
@@ -525,6 +788,16 @@ def row_to_alert(row: sqlite3.Row) -> PriceAlert:
         updated_at=int(row["updated_at"]),
         triggered_at=int(row["triggered_at"]) if row["triggered_at"] is not None else None,
         last_price=float(row["last_price"]) if row["last_price"] is not None else None,
+        alert_type=normalize_alert_type(str(row["alert_type"] or "target_price")),
+        timeframe_sec=normalize_timeframe_sec(row["timeframe_sec"] or 0),
+        threshold_pct=float(row["threshold_pct"] or 0),
+        repeat_policy=normalize_repeat_policy(str(row["repeat_policy"] or "once")),
+        repeat_interval_sec=normalize_repeat_interval_sec(row["repeat_interval_sec"] or 0, str(row["repeat_policy"] or "once")),
+        last_triggered_at=int(row["last_triggered_at"]) if row["last_triggered_at"] is not None else None,
+        trigger_count=int(row["trigger_count"] or 0),
+        last_value=float(row["last_value"]) if row["last_value"] is not None else None,
+        last_baseline=float(row["last_baseline"]) if row["last_baseline"] is not None else None,
+        metadata=str(row["metadata"] or ""),
     )
 
 
@@ -708,19 +981,176 @@ def fetch_price_alert_prices(settings: Settings, alerts: list[PriceAlert]) -> di
     return prices
 
 
+def _condition_met(alert: PriceAlert, value: float, change_pct: float | None = None) -> bool:
+    if alert.alert_type == "target_price":
+        if alert.direction == "above":
+            return value >= alert.target_price
+        if alert.direction == "below":
+            return value <= alert.target_price
+        return False
+    pct = float(change_pct or 0)
+    threshold = float(alert.threshold_pct or 0)
+    if threshold <= 0:
+        return False
+    if alert.direction == "up":
+        return pct >= threshold
+    if alert.direction == "down":
+        return pct <= -threshold
+    return abs(pct) >= threshold
+
+
+def _was_condition_met(alert: PriceAlert) -> bool:
+    if alert.last_price is None:
+        return False
+    return _condition_met(alert, float(alert.last_price))
+
+
+def alert_can_send(alert: PriceAlert, now: int | None = None) -> bool:
+    if alert.repeat_policy == "interval":
+        interval = max(60, int(alert.repeat_interval_sec or 300))
+        last = int(alert.last_triggered_at or 0)
+        return not last or int(now or time.time()) - last >= interval
+    if alert.repeat_policy == "repeat":
+        return True
+    return alert.trigger_count <= 0
+
+
 def triggered_alerts(alerts: list[PriceAlert], prices: dict[str, float]) -> list[tuple[PriceAlert, float]]:
     triggered: list[tuple[PriceAlert, float]] = []
+    now = int(time.time())
     for alert in alerts:
+        if alert.alert_type != "target_price":
+            continue
         price = prices.get(alert.price_key)
         if price is None:
             price = prices.get(alert.symbol)
         if price is None:
             continue
-        if alert.direction == "above" and price >= alert.target_price:
-            triggered.append((alert, price))
-        elif alert.direction == "below" and price <= alert.target_price:
+        met = _condition_met(alert, price)
+        crossed = met and not _was_condition_met(alert)
+        if alert.repeat_policy == "interval":
+            should_send = met and alert_can_send(alert, now)
+        elif alert.repeat_policy == "repeat":
+            should_send = crossed
+        else:
+            should_send = met and alert.trigger_count <= 0
+        if should_send:
             triggered.append((alert, price))
     return triggered
+
+
+def timeframe_to_interval(timeframe_sec: int) -> str:
+    normalized = normalize_timeframe_sec(timeframe_sec)
+    return {300: "5m", 900: "15m", 3600: "1h"}.get(normalized, "5m")
+
+
+def _pct_change(current: float, baseline: float) -> float | None:
+    if baseline <= 0:
+        return None
+    return (current - baseline) / baseline * 100
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None or str(value) == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _kline_change_from_item(item: Any, open_index: int, close_index: int) -> tuple[float, float, float] | None:
+    if not isinstance(item, (list, tuple)) or len(item) <= max(open_index, close_index):
+        return None
+    opened = _safe_float(item[open_index])
+    closed = _safe_float(item[close_index])
+    if opened is None or closed is None:
+        return None
+    change = _pct_change(closed, opened)
+    if change is None:
+        return None
+    return opened, closed, change
+
+
+def fetch_price_change_snapshot(settings: Settings, alert: PriceAlert) -> dict[str, float] | None:
+    interval = timeframe_to_interval(alert.timeframe_sec)
+    pair = alert.pair
+    timeout = max(3, int(settings.http_timeout_sec))
+    try:
+        if alert.exchange == "binance":
+            base = settings.binance_spot_base_url.rstrip("/") if alert.market_type == "spot" else settings.binance_fapi_base_url.rstrip("/")
+            path = "/api/v3/klines" if alert.market_type == "spot" else "/fapi/v1/klines"
+            data = requests.get(f"{base}{path}", params={"symbol": pair, "interval": interval, "limit": 1}, headers=HTTP_HEADERS, timeout=timeout).json()
+            parsed = _kline_change_from_item(data[-1] if isinstance(data, list) and data else None, 1, 4)
+        elif alert.exchange == "bybit":
+            category = "spot" if alert.market_type == "spot" else "linear"
+            bybit_interval = {"5m": "5", "15m": "15", "1h": "60"}[interval]
+            data = requests.get("https://api.bybit.com/v5/market/kline", params={"category": category, "symbol": pair, "interval": bybit_interval, "limit": 1}, headers=HTTP_HEADERS, timeout=timeout).json()
+            items = (((data or {}).get("result") or {}).get("list") or []) if isinstance(data, dict) else []
+            parsed = _kline_change_from_item(items[0] if items else None, 1, 4)
+        elif alert.exchange == "okx":
+            okx_interval = {"5m": "5m", "15m": "15m", "1h": "1H"}[interval]
+            data = requests.get("https://www.okx.com/api/v5/market/candles", params={"instId": pair, "bar": okx_interval, "limit": 1}, headers=HTTP_HEADERS, timeout=timeout).json()
+            items = data.get("data", []) if isinstance(data, dict) else []
+            parsed = _kline_change_from_item(items[0] if items else None, 1, 4)
+        elif alert.exchange == "bitget":
+            if alert.market_type == "spot":
+                data = requests.get("https://api.bitget.com/api/v2/spot/market/candles", params={"symbol": pair, "granularity": {"5m": "5min", "15m": "15min", "1h": "1h"}[interval], "limit": 1}, headers=HTTP_HEADERS, timeout=timeout).json()
+            else:
+                data = requests.get("https://api.bitget.com/api/v2/mix/market/candles", params={"symbol": pair, "productType": "USDT-FUTURES", "granularity": interval, "limit": 1}, headers=HTTP_HEADERS, timeout=timeout).json()
+            items = data.get("data", []) if isinstance(data, dict) else []
+            parsed = _kline_change_from_item(items[0] if items else None, 1, 4)
+        elif alert.exchange == "gate":
+            if alert.market_type == "spot":
+                data = requests.get("https://api.gateio.ws/api/v4/spot/candlesticks", params={"currency_pair": pair, "interval": interval, "limit": 1}, headers={"Accept": "application/json"}, timeout=timeout).json()
+            else:
+                data = requests.get("https://fx-api.gateio.ws/api/v4/futures/usdt/candlesticks", params={"contract": pair, "interval": interval, "limit": 1}, headers={"Accept": "application/json"}, timeout=timeout).json()
+            item = data[0] if isinstance(data, list) and data else None
+            if isinstance(item, dict):
+                opened = _safe_float(item.get("o") or item.get("open"))
+                closed = _safe_float(item.get("c") or item.get("close"))
+                change = _pct_change(float(closed or 0), float(opened or 0)) if opened and closed else None
+                parsed = (opened, closed, change) if opened is not None and closed is not None and change is not None else None
+            else:
+                parsed = _kline_change_from_item(item, 5, 2)
+        else:
+            parsed = None
+    except Exception:
+        return None
+    if not parsed:
+        return None
+    baseline, current, change = parsed
+    return {"baseline": baseline, "current": current, "change_pct": change}
+
+
+def fetch_open_interest_value(settings: Settings, alert: PriceAlert) -> float | None:
+    timeout = max(3, int(settings.http_timeout_sec))
+    pair = alert.pair
+    try:
+        if alert.exchange == "binance":
+            data = requests.get(f"{settings.binance_fapi_base_url.rstrip('/')}/fapi/v1/openInterest", params={"symbol": pair}, headers=HTTP_HEADERS, timeout=timeout).json()
+            return _safe_float(data.get("openInterest")) if isinstance(data, dict) else None
+        if alert.exchange == "bybit":
+            data = requests.get("https://api.bybit.com/v5/market/open-interest", params={"category": "linear", "symbol": pair, "intervalTime": "5min", "limit": 1}, headers=HTTP_HEADERS, timeout=timeout).json()
+            items = (((data or {}).get("result") or {}).get("list") or []) if isinstance(data, dict) else []
+            item = items[0] if items else {}
+            return _safe_float(item.get("openInterest")) if isinstance(item, dict) else None
+        if alert.exchange == "okx":
+            data = requests.get("https://www.okx.com/api/v5/public/open-interest", params={"instType": "SWAP", "instId": pair}, headers=HTTP_HEADERS, timeout=timeout).json()
+            items = data.get("data", []) if isinstance(data, dict) else []
+            item = items[0] if items else {}
+            return _safe_float(item.get("oi")) if isinstance(item, dict) else None
+        if alert.exchange == "bitget":
+            data = requests.get("https://api.bitget.com/api/v2/mix/market/open-interest", params={"symbol": pair, "productType": "USDT-FUTURES"}, headers=HTTP_HEADERS, timeout=timeout).json()
+            payload = data.get("data") if isinstance(data, dict) else {}
+            item = payload[0] if isinstance(payload, list) and payload else payload
+            return _safe_float(item.get("openInterest")) if isinstance(item, dict) else None
+        if alert.exchange == "gate":
+            data = requests.get(f"https://fx-api.gateio.ws/api/v4/futures/usdt/contracts/{pair}", headers={"Accept": "application/json"}, timeout=timeout).json()
+            return _safe_float(data.get("open_interest")) if isinstance(data, dict) else None
+    except Exception:
+        return None
+    return None
 
 
 def alert_to_dict(alert: PriceAlert) -> dict[str, Any]:
@@ -741,6 +1171,14 @@ def alert_to_dict(alert: PriceAlert) -> dict[str, Any]:
         "direction_label": alert.direction_label,
         "target_price": alert.target_price,
         "target_price_text": format_price(alert.target_price),
+        "alert_type": alert.alert_type,
+        "alert_type_label": alert.alert_type_label,
+        "timeframe_sec": alert.timeframe_sec,
+        "timeframe_label": alert.timeframe_label,
+        "threshold_pct": alert.threshold_pct,
+        "repeat_policy": alert.repeat_policy,
+        "repeat_policy_label": alert.repeat_policy_label,
+        "repeat_interval_sec": alert.repeat_interval_sec,
         "condition_text": alert.condition_text,
         "status": alert.status,
         "source": alert.source,
@@ -753,4 +1191,10 @@ def alert_to_dict(alert: PriceAlert) -> dict[str, Any]:
         "triggered_at_text": format_ts(alert.triggered_at),
         "last_price": alert.last_price,
         "last_price_text": format_price(alert.last_price),
+        "last_triggered_at": alert.last_triggered_at,
+        "last_triggered_at_text": format_ts(alert.last_triggered_at),
+        "trigger_count": alert.trigger_count,
+        "last_value": alert.last_value,
+        "last_baseline": alert.last_baseline,
+        "metadata": alert.metadata,
     }

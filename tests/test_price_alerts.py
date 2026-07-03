@@ -72,6 +72,51 @@ class PriceAlertStoreTests(unittest.TestCase):
             self.assertEqual(payload["exchange_label"], "OKX")
             self.assertEqual(payload["market_type_label"], "现货")
 
+    def test_create_price_change_alert_with_repeat_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PriceAlertStore(Path(tmp) / "alerts.db")
+            alert = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="btc",
+                exchange="binance",
+                market_type="futures",
+                pair="BTCUSDT",
+                direction="both",
+                target_price=0,
+                alert_type="price_change",
+                timeframe_sec=300,
+                threshold_pct=2,
+                repeat_policy="interval",
+                repeat_interval_sec=300,
+            )
+
+            self.assertEqual(alert.alert_type, "price_change")
+            self.assertEqual(alert.direction, "both")
+            self.assertEqual(alert.timeframe_label, "5分钟")
+            self.assertEqual(alert.repeat_policy_label, "持续提醒，每5分钟一次")
+            self.assertIn("价格", alert.condition_text)
+
+    def test_repeat_target_alert_stays_active_after_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PriceAlertStore(Path(tmp) / "alerts.db")
+            alert = store.create_alert(
+                user_id="1",
+                chat_id="1",
+                symbol="BTC",
+                direction="above",
+                target_price=60000,
+                repeat_policy="repeat",
+            )
+
+            self.assertTrue(store.mark_triggered(alert, 61000))
+            updated = store.get_alert(alert.id)
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual(updated.status, "active")
+            self.assertEqual(updated.trigger_count, 1)
+
     def test_fetch_price_alert_prices_uses_alert_price_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PriceAlertStore(Path(tmp) / "alerts.db")

@@ -83,7 +83,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_ALLOWED_CHAT_IDS", "允许调用的群/频道 ID", "AI 助手", help="开启群内调用后必须填写。多个用英文逗号分隔，例如 -1001234567890,-1009876543210 或 @channel_username。"),
     ConfigField("AI_PRICE_ALERTS_ENABLE", "启用价格提醒", "AI 助手", kind="bool", help="Telegram 私聊里按按钮手动选择 Binance、Bybit、OKX、Bitget、Gate 的现货或 USDT 合约价格源。"),
     ConfigField("AI_DEFAULT_CHAT_ID", "Web 创建提醒默认接收 ID", "AI 助手", help="通常填你的 Telegram 用户 ID；Telegram 私聊创建提醒时会自动使用当前私聊。"),
-    ConfigField("AI_ALERT_CHECK_INTERVAL_SEC", "价格提醒检查间隔秒数", "AI 助手", kind="int", minimum=5, maximum=3600, help="建议 30-60 秒。越小越实时，但请求更频繁。"),
+    ConfigField("AI_ALERT_CHECK_INTERVAL_SEC", "价格提醒检查间隔秒数", "AI 助手", kind="int", minimum=3, maximum=3600, help="建议 5-10 秒。越小越实时，但请求更频繁。"),
     ConfigField("AI_PROVIDER_ENABLE", "启用 AI 问答接口", "AI 助手", kind="bool", help="关闭时仍可使用价格提醒和本地状态助手。"),
     ConfigField("AI_API_KEY", "AI API Key", "AI 助手", secret=True, help="兼容 OpenAI 格式的接口 Key，例如 DeepSeek/OpenAI 兼容服务。"),
     ConfigField("AI_BASE_URL", "AI 接口地址", "AI 助手", help="例如 https://api.deepseek.com 或其他 OpenAI-compatible 地址。"),
@@ -2730,14 +2730,14 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderAlertRows(alerts) {
       if (!alerts.length) {
-        return `<tr><td colspan="7" class="hint">还没有价格提醒。可以在 Telegram 私聊 AI 助手 Bot 点击“设置价格提醒”，手动选择市场和交易所。</td></tr>`;
+        return `<tr><td colspan="7" class="hint">还没有监控提醒。可以在 Telegram 私聊 AI 助手 Bot 点击“设置价格提醒”，选择目标价、急涨急跌、OI 或资金费率监控。</td></tr>`;
       }
       return alerts.map(item => `
         <tr>
           <td>${escapeHtml(String(item.id))}</td>
           <td><strong>${escapeHtml(item.pair || item.symbol)}</strong><div class="muted">${escapeHtml(item.venue_label || "Binance USDT 合约")}</div></td>
-          <td>${escapeHtml(zhDirection(item.direction))}</td>
-          <td>${escapeHtml(item.target_price_text || item.target_price)}</td>
+          <td>${escapeHtml(item.alert_type_label || "目标价提醒")}</td>
+          <td>${escapeHtml(item.condition_text || `${zhDirection(item.direction)} ${item.target_price_text || item.target_price}`)}<div class="muted">${escapeHtml(item.repeat_policy_label || "提醒一次")}</div></td>
           <td>${neutralPill(zhAlertStatus(item.status))}</td>
           <td>${escapeHtml(item.last_price_text || "暂无")}</td>
           <td>
@@ -2776,7 +2776,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="panel span-12">
-          <h3 class="section-title">新增价格提醒</h3>
+          <h3 class="section-title">新增目标价提醒</h3>
           <div class="form-grid">
             <div class="field"><label>币种</label><input id="newAlertSymbol" placeholder="BTC 或 BTCUSDT"></div>
             <div class="field"><label>方向</label><select id="newAlertDirection"><option value="above">高于或等于</option><option value="below">低于或等于</option></select></div>
@@ -2786,9 +2786,9 @@ INDEX_HTML = r"""<!doctype html>
           <div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="createWebAlert()">创建提醒</button></div>
         </div>
         <div class="panel span-12">
-          <h3 class="section-title">价格提醒列表</h3>
+          <h3 class="section-title">监控提醒列表</h3>
           <table class="table">
-            <thead><tr><th>ID</th><th>币种</th><th>方向</th><th>目标价</th><th>状态</th><th>最后价格</th><th>操作</th></tr></thead>
+            <thead><tr><th>ID</th><th>币种</th><th>类型</th><th>条件</th><th>状态</th><th>最后价格</th><th>操作</th></tr></thead>
             <tbody>${renderAlertRows(alertsData.alerts || [])}</tbody>
           </table>
         </div>

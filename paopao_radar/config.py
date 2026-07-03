@@ -134,8 +134,8 @@ class Settings:
     ai_price_alerts_enable: bool = True
     ai_price_alerts_db_path: Path = BASE_DIR / "data" / "price_alerts.db"
     ai_default_chat_id: str = ""
-    ai_alert_check_interval_sec: int = 30
-    ai_poll_timeout_sec: int = 20
+    ai_alert_check_interval_sec: int = 10
+    ai_poll_timeout_sec: int = 5
     ai_provider_enable: bool = False
     ai_api_key: str = ""
     ai_base_url: str = "https://api.deepseek.com"
@@ -313,8 +313,8 @@ class Settings:
             ai_price_alerts_enable=env_bool("AI_PRICE_ALERTS_ENABLE", True),
             ai_price_alerts_db_path=data_path(data_dir, "AI_PRICE_ALERTS_DB_FILE", "price_alerts.db"),
             ai_default_chat_id=os.getenv("AI_DEFAULT_CHAT_ID", "").strip(),
-            ai_alert_check_interval_sec=env_int("AI_ALERT_CHECK_INTERVAL_SEC", 30),
-            ai_poll_timeout_sec=env_int("AI_POLL_TIMEOUT_SEC", 20),
+            ai_alert_check_interval_sec=env_int("AI_ALERT_CHECK_INTERVAL_SEC", 10),
+            ai_poll_timeout_sec=env_int("AI_POLL_TIMEOUT_SEC", 5),
             ai_provider_enable=env_bool("AI_PROVIDER_ENABLE", False),
             ai_api_key=os.getenv("AI_API_KEY", "").strip(),
             ai_base_url=os.getenv("AI_BASE_URL", "https://api.deepseek.com").rstrip("/"),

@@ -18,7 +18,9 @@ from .price_alerts import (
     PriceAlertStore,
     alert_to_dict,
     discover_alert_markets,
+    fetch_open_interest_value,
     fetch_alert_market_quote,
+    fetch_price_change_snapshot,
     fetch_binance_prices,
     fetch_price_alert_prices,
     format_price,
@@ -33,6 +35,9 @@ from .symbol_dossier import (
     format_symbol_dossier_report,
     is_symbol_dossier_request,
 )
+from .data_sources import DataQuality, HttpClient
+from .funding_alert import classify_funding_alert, funding_row_text
+from .funding_sources import MultiExchangeFundingClient
 
 
 HOME_TEXT = """泡泡 AI 助手 Bot
@@ -49,7 +54,7 @@ HOME_TEXT = """泡泡 AI 助手 Bot
 我会结合历史信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率做解读。
 
 3. 价格提醒
-点击“设置价格提醒”，输入币种后手动选择现货/合约、交易所和目标价。
+点击“设置价格提醒”，选择目标价、价格急涨急跌、持仓量变化或资金费率变化。
 创建前会让你确认，确认后才会保存。
 
 注意：自然语言不再创建提醒。只转发带价格的雷达信号，不会自动创建提醒。
@@ -104,16 +109,17 @@ SOL 可以做多吗
 
 PRICE_HELP_TEXT = """价格提醒说明
 
-当前泡泡 AI 助手的价格提醒改为手动选择模式，不靠 AI 猜。
+当前泡泡 AI 助手的价格提醒是手动选择模式，不靠 AI 猜。
 
 按钮模式：
 1. 点击“设置价格提醒”
-2. 输入币种，例如 BTC、ETH、DOGE
-3. 系统自动识别五大交易所里这个币可用的现货/USDT 合约
-4. 手动选择现货或合约
-5. 手动选择交易所：Binance、Bybit、OKX、Bitget、Gate
-6. 输入目标价格
-7. 点击“确认添加”后才会创建提醒
+2. 选择监控类型：目标价、价格急涨急跌、持仓量变化、资金费率变化
+3. 输入币种，例如 BTC、ETH、DOGE
+4. 系统自动识别五大交易所里这个币可用的现货/USDT 合约
+5. 手动选择市场和交易所：Binance、Bybit、OKX、Bitget、Gate
+6. 按类型输入目标价，或选择 5/15/60 分钟窗口、1%-5% 阈值和方向
+7. 选择提醒方式：提醒一次、重复提醒、持续每5分钟提醒
+8. 点击“确认添加”后才会创建提醒
 
 方向判断：
 目标价高于当前价：价格高于或等于目标价时提醒
@@ -161,12 +167,27 @@ GWEI 怎么看
 
 ALERT_SETUP_TEXT = """设置价格提醒
 
-请先发送币种简称，例如：
+请选择要创建的监控类型：
+
+1. 目标价提醒
+价格高于或低于某个目标价时提醒。
+
+2. 价格急涨急跌
+5分钟 / 15分钟 / 60分钟 内，现货或合约价格波动超过 1%-5% 时提醒。
+
+3. 持仓量变化
+合约 OI 在所选窗口内变化超过 1%-5% 时提醒。
+
+4. 资金费率变化
+监控资金费率周期缩短，例如 8H->4H、8H->1H、4H->1H，以及极正/极负费率。
+"""
+
+ALERT_SYMBOL_TEXT = """请输入币种简称，例如：
 BTC
 ETH
 DOGE
 
-下一步会自动识别五大交易所里这个币可用的现货/USDT 合约，然后让你手动选择市场和交易所。
+下一步会自动识别 Binance、Bybit、OKX、Bitget、Gate 里可用的现货或 USDT 合约。
 """
 
 
@@ -204,6 +225,14 @@ def alert_confirm_markup(symbol: str, direction: str, target_price: float) -> di
     ])
 
 
+def alert_kind_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("目标价提醒", "alert:kind:target_price"), ("价格急涨急跌", "alert:kind:price_change")],
+        [("持仓量变化", "alert:kind:oi_change"), ("资金费率变化", "alert:kind:funding_change")],
+        [("取消", "flow:cancel")],
+    ])
+
+
 def cancel_markup() -> dict[str, Any]:
     return inline_keyboard([[("取消", "flow:cancel")]])
 
@@ -236,6 +265,36 @@ def pending_alert_markup() -> dict[str, Any]:
     return inline_keyboard([
         [("确认添加提醒", "alert:confirm_pending")],
         [("重新设置", "flow:alert_setup"), ("取消", "flow:cancel")],
+    ])
+
+
+def timeframe_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("5分钟", "alert:timeframe:300"), ("15分钟", "alert:timeframe:900"), ("60分钟", "alert:timeframe:3600")],
+        [("取消", "flow:cancel")],
+    ])
+
+
+def threshold_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("1%", "alert:threshold:1"), ("2%", "alert:threshold:2"), ("3%", "alert:threshold:3")],
+        [("4%", "alert:threshold:4"), ("5%", "alert:threshold:5")],
+        [("取消", "flow:cancel")],
+    ])
+
+
+def change_direction_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("上涨", "alert:direction:up"), ("下跌", "alert:direction:down"), ("双向", "alert:direction:both")],
+        [("取消", "flow:cancel")],
+    ])
+
+
+def repeat_policy_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("提醒一次", "alert:repeat:once"), ("重复提醒", "alert:repeat:repeat")],
+        [("持续提醒 每5分钟", "alert:repeat:interval:300")],
+        [("取消", "flow:cancel")],
     ])
 
 
@@ -666,17 +725,24 @@ def user_label(message: dict[str, Any]) -> tuple[str, str]:
 
 
 def alert_created_text(alert: PriceAlert) -> str:
+    detail = [f"类型：{alert.alert_type_label}"]
+    if alert.alert_type == "target_price":
+        detail.append(f"条件：价格 {alert.direction_label} {format_price(alert.target_price)}")
+    elif alert.alert_type in {"price_change", "oi_change"}:
+        detail.append(f"条件：{alert.timeframe_label} {alert.direction_label}超过 {alert.threshold_pct:g}%")
+    else:
+        detail.append("条件：资金费率周期缩短，或出现极正/极负资金费率")
+    detail.append(f"触发方式：{alert.repeat_policy_label}")
     return "\n".join(
         [
-            "已创建价格提醒",
+            "已创建监控提醒",
             "",
             f"编号：{alert.id}",
             f"币种：{alert.symbol}",
             f"交易所：{alert.exchange_label}",
             f"市场：{alert.market_type_label}",
             f"交易对：{alert.pair}",
-            f"条件：价格 {alert.direction_label} {format_price(alert.target_price)}",
-            "触发方式：触发一次后自动停止",
+            *detail,
             "",
             f"查看：/alerts",
             f"暂停：/pause {alert.id}",
@@ -685,20 +751,22 @@ def alert_created_text(alert: PriceAlert) -> str:
     )
 
 
-def alert_trigger_text(alert: PriceAlert, price: float) -> str:
+def alert_trigger_text(alert: PriceAlert, price: float, detail: str = "") -> str:
+    ending = "这条提醒已经标记为已触发，不会重复发送。" if alert.repeat_policy == "once" else f"这条提醒会继续运行：{alert.repeat_policy_label}。"
     return "\n".join(
         [
-            "价格提醒已触发",
+            f"{alert.alert_type_label}已触发",
             "",
             f"币种：{alert.symbol}",
             f"交易所：{alert.exchange_label}",
             f"市场：{alert.market_type_label}",
             f"交易对：{alert.pair}",
-            f"条件：价格 {alert.direction_label} {format_price(alert.target_price)}",
+            f"条件：{alert.condition_text}",
             f"当前价：{format_price(price)}",
+            detail.strip(),
             f"提醒编号：{alert.id}",
             "",
-            "这条提醒已经标记为已触发，不会重复发送。",
+            ending,
         ]
     )
 
@@ -710,7 +778,7 @@ def list_alerts_text(alerts: list[PriceAlert]) -> str:
     status_map = {"active": "运行中", "paused": "已暂停", "triggered": "已触发"}
     for alert in alerts[:30]:
         lines.append(
-            f"{alert.id}. {alert.venue_label} {alert.pair} {alert.direction_label} {format_price(alert.target_price)} "
+            f"{alert.id}. {alert.alert_type_label}｜{alert.condition_text}｜{alert.repeat_policy_label} "
             f"[{status_map.get(alert.status, alert.status)}]"
         )
     return "\n".join(lines)
@@ -718,11 +786,28 @@ def list_alerts_text(alerts: list[PriceAlert]) -> str:
 
 def price_text(settings: Settings, symbol_text: str) -> str:
     symbol = normalize_symbol(symbol_text)
-    prices = fetch_binance_prices(settings, [symbol])
-    price = prices.get(symbol)
-    if price is None:
-        return f"没有从 Binance 合约行情里读到 {symbol} 的价格。"
-    return f"{symbol} 当前 Binance 合约价格：{format_price(price)}"
+    quotes = discover_alert_markets(settings, symbol)
+    if not quotes:
+        return f"没有从 Binance、Bybit、OKX、Bitget、Gate 里读到 {symbol} 的现货或合约价格。"
+    futures = [quote for quote in quotes if quote.market_type == "futures"]
+    spot = [quote for quote in quotes if quote.market_type == "spot"]
+    lines = [f"{symbol} 多交易所价格", ""]
+    if futures:
+        lines.append("合约：")
+        for quote in futures:
+            lines.append(f"{quote.exchange_label:<8} {quote.pair:<16} {format_price(quote.price)}")
+        lines.append("")
+    if spot:
+        lines.append("现货：")
+        for quote in spot:
+            lines.append(f"{quote.exchange_label:<8} {quote.pair:<16} {format_price(quote.price)}")
+        lines.append("")
+    lines.extend([
+        "可继续发送：",
+        f"{symbol.replace('USDT', '')} 怎么看",
+        "或点击首页“设置价格提醒”。",
+    ])
+    return "\n".join(lines).strip()
 
 
 def session_key(chat_id: str | int, user_id: str | int) -> str:
@@ -792,6 +877,48 @@ def alert_confirmation_text(
     return "\n".join(lines)
 
 
+def monitor_confirmation_text(pending: dict[str, Any]) -> str:
+    alert_type = str(pending.get("alert_type") or "target_price")
+    symbol = str(pending.get("symbol") or "")
+    exchange = str(pending.get("exchange_label") or pending.get("exchange") or "")
+    market = str(pending.get("market_type_label") or pending.get("market_type") or "")
+    pair = str(pending.get("pair") or symbol)
+    direction = str(pending.get("direction") or "both")
+    direction_label = {"up": "上涨", "down": "下跌", "both": "双向", "above": "高于或等于", "below": "低于或等于"}.get(direction, direction)
+    repeat_label = str(pending.get("repeat_label") or "提醒一次")
+    lines = [
+        "请确认添加监控提醒",
+        "",
+        f"类型：{ {'target_price': '目标价提醒', 'price_change': '价格急涨急跌', 'oi_change': '持仓量变化', 'funding_change': '资金费率变化'}.get(alert_type, alert_type) }",
+        f"币种：{symbol}",
+        f"交易所：{exchange}",
+        f"市场：{market}",
+        f"交易对：{pair}",
+    ]
+    if alert_type == "target_price":
+        lines.extend([
+            f"目标价：{format_price(float(pending.get('target_price') or 0))}",
+            f"触发条件：价格 {direction_label} {format_price(float(pending.get('target_price') or 0))}",
+        ])
+    elif alert_type in {"price_change", "oi_change"}:
+        lines.extend([
+            f"时间窗口：{pending.get('timeframe_label')}",
+            f"波动阈值：{pending.get('threshold_pct')}%",
+            f"方向：{direction_label}",
+        ])
+    else:
+        lines.extend([
+            "监控内容：结算周期缩短、极正/极负资金费率",
+            "说明：会读取多交易所资金费率快照；当前选择的交易所用于这条个人提醒的价格源和备注。",
+        ])
+    lines.extend([
+        f"提醒方式：{repeat_label}",
+        "",
+        "确认后才会创建提醒；取消则不会保存。",
+    ])
+    return "\n".join(lines)
+
+
 def alert_confirmation_reply(
     settings: Settings,
     parsed: ParsedAlertRequest,
@@ -805,8 +932,8 @@ def alert_confirmation_reply(
 
 
 def start_alert_setup_session(sessions: dict[str, dict[str, Any]], key: str) -> BotReply:
-    sessions[key] = {"state": "alert_symbol", "created_at": int(time.time())}
-    return BotReply(ALERT_SETUP_TEXT, cancel_markup())
+    sessions[key] = {"state": "alert_kind", "created_at": int(time.time())}
+    return BotReply(ALERT_SETUP_TEXT, alert_kind_markup())
 
 
 def handle_alert_setup_session(
@@ -826,15 +953,18 @@ def handle_alert_setup_session(
 
     state = str(session.get("state") or "")
     if state == "alert_symbol":
+        alert_type = str(session.get("alert_type") or "target_price")
         symbol_text = extract_symbol_text(text) or text
         try:
             symbol = normalize_symbol(symbol_text)
         except Exception as exc:
             return BotReply(f"没有识别出币种：{exc}\n请只输入币种简称，例如 BTC、ETH、DOGE。", cancel_markup())
         quotes = discover_alert_markets(settings, symbol)
+        if alert_type in {"oi_change", "funding_change"}:
+            quotes = [quote for quote in quotes if quote.market_type == "futures"]
         if not quotes:
             return BotReply(
-                f"没有在 Binance、Bybit、OKX、Bitget、Gate 里识别到 {symbol} 的现货或 USDT 合约价格。\n"
+                f"没有在 Binance、Bybit、OKX、Bitget、Gate 里识别到 {symbol} 的可用价格源。\n"
                 "可能是这个币没有 USDT 交易对，也可能是交易所接口临时失败。你可以换个币种再试。",
                 cancel_markup(),
             )
@@ -844,7 +974,7 @@ def handle_alert_setup_session(
             "quotes": [quote_to_dict(quote) for quote in quotes],
         })
         market_types = sorted({quote.market_type for quote in quotes})
-        if len(market_types) == 1:
+        if alert_type in {"oi_change", "funding_change"} or len(market_types) == 1:
             selected_market = market_types[0]
             filtered = [quote for quote in quotes if quote.market_type == selected_market]
             session.update({"state": "alert_exchange", "market_type": selected_market})
@@ -882,28 +1012,26 @@ def handle_alert_setup_session(
         current_price = fresh_quote.price
         direction = infer_alert_direction(target_price, current_price, fallback="")
         session.update({
-            "state": "alert_confirm",
+            "state": "alert_repeat",
             "pending_alert": {
+                "alert_type": "target_price",
                 "symbol": symbol,
                 "exchange": fresh_quote.exchange,
+                "exchange_label": fresh_quote.exchange_label,
                 "market_type": fresh_quote.market_type,
+                "market_type_label": fresh_quote.market_type_label,
                 "pair": fresh_quote.pair,
                 "direction": direction,
                 "target_price": target_price,
                 "current_price": current_price,
+                "repeat_policy": "once",
+                "repeat_interval_sec": 0,
+                "repeat_label": "提醒一次",
             },
         })
         return BotReply(
-            alert_confirmation_text(
-                symbol,
-                direction,
-                target_price,
-                current_price,
-                exchange=fresh_quote.exchange_label,
-                market_type=fresh_quote.market_type_label,
-                pair=fresh_quote.pair,
-            ),
-            pending_alert_markup(),
+            "请选择触发后的提醒方式：\n\n提醒一次：触发后自动停止。\n重复提醒：价格重新穿越条件时再次提醒。\n持续提醒：条件持续满足时每5分钟提醒一次。",
+            repeat_policy_markup(),
         )
 
     sessions.pop(key, None)
@@ -923,6 +1051,11 @@ def create_alert_from_context(
     exchange: str = "binance",
     market_type: str = "futures",
     pair: str | None = None,
+    alert_type: str = "target_price",
+    timeframe_sec: int = 0,
+    threshold_pct: float = 0.0,
+    repeat_policy: str = "once",
+    repeat_interval_sec: int = 0,
 ) -> PriceAlert:
     return store.create_alert(
         user_id=user_id,
@@ -936,6 +1069,11 @@ def create_alert_from_context(
         target_price=target_price,
         source=source,
         note=note,
+        alert_type=alert_type,
+        timeframe_sec=timeframe_sec,
+        threshold_pct=threshold_pct,
+        repeat_policy=repeat_policy,
+        repeat_interval_sec=repeat_interval_sec,
     )
 
 
@@ -1441,10 +1579,9 @@ def handle_callback_query(
             "\n".join([
                 "查询价格",
                 "",
-                "可以直接发送：BTC 现在多少钱、ETH 当前价格。",
-                "备用命令：/price BTC",
+                "可以直接发送：BTC、ETH、BTC 现在多少钱、ETH 当前价格。",
                 "",
-                "当前读取 Binance USDT 合约价格。",
+                "当前会读取 Binance、Bybit、OKX、Bitget、Gate 的现货和 USDT 合约价格。",
             ]),
             back_home_markup(),
         )
@@ -1459,6 +1596,21 @@ def handle_callback_query(
     if data == "flow:cancel":
         active_sessions.pop(key, None)
         return BotReply("已取消。", main_menu_markup())
+    if data.startswith("alert:kind:"):
+        session = active_sessions.get(key)
+        if session is None:
+            return BotReply("会话已失效，请重新设置。", main_menu_markup())
+        alert_type = data.rsplit(":", 1)[-1]
+        labels = {
+            "target_price": "目标价提醒",
+            "price_change": "价格急涨急跌",
+            "oi_change": "持仓量变化",
+            "funding_change": "资金费率变化",
+        }
+        if alert_type not in labels:
+            return BotReply("这个提醒类型暂时无法识别，请重新选择。", alert_kind_markup())
+        session.update({"state": "alert_symbol", "alert_type": alert_type})
+        return BotReply(f"已选择：{labels[alert_type]}\n\n{ALERT_SYMBOL_TEXT}", cancel_markup())
     if data.startswith("alert:market:"):
         session = active_sessions.get(key)
         if not session:
@@ -1485,21 +1637,133 @@ def handle_callback_query(
         selected = next((quote for quote in quotes if quote.key == selected_key), None)
         if selected is None:
             return BotReply("这个交易所选项已失效，请重新输入币种。", main_menu_markup())
-        session.update({"state": "alert_price", "selected_quote": quote_to_dict(selected)})
+        alert_type = str(session.get("alert_type") or "target_price")
+        session.update({"selected_quote": quote_to_dict(selected)})
+        if alert_type == "target_price":
+            session.update({"state": "alert_price"})
+            return BotReply(
+                "\n".join([
+                    "已选择价格源",
+                    "",
+                    f"交易所：{selected.exchange_label}",
+                    f"市场：{selected.market_type_label}",
+                    f"交易对：{selected.pair}",
+                    f"当前价：{format_price(selected.price)}",
+                    "",
+                    "请发送目标价格，例如：58000",
+                    "目标价高于当前价会按上涨提醒；低于当前价会按下跌提醒。",
+                ]),
+                cancel_markup(),
+            )
+        if alert_type in {"price_change", "oi_change"}:
+            session.update({"state": "alert_timeframe"})
+            return BotReply(
+                "\n".join([
+                    "已选择监控源",
+                    "",
+                    f"交易所：{selected.exchange_label}",
+                    f"市场：{selected.market_type_label}",
+                    f"交易对：{selected.pair}",
+                    "",
+                    "请选择监控时间窗口：",
+                ]),
+                timeframe_markup(),
+            )
+        session.update({
+            "state": "alert_repeat",
+            "pending_alert": {
+                "alert_type": "funding_change",
+                "symbol": selected.symbol,
+                "exchange": selected.exchange,
+                "exchange_label": selected.exchange_label,
+                "market_type": selected.market_type,
+                "market_type_label": selected.market_type_label,
+                "pair": selected.pair,
+                "direction": "both",
+                "target_price": 0,
+                "timeframe_sec": 0,
+                "timeframe_label": "-",
+                "threshold_pct": 0,
+                "repeat_policy": "once",
+                "repeat_interval_sec": 0,
+                "repeat_label": "提醒一次",
+            },
+        })
         return BotReply(
             "\n".join([
-                "已选择价格源",
+                "已选择资金费率监控源",
                 "",
                 f"交易所：{selected.exchange_label}",
-                f"市场：{selected.market_type_label}",
+                "市场：USDT 合约",
                 f"交易对：{selected.pair}",
-                f"当前价：{format_price(selected.price)}",
                 "",
-                "请发送目标价格，例如：58000",
-                "目标价高于当前价会按上涨提醒；低于当前价会按下跌提醒。",
+                "请选择触发后的提醒方式：",
             ]),
-            cancel_markup(),
+            repeat_policy_markup(),
         )
+    if data.startswith("alert:timeframe:"):
+        session = active_sessions.get(key)
+        if not session:
+            return BotReply("会话已失效，请重新设置。", main_menu_markup())
+        timeframe = int(data.rsplit(":", 1)[-1])
+        session.update({"state": "alert_threshold", "timeframe_sec": timeframe})
+        return BotReply("请选择波动阈值：", threshold_markup())
+    if data.startswith("alert:threshold:"):
+        session = active_sessions.get(key)
+        if not session:
+            return BotReply("会话已失效，请重新设置。", main_menu_markup())
+        threshold = float(data.rsplit(":", 1)[-1])
+        session.update({"state": "alert_direction", "threshold_pct": threshold})
+        return BotReply("请选择触发方向：", change_direction_markup())
+    if data.startswith("alert:direction:"):
+        session = active_sessions.get(key)
+        if not session:
+            return BotReply("会话已失效，请重新设置。", main_menu_markup())
+        direction = data.rsplit(":", 1)[-1]
+        selected = session.get("selected_quote")
+        quote = quote_from_dict(selected) if isinstance(selected, dict) else None
+        if not quote:
+            return BotReply("会话已失效，请重新设置。", main_menu_markup())
+        timeframe = int(session.get("timeframe_sec") or 300)
+        threshold = float(session.get("threshold_pct") or 1)
+        alert_type = str(session.get("alert_type") or "price_change")
+        session.update({
+            "state": "alert_repeat",
+            "pending_alert": {
+                "alert_type": alert_type,
+                "symbol": quote.symbol,
+                "exchange": quote.exchange,
+                "exchange_label": quote.exchange_label,
+                "market_type": quote.market_type,
+                "market_type_label": quote.market_type_label,
+                "pair": quote.pair,
+                "direction": direction,
+                "target_price": 0,
+                "timeframe_sec": timeframe,
+                "timeframe_label": {300: "5分钟", 900: "15分钟", 3600: "60分钟"}.get(timeframe, f"{timeframe}秒"),
+                "threshold_pct": threshold,
+                "repeat_policy": "once",
+                "repeat_interval_sec": 0,
+                "repeat_label": "提醒一次",
+            },
+        })
+        return BotReply("请选择触发后的提醒方式：", repeat_policy_markup())
+    if data.startswith("alert:repeat:"):
+        session = active_sessions.get(key)
+        if not session:
+            return BotReply("会话已失效，请重新设置。", main_menu_markup())
+        pending = session.get("pending_alert")
+        if not isinstance(pending, dict):
+            return BotReply("还没有待确认的提醒，请重新设置。", main_menu_markup())
+        parts = data.split(":")
+        policy = parts[2] if len(parts) >= 3 else "once"
+        interval = int(parts[3]) if len(parts) >= 4 and str(parts[3]).isdigit() else 0
+        if policy == "interval" and interval <= 0:
+            interval = 300
+        repeat_label = "提醒一次" if policy == "once" else ("重复提醒" if policy == "repeat" else f"持续提醒，每{max(1, interval // 60)}分钟一次")
+        pending.update({"repeat_policy": policy, "repeat_interval_sec": interval, "repeat_label": repeat_label})
+        session.update({"state": "alert_confirm", "pending_alert": pending})
+        return BotReply(monitor_confirmation_text(pending), pending_alert_markup())
     if data == "alert:confirm_pending":
         session = active_sessions.get(key)
         pending = session.get("pending_alert") if isinstance(session, dict) else None
@@ -1516,9 +1780,14 @@ def handle_callback_query(
                 market_type=str(pending.get("market_type") or "futures"),
                 pair=str(pending.get("pair") or ""),
                 direction=str(pending.get("direction") or ""),
-                target_price=parse_price(pending.get("target_price") or ""),
+                target_price=parse_price(pending.get("target_price") or "") if str(pending.get("alert_type") or "target_price") == "target_price" else 0,
                 source="telegram-button",
                 note="button-confirm",
+                alert_type=str(pending.get("alert_type") or "target_price"),
+                timeframe_sec=int(pending.get("timeframe_sec") or 0),
+                threshold_pct=float(pending.get("threshold_pct") or 0),
+                repeat_policy=str(pending.get("repeat_policy") or "once"),
+                repeat_interval_sec=int(pending.get("repeat_interval_sec") or 0),
             )
         except Exception as exc:
             return BotReply(f"创建提醒失败：{type(exc).__name__}: {exc}", main_menu_markup())
@@ -1550,14 +1819,132 @@ def handle_callback_query(
     return BotReply("这个按钮暂时无法识别，请返回首页重新选择。", main_menu_markup())
 
 
+def _change_direction_hit(direction: str, change_pct: float, threshold_pct: float) -> bool:
+    if direction == "up":
+        return change_pct >= threshold_pct
+    if direction == "down":
+        return change_pct <= -threshold_pct
+    return abs(change_pct) >= threshold_pct
+
+
+def _monitor_can_send(alert: PriceAlert, current_value: float, change_pct: float | None = None) -> bool:
+    now = int(time.time())
+    if alert.repeat_policy == "once":
+        return alert.trigger_count <= 0
+    if alert.repeat_policy == "interval":
+        return not alert.last_triggered_at or now - int(alert.last_triggered_at) >= max(60, int(alert.repeat_interval_sec or 300))
+    if alert.last_value is None:
+        return alert.trigger_count <= 0
+    if change_pct is not None:
+        previous_change = alert.last_baseline if alert.last_baseline is not None else 0
+        if alert.direction == "up":
+            return previous_change < alert.threshold_pct <= change_pct
+        if alert.direction == "down":
+            return previous_change > -alert.threshold_pct >= change_pct
+        return abs(previous_change) < alert.threshold_pct <= abs(change_pct)
+    return current_value != alert.last_value
+
+
+def evaluate_price_change_alert(settings: Settings, store: PriceAlertStore, alert: PriceAlert) -> dict[str, Any] | None:
+    snapshot = fetch_price_change_snapshot(settings, alert)
+    if not snapshot:
+        return None
+    current = float(snapshot["current"])
+    baseline = float(snapshot["baseline"])
+    change_pct = float(snapshot["change_pct"])
+    should_send = _change_direction_hit(alert.direction, change_pct, alert.threshold_pct) and _monitor_can_send(alert, current, change_pct)
+    store.update_monitor_state(alert.id, last_value=current, last_baseline=change_pct, last_price=current)
+    if not should_send:
+        return None
+    detail = "\n".join([
+        f"时间窗口：{alert.timeframe_label}",
+        f"窗口起点：{format_price(baseline)}",
+        f"当前价格：{format_price(current)}",
+        f"价格波动：{change_pct:+.2f}%（阈值 {alert.threshold_pct:g}%）",
+    ])
+    return {"price": current, "detail": detail, "message": f"price_change {change_pct:+.2f}%"}
+
+
+def evaluate_oi_change_alert(settings: Settings, store: PriceAlertStore, alert: PriceAlert) -> dict[str, Any] | None:
+    current = fetch_open_interest_value(settings, alert)
+    if current is None or current <= 0:
+        return None
+    baseline = alert.last_value
+    change_pct = ((current - baseline) / baseline * 100) if baseline and baseline > 0 else None
+    should_send = (
+        change_pct is not None
+        and _change_direction_hit(alert.direction, change_pct, alert.threshold_pct)
+        and _monitor_can_send(alert, current, change_pct)
+    )
+    store.update_monitor_state(alert.id, last_value=current, last_baseline=change_pct if change_pct is not None else None)
+    if not should_send or change_pct is None or baseline is None:
+        return None
+    quote = fetch_alert_market_quote(settings, alert.symbol, alert.exchange, alert.market_type, alert.pair)
+    current_price = quote.price if quote else (alert.last_price or 0)
+    detail = "\n".join([
+        f"时间窗口：{alert.timeframe_label}（按服务采样基准计算）",
+        f"上次 OI：{baseline:,.4f}",
+        f"当前 OI：{current:,.4f}",
+        f"OI 变化：{change_pct:+.2f}%（阈值 {alert.threshold_pct:g}%）",
+    ])
+    return {"price": float(current_price or 0), "detail": detail, "message": f"oi_change {change_pct:+.2f}%"}
+
+
+def evaluate_funding_change_alert(settings: Settings, store: PriceAlertStore, alert: PriceAlert) -> dict[str, Any] | None:
+    quality = DataQuality()
+    http = HttpClient(settings, quality)
+    client = MultiExchangeFundingClient(settings, http)
+    rows = client.snapshot(alert.symbol, include_history=True)
+    if not rows:
+        return None
+    classification = classify_funding_alert(rows, settings)
+    max_abs = max((abs(float(row.get("funding_pct") or 0)) for row in rows if isinstance(row, dict)), default=0.0)
+    should_send = bool(classification) and _monitor_can_send(alert, max_abs)
+    store.update_monitor_state(alert.id, last_value=max_abs)
+    if not should_send:
+        return None
+    quote = fetch_alert_market_quote(settings, alert.symbol, alert.exchange, alert.market_type, alert.pair)
+    current_price = quote.price if quote else (alert.last_price or 0)
+    row_lines = [funding_row_text(row, settings) for row in rows[:5]]
+    detail = "\n".join([
+        f"风险类型：{'、'.join(classification.get('types') or [])}",
+        f"风险等级：{classification.get('risk') or '观察'}",
+        "资金费率：",
+        *row_lines,
+    ])
+    return {"price": float(current_price or 0), "detail": detail, "message": f"funding_change {classification.get('primary_kind') or ''}"}
+
+
+def evaluate_monitor_alert(settings: Settings, store: PriceAlertStore, alert: PriceAlert) -> dict[str, Any] | None:
+    if alert.alert_type == "price_change":
+        return evaluate_price_change_alert(settings, store, alert)
+    if alert.alert_type == "oi_change":
+        return evaluate_oi_change_alert(settings, store, alert)
+    if alert.alert_type == "funding_change":
+        return evaluate_funding_change_alert(settings, store, alert)
+    return None
+
+
 def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot: TelegramBotClient) -> dict[str, Any]:
     if not settings.ai_price_alerts_enable:
         return {"ok": True, "enabled": False, "checked": 0, "triggered": 0}
     active = store.list_alerts(status="active", limit=1000)
     if not active:
         return {"ok": True, "enabled": True, "checked": 0, "triggered": 0}
-    prices = fetch_price_alert_prices(settings, active)
-    for alert in active:
+    target_alerts = [alert for alert in active if alert.alert_type == "target_price"]
+    monitor_alerts = [alert for alert in active if alert.alert_type != "target_price"]
+    prices = fetch_price_alert_prices(settings, target_alerts)
+    sent = 0
+    errors: list[str] = []
+    for alert, price in triggered_alerts(target_alerts, prices):
+        if not store.mark_triggered(alert, price):
+            continue
+        try:
+            bot.send_message(alert.chat_id, alert_trigger_text(alert, price))
+            sent += 1
+        except Exception as exc:
+            errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
+    for alert in target_alerts:
         price = prices.get(alert.price_key)
         if price is not None:
             store.update_last_price(
@@ -1567,13 +1954,18 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
                 market_type=alert.market_type,
                 pair=alert.pair,
             )
-    sent = 0
-    errors: list[str] = []
-    for alert, price in triggered_alerts(active, prices):
-        if not store.mark_triggered(alert.id, price):
+    for alert in monitor_alerts:
+        try:
+            trigger = evaluate_monitor_alert(settings, store, alert)
+        except Exception as exc:
+            errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
+            continue
+        if not trigger:
+            continue
+        if not store.mark_triggered(alert, trigger["price"], str(trigger.get("message") or "")):
             continue
         try:
-            bot.send_message(alert.chat_id, alert_trigger_text(alert, price))
+            bot.send_message(alert.chat_id, alert_trigger_text(alert, trigger["price"], str(trigger.get("detail") or "")))
             sent += 1
         except Exception as exc:
             errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
@@ -1606,8 +1998,8 @@ def run_ai_assistant_service() -> int:
             bot_user_id = str(bot_info.get("id") or "")
         except Exception as exc:
             print(f"ai-assistant: getMe failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-        poll_timeout = max(1, int(settings.ai_poll_timeout_sec))
-        alert_interval = max(5, int(settings.ai_alert_check_interval_sec))
+        poll_timeout = max(1, min(5, int(settings.ai_poll_timeout_sec)))
+        alert_interval = max(3, int(settings.ai_alert_check_interval_sec))
         next_alert_check = 0.0
         sessions: dict[str, dict[str, Any]] = {}
         print(
@@ -1717,9 +2109,14 @@ def create_price_alert_from_payload(data: dict[str, Any], settings: Settings | N
         market_type=str(data.get("market_type") or "futures"),
         pair=str(data.get("pair") or ""),
         direction=str(data.get("direction") or ""),
-        target_price=parse_price(data.get("target_price") or ""),
+        target_price=parse_price(data.get("target_price") or "") if str(data.get("alert_type") or "target_price") == "target_price" else 0,
         source="web",
         note=str(data.get("note") or ""),
+        alert_type=str(data.get("alert_type") or "target_price"),
+        timeframe_sec=int(data.get("timeframe_sec") or 0),
+        threshold_pct=float(data.get("threshold_pct") or 0),
+        repeat_policy=str(data.get("repeat_policy") or "once"),
+        repeat_interval_sec=int(data.get("repeat_interval_sec") or 0),
     )
     return {"ok": True, "alert": alert_to_dict(alert), "message": "价格提醒已创建"}
 

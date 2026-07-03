@@ -175,7 +175,20 @@ class AiAssistantTests(unittest.TestCase):
 
             first = handle_callback_query(settings, store, callback, sessions=sessions)  # type: ignore[arg-type]
             self.assertIsNotNone(first)
-            self.assertIn("请先发送币种", first.text if first else "")
+            self.assertIn("请选择要创建的监控类型", first.text if first else "")
+            self.assertEqual(sessions["42:42"]["state"], "alert_kind")
+
+            kind_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": "alert:kind:target_price",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions=sessions,  # type: ignore[arg-type]
+            )
+            self.assertIn("已选择：目标价提醒", kind_reply.text if kind_reply else "")
             self.assertEqual(sessions["42:42"]["state"], "alert_symbol")
 
             quotes = [
@@ -226,9 +239,21 @@ class AiAssistantTests(unittest.TestCase):
                     sessions=sessions,  # type: ignore[arg-type]
                 )
 
-            self.assertIn("请确认添加价格提醒", confirm_reply.text if confirm_reply else "")
-            self.assertIn("价格 低于或等于 $58,000.00", confirm_reply.text if confirm_reply else "")
+            self.assertIn("请选择触发后的提醒方式", confirm_reply.text if confirm_reply else "")
             self.assertEqual(store.stats()["total"], 0)
+
+            repeat_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": "alert:repeat:once",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions=sessions,  # type: ignore[arg-type]
+            )
+            self.assertIn("请确认添加监控提醒", repeat_reply.text if repeat_reply else "")
+            self.assertIn("价格 低于或等于 $58,000.00", repeat_reply.text if repeat_reply else "")
 
             create_reply = handle_callback_query(
                 settings,
@@ -241,12 +266,13 @@ class AiAssistantTests(unittest.TestCase):
                 sessions=sessions,  # type: ignore[arg-type]
             )
 
-            self.assertIn("已创建价格提醒", create_reply.text if create_reply else "")
+            self.assertIn("已创建监控提醒", create_reply.text if create_reply else "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0].direction, "below")
             self.assertEqual(alerts[0].exchange, "bybit")
             self.assertEqual(alerts[0].market_type, "futures")
+            self.assertEqual(alerts[0].alert_type, "target_price")
 
     def test_handle_message_reply_natural_alert_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -652,10 +678,12 @@ class AiAssistantTests(unittest.TestCase):
                 "chat": {"id": 42, "type": "private"},
             }
 
-            with patch("paopao_radar.ai_assistant.fetch_binance_prices", return_value={"BTCUSDT": 61234.5}):
+            quote = AlertMarketQuote(exchange="binance", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=61234.5)
+            with patch("paopao_radar.ai_assistant.discover_alert_markets", return_value=[quote]):
                 reply = handle_message(settings, store, message)
 
-            self.assertIn("BTCUSDT 当前 Binance 合约价格", reply or "")
+            self.assertIn("BTCUSDT 多交易所价格", reply or "")
+            self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
 
     def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
