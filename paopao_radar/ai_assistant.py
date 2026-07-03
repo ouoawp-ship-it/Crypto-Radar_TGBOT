@@ -616,10 +616,31 @@ class TelegramBotClient:
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
     ) -> bool:
+        ok, _ = self._send_message_chunks(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return ok
+
+    def send_message_with_ids(
+        self,
+        chat_id: str | int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
+    ) -> list[int]:
+        _, message_ids = self._send_message_chunks(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return message_ids
+
+    def _send_message_chunks(
+        self,
+        chat_id: str | int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
+    ) -> tuple[bool, list[int]]:
         mode = parse_mode or infer_telegram_parse_mode(text)
         safe_text = (str(text or "").strip() if mode == "HTML" else telegram_plain_text(text)) or "（无内容）"
         chunks = split_telegram_text(safe_text) or ["（无内容）"]
         ok = True
+        message_ids: list[int] = []
         for index, chunk in enumerate(chunks):
             payload: dict[str, Any] = {
                 "chat_id": chat_id,
@@ -632,7 +653,21 @@ class TelegramBotClient:
                 payload["reply_markup"] = reply_markup
             data = self._post_json("sendMessage", payload, timeout_sec=self.send_timeout_sec)
             ok = ok and bool(data.get("ok"))
-        return ok
+            result = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
+            try:
+                if result.get("message_id") is not None:
+                    message_ids.append(int(result["message_id"]))
+            except (TypeError, ValueError):
+                pass
+        return ok, message_ids
+
+    def delete_message(self, chat_id: str | int, message_id: int) -> bool:
+        data = self._post_json(
+            "deleteMessage",
+            {"chat_id": chat_id, "message_id": int(message_id)},
+            timeout_sec=self.timeout_sec,
+        )
+        return bool(data.get("ok"))
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
@@ -650,17 +685,37 @@ def send_bot_message_safely(
     *,
     context: str,
     parse_mode: str | None = None,
+    delete_after_send: tuple[tuple[str | int, int], ...] = (),
 ) -> bool:
     if chat_id is None:
         return False
     try:
         try:
-            return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context, parse_mode=parse_mode)  # type: ignore[call-arg]
+            return bot.send_message(
+                chat_id,
+                text,
+                reply_markup=reply_markup,
+                context=context,
+                parse_mode=parse_mode,
+                delete_after_send=delete_after_send,
+            )  # type: ignore[call-arg]
         except TypeError:
             try:
-                return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context)  # type: ignore[call-arg]
+                return bot.send_message(
+                    chat_id,
+                    text,
+                    reply_markup=reply_markup,
+                    context=context,
+                    parse_mode=parse_mode,
+                )  # type: ignore[call-arg]
             except TypeError:
-                return bot.send_message(chat_id, text, reply_markup=reply_markup)
+                try:
+                    return bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+                except TypeError:
+                    try:
+                        return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context)  # type: ignore[call-arg]
+                    except TypeError:
+                        return bot.send_message(chat_id, text, reply_markup=reply_markup)
     except Exception as exc:
         print(f"ai-assistant: {context} send failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return False
@@ -673,6 +728,7 @@ class QueuedTelegramMessage:
     reply_markup: dict[str, Any] | None = None
     context: str = "queued"
     parse_mode: str | None = None
+    delete_after_send: tuple[tuple[str | int, int], ...] = ()
 
 
 class QueuedTelegramSender:
@@ -701,6 +757,7 @@ class QueuedTelegramSender:
         *,
         context: str = "queued",
         parse_mode: str | None = None,
+        delete_after_send: tuple[tuple[str | int, int], ...] = (),
     ) -> bool:
         try:
             self._queue.put_nowait(
@@ -710,6 +767,7 @@ class QueuedTelegramSender:
                     reply_markup=reply_markup,
                     context=context,
                     parse_mode=parse_mode,
+                    delete_after_send=delete_after_send,
                 )
             )
             return True
@@ -731,7 +789,9 @@ class QueuedTelegramSender:
                 continue
             started = time.time()
             try:
-                self.bot.send_message(item.chat_id, item.text, reply_markup=item.reply_markup, parse_mode=item.parse_mode)
+                sent = self.bot.send_message(item.chat_id, item.text, reply_markup=item.reply_markup, parse_mode=item.parse_mode)
+                if sent:
+                    self._delete_messages(item.delete_after_send)
                 elapsed = time.time() - started
                 if elapsed >= 3:
                     print(f"ai-assistant: slow send context={item.context} elapsed={elapsed:.2f}s", flush=True)
@@ -743,6 +803,17 @@ class QueuedTelegramSender:
                 )
             finally:
                 self._queue.task_done()
+
+    def _delete_messages(self, targets: tuple[tuple[str | int, int], ...]) -> None:
+        for chat_id, message_id in targets:
+            try:
+                self.bot.delete_message(chat_id, message_id)
+            except Exception as exc:
+                print(
+                    f"ai-assistant: delete temporary notice failed {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
 
 class SessionLockRegistry:
@@ -2293,6 +2364,39 @@ def _chat_id_from_callback(callback_query: dict[str, Any]) -> str | int | None:
     return chat.get("id") if isinstance(chat, dict) else None
 
 
+def send_temporary_processing_notice(
+    bot: TelegramBotClient,
+    sender: QueuedTelegramSender,
+    chat_id: str | int | None,
+    text: str,
+) -> tuple[tuple[str | int, int], ...]:
+    if chat_id is None:
+        return ()
+    try:
+        message_ids = bot.send_message_with_ids(chat_id, text)
+        return tuple((chat_id, message_id) for message_id in message_ids)
+    except AttributeError:
+        send_bot_message_safely(sender, chat_id, text, context="message_processing_notice")
+    except Exception as exc:
+        print(f"ai-assistant: temporary notice send failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    return ()
+
+
+def delete_temporary_messages(
+    bot: TelegramBotClient,
+    targets: tuple[tuple[str | int, int], ...],
+) -> None:
+    for chat_id, message_id in targets:
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception as exc:
+            print(
+                f"ai-assistant: delete temporary notice failed {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 def process_ai_update(
     update: dict[str, Any],
     bot: TelegramBotClient,
@@ -2339,8 +2443,9 @@ def process_ai_update(
     lock_key = message_session_key(message)
     session_lock = session_locks.lock_for(lock_key)
     notice = processing_notice_for_message(settings, message, bot_username=bot_username, bot_user_id=bot_user_id, sessions=sessions)
+    delete_after_send: tuple[tuple[str | int, int], ...] = ()
     if notice:
-        send_bot_message_safely(sender, chat_id, notice, context="message_processing_notice")
+        delete_after_send = send_temporary_processing_notice(bot, sender, chat_id, notice)
     try:
         with session_lock:
             reply = handle_message_reply(
@@ -2353,17 +2458,30 @@ def process_ai_update(
             )
     except Exception as exc:
         print(f"ai-assistant: message failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-        send_bot_message_safely(sender, chat_id, f"处理失败：{type(exc).__name__}: {exc}", context="message_error")
+        sent = send_bot_message_safely(
+            sender,
+            chat_id,
+            f"处理失败：{type(exc).__name__}: {exc}",
+            context="message_error",
+            delete_after_send=delete_after_send,
+        )
+        if not sent:
+            delete_temporary_messages(bot, delete_after_send)
         return
     if reply:
-        send_bot_message_safely(
+        sent = send_bot_message_safely(
             sender,
             chat_id,
             reply.text,
             reply_markup=reply.reply_markup,
             context="message_reply",
             parse_mode=reply.parse_mode,
+            delete_after_send=delete_after_send,
         )
+        if not sent:
+            delete_temporary_messages(bot, delete_after_send)
+    elif delete_after_send:
+        delete_temporary_messages(bot, delete_after_send)
 
 
 def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot: TelegramBotClient) -> dict[str, Any]:

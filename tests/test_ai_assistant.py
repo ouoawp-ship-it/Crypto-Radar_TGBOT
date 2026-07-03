@@ -9,6 +9,7 @@ import requests
 
 from paopao_radar.ai_assistant import (
     BotReply,
+    QueuedTelegramSender,
     SessionLockRegistry,
     TelegramBotClient,
     build_chat_completion_payload,
@@ -59,6 +60,25 @@ class AiAssistantTests(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
         self.assertEqual(post.call_args.kwargs["timeout"], 20)
 
+    def test_telegram_bot_send_message_with_ids_and_delete_message(self) -> None:
+        bot = TelegramBotClient("123456:test", timeout_sec=10, send_timeout_sec=20, retry_count=1)
+        send_response = Mock()
+        send_response.raise_for_status.return_value = None
+        send_response.json.return_value = {"ok": True, "result": {"message_id": 123}}
+        delete_response = Mock()
+        delete_response.raise_for_status.return_value = None
+        delete_response.json.return_value = {"ok": True}
+
+        with patch("paopao_radar.ai_assistant.requests.post", side_effect=[send_response, delete_response]) as post:
+            message_ids = bot.send_message_with_ids(42, "hello")
+            deleted = bot.delete_message(42, 123)
+
+        self.assertEqual(message_ids, [123])
+        self.assertTrue(deleted)
+        self.assertTrue(post.call_args_list[0].args[0].endswith("/sendMessage"))
+        self.assertTrue(post.call_args_list[1].args[0].endswith("/deleteMessage"))
+        self.assertEqual(post.call_args_list[1].kwargs["json"], {"chat_id": 42, "message_id": 123})
+
     def test_telegram_bot_send_message_preserves_html_price_links(self) -> None:
         bot = TelegramBotClient("123456:test", timeout_sec=10, retry_count=1)
         response = Mock()
@@ -74,6 +94,39 @@ class AiAssistantTests(unittest.TestCase):
         self.assertEqual(payload["parse_mode"], "HTML")
         self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', payload["text"])
         self.assertEqual(infer_telegram_parse_mode(text), "HTML")
+
+    def test_queued_sender_deletes_temporary_notice_after_successful_send(self) -> None:
+        class FakeBot:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str | int, str]] = []
+                self.deleted: list[tuple[str | int, int]] = []
+
+            def send_message(
+                self,
+                chat_id: str | int,
+                text: str,
+                reply_markup: dict | None = None,
+                parse_mode: str | None = None,
+            ) -> bool:
+                self.messages.append((chat_id, text))
+                return True
+
+            def delete_message(self, chat_id: str | int, message_id: int) -> bool:
+                self.deleted.append((chat_id, message_id))
+                return True
+
+        fake_bot = FakeBot()
+        sender = QueuedTelegramSender(fake_bot)  # type: ignore[arg-type]
+        sender.start()
+        try:
+            ok = sender.send_message(42, "final reply", delete_after_send=((42, 77),))
+            sender._queue.join()
+        finally:
+            sender.stop()
+
+        self.assertTrue(ok)
+        self.assertEqual(fake_bot.messages, [(42, "final reply")])
+        self.assertEqual(fake_bot.deleted, [(42, 77)])
 
     def test_price_quote_table_block_aligns_all_columns_in_pre_block(self) -> None:
         rows = price_quote_table_block([
@@ -160,12 +213,25 @@ class AiAssistantTests(unittest.TestCase):
             )
 
             class FakeBot:
+                def __init__(self) -> None:
+                    self.notices: list[tuple[str | int, str]] = []
+
+                def send_message_with_ids(
+                    self,
+                    chat_id: str | int,
+                    text: str,
+                    reply_markup: dict | None = None,
+                    parse_mode: str | None = None,
+                ) -> list[int]:
+                    self.notices.append((chat_id, text))
+                    return [77]
+
                 def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
                     return True
 
             class FakeSender:
                 def __init__(self) -> None:
-                    self.messages: list[tuple[str | int, str, str, dict | None]] = []
+                    self.messages: list[tuple[str | int, str, str, dict | None, tuple[tuple[str | int, int], ...]]] = []
 
                 def send_message(
                     self,
@@ -174,11 +240,14 @@ class AiAssistantTests(unittest.TestCase):
                     reply_markup: dict | None = None,
                     *,
                     context: str = "queued",
+                    parse_mode: str | None = None,
+                    delete_after_send: tuple[tuple[str | int, int], ...] = (),
                 ) -> bool:
-                    self.messages.append((chat_id, text, context, reply_markup))
+                    self.messages.append((chat_id, text, context, reply_markup, delete_after_send))
                     return True
 
             sender = FakeSender()
+            fake_bot = FakeBot()
             update = {
                 "message": {
                     "text": "BTC 现在多少钱",
@@ -196,7 +265,7 @@ class AiAssistantTests(unittest.TestCase):
                 ):
                     process_ai_update(
                         update,
-                        FakeBot(),  # type: ignore[arg-type]
+                        fake_bot,  # type: ignore[arg-type]
                         sender,  # type: ignore[arg-type]
                         bot_username="",
                         bot_user_id="",
@@ -204,12 +273,13 @@ class AiAssistantTests(unittest.TestCase):
                         session_locks=SessionLockRegistry(),
                     )
 
-            self.assertGreaterEqual(len(sender.messages), 2)
-            self.assertIn("正在并发查询五大交易所价格", sender.messages[0][1])
-            self.assertEqual(sender.messages[0][2], "message_processing_notice")
-            self.assertIn("BTCUSDT 多交易所价格", sender.messages[-1][1])
-            self.assertEqual(sender.messages[-1][2], "message_reply")
-            self.assertIsNone(sender.messages[-1][3])
+            self.assertEqual(len(fake_bot.notices), 1)
+            self.assertIn("正在并发查询五大交易所价格", fake_bot.notices[0][1])
+            self.assertEqual(len(sender.messages), 1)
+            self.assertIn("BTCUSDT 多交易所价格", sender.messages[0][1])
+            self.assertEqual(sender.messages[0][2], "message_reply")
+            self.assertIsNone(sender.messages[0][3])
+            self.assertEqual(sender.messages[0][4], ((42, 77),))
 
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
         settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")
