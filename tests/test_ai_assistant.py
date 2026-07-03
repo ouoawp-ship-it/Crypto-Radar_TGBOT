@@ -306,8 +306,11 @@ class AiAssistantTests(unittest.TestCase):
         flat = [button["callback_data"] for row in buttons for button in row]
         labels = [button["text"] for row in buttons for button in row]
         self.assertIn("flow:alert_setup", flat)
-        self.assertIn("menu:assistant", flat)
-        self.assertIn("泡泡 AI 助手", labels)
+        self.assertIn("menu:price_query", flat)
+        self.assertIn("menu:alerts", flat)
+        self.assertIn("menu:help", flat)
+        self.assertNotIn("menu:assistant", flat)
+        self.assertNotIn("泡泡 AI 助手", labels)
         self.assertNotIn("menu:analysis", flat)
         self.assertNotIn("menu:group", flat)
 

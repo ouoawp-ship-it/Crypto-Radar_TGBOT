@@ -228,9 +228,8 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 def main_menu_markup() -> dict[str, Any]:
     return inline_keyboard([
-        [("泡泡 AI 助手", "menu:assistant"), ("设置价格提醒", "flow:alert_setup")],
-        [("查询价格", "menu:price_query"), ("我的提醒", "menu:alerts")],
-        [("完整帮助", "menu:help")],
+        [("设置价格提醒", "flow:alert_setup"), ("我的提醒", "menu:alerts")],
+        [("查询价格", "menu:price_query"), ("完整帮助", "menu:help")],
     ])
 
 
@@ -1896,7 +1895,7 @@ def handle_callback_query(
     if data == "menu:assistant":
         return BotReply(ASSISTANT_HELP_TEXT, back_home_markup())
     if data == "menu:group":
-        return BotReply("这个旧入口已经取消。现在首页只保留泡泡 AI 助手、价格查询、价格提醒和提醒管理。", back_home_markup())
+        return BotReply("这个旧入口已经取消。现在首页只保留设置价格提醒、我的提醒、查询价格和完整帮助。直接发消息就会自动进入 AI 助手分流。", back_home_markup())
     if data == "flow:alert_setup":
         return start_alert_setup_session(active_sessions, key)
     if data == "flow:cancel":
