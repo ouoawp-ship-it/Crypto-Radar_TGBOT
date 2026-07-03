@@ -213,15 +213,6 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
     }
 
 
-def url_inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [{"text": text, "url": url} for text, url in row]
-            for row in rows
-        ]
-    }
-
-
 def main_menu_markup() -> dict[str, Any]:
     return inline_keyboard([
         [("AI 正常对话", "menu:assistant"), ("AI 分析行情", "menu:analysis")],
@@ -1007,30 +998,28 @@ def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
     return exchange_width, pair_width, price_width
 
 
+def price_quote_exchange_link(quote: AlertMarketQuote) -> str:
+    url = html.escape(coinglass_quote_url(quote), quote=True)
+    label = html.escape(quote.exchange_label)
+    return f'<a href="{url}"><b>{label}</b></a>'
+
+
 def price_quote_table_block(quotes: list[AlertMarketQuote]) -> str:
     exchange_width, pair_width, price_width = price_quote_widths(quotes)
-    rows = [f"{pad_display_right('交易所', exchange_width)}  {pad_display_right('交易对', pair_width)}  {pad_display_left('单币价格', price_width)}"]
+    header_exchange_pad = " " * max(0, exchange_width - text_display_width("交易所"))
+    header_tail = f"{pad_display_right('交易对', pair_width)}  {pad_display_left('单币价格', price_width)}"
+    rows = [
+        f"<b>交易所</b>{header_exchange_pad}  "
+        f"<code>{html.escape(header_tail)}</code>"
+    ]
     for quote in quotes:
+        exchange_pad = " " * max(0, exchange_width - text_display_width(quote.exchange_label))
+        value_tail = f"{pad_display_right(quote.pair, pair_width)}  {pad_display_left(format_price(price_quote_display_price(quote)), price_width)}"
         rows.append(
-            f"{pad_display_right(quote.exchange_label, exchange_width)}  "
-            f"{pad_display_right(quote.pair, pair_width)}  "
-            f"{pad_display_left(format_price(price_quote_display_price(quote)), price_width)}"
+            f"{price_quote_exchange_link(quote)}{exchange_pad}  "
+            f"<code>{html.escape(value_tail)}</code>"
         )
-    return f"<pre>{html.escape(chr(10).join(rows))}</pre>"
-
-
-def price_quote_link_markup(quotes: list[AlertMarketQuote]) -> dict[str, Any] | None:
-    rows: list[list[tuple[str, str]]] = []
-    current: list[tuple[str, str]] = []
-    for quote in quotes[:10]:
-        label_prefix = "合约" if quote.market_type == "futures" else "现货"
-        current.append((f"{label_prefix} {quote.exchange_label}", coinglass_quote_url(quote)))
-        if len(current) >= 2:
-            rows.append(current)
-            current = []
-    if current:
-        rows.append(current)
-    return url_inline_keyboard(rows) if rows else None
+    return "\n".join(rows)
 
 
 def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
@@ -1055,7 +1044,7 @@ def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
         f"{symbol.replace('USDT', '')} 怎么看",
         "或点击首页“设置价格提醒”。",
         "",
-        "下方按钮可打开对应 CoinGlass K线。",
+        "点击交易所名称可打开对应 CoinGlass K线。",
     ])
     return "\n".join(lines).strip()
 
@@ -1068,7 +1057,7 @@ def price_text(settings: Settings, symbol_text: str) -> str:
 def price_reply(settings: Settings, symbol_text: str) -> BotReply:
     symbol = normalize_symbol(symbol_text)
     quotes = discover_alert_markets(settings, symbol)
-    return BotReply(price_text_from_quotes(symbol, quotes), price_quote_link_markup(quotes))
+    return BotReply(price_text_from_quotes(symbol, quotes))
 
 
 def session_key(chat_id: str | int, user_id: str | int) -> str:
