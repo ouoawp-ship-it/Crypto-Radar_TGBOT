@@ -28,6 +28,7 @@ from paopao_radar.ai_assistant import (
     price_text_from_quotes,
     price_reply,
     process_ai_update,
+    processing_notice_for_message,
     load_ai_settings_cached,
     telegram_plain_text,
 )
@@ -1228,6 +1229,68 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("交易所", reply or "")
             self.assertIn("Binance  BTCUSDT  $61,234.50", reply or "")
             self.assertIn('K线：<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
+
+    def test_pasted_market_data_with_price_words_routes_to_analysis_not_price(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+                ai_provider_enable=True,
+                ai_api_key="sk-test",
+            )
+            store = PriceAlertStore(db_path)
+            text = """这段数据帮我分析
+🚀 15分钟持仓上涨提醒（第1次）
+TA/USDT（TA） 上涨 16.04%
+当前价格：$0.1117 | 市值：$32.4M | 多空比：1.93
+15分钟：价格+20.78% | 持仓+16.04%
+30分钟：价格+25.98% | 持仓+22.19%
+成交量倍数分析（币安数据）
+5分钟：0.94倍
+资金流向
+5分钟：合约+0 | 现货+309.2K
+"""
+            message = {
+                "text": text,
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            with patch("paopao_radar.ai_assistant.call_ai_provider", return_value="AI 分析结果") as ai:
+                with patch("paopao_radar.ai_assistant.price_reply") as price:
+                    reply = handle_message_reply(settings, store, message, sessions={})
+
+            self.assertIsNotNone(reply)
+            assert reply is not None
+            self.assertEqual(reply.text, "AI 分析结果")
+            ai.assert_called_once()
+            self.assertEqual(ai.call_args.kwargs["mode"], "analyst")
+            self.assertIn("当前价格", ai.call_args.args[1])
+            price.assert_not_called()
+
+    def test_processing_notice_prefers_analysis_for_pasted_market_data(self) -> None:
+        settings = Settings(
+            ai_assistant_enable=True,
+            ai_bot_token="123456:test",
+            ai_admin_user_ids=("42",),
+            ai_provider_enable=True,
+            ai_api_key="sk-test",
+        )
+        text = "这段数据帮我分析\nTA/USDT\n当前价格：$0.1117\n15分钟：价格+20.78% | 持仓+16.04%\n资金流向：现货+309.2K"
+        message = {
+            "text": text,
+            "from": {"id": 42, "username": "tester"},
+            "chat": {"id": 42, "type": "private"},
+        }
+
+        notice = processing_notice_for_message(settings, message, sessions={})
+
+        self.assertIn("AI 分析", notice)
+        self.assertNotIn("五大交易所价格", notice)
 
     def test_slash_ai_command_no_longer_routes_to_ai_or_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

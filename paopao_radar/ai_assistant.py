@@ -330,7 +330,12 @@ ALERT_CREATE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 ANALYSIS_INTENT_RE = re.compile(
-    r"^\s*(分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)",
+    r"^\s*(?:"
+    r"分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号|"
+    r"这段(?:数据|内容|信号)?帮我(?:分析|看看|看下|解读)|"
+    r"帮我(?:分析|看看|看下|解读)(?:这段|这个)(?:数据|内容|信号)?|"
+    r"(?:分析|解读)(?:这个|这段)(?:数据|内容|信号)"
+    r")",
     re.IGNORECASE,
 )
 PRICE_QUERY_RE = re.compile(r"(价格|现价|报价|行情|多少钱|多少|查价|查一下|看一下|price)", re.IGNORECASE)
@@ -344,14 +349,20 @@ MARKET_DATA_KEYWORDS = (
     "阶段：",
     "分数:",
     "分数：",
+    "当前价格",
+    "基础信息",
     "oi",
     "cvd",
+    "持仓",
     "成交量",
+    "成交量倍数",
     "资金费率",
     "市值",
     "流动性",
     "清算",
     "多空",
+    "合约",
+    "现货",
     "coinglass",
 )
 SYMBOL_ALIASES = {
@@ -494,6 +505,13 @@ class ParsedAlertRequest:
     symbol: str
     direction: str
     target_price: float
+
+
+@dataclass(frozen=True)
+class UserIntent:
+    kind: str
+    symbol: str = ""
+    prompt: str = ""
 
 
 class TelegramBotClient:
@@ -821,7 +839,7 @@ def is_analysis_intent(text: str) -> bool:
 
 def strip_analysis_request(text: str) -> str:
     clean = str(text or "").strip()
-    clean = re.sub(r"^(分析这段|帮我分析|分析一下|分析下|解读一下|解读下|解读这个|看看这个信号|看下这个信号)", "", clean).strip()
+    clean = ANALYSIS_INTENT_RE.sub("", clean, count=1).strip()
     clean = clean.lstrip("：:，, \n\t")
     return clean
 
@@ -847,6 +865,12 @@ def is_price_query(text: str) -> bool:
     clean = compact_text(text)
     if not clean:
         return False
+    if is_analysis_intent(clean) or is_market_data_intent(text):
+        return False
+    if "\n" in str(text or ""):
+        return False
+    if len(clean) > 48:
+        return False
     symbol = extract_symbol_text(clean)
     if not symbol:
         return False
@@ -871,6 +895,31 @@ def is_market_data_intent(text: str) -> bool:
     if metric_hits >= 2 and re.search(r"(价格|成交|OI|CVD|费率|市值|流动性)", clean, flags=re.IGNORECASE):
         return True
     return False
+
+
+def classify_user_intent(text: str) -> UserIntent:
+    clean = str(text or "").strip()
+    if not clean:
+        return UserIntent("home")
+    lowered = clean.lower()
+    if lowered == "/start":
+        return UserIntent("home")
+    if clean.startswith("/"):
+        return UserIntent("command")
+    if is_analysis_intent(clean):
+        prompt = strip_analysis_request(clean)
+        return UserIntent("analysis", prompt=prompt)
+    if is_market_data_intent(clean):
+        return UserIntent("analysis", prompt=clean)
+    if is_alert_intent(clean):
+        return UserIntent("alert_setup")
+    if is_symbol_dossier_request(clean) and not is_price_query(clean):
+        return UserIntent("dossier", prompt=clean)
+    if is_price_query(clean):
+        return UserIntent("price", symbol=extract_symbol_text(clean))
+    if ambiguous_alert_text(clean):
+        return UserIntent("ambiguous_alert")
+    return UserIntent("assistant", prompt=clean)
 
 
 def ambiguous_alert_text(text: str) -> ParsedAlertRequest | None:
@@ -1634,20 +1683,20 @@ def handle_message(
     if not text:
         return HOME_TEXT
 
-    lowered = text.lower()
-    if lowered == "/start":
+    intent = classify_user_intent(text)
+    if intent.kind == "home":
         return HOME_TEXT
-    if text.startswith("/"):
+    if intent.kind == "command":
         return "现在只保留 /start。查价格直接发送 BTC；看行情直接发送 BTC 怎么看；提醒请点击首页“设置价格提醒”。"
 
-    if is_symbol_dossier_request(text) and not is_price_query(text) and not is_market_data_intent(text):
+    if intent.kind == "dossier":
         try:
             return build_symbol_dossier_reply(settings, store, user_id, text)
         except Exception as exc:
             return f"币种档案查询失败：{type(exc).__name__}: {exc}"
 
-    if is_analysis_intent(text):
-        prompt = strip_analysis_request(text)
+    if intent.kind == "analysis":
+        prompt = intent.prompt
         if not prompt:
             return "请把要分析的雷达信号、资金费率或市场数据一起发过来。"
         try:
@@ -1655,24 +1704,16 @@ def handle_message(
         except Exception as exc:
             return f"AI 分析失败：{type(exc).__name__}: {exc}"
 
-    if is_alert_intent(text):
+    if intent.kind == "alert_setup":
         return "价格提醒需要手动选择交易所和价格源。请点击首页“设置价格提醒”，按步骤确认后才会创建。"
 
-    if is_market_data_intent(text):
+    if intent.kind == "price":
         try:
-            return call_ai_provider(settings, text, store, user_id, mode="analyst")
-        except Exception as exc:
-            return f"AI 分析失败：{type(exc).__name__}: {exc}"
-
-    if is_price_query(text):
-        symbol = extract_symbol_text(text)
-        try:
-            return price_text(settings, symbol)
+            return price_text(settings, intent.symbol)
         except Exception as exc:
             return f"价格查询失败：{type(exc).__name__}: {exc}"
 
-    ambiguous = ambiguous_alert_text(text)
-    if ambiguous:
+    if intent.kind == "ambiguous_alert":
         return "如果这是价格提醒，请点击首页“设置价格提醒”。如果你想让我分析这句话，可以直接说“帮我分析这段：...”再粘贴内容。"
 
     if settings.ai_provider_enable and settings.ai_api_key:
@@ -1713,15 +1754,15 @@ def handle_message_reply(
     text = strip_bot_addressing(raw_text, bot_username)
     key = session_key(chat_id, user_id)
     active_sessions = sessions if sessions is not None else {}
-    lowered = text.lower()
+    intent = classify_user_intent(text)
 
-    if lowered == "取消":
+    if text.lower() == "取消":
         active_sessions.pop(key, None)
         return BotReply("已取消。", main_menu_markup())
-    if lowered == "/start" or not text:
+    if intent.kind == "home":
         active_sessions.pop(key, None)
         return BotReply(HOME_TEXT, main_menu_markup())
-    if text.startswith("/"):
+    if intent.kind == "command":
         return BotReply(
             "现在只保留 /start。查价格直接发送 BTC；看行情直接发送 BTC 怎么看；提醒请点击首页“设置价格提醒”。",
             main_menu_markup(),
@@ -1731,19 +1772,39 @@ def handle_message_reply(
     if session_reply:
         return session_reply
 
-    if is_alert_intent(text):
+    if intent.kind == "alert_setup":
         active_sessions.pop(key, None)
         return BotReply(
             "价格提醒需要手动选择交易所和价格源。\n\n请点击首页里的「设置价格提醒」，然后按流程选择现货/合约、交易所和目标价。",
             main_menu_markup(),
         )
 
-    if is_price_query(text):
-        symbol = extract_symbol_text(text)
+    if intent.kind == "analysis":
+        prompt = intent.prompt
+        if not prompt:
+            return BotReply("请把要分析的雷达信号、资金费率或市场数据一起发过来。", main_menu_markup())
         try:
-            return price_reply(settings, symbol)
+            return BotReply(call_ai_provider(settings, prompt, store, user_id, mode="analyst"))
+        except Exception as exc:
+            return BotReply(f"AI 分析失败：{type(exc).__name__}: {exc}")
+
+    if intent.kind == "dossier":
+        try:
+            return BotReply(build_symbol_dossier_reply(settings, store, user_id, text))
+        except Exception as exc:
+            return BotReply(f"币种档案查询失败：{type(exc).__name__}: {exc}")
+
+    if intent.kind == "price":
+        try:
+            return price_reply(settings, intent.symbol)
         except Exception as exc:
             return BotReply(f"价格查询失败：{type(exc).__name__}: {exc}")
+
+    if intent.kind == "ambiguous_alert":
+        return BotReply(
+            "如果这是价格提醒，请点击首页“设置价格提醒”。如果你想让我分析这句话，可以直接说“帮我分析这段：...”再粘贴内容。",
+            main_menu_markup(),
+        )
 
     reply = handle_message(settings, store, message, bot_username=bot_username, bot_user_id=bot_user_id)
     if not reply:
@@ -2167,12 +2228,13 @@ def processing_notice_for_message(
         return "已收到币种，正在并发识别五大交易所的现货和合约价格源..."
     if state == "alert_price":
         return "已收到目标价，正在读取所选交易所的最新价格..."
-    if is_price_query(text):
-        return "已收到，正在并发查询五大交易所价格..."
-    if is_analysis_intent(text) or is_market_data_intent(text):
+    intent = classify_user_intent(text)
+    if intent.kind == "analysis":
         return "已收到，正在调用 AI 分析；结果出来后会单独发给你。"
-    if is_symbol_dossier_request(text) and not is_price_query(text):
+    if intent.kind == "dossier":
         return "已收到，正在读取历史信号和当前行情，生成币种档案..."
+    if intent.kind == "price":
+        return "已收到，正在并发查询五大交易所价格..."
     if settings.ai_provider_enable and settings.ai_api_key and not lowered.startswith("/"):
         return "已收到，正在思考；如果问题较复杂会稍慢一点。"
     return ""
