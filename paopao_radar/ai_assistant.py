@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import queue
 import re
 import sys
@@ -198,6 +199,7 @@ DOGE
 class BotReply:
     text: str
     reply_markup: dict[str, Any] | None = None
+    parse_mode: str | None = None
 
 
 def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
@@ -422,6 +424,10 @@ def telegram_plain_text(text: str) -> str:
     return cleaned.strip()
 
 
+def infer_telegram_parse_mode(text: str) -> str | None:
+    return "HTML" if re.search(r"</?(?:pre|code)>", str(text or ""), flags=re.IGNORECASE) else None
+
+
 def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
     remaining = str(text or "").strip()
     if not remaining:
@@ -594,8 +600,10 @@ class TelegramBotClient:
         chat_id: str | int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
     ) -> bool:
-        safe_text = telegram_plain_text(text) or "（无内容）"
+        mode = parse_mode or infer_telegram_parse_mode(text)
+        safe_text = (str(text or "").strip() if mode == "HTML" else telegram_plain_text(text)) or "（无内容）"
         chunks = split_telegram_text(safe_text) or ["（无内容）"]
         ok = True
         for index, chunk in enumerate(chunks):
@@ -604,6 +612,8 @@ class TelegramBotClient:
                 "text": chunk,
                 "disable_web_page_preview": True,
             }
+            if mode:
+                payload["parse_mode"] = mode
             if reply_markup and index == len(chunks) - 1:
                 payload["reply_markup"] = reply_markup
             data = self._post_json("sendMessage", payload, timeout_sec=self.send_timeout_sec)
@@ -625,14 +635,18 @@ def send_bot_message_safely(
     reply_markup: dict[str, Any] | None = None,
     *,
     context: str,
+    parse_mode: str | None = None,
 ) -> bool:
     if chat_id is None:
         return False
     try:
         try:
-            return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context)  # type: ignore[call-arg]
+            return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context, parse_mode=parse_mode)  # type: ignore[call-arg]
         except TypeError:
-            return bot.send_message(chat_id, text, reply_markup=reply_markup)
+            try:
+                return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context)  # type: ignore[call-arg]
+            except TypeError:
+                return bot.send_message(chat_id, text, reply_markup=reply_markup)
     except Exception as exc:
         print(f"ai-assistant: {context} send failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return False
@@ -644,6 +658,7 @@ class QueuedTelegramMessage:
     text: str
     reply_markup: dict[str, Any] | None = None
     context: str = "queued"
+    parse_mode: str | None = None
 
 
 class QueuedTelegramSender:
@@ -671,9 +686,18 @@ class QueuedTelegramSender:
         reply_markup: dict[str, Any] | None = None,
         *,
         context: str = "queued",
+        parse_mode: str | None = None,
     ) -> bool:
         try:
-            self._queue.put_nowait(QueuedTelegramMessage(chat_id=chat_id, text=text, reply_markup=reply_markup, context=context))
+            self._queue.put_nowait(
+                QueuedTelegramMessage(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    context=context,
+                    parse_mode=parse_mode,
+                )
+            )
             return True
         except queue.Full:
             print(f"ai-assistant: send queue full context={context}", file=sys.stderr, flush=True)
@@ -693,7 +717,7 @@ class QueuedTelegramSender:
                 continue
             started = time.time()
             try:
-                self.bot.send_message(item.chat_id, item.text, reply_markup=item.reply_markup)
+                self.bot.send_message(item.chat_id, item.text, reply_markup=item.reply_markup, parse_mode=item.parse_mode)
                 elapsed = time.time() - started
                 if elapsed >= 3:
                     print(f"ai-assistant: slow send context={item.context} elapsed={elapsed:.2f}s", flush=True)
@@ -920,6 +944,15 @@ def list_alerts_text(alerts: list[PriceAlert]) -> str:
     return "\n".join(lines)
 
 
+def price_quote_pre_block(quotes: list[AlertMarketQuote]) -> str:
+    rows = [
+        f"{quote.exchange_label:<8} {quote.pair:<16} {format_price(quote.price):>14}"
+        for quote in quotes
+    ]
+    escaped = "\n".join(html.escape(row) for row in rows)
+    return f"<pre>{escaped}</pre>"
+
+
 def price_text(settings: Settings, symbol_text: str) -> str:
     symbol = normalize_symbol(symbol_text)
     quotes = discover_alert_markets(settings, symbol)
@@ -930,13 +963,11 @@ def price_text(settings: Settings, symbol_text: str) -> str:
     lines = [f"{symbol} 多交易所价格", ""]
     if futures:
         lines.append("合约：")
-        for quote in futures:
-            lines.append(f"{quote.exchange_label:<8} {quote.pair:<16} {format_price(quote.price)}")
+        lines.append(price_quote_pre_block(futures))
         lines.append("")
     if spot:
         lines.append("现货：")
-        for quote in spot:
-            lines.append(f"{quote.exchange_label:<8} {quote.pair:<16} {format_price(quote.price)}")
+        lines.append(price_quote_pre_block(spot))
         lines.append("")
     lines.extend([
         "可继续发送：",
@@ -2154,7 +2185,14 @@ def process_ai_update(
             send_bot_message_safely(sender, chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}", context="callback_error")
             return
         if reply:
-            send_bot_message_safely(sender, chat_id, reply.text, reply_markup=reply.reply_markup, context="callback_reply")
+            send_bot_message_safely(
+                sender,
+                chat_id,
+                reply.text,
+                reply_markup=reply.reply_markup,
+                context="callback_reply",
+                parse_mode=reply.parse_mode,
+            )
         return
 
     message = update.get("message")
@@ -2181,7 +2219,14 @@ def process_ai_update(
         send_bot_message_safely(sender, chat_id, f"处理失败：{type(exc).__name__}: {exc}", context="message_error")
         return
     if reply:
-        send_bot_message_safely(sender, chat_id, reply.text, reply_markup=reply.reply_markup, context="message_reply")
+        send_bot_message_safely(
+            sender,
+            chat_id,
+            reply.text,
+            reply_markup=reply.reply_markup,
+            context="message_reply",
+            parse_mode=reply.parse_mode,
+        )
 
 
 def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot: TelegramBotClient) -> dict[str, Any]:

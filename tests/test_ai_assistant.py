@@ -15,6 +15,7 @@ from paopao_radar.ai_assistant import (
     handle_callback_query,
     handle_message,
     handle_message_reply,
+    infer_telegram_parse_mode,
     is_alert_intent,
     parse_alert_request,
     process_ai_update,
@@ -52,6 +53,22 @@ class AiAssistantTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(post.call_count, 2)
         self.assertEqual(post.call_args.kwargs["timeout"], 20)
+
+    def test_telegram_bot_send_message_preserves_pre_block_as_html(self) -> None:
+        bot = TelegramBotClient("123456:test", timeout_sec=10, retry_count=1)
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"ok": True}
+
+        text = "BTCUSDT 多交易所价格\n\n合约：\n<pre>Binance  BTCUSDT  $62,184.00</pre>"
+        with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
+            ok = bot.send_message(42, text)
+
+        self.assertTrue(ok)
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["parse_mode"], "HTML")
+        self.assertIn("<pre>Binance", payload["text"])
+        self.assertEqual(infer_telegram_parse_mode(text), "HTML")
 
     def test_process_ai_update_sends_processing_notice_before_slow_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -813,6 +830,8 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("BTCUSDT 多交易所价格", reply or "")
             self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
+            self.assertIn("<pre>", reply or "")
+            self.assertIn("</pre>", reply or "")
 
     def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
