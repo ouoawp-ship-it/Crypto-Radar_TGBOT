@@ -749,7 +749,7 @@ def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
     elif ok:
         message = "配置已保存并自动应用；Web 控制台配置变更会在返回结果后短暂重启"
     else:
-        message = "配置已保存，但部分服务自动应用失败；可到服务控制页手动重启"
+        message = "配置已保存，但部分服务自动应用失败；可到雷达服务页手动重启"
     return {"ok": ok, "mode": "auto_restart", "results": results, "message": message}
 
 
@@ -1567,13 +1567,13 @@ INDEX_HTML = r"""<!doctype html>
       <div class="brand">泡泡雷达控制台</div>
       <nav>
         <button data-view="overview" class="active">总览</button>
-        <button data-view="logs">日志</button>
-        <button data-view="config">配置</button>
         <button data-view="ai">AI 助手</button>
-        <button data-view="prompts">AI 提示词</button>
+        <button data-view="price">价格提醒</button>
+        <button data-view="services">雷达服务</button>
+        <button data-view="config">配置中心</button>
+        <button data-view="logs">日志中心</button>
         <button data-view="actions">检查测试</button>
-        <button data-view="services">服务控制</button>
-        <button data-view="preview">预览更新</button>
+        <button data-view="preview">更新备份</button>
         <button data-view="guide">功能说明</button>
       </nav>
     </aside>
@@ -1636,6 +1636,11 @@ INDEX_HTML = r"""<!doctype html>
         <pre id="aiOutput" class="output"></pre>
       </section>
 
+      <section id="price" class="view hidden">
+        <div class="grid" id="priceGrid"></div>
+        <pre id="priceOutput" class="output"></pre>
+      </section>
+
       <section id="prompts" class="view hidden">
         <div class="grid" id="promptGrid"></div>
         <pre id="promptOutput" class="output"></pre>
@@ -1665,13 +1670,14 @@ INDEX_HTML = r"""<!doctype html>
   <script>
     const titles = {
       overview: "总览",
-      logs: "日志",
-      config: "配置",
       ai: "AI 助手",
+      price: "价格提醒",
       prompts: "AI 提示词",
+      services: "雷达服务",
+      config: "配置中心",
+      logs: "日志中心",
       actions: "检查测试",
-      services: "服务控制",
-      preview: "预览更新",
+      preview: "更新备份",
       guide: "功能说明"
     };
     const actionList = [
@@ -1713,6 +1719,8 @@ INDEX_HTML = r"""<!doctype html>
         id: "telegram-test",
         label: "发送 Telegram 测试",
         badge: "会真实发送",
+        danger: true,
+        confirmWord: "SEND",
         desc: "向配置的 Telegram 群或话题发送一条测试消息，用来验证 Token、群 ID、话题 ID 是否可用。",
         details: [
           "这个动作会真实发消息，不是 dry-run。",
@@ -1757,6 +1765,8 @@ INDEX_HTML = r"""<!doctype html>
         id: "cleanup",
         label: "清理运行垃圾",
         badge: "会删除临时文件",
+        danger: true,
+        confirmWord: "CLEANUP",
         desc: "立即执行 cleanup，清理运行中产生的临时文件、过期图表和超限历史记录。",
         details: [
           "不会删除 .env.oi、源码、后台服务文件和关键配置。",
@@ -2254,7 +2264,7 @@ INDEX_HTML = r"""<!doctype html>
       const runtime = data.runtime || {};
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
-        `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的主要操作入口。</strong> 服务器只需要记住 paopao；地址、令牌、Web 服务状态、日志和更新入口都在中文菜单里。配置修改、测试、服务控制都在这里完成。</div>`,
+        `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的单人管理员入口。</strong> 登录令牌通过后，所有运维权限都集中给你本人使用；不做多用户角色区分。服务器只需要记住 paopao；地址、令牌、Web 服务状态、日志和更新入口都在中文菜单里。</div>`,
         healthPanel(data.health || []),
         recentErrorsPanel(data.recent_errors || []),
         serviceCard("主服务", main),
@@ -2302,7 +2312,7 @@ INDEX_HTML = r"""<!doctype html>
     async function loadConfig() {
       const data = await api("/api/config");
       latestConfigData = data;
-      setSubtitle(data.env_file);
+      setSubtitle(`配置中心：${data.env_file}`);
       await renderConfigPage();
     }
     async function selectConfigCategory(id) {
@@ -2594,11 +2604,16 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <p class="muted">${escapeHtml(action.desc)}</p>
           <ul>${action.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-          <button class="btn primary" onclick="runAction('${escapeHtml(action.id)}')">执行</button>
+          <button class="btn ${action.danger ? "danger" : "primary"}" onclick="runAction('${escapeHtml(action.id)}')">执行</button>
         </div>
       `).join("");
     }
     async function runAction(name) {
+      const action = actionList.find(item => item.id === name);
+      if (action && action.confirmWord) {
+        const confirmText = prompt(`这个动作是：${action.label}。输入 ${action.confirmWord} 确认执行：`);
+        if (confirmText !== action.confirmWord) return;
+      }
       const data = await api("/api/action", { method: "POST", body: JSON.stringify({ name }) });
       document.getElementById("actionOutput").textContent = JSON.stringify(data, null, 2);
     }
@@ -2606,7 +2621,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("serviceGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>这个页面是控制后台服务开关的，不是普通测试按钮。</strong>
-          主服务、结构雷达、Web 控制台是三个不同的后台服务。建议优先使用“重启”，只有确认要暂停某类功能时才点“停止”。
+          主服务、结构雷达、Web 控制台、AI 助手是四个不同的后台服务。建议优先使用“重启”，只有确认要暂停某类功能时才点“停止”。
           <div class="service-guide">
             <div class="service-guide-item"><strong>重启</strong><span class="muted">最常用。用于更新代码、修改配置后让服务重新读取设置。</span></div>
             <div class="service-guide-item"><strong>启动</strong><span class="muted">服务已经停止时使用。不会修改配置，只是把服务拉起来。</span></div>
@@ -2640,8 +2655,8 @@ INDEX_HTML = r"""<!doctype html>
       const previews = data.previews || [];
       document.getElementById("previewGrid").innerHTML = `
         <div class="panel span-12 notice">
-          <strong>这个页面只做预览和检查。</strong>
-          推送预览只展示格式，不会调用 Telegram；更新检查只看 GitHub 是否有新版本，不会自动更新服务器代码。
+          <strong>更新备份页只做安全检查和入口汇总。</strong>
+          推送预览只展示格式，不会调用 Telegram；更新检查只看 GitHub 是否有新版本，不会自动更新服务器代码；配置备份仍在配置中心里恢复或删除。
         </div>
         ${previews.map(item => `
           <div class="panel span-4">
@@ -2649,7 +2664,7 @@ INDEX_HTML = r"""<!doctype html>
             <pre style="min-height:220px;max-height:360px">${escapeHtml(item.text || "")}</pre>
           </div>
         `).join("")}
-        <div class="panel span-12">
+        <div class="panel span-8">
           <h3 class="section-title">版本更新检查</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>只检查</strong><span class="muted">读取当前版本和 GitHub 版本，不会拉代码。</span></div>
@@ -2659,8 +2674,16 @@ INDEX_HTML = r"""<!doctype html>
             <button class="btn primary" onclick="checkUpdate()">检查 GitHub 更新</button>
           </div>
         </div>
+        <div class="panel span-4">
+          <h3 class="section-title">配置备份入口</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>自动备份</strong><span class="muted">每次保存配置前都会生成 .env.oi Web 备份。</span></div>
+            <div class="feature-item"><strong>恢复 / 删除</strong><span class="muted">恢复和删除都需要输入确认词，避免误操作。</span></div>
+          </div>
+          <div class="toolbar" style="margin-top:10px"><button class="btn blue" onclick="currentConfigCategory='backup'; switchView('config')">打开备份恢复</button></div>
+        </div>
       `;
-      setSubtitle(data.message || "推送预览和更新检查");
+      setSubtitle(data.message || "更新检查、推送预览和配置备份入口");
     }
     async function checkUpdate() {
       document.getElementById("updateOutput").textContent = "正在检查 GitHub 更新...";
@@ -2690,13 +2713,13 @@ INDEX_HTML = r"""<!doctype html>
           <h3 class="section-title">页面功能</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>总览</strong><span class="muted">查看运行健康度、最近错误、主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
-            <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
-            <div class="feature-item"><strong>配置</strong><span class="muted">按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类修改设置；保存前预览，保存前自动备份 .env.oi。</span></div>
-            <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、价格提醒统计，新增、暂停、恢复和删除 Web 价格提醒；Telegram 私聊里可用“查 BTC”“GWEI 怎么看”查询币种雷达档案。</span></div>
-            <div class="feature-item"><strong>AI 提示词</strong><span class="muted">编辑泡泡 AI 助手提示词和专业分析师提示词；保存后自动重启 AI 助手服务。</span></div>
+            <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、意图分流规则、提示词入口和独立 AI Bot 使用方式；Telegram 私聊里可用“查 BTC”“GWEI 怎么看”查询币种雷达档案。</span></div>
+            <div class="feature-item"><strong>价格提醒</strong><span class="muted">查看价格提醒统计，新增目标价提醒，暂停、恢复和删除已有提醒；五大交易所手动选择流程仍建议在 Telegram 私聊按钮里完成。</span></div>
+            <div class="feature-item"><strong>雷达服务</strong><span class="muted">启动、停止、重启主服务、结构雷达、Web 控制台和 AI 助手；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
+            <div class="feature-item"><strong>配置中心</strong><span class="muted">按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类修改设置；保存前预览，保存前自动备份 .env.oi。</span></div>
+            <div class="feature-item"><strong>日志中心</strong><span class="muted">读取主服务、结构雷达、Web 控制台、AI 助手最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
-            <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
-            <div class="feature-item"><strong>预览更新</strong><span class="muted">查看静态推送样例和 GitHub 更新检查；不会真实发送 Telegram，也不会自动更新代码。</span></div>
+            <div class="feature-item"><strong>更新备份</strong><span class="muted">查看静态推送样例、GitHub 更新检查和配置备份入口；不会真实发送 Telegram，也不会自动更新代码。</span></div>
           </div>
         </div>
         <div class="panel span-6">
@@ -2704,6 +2727,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="feature-list">
             <div class="feature-item"><strong>访问地址</strong><span class="muted">默认使用 http://服务器IP:8080/。如果你改了 WEB_PORT，按配置里的端口访问。</span></div>
             <div class="feature-item"><strong>登录令牌</strong><span class="muted">输入 WEB_ADMIN_TOKEN。服务器输入 paopao 后选择 1 可查看。不要把令牌发到公开群。</span></div>
+            <div class="feature-item"><strong>单人管理员</strong><span class="muted">这个后台按你自己使用设计，登录后默认拥有全部操作权限，不引入多用户登录和复杂权限角色。</span></div>
             <div class="feature-item"><strong>配置生效</strong><span class="muted">保存配置后会自动应用：主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。</span></div>
             <div class="feature-item"><strong>服务器入口</strong><span class="muted">服务器只需要记住 paopao。进入中文菜单后查看 Web 地址、令牌、状态、日志和更新入口。</span></div>
             <div class="feature-item"><strong>安全边界</strong><span class="muted">Web 后端只执行白名单动作，不提供任意 shell 命令入口。</span></div>
@@ -2762,19 +2786,52 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-3 metric"><div class="label">AI 服务</div><div class="value">${statusPill(service.active || "unknown", Boolean(service.active_ok))}</div><div class="muted">${escapeHtml(service.service || "paopao-ai")}</div></div>
         <div class="panel span-3 metric"><div class="label">AI Bot Token</div><div class="value">${neutralPill(configuredText(ai.bot_token_configured))}</div></div>
         <div class="panel span-3 metric"><div class="label">AI 问答接口</div><div class="value">${neutralPill(zhBool(ai.provider_enable))}</div><div class="muted">${escapeHtml(ai.model || "deepseek-v4-pro")}</div></div>
-        <div class="panel span-3 metric"><div class="label">价格提醒</div><div class="value">${neutralPill(`${stats.active || 0} 运行中`)}</div><div class="muted">暂停 ${stats.paused || 0}，已触发 ${stats.triggered || 0}</div></div>
+        <div class="panel span-3 metric"><div class="label">价格提醒</div><div class="value">${neutralPill(`${stats.active || 0} 运行中`)}</div><div class="muted">在“价格提醒”页管理</div></div>
         <div class="panel span-12">
           <h3 class="section-title">怎么用</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 会出现中文按钮首页；首页只保留设置价格提醒、我的提醒、查询价格和使用说明。AI 对话不需要按钮，直接发消息即可自动分流。</span></div>
             <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC、BTC 现在多少钱、查 BTC、GWEI 怎么看，也可以问生活和功能问题。自然语言不会直接创建价格提醒。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
-            <div class="feature-item"><strong>手动提醒</strong><span class="muted">价格提醒不再靠自然语言猜，私聊里点“设置价格提醒”，输入币种后手动选择现货/合约和 Binance、Bybit、OKX、Bitget、Gate 的价格源，最后确认添加。</span></div>
+            <div class="feature-item"><strong>手动提醒</strong><span class="muted">价格提醒不再靠自然语言猜，私聊里点“设置价格提醒”，或在 Web 的“价格提醒”页创建和管理。</span></div>
             <div class="feature-item"><strong>自动分析</strong><span class="muted">直接粘贴启动雷达、结构雷达、资金流、OI、CVD、成交量等数据，会自动走专业分析师提示词。</span></div>
-            <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
             <div class="feature-item"><strong>去命令化</strong><span class="muted">AI Bot 只保留 /start 打开首页；查价格、看行情、AI 分析都直接发消息，提醒管理在“我的提醒”按钮里完成。</span></div>
           </div>
         </div>
+        <div class="panel span-6">
+          <h3 class="section-title">提示词管理</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>泡泡 AI 助手提示词</strong><span class="muted">控制日常问答风格、功能说明和轻松对话。</span></div>
+            <div class="feature-item"><strong>专业分析师提示词</strong><span class="muted">控制雷达数据、行情数据、资金费率、OI 和结构信号的分析方式。</span></div>
+          </div>
+          <div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="switchView('prompts')">编辑 AI 提示词</button></div>
+        </div>
+        <div class="panel span-6">
+          <h3 class="section-title">提醒管理入口</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>当前提醒</strong><span class="muted">运行中 ${stats.active || 0}，暂停 ${stats.paused || 0}，已触发 ${stats.triggered || 0}。</span></div>
+            <div class="feature-item"><strong>创建方式</strong><span class="muted">Web 创建需要填写 Telegram 用户 ID，或先在配置中心填写 AI_DEFAULT_CHAT_ID。</span></div>
+          </div>
+          <div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="switchView('price')">打开价格提醒</button></div>
+        </div>
+      `;
+      setSubtitle("AI 助手：问答、意图分流、提示词和服务状态");
+    }
+    async function loadPriceAlerts() {
+      const summary = await api("/api/summary");
+      const alertsData = await api("/api/price-alerts");
+      const ai = ((summary.config || {}).ai_assistant || {});
+      const service = ((summary.services || {}).ai || {});
+      const stats = alertsData.stats || {};
+      document.getElementById("priceGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>价格提醒是独立的个人监控中心。</strong>
+          普通用户在 Telegram 私聊里按按钮手动选择；这里是管理员 Web 入口，用来快速查看、创建、暂停、恢复和删除提醒。
+        </div>
+        <div class="panel span-3 metric"><div class="label">AI 服务</div><div class="value">${statusPill(service.active || "unknown", Boolean(service.active_ok))}</div><div class="muted">${escapeHtml(service.service || "paopao-ai")}</div></div>
+        <div class="panel span-3 metric"><div class="label">提醒功能</div><div class="value">${neutralPill(zhBool(ai.price_alerts_enable))}</div><div class="muted">AI_PRICE_ALERTS_ENABLE</div></div>
+        <div class="panel span-3 metric"><div class="label">运行中</div><div class="value">${neutralPill(String(stats.active || 0))}</div><div class="muted">触发前持续检查</div></div>
+        <div class="panel span-3 metric"><div class="label">已触发 / 暂停</div><div class="value">${neutralPill(`${stats.triggered || 0} / ${stats.paused || 0}`)}</div><div class="muted">可在列表里恢复或删除</div></div>
         <div class="panel span-12">
           <h3 class="section-title">新增目标价提醒</h3>
           <div class="form-grid">
@@ -2783,6 +2840,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="field"><label>目标价格</label><input id="newAlertPrice" placeholder="58000"></div>
             <div class="field"><label>接收提醒的 Telegram 用户 ID</label><input id="newAlertChatId" placeholder="留空则使用 AI_DEFAULT_CHAT_ID"></div>
           </div>
+          <div class="hint" style="margin-top:8px">Web 创建的是基础目标价提醒；五大交易所手动选择、急涨急跌、OI 和资金费率提醒仍建议在 Telegram 私聊按钮流程里创建。</div>
           <div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="createWebAlert()">创建提醒</button></div>
         </div>
         <div class="panel span-12">
@@ -2793,7 +2851,7 @@ INDEX_HTML = r"""<!doctype html>
           </table>
         </div>
       `;
-      setSubtitle("AI 助手、独立 Bot 和价格提醒中心");
+      setSubtitle("价格提醒：创建、暂停、恢复和删除");
     }
     async function loadAiPrompts() {
       const data = await api("/api/ai-prompts");
@@ -2871,14 +2929,14 @@ INDEX_HTML = r"""<!doctype html>
         chat_id: document.getElementById("newAlertChatId").value
       };
       const data = await api("/api/price-alerts", { method: "POST", body: JSON.stringify(body) });
-      document.getElementById("aiOutput").textContent = JSON.stringify(data, null, 2);
-      await loadAiAssistant();
+      document.getElementById("priceOutput").textContent = JSON.stringify(data, null, 2);
+      await loadPriceAlerts();
     }
     async function mutateAlert(id, action) {
       if (action === "delete" && !confirm(`确认删除提醒 ${id}？`)) return;
       const data = await api("/api/price-alerts", { method: "POST", body: JSON.stringify({ id, action }) });
-      document.getElementById("aiOutput").textContent = JSON.stringify(data, null, 2);
-      await loadAiAssistant();
+      document.getElementById("priceOutput").textContent = JSON.stringify(data, null, 2);
+      await loadPriceAlerts();
     }
     function switchView(view) {
       currentView = view;
@@ -2894,9 +2952,10 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "logs") await loadLogs();
         if (currentView === "config") await loadConfig();
         if (currentView === "ai") await loadAiAssistant();
+        if (currentView === "price") await loadPriceAlerts();
         if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
-        if (currentView === "services") { setSubtitle("后台服务开关，停止前会二次确认"); renderServices(); }
+        if (currentView === "services") { setSubtitle("雷达后台服务开关，停止前会二次确认"); renderServices(); }
         if (currentView === "preview") await loadPreviewPanel();
         if (currentView === "guide") await loadGuide();
       } catch (err) {
