@@ -479,8 +479,26 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("saveAiPrompts", html)
         self.assertIn("专业分析师提示词", html)
         self.assertIn("价格提醒不再靠自然语言猜", html)
+        self.assertIn("Web API 自诊断", html)
+        self.assertIn("runWebSelfCheck", html)
+        self.assertIn("apiErrorMessage", html)
+        self.assertIn("apiMetaLine", html)
+        self.assertIn("浏览器耗时", html)
+        self.assertIn("HTTP ${res.status}", html)
+        self.assertIn("Web API 自诊断通过", html)
         self.assertIn('confirmWord: "SEND"', html)
         self.assertIn('confirmWord: "CLEANUP"', html)
+
+    def test_web_api_meta_uses_path_status_and_request_id(self) -> None:
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/api/summary?x=1"
+
+        meta = web.WebHandler.api_meta(handler, 200)
+
+        self.assertEqual(meta["path"], "/api/summary")
+        self.assertEqual(meta["status"], 200)
+        self.assertIn("served_at", meta)
+        self.assertIn("request_id", meta)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML

@@ -1734,6 +1734,18 @@ INDEX_HTML = r"""<!doctype html>
         ]
       },
       {
+        id: "web-self-check",
+        label: "Web API 自诊断",
+        badge: "前端自检",
+        clientOnly: true,
+        desc: "从浏览器连续读取总览、配置和 Web 日志接口，用来判断后台页面是不是接口慢、鉴权异常或日志读取异常。",
+        details: [
+          "这个动作不会执行服务器命令，也不会修改配置。",
+          "会分别显示每个接口是否正常、HTTP 状态、服务端返回时间和浏览器实测耗时。",
+          "适合页面卡顿、按钮没反应、保存失败时先做一次自检。"
+        ]
+      },
+      {
         id: "doctor",
         label: "环境诊断",
         badge: "只读诊断",
@@ -1990,13 +2002,40 @@ INDEX_HTML = r"""<!doctype html>
       refreshCurrent();
     }
     async function api(path, options = {}) {
+      const started = performance.now();
       const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const elapsedMs = Math.round(performance.now() - started);
       if (res.status === 401) {
         showAuth();
         throw new Error("需要访问令牌");
       }
       const text = await res.text();
-      try { return JSON.parse(text); } catch { return { ok: res.ok, text }; }
+      let data;
+      try { data = JSON.parse(text); } catch { data = { ok: res.ok, text }; }
+      if (data && typeof data === "object") data._client_elapsed_ms = elapsedMs;
+      if (!res.ok) {
+        const error = new Error(apiErrorMessage(data, res, elapsedMs));
+        error.payload = data;
+        error.status = res.status;
+        throw error;
+      }
+      return data;
+    }
+    function apiErrorMessage(data, res, elapsedMs) {
+      const payload = data && typeof data === "object" ? data : {};
+      const message = payload.message || payload.error || payload.text || `HTTP ${res.status}`;
+      const code = payload.code ? `，错误码：${payload.code}` : "";
+      return `${message}（HTTP ${res.status}，耗时 ${elapsedMs}ms${code}）`;
+    }
+    function apiMetaLine(data) {
+      if (!data || typeof data !== "object") return "";
+      const meta = data._meta || {};
+      const parts = [];
+      if (meta.path) parts.push(`接口：${meta.path}`);
+      if (meta.status) parts.push(`HTTP：${meta.status}`);
+      if (meta.served_at) parts.push(`服务端时间：${meta.served_at}`);
+      if (data._client_elapsed_ms !== undefined) parts.push(`浏览器耗时：${data._client_elapsed_ms}ms`);
+      return parts.join("，");
     }
     function setSubtitle(text) { document.getElementById("subtitle").textContent = text; }
     function autoRefreshSupported(view = currentView) {
@@ -2317,6 +2356,16 @@ INDEX_HTML = r"""<!doctype html>
       if (data.returncode !== undefined) lines.push(`返回码：${data.returncode}`);
       const stdoutLine = firstUsefulLine(data.stdout);
       const stderrLine = firstUsefulLine(data.stderr);
+      const metaLine = apiMetaLine(data);
+      if (metaLine) lines.push(metaLine);
+      if (Array.isArray(data.checks)) {
+        data.checks.forEach(check => {
+          const state = check.ok ? "正常" : "异常";
+          const elapsed = check.elapsed_ms !== undefined ? `，耗时 ${check.elapsed_ms}ms` : "";
+          const status = check.status ? `，HTTP ${check.status}` : "";
+          lines.push(`${check.name}：${state}${status}${elapsed}`);
+        });
+      }
       if (stdoutLine) lines.push(`输出摘要：${stdoutLine}`);
       if (stderrLine) lines.push(`错误摘要：${stderrLine}`);
       if (!ok) lines.push("建议下一步：去日志中心按“只看错误”筛选，或在雷达服务页重启对应服务后再看总览。");
@@ -2775,12 +2824,55 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function runAction(name) {
       const action = actionList.find(item => item.id === name);
+      if (action && action.clientOnly) {
+        await runWebSelfCheck(action);
+        return;
+      }
       if (action && action.confirmWord) {
         const confirmText = prompt(`这个动作是：${action.label}。输入 ${action.confirmWord} 确认执行：`);
         if (confirmText !== action.confirmWord) return;
       }
       const data = await api("/api/action", { method: "POST", body: JSON.stringify({ name }) });
       renderOperationResult("actionOutput", data, (action && action.label) || "检查测试", "action");
+    }
+    async function runWebSelfCheck(action) {
+      const started = performance.now();
+      const checks = [];
+      const targets = [
+        ["总览摘要", "/api/summary"],
+        ["配置读取", "/api/config"],
+        ["Web 日志", "/api/logs?target=web&lines=80"]
+      ];
+      try {
+        for (const [name, path] of targets) {
+          const data = await api(path);
+          checks.push({
+            name,
+            path,
+            ok: data.ok !== false,
+            status: data._meta && data._meta.status,
+            served_at: data._meta && data._meta.served_at,
+            elapsed_ms: data._client_elapsed_ms
+          });
+        }
+        const slow = checks.filter(item => Number(item.elapsed_ms || 0) > 3000);
+        renderOperationResult("actionOutput", {
+          ok: slow.length === 0,
+          message: slow.length ? `有 ${slow.length} 个接口响应超过 3 秒。` : "Web API 自诊断通过。",
+          checks,
+          total_elapsed_ms: Math.round(performance.now() - started)
+        }, action.label, "action");
+      } catch (err) {
+        const payload = err.payload || {};
+        renderOperationResult("actionOutput", {
+          ok: false,
+          message: err.message || String(err),
+          checks,
+          error: payload.error || payload.message || String(err),
+          _meta: payload._meta,
+          _client_elapsed_ms: payload._client_elapsed_ms || Math.round(performance.now() - started)
+        }, action.label, "action");
+      }
     }
     function renderServices() {
       document.getElementById("serviceGrid").innerHTML = `
@@ -3217,14 +3309,32 @@ class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write(f"[web] {self.address_string()} {fmt % args}\n")
 
+    def api_meta(self, status: int) -> dict[str, Any]:
+        parsed = urlparse(self.path)
+        return {
+            "served_at": now_text(),
+            "path": parsed.path,
+            "status": int(status),
+            "request_id": f"{int(time.time() * 1000)}-{threading.get_ident()}",
+        }
+
     def send_json(self, data: Any, status: int = 200) -> None:
-        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        payload_obj = data
+        if isinstance(data, dict):
+            payload_obj = dict(data)
+            existing_meta = payload_obj.get("_meta")
+            meta = existing_meta if isinstance(existing_meta, dict) else {}
+            payload_obj["_meta"] = {**meta, **self.api_meta(int(status))}
+        payload = json.dumps(payload_obj, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
+        self.send_json({"ok": False, "error": message, "message": message, "code": code}, status)
 
     def send_html(self, html: str) -> None:
         payload = html.encode("utf-8")
@@ -3248,7 +3358,7 @@ class WebHandler(BaseHTTPRequestHandler):
     def require_auth(self) -> bool:
         if check_auth(self):
             return True
-        self.send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+        self.send_error_json("需要访问令牌", HTTPStatus.UNAUTHORIZED, "unauthorized")
         return False
 
     def do_GET(self) -> None:
@@ -3291,7 +3401,7 @@ class WebHandler(BaseHTTPRequestHandler):
             lines = int(query.get("lines", ["200"])[0] or 200)
             self.send_json(logs_payload(target, lines))
             return
-        self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
+        self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
         if not self.require_auth():
@@ -3366,9 +3476,9 @@ class WebHandler(BaseHTTPRequestHandler):
                     result["message"] = apply_result.get("message", result.get("message"))
                 self.send_json(result)
                 return
-            self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
+            self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
         except Exception as exc:
-            self.send_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, HTTPStatus.BAD_REQUEST)
+            self.send_error_json(f"{type(exc).__name__}: {exc}", HTTPStatus.BAD_REQUEST, "bad_request")
 
 
 def is_loopback_host(host: str) -> bool:
