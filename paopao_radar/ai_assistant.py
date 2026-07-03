@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote as url_quote
 
 import requests
 
@@ -425,7 +426,7 @@ def telegram_plain_text(text: str) -> str:
 
 
 def infer_telegram_parse_mode(text: str) -> str | None:
-    return "HTML" if re.search(r"</?(?:pre|code)>", str(text or ""), flags=re.IGNORECASE) else None
+    return "HTML" if re.search(r"</?(?:a|b|strong|pre|code)\b", str(text or ""), flags=re.IGNORECASE) else None
 
 
 def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
@@ -944,13 +945,33 @@ def list_alerts_text(alerts: list[PriceAlert]) -> str:
     return "\n".join(lines)
 
 
-def price_quote_pre_block(quotes: list[AlertMarketQuote]) -> str:
-    rows = [
-        f"{quote.exchange_label:<8} {quote.pair:<16} {format_price(quote.price):>14}"
-        for quote in quotes
-    ]
-    escaped = "\n".join(html.escape(row) for row in rows)
-    return f"<pre>{escaped}</pre>"
+COINGLASS_EXCHANGE_SLUGS = {
+    "binance": "Binance",
+    "bybit": "Bybit",
+    "okx": "OKX",
+    "bitget": "Bitget",
+    "gate": "Gate",
+}
+
+
+def coinglass_quote_url(quote: AlertMarketQuote) -> str:
+    exchange = COINGLASS_EXCHANGE_SLUGS.get(quote.exchange, quote.exchange_label)
+    pair = quote.pair or quote.symbol
+    path = f"{exchange}_{pair}"
+    if quote.market_type == "spot":
+        path = f"SPOT_{path}"
+    return f"https://www.coinglass.com/tv/zh/{url_quote(path, safe='-_')}"
+
+
+def price_quote_link_rows(quotes: list[AlertMarketQuote]) -> str:
+    lines = ["交易所 | 交易对 | 价格"]
+    for quote in quotes:
+        exchange = html.escape(quote.exchange_label)
+        pair = html.escape(quote.pair)
+        price = html.escape(format_price(quote.price))
+        url = html.escape(coinglass_quote_url(quote), quote=True)
+        lines.append(f'<a href="{url}"><b>{exchange}</b></a> | <code>{pair}</code> | <code>{price}</code>')
+    return "\n".join(lines)
 
 
 def price_text(settings: Settings, symbol_text: str) -> str:
@@ -963,11 +984,11 @@ def price_text(settings: Settings, symbol_text: str) -> str:
     lines = [f"{symbol} 多交易所价格", ""]
     if futures:
         lines.append("合约：")
-        lines.append(price_quote_pre_block(futures))
+        lines.append(price_quote_link_rows(futures))
         lines.append("")
     if spot:
         lines.append("现货：")
-        lines.append(price_quote_pre_block(spot))
+        lines.append(price_quote_link_rows(spot))
         lines.append("")
     lines.extend([
         "可继续发送：",

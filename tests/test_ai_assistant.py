@@ -11,6 +11,7 @@ from paopao_radar.ai_assistant import (
     SessionLockRegistry,
     TelegramBotClient,
     build_chat_completion_payload,
+    coinglass_quote_url,
     extract_ai_reply_text,
     handle_callback_query,
     handle_message,
@@ -54,21 +55,35 @@ class AiAssistantTests(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
         self.assertEqual(post.call_args.kwargs["timeout"], 20)
 
-    def test_telegram_bot_send_message_preserves_pre_block_as_html(self) -> None:
+    def test_telegram_bot_send_message_preserves_html_price_links(self) -> None:
         bot = TelegramBotClient("123456:test", timeout_sec=10, retry_count=1)
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {"ok": True}
 
-        text = "BTCUSDT 多交易所价格\n\n合约：\n<pre>Binance  BTCUSDT  $62,184.00</pre>"
+        text = 'BTCUSDT 多交易所价格\n\n合约：\n<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a> | <code>BTCUSDT</code> | <code>$62,184.00</code>'
         with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
             ok = bot.send_message(42, text)
 
         self.assertTrue(ok)
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["parse_mode"], "HTML")
-        self.assertIn("<pre>Binance", payload["text"])
+        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', payload["text"])
         self.assertEqual(infer_telegram_parse_mode(text), "HTML")
+
+    def test_coinglass_quote_url_keeps_exchange_pair_format(self) -> None:
+        self.assertEqual(
+            coinglass_quote_url(AlertMarketQuote(exchange="binance", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=1)),
+            "https://www.coinglass.com/tv/zh/Binance_BTCUSDT",
+        )
+        self.assertEqual(
+            coinglass_quote_url(AlertMarketQuote(exchange="okx", market_type="futures", symbol="BTCUSDT", pair="BTC-USDT-SWAP", price=1)),
+            "https://www.coinglass.com/tv/zh/OKX_BTC-USDT-SWAP",
+        )
+        self.assertEqual(
+            coinglass_quote_url(AlertMarketQuote(exchange="gate", market_type="spot", symbol="BTCUSDT", pair="BTC_USDT", price=1)),
+            "https://www.coinglass.com/tv/zh/SPOT_Gate_BTC_USDT",
+        )
 
     def test_process_ai_update_sends_processing_notice_before_slow_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -830,8 +845,9 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("BTCUSDT 多交易所价格", reply or "")
             self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
-            self.assertIn("<pre>", reply or "")
-            self.assertIn("</pre>", reply or "")
+            self.assertIn("交易所 | 交易对 | 价格", reply or "")
+            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
+            self.assertIn("<code>BTCUSDT</code>", reply or "")
 
     def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
