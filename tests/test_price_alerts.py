@@ -148,11 +148,11 @@ class PriceAlertStoreTests(unittest.TestCase):
     def test_futures_pair_candidates_include_1000_prefix_for_binance_bybit(self) -> None:
         self.assertEqual(
             alert_market_pair_candidates("PEPE", exchange="binance", market_type="futures"),
-            ["PEPEUSDT", "1000PEPEUSDT"],
+            ["PEPEUSDT", "1000PEPEUSDT", "10000PEPEUSDT", "1000000PEPEUSDT"],
         )
         self.assertEqual(
-            alert_market_pair_candidates("PEPE", exchange="bybit", market_type="futures"),
-            ["PEPEUSDT", "1000PEPEUSDT"],
+            alert_market_pair_candidates("MOG", exchange="bybit", market_type="futures"),
+            ["MOGUSDT", "1000MOGUSDT", "10000MOGUSDT", "1000000MOGUSDT"],
         )
         self.assertEqual(
             alert_market_pair_candidates("PEPE", exchange="okx", market_type="futures"),
@@ -180,6 +180,24 @@ class PriceAlertStoreTests(unittest.TestCase):
             assert quote is not None
             self.assertEqual(quote.pair, "1000PEPEUSDT")
             self.assertEqual(quote.symbol, "PEPEUSDT")
+
+    def test_fetch_alert_market_quote_falls_back_to_1000000_futures_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            requested_pairs: list[str] = []
+
+            def fake_fetch(settings: Settings, exchange: str, market_type: str, pair: str, timeout: int) -> float | None:
+                requested_pairs.append(pair)
+                return 0.00000012 if pair == "1000000MOGUSDT" else None
+
+            with patch("paopao_radar.price_alerts._fetch_alert_market_price", side_effect=fake_fetch):
+                quote = fetch_alert_market_quote(settings, "MOG", exchange="bybit", market_type="futures")
+
+            self.assertEqual(requested_pairs, ["MOGUSDT", "1000MOGUSDT", "10000MOGUSDT", "1000000MOGUSDT"])
+            self.assertIsNotNone(quote)
+            assert quote is not None
+            self.assertEqual(quote.pair, "1000000MOGUSDT")
+            self.assertEqual(quote.symbol, "MOGUSDT")
 
     def test_discover_alert_markets_fetches_concurrently_and_caches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

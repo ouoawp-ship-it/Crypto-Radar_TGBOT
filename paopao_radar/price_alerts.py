@@ -25,6 +25,7 @@ ALERT_MARKET_EXCHANGES = ("binance", "bybit", "okx", "bitget", "gate")
 ALERT_MARKET_TYPES = ("spot", "futures")
 ALERT_MARKET_CACHE_TTL_SEC = 30
 ALERT_MARKET_WORKERS = 10
+FUTURES_CONTRACT_PREFIXES = ("1000", "10000", "1000000")
 TIMEFRAME_LABELS = {
     300: "5分钟",
     900: "15分钟",
@@ -351,9 +352,10 @@ def alert_market_pair_candidates(symbol: str, exchange: str = "binance", market_
         return candidates
     if normalized_market == "futures" and normalized_exchange in {"binance", "bybit"}:
         base = base_symbol(normalized_symbol)
-        prefixed = f"1000{base}USDT"
-        if prefixed != primary:
-            candidates.append(prefixed)
+        for prefix in FUTURES_CONTRACT_PREFIXES:
+            prefixed = f"{prefix}{base}USDT"
+            if prefixed != primary and prefixed not in candidates:
+                candidates.append(prefixed)
     return candidates
 
 
