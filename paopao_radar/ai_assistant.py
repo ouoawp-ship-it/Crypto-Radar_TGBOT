@@ -978,11 +978,12 @@ def price_quote_link_rows(quotes: list[AlertMarketQuote]) -> str:
         f"<code>{html.escape('价格'.rjust(price_width))}</code>"
     ]
     for quote in quotes:
-        exchange = html.escape(quote.exchange_label.ljust(exchange_width))
+        exchange = html.escape(quote.exchange_label)
+        exchange_pad = html.escape(" " * max(0, exchange_width - len(quote.exchange_label)))
         pair = html.escape(quote.pair.ljust(pair_width))
         price = html.escape(format_price(quote.price).rjust(price_width))
         url = html.escape(coinglass_quote_url(quote), quote=True)
-        lines.append(f'<a href="{url}"><b><code>{exchange}</code></b></a> <code>{pair}</code> <code>{price}</code>')
+        lines.append(f'<a href="{url}"><b>{exchange}</b></a><code>{exchange_pad}</code> <code>{pair}</code> <code>{price}</code>')
     return "\n".join(lines)
 
 

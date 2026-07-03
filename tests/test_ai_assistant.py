@@ -62,14 +62,14 @@ class AiAssistantTests(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.json.return_value = {"ok": True}
 
-        text = 'BTCUSDT 多交易所价格\n\n合约：\n<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b><code>Binance</code></b></a> <code>BTCUSDT</code> <code>$62,184.00</code>'
+        text = 'BTCUSDT 多交易所价格\n\n合约：\n<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a> <code>BTCUSDT</code> <code>$62,184.00</code>'
         with patch("paopao_radar.ai_assistant.requests.post", return_value=response) as post:
             ok = bot.send_message(42, text)
 
         self.assertTrue(ok)
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["parse_mode"], "HTML")
-        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b><code>Binance</code></b></a>', payload["text"])
+        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', payload["text"])
         self.assertEqual(infer_telegram_parse_mode(text), "HTML")
 
     def test_price_quote_rows_pad_exchange_pair_and_price_columns(self) -> None:
@@ -79,8 +79,8 @@ class AiAssistantTests(unittest.TestCase):
         ])
 
         self.assertIn("<code>交易所    </code> <code>交易对          </code> <code>        价格</code>", rows)
-        self.assertIn('<b><code>Binance</code></b></a> <code>BTCUSDT      </code> <code>$62,178.20</code>', rows)
-        self.assertIn('<b><code>OKX    </code></b></a> <code>BTC-USDT-SWAP</code> <code>$62,181.00</code>', rows)
+        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a><code></code> <code>BTCUSDT      </code> <code>$62,178.20</code>', rows)
+        self.assertIn('<a href="https://www.coinglass.com/tv/zh/OKX_BTC-USDT-SWAP"><b>OKX</b></a><code>    </code> <code>BTC-USDT-SWAP</code> <code>$62,181.00</code>', rows)
 
     def test_coinglass_quote_url_keeps_exchange_pair_format(self) -> None:
         self.assertEqual(
@@ -857,7 +857,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("合约", reply or "")
             self.assertIn("$61,234.50", reply or "")
             self.assertIn("<code>交易所", reply or "")
-            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b><code>Binance</code></b></a>', reply or "")
+            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply or "")
             self.assertIn("<code>BTCUSDT</code>", reply or "")
 
     def test_ai_command_keeps_assistant_route_even_when_text_mentions_price(self) -> None:
