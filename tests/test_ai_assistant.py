@@ -21,6 +21,7 @@ from paopao_radar.ai_assistant import (
     is_alert_intent,
     parse_alert_request,
     price_quote_table_block,
+    price_reply,
     process_ai_update,
     telegram_plain_text,
 )
@@ -110,6 +111,18 @@ class AiAssistantTests(unittest.TestCase):
             coinglass_quote_url(AlertMarketQuote(exchange="gate", market_type="spot", symbol="BTCUSDT", pair="BTC_USDT", price=1)),
             "https://www.coinglass.com/tv/zh/SPOT_Gate_BTC_USDT",
         )
+
+    def test_price_reply_forces_html_links_without_url_buttons(self) -> None:
+        settings = Settings()
+        quote = AlertMarketQuote(exchange="binance", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=61234.5)
+
+        with patch("paopao_radar.ai_assistant.discover_alert_markets", return_value=[quote]):
+            reply = price_reply(settings, "BTC")
+
+        self.assertEqual(reply.parse_mode, "HTML")
+        self.assertIsNone(reply.reply_markup)
+        self.assertIn('<a href="https://www.coinglass.com/tv/zh/Binance_BTCUSDT"><b>Binance</b></a>', reply.text)
+        self.assertNotIn("[Binance]", reply.text)
 
     def test_process_ai_update_sends_processing_notice_before_slow_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

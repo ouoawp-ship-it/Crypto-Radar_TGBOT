@@ -1057,7 +1057,7 @@ def price_text(settings: Settings, symbol_text: str) -> str:
 def price_reply(settings: Settings, symbol_text: str) -> BotReply:
     symbol = normalize_symbol(symbol_text)
     quotes = discover_alert_markets(settings, symbol)
-    return BotReply(price_text_from_quotes(symbol, quotes))
+    return BotReply(price_text_from_quotes(symbol, quotes), parse_mode="HTML")
 
 
 def session_key(chat_id: str | int, user_id: str | int) -> str:
