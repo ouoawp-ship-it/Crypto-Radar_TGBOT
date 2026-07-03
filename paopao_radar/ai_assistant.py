@@ -518,10 +518,40 @@ class ParsedAlertRequest:
 
 
 class TelegramBotClient:
-    def __init__(self, token: str, timeout_sec: int = 15):
+    def __init__(
+        self,
+        token: str,
+        timeout_sec: int = 15,
+        send_timeout_sec: int | None = None,
+        retry_count: int = 1,
+        retry_delay_sec: float = 0.8,
+    ):
         self.token = token
         self.timeout_sec = max(3, int(timeout_sec))
+        self.send_timeout_sec = max(self.timeout_sec, int(send_timeout_sec or self.timeout_sec))
+        self.retry_count = max(1, int(retry_count))
+        self.retry_delay_sec = max(0.0, float(retry_delay_sec))
         self.base_url = f"https://api.telegram.org/bot{token}"
+
+    def _post_json(self, method: str, payload: dict[str, Any], timeout_sec: int | None = None) -> dict[str, Any]:
+        request_timeout = max(3, int(timeout_sec or self.timeout_sec))
+        for attempt in range(1, self.retry_count + 1):
+            try:
+                response = requests.post(
+                    f"{self.base_url}/{method}",
+                    json=payload,
+                    headers=HTTP_HEADERS,
+                    timeout=request_timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else {}
+            except requests.RequestException:
+                if attempt >= self.retry_count:
+                    raise
+                if self.retry_delay_sec:
+                    time.sleep(self.retry_delay_sec * attempt)
+        raise RuntimeError(f"Telegram {method} request failed")
 
     def get_me(self) -> dict[str, Any]:
         response = requests.get(
@@ -573,14 +603,7 @@ class TelegramBotClient:
             }
             if reply_markup and index == len(chunks) - 1:
                 payload["reply_markup"] = reply_markup
-            response = requests.post(
-                f"{self.base_url}/sendMessage",
-                json=payload,
-                headers=HTTP_HEADERS,
-                timeout=self.timeout_sec,
-            )
-            response.raise_for_status()
-            data = response.json()
+            data = self._post_json("sendMessage", payload, timeout_sec=self.send_timeout_sec)
             ok = ok and bool(data.get("ok"))
         return ok
 
@@ -588,15 +611,25 @@ class TelegramBotClient:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
         if text:
             payload["text"] = text[:180]
-        response = requests.post(
-            f"{self.base_url}/answerCallbackQuery",
-            json=payload,
-            headers=HTTP_HEADERS,
-            timeout=self.timeout_sec,
-        )
-        response.raise_for_status()
-        data = response.json()
+        data = self._post_json("answerCallbackQuery", payload, timeout_sec=self.timeout_sec)
         return bool(data.get("ok"))
+
+
+def send_bot_message_safely(
+    bot: TelegramBotClient,
+    chat_id: str | int | None,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+    *,
+    context: str,
+) -> bool:
+    if chat_id is None:
+        return False
+    try:
+        return bot.send_message(chat_id, text, reply_markup=reply_markup)
+    except Exception as exc:
+        print(f"ai-assistant: {context} send failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return False
 
 
 def parse_alert_request(text: str) -> ParsedAlertRequest | None:
@@ -2013,7 +2046,13 @@ def run_ai_assistant_service() -> int:
             idle_until_enabled()
             continue
         store = PriceAlertStore(settings.ai_price_alerts_db_path)
-        bot = TelegramBotClient(settings.ai_bot_token, timeout_sec=settings.tg_push_timeout_sec)
+        bot = TelegramBotClient(
+            settings.ai_bot_token,
+            timeout_sec=settings.tg_push_timeout_sec,
+            send_timeout_sec=max(20, int(settings.tg_push_timeout_sec)),
+            retry_count=2,
+            retry_delay_sec=1.0,
+        )
         bot_username = ""
         bot_user_id = ""
         try:
@@ -2057,6 +2096,8 @@ def run_ai_assistant_service() -> int:
                     offset = update_id + 1
                 callback_query = update.get("callback_query")
                 if isinstance(callback_query, dict):
+                    callback_message = callback_query.get("message", {})
+                    chat_id = callback_message.get("chat", {}).get("id") if isinstance(callback_message, dict) else None
                     try:
                         callback_id = str(callback_query.get("id") or "")
                         if callback_id:
@@ -2065,24 +2106,24 @@ def run_ai_assistant_service() -> int:
                             except Exception:
                                 pass
                         reply = handle_callback_query(settings, store, callback_query, sessions=sessions)
-                        if reply:
-                            callback_message = callback_query.get("message", {})
-                            chat_id = callback_message.get("chat", {}).get("id") if isinstance(callback_message, dict) else None
-                            if chat_id is not None:
-                                bot.send_message(chat_id, reply.text, reply_markup=reply.reply_markup)
                     except Exception as exc:
                         print(f"ai-assistant: callback failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-                        try:
-                            callback_message = callback_query.get("message", {})
-                            chat_id = callback_message.get("chat", {}).get("id") if isinstance(callback_message, dict) else None
-                            if chat_id is not None:
-                                bot.send_message(chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}")
-                        except Exception:
-                            pass
+                        send_bot_message_safely(bot, chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}", context="callback_error")
+                        continue
+                    if reply:
+                        send_bot_message_safely(
+                            bot,
+                            chat_id,
+                            reply.text,
+                            reply_markup=reply.reply_markup,
+                            context="callback_reply",
+                        )
                     continue
                 message = update.get("message")
                 if not isinstance(message, dict):
                     continue
+                message_chat = message.get("chat", {})
+                chat_id = message_chat.get("id") if isinstance(message_chat, dict) else None
                 try:
                     reply = handle_message_reply(
                         settings,
@@ -2092,16 +2133,18 @@ def run_ai_assistant_service() -> int:
                         bot_user_id=bot_user_id,
                         sessions=sessions,
                     )
-                    if reply:
-                        chat_id = message.get("chat", {}).get("id")
-                        bot.send_message(chat_id, reply.text, reply_markup=reply.reply_markup)
                 except Exception as exc:
                     print(f"ai-assistant: message failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-                    try:
-                        chat_id = message.get("chat", {}).get("id")
-                        bot.send_message(chat_id, f"处理失败：{type(exc).__name__}: {exc}")
-                    except Exception:
-                        pass
+                    send_bot_message_safely(bot, chat_id, f"处理失败：{type(exc).__name__}: {exc}", context="message_error")
+                    continue
+                if reply:
+                    send_bot_message_safely(
+                        bot,
+                        chat_id,
+                        reply.text,
+                        reply_markup=reply.reply_markup,
+                        context="message_reply",
+                    )
 
 
 def price_alerts_payload(settings: Settings | None = None) -> dict[str, Any]:

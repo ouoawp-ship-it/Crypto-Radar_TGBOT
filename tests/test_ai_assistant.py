@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from paopao_radar.ai_assistant import (
+    TelegramBotClient,
     build_chat_completion_payload,
     extract_ai_reply_text,
     handle_callback_query,
@@ -33,6 +34,22 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn("文档（https://example.com）", cleaned)
         self.assertNotIn("**", cleaned)
         self.assertNotIn("`", cleaned)
+
+    def test_telegram_bot_send_message_retries_timeout(self) -> None:
+        bot = TelegramBotClient("123456:test", timeout_sec=10, send_timeout_sec=20, retry_count=2, retry_delay_sec=0)
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"ok": True}
+
+        with patch(
+            "paopao_radar.ai_assistant.requests.post",
+            side_effect=[requests.exceptions.ReadTimeout("Read timed out."), response],
+        ) as post:
+            ok = bot.send_message(42, "hello")
+
+        self.assertTrue(ok)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args.kwargs["timeout"], 20)
 
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
         settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")
