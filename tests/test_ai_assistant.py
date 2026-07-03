@@ -95,10 +95,9 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         assert reply is not None
-        self.assertIn("查币雷达档案", reply)
-        self.assertIn("分析你粘贴的数据", reply)
+        self.assertIn("AI 正常对话", reply)
+        self.assertIn("AI 分析数据行情", reply)
         self.assertIn("设置价格提醒", reply)
-        self.assertIn("群里使用规则", reply)
         self.assertIn("自然语言不再创建提醒", reply)
 
     def test_handle_message_reply_start_has_home_buttons(self) -> None:
@@ -124,12 +123,37 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         assert reply is not None
-        self.assertIn("查币雷达档案", reply.text)
+        self.assertIn("AI 正常对话", reply.text)
         self.assertIsNotNone(reply.reply_markup)
         buttons = reply.reply_markup["inline_keyboard"]
         flat = [button["callback_data"] for row in buttons for button in row]
         self.assertIn("flow:alert_setup", flat)
         self.assertIn("menu:analysis", flat)
+        self.assertNotIn("menu:group", flat)
+
+    def test_paopao_command_is_not_start_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            message = {
+                "text": "/paopao",
+                "from": {"id": 42, "username": "tester"},
+                "chat": {"id": 42, "type": "private"},
+            }
+
+            reply = handle_message_reply(settings, store, message, sessions={})
+
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("命令当前不支持", reply.text)
+        self.assertIsNone(reply.reply_markup)
 
     def test_button_alert_setup_flow_requires_final_confirm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,7 +276,7 @@ class AiAssistantTests(unittest.TestCase):
             flat = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
             self.assertIn("flow:alert_setup", flat)
 
-    def test_id_command_returns_user_and_chat_id(self) -> None:
+    def test_id_command_is_not_exposed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -274,8 +298,11 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message_reply(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
 
-        self.assertIn("你的用户 ID：42", reply.text if reply else "")
-        self.assertIn("当前聊天 ID：-1001", reply.text if reply else "")
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("命令当前不支持", reply.text)
+        self.assertNotIn("你的用户 ID", reply.text)
+        self.assertNotIn("当前聊天 ID", reply.text)
 
     def test_handle_message_routes_symbol_dossier_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

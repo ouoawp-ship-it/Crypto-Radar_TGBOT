@@ -38,50 +38,44 @@ from .symbol_dossier import (
 HOME_TEXT = """泡泡 AI 助手 Bot
 
 这是泡泡雷达的独立 AI 助手，和群里自动推送雷达信号的 Bot 分开。
-它主要负责：查币雷达档案、解读雷达数据、设置价格提醒、查询价格、回答运行状态问题。
 
-常用入口：
-1. 查币雷达档案
-查 BTC
-GWEI 怎么看
-SOL 可以做多吗
+它只保留三类核心功能：
 
-2. 分析你粘贴的数据
-分析这段：粘贴启动雷达、结构雷达、资金流、资金费率或市场数据
+1. AI 正常对话
+可以直接问运行状态、功能用法、雷达信号是什么意思。
 
-3. 设置价格提醒
-点击“设置价格提醒”，按提示输入币种，然后手动选择现货/合约和交易所，再输入目标价。创建前会让你确认。
+2. AI 分析数据行情
+可以发：查 BTC、GWEI 怎么看、分析这段：粘贴雷达信号或市场数据。
+我会结合历史信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率做解读。
 
-自然语言不再创建提醒。只转发带价格的雷达信号，不会自动创建提醒。
+3. 价格提醒
+点击“设置价格提醒”，输入币种后手动选择现货/合约、交易所和目标价。
+创建前会让你确认，确认后才会保存。
 
-群里使用规则：
-只有 Web 后台允许的群/频道才能使用；在群里必须 @我，或者回复我的消息，我才会处理，普通聊天不会触发。
+注意：自然语言不再创建提醒。只转发带价格的雷达信号，不会自动创建提醒。
 """
 
 HELP_TEXT = """泡泡 AI 助手 Bot 完整帮助
 
 这个 Bot 和群里自动推送雷达信号的 Bot 是分开的。
-它主要负责：查币、解读数据、设置价格提醒、回答泡泡雷达运行问题。
+现在只围绕三件事使用：正常对话、AI 行情分析、价格提醒。
 
-你可以直接这样问：
+1. AI 正常对话
+可以直接问：
+最近雷达状态正常吗
+这个启动信号是什么意思
+资金费率极负代表什么
 
-1. 查币雷达档案
+2. AI 分析数据行情
+可以直接发：
 查 BTC
 GWEI 怎么看
 SOL 可以做多吗
+分析这段：粘贴启动雷达、结构雷达、资金流、资金费率或市场数据
 
 我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率，给出偏多 / 偏空 / 观望 / 高风险观望。
 
-2. 分析你粘贴的数据
-分析这段：粘贴启动雷达、结构雷达、资金流、资金费率或市场数据
-也可以直接粘贴一整段雷达信号，我会自动识别并分析。
-
-3. 查询价格
-BTC 现在多少钱
-ETH 当前价格
-/price BTC
-
-4. 设置价格提醒
+3. 价格提醒
 点击首页“设置价格提醒”
 输入币种
 选择现货/合约
@@ -91,28 +85,21 @@ ETH 当前价格
 
 注意：自然语言不再创建提醒。你说“BTC 跌破 58000 提醒我”时，我会提示你去按钮流程手动选择价格源。
 
-5. 管理提醒
+4. 管理提醒
 我的提醒有哪些
 暂停提醒 12
 恢复提醒 12
 删除提醒 12
 
-6. 查询雷达状态
-帮我解释最近雷达状态
-主服务正常吗
-结构雷达有没有报错
-
-群里使用规则：
-只有 Web 后台允许的群/频道才能使用；在群里必须 @我，或者回复我的消息，我才会处理，普通聊天不会触发。
-
 备用命令：
 /coin BTC
+/price BTC
 /analyze 粘贴雷达信号或市场数据
 /alerts
 /pause 12
 /resume 12
 /delete 12
-/ai 帮我解释最近雷达状态
+/ai 你的问题
 """
 
 PRICE_HELP_TEXT = """价格提醒说明
@@ -140,7 +127,7 @@ ANALYSIS_HELP_TEXT = """AI 分析说明
 
 支持两类分析：
 
-1. 查币雷达档案
+1. 单币行情分析
 发送：查 BTC、GWEI 怎么看、SOL 可以做多吗
 我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率。
 
@@ -168,21 +155,8 @@ GWEI 怎么看
 /pause 12
 /resume 12
 /delete 12
-/id
 
 普通私聊会自动识别意图。群里必须 @机器人或回复机器人消息，并且群 ID 已经在 Web 后台白名单里。
-"""
-
-GROUP_RULES_TEXT = """群里使用规则
-
-默认情况下，AI 助手不会读取群里每一句普通聊天。
-
-群内调用需要同时满足：
-1. Web 后台开启 AI_ALLOW_GROUP_CHAT
-2. 当前群/频道 ID 填入 AI_ALLOWED_CHAT_IDS
-3. 用户 @机器人，或回复机器人消息
-
-这样做是为了避免误触发，也避免个人价格提醒设置泄露到不该使用的群里。
 """
 
 ALERT_SETUP_TEXT = """设置价格提醒
@@ -213,10 +187,9 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 def main_menu_markup() -> dict[str, Any]:
     return inline_keyboard([
-        [("查币雷达档案", "menu:dossier"), ("设置价格提醒", "flow:alert_setup")],
-        [("我的提醒", "menu:alerts"), ("查询价格", "menu:price_query")],
-        [("分析雷达数据", "menu:analysis"), ("AI 助手说明", "menu:assistant")],
-        [("群里使用规则", "menu:group"), ("完整帮助", "menu:help")],
+        [("AI 正常对话", "menu:assistant"), ("AI 分析行情", "menu:analysis")],
+        [("设置价格提醒", "flow:alert_setup"), ("我的提醒", "menu:alerts")],
+        [("查询价格", "menu:price_query"), ("完整帮助", "menu:help")],
     ])
 
 
@@ -752,21 +725,6 @@ def price_text(settings: Settings, symbol_text: str) -> str:
     return f"{symbol} 当前 Binance 合约价格：{format_price(price)}"
 
 
-def id_text(message: dict[str, Any]) -> str:
-    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
-    user_id, username = user_label(message)
-    lines = [
-        "当前 Telegram ID",
-        "",
-        f"你的用户 ID：{user_id or '未知'}",
-        f"当前聊天 ID：{chat.get('id') or '未知'}",
-        f"当前聊天类型：{chat.get('type') or '未知'}",
-    ]
-    if username:
-        lines.append(f"用户名：{username}")
-    return "\n".join(lines)
-
-
 def session_key(chat_id: str | int, user_id: str | int) -> str:
     return f"{chat_id}:{user_id}"
 
@@ -1259,12 +1217,10 @@ def handle_message(
         return HOME_TEXT
 
     lowered = text.lower()
-    if lowered in {"/start", "/paopao"}:
+    if lowered == "/start":
         return HOME_TEXT
     if lowered in {"/help", "help", "帮助"}:
         return HELP_TEXT
-    if lowered == "/id":
-        return id_text(message)
     if lowered.startswith("/setup"):
         return ALERT_SETUP_TEXT
 
@@ -1370,6 +1326,9 @@ def handle_message(
             f"{direction_label} {format_price(ambiguous.target_price)} 提醒我"
         )
 
+    if text.startswith("/"):
+        return "这个命令当前不支持。请发送 /start 打开首页，或直接输入你的问题。"
+
     if settings.ai_provider_enable and settings.ai_api_key:
         try:
             return call_ai_provider(settings, text, store, user_id)
@@ -1413,13 +1372,11 @@ def handle_message_reply(
     if lowered in {"/cancel", "取消"}:
         active_sessions.pop(key, None)
         return BotReply("已取消。", main_menu_markup())
-    if lowered in {"/start", "/paopao"} or not text:
+    if lowered == "/start" or not text:
         active_sessions.pop(key, None)
         return BotReply(HOME_TEXT, main_menu_markup())
     if lowered in {"/help", "help", "帮助"}:
         return BotReply(HELP_TEXT, main_menu_markup())
-    if lowered == "/id":
-        return BotReply(id_text(message))
     if lowered.startswith("/setup"):
         return start_alert_setup_session(active_sessions, key)
 
@@ -1476,15 +1433,7 @@ def handle_callback_query(
     if data == "menu:help":
         return BotReply(HELP_TEXT, main_menu_markup())
     if data == "menu:dossier":
-        return BotReply(
-            "\n".join([
-                "查币雷达档案",
-                "",
-                "直接发送：查 BTC、GWEI 怎么看、SOL 可以做多吗。",
-                "我会汇总这个币最近的雷达信号、价格、OI、成交量、市值、流动性、结构状态和资金费率，再给出偏多、偏空、观望或高风险观望结论。",
-            ]),
-            back_home_markup(),
-        )
+        return BotReply(ANALYSIS_HELP_TEXT, back_home_markup())
     if data == "menu:alerts":
         return BotReply(list_alerts_text(store.list_alerts(user_id=user_id, limit=50)), back_home_markup())
     if data == "menu:price_query":
@@ -1504,7 +1453,7 @@ def handle_callback_query(
     if data == "menu:assistant":
         return BotReply(ASSISTANT_HELP_TEXT, back_home_markup())
     if data == "menu:group":
-        return BotReply(GROUP_RULES_TEXT, back_home_markup())
+        return BotReply("这个旧入口已经取消。现在首页只保留 AI 正常对话、AI 行情分析和价格提醒。", back_home_markup())
     if data == "flow:alert_setup":
         return start_alert_setup_session(active_sessions, key)
     if data == "flow:cancel":
