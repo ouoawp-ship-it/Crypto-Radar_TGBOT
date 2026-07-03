@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from paopao_radar.ai_assistant import (
+    SessionLockRegistry,
     TelegramBotClient,
     build_chat_completion_payload,
     extract_ai_reply_text,
@@ -16,6 +17,7 @@ from paopao_radar.ai_assistant import (
     handle_message_reply,
     is_alert_intent,
     parse_alert_request,
+    process_ai_update,
     telegram_plain_text,
 )
 from paopao_radar.config import Settings
@@ -50,6 +52,63 @@ class AiAssistantTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(post.call_count, 2)
         self.assertEqual(post.call_args.kwargs["timeout"], 20)
+
+    def test_process_ai_update_sends_processing_notice_before_slow_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+
+            class FakeBot:
+                def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+                    return True
+
+            class FakeSender:
+                def __init__(self) -> None:
+                    self.messages: list[tuple[str | int, str, str]] = []
+
+                def send_message(
+                    self,
+                    chat_id: str | int,
+                    text: str,
+                    reply_markup: dict | None = None,
+                    *,
+                    context: str = "queued",
+                ) -> bool:
+                    self.messages.append((chat_id, text, context))
+                    return True
+
+            sender = FakeSender()
+            update = {
+                "message": {
+                    "text": "BTC 现在多少钱",
+                    "from": {"id": 42, "username": "tester"},
+                    "chat": {"id": 42, "type": "private"},
+                }
+            }
+
+            with patch("paopao_radar.ai_assistant.Settings.load", return_value=settings):
+                with patch("paopao_radar.ai_assistant.price_text", return_value="BTCUSDT 多交易所价格\n$61,234.50"):
+                    process_ai_update(
+                        update,
+                        FakeBot(),  # type: ignore[arg-type]
+                        sender,  # type: ignore[arg-type]
+                        bot_username="",
+                        bot_user_id="",
+                        sessions={},
+                        session_locks=SessionLockRegistry(),
+                    )
+
+            self.assertGreaterEqual(len(sender.messages), 2)
+            self.assertIn("正在并发查询五大交易所价格", sender.messages[0][1])
+            self.assertEqual(sender.messages[0][2], "message_processing_notice")
+            self.assertIn("BTCUSDT 多交易所价格", sender.messages[-1][1])
+            self.assertEqual(sender.messages[-1][2], "message_reply")
 
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
         settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")

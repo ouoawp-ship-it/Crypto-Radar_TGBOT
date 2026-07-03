@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +21,10 @@ VALID_ALERT_TYPES = {"target_price", "price_change", "oi_change", "funding_chang
 VALID_REPEAT_POLICIES = {"once", "repeat", "interval"}
 VALID_EXCHANGES = {"binance", "bybit", "okx", "bitget", "gate"}
 VALID_MARKET_TYPES = {"spot", "futures"}
+ALERT_MARKET_EXCHANGES = ("binance", "bybit", "okx", "bitget", "gate")
+ALERT_MARKET_TYPES = ("spot", "futures")
+ALERT_MARKET_CACHE_TTL_SEC = 30
+ALERT_MARKET_WORKERS = 10
 TIMEFRAME_LABELS = {
     300: "5分钟",
     900: "15分钟",
@@ -46,6 +52,9 @@ MARKET_TYPE_LABELS = {
     "spot": "现货",
     "futures": "USDT 合约",
 }
+
+_ALERT_MARKET_CACHE_LOCK = threading.Lock()
+_ALERT_MARKET_CACHE: dict[tuple[Any, ...], tuple[float, list["AlertMarketQuote"]]] = {}
 
 
 @dataclass(frozen=True)
@@ -154,6 +163,11 @@ class AlertMarketQuote:
     @property
     def key(self) -> str:
         return price_key(self.exchange, self.market_type, self.pair)
+
+
+def clear_alert_market_cache() -> None:
+    with _ALERT_MARKET_CACHE_LOCK:
+        _ALERT_MARKET_CACHE.clear()
 
 
 def normalize_symbol(value: str) -> str:
@@ -955,29 +969,81 @@ def _fetch_alert_market_price(
     return None
 
 
-def discover_alert_markets(settings: Settings, symbol: str) -> list[AlertMarketQuote]:
+def _alert_market_cache_key(settings: Settings, symbol: str) -> tuple[Any, ...]:
+    return (
+        normalize_symbol(symbol),
+        settings.binance_spot_base_url.rstrip("/"),
+        settings.binance_fapi_base_url.rstrip("/"),
+        int(settings.http_timeout_sec),
+    )
+
+
+def _sort_alert_quotes(quotes: list[AlertMarketQuote]) -> list[AlertMarketQuote]:
+    exchange_order = {exchange: index for index, exchange in enumerate(ALERT_MARKET_EXCHANGES)}
+    market_order = {market_type: index for index, market_type in enumerate(ALERT_MARKET_TYPES)}
+    return sorted(
+        quotes,
+        key=lambda quote: (
+            market_order.get(quote.market_type, 99),
+            exchange_order.get(quote.exchange, 99),
+            quote.pair,
+        ),
+    )
+
+
+def discover_alert_markets(settings: Settings, symbol: str, cache_ttl_sec: int = ALERT_MARKET_CACHE_TTL_SEC) -> list[AlertMarketQuote]:
     normalized_symbol = normalize_symbol(symbol)
+    cache_key = _alert_market_cache_key(settings, normalized_symbol)
+    now = time.time()
+    if cache_ttl_sec > 0:
+        with _ALERT_MARKET_CACHE_LOCK:
+            cached = _ALERT_MARKET_CACHE.get(cache_key)
+            if cached and now - cached[0] <= cache_ttl_sec:
+                return list(cached[1])
+
     quotes: list[AlertMarketQuote] = []
     seen: set[str] = set()
-    for market_type in ("spot", "futures"):
-        for exchange in ("binance", "bybit", "okx", "bitget", "gate"):
-            quote = fetch_alert_market_quote(settings, normalized_symbol, exchange, market_type)
+    jobs = [(exchange, market_type) for market_type in ALERT_MARKET_TYPES for exchange in ALERT_MARKET_EXCHANGES]
+    with ThreadPoolExecutor(max_workers=min(ALERT_MARKET_WORKERS, len(jobs))) as executor:
+        future_map = {
+            executor.submit(fetch_alert_market_quote, settings, normalized_symbol, exchange, market_type): (exchange, market_type)
+            for exchange, market_type in jobs
+        }
+        for future in as_completed(future_map):
+            try:
+                quote = future.result()
+            except Exception:
+                quote = None
             if quote and quote.key not in seen:
                 quotes.append(quote)
                 seen.add(quote.key)
+    quotes = _sort_alert_quotes(quotes)
+    if cache_ttl_sec > 0:
+        with _ALERT_MARKET_CACHE_LOCK:
+            _ALERT_MARKET_CACHE[cache_key] = (now, list(quotes))
     return quotes
 
 
 def fetch_price_alert_prices(settings: Settings, alerts: list[PriceAlert]) -> dict[str, float]:
     prices: dict[str, float] = {}
-    seen: set[str] = set()
+    unique_alerts: dict[str, PriceAlert] = {}
     for alert in alerts:
-        if alert.price_key in seen:
-            continue
-        seen.add(alert.price_key)
-        quote = fetch_alert_market_quote(settings, alert.symbol, alert.exchange, alert.market_type, alert.pair)
-        if quote:
-            prices[alert.price_key] = quote.price
+        unique_alerts.setdefault(alert.price_key, alert)
+    if not unique_alerts:
+        return prices
+    with ThreadPoolExecutor(max_workers=min(ALERT_MARKET_WORKERS, len(unique_alerts))) as executor:
+        future_map = {
+            executor.submit(fetch_alert_market_quote, settings, alert.symbol, alert.exchange, alert.market_type, alert.pair): price_key_value
+            for price_key_value, alert in unique_alerts.items()
+        }
+        for future in as_completed(future_map):
+            quote = None
+            try:
+                quote = future.result()
+            except Exception:
+                quote = None
+            if quote:
+                prices[future_map[future]] = quote.price
     return prices
 
 

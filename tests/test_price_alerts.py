@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +10,8 @@ from paopao_radar.price_alerts import (
     AlertMarketQuote,
     PriceAlertStore,
     alert_to_dict,
+    clear_alert_market_cache,
+    discover_alert_markets,
     fetch_price_alert_prices,
     format_price,
     normalize_symbol,
@@ -139,6 +142,31 @@ class PriceAlertStoreTests(unittest.TestCase):
             self.assertEqual(prices, {"bybit:futures:BTCUSDT": 61234.5})
             hits = triggered_alerts([alert], prices)
             self.assertEqual([(item.exchange, item.market_type, price) for item, price in hits], [("bybit", "futures", 61234.5)])
+
+    def test_discover_alert_markets_fetches_concurrently_and_caches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            clear_alert_market_cache()
+            calls: list[tuple[str, str]] = []
+
+            def fake_fetch(settings: Settings, symbol: str, exchange: str, market_type: str, pair: str | None = None) -> AlertMarketQuote | None:
+                time.sleep(0.05)
+                calls.append((exchange, market_type))
+                if exchange == "binance" and market_type == "futures":
+                    return AlertMarketQuote(exchange=exchange, market_type=market_type, symbol=symbol, pair=symbol, price=61234.5)
+                return None
+
+            with patch("paopao_radar.price_alerts.fetch_alert_market_quote", side_effect=fake_fetch):
+                started = time.time()
+                first = discover_alert_markets(settings, "BTC", cache_ttl_sec=60)
+                elapsed = time.time() - started
+                second = discover_alert_markets(settings, "BTC", cache_ttl_sec=60)
+
+            self.assertEqual(len(calls), 10)
+            self.assertLess(elapsed, 0.45)
+            self.assertEqual([(quote.exchange, quote.market_type) for quote in first], [("binance", "futures")])
+            self.assertEqual(second, first)
+            clear_alert_market_cache()
 
     def test_triggered_alerts_direction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

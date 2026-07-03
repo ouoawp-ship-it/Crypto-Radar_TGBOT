@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -626,10 +629,96 @@ def send_bot_message_safely(
     if chat_id is None:
         return False
     try:
-        return bot.send_message(chat_id, text, reply_markup=reply_markup)
+        try:
+            return bot.send_message(chat_id, text, reply_markup=reply_markup, context=context)  # type: ignore[call-arg]
+        except TypeError:
+            return bot.send_message(chat_id, text, reply_markup=reply_markup)
     except Exception as exc:
         print(f"ai-assistant: {context} send failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return False
+
+
+@dataclass(frozen=True)
+class QueuedTelegramMessage:
+    chat_id: str | int
+    text: str
+    reply_markup: dict[str, Any] | None = None
+    context: str = "queued"
+
+
+class QueuedTelegramSender:
+    def __init__(self, bot: TelegramBotClient, max_queue_size: int = 1000):
+        self.bot = bot
+        self._queue: queue.Queue[QueuedTelegramMessage | None] = queue.Queue(maxsize=max(10, int(max_queue_size)))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="paopao-ai-sender", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self, timeout: float = 3.0) -> None:
+        self._stop.set()
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        self._thread.join(timeout=timeout)
+
+    def send_message(
+        self,
+        chat_id: str | int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        *,
+        context: str = "queued",
+    ) -> bool:
+        try:
+            self._queue.put_nowait(QueuedTelegramMessage(chat_id=chat_id, text=text, reply_markup=reply_markup, context=context))
+            return True
+        except queue.Full:
+            print(f"ai-assistant: send queue full context={context}", file=sys.stderr, flush=True)
+            return False
+
+    def pending_count(self) -> int:
+        return self._queue.qsize()
+
+    def _run(self) -> None:
+        while not self._stop.is_set() or not self._queue.empty():
+            try:
+                item = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if item is None:
+                self._queue.task_done()
+                continue
+            started = time.time()
+            try:
+                self.bot.send_message(item.chat_id, item.text, reply_markup=item.reply_markup)
+                elapsed = time.time() - started
+                if elapsed >= 3:
+                    print(f"ai-assistant: slow send context={item.context} elapsed={elapsed:.2f}s", flush=True)
+            except Exception as exc:
+                print(
+                    f"ai-assistant: queued send failed context={item.context} {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            finally:
+                self._queue.task_done()
+
+
+class SessionLockRegistry:
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: dict[str, threading.RLock] = {}
+
+    def lock_for(self, key: str) -> threading.RLock:
+        with self._guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._locks[key] = lock
+            return lock
 
 
 def parse_alert_request(text: str) -> ParsedAlertRequest | None:
@@ -1982,6 +2071,119 @@ def evaluate_monitor_alert(settings: Settings, store: PriceAlertStore, alert: Pr
     return None
 
 
+def processing_notice_for_message(
+    settings: Settings,
+    message: dict[str, Any],
+    bot_username: str = "",
+    bot_user_id: str = "",
+    sessions: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    raw_text = str(message.get("text") or "").strip()
+    if not raw_text:
+        return ""
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or "")
+    chat_type = str(chat.get("type") or "")
+    user_id, _ = user_label(message)
+    if not user_id or not chat_id:
+        return ""
+    if chat_type in NON_PRIVATE_CHAT_TYPES and not message_targets_bot(message, bot_username, bot_user_id):
+        return ""
+    if chat_type in NON_PRIVATE_CHAT_TYPES:
+        if not settings.ai_allow_group_chat or not chat_is_allowed(settings, chat):
+            return ""
+    if not is_authorized(settings, user_id):
+        return ""
+
+    text = strip_bot_addressing(raw_text, bot_username)
+    lowered = text.lower()
+    session = (sessions or {}).get(session_key(chat_id, user_id)) or {}
+    state = str(session.get("state") or "")
+    if state == "alert_symbol":
+        return "已收到币种，正在并发识别五大交易所的现货和合约价格源..."
+    if state == "alert_price":
+        return "已收到目标价，正在读取所选交易所的最新价格..."
+    if lowered.startswith("/price") or is_price_query(text):
+        return "已收到，正在并发查询五大交易所价格..."
+    if lowered.startswith(("/ai", "/analyze")) or is_analysis_intent(text) or is_market_data_intent(text):
+        return "已收到，正在调用 AI 分析；结果出来后会单独发给你。"
+    if lowered.startswith(("/coin", "/dossier")) or (is_symbol_dossier_request(text) and not is_price_query(text)):
+        return "已收到，正在读取历史信号和当前行情，生成币种档案..."
+    if settings.ai_provider_enable and settings.ai_api_key and not lowered.startswith("/"):
+        return "已收到，正在思考；如果问题较复杂会稍慢一点。"
+    return ""
+
+
+def _chat_id_from_message(message: dict[str, Any]) -> str | int | None:
+    chat = message.get("chat", {})
+    return chat.get("id") if isinstance(chat, dict) else None
+
+
+def _chat_id_from_callback(callback_query: dict[str, Any]) -> str | int | None:
+    message = callback_query.get("message", {})
+    chat = message.get("chat", {}) if isinstance(message, dict) else {}
+    return chat.get("id") if isinstance(chat, dict) else None
+
+
+def process_ai_update(
+    update: dict[str, Any],
+    bot: TelegramBotClient,
+    sender: QueuedTelegramSender,
+    bot_username: str,
+    bot_user_id: str,
+    sessions: dict[str, dict[str, Any]],
+    session_locks: SessionLockRegistry,
+) -> None:
+    settings = Settings.load()
+    store = PriceAlertStore(settings.ai_price_alerts_db_path)
+    callback_query = update.get("callback_query")
+    if isinstance(callback_query, dict):
+        chat_id = _chat_id_from_callback(callback_query)
+        session_lock = session_locks.lock_for(callback_session_key(callback_query))
+        try:
+            callback_id = str(callback_query.get("id") or "")
+            if callback_id:
+                try:
+                    bot.answer_callback_query(callback_id, "处理中...")
+                except Exception:
+                    pass
+            with session_lock:
+                reply = handle_callback_query(settings, store, callback_query, sessions=sessions)
+        except Exception as exc:
+            print(f"ai-assistant: callback failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            send_bot_message_safely(sender, chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}", context="callback_error")
+            return
+        if reply:
+            send_bot_message_safely(sender, chat_id, reply.text, reply_markup=reply.reply_markup, context="callback_reply")
+        return
+
+    message = update.get("message")
+    if not isinstance(message, dict):
+        return
+    chat_id = _chat_id_from_message(message)
+    lock_key = message_session_key(message)
+    session_lock = session_locks.lock_for(lock_key)
+    notice = processing_notice_for_message(settings, message, bot_username=bot_username, bot_user_id=bot_user_id, sessions=sessions)
+    if notice:
+        send_bot_message_safely(sender, chat_id, notice, context="message_processing_notice")
+    try:
+        with session_lock:
+            reply = handle_message_reply(
+                settings,
+                store,
+                message,
+                bot_username=bot_username,
+                bot_user_id=bot_user_id,
+                sessions=sessions,
+            )
+    except Exception as exc:
+        print(f"ai-assistant: message failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        send_bot_message_safely(sender, chat_id, f"处理失败：{type(exc).__name__}: {exc}", context="message_error")
+        return
+    if reply:
+        send_bot_message_safely(sender, chat_id, reply.text, reply_markup=reply.reply_markup, context="message_reply")
+
+
 def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot: TelegramBotClient) -> dict[str, Any]:
     if not settings.ai_price_alerts_enable:
         return {"ok": True, "enabled": False, "checked": 0, "triggered": 0}
@@ -2029,6 +2231,28 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
     return {"ok": not errors, "enabled": True, "checked": len(active), "triggered": sent, "errors": errors}
 
 
+def run_price_alert_scanner(stop_event: threading.Event, sender: QueuedTelegramSender) -> None:
+    while not stop_event.is_set():
+        settings = Settings.load()
+        if not settings.ai_assistant_enable or not settings.ai_bot_token:
+            break
+        interval = max(3, int(settings.ai_alert_check_interval_sec))
+        started = time.time()
+        try:
+            store = PriceAlertStore(settings.ai_price_alerts_db_path)
+            result = check_and_send_price_alerts(settings, store, sender)  # type: ignore[arg-type]
+            elapsed = time.time() - started
+            print(
+                f"ai-assistant: alert_check elapsed={elapsed:.2f}s "
+                f"queue={sender.pending_count()} {json.dumps(result, ensure_ascii=False)}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"ai-assistant: alert_check failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        waited = time.time() - started
+        stop_event.wait(max(0.1, interval - waited))
+
+
 def idle_until_enabled() -> None:
     print("ai-assistant: disabled or missing AI_BOT_TOKEN; idle and reload config every 60s", flush=True)
     while True:
@@ -2045,7 +2269,6 @@ def run_ai_assistant_service() -> int:
         if not settings.ai_assistant_enable or not settings.ai_bot_token:
             idle_until_enabled()
             continue
-        store = PriceAlertStore(settings.ai_price_alerts_db_path)
         bot = TelegramBotClient(
             settings.ai_bot_token,
             timeout_sec=settings.tg_push_timeout_sec,
@@ -2063,88 +2286,55 @@ def run_ai_assistant_service() -> int:
             print(f"ai-assistant: getMe failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         poll_timeout = max(1, min(5, int(settings.ai_poll_timeout_sec)))
         alert_interval = max(3, int(settings.ai_alert_check_interval_sec))
-        next_alert_check = 0.0
         sessions: dict[str, dict[str, Any]] = {}
+        session_locks = SessionLockRegistry()
+        sender = QueuedTelegramSender(bot)
+        sender.start()
+        stop_event = threading.Event()
+        alert_thread = threading.Thread(target=run_price_alert_scanner, args=(stop_event, sender), name="paopao-ai-alerts", daemon=True)
+        alert_thread.start()
+        worker_count = 8
+        update_executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="paopao-ai-update")
         print(
             f"ai-assistant: running username={bot_username or '-'} poll_timeout={poll_timeout}s "
-            f"alert_interval={alert_interval}s db={settings.ai_price_alerts_db_path}",
+            f"alert_interval={alert_interval}s workers={worker_count} db={settings.ai_price_alerts_db_path}",
             flush=True,
         )
-        while True:
-            now = time.time()
-            if now >= next_alert_check:
-                try:
-                    result = check_and_send_price_alerts(settings, store, bot)
-                    print(f"ai-assistant: alert_check {json.dumps(result, ensure_ascii=False)}", flush=True)
-                except Exception as exc:
-                    print(f"ai-assistant: alert_check failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-                next_alert_check = now + alert_interval
-            try:
-                updates = bot.get_updates(offset, timeout=poll_timeout)
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                print(f"ai-assistant: getUpdates failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-                time.sleep(5)
-                settings = Settings.load()
-                if not settings.ai_assistant_enable or not settings.ai_bot_token:
+        try:
+            while True:
+                current_settings = Settings.load()
+                if not current_settings.ai_assistant_enable or current_settings.ai_bot_token != settings.ai_bot_token:
                     break
-                continue
-            for update in updates:
-                update_id = update.get("update_id")
-                if isinstance(update_id, int):
-                    offset = update_id + 1
-                callback_query = update.get("callback_query")
-                if isinstance(callback_query, dict):
-                    callback_message = callback_query.get("message", {})
-                    chat_id = callback_message.get("chat", {}).get("id") if isinstance(callback_message, dict) else None
-                    try:
-                        callback_id = str(callback_query.get("id") or "")
-                        if callback_id:
-                            try:
-                                bot.answer_callback_query(callback_id)
-                            except Exception:
-                                pass
-                        reply = handle_callback_query(settings, store, callback_query, sessions=sessions)
-                    except Exception as exc:
-                        print(f"ai-assistant: callback failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-                        send_bot_message_safely(bot, chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}", context="callback_error")
-                        continue
-                    if reply:
-                        send_bot_message_safely(
-                            bot,
-                            chat_id,
-                            reply.text,
-                            reply_markup=reply.reply_markup,
-                            context="callback_reply",
-                        )
-                    continue
-                message = update.get("message")
-                if not isinstance(message, dict):
-                    continue
-                message_chat = message.get("chat", {})
-                chat_id = message_chat.get("id") if isinstance(message_chat, dict) else None
                 try:
-                    reply = handle_message_reply(
-                        settings,
-                        store,
-                        message,
+                    updates = bot.get_updates(offset, timeout=poll_timeout)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    print(f"ai-assistant: getUpdates failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                    time.sleep(5)
+                    current_settings = Settings.load()
+                    if not current_settings.ai_assistant_enable or not current_settings.ai_bot_token:
+                        continue
+                    continue
+                for update in updates:
+                    update_id = update.get("update_id")
+                    if isinstance(update_id, int):
+                        offset = update_id + 1
+                    update_executor.submit(
+                        process_ai_update,
+                        update,
+                        bot,
+                        sender,
                         bot_username=bot_username,
                         bot_user_id=bot_user_id,
                         sessions=sessions,
+                        session_locks=session_locks,
                     )
-                except Exception as exc:
-                    print(f"ai-assistant: message failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-                    send_bot_message_safely(bot, chat_id, f"处理失败：{type(exc).__name__}: {exc}", context="message_error")
-                    continue
-                if reply:
-                    send_bot_message_safely(
-                        bot,
-                        chat_id,
-                        reply.text,
-                        reply_markup=reply.reply_markup,
-                        context="message_reply",
-                    )
+        finally:
+            stop_event.set()
+            alert_thread.join(timeout=5)
+            update_executor.shutdown(wait=False, cancel_futures=True)
+            sender.stop()
 
 
 def price_alerts_payload(settings: Settings | None = None) -> dict[str, Any]:
