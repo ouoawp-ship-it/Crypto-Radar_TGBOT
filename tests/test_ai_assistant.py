@@ -272,8 +272,8 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         assert reply is not None
-        self.assertIn("AI 正常对话", reply)
-        self.assertIn("AI 分析数据行情", reply)
+        self.assertIn("泡泡 AI 助手", reply)
+        self.assertIn("专业行情分析", reply)
         self.assertIn("设置价格提醒", reply)
         self.assertIn("自然语言不再创建提醒", reply)
 
@@ -300,12 +300,15 @@ class AiAssistantTests(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         assert reply is not None
-        self.assertIn("AI 正常对话", reply.text)
+        self.assertIn("泡泡 AI 助手", reply.text)
         self.assertIsNotNone(reply.reply_markup)
         buttons = reply.reply_markup["inline_keyboard"]
         flat = [button["callback_data"] for row in buttons for button in row]
+        labels = [button["text"] for row in buttons for button in row]
         self.assertIn("flow:alert_setup", flat)
-        self.assertIn("menu:analysis", flat)
+        self.assertIn("menu:assistant", flat)
+        self.assertIn("泡泡 AI 助手", labels)
+        self.assertNotIn("menu:analysis", flat)
         self.assertNotIn("menu:group", flat)
 
     def test_paopao_command_is_not_start_alias(self) -> None:

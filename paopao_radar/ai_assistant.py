@@ -52,13 +52,14 @@ HOME_TEXT = """泡泡 AI 助手 Bot
 
 这是泡泡雷达的独立 AI 助手，和群里自动推送雷达信号的 Bot 分开。
 
-它只保留三类核心功能：
+它现在是统一入口：你直接问，它自动判断该怎么处理。
 
-1. AI 正常对话
-可以直接问运行状态、功能用法、雷达信号是什么意思。
+1. 泡泡 AI 助手
+可以问生活问题、功能用法、运行状态、雷达信号术语。
+回答风格会轻松一点，但不会瞎吹。
 
-2. AI 分析数据行情
-可以发：查 BTC、GWEI 怎么看、分析这段：粘贴雷达信号或市场数据。
+2. 专业行情分析
+你发“查 BTC”“GWEI 怎么看”“分析这段：粘贴雷达信号或市场数据”，会自动走专业分析师模式。
 我会结合历史信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率做解读。
 
 3. 价格提醒
@@ -71,15 +72,17 @@ HOME_TEXT = """泡泡 AI 助手 Bot
 HELP_TEXT = """泡泡 AI 助手 Bot 完整帮助
 
 这个 Bot 和群里自动推送雷达信号的 Bot 是分开的。
-现在只围绕三件事使用：正常对话、AI 行情分析、价格提醒。
+现在是统一 AI 助手入口：普通问题轻松答，交易问题自动走专业分析，价格提醒走手动按钮流程。
 
-1. AI 正常对话
+1. 泡泡 AI 助手
 可以直接问：
 最近雷达状态正常吗
 这个启动信号是什么意思
 资金费率极负代表什么
+今天我应该先处理什么
+帮我把这段话说得直白点
 
-2. AI 分析数据行情
+2. 专业行情分析
 可以直接发：
 查 BTC
 GWEI 怎么看
@@ -152,7 +155,7 @@ ANALYSIS_HELP_TEXT = """AI 分析说明
 AI 分析只做数据解读，不承诺涨跌，不是自动交易指令。
 """
 
-ASSISTANT_HELP_TEXT = """AI 助手说明
+ASSISTANT_HELP_TEXT = """泡泡 AI 助手说明
 
 可以直接问：
 BTC 现在多少钱
@@ -160,6 +163,14 @@ BTC 现在多少钱
 GWEI 怎么看
 我的提醒有哪些
 帮我解释最近雷达状态
+生活问题也可以问，我会用轻松一点的语气回答。
+
+自动分流规则：
+- 价格问题：走五大交易所价格查询
+- 某币怎么看、能不能做多做空：走专业行情分析
+- 粘贴雷达/市场数据：走专业分析师提示词
+- 设置价格提醒：必须点“设置价格提醒”走手动流程
+- 功能说明、运行状态、生活问题：走泡泡 AI 助手
 
 备用命令：
 /price BTC
@@ -217,9 +228,9 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 def main_menu_markup() -> dict[str, Any]:
     return inline_keyboard([
-        [("AI 正常对话", "menu:assistant"), ("AI 分析行情", "menu:analysis")],
-        [("设置价格提醒", "flow:alert_setup"), ("我的提醒", "menu:alerts")],
-        [("查询价格", "menu:price_query"), ("完整帮助", "menu:help")],
+        [("泡泡 AI 助手", "menu:assistant"), ("设置价格提醒", "flow:alert_setup")],
+        [("查询价格", "menu:price_query"), ("我的提醒", "menu:alerts")],
+        [("完整帮助", "menu:help")],
     ])
 
 
@@ -1885,7 +1896,7 @@ def handle_callback_query(
     if data == "menu:assistant":
         return BotReply(ASSISTANT_HELP_TEXT, back_home_markup())
     if data == "menu:group":
-        return BotReply("这个旧入口已经取消。现在首页只保留 AI 正常对话、AI 行情分析和价格提醒。", back_home_markup())
+        return BotReply("这个旧入口已经取消。现在首页只保留泡泡 AI 助手、价格查询、价格提醒和提醒管理。", back_home_markup())
     if data == "flow:alert_setup":
         return start_alert_setup_session(active_sessions, key)
     if data == "flow:cancel":

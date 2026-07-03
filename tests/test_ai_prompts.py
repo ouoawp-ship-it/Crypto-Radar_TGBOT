@@ -20,6 +20,12 @@ class AiPromptsTests(unittest.TestCase):
         self.assertEqual(payload["prompts"]["assistant_prompt"], DEFAULT_ASSISTANT_PROMPT)
         self.assertEqual(payload["prompts"]["analyst_prompt"], DEFAULT_ANALYST_PROMPT)
 
+    def test_default_assistant_prompt_supports_playful_style_and_expert_routing(self) -> None:
+        self.assertIn("有一点皮", DEFAULT_ASSISTANT_PROMPT)
+        self.assertIn("生活问题", DEFAULT_ASSISTANT_PROMPT)
+        self.assertIn("专业分析师模式", DEFAULT_ASSISTANT_PROMPT)
+        self.assertIn("不能用自然语言直接创建", DEFAULT_ASSISTANT_PROMPT)
+
     def test_save_and_reset_prompts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt_path = Path(tmp) / "ai_prompts.json"

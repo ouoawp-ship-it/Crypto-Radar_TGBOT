@@ -2693,7 +2693,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>日志</strong><span class="muted">读取主服务、结构雷达、Web 控制台最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
             <div class="feature-item"><strong>配置</strong><span class="muted">按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类修改设置；保存前预览，保存前自动备份 .env.oi。</span></div>
             <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、价格提醒统计，新增、暂停、恢复和删除 Web 价格提醒；Telegram 私聊里可用“查 BTC”“GWEI 怎么看”查询币种雷达档案。</span></div>
-            <div class="feature-item"><strong>AI 提示词</strong><span class="muted">编辑普通助手提示词和专业分析师提示词；保存后自动重启 AI 助手服务。</span></div>
+            <div class="feature-item"><strong>AI 提示词</strong><span class="muted">编辑泡泡 AI 助手提示词和专业分析师提示词；保存后自动重启 AI 助手服务。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
             <div class="feature-item"><strong>服务控制</strong><span class="muted">启动、停止、重启主服务、结构雷达和 Web 控制台；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
             <div class="feature-item"><strong>预览更新</strong><span class="muted">查看静态推送样例和 GitHub 更新检查；不会真实发送 Telegram，也不会自动更新代码。</span></div>
@@ -2766,8 +2766,8 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-12">
           <h3 class="section-title">怎么用</h3>
           <div class="feature-list">
-            <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 会出现中文按钮首页，只保留 AI 正常对话、AI 行情分析和价格提醒相关入口。</span></div>
-            <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、查 BTC、GWEI 怎么看。自然语言不会直接创建价格提醒。</span></div>
+            <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 会出现中文按钮首页；AI 入口已经合并为“泡泡 AI 助手”，交易问题会自动走专业分析。</span></div>
+            <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、查 BTC、GWEI 怎么看，也可以问生活和功能问题。自然语言不会直接创建价格提醒。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
             <div class="feature-item"><strong>手动提醒</strong><span class="muted">价格提醒不再靠自然语言猜，私聊里点“设置价格提醒”，输入币种后手动选择现货/合约和 Binance、Bybit、OKX、Bitget、Gate 的价格源，最后确认添加。</span></div>
             <div class="feature-item"><strong>自动分析</strong><span class="muted">直接粘贴启动雷达、结构雷达、资金流、OI、CVD、成交量等数据，会自动走专业分析师提示词。</span></div>
@@ -2802,12 +2802,12 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("promptGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>AI 提示词会直接影响机器人回答风格。</strong>
-          普通助手用于日常问答、状态解释和提醒说明；专业分析师用于 /analyze、分析这段、帮我分析，以及自动识别出的雷达/市场数据。
+          泡泡 AI 助手用于日常问答、生活问题、状态解释和提醒说明；专业分析师用于 /analyze、分析这段、帮我分析，以及自动识别出的雷达/市场数据。
           保存或恢复默认后会自动重启 AI 助手服务。
         </div>
         <div class="panel span-6">
-          <h3 class="section-title">普通助手提示词</h3>
-          <div class="hint">用于日常问答、运行状态解释、价格提醒说明。适合保持克制、清楚、少废话。</div>
+          <h3 class="section-title">泡泡 AI 助手提示词</h3>
+          <div class="hint">用于日常问答、生活问题、运行状态解释、价格提醒说明。默认风格更轻松，可以有一点皮，但交易问题仍会自动走专业分析。</div>
           <textarea id="assistantPrompt">${escapeHtml(prompts.assistant_prompt || "")}</textarea>
         </div>
         <div class="panel span-6">
@@ -2820,7 +2820,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="form-grid">
             <div class="field">
               <label>测试模式</label>
-              <select id="promptTestMode"><option value="analyst">专业分析师</option><option value="assistant">普通助手</option></select>
+              <select id="promptTestMode"><option value="analyst">专业分析师</option><option value="assistant">泡泡 AI 助手</option></select>
             </div>
             <div class="field">
               <label>测试内容</label>
