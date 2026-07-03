@@ -1644,6 +1644,7 @@ INDEX_HTML = r"""<!doctype html>
           <button class="btn primary" onclick="loadLogs()">读取日志</button>
           <button class="btn" onclick="copyLogs()">复制</button>
         </div>
+        <div id="logInsight" class="panel"></div>
         <pre id="logOutput"></pre>
       </section>
 
@@ -1666,7 +1667,7 @@ INDEX_HTML = r"""<!doctype html>
 
       <section id="price" class="view hidden">
         <div class="grid" id="priceGrid"></div>
-        <pre id="priceOutput" class="output"></pre>
+        <div id="priceOutput" class="output"></div>
       </section>
 
       <section id="prompts" class="view hidden">
@@ -1911,6 +1912,7 @@ INDEX_HTML = r"""<!doctype html>
     let currentConfigCategory = "home";
     let latestConfigData = null;
     let latestLogData = null;
+    let latestPriceAlertsData = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
     const autoRefreshIntervalMs = 15000;
@@ -2320,6 +2322,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!ok) lines.push("建议下一步：去日志中心按“只看错误”筛选，或在雷达服务页重启对应服务后再看总览。");
       if (ok && kind === "service") lines.push("建议下一步：回到总览确认服务状态和 runtime-status 是否继续更新。");
       if (ok && kind === "action") lines.push("建议下一步：如果这是测试或诊断动作，可以展开原始详情查看完整输出。");
+      if (ok && kind === "price") lines.push("建议下一步：查看提醒列表里的状态和条件，确认是否符合预期。");
       return lines;
     }
     function renderOperationResult(targetId, data, title, kind = "action") {
@@ -2435,6 +2438,33 @@ INDEX_HTML = r"""<!doctype html>
       });
       const header = latestLogData ? `来源: ${latestLogData.source || ""}\n筛选后: ${lines.length} 行\n\n` : "";
       document.getElementById("logOutput").textContent = header + (lines.join("\n") || "没有匹配的日志");
+      renderLogInsight(lines, raw, filter, search, patterns);
+    }
+    function renderLogInsight(lines, raw, filter, search, patterns) {
+      const box = document.getElementById("logInsight");
+      if (!box) return;
+      const rawLines = raw ? raw.split(/\r?\n/).filter(Boolean) : [];
+      const errorPattern = patterns.error;
+      const errorLines = lines.filter(line => errorPattern.test(line));
+      const firstError = errorLines[0] || "";
+      const filterText = {
+        all: "全部日志",
+        error: "只看错误",
+        telegram: "Telegram",
+        binance: "Binance",
+        structure: "结构雷达",
+        ai: "AI 助手",
+        funding: "资金费率"
+      }[filter] || filter;
+      box.innerHTML = `<div class="summary-head">
+          <h3 class="section-title">日志筛选摘要</h3>
+          ${neutralPill(`${lines.length}/${rawLines.length} 行`)}
+        </div>
+        <div class="readable-list">
+          ${row("当前筛选", textValue(search ? `${filterText} + 关键词：${search}` : filterText))}
+          ${row("错误命中", errorLines.length ? statusPill(`${errorLines.length} 条`, false) : neutralPill("未发现"))}
+          ${row("第一条错误", firstError ? `<code>${escapeHtml(firstError.slice(0, 260))}</code>` : neutralPill("暂无"))}
+        </div>`;
     }
     function copyLogs() {
       navigator.clipboard.writeText(document.getElementById("logOutput").textContent || "");
@@ -2849,10 +2879,10 @@ INDEX_HTML = r"""<!doctype html>
           <div class="feature-list">
             <div class="feature-item"><strong>总览</strong><span class="muted">查看运行健康度、最近错误、主服务、结构雷达、Web 控制台、版本、runtime-status 和关键配置。</span></div>
             <div class="feature-item"><strong>AI 助手</strong><span class="muted">查看 AI 服务状态、意图分流规则、提示词入口和独立 AI Bot 使用方式；Telegram 私聊里可用“查 BTC”“GWEI 怎么看”查询币种雷达档案。</span></div>
-            <div class="feature-item"><strong>价格提醒</strong><span class="muted">查看价格提醒统计，新增目标价提醒，暂停、恢复和删除已有提醒；五大交易所手动选择流程仍建议在 Telegram 私聊按钮里完成。</span></div>
+            <div class="feature-item"><strong>价格提醒</strong><span class="muted">查看价格提醒统计，新增目标价提醒，按状态/类型/关键词筛选提醒，暂停、恢复和删除已有提醒；五大交易所手动选择流程仍建议在 Telegram 私聊按钮里完成。</span></div>
             <div class="feature-item"><strong>雷达服务</strong><span class="muted">启动、停止、重启主服务、结构雷达、Web 控制台和 AI 助手；页面会说明每个服务负责什么，停止操作需要输入 STOP。</span></div>
             <div class="feature-item"><strong>配置中心</strong><span class="muted">按 Telegram、AI、雷达参数、资金费率、模块开关、外部接口、Web 控制台和备份恢复分类修改设置；保存前预览，保存前自动备份 .env.oi。</span></div>
-            <div class="feature-item"><strong>日志中心</strong><span class="muted">读取主服务、结构雷达、Web 控制台、AI 助手最近日志，支持搜索、按错误/Telegram/Binance/结构筛选和复制。</span></div>
+            <div class="feature-item"><strong>日志中心</strong><span class="muted">读取主服务、结构雷达、Web 控制台、AI 助手最近日志，支持自动刷新、搜索、错误/Telegram/Binance/结构/AI/资金费率筛选、摘要提取和复制。</span></div>
             <div class="feature-item"><strong>检查测试</strong><span class="muted">执行固定白名单动作；页面会说明每个按钮检查什么、什么时候用、是否会真实发送消息或清理文件。</span></div>
             <div class="feature-item"><strong>更新备份</strong><span class="muted">查看静态推送样例、GitHub 更新检查和配置备份入口；不会真实发送 Telegram，也不会自动更新代码。</span></div>
           </div>
@@ -2887,6 +2917,24 @@ INDEX_HTML = r"""<!doctype html>
       const map = { active: "运行中", paused: "已暂停", triggered: "已触发" };
       return map[value] || value || "未知";
     }
+    function alertTypeText(item) {
+      return item.alert_type_label || item.alert_type || "目标价提醒";
+    }
+    function alertSearchText(item) {
+      return [
+        item.id,
+        item.symbol,
+        item.pair,
+        item.venue_label,
+        item.exchange,
+        item.market_type,
+        alertTypeText(item),
+        item.condition_text,
+        item.repeat_policy_label,
+        item.status,
+        item.last_price_text
+      ].map(value => String(value || "").toLowerCase()).join(" ");
+    }
     function renderAlertRows(alerts) {
       if (!alerts.length) {
         return `<tr><td colspan="7" class="hint">还没有监控提醒。可以在 Telegram 私聊 AI 助手 Bot 点击“设置价格提醒”，选择目标价、急涨急跌、OI 或资金费率监控。</td></tr>`;
@@ -2905,6 +2953,41 @@ INDEX_HTML = r"""<!doctype html>
           </td>
         </tr>
       `).join("");
+    }
+    function priceAlertFilterValues() {
+      return {
+        status: String(document.getElementById("priceStatusFilter")?.value || "all"),
+        type: String(document.getElementById("priceTypeFilter")?.value || "all"),
+        search: String(document.getElementById("priceSearch")?.value || "").trim().toLowerCase()
+      };
+    }
+    function filteredPriceAlerts() {
+      const alerts = (latestPriceAlertsData && latestPriceAlertsData.alerts) || [];
+      const filters = priceAlertFilterValues();
+      return alerts.filter(item => {
+        if (filters.status !== "all" && String(item.status || "") !== filters.status) return false;
+        if (filters.type !== "all" && alertTypeText(item) !== filters.type) return false;
+        if (filters.search && !alertSearchText(item).includes(filters.search)) return false;
+        return true;
+      });
+    }
+    function renderPriceAlertTable() {
+      const tbody = document.getElementById("priceAlertRows");
+      if (!tbody) return;
+      const alerts = (latestPriceAlertsData && latestPriceAlertsData.alerts) || [];
+      const filtered = filteredPriceAlerts();
+      tbody.innerHTML = renderAlertRows(filtered);
+      const summary = document.getElementById("priceFilterSummary");
+      if (summary) summary.innerHTML = `当前显示 ${filtered.length}/${alerts.length} 条提醒。可按状态、类型、币种、交易所、交易对或条件搜索。`;
+    }
+    function clearPriceAlertFilters() {
+      const status = document.getElementById("priceStatusFilter");
+      const type = document.getElementById("priceTypeFilter");
+      const search = document.getElementById("priceSearch");
+      if (status) status.value = "all";
+      if (type) type.value = "all";
+      if (search) search.value = "";
+      renderPriceAlertTable();
     }
     async function loadAiAssistant() {
       const summary = await api("/api/summary");
@@ -2955,9 +3038,12 @@ INDEX_HTML = r"""<!doctype html>
     async function loadPriceAlerts() {
       const summary = await api("/api/summary");
       const alertsData = await api("/api/price-alerts");
+      latestPriceAlertsData = alertsData;
       const ai = ((summary.config || {}).ai_assistant || {});
       const service = ((summary.services || {}).ai || {});
       const stats = alertsData.stats || {};
+      const alerts = alertsData.alerts || [];
+      const alertTypes = Array.from(new Set(alerts.map(alertTypeText).filter(Boolean))).sort();
       document.getElementById("priceGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>价格提醒是独立的个人监控中心。</strong>
@@ -2980,13 +3066,29 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="panel span-12">
           <h3 class="section-title">监控提醒列表</h3>
+          <div class="toolbar">
+            <select id="priceStatusFilter" onchange="renderPriceAlertTable()">
+              <option value="all">全部状态</option>
+              <option value="active">运行中</option>
+              <option value="paused">已暂停</option>
+              <option value="triggered">已触发</option>
+            </select>
+            <select id="priceTypeFilter" onchange="renderPriceAlertTable()">
+              <option value="all">全部类型</option>
+              ${alertTypes.map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("")}
+            </select>
+            <input id="priceSearch" placeholder="搜索币种、交易所、交易对、条件" oninput="renderPriceAlertTable()">
+            <button class="btn" type="button" onclick="clearPriceAlertFilters()">清空筛选</button>
+          </div>
+          <div id="priceFilterSummary" class="hint" style="margin-bottom:8px"></div>
           <table class="table">
             <thead><tr><th>ID</th><th>币种</th><th>类型</th><th>条件</th><th>状态</th><th>最后价格</th><th>操作</th></tr></thead>
-            <tbody>${renderAlertRows(alertsData.alerts || [])}</tbody>
+            <tbody id="priceAlertRows">${renderAlertRows(alerts)}</tbody>
           </table>
         </div>
       `;
       setSubtitle("价格提醒：创建、暂停、恢复和删除");
+      renderPriceAlertTable();
     }
     async function loadAiPrompts() {
       const data = await api("/api/ai-prompts");
@@ -3064,13 +3166,14 @@ INDEX_HTML = r"""<!doctype html>
         chat_id: document.getElementById("newAlertChatId").value
       };
       const data = await api("/api/price-alerts", { method: "POST", body: JSON.stringify(body) });
-      document.getElementById("priceOutput").textContent = JSON.stringify(data, null, 2);
+      renderOperationResult("priceOutput", data, "创建价格提醒", "price");
       await loadPriceAlerts();
     }
     async function mutateAlert(id, action) {
       if (action === "delete" && !confirm(`确认删除提醒 ${id}？`)) return;
       const data = await api("/api/price-alerts", { method: "POST", body: JSON.stringify({ id, action }) });
-      document.getElementById("priceOutput").textContent = JSON.stringify(data, null, 2);
+      const labels = { pause: "暂停价格提醒", resume: "恢复价格提醒", delete: "删除价格提醒" };
+      renderOperationResult("priceOutput", data, labels[action] || "修改价格提醒", "price");
       await loadPriceAlerts();
     }
     function switchView(view) {
