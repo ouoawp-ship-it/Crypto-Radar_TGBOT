@@ -48,6 +48,8 @@ AI_CONFIG_KEYS = {
     "AI_REQUEST_TIMEOUT_SEC",
     "AI_PROMPTS_FILE",
 } | SIGNAL_EVENT_CONFIG_KEYS
+WEB_AUDIT_LOG_FILE = "web_audit_log.json"
+WEB_AUDIT_LIMIT = 1000
 
 
 @dataclass(frozen=True)
@@ -472,6 +474,132 @@ def delete_env_backup(name: str, *, path: Path | None = None) -> dict[str, Any]:
         "deleted": backup.name,
         "size": size,
         "message": f"已删除备份 {backup.name}",
+    }
+
+
+def web_audit_log_path(data_dir: Path | None = None) -> Path:
+    base_dir = data_dir or Settings.load().data_dir
+    return base_dir / WEB_AUDIT_LOG_FILE
+
+
+def first_text_line(text: Any) -> str:
+    lines = str(text or "").splitlines()
+    return lines[0].strip() if lines else ""
+
+
+def result_error_summary(result: dict[str, Any]) -> str:
+    if result.get("error"):
+        return str(result.get("error"))
+    if result.get("stderr"):
+        return first_text_line(result.get("stderr"))
+    errors = result.get("errors")
+    if isinstance(errors, dict):
+        return "; ".join(f"{key}: {value}" for key, value in list(errors.items())[:5])
+    return ""
+
+
+def audit_request_summary(path: str, data: dict[str, Any]) -> dict[str, Any]:
+    if path == "/api/config":
+        updates = data.get("updates", {})
+        clear = data.get("clear", [])
+        update_keys = sorted(str(key) for key in updates) if isinstance(updates, dict) else []
+        clear_keys = sorted(str(item) for item in clear) if isinstance(clear, list) else []
+        return {"action": "保存配置", "target": ",".join(update_keys + clear_keys), "details": {"keys": update_keys, "clear": clear_keys}}
+    if path == "/api/config-restore":
+        name = str(data.get("name", ""))
+        return {"action": "恢复配置备份", "target": name, "details": {"backup": name}}
+    if path == "/api/config-backup-delete":
+        name = str(data.get("name", ""))
+        return {"action": "删除配置备份", "target": name, "details": {"backup": name}}
+    if path == "/api/action":
+        name = str(data.get("name", ""))
+        return {"action": "执行检查测试", "target": name, "details": {"name": name}}
+    if path == "/api/service":
+        name = str(data.get("name", ""))
+        service, action = SERVICE_ACTIONS.get(name, ("", ""))
+        return {"action": "控制后台服务", "target": name, "details": {"name": name, "service": service, "service_action": action}}
+    if path == "/api/price-alerts":
+        action = str(data.get("action") or "create").strip().lower()
+        symbol = str(data.get("symbol") or data.get("id") or "")
+        return {"action": "管理价格提醒", "target": symbol or action, "details": {"action": action, "symbol": str(data.get("symbol") or ""), "id": data.get("id")}}
+    if path == "/api/ai-prompts":
+        action = str(data.get("action") or "save").strip().lower()
+        mode = str(data.get("mode") or "")
+        return {"action": "管理 AI 提示词", "target": mode or action, "details": {"action": action, "mode": mode}}
+    return {"action": "Web 操作", "target": path, "details": {}}
+
+
+def append_web_audit(
+    path: str,
+    data: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    status: int,
+    started_at: float,
+    data_dir: Path | None = None,
+) -> dict[str, Any]:
+    request = audit_request_summary(path, data)
+    ok = bool(result.get("ok")) and int(status) < 400
+    error = result_error_summary(result)
+    message = str(result.get("message") or error or "")
+    record = {
+        "ts": now_text(),
+        "path": path,
+        "action": request["action"],
+        "target": request["target"],
+        "ok": ok,
+        "status": int(status),
+        "duration_ms": int((time.time() - started_at) * 1000),
+        "message": message[:500],
+        "error": str(error)[:500],
+        "details": request["details"],
+    }
+    store = JsonStore((data_dir or Settings.load().data_dir))
+    store.append_record(web_audit_log_path(data_dir), record, limit=WEB_AUDIT_LIMIT)
+    return record
+
+
+def web_audit_payload(
+    *,
+    data_dir: Path | None = None,
+    limit: int = 200,
+    result: str = "all",
+    search: str = "",
+) -> dict[str, Any]:
+    store = JsonStore((data_dir or Settings.load().data_dir))
+    path = web_audit_log_path(data_dir)
+    records = store.load(path, [])
+    if not isinstance(records, list):
+        records = []
+    result_filter = str(result or "all").lower()
+    query = str(search or "").strip().lower()
+
+    def keep(record: Any) -> bool:
+        if not isinstance(record, dict):
+            return False
+        ok = bool(record.get("ok"))
+        if result_filter == "ok" and not ok:
+            return False
+        if result_filter == "failed" and ok:
+            return False
+        if query:
+            haystack = " ".join(
+                str(record.get(key, ""))
+                for key in ("ts", "path", "action", "target", "message", "error", "status")
+            ).lower()
+            if query not in haystack:
+                return False
+        return True
+
+    filtered = [record for record in reversed(records) if keep(record)]
+    limited = filtered[: max(1, min(int(limit or 200), 1000))]
+    return {
+        "ok": True,
+        "path": str(path),
+        "total": len(records),
+        "matched": len(filtered),
+        "records": limited,
+        "message": "已读取 Web 操作审计记录",
     }
 
 
@@ -1597,6 +1725,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="services">雷达服务</button>
         <button data-view="config">配置中心</button>
         <button data-view="logs">日志中心</button>
+        <button data-view="audit">审计记录</button>
         <button data-view="actions">检查测试</button>
         <button data-view="preview">更新备份</button>
         <button data-view="guide">功能说明</button>
@@ -1646,6 +1775,10 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div id="logInsight" class="panel"></div>
         <pre id="logOutput"></pre>
+      </section>
+
+      <section id="audit" class="view hidden">
+        <div class="grid" id="auditGrid"></div>
       </section>
 
       <section id="config" class="view hidden">
@@ -1705,6 +1838,7 @@ INDEX_HTML = r"""<!doctype html>
       services: "雷达服务",
       config: "配置中心",
       logs: "日志中心",
+      audit: "审计记录",
       actions: "检查测试",
       preview: "更新备份",
       guide: "功能说明"
@@ -1924,6 +2058,7 @@ INDEX_HTML = r"""<!doctype html>
     let currentConfigCategory = "home";
     let latestConfigData = null;
     let latestLogData = null;
+    let latestAuditData = null;
     let latestPriceAlertsData = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
@@ -2039,7 +2174,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     function setSubtitle(text) { document.getElementById("subtitle").textContent = text; }
     function autoRefreshSupported(view = currentView) {
-      return ["overview", "logs"].includes(view);
+      return ["overview", "logs", "audit"].includes(view);
     }
     function updateAutoRefreshButton() {
       const btn = document.getElementById("autoRefreshButton");
@@ -2517,6 +2652,75 @@ INDEX_HTML = r"""<!doctype html>
     }
     function copyLogs() {
       navigator.clipboard.writeText(document.getElementById("logOutput").textContent || "");
+    }
+    function auditResultText(ok) {
+      return ok ? "成功" : "失败";
+    }
+    function renderAuditRows(records) {
+      if (!records.length) return `<tr><td colspan="8" class="muted">没有匹配的审计记录</td></tr>`;
+      return records.map(item => `
+        <tr>
+          <td>${escapeHtml(item.ts || "")}</td>
+          <td>${escapeHtml(item.action || "")}</td>
+          <td>${escapeHtml(item.target || "")}</td>
+          <td>${statusPill(auditResultText(Boolean(item.ok)), Boolean(item.ok))}</td>
+          <td>${escapeHtml(String(item.status || ""))}</td>
+          <td>${escapeHtml(String(item.duration_ms ?? ""))}ms</td>
+          <td>${escapeHtml(item.message || item.error || "")}</td>
+          <td>${escapeHtml(item.path || "")}</td>
+        </tr>
+      `).join("");
+    }
+    async function loadAudit() {
+      const result = document.getElementById("auditResult")?.value || "all";
+      const limit = document.getElementById("auditLimit")?.value || "200";
+      const search = document.getElementById("auditSearch")?.value || "";
+      const data = await api(`/api/audit?result=${encodeURIComponent(result)}&limit=${encodeURIComponent(limit)}&search=${encodeURIComponent(search)}`);
+      latestAuditData = data;
+      setSubtitle(`审计记录 ${data.matched || 0}/${data.total || 0} 条`);
+      document.getElementById("auditGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>审计记录是 Web 后台的操作账本。</strong>
+          它记录配置保存、备份恢复/删除、检查测试、服务启停、价格提醒管理和 AI 提示词操作。这里只保存操作摘要、结果、耗时和错误摘要，不保存 Token、API Key 或提示词正文。
+        </div>
+        <div class="panel span-12">
+          <div class="summary-head">
+            <h3 class="section-title">操作审计</h3>
+            ${neutralPill(`${data.matched || 0}/${data.total || 0} 条`)}
+          </div>
+          <div class="toolbar">
+            <select id="auditResult" onchange="loadAudit()">
+              <option value="all" ${result === "all" ? "selected" : ""}>全部结果</option>
+              <option value="ok" ${result === "ok" ? "selected" : ""}>只看成功</option>
+              <option value="failed" ${result === "failed" ? "selected" : ""}>只看失败</option>
+            </select>
+            <select id="auditLimit" onchange="loadAudit()">
+              <option value="100" ${limit === "100" ? "selected" : ""}>最近 100 条</option>
+              <option value="200" ${limit === "200" ? "selected" : ""}>最近 200 条</option>
+              <option value="500" ${limit === "500" ? "selected" : ""}>最近 500 条</option>
+              <option value="1000" ${limit === "1000" ? "selected" : ""}>最近 1000 条</option>
+            </select>
+            <input id="auditSearch" value="${escapeHtml(search)}" placeholder="搜索动作、对象、错误、接口" onkeydown="if(event.key==='Enter') loadAudit()">
+            <button class="btn primary" onclick="loadAudit()">刷新审计</button>
+            <button class="btn" onclick="clearAuditFilters()">清空筛选</button>
+          </div>
+          <div class="hint" style="margin-bottom:8px">失败记录优先看“消息/错误摘要”和“接口”，再去日志中心按同一时间点排查。</div>
+          <table class="table">
+            <thead><tr><th>时间</th><th>动作</th><th>对象</th><th>结果</th><th>HTTP</th><th>耗时</th><th>消息 / 错误摘要</th><th>接口</th></tr></thead>
+            <tbody>${renderAuditRows(data.records || [])}</tbody>
+          </table>
+          ${rawDetails("高级排查：原始审计 JSON", data)}
+        </div>
+      `;
+    }
+    function clearAuditFilters() {
+      const result = document.getElementById("auditResult");
+      const limit = document.getElementById("auditLimit");
+      const search = document.getElementById("auditSearch");
+      if (result) result.value = "all";
+      if (limit) limit.value = "200";
+      if (search) search.value = "";
+      loadAudit();
     }
     async function loadConfig() {
       const data = await api("/api/config");
@@ -3282,6 +3486,7 @@ INDEX_HTML = r"""<!doctype html>
         updateAutoRefreshButton();
         if (currentView === "overview") await loadSummary();
         if (currentView === "logs") await loadLogs();
+        if (currentView === "audit") await loadAudit();
         if (currentView === "config") await loadConfig();
         if (currentView === "ai") await loadAiAssistant();
         if (currentView === "price") await loadPriceAlerts();
@@ -3335,6 +3540,21 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
         self.send_json({"ok": False, "error": message, "message": message, "code": code}, status)
+
+    def send_audited_json(
+        self,
+        path: str,
+        request_data: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        status: int = 200,
+        started_at: float,
+    ) -> None:
+        try:
+            append_web_audit(path, request_data, result, status=int(status), started_at=started_at)
+        except Exception as exc:
+            sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+        self.send_json(result, status)
 
     def send_html(self, html: str) -> None:
         payload = html.encode("utf-8")
@@ -3401,12 +3621,20 @@ class WebHandler(BaseHTTPRequestHandler):
             lines = int(query.get("lines", ["200"])[0] or 200)
             self.send_json(logs_payload(target, lines))
             return
+        if path == "/api/audit":
+            limit = int(query.get("limit", ["200"])[0] or 200)
+            result = query.get("result", ["all"])[0]
+            search = query.get("search", [""])[0]
+            self.send_json(web_audit_payload(limit=limit, result=result, search=search))
+            return
         self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
         if not self.require_auth():
             return
         path = urlparse(self.path).path
+        started_at = time.time()
+        data: dict[str, Any] = {}
         try:
             data = self.read_json()
             if path == "/api/config":
@@ -3419,7 +3647,7 @@ class WebHandler(BaseHTTPRequestHandler):
                     apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
                     result["apply"] = apply_result
                     result["message"] = apply_result.get("message", result.get("message"))
-                self.send_json(result)
+                self.send_audited_json(path, data, result, started_at=started_at)
                 return
             if path == "/api/config-restore":
                 name = str(data.get("name", ""))
@@ -3428,14 +3656,14 @@ class WebHandler(BaseHTTPRequestHandler):
                     apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
                     result["apply"] = apply_result
                     result["message"] = apply_result.get("message", result.get("message"))
-                self.send_json(result)
+                self.send_audited_json(path, data, result, started_at=started_at)
                 return
             if path == "/api/config-backup-delete":
                 name = str(data.get("name", ""))
-                self.send_json(delete_env_backup(name))
+                self.send_audited_json(path, data, delete_env_backup(name), started_at=started_at)
                 return
             if path == "/api/action":
-                self.send_json(run_cli_action(str(data.get("name", ""))))
+                self.send_audited_json(path, data, run_cli_action(str(data.get("name", ""))), started_at=started_at)
                 return
             if path == "/api/service":
                 name = str(data.get("name", ""))
@@ -3443,16 +3671,17 @@ class WebHandler(BaseHTTPRequestHandler):
                 if name in SERVICE_ACTIONS:
                     service, action = SERVICE_ACTIONS[name]
                     result.update({"name": name, "service": service, "action": action})
-                self.send_json(result)
+                self.send_audited_json(path, data, result, started_at=started_at)
                 return
             if path == "/api/price-alerts":
                 from .ai_assistant import create_price_alert_from_payload, mutate_price_alert_from_payload
 
                 action = str(data.get("action") or "create").strip().lower()
                 if action == "create":
-                    self.send_json(create_price_alert_from_payload(data))
+                    result = create_price_alert_from_payload(data)
                 else:
-                    self.send_json(mutate_price_alert_from_payload(data))
+                    result = mutate_price_alert_from_payload(data)
+                self.send_audited_json(path, data, result, started_at=started_at)
                 return
             if path == "/api/ai-prompts":
                 action = str(data.get("action") or "save").strip().lower()
@@ -3460,7 +3689,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 if action == "reset":
                     result = reset_ai_prompts(settings)
                 elif action == "test":
-                    self.send_json(ai_prompts_test_payload(data))
+                    self.send_audited_json(path, data, ai_prompts_test_payload(data), started_at=started_at)
                     return
                 else:
                     result = save_ai_prompts(
@@ -3474,11 +3703,13 @@ class WebHandler(BaseHTTPRequestHandler):
                     apply_result = auto_apply_config_changes(["AI_PROMPTS_FILE"])
                     result["apply"] = apply_result
                     result["message"] = apply_result.get("message", result.get("message"))
-                self.send_json(result)
+                self.send_audited_json(path, data, result, started_at=started_at)
                 return
-            self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
+            result = {"ok": False, "error": "接口不存在", "message": "接口不存在", "code": "not_found"}
+            self.send_audited_json(path, data, result, status=HTTPStatus.NOT_FOUND, started_at=started_at)
         except Exception as exc:
-            self.send_error_json(f"{type(exc).__name__}: {exc}", HTTPStatus.BAD_REQUEST, "bad_request")
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "message": f"{type(exc).__name__}: {exc}", "code": "bad_request"}
+            self.send_audited_json(path, data, result, status=HTTPStatus.BAD_REQUEST, started_at=started_at)
 
 
 def is_loopback_host(host: str) -> bool:

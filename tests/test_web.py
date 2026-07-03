@@ -282,6 +282,64 @@ class WebConsoleTests(unittest.TestCase):
         self.assertFalse(manual_result["ok"])
         self.assertTrue(manual_backup_exists_after)
 
+    def test_web_audit_records_safe_operation_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            web.append_web_audit(
+                "/api/config",
+                {
+                    "updates": {
+                        "TG_BOT_TOKEN": "123456:secret-token",
+                        "TG_CHAT_ID": "-1001234567890",
+                    },
+                    "clear": [],
+                },
+                {"ok": True, "changed": ["TG_BOT_TOKEN", "TG_CHAT_ID"], "message": "配置已保存"},
+                status=200,
+                started_at=web.time.time(),
+                data_dir=data_dir,
+            )
+            payload = web.web_audit_payload(data_dir=data_dir, search="TG_BOT_TOKEN")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["matched"], 1)
+        record = payload["records"][0]
+        self.assertEqual(record["action"], "保存配置")
+        self.assertEqual(record["path"], "/api/config")
+        self.assertTrue(record["ok"])
+        self.assertIn("TG_BOT_TOKEN", record["details"]["keys"])
+        self.assertNotIn("secret-token", json.dumps(record, ensure_ascii=False))
+
+    def test_web_audit_payload_filters_failed_records(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            started = web.time.time()
+
+            web.append_web_audit(
+                "/api/service",
+                {"name": "restart-main"},
+                {"ok": True, "message": "已重启"},
+                status=200,
+                started_at=started,
+                data_dir=data_dir,
+            )
+            web.append_web_audit(
+                "/api/action",
+                {"name": "telegram-test"},
+                {"ok": False, "stderr": "Telegram Forbidden"},
+                status=200,
+                started_at=started,
+                data_dir=data_dir,
+            )
+            payload = web.web_audit_payload(data_dir=data_dir, result="failed", search="telegram")
+
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(payload["matched"], 1)
+        self.assertEqual(payload["records"][0]["action"], "执行检查测试")
+        self.assertIn("Telegram Forbidden", payload["records"][0]["error"])
+
     def test_structure_review_recommendations_payload_returns_updates(self) -> None:
         with TemporaryDirectory() as tmp:
             stats_path = Path(tmp) / "structure_stats.json"
@@ -446,6 +504,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("配置现在按功能模块分开管理", html)
         self.assertIn("配置中心", html)
         self.assertIn("日志中心", html)
+        self.assertIn("审计记录", html)
         self.assertIn("雷达服务", html)
         self.assertIn("Telegram 推送", html)
         self.assertIn("资金费率警报", html)
@@ -458,6 +517,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("最近错误", html)
         self.assertIn("更新备份", html)
         self.assertIn('data-view="price"', html)
+        self.assertIn('data-view="audit"', html)
+        self.assertIn("/api/audit", html)
+        self.assertIn("审计记录是 Web 后台的操作账本", html)
+        self.assertIn("不保存 Token、API Key 或提示词正文", html)
+        self.assertIn("renderAuditRows", html)
         self.assertIn("价格提醒是独立的个人监控中心", html)
         self.assertIn("priceOutput", html)
         self.assertIn("priceStatusFilter", html)
