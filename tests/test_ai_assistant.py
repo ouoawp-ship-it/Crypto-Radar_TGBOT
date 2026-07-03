@@ -19,6 +19,7 @@ from paopao_radar.ai_assistant import (
 )
 from paopao_radar.config import Settings
 from paopao_radar.price_alerts import PriceAlertStore
+from paopao_radar.price_alerts import AlertMarketQuote
 
 
 class AiAssistantTests(unittest.TestCase):
@@ -98,7 +99,7 @@ class AiAssistantTests(unittest.TestCase):
         self.assertIn("分析你粘贴的数据", reply)
         self.assertIn("设置价格提醒", reply)
         self.assertIn("群里使用规则", reply)
-        self.assertIn("创建提醒必须明确说", reply)
+        self.assertIn("自然语言不再创建提醒", reply)
 
     def test_handle_message_reply_start_has_home_buttons(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,16 +154,47 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("请先发送币种", first.text if first else "")
             self.assertEqual(sessions["42:42"]["state"], "alert_symbol")
 
-            coin_reply = handle_message_reply(
+            quotes = [
+                AlertMarketQuote(exchange="binance", market_type="spot", symbol="BTCUSDT", pair="BTCUSDT", price=61230),
+                AlertMarketQuote(exchange="bybit", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=61234.5),
+            ]
+            with patch("paopao_radar.ai_assistant.discover_alert_markets", return_value=quotes):
+                coin_reply = handle_message_reply(
+                    settings,
+                    store,
+                    {"text": "BTC", "from": {"id": 42, "username": "tester"}, "chat": {"id": 42, "type": "private"}},
+                    sessions=sessions,  # type: ignore[arg-type]
+                )
+            self.assertIn("已识别币种：BTCUSDT", coin_reply.text if coin_reply else "")
+            self.assertEqual(sessions["42:42"]["state"], "alert_market")
+
+            market_reply = handle_callback_query(
                 settings,
                 store,
-                {"text": "BTC", "from": {"id": 42, "username": "tester"}, "chat": {"id": 42, "type": "private"}},
+                {
+                    "data": "alert:market:futures",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
                 sessions=sessions,  # type: ignore[arg-type]
             )
-            self.assertIn("已识别币种：BTCUSDT", coin_reply.text if coin_reply else "")
+            self.assertIn("请选择交易所", market_reply.text if market_reply else "")
+
+            exchange_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": "alert:exchange:bybit:futures:BTCUSDT",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions=sessions,  # type: ignore[arg-type]
+            )
+            self.assertIn("交易所：Bybit", exchange_reply.text if exchange_reply else "")
             self.assertEqual(sessions["42:42"]["state"], "alert_price")
 
-            with patch("paopao_radar.ai_assistant.fetch_binance_prices", return_value={"BTCUSDT": 61234.5}):
+            fresh_quote = AlertMarketQuote(exchange="bybit", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=61234.5)
+            with patch("paopao_radar.ai_assistant.fetch_alert_market_quote", return_value=fresh_quote):
                 confirm_reply = handle_message_reply(
                     settings,
                     store,
@@ -178,7 +210,7 @@ class AiAssistantTests(unittest.TestCase):
                 settings,
                 store,
                 {
-                    "data": "alert:confirm:BTCUSDT:below:58000",
+                    "data": "alert:confirm_pending",
                     "from": {"id": 42, "username": "tester"},
                     "message": {"chat": {"id": 42, "type": "private"}},
                 },
@@ -189,8 +221,10 @@ class AiAssistantTests(unittest.TestCase):
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0].direction, "below")
+            self.assertEqual(alerts[0].exchange, "bybit")
+            self.assertEqual(alerts[0].market_type, "futures")
 
-    def test_handle_message_reply_natural_alert_waits_for_confirm(self) -> None:
+    def test_handle_message_reply_natural_alert_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -212,11 +246,11 @@ class AiAssistantTests(unittest.TestCase):
                 sessions={},
             )
 
-            self.assertIn("请确认添加价格提醒", reply.text if reply else "")
+            self.assertIn("价格提醒已经改成手动选择模式", reply.text if reply else "")
             self.assertEqual(store.stats()["total"], 0)
             markup = reply.reply_markup if reply else {}
             flat = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
-            self.assertIn("alert:confirm:ETHUSDT:above:4200", flat)
+            self.assertIn("flow:alert_setup", flat)
 
     def test_id_command_returns_user_and_chat_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,7 +300,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(reply, "GWEI 档案")
             dossier.assert_called_once()
 
-    def test_handle_message_creates_alert_for_allowed_user(self) -> None:
+    def test_handle_message_routes_alert_words_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -286,11 +320,9 @@ class AiAssistantTests(unittest.TestCase):
             reply = handle_message(settings, store, message)
 
             self.assertIsNotNone(reply)
-            self.assertIn("已创建价格提醒", reply or "")
+            self.assertIn("手动选择模式", reply or "")
             alerts = store.list_alerts(user_id="42")
-            self.assertEqual(len(alerts), 1)
-            self.assertEqual(alerts[0].symbol, "ETHUSDT")
-            self.assertEqual(alerts[0].direction, "above")
+            self.assertEqual(len(alerts), 0)
 
     def test_handle_message_does_not_create_alert_from_forwarded_signal(self) -> None:
         signal_text = "\n".join(
@@ -553,7 +585,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("90 秒", reply or "")
             self.assertIn("deepseek-v4-flash", reply or "")
 
-    def test_handle_message_creates_alert_from_explicit_to_price_words(self) -> None:
+    def test_handle_message_routes_explicit_to_price_words_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -572,11 +604,9 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message)
 
-            self.assertIn("已创建价格提醒", reply or "")
+            self.assertIn("手动选择模式", reply or "")
             alerts = store.list_alerts(user_id="42")
-            self.assertEqual(len(alerts), 1)
-            self.assertEqual(alerts[0].symbol, "BTCUSDT")
-            self.assertEqual(alerts[0].direction, "below")
+            self.assertEqual(len(alerts), 0)
 
     def test_natural_language_price_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -669,7 +699,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("已删除", reply_for(f"删除提醒 {created.id}") or "")
             self.assertEqual(store.stats()["total"], 0)
 
-    def test_alert_command_creates_alert_without_natural_language_intent(self) -> None:
+    def test_alert_command_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -688,11 +718,9 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message)
 
-            self.assertIn("已创建价格提醒", reply or "")
+            self.assertIn("手动选择模式", reply or "")
             alerts = store.list_alerts(user_id="42")
-            self.assertEqual(len(alerts), 1)
-            self.assertEqual(alerts[0].symbol, "ETHUSDT")
-            self.assertEqual(alerts[0].direction, "above")
+            self.assertEqual(len(alerts), 0)
 
     def test_group_message_without_bot_mention_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -718,7 +746,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIsNone(reply)
             self.assertEqual(store.stats()["total"], 0)
 
-    def test_group_message_with_bot_mention_creates_alert(self) -> None:
+    def test_group_message_with_bot_mention_routes_alert_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
@@ -739,11 +767,9 @@ class AiAssistantTests(unittest.TestCase):
 
             reply = handle_message(settings, store, message, bot_username="v8pao_bot", bot_user_id="819")
 
-            self.assertIn("已创建价格提醒", reply or "")
+            self.assertIn("手动选择模式", reply or "")
             alerts = store.list_alerts(user_id="42")
-            self.assertEqual(len(alerts), 1)
-            self.assertEqual(alerts[0].chat_id, "-1001")
-            self.assertEqual(alerts[0].symbol, "ETHUSDT")
+            self.assertEqual(len(alerts), 0)
 
     def test_group_mention_is_rejected_when_chat_is_not_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

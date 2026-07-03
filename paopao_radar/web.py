@@ -81,7 +81,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_ADMIN_USER_IDS", "允许使用的 Telegram 用户 ID", "AI 助手", help="多个 ID 用英文逗号分隔。留空表示不限制用户，不建议公开使用。"),
     ConfigField("AI_ALLOW_GROUP_CHAT", "允许群内调用 AI 助手", "AI 助手", kind="bool", help="默认关闭。开启后群里也必须 @机器人 或回复机器人消息才会处理，普通群聊不会触发。"),
     ConfigField("AI_ALLOWED_CHAT_IDS", "允许调用的群/频道 ID", "AI 助手", help="开启群内调用后必须填写。多个用英文逗号分隔，例如 -1001234567890,-1009876543210 或 @channel_username。"),
-    ConfigField("AI_PRICE_ALERTS_ENABLE", "启用价格提醒", "AI 助手", kind="bool", help="使用 Binance 免费合约价格检查提醒。"),
+    ConfigField("AI_PRICE_ALERTS_ENABLE", "启用价格提醒", "AI 助手", kind="bool", help="Telegram 私聊里按按钮手动选择 Binance、Bybit、OKX、Bitget、Gate 的现货或 USDT 合约价格源。"),
     ConfigField("AI_DEFAULT_CHAT_ID", "Web 创建提醒默认接收 ID", "AI 助手", help="通常填你的 Telegram 用户 ID；Telegram 私聊创建提醒时会自动使用当前私聊。"),
     ConfigField("AI_ALERT_CHECK_INTERVAL_SEC", "价格提醒检查间隔秒数", "AI 助手", kind="int", minimum=5, maximum=3600, help="建议 30-60 秒。越小越实时，但请求更频繁。"),
     ConfigField("AI_PROVIDER_ENABLE", "启用 AI 问答接口", "AI 助手", kind="bool", help="关闭时仍可使用价格提醒和本地状态助手。"),
@@ -1861,7 +1861,7 @@ INDEX_HTML = r"""<!doctype html>
       {
         name: "AI 助手 Bot",
         service: "paopao-ai",
-        desc: "负责独立 Telegram 私聊、自然语言价格提醒和 AI 问答。它停了以后，群里的雷达推送不会受影响。",
+        desc: "负责独立 Telegram 私聊、手动价格提醒和 AI 问答。它停了以后，群里的雷达推送不会受影响。",
         actions: [
           { id: "restart-ai", label: "重启 AI 助手", button: "重启", level: "warn", note: "修改 AI_BOT_TOKEN、AI API Key、允许用户 ID 或提醒间隔后使用。" },
           { id: "start-ai", label: "启动 AI 助手", button: "启动", level: "", note: "AI 助手服务停止后，想恢复私聊和价格提醒时使用。" },
@@ -2730,12 +2730,12 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderAlertRows(alerts) {
       if (!alerts.length) {
-        return `<tr><td colspan="7" class="hint">还没有价格提醒。可以在 Telegram 私聊 AI 助手 Bot：BTC 跌破 58000 提醒我</td></tr>`;
+        return `<tr><td colspan="7" class="hint">还没有价格提醒。可以在 Telegram 私聊 AI 助手 Bot 点击“设置价格提醒”，手动选择市场和交易所。</td></tr>`;
       }
       return alerts.map(item => `
         <tr>
           <td>${escapeHtml(String(item.id))}</td>
-          <td><strong>${escapeHtml(item.symbol)}</strong></td>
+          <td><strong>${escapeHtml(item.pair || item.symbol)}</strong><div class="muted">${escapeHtml(item.venue_label || "Binance USDT 合约")}</div></td>
           <td>${escapeHtml(zhDirection(item.direction))}</td>
           <td>${escapeHtml(item.target_price_text || item.target_price)}</td>
           <td>${neutralPill(zhAlertStatus(item.status))}</td>
@@ -2756,7 +2756,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("aiGrid").innerHTML = `
         <div class="panel span-12 notice">
           <strong>AI 助手 Bot 和雷达推送 Bot 是分开的。</strong>
-          群里的启动雷达、资金流雷达、结构雷达继续走 TG_BOT_TOKEN；私聊 AI、自然语言价格提醒和个人提醒走 AI_BOT_TOKEN。
+          群里的启动雷达、资金流雷达、结构雷达继续走 TG_BOT_TOKEN；私聊 AI、手动价格提醒和个人提醒走 AI_BOT_TOKEN。
           开启群内调用时，还必须在配置里填写允许调用的群/频道 ID，并且用户需要 @机器人或回复机器人消息。
         </div>
         <div class="panel span-3 metric"><div class="label">AI 服务</div><div class="value">${statusPill(service.active || "unknown", Boolean(service.active_ok))}</div><div class="muted">${escapeHtml(service.service || "paopao-ai")}</div></div>
@@ -2769,10 +2769,10 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>首页按钮</strong><span class="muted">打开 AI 助手 Bot 私聊，发送 /start 或 /paopao 会出现中文按钮首页，可进入查币、分析数据、设置提醒、查看提醒和群内规则。</span></div>
             <div class="feature-item"><strong>自然语言</strong><span class="muted">可以直接说：BTC 现在多少钱、我的提醒有哪些、暂停提醒 12、查 BTC、GWEI 怎么看。</span></div>
             <div class="feature-item"><strong>群内调用</strong><span class="muted">开启 AI_ALLOW_GROUP_CHAT 后，还要填写 AI_ALLOWED_CHAT_IDS；群里只有 @机器人或回复机器人消息才会触发。</span></div>
-            <div class="feature-item"><strong>提醒确认</strong><span class="muted">创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”，并且真实创建前会显示确认按钮；只转发带价格的雷达信号不会乱建提醒。</span></div>
+            <div class="feature-item"><strong>手动提醒</strong><span class="muted">价格提醒不再靠自然语言猜，私聊里点“设置价格提醒”，输入币种后手动选择现货/合约和 Binance、Bybit、OKX、Bitget、Gate 的价格源，最后确认添加。</span></div>
             <div class="feature-item"><strong>自动分析</strong><span class="muted">直接粘贴启动雷达、结构雷达、资金流、OI、CVD、成交量等数据，会自动走专业分析师提示词。</span></div>
             <div class="feature-item"><strong>Web 创建</strong><span class="muted">需要填写接收提醒的 Telegram 用户 ID，或先在配置页填写 AI_DEFAULT_CHAT_ID。</span></div>
-            <div class="feature-item"><strong>备用命令</strong><span class="muted">/alert、/price、/alerts、/pause、/resume、/delete、/ai、/analyze 仍然保留，方便精确操作和排查。</span></div>
+            <div class="feature-item"><strong>备用命令</strong><span class="muted">/price、/alerts、/pause、/resume、/delete、/ai、/analyze 仍然保留，方便查询和排查；创建提醒请走按钮流程。</span></div>
           </div>
         </div>
         <div class="panel span-12">

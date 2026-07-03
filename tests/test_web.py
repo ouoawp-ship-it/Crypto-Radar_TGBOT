@@ -461,7 +461,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("AI 提示词", html)
         self.assertIn("saveAiPrompts", html)
         self.assertIn("专业分析师提示词", html)
-        self.assertIn("创建提醒必须明确说", html)
+        self.assertIn("价格提醒不再靠自然语言猜", html)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML

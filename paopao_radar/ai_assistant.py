@@ -13,10 +13,14 @@ from .ai_prompts import load_ai_prompts
 from .config import Settings, normalize_ai_model
 from .data_sources import HTTP_HEADERS
 from .price_alerts import (
+    AlertMarketQuote,
     PriceAlert,
     PriceAlertStore,
     alert_to_dict,
+    discover_alert_markets,
+    fetch_alert_market_quote,
     fetch_binance_prices,
+    fetch_price_alert_prices,
     format_price,
     normalize_symbol,
     parse_price,
@@ -46,9 +50,9 @@ SOL 可以做多吗
 分析这段：粘贴启动雷达、结构雷达、资金流、资金费率或市场数据
 
 3. 设置价格提醒
-可以点击“设置价格提醒”，按提示输入币种和目标价。创建前会让你确认。
+点击“设置价格提醒”，按提示输入币种，然后手动选择现货/合约和交易所，再输入目标价。创建前会让你确认。
 
-创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。只转发带价格的雷达信号，不会自动创建提醒。
+自然语言不再创建提醒。只转发带价格的雷达信号，不会自动创建提醒。
 
 群里使用规则：
 只有 Web 后台允许的群/频道才能使用；在群里必须 @我，或者回复我的消息，我才会处理，普通聊天不会触发。
@@ -78,10 +82,14 @@ ETH 当前价格
 /price BTC
 
 4. 设置价格提醒
-BTC 跌破 58000 提醒我
-ETH 突破 4200 通知我
+点击首页“设置价格提醒”
+输入币种
+选择现货/合约
+选择交易所
+输入目标价
+确认添加
 
-注意：创建提醒必须明确说“提醒我 / 通知我 / 设置提醒”。只转发带价格的雷达信号，不会自动创建提醒。
+注意：自然语言不再创建提醒。你说“BTC 跌破 58000 提醒我”时，我会提示你去按钮流程手动选择价格源。
 
 5. 管理提醒
 我的提醒有哪些
@@ -100,7 +108,6 @@ ETH 突破 4200 通知我
 备用命令：
 /coin BTC
 /analyze 粘贴雷达信号或市场数据
-/alert BTC 高于 58000
 /alerts
 /pause 12
 /resume 12
@@ -110,23 +117,22 @@ ETH 突破 4200 通知我
 
 PRICE_HELP_TEXT = """价格提醒说明
 
-当前泡泡 AI 助手的价格提醒使用 Binance USDT 合约价格。
+当前泡泡 AI 助手的价格提醒改为手动选择模式，不靠 AI 猜。
 
 按钮模式：
 1. 点击“设置价格提醒”
 2. 输入币种，例如 BTC、ETH、DOGE
-3. 输入目标价格，例如 58000
-4. 机器人读取当前价格并自动判断方向
-5. 点击“确认添加”后才会创建提醒
+3. 系统自动识别五大交易所里这个币可用的现货/USDT 合约
+4. 手动选择现货或合约
+5. 手动选择交易所：Binance、Bybit、OKX、Bitget、Gate
+6. 输入目标价格
+7. 点击“确认添加”后才会创建提醒
 
 方向判断：
 目标价高于当前价：价格高于或等于目标价时提醒
 目标价低于当前价：价格低于或等于目标价时提醒
 
-命令模式：
-/alert BTC 高于 58000
-/alert ETH 跌破 3200
-
+不同交易所价格可能不同，提醒触发时会按你选择的交易所和市场价格检查。
 提醒触发后会自动标记为已触发，不会反复轰炸。
 """
 
@@ -186,7 +192,7 @@ BTC
 ETH
 DOGE
 
-当前版本使用 Binance USDT 合约价格。下一步会让你输入目标价，并在创建前确认。
+下一步会自动识别五大交易所里这个币可用的现货/USDT 合约，然后让你手动选择市场和交易所。
 """
 
 
@@ -227,6 +233,66 @@ def alert_confirm_markup(symbol: str, direction: str, target_price: float) -> di
 
 def cancel_markup() -> dict[str, Any]:
     return inline_keyboard([[("取消", "flow:cancel")]])
+
+
+def market_type_markup(quotes: list[AlertMarketQuote]) -> dict[str, Any]:
+    has_spot = any(quote.market_type == "spot" for quote in quotes)
+    has_futures = any(quote.market_type == "futures" for quote in quotes)
+    rows: list[list[tuple[str, str]]] = []
+    row: list[tuple[str, str]] = []
+    if has_spot:
+        row.append(("现货", "alert:market:spot"))
+    if has_futures:
+        row.append(("USDT 合约", "alert:market:futures"))
+    if row:
+        rows.append(row)
+    rows.append([("取消", "flow:cancel")])
+    return inline_keyboard(rows)
+
+
+def exchange_markup(quotes: list[AlertMarketQuote]) -> dict[str, Any]:
+    rows: list[list[tuple[str, str]]] = []
+    for quote in quotes:
+        label = f"{quote.exchange_label} · {format_price(quote.price)}"
+        rows.append([(label, f"alert:exchange:{quote.key}")])
+    rows.append([("重新输入币种", "flow:alert_setup"), ("取消", "flow:cancel")])
+    return inline_keyboard(rows)
+
+
+def pending_alert_markup() -> dict[str, Any]:
+    return inline_keyboard([
+        [("确认添加提醒", "alert:confirm_pending")],
+        [("重新设置", "flow:alert_setup"), ("取消", "flow:cancel")],
+    ])
+
+
+def quote_to_dict(quote: AlertMarketQuote) -> dict[str, Any]:
+    return {
+        "exchange": quote.exchange,
+        "market_type": quote.market_type,
+        "symbol": quote.symbol,
+        "pair": quote.pair,
+        "price": quote.price,
+    }
+
+
+def quote_from_dict(data: dict[str, Any]) -> AlertMarketQuote:
+    return AlertMarketQuote(
+        exchange=str(data.get("exchange") or "binance"),
+        market_type=str(data.get("market_type") or "futures"),
+        symbol=str(data.get("symbol") or ""),
+        pair=str(data.get("pair") or ""),
+        price=float(data.get("price") or 0),
+    )
+
+
+def session_quotes(session: dict[str, Any], market_type: str | None = None) -> list[AlertMarketQuote]:
+    raw = session.get("quotes")
+    items = raw if isinstance(raw, list) else []
+    quotes = [quote_from_dict(item) for item in items if isinstance(item, dict)]
+    if market_type:
+        quotes = [quote for quote in quotes if quote.market_type == market_type]
+    return quotes
 
 
 GROUP_CHAT_TYPES = {"group", "supergroup"}
@@ -633,6 +699,9 @@ def alert_created_text(alert: PriceAlert) -> str:
             "",
             f"编号：{alert.id}",
             f"币种：{alert.symbol}",
+            f"交易所：{alert.exchange_label}",
+            f"市场：{alert.market_type_label}",
+            f"交易对：{alert.pair}",
             f"条件：价格 {alert.direction_label} {format_price(alert.target_price)}",
             "触发方式：触发一次后自动停止",
             "",
@@ -649,6 +718,9 @@ def alert_trigger_text(alert: PriceAlert, price: float) -> str:
             "价格提醒已触发",
             "",
             f"币种：{alert.symbol}",
+            f"交易所：{alert.exchange_label}",
+            f"市场：{alert.market_type_label}",
+            f"交易对：{alert.pair}",
             f"条件：价格 {alert.direction_label} {format_price(alert.target_price)}",
             f"当前价：{format_price(price)}",
             f"提醒编号：{alert.id}",
@@ -660,12 +732,12 @@ def alert_trigger_text(alert: PriceAlert, price: float) -> str:
 
 def list_alerts_text(alerts: list[PriceAlert]) -> str:
     if not alerts:
-        return "当前没有价格提醒。可以发送：BTC 跌破 58000 提醒我"
+        return "当前没有价格提醒。可以发送 /start，然后点击“设置价格提醒”。"
     lines = ["你的价格提醒：", ""]
     status_map = {"active": "运行中", "paused": "已暂停", "triggered": "已触发"}
     for alert in alerts[:30]:
         lines.append(
-            f"{alert.id}. {alert.symbol} {alert.direction_label} {format_price(alert.target_price)} "
+            f"{alert.id}. {alert.venue_label} {alert.pair} {alert.direction_label} {format_price(alert.target_price)} "
             f"[{status_map.get(alert.status, alert.status)}]"
         )
     return "\n".join(lines)
@@ -721,6 +793,10 @@ def current_price_for_symbol(settings: Settings, symbol: str) -> float | None:
     return float(price) if isinstance(price, (int, float)) else None
 
 
+def current_price_for_alert_market(settings: Settings, quote: AlertMarketQuote) -> AlertMarketQuote | None:
+    return fetch_alert_market_quote(settings, quote.symbol, quote.exchange, quote.market_type, quote.pair)
+
+
 def infer_alert_direction(target_price: float, current_price: float | None = None, fallback: str = "above") -> str:
     if fallback in {"above", "below"}:
         return fallback
@@ -734,13 +810,18 @@ def alert_confirmation_text(
     direction: str,
     target_price: float,
     current_price: float | None = None,
+    exchange: str = "Binance",
+    market_type: str = "USDT 合约",
+    pair: str | None = None,
 ) -> str:
     direction_label = "高于或等于" if direction == "above" else "低于或等于"
     lines = [
         "请确认添加价格提醒",
         "",
         f"币种：{symbol}",
-        "数据源：Binance USDT 合约",
+        f"交易所：{exchange}",
+        f"市场：{market_type}",
+        f"交易对：{pair or symbol}",
     ]
     if current_price is not None:
         lines.append(f"当前价：{format_price(current_price)}")
@@ -792,32 +873,79 @@ def handle_alert_setup_session(
             symbol = normalize_symbol(symbol_text)
         except Exception as exc:
             return BotReply(f"没有识别出币种：{exc}\n请只输入币种简称，例如 BTC、ETH、DOGE。", cancel_markup())
-        session.update({"state": "alert_price", "symbol": symbol})
+        quotes = discover_alert_markets(settings, symbol)
+        if not quotes:
+            return BotReply(
+                f"没有在 Binance、Bybit、OKX、Bitget、Gate 里识别到 {symbol} 的现货或 USDT 合约价格。\n"
+                "可能是这个币没有 USDT 交易对，也可能是交易所接口临时失败。你可以换个币种再试。",
+                cancel_markup(),
+            )
+        session.update({
+            "state": "alert_market",
+            "symbol": symbol,
+            "quotes": [quote_to_dict(quote) for quote in quotes],
+        })
+        market_types = sorted({quote.market_type for quote in quotes})
+        if len(market_types) == 1:
+            selected_market = market_types[0]
+            filtered = [quote for quote in quotes if quote.market_type == selected_market]
+            session.update({"state": "alert_exchange", "market_type": selected_market})
+            market_label = filtered[0].market_type_label if filtered else selected_market
+            return BotReply(
+                "\n".join([
+                    f"已识别币种：{symbol}",
+                    f"可用市场：{market_label}",
+                    "",
+                    "请选择交易所：",
+                ]),
+                exchange_markup(filtered),
+            )
         return BotReply(
             "\n".join([
                 f"已识别币种：{symbol}",
                 "",
-                "请发送目标价格，例如：58000",
-                "目标价高于当前价会按上涨提醒；低于当前价会按下跌提醒。",
+                "请选择市场类型：",
             ]),
-            cancel_markup(),
+            market_type_markup(quotes),
         )
 
     if state == "alert_price":
         symbol = str(session.get("symbol") or "")
-        if not symbol:
+        selected = session.get("selected_quote")
+        quote = quote_from_dict(selected) if isinstance(selected, dict) else None
+        if not symbol or not quote:
             sessions.pop(key, None)
             return BotReply("会话已失效，请重新设置价格提醒。", main_menu_markup())
         try:
             target_price = parse_price(text)
         except Exception as exc:
             return BotReply(f"价格格式不正确：{exc}\n请发送数字，例如 58000 或 0.35。", cancel_markup())
-        current_price = current_price_for_symbol(settings, symbol)
+        fresh_quote = current_price_for_alert_market(settings, quote) or quote
+        current_price = fresh_quote.price
         direction = infer_alert_direction(target_price, current_price, fallback="")
-        sessions.pop(key, None)
+        session.update({
+            "state": "alert_confirm",
+            "pending_alert": {
+                "symbol": symbol,
+                "exchange": fresh_quote.exchange,
+                "market_type": fresh_quote.market_type,
+                "pair": fresh_quote.pair,
+                "direction": direction,
+                "target_price": target_price,
+                "current_price": current_price,
+            },
+        })
         return BotReply(
-            alert_confirmation_text(symbol, direction, target_price, current_price),
-            alert_confirm_markup(symbol, direction, target_price),
+            alert_confirmation_text(
+                symbol,
+                direction,
+                target_price,
+                current_price,
+                exchange=fresh_quote.exchange_label,
+                market_type=fresh_quote.market_type_label,
+                pair=fresh_quote.pair,
+            ),
+            pending_alert_markup(),
         )
 
     sessions.pop(key, None)
@@ -834,12 +962,18 @@ def create_alert_from_context(
     target_price: float,
     source: str,
     note: str,
+    exchange: str = "binance",
+    market_type: str = "futures",
+    pair: str | None = None,
 ) -> PriceAlert:
     return store.create_alert(
         user_id=user_id,
         chat_id=chat_id,
         username=username,
         symbol=symbol,
+        exchange=exchange,
+        market_type=market_type,
+        pair=pair,
         direction=direction,
         target_price=target_price,
         source=source,
@@ -1083,7 +1217,7 @@ def local_assistant_reply(settings: Settings, store: PriceAlertStore, user_id: s
             "AI 对话接口还没有启用。",
             "",
             "现在已经可以使用价格提醒和本地状态助手：",
-            "- 发送：BTC 跌破 58000 提醒我",
+            "- 发送：/start 后点击“设置价格提醒”",
             "- 发送：/alerts 查看提醒",
             "- 发送：/price BTC 查看价格",
             "",
@@ -1211,20 +1345,7 @@ def handle_message(
             return f"AI 分析失败：{type(exc).__name__}: {exc}"
 
     if lowered.startswith("/alert") or is_alert_intent(text):
-        parsed = parse_alert_request(text)
-        if not parsed:
-            return "我没识别出提醒条件。示例：BTC 跌破 58000 提醒我，或 /alert ETH 高于 4200"
-        alert = store.create_alert(
-            user_id=user_id,
-            chat_id=chat_id,
-            username=username,
-            symbol=parsed.symbol,
-            direction=parsed.direction,
-            target_price=parsed.target_price,
-            source="telegram",
-            note=text,
-        )
-        return alert_created_text(alert)
+        return "价格提醒已经改成手动选择模式。请发送 /start，然后点击“设置价格提醒”。"
 
     if is_market_data_intent(text):
         try:
@@ -1306,10 +1427,12 @@ def handle_message_reply(
     if session_reply:
         return session_reply
 
-    if not lowered.startswith("/alert") and is_alert_intent(text):
-        parsed = parse_alert_request(text)
-        if parsed:
-            return alert_confirmation_reply(settings, parsed)
+    if lowered.startswith("/alert") or is_alert_intent(text):
+        active_sessions.pop(key, None)
+        return BotReply(
+            "价格提醒已经改成手动选择模式。\n\n请点击首页里的「设置价格提醒」，然后按流程选择现货/合约、交易所和目标价。",
+            main_menu_markup(),
+        )
 
     reply = handle_message(settings, store, message, bot_username=bot_username, bot_user_id=bot_user_id)
     if not reply:
@@ -1387,6 +1510,71 @@ def handle_callback_query(
     if data == "flow:cancel":
         active_sessions.pop(key, None)
         return BotReply("已取消。", main_menu_markup())
+    if data.startswith("alert:market:"):
+        session = active_sessions.get(key)
+        if not session:
+            return BotReply("会话已失效，请重新设置价格提醒。", main_menu_markup())
+        market_type = data.rsplit(":", 1)[-1]
+        quotes = session_quotes(session, market_type)
+        if not quotes:
+            return BotReply("这个市场暂时没有可选交易所，请重新输入币种。", main_menu_markup())
+        session.update({"state": "alert_exchange", "market_type": market_type})
+        return BotReply(
+            "\n".join([
+                f"已选择市场：{quotes[0].market_type_label}",
+                "",
+                "请选择交易所：",
+            ]),
+            exchange_markup(quotes),
+        )
+    if data.startswith("alert:exchange:"):
+        session = active_sessions.get(key)
+        if not session:
+            return BotReply("会话已失效，请重新设置价格提醒。", main_menu_markup())
+        selected_key = data.split(":", 2)[-1]
+        quotes = session_quotes(session, str(session.get("market_type") or ""))
+        selected = next((quote for quote in quotes if quote.key == selected_key), None)
+        if selected is None:
+            return BotReply("这个交易所选项已失效，请重新输入币种。", main_menu_markup())
+        session.update({"state": "alert_price", "selected_quote": quote_to_dict(selected)})
+        return BotReply(
+            "\n".join([
+                "已选择价格源",
+                "",
+                f"交易所：{selected.exchange_label}",
+                f"市场：{selected.market_type_label}",
+                f"交易对：{selected.pair}",
+                f"当前价：{format_price(selected.price)}",
+                "",
+                "请发送目标价格，例如：58000",
+                "目标价高于当前价会按上涨提醒；低于当前价会按下跌提醒。",
+            ]),
+            cancel_markup(),
+        )
+    if data == "alert:confirm_pending":
+        session = active_sessions.get(key)
+        pending = session.get("pending_alert") if isinstance(session, dict) else None
+        if not isinstance(pending, dict):
+            return BotReply("这个确认按钮已失效，请重新设置。", main_menu_markup())
+        try:
+            alert = create_alert_from_context(
+                store,
+                user_id=user_id,
+                chat_id=chat_id,
+                username=username,
+                symbol=str(pending.get("symbol") or ""),
+                exchange=str(pending.get("exchange") or "binance"),
+                market_type=str(pending.get("market_type") or "futures"),
+                pair=str(pending.get("pair") or ""),
+                direction=str(pending.get("direction") or ""),
+                target_price=parse_price(pending.get("target_price") or ""),
+                source="telegram-button",
+                note="button-confirm",
+            )
+        except Exception as exc:
+            return BotReply(f"创建提醒失败：{type(exc).__name__}: {exc}", main_menu_markup())
+        active_sessions.pop(key, None)
+        return BotReply(alert_created_text(alert), main_menu_markup())
     if data.startswith("alert:confirm:"):
         parts = data.split(":", 4)
         if len(parts) != 5:
@@ -1419,10 +1607,17 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
     active = store.list_alerts(status="active", limit=1000)
     if not active:
         return {"ok": True, "enabled": True, "checked": 0, "triggered": 0}
-    symbols = sorted({alert.symbol for alert in active})
-    prices = fetch_binance_prices(settings, symbols)
-    for symbol, price in prices.items():
-        store.update_last_price(symbol, price)
+    prices = fetch_price_alert_prices(settings, active)
+    for alert in active:
+        price = prices.get(alert.price_key)
+        if price is not None:
+            store.update_last_price(
+                alert.symbol,
+                price,
+                exchange=alert.exchange,
+                market_type=alert.market_type,
+                pair=alert.pair,
+            )
     sent = 0
     errors: list[str] = []
     for alert, price in triggered_alerts(active, prices):
@@ -1569,6 +1764,9 @@ def create_price_alert_from_payload(data: dict[str, Any], settings: Settings | N
         chat_id=chat_id,
         username=str(data.get("username") or "web"),
         symbol=str(data.get("symbol") or ""),
+        exchange=str(data.get("exchange") or "binance"),
+        market_type=str(data.get("market_type") or "futures"),
+        pair=str(data.get("pair") or ""),
         direction=str(data.get("direction") or ""),
         target_price=parse_price(data.get("target_price") or ""),
         source="web",
