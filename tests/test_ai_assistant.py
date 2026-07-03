@@ -12,6 +12,7 @@ from paopao_radar.ai_assistant import (
     QueuedTelegramSender,
     SessionLockRegistry,
     TelegramBotClient,
+    alert_created_text,
     build_chat_completion_payload,
     coinglass_quote_url,
     extract_ai_reply_text,
@@ -187,6 +188,39 @@ class AiAssistantTests(unittest.TestCase):
             coinglass_quote_url(AlertMarketQuote(exchange="gate", market_type="spot", symbol="BTCUSDT", pair="BTC_USDT", price=1)),
             "https://www.coinglass.com/tv/zh/SPOT_Gate_BTC_USDT",
         )
+
+    def test_alert_created_text_uses_display_number_and_html_market_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PriceAlertStore(Path(tmp) / "alerts.db")
+            store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="BTC",
+                exchange="binance",
+                market_type="futures",
+                pair="BTCUSDT",
+                direction="above",
+                target_price=70000,
+            )
+            alert = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="FIL",
+                exchange="bybit",
+                market_type="futures",
+                pair="FILUSDT",
+                direction="above",
+                target_price=0.82,
+            )
+
+        text = alert_created_text(alert, display_no=1)
+
+        self.assertIn("编号：1", text)
+        self.assertIn('交易所：<a href="https://www.coinglass.com/tv/zh/Bybit_FILUSDT"><b>Bybit</b></a>', text)
+        self.assertIn("交易对：<code>FILUSDT</code>", text)
+        self.assertNotIn(f"编号：{alert.id}", text)
 
     def test_price_reply_forces_html_links_without_url_buttons(self) -> None:
         settings = Settings()
@@ -481,7 +515,8 @@ class AiAssistantTests(unittest.TestCase):
                 },
                 sessions=sessions,  # type: ignore[arg-type]
             )
-            self.assertIn("交易所：Bybit", exchange_reply.text if exchange_reply else "")
+            self.assertIn('交易所：<a href="https://www.coinglass.com/tv/zh/Bybit_BTCUSDT"><b>Bybit</b></a>', exchange_reply.text if exchange_reply else "")
+            self.assertIn("交易对：<code>BTCUSDT</code>", exchange_reply.text if exchange_reply else "")
             self.assertEqual(sessions["42:42"]["state"], "alert_price")
 
             fresh_quote = AlertMarketQuote(exchange="bybit", market_type="futures", symbol="BTCUSDT", pair="BTCUSDT", price=61234.5)
@@ -521,6 +556,9 @@ class AiAssistantTests(unittest.TestCase):
             )
 
             self.assertIn("已创建监控提醒", create_reply.text if create_reply else "")
+            self.assertIn("编号：1", create_reply.text if create_reply else "")
+            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Bybit_BTCUSDT"><b>Bybit</b></a>', create_reply.text if create_reply else "")
+            self.assertIn("交易对：<code>BTCUSDT</code>", create_reply.text if create_reply else "")
             alerts = store.list_alerts(user_id="42")
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0].direction, "below")
@@ -561,9 +599,12 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIsNotNone(reply)
             assert reply is not None
             self.assertIn("你的价格提醒", reply.text)
+            self.assertIn("1. 目标价提醒", reply.text)
+            self.assertIn('<a href="https://www.coinglass.com/tv/zh/Bybit_FILUSDT"><b>Bybit</b></a>', reply.text)
+            self.assertIn("<code>FILUSDT</code>", reply.text)
             flat = [button for row in reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
-            self.assertIn({"text": f"暂停{created.id}", "callback_data": f"alert:pause:{created.id}"}, flat)
-            self.assertIn({"text": f"删除{created.id}", "callback_data": f"alert:delete:{created.id}"}, flat)
+            self.assertIn({"text": "暂停1", "callback_data": f"alert:pause:{created.id}"}, flat)
+            self.assertIn({"text": "删除1", "callback_data": f"alert:delete:{created.id}"}, flat)
 
             pause_reply = handle_callback_query(
                 settings,
@@ -578,10 +619,10 @@ class AiAssistantTests(unittest.TestCase):
 
             self.assertIsNotNone(pause_reply)
             assert pause_reply is not None
-            self.assertIn(f"提醒 {created.id} 已暂停", pause_reply.text)
+            self.assertIn("提醒 1 已暂停", pause_reply.text)
             self.assertEqual(store.list_alerts(user_id="42")[0].status, "paused")
             pause_flat = [button for row in pause_reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
-            self.assertIn({"text": f"恢复{created.id}", "callback_data": f"alert:resume:{created.id}"}, pause_flat)
+            self.assertIn({"text": "恢复1", "callback_data": f"alert:resume:{created.id}"}, pause_flat)
 
             resume_reply = handle_callback_query(
                 settings,
@@ -596,7 +637,7 @@ class AiAssistantTests(unittest.TestCase):
 
             self.assertIsNotNone(resume_reply)
             assert resume_reply is not None
-            self.assertIn(f"提醒 {created.id} 已恢复", resume_reply.text)
+            self.assertIn("提醒 1 已恢复", resume_reply.text)
             self.assertEqual(store.list_alerts(user_id="42")[0].status, "active")
 
             delete_reply = handle_callback_query(
@@ -612,8 +653,78 @@ class AiAssistantTests(unittest.TestCase):
 
             self.assertIsNotNone(delete_reply)
             assert delete_reply is not None
-            self.assertIn(f"已删除提醒 {created.id}", delete_reply.text)
+            self.assertIn("已删除提醒 1", delete_reply.text)
             self.assertEqual(store.stats()["total"], 0)
+
+    def test_alert_display_numbers_reflow_after_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            older = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="BTC",
+                exchange="binance",
+                market_type="futures",
+                pair="BTCUSDT",
+                direction="above",
+                target_price=70000,
+            )
+            newer = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="ETH",
+                exchange="okx",
+                market_type="spot",
+                pair="ETH-USDT",
+                direction="below",
+                target_price=3000,
+            )
+
+            first_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": "menu:alerts",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions={},
+            )
+            assert first_reply is not None
+            self.assertIn("1. 目标价提醒", first_reply.text)
+            self.assertIn("<code>ETH-USDT</code>", first_reply.text)
+            first_flat = [button for row in first_reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
+            self.assertIn({"text": "删除1", "callback_data": f"alert:delete:{newer.id}"}, first_flat)
+            self.assertIn({"text": "删除2", "callback_data": f"alert:delete:{older.id}"}, first_flat)
+
+            delete_reply = handle_callback_query(
+                settings,
+                store,
+                {
+                    "data": f"alert:delete:{newer.id}",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                },
+                sessions={},
+            )
+
+            assert delete_reply is not None
+            self.assertIn("已删除提醒 1", delete_reply.text)
+            self.assertIn("1. 目标价提醒", delete_reply.text)
+            self.assertIn("<code>BTCUSDT</code>", delete_reply.text)
+            self.assertNotIn("2. 目标价提醒", delete_reply.text)
+            delete_flat = [button for row in delete_reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
+            self.assertIn({"text": "删除1", "callback_data": f"alert:delete:{older.id}"}, delete_flat)
 
     def test_handle_message_reply_natural_alert_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

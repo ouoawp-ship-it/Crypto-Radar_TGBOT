@@ -223,13 +223,13 @@ def repeat_policy_markup() -> dict[str, Any]:
 
 def alerts_manage_markup(alerts: list[PriceAlert]) -> dict[str, Any]:
     rows: list[list[tuple[str, str]]] = []
-    for alert in alerts[:30]:
+    for display_no, alert in enumerate(alerts[:30], start=1):
         row: list[tuple[str, str]] = []
         if alert.status == "paused":
-            row.append((f"恢复{alert.id}", f"alert:resume:{alert.id}"))
+            row.append((f"恢复{display_no}", f"alert:resume:{alert.id}"))
         elif alert.status == "active":
-            row.append((f"暂停{alert.id}", f"alert:pause:{alert.id}"))
-        row.append((f"删除{alert.id}", f"alert:delete:{alert.id}"))
+            row.append((f"暂停{display_no}", f"alert:pause:{alert.id}"))
+        row.append((f"删除{display_no}", f"alert:delete:{alert.id}"))
         rows.append(row)
     rows.append([("返回首页", "menu:home")])
     return inline_keyboard(rows)
@@ -834,7 +834,47 @@ def user_label(message: dict[str, Any]) -> tuple[str, str]:
     return user_id, username
 
 
-def alert_created_text(alert: PriceAlert) -> str:
+def alert_display_number(alerts: list[PriceAlert], alert_id: int) -> int | None:
+    for display_no, alert in enumerate(alerts[:30], start=1):
+        if alert.id == alert_id:
+            return display_no
+    return None
+
+
+def alert_market_quote(alert: PriceAlert) -> AlertMarketQuote:
+    return AlertMarketQuote(
+        exchange=alert.exchange,
+        market_type=alert.market_type,
+        symbol=alert.symbol,
+        pair=alert.pair or alert.symbol,
+        price=alert.last_price or alert.target_price or 0,
+    )
+
+
+def alert_exchange_link(alert: PriceAlert) -> str:
+    quote = alert_market_quote(alert)
+    url = html.escape(coinglass_quote_url(quote), quote=True)
+    label = html.escape(alert.exchange_label)
+    return f'<a href="{url}"><b>{label}</b></a>'
+
+
+def alert_pair_code(alert: PriceAlert) -> str:
+    return telegram_code(alert.pair or alert.symbol)
+
+
+def telegram_code(value: Any) -> str:
+    return f"<code>{html.escape(str(value or ''))}</code>"
+
+
+def alert_condition_short(alert: PriceAlert) -> str:
+    if alert.alert_type == "target_price":
+        return f"价格 {alert.direction_label} {format_price(alert.target_price)}"
+    if alert.alert_type in {"price_change", "oi_change"}:
+        return f"{alert.timeframe_label} {alert.direction_label}超过 {alert.threshold_pct:g}%"
+    return "资金费率周期缩短，或出现极正/极负资金费率"
+
+
+def alert_created_text(alert: PriceAlert, display_no: int | None = None) -> str:
     detail = [f"类型：{alert.alert_type_label}"]
     if alert.alert_type == "target_price":
         detail.append(f"条件：价格 {alert.direction_label} {format_price(alert.target_price)}")
@@ -843,40 +883,41 @@ def alert_created_text(alert: PriceAlert) -> str:
     else:
         detail.append("条件：资金费率周期缩短，或出现极正/极负资金费率")
     detail.append(f"触发方式：{alert.repeat_policy_label}")
+    display_label = str(display_no) if display_no is not None else "已创建"
     return "\n".join(
         [
             "已创建监控提醒",
             "",
-            f"编号：{alert.id}",
-            f"币种：{alert.symbol}",
-            f"交易所：{alert.exchange_label}",
-            f"市场：{alert.market_type_label}",
-            f"交易对：{alert.pair}",
-            *detail,
+            f"编号：{display_label}",
+            f"币种：{html.escape(alert.symbol)}",
+            f"交易所：{alert_exchange_link(alert)}",
+            f"市场：{html.escape(alert.market_type_label)}",
+            f"交易对：{alert_pair_code(alert)}",
+            *(html.escape(item) for item in detail),
             "",
             "管理：点击首页“我的提醒”，可以暂停、恢复或删除。",
         ]
     )
 
 
-def alert_trigger_text(alert: PriceAlert, price: float, detail: str = "") -> str:
+def alert_trigger_text(alert: PriceAlert, price: float, detail: str = "", display_no: int | None = None) -> str:
     ending = "这条提醒已经标记为已触发，不会重复发送。" if alert.repeat_policy == "once" else f"这条提醒会继续运行：{alert.repeat_policy_label}。"
-    return "\n".join(
-        [
-            f"{alert.alert_type_label}已触发",
-            "",
-            f"币种：{alert.symbol}",
-            f"交易所：{alert.exchange_label}",
-            f"市场：{alert.market_type_label}",
-            f"交易对：{alert.pair}",
-            f"条件：{alert.condition_text}",
-            f"当前价：{format_price(price)}",
-            detail.strip(),
-            f"提醒编号：{alert.id}",
-            "",
-            ending,
-        ]
-    )
+    lines = [
+        f"{alert.alert_type_label}已触发",
+        "",
+        f"币种：{html.escape(alert.symbol)}",
+        f"交易所：{alert_exchange_link(alert)}",
+        f"市场：{html.escape(alert.market_type_label)}",
+        f"交易对：{alert_pair_code(alert)}",
+        f"条件：{html.escape(alert_condition_short(alert))}",
+        f"当前价：{format_price(price)}",
+    ]
+    if detail.strip():
+        lines.append(html.escape(detail.strip()))
+    if display_no is not None:
+        lines.append(f"提醒编号：{display_no}")
+    lines.extend(["", html.escape(ending)])
+    return "\n".join(lines)
 
 
 def list_alerts_text(alerts: list[PriceAlert]) -> str:
@@ -884,10 +925,11 @@ def list_alerts_text(alerts: list[PriceAlert]) -> str:
         return "当前没有价格提醒。点击首页“设置价格提醒”即可创建。"
     lines = ["你的价格提醒：", ""]
     status_map = {"active": "运行中", "paused": "已暂停", "triggered": "已触发"}
-    for alert in alerts[:30]:
+    for display_no, alert in enumerate(alerts[:30], start=1):
         lines.append(
-            f"{alert.id}. {alert.alert_type_label}｜{alert.condition_text}｜{alert.repeat_policy_label} "
-            f"[{status_map.get(alert.status, alert.status)}]"
+            f"{display_no}. {html.escape(alert.alert_type_label)}｜{alert_exchange_link(alert)} {alert_pair_code(alert)}｜"
+            f"{html.escape(alert_condition_short(alert))}｜{html.escape(alert.repeat_policy_label)} "
+            f"[{html.escape(status_map.get(alert.status, alert.status))}]"
         )
     return "\n".join(lines)
 
@@ -1064,9 +1106,16 @@ def infer_alert_direction(target_price: float, current_price: float | None = Non
 def monitor_confirmation_text(pending: dict[str, Any]) -> str:
     alert_type = str(pending.get("alert_type") or "target_price")
     symbol = str(pending.get("symbol") or "")
-    exchange = str(pending.get("exchange_label") or pending.get("exchange") or "")
+    exchange = str(pending.get("exchange") or "binance")
     market = str(pending.get("market_type_label") or pending.get("market_type") or "")
     pair = str(pending.get("pair") or symbol)
+    quote = AlertMarketQuote(
+        exchange=exchange,
+        market_type=str(pending.get("market_type") or "futures"),
+        symbol=symbol,
+        pair=pair,
+        price=float(pending.get("current_price") or pending.get("target_price") or 0),
+    )
     direction = str(pending.get("direction") or "both")
     direction_label = {"up": "上涨", "down": "下跌", "both": "双向", "above": "高于或等于", "below": "低于或等于"}.get(direction, direction)
     repeat_label = str(pending.get("repeat_label") or "提醒一次")
@@ -1074,10 +1123,10 @@ def monitor_confirmation_text(pending: dict[str, Any]) -> str:
         "请确认添加监控提醒",
         "",
         f"类型：{ {'target_price': '目标价提醒', 'price_change': '价格急涨急跌', 'oi_change': '持仓量变化', 'funding_change': '资金费率变化'}.get(alert_type, alert_type) }",
-        f"币种：{symbol}",
-        f"交易所：{exchange}",
-        f"市场：{market}",
-        f"交易对：{pair}",
+        f"币种：{html.escape(symbol)}",
+        f"交易所：{price_quote_exchange_link(quote, bold=True)}",
+        f"市场：{html.escape(market)}",
+        f"交易对：{telegram_code(pair)}",
     ]
     if alert_type == "target_price":
         lines.extend([
@@ -1700,19 +1749,23 @@ def handle_callback_query(
         if not alert_id_text.isdigit():
             return BotReply("删除按钮已失效，请重新打开“我的提醒”。", main_menu_markup())
         alert_id = int(alert_id_text)
+        before_alerts = store.list_alerts(user_id=user_id, limit=50)
+        display_no = alert_display_number(before_alerts, alert_id)
         ok = store.delete_alert(alert_id, user_id=user_id)
         alerts = store.list_alerts(user_id=user_id, limit=50)
-        prefix = f"已删除提醒 {alert_id}。" if ok else f"没有找到提醒 {alert_id}，可能已经删除。"
+        prefix = f"已删除提醒 {display_no}。" if ok and display_no is not None else "没有找到这条提醒，可能已经删除。"
         return BotReply(f"{prefix}\n\n{list_alerts_text(alerts)}", alerts_manage_markup(alerts))
     if data.startswith("alert:pause:") or data.startswith("alert:resume:"):
         action, alert_id_text = data.split(":", 2)[1:]
         if not alert_id_text.isdigit():
             return BotReply("这个按钮已失效，请重新打开“我的提醒”。", main_menu_markup())
         alert_id = int(alert_id_text)
+        before_alerts = store.list_alerts(user_id=user_id, limit=50)
+        display_no = alert_display_number(before_alerts, alert_id)
         status, label = ("paused", "已暂停") if action == "pause" else ("active", "已恢复")
         ok = store.set_status(alert_id, status, user_id=user_id)
         alerts = store.list_alerts(user_id=user_id, limit=50)
-        prefix = f"提醒 {alert_id} {label}。" if ok else f"没有找到提醒 {alert_id}，可能已经删除。"
+        prefix = f"提醒 {display_no} {label}。" if ok and display_no is not None else "没有找到这条提醒，可能已经删除。"
         return BotReply(f"{prefix}\n\n{list_alerts_text(alerts)}", alerts_manage_markup(alerts))
     if data.startswith("alert:kind:"):
         session = active_sessions.get(key)
@@ -1763,9 +1816,9 @@ def handle_callback_query(
                 "\n".join([
                     "已选择价格源",
                     "",
-                    f"交易所：{selected.exchange_label}",
-                    f"市场：{selected.market_type_label}",
-                    f"交易对：{selected.pair}",
+                    f"交易所：{price_quote_exchange_link(selected, bold=True)}",
+                    f"市场：{html.escape(selected.market_type_label)}",
+                    f"交易对：{telegram_code(selected.pair)}",
                     f"当前价：{format_price(selected.price)}",
                     "",
                     "请发送目标价格，例如：58000",
@@ -1779,9 +1832,9 @@ def handle_callback_query(
                 "\n".join([
                     "已选择监控源",
                     "",
-                    f"交易所：{selected.exchange_label}",
-                    f"市场：{selected.market_type_label}",
-                    f"交易对：{selected.pair}",
+                    f"交易所：{price_quote_exchange_link(selected, bold=True)}",
+                    f"市场：{html.escape(selected.market_type_label)}",
+                    f"交易对：{telegram_code(selected.pair)}",
                     "",
                     "请选择监控时间窗口：",
                 ]),
@@ -1811,9 +1864,9 @@ def handle_callback_query(
             "\n".join([
                 "已选择资金费率监控源",
                 "",
-                f"交易所：{selected.exchange_label}",
+                f"交易所：{price_quote_exchange_link(selected, bold=True)}",
                 "市场：USDT 合约",
-                f"交易对：{selected.pair}",
+                f"交易对：{telegram_code(selected.pair)}",
                 "",
                 "请选择触发后的提醒方式：",
             ]),
@@ -1910,7 +1963,8 @@ def handle_callback_query(
         except Exception as exc:
             return BotReply(f"创建提醒失败：{type(exc).__name__}: {exc}", main_menu_markup())
         active_sessions.pop(key, None)
-        return BotReply(alert_created_text(alert), main_menu_markup())
+        alerts = store.list_alerts(user_id=user_id, limit=50)
+        return BotReply(alert_created_text(alert, alert_display_number(alerts, alert.id)), main_menu_markup())
     return BotReply("这个按钮暂时无法识别，请返回首页重新选择。", main_menu_markup())
 
 
@@ -2211,7 +2265,8 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
         if not store.mark_triggered(alert, price):
             continue
         try:
-            bot.send_message(alert.chat_id, alert_trigger_text(alert, price))
+            user_alerts = store.list_alerts(user_id=alert.user_id, limit=50)
+            bot.send_message(alert.chat_id, alert_trigger_text(alert, price, display_no=alert_display_number(user_alerts, alert.id)))
             sent += 1
         except Exception as exc:
             errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
@@ -2236,7 +2291,16 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
         if not store.mark_triggered(alert, trigger["price"], str(trigger.get("message") or "")):
             continue
         try:
-            bot.send_message(alert.chat_id, alert_trigger_text(alert, trigger["price"], str(trigger.get("detail") or "")))
+            user_alerts = store.list_alerts(user_id=alert.user_id, limit=50)
+            bot.send_message(
+                alert.chat_id,
+                alert_trigger_text(
+                    alert,
+                    trigger["price"],
+                    str(trigger.get("detail") or ""),
+                    display_no=alert_display_number(user_alerts, alert.id),
+                ),
+            )
             sent += 1
         except Exception as exc:
             errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
