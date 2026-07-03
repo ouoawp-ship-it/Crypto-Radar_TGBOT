@@ -315,6 +315,75 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIsNone(sender.messages[0][3])
             self.assertEqual(sender.messages[0][4], ((42, 77),))
 
+    def test_process_ai_update_acknowledges_callback_silently_before_loading_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=db_path,
+            )
+
+            class FakeBot:
+                def __init__(self) -> None:
+                    self.answers: list[tuple[str, str]] = []
+
+                def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+                    self.answers.append((callback_query_id, text))
+                    return True
+
+            class FakeSender:
+                def __init__(self) -> None:
+                    self.messages: list[tuple[str | int, str, dict | None, str | None]] = []
+
+                def send_message(
+                    self,
+                    chat_id: str | int,
+                    text: str,
+                    reply_markup: dict | None = None,
+                    *,
+                    context: str = "queued",
+                    parse_mode: str | None = None,
+                    delete_after_send: tuple[tuple[str | int, int], ...] = (),
+                ) -> bool:
+                    self.messages.append((chat_id, text, reply_markup, parse_mode))
+                    return True
+
+            fake_bot = FakeBot()
+            sender = FakeSender()
+            answers_seen_during_settings_load: list[list[tuple[str, str]]] = []
+
+            def load_settings() -> Settings:
+                answers_seen_during_settings_load.append(list(fake_bot.answers))
+                return settings
+
+            update = {
+                "callback_query": {
+                    "id": "cb-1",
+                    "data": "menu:home",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                }
+            }
+
+            with patch("paopao_radar.ai_assistant.Settings.load", side_effect=load_settings):
+                process_ai_update(
+                    update,
+                    fake_bot,  # type: ignore[arg-type]
+                    sender,  # type: ignore[arg-type]
+                    bot_username="",
+                    bot_user_id="",
+                    sessions={},
+                    session_locks=SessionLockRegistry(),
+                )
+
+            self.assertEqual(fake_bot.answers, [("cb-1", "")])
+            self.assertEqual(answers_seen_during_settings_load, [[("cb-1", "")]])
+            self.assertEqual(len(sender.messages), 1)
+            self.assertIn("泡泡 AI 助手", sender.messages[0][1])
+
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
         settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")
 

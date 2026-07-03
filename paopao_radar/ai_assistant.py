@@ -2163,6 +2163,20 @@ def delete_temporary_messages(
             )
 
 
+def acknowledge_callback_query(
+    bot: TelegramBotClient,
+    callback_query: dict[str, Any],
+    text: str = "",
+) -> None:
+    callback_id = str(callback_query.get("id") or "")
+    if not callback_id:
+        return
+    try:
+        bot.answer_callback_query(callback_id, text)
+    except Exception as exc:
+        print(f"ai-assistant: callback ack failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
 def process_ai_update(
     update: dict[str, Any],
     bot: TelegramBotClient,
@@ -2172,19 +2186,14 @@ def process_ai_update(
     sessions: dict[str, dict[str, Any]],
     session_locks: SessionLockRegistry,
 ) -> None:
-    settings = Settings.load()
-    store = PriceAlertStore(settings.ai_price_alerts_db_path)
     callback_query = update.get("callback_query")
     if isinstance(callback_query, dict):
+        acknowledge_callback_query(bot, callback_query)
+        settings = Settings.load()
+        store = PriceAlertStore(settings.ai_price_alerts_db_path)
         chat_id = _chat_id_from_callback(callback_query)
         session_lock = session_locks.lock_for(callback_session_key(callback_query))
         try:
-            callback_id = str(callback_query.get("id") or "")
-            if callback_id:
-                try:
-                    bot.answer_callback_query(callback_id, "处理中...")
-                except Exception:
-                    pass
             with session_lock:
                 reply = handle_callback_query(settings, store, callback_query, sessions=sessions)
         except Exception as exc:
@@ -2205,6 +2214,8 @@ def process_ai_update(
     message = update.get("message")
     if not isinstance(message, dict):
         return
+    settings = Settings.load()
+    store = PriceAlertStore(settings.ai_price_alerts_db_path)
     chat_id = _chat_id_from_message(message)
     lock_key = message_session_key(message)
     session_lock = session_locks.lock_for(lock_key)
