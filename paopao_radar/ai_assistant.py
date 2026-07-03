@@ -22,6 +22,7 @@ from .price_alerts import (
     PriceAlert,
     PriceAlertStore,
     alert_to_dict,
+    contract_pair_multiplier,
     discover_alert_markets,
     fetch_open_interest_value,
     fetch_alert_market_quote,
@@ -986,21 +987,34 @@ def pad_display_left(text: str, width: int) -> str:
     return " " * max(0, width - text_display_width(value)) + value
 
 
+def price_quote_multiplier(quote: AlertMarketQuote) -> int:
+    if quote.market_type != "futures":
+        return 1
+    return contract_pair_multiplier(quote.pair, quote.symbol)
+
+
+def price_quote_display_price(quote: AlertMarketQuote) -> float:
+    multiplier = price_quote_multiplier(quote)
+    if multiplier <= 1:
+        return quote.price
+    return quote.price / multiplier
+
+
 def price_quote_widths(quotes: list[AlertMarketQuote]) -> tuple[int, int, int]:
     exchange_width = max([text_display_width("交易所"), *(text_display_width(quote.exchange_label) for quote in quotes)], default=text_display_width("交易所"))
     pair_width = max([text_display_width("交易对"), *(text_display_width(quote.pair) for quote in quotes)], default=text_display_width("交易对"))
-    price_width = max([text_display_width("价格"), *(text_display_width(format_price(quote.price)) for quote in quotes)], default=text_display_width("价格"))
+    price_width = max([text_display_width("单币价格"), *(text_display_width(format_price(price_quote_display_price(quote))) for quote in quotes)], default=text_display_width("单币价格"))
     return exchange_width, pair_width, price_width
 
 
 def price_quote_table_block(quotes: list[AlertMarketQuote]) -> str:
     exchange_width, pair_width, price_width = price_quote_widths(quotes)
-    rows = [f"{pad_display_right('交易所', exchange_width)}  {pad_display_right('交易对', pair_width)}  {pad_display_left('价格', price_width)}"]
+    rows = [f"{pad_display_right('交易所', exchange_width)}  {pad_display_right('交易对', pair_width)}  {pad_display_left('单币价格', price_width)}"]
     for quote in quotes:
         rows.append(
             f"{pad_display_right(quote.exchange_label, exchange_width)}  "
             f"{pad_display_right(quote.pair, pair_width)}  "
-            f"{pad_display_left(format_price(quote.price), price_width)}"
+            f"{pad_display_left(format_price(price_quote_display_price(quote)), price_width)}"
         )
     return f"<pre>{html.escape(chr(10).join(rows))}</pre>"
 
@@ -1032,6 +1046,9 @@ def price_text_from_quotes(symbol: str, quotes: list[AlertMarketQuote]) -> str:
     if spot:
         lines.append("现货：")
         lines.append(price_quote_table_block(spot))
+        lines.append("")
+    if any(price_quote_multiplier(quote) > 1 for quote in quotes):
+        lines.append("说明：1000/10000/1000000 合约已折算为单币价格，交易对仍保留交易所原始名称。")
         lines.append("")
     lines.extend([
         "可继续发送：",

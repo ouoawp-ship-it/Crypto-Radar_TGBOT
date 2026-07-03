@@ -25,8 +25,7 @@ from paopao_radar.ai_assistant import (
     telegram_plain_text,
 )
 from paopao_radar.config import Settings
-from paopao_radar.price_alerts import PriceAlertStore
-from paopao_radar.price_alerts import AlertMarketQuote
+from paopao_radar.price_alerts import AlertMarketQuote, PriceAlertStore
 
 
 class AiAssistantTests(unittest.TestCase):
@@ -80,9 +79,20 @@ class AiAssistantTests(unittest.TestCase):
         ])
 
         self.assertIn("<pre>", rows)
-        self.assertIn("交易所   交易对               价格", rows)
+        self.assertIn("交易所   交易对           单币价格", rows)
         self.assertIn("Binance  BTCUSDT        $62,178.20", rows)
         self.assertIn("OKX      BTC-USDT-SWAP  $62,181.00", rows)
+
+    def test_price_quote_table_block_normalizes_prefixed_contract_price(self) -> None:
+        rows = price_quote_table_block([
+            AlertMarketQuote(exchange="binance", market_type="futures", symbol="MOGUSDT", pair="1000000MOGUSDT", price=0.1176),
+            AlertMarketQuote(exchange="gate", market_type="futures", symbol="MOGUSDT", pair="MOG_USDT", price=0.00000012),
+        ])
+
+        self.assertIn("单币价格", rows)
+        self.assertIn("Binance  1000000MOGUSDT  $0.0000001176", rows)
+        self.assertIn("Gate     MOG_USDT          $0.00000012", rows)
+        self.assertNotIn("$0.1176", rows)
 
     def test_coinglass_quote_url_keeps_exchange_pair_format(self) -> None:
         self.assertEqual(

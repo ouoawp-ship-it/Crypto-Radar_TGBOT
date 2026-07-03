@@ -12,6 +12,7 @@ from paopao_radar.price_alerts import (
     alert_market_pair_candidates,
     alert_to_dict,
     clear_alert_market_cache,
+    contract_pair_multiplier,
     discover_alert_markets,
     fetch_alert_market_quote,
     fetch_price_alert_prices,
@@ -162,6 +163,12 @@ class PriceAlertStoreTests(unittest.TestCase):
             alert_market_pair_candidates("PEPE", exchange="binance", market_type="spot"),
             ["PEPEUSDT"],
         )
+
+    def test_contract_pair_multiplier_detects_prefixed_futures_units(self) -> None:
+        self.assertEqual(contract_pair_multiplier("1000PEPEUSDT", "PEPEUSDT"), 1000)
+        self.assertEqual(contract_pair_multiplier("1000000MOGUSDT", "MOGUSDT"), 1_000_000)
+        self.assertEqual(contract_pair_multiplier("MOG_USDT", "MOGUSDT"), 1)
+        self.assertEqual(contract_pair_multiplier("PEPE-USDT-SWAP", "PEPEUSDT"), 1)
 
     def test_fetch_alert_market_quote_falls_back_to_1000_futures_pair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -189,6 +189,21 @@ def base_symbol(value: str) -> str:
     return symbol[:-4] if symbol.endswith("USDT") else symbol
 
 
+def contract_pair_multiplier(pair: str, symbol: str) -> int:
+    """Return the contract unit multiplier for prefixed futures pairs."""
+
+    try:
+        normalized_symbol = normalize_symbol(symbol)
+    except ValueError:
+        return 1
+    base = base_symbol(normalized_symbol)
+    clean_pair = re.sub(r"[^A-Z0-9]", "", str(pair or "").upper())
+    for prefix in sorted(FUTURES_CONTRACT_PREFIXES, key=len, reverse=True):
+        if clean_pair == f"{prefix}{base}USDT":
+            return int(prefix)
+    return 1
+
+
 def normalize_exchange(value: str | None) -> str:
     exchange = (value or "binance").strip().lower()
     if exchange == "bianca":
@@ -406,6 +421,8 @@ def format_price(value: float | None) -> str:
         return f"${value:,.2f}"
     if value >= 1:
         return f"${value:.4f}".rstrip("0").rstrip(".")
+    if value < 0.000001:
+        return f"${value:.12f}".rstrip("0").rstrip(".")
     return f"${value:.8f}".rstrip("0").rstrip(".")
 
 
