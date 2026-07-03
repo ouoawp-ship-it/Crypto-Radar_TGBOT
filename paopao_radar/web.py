@@ -1316,7 +1316,32 @@ INDEX_HTML = r"""<!doctype html>
     }
     .field-help { color: var(--muted); font-size: 12px; }
     .section-title { margin: 2px 0 10px; font-size: 15px; }
-    .output { margin-top: 12px; }
+    .output { margin-top: 12px; white-space: pre-wrap; }
+    .result-panel {
+      background: var(--metal);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      white-space: normal;
+    }
+    .result-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+    .result-list {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .result-list li { margin: 3px 0; }
     .summary-card { display: grid; gap: 11px; align-content: start; }
     .summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .summary-title { margin: 0; font-size: 15px; }
@@ -1585,6 +1610,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="toolbar">
           <button class="btn" onclick="refreshCurrent()">刷新</button>
+          <button id="autoRefreshButton" class="btn" onclick="toggleAutoRefresh()">自动刷新：关闭</button>
         </div>
       </header>
 
@@ -1611,6 +1637,8 @@ INDEX_HTML = r"""<!doctype html>
             <option value="telegram">Telegram</option>
             <option value="binance">Binance</option>
             <option value="structure">结构雷达</option>
+            <option value="ai">AI 助手</option>
+            <option value="funding">资金费率</option>
           </select>
           <input id="logSearch" placeholder="搜索币种、错误或关键词" oninput="renderFilteredLogs()">
           <button class="btn primary" onclick="loadLogs()">读取日志</button>
@@ -1628,7 +1656,7 @@ INDEX_HTML = r"""<!doctype html>
           <button class="btn primary" onclick="saveConfig()">保存配置</button>
         </div>
         <div id="configPreview" class="panel hidden"></div>
-        <pre id="configOutput" class="output"></pre>
+        <div id="configOutput" class="output"></div>
       </section>
 
       <section id="ai" class="view hidden">
@@ -1648,12 +1676,12 @@ INDEX_HTML = r"""<!doctype html>
 
       <section id="actions" class="view hidden">
         <div class="grid" id="actionGrid"></div>
-        <pre id="actionOutput" class="output"></pre>
+        <div id="actionOutput" class="output"></div>
       </section>
 
       <section id="services" class="view hidden">
         <div class="grid" id="serviceGrid"></div>
-        <pre id="serviceOutput" class="output"></pre>
+        <div id="serviceOutput" class="output"></div>
       </section>
 
       <section id="preview" class="view hidden">
@@ -1883,6 +1911,9 @@ INDEX_HTML = r"""<!doctype html>
     let currentConfigCategory = "home";
     let latestConfigData = null;
     let latestLogData = null;
+    let autoRefreshTimer = null;
+    let autoRefreshEnabled = false;
+    const autoRefreshIntervalMs = 15000;
     const configCategories = [
       {
         id: "home",
@@ -1966,6 +1997,40 @@ INDEX_HTML = r"""<!doctype html>
       try { return JSON.parse(text); } catch { return { ok: res.ok, text }; }
     }
     function setSubtitle(text) { document.getElementById("subtitle").textContent = text; }
+    function autoRefreshSupported(view = currentView) {
+      return ["overview", "logs"].includes(view);
+    }
+    function updateAutoRefreshButton() {
+      const btn = document.getElementById("autoRefreshButton");
+      if (!btn) return;
+      const supported = autoRefreshSupported();
+      btn.disabled = !supported;
+      btn.textContent = supported
+        ? `自动刷新：${autoRefreshEnabled ? "开启" : "关闭"}`
+        : "自动刷新：当前页不可用";
+      btn.classList.toggle("primary", supported && autoRefreshEnabled);
+    }
+    function stopAutoRefresh() {
+      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+    }
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      if (!autoRefreshEnabled || !autoRefreshSupported()) {
+        updateAutoRefreshButton();
+        return;
+      }
+      autoRefreshTimer = setInterval(() => {
+        if (autoRefreshSupported()) refreshCurrent(true);
+      }, autoRefreshIntervalMs);
+      updateAutoRefreshButton();
+    }
+    function toggleAutoRefresh() {
+      if (!autoRefreshSupported()) return;
+      autoRefreshEnabled = !autoRefreshEnabled;
+      startAutoRefresh();
+      if (autoRefreshEnabled) refreshCurrent(true);
+    }
     function zhStatus(value) {
       const key = String(value || "unknown").toLowerCase();
       const map = {
@@ -2192,21 +2257,84 @@ INDEX_HTML = r"""<!doctype html>
         <div class="api-grid">${list || '<div class="hint">暂无健康度数据</div>'}</div>
       </div>`;
     }
+    function logTargetForSource(source) {
+      const text = String(source || "").toLowerCase();
+      if (text.includes("结构")) return "structure";
+      if (text.includes("web")) return "web";
+      if (text.includes("ai")) return "ai";
+      return "main";
+    }
     function recentErrorsPanel(errors) {
       const list = (errors || []).map(item => `<div class="feature-item">
         <strong>${escapeHtml(item.source || "来源未知")} · ${escapeHtml(item.level || "错误")}</strong>
         <span class="muted">${escapeHtml(item.message || "")}</span>
+        <div class="toolbar" style="margin:8px 0 0">
+          <button class="btn" type="button" onclick="openLogsForError('${escapeHtml(logTargetForSource(item.source))}')">查看相关日志</button>
+        </div>
       </div>`).join("");
       return `<div class="panel span-12">
         <h3 class="section-title">最近错误 / 警告</h3>
         ${list ? `<div class="feature-list">${list}</div>` : `<div class="notice"><strong>当前没有检测到 runtime-status 里的错误或接口警告。</strong> 如果仍怀疑异常，可以去日志页按“只看错误”筛选。</div>`}
       </div>`;
     }
+    function openLogsForError(target) {
+      switchView("logs");
+      setTimeout(() => {
+        const targetEl = document.getElementById("logTarget");
+        const filterEl = document.getElementById("logFilter");
+        if (targetEl) targetEl.value = target || "main";
+        if (filterEl) filterEl.value = "error";
+        loadLogs();
+      }, 0);
+    }
     function rawDetails(title, data) {
       return `<details class="panel raw-details">
         <summary>${escapeHtml(title)}</summary>
         <div class="raw-body"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
       </details>`;
+    }
+    function serviceActionLabel(action) {
+      const map = { restart: "重启", start: "启动", stop: "停止" };
+      return map[action] || zhStatus(action || "执行");
+    }
+    function firstUsefulLine(text) {
+      return String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean)[0] || "";
+    }
+    function commandResultSummary(data, title, kind = "action") {
+      const ok = Boolean(data && data.ok);
+      const lines = [];
+      const label = title || data.label || data.service || "操作";
+      lines.push(ok ? `${label} 已完成。` : `${label} 没有成功完成。`);
+      if (data.message) lines.push(data.message);
+      if (kind === "service") {
+        const action = serviceActionLabel(data.action || "");
+        const service = data.service || "后台服务";
+        lines.push(`目标服务：${service}，动作：${action}。`);
+      }
+      if (data.command) lines.push(`执行命令：${data.command}`);
+      if (data.returncode !== undefined) lines.push(`返回码：${data.returncode}`);
+      const stdoutLine = firstUsefulLine(data.stdout);
+      const stderrLine = firstUsefulLine(data.stderr);
+      if (stdoutLine) lines.push(`输出摘要：${stdoutLine}`);
+      if (stderrLine) lines.push(`错误摘要：${stderrLine}`);
+      if (!ok) lines.push("建议下一步：去日志中心按“只看错误”筛选，或在雷达服务页重启对应服务后再看总览。");
+      if (ok && kind === "service") lines.push("建议下一步：回到总览确认服务状态和 runtime-status 是否继续更新。");
+      if (ok && kind === "action") lines.push("建议下一步：如果这是测试或诊断动作，可以展开原始详情查看完整输出。");
+      return lines;
+    }
+    function renderOperationResult(targetId, data, title, kind = "action") {
+      const target = document.getElementById(targetId);
+      if (!target) return;
+      const ok = Boolean(data && data.ok);
+      const summary = commandResultSummary(data || {}, title, kind);
+      target.innerHTML = `<div class="result-panel">
+        <div class="result-title">
+          <span>${escapeHtml(title || "操作结果")}</span>
+          ${statusPill(ok ? "已完成" : "异常", ok)}
+        </div>
+        <ul class="result-list">${summary.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        ${rawDetails("高级详情：原始执行结果 JSON", data || {})}
+      </div>`;
     }
     function apiLogo(brand, label, logoUrl) {
       const safeBrand = escapeHtml(String(brand || "generic"));
@@ -2255,7 +2383,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function loadSummary() {
       const data = await api("/api/summary");
-      setSubtitle(`更新时间 ${data.updated_at}`);
+      setSubtitle(`更新时间 ${data.updated_at}${autoRefreshEnabled && currentView === "overview" ? " · 自动刷新中" : ""}`);
       const main = data.services.main || {};
       const structure = data.services.structure || {};
       const web = data.services.web || {};
@@ -2283,7 +2411,7 @@ INDEX_HTML = r"""<!doctype html>
       const target = document.getElementById("logTarget").value;
       const lines = document.getElementById("logLines").value;
       const data = await api(`/api/logs?target=${encodeURIComponent(target)}&lines=${encodeURIComponent(lines)}`);
-      setSubtitle(`日志来源 ${data.source || ""}`);
+      setSubtitle(`日志来源 ${data.source || ""}${autoRefreshEnabled && currentView === "logs" ? " · 自动刷新中" : ""}`);
       latestLogData = data;
       renderFilteredLogs();
     }
@@ -2295,7 +2423,9 @@ INDEX_HTML = r"""<!doctype html>
         error: /(error|traceback|exception|failed|失败|异常|错误)/i,
         telegram: /(telegram|bot|chat|topic|message_thread_id)/i,
         binance: /(binance|fapi|api\.binance|ticker|klines|openinterest)/i,
-        structure: /(structure|结构|breakout|breakdown|squeeze)/i
+        structure: /(structure|结构|breakout|breakdown|squeeze)/i,
+        ai: /(ai|assistant|deepseek|price_alert|alert|提醒|意图|intent|callback)/i,
+        funding: /(funding|fundingrate|资金费率|费率|premium|gate|bybit|okx|bitget)/i
       };
       const lines = raw.split(/\r?\n/).filter(line => {
         const lower = line.toLowerCase();
@@ -2490,7 +2620,12 @@ INDEX_HTML = r"""<!doctype html>
       if (applyResults.length) {
         lines.push("");
         lines.push("自动应用：");
-        applyResults.forEach(item => lines.push(`- ${item.service || item.name || "服务"} ${item.action || ""}: ${item.ok ? "成功" : "失败"}`));
+        applyResults.forEach(item => lines.push(`- ${item.service || item.name || "服务"} ${serviceActionLabel(item.action || "")}: ${item.ok ? "成功" : "失败"}`));
+        if (applyResults.some(item => !item.ok)) {
+          lines.push("建议下一步：去雷达服务页手动重启失败的服务，然后回总览确认状态。");
+        } else {
+          lines.push("建议下一步：回总览确认 runtime-status 的最近更新时间是否继续变化。");
+        }
       }
       if (!data.ok && data.errors) {
         lines.push("");
@@ -2615,7 +2750,7 @@ INDEX_HTML = r"""<!doctype html>
         if (confirmText !== action.confirmWord) return;
       }
       const data = await api("/api/action", { method: "POST", body: JSON.stringify({ name }) });
-      document.getElementById("actionOutput").textContent = JSON.stringify(data, null, 2);
+      renderOperationResult("actionOutput", data, (action && action.label) || "检查测试", "action");
     }
     function renderServices() {
       document.getElementById("serviceGrid").innerHTML = `
@@ -2742,7 +2877,7 @@ INDEX_HTML = r"""<!doctype html>
         if (confirmText !== "STOP") return;
       }
       const data = await api("/api/service", { method: "POST", body: JSON.stringify({ name }) });
-      document.getElementById("serviceOutput").textContent = JSON.stringify(data, null, 2);
+      renderOperationResult("serviceOutput", data, label || "服务操作", "service");
       await loadSummary();
     }
     function zhDirection(value) {
@@ -2944,10 +3079,12 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById(view).classList.remove("hidden");
       document.querySelectorAll("nav button").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
       document.getElementById("pageTitle").textContent = titles[view];
+      startAutoRefresh();
       refreshCurrent();
     }
-    async function refreshCurrent() {
+    async function refreshCurrent(isAuto = false) {
       try {
+        updateAutoRefreshButton();
         if (currentView === "overview") await loadSummary();
         if (currentView === "logs") await loadLogs();
         if (currentView === "config") await loadConfig();
@@ -2959,10 +3096,11 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "preview") await loadPreviewPanel();
         if (currentView === "guide") await loadGuide();
       } catch (err) {
-        setSubtitle(err.message || String(err));
+        setSubtitle(`${isAuto ? "自动刷新失败：" : ""}${err.message || String(err)}`);
       }
     }
     document.querySelectorAll("nav button").forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));
+    updateAutoRefreshButton();
     refreshCurrent();
   </script>
 </body>
@@ -3087,7 +3225,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.send_json(run_cli_action(str(data.get("name", ""))))
                 return
             if path == "/api/service":
-                self.send_json(run_service_action(str(data.get("name", ""))))
+                name = str(data.get("name", ""))
+                result = run_service_action(name)
+                if name in SERVICE_ACTIONS:
+                    service, action = SERVICE_ACTIONS[name]
+                    result.update({"name": name, "service": service, "action": action})
+                self.send_json(result)
                 return
             if path == "/api/price-alerts":
                 from .ai_assistant import create_price_alert_from_payload, mutate_price_alert_from_payload
