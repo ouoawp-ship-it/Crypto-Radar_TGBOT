@@ -14,6 +14,7 @@ from paopao_radar.ai_assistant import (
     TelegramBotClient,
     alert_created_text,
     build_chat_completion_payload,
+    check_and_send_price_alerts,
     clear_ai_settings_cache,
     coinglass_quote_url,
     extract_ai_reply_text,
@@ -31,6 +32,7 @@ from paopao_radar.ai_assistant import (
     processing_notice_for_message,
     load_ai_settings_cached,
     telegram_plain_text,
+    user_facing_error,
 )
 from paopao_radar.config import Settings
 from paopao_radar.price_alerts import AlertMarketQuote, PriceAlertStore
@@ -79,6 +81,19 @@ class AiAssistantTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(post.call_count, 2)
         self.assertEqual(post.call_args.kwargs["timeout"], 20)
+
+    def test_answer_callback_query_uses_short_single_attempt_timeout(self) -> None:
+        bot = TelegramBotClient("123456:test", timeout_sec=10, retry_count=3, retry_delay_sec=0)
+
+        with patch(
+            "paopao_radar.ai_assistant.requests.post",
+            side_effect=requests.exceptions.ReadTimeout("Read timed out."),
+        ) as post:
+            with self.assertRaises(requests.exceptions.ReadTimeout):
+                bot.answer_callback_query("cb-1")
+
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.kwargs["timeout"], 3)
 
     def test_telegram_bot_send_message_with_ids_and_delete_message(self) -> None:
         bot = TelegramBotClient("123456:test", timeout_sec=10, send_timeout_sec=20, retry_count=1)
@@ -147,6 +162,40 @@ class AiAssistantTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(fake_bot.messages, [(42, "final reply")])
         self.assertEqual(fake_bot.deleted, [(42, 77)])
+
+    def test_queued_sender_retries_transient_send_failure(self) -> None:
+        class FakeBot:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.messages: list[tuple[str | int, str]] = []
+
+            def send_message(
+                self,
+                chat_id: str | int,
+                text: str,
+                reply_markup: dict | None = None,
+                parse_mode: str | None = None,
+            ) -> bool:
+                self.calls += 1
+                if self.calls == 1:
+                    raise requests.exceptions.ReadTimeout("Read timed out.")
+                self.messages.append((chat_id, text))
+                return True
+
+            def delete_message(self, chat_id: str | int, message_id: int) -> bool:
+                return True
+
+        fake_bot = FakeBot()
+        sender = QueuedTelegramSender(fake_bot, max_send_attempts=2, retry_delay_sec=0)  # type: ignore[arg-type]
+        sender.start()
+        try:
+            self.assertTrue(sender.send_message(42, "final reply", context="retry_test"))
+            sender._queue.join()
+        finally:
+            sender.stop()
+
+        self.assertEqual(fake_bot.calls, 2)
+        self.assertEqual(fake_bot.messages, [(42, "final reply")])
 
     def test_price_quote_table_block_aligns_all_columns_in_pre_block(self) -> None:
         rows = price_quote_table_block([
@@ -402,6 +451,69 @@ class AiAssistantTests(unittest.TestCase):
             self.assertEqual(answers_seen_during_settings_load, [[("cb-1", "")]])
             self.assertEqual(len(sender.messages), 1)
             self.assertIn("泡泡 AI 助手", sender.messages[0][1])
+
+    def test_process_ai_update_callback_error_is_user_friendly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_assistant_enable=True,
+                ai_bot_token="123456:test",
+                ai_admin_user_ids=("42",),
+                ai_price_alerts_db_path=Path(tmp) / "alerts.db",
+            )
+
+            class FakeBot:
+                def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+                    return True
+
+            class FakeSender:
+                def __init__(self) -> None:
+                    self.messages: list[tuple[str | int, str]] = []
+
+                def send_message(
+                    self,
+                    chat_id: str | int,
+                    text: str,
+                    reply_markup: dict | None = None,
+                    *,
+                    context: str = "queued",
+                    parse_mode: str | None = None,
+                    delete_after_send: tuple[tuple[str | int, int], ...] = (),
+                ) -> bool:
+                    self.messages.append((chat_id, text))
+                    return True
+
+            sender = FakeSender()
+            update = {
+                "callback_query": {
+                    "id": "cb-1",
+                    "data": "menu:alerts",
+                    "from": {"id": 42, "username": "tester"},
+                    "message": {"chat": {"id": 42, "type": "private"}},
+                }
+            }
+
+            with patch("paopao_radar.ai_assistant.Settings.load", return_value=settings):
+                with patch("paopao_radar.ai_assistant.handle_callback_query", side_effect=requests.exceptions.ReadTimeout("Read timed out.")):
+                    process_ai_update(
+                        update,
+                        FakeBot(),  # type: ignore[arg-type]
+                        sender,  # type: ignore[arg-type]
+                        bot_username="",
+                        bot_user_id="",
+                        sessions={},
+                        session_locks=SessionLockRegistry(),
+                    )
+
+            self.assertEqual(len(sender.messages), 1)
+            self.assertIn("按钮处理超时", sender.messages[0][1])
+            self.assertNotIn("ReadTimeout", sender.messages[0][1])
+
+    def test_user_facing_error_keeps_ai_timeout_chinese(self) -> None:
+        message = user_facing_error("AI 分析", RuntimeError("AI 接口响应超时（已等待 90 秒）。请稍后重试。"))
+
+        self.assertIn("AI 分析失败：AI 接口响应超时", message)
+        self.assertNotIn("RuntimeError", message)
 
     def test_deepseek_v4_payload_enables_thinking_mode(self) -> None:
         settings = Settings(ai_model="AI_MODEL=deepseek-v4-pro")
@@ -813,6 +925,51 @@ class AiAssistantTests(unittest.TestCase):
             self.assertNotIn("2. 目标价提醒", delete_reply.text)
             delete_flat = [button for row in delete_reply.reply_markup["inline_keyboard"] for button in row]  # type: ignore[index]
             self.assertIn({"text": "删除1", "callback_data": f"alert:delete:{older.id}"}, delete_flat)
+
+    def test_price_alert_scan_keeps_alert_active_when_send_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "alerts.db"
+            settings = Settings(
+                data_dir=Path(tmp),
+                ai_price_alerts_enable=True,
+                ai_price_alerts_db_path=db_path,
+            )
+            store = PriceAlertStore(db_path)
+            alert = store.create_alert(
+                user_id="42",
+                chat_id="42",
+                username="tester",
+                symbol="BTC",
+                exchange="binance",
+                market_type="futures",
+                pair="BTCUSDT",
+                direction="above",
+                target_price=60000,
+            )
+
+            class FailingSender:
+                def send_message(
+                    self,
+                    chat_id: str | int,
+                    text: str,
+                    reply_markup: dict | None = None,
+                    *,
+                    context: str = "queued",
+                    parse_mode: str | None = None,
+                    delete_after_send: tuple[tuple[str | int, int], ...] = (),
+                ) -> bool:
+                    return False
+
+            with patch("paopao_radar.ai_assistant.fetch_price_alert_prices", return_value={alert.price_key: 61000.0}):
+                result = check_and_send_price_alerts(settings, store, FailingSender())  # type: ignore[arg-type]
+
+            updated = store.get_alert(alert.id)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["triggered"], 0)
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual(updated.status, "active")
+            self.assertEqual(updated.trigger_count, 0)
 
     def test_handle_message_reply_natural_alert_routes_to_manual_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

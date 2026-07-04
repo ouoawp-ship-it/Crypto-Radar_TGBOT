@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote as url_quote
 
@@ -185,6 +185,33 @@ def log_ai_update_latency(kind: str, started_at: float, note: str = "") -> None:
         return
     suffix = f" {note}" if note else ""
     print(f"ai-assistant: slow_{kind} elapsed={elapsed:.3f}s{suffix}", flush=True)
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return isinstance(exc, requests.Timeout) or "timeout" in text or "timed out" in text
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return isinstance(exc, requests.ConnectionError) or "connection" in text
+
+
+def user_facing_error(action: str, exc: BaseException) -> str:
+    raw = str(exc).strip()
+    if raw.startswith(f"{action}失败：") or raw.startswith(f"{action}超时："):
+        return raw
+    if "AI 接口响应超时" in raw:
+        return f"{action}失败：{raw}"
+    if "AI 接口" in raw or "DeepSeek" in raw or "deepseek" in raw:
+        return f"{action}失败：{raw}"
+    if action.startswith("AI") and re.match(r"^[1-5][0-9]{2}\b", raw):
+        return f"{action}失败：{raw}"
+    if _is_timeout_error(exc):
+        return f"{action}超时：网络或接口响应慢，系统已记录日志；请稍后再试。"
+    if _is_connection_error(exc):
+        return f"{action}失败：网络连接不稳定，系统会继续自动重试；请稍后再试。"
+    return f"{action}失败：系统已记录错误，请稍后再试。"
 
 
 def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
@@ -530,9 +557,16 @@ class TelegramBotClient:
         self.retry_delay_sec = max(0.0, float(retry_delay_sec))
         self.base_url = f"https://api.telegram.org/bot{token}"
 
-    def _post_json(self, method: str, payload: dict[str, Any], timeout_sec: int | None = None) -> dict[str, Any]:
+    def _post_json(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        timeout_sec: int | None = None,
+        retry_count: int | None = None,
+    ) -> dict[str, Any]:
         request_timeout = max(3, int(timeout_sec or self.timeout_sec))
-        for attempt in range(1, self.retry_count + 1):
+        attempts = max(1, int(self.retry_count if retry_count is None else retry_count))
+        for attempt in range(1, attempts + 1):
             try:
                 response = requests.post(
                     f"{self.base_url}/{method}",
@@ -544,7 +578,7 @@ class TelegramBotClient:
                 data = response.json()
                 return data if isinstance(data, dict) else {}
             except requests.RequestException:
-                if attempt >= self.retry_count:
+                if attempt >= attempts:
                     raise
                 if self.retry_delay_sec:
                     time.sleep(self.retry_delay_sec * attempt)
@@ -639,7 +673,8 @@ class TelegramBotClient:
         data = self._post_json(
             "deleteMessage",
             {"chat_id": chat_id, "message_id": int(message_id)},
-            timeout_sec=self.timeout_sec,
+            timeout_sec=min(3, self.timeout_sec),
+            retry_count=1,
         )
         return bool(data.get("ok"))
 
@@ -647,7 +682,7 @@ class TelegramBotClient:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
         if text:
             payload["text"] = text[:180]
-        data = self._post_json("answerCallbackQuery", payload, timeout_sec=self.timeout_sec)
+        data = self._post_json("answerCallbackQuery", payload, timeout_sec=min(3, self.timeout_sec), retry_count=1)
         return bool(data.get("ok"))
 
 
@@ -703,14 +738,23 @@ class QueuedTelegramMessage:
     context: str = "queued"
     parse_mode: str | None = None
     delete_after_send: tuple[tuple[str | int, int], ...] = ()
+    attempts: int = 0
 
 
 class QueuedTelegramSender:
-    def __init__(self, bot: TelegramBotClient, max_queue_size: int = 1000):
+    def __init__(
+        self,
+        bot: TelegramBotClient,
+        max_queue_size: int = 1000,
+        max_send_attempts: int = 3,
+        retry_delay_sec: float = 1.0,
+    ):
         self.bot = bot
         self._queue: queue.Queue[QueuedTelegramMessage | None] = queue.Queue(maxsize=max(10, int(max_queue_size)))
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="paopao-ai-sender", daemon=True)
+        self.max_send_attempts = max(1, int(max_send_attempts))
+        self.retry_delay_sec = max(0.0, float(retry_delay_sec))
 
     def start(self) -> None:
         self._thread.start()
@@ -764,12 +808,35 @@ class QueuedTelegramSender:
             started = time.time()
             try:
                 sent = self.bot.send_message(item.chat_id, item.text, reply_markup=item.reply_markup, parse_mode=item.parse_mode)
-                if sent:
-                    self._delete_messages(item.delete_after_send)
+                if not sent:
+                    raise RuntimeError("sendMessage returned false")
+                self._delete_messages(item.delete_after_send)
                 elapsed = time.time() - started
                 if elapsed >= 3:
                     print(f"ai-assistant: slow send context={item.context} elapsed={elapsed:.2f}s", flush=True)
             except Exception as exc:
+                next_attempt = item.attempts + 1
+                if next_attempt < self.max_send_attempts and not self._stop.is_set():
+                    print(
+                        f"ai-assistant: queued send retry context={item.context} "
+                        f"attempt={next_attempt + 1}/{self.max_send_attempts} {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if self.retry_delay_sec:
+                        time.sleep(self.retry_delay_sec * next_attempt)
+                    requeued = False
+                    try:
+                        self._queue.put_nowait(replace(item, attempts=next_attempt))
+                        requeued = True
+                    except queue.Full:
+                        print(
+                            f"ai-assistant: queued send retry dropped context={item.context} queue_full=1",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    if requeued:
+                        continue
                 print(
                     f"ai-assistant: queued send failed context={item.context} {type(exc).__name__}: {exc}",
                     file=sys.stderr,
@@ -1693,7 +1760,7 @@ def handle_message(
         try:
             return build_symbol_dossier_reply(settings, store, user_id, text)
         except Exception as exc:
-            return f"币种档案查询失败：{type(exc).__name__}: {exc}"
+            return user_facing_error("币种档案查询", exc)
 
     if intent.kind == "analysis":
         prompt = intent.prompt
@@ -1702,7 +1769,7 @@ def handle_message(
         try:
             return call_ai_provider(settings, prompt, store, user_id, mode="analyst")
         except Exception as exc:
-            return f"AI 分析失败：{type(exc).__name__}: {exc}"
+            return user_facing_error("AI 分析", exc)
 
     if intent.kind == "alert_setup":
         return "价格提醒需要手动选择交易所和价格源。请点击首页“设置价格提醒”，按步骤确认后才会创建。"
@@ -1711,7 +1778,7 @@ def handle_message(
         try:
             return price_text(settings, intent.symbol)
         except Exception as exc:
-            return f"价格查询失败：{type(exc).__name__}: {exc}"
+            return user_facing_error("价格查询", exc)
 
     if intent.kind == "ambiguous_alert":
         return "如果这是价格提醒，请点击首页“设置价格提醒”。如果你想让我分析这句话，可以直接说“帮我分析这段：...”再粘贴内容。"
@@ -1720,7 +1787,7 @@ def handle_message(
         try:
             return call_ai_provider(settings, text, store, user_id)
         except Exception as exc:
-            return f"AI 回答失败：{type(exc).__name__}: {exc}"
+            return user_facing_error("AI 回答", exc)
     return local_assistant_reply(settings, store, user_id)
 
 
@@ -1786,19 +1853,19 @@ def handle_message_reply(
         try:
             return BotReply(call_ai_provider(settings, prompt, store, user_id, mode="analyst"))
         except Exception as exc:
-            return BotReply(f"AI 分析失败：{type(exc).__name__}: {exc}")
+            return BotReply(user_facing_error("AI 分析", exc))
 
     if intent.kind == "dossier":
         try:
             return BotReply(build_symbol_dossier_reply(settings, store, user_id, text))
         except Exception as exc:
-            return BotReply(f"币种档案查询失败：{type(exc).__name__}: {exc}")
+            return BotReply(user_facing_error("币种档案查询", exc))
 
     if intent.kind == "price":
         try:
             return price_reply(settings, intent.symbol)
         except Exception as exc:
-            return BotReply(f"价格查询失败：{type(exc).__name__}: {exc}")
+            return BotReply(user_facing_error("价格查询", exc))
 
     if intent.kind == "ambiguous_alert":
         return BotReply(
@@ -2320,7 +2387,7 @@ def process_ai_update(
                 reply = handle_callback_query(settings, store, callback_query, sessions=sessions)
         except Exception as exc:
             print(f"ai-assistant: callback failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            send_bot_message_safely(sender, chat_id, f"按钮处理失败：{type(exc).__name__}: {exc}", context="callback_error")
+            send_bot_message_safely(sender, chat_id, user_facing_error("按钮处理", exc), context="callback_error")
             log_ai_update_latency("callback", started_at, "error=1")
             return
         if reply:
@@ -2362,7 +2429,7 @@ def process_ai_update(
         sent = send_bot_message_safely(
             sender,
             chat_id,
-            f"处理失败：{type(exc).__name__}: {exc}",
+            user_facing_error("消息处理", exc),
             context="message_error",
             delete_after_send=delete_after_send,
         )
@@ -2398,17 +2465,30 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
     prices = fetch_price_alert_prices(settings, target_alerts)
     sent = 0
     errors: list[str] = []
+    price_misses = 0
     for alert, price in triggered_alerts(target_alerts, prices):
-        if not store.mark_triggered(alert, price):
-            continue
         try:
             user_alerts = store.list_alerts(user_id=alert.user_id, limit=50)
-            bot.send_message(alert.chat_id, alert_trigger_text(alert, price, display_no=alert_display_number(user_alerts, alert.id)))
-            sent += 1
+            queued = send_bot_message_safely(
+                bot,
+                alert.chat_id,
+                alert_trigger_text(alert, price, display_no=alert_display_number(user_alerts, alert.id)),
+                context="alert_trigger",
+            )
         except Exception as exc:
             errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
+            continue
+        if not queued:
+            errors.append(f"{alert.id}: send_failed")
+            continue
+        if not store.mark_triggered(alert, price):
+            errors.append(f"{alert.id}: state_not_marked")
+            continue
+        sent += 1
     for alert in target_alerts:
         price = prices.get(alert.price_key)
+        if price is None:
+            price_misses += 1
         if price is not None:
             store.update_last_price(
                 alert.symbol,
@@ -2425,11 +2505,10 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
             continue
         if not trigger:
             continue
-        if not store.mark_triggered(alert, trigger["price"], str(trigger.get("message") or "")):
-            continue
         try:
             user_alerts = store.list_alerts(user_id=alert.user_id, limit=50)
-            bot.send_message(
+            queued = send_bot_message_safely(
+                bot,
                 alert.chat_id,
                 alert_trigger_text(
                     alert,
@@ -2437,11 +2516,26 @@ def check_and_send_price_alerts(settings: Settings, store: PriceAlertStore, bot:
                     str(trigger.get("detail") or ""),
                     display_no=alert_display_number(user_alerts, alert.id),
                 ),
+                context="alert_trigger",
             )
-            sent += 1
         except Exception as exc:
             errors.append(f"{alert.id}: {type(exc).__name__}: {exc}")
-    return {"ok": not errors, "enabled": True, "checked": len(active), "triggered": sent, "errors": errors}
+            continue
+        if not queued:
+            errors.append(f"{alert.id}: send_failed")
+            continue
+        if not store.mark_triggered(alert, trigger["price"], str(trigger.get("message") or "")):
+            errors.append(f"{alert.id}: state_not_marked")
+            continue
+        sent += 1
+    return {
+        "ok": not errors,
+        "enabled": True,
+        "checked": len(active),
+        "triggered": sent,
+        "price_misses": price_misses,
+        "errors": errors,
+    }
 
 
 def run_price_alert_scanner(stop_event: threading.Event, sender: QueuedTelegramSender) -> None:
