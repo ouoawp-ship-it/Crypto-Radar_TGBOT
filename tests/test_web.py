@@ -359,6 +359,14 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["records"][0]["action"], "执行检查测试")
         self.assertIn("Telegram Forbidden", payload["records"][0]["error"])
 
+    def test_stable_check_web_action_treats_blocked_result_as_successful_execution(self) -> None:
+        with patch.object(web, "run_subprocess", return_value={"ok": False, "returncode": 2, "stdout": "未达稳定版标准", "stderr": ""}):
+            result = web.run_cli_action("stable-check")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["returncode"], 2)
+        self.assertEqual(result["label"], "执行稳定版验收")
+
     def test_ops_snapshot_payload_redacts_sensitive_log_values(self) -> None:
         summary = {
             "git": {"version": "v-test", "branch": "main", "commit": "abc123"},
@@ -511,6 +519,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(center["label"], "当前健康")
         self.assertEqual(center["counts"]["transient_timeouts"], 2)
         self.assertEqual(center["modules"], [])
+        self.assertEqual(center["action_plan"][0]["key"], "observe")
+        self.assertEqual(center["action_plan"][0]["target"], "actions")
         self.assertIn("暂无需要立即处理", "\n".join(center["next_steps"]))
 
     def test_problem_center_blocks_on_critical_issues_and_summarizes_modules(self) -> None:
@@ -534,7 +544,33 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(center["counts"]["log_errors"], 12)
         self.assertEqual(center["counts"]["failed_audit"], 1)
         self.assertEqual(center["modules"][0]["module"], "主服务")
+        keys = [item["key"] for item in center["action_plan"]]
+        self.assertIn("service-health", keys)
+        self.assertIn("log-errors", keys)
+        self.assertIn("failed-audit", keys)
+        self.assertIn("stable-check", keys)
+        self.assertTrue(any(item["target"] == "logs" and item["log_target"] == "main" for item in center["action_plan"]))
         self.assertTrue(any("严重问题" in item for item in center["next_steps"]))
+
+    def test_problem_center_action_plan_routes_config_failures(self) -> None:
+        snapshot = {
+            "health": [{"label": "Telegram 推送", "status": "bad"}],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {},
+            "issues": [],
+            "stability": {
+                "status": "blocked",
+                "fail_count": 1,
+                "warn_count": 0,
+                "checks": [{"key": "config", "status": "fail", "label": "关键配置"}],
+            },
+        }
+
+        center = web.build_problem_center(snapshot)
+
+        self.assertEqual(center["status"], "blocked")
+        self.assertTrue(any(item["key"] == "config-check" and item["target"] == "config" for item in center["action_plan"]))
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
@@ -891,6 +927,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("问题中心总览", html)
         self.assertIn("problemCenterPanel", html)
         self.assertIn("problemCenterStatusPill", html)
+        self.assertIn("处理清单", html)
+        self.assertIn("actionPlanCards", html)
+        self.assertIn("actionPlanButton", html)
+        self.assertIn("执行稳定版验收", html)
+        self.assertIn("stable-check", html)
         self.assertIn("issueCards", html)
         self.assertIn("issueSeverityPill", html)
         self.assertIn("查看失败审计", html)

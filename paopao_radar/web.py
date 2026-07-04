@@ -226,6 +226,7 @@ CLI_ACTIONS: dict[str, dict[str, Any]] = {
     "readiness": {"label": "检查真实推送准备度", "argv": ["readiness"], "timeout": 45},
     "doctor": {"label": "环境诊断", "argv": ["doctor"], "timeout": 45},
     "runtime-status": {"label": "查看运行状态", "argv": ["runtime-status"], "timeout": 20},
+    "stable-check": {"label": "执行稳定版验收", "argv": ["stable-check"], "timeout": 60, "ok_returncodes": [0, 1, 2]},
     "announcements-test": {"label": "测试 Binance 公告", "argv": ["announcements-test"], "timeout": 90},
     "funding-alert": {"label": "扫描资金费率警报", "argv": ["funding-alert"], "timeout": 180},
     "structure-review": {"label": "结构信号复盘", "argv": ["structure-review"], "timeout": 120},
@@ -882,6 +883,9 @@ def run_cli_action(name: str) -> dict[str, Any]:
     if action is None:
         return {"ok": False, "returncode": 2, "stderr": "未知动作", "stdout": ""}
     result = run_subprocess(action["argv"], timeout=int(action.get("timeout", 30)), use_python=True)
+    ok_returncodes = action.get("ok_returncodes")
+    if isinstance(ok_returncodes, list):
+        result["ok"] = int(result.get("returncode", 0) or 0) in {int(code) for code in ok_returncodes}
     result["label"] = action["label"]
     return result
 
@@ -1721,6 +1725,132 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not next_steps:
         next_steps.append("暂无需要立即处理的动作。")
 
+    action_plan: list[dict[str, Any]] = []
+    action_keys: set[str] = set()
+
+    def add_action(
+        key: str,
+        *,
+        severity: str,
+        title: str,
+        detail: str,
+        target: str,
+        button: str,
+        log_target: str = "",
+        action_id: str = "",
+    ) -> None:
+        if key in action_keys:
+            return
+        action_keys.add(key)
+        action_plan.append(
+            {
+                "key": key,
+                "severity": severity,
+                "title": title,
+                "detail": detail,
+                "target": target,
+                "button": button,
+                "log_target": log_target,
+                "action_id": action_id,
+            }
+        )
+
+    if bad_health_count or critical_count:
+        add_action(
+            "service-health",
+            severity="critical",
+            title="先处理服务或健康异常",
+            detail="如果主服务、结构雷达、Web 控制台或 AI 助手显示异常，先到雷达服务页重启对应服务，再回来看诊断报告。",
+            target="services",
+            button="打开雷达服务",
+        )
+
+    config_problem = any(
+        isinstance(item, dict) and str(item.get("key") or "") == "config" and str(item.get("status") or "") in {"fail", "warn"}
+        for item in (stability.get("checks", []) if isinstance(stability.get("checks"), list) else [])
+    )
+    if config_problem:
+        add_action(
+            "config-check",
+            severity="critical" if stability_status == "blocked" else "warning",
+            title="补齐关键配置",
+            detail="关键配置异常通常是 Telegram Token、群 ID 或 AI Bot Token 缺失。进入配置中心按模块补齐后保存，后台会自动应用。",
+            target="config",
+            button="打开配置中心",
+        )
+
+    if log_error_total:
+        worst_log_target = ""
+        worst_log_count = -1
+        for target, item in logs.items():
+            if not isinstance(item, dict):
+                continue
+            count = int(item.get("error_count", 0) or 0)
+            if count > worst_log_count:
+                worst_log_count = count
+                worst_log_target = str(target)
+        add_action(
+            "log-errors",
+            severity="critical" if log_error_total >= 20 else "warning",
+            title="查看错误日志原文",
+            detail=f"最近日志检测到 {log_error_total} 条错误/异常关键字。先看错误最多的模块，再按时间点回查上下文。",
+            target="logs",
+            button="打开相关日志",
+            log_target=worst_log_target,
+        )
+
+    if failed_audit:
+        add_action(
+            "failed-audit",
+            severity="warning",
+            title="检查失败的后台操作",
+            detail="配置保存、服务控制或检查测试失败时会进入审计记录。先确认失败动作是否已经重新执行成功。",
+            target="audit",
+            button="查看失败审计",
+        )
+
+    if transient_total >= 10 and not log_error_total:
+        worst_transient_target = ""
+        worst_transient_count = -1
+        for target, item in logs.items():
+            if not isinstance(item, dict):
+                continue
+            count = int(item.get("transient_count", 0) or 0)
+            if count > worst_transient_count:
+                worst_transient_count = count
+                worst_transient_target = str(target)
+        add_action(
+            "transient-timeouts",
+            severity="notice",
+            title="观察网络超时是否恢复",
+            detail=f"最近检测到 {transient_total} 条可自动重试超时。低频通常不用处理；如果 Bot 明显不回复，再检查服务器到 Telegram/API 的网络。",
+            target="logs",
+            button="查看超时日志",
+            log_target=worst_transient_target,
+        )
+
+    if stability_status in {"blocked", "attention"}:
+        add_action(
+            "stable-check",
+            severity="critical" if stability_status == "blocked" else "warning",
+            title="处理后重新验收",
+            detail="处理上面的服务、配置或日志问题后，再执行稳定版验收，把新的结果保存到验收历史。",
+            target="actions",
+            button="打开检查测试",
+            action_id="stable-check",
+        )
+
+    if not action_plan:
+        add_action(
+            "observe",
+            severity="notice",
+            title="继续观察",
+            detail="当前没有需要立即处理的动作。更新后可以执行一次稳定版验收，保存健康记录。",
+            target="actions",
+            button="打开检查测试",
+            action_id="stable-check",
+        )
+
     modules = sorted(
         module_counts.values(),
         key=lambda item: (severity_rank.get(str(item.get("severity") or ""), 9), -int(item.get("count", 0) or 0), str(item.get("module") or "")),
@@ -1745,6 +1875,7 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
         },
         "modules": modules,
         "next_steps": next_steps,
+        "action_plan": action_plan,
     }
 
 
@@ -2899,6 +3030,17 @@ INDEX_HTML = r"""<!doctype html>
         ]
       },
       {
+        id: "stable-check",
+        label: "执行稳定版验收",
+        badge: "保存验收历史",
+        desc: "把当前服务、配置、日志、审计和问题中心合成稳定版验收结果，并保存到验收历史。",
+        details: [
+          "更新后或处理完异常后执行，用来确认当前部署是否适合长期运行。",
+          "结果会写入 data/stable_check_latest.json 和 data/stable_check_history.json。",
+          "如果显示未达标，优先回到诊断报告查看问题中心总览和处理清单。"
+        ]
+      },
+      {
         id: "web-self-check",
         label: "Web API 自诊断",
         badge: "前端自检",
@@ -3941,6 +4083,11 @@ INDEX_HTML = r"""<!doctype html>
       lines.push(`- 主要动作: ${problemCenter.primary_action || ""}`);
       lines.push(`- 统计: 严重 ${problemCounts.critical || 0} | 警告 ${problemCounts.warning || 0} | 日志错误 ${problemCounts.log_errors || 0} | 网络超时 ${problemCounts.transient_timeouts || 0} | 失败审计 ${problemCounts.failed_audit || 0}`);
       ((problemCenter && problemCenter.next_steps) || []).forEach(item => lines.push(`- 下一步: ${item}`));
+      const actionPlan = problemCenter.action_plan || [];
+      if (actionPlan.length) {
+        lines.push("处理清单:");
+        actionPlan.forEach((item, idx) => lines.push(`- ${idx + 1}. ${item.title || ""}: ${item.detail || ""} | 入口: ${item.button || ""}`));
+      }
       lines.push("");
       const stability = data.stability || {};
       lines.push("稳定版自检:");
@@ -4120,11 +4267,45 @@ INDEX_HTML = r"""<!doctype html>
       `).join("");
       return rows || tableEmpty(5, "暂无异常模块", "当前没有需要单独处理的模块。");
     }
+    function actionPlanButton(action) {
+      const target = String((action && action.target) || "");
+      const logTarget = String((action && action.log_target) || "");
+      const allowedViews = ["overview", "ai", "price", "services", "config", "logs", "audit", "report", "actions", "preview", "guide"];
+      if (target === "logs" && ["main", "structure", "web", "ai", "funding"].includes(logTarget)) {
+        return `<button class="btn primary" type="button" onclick="openLogsForError('${escapeHtml(logTarget)}')">${escapeHtml(action.button || "查看日志")}</button>`;
+      }
+      if (allowedViews.includes(target)) {
+        return `<button class="btn primary" type="button" onclick="switchView('${escapeHtml(target)}')">${escapeHtml(action.button || "打开页面")}</button>`;
+      }
+      return `<button class="btn" type="button" onclick="switchView('report')">留在诊断报告</button>`;
+    }
+    function actionPlanCards(actions) {
+      const items = actions || [];
+      if (!items.length) {
+        return emptyState("暂无处理清单", "当前没有需要立即处理的动作。");
+      }
+      return `<div class="issue-list">${items.map((item, idx) => `
+        <div class="issue-card ${escapeHtml(item.severity || "notice")}">
+          <div class="issue-head">
+            <div>
+              <div class="issue-title">${idx + 1}. ${escapeHtml(item.title || "处理动作")}</div>
+              <div class="issue-detail">${escapeHtml(item.detail || "")}</div>
+            </div>
+            <div class="issue-meta">${issueSeverityPill(item.severity)}</div>
+          </div>
+          <div class="issue-action">
+            <span>${escapeHtml(item.button || "打开相关页面")}</span>
+            ${actionPlanButton(item)}
+          </div>
+        </div>
+      `).join("")}</div>`;
+    }
     function problemCenterPanel(problemCenter) {
       const data = problemCenter || {};
       const counts = data.counts || {};
       const modules = data.modules || [];
       const nextSteps = data.next_steps || [];
+      const actionPlan = data.action_plan || [];
       return `
         <div class="panel span-12">
           <div class="summary-head">
@@ -4149,6 +4330,10 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="readable-list" style="margin-top:10px">
             ${nextSteps.length ? nextSteps.map((item, idx) => row(`下一步 ${idx + 1}`, textValue(item))).join("") : row("下一步", neutralPill("暂无"))}
+          </div>
+          <div style="margin-top:10px">
+            <h3 class="section-title">处理清单</h3>
+            ${actionPlanCards(actionPlan)}
           </div>
           <table class="table" style="margin-top:10px">
             <thead><tr><th>模块</th><th>级别</th><th>次数</th><th>原因</th><th>入口</th></tr></thead>
