@@ -111,6 +111,47 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('"status": "empty"', output.getvalue())
 
+    def test_stable_check_prints_summary_and_returns_ready_code(self) -> None:
+        snapshot = {
+            "generated_at": "2026-07-04 08:00:00",
+            "git": {"version": "v1.36.0", "branch": "main", "commit": "abc123"},
+            "stability": {
+                "status": "ready",
+                "label": "达到稳定版标准",
+                "summary": "核心服务正常",
+                "checks": [{"label": "后台服务", "status": "ok", "detail": "全部运行中"}],
+            },
+            "recommendations": ["当前快照没有发现明显异常。"],
+        }
+
+        with patch("paopao_radar.web.ops_snapshot_payload", return_value=snapshot):
+            with redirect_stdout(StringIO()) as output:
+                code = main.main(["stable-check"])
+
+        self.assertEqual(code, 0)
+        text = output.getvalue()
+        self.assertIn("泡泡雷达稳定版自检", text)
+        self.assertIn("达到稳定版标准", text)
+        self.assertIn("后台服务: 通过", text)
+
+    def test_stable_check_json_outputs_snapshot_and_blocked_code(self) -> None:
+        snapshot = {
+            "ok": True,
+            "stability": {
+                "status": "blocked",
+                "label": "未达稳定版标准",
+                "summary": "1 个阻断项",
+                "checks": [],
+            },
+        }
+
+        with patch("paopao_radar.web.ops_snapshot_payload", return_value=snapshot):
+            with redirect_stdout(StringIO()) as output:
+                code = main.main(["stable-check", "--json"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(__import__("json").loads(output.getvalue())["stability"]["status"], "blocked")
+
     def test_write_runtime_status_persists_payload(self) -> None:
         with TemporaryDirectory() as tmp:
             settings, store, _engine, _gateway = self.make_runtime(tmp)

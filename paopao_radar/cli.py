@@ -134,8 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
@@ -163,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST")
     parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
     parser.add_argument("--web-token", default="", help="web 控制台访问令牌；也可用 WEB_ADMIN_TOKEN")
+    parser.add_argument("--json", action="store_true", help="用于 stable-check：输出完整 JSON 快照")
     return parser
 
 
@@ -332,6 +333,59 @@ def print_doctor(settings: Settings, store: JsonStore) -> None:
         "auto_cleanup": "enabled" if settings.cleanup_enable else "disabled",
     }
     print(json.dumps(status, ensure_ascii=False, indent=2))
+
+
+def _stable_check_status_label(status: str) -> str:
+    return {
+        "ready": "达到稳定版标准",
+        "attention": "基本可运行，建议关注",
+        "blocked": "未达稳定版标准",
+        "ok": "通过",
+        "warn": "关注",
+        "fail": "未达标",
+    }.get(str(status or ""), str(status or "未知"))
+
+
+def print_stable_check(as_json: bool = False) -> int:
+    from .web import ops_snapshot_payload
+
+    snapshot = ops_snapshot_payload()
+    stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    if as_json:
+        print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+    else:
+        git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
+        print("泡泡雷达稳定版自检")
+        print(f"生成时间: {snapshot.get('generated_at', '')}")
+        print(f"版本: {git.get('version', '')} {git.get('branch', '')} {git.get('commit', '')}".strip())
+        print(f"状态: {_stable_check_status_label(str(stability.get('status') or ''))}")
+        print(f"摘要: {stability.get('summary') or ''}")
+        print("")
+        print("检查项:")
+        checks = stability.get("checks", []) if isinstance(stability.get("checks"), list) else []
+        if not checks:
+            print("- 暂无自检结果")
+        for item in checks:
+            if not isinstance(item, dict):
+                continue
+            line = f"- {item.get('label', '')}: {_stable_check_status_label(str(item.get('status') or ''))} - {item.get('detail', '')}"
+            action = str(item.get("action") or "")
+            if action:
+                line += f" | 建议: {action}"
+            print(line)
+        print("")
+        print("建议动作:")
+        recommendations = snapshot.get("recommendations", []) if isinstance(snapshot.get("recommendations"), list) else []
+        if not recommendations:
+            print("- 暂无")
+        for item in recommendations:
+            print(f"- {item}")
+    status = str(stability.get("status") or "")
+    if status == "blocked":
+        return 2
+    if status == "attention":
+        return 1
+    return 0
 
 
 def run_telegram_test(args: argparse.Namespace) -> int:
@@ -1495,6 +1549,8 @@ def main(argv: list[str] | None = None) -> int:
         from .ai_assistant import run_ai_assistant_service
 
         return run_ai_assistant_service()
+    if args.command == "stable-check":
+        return print_stable_check(as_json=args.json)
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":

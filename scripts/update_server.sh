@@ -32,6 +32,7 @@ usage() {
   bash scripts/update_server.sh          # 检查 GitHub 最新版本，有更新时询问是否更新
   bash scripts/update_server.sh --yes    # 有更新时自动确认更新
   bash scripts/update_server.sh --check  # 只检查版本，不更新
+  更新或确认已是最新版后，会自动执行 stable-check 输出稳定版自检摘要
 
 环境变量:
   BRANCH=main
@@ -155,6 +156,32 @@ run_post_update_cleanup() {
     printf '\n[paopao-update] cleanup runtime artifacts\n'
     "$PYTHON_BIN" main.py cleanup --force-cleanup || true
   fi
+}
+
+run_post_update_stable_check() {
+  if [ ! -f "${APP_DIR}/main.py" ]; then
+    return 0
+  fi
+  printf '\n[paopao-update] stable check\n'
+  set +e
+  "$PYTHON_BIN" main.py stable-check
+  local check_status=$?
+  set -e
+  case "$check_status" in
+    0)
+      printf '[paopao-update] 稳定版自检通过。\n'
+      ;;
+    1)
+      printf '[paopao-update] 稳定版自检有警告。可打开 Web 控制台 -> 诊断报告查看详情。\n'
+      ;;
+    2)
+      printf '[paopao-update] 稳定版自检未达标。请打开 Web 控制台 -> 诊断报告按建议处理。\n'
+      ;;
+    *)
+      printf '[paopao-update] 稳定版自检执行异常，退出码: %s\n' "$check_status"
+      ;;
+  esac
+  return 0
 }
 
 install_or_update_structure_service() {
@@ -361,6 +388,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     install_or_update_web_service
     install_or_update_ai_service
     restart_services_if_present
+    run_post_update_stable_check
   fi
   printf '\n当前已经是最新版本，不需要更新。\n'
   exit 0
@@ -406,6 +434,7 @@ install_or_update_cleanup_timer
 install_or_update_web_service
 install_or_update_ai_service
 restart_services_if_present
+run_post_update_stable_check
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
 printf '[paopao-update] Web 控制台: http://服务器IP:8080/，访问令牌: 输入 paopao 后选择 1\n'
