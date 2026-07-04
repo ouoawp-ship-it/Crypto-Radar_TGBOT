@@ -394,6 +394,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("issues", payload)
         self.assertIn("stability", payload)
         self.assertIn("stability_history", payload)
+        self.assertIn("problem_center", payload)
         self.assertIn("recommendations", payload)
         self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
@@ -493,6 +494,47 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
         self.assertEqual(payload["latest"]["commit"], "ccc333")
         self.assertEqual(payload["count"], 2)
+
+    def test_problem_center_reports_ok_when_snapshot_is_clean(self) -> None:
+        snapshot = {
+            "health": [{"label": "主服务", "status": "ok"}],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {"ai": {"error_count": 0, "transient_count": 2}},
+            "issues": [],
+            "stability": {"status": "ready", "fail_count": 0, "warn_count": 0},
+        }
+
+        center = web.build_problem_center(snapshot)
+
+        self.assertEqual(center["status"], "ok")
+        self.assertEqual(center["label"], "当前健康")
+        self.assertEqual(center["counts"]["transient_timeouts"], 2)
+        self.assertEqual(center["modules"], [])
+        self.assertIn("暂无需要立即处理", "\n".join(center["next_steps"]))
+
+    def test_problem_center_blocks_on_critical_issues_and_summarizes_modules(self) -> None:
+        snapshot = {
+            "health": [{"label": "主服务", "status": "bad"}],
+            "recent_errors": [{"source": "主服务", "level": "异常", "message": "boom"}],
+            "audit": {"failed_recent": [{"action": "保存配置"}]},
+            "log_errors": {"main": {"error_count": 12, "transient_count": 0}},
+            "issues": [
+                {"severity": "critical", "module": "主服务", "title": "主服务异常", "count": 1, "target": "main"},
+                {"severity": "warning", "module": "Web 后台操作", "title": "保存失败", "count": 2, "target": "audit"},
+            ],
+            "stability": {"status": "blocked", "fail_count": 2, "warn_count": 1},
+        }
+
+        center = web.build_problem_center(snapshot)
+
+        self.assertEqual(center["status"], "blocked")
+        self.assertEqual(center["counts"]["critical"], 1)
+        self.assertEqual(center["counts"]["warning"], 1)
+        self.assertEqual(center["counts"]["log_errors"], 12)
+        self.assertEqual(center["counts"]["failed_audit"], 1)
+        self.assertEqual(center["modules"][0]["module"], "主服务")
+        self.assertTrue(any("严重问题" in item for item in center["next_steps"]))
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
@@ -846,6 +888,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("document.execCommand(\"copy\")", html)
         self.assertIn("reportCopyStatus", html)
         self.assertIn("问题中心", html)
+        self.assertIn("问题中心总览", html)
+        self.assertIn("problemCenterPanel", html)
+        self.assertIn("problemCenterStatusPill", html)
         self.assertIn("issueCards", html)
         self.assertIn("issueSeverityPill", html)
         self.assertIn("查看失败审计", html)

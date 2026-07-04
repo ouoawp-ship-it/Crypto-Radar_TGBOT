@@ -1643,6 +1643,111 @@ def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(issues, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count", 1) or 1), str(item.get("module") or "")))[:20]
 
 
+def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
+    issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
+    stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    health = snapshot.get("health", []) if isinstance(snapshot.get("health"), list) else []
+    recent_errors = snapshot.get("recent_errors", []) if isinstance(snapshot.get("recent_errors"), list) else []
+    audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
+    failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
+    logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+
+    critical_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "critical")
+    warning_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "warning")
+    notice_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "notice")
+    bad_health_count = sum(1 for item in health if isinstance(item, dict) and item.get("status") == "bad")
+    warn_health_count = sum(1 for item in health if isinstance(item, dict) and item.get("status") == "warn")
+    log_error_total = sum(
+        int(item.get("error_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    transient_total = sum(
+        int(item.get("transient_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    stability_status = str(stability.get("status") or "")
+
+    if critical_count or bad_health_count or stability_status == "blocked":
+        status = "blocked"
+        label = "需要优先处理"
+        summary = "存在阻断项或严重问题，建议先处理后再继续观察。"
+        primary_action = "先处理问题中心里的严重项；服务异常优先重启对应服务，配置缺失优先补齐配置。"
+    elif warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention":
+        status = "attention"
+        label = "需要关注"
+        summary = "系统可运行，但存在警告、错误日志或失败操作，建议确认是否影响实际推送。"
+        primary_action = "先看建议动作和相关日志；如果功能正常，可以继续观察并等待下一次 stable-check。"
+    else:
+        status = "ok"
+        label = "当前健康"
+        summary = "核心服务、配置、日志、审计和稳定版验收未发现需要优先处理的问题。"
+        primary_action = "继续正常运行；更新后可再次执行 stable-check 保存一条验收记录。"
+
+    module_counts: dict[str, dict[str, Any]] = {}
+    severity_rank = {"critical": 0, "warning": 1, "notice": 2}
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        module = str(item.get("module") or "未知模块")
+        severity = str(item.get("severity") or "notice")
+        count = int(item.get("count", 1) or 1)
+        existing = module_counts.setdefault(
+            module,
+            {
+                "module": module,
+                "severity": severity,
+                "count": 0,
+                "target": str(item.get("target") or ""),
+                "reason": str(item.get("title") or ""),
+            },
+        )
+        existing["count"] = int(existing.get("count", 0) or 0) + max(1, count)
+        if severity_rank.get(severity, 9) < severity_rank.get(str(existing.get("severity") or ""), 9):
+            existing["severity"] = severity
+            existing["target"] = str(item.get("target") or "")
+            existing["reason"] = str(item.get("title") or "")
+
+    next_steps: list[str] = []
+    if critical_count:
+        next_steps.append("先处理严重问题，严重项通常意味着服务异常、关键配置缺失或日志错误过多。")
+    if log_error_total:
+        next_steps.append("打开日志中心，选择对应模块并勾选“只看错误”，按最早错误时间排查。")
+    if failed_audit:
+        next_steps.append("打开审计记录，筛选失败操作，确认最近的配置保存或服务控制是否已经重试成功。")
+    if transient_total >= 10 and not log_error_total:
+        next_steps.append("Telegram/API 网络超时偏多但可自动重试；如果 Bot 明显不回复，再检查服务器网络。")
+    if not next_steps:
+        next_steps.append("暂无需要立即处理的动作。")
+
+    modules = sorted(
+        module_counts.values(),
+        key=lambda item: (severity_rank.get(str(item.get("severity") or ""), 9), -int(item.get("count", 0) or 0), str(item.get("module") or "")),
+    )[:8]
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "primary_action": primary_action,
+        "counts": {
+            "critical": critical_count,
+            "warning": warning_count,
+            "notice": notice_count,
+            "bad_health": bad_health_count,
+            "warn_health": warn_health_count,
+            "recent_errors": len(recent_errors),
+            "failed_audit": len(failed_audit),
+            "log_errors": log_error_total,
+            "transient_timeouts": transient_total,
+            "stability_fail": int(stability.get("fail_count", 0) or 0),
+            "stability_warn": int(stability.get("warn_count", 0) or 0),
+        },
+        "modules": modules,
+        "next_steps": next_steps,
+    }
+
+
 def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
@@ -1931,6 +2036,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     snapshot["issues"] = build_ops_issues(snapshot)
     snapshot["stability"] = build_stability_checks(snapshot)
     snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
+    snapshot["problem_center"] = build_problem_center(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -2093,6 +2199,18 @@ INDEX_HTML = r"""<!doctype html>
     .metric { display: grid; gap: 5px; min-height: 82px; }
     .metric .label { color: var(--muted); font-size: 12px; }
     .metric .value { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+    .mini-metrics { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; margin-top: 10px; }
+    .mini-metric {
+      display: grid;
+      gap: 4px;
+      padding: 10px;
+      border: 1px solid rgba(101, 113, 121, .16);
+      border-radius: 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,.55), rgba(239,244,247,.46));
+    }
+    .mini-metric .label { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .mini-metric .value { font-size: 15px; font-weight: 800; }
+    .mini-metric .muted { font-size: 12px; }
     .status {
       display: inline-flex;
       align-items: center;
@@ -2525,6 +2643,7 @@ INDEX_HTML = r"""<!doctype html>
       .config-category-summary { grid-template-columns: 1fr; }
       .config-module-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
+      .mini-metrics { grid-template-columns: 1fr; }
       .field-heading { grid-template-columns: 1fr; }
       .field-current { justify-self: start; text-align: left; }
       .page-intro { grid-template-columns: 1fr; }
@@ -3815,6 +3934,14 @@ INDEX_HTML = r"""<!doctype html>
       lines.push(`生成时间: ${data.generated_at || ""}`);
       lines.push(`版本: ${git.version || ""} ${git.branch || ""} ${git.commit || ""}`);
       lines.push("");
+      const problemCenter = data.problem_center || {};
+      const problemCounts = problemCenter.counts || {};
+      lines.push("问题中心总览:");
+      lines.push(`- 状态: ${problemCenter.label || ""} ${problemCenter.summary || ""}`);
+      lines.push(`- 主要动作: ${problemCenter.primary_action || ""}`);
+      lines.push(`- 统计: 严重 ${problemCounts.critical || 0} | 警告 ${problemCounts.warning || 0} | 日志错误 ${problemCounts.log_errors || 0} | 网络超时 ${problemCounts.transient_timeouts || 0} | 失败审计 ${problemCounts.failed_audit || 0}`);
+      ((problemCenter && problemCenter.next_steps) || []).forEach(item => lines.push(`- 下一步: ${item}`));
+      lines.push("");
       const stability = data.stability || {};
       lines.push("稳定版自检:");
       lines.push(`- 状态: ${stability.label || ""} ${stability.summary || ""}`);
@@ -3974,6 +4101,62 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `;
     }
+    function problemCenterStatusPill(status) {
+      const value = String(status || "");
+      if (value === "ok") return statusPill("当前健康", true);
+      if (value === "attention") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">需要关注</span>`;
+      if (value === "blocked") return statusPill("优先处理", false);
+      return neutralPill(value || "未知");
+    }
+    function problemModuleRows(modules) {
+      const rows = (modules || []).map(item => `
+        <tr>
+          <td>${escapeHtml(item.module || "")}</td>
+          <td>${issueSeverityPill(item.severity)}</td>
+          <td>${escapeHtml(String(item.count || 0))}</td>
+          <td>${escapeHtml(item.reason || "")}</td>
+          <td>${item.target ? issueActionButton(item) : `<button class="btn" type="button" onclick="switchView('logs')">打开日志中心</button>`}</td>
+        </tr>
+      `).join("");
+      return rows || tableEmpty(5, "暂无异常模块", "当前没有需要单独处理的模块。");
+    }
+    function problemCenterPanel(problemCenter) {
+      const data = problemCenter || {};
+      const counts = data.counts || {};
+      const modules = data.modules || [];
+      const nextSteps = data.next_steps || [];
+      return `
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">问题中心总览</h3>
+              <div class="summary-meta">${escapeHtml(data.summary || "聚合稳定版验收、健康检查、日志错误、网络超时和失败审计。")}</div>
+            </div>
+            <div class="issue-meta">
+              ${problemCenterStatusPill(data.status)}
+              ${Number(counts.critical || 0) ? statusPill(`${counts.critical} 严重`, false) : neutralPill("无严重")}
+              ${Number(counts.warning || 0) ? neutralPill(`${counts.warning} 警告`) : ""}
+              ${Number(counts.log_errors || 0) ? statusPill(`${counts.log_errors} 日志错误`, false) : ""}
+              ${Number(counts.transient_timeouts || 0) ? neutralPill(`${counts.transient_timeouts} 网络超时`) : ""}
+            </div>
+          </div>
+          <div class="hint" style="margin:10px 0">${escapeHtml(data.primary_action || "暂无需要立即处理的动作。")}</div>
+          <div class="mini-metrics">
+            <div class="mini-metric"><div class="label">健康异常</div><div class="value">${Number(counts.bad_health || 0) ? statusPill(`${counts.bad_health} 项`, false) : neutralPill("暂无")}</div><div class="muted">健康检查 bad</div></div>
+            <div class="mini-metric"><div class="label">最近错误</div><div class="value">${Number(counts.recent_errors || 0) ? statusPill(`${counts.recent_errors} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 记录</div></div>
+            <div class="mini-metric"><div class="label">失败审计</div><div class="value">${Number(counts.failed_audit || 0) ? statusPill(`${counts.failed_audit} 条`, false) : neutralPill("暂无")}</div><div class="muted">Web 操作失败</div></div>
+            <div class="mini-metric"><div class="label">验收门禁</div><div class="value">${Number(counts.stability_fail || 0) ? statusPill(`${counts.stability_fail} 阻断`, false) : (Number(counts.stability_warn || 0) ? neutralPill(`${counts.stability_warn} 警告`) : neutralPill("通过"))}</div><div class="muted">stable-check</div></div>
+          </div>
+          <div class="readable-list" style="margin-top:10px">
+            ${nextSteps.length ? nextSteps.map((item, idx) => row(`下一步 ${idx + 1}`, textValue(item))).join("") : row("下一步", neutralPill("暂无"))}
+          </div>
+          <table class="table" style="margin-top:10px">
+            <thead><tr><th>模块</th><th>级别</th><th>次数</th><th>原因</th><th>入口</th></tr></thead>
+            <tbody>${problemModuleRows(modules)}</tbody>
+          </table>
+        </div>
+      `;
+    }
     function issueCards(issues) {
       if (!issues.length) {
         return emptyState("当前没有明确问题", "健康检查、失败审计、日志错误和网络超时都没有达到需要优先处理的程度。");
@@ -4016,11 +4199,13 @@ INDEX_HTML = r"""<!doctype html>
       const issues = data.issues || [];
       const stability = data.stability || {};
       const stabilityHistory = data.stability_history || {};
+      const problemCenter = data.problem_center || {};
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
-        ${renderPageIntro("report", [data.generated_at || "", stability.label || "稳定版自检", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${renderPageIntro("report", [data.generated_at || "", problemCenter.label || stability.label || "稳定版自检", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${problemCenterPanel(problemCenter)}
         <div class="panel span-12">
           <div class="summary-head">
             <div>
