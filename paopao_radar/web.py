@@ -53,6 +53,14 @@ WEB_AUDIT_LOG_FILE = "web_audit_log.json"
 WEB_AUDIT_LIMIT = 1000
 PROBLEM_STATE_FILE = "problem_state.json"
 PROBLEM_STATE_LIMIT = 500
+RELEASE_CLOSURE_TARGET = "v1.50.0"
+RELEASE_CLOSURE_RULE = "进入 v1.50.0 收口路线后，不新增大模块，只做稳定性、验收、文档和已有功能修复。"
+RELEASE_CLOSURE_STAGES: tuple[dict[str, str], ...] = (
+    {"version": "v1.47.0", "label": "功能冻结和稳定性收口", "goal": "冻结新增大模块，集中处理现有诊断、Web、AI Bot、服务控制和测试缺口。"},
+    {"version": "v1.48.0", "label": "服务器部署验收闭环", "goal": "把更新、端口、服务、配置、回滚和 stable-check 做成可验收闭环。"},
+    {"version": "v1.49.0", "label": "文档说明和运维流程最终整理", "goal": "整理安装、更新、排错、Web 后台和 AI Bot 使用说明。"},
+    {"version": "v1.50.0", "label": "v1 完整稳定版发布", "goal": "完成最终自检、历史验收和稳定版发布，后续只做小修和策略优化。"},
+)
 
 
 @dataclass(frozen=True)
@@ -2350,11 +2358,92 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def version_tuple(value: str) -> tuple[int, int, int]:
+    text = str(value or "").strip()
+    match = SEMVER_VERSION_RE.match(text)
+    if not match:
+        return (0, 0, 0)
+    parts = re.findall(r"\d+", text, flags=0)[:3]
+    while len(parts) < 3:
+        parts.append("0")
+    return tuple(int(part) for part in parts)
+
+
+def release_closure_stage_index(version: str) -> int:
+    current = version_tuple(version)
+    selected = 0
+    for idx, item in enumerate(RELEASE_CLOSURE_STAGES):
+        if current >= version_tuple(item["version"]):
+            selected = idx
+    return selected
+
+
+def build_release_closure_plan(
+    *,
+    version: str,
+    readiness_status: str,
+    score: int,
+    fail_count: int,
+    warn_count: int,
+    checks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    current_index = release_closure_stage_index(version)
+    blocking = [item for item in checks if item.get("status") == "fail"]
+    warnings = [item for item in checks if item.get("status") == "warn"]
+
+    if readiness_status == "blocked":
+        current_stage_status = "blocked"
+        summary = "当前仍有阻断项，先完成 v1.47.0 稳定性收口。"
+    elif readiness_status == "candidate":
+        current_stage_status = "active"
+        summary = "当前可运行但仍有观察项，继续按处理清单收口。"
+    elif current_index >= len(RELEASE_CLOSURE_STAGES) - 1:
+        current_stage_status = "complete"
+        summary = "当前已经进入 v1.50.0 完整稳定版发布阶段。"
+    else:
+        current_stage_status = "ready_to_advance"
+        summary = "当前阶段门禁已满足，可以推进到下一阶段。"
+
+    stage_items: list[dict[str, Any]] = []
+    for idx, item in enumerate(RELEASE_CLOSURE_STAGES):
+        if idx < current_index:
+            stage_status = "done"
+        elif idx == current_index:
+            stage_status = current_stage_status
+        else:
+            stage_status = "pending"
+        stage_items.append({**item, "status": stage_status})
+
+    current_stage = stage_items[current_index] if stage_items else {}
+    next_stage = stage_items[current_index + 1] if current_index + 1 < len(stage_items) else None
+    return {
+        "target_version": RELEASE_CLOSURE_TARGET,
+        "mode": "功能冻结收口",
+        "rule": RELEASE_CLOSURE_RULE,
+        "current_stage": current_stage,
+        "next_stage": next_stage,
+        "stages": stage_items,
+        "status": current_stage_status,
+        "summary": summary,
+        "score": score,
+        "fail_count": fail_count,
+        "warn_count": warn_count,
+        "blocking": [{"key": item.get("key", ""), "label": item.get("label", ""), "detail": item.get("detail", "")} for item in blocking],
+        "warnings": [{"key": item.get("key", ""), "label": item.get("label", ""), "detail": item.get("detail", "")} for item in warnings],
+        "no_new_major_features": True,
+    }
+
+
 def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
     history = snapshot.get("stability_history", {}) if isinstance(snapshot.get("stability_history"), dict) else {}
+    git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
     counts = problem_center.get("counts", {}) if isinstance(problem_center.get("counts"), dict) else {}
+    problem_state = problem_center.get("problem_state", {}) if isinstance(problem_center.get("problem_state"), dict) else {}
+    problem_review = problem_state.get("review", {}) if isinstance(problem_state.get("review"), dict) else {}
+    problem_review_counts = problem_review.get("counts", {}) if isinstance(problem_review.get("counts"), dict) else {}
+    release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
     records = history.get("records", []) if isinstance(history.get("records"), list) else []
     latest = history.get("latest", {}) if isinstance(history.get("latest"), dict) else {}
 
@@ -2410,6 +2499,14 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
             str(problem_center.get("summary") or "问题中心存在优先处理项"),
             "优先处理问题中心里的严重项，再评估长期运行。",
         )
+
+    add(
+        "feature_freeze",
+        "功能冻结边界",
+        "ok",
+        "当前路线已固定为 v1.47.0-v1.50.0 收口，不新增大模块。",
+        "后续只处理已有功能修复、稳定性、部署验收和文档收口。",
+    )
 
     ready_records = [item for item in records if isinstance(item, dict) and item.get("status") == "ready"]
     latest_status = str(latest.get("status") or "")
@@ -2497,6 +2594,47 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     else:
         add("transient_timeouts", "网络重试噪声", "ok", "网络超时在可接受范围内。")
 
+    resolved_active = int(problem_review_counts.get("resolved_active", 0) or 0)
+    resolved_missing = int(problem_review_counts.get("resolved_missing", 0) or 0)
+    if resolved_active:
+        add(
+            "problem_state_review",
+            "问题状态复查",
+            "fail",
+            f"{resolved_active} 个已标记解决的问题仍然存在。",
+            "继续按处理清单排查，处理后再执行 stable-check。",
+        )
+    elif resolved_missing:
+        add(
+            "problem_state_review",
+            "问题状态复查",
+            "warn",
+            f"{resolved_missing} 个已标记解决的问题当前已消失，但还需要 stable-check 复查确认。",
+            "执行 stable-check 保存新的验收记录；确认稳定后可清除对应标记。",
+        )
+    else:
+        add("problem_state_review", "问题状态复查", "ok", "没有已解决但仍存在的问题。")
+
+    trend_status = str(release_trend.get("status") or "")
+    if trend_status == "regressed":
+        add(
+            "release_trend",
+            "长期运行趋势",
+            "fail",
+            str(release_trend.get("summary") or "长期运行就绪度发生回退。"),
+            "优先处理趋势回退原因，再推进完整稳定版。",
+        )
+    elif trend_status == "worse":
+        add(
+            "release_trend",
+            "长期运行趋势",
+            "warn",
+            str(release_trend.get("summary") or "长期运行就绪度变差。"),
+            "查看本次新增警告或阻断项，确认是否影响长期运行。",
+        )
+    elif trend_status:
+        add("release_trend", "长期运行趋势", "ok", str(release_trend.get("summary") or "长期运行趋势正常。"))
+
     fail_count = sum(1 for item in checks if item.get("status") == "fail")
     warn_count = sum(1 for item in checks if item.get("status") == "warn")
     ok_count = sum(1 for item in checks if item.get("status") == "ok")
@@ -2505,18 +2643,18 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     if fail_count:
         status = "blocked"
         label = "还不能作为完整稳定版"
-        summary = "存在阻断项，先处理服务、配置、日志或验收问题，再继续推进下一阶段。"
-        next_version_goal = "先把诊断报告清到无阻断，再重新执行 stable-check。"
+        summary = "存在阻断项，先处理服务、配置、日志、趋势或问题复查，再继续推进下一阶段。"
+        next_version_goal = "v1.47.0：先把诊断报告清到无阻断，再重新执行 stable-check。"
     elif warn_count:
         status = "candidate"
         label = "准稳定候选"
         summary = "核心服务可运行，但仍有观察项；适合继续跑一段时间并保存新的验收记录。"
-        next_version_goal = "连续两次验收达标且问题中心无警告后，再进入完整候选。"
+        next_version_goal = "v1.47.0：连续两次验收达标且问题中心无警告后，再进入部署验收阶段。"
     else:
         status = "complete_candidate"
         label = "完整稳定版候选"
         summary = "当前快照、问题中心、日志、审计和验收历史都达到长期运行候选标准。"
-        next_version_goal = "可以进入 v1 完整稳定收口或 v2.0 功能规划。"
+        next_version_goal = "v1.48.0：可以进入服务器部署验收闭环。"
 
     requirements = [
         "后台核心服务运行正常",
@@ -2524,7 +2662,16 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         "问题中心没有严重项和警告项",
         "近期没有真实日志错误和失败审计",
         "至少保留两次稳定版达标历史",
+        "没有仍存在的已解决问题，长期运行趋势没有回退",
     ]
+    closure_plan = build_release_closure_plan(
+        version=str(git.get("version") or ""),
+        readiness_status=status,
+        score=score,
+        fail_count=fail_count,
+        warn_count=warn_count,
+        checks=checks,
+    )
     return {
         "status": status,
         "label": label,
@@ -2536,6 +2683,7 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         "checks": checks,
         "requirements": requirements,
         "next_version_goal": next_version_goal,
+        "closure_plan": closure_plan,
     }
 
 
@@ -2629,6 +2777,8 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     release = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
+    closure = release.get("closure_plan", {}) if isinstance(release.get("closure_plan"), dict) else {}
+    closure_stage = closure.get("current_stage", {}) if isinstance(closure.get("current_stage"), dict) else {}
     problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
     problem_state = problem_center.get("problem_state", {}) if isinstance(problem_center.get("problem_state"), dict) else {}
     problem_review = problem_state.get("review", {}) if isinstance(problem_state.get("review"), dict) else {}
@@ -2665,6 +2815,11 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "release_ok_count": int(release.get("ok_count", 0) or 0),
         "release_warn_count": int(release.get("warn_count", 0) or 0),
         "release_fail_count": int(release.get("fail_count", 0) or 0),
+        "closure_target_version": closure.get("target_version", RELEASE_CLOSURE_TARGET),
+        "closure_mode": closure.get("mode", "功能冻结收口"),
+        "closure_current_stage": closure_stage.get("version", ""),
+        "closure_current_stage_label": closure_stage.get("label", ""),
+        "closure_stage_status": closure_stage.get("status", ""),
         "issue_count": len(issues),
         "log_error_count": log_error_total,
         "transient_count": transient_total,
@@ -4701,7 +4856,17 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("");
       const releaseReadiness = data.release_readiness || {};
       const releaseChecks = releaseReadiness.checks || [];
+      const closurePlan = releaseReadiness.closure_plan || {};
+      const closureStage = closurePlan.current_stage || {};
+      const nextClosureStage = closurePlan.next_stage || {};
       const releaseTrend = data.release_trend || {};
+      lines.push("v1.50.0 收口路线:");
+      lines.push(`- 模式: ${closurePlan.mode || ""}`);
+      lines.push(`- 规则: ${closurePlan.rule || ""}`);
+      lines.push(`- 当前阶段: ${closureStage.version || ""} ${closureStage.label || ""} (${closureStage.status || ""})`);
+      if (nextClosureStage.version) lines.push(`- 下一阶段: ${nextClosureStage.version || ""} ${nextClosureStage.label || ""}`);
+      lines.push(`- 阻断/警告: 阻断 ${closurePlan.fail_count || 0} | 警告 ${closurePlan.warn_count || 0}`);
+      lines.push("");
       lines.push("长期运行就绪度:");
       lines.push(`- 状态: ${releaseReadiness.label || ""} ${releaseReadiness.summary || ""}`);
       lines.push(`- 评分: ${releaseReadiness.score ?? ""}`);
@@ -4737,8 +4902,8 @@ INDEX_HTML = r"""<!doctype html>
       ((stability && stability.checks) || []).forEach(item => lines.push(`- ${item.label || ""}: ${item.status || ""} ${item.detail || ""}${item.action ? ` | 建议: ${item.action}` : ""}`));
       const stabilityHistory = data.stability_history || {};
       const latestStable = stabilityHistory.latest || null;
-      if (latestStable) lines.push(`- 最近保存: ${latestStable.ts || ""} ${latestStable.label || ""} ${latestStable.version || ""} ${latestStable.commit || ""}`);
-      ((stabilityHistory && stabilityHistory.records) || []).slice(0, 5).forEach(item => lines.push(`- 历史: ${item.ts || ""} ${item.label || ""} ${item.version || ""} ${item.commit || ""}`));
+      if (latestStable) lines.push(`- 最近保存: ${latestStable.ts || ""} ${latestStable.label || ""} ${latestStable.version || ""} ${latestStable.commit || ""} ${latestStable.closure_current_stage ? `| 收口阶段 ${latestStable.closure_current_stage}` : ""}`);
+      ((stabilityHistory && stabilityHistory.records) || []).slice(0, 5).forEach(item => lines.push(`- 历史: ${item.ts || ""} ${item.label || ""} ${item.version || ""} ${item.commit || ""}${item.closure_current_stage ? ` | 收口阶段 ${item.closure_current_stage}` : ""}`));
       lines.push("");
       lines.push("问题中心:");
       const issues = data.issues || [];
@@ -4851,6 +5016,25 @@ INDEX_HTML = r"""<!doctype html>
       if (value === "blocked") return statusPill("需要处理", false);
       return neutralPill(value || "未知");
     }
+    function closureStageStatusPill(status) {
+      const value = String(status || "");
+      if (value === "done" || value === "complete" || value === "ready_to_advance") return statusPill(value === "ready_to_advance" ? "可进入下一阶段" : "完成", true);
+      if (value === "active") return neutralPill("收口中");
+      if (value === "blocked") return statusPill("有阻断", false);
+      return neutralPill("未开始");
+    }
+    function closurePlanRows(stages) {
+      const items = stages || [];
+      if (!items.length) return tableEmpty(4, "暂无收口路线", "刷新诊断报告后会生成 v1.50.0 收口阶段。");
+      return items.map(item => `
+        <tr>
+          <td><strong>${escapeHtml(item.version || "")}</strong></td>
+          <td>${escapeHtml(item.label || "")}</td>
+          <td>${closureStageStatusPill(item.status)}</td>
+          <td>${escapeHtml(item.goal || "")}</td>
+        </tr>
+      `).join("");
+    }
     function releaseTrendStatusPill(status) {
       const value = String(status || "");
       if (value === "improved") return statusPill("趋势变好", true);
@@ -4892,6 +5076,9 @@ INDEX_HTML = r"""<!doctype html>
       const data = readiness || {};
       const checks = data.checks || [];
       const requirements = data.requirements || [];
+      const closurePlan = data.closure_plan || {};
+      const closureStage = closurePlan.current_stage || {};
+      const nextClosureStage = closurePlan.next_stage || {};
       const score = Number(data.score || 0);
       const checkRows = checks.length ? checks.map(item => `
         <tr>
@@ -4920,11 +5107,19 @@ INDEX_HTML = r"""<!doctype html>
             <div class="mini-metric"><div class="label">通过项</div><div class="value">${neutralPill(String(data.ok_count || 0))}</div><div class="muted">当前满足的门槛</div></div>
             <div class="mini-metric"><div class="label">警告项</div><div class="value">${Number(data.warn_count || 0) ? neutralPill(String(data.warn_count)) : neutralPill("0")}</div><div class="muted">不一定阻断，但建议确认</div></div>
             <div class="mini-metric"><div class="label">阻断项</div><div class="value">${Number(data.fail_count || 0) ? statusPill(String(data.fail_count), false) : neutralPill("0")}</div><div class="muted">需要先处理</div></div>
+            <div class="mini-metric"><div class="label">收口阶段</div><div class="value">${closureStageStatusPill(closureStage.status)}</div><div class="muted">${escapeHtml(`${closureStage.version || ""} ${closureStage.label || ""}`.trim() || "未生成")}</div></div>
           </div>
           <div class="readable-list" style="margin-top:10px">
+            ${row("v1.50.0 目标", textValue(`${closurePlan.mode || "功能冻结收口"}：${closurePlan.summary || "按 v1.47.0-v1.50.0 路线推进完整稳定版。"}`))}
+            ${row("收口规则", textValue(closurePlan.rule || "不新增大模块，只做稳定性、验收、文档和已有功能修复。"))}
+            ${row("下一收口阶段", textValue(nextClosureStage.version ? `${nextClosureStage.version} ${nextClosureStage.label}` : "当前已经是最后阶段"))}
             ${row("下一版本目标", textValue(data.next_version_goal || "暂无"))}
             ${row("完整候选门槛", textValue(requirements.join("；") || "暂无"))}
           </div>
+          <table class="table" style="margin-top:10px">
+            <thead><tr><th>版本</th><th>阶段</th><th>状态</th><th>目标</th></tr></thead>
+            <tbody>${closurePlanRows(closurePlan.stages || [])}</tbody>
+          </table>
           <table class="table" style="margin-top:10px">
             <thead><tr><th>检查项</th><th>状态</th><th>当前情况</th><th>建议动作</th></tr></thead>
             <tbody>${checkRows}</tbody>
@@ -4961,10 +5156,11 @@ INDEX_HTML = r"""<!doctype html>
           <td>${item.release_status && item.release_status !== "unknown" ? releaseReadinessStatusPill(item.release_status) : neutralPill("未记录")}</td>
           <td>${item.release_score === null || item.release_score === undefined ? escapeHtml("未记录") : escapeHtml(`${item.release_score}/100`)}</td>
           <td>${escapeHtml(item.version || "")} ${escapeHtml(item.commit || "")}</td>
+          <td>${item.closure_current_stage ? `${neutralPill(item.closure_current_stage)} ${closureStageStatusPill(item.closure_stage_status)}` : neutralPill("未记录")}</td>
           <td>${Number(item.problem_resolved_active || 0) ? statusPill(`${item.problem_resolved_active} 仍存在`, false) : (Number(item.problem_resolved_missing || 0) ? statusPill(`${item.problem_resolved_missing} 待复查`, true) : neutralPill(item.problem_review_status && item.problem_review_status !== "empty" ? "已记录" : "暂无"))}</td>
           <td>${escapeHtml(item.summary || "")}</td>
         </tr>
-      `).join("") : tableEmpty(7, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
+      `).join("") : tableEmpty(8, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
       return `
         <div class="panel span-12">
           <div class="summary-head">
@@ -4975,7 +5171,7 @@ INDEX_HTML = r"""<!doctype html>
             ${neutralPill(`${Number((history && history.count) || 0)} 条`)}
           </div>
           <table class="table">
-            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>处理复查</th><th>摘要</th></tr></thead>
+            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>收口阶段</th><th>处理复查</th><th>摘要</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>

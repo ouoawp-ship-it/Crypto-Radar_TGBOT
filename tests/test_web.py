@@ -549,6 +549,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(any(item["key"] == "release-trend" for item in latest["problem_center"]["action_plan"]))
         self.assertEqual(latest["stability_history"]["records"][0]["release_status"], "blocked")
         self.assertIsInstance(latest["stability_history"]["records"][0]["release_score"], int)
+        self.assertEqual(latest["stability_history"]["records"][0]["closure_target_version"], "v1.50.0")
+        self.assertEqual(latest["stability_history"]["records"][0]["closure_current_stage"], "v1.47.0")
         self.assertEqual(latest["stability_history"]["records"][0]["problem_resolved_active"], 1)
         self.assertEqual(latest["stability_history"]["records"][0]["problem_review_status"], "attention")
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
@@ -739,6 +741,10 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(readiness["score"], 100)
         self.assertEqual(readiness["fail_count"], 0)
         self.assertEqual(readiness["warn_count"], 0)
+        self.assertEqual(readiness["closure_plan"]["target_version"], "v1.50.0")
+        self.assertTrue(readiness["closure_plan"]["no_new_major_features"])
+        self.assertEqual(readiness["closure_plan"]["current_stage"]["version"], "v1.47.0")
+        self.assertEqual(readiness["closure_plan"]["current_stage"]["status"], "ready_to_advance")
         self.assertTrue(any(item["key"] == "stability_history" and item["status"] == "ok" for item in readiness["checks"]))
 
     def test_release_readiness_candidate_when_history_is_not_enough(self) -> None:
@@ -782,6 +788,35 @@ class WebConsoleTests(unittest.TestCase):
         self.assertGreater(readiness["fail_count"], 0)
         self.assertLess(readiness["score"], 80)
         self.assertTrue(any(item["key"] == "log_errors" and item["status"] == "fail" for item in readiness["checks"]))
+
+    def test_release_readiness_blocks_when_resolved_problem_is_still_active(self) -> None:
+        snapshot = {
+            "git": {"version": "v1.47.0"},
+            "stability": {"status": "ready", "summary": "ok"},
+            "problem_center": {
+                "status": "ok",
+                "summary": "ok",
+                "counts": {"log_errors": 0, "failed_audit": 0, "transient_timeouts": 0},
+                "problem_state": {
+                    "review": {
+                        "status": "attention",
+                        "summary": "1 个已标记解决的问题仍然存在。",
+                        "counts": {"resolved_active": 1, "resolved_missing": 0},
+                    }
+                },
+            },
+            "stability_history": {
+                "latest": {"status": "ready"},
+                "records": [{"status": "ready"}, {"status": "ready"}],
+            },
+            "release_trend": {"status": "stable", "summary": "趋势持平"},
+        }
+
+        readiness = web.build_release_readiness(snapshot)
+
+        self.assertEqual(readiness["status"], "blocked")
+        self.assertEqual(readiness["closure_plan"]["current_stage"]["status"], "blocked")
+        self.assertTrue(any(item["key"] == "problem_state_review" and item["status"] == "fail" for item in readiness["checks"]))
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
@@ -1217,6 +1252,12 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("长期运行就绪度", html)
         self.assertIn("releaseReadinessPanel", html)
         self.assertIn("releaseReadinessStatusPill", html)
+        self.assertIn("v1.50.0 收口路线", html)
+        self.assertIn("功能冻结收口", html)
+        self.assertIn("不新增大模块", html)
+        self.assertIn("收口阶段", html)
+        self.assertIn("closurePlanRows", html)
+        self.assertIn("closure_current_stage", html)
         self.assertIn("完整稳定版候选", html)
         self.assertIn("下一版本目标", html)
         self.assertIn("长期就绪度", html)
