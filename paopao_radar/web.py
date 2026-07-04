@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -50,6 +51,8 @@ AI_CONFIG_KEYS = {
 } | SIGNAL_EVENT_CONFIG_KEYS
 WEB_AUDIT_LOG_FILE = "web_audit_log.json"
 WEB_AUDIT_LIMIT = 1000
+PROBLEM_STATE_FILE = "problem_state.json"
+PROBLEM_STATE_LIMIT = 500
 
 
 @dataclass(frozen=True)
@@ -606,6 +609,10 @@ def audit_request_summary(path: str, data: dict[str, Any]) -> dict[str, Any]:
         action = str(data.get("action") or "save").strip().lower()
         mode = str(data.get("mode") or "")
         return {"action": "管理 AI 提示词", "target": mode or action, "details": {"action": action, "mode": mode}}
+    if path == "/api/problem-state":
+        status = str(data.get("status") or "").strip()
+        fingerprint = str(data.get("fingerprint") or "").strip()
+        return {"action": "标记诊断问题状态", "target": fingerprint, "details": {"status": status, "fingerprint": fingerprint}}
     return {"action": "Web 操作", "target": path, "details": {}}
 
 
@@ -681,6 +688,154 @@ def web_audit_payload(
         "records": limited,
         "message": "已读取 Web 操作审计记录",
     }
+
+
+def problem_state_path(data_dir: Path | None = None) -> Path:
+    base_dir = data_dir or Settings.load().data_dir
+    return base_dir / PROBLEM_STATE_FILE
+
+
+def problem_state_status_label(status: str) -> str:
+    value = str(status or "open")
+    if value == "acknowledged":
+        return "已确认"
+    if value == "resolved":
+        return "已解决观察中"
+    return "未确认"
+
+
+def problem_fingerprint(*parts: Any) -> str:
+    text = "|".join(str(part or "").strip().lower() for part in parts)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def load_problem_state(data_dir: Path | None = None) -> dict[str, Any]:
+    store = JsonStore((data_dir or Settings.load().data_dir))
+    path = problem_state_path(data_dir)
+    payload = store.load(path, {"records": []})
+    records = payload.get("records", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+    clean_records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in records if isinstance(records, list) else []:
+        if not isinstance(item, dict):
+            continue
+        fingerprint = str(item.get("fingerprint") or "").strip()
+        if not fingerprint or fingerprint in seen:
+            continue
+        status = str(item.get("status") or "open")
+        if status not in {"acknowledged", "resolved"}:
+            continue
+        seen.add(fingerprint)
+        clean_records.append(
+            {
+                "fingerprint": fingerprint,
+                "status": status,
+                "label": problem_state_status_label(status),
+                "title": str(item.get("title") or "")[:160],
+                "key": str(item.get("key") or "")[:80],
+                "target": str(item.get("target") or "")[:80],
+                "note": str(item.get("note") or "")[:240],
+                "updated_at": str(item.get("updated_at") or ""),
+            }
+        )
+    return {
+        "ok": True,
+        "path": str(path),
+        "records": clean_records[:PROBLEM_STATE_LIMIT],
+        "total": len(clean_records),
+    }
+
+
+def problem_state_payload(*, data_dir: Path | None = None, limit: int = 100) -> dict[str, Any]:
+    payload = load_problem_state(data_dir)
+    records = payload.get("records", []) if isinstance(payload.get("records"), list) else []
+    return {
+        **payload,
+        "records": records[: max(1, min(int(limit or 100), PROBLEM_STATE_LIMIT))],
+        "message": "已读取问题处理状态",
+    }
+
+
+def save_problem_state_records(records: list[dict[str, Any]], data_dir: Path | None = None) -> None:
+    store = JsonStore((data_dir or Settings.load().data_dir))
+    path = problem_state_path(data_dir)
+    store.save(
+        path,
+        {
+            "updated_at": now_text(),
+            "records": records[:PROBLEM_STATE_LIMIT],
+        },
+    )
+
+
+def update_problem_state_payload(data: dict[str, Any], *, data_dir: Path | None = None) -> dict[str, Any]:
+    fingerprint = str(data.get("fingerprint") or "").strip()
+    if not fingerprint:
+        return {"ok": False, "error": "缺少问题编号", "message": "缺少问题编号"}
+    status = str(data.get("status") or "acknowledged").strip().lower()
+    if status not in {"acknowledged", "resolved", "open", "clear"}:
+        return {"ok": False, "error": "不支持的问题状态", "message": "不支持的问题状态"}
+    state = load_problem_state(data_dir)
+    records = state.get("records", []) if isinstance(state.get("records"), list) else []
+    kept = [item for item in records if isinstance(item, dict) and item.get("fingerprint") != fingerprint]
+    if status in {"open", "clear"}:
+        save_problem_state_records(kept, data_dir)
+        return {
+            "ok": True,
+            "fingerprint": fingerprint,
+            "status": "open",
+            "label": problem_state_status_label("open"),
+            "message": "已清除这个问题的处理标记",
+        }
+    record = {
+        "fingerprint": fingerprint,
+        "status": status,
+        "label": problem_state_status_label(status),
+        "title": redact_sensitive_text(str(data.get("title") or ""))[:160],
+        "key": str(data.get("key") or "")[:80],
+        "target": str(data.get("target") or "")[:80],
+        "note": redact_sensitive_text(str(data.get("note") or ""))[:240],
+        "updated_at": now_text(),
+    }
+    save_problem_state_records([record, *kept], data_dir)
+    return {
+        "ok": True,
+        **record,
+        "message": f"已标记为：{record['label']}",
+    }
+
+
+def enrich_problem_action_plan(action_plan: list[dict[str, Any]], problem_state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    records = problem_state.get("records", []) if isinstance(problem_state, dict) and isinstance(problem_state.get("records"), list) else []
+    state_by_fingerprint = {
+        str(item.get("fingerprint")): item
+        for item in records
+        if isinstance(item, dict) and item.get("fingerprint")
+    }
+    enriched: list[dict[str, Any]] = []
+    for action in action_plan:
+        item = dict(action)
+        fingerprint = problem_fingerprint(
+            item.get("key"),
+            item.get("severity"),
+            item.get("target"),
+            item.get("log_target"),
+            item.get("action_id"),
+            item.get("title"),
+        )
+        state = state_by_fingerprint.get(fingerprint, {})
+        state_status = str(state.get("status") or "open") if isinstance(state, dict) else "open"
+        item.update(
+            {
+                "fingerprint": fingerprint,
+                "state_status": state_status,
+                "state_label": problem_state_status_label(state_status),
+                "state_updated_at": str(state.get("updated_at") or "") if isinstance(state, dict) else "",
+                "state_note": str(state.get("note") or "") if isinstance(state, dict) else "",
+            }
+        )
+        enriched.append(item)
+    return enriched
 
 
 def structure_review_recommendations_payload(path: Path | None = None) -> dict[str, Any]:
@@ -1671,7 +1826,7 @@ def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(issues, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count", 1) or 1), str(item.get("module") or "")))[:20]
 
 
-def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
+def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any] | None = None) -> dict[str, Any]:
     issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     health = snapshot.get("health", []) if isinstance(snapshot.get("health"), list) else []
@@ -1897,6 +2052,13 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
             action_id="stable-check",
         )
 
+    action_plan = enrich_problem_action_plan(action_plan, problem_state)
+    actionable_items = [item for item in action_plan if item.get("key") != "observe"]
+    acknowledged_count = sum(1 for item in actionable_items if item.get("state_status") == "acknowledged")
+    resolved_count = sum(1 for item in actionable_items if item.get("state_status") == "resolved")
+    open_count = sum(1 for item in actionable_items if item.get("state_status") == "open")
+    state_records = problem_state.get("records", []) if isinstance(problem_state, dict) and isinstance(problem_state.get("records"), list) else []
+
     modules = sorted(
         module_counts.values(),
         key=lambda item: (severity_rank.get(str(item.get("severity") or ""), 9), -int(item.get("count", 0) or 0), str(item.get("module") or "")),
@@ -1920,10 +2082,17 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
             "stability_warn": int(stability.get("warn_count", 0) or 0),
             "release_trend_regressed": 1 if trend_regressed else 0,
             "release_trend_worse": 1 if trend_worse else 0,
+            "action_open": open_count,
+            "action_acknowledged": acknowledged_count,
+            "action_resolved": resolved_count,
         },
         "modules": modules,
         "next_steps": next_steps,
         "action_plan": action_plan,
+        "problem_state": {
+            "records": state_records[:8],
+            "total": int(problem_state.get("total", len(state_records)) if isinstance(problem_state, dict) else len(state_records)),
+        },
     }
 
 
@@ -2448,7 +2617,7 @@ def save_stability_snapshot(
         "count": len(trimmed),
     }
     snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
-    snapshot["problem_center"] = build_problem_center(snapshot)
+    snapshot["problem_center"] = build_problem_center(snapshot, load_problem_state(base_dir))
     snapshot["release_readiness"] = build_release_readiness(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2488,6 +2657,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     settings = Settings.load()
     audit_all = web_audit_payload(limit=10, result="all")
     audit_failed = web_audit_payload(limit=10, result="failed")
+    problem_state = load_problem_state(settings.data_dir)
     log_errors = {
         target: log_error_excerpt(target, lines=300, limit=20)
         for target in ("main", "structure", "web", "ai")
@@ -2514,7 +2684,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     snapshot["issues"] = build_ops_issues(snapshot)
     snapshot["stability"] = build_stability_checks(snapshot)
-    snapshot["problem_center"] = build_problem_center(snapshot)
+    snapshot["problem_center"] = build_problem_center(snapshot, problem_state)
     snapshot["release_readiness"] = build_release_readiness(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
@@ -4444,12 +4614,12 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("问题中心总览:");
       lines.push(`- 状态: ${problemCenter.label || ""} ${problemCenter.summary || ""}`);
       lines.push(`- 主要动作: ${problemCenter.primary_action || ""}`);
-      lines.push(`- 统计: 严重 ${problemCounts.critical || 0} | 警告 ${problemCounts.warning || 0} | 日志错误 ${problemCounts.log_errors || 0} | 网络超时 ${problemCounts.transient_timeouts || 0} | 失败审计 ${problemCounts.failed_audit || 0}`);
+      lines.push(`- 统计: 严重 ${problemCounts.critical || 0} | 警告 ${problemCounts.warning || 0} | 日志错误 ${problemCounts.log_errors || 0} | 网络超时 ${problemCounts.transient_timeouts || 0} | 失败审计 ${problemCounts.failed_audit || 0} | 待确认 ${problemCounts.action_open || 0} | 已确认 ${problemCounts.action_acknowledged || 0} | 观察中 ${problemCounts.action_resolved || 0}`);
       ((problemCenter && problemCenter.next_steps) || []).forEach(item => lines.push(`- 下一步: ${item}`));
       const actionPlan = problemCenter.action_plan || [];
       if (actionPlan.length) {
         lines.push("处理清单:");
-        actionPlan.forEach((item, idx) => lines.push(`- ${idx + 1}. ${item.title || ""}: ${item.detail || ""} | 入口: ${item.button || ""}`));
+        actionPlan.forEach((item, idx) => lines.push(`- ${idx + 1}. ${item.title || ""}: ${item.detail || ""} | 状态: ${item.state_label || ""} | 编号: ${item.fingerprint || ""} | 入口: ${item.button || ""}`));
       }
       lines.push("");
       const stability = data.stability || {};
@@ -4732,6 +4902,41 @@ INDEX_HTML = r"""<!doctype html>
       }
       return `<button class="btn" type="button" onclick="switchView('report')">留在诊断报告</button>`;
     }
+    function problemStateStatusPill(status) {
+      const value = String(status || "open");
+      if (value === "acknowledged") return neutralPill("已确认");
+      if (value === "resolved") return statusPill("观察中", true);
+      return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">未确认</span>`;
+    }
+    function problemStateControls(action) {
+      if (!action || action.key === "observe" || !action.fingerprint) return "";
+      const base = {
+        fingerprint: action.fingerprint,
+        title: action.title || "",
+        key: action.key || "",
+        target: action.target || ""
+      };
+      const ackArg = escapeHtml(JSON.stringify({ ...base, status: "acknowledged", note: "Web 诊断报告手动确认" }));
+      const resolvedArg = escapeHtml(JSON.stringify({ ...base, status: "resolved", note: "已处理，等待下一次 stable-check 验证" }));
+      const clearArg = escapeHtml(JSON.stringify({ ...base, status: "clear", note: "" }));
+      return `<div class="toolbar" style="margin:8px 0 0">
+        <button class="btn" type="button" onclick="markProblemState(${ackArg})">标记已确认</button>
+        <button class="btn primary" type="button" onclick="markProblemState(${resolvedArg})">标记已解决观察中</button>
+        ${action.state_status !== "open" ? `<button class="btn" type="button" onclick="markProblemState(${clearArg})">清除标记</button>` : ""}
+      </div>`;
+    }
+    function problemStateRecentRows(records) {
+      const items = (records || []).slice(0, 8);
+      if (!items.length) return emptyState("暂无处理记录", "你在处理清单里标记过的问题会显示在这里。");
+      return `<table class="table"><thead><tr><th>时间</th><th>状态</th><th>问题</th><th>编号</th></tr></thead><tbody>${items.map(item => `
+        <tr>
+          <td>${escapeHtml(item.updated_at || "")}</td>
+          <td>${problemStateStatusPill(item.status)}</td>
+          <td>${escapeHtml(item.title || item.key || "")}</td>
+          <td><code>${escapeHtml(item.fingerprint || "")}</code></td>
+        </tr>
+      `).join("")}</tbody></table>`;
+    }
     function actionPlanCards(actions) {
       const items = actions || [];
       if (!items.length) {
@@ -4743,13 +4948,15 @@ INDEX_HTML = r"""<!doctype html>
             <div>
               <div class="issue-title">${idx + 1}. ${escapeHtml(item.title || "处理动作")}</div>
               <div class="issue-detail">${escapeHtml(item.detail || "")}</div>
+              <div class="hint" style="margin-top:6px">问题编号：<code>${escapeHtml(item.fingerprint || "")}</code>${item.state_updated_at ? ` · 最近标记：${escapeHtml(item.state_updated_at)}` : ""}${item.state_note ? ` · ${escapeHtml(item.state_note)}` : ""}</div>
             </div>
-            <div class="issue-meta">${issueSeverityPill(item.severity)}</div>
+            <div class="issue-meta">${issueSeverityPill(item.severity)}${problemStateStatusPill(item.state_status)}</div>
           </div>
           <div class="issue-action">
             <span>${escapeHtml(item.button || "打开相关页面")}</span>
             ${actionPlanButton(item)}
           </div>
+          ${problemStateControls(item)}
         </div>
       `).join("")}</div>`;
     }
@@ -4759,6 +4966,8 @@ INDEX_HTML = r"""<!doctype html>
       const modules = data.modules || [];
       const nextSteps = data.next_steps || [];
       const actionPlan = data.action_plan || [];
+      const problemState = data.problem_state || {};
+      const problemStateRecords = problemState.records || [];
       return `
         <div class="panel span-12">
           <div class="summary-head">
@@ -4774,6 +4983,9 @@ INDEX_HTML = r"""<!doctype html>
               ${Number(counts.transient_timeouts || 0) ? neutralPill(`${counts.transient_timeouts} 网络超时`) : ""}
               ${Number(counts.release_trend_regressed || 0) ? statusPill("趋势回退", false) : ""}
               ${Number(counts.release_trend_worse || 0) ? neutralPill("趋势变差") : ""}
+              ${Number(counts.action_open || 0) ? neutralPill(`${counts.action_open} 待确认`) : ""}
+              ${Number(counts.action_acknowledged || 0) ? neutralPill(`${counts.action_acknowledged} 已确认`) : ""}
+              ${Number(counts.action_resolved || 0) ? statusPill(`${counts.action_resolved} 观察中`, true) : ""}
             </div>
           </div>
           <div class="hint" style="margin:10px 0">${escapeHtml(data.primary_action || "暂无需要立即处理的动作。")}</div>
@@ -4790,12 +5002,21 @@ INDEX_HTML = r"""<!doctype html>
             <h3 class="section-title">处理清单</h3>
             ${actionPlanCards(actionPlan)}
           </div>
+          <details class="raw-details" style="margin-top:10px">
+            <summary>最近处理记录</summary>
+            <div class="raw-body">${problemStateRecentRows(problemStateRecords)}</div>
+          </details>
           <table class="table" style="margin-top:10px">
             <thead><tr><th>模块</th><th>级别</th><th>次数</th><th>原因</th><th>入口</th></tr></thead>
             <tbody>${problemModuleRows(modules)}</tbody>
           </table>
         </div>
       `;
+    }
+    async function markProblemState(payload) {
+      const data = await api("/api/problem-state", { method: "POST", body: JSON.stringify(payload || {}) });
+      setSubtitle(data.message || "问题状态已更新");
+      await loadReport();
     }
     function issueCards(issues) {
       if (!issues.length) {
@@ -5906,6 +6127,10 @@ class WebHandler(BaseHTTPRequestHandler):
             search = query.get("search", [""])[0]
             self.send_json(web_audit_payload(limit=limit, result=result, search=search))
             return
+        if path == "/api/problem-state":
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            self.send_json(problem_state_payload(limit=limit))
+            return
         if path == "/api/ops-snapshot":
             self.send_json(ops_snapshot_payload())
             return
@@ -5953,6 +6178,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/action":
                 self.send_audited_json(path, data, run_cli_action(str(data.get("name", ""))), started_at=started_at)
+                return
+            if path == "/api/problem-state":
+                self.send_audited_json(path, data, update_problem_state_payload(data), started_at=started_at)
                 return
             if path == "/api/service":
                 name = str(data.get("name", ""))

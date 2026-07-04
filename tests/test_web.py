@@ -359,6 +359,34 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["records"][0]["action"], "执行检查测试")
         self.assertIn("Telegram Forbidden", payload["records"][0]["error"])
 
+    def test_problem_state_updates_redacts_and_clears_records(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            result = web.update_problem_state_payload(
+                {
+                    "fingerprint": "abc123",
+                    "status": "acknowledged",
+                    "title": "AI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz failed",
+                    "key": "log-errors",
+                    "target": "logs",
+                    "note": "token=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
+                },
+                data_dir=data_dir,
+            )
+            payload = web.problem_state_payload(data_dir=data_dir)
+            clear = web.update_problem_state_payload({"fingerprint": "abc123", "status": "clear"}, data_dir=data_dir)
+            cleared = web.problem_state_payload(data_dir=data_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["records"][0]["status"], "acknowledged")
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("<redacted", payload_text)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
+        self.assertNotIn("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
+        self.assertTrue(clear["ok"])
+        self.assertEqual(cleared["total"], 0)
+
     def test_stable_check_web_action_treats_blocked_result_as_successful_execution(self) -> None:
         with patch.object(web, "run_subprocess", return_value={"ok": False, "returncode": 2, "stdout": "未达稳定版标准", "stderr": ""}):
             result = web.run_cli_action("stable-check")
@@ -589,6 +617,38 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("stable-check", keys)
         self.assertTrue(any(item["target"] == "logs" and item["log_target"] == "main" for item in center["action_plan"]))
         self.assertTrue(any("严重问题" in item for item in center["next_steps"]))
+
+    def test_problem_center_merges_problem_state_into_action_plan(self) -> None:
+        snapshot = {
+            "health": [{"label": "主服务", "status": "bad"}],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {"main": {"error_count": 12, "transient_count": 0}},
+            "issues": [{"severity": "critical", "module": "主服务", "title": "主服务异常", "count": 1, "target": "main"}],
+            "stability": {"status": "blocked", "fail_count": 1, "warn_count": 0},
+        }
+        first_center = web.build_problem_center(snapshot)
+        log_action = next(item for item in first_center["action_plan"] if item["key"] == "log-errors")
+        state = {
+            "records": [
+                {
+                    "fingerprint": log_action["fingerprint"],
+                    "status": "resolved",
+                    "label": "已解决观察中",
+                    "updated_at": "2026-07-04 12:00:00",
+                }
+            ],
+            "total": 1,
+        }
+
+        center = web.build_problem_center(snapshot, state)
+        action = next(item for item in center["action_plan"] if item["key"] == "log-errors")
+
+        self.assertEqual(action["state_status"], "resolved")
+        self.assertEqual(action["state_label"], "已解决观察中")
+        self.assertEqual(center["counts"]["action_resolved"], 1)
+        self.assertEqual(center["counts"]["action_open"], len([item for item in center["action_plan"] if item["key"] != "observe"]) - 1)
+        self.assertEqual(center["problem_state"]["total"], 1)
 
     def test_problem_center_action_plan_routes_config_failures(self) -> None:
         snapshot = {
@@ -1093,6 +1153,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn('data-view="report"', html)
         self.assertIn("/api/audit", html)
         self.assertIn("/api/ops-snapshot", html)
+        self.assertIn("/api/problem-state", html)
         self.assertIn("审计记录是 Web 后台的操作账本", html)
         self.assertIn("不保存 Token、API Key 或提示词正文", html)
         self.assertIn("renderAuditRows", html)
@@ -1106,6 +1167,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("问题中心总览", html)
         self.assertIn("problemCenterPanel", html)
         self.assertIn("problemCenterStatusPill", html)
+        self.assertIn("problemStateControls", html)
+        self.assertIn("problemStateRecentRows", html)
+        self.assertIn("markProblemState", html)
+        self.assertIn("问题编号", html)
+        self.assertIn("最近处理记录", html)
         self.assertIn("长期运行就绪度", html)
         self.assertIn("releaseReadinessPanel", html)
         self.assertIn("releaseReadinessStatusPill", html)
