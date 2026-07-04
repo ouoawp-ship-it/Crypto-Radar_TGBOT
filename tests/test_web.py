@@ -438,6 +438,33 @@ class WebConsoleTests(unittest.TestCase):
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
         self.assertIn("<redacted", payload_text)
 
+    def test_summary_payload_includes_web_config_for_deployment_acceptance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            settings = Settings(data_dir=data_dir)
+            with patch.object(Settings, "load", return_value=settings):
+                with patch.object(
+                    Settings,
+                    "redacted_status",
+                    return_value={
+                        "env_file_exists": True,
+                        "telegram": {},
+                        "runtime": {},
+                        "web": {"host": "0.0.0.0", "port": 8080, "admin_token_configured": True},
+                        "liquidity": {},
+                        "coinalyze": {},
+                        "ai_assistant": {},
+                        "structure_radar": {},
+                    },
+                ):
+                    with patch.object(web, "service_status", return_value={"active_ok": True}):
+                        payload = web.summary_payload()
+
+        self.assertEqual(payload["config"]["web"]["host"], "0.0.0.0")
+        self.assertEqual(payload["config"]["web"]["port"], 8080)
+        self.assertTrue(payload["config"]["web"]["admin_token_configured"])
+
     def test_stability_checks_ready_when_core_snapshot_is_clean(self) -> None:
         snapshot = {
             "git": {"version": "v1.35.0", "branch": "main", "commit": "abc123"},

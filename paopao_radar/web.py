@@ -1618,6 +1618,7 @@ def summary_payload() -> dict[str, Any]:
         "env_file_exists": redacted.get("env_file_exists"),
         "telegram": telegram,
         "runtime": redacted.get("runtime"),
+        "web": redacted.get("web"),
         "liquidity": redacted.get("liquidity"),
         "coinalyze": redacted.get("coinalyze"),
         "ai_assistant": redacted.get("ai_assistant"),
