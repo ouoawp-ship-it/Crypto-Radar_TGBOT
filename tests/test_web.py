@@ -746,6 +746,34 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(readiness["closure_plan"]["current_stage"]["status"], "ready_to_advance")
         self.assertTrue(any(item["key"] == "stability_history" and item["status"] == "ok" for item in readiness["checks"]))
 
+    def test_release_readiness_marks_v150_as_final_release_when_clean(self) -> None:
+        snapshot = {
+            "git": {"version": "v1.50.0"},
+            "stability": {"status": "ready", "summary": "ok"},
+            "problem_center": {
+                "status": "ok",
+                "summary": "ok",
+                "counts": {"log_errors": 0, "failed_audit": 0, "transient_timeouts": 0},
+            },
+            "stability_history": {
+                "latest": {"status": "ready"},
+                "records": [{"status": "ready"}, {"status": "ready"}],
+            },
+            "release_trend": {"status": "stable", "summary": "稳定"},
+        }
+
+        readiness = web.build_release_readiness(snapshot)
+        closure = readiness["closure_plan"]
+
+        self.assertEqual(readiness["status"], "complete_candidate")
+        self.assertEqual(readiness["next_version_goal"], "v1.50.0：已经达到 v1 完整稳定版发布门槛，后续进入长期维护。")
+        self.assertEqual(closure["mode"], "v1 完整稳定版发布")
+        self.assertEqual(closure["current_stage"]["version"], "v1.50.0")
+        self.assertEqual(closure["current_stage"]["status"], "complete")
+        self.assertIsNone(closure["next_stage"])
+        self.assertTrue(closure["final_release"])
+        self.assertIn("v2 规划", closure["maintenance_policy"])
+
     def test_release_readiness_candidate_when_history_is_not_enough(self) -> None:
         snapshot = {
             "stability": {"status": "ready", "summary": "ok"},
@@ -1305,6 +1333,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("功能冻结收口", html)
         self.assertIn("不新增大模块", html)
         self.assertIn("收口阶段", html)
+        self.assertIn("发布后维护规则", html)
+        self.assertIn("v2 规划", html)
         self.assertIn("closurePlanRows", html)
         self.assertIn("closure_current_stage", html)
         self.assertIn("服务器部署验收", html)

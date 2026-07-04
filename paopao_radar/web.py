@@ -55,6 +55,7 @@ PROBLEM_STATE_FILE = "problem_state.json"
 PROBLEM_STATE_LIMIT = 500
 RELEASE_CLOSURE_TARGET = "v1.50.0"
 RELEASE_CLOSURE_RULE = "进入 v1.50.0 收口路线后，不新增大模块，只做稳定性、验收、文档和已有功能修复。"
+RELEASE_MAINTENANCE_POLICY = "v1.50.0 发布后，v1 主线进入长期维护：只做 bug 修复、策略微调、文档和运维补丁；新增大模块进入 v2 规划。"
 RELEASE_CLOSURE_STAGES: tuple[dict[str, str], ...] = (
     {"version": "v1.47.0", "label": "功能冻结和稳定性收口", "goal": "冻结新增大模块，集中处理现有诊断、Web、AI Bot、服务控制和测试缺口。"},
     {"version": "v1.48.0", "label": "服务器部署验收闭环", "goal": "把更新、端口、服务、配置、回滚和 stable-check 做成可验收闭环。"},
@@ -2394,16 +2395,17 @@ def build_release_closure_plan(
     checks: list[dict[str, Any]],
 ) -> dict[str, Any]:
     current_index = release_closure_stage_index(version)
+    final_stage = current_index >= len(RELEASE_CLOSURE_STAGES) - 1
     blocking = [item for item in checks if item.get("status") == "fail"]
     warnings = [item for item in checks if item.get("status") == "warn"]
 
     if readiness_status == "blocked":
         current_stage_status = "blocked"
-        summary = "当前仍有阻断项，先完成 v1.47.0 稳定性收口。"
+        summary = "v1.50.0 发布门禁仍有阻断项，先处理后重新 stable-check。" if final_stage else "当前仍有阻断项，先完成 v1.47.0 稳定性收口。"
     elif readiness_status == "candidate":
         current_stage_status = "active"
-        summary = "当前可运行但仍有观察项，继续按处理清单收口。"
-    elif current_index >= len(RELEASE_CLOSURE_STAGES) - 1:
+        summary = "v1.50.0 发布前仍有观察项，确认不影响真实推送后再保存验收历史。" if final_stage else "当前可运行但仍有观察项，继续按处理清单收口。"
+    elif final_stage:
         current_stage_status = "complete"
         summary = "当前已经进入 v1.50.0 完整稳定版发布阶段。"
     else:
@@ -2424,8 +2426,9 @@ def build_release_closure_plan(
     next_stage = stage_items[current_index + 1] if current_index + 1 < len(stage_items) else None
     return {
         "target_version": RELEASE_CLOSURE_TARGET,
-        "mode": "功能冻结收口",
+        "mode": "v1 完整稳定版发布" if final_stage else "功能冻结收口",
         "rule": RELEASE_CLOSURE_RULE,
+        "maintenance_policy": RELEASE_MAINTENANCE_POLICY,
         "current_stage": current_stage,
         "next_stage": next_stage,
         "stages": stage_items,
@@ -2437,6 +2440,7 @@ def build_release_closure_plan(
         "blocking": [{"key": item.get("key", ""), "label": item.get("label", ""), "detail": item.get("detail", "")} for item in blocking],
         "warnings": [{"key": item.get("key", ""), "label": item.get("label", ""), "detail": item.get("detail", "")} for item in warnings],
         "no_new_major_features": True,
+        "final_release": final_stage and current_stage_status == "complete",
     }
 
 
@@ -2452,6 +2456,11 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
     records = history.get("records", []) if isinstance(history.get("records"), list) else []
     latest = history.get("latest", {}) if isinstance(history.get("latest"), dict) else {}
+    git_version = str(git.get("version") or "")
+    closure_index = release_closure_stage_index(git_version)
+    final_stage = closure_index >= len(RELEASE_CLOSURE_STAGES) - 1
+    current_stage_info = RELEASE_CLOSURE_STAGES[closure_index] if RELEASE_CLOSURE_STAGES else {}
+    next_stage_info = RELEASE_CLOSURE_STAGES[closure_index + 1] if closure_index + 1 < len(RELEASE_CLOSURE_STAGES) else None
 
     checks: list[dict[str, Any]] = []
 
@@ -2650,17 +2659,22 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         status = "blocked"
         label = "还不能作为完整稳定版"
         summary = "存在阻断项，先处理服务、配置、日志、趋势或问题复查，再继续推进下一阶段。"
-        next_version_goal = "v1.47.0：先把诊断报告清到无阻断，再重新执行 stable-check。"
+        next_version_goal = "v1.50.0：先处理阻断项，重新执行 stable-check 后再确认完整稳定版。" if final_stage else f"{current_stage_info.get('version', 'v1.47.0')}：先把诊断报告清到无阻断，再重新执行 stable-check。"
     elif warn_count:
         status = "candidate"
         label = "准稳定候选"
         summary = "核心服务可运行，但仍有观察项；适合继续跑一段时间并保存新的验收记录。"
-        next_version_goal = "v1.47.0：连续两次验收达标且问题中心无警告后，再进入部署验收阶段。"
+        next_version_goal = "v1.50.0：确认警告不影响真实推送，再保存新的 stable-check 验收历史。" if final_stage else f"{current_stage_info.get('version', 'v1.47.0')}：清完观察项后，再进入下一收口阶段。"
     else:
         status = "complete_candidate"
         label = "完整稳定版候选"
         summary = "当前快照、问题中心、日志、审计和验收历史都达到长期运行候选标准。"
-        next_version_goal = "v1.48.0：可以进入服务器部署验收闭环。"
+        if final_stage:
+            next_version_goal = "v1.50.0：已经达到 v1 完整稳定版发布门槛，后续进入长期维护。"
+        elif next_stage_info:
+            next_version_goal = f"{next_stage_info.get('version')}：可以进入{next_stage_info.get('label')}。"
+        else:
+            next_version_goal = "v1.50.0：继续保持长期运行验收记录。"
 
     requirements = [
         "后台核心服务运行正常",
@@ -2671,7 +2685,7 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         "没有仍存在的已解决问题，长期运行趋势没有回退",
     ]
     closure_plan = build_release_closure_plan(
-        version=str(git.get("version") or ""),
+        version=git_version,
         readiness_status=status,
         score=score,
         fail_count=fail_count,
@@ -5043,6 +5057,7 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("v1.50.0 收口路线:");
       lines.push(`- 模式: ${closurePlan.mode || ""}`);
       lines.push(`- 规则: ${closurePlan.rule || ""}`);
+      lines.push(`- 发布后维护: ${closurePlan.maintenance_policy || ""}`);
       lines.push(`- 当前阶段: ${closureStage.version || ""} ${closureStage.label || ""} (${closureStage.status || ""})`);
       if (nextClosureStage.version) lines.push(`- 下一阶段: ${nextClosureStage.version || ""} ${nextClosureStage.label || ""}`);
       lines.push(`- 阻断/警告: 阻断 ${closurePlan.fail_count || 0} | 警告 ${closurePlan.warn_count || 0}`);
@@ -5342,6 +5357,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="readable-list" style="margin-top:10px">
             ${row("v1.50.0 目标", textValue(`${closurePlan.mode || "功能冻结收口"}：${closurePlan.summary || "按 v1.47.0-v1.50.0 路线推进完整稳定版。"}`))}
             ${row("收口规则", textValue(closurePlan.rule || "不新增大模块，只做稳定性、验收、文档和已有功能修复。"))}
+            ${row("发布后维护规则", textValue(closurePlan.maintenance_policy || "v1 主线只做小修、策略微调、文档和运维补丁；新增大模块进入 v2 规划。"))}
             ${row("下一收口阶段", textValue(nextClosureStage.version ? `${nextClosureStage.version} ${nextClosureStage.label}` : "当前已经是最后阶段"))}
             ${row("下一版本目标", textValue(data.next_version_goal || "暂无"))}
             ${row("完整候选门槛", textValue(requirements.join("；") || "暂无"))}
