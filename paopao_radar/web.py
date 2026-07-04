@@ -1571,6 +1571,53 @@ INDEX_HTML = r"""<!doctype html>
       min-width: 0;
       backdrop-filter: blur(8px);
     }
+    .page-intro {
+      grid-column: span 12;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: start;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.94), rgba(236,241,244,.82)),
+        linear-gradient(90deg, rgba(15,111,104,.12), transparent 38%);
+      border-color: rgba(75, 86, 94, .24);
+    }
+    .page-kicker {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      margin-bottom: 4px;
+    }
+    .page-intro h2 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    .page-intro p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      max-width: 980px;
+    }
+    .intro-tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: 520px;
+    }
+    .empty-state {
+      display: grid;
+      gap: 6px;
+      justify-items: start;
+      border: 1px dashed rgba(93, 106, 115, .32);
+      border-radius: 8px;
+      padding: 14px;
+      color: var(--muted);
+      background: linear-gradient(135deg, rgba(255,255,255,.62), rgba(237,242,244,.54));
+    }
+    .empty-state strong { color: var(--text); }
     .span-3 { grid-column: span 3; }
     .span-4 { grid-column: span 4; }
     .span-6 { grid-column: span 6; }
@@ -1937,6 +1984,8 @@ INDEX_HTML = r"""<!doctype html>
       .form-grid { grid-template-columns: 1fr; }
       .field-heading { grid-template-columns: 1fr; }
       .field-current { justify-self: start; text-align: left; }
+      .page-intro { grid-template-columns: 1fr; }
+      .intro-tags { justify-content: flex-start; }
       header { align-items: flex-start; flex-direction: column; }
     }
   </style>
@@ -1988,6 +2037,7 @@ INDEX_HTML = r"""<!doctype html>
       </section>
 
       <section id="logs" class="view hidden">
+        <div class="grid" id="logsIntro"></div>
         <div class="toolbar">
       <select id="logTarget">
         <option value="main">主服务</option>
@@ -2087,6 +2137,80 @@ INDEX_HTML = r"""<!doctype html>
       actions: "检查测试",
       preview: "更新备份",
       guide: "功能说明"
+    };
+    const viewMeta = {
+      overview: {
+        kicker: "运维总览",
+        title: "单人管理员入口",
+        desc: "服务器只需要记住 paopao；Web 后台负责状态查看、日志定位、配置修改、服务控制和更新入口。所有运维权限都集中给你本人使用，不做多用户角色区分。",
+        tags: ["服务状态", "健康检查", "关键配置"]
+      },
+      ai: {
+        kicker: "AI Bot",
+        title: "AI 助手运行中心",
+        desc: "查看独立 AI Bot、问答接口、提示词入口和价格提醒统计。这里说明 AI Bot 能做什么，但日常对话仍在 Telegram 私聊里完成。",
+        tags: ["独立 Bot", "提示词", "意图分流"]
+      },
+      price: {
+        kicker: "个人提醒",
+        title: "价格提醒管理",
+        desc: "查看、筛选、暂停、恢复和删除提醒。Web 适合管理员快速排查；普通提醒创建仍推荐 Telegram 私聊按钮流程。",
+        tags: ["目标价", "筛选", "提醒状态"]
+      },
+      config: {
+        kicker: "配置中心",
+        title: "按功能模块管理配置",
+        desc: "配置现在按功能模块分开管理。先选择 Telegram、AI、雷达参数、资金费率、外部接口、Web 控制台或备份恢复，再进入对应设置。保存前会预检影响模块和自动应用动作。",
+        tags: ["分类配置", "保存预检", "自动应用"]
+      },
+      logs: {
+        kicker: "排查日志",
+        title: "日志中心",
+        desc: "读取主服务、结构雷达、Web 控制台和 AI 助手日志，按错误、Telegram、Binance、结构、AI、资金费率筛选。先看摘要，再看原文。",
+        tags: ["筛选", "复制", "自动刷新"]
+      },
+      audit: {
+        kicker: "操作账本",
+        title: "审计记录",
+        desc: "审计记录是 Web 后台的操作账本。记录关键操作的动作、对象、结果、耗时和错误摘要，不保存 Token、API Key 或提示词正文。",
+        tags: ["成功/失败", "搜索", "安全脱敏"]
+      },
+      report: {
+        kicker: "问题快照",
+        title: "诊断报告",
+        desc: "一键诊断报告用于排查问题。汇总服务状态、健康检查、最近错误、失败审计、日志错误和可自动重试的网络超时，适合复制给排查人员。",
+        tags: ["健康检查", "日志片段", "复制报告"]
+      },
+      actions: {
+        kicker: "白名单动作",
+        title: "检查测试",
+        desc: "这里的按钮都是固定白名单动作，只执行页面写明的检查、测试或清理动作，不能输入任意命令。会真实发送或删除文件的动作需要确认词。",
+        tags: ["只读检查", "测试发送", "安全确认"]
+      },
+      services: {
+        kicker: "后台服务",
+        title: "雷达服务控制",
+        desc: "控制主服务、结构雷达、Web 控制台和 AI 助手。优先使用重启；停止会暂停对应功能，并需要二次确认。",
+        tags: ["重启", "启动", "停止"]
+      },
+      preview: {
+        kicker: "更新与备份",
+        title: "更新备份",
+        desc: "推送预览只展示格式，不会调用 Telegram；更新检查只看 GitHub 是否有新版本，不会自动更新服务器代码；配置备份仍在配置中心里恢复或删除。",
+        tags: ["推送预览", "更新检查", "备份入口"]
+      },
+      prompts: {
+        kicker: "AI 提示词",
+        title: "提示词管理",
+        desc: "编辑日常 AI 助手和专业分析师提示词。保存或恢复默认后会自动重启 AI 助手服务。",
+        tags: ["日常助手", "专业分析", "自动重启"]
+      },
+      guide: {
+        kicker: "使用说明",
+        title: "功能说明",
+        desc: "查看当前版本、外部接口用途、页面功能和安全规则。这里是后台的内置说明书。",
+        tags: ["版本", "接口用途", "安全规则"]
+      }
     };
     const actionList = [
       {
@@ -2597,6 +2721,24 @@ INDEX_HTML = r"""<!doctype html>
     function row(label, value) {
       return `<div class="readable-row"><div class="readable-label">${escapeHtml(label)}</div><div class="readable-value">${value}</div></div>`;
     }
+    function renderPageIntro(view, extraTags = []) {
+      const meta = viewMeta[view] || { kicker: "页面", title: titles[view] || view, desc: "", tags: [] };
+      const tags = [...(meta.tags || []), ...(extraTags || [])].filter(Boolean).slice(0, 6);
+      return `<div class="panel page-intro">
+        <div>
+          <div class="page-kicker">${escapeHtml(meta.kicker || "")}</div>
+          <h2>${escapeHtml(meta.title || titles[view] || view)}</h2>
+          <p>${escapeHtml(meta.desc || "")}</p>
+        </div>
+        <div class="intro-tags">${tags.map(tag => neutralPill(tag)).join("")}</div>
+      </div>`;
+    }
+    function emptyState(title, desc, actionHtml = "") {
+      return `<div class="empty-state"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(desc || "")}</span>${actionHtml || ""}</div>`;
+    }
+    function tableEmpty(colspan, title, desc) {
+      return `<tr><td colspan="${Number(colspan) || 1}">${emptyState(title, desc)}</td></tr>`;
+    }
     function textValue(value, fallback = "暂无") {
       const text = value === undefined || value === null || value === "" ? fallback : String(value);
       return escapeHtml(text);
@@ -2750,7 +2892,7 @@ INDEX_HTML = r"""<!doctype html>
       }).join("");
       return `<div class="panel span-12">
         <h3 class="section-title">运行健康度</h3>
-        <div class="api-grid">${list || '<div class="hint">暂无健康度数据</div>'}</div>
+        <div class="api-grid">${list || emptyState("暂无健康度数据", "后台还没有生成健康检查结果。可以稍后刷新，或到检查测试页执行 Web API 自诊断。")}</div>
       </div>`;
     }
     function logTargetForSource(source) {
@@ -2770,7 +2912,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>`).join("");
       return `<div class="panel span-12">
         <h3 class="section-title">最近错误 / 警告</h3>
-        ${list ? `<div class="feature-list">${list}</div>` : `<div class="notice"><strong>当前没有检测到 runtime-status 里的错误或接口警告。</strong> 如果仍怀疑异常，可以去日志页按“只看错误”筛选。</div>`}
+        ${list ? `<div class="feature-list">${list}</div>` : emptyState("当前没有检测到 runtime-status 里的错误或接口警告。", "如果仍怀疑异常，可以去日志中心按“只看错误”筛选，或打开诊断报告复制快照。")}
       </div>`;
     }
     function openLogsForError(target) {
@@ -2899,7 +3041,7 @@ INDEX_HTML = r"""<!doctype html>
       const runtime = data.runtime || {};
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
-        `<div class="panel span-12 notice"><strong>Web 控制台是当前版本的单人管理员入口。</strong> 登录令牌通过后，所有运维权限都集中给你本人使用；不做多用户角色区分。服务器只需要记住 paopao；地址、令牌、Web 服务状态、日志和更新入口都在中文菜单里。</div>`,
+        renderPageIntro("overview", [data.updated_at ? `更新 ${data.updated_at}` : "", git.version || "unknown"]),
         healthPanel(data.health || []),
         recentErrorsPanel(data.recent_errors || []),
         serviceCard("主服务", main),
@@ -2920,6 +3062,8 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api(`/api/logs?target=${encodeURIComponent(target)}&lines=${encodeURIComponent(lines)}`);
       setSubtitle(`日志来源 ${data.source || ""}${autoRefreshEnabled && currentView === "logs" ? " · 自动刷新中" : ""}`);
       latestLogData = data;
+      const intro = document.getElementById("logsIntro");
+      if (intro) intro.innerHTML = renderPageIntro("logs", [data.source || "", `${lines} 行`]);
       renderFilteredLogs();
     }
     function renderFilteredLogs() {
@@ -2980,7 +3124,7 @@ INDEX_HTML = r"""<!doctype html>
       return ok ? "成功" : "失败";
     }
     function renderAuditRows(records) {
-      if (!records.length) return `<tr><td colspan="8" class="muted">没有匹配的审计记录</td></tr>`;
+      if (!records.length) return tableEmpty(8, "没有匹配的审计记录", "可以调整成功/失败筛选、关键词或记录数量；如果刚部署，后台还没有产生可审计操作。");
       return records.map(item => `
         <tr>
           <td>${escapeHtml(item.ts || "")}</td>
@@ -3002,10 +3146,7 @@ INDEX_HTML = r"""<!doctype html>
       latestAuditData = data;
       setSubtitle(`审计记录 ${data.matched || 0}/${data.total || 0} 条`);
       document.getElementById("auditGrid").innerHTML = `
-        <div class="panel span-12 notice">
-          <strong>审计记录是 Web 后台的操作账本。</strong>
-          它记录配置保存、备份恢复/删除、检查测试、服务启停、价格提醒管理和 AI 提示词操作。这里只保存操作摘要、结果、耗时和错误摘要，不保存 Token、API Key 或提示词正文。
-        </div>
+        ${renderPageIntro("audit", [`匹配 ${data.matched || 0}/${data.total || 0}`, result === "failed" ? "只看失败" : "全部操作"])}
         <div class="panel span-12">
           <div class="summary-head">
             <h3 class="section-title">操作审计</h3>
@@ -3139,7 +3280,7 @@ INDEX_HTML = r"""<!doctype html>
       `).join("");
     }
     function reportAuditRows(records) {
-      if (!records.length) return `<tr><td colspan="5" class="muted">暂无失败审计</td></tr>`;
+      if (!records.length) return tableEmpty(5, "暂无失败审计", "最近没有失败的 Web 后台操作。配置保存、服务控制和检查测试如果失败，会出现在这里。");
       return records.map(item => `
         <tr>
           <td>${escapeHtml(item.ts || "")}</td>
@@ -3161,10 +3302,7 @@ INDEX_HTML = r"""<!doctype html>
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
-        <div class="panel span-12 notice">
-          <strong>一键诊断报告用于排查问题。</strong>
-          这里会汇总服务状态、健康检查、最近错误、关键配置摘要、失败审计和日志错误片段；报告已做安全处理，不包含 Token、API Key 或提示词正文。
-        </div>
+        ${renderPageIntro("report", [data.generated_at || "", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
         <div class="panel span-3 metric"><div class="label">健康项</div><div class="value">${neutralPill(String(health.length))}</div><div class="muted">含服务和配置门禁</div></div>
         <div class="panel span-3 metric"><div class="label">最近错误</div><div class="value">${recentErrors.length ? statusPill(`${recentErrors.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 检测</div></div>
         <div class="panel span-3 metric"><div class="label">失败审计</div><div class="value">${failedAudit.length ? statusPill(`${failedAudit.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">Web 后台操作</div></div>
@@ -3243,10 +3381,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderConfigHome() {
       const modules = configCategories.filter(item => item.id !== "home");
       return `
-        <div class="panel span-12 notice">
-          <strong>配置现在按功能模块分开管理。</strong>
-          先选择要修改的功能，再进入对应设置；这样不会把 Telegram、AI、雷达参数、资金费率、Web 端口和备份恢复全部堆在一个页面。
-        </div>
+        ${renderPageIntro("config", [`${modules.length} 个模块`, "保存前预检"])}
         <div class="config-module-grid">
           ${modules.map(item => {
             const count = configFieldsForCategory(item).length;
@@ -3554,10 +3689,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderActions() {
       document.getElementById("actionGrid").innerHTML = `
-        <div class="panel span-12 notice">
-          <strong>这里的按钮都是固定白名单动作。</strong>
-          不能输入任意命令；点击后只会执行页面写明的检查、测试或清理动作。会真实发送或删除文件的动作，卡片里会单独标明。
-        </div>
+        ${renderPageIntro("actions", [`${actionList.length} 个动作`, "禁止任意命令"])}
       ` + actionList.map(action => `
         <div class="panel span-6 action-card">
           <div>
@@ -3624,9 +3756,11 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderServices() {
       document.getElementById("serviceGrid").innerHTML = `
+        ${renderPageIntro("services", [`${serviceGroups.length} 个服务`, "STOP 二次确认"])}
         <div class="panel span-12 notice">
           <strong>这个页面是控制后台服务开关的，不是普通测试按钮。</strong>
-          主服务、结构雷达、Web 控制台、AI 助手是四个不同的后台服务。建议优先使用“重启”，只有确认要暂停某类功能时才点“停止”。
+          建议优先使用“重启”。
+          主服务、结构雷达、Web 控制台、AI 助手是四个不同的后台服务；只有确认要暂停某类功能时才点“停止”。
           <div class="service-guide">
             <div class="service-guide-item"><strong>重启</strong><span class="muted">最常用。用于更新代码、修改配置后让服务重新读取设置。</span></div>
             <div class="service-guide-item"><strong>启动</strong><span class="muted">服务已经停止时使用。不会修改配置，只是把服务拉起来。</span></div>
@@ -3659,10 +3793,7 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api("/api/push-preview");
       const previews = data.previews || [];
       document.getElementById("previewGrid").innerHTML = `
-        <div class="panel span-12 notice">
-          <strong>更新备份页只做安全检查和入口汇总。</strong>
-          推送预览只展示格式，不会调用 Telegram；更新检查只看 GitHub 是否有新版本，不会自动更新服务器代码；配置备份仍在配置中心里恢复或删除。
-        </div>
+        ${renderPageIntro("preview", [`${previews.length} 个推送样例`, "不真实发送"])}
         ${previews.map(item => `
           <div class="panel span-4">
             <h3 class="section-title">${escapeHtml(item.title || "预览")}</h3>
@@ -3704,6 +3835,7 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api("/api/summary");
       const git = data.git || {};
       document.getElementById("guideGrid").innerHTML = `
+        ${renderPageIntro("guide", [git.version || "unknown", git.commit || "unknown"])}
         <div class="panel span-12">
           <h3 class="section-title">版本信息</h3>
           <div class="kv">
@@ -3748,7 +3880,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       const data = await api("/api/service", { method: "POST", body: JSON.stringify({ name }) });
       renderOperationResult("serviceOutput", data, label || "服务操作", "service");
-      await loadSummary();
+      await refreshCurrent();
     }
     function zhDirection(value) {
       return value === "below" ? "低于或等于" : "高于或等于";
@@ -3777,7 +3909,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderAlertRows(alerts) {
       if (!alerts.length) {
-        return `<tr><td colspan="7" class="hint">还没有监控提醒。可以在 Telegram 私聊 AI 助手 Bot 点击“设置价格提醒”，选择目标价、急涨急跌、OI 或资金费率监控。</td></tr>`;
+        return tableEmpty(7, "还没有匹配的监控提醒", "可以在 Telegram 私聊 AI 助手 Bot 点击“设置价格提醒”，选择目标价、急涨急跌、OI 或资金费率监控。");
       }
       return alerts.map(item => `
         <tr>
@@ -3842,6 +3974,7 @@ INDEX_HTML = r"""<!doctype html>
       const stats = alertsData.stats || {};
       document.getElementById("aiGrid").innerHTML = `
         ${failureHtml}
+        ${renderPageIntro("ai", [service.active || "unknown", ai.model || "deepseek-v4-pro"])}
         <div class="panel span-12 notice">
           <strong>AI 助手 Bot 和雷达推送 Bot 是分开的。</strong>
           群里的启动雷达、资金流雷达、结构雷达继续走 TG_BOT_TOKEN；私聊 AI、手动价格提醒和个人提醒走 AI_BOT_TOKEN。
@@ -3897,6 +4030,7 @@ INDEX_HTML = r"""<!doctype html>
       const alertTypes = Array.from(new Set(alerts.map(alertTypeText).filter(Boolean))).sort();
       document.getElementById("priceGrid").innerHTML = `
         ${failureHtml}
+        ${renderPageIntro("price", [`${stats.active || 0} 运行中`, `${alerts.length} 条提醒`])}
         <div class="panel span-12 notice">
           <strong>价格提醒是独立的个人监控中心。</strong>
           普通用户在 Telegram 私聊里按按钮手动选择；这里是管理员 Web 入口，用来快速查看、创建、暂停、恢复和删除提醒。
@@ -3947,11 +4081,7 @@ INDEX_HTML = r"""<!doctype html>
       const prompts = data.prompts || {};
       setSubtitle(data.path || "AI 提示词文件");
       document.getElementById("promptGrid").innerHTML = `
-        <div class="panel span-12 notice">
-          <strong>AI 提示词会直接影响机器人回答风格。</strong>
-          泡泡 AI 助手用于日常问答、生活问题、状态解释和提醒说明；专业分析师用于“分析这段”“帮我分析”，以及自动识别出的雷达/市场数据。
-          保存或恢复默认后会自动重启 AI 助手服务。
-        </div>
+        ${renderPageIntro("prompts", [data.path || "ai_prompts.json", "保存后自动重启"])}
         <div class="panel span-6">
           <h3 class="section-title">泡泡 AI 助手提示词</h3>
           <div class="hint">用于日常问答、生活问题、运行状态解释、价格提醒说明。默认风格更轻松，可以有一点皮，但交易问题仍会自动走专业分析。</div>
