@@ -1442,6 +1442,7 @@ SENSITIVE_LINE_RE = re.compile(r"(?i)\b(token|api[_-]?key|secret|password)\b\s*[
 TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
 TRANSIENT_LOG_RE = re.compile(r"(getUpdates failed ReadTimeout|Read timed out|read timeout=\d+)", re.I)
+SEMVER_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9_.-]+)?$")
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -1639,6 +1640,165 @@ def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(issues, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count", 1) or 1), str(item.get("module") or "")))[:20]
 
 
+def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def add(
+        key: str,
+        label: str,
+        status: str,
+        detail: str,
+        action: str = "",
+    ) -> None:
+        checks.append(
+            {
+                "key": key,
+                "label": label,
+                "status": status,
+                "detail": detail,
+                "action": action,
+            }
+        )
+
+    git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
+    version = str(git.get("version") or "").strip()
+    commit = str(git.get("commit") or "").strip()
+    version_ok = bool(version and version != "unknown" and SEMVER_VERSION_RE.match(version))
+    add(
+        "version",
+        "版本信息",
+        "ok" if version_ok and commit and commit != "unknown" else "fail",
+        f"{version or 'unknown'} {commit or 'unknown'}".strip(),
+        "确认 VERSION 文件存在，并且当前目录是 Git 仓库。" if not version_ok or not commit or commit == "unknown" else "",
+    )
+
+    services = snapshot.get("services", {}) if isinstance(snapshot.get("services"), dict) else {}
+    service_labels = {"main": "主服务", "structure": "结构雷达", "web": "Web 控制台", "ai": "AI 助手"}
+    down_services = [
+        service_labels.get(key, key)
+        for key, item in services.items()
+        if isinstance(item, dict) and not bool(item.get("active_ok"))
+    ]
+    add(
+        "services",
+        "后台服务",
+        "ok" if not down_services else "fail",
+        "主服务、结构雷达、Web 控制台和 AI 助手均运行中" if not down_services else f"未运行：{'、'.join(down_services)}",
+        "进入“雷达服务”页重启对应服务；如果仍失败，再看日志中心。" if down_services else "",
+    )
+
+    health = snapshot.get("health", []) if isinstance(snapshot.get("health"), list) else []
+    bad_health = [item for item in health if isinstance(item, dict) and item.get("status") == "bad"]
+    warn_health = [item for item in health if isinstance(item, dict) and item.get("status") == "warn"]
+    health_status = "fail" if bad_health else ("warn" if warn_health else "ok")
+    health_detail = "全部健康项通过"
+    if bad_health:
+        health_detail = "异常：" + "、".join(str(item.get("label") or "") for item in bad_health[:5])
+    elif warn_health:
+        health_detail = "警告：" + "、".join(str(item.get("label") or "") for item in warn_health[:5])
+    add(
+        "health",
+        "健康门禁",
+        health_status,
+        health_detail,
+        "先处理异常健康项；警告项可根据实际是否使用对应功能判断。" if health_status != "ok" else "",
+    )
+
+    issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
+    critical_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "critical")
+    warning_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "warning")
+    issue_status = "fail" if critical_count else ("warn" if warning_count else "ok")
+    add(
+        "issues",
+        "问题中心",
+        issue_status,
+        "无严重问题" if not critical_count and not warning_count else f"严重 {critical_count} 个，警告 {warning_count} 个",
+        "按问题中心从上到下处理，优先处理严重问题。" if issue_status != "ok" else "",
+    )
+
+    logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    log_error_total = sum(
+        int(item.get("error_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    transient_total = sum(
+        int(item.get("transient_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    log_status = "fail" if log_error_total >= 20 else ("warn" if log_error_total or transient_total >= 10 else "ok")
+    log_detail = "近期日志无错误"
+    if log_error_total:
+        log_detail = f"错误/异常关键字 {log_error_total} 条"
+    elif transient_total:
+        log_detail = f"可自动重试网络超时 {transient_total} 条"
+    add(
+        "logs",
+        "日志稳定性",
+        log_status,
+        log_detail,
+        "打开日志中心按“只看错误”筛选；网络超时持续增多时检查服务器网络。" if log_status != "ok" else "",
+    )
+
+    audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
+    failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
+    add(
+        "audit",
+        "后台操作审计",
+        "warn" if failed_audit else "ok",
+        f"最近失败操作 {len(failed_audit)} 条" if failed_audit else "最近没有失败操作",
+        "进入审计记录页筛选失败，确认失败动作是否已重试成功。" if failed_audit else "",
+    )
+
+    config = snapshot.get("config", {}) if isinstance(snapshot.get("config"), dict) else {}
+    telegram = config.get("telegram", {}) if isinstance(config.get("telegram"), dict) else {}
+    ai = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
+    telegram_ok = bool(telegram.get("bot_token_configured") and telegram.get("chat_id_configured"))
+    ai_enabled = bool(ai.get("enable"))
+    ai_ok = bool(ai_enabled and ai.get("bot_token_configured"))
+    config_status = "fail" if not telegram_ok else ("warn" if ai_enabled and not ai_ok else "ok")
+    config_detail = "Telegram 推送和 AI Bot 配置可用"
+    if not telegram_ok:
+        config_detail = "Telegram 群推送缺 Token 或群 ID"
+    elif ai_enabled and not ai_ok:
+        config_detail = "AI 助手已开启但缺 AI_BOT_TOKEN"
+    elif not ai_enabled:
+        config_detail = "Telegram 群推送可用；AI 助手未启用"
+    add(
+        "config",
+        "关键配置",
+        config_status,
+        config_detail,
+        "进入配置中心补齐 Telegram 或 AI Bot 配置，保存后让后台自动应用。" if config_status != "ok" else "",
+    )
+
+    fail_count = sum(1 for item in checks if item.get("status") == "fail")
+    warn_count = sum(1 for item in checks if item.get("status") == "warn")
+    ok_count = sum(1 for item in checks if item.get("status") == "ok")
+    if fail_count:
+        status = "blocked"
+        label = "未达稳定版标准"
+        summary = f"{fail_count} 个阻断项，先处理后再长期运行。"
+    elif warn_count:
+        status = "attention"
+        label = "基本可运行，建议关注"
+        summary = f"{warn_count} 个警告项，不一定阻断运行，但建议确认。"
+    else:
+        status = "ready"
+        label = "达到稳定版标准"
+        summary = "核心服务、配置、日志和诊断均未发现阻断项。"
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "ok_count": ok_count,
+        "warn_count": warn_count,
+        "fail_count": fail_count,
+        "checks": checks,
+    }
+
+
 def ops_snapshot_payload() -> dict[str, Any]:
     summary = summary_payload()
     audit_all = web_audit_payload(limit=10, result="all")
@@ -1666,6 +1826,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
         "log_errors": log_errors,
     }
     snapshot["issues"] = build_ops_issues(snapshot)
+    snapshot["stability"] = build_stability_checks(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -3550,6 +3711,11 @@ INDEX_HTML = r"""<!doctype html>
       lines.push(`生成时间: ${data.generated_at || ""}`);
       lines.push(`版本: ${git.version || ""} ${git.branch || ""} ${git.commit || ""}`);
       lines.push("");
+      const stability = data.stability || {};
+      lines.push("稳定版自检:");
+      lines.push(`- 状态: ${stability.label || ""} ${stability.summary || ""}`);
+      ((stability && stability.checks) || []).forEach(item => lines.push(`- ${item.label || ""}: ${item.status || ""} ${item.detail || ""}${item.action ? ` | 建议: ${item.action}` : ""}`));
+      lines.push("");
       lines.push("问题中心:");
       const issues = data.issues || [];
       if (!issues.length) lines.push("- 暂无明确问题");
@@ -3647,6 +3813,32 @@ INDEX_HTML = r"""<!doctype html>
       if (["main", "structure", "web", "ai"].includes(target)) return `<button class="btn" type="button" onclick="openLogsForError('${escapeHtml(target)}')">查看相关日志</button>`;
       return `<button class="btn" type="button" onclick="switchView('logs')">打开日志中心</button>`;
     }
+    function stabilityStatusPill(status) {
+      const value = String(status || "");
+      if (value === "ready" || value === "ok") return statusPill("达标", true);
+      if (value === "attention" || value === "warn") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">关注</span>`;
+      if (value === "blocked" || value === "fail") return statusPill("未达标", false);
+      return neutralPill(value || "未知");
+    }
+    function stabilityCards(stability) {
+      const checks = (stability && stability.checks) || [];
+      if (!checks.length) return emptyState("暂无稳定版自检结果", "刷新诊断报告后会生成服务、配置、日志和问题中心自检。");
+      return `<div class="issue-list">${checks.map(item => {
+        const severity = item.status === "fail" ? "critical" : (item.status === "warn" ? "warning" : "notice");
+        return `
+          <div class="issue-card ${severity}">
+            <div class="issue-head">
+              <div>
+                <div class="issue-title">${escapeHtml(item.label || "检查项")}</div>
+                <div class="issue-detail">${escapeHtml(item.detail || "")}</div>
+              </div>
+              <div class="issue-meta">${stabilityStatusPill(item.status)}</div>
+            </div>
+            ${item.action ? `<div class="issue-action"><span>${escapeHtml(item.action)}</span></div>` : ""}
+          </div>
+        `;
+      }).join("")}</div>`;
+    }
     function issueCards(issues) {
       if (!issues.length) {
         return emptyState("当前没有明确问题", "健康检查、失败审计、日志错误和网络超时都没有达到需要优先处理的程度。");
@@ -3687,11 +3879,22 @@ INDEX_HTML = r"""<!doctype html>
       const audit = data.audit || {};
       const failedAudit = audit.failed_recent || [];
       const issues = data.issues || [];
+      const stability = data.stability || {};
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
-        ${renderPageIntro("report", [data.generated_at || "", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${renderPageIntro("report", [data.generated_at || "", stability.label || "稳定版自检", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">稳定版自检</h3>
+              <div class="summary-meta">${escapeHtml(stability.summary || "检查核心服务、配置、问题中心、日志和后台操作。")}</div>
+            </div>
+            <div class="issue-meta">${stabilityStatusPill(stability.status)}${neutralPill(`${Number(stability.ok_count || 0)} 通过`)}${Number(stability.warn_count || 0) ? neutralPill(`${stability.warn_count} 警告`) : ""}${Number(stability.fail_count || 0) ? statusPill(`${stability.fail_count} 阻断`, false) : ""}</div>
+          </div>
+          ${stabilityCards(stability)}
+        </div>
         <div class="panel span-3 metric"><div class="label">健康项</div><div class="value">${neutralPill(String(health.length))}</div><div class="muted">含服务和配置门禁</div></div>
         <div class="panel span-3 metric"><div class="label">问题中心</div><div class="value">${issues.length ? statusPill(`${issues.length} 个`, !issues.some(item => item.severity !== "notice")) : neutralPill("暂无")}</div><div class="muted">按严重程度排序</div></div>
         <div class="panel span-3 metric"><div class="label">最近错误</div><div class="value">${recentErrors.length ? statusPill(`${recentErrors.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 检测</div></div>

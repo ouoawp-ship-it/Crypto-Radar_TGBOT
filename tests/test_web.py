@@ -389,10 +389,68 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertIn("log_errors", payload)
         self.assertIn("issues", payload)
+        self.assertIn("stability", payload)
         self.assertIn("recommendations", payload)
         self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
         self.assertIn("<redacted", payload_text)
+
+    def test_stability_checks_ready_when_core_snapshot_is_clean(self) -> None:
+        snapshot = {
+            "git": {"version": "v1.35.0", "branch": "main", "commit": "abc123"},
+            "services": {
+                "main": {"active_ok": True},
+                "structure": {"active_ok": True},
+                "web": {"active_ok": True},
+                "ai": {"active_ok": True},
+            },
+            "health": [{"label": "主服务", "status": "ok", "value": "运行中"}],
+            "issues": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {
+                "main": {"error_count": 0, "transient_count": 0},
+                "ai": {"error_count": 0, "transient_count": 2},
+            },
+            "config": {
+                "telegram": {"bot_token_configured": True, "chat_id_configured": True},
+                "ai_assistant": {"enable": True, "bot_token_configured": True},
+            },
+        }
+
+        stability = web.build_stability_checks(snapshot)
+
+        self.assertEqual(stability["status"], "ready")
+        self.assertEqual(stability["fail_count"], 0)
+        self.assertEqual(stability["warn_count"], 0)
+        self.assertTrue(all(item["status"] == "ok" for item in stability["checks"]))
+
+    def test_stability_checks_block_when_services_or_health_fail(self) -> None:
+        snapshot = {
+            "git": {"version": "unknown", "branch": "main", "commit": "unknown"},
+            "services": {
+                "main": {"active_ok": False},
+                "structure": {"active_ok": True},
+                "web": {"active_ok": True},
+                "ai": {"active_ok": True},
+            },
+            "health": [{"label": "主服务", "status": "bad", "value": "failed"}],
+            "issues": [{"severity": "critical", "title": "主服务异常"}],
+            "audit": {"failed_recent": []},
+            "log_errors": {"main": {"error_count": 25, "transient_count": 0}},
+            "config": {
+                "telegram": {"bot_token_configured": False, "chat_id_configured": True},
+                "ai_assistant": {"enable": True, "bot_token_configured": True},
+            },
+        }
+
+        stability = web.build_stability_checks(snapshot)
+
+        self.assertEqual(stability["status"], "blocked")
+        labels = "\n".join(item["label"] for item in stability["checks"] if item["status"] == "fail")
+        self.assertIn("版本信息", labels)
+        self.assertIn("后台服务", labels)
+        self.assertIn("健康门禁", labels)
+        self.assertIn("关键配置", labels)
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
