@@ -376,6 +376,25 @@ class WebConsoleTests(unittest.TestCase):
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
         self.assertIn("<redacted", payload_text)
 
+    def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
+        def fake_logs(target: str, lines: int) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source": f"fake:{target}",
+                "text": (
+                    'ai-assistant: alert_check elapsed=0.52s queue=0 {"ok": true, "enabled": true, "errors": []}\n'
+                    'ai-assistant: price_check ok=true error=""\n'
+                    "INFO normal line\n"
+                    "ERROR real failure timeout\n"
+                ),
+            }
+
+        with patch.object(web, "logs_payload", side_effect=fake_logs):
+            payload = web.log_error_excerpt("ai", lines=80, limit=10)
+
+        self.assertEqual(payload["error_count"], 1)
+        self.assertEqual(payload["lines"], ["ERROR real failure timeout"])
+
     def test_ops_snapshot_recommends_failed_audit_and_bad_health(self) -> None:
         snapshot = {
             "health": [{"label": "主服务", "status": "bad"}],

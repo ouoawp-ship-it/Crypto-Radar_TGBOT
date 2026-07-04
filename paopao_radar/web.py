@@ -1343,7 +1343,22 @@ def logs_payload(target: str, lines: int) -> dict[str, Any]:
     return {"target": target, "source": str(fallback_path), "text": text, "ok": bool(text)}
 
 
-ERROR_LINE_RE = re.compile(r"(error|traceback|exception|failed|fatal|timeout|denied|forbidden|失败|异常|错误|超时|拒绝)", re.I)
+ERROR_LINE_RE = re.compile(
+    r"(\b[a-z0-9_]*error\b|traceback|exception|failed|fatal|timeout|denied|forbidden|失败|异常|错误|超时|拒绝)",
+    re.I,
+)
+EMPTY_ERROR_FIELD_RE = re.compile(
+    r"""(?ix)
+    (?:["']?[a-z0-9_]*errors?["']?)\s*[:=]\s*
+    (?:
+        \[\s*\]
+        | "" | ''
+        | null\b
+        | none\b
+        | false\b
+    )
+    """
+)
 SENSITIVE_LINE_RE = re.compile(r"(?i)\b(token|api[_-]?key|secret|password)\b\s*[:=]\s*['\"]?[^'\"\s,;]+")
 TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
@@ -1356,10 +1371,15 @@ def redact_sensitive_text(text: str) -> str:
     return redacted
 
 
+def is_error_log_line(line: str) -> bool:
+    cleaned = EMPTY_ERROR_FIELD_RE.sub("", str(line or ""))
+    return bool(ERROR_LINE_RE.search(cleaned))
+
+
 def log_error_excerpt(target: str, *, lines: int = 300, limit: int = 20) -> dict[str, Any]:
     payload = logs_payload(target, lines)
     raw_lines = str(payload.get("text") or "").splitlines()
-    error_lines = [line for line in raw_lines if ERROR_LINE_RE.search(line)]
+    error_lines = [line for line in raw_lines if is_error_log_line(line)]
     selected = error_lines[-limit:]
     return {
         "target": target,
