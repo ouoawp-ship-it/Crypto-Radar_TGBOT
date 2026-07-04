@@ -403,6 +403,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("stability", payload)
         self.assertIn("stability_history", payload)
         self.assertIn("problem_center", payload)
+        self.assertIn("release_readiness", payload)
         self.assertIn("recommendations", payload)
         self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
@@ -571,6 +572,70 @@ class WebConsoleTests(unittest.TestCase):
 
         self.assertEqual(center["status"], "blocked")
         self.assertTrue(any(item["key"] == "config-check" and item["target"] == "config" for item in center["action_plan"]))
+
+    def test_release_readiness_complete_candidate_when_clean_and_history_ready(self) -> None:
+        snapshot = {
+            "stability": {"status": "ready", "summary": "ok"},
+            "problem_center": {
+                "status": "ok",
+                "summary": "ok",
+                "counts": {"log_errors": 0, "failed_audit": 0, "transient_timeouts": 0},
+            },
+            "stability_history": {
+                "latest": {"status": "ready"},
+                "records": [{"status": "ready"}, {"status": "ready"}],
+            },
+        }
+
+        readiness = web.build_release_readiness(snapshot)
+
+        self.assertEqual(readiness["status"], "complete_candidate")
+        self.assertEqual(readiness["score"], 100)
+        self.assertEqual(readiness["fail_count"], 0)
+        self.assertEqual(readiness["warn_count"], 0)
+        self.assertTrue(any(item["key"] == "stability_history" and item["status"] == "ok" for item in readiness["checks"]))
+
+    def test_release_readiness_candidate_when_history_is_not_enough(self) -> None:
+        snapshot = {
+            "stability": {"status": "ready", "summary": "ok"},
+            "problem_center": {
+                "status": "ok",
+                "summary": "ok",
+                "counts": {"log_errors": 0, "failed_audit": 0, "transient_timeouts": 0},
+            },
+            "stability_history": {
+                "latest": {"status": "ready"},
+                "records": [{"status": "ready"}],
+            },
+        }
+
+        readiness = web.build_release_readiness(snapshot)
+
+        self.assertEqual(readiness["status"], "candidate")
+        self.assertEqual(readiness["fail_count"], 0)
+        self.assertGreater(readiness["warn_count"], 0)
+        self.assertLess(readiness["score"], 100)
+
+    def test_release_readiness_blocks_on_current_failures(self) -> None:
+        snapshot = {
+            "stability": {"status": "blocked", "summary": "blocked"},
+            "problem_center": {
+                "status": "blocked",
+                "summary": "bad",
+                "counts": {"log_errors": 12, "failed_audit": 1, "transient_timeouts": 0},
+            },
+            "stability_history": {
+                "latest": {"status": "blocked"},
+                "records": [{"status": "blocked"}],
+            },
+        }
+
+        readiness = web.build_release_readiness(snapshot)
+
+        self.assertEqual(readiness["status"], "blocked")
+        self.assertGreater(readiness["fail_count"], 0)
+        self.assertLess(readiness["score"], 80)
+        self.assertTrue(any(item["key"] == "log_errors" and item["status"] == "fail" for item in readiness["checks"]))
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
@@ -963,6 +1028,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("问题中心总览", html)
         self.assertIn("problemCenterPanel", html)
         self.assertIn("problemCenterStatusPill", html)
+        self.assertIn("长期运行就绪度", html)
+        self.assertIn("releaseReadinessPanel", html)
+        self.assertIn("releaseReadinessStatusPill", html)
+        self.assertIn("完整稳定版候选", html)
+        self.assertIn("下一版本目标", html)
         self.assertIn("处理清单", html)
         self.assertIn("actionPlanCards", html)
         self.assertIn("actionPlanButton", html)

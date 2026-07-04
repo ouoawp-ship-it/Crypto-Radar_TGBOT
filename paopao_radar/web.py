@@ -2056,6 +2056,195 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
+    stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
+    history = snapshot.get("stability_history", {}) if isinstance(snapshot.get("stability_history"), dict) else {}
+    counts = problem_center.get("counts", {}) if isinstance(problem_center.get("counts"), dict) else {}
+    records = history.get("records", []) if isinstance(history.get("records"), list) else []
+    latest = history.get("latest", {}) if isinstance(history.get("latest"), dict) else {}
+
+    checks: list[dict[str, Any]] = []
+
+    def add(key: str, label: str, status: str, detail: str, action: str = "") -> None:
+        checks.append(
+            {
+                "key": key,
+                "label": label,
+                "status": status,
+                "detail": detail,
+                "action": action,
+            }
+        )
+
+    stability_status = str(stability.get("status") or "")
+    if stability_status == "ready":
+        add("current_stability", "当前稳定版验收", "ok", str(stability.get("summary") or "当前 stable-check 已通过"))
+    elif stability_status == "attention":
+        add(
+            "current_stability",
+            "当前稳定版验收",
+            "warn",
+            str(stability.get("summary") or "当前 stable-check 有警告"),
+            "按稳定版自检里的警告项确认是否影响真实推送。",
+        )
+    else:
+        add(
+            "current_stability",
+            "当前稳定版验收",
+            "fail",
+            str(stability.get("summary") or "当前 stable-check 未达标"),
+            "先处理阻断项，再重新执行稳定版验收。",
+        )
+
+    problem_status = str(problem_center.get("status") or "")
+    if problem_status == "ok":
+        add("problem_center", "问题中心", "ok", str(problem_center.get("summary") or "问题中心当前健康"))
+    elif problem_status == "attention":
+        add(
+            "problem_center",
+            "问题中心",
+            "warn",
+            str(problem_center.get("summary") or "问题中心存在需要关注项"),
+            "按处理清单确认警告是否影响主服务、结构雷达或 AI 助手。",
+        )
+    else:
+        add(
+            "problem_center",
+            "问题中心",
+            "fail",
+            str(problem_center.get("summary") or "问题中心存在优先处理项"),
+            "优先处理问题中心里的严重项，再评估长期运行。",
+        )
+
+    ready_records = [item for item in records if isinstance(item, dict) and item.get("status") == "ready"]
+    latest_status = str(latest.get("status") or "")
+    if not records:
+        add(
+            "stability_history",
+            "验收历史",
+            "warn",
+            "还没有保存过稳定版验收历史，无法判断是否连续稳定。",
+            "执行一次稳定版验收；更新后建议至少保留两次通过记录。",
+        )
+    elif latest_status == "blocked":
+        add(
+            "stability_history",
+            "验收历史",
+            "fail",
+            "最近一次保存的稳定版验收未达标。",
+            "处理问题后重新执行稳定版验收，覆盖最新历史状态。",
+        )
+    elif latest_status == "ready" and len(ready_records) >= 2:
+        add(
+            "stability_history",
+            "验收历史",
+            "ok",
+            f"最近历史里已有 {len(ready_records)} 次达标记录，可作为长期运行参考。",
+        )
+    elif latest_status == "ready":
+        add(
+            "stability_history",
+            "验收历史",
+            "warn",
+            "最近一次验收已达标，但达标历史少于 2 次。",
+            "继续观察并再执行一次稳定版验收，确认不是偶然通过。",
+        )
+    else:
+        add(
+            "stability_history",
+            "验收历史",
+            "warn",
+            "最近验收历史不是完全达标状态。",
+            "按最新诊断处理警告后，再保存一条新的验收记录。",
+        )
+
+    log_errors = int(counts.get("log_errors", 0) or 0)
+    failed_audit = int(counts.get("failed_audit", 0) or 0)
+    transient_timeouts = int(counts.get("transient_timeouts", 0) or 0)
+    if log_errors >= 10:
+        add(
+            "log_errors",
+            "日志错误",
+            "fail",
+            f"近期日志错误/异常关键字 {log_errors} 条，数量偏高。",
+            "打开日志中心筛选错误，先处理最早和重复次数最多的错误。",
+        )
+    elif log_errors:
+        add(
+            "log_errors",
+            "日志错误",
+            "warn",
+            f"近期日志错误/异常关键字 {log_errors} 条。",
+            "确认是否只是偶发错误；真实异常应先处理再作为完整稳定版候选。",
+        )
+    else:
+        add("log_errors", "日志错误", "ok", "近期没有真实日志错误。")
+
+    if failed_audit:
+        add(
+            "failed_audit",
+            "后台操作审计",
+            "warn",
+            f"最近有 {failed_audit} 条失败的后台操作。",
+            "打开审计记录确认失败操作是否已经重试成功。",
+        )
+    else:
+        add("failed_audit", "后台操作审计", "ok", "最近没有失败的后台操作。")
+
+    if transient_timeouts >= 10:
+        add(
+            "transient_timeouts",
+            "网络重试噪声",
+            "warn",
+            f"近期可自动重试的网络超时 {transient_timeouts} 条。",
+            "如果 Bot 回复和推送正常，可以继续观察；持续增多时检查服务器到 Telegram/API 的网络。",
+        )
+    else:
+        add("transient_timeouts", "网络重试噪声", "ok", "网络超时在可接受范围内。")
+
+    fail_count = sum(1 for item in checks if item.get("status") == "fail")
+    warn_count = sum(1 for item in checks if item.get("status") == "warn")
+    ok_count = sum(1 for item in checks if item.get("status") == "ok")
+    score = max(0, min(100, 100 - fail_count * 25 - warn_count * 8))
+
+    if fail_count:
+        status = "blocked"
+        label = "还不能作为完整稳定版"
+        summary = "存在阻断项，先处理服务、配置、日志或验收问题，再继续推进下一阶段。"
+        next_version_goal = "先把诊断报告清到无阻断，再重新执行 stable-check。"
+    elif warn_count:
+        status = "candidate"
+        label = "准稳定候选"
+        summary = "核心服务可运行，但仍有观察项；适合继续跑一段时间并保存新的验收记录。"
+        next_version_goal = "连续两次验收达标且问题中心无警告后，再进入完整候选。"
+    else:
+        status = "complete_candidate"
+        label = "完整稳定版候选"
+        summary = "当前快照、问题中心、日志、审计和验收历史都达到长期运行候选标准。"
+        next_version_goal = "可以进入 v1 完整稳定收口或 v2.0 功能规划。"
+
+    requirements = [
+        "后台核心服务运行正常",
+        "当前 stable-check 达标",
+        "问题中心没有严重项和警告项",
+        "近期没有真实日志错误和失败审计",
+        "至少保留两次稳定版达标历史",
+    ]
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "score": score,
+        "ok_count": ok_count,
+        "warn_count": warn_count,
+        "fail_count": fail_count,
+        "checks": checks,
+        "requirements": requirements,
+        "next_version_goal": next_version_goal,
+    }
+
+
 def stability_latest_path(data_dir: Path | None = None) -> Path:
     return (data_dir or Settings.load().data_dir) / STABILITY_LATEST_FILE
 
@@ -2186,6 +2375,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     snapshot["stability"] = build_stability_checks(snapshot)
     snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
     snapshot["problem_center"] = build_problem_center(snapshot)
+    snapshot["release_readiness"] = build_release_readiness(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -4094,6 +4284,15 @@ INDEX_HTML = r"""<!doctype html>
       lines.push(`生成时间: ${data.generated_at || ""}`);
       lines.push(`版本: ${git.version || ""} ${git.branch || ""} ${git.commit || ""}`);
       lines.push("");
+      const releaseReadiness = data.release_readiness || {};
+      const releaseChecks = releaseReadiness.checks || [];
+      lines.push("长期运行就绪度:");
+      lines.push(`- 状态: ${releaseReadiness.label || ""} ${releaseReadiness.summary || ""}`);
+      lines.push(`- 评分: ${releaseReadiness.score ?? ""}`);
+      lines.push(`- 计数: 通过 ${releaseReadiness.ok_count || 0} | 警告 ${releaseReadiness.warn_count || 0} | 阻断 ${releaseReadiness.fail_count || 0}`);
+      lines.push(`- 下一目标: ${releaseReadiness.next_version_goal || ""}`);
+      releaseChecks.forEach(item => lines.push(`- ${item.label || ""}: ${item.status || ""} ${item.detail || ""}${item.action ? ` | 建议: ${item.action}` : ""}`));
+      lines.push("");
       const problemCenter = data.problem_center || {};
       const problemCounts = problemCenter.counts || {};
       lines.push("问题中心总览:");
@@ -4219,6 +4418,57 @@ INDEX_HTML = r"""<!doctype html>
       if (value === "attention" || value === "warn") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">关注</span>`;
       if (value === "blocked" || value === "fail") return statusPill("未达标", false);
       return neutralPill(value || "未知");
+    }
+    function releaseReadinessStatusPill(status) {
+      const value = String(status || "");
+      if (value === "complete_candidate") return statusPill("完整稳定版候选", true);
+      if (value === "candidate") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">准稳定候选</span>`;
+      if (value === "blocked") return statusPill("需要处理", false);
+      return neutralPill(value || "未知");
+    }
+    function releaseReadinessPanel(readiness) {
+      const data = readiness || {};
+      const checks = data.checks || [];
+      const requirements = data.requirements || [];
+      const score = Number(data.score || 0);
+      const checkRows = checks.length ? checks.map(item => `
+        <tr>
+          <td>${escapeHtml(item.label || "")}</td>
+          <td>${stabilityStatusPill(item.status)}</td>
+          <td>${escapeHtml(item.detail || "")}</td>
+          <td>${escapeHtml(item.action || "无需处理")}</td>
+        </tr>
+      `).join("") : tableEmpty(4, "暂无长期运行就绪度", "刷新诊断报告后会生成完整候选评估。");
+      return `
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">长期运行就绪度</h3>
+              <div class="summary-meta">${escapeHtml(data.summary || "把稳定版验收、问题中心、日志、审计和验收历史合成一个长期运行结论。")}</div>
+            </div>
+            <div class="issue-meta">
+              ${releaseReadinessStatusPill(data.status)}
+              ${neutralPill(`评分 ${score}/100`)}
+              ${Number(data.fail_count || 0) ? statusPill(`${data.fail_count} 阻断`, false) : ""}
+              ${Number(data.warn_count || 0) ? neutralPill(`${data.warn_count} 警告`) : ""}
+            </div>
+          </div>
+          <div class="mini-metrics">
+            <div class="mini-metric"><div class="label">就绪评分</div><div class="value">${neutralPill(`${score}/100`)}</div><div class="muted">阻断扣 25，警告扣 8</div></div>
+            <div class="mini-metric"><div class="label">通过项</div><div class="value">${neutralPill(String(data.ok_count || 0))}</div><div class="muted">当前满足的门槛</div></div>
+            <div class="mini-metric"><div class="label">警告项</div><div class="value">${Number(data.warn_count || 0) ? neutralPill(String(data.warn_count)) : neutralPill("0")}</div><div class="muted">不一定阻断，但建议确认</div></div>
+            <div class="mini-metric"><div class="label">阻断项</div><div class="value">${Number(data.fail_count || 0) ? statusPill(String(data.fail_count), false) : neutralPill("0")}</div><div class="muted">需要先处理</div></div>
+          </div>
+          <div class="readable-list" style="margin-top:10px">
+            ${row("下一版本目标", textValue(data.next_version_goal || "暂无"))}
+            ${row("完整候选门槛", textValue(requirements.join("；") || "暂无"))}
+          </div>
+          <table class="table" style="margin-top:10px">
+            <thead><tr><th>检查项</th><th>状态</th><th>当前情况</th><th>建议动作</th></tr></thead>
+            <tbody>${checkRows}</tbody>
+          </table>
+        </div>
+      `;
     }
     function stabilityCards(stability) {
       const checks = (stability && stability.checks) || [];
@@ -4403,11 +4653,13 @@ INDEX_HTML = r"""<!doctype html>
       const stability = data.stability || {};
       const stabilityHistory = data.stability_history || {};
       const problemCenter = data.problem_center || {};
+      const releaseReadiness = data.release_readiness || {};
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
-        ${renderPageIntro("report", [data.generated_at || "", problemCenter.label || stability.label || "稳定版自检", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${renderPageIntro("report", [data.generated_at || "", releaseReadiness.label || problemCenter.label || stability.label || "稳定版自检", releaseReadiness.score !== undefined ? `就绪度 ${releaseReadiness.score}/100` : "就绪度未生成", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${releaseReadinessPanel(releaseReadiness)}
         ${problemCenterPanel(problemCenter)}
         <div class="panel span-12">
           <div class="summary-head">
