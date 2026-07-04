@@ -611,6 +611,42 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["transient_count"], 3)
         self.assertEqual(len(payload["transient_lines"]), 3)
 
+    def test_log_error_excerpt_ignores_web_client_disconnect_noise(self) -> None:
+        def fake_logs(target: str, lines: int) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source": f"fake:{target}",
+                "text": (
+                    "Jul 04 11:07:34 python[206331]: Exception occurred during processing of request from ('112.46.214.29', 4909)\n"
+                    "Jul 04 11:07:34 python[206331]: Traceback (most recent call last):\n"
+                    "Jul 04 11:07:34 python[206331]: ConnectionResetError: [Errno 104] Connection reset by peer\n"
+                ),
+            }
+
+        with patch.object(web, "logs_payload", side_effect=fake_logs):
+            payload = web.log_error_excerpt("web", lines=80, limit=10)
+
+        self.assertEqual(payload["error_count"], 0)
+        self.assertEqual(payload["transient_count"], 3)
+        self.assertEqual(len(payload["transient_lines"]), 3)
+
+    def test_log_error_excerpt_keeps_real_web_traceback_errors(self) -> None:
+        def fake_logs(target: str, lines: int) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source": f"fake:{target}",
+                "text": (
+                    "Jul 04 11:10:00 python[206331]: Traceback (most recent call last):\n"
+                    "Jul 04 11:10:00 python[206331]: ValueError: bad config\n"
+                ),
+            }
+
+        with patch.object(web, "logs_payload", side_effect=fake_logs):
+            payload = web.log_error_excerpt("web", lines=80, limit=10)
+
+        self.assertEqual(payload["error_count"], 1)
+        self.assertEqual(payload["lines"], ["Jul 04 11:10:00 python[206331]: ValueError: bad config"])
+
     def test_ops_snapshot_does_not_recommend_low_transient_timeouts_as_errors(self) -> None:
         snapshot = {
             "health": [{"label": "主服务", "status": "ok"}],

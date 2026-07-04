@@ -1430,6 +1430,14 @@ ERROR_LINE_RE = re.compile(
     r"(\b[a-z0-9_]*error\b|traceback|exception|failed|fatal|\breadtimeout\b|(?<![_a-z0-9])timeout\b|timed out|denied|forbidden|失败|异常|错误|超时|拒绝)",
     re.I,
 )
+WEB_CLIENT_DISCONNECT_RE = re.compile(
+    r"(ConnectionResetError|ConnectionAbortedError|BrokenPipeError|\[Errno\s+104\]\s+Connection reset by peer|\[Errno\s+32\]\s+Broken pipe)",
+    re.I,
+)
+WEB_CLIENT_DISCONNECT_CONTEXT_RE = re.compile(
+    r"(Exception occurred during processing of request from|Traceback \(most recent call last\):)",
+    re.I,
+)
 EMPTY_ERROR_FIELD_RE = re.compile(
     r"""(?ix)
     (?:["']?[a-z0-9_]*errors?["']?)\s*[:=]\s*
@@ -1468,11 +1476,21 @@ def is_transient_log_line(line: str) -> bool:
     return bool(TRANSIENT_LOG_RE.search(str(line or "")))
 
 
+def is_ignorable_log_line(target: str, line: str) -> bool:
+    if str(target or "").lower() != "web":
+        return False
+    text = str(line or "")
+    return bool(WEB_CLIENT_DISCONNECT_RE.search(text) or WEB_CLIENT_DISCONNECT_CONTEXT_RE.search(text))
+
+
 def log_error_excerpt(target: str, *, lines: int = 300, limit: int = 20) -> dict[str, Any]:
     payload = logs_payload(target, lines)
     raw_lines = str(payload.get("text") or "").splitlines()
-    transient_lines = [line for line in raw_lines if is_transient_log_line(line)]
-    error_lines = [line for line in raw_lines if is_error_log_line(line) and not is_transient_log_line(line)]
+    transient_lines = [line for line in raw_lines if is_transient_log_line(line) or is_ignorable_log_line(target, line)]
+    error_lines = [
+        line for line in raw_lines
+        if is_error_log_line(line) and not is_transient_log_line(line) and not is_ignorable_log_line(target, line)
+    ]
     selected = error_lines[-limit:]
     selected_transient = transient_lines[-limit:]
     return {
