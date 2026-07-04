@@ -42,6 +42,23 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["display_value"], "-1001234567890")
 
+    def test_config_payload_exposes_engineered_field_explanations(self) -> None:
+        payload = web.config_payload(Path("__missing_env_for_test__"))
+
+        fields = {
+            item["key"]: item
+            for items in payload["sections"].values()
+            for item in items
+        }
+
+        self.assertIn("群推送机器人令牌", fields["TG_BOT_TOKEN"]["purpose"])
+        self.assertIn("Telegram 真实推送", fields["TG_CHAT_ID"]["affects"])
+        self.assertIn("自动重启 AI 助手服务", fields["AI_MODEL"]["apply"])
+        self.assertIn("自动延迟重启 Web 控制台", fields["WEB_PORT"]["apply"])
+        self.assertIn("资金费率警报", fields["FUNDING_ALERT_INTERVAL_SEC"]["affects"])
+        self.assertIn("结构雷达", fields["STRUCTURE_MIN_SCORE"]["affects"])
+        self.assertIn("不影响市值数据", fields["COINALYZE_API_KEY"]["affects"])
+
     def test_config_payload_exposes_ai_assistant_secret_values(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
@@ -663,6 +680,18 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("还没有匹配的监控提醒", html)
         self.assertIn("禁止任意命令", html)
         self.assertIn("保存后自动重启", html)
+        self.assertIn("fieldExplainHtml", html)
+        self.assertIn("configFieldAllowed", html)
+        self.assertIn("做什么", html)
+        self.assertIn("影响什么", html)
+        self.assertIn("改完是否自动重启", html)
+        self.assertIn("AI Bot", html)
+        self.assertIn("价格提醒", html)
+        self.assertIn("主雷达参数", html)
+        self.assertIn("行情源 / 外部接口", html)
+        self.assertIn("保存后怎么生效", html)
+        self.assertIn("excludeKeys", html)
+        self.assertIn("price-alerts", html)
         self.assertIn("配置中心", html)
         self.assertIn("日志中心", html)
         self.assertIn("审计记录", html)

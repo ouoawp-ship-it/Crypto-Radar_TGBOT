@@ -192,6 +192,29 @@ TOPIC_SUMMARY_ROUTE_KEYS: dict[str, str] = {
     "TG_STRUCTURE_REVIEW": "structure_review",
 }
 
+CONFIG_FIELD_PURPOSE: dict[str, str] = {
+    "TG_BOT_TOKEN": "群推送机器人令牌，用来把雷达信号发送到 Telegram。",
+    "TG_CHAT_ID": "群、频道或超级群 ID，决定群推送机器人把消息发到哪里。",
+    "TELEGRAM_USE_TOPIC": "控制群推送是否使用 Telegram 话题。",
+    "TG_AUTO_CREATE_TOPICS": "开启后系统会按资金摘要、启动预警、资金流等模板自动创建话题并记录路由。",
+    "TG_TOPIC_ID": "没有单独话题 ID 时使用的默认话题。",
+    "WEB_HOST": "Web 后台监听地址。普通部署保持 0.0.0.0 即可让服务器 IP 可以访问。",
+    "WEB_PORT": "Web 后台访问端口。默认 8080。",
+    "WEB_ADMIN_TOKEN": "Web 后台访问令牌，控制谁能进入管理后台。",
+    "TG_TOPIC_INTRO_ENABLE": "控制自动话题创建后是否发送话题说明。",
+    "TG_TOPIC_INTRO_PIN": "控制话题说明是否置顶。",
+    "CLEANUP_ENABLE": "控制后台是否按计划清理临时文件、过期图表和超限历史记录。",
+    "LIQUIDITY_FALLBACK_ENABLE": "控制结构雷达是否使用外部盘口/清算数据做辅助确认。",
+    "BINANCE_ORDERBOOK_LIQUIDITY_ENABLE": "控制结构雷达是否读取 Binance 盘口深度做流动性墙确认。",
+    "STRUCTURE_RADAR_ENABLE": "结构雷达总开关，关闭后不再发送结构突破类信号。",
+    "STRUCTURE_REVIEW_ENABLE": "结构复盘总开关，关闭后不再发送结构信号复盘统计。",
+    "COINALYZE_ENABLE": "控制是否启用 Coinalyze 作为结构雷达外部确认数据源。",
+    "COINALYZE_API_KEY": "Coinalyze 接口令牌，只用于可选外部确认，不用于市值数据。",
+    "RADAR_SUMMARY_MIN_INTERVAL_SEC": "资金摘要最小推送间隔，控制摘要消息安静程度。",
+    "FLOW_INTERVAL_SEC": "资金流雷达统计窗口长度，按完整闭合窗口统计资金流。",
+    "FLOW_SCAN_LIMIT": "资金流雷达每轮扫描多少个币。",
+}
+
 
 CLI_ACTIONS: dict[str, dict[str, Any]] = {
     "telegram-test": {
@@ -290,6 +313,61 @@ def read_topic_routes(path: Path) -> dict[str, dict[str, str]]:
     return result
 
 
+def config_field_explain(field: ConfigField) -> dict[str, str]:
+    key = field.key
+    if key in CONFIG_FIELD_PURPOSE:
+        purpose = CONFIG_FIELD_PURPOSE[key]
+    elif key.endswith("_TOPIC_ID"):
+        purpose = f"指定“{field.label.replace('话题 ID', '')}”推送使用哪个 Telegram 话题。"
+    elif key.startswith("FUNDING_ALERT_"):
+        purpose = field.help or f"调整资金费率警报里的“{field.label}”。"
+    elif key.startswith("STRUCTURE_"):
+        purpose = field.help or f"调整结构雷达里的“{field.label}”。"
+    elif key.startswith("LAUNCH_FUNDING_") or key == "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE":
+        purpose = field.help or f"调整启动预警推送里的“{field.label}”。"
+    elif key.startswith("AI_"):
+        purpose = field.help or f"调整 AI 助手 Bot 里的“{field.label}”。"
+    elif key.startswith("LIQUIDITY_") or key.startswith("BINANCE_ORDERBOOK_"):
+        purpose = field.help or f"调整结构雷达外部确认里的“{field.label}”。"
+    else:
+        purpose = field.help or f"配置“{field.label}”。"
+
+    if key.startswith("TG_") or key == "TELEGRAM_USE_TOPIC" or key.endswith("_TOPIC_ID"):
+        affects = "Telegram 真实推送、话题路由、测试消息和 readiness 检查。"
+    elif key in WEB_CONFIG_KEYS:
+        affects = "Web 后台访问地址、端口或登录令牌。"
+    elif key in {"AI_PRICE_ALERTS_ENABLE", "AI_DEFAULT_CHAT_ID", "AI_ALERT_CHECK_INTERVAL_SEC"}:
+        affects = "AI 助手 Bot 的个人价格提醒、监控频率和 Web 创建提醒默认接收人。"
+    elif key in AI_CONFIG_KEYS:
+        affects = "AI 助手 Bot、AI 行情分析、允许用户/群组和币种档案读取。"
+    elif key.startswith("FUNDING_ALERT_"):
+        affects = "独立资金费率警报扫描、异常阈值、冷却、回复链和资金费率话题推送。"
+    elif key.startswith("STRUCTURE_"):
+        affects = "结构雷达信号数量、结构复盘、结构图数量和同币冷却。"
+    elif key.startswith("LAUNCH_FUNDING_") or key == "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE":
+        affects = "启动预警推送里的多交易所资金费率展示和结算周期识别。"
+    elif key in {"COINALYZE_ENABLE", "COINALYZE_API_KEY"}:
+        affects = "结构雷达外部确认；不影响市值数据。"
+    elif key.startswith("LIQUIDITY_") or key.startswith("BINANCE_ORDERBOOK_"):
+        affects = "结构雷达盘口墙、流动性确认和外部确认分数修正。"
+    elif key.startswith("FLOW_"):
+        affects = "资金流雷达的统计窗口、扫描范围和请求压力。"
+    elif key.startswith("RADAR_SUMMARY_"):
+        affects = "资金摘要推送频率。"
+    elif key in {"TG_TOPIC_INTRO_ENABLE", "TG_TOPIC_INTRO_PIN", "CLEANUP_ENABLE"}:
+        affects = "话题说明或运行垃圾清理行为。"
+    else:
+        affects = f"{field.section} 模块。"
+
+    if key in WEB_CONFIG_KEYS:
+        apply = "保存后自动延迟重启 Web 控制台；页面可能短暂断开。"
+    elif key in AI_CONFIG_KEYS:
+        apply = "保存后自动重启 AI 助手服务。"
+    else:
+        apply = "保存后自动重启主服务和结构雷达。"
+    return {"purpose": purpose, "affects": affects, "apply": apply}
+
+
 def config_payload(path: Path | None = None, topic_routes_path: Path | None = None) -> dict[str, Any]:
     env_path = path or ENV_FILE
     values = read_env_values(env_path)
@@ -324,6 +402,7 @@ def config_payload(path: Path | None = None, topic_routes_path: Path | None = No
             "minimum": field.minimum,
             "maximum": field.maximum,
             "help": field.help,
+            **config_field_explain(field),
         }
         sections.setdefault(field.section, []).append(item)
     return {
@@ -1721,6 +1800,28 @@ INDEX_HTML = r"""<!doctype html>
       text-align: right;
     }
     .field-help { color: var(--muted); font-size: 12px; }
+    .field-explain {
+      display: grid;
+      gap: 6px;
+      margin-top: 2px;
+      border: 1px solid rgba(93, 106, 115, .18);
+      border-radius: 6px;
+      padding: 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,.58), rgba(238,243,245,.48));
+    }
+    .field-explain-row {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      gap: 8px;
+      align-items: start;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .field-explain-label {
+      color: #34424a;
+      font-weight: 800;
+    }
     .section-title { margin: 2px 0 10px; font-size: 15px; }
     .output { margin-top: 12px; white-space: pre-wrap; }
     .result-panel {
@@ -1833,6 +1934,14 @@ INDEX_HTML = r"""<!doctype html>
       gap: 8px;
       align-content: start;
     }
+    .config-module-meta {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .config-module-meta strong { color: #34424a; }
     .config-module-card:hover {
       border-color: rgba(15, 118, 110, .42);
       box-shadow: 0 14px 30px rgba(20, 31, 36, .12), 0 1px 1px rgba(255,255,255,.75) inset;
@@ -1845,6 +1954,21 @@ INDEX_HTML = r"""<!doctype html>
       font-weight: 800;
       font-size: 15px;
     }
+    .config-category-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .config-category-summary > div {
+      border: 1px solid rgba(93, 106, 115, .18);
+      border-radius: 8px;
+      padding: 9px;
+      background: linear-gradient(135deg, rgba(255,255,255,.58), rgba(238,243,245,.46));
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .config-category-summary strong { display: block; color: #34424a; margin-bottom: 3px; }
     .api-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1980,6 +2104,7 @@ INDEX_HTML = r"""<!doctype html>
       .service-guide { grid-template-columns: 1fr; }
       .service-action { grid-template-columns: 1fr; }
       .api-grid { grid-template-columns: 1fr; }
+      .config-category-summary { grid-template-columns: 1fr; }
       .config-module-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       .field-heading { grid-template-columns: 1fr; }
@@ -2444,50 +2569,123 @@ INDEX_HTML = r"""<!doctype html>
         id: "telegram",
         label: "Telegram 推送",
         desc: "群推送机器人 Token、群 ID、话题 ID、自动创建话题等消息入口配置。",
+        impact: "影响群推送、话题路由、测试消息和 readiness。",
+        apply: "保存后自动重启主服务和结构雷达。",
         sections: ["Telegram"]
       },
       {
         id: "ai",
-        label: "AI 助手配置",
-        desc: "独立 AI Bot、允许用户/群组、价格提醒、AI 接口地址、模型和超时配置。",
-        sections: ["AI 助手"]
+        label: "AI Bot",
+        desc: "独立 AI Bot、允许用户/群组、AI 接口地址、模型、提示词文件和币种档案索引。",
+        impact: "影响私聊 AI、行情分析、群内 @ 调用和币种档案读取。",
+        apply: "保存后自动重启 AI 助手服务。",
+        sections: ["AI 助手"],
+        excludeKeys: ["AI_PRICE_ALERTS_ENABLE", "AI_DEFAULT_CHAT_ID", "AI_ALERT_CHECK_INTERVAL_SEC"]
+      },
+      {
+        id: "price-alerts",
+        label: "价格提醒",
+        desc: "AI Bot 私聊里的手动价格提醒开关、默认接收人和提醒扫描间隔。",
+        impact: "影响目标价、急涨急跌、OI、资金费率等个人提醒的检测和推送。",
+        apply: "保存后自动重启 AI 助手服务。",
+        sections: ["AI 助手"],
+        keys: ["AI_PRICE_ALERTS_ENABLE", "AI_DEFAULT_CHAT_ID", "AI_ALERT_CHECK_INTERVAL_SEC"]
       },
       {
         id: "radar",
-        label: "雷达参数",
-        desc: "资金摘要、资金流、启动雷达、结构雷达、盘口确认和结构复盘建议参数。",
+        label: "主雷达参数",
+        desc: "资金摘要和资金流雷达的推送间隔、统计窗口和扫描范围。",
+        impact: "影响主服务里的资金摘要和资金流雷达，不直接影响 AI Bot。",
+        apply: "保存后自动重启主服务和结构雷达。",
         sections: ["雷达参数"],
-        special: "structure"
+        keys: ["RADAR_SUMMARY_MIN_INTERVAL_SEC", "FLOW_INTERVAL_SEC", "FLOW_SCAN_LIMIT"]
       },
       {
         id: "funding",
         label: "资金费率警报",
-        desc: "独立资金费率警报的扫描间隔、交易所、极端阈值、回复追踪和衰减规则。",
-        sections: ["资金费率警报"]
+        desc: "独立资金费率警报，以及启动预警里多交易所资金费率展示相关参数。",
+        impact: "影响资金费率警报话题、启动信号里的资金费率备注、阈值、冷却和回复链。",
+        apply: "保存后自动重启主服务和结构雷达。",
+        sections: ["资金费率警报", "雷达参数"],
+        keys: [
+          "FUNDING_ALERT_ENABLE",
+          "FUNDING_ALERT_INTERVAL_SEC",
+          "FUNDING_ALERT_SCAN_LIMIT",
+          "FUNDING_ALERT_EXCHANGES",
+          "FUNDING_ALERT_EXTREME_NEGATIVE_PCT",
+          "FUNDING_ALERT_SUPER_NEGATIVE_PCT",
+          "FUNDING_ALERT_EXTREME_POSITIVE_PCT",
+          "FUNDING_ALERT_MIN_EXCHANGE_COUNT",
+          "FUNDING_ALERT_DIVERGENCE_PCT",
+          "FUNDING_ALERT_COOLDOWN_SEC",
+          "FUNDING_ALERT_REPLY_CHAIN_ENABLE",
+          "FUNDING_ALERT_DECAY_QUIET_SCANS",
+          "FUNDING_ALERT_END_QUIET_SCANS",
+          "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE",
+          "LAUNCH_FUNDING_EXCHANGES",
+          "LAUNCH_FUNDING_HISTORY_LIMIT"
+        ]
+      },
+      {
+        id: "structure",
+        label: "结构雷达",
+        desc: "结构雷达开关、扫描数量、临界距离、最低分、结构图数量、同币冷却和复盘建议。",
+        impact: "影响结构突破信号数量、图片刷屏程度、假突破过滤和结构复盘统计。",
+        apply: "保存后自动重启主服务和结构雷达。",
+        sections: ["模块开关", "雷达参数"],
+        keys: [
+          "STRUCTURE_RADAR_ENABLE",
+          "STRUCTURE_REVIEW_ENABLE",
+          "STRUCTURE_TOP_SYMBOLS",
+          "STRUCTURE_NEAR_EDGE_PCT",
+          "STRUCTURE_MIN_SCORE",
+          "STRUCTURE_SEND_CHART_TOP_N",
+          "STRUCTURE_COOLDOWN_SEC"
+        ],
+        special: "structure"
+      },
+      {
+        id: "market",
+        label: "行情源 / 外部接口",
+        desc: "Binance、CoinPaprika、Coinalyze、盘口深度和外部确认相关配置说明。",
+        impact: "影响结构雷达外部确认、盘口墙、流动性辅助和可选 Coinalyze 数据。",
+        apply: "保存后自动重启主服务和结构雷达。",
+        sections: ["Coinalyze", "模块开关", "雷达参数"],
+        keys: [
+          "COINALYZE_ENABLE",
+          "COINALYZE_API_KEY",
+          "LIQUIDITY_FALLBACK_ENABLE",
+          "BINANCE_ORDERBOOK_LIQUIDITY_ENABLE",
+          "LIQUIDITY_SCORE_MAX_DELTA",
+          "LIQUIDITY_MIN_DISTANCE_PCT",
+          "LIQUIDITY_MAX_DISTANCE_PCT",
+          "BINANCE_ORDERBOOK_DEPTH_LIMIT"
+        ],
+        special: "api"
       },
       {
         id: "switches",
         label: "模块开关",
-        desc: "话题说明、自动清理、结构雷达、结构复盘、外部确认等总开关。",
-        sections: ["模块开关"]
-      },
-      {
-        id: "external",
-        label: "外部接口",
-        desc: "查看 Binance、CoinPaprika、Coinalyze、CoinMarketCap 等数据源用途，并配置可选 Coinalyze Key。",
-        sections: ["Coinalyze"],
-        special: "api"
+        desc: "话题说明置顶和运行垃圾清理这类通用开关。",
+        impact: "影响话题说明展示、置顶和 cleanup 行为。",
+        apply: "保存后自动重启主服务和结构雷达。",
+        sections: ["模块开关"],
+        keys: ["TG_TOPIC_INTRO_ENABLE", "TG_TOPIC_INTRO_PIN", "CLEANUP_ENABLE"]
       },
       {
         id: "web",
         label: "Web 控制台",
         desc: "Web 后台监听地址、访问端口和访问令牌配置。",
+        impact: "影响浏览器打开后台的地址、端口和登录令牌。",
+        apply: "保存后自动延迟重启 Web 控制台。",
         sections: ["Web 控制台"]
       },
       {
         id: "backup",
         label: "备份恢复",
         desc: "查看、恢复或删除 Web 自动生成的 .env.oi 配置备份。",
+        impact: "影响 .env.oi 配置文件回滚，不直接改变源码。",
+        apply: "恢复备份后会自动应用新配置；删除备份不会重启服务。",
         sections: [],
         special: "backup"
       }
@@ -3367,9 +3565,15 @@ INDEX_HTML = r"""<!doctype html>
     function configCategoryById(id) {
       return configCategories.find(item => item.id === id) || configCategories[0];
     }
+    function configFieldAllowed(category, field) {
+      if (!field || !field.key) return false;
+      if (category.keys && category.keys.length) return category.keys.includes(field.key);
+      if (category.excludeKeys && category.excludeKeys.includes(field.key)) return false;
+      return true;
+    }
     function configFieldsForCategory(category) {
       const sections = (latestConfigData && latestConfigData.sections) || {};
-      return category.sections.flatMap(section => sections[section] || []);
+      return category.sections.flatMap(section => sections[section] || []).filter(field => configFieldAllowed(category, field));
     }
     function renderConfigCategoryBar() {
       const bar = document.getElementById("configCategoryBar");
@@ -3389,6 +3593,10 @@ INDEX_HTML = r"""<!doctype html>
             return `<button class="config-module-card" type="button" onclick="selectConfigCategory('${escapeHtml(item.id)}')">
               <span class="config-module-title"><span>${escapeHtml(item.label)}</span>${neutralPill(countText)}</span>
               <span class="muted">${escapeHtml(item.desc)}</span>
+              <span class="config-module-meta">
+                <span><strong>影响：</strong>${escapeHtml(item.impact || "对应功能模块")}</span>
+                <span><strong>保存后：</strong>${escapeHtml(item.apply || "按保存预检自动应用")}</span>
+              </span>
             </button>`;
           }).join("")}
         </div>
@@ -3425,6 +3633,10 @@ INDEX_HTML = r"""<!doctype html>
             <button class="btn" type="button" onclick="selectConfigCategory('home')">返回配置首页</button>
           </div>
           <div class="hint">${escapeHtml(category.desc)}</div>
+          <div class="config-category-summary">
+            <div><strong>影响什么</strong>${escapeHtml(category.impact || "对应功能模块。")}</div>
+            <div><strong>保存后怎么生效</strong>${escapeHtml(category.apply || "按保存预检自动应用。")}</div>
+          </div>
         </div>`
       ];
       if (category.special === "api") parts.push(apiSourcePanel());
@@ -3446,6 +3658,16 @@ INDEX_HTML = r"""<!doctype html>
       if (field.source === "auto_route") return `当前使用：${display}（自动话题：${field.route_name || "已记录"}）`;
       return `当前使用：${display}`;
     }
+    function fieldExplainHtml(field) {
+      const rows = [
+        ["做什么", field.purpose || field.help || `配置 ${field.label}`],
+        ["影响什么", field.affects || "影响对应功能模块。"],
+        ["改完是否自动重启", field.apply || "保存后按预检结果自动应用。"]
+      ];
+      return `<div class="field-explain">${rows.map(([label, value]) => `
+        <div class="field-explain-row"><span class="field-explain-label">${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>
+      `).join("")}</div>`;
+    }
     function fieldHtml(field) {
       const key = escapeHtml(field.key);
       const label = escapeHtml(field.label);
@@ -3454,16 +3676,17 @@ INDEX_HTML = r"""<!doctype html>
       if (field.help) helpParts.push(escapeHtml(field.help));
       if (field.source === "auto_route") helpParts.push("当前 ID 来自自动创建的话题路由文件；输入新值并保存后会写入 .env.oi。");
       const help = helpParts.map(text => `<div class="field-help">${text}</div>`).join("");
+      const explain = fieldExplainHtml(field);
       if (field.kind === "bool") {
         const raw = String(field.value || "").trim().toLowerCase();
         const selectedTrue = ["true", "1", "yes", "on", "y"].includes(raw) ? "selected" : "";
         const selectedFalse = ["false", "0", "no", "off", "n"].includes(raw) ? "selected" : "";
-        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select>${help}</div>`;
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><select data-key="${key}"><option value="true" ${selectedTrue}>开启</option><option value="false" ${selectedFalse}>关闭</option></select>${help}${explain}</div>`;
       }
       if (field.secret) {
-        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">当前值会完整显示；输入新值才会替换当前值，留空保存不会改动。</div>${help}</div>`;
+        return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><div class="secret-row"><input data-key="${key}" type="password" placeholder="输入新值才会替换当前值"><button class="btn" type="button" onclick="clearSecret('${key}')">清空</button></div><div class="field-help">当前值会完整显示；输入新值才会替换当前值，留空保存不会改动。</div>${help}${explain}</div>`;
       }
-      return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}">${help}</div>`;
+      return `<div class="field"><div class="field-heading"><label>${label}</label><span class="field-current">${current}</span></div><input data-key="${key}" value="${escapeHtml(field.value || "")}">${help}${explain}</div>`;
     }
     const clearKeys = new Set();
     function clearSecret(key) {
