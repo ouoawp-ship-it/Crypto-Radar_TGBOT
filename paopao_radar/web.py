@@ -1443,6 +1443,9 @@ TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
 TRANSIENT_LOG_RE = re.compile(r"(getUpdates failed ReadTimeout|Read timed out|read timeout=\d+)", re.I)
 SEMVER_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9_.-]+)?$")
+STABILITY_LATEST_FILE = "stable_check_latest.json"
+STABILITY_HISTORY_FILE = "stable_check_history.json"
+STABILITY_HISTORY_LIMIT = 30
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -1799,8 +1802,108 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def stability_latest_path(data_dir: Path | None = None) -> Path:
+    return (data_dir or Settings.load().data_dir) / STABILITY_LATEST_FILE
+
+
+def stability_history_path(data_dir: Path | None = None) -> Path:
+    return (data_dir or Settings.load().data_dir) / STABILITY_HISTORY_FILE
+
+
+def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
+    stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
+    logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    log_error_total = sum(
+        int(item.get("error_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    transient_total = sum(
+        int(item.get("transient_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    return {
+        "ts": now_text(),
+        "generated_at": snapshot.get("generated_at", ""),
+        "status": stability.get("status", "unknown"),
+        "label": stability.get("label", "未知"),
+        "summary": stability.get("summary", ""),
+        "version": git.get("version", "unknown"),
+        "branch": git.get("branch", "unknown"),
+        "commit": git.get("commit", "unknown"),
+        "ok_count": int(stability.get("ok_count", 0) or 0),
+        "warn_count": int(stability.get("warn_count", 0) or 0),
+        "fail_count": int(stability.get("fail_count", 0) or 0),
+        "issue_count": len(issues),
+        "log_error_count": log_error_total,
+        "transient_count": transient_total,
+    }
+
+
+def load_stability_history(data_dir: Path | None = None, limit: int = STABILITY_HISTORY_LIMIT) -> list[dict[str, Any]]:
+    path = stability_history_path(data_dir)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = payload if isinstance(payload, list) else payload.get("records", []) if isinstance(payload, dict) else []
+    records = [row for row in rows if isinstance(row, dict)]
+    return records[: max(1, min(STABILITY_HISTORY_LIMIT, int(limit or STABILITY_HISTORY_LIMIT)))]
+
+
+def save_stability_snapshot(
+    snapshot: dict[str, Any],
+    data_dir: Path | None = None,
+    limit: int = STABILITY_HISTORY_LIMIT,
+) -> dict[str, Any]:
+    base_dir = data_dir or Settings.load().data_dir
+    base_dir.mkdir(parents=True, exist_ok=True)
+    latest_path = stability_latest_path(base_dir)
+    history_path = stability_history_path(base_dir)
+    latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    record = stability_record_from_snapshot(snapshot)
+    records = [record]
+    records.extend(load_stability_history(base_dir, limit=limit))
+    trimmed = records[: max(1, min(STABILITY_HISTORY_LIMIT, int(limit or STABILITY_HISTORY_LIMIT)))]
+    history_path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "saved": True,
+        "latest_path": str(latest_path),
+        "history_path": str(history_path),
+        "record": record,
+        "history_count": len(trimmed),
+    }
+
+
+def stability_history_payload(data_dir: Path | None = None, limit: int = 8) -> dict[str, Any]:
+    base_dir = data_dir or Settings.load().data_dir
+    latest_path = stability_latest_path(base_dir)
+    latest_record: dict[str, Any] | None = None
+    if latest_path.exists():
+        try:
+            latest_snapshot = json.loads(latest_path.read_text(encoding="utf-8"))
+            if isinstance(latest_snapshot, dict):
+                latest_record = stability_record_from_snapshot(latest_snapshot)
+        except Exception:
+            latest_record = None
+    records = load_stability_history(base_dir, limit=limit)
+    return {
+        "latest_path": str(latest_path),
+        "history_path": str(stability_history_path(base_dir)),
+        "latest": latest_record,
+        "records": records,
+        "count": len(records),
+    }
+
+
 def ops_snapshot_payload() -> dict[str, Any]:
     summary = summary_payload()
+    settings = Settings.load()
     audit_all = web_audit_payload(limit=10, result="all")
     audit_failed = web_audit_payload(limit=10, result="failed")
     log_errors = {
@@ -1827,6 +1930,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     }
     snapshot["issues"] = build_ops_issues(snapshot)
     snapshot["stability"] = build_stability_checks(snapshot)
+    snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -3715,6 +3819,10 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("稳定版自检:");
       lines.push(`- 状态: ${stability.label || ""} ${stability.summary || ""}`);
       ((stability && stability.checks) || []).forEach(item => lines.push(`- ${item.label || ""}: ${item.status || ""} ${item.detail || ""}${item.action ? ` | 建议: ${item.action}` : ""}`));
+      const stabilityHistory = data.stability_history || {};
+      const latestStable = stabilityHistory.latest || null;
+      if (latestStable) lines.push(`- 最近保存: ${latestStable.ts || ""} ${latestStable.label || ""} ${latestStable.version || ""} ${latestStable.commit || ""}`);
+      ((stabilityHistory && stabilityHistory.records) || []).slice(0, 5).forEach(item => lines.push(`- 历史: ${item.ts || ""} ${item.label || ""} ${item.version || ""} ${item.commit || ""}`));
       lines.push("");
       lines.push("问题中心:");
       const issues = data.issues || [];
@@ -3839,6 +3947,33 @@ INDEX_HTML = r"""<!doctype html>
         `;
       }).join("")}</div>`;
     }
+    function stabilityHistoryPanel(history) {
+      const records = (history && history.records) || [];
+      const latest = (history && history.latest) || null;
+      const rows = records.length ? records.map(item => `
+        <tr>
+          <td>${escapeHtml(item.ts || item.generated_at || "")}</td>
+          <td>${stabilityStatusPill(item.status)}</td>
+          <td>${escapeHtml(item.version || "")} ${escapeHtml(item.commit || "")}</td>
+          <td>${escapeHtml(item.summary || "")}</td>
+        </tr>
+      `).join("") : tableEmpty(4, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
+      return `
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">验收历史</h3>
+              <div class="summary-meta">${latest ? `最近保存：${escapeHtml(latest.ts || latest.generated_at || "")} · ${escapeHtml(latest.label || "")}` : "还没有保存过稳定版验收结果"}</div>
+            </div>
+            ${neutralPill(`${Number((history && history.count) || 0)} 条`)}
+          </div>
+          <table class="table">
+            <thead><tr><th>时间</th><th>状态</th><th>版本</th><th>摘要</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
     function issueCards(issues) {
       if (!issues.length) {
         return emptyState("当前没有明确问题", "健康检查、失败审计、日志错误和网络超时都没有达到需要优先处理的程度。");
@@ -3880,6 +4015,7 @@ INDEX_HTML = r"""<!doctype html>
       const failedAudit = audit.failed_recent || [];
       const issues = data.issues || [];
       const stability = data.stability || {};
+      const stabilityHistory = data.stability_history || {};
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
@@ -3895,6 +4031,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           ${stabilityCards(stability)}
         </div>
+        ${stabilityHistoryPanel(stabilityHistory)}
         <div class="panel span-3 metric"><div class="label">健康项</div><div class="value">${neutralPill(String(health.length))}</div><div class="muted">含服务和配置门禁</div></div>
         <div class="panel span-3 metric"><div class="label">问题中心</div><div class="value">${issues.length ? statusPill(`${issues.length} 个`, !issues.some(item => item.severity !== "notice")) : neutralPill("暂无")}</div><div class="muted">按严重程度排序</div></div>
         <div class="panel span-3 metric"><div class="label">最近错误</div><div class="value">${recentErrors.length ? statusPill(`${recentErrors.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 检测</div></div>

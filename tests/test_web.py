@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 import paopao_radar.cli as cli
 from paopao_radar import web
+from paopao_radar.config import Settings
 
 
 class WebConsoleTests(unittest.TestCase):
@@ -380,16 +381,19 @@ class WebConsoleTests(unittest.TestCase):
                 ),
             }
 
-        with patch.object(web, "summary_payload", return_value=summary):
-            with patch.object(web, "web_audit_payload", return_value={"records": [], "total": 0, "matched": 0}):
-                with patch.object(web, "logs_payload", side_effect=fake_logs):
-                    payload = web.ops_snapshot_payload()
+        with TemporaryDirectory() as tmp:
+            with patch.object(web, "summary_payload", return_value=summary):
+                with patch.object(web, "web_audit_payload", return_value={"records": [], "total": 0, "matched": 0}):
+                    with patch.object(web, "logs_payload", side_effect=fake_logs):
+                        with patch.object(Settings, "load", return_value=Settings(data_dir=Path(tmp))):
+                            payload = web.ops_snapshot_payload()
 
         payload_text = json.dumps(payload, ensure_ascii=False)
         self.assertTrue(payload["ok"])
         self.assertIn("log_errors", payload)
         self.assertIn("issues", payload)
         self.assertIn("stability", payload)
+        self.assertIn("stability_history", payload)
         self.assertIn("recommendations", payload)
         self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
@@ -451,6 +455,44 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("后台服务", labels)
         self.assertIn("健康门禁", labels)
         self.assertIn("关键配置", labels)
+
+    def test_save_stability_snapshot_writes_latest_and_trimmed_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            first = {
+                "generated_at": "2026-07-04 08:00:00",
+                "git": {"version": "v1.37.0", "branch": "main", "commit": "aaa111"},
+                "stability": {"status": "ready", "label": "达到稳定版标准", "summary": "第一次", "ok_count": 7, "warn_count": 0, "fail_count": 0},
+                "issues": [],
+                "log_errors": {"main": {"error_count": 0, "transient_count": 0}},
+            }
+            second = {
+                "generated_at": "2026-07-04 09:00:00",
+                "git": {"version": "v1.37.0", "branch": "main", "commit": "bbb222"},
+                "stability": {"status": "attention", "label": "基本可运行，建议关注", "summary": "第二次", "ok_count": 6, "warn_count": 1, "fail_count": 0},
+                "issues": [{"severity": "warning"}],
+                "log_errors": {"ai": {"error_count": 1, "transient_count": 3}},
+            }
+            third = {
+                "generated_at": "2026-07-04 10:00:00",
+                "git": {"version": "v1.37.0", "branch": "main", "commit": "ccc333"},
+                "stability": {"status": "blocked", "label": "未达稳定版标准", "summary": "第三次", "ok_count": 4, "warn_count": 1, "fail_count": 2},
+                "issues": [{"severity": "critical"}],
+                "log_errors": {"main": {"error_count": 2, "transient_count": 0}},
+            }
+
+            web.save_stability_snapshot(first, data_dir=data_dir, limit=2)
+            web.save_stability_snapshot(second, data_dir=data_dir, limit=2)
+            result = web.save_stability_snapshot(third, data_dir=data_dir, limit=2)
+
+            latest = json.loads(Path(result["latest_path"]).read_text(encoding="utf-8"))
+            history = web.load_stability_history(data_dir=data_dir, limit=10)
+            payload = web.stability_history_payload(data_dir=data_dir, limit=10)
+
+        self.assertEqual(latest["stability"]["status"], "blocked")
+        self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
+        self.assertEqual(payload["latest"]["commit"], "ccc333")
+        self.assertEqual(payload["count"], 2)
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:

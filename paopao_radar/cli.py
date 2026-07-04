@@ -164,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
     parser.add_argument("--web-token", default="", help="web 控制台访问令牌；也可用 WEB_ADMIN_TOKEN")
     parser.add_argument("--json", action="store_true", help="用于 stable-check：输出完整 JSON 快照")
+    parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
     return parser
 
 
@@ -346,10 +347,12 @@ def _stable_check_status_label(status: str) -> str:
     }.get(str(status or ""), str(status or "未知"))
 
 
-def print_stable_check(as_json: bool = False) -> int:
-    from .web import ops_snapshot_payload
+def print_stable_check(as_json: bool = False, save: bool = True) -> int:
+    from .web import ops_snapshot_payload, save_stability_snapshot
 
     snapshot = ops_snapshot_payload()
+    if save:
+        snapshot["stability_saved"] = save_stability_snapshot(snapshot)
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     if as_json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
@@ -360,6 +363,11 @@ def print_stable_check(as_json: bool = False) -> int:
         print(f"版本: {git.get('version', '')} {git.get('branch', '')} {git.get('commit', '')}".strip())
         print(f"状态: {_stable_check_status_label(str(stability.get('status') or ''))}")
         print(f"摘要: {stability.get('summary') or ''}")
+        saved = snapshot.get("stability_saved", {}) if isinstance(snapshot.get("stability_saved"), dict) else {}
+        if saved.get("saved"):
+            print(f"记录: 已保存 latest/history，历史 {saved.get('history_count', 0)} 条")
+        elif not save:
+            print("记录: 本次未保存（--no-save）")
         print("")
         print("检查项:")
         checks = stability.get("checks", []) if isinstance(stability.get("checks"), list) else []
@@ -1550,7 +1558,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_ai_assistant_service()
     if args.command == "stable-check":
-        return print_stable_check(as_json=args.json)
+        return print_stable_check(as_json=args.json, save=not args.no_save)
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":

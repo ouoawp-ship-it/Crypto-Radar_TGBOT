@@ -126,13 +126,14 @@ class MainCommandTests(unittest.TestCase):
 
         with patch("paopao_radar.web.ops_snapshot_payload", return_value=snapshot):
             with redirect_stdout(StringIO()) as output:
-                code = main.main(["stable-check"])
+                code = main.main(["stable-check", "--no-save"])
 
         self.assertEqual(code, 0)
         text = output.getvalue()
         self.assertIn("泡泡雷达稳定版自检", text)
         self.assertIn("达到稳定版标准", text)
         self.assertIn("后台服务: 通过", text)
+        self.assertIn("本次未保存", text)
 
     def test_stable_check_json_outputs_snapshot_and_blocked_code(self) -> None:
         snapshot = {
@@ -147,7 +148,7 @@ class MainCommandTests(unittest.TestCase):
 
         with patch("paopao_radar.web.ops_snapshot_payload", return_value=snapshot):
             with redirect_stdout(StringIO()) as output:
-                code = main.main(["stable-check", "--json"])
+                code = main.main(["stable-check", "--json", "--no-save"])
 
         self.assertEqual(code, 2)
         self.assertEqual(__import__("json").loads(output.getvalue())["stability"]["status"], "blocked")
