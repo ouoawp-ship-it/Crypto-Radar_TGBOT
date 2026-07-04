@@ -509,6 +509,8 @@ class WebConsoleTests(unittest.TestCase):
         )
         scheduled.assert_called_once_with("restart-web")
         self.assertIn("自动应用", result["message"])
+        self.assertIn("impact", result)
+        self.assertTrue(any(item["service"] == web.WEB_SERVICE for item in result["impact"]["service_actions"]))
 
     def test_auto_apply_ai_config_restarts_only_ai_service(self) -> None:
         with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
@@ -518,6 +520,44 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([call.args[0] for call in service_action.call_args_list], ["restart-ai"])
         scheduled.assert_not_called()
+
+    def test_config_change_impact_describes_modules_services_and_warnings(self) -> None:
+        impact = web.config_change_impact(["WEB_PORT", "AI_API_KEY", "TG_CHAT_ID"])
+
+        self.assertIn("Web 控制台", impact["modules"])
+        self.assertIn("AI 助手", impact["modules"])
+        self.assertTrue(any(item["service"] == web.WEB_SERVICE and item["scheduled"] for item in impact["service_actions"]))
+        self.assertTrue(any(item["service"] == web.AI_SERVICE for item in impact["service_actions"]))
+        self.assertTrue(any("敏感配置" in item for item in impact["warnings"]))
+        self.assertTrue(any("Telegram" in item for item in impact["warnings"]))
+        self.assertIn("备份", impact["rollback"])
+
+    def test_config_impact_payload_validates_without_exposing_secret_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("WEB_PORT=8080\nAI_API_KEY=old-secret\n", encoding="utf-8")
+
+            result = web.config_impact_payload(
+                {"updates": {"WEB_PORT": "9090", "AI_API_KEY": "sk-secret-value-for-test"}, "clear": []},
+                path=env_path,
+            )
+
+        text = json.dumps(result, ensure_ascii=False)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["changed"], ["AI_API_KEY", "WEB_PORT"])
+        self.assertNotIn("sk-secret-value-for-test", text)
+        self.assertTrue(any(item["secret"] for item in result["impact"]["changed_fields"]))
+
+    def test_config_impact_payload_reports_validation_errors(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("WEB_PORT=8080\n", encoding="utf-8")
+
+            result = web.config_impact_payload({"updates": {"WEB_PORT": "99999"}, "clear": []}, path=env_path)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("WEB_PORT", result["errors"])
+        self.assertEqual(result["changed"], [])
 
     def test_auto_apply_signal_event_config_restarts_writers_and_ai(self) -> None:
         with patch.object(web, "run_service_action", return_value={"ok": True, "returncode": 0}) as service_action:
@@ -551,6 +591,12 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N", html)
         self.assertIn("配置已保存，后台服务正在自动应用", html)
         self.assertIn("配置改动预览", html)
+        self.assertIn("保存影响预检", html)
+        self.assertIn("/api/config-impact", html)
+        self.assertIn("fetchConfigImpact", html)
+        self.assertIn("影响模块", html)
+        self.assertIn("自动应用", html)
+        self.assertIn("回滚方式", html)
         self.assertIn("配置现在按功能模块分开管理", html)
         self.assertIn("配置中心", html)
         self.assertIn("日志中心", html)

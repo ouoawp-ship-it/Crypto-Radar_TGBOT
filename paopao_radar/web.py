@@ -850,10 +850,115 @@ def schedule_service_action(name: str, *, delay_sec: float = 1.2) -> dict[str, A
     }
 
 
+def config_field_info(key: str) -> dict[str, Any]:
+    field = EDITABLE_CONFIG.get(key)
+    if field is None:
+        return {"key": key, "label": key, "section": "未知", "secret": False, "kind": "text"}
+    return {"key": key, "label": field.label, "section": field.section, "secret": field.secret, "kind": field.kind}
+
+
+def config_change_impact(changed: list[str]) -> dict[str, Any]:
+    changed_keys = sorted({str(key) for key in changed if str(key)})
+    changed_set = set(changed_keys)
+    changed_fields = [config_field_info(key) for key in changed_keys]
+    modules = sorted({str(item.get("section") or "未知") for item in changed_fields})
+    sensitive_keys = [item["key"] for item in changed_fields if item.get("secret")]
+    service_actions: list[dict[str, Any]] = []
+
+    def add_service(action_name: str, reason: str, *, scheduled: bool = False) -> None:
+        service, action = SERVICE_ACTIONS[action_name]
+        service_actions.append(
+            {
+                "name": action_name,
+                "service": service,
+                "action": action,
+                "scheduled": scheduled,
+                "reason": reason,
+            }
+        )
+
+    standard_restart_keys = changed_set - WEB_CONFIG_KEYS - AI_CONFIG_KEYS
+    if standard_restart_keys or (changed_set & SIGNAL_EVENT_CONFIG_KEYS):
+        add_service("restart-main", "主服务需要重新读取 Telegram、雷达扫描、资金费率或信号索引相关配置。")
+        add_service("restart-structure", "结构雷达需要重新读取结构参数、话题、外部确认或信号索引相关配置。")
+    if changed_set & AI_CONFIG_KEYS:
+        add_service("restart-ai", "AI 助手需要重新读取 Bot Token、AI 接口、允许群组、价格提醒或币种档案配置。")
+    if changed_set & WEB_CONFIG_KEYS:
+        add_service("restart-web", "Web 控制台地址、端口或访问令牌变更后需要重启 Web 服务。", scheduled=True)
+
+    warnings: list[str] = []
+    if sensitive_keys:
+        labels = "、".join(EDITABLE_CONFIG.get(key, ConfigField(key, key, "")).label for key in sensitive_keys)
+        warnings.append(f"包含敏感配置：{labels}。审计和诊断只记录字段名，不记录具体值。")
+    if changed_set & {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}:
+        warnings.append("Web 入口配置会在保存返回后短暂重启；如果页面断开，稍后按新的地址或令牌重新打开。")
+    if changed_set & {"TG_BOT_TOKEN", "TG_CHAT_ID", "TELEGRAM_USE_TOPIC", "TG_AUTO_CREATE_TOPICS"} or any(key.endswith("_TOPIC_ID") for key in changed_set):
+        warnings.append("Telegram 推送配置会影响真实消息发送；保存后建议先执行 Telegram 测试消息或 readiness。")
+    if changed_set & {"AI_BOT_TOKEN", "AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "AI_ALLOWED_CHAT_IDS", "AI_PROVIDER_ENABLE"}:
+        warnings.append("AI 助手配置会影响私聊、行情分析和价格提醒；保存后建议到 AI 助手页确认服务状态。")
+    if changed_set & {"STRUCTURE_MIN_SCORE", "STRUCTURE_SEND_CHART_TOP_N", "STRUCTURE_NEAR_EDGE_PCT", "STRUCTURE_COOLDOWN_SEC"}:
+        warnings.append("结构雷达参数会改变信号数量、图片数量或同币冷却；保存后建议观察结构复盘和下一轮推送。")
+    if any(key.startswith("FUNDING_ALERT_") for key in changed_set):
+        warnings.append("资金费率警报参数会改变扫描频率、阈值或冷却；保存后建议手动扫描一次资金费率警报。")
+
+    if not changed_keys:
+        message = "没有检测到配置变更，不会重启服务。"
+    elif service_actions:
+        names = "、".join(item["service"] for item in service_actions)
+        message = f"保存后会自动应用，并影响这些服务：{names}。"
+    else:
+        message = "保存后不需要自动重启后台服务。"
+    return {
+        "changed": changed_keys,
+        "changed_fields": changed_fields,
+        "modules": modules,
+        "service_actions": service_actions,
+        "warnings": warnings,
+        "rollback": "保存前会自动生成 .env.oi Web 备份；如果改错，可到配置中心的备份恢复里恢复最近一次备份。",
+        "message": message,
+    }
+
+
+def config_impact_payload(data: dict[str, Any], *, path: Path | None = None) -> dict[str, Any]:
+    updates = data.get("updates", {})
+    clear = data.get("clear", [])
+    if not isinstance(updates, dict) or not isinstance(clear, list):
+        return {"ok": False, "errors": {"request": "updates 必须是对象，clear 必须是数组"}, "impact": config_change_impact([])}
+    clear_set = {str(item) for item in clear}
+    normalized: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    for key, value in updates.items():
+        field = EDITABLE_CONFIG.get(str(key))
+        if field is None:
+            errors[str(key)] = "不允许修改这个配置项"
+            continue
+        if field.secret and str(value).strip() == "" and str(key) not in clear_set:
+            continue
+        try:
+            normalized[str(key)] = "" if str(key) in clear_set else validate_config_value(field, value)
+        except ValueError as exc:
+            errors[str(key)] = str(exc)
+    for key in clear_set:
+        if key not in EDITABLE_CONFIG:
+            errors[key] = "不允许清空这个配置项"
+        elif key not in normalized:
+            normalized[key] = ""
+    current = read_env_values(path or ENV_FILE)
+    changed = sorted(key for key, value in normalized.items() if current.get(key, "") != value)
+    impact = config_change_impact(changed)
+    return {
+        "ok": not errors,
+        "changed": changed,
+        "errors": errors,
+        "impact": impact,
+        "message": "配置影响预检完成" if not errors else "配置影响预检发现错误，保存前需要修正",
+    }
+
+
 def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
     changed_set = set(changed)
     if not changed_set:
-        return {"ok": True, "mode": "none", "results": [], "message": "没有配置变更，不需要自动应用"}
+        return {"ok": True, "mode": "none", "results": [], "impact": config_change_impact(changed), "message": "没有配置变更，不需要自动应用"}
 
     results: list[dict[str, Any]] = []
     standard_restart_keys = changed_set - WEB_CONFIG_KEYS - AI_CONFIG_KEYS
@@ -878,7 +983,7 @@ def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
         message = "配置已保存并自动应用；Web 控制台配置变更会在返回结果后短暂重启"
     else:
         message = "配置已保存，但部分服务自动应用失败；可到雷达服务页手动重启"
-    return {"ok": ok, "mode": "auto_restart", "results": results, "message": message}
+    return {"ok": ok, "mode": "auto_restart", "results": results, "impact": config_change_impact(changed), "message": message}
 
 
 def command_exists(name: str) -> bool:
@@ -3077,27 +3182,74 @@ INDEX_HTML = r"""<!doctype html>
         return [{ key, label: field.label || key, oldText, newText }];
       });
     }
-    function renderConfigChanges(changes) {
+    function configImpactHtml(impactData) {
+      const impact = (impactData && impactData.impact) || impactData || {};
+      if (!impact || !impact.message) return "";
+      const services = impact.service_actions || [];
+      const warnings = impact.warnings || [];
+      const modules = impact.modules || [];
+      return `<div class="config-impact">
+        <h3 class="section-title">保存影响预检</h3>
+        <div class="readable-list">
+          ${row("影响模块", modules.length ? textValue(modules.join("、")) : neutralPill("无"))}
+          ${row("自动应用", services.length ? textValue(services.map(item => `${serviceActionLabel(item.action)} ${item.service}${item.scheduled ? "（延迟）" : ""}`).join("、")) : neutralPill("不需要重启"))}
+          ${row("结果说明", textValue(impact.message || ""))}
+          ${row("回滚方式", textValue(impact.rollback || "保存前会自动备份 .env.oi"))}
+        </div>
+        ${warnings.length ? `<div class="notice warn"><strong>注意：</strong><ul>${warnings.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
+        ${impactData && impactData.errors && Object.keys(impactData.errors).length ? `<div class="notice danger"><strong>预检错误：</strong><ul>${Object.entries(impactData.errors).map(([key, value]) => `<li>${escapeHtml(key)}: ${escapeHtml(value)}</li>`).join("")}</ul></div>` : ""}
+      </div>`;
+    }
+    function configImpactConfirmText(impactData) {
+      const impact = (impactData && impactData.impact) || {};
+      const services = (impact.service_actions || []).map(item => item.service).join("、") || "无服务重启";
+      const modules = (impact.modules || []).join("、") || "无";
+      return `影响模块：${modules}\n自动应用：${services}`;
+    }
+    async function fetchConfigImpact(updates, clear) {
+      return await api("/api/config-impact", {
+        method: "POST",
+        body: JSON.stringify({ updates, clear })
+      });
+    }
+    function renderConfigChanges(changes, impactData = null) {
       const target = document.getElementById("configPreview");
       if (!changes.length) {
         target.classList.remove("hidden");
-        target.innerHTML = `<h3 class="section-title">配置改动预览</h3><div class="hint">没有检测到需要保存的改动。</div>`;
+        target.innerHTML = `<h3 class="section-title">配置改动预览</h3><div class="hint">没有检测到需要保存的改动。</div>${configImpactHtml(impactData)}`;
         return;
       }
       target.classList.remove("hidden");
       target.innerHTML = `<h3 class="section-title">配置改动预览</h3>
-        <div class="readable-list">${changes.map(item => row(`${item.label} (${item.key})`, `<strong>${escapeHtml(item.oldText)}</strong> -> <strong>${escapeHtml(item.newText)}</strong>`)).join("")}</div>`;
+        <div class="readable-list">${changes.map(item => row(`${item.label} (${item.key})`, `<strong>${escapeHtml(item.oldText)}</strong> -> <strong>${escapeHtml(item.newText)}</strong>`)).join("")}</div>
+        ${configImpactHtml(impactData)}`;
     }
-    function previewConfig() {
+    async function previewConfig() {
       const updates = gatherConfigUpdates();
+      const visibleKeys = new Set(Object.keys(updates));
+      const clear = Array.from(clearKeys).filter(key => visibleKeys.has(key));
       const changes = buildConfigChanges(updates);
-      renderConfigChanges(changes);
-      return changes;
+      const impact = await fetchConfigImpact(updates, clear);
+      renderConfigChanges(changes, impact);
+      return { changes, impact };
     }
     function formatSaveResult(data, changes) {
       const lines = [];
       lines.push(data.ok ? "配置保存成功" : "配置保存失败");
       if (data.message) lines.push(`结果：${data.message}`);
+      if (data.impact) {
+        lines.push("");
+        lines.push("影响预检：");
+        lines.push(`- ${data.impact.message || ""}`);
+        if ((data.impact.modules || []).length) lines.push(`- 影响模块：${data.impact.modules.join("、")}`);
+        if ((data.impact.service_actions || []).length) {
+          lines.push(`- 自动应用：${data.impact.service_actions.map(item => `${serviceActionLabel(item.action)} ${item.service}${item.scheduled ? "（延迟）" : ""}`).join("、")}`);
+        } else {
+          lines.push("- 自动应用：不需要重启服务");
+        }
+        (data.impact.warnings || []).forEach(item => lines.push(`- 注意：${item}`));
+        if (data.impact.rollback) lines.push(`- 回滚：${data.impact.rollback}`);
+      }
       if (changes && changes.length) {
         lines.push("");
         lines.push("本次改动：");
@@ -3193,12 +3345,17 @@ INDEX_HTML = r"""<!doctype html>
       const visibleKeys = new Set(Object.keys(updates));
       const clear = Array.from(clearKeys).filter(key => visibleKeys.has(key));
       const changes = buildConfigChanges(updates);
-      renderConfigChanges(changes);
+      const impact = await fetchConfigImpact(updates, clear);
+      renderConfigChanges(changes, impact);
       if (!changes.length) {
         document.getElementById("configOutput").textContent = "没有检测到需要保存的改动。";
         return;
       }
-      if (!confirm(`即将保存 ${changes.length} 项配置改动，并自动应用。是否继续？`)) return;
+      if (!impact.ok) {
+        document.getElementById("configOutput").textContent = formatSaveResult(impact, changes);
+        return;
+      }
+      if (!confirm(`即将保存 ${changes.length} 项配置改动，并自动应用。\n${configImpactConfirmText(impact)}\n是否继续？`)) return;
       const data = await api("/api/config", {
         method: "POST",
         body: JSON.stringify({ updates, clear })
@@ -3846,24 +4003,31 @@ class WebHandler(BaseHTTPRequestHandler):
         data: dict[str, Any] = {}
         try:
             data = self.read_json()
+            if path == "/api/config-impact":
+                self.send_json(config_impact_payload(data))
+                return
             if path == "/api/config":
                 updates = data.get("updates", {})
                 clear = data.get("clear", [])
                 if not isinstance(updates, dict) or not isinstance(clear, list):
                     raise ValueError("updates 必须是对象，clear 必须是数组")
                 result = write_env_updates(updates, clear=[str(item) for item in clear])
+                result["impact"] = config_change_impact([str(item) for item in result.get("changed", [])])
                 if result.get("ok") and result.get("changed"):
                     apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
                     result["apply"] = apply_result
+                    result["impact"] = apply_result.get("impact", result["impact"])
                     result["message"] = apply_result.get("message", result.get("message"))
                 self.send_audited_json(path, data, result, started_at=started_at)
                 return
             if path == "/api/config-restore":
                 name = str(data.get("name", ""))
                 result = restore_env_backup(name)
+                result["impact"] = config_change_impact([str(item) for item in result.get("changed", [])])
                 if result.get("ok") and result.get("changed"):
                     apply_result = auto_apply_config_changes([str(item) for item in result.get("changed", [])])
                     result["apply"] = apply_result
+                    result["impact"] = apply_result.get("impact", result["impact"])
                     result["message"] = apply_result.get("message", result.get("message"))
                 self.send_audited_json(path, data, result, started_at=started_at)
                 return
