@@ -2759,7 +2759,7 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not web_token_ok:
         web_status = "fail"
         web_detail = "WEB_ADMIN_TOKEN 未配置，公网入口不安全。"
-        web_action = "到配置中心补齐 Web 访问令牌，保存后让 Web 控制台自动重启。"
+        web_action = "服务器执行 bash scripts/update_server.sh --yes 自动补齐；或到配置中心填写 Web 访问令牌并保存。"
     elif web_host in {"0.0.0.0", "::"} and 1 <= web_port <= 65535:
         web_status = "ok"
         web_detail = f"Web 入口监听 {web_host}:{web_port}，可通过服务器 IP 访问。"

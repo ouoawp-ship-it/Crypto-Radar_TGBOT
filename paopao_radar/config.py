@@ -22,7 +22,9 @@ def load_env_file(path: Path = ENV_FILE) -> dict[str, str]:
         key = key.strip()
         value = value.strip().strip('"').strip("'")
         env[key] = value
-        os.environ.setdefault(key, value)
+        current = os.environ.get(key)
+        if current is None or (current.strip() == "" and value.strip()):
+            os.environ[key] = value
     return env
 
 
