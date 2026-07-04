@@ -1344,7 +1344,7 @@ def logs_payload(target: str, lines: int) -> dict[str, Any]:
 
 
 ERROR_LINE_RE = re.compile(
-    r"(\b[a-z0-9_]*error\b|traceback|exception|failed|fatal|timeout|denied|forbidden|失败|异常|错误|超时|拒绝)",
+    r"(\b[a-z0-9_]*error\b|traceback|exception|failed|fatal|\breadtimeout\b|(?<![_a-z0-9])timeout\b|timed out|denied|forbidden|失败|异常|错误|超时|拒绝)",
     re.I,
 )
 EMPTY_ERROR_FIELD_RE = re.compile(
@@ -2955,7 +2955,10 @@ INDEX_HTML = r"""<!doctype html>
         </div>`;
     }
     function copyLogs() {
-      navigator.clipboard.writeText(document.getElementById("logOutput").textContent || "");
+      copyTextToClipboard(document.getElementById("logOutput").textContent || "").then(ok => {
+        setSubtitle(ok ? "日志已复制" : "浏览器拒绝自动复制，已选中日志文本，请按 Ctrl+C");
+        if (!ok) selectElementText("logOutput");
+      });
     }
     function auditResultText(ok) {
       return ok ? "成功" : "失败";
@@ -3059,6 +3062,44 @@ INDEX_HTML = r"""<!doctype html>
       });
       return lines.join("\n");
     }
+    function selectElementText(id) {
+      const element = document.getElementById(id);
+      if (!element) return;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection();
+      if (!selection) return;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    async function copyTextToClipboard(text) {
+      const value = String(text || "");
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(value);
+          return true;
+        } catch (err) {
+          console.warn("clipboard api failed", err);
+        }
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (err) {
+        console.warn("fallback copy failed", err);
+      }
+      document.body.removeChild(textarea);
+      return ok;
+    }
     function logErrorPanels(logErrors) {
       return Object.entries(logErrors || {}).map(([target, item]) => `
         <div class="panel span-6">
@@ -3104,7 +3145,10 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-12">
           <div class="summary-head">
             <h3 class="section-title">建议动作</h3>
-            <button class="btn primary" onclick="copyReport()">复制报告</button>
+            <div class="toolbar" style="margin:0">
+              <button class="btn primary" onclick="copyReport()">复制报告</button>
+              <span id="reportCopyStatus" class="hint"></span>
+            </div>
           </div>
           <ul>${(data.recommendations || []).map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </div>
@@ -3131,8 +3175,16 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function copyReport() {
       const text = reportText(latestReportData || {});
-      await navigator.clipboard.writeText(text);
-      setSubtitle("诊断报告已复制");
+      const ok = await copyTextToClipboard(text);
+      const status = document.getElementById("reportCopyStatus");
+      if (ok) {
+        setSubtitle("诊断报告已复制");
+        if (status) status.textContent = "已复制到剪贴板";
+        return;
+      }
+      selectElementText("reportTextOutput");
+      setSubtitle("浏览器拒绝自动复制，已选中报告文本，请按 Ctrl+C");
+      if (status) status.textContent = "浏览器拒绝自动复制，已选中文本，请按 Ctrl+C";
     }
     async function loadConfig() {
       const data = await api("/api/config");

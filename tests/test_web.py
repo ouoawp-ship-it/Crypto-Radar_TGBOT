@@ -384,6 +384,7 @@ class WebConsoleTests(unittest.TestCase):
                 "text": (
                     'ai-assistant: alert_check elapsed=0.52s queue=0 {"ok": true, "enabled": true, "errors": []}\n'
                     'ai-assistant: price_check ok=true error=""\n'
+                    "ai-assistant: running username=VIPpao_bot poll_timeout=5s alert_interval=30s workers=8\n"
                     "INFO normal line\n"
                     "ERROR real failure timeout\n"
                 ),
@@ -644,6 +645,10 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("一键诊断报告用于排查问题", html)
         self.assertIn("copyReport", html)
         self.assertIn("reportText", html)
+        self.assertIn("copyTextToClipboard", html)
+        self.assertIn("document.execCommand(\"copy\")", html)
+        self.assertIn("reportCopyStatus", html)
+        self.assertIn("浏览器拒绝自动复制", html)
         self.assertIn("价格提醒是独立的个人监控中心", html)
         self.assertIn("priceOutput", html)
         self.assertIn("priceStatusFilter", html)
