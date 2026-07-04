@@ -6170,7 +6170,7 @@ INDEX_HTML = r"""<!doctype html>
           <h3 class="section-title">版本更新检查</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>只检查</strong><span class="muted">读取当前版本和 GitHub 版本，不会拉代码。</span></div>
-            <div class="feature-item"><strong>真正更新</strong><span class="muted">等我通知你完整版本完成后，再在服务器执行 paopao update --yes。</span></div>
+            <div class="feature-item"><strong>真正更新</strong><span class="muted">服务器执行 paopao update --yes；更新后会自动重启服务并执行 stable-check。</span></div>
           </div>
           <div class="toolbar" style="margin-top:10px">
             <button class="btn primary" onclick="checkUpdate()">检查 GitHub 更新</button>
@@ -6234,6 +6234,16 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>配置生效</strong><span class="muted">保存配置后会自动应用：主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。</span></div>
             <div class="feature-item"><strong>服务器入口</strong><span class="muted">服务器只需要记住 paopao。进入中文菜单后查看 Web 地址、令牌、状态、日志和更新入口。</span></div>
             <div class="feature-item"><strong>安全边界</strong><span class="muted">Web 后端只执行白名单动作，不提供任意 shell 命令入口。</span></div>
+          </div>
+        </div>
+        <div class="panel span-12">
+          <h3 class="section-title">v1 完整稳定版收口指引</h3>
+          <div class="feature-list">
+            <div class="feature-item"><strong>日常检查</strong><span class="muted">先看总览，再看诊断报告。诊断报告里的长期运行就绪度、服务器部署验收、问题中心、处理清单和验收历史是最终判断依据。</span></div>
+            <div class="feature-item"><strong>更新流程</strong><span class="muted">服务器执行 paopao update --yes。更新脚本会同步配置、安装依赖、运行测试、清理运行垃圾、刷新后台服务并执行 stable-check。</span></div>
+            <div class="feature-item"><strong>排错流程</strong><span class="muted">先打开诊断报告，按处理清单从上到下处理；日志问题跳日志中心，失败操作跳审计记录，配置问题跳配置中心，服务问题跳雷达服务。</span></div>
+            <div class="feature-item"><strong>回滚流程</strong><span class="muted">配置改错先到配置中心的备份恢复；代码更新异常先复制诊断报告和 stable-check 输出，再按 GitHub 上一个稳定提交处理。</span></div>
+            <div class="feature-item"><strong>完整标准</strong><span class="muted">长期运行就绪度为完整稳定版候选、服务器部署验收通过、问题中心无阻断、近期日志和审计干净，并至少保留两次达标验收历史。</span></div>
           </div>
         </div>
       `;
