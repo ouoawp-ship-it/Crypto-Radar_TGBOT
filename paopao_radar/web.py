@@ -838,6 +838,86 @@ def enrich_problem_action_plan(action_plan: list[dict[str, Any]], problem_state:
     return enriched
 
 
+def review_problem_state(action_plan: list[dict[str, Any]], problem_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    records = problem_state.get("records", []) if isinstance(problem_state, dict) and isinstance(problem_state.get("records"), list) else []
+    active_fingerprints = {
+        str(item.get("fingerprint") or "")
+        for item in action_plan
+        if isinstance(item, dict) and item.get("key") != "observe" and item.get("fingerprint")
+    }
+    reviewed_records: list[dict[str, Any]] = []
+    counts = {
+        "tracked_total": 0,
+        "tracked_active": 0,
+        "tracked_missing": 0,
+        "resolved_active": 0,
+        "resolved_missing": 0,
+        "acknowledged_active": 0,
+        "acknowledged_missing": 0,
+    }
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        fingerprint = str(record.get("fingerprint") or "")
+        if not fingerprint:
+            continue
+        status = str(record.get("status") or "open")
+        active = fingerprint in active_fingerprints
+        counts["tracked_total"] += 1
+        counts["tracked_active" if active else "tracked_missing"] += 1
+        if status == "resolved" and active:
+            review_status = "still_active"
+            review_label = "仍然存在"
+            counts["resolved_active"] += 1
+        elif status == "resolved":
+            review_status = "missing_after_resolved"
+            review_label = "已消失待复查"
+            counts["resolved_missing"] += 1
+        elif status == "acknowledged" and active:
+            review_status = "acknowledged_active"
+            review_label = "仍需处理"
+            counts["acknowledged_active"] += 1
+        elif status == "acknowledged":
+            review_status = "missing_after_acknowledged"
+            review_label = "已消失待确认"
+            counts["acknowledged_missing"] += 1
+        else:
+            review_status = "unknown"
+            review_label = "状态未知"
+        reviewed = dict(record)
+        reviewed.update(
+            {
+                "active": active,
+                "review_status": review_status,
+                "review_label": review_label,
+            }
+        )
+        reviewed_records.append(reviewed)
+
+    if counts["resolved_active"]:
+        summary = f"{counts['resolved_active']} 个已标记解决的问题仍然存在，建议继续处理后再 stable-check。"
+        status = "attention"
+    elif counts["resolved_missing"]:
+        summary = f"{counts['resolved_missing']} 个已标记解决的问题当前已消失，建议执行 stable-check 复查。"
+        status = "review"
+    elif counts["acknowledged_active"]:
+        summary = f"{counts['acknowledged_active']} 个已确认问题仍在处理清单里。"
+        status = "tracking"
+    elif counts["tracked_total"]:
+        summary = "历史标记的问题当前没有出现在处理清单里，可继续观察。"
+        status = "quiet"
+    else:
+        summary = "暂无历史问题处理状态。"
+        status = "empty"
+
+    return {
+        "status": status,
+        "summary": summary,
+        "counts": counts,
+        "records": reviewed_records[:PROBLEM_STATE_LIMIT],
+    }
+
+
 def structure_review_recommendations_payload(path: Path | None = None) -> dict[str, Any]:
     settings = Settings.load()
     stats_path = path or settings.structure_stats_path
@@ -1671,6 +1751,8 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
     release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
     release_trend_status = str(release_trend.get("status") or "")
+    problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
+    problem_counts = problem_center.get("counts", {}) if isinstance(problem_center.get("counts"), dict) else {}
     log_error_total = sum(
         int(item.get("error_count", 0) or 0)
         for item in logs.values()
@@ -1696,6 +1778,12 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
         recommendations.append("长期运行趋势发生回退：这次从候选状态掉到需要处理。优先打开诊断报告的问题中心和日志中心，按阻断项处理后重新 stable-check。")
     elif release_trend_status == "worse":
         recommendations.append("长期运行趋势变差：分数或候选状态低于上次。先看趋势卡片的分数变化，再处理本次新增的警告或阻断项。")
+    resolved_active = int(problem_counts.get("state_resolved_active", 0) or 0)
+    resolved_missing = int(problem_counts.get("state_resolved_missing", 0) or 0)
+    if resolved_active:
+        recommendations.append(f"有 {resolved_active} 个已标记解决的问题仍然存在：继续按处理清单排查，处理后再执行 stable-check。")
+    elif resolved_missing:
+        recommendations.append(f"有 {resolved_missing} 个已标记解决的问题当前已消失：建议执行 stable-check 复查并保存新的验收记录。")
     if warn_health and not bad_health:
         labels = "、".join(str(item.get("label") or "") for item in warn_health[:4])
         recommendations.append(f"存在需要关注的警告项：{labels}。如果功能正常，可以观察；如果推送异常，再进入对应配置页检查。")
@@ -2057,7 +2145,9 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
     acknowledged_count = sum(1 for item in actionable_items if item.get("state_status") == "acknowledged")
     resolved_count = sum(1 for item in actionable_items if item.get("state_status") == "resolved")
     open_count = sum(1 for item in actionable_items if item.get("state_status") == "open")
-    state_records = problem_state.get("records", []) if isinstance(problem_state, dict) and isinstance(problem_state.get("records"), list) else []
+    state_review = review_problem_state(action_plan, problem_state)
+    state_counts = state_review.get("counts", {}) if isinstance(state_review.get("counts"), dict) else {}
+    state_records = state_review.get("records", []) if isinstance(state_review.get("records"), list) else []
 
     modules = sorted(
         module_counts.values(),
@@ -2085,6 +2175,10 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
             "action_open": open_count,
             "action_acknowledged": acknowledged_count,
             "action_resolved": resolved_count,
+            "state_tracked_active": int(state_counts.get("tracked_active", 0) or 0),
+            "state_tracked_missing": int(state_counts.get("tracked_missing", 0) or 0),
+            "state_resolved_active": int(state_counts.get("resolved_active", 0) or 0),
+            "state_resolved_missing": int(state_counts.get("resolved_missing", 0) or 0),
         },
         "modules": modules,
         "next_steps": next_steps,
@@ -2092,6 +2186,7 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
         "problem_state": {
             "records": state_records[:8],
             "total": int(problem_state.get("total", len(state_records)) if isinstance(problem_state, dict) else len(state_records)),
+            "review": state_review,
         },
     }
 
@@ -2534,6 +2629,10 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     release = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
+    problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
+    problem_state = problem_center.get("problem_state", {}) if isinstance(problem_center.get("problem_state"), dict) else {}
+    problem_review = problem_state.get("review", {}) if isinstance(problem_state.get("review"), dict) else {}
+    problem_review_counts = problem_review.get("counts", {}) if isinstance(problem_review.get("counts"), dict) else {}
     issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
     log_error_total = sum(
@@ -2569,6 +2668,12 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "issue_count": len(issues),
         "log_error_count": log_error_total,
         "transient_count": transient_total,
+        "problem_review_status": problem_review.get("status", "empty"),
+        "problem_review_summary": problem_review.get("summary", ""),
+        "problem_resolved_active": int(problem_review_counts.get("resolved_active", 0) or 0),
+        "problem_resolved_missing": int(problem_review_counts.get("resolved_missing", 0) or 0),
+        "problem_tracked_active": int(problem_review_counts.get("tracked_active", 0) or 0),
+        "problem_tracked_missing": int(problem_review_counts.get("tracked_missing", 0) or 0),
     }
 
 
@@ -4614,12 +4719,16 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("问题中心总览:");
       lines.push(`- 状态: ${problemCenter.label || ""} ${problemCenter.summary || ""}`);
       lines.push(`- 主要动作: ${problemCenter.primary_action || ""}`);
-      lines.push(`- 统计: 严重 ${problemCounts.critical || 0} | 警告 ${problemCounts.warning || 0} | 日志错误 ${problemCounts.log_errors || 0} | 网络超时 ${problemCounts.transient_timeouts || 0} | 失败审计 ${problemCounts.failed_audit || 0} | 待确认 ${problemCounts.action_open || 0} | 已确认 ${problemCounts.action_acknowledged || 0} | 观察中 ${problemCounts.action_resolved || 0}`);
+      lines.push(`- 统计: 严重 ${problemCounts.critical || 0} | 警告 ${problemCounts.warning || 0} | 日志错误 ${problemCounts.log_errors || 0} | 网络超时 ${problemCounts.transient_timeouts || 0} | 失败审计 ${problemCounts.failed_audit || 0} | 待确认 ${problemCounts.action_open || 0} | 已确认 ${problemCounts.action_acknowledged || 0} | 观察中 ${problemCounts.action_resolved || 0} | 仍存在 ${problemCounts.state_resolved_active || 0} | 待复查 ${problemCounts.state_resolved_missing || 0}`);
       ((problemCenter && problemCenter.next_steps) || []).forEach(item => lines.push(`- 下一步: ${item}`));
       const actionPlan = problemCenter.action_plan || [];
       if (actionPlan.length) {
         lines.push("处理清单:");
         actionPlan.forEach((item, idx) => lines.push(`- ${idx + 1}. ${item.title || ""}: ${item.detail || ""} | 状态: ${item.state_label || ""} | 编号: ${item.fingerprint || ""} | 入口: ${item.button || ""}`));
+      }
+      const stateReview = ((problemCenter.problem_state || {}).review || {});
+      if (stateReview.summary) {
+        lines.push(`问题复查: ${stateReview.summary}`);
       }
       lines.push("");
       const stability = data.stability || {};
@@ -4852,9 +4961,10 @@ INDEX_HTML = r"""<!doctype html>
           <td>${item.release_status && item.release_status !== "unknown" ? releaseReadinessStatusPill(item.release_status) : neutralPill("未记录")}</td>
           <td>${item.release_score === null || item.release_score === undefined ? escapeHtml("未记录") : escapeHtml(`${item.release_score}/100`)}</td>
           <td>${escapeHtml(item.version || "")} ${escapeHtml(item.commit || "")}</td>
+          <td>${Number(item.problem_resolved_active || 0) ? statusPill(`${item.problem_resolved_active} 仍存在`, false) : (Number(item.problem_resolved_missing || 0) ? statusPill(`${item.problem_resolved_missing} 待复查`, true) : neutralPill(item.problem_review_status && item.problem_review_status !== "empty" ? "已记录" : "暂无"))}</td>
           <td>${escapeHtml(item.summary || "")}</td>
         </tr>
-      `).join("") : tableEmpty(6, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
+      `).join("") : tableEmpty(7, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
       return `
         <div class="panel span-12">
           <div class="summary-head">
@@ -4865,7 +4975,7 @@ INDEX_HTML = r"""<!doctype html>
             ${neutralPill(`${Number((history && history.count) || 0)} 条`)}
           </div>
           <table class="table">
-            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>摘要</th></tr></thead>
+            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>处理复查</th><th>摘要</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -4908,6 +5018,14 @@ INDEX_HTML = r"""<!doctype html>
       if (value === "resolved") return statusPill("观察中", true);
       return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">未确认</span>`;
     }
+    function problemReviewStatusPill(status) {
+      const value = String(status || "");
+      if (value === "still_active") return statusPill("仍然存在", false);
+      if (value === "missing_after_resolved") return statusPill("已消失待复查", true);
+      if (value === "acknowledged_active") return neutralPill("仍需处理");
+      if (value === "missing_after_acknowledged") return neutralPill("已消失待确认");
+      return neutralPill("未复查");
+    }
     function problemStateControls(action) {
       if (!action || action.key === "observe" || !action.fingerprint) return "";
       const base = {
@@ -4928,10 +5046,11 @@ INDEX_HTML = r"""<!doctype html>
     function problemStateRecentRows(records) {
       const items = (records || []).slice(0, 8);
       if (!items.length) return emptyState("暂无处理记录", "你在处理清单里标记过的问题会显示在这里。");
-      return `<table class="table"><thead><tr><th>时间</th><th>状态</th><th>问题</th><th>编号</th></tr></thead><tbody>${items.map(item => `
+      return `<table class="table"><thead><tr><th>时间</th><th>人工状态</th><th>自动复查</th><th>问题</th><th>编号</th></tr></thead><tbody>${items.map(item => `
         <tr>
           <td>${escapeHtml(item.updated_at || "")}</td>
           <td>${problemStateStatusPill(item.status)}</td>
+          <td>${problemReviewStatusPill(item.review_status)}</td>
           <td>${escapeHtml(item.title || item.key || "")}</td>
           <td><code>${escapeHtml(item.fingerprint || "")}</code></td>
         </tr>
@@ -4968,6 +5087,8 @@ INDEX_HTML = r"""<!doctype html>
       const actionPlan = data.action_plan || [];
       const problemState = data.problem_state || {};
       const problemStateRecords = problemState.records || [];
+      const problemReview = problemState.review || {};
+      const reviewCounts = problemReview.counts || {};
       return `
         <div class="panel span-12">
           <div class="summary-head">
@@ -4986,14 +5107,18 @@ INDEX_HTML = r"""<!doctype html>
               ${Number(counts.action_open || 0) ? neutralPill(`${counts.action_open} 待确认`) : ""}
               ${Number(counts.action_acknowledged || 0) ? neutralPill(`${counts.action_acknowledged} 已确认`) : ""}
               ${Number(counts.action_resolved || 0) ? statusPill(`${counts.action_resolved} 观察中`, true) : ""}
+              ${Number(counts.state_resolved_active || 0) ? statusPill(`${counts.state_resolved_active} 仍存在`, false) : ""}
+              ${Number(counts.state_resolved_missing || 0) ? statusPill(`${counts.state_resolved_missing} 待复查`, true) : ""}
             </div>
           </div>
           <div class="hint" style="margin:10px 0">${escapeHtml(data.primary_action || "暂无需要立即处理的动作。")}</div>
+          <div class="notice" style="margin:10px 0"><strong>问题状态复查：</strong>${escapeHtml(problemReview.summary || "暂无历史问题处理状态。")}</div>
           <div class="mini-metrics">
             <div class="mini-metric"><div class="label">健康异常</div><div class="value">${Number(counts.bad_health || 0) ? statusPill(`${counts.bad_health} 项`, false) : neutralPill("暂无")}</div><div class="muted">健康检查 bad</div></div>
             <div class="mini-metric"><div class="label">最近错误</div><div class="value">${Number(counts.recent_errors || 0) ? statusPill(`${counts.recent_errors} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 记录</div></div>
             <div class="mini-metric"><div class="label">失败审计</div><div class="value">${Number(counts.failed_audit || 0) ? statusPill(`${counts.failed_audit} 条`, false) : neutralPill("暂无")}</div><div class="muted">Web 操作失败</div></div>
             <div class="mini-metric"><div class="label">验收门禁</div><div class="value">${Number(counts.stability_fail || 0) ? statusPill(`${counts.stability_fail} 阻断`, false) : (Number(counts.stability_warn || 0) ? neutralPill(`${counts.stability_warn} 警告`) : neutralPill("通过"))}</div><div class="muted">stable-check</div></div>
+            <div class="mini-metric"><div class="label">处理复查</div><div class="value">${Number(reviewCounts.resolved_active || 0) ? statusPill(`${reviewCounts.resolved_active} 仍存在`, false) : (Number(reviewCounts.resolved_missing || 0) ? statusPill(`${reviewCounts.resolved_missing} 待复查`, true) : neutralPill("暂无"))}</div><div class="muted">problem_state</div></div>
           </div>
           <div class="readable-list" style="margin-top:10px">
             ${nextSteps.length ? nextSteps.map((item, idx) => row(`下一步 ${idx + 1}`, textValue(item))).join("") : row("下一步", neutralPill("暂无"))}

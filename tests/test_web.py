@@ -518,7 +518,18 @@ class WebConsoleTests(unittest.TestCase):
                 "generated_at": "2026-07-04 10:00:00",
                 "git": {"version": "v1.37.0", "branch": "main", "commit": "ccc333"},
                 "stability": {"status": "blocked", "label": "未达稳定版标准", "summary": "第三次", "ok_count": 4, "warn_count": 1, "fail_count": 2},
-                "problem_center": {"status": "blocked", "summary": "blocked", "counts": {"log_errors": 2, "failed_audit": 0, "transient_timeouts": 0}},
+                "problem_center": {
+                    "status": "blocked",
+                    "summary": "blocked",
+                    "counts": {"log_errors": 2, "failed_audit": 0, "transient_timeouts": 0},
+                    "problem_state": {
+                        "review": {
+                            "status": "attention",
+                            "summary": "1 个已标记解决的问题仍然存在。",
+                            "counts": {"resolved_active": 1, "resolved_missing": 0, "tracked_active": 1, "tracked_missing": 0},
+                        }
+                    },
+                },
                 "issues": [{"severity": "critical"}],
                 "log_errors": {"main": {"error_count": 2, "transient_count": 0}},
             }
@@ -538,6 +549,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(any(item["key"] == "release-trend" for item in latest["problem_center"]["action_plan"]))
         self.assertEqual(latest["stability_history"]["records"][0]["release_status"], "blocked")
         self.assertIsInstance(latest["stability_history"]["records"][0]["release_score"], int)
+        self.assertEqual(latest["stability_history"]["records"][0]["problem_resolved_active"], 1)
+        self.assertEqual(latest["stability_history"]["records"][0]["problem_review_status"], "attention")
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
         self.assertEqual([row["release_status"] for row in history], ["blocked", "candidate"])
         self.assertEqual(payload["latest"]["commit"], "ccc333")
@@ -636,9 +649,15 @@ class WebConsoleTests(unittest.TestCase):
                     "status": "resolved",
                     "label": "已解决观察中",
                     "updated_at": "2026-07-04 12:00:00",
-                }
+                },
+                {
+                    "fingerprint": "missing-resolved",
+                    "status": "resolved",
+                    "label": "已解决观察中",
+                    "updated_at": "2026-07-04 12:05:00",
+                },
             ],
-            "total": 1,
+            "total": 2,
         }
 
         center = web.build_problem_center(snapshot, state)
@@ -648,7 +667,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(action["state_label"], "已解决观察中")
         self.assertEqual(center["counts"]["action_resolved"], 1)
         self.assertEqual(center["counts"]["action_open"], len([item for item in center["action_plan"] if item["key"] != "observe"]) - 1)
-        self.assertEqual(center["problem_state"]["total"], 1)
+        self.assertEqual(center["counts"]["state_resolved_active"], 1)
+        self.assertEqual(center["counts"]["state_resolved_missing"], 1)
+        self.assertEqual(center["problem_state"]["total"], 2)
+        self.assertEqual(center["problem_state"]["review"]["status"], "attention")
+        review_statuses = {item["fingerprint"]: item["review_status"] for item in center["problem_state"]["records"]}
+        self.assertEqual(review_statuses[log_action["fingerprint"]], "still_active")
+        self.assertEqual(review_statuses["missing-resolved"], "missing_after_resolved")
 
     def test_problem_center_action_plan_routes_config_failures(self) -> None:
         snapshot = {
@@ -878,6 +903,19 @@ class WebConsoleTests(unittest.TestCase):
         recommendations = web.build_ops_recommendations(snapshot)
 
         self.assertTrue(any("长期运行趋势发生回退" in item for item in recommendations))
+
+    def test_ops_snapshot_recommends_problem_state_still_active(self) -> None:
+        snapshot = {
+            "health": [],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {},
+            "problem_center": {"counts": {"state_resolved_active": 2, "state_resolved_missing": 0}},
+        }
+
+        recommendations = web.build_ops_recommendations(snapshot)
+
+        self.assertTrue(any("已标记解决的问题仍然存在" in item for item in recommendations))
 
     def test_ops_issues_classify_modules_severity_and_actions(self) -> None:
         snapshot = {
@@ -1169,9 +1207,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("problemCenterStatusPill", html)
         self.assertIn("problemStateControls", html)
         self.assertIn("problemStateRecentRows", html)
+        self.assertIn("problemReviewStatusPill", html)
         self.assertIn("markProblemState", html)
         self.assertIn("问题编号", html)
         self.assertIn("最近处理记录", html)
+        self.assertIn("自动复查", html)
+        self.assertIn("已消失待复查", html)
+        self.assertIn("处理复查", html)
         self.assertIn("长期运行就绪度", html)
         self.assertIn("releaseReadinessPanel", html)
         self.assertIn("releaseReadinessStatusPill", html)
