@@ -1238,6 +1238,96 @@ def logs_payload(target: str, lines: int) -> dict[str, Any]:
     return {"target": target, "source": str(fallback_path), "text": text, "ok": bool(text)}
 
 
+ERROR_LINE_RE = re.compile(r"(error|traceback|exception|failed|fatal|timeout|denied|forbidden|失败|异常|错误|超时|拒绝)", re.I)
+SENSITIVE_LINE_RE = re.compile(r"(?i)\b(token|api[_-]?key|secret|password)\b\s*[:=]\s*['\"]?[^'\"\s,;]+")
+TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
+API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
+
+
+def redact_sensitive_text(text: str) -> str:
+    redacted = TELEGRAM_TOKEN_RE.sub("<redacted-telegram-token>", str(text or ""))
+    redacted = API_KEY_RE.sub("<redacted-api-key>", redacted)
+    redacted = SENSITIVE_LINE_RE.sub(lambda match: f"{match.group(1)}=<redacted>", redacted)
+    return redacted
+
+
+def log_error_excerpt(target: str, *, lines: int = 300, limit: int = 20) -> dict[str, Any]:
+    payload = logs_payload(target, lines)
+    raw_lines = str(payload.get("text") or "").splitlines()
+    error_lines = [line for line in raw_lines if ERROR_LINE_RE.search(line)]
+    selected = error_lines[-limit:]
+    return {
+        "target": target,
+        "source": payload.get("source", ""),
+        "ok": bool(payload.get("ok")),
+        "total_lines": len(raw_lines),
+        "error_count": len(error_lines),
+        "lines": [redact_sensitive_text(line)[-600:] for line in selected],
+    }
+
+
+def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
+    recommendations: list[str] = []
+    health = snapshot.get("health", []) if isinstance(snapshot.get("health"), list) else []
+    bad_health = [item for item in health if isinstance(item, dict) and item.get("status") == "bad"]
+    warn_health = [item for item in health if isinstance(item, dict) and item.get("status") == "warn"]
+    recent_errors = snapshot.get("recent_errors", []) if isinstance(snapshot.get("recent_errors"), list) else []
+    audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
+    failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
+    logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    log_error_total = sum(
+        int(item.get("error_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
+    if bad_health:
+        labels = "、".join(str(item.get("label") or "") for item in bad_health[:4])
+        recommendations.append(f"优先处理异常健康项：{labels}。先到“雷达服务”页重启对应服务，再看日志中心错误。")
+    if recent_errors:
+        recommendations.append("总览已经检测到最近错误，先按错误来源跳转日志中心查看同一时间段日志。")
+    if failed_audit:
+        recommendations.append("最近存在失败的 Web 后台操作，先到“审计记录”按失败筛选，确认是不是配置保存、服务控制或测试动作失败。")
+    if log_error_total:
+        recommendations.append(f"近期日志中检测到 {log_error_total} 条错误/异常关键字，优先查看诊断报告里的日志片段和日志中心原文。")
+    if warn_health and not bad_health:
+        labels = "、".join(str(item.get("label") or "") for item in warn_health[:4])
+        recommendations.append(f"存在需要关注的警告项：{labels}。如果功能正常，可以观察；如果推送异常，再进入对应配置页检查。")
+    if not recommendations:
+        recommendations.append("当前快照没有发现明显异常。若仍然感觉不对，复制本页报告并补充你看到的具体现象。")
+    return recommendations
+
+
+def ops_snapshot_payload() -> dict[str, Any]:
+    summary = summary_payload()
+    audit_all = web_audit_payload(limit=10, result="all")
+    audit_failed = web_audit_payload(limit=10, result="failed")
+    log_errors = {
+        target: log_error_excerpt(target, lines=300, limit=20)
+        for target in ("main", "structure", "web", "ai")
+    }
+    snapshot = {
+        "ok": True,
+        "generated_at": now_text(),
+        "git": summary.get("git", {}),
+        "services": summary.get("services", {}),
+        "health": summary.get("health", []),
+        "recent_errors": summary.get("recent_errors", []),
+        "runtime": summary.get("runtime", {}),
+        "config": summary.get("config", {}),
+        "state_files": summary.get("state_files", []),
+        "audit": {
+            "recent": audit_all.get("records", []),
+            "failed_recent": audit_failed.get("records", []),
+            "total": audit_all.get("total", 0),
+            "failed_matched": audit_failed.get("matched", 0),
+        },
+        "log_errors": log_errors,
+    }
+    snapshot["recommendations"] = build_ops_recommendations(snapshot)
+    snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
+    return snapshot
+
+
 def check_auth(handler: BaseHTTPRequestHandler) -> bool:
     token = getattr(handler.server, "admin_token", "")  # type: ignore[attr-defined]
     if not token:
@@ -1726,6 +1816,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="config">配置中心</button>
         <button data-view="logs">日志中心</button>
         <button data-view="audit">审计记录</button>
+        <button data-view="report">诊断报告</button>
         <button data-view="actions">检查测试</button>
         <button data-view="preview">更新备份</button>
         <button data-view="guide">功能说明</button>
@@ -1779,6 +1870,10 @@ INDEX_HTML = r"""<!doctype html>
 
       <section id="audit" class="view hidden">
         <div class="grid" id="auditGrid"></div>
+      </section>
+
+      <section id="report" class="view hidden">
+        <div class="grid" id="reportGrid"></div>
       </section>
 
       <section id="config" class="view hidden">
@@ -1839,6 +1934,7 @@ INDEX_HTML = r"""<!doctype html>
       config: "配置中心",
       logs: "日志中心",
       audit: "审计记录",
+      report: "诊断报告",
       actions: "检查测试",
       preview: "更新备份",
       guide: "功能说明"
@@ -2059,6 +2155,7 @@ INDEX_HTML = r"""<!doctype html>
     let latestConfigData = null;
     let latestLogData = null;
     let latestAuditData = null;
+    let latestReportData = null;
     let latestPriceAlertsData = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
@@ -2721,6 +2818,114 @@ INDEX_HTML = r"""<!doctype html>
       if (limit) limit.value = "200";
       if (search) search.value = "";
       loadAudit();
+    }
+    function countLogErrors(logErrors) {
+      return Object.values(logErrors || {}).reduce((total, item) => total + Number((item && item.error_count) || 0), 0);
+    }
+    function reportText(data) {
+      const lines = [];
+      const git = data.git || {};
+      lines.push(`泡泡雷达诊断报告`);
+      lines.push(`生成时间: ${data.generated_at || ""}`);
+      lines.push(`版本: ${git.version || ""} ${git.branch || ""} ${git.commit || ""}`);
+      lines.push("");
+      lines.push("建议动作:");
+      (data.recommendations || []).forEach(item => lines.push(`- ${item}`));
+      lines.push("");
+      lines.push("健康检查:");
+      (data.health || []).forEach(item => lines.push(`- ${item.label}: ${item.value} (${item.status}) ${item.detail || ""}`));
+      lines.push("");
+      lines.push("最近错误:");
+      const recentErrors = data.recent_errors || [];
+      if (!recentErrors.length) lines.push("- 暂无");
+      recentErrors.forEach(item => lines.push(`- ${item.source} · ${item.level}: ${item.message}`));
+      lines.push("");
+      lines.push("失败审计:");
+      const failed = ((data.audit || {}).failed_recent || []);
+      if (!failed.length) lines.push("- 暂无");
+      failed.forEach(item => lines.push(`- ${item.ts} ${item.action} ${item.target} ${item.error || item.message || ""}`));
+      lines.push("");
+      lines.push("日志错误片段:");
+      Object.entries(data.log_errors || {}).forEach(([target, item]) => {
+        lines.push(`- ${target}: ${(item && item.error_count) || 0} 条`);
+        ((item && item.lines) || []).slice(-5).forEach(line => lines.push(`  ${line}`));
+      });
+      return lines.join("\n");
+    }
+    function logErrorPanels(logErrors) {
+      return Object.entries(logErrors || {}).map(([target, item]) => `
+        <div class="panel span-6">
+          <div class="summary-head">
+            <h3 class="section-title">${escapeHtml(target)} 日志错误</h3>
+            ${Number((item && item.error_count) || 0) ? statusPill(`${item.error_count} 条`, false) : neutralPill("未发现")}
+          </div>
+          <div class="summary-meta">${escapeHtml((item && item.source) || "")}</div>
+          <pre class="output" style="max-height:220px">${escapeHtml(((item && item.lines) || []).join("\n") || "没有匹配的错误片段")}</pre>
+        </div>
+      `).join("");
+    }
+    function reportAuditRows(records) {
+      if (!records.length) return `<tr><td colspan="5" class="muted">暂无失败审计</td></tr>`;
+      return records.map(item => `
+        <tr>
+          <td>${escapeHtml(item.ts || "")}</td>
+          <td>${escapeHtml(item.action || "")}</td>
+          <td>${escapeHtml(item.target || "")}</td>
+          <td>${escapeHtml(String(item.duration_ms ?? ""))}ms</td>
+          <td>${escapeHtml(item.error || item.message || "")}</td>
+        </tr>
+      `).join("");
+    }
+    async function loadReport() {
+      const data = await api("/api/ops-snapshot");
+      latestReportData = data;
+      const health = data.health || [];
+      const recentErrors = data.recent_errors || [];
+      const audit = data.audit || {};
+      const failedAudit = audit.failed_recent || [];
+      const logErrorTotal = countLogErrors(data.log_errors || {});
+      setSubtitle(`诊断报告 ${data.generated_at || ""}`);
+      document.getElementById("reportGrid").innerHTML = `
+        <div class="panel span-12 notice">
+          <strong>一键诊断报告用于排查问题。</strong>
+          这里会汇总服务状态、健康检查、最近错误、关键配置摘要、失败审计和日志错误片段；报告已做安全处理，不包含 Token、API Key 或提示词正文。
+        </div>
+        <div class="panel span-3 metric"><div class="label">健康项</div><div class="value">${neutralPill(String(health.length))}</div><div class="muted">含服务和配置门禁</div></div>
+        <div class="panel span-3 metric"><div class="label">最近错误</div><div class="value">${recentErrors.length ? statusPill(`${recentErrors.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 检测</div></div>
+        <div class="panel span-3 metric"><div class="label">失败审计</div><div class="value">${failedAudit.length ? statusPill(`${failedAudit.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">Web 后台操作</div></div>
+        <div class="panel span-3 metric"><div class="label">日志错误</div><div class="value">${logErrorTotal ? statusPill(`${logErrorTotal} 条`, false) : neutralPill("暂无")}</div><div class="muted">main/structure/web/ai</div></div>
+        <div class="panel span-12">
+          <div class="summary-head">
+            <h3 class="section-title">建议动作</h3>
+            <button class="btn primary" onclick="copyReport()">复制报告</button>
+          </div>
+          <ul>${(data.recommendations || []).map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </div>
+        <div class="panel span-12">
+          <h3 class="section-title">最近错误</h3>
+          <div class="readable-list">
+            ${recentErrors.length ? recentErrors.map(item => row(`${item.source} · ${item.level}`, textValue(item.message))).join("") : row("最近错误", neutralPill("暂无"))}
+          </div>
+        </div>
+        <div class="panel span-12">
+          <h3 class="section-title">失败审计</h3>
+          <table class="table">
+            <thead><tr><th>时间</th><th>动作</th><th>对象</th><th>耗时</th><th>错误摘要</th></tr></thead>
+            <tbody>${reportAuditRows(failedAudit)}</tbody>
+          </table>
+        </div>
+        ${logErrorPanels(data.log_errors || {})}
+        <div class="panel span-12">
+          <h3 class="section-title">复制用文本</h3>
+          <pre id="reportTextOutput" class="output">${escapeHtml(reportText(data))}</pre>
+        </div>
+        ${rawDetails("高级排查：原始诊断 JSON", data)}
+      `;
+    }
+    async function copyReport() {
+      const text = reportText(latestReportData || {});
+      await navigator.clipboard.writeText(text);
+      setSubtitle("诊断报告已复制");
     }
     async function loadConfig() {
       const data = await api("/api/config");
@@ -3487,6 +3692,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "overview") await loadSummary();
         if (currentView === "logs") await loadLogs();
         if (currentView === "audit") await loadAudit();
+        if (currentView === "report") await loadReport();
         if (currentView === "config") await loadConfig();
         if (currentView === "ai") await loadAiAssistant();
         if (currentView === "price") await loadPriceAlerts();
@@ -3626,6 +3832,9 @@ class WebHandler(BaseHTTPRequestHandler):
             result = query.get("result", ["all"])[0]
             search = query.get("search", [""])[0]
             self.send_json(web_audit_payload(limit=limit, result=result, search=search))
+            return
+        if path == "/api/ops-snapshot":
+            self.send_json(ops_snapshot_payload())
             return
         self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
 

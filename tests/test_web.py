@@ -340,6 +340,56 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["records"][0]["action"], "执行检查测试")
         self.assertIn("Telegram Forbidden", payload["records"][0]["error"])
 
+    def test_ops_snapshot_payload_redacts_sensitive_log_values(self) -> None:
+        summary = {
+            "git": {"version": "v-test", "branch": "main", "commit": "abc123"},
+            "services": {"main": {"active_ok": True}},
+            "health": [{"label": "主服务", "status": "ok", "value": "运行中", "detail": ""}],
+            "recent_errors": [],
+            "runtime": {"main": {"status": "running"}},
+            "config": {"telegram": {"bot_token_configured": True}},
+            "state_files": [],
+        }
+
+        def fake_logs(target: str, lines: int) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source": f"fake:{target}",
+                "text": (
+                    "INFO ok\n"
+                    "ERROR bot token=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi failed\n"
+                    "ERROR AI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz timeout\n"
+                ),
+            }
+
+        with patch.object(web, "summary_payload", return_value=summary):
+            with patch.object(web, "web_audit_payload", return_value={"records": [], "total": 0, "matched": 0}):
+                with patch.object(web, "logs_payload", side_effect=fake_logs):
+                    payload = web.ops_snapshot_payload()
+
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        self.assertTrue(payload["ok"])
+        self.assertIn("log_errors", payload)
+        self.assertIn("recommendations", payload)
+        self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
+        self.assertIn("<redacted", payload_text)
+
+    def test_ops_snapshot_recommends_failed_audit_and_bad_health(self) -> None:
+        snapshot = {
+            "health": [{"label": "主服务", "status": "bad"}],
+            "recent_errors": [{"source": "主服务", "message": "boom"}],
+            "audit": {"failed_recent": [{"action": "保存配置"}]},
+            "log_errors": {"main": {"error_count": 2}},
+        }
+
+        recommendations = web.build_ops_recommendations(snapshot)
+
+        joined = "\n".join(recommendations)
+        self.assertIn("异常健康项", joined)
+        self.assertIn("失败的 Web 后台操作", joined)
+        self.assertIn("日志", joined)
+
     def test_structure_review_recommendations_payload_returns_updates(self) -> None:
         with TemporaryDirectory() as tmp:
             stats_path = Path(tmp) / "structure_stats.json"
@@ -505,6 +555,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("配置中心", html)
         self.assertIn("日志中心", html)
         self.assertIn("审计记录", html)
+        self.assertIn("诊断报告", html)
         self.assertIn("雷达服务", html)
         self.assertIn("Telegram 推送", html)
         self.assertIn("资金费率警报", html)
@@ -518,10 +569,15 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("更新备份", html)
         self.assertIn('data-view="price"', html)
         self.assertIn('data-view="audit"', html)
+        self.assertIn('data-view="report"', html)
         self.assertIn("/api/audit", html)
+        self.assertIn("/api/ops-snapshot", html)
         self.assertIn("审计记录是 Web 后台的操作账本", html)
         self.assertIn("不保存 Token、API Key 或提示词正文", html)
         self.assertIn("renderAuditRows", html)
+        self.assertIn("一键诊断报告用于排查问题", html)
+        self.assertIn("copyReport", html)
+        self.assertIn("reportText", html)
         self.assertIn("价格提醒是独立的个人监控中心", html)
         self.assertIn("priceOutput", html)
         self.assertIn("priceStatusFilter", html)
