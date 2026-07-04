@@ -388,6 +388,7 @@ class WebConsoleTests(unittest.TestCase):
         payload_text = json.dumps(payload, ensure_ascii=False)
         self.assertTrue(payload["ok"])
         self.assertIn("log_errors", payload)
+        self.assertIn("issues", payload)
         self.assertIn("recommendations", payload)
         self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
@@ -460,6 +461,29 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("异常健康项", joined)
         self.assertIn("失败的 Web 后台操作", joined)
         self.assertIn("日志", joined)
+
+    def test_ops_issues_classify_modules_severity_and_actions(self) -> None:
+        snapshot = {
+            "health": [{"label": "主服务", "status": "bad", "value": "failed", "detail": "paopao-radar"}],
+            "recent_errors": [{"source": "AI 助手", "level": "警告", "message": "接口超时"}],
+            "audit": {"failed_recent": [{"action": "保存配置", "message": "HTTP 500"}]},
+            "log_errors": {
+                "main": {"error_count": 2, "lines": ["ERROR boom"], "transient_count": 0},
+                "ai": {"error_count": 0, "lines": [], "transient_count": 12},
+            },
+        }
+
+        issues = web.build_ops_issues(snapshot)
+
+        titles = "\n".join(str(item["title"]) for item in issues)
+        self.assertIn("主服务异常", titles)
+        self.assertIn("AI 助手 · 警告", titles)
+        self.assertIn("存在失败的 Web 后台操作", titles)
+        self.assertIn("主服务日志出现错误关键字", titles)
+        self.assertIn("AI 助手网络超时较多", titles)
+        self.assertEqual(issues[0]["severity"], "critical")
+        self.assertTrue(any(item["target"] == "audit" for item in issues))
+        self.assertTrue(any("查看" in item["action"] or "进入" in item["action"] for item in issues))
 
     def test_structure_review_recommendations_payload_returns_updates(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -721,6 +745,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("copyTextToClipboard", html)
         self.assertIn("document.execCommand(\"copy\")", html)
         self.assertIn("reportCopyStatus", html)
+        self.assertIn("问题中心", html)
+        self.assertIn("issueCards", html)
+        self.assertIn("issueSeverityPill", html)
+        self.assertIn("查看失败审计", html)
+        self.assertIn("按严重程度排序", html)
         self.assertIn("浏览器拒绝自动复制", html)
         self.assertIn("countTransientLogs", html)
         self.assertIn("网络超时", html)

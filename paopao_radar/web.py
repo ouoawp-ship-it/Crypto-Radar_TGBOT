@@ -1517,6 +1517,128 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
     return recommendations
 
 
+def issue_target_from_source(source: str) -> str:
+    text = str(source or "").lower()
+    if "结构" in source or "structure" in text:
+        return "structure"
+    if "web" in text:
+        return "web"
+    if "ai" in text or "助手" in source:
+        return "ai"
+    return "main"
+
+
+def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+
+    def add(
+        *,
+        severity: str,
+        module: str,
+        title: str,
+        detail: str,
+        count: int = 1,
+        target: str = "",
+        action: str = "",
+    ) -> None:
+        issues.append(
+            {
+                "severity": severity,
+                "module": module,
+                "title": title,
+                "detail": detail,
+                "count": max(1, int(count or 1)),
+                "target": target,
+                "action": action,
+            }
+        )
+
+    health = snapshot.get("health", []) if isinstance(snapshot.get("health"), list) else []
+    for item in health:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "")
+        if status not in {"bad", "warn"}:
+            continue
+        label = str(item.get("label") or "健康检查")
+        value = str(item.get("value") or "")
+        detail = str(item.get("detail") or "")
+        add(
+            severity="critical" if status == "bad" else "warning",
+            module=label,
+            title=f"{label}{'异常' if status == 'bad' else '需要关注'}",
+            detail="；".join(part for part in (value, detail) if part),
+            target=issue_target_from_source(label),
+            action="先确认服务状态；如果是运行异常，进入雷达服务页重启对应服务，再看相关日志。",
+        )
+
+    recent_errors = snapshot.get("recent_errors", []) if isinstance(snapshot.get("recent_errors"), list) else []
+    for item in recent_errors:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "运行状态")
+        level = str(item.get("level") or "异常")
+        message = str(item.get("message") or "")
+        add(
+            severity="critical" if "异常" in level else "warning",
+            module=source,
+            title=f"{source} · {level}",
+            detail=message,
+            target=issue_target_from_source(source),
+            action="打开相关日志，对照 runtime-status 的时间点查看同一轮扫描发生了什么。",
+        )
+
+    audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
+    failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
+    if failed_audit:
+        first = failed_audit[0] if isinstance(failed_audit[0], dict) else {}
+        add(
+            severity="warning",
+            module="Web 后台操作",
+            title="存在失败的 Web 后台操作",
+            detail=str(first.get("error") or first.get("message") or "配置保存、服务控制或检查测试曾失败。"),
+            count=len(failed_audit),
+            target="audit",
+            action="进入审计记录页选择“只看失败”，确认失败动作、接口和错误摘要。",
+        )
+
+    target_labels = {"main": "主服务", "structure": "结构雷达", "web": "Web 控制台", "ai": "AI 助手"}
+    logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    for target, item in logs.items():
+        if not isinstance(item, dict):
+            continue
+        error_count = int(item.get("error_count", 0) or 0)
+        transient_count = int(item.get("transient_count", 0) or 0)
+        label = target_labels.get(str(target), str(target))
+        if error_count:
+            first_line = ""
+            lines = item.get("lines", [])
+            if isinstance(lines, list) and lines:
+                first_line = str(lines[-1])
+            add(
+                severity="critical" if error_count >= 10 else "warning",
+                module=label,
+                title=f"{label}日志出现错误关键字",
+                detail=first_line or f"近 300 行日志检测到 {error_count} 条错误/异常关键字。",
+                count=error_count,
+                target=str(target),
+                action="打开对应日志中心，筛选“只看错误”，按第一条错误的时间点继续排查。",
+            )
+        if transient_count >= 10:
+            add(
+                severity="notice",
+                module=label,
+                title=f"{label}网络超时较多",
+                detail=f"近 300 行日志检测到 {transient_count} 条 Telegram/API 可重试超时。低频无需处理，持续增多时检查服务器网络。",
+                count=transient_count,
+                target=str(target),
+                action="先观察是否自动恢复；如果机器人明显不回复，再检查服务器到 Telegram/API 的网络。",
+            )
+
+    severity_order = {"critical": 0, "warning": 1, "notice": 2}
+    return sorted(issues, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count", 1) or 1), str(item.get("module") or "")))[:20]
+
+
 def ops_snapshot_payload() -> dict[str, Any]:
     summary = summary_payload()
     audit_all = web_audit_payload(limit=10, result="all")
@@ -1543,6 +1665,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
         },
         "log_errors": log_errors,
     }
+    snapshot["issues"] = build_ops_issues(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -1903,6 +2026,36 @@ INDEX_HTML = r"""<!doctype html>
       background: linear-gradient(135deg, rgba(255,255,255,.74), rgba(239,244,246,.7));
     }
     .feature-item strong { display: block; margin-bottom: 4px; }
+    .issue-list { display: grid; gap: 10px; }
+    .issue-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: linear-gradient(135deg, rgba(255,255,255,.82), rgba(239,244,246,.72));
+      display: grid;
+      gap: 9px;
+    }
+    .issue-card.critical { border-color: rgba(179, 38, 30, .34); background: linear-gradient(135deg, rgba(255,255,255,.92), rgba(255,240,236,.78)); }
+    .issue-card.warning { border-color: rgba(154, 101, 8, .34); background: linear-gradient(135deg, rgba(255,255,255,.92), rgba(255,248,231,.78)); }
+    .issue-card.notice { border-color: rgba(15, 111, 104, .26); }
+    .issue-head {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    .issue-title { font-weight: 800; }
+    .issue-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+    .issue-detail { color: var(--muted); }
+    .issue-action {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      border-top: 1px solid rgba(105, 118, 126, .18);
+      padding-top: 9px;
+      color: var(--muted);
+    }
     .config-category-bar {
       display: flex;
       gap: 8px;
@@ -2303,7 +2456,7 @@ INDEX_HTML = r"""<!doctype html>
       report: {
         kicker: "问题快照",
         title: "诊断报告",
-        desc: "一键诊断报告用于排查问题。汇总服务状态、健康检查、最近错误、失败审计、日志错误和可自动重试的网络超时，适合复制给排查人员。",
+        desc: "一键诊断报告用于排查问题。问题中心会按严重程度汇总服务健康、最近错误、失败审计、日志错误和可自动重试网络超时，并给出建议动作和相关日志入口。",
         tags: ["健康检查", "日志片段", "复制报告"]
       },
       actions: {
@@ -3397,6 +3550,11 @@ INDEX_HTML = r"""<!doctype html>
       lines.push(`生成时间: ${data.generated_at || ""}`);
       lines.push(`版本: ${git.version || ""} ${git.branch || ""} ${git.commit || ""}`);
       lines.push("");
+      lines.push("问题中心:");
+      const issues = data.issues || [];
+      if (!issues.length) lines.push("- 暂无明确问题");
+      issues.forEach(item => lines.push(`- [${item.severity || ""}] ${item.module || ""} · ${item.title || ""} x${item.count || 1}: ${item.detail || ""} | 建议: ${item.action || ""}`));
+      lines.push("");
       lines.push("建议动作:");
       (data.recommendations || []).forEach(item => lines.push(`- ${item}`));
       lines.push("");
@@ -3477,6 +3635,38 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `).join("");
     }
+    function issueSeverityPill(severity) {
+      const value = String(severity || "");
+      if (value === "critical") return statusPill("严重", false);
+      if (value === "warning") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">警告</span>`;
+      return neutralPill("提示");
+    }
+    function issueActionButton(issue) {
+      const target = String(issue.target || "");
+      if (target === "audit") return `<button class="btn" type="button" onclick="switchView('audit')">查看失败审计</button>`;
+      if (["main", "structure", "web", "ai"].includes(target)) return `<button class="btn" type="button" onclick="openLogsForError('${escapeHtml(target)}')">查看相关日志</button>`;
+      return `<button class="btn" type="button" onclick="switchView('logs')">打开日志中心</button>`;
+    }
+    function issueCards(issues) {
+      if (!issues.length) {
+        return emptyState("当前没有明确问题", "健康检查、失败审计、日志错误和网络超时都没有达到需要优先处理的程度。");
+      }
+      return `<div class="issue-list">${issues.map(issue => `
+        <div class="issue-card ${escapeHtml(issue.severity || "notice")}">
+          <div class="issue-head">
+            <div>
+              <div class="issue-title">${escapeHtml(issue.title || "未命名问题")}</div>
+              <div class="issue-detail">${escapeHtml(issue.detail || "")}</div>
+            </div>
+            <div class="issue-meta">${issueSeverityPill(issue.severity)}${neutralPill(issue.module || "未知模块")}${neutralPill(`${issue.count || 1} 次`)}</div>
+          </div>
+          <div class="issue-action">
+            <span>${escapeHtml(issue.action || "查看相关日志和诊断详情。")}</span>
+            ${issueActionButton(issue)}
+          </div>
+        </div>
+      `).join("")}</div>`;
+    }
     function reportAuditRows(records) {
       if (!records.length) return tableEmpty(5, "暂无失败审计", "最近没有失败的 Web 后台操作。配置保存、服务控制和检查测试如果失败，会出现在这里。");
       return records.map(item => `
@@ -3496,16 +3686,25 @@ INDEX_HTML = r"""<!doctype html>
       const recentErrors = data.recent_errors || [];
       const audit = data.audit || {};
       const failedAudit = audit.failed_recent || [];
+      const issues = data.issues || [];
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
-        ${renderPageIntro("report", [data.generated_at || "", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${renderPageIntro("report", [data.generated_at || "", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
         <div class="panel span-3 metric"><div class="label">健康项</div><div class="value">${neutralPill(String(health.length))}</div><div class="muted">含服务和配置门禁</div></div>
+        <div class="panel span-3 metric"><div class="label">问题中心</div><div class="value">${issues.length ? statusPill(`${issues.length} 个`, !issues.some(item => item.severity !== "notice")) : neutralPill("暂无")}</div><div class="muted">按严重程度排序</div></div>
         <div class="panel span-3 metric"><div class="label">最近错误</div><div class="value">${recentErrors.length ? statusPill(`${recentErrors.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 检测</div></div>
         <div class="panel span-3 metric"><div class="label">失败审计</div><div class="value">${failedAudit.length ? statusPill(`${failedAudit.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">Web 后台操作</div></div>
         <div class="panel span-3 metric"><div class="label">日志错误</div><div class="value">${logErrorTotal ? statusPill(`${logErrorTotal} 条`, false) : neutralPill("暂无")}</div><div class="muted">main/structure/web/ai</div></div>
         <div class="panel span-3 metric"><div class="label">网络超时</div><div class="value">${transientTotal ? neutralPill(`${transientTotal} 条`) : neutralPill("暂无")}</div><div class="muted">Telegram 自动重试类</div></div>
+        <div class="panel span-12">
+          <div class="summary-head">
+            <h3 class="section-title">问题中心</h3>
+            ${neutralPill(`${issues.length} 个问题`)}
+          </div>
+          ${issueCards(issues)}
+        </div>
         <div class="panel span-12">
           <div class="summary-head">
             <h3 class="section-title">建议动作</h3>
