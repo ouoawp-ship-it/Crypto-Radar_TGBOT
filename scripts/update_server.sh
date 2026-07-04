@@ -181,6 +181,7 @@ run_post_update_stable_check() {
       printf '[paopao-update] 稳定版自检执行异常，退出码: %s\n' "$check_status"
       ;;
   esac
+  printf '[paopao-update] 如果上方“趋势变化”显示“发生回退”或“趋势变差”，请优先打开 Web 控制台 -> 诊断报告处理趋势告警。\n'
   return 0
 }
 

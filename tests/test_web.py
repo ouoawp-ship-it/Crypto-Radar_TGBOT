@@ -507,6 +507,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(latest["release_readiness"]["status"], "blocked")
         self.assertEqual(latest["release_trend"]["status"], "regressed")
         self.assertEqual(latest["release_trend"]["previous_status"], "candidate")
+        self.assertTrue(any(item["key"] == "release-trend" for item in latest["problem_center"]["action_plan"]))
         self.assertEqual(latest["stability_history"]["records"][0]["release_status"], "blocked")
         self.assertIsInstance(latest["stability_history"]["records"][0]["release_score"], int)
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
@@ -608,6 +609,30 @@ class WebConsoleTests(unittest.TestCase):
 
         self.assertEqual(center["status"], "blocked")
         self.assertTrue(any(item["key"] == "config-check" and item["target"] == "config" for item in center["action_plan"]))
+
+    def test_problem_center_promotes_release_trend_regression_to_action_plan(self) -> None:
+        snapshot = {
+            "health": [],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {},
+            "issues": [],
+            "stability": {"status": "ready", "fail_count": 0, "warn_count": 0},
+            "release_trend": {
+                "status": "regressed",
+                "label": "发生回退",
+                "summary": "长期运行就绪度从候选状态回退到需要处理。",
+                "action": "优先打开问题中心和日志中心。",
+            },
+        }
+
+        center = web.build_problem_center(snapshot)
+
+        self.assertEqual(center["status"], "blocked")
+        self.assertEqual(center["counts"]["release_trend_regressed"], 1)
+        self.assertTrue(any(item["key"] == "release-trend" and item["target"] == "report" for item in center["action_plan"]))
+        self.assertTrue(any(item["button"] == "查看趋势详情" for item in center["action_plan"]))
+        self.assertTrue(any("长期运行趋势发生回退" in item for item in center["next_steps"]))
 
     def test_release_readiness_complete_candidate_when_clean_and_history_ready(self) -> None:
         snapshot = {
@@ -776,6 +801,23 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("异常健康项", joined)
         self.assertIn("失败的 Web 后台操作", joined)
         self.assertIn("日志", joined)
+
+    def test_ops_snapshot_recommends_release_trend_regression(self) -> None:
+        snapshot = {
+            "health": [],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {},
+            "release_trend": {
+                "status": "regressed",
+                "label": "发生回退",
+                "summary": "长期运行就绪度从候选状态回退到需要处理。",
+            },
+        }
+
+        recommendations = web.build_ops_recommendations(snapshot)
+
+        self.assertTrue(any("长期运行趋势发生回退" in item for item in recommendations))
 
     def test_ops_issues_classify_modules_severity_and_actions(self) -> None:
         snapshot = {
@@ -1078,6 +1120,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("趋势变好", html)
         self.assertIn("发生回退", html)
         self.assertIn("scoreText", html)
+        self.assertIn("趋势回退", html)
         self.assertIn("处理清单", html)
         self.assertIn("actionPlanCards", html)
         self.assertIn("actionPlanButton", html)

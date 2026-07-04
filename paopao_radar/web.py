@@ -1514,6 +1514,8 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
     audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
     failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
+    release_trend_status = str(release_trend.get("status") or "")
     log_error_total = sum(
         int(item.get("error_count", 0) or 0)
         for item in logs.values()
@@ -1535,6 +1537,10 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
         recommendations.append(f"近期日志中检测到 {log_error_total} 条错误/异常关键字，优先查看诊断报告里的日志片段和日志中心原文。")
     if transient_total >= 10 and not log_error_total:
         recommendations.append(f"近期 Telegram 网络超时 {transient_total} 次。服务会自动重试；如果 AI Bot 明显不回复，再检查服务器到 api.telegram.org 的网络。")
+    if release_trend_status == "regressed":
+        recommendations.append("长期运行趋势发生回退：这次从候选状态掉到需要处理。优先打开诊断报告的问题中心和日志中心，按阻断项处理后重新 stable-check。")
+    elif release_trend_status == "worse":
+        recommendations.append("长期运行趋势变差：分数或候选状态低于上次。先看趋势卡片的分数变化，再处理本次新增的警告或阻断项。")
     if warn_health and not bad_health:
         labels = "、".join(str(item.get("label") or "") for item in warn_health[:4])
         recommendations.append(f"存在需要关注的警告项：{labels}。如果功能正常，可以观察；如果推送异常，再进入对应配置页检查。")
@@ -1673,6 +1679,10 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
     audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
     failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
+    release_trend_status = str(release_trend.get("status") or "")
+    trend_regressed = release_trend_status == "regressed"
+    trend_worse = release_trend_status == "worse"
 
     critical_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "critical")
     warning_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "warning")
@@ -1691,16 +1701,20 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
     stability_status = str(stability.get("status") or "")
 
-    if critical_count or bad_health_count or stability_status == "blocked":
+    if critical_count or bad_health_count or stability_status == "blocked" or trend_regressed:
         status = "blocked"
         label = "需要优先处理"
         summary = "存在阻断项或严重问题，建议先处理后再继续观察。"
         primary_action = "先处理问题中心里的严重项；服务异常优先重启对应服务，配置缺失优先补齐配置。"
-    elif warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention":
+        if trend_regressed and not (critical_count or bad_health_count or stability_status == "blocked"):
+            primary_action = "长期运行趋势发生回退，先查看趋势卡片和验收历史，再按本次新增阻断项重新验收。"
+    elif warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention" or trend_worse:
         status = "attention"
         label = "需要关注"
         summary = "系统可运行，但存在警告、错误日志或失败操作，建议确认是否影响实际推送。"
         primary_action = "先看建议动作和相关日志；如果功能正常，可以继续观察并等待下一次 stable-check。"
+        if trend_worse and not (warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention"):
+            primary_action = "长期运行趋势变差，先查看趋势卡片的分数变化和验收历史，确认是否需要处理。"
     else:
         status = "ok"
         label = "当前健康"
@@ -1740,6 +1754,10 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
         next_steps.append("打开审计记录，筛选失败操作，确认最近的配置保存或服务控制是否已经重试成功。")
     if transient_total >= 10 and not log_error_total:
         next_steps.append("Telegram/API 网络超时偏多但可自动重试；如果 Bot 明显不回复，再检查服务器网络。")
+    if trend_regressed:
+        next_steps.append("长期运行趋势发生回退：优先查看趋势卡片、验收历史和本次阻断项，处理后重新执行 stable-check。")
+    elif trend_worse:
+        next_steps.append("长期运行趋势变差：对比本次和上次分数变化，确认新增警告或阻断项是否影响真实推送。")
     if not next_steps:
         next_steps.append("暂无需要立即处理的动作。")
 
@@ -1847,6 +1865,16 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
             log_target=worst_transient_target,
         )
 
+    if trend_regressed or trend_worse:
+        add_action(
+            "release-trend",
+            severity="critical" if trend_regressed else "warning",
+            title="处理长期运行趋势回退" if trend_regressed else "确认长期运行趋势变差",
+            detail=str(release_trend.get("action") or release_trend.get("summary") or "查看趋势卡片和验收历史，确认分数下降原因。"),
+            target="report",
+            button="查看趋势详情",
+        )
+
     if stability_status in {"blocked", "attention"}:
         add_action(
             "stable-check",
@@ -1890,6 +1918,8 @@ def build_problem_center(snapshot: dict[str, Any]) -> dict[str, Any]:
             "transient_timeouts": transient_total,
             "stability_fail": int(stability.get("fail_count", 0) or 0),
             "stability_warn": int(stability.get("warn_count", 0) or 0),
+            "release_trend_regressed": 1 if trend_regressed else 0,
+            "release_trend_worse": 1 if trend_worse else 0,
         },
         "modules": modules,
         "next_steps": next_steps,
@@ -2418,6 +2448,9 @@ def save_stability_snapshot(
         "count": len(trimmed),
     }
     snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
+    snapshot["problem_center"] = build_problem_center(snapshot)
+    snapshot["release_readiness"] = build_release_readiness(snapshot)
+    snapshot["recommendations"] = build_ops_recommendations(snapshot)
     latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     history_path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
@@ -2477,12 +2510,12 @@ def ops_snapshot_payload() -> dict[str, Any]:
         },
         "log_errors": log_errors,
     }
+    snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
+    snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     snapshot["issues"] = build_ops_issues(snapshot)
     snapshot["stability"] = build_stability_checks(snapshot)
-    snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
     snapshot["problem_center"] = build_problem_center(snapshot)
     snapshot["release_readiness"] = build_release_readiness(snapshot)
-    snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -4739,6 +4772,8 @@ INDEX_HTML = r"""<!doctype html>
               ${Number(counts.warning || 0) ? neutralPill(`${counts.warning} 警告`) : ""}
               ${Number(counts.log_errors || 0) ? statusPill(`${counts.log_errors} 日志错误`, false) : ""}
               ${Number(counts.transient_timeouts || 0) ? neutralPill(`${counts.transient_timeouts} 网络超时`) : ""}
+              ${Number(counts.release_trend_regressed || 0) ? statusPill("趋势回退", false) : ""}
+              ${Number(counts.release_trend_worse || 0) ? neutralPill("趋势变差") : ""}
             </div>
           </div>
           <div class="hint" style="margin:10px 0">${escapeHtml(data.primary_action || "暂无需要立即处理的动作。")}</div>

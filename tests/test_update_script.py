@@ -13,6 +13,8 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertGreaterEqual(script.count("run_post_update_stable_check"), 3)
         self.assertIn("稳定版自检通过，长期运行就绪度", script)
         self.assertIn("稳定版自检未达标，长期运行就绪度需要处理", script)
+        self.assertIn("趋势变化", script)
+        self.assertIn("发生回退", script)
 
 
 if __name__ == "__main__":
