@@ -169,13 +169,13 @@ run_post_update_stable_check() {
   set -e
   case "$check_status" in
     0)
-      printf '[paopao-update] 稳定版自检通过。\n'
+      printf '[paopao-update] 稳定版自检通过，长期运行就绪度请以上方摘要为准。\n'
       ;;
     1)
-      printf '[paopao-update] 稳定版自检有警告。可打开 Web 控制台 -> 诊断报告查看详情。\n'
+      printf '[paopao-update] 稳定版自检有警告，长期运行就绪度可能是准稳定候选。可打开 Web 控制台 -> 诊断报告查看详情。\n'
       ;;
     2)
-      printf '[paopao-update] 稳定版自检未达标。请打开 Web 控制台 -> 诊断报告按建议处理。\n'
+      printf '[paopao-update] 稳定版自检未达标，长期运行就绪度需要处理。请打开 Web 控制台 -> 诊断报告按建议处理。\n'
       ;;
     *)
       printf '[paopao-update] 稳定版自检执行异常，退出码: %s\n' "$check_status"

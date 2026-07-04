@@ -11,8 +11,8 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("run_post_update_stable_check()", script)
         self.assertIn('\"$PYTHON_BIN\" main.py stable-check', script)
         self.assertGreaterEqual(script.count("run_post_update_stable_check"), 3)
-        self.assertIn("稳定版自检通过", script)
-        self.assertIn("稳定版自检未达标", script)
+        self.assertIn("稳定版自检通过，长期运行就绪度", script)
+        self.assertIn("稳定版自检未达标，长期运行就绪度需要处理", script)
 
 
 if __name__ == "__main__":

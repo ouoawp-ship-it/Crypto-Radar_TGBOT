@@ -347,13 +347,27 @@ def _stable_check_status_label(status: str) -> str:
     }.get(str(status or ""), str(status or "未知"))
 
 
+def _release_readiness_status_label(status: str) -> str:
+    return {
+        "complete_candidate": "完整稳定版候选",
+        "candidate": "准稳定候选",
+        "blocked": "需要处理",
+        "ok": "通过",
+        "warn": "关注",
+        "fail": "未达标",
+    }.get(str(status or ""), str(status or "未知"))
+
+
 def print_stable_check(as_json: bool = False, save: bool = True) -> int:
-    from .web import ops_snapshot_payload, save_stability_snapshot
+    from .web import build_release_readiness, ops_snapshot_payload, save_stability_snapshot, stability_history_payload
 
     snapshot = ops_snapshot_payload()
     if save:
         snapshot["stability_saved"] = save_stability_snapshot(snapshot)
+        snapshot["stability_history"] = stability_history_payload(limit=8)
+        snapshot["release_readiness"] = build_release_readiness(snapshot)
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    release_readiness = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
     if as_json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     else:
@@ -368,6 +382,30 @@ def print_stable_check(as_json: bool = False, save: bool = True) -> int:
             print(f"记录: 已保存 latest/history，历史 {saved.get('history_count', 0)} 条")
         elif not save:
             print("记录: 本次未保存（--no-save）")
+        print("")
+        print("长期运行就绪度:")
+        print(f"状态: {_release_readiness_status_label(str(release_readiness.get('status') or ''))}")
+        print(f"评分: {release_readiness.get('score', '')}/100")
+        print(f"摘要: {release_readiness.get('summary') or ''}")
+        print(f"下一目标: {release_readiness.get('next_version_goal') or ''}")
+        print(
+            "计数: "
+            f"通过 {int(release_readiness.get('ok_count', 0) or 0)} | "
+            f"警告 {int(release_readiness.get('warn_count', 0) or 0)} | "
+            f"阻断 {int(release_readiness.get('fail_count', 0) or 0)}"
+        )
+        readiness_checks = release_readiness.get("checks", []) if isinstance(release_readiness.get("checks"), list) else []
+        if readiness_checks:
+            print("就绪度检查:")
+        for item in readiness_checks:
+            if not isinstance(item, dict):
+                continue
+            status_label = _release_readiness_status_label(str(item.get("status") or ""))
+            line = f"- {item.get('label', '')}: {status_label} - {item.get('detail', '')}"
+            action = str(item.get("action") or "")
+            if action:
+                line += f" | 建议: {action}"
+            print(line)
         print("")
         print("检查项:")
         checks = stability.get("checks", []) if isinstance(stability.get("checks"), list) else []

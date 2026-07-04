@@ -121,6 +121,17 @@ class MainCommandTests(unittest.TestCase):
                 "summary": "核心服务正常",
                 "checks": [{"label": "后台服务", "status": "ok", "detail": "全部运行中"}],
             },
+            "release_readiness": {
+                "status": "complete_candidate",
+                "label": "完整稳定版候选",
+                "summary": "当前快照达到长期运行候选标准",
+                "score": 100,
+                "ok_count": 6,
+                "warn_count": 0,
+                "fail_count": 0,
+                "next_version_goal": "可以进入下一阶段",
+                "checks": [{"label": "当前稳定版验收", "status": "ok", "detail": "当前 stable-check 已通过"}],
+            },
             "recommendations": ["当前快照没有发现明显异常。"],
         }
 
@@ -132,6 +143,10 @@ class MainCommandTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("泡泡雷达稳定版自检", text)
         self.assertIn("达到稳定版标准", text)
+        self.assertIn("长期运行就绪度", text)
+        self.assertIn("完整稳定版候选", text)
+        self.assertIn("评分: 100/100", text)
+        self.assertIn("下一目标: 可以进入下一阶段", text)
         self.assertIn("后台服务: 通过", text)
         self.assertIn("本次未保存", text)
 
