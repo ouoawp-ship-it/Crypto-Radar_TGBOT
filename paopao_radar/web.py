@@ -1761,6 +1761,8 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
     release_trend_status = str(release_trend.get("status") or "")
     problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
     problem_counts = problem_center.get("counts", {}) if isinstance(problem_center.get("counts"), dict) else {}
+    deployment = snapshot.get("deployment_acceptance", {}) if isinstance(snapshot.get("deployment_acceptance"), dict) else {}
+    deployment_status = str(deployment.get("status") or "")
     log_error_total = sum(
         int(item.get("error_count", 0) or 0)
         for item in logs.values()
@@ -1792,6 +1794,10 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
         recommendations.append(f"有 {resolved_active} 个已标记解决的问题仍然存在：继续按处理清单排查，处理后再执行 stable-check。")
     elif resolved_missing:
         recommendations.append(f"有 {resolved_missing} 个已标记解决的问题当前已消失：建议执行 stable-check 复查并保存新的验收记录。")
+    if deployment_status == "blocked":
+        recommendations.append("服务器部署验收未通过：先处理部署验收里的阻断项，再重新执行 stable-check。")
+    elif deployment_status == "attention":
+        recommendations.append("服务器部署验收存在观察项：确认 Web 入口、服务、配置、日志和审计是否影响真实运行。")
     if warn_health and not bad_health:
         labels = "、".join(str(item.get("label") or "") for item in warn_health[:4])
         recommendations.append(f"存在需要关注的警告项：{labels}。如果功能正常，可以观察；如果推送异常，再进入对应配置页检查。")
@@ -2687,6 +2693,163 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
+    services = snapshot.get("services", {}) if isinstance(snapshot.get("services"), dict) else {}
+    config = snapshot.get("config", {}) if isinstance(snapshot.get("config"), dict) else {}
+    git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
+    stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    release = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
+    logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
+
+    checks: list[dict[str, Any]] = []
+
+    def add(key: str, label: str, status: str, detail: str, action: str = "") -> None:
+        checks.append({"key": key, "label": label, "status": status, "detail": detail, "action": action})
+
+    version = str(git.get("version") or "")
+    commit = str(git.get("commit") or "")
+    add(
+        "version",
+        "代码版本",
+        "ok" if SEMVER_VERSION_RE.match(version) and commit and commit != "unknown" else "fail",
+        f"{version or 'unknown'} {commit or 'unknown'}".strip(),
+        "确认服务器目录是 Git 仓库，且 VERSION 文件和提交号能正常读取。",
+    )
+
+    required_services = {
+        "main": "主服务",
+        "structure": "结构雷达",
+        "web": "Web 控制台",
+    }
+    ai_config = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
+    if bool(ai_config.get("enable")):
+        required_services["ai"] = "AI 助手"
+    down = []
+    for key, label in required_services.items():
+        item = services.get(key, {}) if isinstance(services.get(key), dict) else {}
+        if not bool(item.get("active_ok")):
+            down.append(label)
+    add(
+        "services",
+        "后台服务",
+        "ok" if not down else "fail",
+        "主服务、结构雷达、Web 控制台和已启用的 AI 助手均在运行。" if not down else "未运行：" + "、".join(down),
+        "进入 Web「雷达服务」页重启对应服务；仍失败时查看日志中心。",
+    )
+
+    web_config = config.get("web", {}) if isinstance(config.get("web"), dict) else {}
+    web_host = str(web_config.get("host") or "")
+    web_port = int(web_config.get("port", 0) or 0)
+    web_token_ok = bool(web_config.get("admin_token_configured"))
+    if not web_token_ok:
+        web_status = "fail"
+        web_detail = "WEB_ADMIN_TOKEN 未配置，公网入口不安全。"
+        web_action = "到配置中心补齐 Web 访问令牌，保存后让 Web 控制台自动重启。"
+    elif web_host in {"0.0.0.0", "::"} and 1 <= web_port <= 65535:
+        web_status = "ok"
+        web_detail = f"Web 入口监听 {web_host}:{web_port}，可通过服务器 IP 访问。"
+        web_action = ""
+    else:
+        web_status = "warn"
+        web_detail = f"Web 入口监听 {web_host or 'unknown'}:{web_port or 'unknown'}，可能只适合本机或自定义代理访问。"
+        web_action = "如果希望直接用服务器 IP 打开，保持 WEB_HOST=0.0.0.0，WEB_PORT=8080。"
+    add("web_entry", "Web 入口", web_status, web_detail, web_action)
+
+    telegram = config.get("telegram", {}) if isinstance(config.get("telegram"), dict) else {}
+    telegram_ok = bool(telegram.get("bot_token_configured") and telegram.get("chat_id_configured"))
+    add(
+        "telegram",
+        "Telegram 推送配置",
+        "ok" if telegram_ok else "fail",
+        "Token 和群/频道 ID 已配置。" if telegram_ok else "缺少 Telegram Token 或群/频道 ID。",
+        "到配置中心补齐 Telegram 配置后，执行 Telegram 测试消息和 readiness。",
+    )
+
+    if bool(ai_config.get("enable")):
+        ai_ok = bool(ai_config.get("bot_token_configured"))
+        add(
+            "ai_bot",
+            "AI 助手配置",
+            "ok" if ai_ok else "warn",
+            "AI 助手已启用且 Bot Token 已配置。" if ai_ok else "AI 助手已启用但缺 AI_BOT_TOKEN。",
+            "到配置中心补齐 AI Bot Token；如果暂时不用 AI 助手，可以关闭 AI_ASSISTANT_ENABLE。",
+        )
+    else:
+        add("ai_bot", "AI 助手配置", "warn", "AI 助手未启用；不影响群推送，但价格提醒和 AI 分析不可用。")
+
+    stability_status = str(stability.get("status") or "")
+    release_status = str(release.get("status") or "")
+    if stability_status == "ready" and release_status in {"complete_candidate", "candidate"}:
+        deploy_status = "ok"
+        deploy_detail = f"stable-check={stability_status}，长期就绪度={release_status}。"
+        deploy_action = ""
+    elif stability_status == "blocked" or release_status == "blocked":
+        deploy_status = "fail"
+        deploy_detail = f"stable-check={stability_status or 'unknown'}，长期就绪度={release_status or 'unknown'}。"
+        deploy_action = "先按诊断报告处理阻断项，再重新执行 stable-check。"
+    else:
+        deploy_status = "warn"
+        deploy_detail = f"stable-check={stability_status or 'unknown'}，长期就绪度={release_status or 'unknown'}。"
+        deploy_action = "如果实际推送正常，可以观察；建议再执行一次 stable-check 保存历史。"
+    add("stable_check", "稳定版验收", deploy_status, deploy_detail, deploy_action)
+
+    log_error_total = sum(int(item.get("error_count", 0) or 0) for item in logs.values() if isinstance(item, dict))
+    failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
+    add(
+        "logs",
+        "日志稳定性",
+        "ok" if log_error_total == 0 else ("warn" if log_error_total < 10 else "fail"),
+        "近期没有真实日志错误。" if log_error_total == 0 else f"近期真实日志错误 {log_error_total} 条。",
+        "打开日志中心勾选“只看错误”，按最早错误时间排查。",
+    )
+    add(
+        "audit",
+        "后台操作审计",
+        "ok" if not failed_audit else "warn",
+        "最近没有失败的后台操作。" if not failed_audit else f"最近失败操作 {len(failed_audit)} 条。",
+        "打开审计记录按失败筛选，确认是否已经重试成功。",
+    )
+
+    script_status = "ok" if (BASE_DIR / "scripts" / "update_server.sh").exists() and (BASE_DIR / "scripts" / "install_server.sh").exists() else "fail"
+    add(
+        "scripts",
+        "部署脚本",
+        script_status,
+        "更新脚本和安装脚本存在。" if script_status == "ok" else "缺少更新脚本或安装脚本。",
+        "确认 scripts/update_server.sh 和 scripts/install_server.sh 没有被删除。",
+    )
+
+    fail_count = sum(1 for item in checks if item.get("status") == "fail")
+    warn_count = sum(1 for item in checks if item.get("status") == "warn")
+    ok_count = sum(1 for item in checks if item.get("status") == "ok")
+    if fail_count:
+        status = "blocked"
+        label = "部署验收未通过"
+        summary = f"{fail_count} 个阻断项会影响服务器长期运行。"
+        next_action = "先处理阻断项，再执行 paopao update --yes 或 python main.py stable-check。"
+    elif warn_count:
+        status = "attention"
+        label = "部署基本可用，建议关注"
+        summary = f"{warn_count} 个观察项不一定阻断运行，但建议确认。"
+        next_action = "确认警告不影响真实推送后，再保存一次 stable-check 历史。"
+    else:
+        status = "ready"
+        label = "部署验收通过"
+        summary = "服务器部署、服务、入口、配置、日志和审计均达到当前收口标准。"
+        next_action = "可以进入下一阶段收口。"
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "ok_count": ok_count,
+        "warn_count": warn_count,
+        "fail_count": fail_count,
+        "checks": checks,
+        "next_action": next_action,
+    }
+
+
 def _release_status_rank(status: str) -> int:
     return {
         "blocked": 0,
@@ -2779,6 +2942,7 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     release = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
     closure = release.get("closure_plan", {}) if isinstance(release.get("closure_plan"), dict) else {}
     closure_stage = closure.get("current_stage", {}) if isinstance(closure.get("current_stage"), dict) else {}
+    deployment = snapshot.get("deployment_acceptance", {}) if isinstance(snapshot.get("deployment_acceptance"), dict) else {}
     problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
     problem_state = problem_center.get("problem_state", {}) if isinstance(problem_center.get("problem_state"), dict) else {}
     problem_review = problem_state.get("review", {}) if isinstance(problem_state.get("review"), dict) else {}
@@ -2820,6 +2984,11 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "closure_current_stage": closure_stage.get("version", ""),
         "closure_current_stage_label": closure_stage.get("label", ""),
         "closure_stage_status": closure_stage.get("status", ""),
+        "deployment_status": deployment.get("status", "unknown"),
+        "deployment_label": deployment.get("label", "未知"),
+        "deployment_summary": deployment.get("summary", ""),
+        "deployment_warn_count": int(deployment.get("warn_count", 0) or 0),
+        "deployment_fail_count": int(deployment.get("fail_count", 0) or 0),
         "issue_count": len(issues),
         "log_error_count": log_error_total,
         "transient_count": transient_total,
@@ -2879,6 +3048,16 @@ def save_stability_snapshot(
     snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     snapshot["problem_center"] = build_problem_center(snapshot, load_problem_state(base_dir))
     snapshot["release_readiness"] = build_release_readiness(snapshot)
+    snapshot["deployment_acceptance"] = build_deployment_acceptance(snapshot)
+    record = stability_record_from_snapshot(snapshot)
+    trimmed = [record, *previous_records][:max_records]
+    snapshot["stability_history"] = {
+        "latest_path": str(latest_path),
+        "history_path": str(history_path),
+        "latest": record,
+        "records": trimmed,
+        "count": len(trimmed),
+    }
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     history_path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2946,6 +3125,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     snapshot["stability"] = build_stability_checks(snapshot)
     snapshot["problem_center"] = build_problem_center(snapshot, problem_state)
     snapshot["release_readiness"] = build_release_readiness(snapshot)
+    snapshot["deployment_acceptance"] = build_deployment_acceptance(snapshot)
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -4867,6 +5047,13 @@ INDEX_HTML = r"""<!doctype html>
       if (nextClosureStage.version) lines.push(`- 下一阶段: ${nextClosureStage.version || ""} ${nextClosureStage.label || ""}`);
       lines.push(`- 阻断/警告: 阻断 ${closurePlan.fail_count || 0} | 警告 ${closurePlan.warn_count || 0}`);
       lines.push("");
+      const deployment = data.deployment_acceptance || {};
+      lines.push("服务器部署验收:");
+      lines.push(`- 状态: ${deployment.label || ""} ${deployment.summary || ""}`);
+      lines.push(`- 计数: 通过 ${deployment.ok_count || 0} | 警告 ${deployment.warn_count || 0} | 阻断 ${deployment.fail_count || 0}`);
+      lines.push(`- 下一步: ${deployment.next_action || ""}`);
+      ((deployment && deployment.checks) || []).forEach(item => lines.push(`- ${item.label || ""}: ${item.status || ""} ${item.detail || ""}${item.action ? ` | 建议: ${item.action}` : ""}`));
+      lines.push("");
       lines.push("长期运行就绪度:");
       lines.push(`- 状态: ${releaseReadiness.label || ""} ${releaseReadiness.summary || ""}`);
       lines.push(`- 评分: ${releaseReadiness.score ?? ""}`);
@@ -5035,6 +5222,49 @@ INDEX_HTML = r"""<!doctype html>
         </tr>
       `).join("");
     }
+    function deploymentStatusPill(status) {
+      const value = String(status || "");
+      if (value === "ready") return statusPill("部署通过", true);
+      if (value === "attention") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">部署关注</span>`;
+      if (value === "blocked") return statusPill("部署未通过", false);
+      return neutralPill(value || "未知");
+    }
+    function deploymentAcceptancePanel(deployment) {
+      const data = deployment || {};
+      const checks = data.checks || [];
+      const rows = checks.length ? checks.map(item => `
+        <tr>
+          <td>${escapeHtml(item.label || "")}</td>
+          <td>${stabilityStatusPill(item.status)}</td>
+          <td>${escapeHtml(item.detail || "")}</td>
+          <td>${escapeHtml(item.action || "无需处理")}</td>
+        </tr>
+      `).join("") : tableEmpty(4, "暂无部署验收结果", "执行稳定版验收后会生成服务器部署验收。");
+      return `
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">服务器部署验收</h3>
+              <div class="summary-meta">${escapeHtml(data.summary || "检查更新后的服务、Web 入口、关键配置、日志和审计是否适合长期运行。")}</div>
+            </div>
+            <div class="issue-meta">
+              ${deploymentStatusPill(data.status)}
+              ${neutralPill(`${Number(data.ok_count || 0)} 通过`)}
+              ${Number(data.warn_count || 0) ? neutralPill(`${data.warn_count} 警告`) : ""}
+              ${Number(data.fail_count || 0) ? statusPill(`${data.fail_count} 阻断`, false) : ""}
+            </div>
+          </div>
+          <div class="readable-list" style="margin-top:10px">
+            ${row("下一步", textValue(data.next_action || "暂无"))}
+            ${row("验收范围", textValue("代码版本、后台服务、Web 入口、Telegram/AI 配置、stable-check、日志、审计和部署脚本。"))}
+          </div>
+          <table class="table" style="margin-top:10px">
+            <thead><tr><th>检查项</th><th>状态</th><th>当前情况</th><th>建议动作</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
     function releaseTrendStatusPill(status) {
       const value = String(status || "");
       if (value === "improved") return statusPill("趋势变好", true);
@@ -5157,10 +5387,11 @@ INDEX_HTML = r"""<!doctype html>
           <td>${item.release_score === null || item.release_score === undefined ? escapeHtml("未记录") : escapeHtml(`${item.release_score}/100`)}</td>
           <td>${escapeHtml(item.version || "")} ${escapeHtml(item.commit || "")}</td>
           <td>${item.closure_current_stage ? `${neutralPill(item.closure_current_stage)} ${closureStageStatusPill(item.closure_stage_status)}` : neutralPill("未记录")}</td>
+          <td>${item.deployment_status && item.deployment_status !== "unknown" ? deploymentStatusPill(item.deployment_status) : neutralPill("未记录")}</td>
           <td>${Number(item.problem_resolved_active || 0) ? statusPill(`${item.problem_resolved_active} 仍存在`, false) : (Number(item.problem_resolved_missing || 0) ? statusPill(`${item.problem_resolved_missing} 待复查`, true) : neutralPill(item.problem_review_status && item.problem_review_status !== "empty" ? "已记录" : "暂无"))}</td>
           <td>${escapeHtml(item.summary || "")}</td>
         </tr>
-      `).join("") : tableEmpty(8, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
+      `).join("") : tableEmpty(9, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
       return `
         <div class="panel span-12">
           <div class="summary-head">
@@ -5171,7 +5402,7 @@ INDEX_HTML = r"""<!doctype html>
             ${neutralPill(`${Number((history && history.count) || 0)} 条`)}
           </div>
           <table class="table">
-            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>收口阶段</th><th>处理复查</th><th>摘要</th></tr></thead>
+            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>收口阶段</th><th>部署验收</th><th>处理复查</th><th>摘要</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -5384,12 +5615,14 @@ INDEX_HTML = r"""<!doctype html>
       const problemCenter = data.problem_center || {};
       const releaseReadiness = data.release_readiness || {};
       const releaseTrend = data.release_trend || {};
+      const deploymentAcceptance = data.deployment_acceptance || {};
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
         ${renderPageIntro("report", [data.generated_at || "", releaseReadiness.label || problemCenter.label || stability.label || "稳定版自检", releaseReadiness.score !== undefined ? `就绪度 ${releaseReadiness.score}/100` : "就绪度未生成", releaseTrend.label || "趋势未生成", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
         ${releaseReadinessPanel(releaseReadiness)}
+        ${deploymentAcceptancePanel(deploymentAcceptance)}
         ${releaseTrendPanel(releaseTrend)}
         ${problemCenterPanel(problemCenter)}
         <div class="panel span-12">

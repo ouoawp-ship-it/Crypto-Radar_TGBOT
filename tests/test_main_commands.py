@@ -141,6 +141,16 @@ class MainCommandTests(unittest.TestCase):
                 "score_delta": 16,
                 "action": "继续观察。",
             },
+            "deployment_acceptance": {
+                "status": "ready",
+                "label": "部署验收通过",
+                "summary": "服务器部署达到当前收口标准",
+                "ok_count": 8,
+                "warn_count": 0,
+                "fail_count": 0,
+                "next_action": "可以进入下一阶段收口。",
+                "checks": [{"label": "Web 入口", "status": "ok", "detail": "监听 0.0.0.0:8080"}],
+            },
             "recommendations": ["当前快照没有发现明显异常。"],
         }
 
@@ -159,6 +169,9 @@ class MainCommandTests(unittest.TestCase):
         self.assertIn("趋势变化", text)
         self.assertIn("趋势变好", text)
         self.assertIn("变化 16", text)
+        self.assertIn("服务器部署验收", text)
+        self.assertIn("部署验收通过", text)
+        self.assertIn("Web 入口: 通过", text)
         self.assertIn("后台服务: 通过", text)
         self.assertIn("本次未保存", text)
 

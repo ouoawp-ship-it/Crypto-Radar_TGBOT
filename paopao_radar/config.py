@@ -495,6 +495,11 @@ class Settings:
                 "cleanup_interval_sec": self.cleanup_interval_sec,
                 "cleanup_state_file": str(self.cleanup_state_path),
             },
+            "web": {
+                "host": os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
+                "port": env_int("WEB_PORT", 8080),
+                "admin_token_configured": bool(os.getenv("WEB_ADMIN_TOKEN", "").strip()),
+            },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,
                 "spot_base_url": self.binance_spot_base_url,

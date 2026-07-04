@@ -363,7 +363,7 @@ def _trend_value(value: object) -> str:
 
 
 def print_stable_check(as_json: bool = False, save: bool = True) -> int:
-    from .web import build_release_readiness, build_release_trend, ops_snapshot_payload, save_stability_snapshot, stability_history_payload
+    from .web import build_deployment_acceptance, build_release_readiness, build_release_trend, ops_snapshot_payload, save_stability_snapshot, stability_history_payload
 
     snapshot = ops_snapshot_payload()
     if save:
@@ -371,9 +371,11 @@ def print_stable_check(as_json: bool = False, save: bool = True) -> int:
         snapshot["stability_history"] = stability_history_payload(limit=8)
         snapshot["release_readiness"] = build_release_readiness(snapshot)
         snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
+        snapshot["deployment_acceptance"] = build_deployment_acceptance(snapshot)
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     release_readiness = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
     release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
+    deployment = snapshot.get("deployment_acceptance", {}) if isinstance(snapshot.get("deployment_acceptance"), dict) else {}
     if as_json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     else:
@@ -408,6 +410,28 @@ def print_stable_check(as_json: bool = False, save: bool = True) -> int:
                 continue
             status_label = _release_readiness_status_label(str(item.get("status") or ""))
             line = f"- {item.get('label', '')}: {status_label} - {item.get('detail', '')}"
+            action = str(item.get("action") or "")
+            if action:
+                line += f" | 建议: {action}"
+            print(line)
+        print("")
+        print("服务器部署验收:")
+        print(f"状态: {deployment.get('label') or _stable_check_status_label(str(deployment.get('status') or ''))}")
+        print(f"摘要: {deployment.get('summary') or ''}")
+        print(f"下一步: {deployment.get('next_action') or ''}")
+        print(
+            "计数: "
+            f"通过 {int(deployment.get('ok_count', 0) or 0)} | "
+            f"警告 {int(deployment.get('warn_count', 0) or 0)} | "
+            f"阻断 {int(deployment.get('fail_count', 0) or 0)}"
+        )
+        deployment_checks = deployment.get("checks", []) if isinstance(deployment.get("checks"), list) else []
+        if deployment_checks:
+            print("部署检查:")
+        for item in deployment_checks:
+            if not isinstance(item, dict):
+                continue
+            line = f"- {item.get('label', '')}: {_stable_check_status_label(str(item.get('status') or ''))} - {item.get('detail', '')}"
             action = str(item.get("action") or "")
             if action:
                 line += f" | 建议: {action}"

@@ -551,8 +551,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIsInstance(latest["stability_history"]["records"][0]["release_score"], int)
         self.assertEqual(latest["stability_history"]["records"][0]["closure_target_version"], "v1.50.0")
         self.assertEqual(latest["stability_history"]["records"][0]["closure_current_stage"], "v1.47.0")
-        self.assertEqual(latest["stability_history"]["records"][0]["problem_resolved_active"], 1)
-        self.assertEqual(latest["stability_history"]["records"][0]["problem_review_status"], "attention")
+        self.assertEqual(latest["stability_history"]["records"][0]["deployment_status"], "blocked")
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
         self.assertEqual([row["release_status"] for row in history], ["blocked", "candidate"])
         self.assertEqual(payload["latest"]["commit"], "ccc333")
@@ -817,6 +816,56 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(readiness["status"], "blocked")
         self.assertEqual(readiness["closure_plan"]["current_stage"]["status"], "blocked")
         self.assertTrue(any(item["key"] == "problem_state_review" and item["status"] == "fail" for item in readiness["checks"]))
+
+    def test_deployment_acceptance_ready_when_server_contract_is_met(self) -> None:
+        snapshot = {
+            "git": {"version": "v1.48.0", "commit": "abc123"},
+            "services": {
+                "main": {"active_ok": True},
+                "structure": {"active_ok": True},
+                "web": {"active_ok": True},
+                "ai": {"active_ok": True},
+            },
+            "config": {
+                "web": {"host": "0.0.0.0", "port": 8080, "admin_token_configured": True},
+                "telegram": {"bot_token_configured": True, "chat_id_configured": True},
+                "ai_assistant": {"enable": True, "bot_token_configured": True},
+            },
+            "stability": {"status": "ready"},
+            "release_readiness": {"status": "complete_candidate"},
+            "log_errors": {"main": {"error_count": 0}},
+            "audit": {"failed_recent": []},
+        }
+
+        deployment = web.build_deployment_acceptance(snapshot)
+
+        self.assertEqual(deployment["status"], "ready")
+        self.assertEqual(deployment["fail_count"], 0)
+        self.assertTrue(any(item["key"] == "web_entry" and item["status"] == "ok" for item in deployment["checks"]))
+
+    def test_deployment_acceptance_blocks_on_missing_web_token(self) -> None:
+        snapshot = {
+            "git": {"version": "v1.48.0", "commit": "abc123"},
+            "services": {
+                "main": {"active_ok": True},
+                "structure": {"active_ok": True},
+                "web": {"active_ok": True},
+            },
+            "config": {
+                "web": {"host": "0.0.0.0", "port": 8080, "admin_token_configured": False},
+                "telegram": {"bot_token_configured": True, "chat_id_configured": True},
+                "ai_assistant": {"enable": False},
+            },
+            "stability": {"status": "ready"},
+            "release_readiness": {"status": "candidate"},
+            "log_errors": {},
+            "audit": {"failed_recent": []},
+        }
+
+        deployment = web.build_deployment_acceptance(snapshot)
+
+        self.assertEqual(deployment["status"], "blocked")
+        self.assertTrue(any(item["key"] == "web_entry" and item["status"] == "fail" for item in deployment["checks"]))
 
     def test_log_error_excerpt_ignores_empty_errors_field(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
@@ -1258,6 +1307,10 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("收口阶段", html)
         self.assertIn("closurePlanRows", html)
         self.assertIn("closure_current_stage", html)
+        self.assertIn("服务器部署验收", html)
+        self.assertIn("deploymentAcceptancePanel", html)
+        self.assertIn("deployment_status", html)
+        self.assertIn("Web 入口", html)
         self.assertIn("完整稳定版候选", html)
         self.assertIn("下一版本目标", html)
         self.assertIn("长期就绪度", html)
