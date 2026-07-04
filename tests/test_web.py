@@ -396,6 +396,39 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["error_count"], 1)
         self.assertEqual(payload["lines"], ["ERROR real failure timeout"])
 
+    def test_log_error_excerpt_classifies_getupdates_timeout_as_transient(self) -> None:
+        def fake_logs(target: str, lines: int) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source": f"fake:{target}",
+                "text": (
+                    "ai-assistant: getUpdates failed ReadTimeout: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=10)\n"
+                    "ai-assistant: getUpdates failed ReadTimeout: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=10)\n"
+                    "ai-assistant: getUpdates failed ReadTimeout: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=10)\n"
+                ),
+            }
+
+        with patch.object(web, "logs_payload", side_effect=fake_logs):
+            payload = web.log_error_excerpt("ai", lines=80, limit=10)
+
+        self.assertEqual(payload["error_count"], 0)
+        self.assertEqual(payload["transient_count"], 3)
+        self.assertEqual(len(payload["transient_lines"]), 3)
+
+    def test_ops_snapshot_does_not_recommend_low_transient_timeouts_as_errors(self) -> None:
+        snapshot = {
+            "health": [{"label": "主服务", "status": "ok"}],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {"ai": {"error_count": 0, "transient_count": 3}},
+        }
+
+        recommendations = web.build_ops_recommendations(snapshot)
+
+        joined = "\n".join(recommendations)
+        self.assertIn("当前快照没有发现明显异常", joined)
+        self.assertNotIn("错误/异常关键字", joined)
+
     def test_ops_snapshot_recommends_failed_audit_and_bad_health(self) -> None:
         snapshot = {
             "health": [{"label": "主服务", "status": "bad"}],
@@ -649,6 +682,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("document.execCommand(\"copy\")", html)
         self.assertIn("reportCopyStatus", html)
         self.assertIn("浏览器拒绝自动复制", html)
+        self.assertIn("countTransientLogs", html)
+        self.assertIn("网络超时", html)
+        self.assertIn("Telegram 自动重试类", html)
         self.assertIn("价格提醒是独立的个人监控中心", html)
         self.assertIn("priceOutput", html)
         self.assertIn("priceStatusFilter", html)

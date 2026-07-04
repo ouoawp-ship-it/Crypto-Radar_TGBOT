@@ -1362,6 +1362,7 @@ EMPTY_ERROR_FIELD_RE = re.compile(
 SENSITIVE_LINE_RE = re.compile(r"(?i)\b(token|api[_-]?key|secret|password)\b\s*[:=]\s*['\"]?[^'\"\s,;]+")
 TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
+TRANSIENT_LOG_RE = re.compile(r"(getUpdates failed ReadTimeout|Read timed out|read timeout=\d+)", re.I)
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -1376,18 +1377,26 @@ def is_error_log_line(line: str) -> bool:
     return bool(ERROR_LINE_RE.search(cleaned))
 
 
+def is_transient_log_line(line: str) -> bool:
+    return bool(TRANSIENT_LOG_RE.search(str(line or "")))
+
+
 def log_error_excerpt(target: str, *, lines: int = 300, limit: int = 20) -> dict[str, Any]:
     payload = logs_payload(target, lines)
     raw_lines = str(payload.get("text") or "").splitlines()
-    error_lines = [line for line in raw_lines if is_error_log_line(line)]
+    transient_lines = [line for line in raw_lines if is_transient_log_line(line)]
+    error_lines = [line for line in raw_lines if is_error_log_line(line) and not is_transient_log_line(line)]
     selected = error_lines[-limit:]
+    selected_transient = transient_lines[-limit:]
     return {
         "target": target,
         "source": payload.get("source", ""),
         "ok": bool(payload.get("ok")),
         "total_lines": len(raw_lines),
         "error_count": len(error_lines),
+        "transient_count": len(transient_lines),
         "lines": [redact_sensitive_text(line)[-600:] for line in selected],
+        "transient_lines": [redact_sensitive_text(line)[-600:] for line in selected_transient],
     }
 
 
@@ -1405,6 +1414,11 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
         for item in logs.values()
         if isinstance(item, dict)
     )
+    transient_total = sum(
+        int(item.get("transient_count", 0) or 0)
+        for item in logs.values()
+        if isinstance(item, dict)
+    )
     if bad_health:
         labels = "、".join(str(item.get("label") or "") for item in bad_health[:4])
         recommendations.append(f"优先处理异常健康项：{labels}。先到“雷达服务”页重启对应服务，再看日志中心错误。")
@@ -1414,6 +1428,8 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
         recommendations.append("最近存在失败的 Web 后台操作，先到“审计记录”按失败筛选，确认是不是配置保存、服务控制或测试动作失败。")
     if log_error_total:
         recommendations.append(f"近期日志中检测到 {log_error_total} 条错误/异常关键字，优先查看诊断报告里的日志片段和日志中心原文。")
+    if transient_total >= 10 and not log_error_total:
+        recommendations.append(f"近期 Telegram 网络超时 {transient_total} 次。服务会自动重试；如果 AI Bot 明显不回复，再检查服务器到 api.telegram.org 的网络。")
     if warn_health and not bad_health:
         labels = "、".join(str(item.get("label") or "") for item in warn_health[:4])
         recommendations.append(f"存在需要关注的警告项：{labels}。如果功能正常，可以观察；如果推送异常，再进入对应配置页检查。")
@@ -3032,6 +3048,9 @@ INDEX_HTML = r"""<!doctype html>
     function countLogErrors(logErrors) {
       return Object.values(logErrors || {}).reduce((total, item) => total + Number((item && item.error_count) || 0), 0);
     }
+    function countTransientLogs(logErrors) {
+      return Object.values(logErrors || {}).reduce((total, item) => total + Number((item && item.transient_count) || 0), 0);
+    }
     function reportText(data) {
       const lines = [];
       const git = data.git || {};
@@ -3059,6 +3078,12 @@ INDEX_HTML = r"""<!doctype html>
       Object.entries(data.log_errors || {}).forEach(([target, item]) => {
         lines.push(`- ${target}: ${(item && item.error_count) || 0} 条`);
         ((item && item.lines) || []).slice(-5).forEach(line => lines.push(`  ${line}`));
+      });
+      lines.push("");
+      lines.push("网络超时/可自动重试:");
+      Object.entries(data.log_errors || {}).forEach(([target, item]) => {
+        lines.push(`- ${target}: ${(item && item.transient_count) || 0} 条`);
+        ((item && item.transient_lines) || []).slice(-5).forEach(line => lines.push(`  ${line}`));
       });
       return lines.join("\n");
     }
@@ -3109,6 +3134,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="summary-meta">${escapeHtml((item && item.source) || "")}</div>
           <pre class="output" style="max-height:220px">${escapeHtml(((item && item.lines) || []).join("\n") || "没有匹配的错误片段")}</pre>
+          ${Number((item && item.transient_count) || 0) ? `<div class="hint" style="margin-top:8px">另有 ${escapeHtml(String(item.transient_count))} 条 Telegram 网络超时，通常会自动重试。</div>` : ""}
         </div>
       `).join("");
     }
@@ -3132,6 +3158,7 @@ INDEX_HTML = r"""<!doctype html>
       const audit = data.audit || {};
       const failedAudit = audit.failed_recent || [];
       const logErrorTotal = countLogErrors(data.log_errors || {});
+      const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
         <div class="panel span-12 notice">
@@ -3142,6 +3169,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel span-3 metric"><div class="label">最近错误</div><div class="value">${recentErrors.length ? statusPill(`${recentErrors.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">runtime 检测</div></div>
         <div class="panel span-3 metric"><div class="label">失败审计</div><div class="value">${failedAudit.length ? statusPill(`${failedAudit.length} 条`, false) : neutralPill("暂无")}</div><div class="muted">Web 后台操作</div></div>
         <div class="panel span-3 metric"><div class="label">日志错误</div><div class="value">${logErrorTotal ? statusPill(`${logErrorTotal} 条`, false) : neutralPill("暂无")}</div><div class="muted">main/structure/web/ai</div></div>
+        <div class="panel span-3 metric"><div class="label">网络超时</div><div class="value">${transientTotal ? neutralPill(`${transientTotal} 条`) : neutralPill("暂无")}</div><div class="muted">Telegram 自动重试类</div></div>
         <div class="panel span-12">
           <div class="summary-head">
             <h3 class="section-title">建议动作</h3>
