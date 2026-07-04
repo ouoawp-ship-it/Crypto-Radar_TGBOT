@@ -1650,6 +1650,14 @@ INDEX_HTML = r"""<!doctype html>
       gap: 12px;
       white-space: normal;
     }
+    .error-card {
+      border-color: rgba(179, 38, 30, .32);
+      background: linear-gradient(135deg, rgba(255,255,255,.92), rgba(255,242,239,.78));
+    }
+    .error-card .raw-details {
+      box-shadow: none;
+      background: rgba(255,255,255,.58);
+    }
     .result-title {
       display: flex;
       justify-content: space-between;
@@ -2373,6 +2381,80 @@ INDEX_HTML = r"""<!doctype html>
       if (meta.served_at) parts.push(`服务端时间：${meta.served_at}`);
       if (data._client_elapsed_ms !== undefined) parts.push(`浏览器耗时：${data._client_elapsed_ms}ms`);
       return parts.join("，");
+    }
+    function apiOrError(path, label, options = {}) {
+      return api(path, options)
+        .then(data => ({ ok: true, data, label, path }))
+        .catch(error => ({ ok: false, error, label, path }));
+    }
+    function errorDetails(err) {
+      const payload = err && err.payload && typeof err.payload === "object" ? err.payload : {};
+      const meta = payload._meta || {};
+      return {
+        message: (err && err.message) || String(err || "未知错误"),
+        status: (err && err.status) || meta.status || "",
+        path: meta.path || "",
+        code: payload.code || "",
+        meta,
+        payload
+      };
+    }
+    function renderErrorPanel(title, err, options = {}) {
+      const details = errorDetails(err);
+      const compact = Boolean(options.compact);
+      const metaLine = apiMetaLine(details.payload);
+      const pathText = options.path || details.path || "未知接口";
+      return `<div class="panel span-12 error-card">
+        <div class="result-title">
+          <span>${escapeHtml(title || "页面加载失败")}</span>
+          ${statusPill("异常", false)}
+        </div>
+        <div class="readable-list">
+          ${row("原因", textValue(details.message))}
+          ${row("接口", `<code>${escapeHtml(pathText)}</code>`)}
+          ${details.status ? row("HTTP", neutralPill(String(details.status))) : ""}
+          ${details.code ? row("错误码", `<code>${escapeHtml(details.code)}</code>`) : ""}
+          ${metaLine ? row("耗时/时间", textValue(metaLine)) : ""}
+          ${compact ? "" : row("下一步", textValue("先点“重试”；如果仍失败，打开诊断报告，再去日志中心按“只看错误”筛选。"))}
+        </div>
+        <div class="toolbar" style="margin:4px 0 0">
+          <button class="btn primary" type="button" onclick="refreshCurrent()">重试</button>
+          <button class="btn" type="button" onclick="switchView('report')">打开诊断报告</button>
+          <button class="btn" type="button" onclick="switchView('logs')">打开日志中心</button>
+        </div>
+        ${rawDetails("高级排查：接口错误 JSON", details.payload && Object.keys(details.payload).length ? details.payload : details)}
+      </div>`;
+    }
+    function partialErrorPanels(results) {
+      return (results || [])
+        .filter(result => result && !result.ok)
+        .map(result => renderErrorPanel(`${result.label || "接口"} 读取失败`, result.error, { compact: true, path: result.path }))
+        .join("");
+    }
+    function viewTargetId(view) {
+      return {
+        overview: "overviewGrid",
+        logs: "logInsight",
+        audit: "auditGrid",
+        report: "reportGrid",
+        config: "configForms",
+        ai: "aiGrid",
+        price: "priceGrid",
+        prompts: "promptGrid",
+        actions: "actionGrid",
+        services: "serviceGrid",
+        preview: "previewGrid",
+        guide: "guideGrid"
+      }[view] || "";
+    }
+    function renderViewError(view, err, isAuto = false) {
+      const targetId = viewTargetId(view);
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (target) target.innerHTML = renderErrorPanel(isAuto ? "自动刷新失败" : "页面加载失败", err);
+      if (view === "logs") {
+        const output = document.getElementById("logOutput");
+        if (output) output.textContent = "";
+      }
     }
     function setSubtitle(text) { document.getElementById("subtitle").textContent = text; }
     function autoRefreshSupported(view = currentView) {
@@ -3648,12 +3730,18 @@ INDEX_HTML = r"""<!doctype html>
       renderPriceAlertTable();
     }
     async function loadAiAssistant() {
-      const summary = await api("/api/summary");
-      const alertsData = await api("/api/price-alerts");
+      const [summaryResult, alertsResult] = await Promise.all([
+        apiOrError("/api/summary", "总览摘要"),
+        apiOrError("/api/price-alerts", "价格提醒")
+      ]);
+      const summary = summaryResult.ok ? summaryResult.data : {};
+      const alertsData = alertsResult.ok ? alertsResult.data : {};
+      const failureHtml = partialErrorPanels([summaryResult, alertsResult]);
       const ai = ((summary.config || {}).ai_assistant || {});
       const service = ((summary.services || {}).ai || {});
       const stats = alertsData.stats || {};
       document.getElementById("aiGrid").innerHTML = `
+        ${failureHtml}
         <div class="panel span-12 notice">
           <strong>AI 助手 Bot 和雷达推送 Bot 是分开的。</strong>
           群里的启动雷达、资金流雷达、结构雷达继续走 TG_BOT_TOKEN；私聊 AI、手动价格提醒和个人提醒走 AI_BOT_TOKEN。
@@ -3691,11 +3779,16 @@ INDEX_HTML = r"""<!doctype html>
           <div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="switchView('price')">打开价格提醒</button></div>
         </div>
       `;
-      setSubtitle("AI 助手：问答、意图分流、提示词和服务状态");
+      setSubtitle(failureHtml ? "AI 助手：部分信息读取失败，其余可用信息已显示" : "AI 助手：问答、意图分流、提示词和服务状态");
     }
     async function loadPriceAlerts() {
-      const summary = await api("/api/summary");
-      const alertsData = await api("/api/price-alerts");
+      const [summaryResult, alertsResult] = await Promise.all([
+        apiOrError("/api/summary", "总览摘要"),
+        apiOrError("/api/price-alerts", "价格提醒")
+      ]);
+      const summary = summaryResult.ok ? summaryResult.data : {};
+      const alertsData = alertsResult.ok ? alertsResult.data : { stats: {}, alerts: [] };
+      const failureHtml = partialErrorPanels([summaryResult, alertsResult]);
       latestPriceAlertsData = alertsData;
       const ai = ((summary.config || {}).ai_assistant || {});
       const service = ((summary.services || {}).ai || {});
@@ -3703,6 +3796,7 @@ INDEX_HTML = r"""<!doctype html>
       const alerts = alertsData.alerts || [];
       const alertTypes = Array.from(new Set(alerts.map(alertTypeText).filter(Boolean))).sort();
       document.getElementById("priceGrid").innerHTML = `
+        ${failureHtml}
         <div class="panel span-12 notice">
           <strong>价格提醒是独立的个人监控中心。</strong>
           普通用户在 Telegram 私聊里按按钮手动选择；这里是管理员 Web 入口，用来快速查看、创建、暂停、恢复和删除提醒。
@@ -3745,7 +3839,7 @@ INDEX_HTML = r"""<!doctype html>
           </table>
         </div>
       `;
-      setSubtitle("价格提醒：创建、暂停、恢复和删除");
+      setSubtitle(failureHtml ? "价格提醒：部分信息读取失败，其余可用信息已显示" : "价格提醒：创建、暂停、恢复和删除");
       renderPriceAlertTable();
     }
     async function loadAiPrompts() {
@@ -3860,6 +3954,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "guide") await loadGuide();
       } catch (err) {
         setSubtitle(`${isAuto ? "自动刷新失败：" : ""}${err.message || String(err)}`);
+        renderViewError(currentView, err, isAuto);
       }
     }
     document.querySelectorAll("nav button").forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import unittest
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -649,6 +650,14 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("runWebSelfCheck", html)
         self.assertIn("apiErrorMessage", html)
         self.assertIn("apiMetaLine", html)
+        self.assertIn("renderErrorPanel", html)
+        self.assertIn("renderViewError", html)
+        self.assertIn("apiOrError", html)
+        self.assertIn("partialErrorPanels", html)
+        self.assertIn("页面加载失败", html)
+        self.assertIn("打开诊断报告", html)
+        self.assertIn("打开日志中心", html)
+        self.assertIn("部分信息读取失败，其余可用信息已显示", html)
         self.assertIn("浏览器耗时", html)
         self.assertIn("HTTP ${res.status}", html)
         self.assertIn("Web API 自诊断通过", html)
@@ -665,6 +674,51 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(meta["status"], 200)
         self.assertIn("served_at", meta)
         self.assertIn("request_id", meta)
+
+    def test_send_json_wraps_dict_payload_with_api_meta(self) -> None:
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/api/test?x=1"
+        handler.wfile = BytesIO()
+        statuses: list[int] = []
+        headers: list[tuple[str, str]] = []
+        handler.send_response = lambda status: statuses.append(status)
+        handler.send_header = lambda key, value: headers.append((key, value))
+        handler.end_headers = lambda: None
+
+        web.WebHandler.send_json(handler, {"ok": True, "message": "ok"}, 201)
+
+        payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(statuses, [201])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["message"], "ok")
+        self.assertEqual(payload["_meta"]["path"], "/api/test")
+        self.assertEqual(payload["_meta"]["status"], 201)
+        self.assertIn("served_at", payload["_meta"])
+        self.assertIn("request_id", payload["_meta"])
+        self.assertIn(("Cache-Control", "no-store"), headers)
+        self.assertTrue(any(key == "Content-Type" and "application/json" in value for key, value in headers))
+
+    def test_send_error_json_uses_stable_error_contract(self) -> None:
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/api/missing"
+        handler.wfile = BytesIO()
+        statuses: list[int] = []
+        headers: list[tuple[str, str]] = []
+        handler.send_response = lambda status: statuses.append(status)
+        handler.send_header = lambda key, value: headers.append((key, value))
+        handler.end_headers = lambda: None
+
+        web.WebHandler.send_error_json(handler, "接口不存在", 404, "not_found")
+
+        payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(statuses, [404])
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "接口不存在")
+        self.assertEqual(payload["message"], "接口不存在")
+        self.assertEqual(payload["code"], "not_found")
+        self.assertEqual(payload["_meta"]["path"], "/api/missing")
+        self.assertEqual(payload["_meta"]["status"], 404)
+        self.assertIn(("Cache-Control", "no-store"), headers)
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML
