@@ -1232,8 +1232,9 @@ class WebConsoleTests(unittest.TestCase):
         )
 
     def test_non_loopback_web_requires_token(self) -> None:
-        with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
-            self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
+        with patch.object(web, "load_env_file", return_value={}):
+            with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
+                self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
 
     def test_index_localizes_bool_options_and_explains_actions(self) -> None:
         html = web.INDEX_HTML

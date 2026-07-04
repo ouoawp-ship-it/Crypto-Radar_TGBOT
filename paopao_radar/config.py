@@ -443,6 +443,14 @@ class Settings:
         )
 
     def redacted_status(self) -> dict[str, Any]:
+        file_env = load_env_file()
+        web_host = (file_env.get("WEB_HOST") or os.getenv("WEB_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+        web_port_raw = (file_env.get("WEB_PORT") or os.getenv("WEB_PORT", "8080")).strip()
+        try:
+            web_port = int(web_port_raw)
+        except ValueError:
+            web_port = 8080
+        web_admin_token = (file_env.get("WEB_ADMIN_TOKEN") or os.getenv("WEB_ADMIN_TOKEN", "")).strip()
         return {
             "base_dir": str(self.base_dir),
             "data_dir": str(self.data_dir),
@@ -498,9 +506,9 @@ class Settings:
                 "cleanup_state_file": str(self.cleanup_state_path),
             },
             "web": {
-                "host": os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
-                "port": env_int("WEB_PORT", 8080),
-                "admin_token_configured": bool(os.getenv("WEB_ADMIN_TOKEN", "").strip()),
+                "host": web_host,
+                "port": web_port,
+                "admin_token_configured": bool(web_admin_token),
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,
