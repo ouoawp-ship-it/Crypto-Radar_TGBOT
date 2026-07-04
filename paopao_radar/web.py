@@ -2256,6 +2256,7 @@ def stability_history_path(data_dir: Path | None = None) -> Path:
 def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
+    release = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
     issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
     log_error_total = sum(
@@ -2280,6 +2281,14 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "ok_count": int(stability.get("ok_count", 0) or 0),
         "warn_count": int(stability.get("warn_count", 0) or 0),
         "fail_count": int(stability.get("fail_count", 0) or 0),
+        "release_status": release.get("status", "unknown"),
+        "release_label": release.get("label", "未知"),
+        "release_score": release.get("score", None),
+        "release_summary": release.get("summary", ""),
+        "release_next_version_goal": release.get("next_version_goal", ""),
+        "release_ok_count": int(release.get("ok_count", 0) or 0),
+        "release_warn_count": int(release.get("warn_count", 0) or 0),
+        "release_fail_count": int(release.get("fail_count", 0) or 0),
         "issue_count": len(issues),
         "log_error_count": log_error_total,
         "transient_count": transient_total,
@@ -2308,11 +2317,29 @@ def save_stability_snapshot(
     base_dir.mkdir(parents=True, exist_ok=True)
     latest_path = stability_latest_path(base_dir)
     history_path = stability_history_path(base_dir)
-    latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    previous_records = load_stability_history(base_dir, limit=limit)
+    provisional_record = stability_record_from_snapshot(snapshot)
+    max_records = max(1, min(STABILITY_HISTORY_LIMIT, int(limit or STABILITY_HISTORY_LIMIT)))
+    provisional_records = [provisional_record, *previous_records][:max_records]
+    snapshot["stability_history"] = {
+        "latest_path": str(latest_path),
+        "history_path": str(history_path),
+        "latest": provisional_record,
+        "records": provisional_records,
+        "count": len(provisional_records),
+    }
+    snapshot["release_readiness"] = build_release_readiness(snapshot)
     record = stability_record_from_snapshot(snapshot)
-    records = [record]
-    records.extend(load_stability_history(base_dir, limit=limit))
-    trimmed = records[: max(1, min(STABILITY_HISTORY_LIMIT, int(limit or STABILITY_HISTORY_LIMIT)))]
+    records = [record, *previous_records]
+    trimmed = records[:max_records]
+    snapshot["stability_history"] = {
+        "latest_path": str(latest_path),
+        "history_path": str(history_path),
+        "latest": record,
+        "records": trimmed,
+        "count": len(trimmed),
+    }
+    latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     history_path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "saved": True,
@@ -4496,21 +4523,23 @@ INDEX_HTML = r"""<!doctype html>
         <tr>
           <td>${escapeHtml(item.ts || item.generated_at || "")}</td>
           <td>${stabilityStatusPill(item.status)}</td>
+          <td>${item.release_status && item.release_status !== "unknown" ? releaseReadinessStatusPill(item.release_status) : neutralPill("未记录")}</td>
+          <td>${item.release_score === null || item.release_score === undefined ? escapeHtml("未记录") : escapeHtml(`${item.release_score}/100`)}</td>
           <td>${escapeHtml(item.version || "")} ${escapeHtml(item.commit || "")}</td>
           <td>${escapeHtml(item.summary || "")}</td>
         </tr>
-      `).join("") : tableEmpty(4, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
+      `).join("") : tableEmpty(6, "暂无历史验收记录", "执行 paopao update --yes 或 python main.py stable-check 后会自动保存。");
       return `
         <div class="panel span-12">
           <div class="summary-head">
             <div>
               <h3 class="section-title">验收历史</h3>
-              <div class="summary-meta">${latest ? `最近保存：${escapeHtml(latest.ts || latest.generated_at || "")} · ${escapeHtml(latest.label || "")}` : "还没有保存过稳定版验收结果"}</div>
+              <div class="summary-meta">${latest ? `最近保存：${escapeHtml(latest.ts || latest.generated_at || "")} · ${escapeHtml(latest.label || "")} · ${escapeHtml(latest.release_label || "长期就绪度未记录")}${latest.release_score === null || latest.release_score === undefined ? "" : ` ${escapeHtml(String(latest.release_score))}/100`}` : "还没有保存过稳定版验收结果"}</div>
             </div>
             ${neutralPill(`${Number((history && history.count) || 0)} 条`)}
           </div>
           <table class="table">
-            <thead><tr><th>时间</th><th>状态</th><th>版本</th><th>摘要</th></tr></thead>
+            <thead><tr><th>时间</th><th>稳定版状态</th><th>长期就绪度</th><th>评分</th><th>版本</th><th>摘要</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>

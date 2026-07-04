@@ -473,6 +473,7 @@ class WebConsoleTests(unittest.TestCase):
                 "generated_at": "2026-07-04 08:00:00",
                 "git": {"version": "v1.37.0", "branch": "main", "commit": "aaa111"},
                 "stability": {"status": "ready", "label": "达到稳定版标准", "summary": "第一次", "ok_count": 7, "warn_count": 0, "fail_count": 0},
+                "problem_center": {"status": "ok", "summary": "ok", "counts": {"log_errors": 0, "failed_audit": 0, "transient_timeouts": 0}},
                 "issues": [],
                 "log_errors": {"main": {"error_count": 0, "transient_count": 0}},
             }
@@ -480,6 +481,7 @@ class WebConsoleTests(unittest.TestCase):
                 "generated_at": "2026-07-04 09:00:00",
                 "git": {"version": "v1.37.0", "branch": "main", "commit": "bbb222"},
                 "stability": {"status": "attention", "label": "基本可运行，建议关注", "summary": "第二次", "ok_count": 6, "warn_count": 1, "fail_count": 0},
+                "problem_center": {"status": "attention", "summary": "warning", "counts": {"log_errors": 1, "failed_audit": 0, "transient_timeouts": 3}},
                 "issues": [{"severity": "warning"}],
                 "log_errors": {"ai": {"error_count": 1, "transient_count": 3}},
             }
@@ -487,6 +489,7 @@ class WebConsoleTests(unittest.TestCase):
                 "generated_at": "2026-07-04 10:00:00",
                 "git": {"version": "v1.37.0", "branch": "main", "commit": "ccc333"},
                 "stability": {"status": "blocked", "label": "未达稳定版标准", "summary": "第三次", "ok_count": 4, "warn_count": 1, "fail_count": 2},
+                "problem_center": {"status": "blocked", "summary": "blocked", "counts": {"log_errors": 2, "failed_audit": 0, "transient_timeouts": 0}},
                 "issues": [{"severity": "critical"}],
                 "log_errors": {"main": {"error_count": 2, "transient_count": 0}},
             }
@@ -500,8 +503,13 @@ class WebConsoleTests(unittest.TestCase):
             payload = web.stability_history_payload(data_dir=data_dir, limit=10)
 
         self.assertEqual(latest["stability"]["status"], "blocked")
+        self.assertEqual(latest["release_readiness"]["status"], "blocked")
+        self.assertEqual(latest["stability_history"]["records"][0]["release_status"], "blocked")
+        self.assertIsInstance(latest["stability_history"]["records"][0]["release_score"], int)
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
+        self.assertEqual([row["release_status"] for row in history], ["blocked", "candidate"])
         self.assertEqual(payload["latest"]["commit"], "ccc333")
+        self.assertEqual(payload["latest"]["release_status"], "blocked")
         self.assertEqual(payload["count"], 2)
 
     def test_problem_center_reports_ok_when_snapshot_is_clean(self) -> None:
@@ -1033,6 +1041,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("releaseReadinessStatusPill", html)
         self.assertIn("完整稳定版候选", html)
         self.assertIn("下一版本目标", html)
+        self.assertIn("长期就绪度", html)
+        self.assertIn("release_status", html)
+        self.assertIn("release_score", html)
         self.assertIn("处理清单", html)
         self.assertIn("actionPlanCards", html)
         self.assertIn("actionPlanButton", html)
