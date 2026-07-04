@@ -404,6 +404,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("stability_history", payload)
         self.assertIn("problem_center", payload)
         self.assertIn("release_readiness", payload)
+        self.assertIn("release_trend", payload)
         self.assertIn("recommendations", payload)
         self.assertNotIn("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", payload_text)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", payload_text)
@@ -504,6 +505,8 @@ class WebConsoleTests(unittest.TestCase):
 
         self.assertEqual(latest["stability"]["status"], "blocked")
         self.assertEqual(latest["release_readiness"]["status"], "blocked")
+        self.assertEqual(latest["release_trend"]["status"], "regressed")
+        self.assertEqual(latest["release_trend"]["previous_status"], "candidate")
         self.assertEqual(latest["stability_history"]["records"][0]["release_status"], "blocked")
         self.assertIsInstance(latest["stability_history"]["records"][0]["release_score"], int)
         self.assertEqual([row["commit"] for row in history], ["ccc333", "bbb222"])
@@ -511,6 +514,31 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["latest"]["commit"], "ccc333")
         self.assertEqual(payload["latest"]["release_status"], "blocked")
         self.assertEqual(payload["count"], 2)
+
+    def test_release_trend_detects_improvement_regression_and_single_history(self) -> None:
+        improved = web.build_release_trend(
+            {
+                "records": [
+                    {"release_status": "complete_candidate", "release_label": "完整稳定版候选", "release_score": 100, "ts": "t2"},
+                    {"release_status": "candidate", "release_label": "准稳定候选", "release_score": 84, "ts": "t1"},
+                ]
+            }
+        )
+        regressed = web.build_release_trend(
+            {
+                "records": [
+                    {"release_status": "blocked", "release_label": "需要处理", "release_score": 58, "ts": "t3"},
+                    {"release_status": "candidate", "release_label": "准稳定候选", "release_score": 84, "ts": "t2"},
+                ]
+            }
+        )
+        single = web.build_release_trend({"records": [{"release_status": "candidate", "release_score": 84}]})
+
+        self.assertEqual(improved["status"], "improved")
+        self.assertEqual(improved["score_delta"], 16)
+        self.assertEqual(regressed["status"], "regressed")
+        self.assertEqual(regressed["previous_status"], "candidate")
+        self.assertEqual(single["status"], "single")
 
     def test_problem_center_reports_ok_when_snapshot_is_clean(self) -> None:
         snapshot = {
@@ -1044,6 +1072,12 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("长期就绪度", html)
         self.assertIn("release_status", html)
         self.assertIn("release_score", html)
+        self.assertIn("长期运行趋势", html)
+        self.assertIn("releaseTrendPanel", html)
+        self.assertIn("releaseTrendStatusPill", html)
+        self.assertIn("趋势变好", html)
+        self.assertIn("发生回退", html)
+        self.assertIn("scoreText", html)
         self.assertIn("处理清单", html)
         self.assertIn("actionPlanCards", html)
         self.assertIn("actionPlanButton", html)

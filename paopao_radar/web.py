@@ -2245,6 +2245,84 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _release_status_rank(status: str) -> int:
+    return {
+        "blocked": 0,
+        "candidate": 1,
+        "complete_candidate": 2,
+    }.get(str(status or ""), -1)
+
+
+def build_release_trend(history: dict[str, Any]) -> dict[str, Any]:
+    records = history.get("records", []) if isinstance(history.get("records"), list) else []
+    clean_records = [item for item in records if isinstance(item, dict)]
+    if not clean_records:
+        return {
+            "status": "empty",
+            "label": "暂无趋势",
+            "summary": "还没有长期运行就绪度历史记录。",
+            "current_score": None,
+            "previous_score": None,
+            "score_delta": None,
+            "current_status": "",
+            "previous_status": "",
+            "action": "执行一次 stable-check 后会开始形成趋势。",
+        }
+
+    current = clean_records[0]
+    previous = clean_records[1] if len(clean_records) > 1 else {}
+    current_status = str(current.get("release_status") or "")
+    previous_status = str(previous.get("release_status") or "")
+    current_score_raw = current.get("release_score")
+    previous_score_raw = previous.get("release_score")
+    current_score = int(current_score_raw) if isinstance(current_score_raw, (int, float)) else None
+    previous_score = int(previous_score_raw) if isinstance(previous_score_raw, (int, float)) else None
+    score_delta = current_score - previous_score if current_score is not None and previous_score is not None else None
+    status_delta = _release_status_rank(current_status) - _release_status_rank(previous_status)
+
+    if not previous:
+        status = "single"
+        label = "等待下一次对比"
+        summary = "当前只有一条长期运行就绪度历史，下一次 stable-check 后才能判断趋势。"
+        action = "继续运行并在下次更新或排障后再执行 stable-check。"
+    elif current_status == "blocked" and previous_status and previous_status != "blocked":
+        status = "regressed"
+        label = "发生回退"
+        summary = "长期运行就绪度从候选状态回退到需要处理。"
+        action = "优先打开问题中心和日志中心，按最新阻断项处理后重新验收。"
+    elif status_delta > 0 or (score_delta is not None and score_delta >= 8):
+        status = "improved"
+        label = "趋势变好"
+        summary = "长期运行就绪度比上一次验收更好。"
+        action = "继续观察；如果连续达标，可以进入下一阶段规划。"
+    elif status_delta < 0 or (score_delta is not None and score_delta <= -8):
+        status = "worse"
+        label = "趋势变差"
+        summary = "长期运行就绪度比上一次验收变差。"
+        action = "查看本次新增的警告或阻断项，先处理分数下降原因。"
+    else:
+        status = "stable"
+        label = "趋势持平"
+        summary = "长期运行就绪度和上一次基本一致。"
+        action = "如果当前仍有警告，继续按处理清单收口；如果已达标，可继续观察。"
+
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "current_score": current_score,
+        "previous_score": previous_score,
+        "score_delta": score_delta,
+        "current_status": current_status,
+        "previous_status": previous_status,
+        "current_label": str(current.get("release_label") or ""),
+        "previous_label": str(previous.get("release_label") or ""),
+        "current_ts": str(current.get("ts") or current.get("generated_at") or ""),
+        "previous_ts": str(previous.get("ts") or previous.get("generated_at") or ""),
+        "action": action,
+    }
+
+
 def stability_latest_path(data_dir: Path | None = None) -> Path:
     return (data_dir or Settings.load().data_dir) / STABILITY_LATEST_FILE
 
@@ -2339,6 +2417,7 @@ def save_stability_snapshot(
         "records": trimmed,
         "count": len(trimmed),
     }
+    snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     history_path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
@@ -2403,6 +2482,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
     snapshot["problem_center"] = build_problem_center(snapshot)
     snapshot["release_readiness"] = build_release_readiness(snapshot)
+    snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     snapshot["recommendations"] = build_ops_recommendations(snapshot)
     snapshot["message"] = "已生成安全运维快照，可复制给排查人员；不包含 Token、API Key 或提示词正文。"
     return snapshot
@@ -4313,12 +4393,18 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("");
       const releaseReadiness = data.release_readiness || {};
       const releaseChecks = releaseReadiness.checks || [];
+      const releaseTrend = data.release_trend || {};
       lines.push("长期运行就绪度:");
       lines.push(`- 状态: ${releaseReadiness.label || ""} ${releaseReadiness.summary || ""}`);
       lines.push(`- 评分: ${releaseReadiness.score ?? ""}`);
       lines.push(`- 计数: 通过 ${releaseReadiness.ok_count || 0} | 警告 ${releaseReadiness.warn_count || 0} | 阻断 ${releaseReadiness.fail_count || 0}`);
       lines.push(`- 下一目标: ${releaseReadiness.next_version_goal || ""}`);
       releaseChecks.forEach(item => lines.push(`- ${item.label || ""}: ${item.status || ""} ${item.detail || ""}${item.action ? ` | 建议: ${item.action}` : ""}`));
+      lines.push("");
+      lines.push("长期运行趋势:");
+      lines.push(`- 状态: ${releaseTrend.label || ""} ${releaseTrend.summary || ""}`);
+      lines.push(`- 分数: 当前 ${releaseTrend.current_score ?? "未记录"} | 上次 ${releaseTrend.previous_score ?? "未记录"} | 变化 ${releaseTrend.score_delta ?? "未记录"}`);
+      lines.push(`- 建议: ${releaseTrend.action || ""}`);
       lines.push("");
       const problemCenter = data.problem_center || {};
       const problemCounts = problemCenter.counts || {};
@@ -4452,6 +4538,43 @@ INDEX_HTML = r"""<!doctype html>
       if (value === "candidate") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">准稳定候选</span>`;
       if (value === "blocked") return statusPill("需要处理", false);
       return neutralPill(value || "未知");
+    }
+    function releaseTrendStatusPill(status) {
+      const value = String(status || "");
+      if (value === "improved") return statusPill("趋势变好", true);
+      if (value === "stable") return neutralPill("趋势持平");
+      if (value === "worse") return `<span class="status" style="color:var(--warn);background:linear-gradient(135deg,#fff3d7,#fffaf0)">趋势变差</span>`;
+      if (value === "regressed") return statusPill("发生回退", false);
+      if (value === "single") return neutralPill("等待对比");
+      if (value === "empty") return neutralPill("暂无趋势");
+      return neutralPill(value || "未知");
+    }
+    function scoreText(value) {
+      return value === null || value === undefined ? "未记录" : String(value);
+    }
+    function releaseTrendPanel(trend) {
+      const data = trend || {};
+      return `
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">长期运行趋势</h3>
+              <div class="summary-meta">${escapeHtml(data.summary || "对比最近两次长期运行就绪度历史，判断分数和候选状态有没有回退。")}</div>
+            </div>
+            <div class="issue-meta">${releaseTrendStatusPill(data.status)}</div>
+          </div>
+          <div class="mini-metrics">
+            <div class="mini-metric"><div class="label">当前分数</div><div class="value">${neutralPill(scoreText(data.current_score))}</div><div class="muted">${escapeHtml(data.current_label || data.current_status || "最新记录")}</div></div>
+            <div class="mini-metric"><div class="label">上次分数</div><div class="value">${neutralPill(scoreText(data.previous_score))}</div><div class="muted">${escapeHtml(data.previous_label || data.previous_status || "上一条记录")}</div></div>
+            <div class="mini-metric"><div class="label">分数变化</div><div class="value">${Number(data.score_delta || 0) < 0 ? statusPill(String(data.score_delta), false) : neutralPill(scoreText(data.score_delta))}</div><div class="muted">当前分数减上次分数</div></div>
+            <div class="mini-metric"><div class="label">趋势状态</div><div class="value">${releaseTrendStatusPill(data.status)}</div><div class="muted">${escapeHtml(data.current_ts || "")}</div></div>
+          </div>
+          <div class="readable-list" style="margin-top:10px">
+            ${row("建议动作", textValue(data.action || "暂无"))}
+            ${row("对比时间", textValue(`${data.current_ts || "当前未记录"} / ${data.previous_ts || "上次未记录"}`))}
+          </div>
+        </div>
+      `;
     }
     function releaseReadinessPanel(readiness) {
       const data = readiness || {};
@@ -4683,12 +4806,14 @@ INDEX_HTML = r"""<!doctype html>
       const stabilityHistory = data.stability_history || {};
       const problemCenter = data.problem_center || {};
       const releaseReadiness = data.release_readiness || {};
+      const releaseTrend = data.release_trend || {};
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
       document.getElementById("reportGrid").innerHTML = `
-        ${renderPageIntro("report", [data.generated_at || "", releaseReadiness.label || problemCenter.label || stability.label || "稳定版自检", releaseReadiness.score !== undefined ? `就绪度 ${releaseReadiness.score}/100` : "就绪度未生成", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
+        ${renderPageIntro("report", [data.generated_at || "", releaseReadiness.label || problemCenter.label || stability.label || "稳定版自检", releaseReadiness.score !== undefined ? `就绪度 ${releaseReadiness.score}/100` : "就绪度未生成", releaseTrend.label || "趋势未生成", issues.length ? `${issues.length} 个问题` : "无明确问题", logErrorTotal ? `${logErrorTotal} 条日志错误` : "无日志错误", transientTotal ? `${transientTotal} 条网络超时` : "无网络超时"])}
         ${releaseReadinessPanel(releaseReadiness)}
+        ${releaseTrendPanel(releaseTrend)}
         ${problemCenterPanel(problemCenter)}
         <div class="panel span-12">
           <div class="summary-head">

@@ -358,16 +358,22 @@ def _release_readiness_status_label(status: str) -> str:
     }.get(str(status or ""), str(status or "未知"))
 
 
+def _trend_value(value: object) -> str:
+    return "未记录" if value is None else str(value)
+
+
 def print_stable_check(as_json: bool = False, save: bool = True) -> int:
-    from .web import build_release_readiness, ops_snapshot_payload, save_stability_snapshot, stability_history_payload
+    from .web import build_release_readiness, build_release_trend, ops_snapshot_payload, save_stability_snapshot, stability_history_payload
 
     snapshot = ops_snapshot_payload()
     if save:
         snapshot["stability_saved"] = save_stability_snapshot(snapshot)
         snapshot["stability_history"] = stability_history_payload(limit=8)
         snapshot["release_readiness"] = build_release_readiness(snapshot)
+        snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
     release_readiness = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
+    release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
     if as_json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     else:
@@ -406,6 +412,17 @@ def print_stable_check(as_json: bool = False, save: bool = True) -> int:
             if action:
                 line += f" | 建议: {action}"
             print(line)
+        print("")
+        print("趋势变化:")
+        print(f"状态: {release_trend.get('label') or '暂无趋势'}")
+        print(
+            "分数: "
+            f"当前 {_trend_value(release_trend.get('current_score'))} | "
+            f"上次 {_trend_value(release_trend.get('previous_score'))} | "
+            f"变化 {_trend_value(release_trend.get('score_delta'))}"
+        )
+        print(f"摘要: {release_trend.get('summary') or ''}")
+        print(f"建议: {release_trend.get('action') or ''}")
         print("")
         print("检查项:")
         checks = stability.get("checks", []) if isinstance(stability.get("checks"), list) else []

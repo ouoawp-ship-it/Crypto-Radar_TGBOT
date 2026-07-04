@@ -132,6 +132,15 @@ class MainCommandTests(unittest.TestCase):
                 "next_version_goal": "可以进入下一阶段",
                 "checks": [{"label": "当前稳定版验收", "status": "ok", "detail": "当前 stable-check 已通过"}],
             },
+            "release_trend": {
+                "status": "improved",
+                "label": "趋势变好",
+                "summary": "长期运行就绪度比上一次验收更好。",
+                "current_score": 100,
+                "previous_score": 84,
+                "score_delta": 16,
+                "action": "继续观察。",
+            },
             "recommendations": ["当前快照没有发现明显异常。"],
         }
 
@@ -147,6 +156,9 @@ class MainCommandTests(unittest.TestCase):
         self.assertIn("完整稳定版候选", text)
         self.assertIn("评分: 100/100", text)
         self.assertIn("下一目标: 可以进入下一阶段", text)
+        self.assertIn("趋势变化", text)
+        self.assertIn("趋势变好", text)
+        self.assertIn("变化 16", text)
         self.assertIn("后台服务: 通过", text)
         self.assertIn("本次未保存", text)
 
