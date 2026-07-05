@@ -3167,53 +3167,70 @@ INDEX_HTML = r"""<!doctype html>
   <title>泡泡雷达控制台</title>
   <style>
     :root {
-      --bg: #e7ebee;
-      --bg-2: #f7f9fa;
-      --panel: rgba(255, 255, 255, .84);
-      --panel-2: #edf1f3;
+      --bg: #f3f6f8;
+      --bg-2: #f8fafc;
+      --panel: #ffffff;
+      --panel-2: #f2f5f7;
       --text: #171c1f;
-      --muted: #68747b;
-      --line: rgba(118, 132, 141, .32);
-      --line-strong: rgba(75, 86, 94, .42);
-      --accent: #0f6f68;
+      --muted: #66747d;
+      --line: #dfe6ea;
+      --line-strong: #c8d2d8;
+      --accent: #0f766e;
       --accent-2: #34424a;
       --warn: #9a6508;
       --bad: #b3261e;
       --good: #087443;
-      --shadow: 0 12px 28px rgba(30, 38, 43, .08), 0 1px 1px rgba(255, 255, 255, .7) inset;
-      --metal: linear-gradient(135deg, rgba(255,255,255,.92), rgba(240,244,246,.78) 44%, rgba(255,255,255,.86));
+      --sidebar: #111820;
+      --sidebar-2: #18222b;
+      --topbar: rgba(248, 250, 252, .86);
+      --shadow: 0 10px 26px rgba(20, 32, 40, .06);
+      --shadow-strong: 0 18px 42px rgba(20, 32, 40, .12);
+      --metal: linear-gradient(135deg, rgba(255,255,255,.98), rgba(245,248,250,.92));
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background:
-        linear-gradient(115deg, rgba(255,255,255,.55), rgba(190,198,204,.36)),
-        repeating-linear-gradient(90deg, rgba(255,255,255,.22) 0, rgba(255,255,255,.22) 1px, rgba(143,153,160,.08) 1px, rgba(143,153,160,.08) 4px),
+        radial-gradient(circle at 18% 0%, rgba(15, 118, 110, .08), transparent 28%),
+        linear-gradient(180deg, #f8fafc, #eef3f6),
         var(--bg);
       color: var(--text);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0;
     }
     button, input, select, textarea { font: inherit; }
-    .app { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
     aside {
       background:
-        linear-gradient(180deg, rgba(41, 49, 55, .98), rgba(19, 24, 28, .98)),
-        repeating-linear-gradient(90deg, rgba(255,255,255,.05) 0, rgba(255,255,255,.05) 1px, transparent 1px, transparent 5px);
+        linear-gradient(180deg, var(--sidebar-2), var(--sidebar)),
+        radial-gradient(circle at 30% 0%, rgba(15, 118, 110, .22), transparent 32%);
       color: #e8eef0;
-      padding: 18px 14px;
+      padding: 18px 14px 16px;
       position: sticky;
       top: 0;
       height: 100vh;
-      border-right: 1px solid rgba(255,255,255,.08);
-      box-shadow: 6px 0 18px rgba(20, 27, 31, .12);
+      border-right: 1px solid rgba(255,255,255,.07);
+      box-shadow: 10px 0 28px rgba(20, 27, 31, .18);
+      overflow-y: auto;
     }
     .brand {
-      font-weight: 800;
-      font-size: 18px;
-      margin: 2px 8px 18px;
-      letter-spacing: .02em;
+      display: grid;
+      gap: 2px;
+      margin: 2px 6px 16px;
+      padding: 12px 12px;
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,.1), rgba(255,255,255,.04));
+      box-shadow: 0 1px 0 rgba(255,255,255,.08) inset;
       color: #f7fafb;
+    }
+    .brand-title { font-weight: 850; font-size: 18px; letter-spacing: 0; }
+    .brand-subtitle { color: rgba(232,238,240,.68); font-size: 12px; }
+    .sidebar-section {
+      margin: 14px 8px 7px;
+      color: rgba(232,238,240,.42);
+      font-size: 12px;
+      font-weight: 800;
     }
     nav { display: grid; gap: 4px; }
     nav button {
@@ -3223,33 +3240,65 @@ INDEX_HTML = r"""<!doctype html>
       background: transparent;
       color: inherit;
       text-align: left;
-      padding: 10px 11px;
+      padding: 9px 10px;
       cursor: pointer;
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      color: rgba(232,238,240,.82);
     }
+    .nav-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: rgba(232,238,240,.34);
+      box-shadow: 0 0 0 3px rgba(232,238,240,.04);
+    }
+    .nav-text { display: grid; gap: 1px; min-width: 0; }
+    .nav-text strong { font-size: 14px; line-height: 1.2; }
+    .nav-text small { color: rgba(232,238,240,.48); font-size: 11px; line-height: 1.2; }
     nav button.active, nav button:hover {
-      background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
-      border-color: rgba(255,255,255,.13);
-      box-shadow: 0 1px 0 rgba(255,255,255,.08) inset;
+      background: linear-gradient(135deg, rgba(15,118,110,.34), rgba(255,255,255,.06));
+      border-color: rgba(255,255,255,.14);
+      box-shadow: 0 1px 0 rgba(255,255,255,.08) inset, 0 12px 24px rgba(0,0,0,.1);
+      color: #fff;
     }
-    main { padding: 22px 26px 36px; min-width: 0; }
+    nav button.active .nav-dot, nav button:hover .nav-dot { background: #5eead4; box-shadow: 0 0 0 4px rgba(94,234,212,.12); }
+    main { padding: 18px 24px 36px; min-width: 0; }
     header {
       display: flex;
       justify-content: space-between;
       gap: 16px;
       align-items: center;
-      margin-bottom: 16px;
+      margin: 0 0 16px;
+      padding: 13px 16px;
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      background: var(--topbar);
+      border: 1px solid rgba(203, 213, 220, .74);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
     }
-    h1 { margin: 0; font-size: 23px; letter-spacing: .01em; }
+    .page-heading { min-width: 0; }
+    .breadcrumb { color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 2px; }
+    .topbar-actions { margin-bottom: 0; justify-content: flex-end; }
+    h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
     .muted { color: var(--muted); }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
     .panel {
-      background: var(--metal);
+      background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
       padding: 14px;
       min-width: 0;
-      backdrop-filter: blur(8px);
+      transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+    }
+    .panel:hover {
+      border-color: rgba(15, 118, 110, .24);
     }
     .page-intro {
       grid-column: span 12;
@@ -3258,9 +3307,9 @@ INDEX_HTML = r"""<!doctype html>
       gap: 14px;
       align-items: start;
       background:
-        linear-gradient(135deg, rgba(255,255,255,.94), rgba(236,241,244,.82)),
-        linear-gradient(90deg, rgba(15,111,104,.12), transparent 38%);
-      border-color: rgba(75, 86, 94, .24);
+        linear-gradient(135deg, rgba(255,255,255,.98), rgba(248,250,252,.96)),
+        linear-gradient(90deg, rgba(15,118,110,.1), transparent 44%);
+      border-color: rgba(15, 118, 110, .16);
     }
     .page-kicker {
       color: var(--accent);
@@ -3291,11 +3340,11 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 6px;
       justify-items: start;
-      border: 1px dashed rgba(93, 106, 115, .32);
+      border: 1px dashed rgba(93, 106, 115, .28);
       border-radius: 8px;
       padding: 14px;
       color: var(--muted);
-      background: linear-gradient(135deg, rgba(255,255,255,.62), rgba(237,242,244,.54));
+      background: #f8fafc;
     }
     .empty-state strong { color: var(--text); }
     .span-3 { grid-column: span 3; }
@@ -3311,9 +3360,9 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 4px;
       padding: 10px;
-      border: 1px solid rgba(101, 113, 121, .16);
+      border: 1px solid #e3eaee;
       border-radius: 8px;
-      background: linear-gradient(135deg, rgba(255,255,255,.55), rgba(239,244,247,.46));
+      background: #f8fafc;
     }
     .mini-metric .label { color: var(--muted); font-size: 12px; font-weight: 700; }
     .mini-metric .value { font-size: 15px; font-weight: 800; }
@@ -3321,13 +3370,22 @@ INDEX_HTML = r"""<!doctype html>
     .status {
       display: inline-flex;
       align-items: center;
+      gap: 5px;
       border-radius: 999px;
-      padding: 3px 8px;
+      padding: 3px 9px;
       font-size: 12px;
       font-weight: 700;
       background: var(--panel-2);
       color: var(--muted);
       border: 1px solid rgba(101, 113, 121, .18);
+    }
+    .status::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: .78;
     }
     .status.ok { background: linear-gradient(135deg, #dff7ea, #f2fbf6); color: var(--good); }
     .status.bad { background: linear-gradient(135deg, #ffe4df, #fff5f2); color: var(--bad); }
@@ -3335,14 +3393,15 @@ INDEX_HTML = r"""<!doctype html>
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .btn {
       border: 1px solid var(--line);
-      background: linear-gradient(135deg, rgba(255,255,255,.9), rgba(235,240,243,.82));
+      background: #fff;
       color: var(--text);
       border-radius: 6px;
       padding: 8px 11px;
       cursor: pointer;
       min-height: 36px;
-      box-shadow: 0 1px 0 rgba(255,255,255,.75) inset, 0 6px 14px rgba(35, 43, 48, .06);
+      box-shadow: 0 1px 0 rgba(255,255,255,.75) inset;
     }
+    .btn:hover { border-color: rgba(15,118,110,.42); color: var(--accent); }
     .btn.primary { background: linear-gradient(135deg, #0f766e, #0b5f59); border-color: #0b5f59; color: white; }
     .btn.blue { background: linear-gradient(135deg, #41515a, #2f3a41); border-color: #2f3a41; color: white; }
     .btn.warn { border-color: #d6a01d; color: var(--warn); }
@@ -3350,8 +3409,8 @@ INDEX_HTML = r"""<!doctype html>
     .btn:disabled { opacity: .55; cursor: not-allowed; }
     pre {
       margin: 0;
-      background: #11171b;
-      color: #dce7eb;
+      background: #0f1720;
+      color: #dce8ef;
       border-radius: 6px;
       padding: 13px;
       min-height: 320px;
@@ -3361,9 +3420,18 @@ INDEX_HTML = r"""<!doctype html>
       word-break: break-word;
       border: 1px solid rgba(255,255,255,.08);
     }
-    .table { width: 100%; border-collapse: collapse; }
-    .table th, .table td { border-bottom: 1px solid var(--line); text-align: left; padding: 9px 6px; vertical-align: top; }
-    .table th { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    .table th, .table td { border-bottom: 1px solid var(--line); text-align: left; padding: 10px 8px; vertical-align: top; }
+    .table th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      background: #f8fafc;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .table tr:hover td { background: rgba(15, 118, 110, .035); }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .field { display: grid; gap: 6px; }
     label { font-weight: 700; font-size: 13px; }
@@ -3438,7 +3506,7 @@ INDEX_HTML = r"""<!doctype html>
     .section-title { margin: 2px 0 10px; font-size: 15px; }
     .output { margin-top: 12px; white-space: pre-wrap; }
     .result-panel {
-      background: var(--metal);
+      background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
@@ -3513,7 +3581,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 11px;
-      background: linear-gradient(135deg, rgba(255,255,255,.74), rgba(239,244,246,.7));
+      background: #f8fafc;
     }
     .feature-item strong { display: block; margin-bottom: 4px; }
     .issue-list { display: grid; gap: 10px; }
@@ -3521,7 +3589,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 12px;
-      background: linear-gradient(135deg, rgba(255,255,255,.82), rgba(239,244,246,.72));
+      background: #fff;
       display: grid;
       gap: 9px;
     }
@@ -3567,7 +3635,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 14px;
-      background: var(--metal);
+      background: var(--panel);
       box-shadow: var(--shadow);
       text-align: left;
       cursor: pointer;
@@ -3732,7 +3800,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .auth-box {
       width: min(420px, calc(100vw - 32px));
-      background: var(--metal);
+      background: var(--panel);
       border-radius: 8px;
       border: 1px solid var(--line);
       padding: 18px;
@@ -3755,7 +3823,9 @@ INDEX_HTML = r"""<!doctype html>
       .field-current { justify-self: start; text-align: left; }
       .page-intro { grid-template-columns: 1fr; }
       .intro-tags { justify-content: flex-start; }
-      header { align-items: flex-start; flex-direction: column; }
+      header { position: static; align-items: flex-start; flex-direction: column; }
+      .topbar-actions { width: 100%; margin-bottom: 0; }
+      .sidebar-section { display: none; }
     }
   </style>
 </head>
@@ -3772,30 +3842,38 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app">
+  <div class="app" data-ui-version="v1.51.0">
     <aside>
-      <div class="brand">泡泡雷达控制台</div>
+      <div class="brand">
+        <div class="brand-title">泡泡雷达控制台</div>
+        <div class="brand-subtitle">Crypto Radar Ops</div>
+      </div>
+      <div class="sidebar-section">运行中心</div>
       <nav>
-        <button data-view="overview" class="active">总览</button>
-        <button data-view="ai">AI 助手</button>
-        <button data-view="price">价格提醒</button>
-        <button data-view="services">雷达服务</button>
-        <button data-view="config">配置中心</button>
-        <button data-view="logs">日志中心</button>
-        <button data-view="audit">审计记录</button>
-        <button data-view="report">诊断报告</button>
-        <button data-view="actions">检查测试</button>
-        <button data-view="preview">更新备份</button>
-        <button data-view="guide">功能说明</button>
+        <button data-view="overview" class="active"><span class="nav-dot"></span><span class="nav-text"><strong>总览</strong><small>服务快照</small></span></button>
+        <button data-view="ai"><span class="nav-dot"></span><span class="nav-text"><strong>AI 助手</strong><small>Bot 状态</small></span></button>
+        <button data-view="price"><span class="nav-dot"></span><span class="nav-text"><strong>价格提醒</strong><small>监控列表</small></span></button>
+        <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
+      </nav>
+      <div class="sidebar-section">运维排查</div>
+      <nav>
+        <button data-view="config"><span class="nav-dot"></span><span class="nav-text"><strong>配置中心</strong><small>分类设置</small></span></button>
+        <button data-view="logs"><span class="nav-dot"></span><span class="nav-text"><strong>日志中心</strong><small>搜索排查</small></span></button>
+        <button data-view="audit"><span class="nav-dot"></span><span class="nav-text"><strong>审计记录</strong><small>操作流水</small></span></button>
+        <button data-view="report"><span class="nav-dot"></span><span class="nav-text"><strong>诊断报告</strong><small>稳定验收</small></span></button>
+        <button data-view="actions"><span class="nav-dot"></span><span class="nav-text"><strong>检查测试</strong><small>白名单动作</small></span></button>
+        <button data-view="preview"><span class="nav-dot"></span><span class="nav-text"><strong>更新备份</strong><small>版本和恢复</small></span></button>
+        <button data-view="guide"><span class="nav-dot"></span><span class="nav-text"><strong>功能说明</strong><small>运维手册</small></span></button>
       </nav>
     </aside>
     <main>
-      <header>
-        <div>
+      <header class="topbar">
+        <div class="page-heading">
+          <div class="breadcrumb">控制台 / <span id="breadcrumbView">总览</span></div>
           <h1 id="pageTitle">总览</h1>
           <div id="subtitle" class="muted">正在读取状态</div>
         </div>
-        <div class="toolbar">
+        <div class="toolbar topbar-actions">
           <button class="btn" onclick="refreshCurrent()">刷新</button>
           <button id="autoRefreshButton" class="btn" onclick="toggleAutoRefresh()">自动刷新：关闭</button>
         </div>
@@ -6560,6 +6638,8 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById(view).classList.remove("hidden");
       document.querySelectorAll("nav button").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
       document.getElementById("pageTitle").textContent = titles[view];
+      const breadcrumbView = document.getElementById("breadcrumbView");
+      if (breadcrumbView) breadcrumbView.textContent = titles[view] || view;
       startAutoRefresh();
       refreshCurrent();
     }
