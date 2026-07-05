@@ -1410,7 +1410,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("运行健康度", html)
         self.assertIn("最近错误", html)
         self.assertIn("更新备份", html)
-        self.assertIn('data-ui-version="v1.57.1"', html)
+        self.assertIn('data-ui-version="v1.58.0"', html)
         self.assertIn("Crypto Radar Ops", html)
         self.assertIn("versionBadge", html)
         self.assertIn("loadVersionBadge", html)

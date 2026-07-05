@@ -3368,8 +3368,8 @@ INDEX_HTML = r"""<!doctype html>
       --sidebar: #111827;
       --sidebar-2: #182235;
       --topbar: rgba(255, 255, 255, .92);
-      --shadow: 0 1px 2px rgba(30, 41, 59, .06), 0 8px 24px rgba(30, 41, 59, .06);
-      --shadow-strong: 0 10px 30px rgba(30, 41, 59, .12);
+      --shadow: 0 1px 2px rgba(30, 41, 59, .05), 0 6px 18px rgba(30, 41, 59, .045);
+      --shadow-strong: 0 8px 22px rgba(30, 41, 59, .09);
       --metal: #ffffff;
       --metal-bright: linear-gradient(135deg, #206bc4, #4299e1);
       --frost: rgba(255, 255, 255, .88);
@@ -3400,54 +3400,55 @@ INDEX_HTML = r"""<!doctype html>
       letter-spacing: 0;
     }
     button, input, select, textarea { font: inherit; }
-    .app { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 224px minmax(0, 1fr); }
     aside {
       background:
         linear-gradient(180deg, #182235, #111827 58%, #0f1724);
       color: #e8eef6;
-      padding: 18px 14px 18px;
+      padding: 13px 11px 14px;
       position: sticky;
       top: 0;
       height: 100vh;
       border-right: 1px solid rgba(15, 23, 36, .16);
-      box-shadow: 10px 0 30px rgba(15, 23, 42, .12);
+      box-shadow: 8px 0 22px rgba(15, 23, 42, .10);
       overflow-y: auto;
     }
     .brand {
       display: grid;
       gap: 2px;
-      margin: 2px 6px 18px;
-      padding: 14px 13px;
+      margin: 0 4px 12px;
+      padding: 11px 12px;
       border: 1px solid rgba(170,187,204,.14);
       border-radius: 8px;
       background:
         linear-gradient(135deg, rgba(32,107,196,.26), rgba(66,153,225,.12)),
         rgba(255,255,255,.035);
-      box-shadow: 0 10px 24px rgba(0,0,0,.16);
+      box-shadow: none;
       color: #f8fbff;
     }
-    .brand-title { font-weight: 850; font-size: 18px; letter-spacing: 0; }
-    .brand-subtitle { color: rgba(214,222,231,.66); font-size: 12px; }
+    .brand-title { font-weight: 850; font-size: 17px; letter-spacing: 0; }
+    .brand-subtitle { display: none; }
     .sidebar-section {
-      margin: 14px 8px 7px;
+      margin: 10px 8px 6px;
       color: rgba(232,238,240,.48);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 800;
+      display: none;
     }
-    nav { display: grid; gap: 4px; }
+    nav { display: grid; gap: 2px; }
     nav button {
       width: 100%;
       border: 1px solid transparent;
-      border-radius: 6px;
+      border-radius: 5px;
       background: transparent;
       color: inherit;
       text-align: left;
-      padding: 10px 11px;
+      padding: 9px 10px;
       cursor: pointer;
       display: grid;
-      grid-template-columns: 8px minmax(0, 1fr);
+      grid-template-columns: 6px minmax(0, 1fr);
       align-items: center;
-      gap: 10px;
+      gap: 9px;
       color: rgba(232,238,240,.78);
       transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease;
     }
@@ -3458,9 +3459,9 @@ INDEX_HTML = r"""<!doctype html>
       background: rgba(232,238,240,.34);
       box-shadow: 0 0 0 3px rgba(232,238,240,.04);
     }
-    .nav-text { display: grid; gap: 1px; min-width: 0; }
-    .nav-text strong { font-size: 14px; line-height: 1.2; }
-    .nav-text small { color: rgba(232,238,240,.48); font-size: 11px; line-height: 1.2; }
+    .nav-text { display: block; min-width: 0; }
+    .nav-text strong { font-size: 13px; line-height: 1.2; }
+    .nav-text small { display: none; }
     nav button.active, nav button:hover {
       background:
         linear-gradient(135deg, rgba(32,107,196,.28), rgba(66,153,225,.12)),
@@ -3470,14 +3471,14 @@ INDEX_HTML = r"""<!doctype html>
       color: #fff;
     }
     nav button.active .nav-dot, nav button:hover .nav-dot { background: #60a5fa; box-shadow: 0 0 0 4px rgba(96,165,250,.14); }
-    main { padding: 20px 26px 38px; min-width: 0; }
+    main { padding: 16px 20px 34px; min-width: 0; }
     header {
       display: flex;
       justify-content: space-between;
-      gap: 16px;
+      gap: 12px;
       align-items: center;
-      margin: 0 0 18px;
-      padding: 14px 16px;
+      margin: 0 0 12px;
+      padding: 9px 12px;
       position: sticky;
       top: 0;
       z-index: 4;
@@ -3488,16 +3489,17 @@ INDEX_HTML = r"""<!doctype html>
       backdrop-filter: blur(12px) saturate(1.05);
     }
     .page-heading { min-width: 0; }
-    .breadcrumb { color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 2px; }
+    .breadcrumb { display: none; }
+    #subtitle { font-size: 12px; }
     .topbar-actions { margin-bottom: 0; justify-content: flex-end; }
     .version-chip {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      min-height: 34px;
+      min-height: 30px;
       border: 1px solid #cfe0f5;
       border-radius: 999px;
-      padding: 6px 10px;
+      padding: 5px 9px;
       background: #eef6ff;
       color: var(--accent);
       font-size: 12px;
@@ -3505,20 +3507,20 @@ INDEX_HTML = r"""<!doctype html>
       white-space: nowrap;
     }
     .version-chip small { color: var(--muted); font-weight: 700; }
-    h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
+    h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
     .muted { color: var(--muted); }
-    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
     .panel {
       background: var(--metal);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
-      padding: 15px;
+      padding: 13px;
       min-width: 0;
       backdrop-filter: none;
       position: relative;
       overflow: hidden;
-      transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+      transition: border-color .16s ease, box-shadow .16s ease;
     }
     .panel::before { content: none; }
     .panel > * { position: relative; z-index: 1; }
@@ -3529,12 +3531,12 @@ INDEX_HTML = r"""<!doctype html>
     .page-intro {
       grid-column: span 12;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 14px;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
       align-items: start;
       background:
         linear-gradient(135deg, #ffffff, #f8fbff),
-        radial-gradient(circle at 94% 0%, rgba(32,107,196,.08), transparent 34%);
+        radial-gradient(circle at 96% 0%, rgba(32,107,196,.05), transparent 30%);
       border-color: #dbe8f6;
     }
     .page-kicker {
@@ -3542,24 +3544,33 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
       font-weight: 800;
       letter-spacing: 0;
-      margin-bottom: 4px;
+      margin-bottom: 2px;
     }
     .page-intro h2 {
       margin: 0;
-      font-size: 18px;
+      font-size: 16px;
       line-height: 1.25;
       letter-spacing: 0;
     }
-    .page-intro p {
-      margin: 7px 0 0;
+    .page-intro-line {
+      margin-top: 4px;
       color: var(--muted);
       max-width: 980px;
+      font-size: 13px;
     }
+    .intro-detail { margin-top: 5px; color: var(--muted); }
+    .intro-detail summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-weight: 750;
+      font-size: 12px;
+    }
+    .intro-detail p { margin: 6px 0 0; }
     .intro-tags {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
-      justify-content: flex-end;
+      justify-content: flex-start;
       max-width: 520px;
     }
     .empty-state {
@@ -3641,9 +3652,9 @@ INDEX_HTML = r"""<!doctype html>
       background: #ffffff;
       color: var(--text);
       border-radius: 6px;
-      padding: 8px 11px;
+      padding: 6px 10px;
       cursor: pointer;
-      min-height: 36px;
+      min-height: 32px;
       box-shadow: 0 1px 2px rgba(30,41,59,.06);
       transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease, color .16s ease;
     }
@@ -3840,6 +3851,13 @@ INDEX_HTML = r"""<!doctype html>
     .raw-details[open] summary { border-bottom-color: var(--line); }
     .raw-details .raw-body { padding: 14px; display: grid; gap: 12px; }
     .raw-details pre { min-height: 180px; max-height: 460px; }
+    .compact-details summary { padding: 11px 13px; }
+    .compact-details .raw-body { padding: 12px 13px; }
+    .compact-details .section-title { margin: 0; }
+    .slim-notice {
+      padding: 10px 12px;
+      font-size: 13px;
+    }
     .notice {
       background: #eef6ff;
       border: 1px solid #cfe0f5;
@@ -4017,7 +4035,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .meter-card {
       display: grid;
-      gap: 14px;
+      gap: 9px;
       align-content: start;
       overflow: hidden;
       background:
@@ -4027,12 +4045,12 @@ INDEX_HTML = r"""<!doctype html>
     .meter-card.ok { box-shadow: var(--shadow); }
     .meter-card.warn { box-shadow: var(--shadow); }
     .meter-card.bad { box-shadow: var(--shadow); }
-    .meter-main { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 18px; min-width: 0; }
+    .meter-main { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 13px; min-width: 0; }
     .meter-dial {
       --meter-color: var(--accent);
       --meter-glow: rgba(89,215,255,.20);
-      width: 132px;
-      height: 132px;
+      width: 92px;
+      height: 92px;
       border-radius: 50%;
       position: relative;
       display: grid;
@@ -4043,14 +4061,14 @@ INDEX_HTML = r"""<!doctype html>
         #f1f5f9;
       border: 1px solid #dbe8f6;
       box-shadow:
-        inset 0 0 0 8px #fff,
-        0 8px 20px rgba(30,41,59,.08);
+        inset 0 0 0 6px #fff,
+        0 6px 16px rgba(30,41,59,.07);
       transition: background .28s ease;
     }
     .meter-dial::before {
       content: "";
       position: absolute;
-      inset: 11px;
+      inset: 8px;
       border-radius: 50%;
       background:
         radial-gradient(circle at 52% 58%, #ffffff, #f8fafc);
@@ -4060,8 +4078,8 @@ INDEX_HTML = r"""<!doctype html>
     .meter-dial::after {
       content: "";
       position: absolute;
-      width: 15px;
-      height: 15px;
+      width: 11px;
+      height: 11px;
       border-radius: 50%;
       background: radial-gradient(circle at 35% 35%, #ffffff, #94a3b8 55%, #475569 100%);
       box-shadow: 0 2px 6px rgba(30,41,59,.22), 0 0 0 3px rgba(32,107,196,.10);
@@ -4075,7 +4093,7 @@ INDEX_HTML = r"""<!doctype html>
     .meter-needle {
       position: absolute;
       width: 3px;
-      height: 49px;
+      height: 34px;
       bottom: 50%;
       left: calc(50% - 2px);
       border-radius: 999px;
@@ -4087,8 +4105,8 @@ INDEX_HTML = r"""<!doctype html>
       z-index: 2;
     }
     .meter-center {
-      width: 62px;
-      height: 62px;
+      width: 45px;
+      height: 45px;
       border-radius: 50%;
       display: grid;
       place-items: center;
@@ -4097,12 +4115,13 @@ INDEX_HTML = r"""<!doctype html>
       background:
         #ffffff;
       color: var(--text);
+      font-size: 12px;
       font-weight: 900;
       border: 1px solid #e3ebf5;
       box-shadow: inset 0 0 0 1px #ffffff, 0 7px 16px rgba(30,41,59,.11);
     }
     .meter-copy { min-width: 0; display: grid; gap: 5px; }
-    .meter-copy h3 { margin: 0; font-size: 16px; }
+    .meter-copy h3 { margin: 0; font-size: 15px; }
     .usage-bar {
       height: 9px;
       border-radius: 999px;
@@ -4255,7 +4274,7 @@ INDEX_HTML = r"""<!doctype html>
       .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .service-guide { grid-template-columns: 1fr; }
       .system-grid { grid-template-columns: 1fr; }
-      .meter-main { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+      .meter-main { grid-template-columns: 92px minmax(0, 1fr); justify-items: stretch; text-align: left; }
       .system-row { grid-template-columns: 1fr; }
       .service-action { grid-template-columns: 1fr; }
       .api-grid { grid-template-columns: 1fr; }
@@ -4267,13 +4286,13 @@ INDEX_HTML = r"""<!doctype html>
       .field-current { justify-self: start; text-align: left; }
       .page-intro { grid-template-columns: 1fr; }
       .intro-tags { justify-content: flex-start; }
-      header { position: static; align-items: flex-start; flex-direction: column; }
-      .topbar-actions { width: 100%; margin-bottom: 0; }
+      header { position: static; align-items: center; flex-direction: row; flex-wrap: wrap; }
+      .topbar-actions { width: auto; margin-left: auto; margin-bottom: 0; }
       .toolbar input, .toolbar select {
         min-width: min(100%, 220px);
         flex: 1 1 180px;
       }
-      .version-chip { width: 100%; justify-content: center; }
+      .version-chip { width: auto; justify-content: center; }
       .sidebar-section { display: none; }
     }
   </style>
@@ -4291,7 +4310,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.57.1">
+  <div class="app" data-ui-version="v1.58.0">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -5129,15 +5148,24 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderPageIntro(view, extraTags = []) {
       const meta = viewMeta[view] || { kicker: "页面", title: titles[view] || view, desc: "", tags: [] };
-      const tags = [...(meta.tags || []), ...(extraTags || [])].filter(Boolean).slice(0, 6);
+      const tags = [...(meta.tags || []), ...(extraTags || [])].filter(Boolean).slice(0, 3);
+      const desc = String(meta.desc || "");
+      const shortDesc = desc.length > 78 ? `${desc.slice(0, 78)}...` : desc;
       return `<div class="panel page-intro">
         <div>
           <div class="page-kicker">${escapeHtml(meta.kicker || "")}</div>
           <h2>${escapeHtml(meta.title || titles[view] || view)}</h2>
-          <p>${escapeHtml(meta.desc || "")}</p>
+          ${desc ? `<div class="page-intro-line">${escapeHtml(shortDesc)}</div>
+          <details class="intro-detail"><summary>完整说明</summary><p>${escapeHtml(desc)}</p></details>` : ""}
         </div>
         <div class="intro-tags">${tags.map(tag => neutralPill(tag)).join("")}</div>
       </div>`;
+    }
+    function detailGrid(title, html, meta = "") {
+      return `<details class="raw-details compact-details span-12">
+        <summary>${escapeHtml(title)}${meta ? ` <span class="summary-meta">${escapeHtml(meta)}</span>` : ""}</summary>
+        <div class="raw-body grid">${html}</div>
+      </details>`;
     }
     function emptyState(title, desc, actionHtml = "") {
       return `<div class="empty-state"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(desc || "")}</span>${actionHtml || ""}</div>`;
@@ -5240,16 +5268,13 @@ INDEX_HTML = r"""<!doctype html>
       const active = service.active || "unknown";
       const enabled = service.enabled || "unknown";
       const ok = Boolean(service.active_ok);
-      return `<div class="panel span-3 summary-card">
+      return `<div class="panel span-3 summary-card service-summary">
         <div class="summary-head">
           <h3 class="summary-title">${escapeHtml(title)}</h3>
           ${statusPill(active, ok)}
         </div>
         <div class="summary-meta">${escapeHtml(service.service || "未找到服务名")}</div>
-        <div class="readable-list">
-          ${row("运行状态", statusPill(active, ok))}
-          ${row("开机启动", neutralPill(zhStatus(enabled)))}
-        </div>
+        <div>${neutralPill(`开机启动：${zhStatus(enabled)}`)}</div>
       </div>`;
     }
     function successSummary(runtimeItem) {
@@ -5373,6 +5398,7 @@ INDEX_HTML = r"""<!doctype html>
       ].join("");
     }
     function healthPanel(items) {
+      const hasWarning = (items || []).some(item => item.status !== "ok");
       const list = (items || []).map(item => {
         const ok = item.status === "ok";
         const warn = item.status === "warn";
@@ -5383,10 +5409,10 @@ INDEX_HTML = r"""<!doctype html>
           <div class="hint">${escapeHtml(item.detail || "")}</div>
         </div>`;
       }).join("");
-      return `<div class="panel span-12">
-        <h3 class="section-title">运行健康度</h3>
-        <div class="api-grid">${list || emptyState("暂无健康度数据", "后台还没有生成健康检查结果。可以稍后刷新，或到检查测试页执行 Web API 自诊断。")}</div>
-      </div>`;
+      return `<details class="raw-details compact-details span-12" ${hasWarning ? "open" : ""}>
+        <summary>运行健康度 ${hasWarning ? "· 需要关注" : "· 正常时默认折叠"}</summary>
+        <div class="raw-body"><div class="api-grid">${list || emptyState("暂无健康度数据", "后台还没有生成健康检查结果。可以稍后刷新，或到检查测试页执行 Web API 自诊断。")}</div></div>
+      </details>`;
     }
     function logTargetForSource(source) {
       const text = String(source || "").toLowerCase();
@@ -5534,18 +5560,20 @@ INDEX_HTML = r"""<!doctype html>
       updateVersionBadge(git);
       const runtime = data.runtime || {};
       const cfg = data.config || {};
+      const overviewDetails = [
+        runtimeCard("主服务运行摘要", runtime.main, "main"),
+        runtimeCard("结构雷达运行摘要", runtime.structure, "structure"),
+        configSummaryCards(cfg, data.state_files || [])
+      ].join("");
       document.getElementById("overviewGrid").innerHTML = [
-        renderPageIntro("overview", [data.updated_at ? `更新 ${data.updated_at}` : "", git.version || "unknown"]),
-        healthPanel(data.health || []),
-        recentErrorsPanel(data.recent_errors || []),
+        renderPageIntro("overview", [git.version || "unknown"]),
         serviceCard("主服务", main),
         serviceCard("结构雷达", structure),
         serviceCard("Web 控制台", web),
         serviceCard("AI 助手", ai),
-        metric("版本", escapeHtml(git.version || "unknown"), `<div class="muted">${escapeHtml(git.branch)} ${escapeHtml(git.commit)}</div>`),
-        runtimeCard("主服务运行摘要", runtime.main, "main"),
-        runtimeCard("结构雷达运行摘要", runtime.structure, "structure"),
-        configSummaryCards(cfg, data.state_files || []),
+        recentErrorsPanel(data.recent_errors || []),
+        healthPanel(data.health || []),
+        detailGrid("运行摘要和关键配置", overviewDetails, "默认折叠，排查时展开"),
         rawDetails("高级排查：原始运行状态 JSON", runtime),
         rawDetails("高级排查：原始配置摘要 JSON", cfg)
       ].join("");
@@ -5588,20 +5616,17 @@ INDEX_HTML = r"""<!doctype html>
         ["磁盘", "磁盘快满会影响日志、运行状态文件、图表和配置备份写入，建议低于 80%。"],
         ["系统负载", "1分钟负载接近或超过 CPU 核心数，说明服务器正在排队处理任务。"]
       ];
-      return `<div class="panel span-12 summary-card">
-        <div class="summary-head">
-          <h3 class="summary-title">怎么看这些数据</h3>
-          ${neutralPill("白话说明")}
-        </div>
-        <div class="feature-list">
+      return `<details class="raw-details compact-details span-12">
+        <summary>怎么看这些数据 <span class="summary-meta">白话说明，默认折叠</span></summary>
+        <div class="raw-body"><div class="feature-list">
           ${items.map(([title, desc]) => `<div class="feature-item"><strong>${escapeHtml(title)}</strong><span class="muted">${escapeHtml(desc)}</span></div>`).join("")}
-        </div>
-      </div>`;
+        </div></div>
+      </details>`;
     }
     function serverRefreshHint(isLive) {
-      return `<div class="panel span-12 notice">
+      return `<div class="panel span-12 notice slim-notice">
         <strong>${isLive ? "实时监控已开启。" : "实时监控未开启。"}</strong>
-        ${isLive ? "服务器状态页现在每 3 秒采样一次；只刷新当前页面的轻量接口，不会重复读取日志、配置或诊断报告。" : "点击右上角“自动刷新”后，本页会每 3 秒刷新一次 CPU、内存和磁盘仪表；其他页面不会跟着高频刷新。"}
+        ${isLive ? "每 3 秒刷新一次，只刷新服务器状态接口。" : "需要动态看 CPU / 内存 / 磁盘时，再打开右上角自动刷新。"}
       </div>`;
     }
     async function loadServerStatus() {
@@ -5618,7 +5643,7 @@ INDEX_HTML = r"""<!doctype html>
       pushMetricHistory("memory", memory.percent);
       pushMetricHistory("disk", primaryDisk.percent);
       document.getElementById("serverGrid").innerHTML = [
-        renderPageIntro("server", [data.updated_at ? `更新 ${data.updated_at}` : "", host.name || "unknown"]),
+        renderPageIntro("server", [host.name || "unknown"]),
         serverRefreshHint(autoRefreshEnabled && currentView === "server"),
         gaugeCard("CPU 使用率", cpu.percent, `${cpu.cores || 0} 核 · 1分钟负载 ${load.load1 ?? "暂无"}`, `5分钟 ${escapeHtml(load.load5 ?? "暂无")} · 15分钟 ${escapeHtml(load.load15 ?? "暂无")}`, "cpu"),
         gaugeCard("内存使用率", memory.percent, `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`, `可用 ${formatBytes(memory.free)} · Swap ${formatPercent(swap.percent)}`, "memory"),
