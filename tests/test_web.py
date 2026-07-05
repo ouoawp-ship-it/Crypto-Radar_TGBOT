@@ -961,6 +961,24 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["transient_count"], 3)
         self.assertEqual(len(payload["transient_lines"]), 3)
 
+    def test_log_error_excerpt_classifies_market_cap_timeout_as_transient(self) -> None:
+        def fake_logs(target: str, lines: int) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source": f"fake:{target}",
+                "text": (
+                    'Jul 05 05:04:21 python[438959]:         "coinpaprikaMarketCaps: ReadTimeout",\n'
+                    "Jul 05 05:04:22 python[438959]: normal scan finished\n"
+                ),
+            }
+
+        with patch.object(web, "logs_payload", side_effect=fake_logs):
+            payload = web.log_error_excerpt("main", lines=80, limit=10)
+
+        self.assertEqual(payload["error_count"], 0)
+        self.assertEqual(payload["transient_count"], 1)
+        self.assertIn("coinpaprikaMarketCaps", payload["transient_lines"][0])
+
     def test_log_error_excerpt_ignores_web_client_disconnect_noise(self) -> None:
         def fake_logs(target: str, lines: int) -> dict[str, object]:
             return {

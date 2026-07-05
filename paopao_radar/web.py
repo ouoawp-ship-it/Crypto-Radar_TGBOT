@@ -1698,7 +1698,10 @@ EMPTY_ERROR_FIELD_RE = re.compile(
 SENSITIVE_LINE_RE = re.compile(r"(?i)\b(token|api[_-]?key|secret|password)\b\s*[:=]\s*['\"]?[^'\"\s,;]+")
 TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
-TRANSIENT_LOG_RE = re.compile(r"(getUpdates failed ReadTimeout|Read timed out|read timeout=\d+)", re.I)
+TRANSIENT_LOG_RE = re.compile(
+    r"(getUpdates failed ReadTimeout|Read timed out|read timeout=\d+|\b[A-Za-z][A-Za-z0-9_.:-]{2,}\s*:\s*(?:ReadTimeout|ConnectTimeout|Timeout)\b)",
+    re.I,
+)
 SEMVER_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9_.-]+)?$")
 STABILITY_LATEST_FILE = "stable_check_latest.json"
 STABILITY_HISTORY_FILE = "stable_check_history.json"
