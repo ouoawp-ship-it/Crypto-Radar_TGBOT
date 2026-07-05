@@ -3400,12 +3400,12 @@ INDEX_HTML = r"""<!doctype html>
       letter-spacing: 0;
     }
     button, input, select, textarea { font: inherit; }
-    .app { min-height: 100vh; display: grid; grid-template-columns: 224px minmax(0, 1fr); }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 212px minmax(0, 1fr); }
     aside {
       background:
         linear-gradient(180deg, #182235, #111827 58%, #0f1724);
       color: #e8eef6;
-      padding: 13px 11px 14px;
+      padding: 14px 12px;
       position: sticky;
       top: 0;
       height: 100vh;
@@ -3415,9 +3415,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     .brand {
       display: grid;
-      gap: 2px;
-      margin: 0 4px 12px;
-      padding: 11px 12px;
+      gap: 3px;
+      margin: 0 3px 14px;
+      padding: 13px 12px;
       border: 1px solid rgba(170,187,204,.14);
       border-radius: 8px;
       background:
@@ -3427,13 +3427,13 @@ INDEX_HTML = r"""<!doctype html>
       color: #f8fbff;
     }
     .brand-title { font-weight: 850; font-size: 17px; letter-spacing: 0; }
-    .brand-subtitle { display: none; }
+    .brand-subtitle { display: block; color: rgba(214,222,231,.66); font-size: 12px; }
     .sidebar-section {
       margin: 10px 8px 6px;
       color: rgba(232,238,240,.48);
       font-size: 11px;
       font-weight: 800;
-      display: none;
+      display: block;
     }
     nav { display: grid; gap: 2px; }
     nav button {
@@ -4020,6 +4020,41 @@ INDEX_HTML = r"""<!doctype html>
     .api-card h4 { margin: 0; font-size: 14px; }
     .api-card p { margin: 0; color: var(--muted); line-height: 1.5; }
     .api-card ul { margin: 0; padding-left: 17px; color: var(--muted); line-height: 1.5; }
+    .platform-strip {
+      grid-column: span 12;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 12px 13px;
+    }
+    .platform-strip-title {
+      font-weight: 850;
+      color: var(--text);
+      margin-right: 2px;
+    }
+    .platform-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px 5px 6px;
+      background: #fff;
+      color: var(--text);
+      font-weight: 750;
+      box-shadow: 0 1px 2px rgba(30,41,59,.04);
+    }
+    .platform-pill .api-logo {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+    }
+    .platform-pill .api-logo img {
+      width: 18px;
+      height: 18px;
+    }
     .system-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4232,7 +4267,7 @@ INDEX_HTML = r"""<!doctype html>
       padding: 18px;
       box-shadow: var(--shadow-strong);
     }
-    @media (max-width: 900px) {
+    @media (max-width: 680px) {
       .app { grid-template-columns: 1fr; }
       aside {
         position: sticky;
@@ -4302,7 +4337,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.58.1">
+  <div class="app" data-ui-version="v1.59.0">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -5516,6 +5551,13 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `).join("") + `</div>`;
     }
+    function platformStrip() {
+      const visible = apiSourceList.filter(source => ["telegram", "binance", "coinpaprika", "coinalyze", "coinmarketcap"].includes(source.brand));
+      return `<div class="panel platform-strip">
+        <span class="platform-strip-title">数据平台</span>
+        ${visible.map(source => `<span class="platform-pill">${apiLogo(source.brand, source.name, source.logoUrl)}${escapeHtml(source.name.replace(" 免费公开数据", "").replace(" 免费市值数据", ""))}</span>`).join("")}
+      </div>`;
+    }
     function apiSourcePanel() {
       return `<div class="panel span-12">
         <h3 class="section-title">外部接口和 API Key 说明</h3>
@@ -5558,6 +5600,7 @@ INDEX_HTML = r"""<!doctype html>
       ].join("");
       document.getElementById("overviewGrid").innerHTML = [
         renderPageIntro("overview", [git.version || "unknown"]),
+        platformStrip(),
         serviceCard("主服务", main),
         serviceCard("结构雷达", structure),
         serviceCard("Web 控制台", web),
