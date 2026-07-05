@@ -3344,6 +3344,9 @@ INDEX_HTML = r"""<!doctype html>
       --line-strong: #c8d2d8;
       --accent: #0f766e;
       --accent-2: #34424a;
+      --info: #2563eb;
+      --gold: #c88a10;
+      --purple: #6d5bd0;
       --warn: #9a6508;
       --bad: #b3261e;
       --good: #087443;
@@ -3352,13 +3355,15 @@ INDEX_HTML = r"""<!doctype html>
       --topbar: rgba(248, 250, 252, .86);
       --shadow: 0 10px 26px rgba(20, 32, 40, .06);
       --shadow-strong: 0 18px 42px rgba(20, 32, 40, .12);
-      --metal: linear-gradient(135deg, rgba(255,255,255,.98), rgba(245,248,250,.92));
+      --metal: linear-gradient(135deg, rgba(255,255,255,.92), rgba(246,249,251,.76) 48%, rgba(226,235,240,.78));
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background:
-        radial-gradient(circle at 18% 0%, rgba(15, 118, 110, .08), transparent 28%),
+        radial-gradient(circle at 18% 0%, rgba(15, 118, 110, .10), transparent 28%),
+        radial-gradient(circle at 86% 10%, rgba(109, 91, 208, .08), transparent 30%),
+        radial-gradient(circle at 70% 80%, rgba(200, 138, 16, .06), transparent 28%),
         linear-gradient(180deg, #f8fafc, #eef3f6),
         var(--bg);
       color: var(--text);
@@ -3471,12 +3476,13 @@ INDEX_HTML = r"""<!doctype html>
     .muted { color: var(--muted); }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
     .panel {
-      background: var(--panel);
+      background: var(--metal);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
       padding: 14px;
       min-width: 0;
+      backdrop-filter: blur(12px);
       transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
     }
     .panel:hover {
@@ -3526,7 +3532,7 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 8px;
       padding: 14px;
       color: var(--muted);
-      background: #f8fafc;
+      background: rgba(248,250,252,.76);
     }
     .empty-state strong { color: var(--text); }
     .span-3 { grid-column: span 3; }
@@ -3920,35 +3926,51 @@ INDEX_HTML = r"""<!doctype html>
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
-    .gauge-card { display: grid; gap: 12px; align-content: start; }
-    .gauge-main { display: flex; align-items: center; gap: 14px; min-width: 0; }
-    .gauge-ring {
-      width: 104px;
-      height: 104px;
+    .meter-card { display: grid; gap: 12px; align-content: start; overflow: hidden; }
+    .meter-main { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 14px; min-width: 0; }
+    .meter-dial {
+      width: 132px;
+      height: 132px;
       border-radius: 50%;
-      flex: 0 0 auto;
+      position: relative;
       display: grid;
       place-items: center;
-      background: conic-gradient(var(--accent) var(--pct, 0%), #e7edf0 0);
-      box-shadow: inset 0 0 0 1px rgba(15, 118, 110, .1), var(--shadow);
+      background:
+        radial-gradient(circle at 50% 50%, #fff 0 43%, transparent 44%),
+        conic-gradient(from 230deg, var(--accent) 0 var(--arc, 0%), rgba(203,213,220,.52) 0 72%, transparent 0);
+      border: 1px solid rgba(203, 213, 220, .76);
+      box-shadow: inset 0 1px 8px rgba(255,255,255,.8), 0 14px 30px rgba(20,32,40,.10);
+      transition: background .28s ease;
     }
-    .gauge-ring.warn { background: conic-gradient(#d97706 var(--pct, 0%), #e7edf0 0); }
-    .gauge-ring.bad { background: conic-gradient(#b3261e var(--pct, 0%), #e7edf0 0); }
-    .gauge-ring::after {
-      content: attr(data-label);
-      width: 72px;
-      height: 72px;
+    .meter-dial.warn { background: radial-gradient(circle at 50% 50%, #fff 0 43%, transparent 44%), conic-gradient(from 230deg, #d97706 0 var(--arc, 0%), rgba(203,213,220,.52) 0 72%, transparent 0); }
+    .meter-dial.bad { background: radial-gradient(circle at 50% 50%, #fff 0 43%, transparent 44%), conic-gradient(from 230deg, #b3261e 0 var(--arc, 0%), rgba(203,213,220,.52) 0 72%, transparent 0); }
+    .meter-needle {
+      position: absolute;
+      width: 3px;
+      height: 48px;
+      bottom: 50%;
+      left: calc(50% - 1.5px);
+      border-radius: 999px;
+      background: linear-gradient(180deg, #172026, #4f5f68);
+      transform-origin: 50% 100%;
+      transform: rotate(var(--angle, -130deg));
+      transition: transform .42s cubic-bezier(.2,.7,.2,1);
+      box-shadow: 0 2px 8px rgba(20,32,40,.22);
+    }
+    .meter-center {
+      width: 62px;
+      height: 62px;
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: #fff;
+      z-index: 1;
+      background: linear-gradient(135deg, #fff, #edf3f6);
       color: var(--text);
       font-weight: 900;
-      font-size: 16px;
-      box-shadow: inset 0 0 0 1px rgba(203, 213, 220, .65);
+      box-shadow: inset 0 0 0 1px rgba(203, 213, 220, .75);
     }
-    .gauge-copy { min-width: 0; display: grid; gap: 5px; }
-    .gauge-copy h3 { margin: 0; font-size: 16px; }
+    .meter-copy { min-width: 0; display: grid; gap: 5px; }
+    .meter-copy h3 { margin: 0; font-size: 16px; }
     .usage-bar {
       height: 9px;
       border-radius: 999px;
@@ -3970,7 +3992,7 @@ INDEX_HTML = r"""<!doctype html>
       height: 122px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: linear-gradient(180deg, #fbfdfe, #f2f6f8);
+      background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(238,244,247,.82));
     }
     .sparkline .area { fill: rgba(15, 118, 110, .1); }
     .sparkline .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -4098,7 +4120,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.52.0">
+  <div class="app" data-ui-version="v1.53.0">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -4258,8 +4280,8 @@ INDEX_HTML = r"""<!doctype html>
       server: {
         kicker: "服务器资源",
         title: "CPU、内存、磁盘状态",
-        desc: "查看服务器本机资源状态：CPU 使用率、系统负载、内存、Swap、磁盘空间、运行时间和主机信息。适合判断卡顿、推送延迟、日志写入异常是不是服务器资源问题。",
-        tags: ["CPU", "内存", "磁盘", "图表"]
+        desc: "查看服务器本机资源状态：CPU 使用率、系统负载、内存、Swap、磁盘空间、运行时间和主机信息。打开自动刷新后，本页每 3 秒采样一次，只刷新轻量服务器状态接口。",
+        tags: ["CPU", "内存", "磁盘", "3秒刷新"]
       },
       ai: {
         kicker: "AI Bot",
@@ -4560,7 +4582,8 @@ INDEX_HTML = r"""<!doctype html>
     let latestPriceAlertsData = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
-    const autoRefreshIntervalMs = 15000;
+    let refreshInFlight = false;
+    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000 };
     const configCategories = [
       {
         id: "home",
@@ -4819,15 +4842,23 @@ INDEX_HTML = r"""<!doctype html>
     }
     function setSubtitle(text) { document.getElementById("subtitle").textContent = text; }
     function autoRefreshSupported(view = currentView) {
-      return ["overview", "logs", "audit"].includes(view);
+      return Object.prototype.hasOwnProperty.call(autoRefreshIntervalsMs, view);
+    }
+    function autoRefreshIntervalFor(view = currentView) {
+      return autoRefreshIntervalsMs[view] || 15000;
+    }
+    function refreshIntervalLabel(ms) {
+      const seconds = Math.round(Number(ms || 0) / 1000);
+      return seconds >= 60 ? `${Math.round(seconds / 60)}分钟` : `${seconds}秒`;
     }
     function updateAutoRefreshButton() {
       const btn = document.getElementById("autoRefreshButton");
       if (!btn) return;
       const supported = autoRefreshSupported();
       btn.disabled = !supported;
+      const label = refreshIntervalLabel(autoRefreshIntervalFor());
       btn.textContent = supported
-        ? `自动刷新：${autoRefreshEnabled ? "开启" : "关闭"}`
+        ? `自动刷新：${autoRefreshEnabled ? `开启 · ${label}` : `关闭 · ${label}`}`
         : "自动刷新：当前页不可用";
       btn.classList.toggle("primary", supported && autoRefreshEnabled);
     }
@@ -4842,8 +4873,8 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       autoRefreshTimer = setInterval(() => {
-        if (autoRefreshSupported()) refreshCurrent(true);
-      }, autoRefreshIntervalMs);
+        if (autoRefreshSupported() && !refreshInFlight) refreshCurrent(true);
+      }, autoRefreshIntervalFor());
       updateAutoRefreshButton();
     }
     function toggleAutoRefresh() {
@@ -4984,10 +5015,15 @@ INDEX_HTML = r"""<!doctype html>
     function gaugeCard(title, percent, detail, footer = "") {
       const n = Math.max(0, Math.min(100, Number(percent || 0)));
       const level = usageLevel(n);
-      return `<div class="panel span-4 gauge-card">
-        <div class="gauge-main">
-          <div class="gauge-ring ${level}" style="--pct:${n}%" data-label="${escapeHtml(formatPercent(n))}"></div>
-          <div class="gauge-copy">
+      const angle = -130 + n * 2.6;
+      const arc = n * 0.72;
+      return `<div class="panel span-4 meter-card">
+        <div class="meter-main">
+          <div class="meter-dial ${level}" style="--pct:${n}%; --arc:${arc}%; --angle:${angle}deg" aria-label="${escapeHtml(`${title} ${formatPercent(n)}`)}">
+            <div class="meter-needle"></div>
+            <div class="meter-center">${escapeHtml(formatPercent(n))}</div>
+          </div>
+          <div class="meter-copy">
             <h3>${escapeHtml(title)}</h3>
             <div class="muted">${escapeHtml(detail || "")}</div>
             ${usageBar(n)}
@@ -5369,6 +5405,29 @@ INDEX_HTML = r"""<!doctype html>
       }).join("");
       return rows || emptyState("暂无磁盘数据", "当前环境没有返回磁盘容量信息。");
     }
+    function serverExplainPanel() {
+      const items = [
+        ["CPU", "短时间升高不一定危险；如果长期超过 75%，说明扫描、日志或外部接口处理压力偏大。"],
+        ["内存", "长期接近 90% 要关注，可能导致系统变慢，严重时进程会被系统杀掉。"],
+        ["磁盘", "磁盘快满会影响日志、运行状态文件、图表和配置备份写入，建议低于 80%。"],
+        ["系统负载", "1分钟负载接近或超过 CPU 核心数，说明服务器正在排队处理任务。"]
+      ];
+      return `<div class="panel span-12 summary-card">
+        <div class="summary-head">
+          <h3 class="summary-title">怎么看这些数据</h3>
+          ${neutralPill("白话说明")}
+        </div>
+        <div class="feature-list">
+          ${items.map(([title, desc]) => `<div class="feature-item"><strong>${escapeHtml(title)}</strong><span class="muted">${escapeHtml(desc)}</span></div>`).join("")}
+        </div>
+      </div>`;
+    }
+    function serverRefreshHint(isLive) {
+      return `<div class="panel span-12 notice">
+        <strong>${isLive ? "实时监控已开启。" : "实时监控未开启。"}</strong>
+        ${isLive ? "服务器状态页现在每 3 秒采样一次；只刷新当前页面的轻量接口，不会重复读取日志、配置或诊断报告。" : "点击右上角“自动刷新”后，本页会每 3 秒刷新一次 CPU、内存和磁盘仪表；其他页面不会跟着高频刷新。"}
+      </div>`;
+    }
     async function loadServerStatus() {
       const data = await api("/api/server-status");
       setSubtitle(`服务器状态 ${data.updated_at || ""}${autoRefreshEnabled && currentView === "server" ? " · 自动刷新中" : ""}`);
@@ -5384,6 +5443,7 @@ INDEX_HTML = r"""<!doctype html>
       pushMetricHistory("disk", primaryDisk.percent);
       document.getElementById("serverGrid").innerHTML = [
         renderPageIntro("server", [data.updated_at ? `更新 ${data.updated_at}` : "", host.name || "unknown"]),
+        serverRefreshHint(autoRefreshEnabled && currentView === "server"),
         gaugeCard("CPU 使用率", cpu.percent, `${cpu.cores || 0} 核 · 1分钟负载 ${load.load1 ?? "暂无"}`, `5分钟 ${escapeHtml(load.load5 ?? "暂无")} · 15分钟 ${escapeHtml(load.load15 ?? "暂无")}`),
         gaugeCard("内存使用率", memory.percent, `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`, `可用 ${formatBytes(memory.free)} · Swap ${formatPercent(swap.percent)}`),
         gaugeCard("磁盘使用率", primaryDisk.percent, `${formatBytes(primaryDisk.used)} / ${formatBytes(primaryDisk.total)}`, `路径 ${escapeHtml(primaryDisk.path || "暂无")}`),
@@ -5404,6 +5464,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="summary-head"><h3 class="summary-title">磁盘分区</h3>${neutralPill(`${disks.length} 项`)}</div>
           <div class="system-list">${diskRows(disks)}</div>
         </div>`,
+        serverExplainPanel(),
         rawDetails("高级排查：服务器状态 JSON", data)
       ].join("");
     }
@@ -7065,6 +7126,8 @@ INDEX_HTML = r"""<!doctype html>
       refreshCurrent();
     }
     async function refreshCurrent(isAuto = false) {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
       try {
         updateAutoRefreshButton();
         if (currentView === "overview") await loadSummary();
@@ -7083,6 +7146,9 @@ INDEX_HTML = r"""<!doctype html>
       } catch (err) {
         setSubtitle(`${isAuto ? "自动刷新失败：" : ""}${err.message || String(err)}`);
         renderViewError(currentView, err, isAuto);
+      } finally {
+        refreshInFlight = false;
+        updateAutoRefreshButton();
       }
     }
     document.querySelectorAll("nav button").forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));
