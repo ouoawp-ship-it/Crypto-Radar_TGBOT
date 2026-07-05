@@ -14,6 +14,29 @@ from paopao_radar.config import Settings
 
 
 class WebConsoleTests(unittest.TestCase):
+    def test_server_status_payload_includes_core_resource_sections(self) -> None:
+        payload = web.server_status_payload()
+
+        self.assertIn("updated_at", payload)
+        self.assertIn("host", payload)
+        self.assertIn("cpu", payload)
+        self.assertIn("memory", payload)
+        self.assertIn("disks", payload)
+        self.assertGreaterEqual(payload["cpu"]["cores"], 1)
+        self.assertIsInstance(payload["disks"], list)
+        self.assertTrue(payload["disks"])
+        self.assertIn("base_dir", payload["host"])
+
+    def test_proc_cpu_totals_parser_reads_idle_and_total(self) -> None:
+        with TemporaryDirectory() as tmp:
+            stat_path = Path(tmp) / "stat"
+            stat_path.write_text("cpu  10 20 30 40 5 6 7 8 9 10\n", encoding="utf-8")
+
+            total, idle = web.read_proc_cpu_totals(stat_path) or (0, 0)
+
+        self.assertEqual(total, 145)
+        self.assertEqual(idle, 45)
+
     def test_config_payload_exposes_current_secret_values_for_admin_ui(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
@@ -1344,14 +1367,23 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("运行健康度", html)
         self.assertIn("最近错误", html)
         self.assertIn("更新备份", html)
-        self.assertIn('data-ui-version="v1.51.0"', html)
+        self.assertIn('data-ui-version="v1.52.0"', html)
         self.assertIn("Crypto Radar Ops", html)
+        self.assertIn("versionBadge", html)
+        self.assertIn("loadVersionBadge", html)
         self.assertIn("brand-subtitle", html)
         self.assertIn("sidebar-section", html)
         self.assertIn("nav-dot", html)
         self.assertIn("nav-text", html)
         self.assertIn("breadcrumbView", html)
         self.assertIn("topbar-actions", html)
+        self.assertIn('data-view="server"', html)
+        self.assertIn('id="serverGrid"', html)
+        self.assertIn("/api/server-status", html)
+        self.assertIn("/api/version", html)
+        self.assertIn("serverMetricHistory", html)
+        self.assertIn("gauge-ring", html)
+        self.assertIn("sparkline", html)
         self.assertIn("--sidebar", html)
         self.assertIn("--topbar", html)
         self.assertIn('data-view="price"', html)

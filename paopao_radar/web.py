@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -62,6 +63,8 @@ RELEASE_CLOSURE_STAGES: tuple[dict[str, str], ...] = (
     {"version": "v1.49.0", "label": "文档说明和运维流程最终整理", "goal": "整理安装、更新、排错、Web 后台和 AI Bot 使用说明。"},
     {"version": "v1.50.0", "label": "v1 完整稳定版发布", "goal": "完成最终自检、历史验收和稳定版发布，后续只做小修和策略优化。"},
 )
+_CPU_SAMPLE_LOCK = threading.Lock()
+_CPU_LAST_SAMPLE: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -1342,6 +1345,170 @@ def git_info() -> dict[str, str]:
         "commit": commit["stdout"].strip() or "unknown",
         "branch": branch["stdout"].strip() or "unknown",
         "subject": subject["stdout"].strip() or "",
+    }
+
+
+def percent_value(used: float | int | None, total: float | int | None) -> float | None:
+    try:
+        used_float = float(used if used is not None else 0)
+        total_float = float(total if total is not None else 0)
+    except (TypeError, ValueError):
+        return None
+    if total_float <= 0:
+        return None
+    return round(max(0.0, min(100.0, used_float / total_float * 100.0)), 1)
+
+
+def read_proc_cpu_totals(path: Path = Path("/proc/stat")) -> tuple[int, int] | None:
+    try:
+        first = path.read_text(encoding="utf-8", errors="ignore").splitlines()[0].split()
+    except Exception:
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    try:
+        values = [int(float(item)) for item in first[1:]]
+    except ValueError:
+        return None
+    if len(values) < 4:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
+def cpu_usage_percent() -> float | None:
+    global _CPU_LAST_SAMPLE
+    sample = read_proc_cpu_totals()
+    if sample is None:
+        return None
+    with _CPU_SAMPLE_LOCK:
+        previous = _CPU_LAST_SAMPLE
+        _CPU_LAST_SAMPLE = sample
+    if previous is None:
+        return None
+    total_delta = sample[0] - previous[0]
+    idle_delta = sample[1] - previous[1]
+    if total_delta <= 0:
+        return None
+    return round(max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0)), 1)
+
+
+def load_average_payload(cpu_count: int) -> dict[str, Any]:
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except (AttributeError, OSError):
+        return {"available": False, "load1": None, "load5": None, "load15": None, "load1_pct": None}
+    load1_pct = round(max(0.0, load1 / max(1, cpu_count) * 100.0), 1)
+    return {
+        "available": True,
+        "load1": round(load1, 2),
+        "load5": round(load5, 2),
+        "load15": round(load15, 2),
+        "load1_pct": load1_pct,
+    }
+
+
+def read_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int]:
+    result: dict[str, int] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return result
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parts = rest.strip().split()
+        if not parts:
+            continue
+        try:
+            result[key] = int(parts[0]) * 1024
+        except ValueError:
+            continue
+    return result
+
+
+def memory_payload() -> dict[str, Any]:
+    meminfo = read_meminfo()
+    total = meminfo.get("MemTotal")
+    available = meminfo.get("MemAvailable")
+    free = meminfo.get("MemFree")
+    if total is None:
+        return {"available": False, "total": None, "used": None, "free": None, "percent": None, "swap": {}}
+    free_value = available if available is not None else free
+    used = max(0, total - int(free_value or 0))
+    swap_total = meminfo.get("SwapTotal") or 0
+    swap_free = meminfo.get("SwapFree") or 0
+    swap_used = max(0, swap_total - swap_free)
+    return {
+        "available": True,
+        "total": total,
+        "used": used,
+        "free": int(free_value or 0),
+        "percent": percent_value(used, total),
+        "swap": {
+            "total": swap_total,
+            "used": swap_used,
+            "free": swap_free,
+            "percent": percent_value(swap_used, swap_total),
+        },
+    }
+
+
+def disk_item(path: Path, label: str) -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(path)
+        used = usage.total - usage.free
+        return {
+            "label": label,
+            "path": str(path),
+            "available": True,
+            "total": usage.total,
+            "used": used,
+            "free": usage.free,
+            "percent": percent_value(used, usage.total),
+        }
+    except Exception as exc:
+        return {"label": label, "path": str(path), "available": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def uptime_seconds(path: Path = Path("/proc/uptime")) -> float | None:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore").split()[0]
+        return round(float(raw), 1)
+    except Exception:
+        return None
+
+
+def server_status_payload() -> dict[str, Any]:
+    cpu_count = os.cpu_count() or 1
+    load = load_average_payload(cpu_count)
+    cpu_percent = cpu_usage_percent()
+    if cpu_percent is None and load.get("load1_pct") is not None:
+        cpu_percent = float(load["load1_pct"])
+    root_path = Path(os.path.abspath(os.sep))
+    disks = [disk_item(BASE_DIR, "项目目录")]
+    if root_path != BASE_DIR:
+        disks.append(disk_item(root_path, "系统根目录"))
+    return {
+        "updated_at": now_text(),
+        "host": {
+            "name": platform.node() or "unknown",
+            "system": platform.system() or "unknown",
+            "release": platform.release() or "",
+            "platform": platform.platform() or "",
+            "python": platform.python_version(),
+            "base_dir": str(BASE_DIR),
+            "uptime_sec": uptime_seconds(),
+        },
+        "cpu": {
+            "cores": cpu_count,
+            "percent": cpu_percent,
+            "load": load,
+        },
+        "memory": memory_payload(),
+        "disks": disks,
     }
 
 
@@ -3285,6 +3452,21 @@ INDEX_HTML = r"""<!doctype html>
     .page-heading { min-width: 0; }
     .breadcrumb { color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 2px; }
     .topbar-actions { margin-bottom: 0; justify-content: flex-end; }
+    .version-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      border: 1px solid rgba(15, 118, 110, .22);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(237,246,245,.9));
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+    .version-chip small { color: var(--muted); font-weight: 700; }
     h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
     .muted { color: var(--muted); }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
@@ -3733,6 +3915,77 @@ INDEX_HTML = r"""<!doctype html>
     .api-card h4 { margin: 0; font-size: 14px; }
     .api-card p { margin: 0; color: var(--muted); line-height: 1.5; }
     .api-card ul { margin: 0; padding-left: 17px; color: var(--muted); line-height: 1.5; }
+    .system-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .gauge-card { display: grid; gap: 12px; align-content: start; }
+    .gauge-main { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .gauge-ring {
+      width: 104px;
+      height: 104px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(var(--accent) var(--pct, 0%), #e7edf0 0);
+      box-shadow: inset 0 0 0 1px rgba(15, 118, 110, .1), var(--shadow);
+    }
+    .gauge-ring.warn { background: conic-gradient(#d97706 var(--pct, 0%), #e7edf0 0); }
+    .gauge-ring.bad { background: conic-gradient(#b3261e var(--pct, 0%), #e7edf0 0); }
+    .gauge-ring::after {
+      content: attr(data-label);
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #fff;
+      color: var(--text);
+      font-weight: 900;
+      font-size: 16px;
+      box-shadow: inset 0 0 0 1px rgba(203, 213, 220, .65);
+    }
+    .gauge-copy { min-width: 0; display: grid; gap: 5px; }
+    .gauge-copy h3 { margin: 0; font-size: 16px; }
+    .usage-bar {
+      height: 9px;
+      border-radius: 999px;
+      background: #e7edf0;
+      overflow: hidden;
+      border: 1px solid rgba(203, 213, 220, .7);
+    }
+    .usage-bar > span {
+      display: block;
+      height: 100%;
+      width: var(--pct, 0%);
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f766e, #4f8f89);
+    }
+    .usage-bar.warn > span { background: linear-gradient(90deg, #d97706, #f5b041); }
+    .usage-bar.bad > span { background: linear-gradient(90deg, #b3261e, #ef6f61); }
+    .sparkline {
+      width: 100%;
+      height: 122px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, #fbfdfe, #f2f6f8);
+    }
+    .sparkline .area { fill: rgba(15, 118, 110, .1); }
+    .sparkline .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .system-list { display: grid; gap: 10px; }
+    .system-row {
+      display: grid;
+      grid-template-columns: 150px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #f8fafc;
+    }
+    .system-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .action-card { display: grid; gap: 10px; align-content: start; }
     .action-card ul {
       margin: 0;
@@ -3813,6 +4066,8 @@ INDEX_HTML = r"""<!doctype html>
       main { padding: 14px; }
       .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .service-guide { grid-template-columns: 1fr; }
+      .system-grid { grid-template-columns: 1fr; }
+      .system-row { grid-template-columns: 1fr; }
       .service-action { grid-template-columns: 1fr; }
       .api-grid { grid-template-columns: 1fr; }
       .config-category-summary { grid-template-columns: 1fr; }
@@ -3825,6 +4080,7 @@ INDEX_HTML = r"""<!doctype html>
       .intro-tags { justify-content: flex-start; }
       header { position: static; align-items: flex-start; flex-direction: column; }
       .topbar-actions { width: 100%; margin-bottom: 0; }
+      .version-chip { width: 100%; justify-content: center; }
       .sidebar-section { display: none; }
     }
   </style>
@@ -3842,7 +4098,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.51.0">
+  <div class="app" data-ui-version="v1.52.0">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -3851,6 +4107,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="sidebar-section">运行中心</div>
       <nav>
         <button data-view="overview" class="active"><span class="nav-dot"></span><span class="nav-text"><strong>总览</strong><small>服务快照</small></span></button>
+        <button data-view="server"><span class="nav-dot"></span><span class="nav-text"><strong>服务器状态</strong><small>CPU / 内存 / 磁盘</small></span></button>
         <button data-view="ai"><span class="nav-dot"></span><span class="nav-text"><strong>AI 助手</strong><small>Bot 状态</small></span></button>
         <button data-view="price"><span class="nav-dot"></span><span class="nav-text"><strong>价格提醒</strong><small>监控列表</small></span></button>
         <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
@@ -3874,6 +4131,7 @@ INDEX_HTML = r"""<!doctype html>
           <div id="subtitle" class="muted">正在读取状态</div>
         </div>
         <div class="toolbar topbar-actions">
+          <span id="versionBadge" class="version-chip">版本 <small>读取中</small></span>
           <button class="btn" onclick="refreshCurrent()">刷新</button>
           <button id="autoRefreshButton" class="btn" onclick="toggleAutoRefresh()">自动刷新：关闭</button>
         </div>
@@ -3912,6 +4170,10 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div id="logInsight" class="panel"></div>
         <pre id="logOutput"></pre>
+      </section>
+
+      <section id="server" class="view hidden">
+        <div class="grid" id="serverGrid"></div>
       </section>
 
       <section id="audit" class="view hidden">
@@ -3973,6 +4235,7 @@ INDEX_HTML = r"""<!doctype html>
   <script>
     const titles = {
       overview: "总览",
+      server: "服务器状态",
       ai: "AI 助手",
       price: "价格提醒",
       prompts: "AI 提示词",
@@ -3991,6 +4254,12 @@ INDEX_HTML = r"""<!doctype html>
         title: "单人管理员入口",
         desc: "服务器只需要记住 paopao；Web 后台负责状态查看、日志定位、配置修改、服务控制和更新入口。所有运维权限都集中给你本人使用，不做多用户角色区分。",
         tags: ["服务状态", "健康检查", "关键配置"]
+      },
+      server: {
+        kicker: "服务器资源",
+        title: "CPU、内存、磁盘状态",
+        desc: "查看服务器本机资源状态：CPU 使用率、系统负载、内存、Swap、磁盘空间、运行时间和主机信息。适合判断卡顿、推送延迟、日志写入异常是不是服务器资源问题。",
+        tags: ["CPU", "内存", "磁盘", "图表"]
       },
       ai: {
         kicker: "AI Bot",
@@ -4282,6 +4551,7 @@ INDEX_HTML = r"""<!doctype html>
       }
     ];
     let currentView = "overview";
+    const serverMetricHistory = { cpu: [], memory: [], disk: [] };
     let currentConfigCategory = "home";
     let latestConfigData = null;
     let latestLogData = null;
@@ -4674,6 +4944,86 @@ INDEX_HTML = r"""<!doctype html>
       const text = value === undefined || value === null || value === "" ? fallback : String(value);
       return escapeHtml(text);
     }
+    function formatBytes(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return "暂无";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let size = n;
+      let idx = 0;
+      while (size >= 1024 && idx < units.length - 1) {
+        size /= 1024;
+        idx += 1;
+      }
+      return `${size >= 10 || idx === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[idx]}`;
+    }
+    function formatPercent(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? `${n.toFixed(1)}%` : "暂无";
+    }
+    function formatDuration(seconds) {
+      const total = Number(seconds || 0);
+      if (!Number.isFinite(total) || total <= 0) return "暂无";
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      if (days > 0) return `${days}天 ${hours}小时`;
+      if (hours > 0) return `${hours}小时 ${minutes}分钟`;
+      return `${minutes}分钟`;
+    }
+    function usageLevel(value) {
+      const n = Number(value || 0);
+      if (n >= 90) return "bad";
+      if (n >= 75) return "warn";
+      return "ok";
+    }
+    function usageBar(value) {
+      const n = Math.max(0, Math.min(100, Number(value || 0)));
+      const level = usageLevel(n);
+      return `<div class="usage-bar ${level === "ok" ? "" : level}" title="${formatPercent(n)}"><span style="--pct:${n}%"></span></div>`;
+    }
+    function gaugeCard(title, percent, detail, footer = "") {
+      const n = Math.max(0, Math.min(100, Number(percent || 0)));
+      const level = usageLevel(n);
+      return `<div class="panel span-4 gauge-card">
+        <div class="gauge-main">
+          <div class="gauge-ring ${level}" style="--pct:${n}%" data-label="${escapeHtml(formatPercent(n))}"></div>
+          <div class="gauge-copy">
+            <h3>${escapeHtml(title)}</h3>
+            <div class="muted">${escapeHtml(detail || "")}</div>
+            ${usageBar(n)}
+          </div>
+        </div>
+        ${footer ? `<div class="summary-meta">${footer}</div>` : ""}
+      </div>`;
+    }
+    function pushMetricHistory(key, value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return;
+      const list = serverMetricHistory[key] || [];
+      list.push(Math.max(0, Math.min(100, n)));
+      while (list.length > 24) list.shift();
+      serverMetricHistory[key] = list;
+    }
+    function sparkline(title, values) {
+      const data = (values || []).length ? values : [0];
+      const w = 360;
+      const h = 110;
+      const points = data.map((value, index) => {
+        const x = data.length === 1 ? 0 : (index / (data.length - 1)) * w;
+        const y = h - (Math.max(0, Math.min(100, Number(value || 0))) / 100) * h;
+        return [x, y];
+      });
+      const line = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+      const areaLine = points.map(([x, y]) => `L${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+      const area = `M0,${h} ${areaLine} L${w},${h} Z`;
+      return `<div class="panel span-4 summary-card">
+        <div class="summary-head"><h3 class="summary-title">${escapeHtml(title)}</h3>${neutralPill(`${data.length} 点`)}</div>
+        <svg class="sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(title)}趋势图">
+          <path class="area" d="${area}"></path>
+          <polyline class="line" points="${line}"></polyline>
+        </svg>
+      </div>`;
+    }
     function serviceCard(title, service) {
       const active = service.active || "unknown";
       const enabled = service.enabled || "unknown";
@@ -4969,6 +5319,7 @@ INDEX_HTML = r"""<!doctype html>
       const web = data.services.web || {};
       const ai = data.services.ai || {};
       const git = data.git || {};
+      updateVersionBadge(git);
       const runtime = data.runtime || {};
       const cfg = data.config || {};
       document.getElementById("overviewGrid").innerHTML = [
@@ -4985,6 +5336,75 @@ INDEX_HTML = r"""<!doctype html>
         configSummaryCards(cfg, data.state_files || []),
         rawDetails("高级排查：原始运行状态 JSON", runtime),
         rawDetails("高级排查：原始配置摘要 JSON", cfg)
+      ].join("");
+    }
+    function updateVersionBadge(git) {
+      const box = document.getElementById("versionBadge");
+      if (!box) return;
+      const version = (git && git.version) || "unknown";
+      const commit = (git && git.commit) || "";
+      box.innerHTML = `版本 <small>${escapeHtml(version)}${commit ? ` · ${escapeHtml(commit)}` : ""}</small>`;
+    }
+    async function loadVersionBadge() {
+      try {
+        const git = await api("/api/version");
+        updateVersionBadge(git || {});
+      } catch (_err) {
+        updateVersionBadge({ version: "unknown", commit: "" });
+      }
+    }
+    function diskRows(disks) {
+      const rows = (disks || []).map(item => {
+        if (!item.available) {
+          return `<div class="system-row"><strong>${escapeHtml(item.label || item.path || "磁盘")}</strong><span class="muted">${escapeHtml(item.error || "无法读取")}</span>${statusPill("异常", false)}</div>`;
+        }
+        return `<div class="system-row">
+          <strong>${escapeHtml(item.label || "磁盘")}</strong>
+          <div>
+            <div class="muted">${escapeHtml(item.path || "")}</div>
+            ${usageBar(item.percent)}
+          </div>
+          <span>${formatBytes(item.used)} / ${formatBytes(item.total)} · ${formatPercent(item.percent)}</span>
+        </div>`;
+      }).join("");
+      return rows || emptyState("暂无磁盘数据", "当前环境没有返回磁盘容量信息。");
+    }
+    async function loadServerStatus() {
+      const data = await api("/api/server-status");
+      setSubtitle(`服务器状态 ${data.updated_at || ""}${autoRefreshEnabled && currentView === "server" ? " · 自动刷新中" : ""}`);
+      const cpu = data.cpu || {};
+      const load = cpu.load || {};
+      const memory = data.memory || {};
+      const swap = memory.swap || {};
+      const disks = data.disks || [];
+      const primaryDisk = disks.find(item => item && item.available) || {};
+      const host = data.host || {};
+      pushMetricHistory("cpu", cpu.percent);
+      pushMetricHistory("memory", memory.percent);
+      pushMetricHistory("disk", primaryDisk.percent);
+      document.getElementById("serverGrid").innerHTML = [
+        renderPageIntro("server", [data.updated_at ? `更新 ${data.updated_at}` : "", host.name || "unknown"]),
+        gaugeCard("CPU 使用率", cpu.percent, `${cpu.cores || 0} 核 · 1分钟负载 ${load.load1 ?? "暂无"}`, `5分钟 ${escapeHtml(load.load5 ?? "暂无")} · 15分钟 ${escapeHtml(load.load15 ?? "暂无")}`),
+        gaugeCard("内存使用率", memory.percent, `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`, `可用 ${formatBytes(memory.free)} · Swap ${formatPercent(swap.percent)}`),
+        gaugeCard("磁盘使用率", primaryDisk.percent, `${formatBytes(primaryDisk.used)} / ${formatBytes(primaryDisk.total)}`, `路径 ${escapeHtml(primaryDisk.path || "暂无")}`),
+        sparkline("CPU 趋势", serverMetricHistory.cpu),
+        sparkline("内存趋势", serverMetricHistory.memory),
+        sparkline("磁盘趋势", serverMetricHistory.disk),
+        `<div class="panel span-6 summary-card">
+          <div class="summary-head"><h3 class="summary-title">主机信息</h3>${neutralPill(host.system || "unknown")}</div>
+          <div class="readable-list">
+            ${row("主机名", textValue(host.name))}
+            ${row("系统版本", textValue(host.platform || `${host.system || ""} ${host.release || ""}`.trim()))}
+            ${row("Python", textValue(host.python))}
+            ${row("运行时间", textValue(formatDuration(host.uptime_sec)))}
+            ${row("项目目录", textValue(host.base_dir))}
+          </div>
+        </div>`,
+        `<div class="panel span-6 summary-card">
+          <div class="summary-head"><h3 class="summary-title">磁盘分区</h3>${neutralPill(`${disks.length} 项`)}</div>
+          <div class="system-list">${diskRows(disks)}</div>
+        </div>`,
+        rawDetails("高级排查：服务器状态 JSON", data)
       ].join("");
     }
     async function loadLogs() {
@@ -6184,6 +6604,7 @@ INDEX_HTML = r"""<!doctype html>
       const checks = [];
       const targets = [
         ["总览摘要", "/api/summary"],
+        ["服务器状态", "/api/server-status"],
         ["配置读取", "/api/config"],
         ["Web 日志", "/api/logs?target=web&lines=80"]
       ];
@@ -6647,6 +7068,7 @@ INDEX_HTML = r"""<!doctype html>
       try {
         updateAutoRefreshButton();
         if (currentView === "overview") await loadSummary();
+        if (currentView === "server") await loadServerStatus();
         if (currentView === "logs") await loadLogs();
         if (currentView === "audit") await loadAudit();
         if (currentView === "report") await loadReport();
@@ -6665,6 +7087,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     document.querySelectorAll("nav button").forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));
     updateAutoRefreshButton();
+    loadVersionBadge();
     refreshCurrent();
   </script>
 </body>
@@ -6756,6 +7179,12 @@ class WebHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if path == "/api/summary":
             self.send_json(summary_payload())
+            return
+        if path == "/api/version":
+            self.send_json(git_info())
+            return
+        if path == "/api/server-status":
+            self.send_json(server_status_payload())
             return
         if path == "/api/config":
             self.send_json(config_payload())
