@@ -770,6 +770,25 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(any(item["button"] == "查看趋势详情" for item in center["action_plan"]))
         self.assertTrue(any("长期运行趋势发生回退" in item for item in center["next_steps"]))
 
+    def test_problem_center_treats_pure_release_trend_worse_as_observation(self) -> None:
+        snapshot = {
+            "health": [{"label": "main", "status": "ok"}],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {"main": {"error_count": 0, "transient_count": 0}},
+            "issues": [],
+            "stability": {"status": "ready", "fail_count": 0, "warn_count": 0},
+            "release_trend": {"status": "worse", "summary": "score down"},
+        }
+
+        center = web.build_problem_center(snapshot)
+
+        self.assertEqual(center["status"], "ok")
+        self.assertEqual(center["counts"]["release_trend_worse"], 1)
+        self.assertFalse(any(item["key"] == "release-trend" for item in center["action_plan"]))
+        self.assertEqual(center["action_plan"][0]["key"], "observe")
+        self.assertTrue(any("stable-check" in item for item in center["next_steps"]))
+
     def test_release_readiness_complete_candidate_when_clean_and_history_ready(self) -> None:
         snapshot = {
             "stability": {"status": "ready", "summary": "ok"},
@@ -795,6 +814,30 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(readiness["closure_plan"]["current_stage"]["version"], "v1.47.0")
         self.assertEqual(readiness["closure_plan"]["current_stage"]["status"], "ready_to_advance")
         self.assertTrue(any(item["key"] == "stability_history" and item["status"] == "ok" for item in readiness["checks"]))
+
+    def test_release_readiness_does_not_penalize_pure_release_trend_worse(self) -> None:
+        snapshot = {
+            "git": {"version": "v1.50.0"},
+            "stability": {"status": "ready", "summary": "ok"},
+            "problem_center": {
+                "status": "ok",
+                "summary": "ok",
+                "counts": {"log_errors": 0, "failed_audit": 0, "transient_timeouts": 0},
+            },
+            "stability_history": {
+                "latest": {"status": "ready"},
+                "records": [{"status": "ready"}, {"status": "ready"}],
+            },
+            "release_trend": {"status": "worse", "summary": "score down"},
+        }
+
+        readiness = web.build_release_readiness(snapshot)
+        trend_check = next(item for item in readiness["checks"] if item["key"] == "release_trend")
+
+        self.assertEqual(readiness["status"], "complete_candidate")
+        self.assertEqual(readiness["score"], 100)
+        self.assertEqual(readiness["warn_count"], 0)
+        self.assertEqual(trend_check["status"], "ok")
 
     def test_release_readiness_marks_v150_as_final_release_when_clean(self) -> None:
         snapshot = {

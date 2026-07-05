@@ -2129,15 +2129,19 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
         if isinstance(item, dict)
     )
     stability_status = str(stability.get("status") or "")
+    current_blocking = bool(critical_count or bad_health_count or stability_status == "blocked")
+    current_attention = bool(warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention")
+    actionable_trend_worse = bool(trend_worse and current_attention)
+    pure_trend_worse = bool(trend_worse and not current_attention and not current_blocking)
 
-    if critical_count or bad_health_count or stability_status == "blocked" or trend_regressed:
+    if current_blocking or trend_regressed:
         status = "blocked"
         label = "需要优先处理"
         summary = "存在阻断项或严重问题，建议先处理后再继续观察。"
         primary_action = "先处理问题中心里的严重项；服务异常优先重启对应服务，配置缺失优先补齐配置。"
-        if trend_regressed and not (critical_count or bad_health_count or stability_status == "blocked"):
+        if trend_regressed and not current_blocking:
             primary_action = "长期运行趋势发生回退，先查看趋势卡片和验收历史，再按本次新增阻断项重新验收。"
-    elif warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention" or trend_worse:
+    elif current_attention or actionable_trend_worse:
         status = "attention"
         label = "需要关注"
         summary = "系统可运行，但存在警告、错误日志或失败操作，建议确认是否影响实际推送。"
@@ -2185,8 +2189,10 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
         next_steps.append("Telegram/API 网络超时偏多但可自动重试；如果 Bot 明显不回复，再检查服务器网络。")
     if trend_regressed:
         next_steps.append("长期运行趋势发生回退：优先查看趋势卡片、验收历史和本次阻断项，处理后重新执行 stable-check。")
-    elif trend_worse:
+    elif actionable_trend_worse:
         next_steps.append("长期运行趋势变差：对比本次和上次分数变化，确认新增警告或阻断项是否影响真实推送。")
+    if pure_trend_worse:
+        next_steps.append("长期趋势只是历史分数对比变差；当前没有真实错误或失败操作，可以再执行一次 stable-check 保存健康记录。")
     if not next_steps:
         next_steps.append("暂无需要立即处理的动作。")
 
@@ -2294,7 +2300,7 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
             log_target=worst_transient_target,
         )
 
-    if trend_regressed or trend_worse:
+    if trend_regressed or actionable_trend_worse:
         add_action(
             "release-trend",
             severity="critical" if trend_regressed else "warning",
@@ -2636,6 +2642,10 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
     def add(key: str, label: str, status: str, detail: str, action: str = "") -> None:
+        if key == "release_trend" and status == "warn" and not any(
+            item.get("status") in {"fail", "warn"} for item in checks
+        ):
+            status = "ok"
         checks.append(
             {
                 "key": key,
