@@ -3558,14 +3558,6 @@ INDEX_HTML = r"""<!doctype html>
       max-width: 980px;
       font-size: 13px;
     }
-    .intro-detail { margin-top: 5px; color: var(--muted); }
-    .intro-detail summary {
-      cursor: pointer;
-      color: var(--accent);
-      font-weight: 750;
-      font-size: 12px;
-    }
-    .intro-detail p { margin: 6px 0 0; }
     .intro-tags {
       display: flex;
       gap: 6px;
@@ -4310,7 +4302,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.58.0">
+  <div class="app" data-ui-version="v1.58.1">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -5150,13 +5142,12 @@ INDEX_HTML = r"""<!doctype html>
       const meta = viewMeta[view] || { kicker: "页面", title: titles[view] || view, desc: "", tags: [] };
       const tags = [...(meta.tags || []), ...(extraTags || [])].filter(Boolean).slice(0, 3);
       const desc = String(meta.desc || "");
-      const shortDesc = desc.length > 78 ? `${desc.slice(0, 78)}...` : desc;
+      const shortDesc = desc.length > 96 ? `${desc.slice(0, 96)}...` : desc;
       return `<div class="panel page-intro">
         <div>
           <div class="page-kicker">${escapeHtml(meta.kicker || "")}</div>
           <h2>${escapeHtml(meta.title || titles[view] || view)}</h2>
-          ${desc ? `<div class="page-intro-line">${escapeHtml(shortDesc)}</div>
-          <details class="intro-detail"><summary>完整说明</summary><p>${escapeHtml(desc)}</p></details>` : ""}
+          ${desc ? `<div class="page-intro-line">${escapeHtml(shortDesc)}</div>` : ""}
         </div>
         <div class="intro-tags">${tags.map(tag => neutralPill(tag)).join("")}</div>
       </div>`;
