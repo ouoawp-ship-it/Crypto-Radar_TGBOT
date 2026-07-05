@@ -3349,7 +3349,7 @@ INDEX_HTML = r"""<!doctype html>
       --panel: rgba(18, 24, 32, .76);
       --panel-2: rgba(28, 36, 46, .82);
       --text: #eef3f7;
-      --muted: #9aa7b2;
+      --muted: #aeb8c2;
       --line: rgba(212, 175, 55, .15);
       --line-strong: rgba(192, 192, 192, .28);
       --accent: #d4af37;
@@ -3373,15 +3373,28 @@ INDEX_HTML = r"""<!doctype html>
       --metal: linear-gradient(145deg, rgba(44,52,62,.88) 0%, rgba(20,27,36,.76) 42%, rgba(9,13,19,.88) 100%);
       --metal-bright: linear-gradient(135deg, #f2d98d 0%, #d4af37 28%, #b87333 58%, #6f4524 100%);
       --frost: rgba(17, 24, 33, .66);
-      --brushed: repeating-linear-gradient(100deg, rgba(255,255,255,.065) 0 1px, rgba(0,0,0,.08) 1px 2px, transparent 2px 8px);
+      --brushed: repeating-linear-gradient(100deg, rgba(255,255,255,.038) 0 1px, rgba(0,0,0,.055) 1px 2px, transparent 2px 9px);
     }
     * { box-sizing: border-box; }
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(212, 175, 55, .42) rgba(7, 10, 15, .55);
+    }
+    *::-webkit-scrollbar { width: 10px; height: 10px; }
+    *::-webkit-scrollbar-track { background: rgba(7, 10, 15, .55); }
+    *::-webkit-scrollbar-thumb {
+      background:
+        linear-gradient(180deg, rgba(242,217,141,.62), rgba(184,115,51,.46));
+      border: 2px solid rgba(7, 10, 15, .74);
+      border-radius: 999px;
+    }
+    *::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, rgba(242,217,141,.78), rgba(184,115,51,.58)); }
     body {
       margin: 0;
       background:
         linear-gradient(112deg, rgba(212,175,55,.12) 0%, rgba(212,175,55,0) 24%, rgba(72,198,216,.09) 48%, rgba(72,198,216,0) 68%, rgba(184,115,51,.10) 100%),
         linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,0) 32%),
-        repeating-linear-gradient(100deg, rgba(255,255,255,.024) 0 1px, rgba(0,0,0,.06) 1px 2px, transparent 2px 10px),
+        repeating-linear-gradient(100deg, rgba(255,255,255,.015) 0 1px, rgba(0,0,0,.045) 1px 2px, transparent 2px 12px),
         linear-gradient(180deg, #070a0f, #0d1219 48%, #05070b),
         var(--bg);
       color: var(--text);
@@ -3517,9 +3530,9 @@ INDEX_HTML = r"""<!doctype html>
       pointer-events: none;
       border-radius: inherit;
       background:
-        linear-gradient(180deg, rgba(255,255,255,.46), transparent 38%),
+        linear-gradient(180deg, rgba(255,255,255,.30), transparent 34%),
         linear-gradient(90deg, rgba(255,255,255,.10), transparent 22%, rgba(0,0,0,.18) 62%, rgba(212,175,55,.08));
-      opacity: .32;
+      opacity: .24;
       mix-blend-mode: screen;
     }
     .panel > * { position: relative; z-index: 1; }
@@ -3624,6 +3637,19 @@ INDEX_HTML = r"""<!doctype html>
     .status.warn, .status.warning { background: linear-gradient(135deg, rgba(242,184,75,.18), rgba(212,175,55,.05)); color: var(--warn); border-color: rgba(212,175,55,.28); }
     .status.neutral { background: linear-gradient(135deg, rgba(192,192,192,.13), rgba(255,255,255,.04)); color: var(--silver); }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+    .toolbar select {
+      width: auto;
+      min-width: 150px;
+      flex: 0 1 190px;
+    }
+    .toolbar input {
+      width: auto;
+      min-width: 220px;
+      flex: 1 1 260px;
+    }
+    .toolbar .btn, .toolbar .version-chip {
+      flex: 0 0 auto;
+    }
     .btn {
       position: relative;
       isolation: isolate;
@@ -4040,8 +4066,8 @@ INDEX_HTML = r"""<!doctype html>
       align-content: start;
       overflow: hidden;
       background:
-        linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.018) 48%, rgba(0,0,0,.22)),
-        repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 1px, rgba(0,0,0,.09) 1px 2px, transparent 2px 8px),
+        linear-gradient(145deg, rgba(255,255,255,.065), rgba(255,255,255,.015) 48%, rgba(0,0,0,.24)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.026) 0 1px, rgba(0,0,0,.065) 1px 2px, transparent 2px 10px),
         rgba(10, 16, 24, .76);
       border-color: rgba(192,192,192,.18);
     }
@@ -4255,8 +4281,33 @@ INDEX_HTML = r"""<!doctype html>
     }
     @media (max-width: 900px) {
       .app { grid-template-columns: 1fr; }
-      aside { position: static; height: auto; }
-      nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      aside {
+        position: sticky;
+        top: 0;
+        z-index: 8;
+        height: auto;
+        max-height: 46vh;
+        padding: 10px 10px 8px;
+      }
+      .brand {
+        margin: 0 0 9px;
+        padding: 9px 10px;
+      }
+      .brand-title { font-size: 16px; }
+      .brand-subtitle { font-size: 11px; }
+      nav {
+        grid-template-columns: none;
+        grid-auto-flow: column;
+        grid-auto-columns: max-content;
+        overflow-x: auto;
+        padding-bottom: 6px;
+      }
+      nav + nav { margin-top: 2px; }
+      nav button {
+        min-width: 126px;
+        padding: 8px 9px;
+      }
+      .nav-text small { display: none; }
       main { padding: 14px; }
       .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .service-guide { grid-template-columns: 1fr; }
@@ -4275,6 +4326,10 @@ INDEX_HTML = r"""<!doctype html>
       .intro-tags { justify-content: flex-start; }
       header { position: static; align-items: flex-start; flex-direction: column; }
       .topbar-actions { width: 100%; margin-bottom: 0; }
+      .toolbar input, .toolbar select {
+        min-width: min(100%, 220px);
+        flex: 1 1 180px;
+      }
       .version-chip { width: 100%; justify-content: center; }
       .sidebar-section { display: none; }
     }
@@ -4293,7 +4348,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.55.0">
+  <div class="app" data-ui-version="v1.55.1">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
