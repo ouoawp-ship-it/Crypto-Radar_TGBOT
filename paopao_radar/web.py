@@ -4092,12 +4092,14 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 50%;
       display: grid;
       place-items: center;
-      z-index: 1;
+      position: relative;
+      z-index: 4;
       background:
         #ffffff;
       color: var(--text);
       font-weight: 900;
-      box-shadow: inset 0 0 0 1px #e5edf5, 0 6px 14px rgba(30,41,59,.08);
+      border: 1px solid #e3ebf5;
+      box-shadow: inset 0 0 0 1px #ffffff, 0 7px 16px rgba(30,41,59,.11);
     }
     .meter-copy { min-width: 0; display: grid; gap: 5px; }
     .meter-copy h3 { margin: 0; font-size: 16px; }
@@ -4289,7 +4291,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.57.0">
+  <div class="app" data-ui-version="v1.57.1">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
