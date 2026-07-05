@@ -3344,37 +3344,39 @@ INDEX_HTML = r"""<!doctype html>
   <title>泡泡雷达控制台</title>
   <style>
     :root {
-      --bg: #f3f6f8;
-      --bg-2: #f8fafc;
-      --panel: #ffffff;
-      --panel-2: #f2f5f7;
-      --text: #171c1f;
-      --muted: #66747d;
-      --line: #dfe6ea;
-      --line-strong: #c8d2d8;
+      --bg: #e8edf0;
+      --bg-2: #f7f9fa;
+      --panel: rgba(247, 250, 251, .82);
+      --panel-2: rgba(227, 234, 238, .84);
+      --text: #12181d;
+      --muted: #65717a;
+      --line: rgba(127, 143, 153, .28);
+      --line-strong: rgba(82, 98, 109, .34);
       --accent: #0f766e;
       --accent-2: #34424a;
+      --cyan: #1787a6;
+      --indigo: #5664d2;
       --info: #2563eb;
-      --gold: #c88a10;
-      --purple: #6d5bd0;
+      --gold: #b88724;
+      --purple: #6555c8;
       --warn: #9a6508;
       --bad: #b3261e;
       --good: #087443;
-      --sidebar: #111820;
-      --sidebar-2: #18222b;
-      --topbar: rgba(248, 250, 252, .86);
-      --shadow: 0 10px 26px rgba(20, 32, 40, .06);
-      --shadow-strong: 0 18px 42px rgba(20, 32, 40, .12);
-      --metal: linear-gradient(135deg, rgba(255,255,255,.92), rgba(246,249,251,.76) 48%, rgba(226,235,240,.78));
+      --sidebar: #10161c;
+      --sidebar-2: #1a222a;
+      --topbar: rgba(244, 247, 249, .78);
+      --shadow: 0 14px 32px rgba(18, 26, 32, .10), 0 1px 0 rgba(255,255,255,.72) inset;
+      --shadow-strong: 0 24px 58px rgba(18, 26, 32, .18), 0 1px 0 rgba(255,255,255,.76) inset;
+      --metal: linear-gradient(145deg, rgba(255,255,255,.86) 0%, rgba(241,245,247,.72) 36%, rgba(210,220,226,.52) 100%);
+      --brushed: repeating-linear-gradient(90deg, rgba(255,255,255,.12) 0 1px, rgba(17,24,30,.018) 1px 3px, transparent 3px 7px);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background:
-        radial-gradient(circle at 18% 0%, rgba(15, 118, 110, .10), transparent 28%),
-        radial-gradient(circle at 86% 10%, rgba(109, 91, 208, .08), transparent 30%),
-        radial-gradient(circle at 70% 80%, rgba(200, 138, 16, .06), transparent 28%),
-        linear-gradient(180deg, #f8fafc, #eef3f6),
+        linear-gradient(115deg, rgba(255,255,255,.88) 0%, rgba(222,230,235,.78) 42%, rgba(171,185,194,.34) 100%),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.26) 0 1px, rgba(68,82,92,.035) 1px 2px, transparent 2px 9px),
+        linear-gradient(180deg, #f7f9fa, #dfe7eb 56%, #eef3f5),
         var(--bg);
       color: var(--text);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -3384,15 +3386,16 @@ INDEX_HTML = r"""<!doctype html>
     .app { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
     aside {
       background:
-        linear-gradient(180deg, var(--sidebar-2), var(--sidebar)),
-        radial-gradient(circle at 30% 0%, rgba(15, 118, 110, .22), transparent 32%);
+        linear-gradient(180deg, rgba(35,45,54,.96), rgba(13,19,24,.98)),
+        var(--brushed),
+        linear-gradient(135deg, rgba(23,135,166,.20), transparent 34%);
       color: #e8eef0;
       padding: 18px 14px 16px;
       position: sticky;
       top: 0;
       height: 100vh;
-      border-right: 1px solid rgba(255,255,255,.07);
-      box-shadow: 10px 0 28px rgba(20, 27, 31, .18);
+      border-right: 1px solid rgba(255,255,255,.10);
+      box-shadow: 18px 0 48px rgba(15, 22, 28, .24), -1px 0 0 rgba(255,255,255,.08) inset;
       overflow-y: auto;
     }
     .brand {
@@ -3402,8 +3405,10 @@ INDEX_HTML = r"""<!doctype html>
       padding: 12px 12px;
       border: 1px solid rgba(255,255,255,.1);
       border-radius: 8px;
-      background: linear-gradient(135deg, rgba(255,255,255,.1), rgba(255,255,255,.04));
-      box-shadow: 0 1px 0 rgba(255,255,255,.08) inset;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.16), rgba(255,255,255,.04)),
+        linear-gradient(90deg, rgba(23,135,166,.20), rgba(184,135,36,.10));
+      box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 14px 28px rgba(0,0,0,.16);
       color: #f7fafb;
     }
     .brand-title { font-weight: 850; font-size: 18px; letter-spacing: 0; }
@@ -3441,9 +3446,11 @@ INDEX_HTML = r"""<!doctype html>
     .nav-text strong { font-size: 14px; line-height: 1.2; }
     .nav-text small { color: rgba(232,238,240,.48); font-size: 11px; line-height: 1.2; }
     nav button.active, nav button:hover {
-      background: linear-gradient(135deg, rgba(15,118,110,.34), rgba(255,255,255,.06));
-      border-color: rgba(255,255,255,.14);
-      box-shadow: 0 1px 0 rgba(255,255,255,.08) inset, 0 12px 24px rgba(0,0,0,.1);
+      background:
+        linear-gradient(135deg, rgba(23,135,166,.34), rgba(15,118,110,.22) 46%, rgba(255,255,255,.07)),
+        linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0));
+      border-color: rgba(255,255,255,.18);
+      box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 14px 28px rgba(0,0,0,.16);
       color: #fff;
     }
     nav button.active .nav-dot, nav button:hover .nav-dot { background: #5eead4; box-shadow: 0 0 0 4px rgba(94,234,212,.12); }
@@ -3459,10 +3466,10 @@ INDEX_HTML = r"""<!doctype html>
       top: 0;
       z-index: 4;
       background: var(--topbar);
-      border: 1px solid rgba(203, 213, 220, .74);
-      border-radius: 8px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(14px);
+      border: 1px solid rgba(255,255,255,.64);
+      border-radius: 10px;
+      box-shadow: var(--shadow), 0 18px 44px rgba(31, 45, 54, .08);
+      backdrop-filter: blur(18px) saturate(1.18);
     }
     .page-heading { min-width: 0; }
     .breadcrumb { color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 2px; }
@@ -3488,15 +3495,31 @@ INDEX_HTML = r"""<!doctype html>
     .panel {
       background: var(--metal);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 10px;
       box-shadow: var(--shadow);
       padding: 14px;
       min-width: 0;
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(16px) saturate(1.12);
+      position: relative;
+      overflow: hidden;
       transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
     }
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.46), transparent 38%),
+        linear-gradient(90deg, rgba(255,255,255,.16), transparent 22%, rgba(33,48,58,.045) 62%, rgba(255,255,255,.10));
+      opacity: .72;
+      mix-blend-mode: screen;
+    }
+    .panel > * { position: relative; z-index: 1; }
     .panel:hover {
-      border-color: rgba(15, 118, 110, .24);
+      border-color: rgba(23, 135, 166, .30);
+      box-shadow: var(--shadow-strong);
     }
     .page-intro {
       grid-column: span 12;
@@ -3505,9 +3528,9 @@ INDEX_HTML = r"""<!doctype html>
       gap: 14px;
       align-items: start;
       background:
-        linear-gradient(135deg, rgba(255,255,255,.98), rgba(248,250,252,.96)),
-        linear-gradient(90deg, rgba(15,118,110,.1), transparent 44%);
-      border-color: rgba(15, 118, 110, .16);
+        linear-gradient(135deg, rgba(255,255,255,.86), rgba(236,242,245,.72)),
+        linear-gradient(92deg, rgba(23,135,166,.14), transparent 42%, rgba(184,135,36,.08));
+      border-color: rgba(255,255,255,.70);
     }
     .page-kicker {
       color: var(--accent);
@@ -3558,9 +3581,9 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 4px;
       padding: 10px;
-      border: 1px solid #e3eaee;
+      border: 1px solid rgba(127,143,153,.24);
       border-radius: 8px;
-      background: #f8fafc;
+      background: linear-gradient(145deg, rgba(255,255,255,.72), rgba(225,233,238,.58));
     }
     .mini-metric .label { color: var(--muted); font-size: 12px; font-weight: 700; }
     .mini-metric .value { font-size: 15px; font-weight: 800; }
@@ -3585,19 +3608,19 @@ INDEX_HTML = r"""<!doctype html>
       background: currentColor;
       opacity: .78;
     }
-    .status.ok { background: linear-gradient(135deg, #dff7ea, #f2fbf6); color: var(--good); }
-    .status.bad { background: linear-gradient(135deg, #ffe4df, #fff5f2); color: var(--bad); }
-    .status.neutral { background: linear-gradient(135deg, #eef2f4, #fafbfc); color: var(--muted); }
+    .status.ok { background: linear-gradient(135deg, rgba(219,249,235,.92), rgba(244,252,248,.82)); color: var(--good); border-color: rgba(8,116,67,.20); }
+    .status.bad { background: linear-gradient(135deg, rgba(255,228,223,.92), rgba(255,246,244,.82)); color: var(--bad); border-color: rgba(179,38,30,.22); }
+    .status.neutral { background: linear-gradient(135deg, rgba(238,242,244,.90), rgba(250,251,252,.72)); color: #596770; }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .btn {
       border: 1px solid var(--line);
-      background: #fff;
+      background: linear-gradient(145deg, rgba(255,255,255,.82), rgba(229,236,240,.70));
       color: var(--text);
       border-radius: 6px;
       padding: 8px 11px;
       cursor: pointer;
       min-height: 36px;
-      box-shadow: 0 1px 0 rgba(255,255,255,.75) inset;
+      box-shadow: 0 1px 0 rgba(255,255,255,.82) inset, 0 8px 18px rgba(35,48,58,.08);
     }
     .btn:hover { border-color: rgba(15,118,110,.42); color: var(--accent); }
     .btn.primary { background: linear-gradient(135deg, #0f766e, #0b5f59); border-color: #0b5f59; color: white; }
@@ -3638,7 +3661,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 8px 9px;
-      background: linear-gradient(180deg, #ffffff, #f7f9fa);
+      background: linear-gradient(180deg, rgba(255,255,255,.86), rgba(239,244,247,.74));
       color: var(--text);
       min-height: 36px;
       box-shadow: 0 1px 0 rgba(255,255,255,.8) inset;
@@ -3936,65 +3959,116 @@ INDEX_HTML = r"""<!doctype html>
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
-    .meter-card { display: grid; gap: 12px; align-content: start; overflow: hidden; }
-    .meter-main { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 14px; min-width: 0; }
+    .meter-card {
+      display: grid;
+      gap: 13px;
+      align-content: start;
+      overflow: hidden;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.88), rgba(232,238,242,.70) 48%, rgba(178,194,204,.34)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.20) 0 1px, rgba(54,68,78,.026) 1px 3px, transparent 3px 8px);
+      border-color: rgba(88,105,116,.28);
+    }
+    .meter-card.ok { box-shadow: var(--shadow), 0 0 0 1px rgba(15,118,110,.08) inset; }
+    .meter-card.warn { box-shadow: var(--shadow), 0 0 0 1px rgba(184,135,36,.14) inset; }
+    .meter-card.bad { box-shadow: var(--shadow), 0 0 0 1px rgba(179,38,30,.14) inset; }
+    .meter-main { display: grid; grid-template-columns: 152px minmax(0, 1fr); align-items: center; gap: 16px; min-width: 0; }
     .meter-dial {
-      width: 132px;
-      height: 132px;
+      --meter-color: var(--accent);
+      --meter-glow: rgba(15,118,110,.24);
+      width: 152px;
+      height: 152px;
       border-radius: 50%;
       position: relative;
       display: grid;
       place-items: center;
       background:
-        radial-gradient(circle at 50% 50%, #fff 0 43%, transparent 44%),
-        conic-gradient(from 230deg, var(--accent) 0 var(--arc, 0%), rgba(203,213,220,.52) 0 72%, transparent 0);
-      border: 1px solid rgba(203, 213, 220, .76);
-      box-shadow: inset 0 1px 8px rgba(255,255,255,.8), 0 14px 30px rgba(20,32,40,.10);
+        radial-gradient(circle at 50% 52%, rgba(245,248,250,.98) 0 31%, transparent 32%),
+        radial-gradient(circle at 50% 52%, rgba(19,28,34,.12) 0 38%, transparent 39%),
+        repeating-conic-gradient(from 224deg, rgba(36,48,57,.42) 0deg 1.4deg, transparent 1.4deg 10deg),
+        conic-gradient(from 230deg, var(--meter-color) 0 var(--arc, 0%), rgba(125,143,154,.30) 0 72%, transparent 0),
+        linear-gradient(145deg, #f5f7f8, #aab6bd);
+      border: 1px solid rgba(255,255,255,.70);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.92),
+        inset 0 -14px 24px rgba(30,43,52,.16),
+        0 18px 36px rgba(20,32,40,.16),
+        0 0 0 7px rgba(220,228,232,.58),
+        0 0 0 8px rgba(106,121,132,.20),
+        0 0 24px var(--meter-glow);
       transition: background .28s ease;
     }
-    .meter-dial.warn { background: radial-gradient(circle at 50% 50%, #fff 0 43%, transparent 44%), conic-gradient(from 230deg, #d97706 0 var(--arc, 0%), rgba(203,213,220,.52) 0 72%, transparent 0); }
-    .meter-dial.bad { background: radial-gradient(circle at 50% 50%, #fff 0 43%, transparent 44%), conic-gradient(from 230deg, #b3261e 0 var(--arc, 0%), rgba(203,213,220,.52) 0 72%, transparent 0); }
+    .meter-dial::before {
+      content: "";
+      position: absolute;
+      inset: 12px;
+      border-radius: 50%;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.52), transparent 42%),
+        radial-gradient(circle at 52% 58%, rgba(255,255,255,.10), rgba(18,27,34,.10));
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.42), inset 0 -10px 16px rgba(42,56,66,.12);
+      pointer-events: none;
+    }
+    .meter-dial::after {
+      content: "";
+      position: absolute;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #ffffff, #7a8992 45%, #1b252c 100%);
+      box-shadow: 0 2px 7px rgba(20,32,40,.34), 0 0 0 3px rgba(255,255,255,.58);
+      z-index: 3;
+    }
+    .meter-dial.cpu { --meter-color: var(--cyan); --meter-glow: rgba(23,135,166,.24); }
+    .meter-dial.memory { --meter-color: var(--indigo); --meter-glow: rgba(86,100,210,.22); }
+    .meter-dial.disk { --meter-color: var(--gold); --meter-glow: rgba(184,135,36,.22); }
+    .meter-dial.warn { --meter-color: #c98516; --meter-glow: rgba(201,133,22,.25); }
+    .meter-dial.bad { --meter-color: #b3261e; --meter-glow: rgba(179,38,30,.24); }
     .meter-needle {
       position: absolute;
-      width: 3px;
-      height: 48px;
+      width: 4px;
+      height: 58px;
       bottom: 50%;
-      left: calc(50% - 1.5px);
+      left: calc(50% - 2px);
       border-radius: 999px;
-      background: linear-gradient(180deg, #172026, #4f5f68);
+      background: linear-gradient(180deg, #0e1419, #53636e 68%, #202b32);
       transform-origin: 50% 100%;
       transform: rotate(var(--angle, -130deg));
       transition: transform .42s cubic-bezier(.2,.7,.2,1);
-      box-shadow: 0 2px 8px rgba(20,32,40,.22);
+      box-shadow: 0 2px 10px rgba(20,32,40,.30);
+      z-index: 2;
     }
     .meter-center {
-      width: 62px;
-      height: 62px;
+      width: 70px;
+      height: 70px;
       border-radius: 50%;
       display: grid;
       place-items: center;
       z-index: 1;
-      background: linear-gradient(135deg, #fff, #edf3f6);
+      background: linear-gradient(145deg, #ffffff, #e3ebef 58%, #c4d0d7);
       color: var(--text);
       font-weight: 900;
-      box-shadow: inset 0 0 0 1px rgba(203, 213, 220, .75);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.86), inset 0 -8px 16px rgba(31,45,54,.10), 0 8px 16px rgba(20,32,40,.12);
     }
     .meter-copy { min-width: 0; display: grid; gap: 5px; }
     .meter-copy h3 { margin: 0; font-size: 16px; }
     .usage-bar {
       height: 9px;
       border-radius: 999px;
-      background: #e7edf0;
+      background: linear-gradient(180deg, rgba(222,230,235,.90), rgba(198,210,218,.86));
       overflow: hidden;
-      border: 1px solid rgba(203, 213, 220, .7);
+      border: 1px solid rgba(127,143,153,.28);
     }
     .usage-bar > span {
       display: block;
       height: 100%;
       width: var(--pct, 0%);
       border-radius: inherit;
-      background: linear-gradient(90deg, #0f766e, #4f8f89);
+      background: linear-gradient(90deg, #0f766e, #1787a6);
     }
+    .usage-bar.cpu > span { background: linear-gradient(90deg, #1787a6, #58b9cf); }
+    .usage-bar.memory > span { background: linear-gradient(90deg, #5664d2, #8b7cf0); }
+    .usage-bar.disk > span { background: linear-gradient(90deg, #b88724, #e4b955); }
     .usage-bar.warn > span { background: linear-gradient(90deg, #d97706, #f5b041); }
     .usage-bar.bad > span { background: linear-gradient(90deg, #b3261e, #ef6f61); }
     .sparkline {
@@ -4002,7 +4076,9 @@ INDEX_HTML = r"""<!doctype html>
       height: 122px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(238,244,247,.82));
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.84), rgba(223,232,237,.76)),
+        repeating-linear-gradient(90deg, rgba(71,86,96,.08) 0 1px, transparent 1px 36px);
     }
     .sparkline .area { fill: rgba(15, 118, 110, .1); }
     .sparkline .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -4015,7 +4091,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 10px;
-      background: #f8fafc;
+      background: linear-gradient(145deg, rgba(255,255,255,.70), rgba(226,234,239,.58));
     }
     .system-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .action-card { display: grid; gap: 10px; align-content: start; }
@@ -4099,6 +4175,7 @@ INDEX_HTML = r"""<!doctype html>
       .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .service-guide { grid-template-columns: 1fr; }
       .system-grid { grid-template-columns: 1fr; }
+      .meter-main { grid-template-columns: 1fr; justify-items: center; text-align: center; }
       .system-row { grid-template-columns: 1fr; }
       .service-action { grid-template-columns: 1fr; }
       .api-grid { grid-template-columns: 1fr; }
@@ -5017,26 +5094,28 @@ INDEX_HTML = r"""<!doctype html>
       if (n >= 75) return "warn";
       return "ok";
     }
-    function usageBar(value) {
+    function usageBar(value, tone = "") {
       const n = Math.max(0, Math.min(100, Number(value || 0)));
       const level = usageLevel(n);
-      return `<div class="usage-bar ${level === "ok" ? "" : level}" title="${formatPercent(n)}"><span style="--pct:${n}%"></span></div>`;
+      const toneClass = String(tone || "").replace(/[^a-z0-9_-]/gi, "");
+      return `<div class="usage-bar ${toneClass} ${level === "ok" ? "" : level}" title="${formatPercent(n)}"><span style="--pct:${n}%"></span></div>`;
     }
-    function gaugeCard(title, percent, detail, footer = "") {
+    function gaugeCard(title, percent, detail, footer = "", tone = "") {
       const n = Math.max(0, Math.min(100, Number(percent || 0)));
       const level = usageLevel(n);
+      const toneClass = String(tone || "").replace(/[^a-z0-9_-]/gi, "");
       const angle = -130 + n * 2.6;
       const arc = n * 0.72;
-      return `<div class="panel span-4 meter-card">
+      return `<div class="panel span-4 meter-card ${level} ${toneClass}">
         <div class="meter-main">
-          <div class="meter-dial ${level}" style="--pct:${n}%; --arc:${arc}%; --angle:${angle}deg" aria-label="${escapeHtml(`${title} ${formatPercent(n)}`)}">
+          <div class="meter-dial ${level} ${toneClass}" style="--pct:${n}%; --arc:${arc}%; --angle:${angle}deg" aria-label="${escapeHtml(`${title} ${formatPercent(n)}`)}">
             <div class="meter-needle"></div>
             <div class="meter-center">${escapeHtml(formatPercent(n))}</div>
           </div>
           <div class="meter-copy">
             <h3>${escapeHtml(title)}</h3>
             <div class="muted">${escapeHtml(detail || "")}</div>
-            ${usageBar(n)}
+            ${usageBar(n, toneClass)}
           </div>
         </div>
         ${footer ? `<div class="summary-meta">${footer}</div>` : ""}
@@ -5408,7 +5487,7 @@ INDEX_HTML = r"""<!doctype html>
           <strong>${escapeHtml(item.label || "磁盘")}</strong>
           <div>
             <div class="muted">${escapeHtml(item.path || "")}</div>
-            ${usageBar(item.percent)}
+            ${usageBar(item.percent, "disk")}
           </div>
           <span>${formatBytes(item.used)} / ${formatBytes(item.total)} · ${formatPercent(item.percent)}</span>
         </div>`;
@@ -5454,9 +5533,9 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("serverGrid").innerHTML = [
         renderPageIntro("server", [data.updated_at ? `更新 ${data.updated_at}` : "", host.name || "unknown"]),
         serverRefreshHint(autoRefreshEnabled && currentView === "server"),
-        gaugeCard("CPU 使用率", cpu.percent, `${cpu.cores || 0} 核 · 1分钟负载 ${load.load1 ?? "暂无"}`, `5分钟 ${escapeHtml(load.load5 ?? "暂无")} · 15分钟 ${escapeHtml(load.load15 ?? "暂无")}`),
-        gaugeCard("内存使用率", memory.percent, `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`, `可用 ${formatBytes(memory.free)} · Swap ${formatPercent(swap.percent)}`),
-        gaugeCard("磁盘使用率", primaryDisk.percent, `${formatBytes(primaryDisk.used)} / ${formatBytes(primaryDisk.total)}`, `路径 ${escapeHtml(primaryDisk.path || "暂无")}`),
+        gaugeCard("CPU 使用率", cpu.percent, `${cpu.cores || 0} 核 · 1分钟负载 ${load.load1 ?? "暂无"}`, `5分钟 ${escapeHtml(load.load5 ?? "暂无")} · 15分钟 ${escapeHtml(load.load15 ?? "暂无")}`, "cpu"),
+        gaugeCard("内存使用率", memory.percent, `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`, `可用 ${formatBytes(memory.free)} · Swap ${formatPercent(swap.percent)}`, "memory"),
+        gaugeCard("磁盘使用率", primaryDisk.percent, `${formatBytes(primaryDisk.used)} / ${formatBytes(primaryDisk.total)}`, `路径 ${escapeHtml(primaryDisk.path || "暂无")}`, "disk"),
         sparkline("CPU 趋势", serverMetricHistory.cpu),
         sparkline("内存趋势", serverMetricHistory.memory),
         sparkline("磁盘趋势", serverMetricHistory.disk),
