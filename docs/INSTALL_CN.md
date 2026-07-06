@@ -1,5 +1,11 @@
 # 泡泡抓币中文安装目录
 
+## v1.65.0 运维说明
+
+Web 新增「Coin Detail / 币种详情」页面，用于按单币种排查信号历史。你可以输入 `BTC` 或 `BTCUSDT`，查看最近 7 天该币种的信号数量、已发送/失败/阻止统计、活跃模块、按日期分组的时间线、最近 Telegram message_ids/topic_ids 和同币种最新信号。
+
+这个页面只读取 `signals.db`，不会访问外部行情 API，也不会触发扫描或推送；适合排查“某个币近期是否多模块集中出现信号”“某条 Telegram 推送对应哪条结构化记录”。`signals.db`、`jobs.db`、`data/*.json`、日志和生产 `.env.oi.bak*` 仍然是运行数据，不应提交到 Git。
+
 ## v1.64.0 运维说明
 
 Web「信号推送」页现在可以按币种、模块、状态、关键词、时间窗口和排序条件筛选信号。点击 Signal Card 可以查看该条推送的 Telegram topic/message、dedup_key、payload_json、同币种最近信号和原始摘要，适合日常排查“某条信号为什么发送/跳过/失败”。

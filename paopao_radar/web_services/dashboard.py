@@ -4,6 +4,7 @@ from typing import Any
 
 from ..config import Settings
 from .api_core import api_ok, redact_api_payload
+from .coins import coin_search_payload
 from .jobs import jobs_payload, jobs_stats_payload
 from .ops import update_check_status_payload
 
@@ -39,6 +40,7 @@ def dashboard_payload(*, settings: Settings | None = None) -> dict[str, Any]:
     server_status = web_module.server_status_payload()
     signal_stats = web_module.signals_stats_payload(window_sec=86400, settings=loaded)
     signal_latest = web_module.signals_payload(limit=5, settings=loaded)
+    coin_search = coin_search_payload(q="", limit=5, settings=loaded)
     job_stats = jobs_stats_payload(settings=loaded)
     job_latest = jobs_payload(limit=5, settings=loaded)
     update_status = update_check_status_payload(settings=loaded)
@@ -88,6 +90,9 @@ def dashboard_payload(*, settings: Settings | None = None) -> dict[str, Any]:
             "latest_check_job": update_status.get("latest_check_job") or update_status.get("job") or {},
             "update_available": update_status.get("update_available"),
             "summary": update_status.get("summary", ""),
+        },
+        "coins": {
+            "top_active": coin_search.get("items", []) if coin_search.get("ok", True) else [],
         },
     }
     return api_ok(

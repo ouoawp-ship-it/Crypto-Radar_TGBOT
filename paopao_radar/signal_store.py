@@ -522,6 +522,150 @@ class SignalEventStore:
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    def list_by_symbol(
+        self,
+        symbol: str,
+        *,
+        limit: int = 100,
+        cursor: int | None = None,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> dict[str, Any]:
+        normalized = str(symbol or "").strip().upper()
+        if normalized and not normalized.endswith("USDT"):
+            normalized = f"{normalized}USDT"
+        clauses = ["symbol = :symbol"]
+        params: dict[str, Any] = {"symbol": normalized, "limit": _limit(limit, 100, 300)}
+        if cursor:
+            clauses.append("id < :cursor")
+            params["cursor"] = int(cursor)
+        if start_ts is not None:
+            clauses.append("ts >= :start_ts")
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= :end_ts")
+            params["end_ts"] = int(end_ts)
+        where = " AND ".join(clauses)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM signals WHERE {where} ORDER BY id DESC LIMIT :limit",
+                params,
+            ).fetchall()
+        items = [_row_to_dict(row) for row in rows]
+        return {
+            "items": items,
+            "next_cursor": items[-1]["id"] if items else None,
+            "count": len(items),
+            "symbol": normalized,
+        }
+
+    def stats_by_symbol(
+        self,
+        symbol: str,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> dict[str, Any]:
+        normalized = str(symbol or "").strip().upper()
+        if normalized and not normalized.endswith("USDT"):
+            normalized = f"{normalized}USDT"
+        clauses = ["symbol = :symbol"]
+        params: dict[str, Any] = {"symbol": normalized}
+        if start_ts is not None:
+            clauses.append("ts >= :start_ts")
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= :end_ts")
+            params["end_ts"] = int(end_ts)
+        where = " AND ".join(clauses)
+        with self.connect() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM signals WHERE {where}", params).fetchone()[0])
+            by_status = {
+                str(row["status"]): int(row["count"])
+                for row in conn.execute(
+                    f"SELECT status, COUNT(*) AS count FROM signals WHERE {where} GROUP BY status ORDER BY count DESC",
+                    params,
+                ).fetchall()
+            }
+            by_module = {
+                str(row["module"]): int(row["count"])
+                for row in conn.execute(
+                    f"SELECT module, COUNT(*) AS count FROM signals WHERE {where} GROUP BY module ORDER BY count DESC",
+                    params,
+                ).fetchall()
+            }
+            bounds = conn.execute(
+                f"SELECT MIN(time) AS first_at, MAX(time) AS latest_at, MIN(ts) AS first_ts, MAX(ts) AS latest_ts FROM signals WHERE {where}",
+                params,
+            ).fetchone()
+        return {
+            "symbol": normalized,
+            "coin": _coin_from_symbol(normalized),
+            "total": total,
+            "sent": by_status.get("sent", 0),
+            "dry_run": by_status.get("dry_run", 0),
+            "skipped": by_status.get("skipped", 0),
+            "blocked": by_status.get("blocked", 0),
+            "failed": by_status.get("failed", 0),
+            "by_module": by_module,
+            "by_status": by_status,
+            "first_at": str(bounds["first_at"] or "") if bounds else "",
+            "latest_at": str(bounds["latest_at"] or "") if bounds else "",
+            "first_ts": int(bounds["first_ts"] or 0) if bounds else 0,
+            "latest_ts": int(bounds["latest_ts"] or 0) if bounds else 0,
+        }
+
+    def search_symbols(
+        self,
+        q: str = "",
+        *,
+        limit: int = 20,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["symbol != ''"]
+        params: dict[str, Any] = {"limit": _limit(limit, 20, 100)}
+        if start_ts is not None:
+            clauses.append("ts >= :start_ts")
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= :end_ts")
+            params["end_ts"] = int(end_ts)
+        q_text = str(q or "").strip()[:40]
+        if q_text:
+            clauses.append("(symbol LIKE :q_like ESCAPE '\\' COLLATE NOCASE OR coin LIKE :q_like ESCAPE '\\' COLLATE NOCASE)")
+            params["q_like"] = _like_pattern(q_text)
+        where = " AND ".join(clauses)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    symbol,
+                    coin,
+                    COUNT(*) AS count,
+                    MAX(time) AS latest_at,
+                    COUNT(DISTINCT module) AS module_count,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+                FROM signals
+                WHERE {where}
+                GROUP BY symbol, coin
+                ORDER BY count DESC, latest_at DESC, symbol ASC
+                LIMIT :limit
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "symbol": str(row["symbol"] or ""),
+                "coin": str(row["coin"] or _coin_from_symbol(str(row["symbol"] or ""))),
+                "count": int(row["count"] or 0),
+                "latest_at": str(row["latest_at"] or ""),
+                "module_count": int(row["module_count"] or 0),
+                "failed_count": int(row["failed_count"] or 0),
+            }
+            for row in rows
+        ]
+
     def signal_detail(self, signal_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM signals WHERE id = ?", (int(signal_id),)).fetchone()

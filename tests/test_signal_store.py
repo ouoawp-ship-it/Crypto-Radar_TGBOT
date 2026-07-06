@@ -190,6 +190,28 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(stats["by_module"]["flow"], 2)
         self.assertEqual(stats["top_symbols"][0]["symbol"], "BTCUSDT")
 
+    def test_symbol_queries_support_coin_detail_views(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(settings, template_id="TG_LAUNCH_ALERT", dedup_key="coin:a", status="sent", sent=True, text="BTCUSDT launch", ts=1000)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="coin:b", status="failed", sent=False, text="BTCUSDT flow", ts=1001)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="coin:c", status="sent", sent=True, text="ETHUSDT flow", ts=1002)
+            store = SignalEventStore(settings.signal_events_db_path)
+            active = store.search_symbols(limit=10, start_ts=999, end_ts=1003)
+            btc_search = store.search_symbols(q="btc", limit=10, start_ts=999, end_ts=1003)
+            btc_stats = store.stats_by_symbol("BTC", start_ts=999, end_ts=1003)
+            first = store.list_by_symbol("BTCUSDT", limit=1, start_ts=999, end_ts=1003)
+            older = store.list_by_symbol("BTC", limit=10, cursor=first["next_cursor"], start_ts=999, end_ts=1003)
+
+        self.assertEqual(active[0]["symbol"], "BTCUSDT")
+        self.assertEqual(active[0]["count"], 2)
+        self.assertEqual(btc_search[0]["symbol"], "BTCUSDT")
+        self.assertEqual(btc_stats["total"], 2)
+        self.assertEqual(btc_stats["failed"], 1)
+        self.assertEqual(btc_stats["by_module"]["flow"], 1)
+        self.assertEqual(first["count"], 1)
+        self.assertEqual(older["count"], 1)
+
     def test_signal_events_view_matches_signals_table(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

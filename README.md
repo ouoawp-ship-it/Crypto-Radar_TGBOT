@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.65.0 说明
+
+v1.65.0 新增 Web「Coin Detail / 币种详情」页面：可以从 Signal Card 或 Dashboard 最新信号直接进入 BTC/BTCUSDT 等单币种视角，查看该币种最近信号时间线、模块分布、状态统计、最新同币种 Signal Card、Telegram message/topic 记录和单条信号详情。
+
+本版本只做只读情报展示和查询体验增强，数据全部来自 `signals.db` / `signal_events` 兼容视图，不触发行情扫描，不新增外部行情 API 调用，不改变 `signals.db` / `jobs.db` 结构，不改变 Telegram 推送主流程。
+
 ## v1.64.0 说明
 
 v1.64.0 将 Web「信号推送」页升级为 Signal Card UI：信号列表改为卡片展示，支持关键词、币种、模块、状态、时间窗口和排序筛选；点击卡片可打开详情面板，查看 Telegram topic/message、dedup_key、payload_json、同币种最近信号等结构化信息。Dashboard 也会展示最新信号简版卡片和 24h 信号统计。

@@ -21,12 +21,14 @@ from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
 from .storage import JsonStore
 from .web_services.api_core import (
+    api_error,
     filter_params,
     normalize_symbol_filter,
     pagination_params,
     sort_params,
     time_range_params,
 )
+from .web_services.coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
 from .web_services.dashboard import dashboard_payload
 from .web_services.jobs import (
     LONG_ACTION_JOB_TYPES,
@@ -3960,6 +3962,49 @@ INDEX_HTML = r"""<!doctype html>
     .signal-detail-section h4 { margin: 0 0 8px; font-size: 13px; }
     .signal-empty, .signal-error { border: 1px dashed var(--line-strong); border-radius: 8px; padding: 18px; background: #f8fafc; color: var(--muted); }
     .signal-error { border-color: #f8cccc; background: #fff7f7; color: var(--bad); }
+    .coin-search-bar { display: grid; gap: 10px; }
+    .coin-summary-grid { grid-column: span 12; display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 10px; }
+    .coin-summary-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+    .coin-summary-card .label { color: var(--muted); font-size: 12px; font-weight: 760; }
+    .coin-summary-card .value { font-size: 18px; font-weight: 880; margin-top: 4px; overflow-wrap: anywhere; }
+    .coin-module-grid { display: grid; gap: 8px; }
+    .coin-distribution-row {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr) 48px;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+    }
+    .coin-distribution-row .usage-bar { height: 7px; }
+    .coin-timeline { display: grid; gap: 12px; }
+    .coin-timeline-day {
+      display: grid;
+      gap: 8px;
+      border-left: 2px solid #dbe6f3;
+      padding-left: 12px;
+    }
+    .coin-timeline-day h3 { margin: 0; font-size: 13px; color: var(--muted); }
+    .coin-timeline-item {
+      display: grid;
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .coin-timeline-item:hover { border-color: #b8cbe1; box-shadow: var(--shadow); }
+    .coin-empty { border: 1px dashed var(--line-strong); border-radius: 8px; padding: 18px; background: #f8fafc; color: var(--muted); }
+    .coin-health-badge.good { color: var(--good); }
+    .coin-health-badge.warn { color: #b77900; }
+    .coin-health-badge.bad { color: var(--bad); }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .toolbar select {
       width: auto;
@@ -4671,6 +4716,8 @@ INDEX_HTML = r"""<!doctype html>
       .signal-stat-grid { grid-template-columns: 1fr; }
       .signal-layout { grid-template-columns: 1fr; }
       .signal-detail-panel { position: static; max-height: none; }
+      .coin-summary-grid { grid-template-columns: 1fr; }
+      .coin-distribution-row { grid-template-columns: 1fr; }
       .field-heading { grid-template-columns: 1fr; }
       .field-current { justify-self: start; text-align: left; }
       .page-intro { grid-template-columns: 1fr; }
@@ -4712,6 +4759,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="ai"><span class="nav-dot"></span><span class="nav-text"><strong>AI 助手</strong><small>Bot 状态</small></span></button>
         <button data-view="price"><span class="nav-dot"></span><span class="nav-text"><strong>价格提醒</strong><small>监控列表</small></span></button>
         <button data-view="signals"><span class="nav-dot"></span><span class="nav-text"><strong>信号推送</strong><small>结构化记录</small></span></button>
+        <button data-view="coin"><span class="nav-dot"></span><span class="nav-text"><strong>Coin Detail</strong><small>单币种情报</small></span></button>
         <button data-view="jobs"><span class="nav-dot"></span><span class="nav-text"><strong>任务中心</strong><small>后台长任务</small></span></button>
         <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
       </nav>
@@ -4813,6 +4861,10 @@ INDEX_HTML = r"""<!doctype html>
         <div class="grid" id="signalsGrid"></div>
       </section>
 
+      <section id="coin" class="view hidden">
+        <div class="grid" id="coinGrid"></div>
+      </section>
+
       <section id="jobs" class="view hidden">
         <div class="grid" id="jobsGrid"></div>
         <pre id="jobOutput" class="output"></pre>
@@ -4851,6 +4903,7 @@ INDEX_HTML = r"""<!doctype html>
       ai: "AI 助手",
       price: "价格提醒",
       signals: "信号推送",
+      coin: "Coin Detail",
       jobs: "任务中心",
       prompts: "AI 提示词",
       services: "雷达服务",
@@ -4892,6 +4945,12 @@ INDEX_HTML = r"""<!doctype html>
         title: "信号推送展示",
         desc: "这里读取 signals.db 里的结构化推送记录，不从日志反推，也不会触发行情扫描。适合查看哪些信号发过、是否 dry-run、是否被拦截、发到了哪个话题和 message_id。",
         tags: ["signals.db", "只读查询", "5秒增量刷新"]
+      },
+      coin: {
+        kicker: "单币种情报",
+        title: "Coin Detail",
+        desc: "按 BTC / BTCUSDT 查看单币种的信号时间线、模块分布、状态统计和 Telegram 记录。本页只读 signals.db，不触发行情扫描。",
+        tags: ["signals.db", "单币种", "低频刷新"]
       },
       jobs: {
         kicker: "后台任务",
@@ -5191,6 +5250,11 @@ INDEX_HTML = r"""<!doctype html>
     let latestSignalDetail = null;
     let latestSignalDetailView = null;
     let latestSignalTimeline = null;
+    let currentCoinSymbol = "";
+    let latestCoinData = null;
+    let latestCoinSearchData = { items: [] };
+    let latestCoinSignalDetail = null;
+    let latestCoinSignalDetailView = null;
     let latestJobsData = { jobs: [] };
     let latestJobsStats = {};
     let latestJobFilters = { job_type: "", status: "", failedOnly: false };
@@ -5198,7 +5262,7 @@ INDEX_HTML = r"""<!doctype html>
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
     let refreshInFlight = false;
-    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, jobs: 3000 };
+    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, coin: 30000, jobs: 3000 };
     const configCategories = [
       {
         id: "home",
@@ -5440,6 +5504,7 @@ INDEX_HTML = r"""<!doctype html>
         ai: "aiGrid",
         price: "priceGrid",
         signals: "signalsGrid",
+        coin: "coinGrid",
         prompts: "promptGrid",
         actions: "actionGrid",
         services: "serviceGrid",
@@ -6023,6 +6088,7 @@ INDEX_HTML = r"""<!doctype html>
             <span class="signal-badge ${tone}">${escapeHtml(display.status_label || item.status || "")}</span>
           </div>
           <div class="signal-card-summary">${escapeHtml(display.summary || "")}</div>
+          ${item.symbol ? `<div class="signal-meta-row"><button class="btn" type="button" onclick="event.stopPropagation(); openCoinDetail('${escapeHtml(item.symbol)}')">\u5e01\u79cd\u8be6\u60c5</button></div>` : ""}
         </article>`;
       }).join("");
       const action = failed || blocked
@@ -8404,6 +8470,7 @@ INDEX_HTML = r"""<!doctype html>
           <span>\u9636\u6bb5: ${escapeHtml(display.stage_label || "-")}</span>
           <span>message: <code>${escapeHtml(messageIds)}</code></span>
           <button class="btn blue" type="button" onclick="event.stopPropagation(); loadSignalDetail(${Number(item.id || 0)})">${escapeHtml(display.primary_action || "\u67e5\u770b\u8be6\u60c5")}</button>
+          ${item.symbol ? `<button class="btn" type="button" onclick="event.stopPropagation(); openCoinDetail('${escapeHtml(item.symbol)}')">\u5e01\u79cd\u8be6\u60c5</button>` : ""}
         </div>
       </article>`;
     }
@@ -8492,6 +8559,177 @@ INDEX_HTML = r"""<!doctype html>
         if (status) status.value = value || "";
       }
       loadSignals();
+    }
+    function normalizeCoinInput(value) {
+      const text = String(value || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 24);
+      if (!text) return "";
+      return text.endsWith("USDT") ? text : `${text}USDT`;
+    }
+    function openCoinDetail(symbol) {
+      currentCoinSymbol = normalizeCoinInput(symbol);
+      latestCoinSignalDetail = null;
+      latestCoinSignalDetailView = null;
+      switchView("coin");
+    }
+    function coinHealthPill(health, label) {
+      const key = String(health || "ok");
+      if (key === "risk") return `<span class="status bad coin-health-badge bad">${escapeHtml(label || "\u98ce\u9669")}</span>`;
+      if (key === "attention") return `<span class="status warn coin-health-badge warn">${escapeHtml(label || "\u9700\u5173\u6ce8")}</span>`;
+      return `<span class="status ok coin-health-badge good">${escapeHtml(label || "\u6b63\u5e38")}</span>`;
+    }
+    function coinSearchPanel(data) {
+      const active = ((latestCoinSearchData || {}).items || []).slice(0, 12);
+      return `<div class="panel span-12 coin-search-bar">
+        <div class="toolbar" style="margin-bottom:0">
+          <input id="coinSearchInput" value="${escapeHtml(currentCoinSymbol || "")}" placeholder="BTC / BTCUSDT" onkeydown="if(event.key==='Enter') loadCoinDetail()">
+          <button class="btn primary" type="button" onclick="loadCoinDetail()">\u641c\u7d22\u5e01\u79cd</button>
+          <button class="btn" type="button" onclick="loadCoinDetail(currentCoinSymbol)">\u5237\u65b0</button>
+          <button class="btn" type="button" onclick="switchView('signals')">\u8fd4\u56de\u4fe1\u53f7\u63a8\u9001</button>
+        </div>
+        <div class="signal-meta-row">
+          <span class="muted">\u6700\u8fd1\u6d3b\u8dc3\u5e01\u79cd</span>
+          ${active.length ? active.map(item => `<button class="signal-badge info" type="button" onclick="selectCoinSymbol('${escapeHtml(item.symbol || item.coin || "")}')">${escapeHtml(item.label || item.symbol || item.coin || "")}</button>`).join("") : `<span class="muted">\u6682\u65e0</span>`}
+        </div>
+      </div>`;
+    }
+    function coinSummaryCards(data) {
+      const s = data.summary || {};
+      return `<div class="coin-summary-grid">
+        <div class="coin-summary-card"><div class="label">\u5e01\u79cd</div><div class="value">${escapeHtml(data.symbol || currentCoinSymbol || "-")}</div><div class="hint">${escapeHtml(data.coin || "")}</div></div>
+        <div class="coin-summary-card"><div class="label">7d \u4fe1\u53f7</div><div class="value">${escapeHtml(s.total || 0)}</div><div class="hint">${escapeHtml(s.headline || "")}</div></div>
+        <div class="coin-summary-card"><div class="label">\u5df2\u53d1\u9001</div><div class="value">${escapeHtml(s.sent || 0)}</div><div class="hint">sent</div></div>
+        <div class="coin-summary-card"><div class="label">\u5931\u8d25 / \u963b\u6b62</div><div class="value">${escapeHtml((Number(s.failed || 0) + Number(s.blocked || 0)))}</div><div class="hint">failed + blocked</div></div>
+        <div class="coin-summary-card"><div class="label">\u6d3b\u8dc3\u6a21\u5757</div><div class="value">${escapeHtml(s.active_modules || 0)}</div><div class="hint">${escapeHtml(s.latest_at || "\u6682\u65e0\u6700\u65b0\u4fe1\u53f7")}</div></div>
+        <div class="coin-summary-card"><div class="label">\u5065\u5eb7\u72b6\u6001</div><div class="value">${coinHealthPill(s.health, s.health_label)}</div><div class="hint">${escapeHtml(s.first_at || "")}</div></div>
+      </div>`;
+    }
+    function coinDistributionRows(items, nameKey, labelKey) {
+      const max = Math.max(1, ...((items || []).map(item => Number(item.count || 0))));
+      if (!(items || []).length) return emptyState("\u6682\u65e0\u5206\u5e03\u6570\u636e", "\u8be5\u5e01\u79cd\u5728\u5f53\u524d\u65f6\u95f4\u7a97\u53e3\u5185\u8fd8\u6ca1\u6709\u4fe1\u53f7\u3002");
+      return `<div class="coin-module-grid">${items.map(item => {
+        const pct = Math.max(0, Math.min(100, Math.round(Number(item.count || 0) * 100 / max)));
+        return `<div class="coin-distribution-row">
+          <strong>${escapeHtml(item[labelKey] || item[nameKey] || "-")}</strong>
+          <div class="usage-bar ${signalToneClass(item.tone)}"><span style="--pct:${pct}%"></span></div>
+          <span class="muted">${escapeHtml(item.count || 0)}</span>
+        </div>`;
+      }).join("")}</div>`;
+    }
+    function coinTimelinePanel(data) {
+      const groups = data.timeline || [];
+      if (!groups.length) return `<div class="panel span-8 coin-empty">${emptyState(`\u6682\u65e0 ${escapeHtml(data.symbol || currentCoinSymbol || "\u8be5\u5e01\u79cd")} \u7684\u4fe1\u53f7\u8bb0\u5f55`, "\u53ef\u4ee5\u8fd4\u56de\u4fe1\u53f7\u63a8\u9001\u9875\u67e5\u770b\u5168\u5c40\u4fe1\u53f7\uff0c\u6216\u7b49\u5f85\u4e0b\u4e00\u8f6e\u626b\u63cf\u3002")}</div>`;
+      return `<div class="panel span-8">
+        <h3 class="section-title">\u4fe1\u53f7\u65f6\u95f4\u7ebf</h3>
+        <div class="coin-timeline">${groups.map(group => `<section class="coin-timeline-day">
+          <h3>${escapeHtml(group.date || "-")}</h3>
+          ${(group.items || []).map(item => {
+            const display = signalDisplay(item);
+            return `<article class="coin-timeline-item" onclick="loadCoinSignalDetail(${Number(item.id || 0)})">
+              <div class="signal-meta-row"><strong>${escapeHtml(display.time_label || item.time || "-")}</strong>${signalBadgeHtml({ label: display.module_label, tone: "info" }, false)}${signalBadgeHtml({ label: display.status_label, tone: display.card_tone }, false)}</div>
+              <div>${escapeHtml(display.title || "")}</div>
+              <div class="muted">${escapeHtml((display.summary || "").slice(0, 180))}</div>
+            </article>`;
+          }).join("")}
+        </section>`).join("")}</div>
+      </div>`;
+    }
+    function coinLatestCards(data) {
+      const latest = data.latest || [];
+      return `<div class="panel span-4">
+        <h3 class="section-title">\u6700\u8fd1\u540c\u5e01\u79cd\u4fe1\u53f7</h3>
+        ${latest.length ? `<div class="signal-card-grid">${latest.slice(0, 20).map(item => {
+          const display = signalDisplay(item);
+          const tone = signalToneClass(display.card_tone);
+          return `<article class="signal-card ${tone}" onclick="loadCoinSignalDetail(${Number(item.id || 0)})">
+            <div class="signal-card-head"><h3 class="signal-card-title">${escapeHtml(display.title || "")}</h3>${signalBadgeHtml({ label: display.status_label, tone: tone }, false)}</div>
+            <div class="signal-meta-row">${escapeHtml(display.time_label || "")} / ${escapeHtml(display.module_label || "")}</div>
+            <div class="signal-card-summary">${escapeHtml((display.summary || "").slice(0, 160))}</div>
+          </article>`;
+        }).join("")}</div>` : emptyState("\u6682\u65e0\u6700\u8fd1\u4fe1\u53f7", "\u8be5\u5e01\u79cd\u5728\u5f53\u524d\u7a97\u53e3\u5185\u8fd8\u6ca1\u6709\u8bb0\u5f55\u3002")}
+      </div>`;
+    }
+    function coinTelegramPanel(data) {
+      const tg = data.telegram || {};
+      return `<div class="panel span-4">
+        <h3 class="section-title">Telegram</h3>
+        <div class="readable-list">
+          ${row("message_ids", `<code>${escapeHtml((tg.latest_message_ids || []).join(", ") || "-")}</code>`)}
+          ${row("topic_ids", `<code>${escapeHtml((tg.topic_ids || []).join(", ") || "-")}</code>`)}
+          ${row("reply_to_message_id", textValue(tg.reply_chain_count || 0))}
+        </div>
+      </div>`;
+    }
+    function coinSignalDetailPanel() {
+      const item = latestCoinSignalDetail;
+      const detail = latestCoinSignalDetailView;
+      if (!item || !detail) {
+        return `<div class="panel span-8">${emptyState("\u8bf7\u9009\u62e9\u4e00\u6761\u4fe1\u53f7", "\u70b9\u51fb\u65f6\u95f4\u7ebf\u6216\u6700\u8fd1\u4fe1\u53f7\uff0c\u53ef\u4ee5\u67e5\u770b Telegram\u3001dedup\u3001payload \u548c\u540c\u5e01\u79cd\u5173\u8054\u8bb0\u5f55\u3002")}</div>`;
+      }
+      const header = detail.header || {};
+      const sections = (detail.sections || []).map(section => `<div class="signal-detail-section">
+        <h4>${escapeHtml(section.title || "")}</h4>
+        <div class="readable-list">${(section.rows || []).map(r => row(r.label, r.code ? `<code>${escapeHtml(r.value || "")}</code>` : textValue(r.value || "-"))).join("")}</div>
+      </div>`).join("");
+      return `<div class="panel span-8 signal-detail-panel" style="position:static;max-height:none">
+        <div class="summary-head">
+          <div><h3 class="section-title">${escapeHtml(header.title || `Signal #${item.id || ""}`)}</h3><div class="summary-meta">${escapeHtml(header.subtitle || "")} / ${escapeHtml(header.time_label || "")}</div></div>
+          <button class="btn" type="button" onclick="latestCoinSignalDetail=null; latestCoinSignalDetailView=null; renderCoinPage()">\u5173\u95ed</button>
+        </div>
+        <div class="signal-meta-row">${(header.badges || []).map(badge => signalBadgeHtml(badge, false)).join("")}</div>
+        ${sections}
+        <details class="raw-details compact-details">
+          <summary>payload_json</summary>
+          <div class="raw-body"><pre>${escapeHtml((detail.raw || {}).payload_json || "{}")}</pre></div>
+        </details>
+        <details class="raw-details compact-details">
+          <summary>message_ids_json</summary>
+          <div class="raw-body"><pre>${escapeHtml((detail.raw || {}).message_ids_json || "[]")}</pre></div>
+        </details>
+      </div>`;
+    }
+    function renderCoinPage() {
+      const data = latestCoinData || { summary: { total: 0 }, module_counts: [], status_counts: [], timeline: [], latest: [], telegram: {} };
+      document.getElementById("coinGrid").innerHTML = [
+        renderPageIntro("coin", [data.symbol || currentCoinSymbol || "\u672a\u9009\u62e9"]),
+        coinSearchPanel(data),
+        coinSummaryCards(data),
+        `<div class="panel span-6"><h3 class="section-title">\u6a21\u5757\u5206\u5e03</h3>${coinDistributionRows(data.module_counts || [], "module", "label")}</div>`,
+        `<div class="panel span-6"><h3 class="section-title">\u72b6\u6001\u5206\u5e03</h3>${coinDistributionRows(data.status_counts || [], "status", "label")}</div>`,
+        coinTimelinePanel(data),
+        coinLatestCards(data),
+        coinTelegramPanel(data),
+        coinSignalDetailPanel()
+      ].join("");
+      const s = data.summary || {};
+      setSubtitle(data.symbol ? `${data.symbol} / ${s.total || 0} \u6761\u4fe1\u53f7 / ${s.health_label || "\u6b63\u5e38"}` : "\u8f93\u5165 BTC \u6216 BTCUSDT \u67e5\u770b\u5355\u5e01\u79cd\u4fe1\u53f7\u5386\u53f2");
+    }
+    async function loadCoinSearch(q = "") {
+      latestCoinSearchData = await api(`/api/coin-search?q=${encodeURIComponent(q || "")}&limit=20&window_sec=604800`);
+      return latestCoinSearchData;
+    }
+    async function selectCoinSymbol(symbol) {
+      currentCoinSymbol = normalizeCoinInput(symbol);
+      latestCoinSignalDetail = null;
+      latestCoinSignalDetailView = null;
+      await loadCoinDetail(currentCoinSymbol);
+    }
+    async function loadCoinDetail(symbol = "") {
+      const input = normalizeCoinInput(symbol || document.getElementById("coinSearchInput")?.value || currentCoinSymbol || "");
+      await loadCoinSearch("");
+      if (!input) {
+        latestCoinData = null;
+        renderCoinPage();
+        return;
+      }
+      currentCoinSymbol = input;
+      latestCoinData = await api(`/api/coin-detail?symbol=${encodeURIComponent(input)}&limit=100&window_sec=604800`);
+      renderCoinPage();
+    }
+    async function loadCoinSignalDetail(id) {
+      const data = await api(`/api/signals/detail?id=${encodeURIComponent(Number(id || 0))}`);
+      latestCoinSignalDetail = data.item || null;
+      latestCoinSignalDetailView = data.detail || null;
+      renderCoinPage();
     }
     async function loadAiPrompts() {
       const data = await api("/api/ai-prompts");
@@ -8603,6 +8841,7 @@ INDEX_HTML = r"""<!doctype html>
           if (isAuto) await loadLatestSignals();
           else await loadSignals();
         }
+        if (currentView === "coin") await loadCoinDetail(currentCoinSymbol);
         if (currentView === "jobs") await loadJobs(isAuto);
         if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
@@ -8823,6 +9062,35 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/signals/detail":
             self.send_json(signal_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
+            return
+        if path == "/api/coin-detail":
+            coin_value = query.get("symbol", query.get("coin", [""]))[0]
+            if not str(coin_value or "").strip():
+                self.send_json(api_error("请输入币种，例如 BTC 或 BTCUSDT", code="bad_request"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(coin_detail_payload(
+                coin_value,
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+            ))
+            return
+        if path == "/api/coin-search":
+            self.send_json(coin_search_payload(
+                q=query.get("q", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["20"])[0], 20, 100),
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+            ))
+            return
+        if path == "/api/coin-timeline":
+            coin_value = query.get("symbol", query.get("coin", [""]))[0]
+            if not str(coin_value or "").strip():
+                self.send_json(api_error("请输入币种，例如 BTC 或 BTCUSDT", code="bad_request"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(coin_timeline_payload(
+                coin_value,
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+                cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+            ))
             return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]

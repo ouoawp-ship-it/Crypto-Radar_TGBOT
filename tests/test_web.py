@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import time
 import unittest
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -14,6 +15,7 @@ from paopao_radar.config import Settings
 from paopao_radar.signal_store import append_from_push
 from paopao_radar.web_services import jobs
 from paopao_radar.web_services.api_core import api_contract_self_test
+from paopao_radar.web_services.coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
 from paopao_radar.web_services.dashboard import dashboard_payload
 
 
@@ -1706,7 +1708,7 @@ class WebConsoleTests(unittest.TestCase):
                 signal_events_db_path=Path(tmp) / "signals.db",
                 web_jobs_db_path=Path(tmp) / "jobs.db",
             )
-            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="dashboard:btc", status="sent", sent=True, text="BTCUSDT dashboard", ts=1000)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="dashboard:btc", status="sent", sent=True, text="BTCUSDT dashboard", ts=int(time.time()))
             payload = dashboard_payload(settings=settings)
 
         self.assertTrue(payload["ok"])
@@ -1714,6 +1716,43 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(latest)
         self.assertIn("display", latest[0])
         self.assertIn("top_symbols_display", payload["data"]["signals"])
+        self.assertIn("coins", payload["data"])
+        self.assertEqual(payload["data"]["coins"]["top_active"][0]["symbol"], "BTCUSDT")
+
+    def test_coin_detail_payloads_and_frontend_contract_are_present(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="coin-web:btc", status="sent", sent=True, text="BTCUSDT coin detail", ts=int(time.time()))
+            detail = coin_detail_payload("BTC", settings=settings, window_sec=10**10)
+            missing = coin_detail_payload("", settings=settings)
+            search = coin_search_payload("btc", settings=settings, window_sec=10**10)
+            timeline = coin_timeline_payload("BTCUSDT", settings=settings)
+
+        self.assertTrue(detail["ok"])
+        self.assertEqual(detail["symbol"], "BTCUSDT")
+        self.assertIn("summary", detail)
+        self.assertIn("module_counts", detail)
+        self.assertIn("status_counts", detail)
+        self.assertIn("timeline", detail)
+        self.assertIn("telegram", detail)
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["code"], "bad_request")
+        self.assertTrue(search["ok"])
+        self.assertEqual(search["items"][0]["symbol"], "BTCUSDT")
+        self.assertTrue(timeline["ok"])
+        self.assertEqual(timeline["symbol"], "BTCUSDT")
+
+        html = web.INDEX_HTML
+        self.assertIn('data-view="coin"', html)
+        self.assertIn('id="coinGrid"', html)
+        self.assertIn("/api/coin-detail", html)
+        self.assertIn("/api/coin-search", html)
+        self.assertIn("openCoinDetail", html)
+        self.assertIn("Coin Detail", html)
 
     def test_send_json_wraps_dict_payload_with_api_meta(self) -> None:
         handler = object.__new__(web.WebHandler)
@@ -2076,6 +2115,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("signals", names)
         self.assertIn("jobs", names)
         self.assertIn("update-status", names)
+        self.assertIn("coin-search", names)
+        self.assertIn("coin-detail", names)
+        self.assertIn("coin-timeline", names)
 
     def test_jobs_audit_summary_stays_minimal(self) -> None:
         rerun = web.audit_request_summary("/api/jobs/rerun", {"id": 12, "stdout_tail": "secret"})
