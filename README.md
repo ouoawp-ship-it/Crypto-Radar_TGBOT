@@ -456,4 +456,7 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.62.1`，这是 v1 完整稳定版后的任务中心状态口径维护版本；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.63.0`；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+## v1.63.0 Web Platform API Core
+
+v1.63.0 adds the Web Platform API Core for the next Web v2.0 stages. It introduces shared API response helpers, pagination/filter/sort/time-range parsing, normalized symbol filters, and the lightweight `/api/dashboard` aggregation endpoint. The `api-self-test` job now runs an API contract self-test for dashboard, signals, jobs, job stats, and update status. This is a backend foundation release for future Signals, Coin Detail, Timeline, and Dashboard work; it does not trigger scans and does not change the Telegram push path.

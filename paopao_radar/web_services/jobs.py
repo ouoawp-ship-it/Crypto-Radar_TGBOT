@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..config import BASE_DIR, Settings
+from .api_core import api_list_payload
 
 
 DEFAULT_JOBS_DB_PATH = BASE_DIR / "data" / "jobs.db"
@@ -215,10 +216,25 @@ class JobStore:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
         return _row_to_job(row)
 
-    def list_jobs(self, *, limit: int = 50, status: str = "", job_type: str = "") -> list[dict[str, Any]]:
+    def list_jobs(
+        self,
+        *,
+        limit: int = 50,
+        status: str = "",
+        job_type: str = "",
+        cursor: int | None = None,
+        offset: int = 0,
+        sort_field: str = "id",
+        sort_direction: str = "desc",
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit or 50), 200))
         where: list[str] = []
         params: list[Any] = []
+        if cursor:
+            where.append("id > ?" if str(sort_direction).lower() == "asc" and str(sort_field) == "id" else "id < ?")
+            params.append(int(cursor))
         if status:
             if status == "attention":
                 where.append("(status = ? OR (job_type = 'stable-check' AND status = 'failed' AND returncode = 1))")
@@ -232,11 +248,23 @@ class JobStore:
         if job_type:
             where.append("job_type = ?")
             params.append(job_type)
+        if start_ts is not None:
+            where.append("created_at >= ?")
+            params.append(int(start_ts))
+        if end_ts is not None:
+            where.append("created_at <= ?")
+            params.append(int(end_ts))
         sql = "SELECT * FROM jobs"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
-        params.append(safe_limit)
+        allowed_sort_fields = {"id", "created_at", "updated_at", "status", "job_type", "returncode"}
+        safe_sort_field = str(sort_field or "id")
+        if safe_sort_field not in allowed_sort_fields:
+            safe_sort_field = "id"
+        safe_sort_direction = "ASC" if str(sort_direction or "").lower() == "asc" else "DESC"
+        tie_direction = "ASC" if safe_sort_direction == "ASC" else "DESC"
+        sql += f" ORDER BY {safe_sort_field} {safe_sort_direction}, id {tie_direction} LIMIT ? OFFSET ?"
+        params.extend([safe_limit, max(0, int(offset or 0))])
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [job for row in rows if (job := _row_to_job(row)) is not None]
@@ -623,34 +651,14 @@ def _preflight_command(spec: JobSpec) -> str:
 
 
 def _run_api_self_test() -> tuple[int, str, str]:
-    checks: list[dict[str, Any]] = []
-    errors: list[str] = []
-    started = time.time()
     try:
-        from .. import web as web_module
+        from .api_core import api_contract_self_test
 
-        probes = [
-            ("summary", lambda: web_module.summary_payload()),
-            ("web logs", lambda: web_module.logs_payload("web", 50)),
-            ("signal stats", lambda: web_module.signals_stats_payload(86400)),
-        ]
-        for name, func in probes:
-            item_started = time.time()
-            try:
-                payload = func()
-                checks.append({"name": name, "ok": bool(payload.get("ok", True)), "elapsed_ms": int((time.time() - item_started) * 1000)})
-            except Exception as exc:
-                message = f"{name}: {type(exc).__name__}: {exc}"
-                errors.append(message)
-                checks.append({"name": name, "ok": False, "error": message})
+        payload = api_contract_self_test()
     except Exception as exc:
-        errors.append(f"{type(exc).__name__}: {exc}")
-    payload = {
-        "ok": not errors,
-        "elapsed_ms": int((time.time() - started) * 1000),
-        "checks": checks,
-        "errors": errors,
-    }
+        message = f"{type(exc).__name__}: {exc}"
+        payload = {"ok": False, "checks": [], "errors": [message]}
+    errors = list(payload.get("errors") or [])
     stdout = _json_dumps(payload)
     return (0 if not errors else 1, stdout, "\n".join(errors))
 
@@ -769,10 +777,46 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     }
 
 
-def jobs_payload(*, limit: int = 50, status: str = "", job_type: str = "", settings: Settings | None = None) -> dict[str, Any]:
+def jobs_payload(
+    *,
+    limit: int = 50,
+    status: str = "",
+    job_type: str = "",
+    cursor: int | None = None,
+    offset: int = 0,
+    sort_field: str = "id",
+    sort_direction: str = "desc",
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+    pagination: dict[str, Any] | None = None,
+    filters: dict[str, Any] | None = None,
+    sort: dict[str, Any] | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
     store = store_for_settings(settings)
-    jobs = store.list_jobs(limit=limit, status=status, job_type=job_type)
-    return {"ok": True, "jobs": [enrich_job(job) for job in jobs], "count": len(jobs), "message": zh(r"\u5df2\u8bfb\u53d6\u4efb\u52a1\u8bb0\u5f55")}
+    jobs = store.list_jobs(
+        limit=limit,
+        status=status,
+        job_type=job_type,
+        cursor=cursor,
+        offset=offset,
+        sort_field=sort_field,
+        sort_direction=sort_direction,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
+    enriched = [enrich_job(job) for job in jobs]
+    next_cursor = enriched[-1]["id"] if enriched else None
+    return api_list_payload(
+        enriched,
+        count=len(enriched),
+        next_cursor=next_cursor,
+        message=zh(r"\u5df2\u8bfb\u53d6\u4efb\u52a1\u8bb0\u5f55"),
+        pagination=pagination,
+        filters=filters,
+        sort=sort,
+        alias="jobs",
+    )
 
 
 def job_detail_payload(job_id: int, *, settings: Settings | None = None) -> dict[str, Any]:

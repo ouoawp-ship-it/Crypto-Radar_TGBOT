@@ -541,3 +541,6 @@ TG_CHAT_ID=你的群ID
 如果把非数字内容错填到了 `TG_TOPIC_ID`，重新运行安装脚本即可。新脚本会检测到非数字话题 ID，并自动清空。
 
 如果 Telegram 话题无法置顶，通常是 bot 缺少置顶消息或管理话题权限。推送本身不会因此停止。
+## v1.63.0 Web Platform API Core
+
+v1.63.0 adds `/api/dashboard` as a lightweight aggregation API. It only reads current service status, signals.db, jobs.db, resources, and update-check state; it does not trigger market scans or external update apply. The `api-self-test` background job now checks the Web API contract directly. `jobs.db` and `signals.db` remain runtime data and must not be committed. Production updates should still be run from the server with `paopao update --yes`.

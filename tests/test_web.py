@@ -11,7 +11,10 @@ from unittest.mock import Mock, patch
 import paopao_radar.cli as cli
 from paopao_radar import web
 from paopao_radar.config import Settings
+from paopao_radar.signal_store import append_from_push
 from paopao_radar.web_services import jobs
+from paopao_radar.web_services.api_core import api_contract_self_test
+from paopao_radar.web_services.dashboard import dashboard_payload
 
 
 class WebConsoleTests(unittest.TestCase):
@@ -1822,6 +1825,7 @@ class WebConsoleTests(unittest.TestCase):
     def test_jobs_frontend_and_api_routes_are_present(self) -> None:
         html = web.INDEX_HTML
 
+        self.assertIn("/api/dashboard", html)
         self.assertIn("/api/jobs/stats", html)
         self.assertIn("/api/jobs/report", html)
         self.assertIn("/api/jobs/rerun", html)
@@ -1832,6 +1836,99 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn('attention: ["warning", "关注"]', html)
         self.assertIn('["attention", "关注"]', html)
         self.assertIn("last_attention_by_type", html)
+
+    def test_signals_payload_exposes_api_core_metadata_and_symbol_normalization(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="api-core:btc",
+                status="sent",
+                sent=True,
+                text="BTCUSDT",
+                ts=1000,
+            )
+            payload = web.signals_payload(
+                limit=10,
+                symbol="BTC",
+                status="sent",
+                sort_field="id",
+                sort_direction="asc",
+                pagination={"limit": 10, "cursor": None},
+                filters={"symbol": "BTCUSDT", "status": "sent"},
+                sort={"field": "id", "direction": "asc", "raw": "id"},
+                settings=settings,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["items"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(payload["filters"]["symbol"], "BTCUSDT")
+        self.assertEqual(payload["sort"]["raw"], "id")
+        self.assertIn("pagination", payload)
+
+    def test_jobs_payload_keeps_attention_status_and_api_core_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp), web_jobs_db_path=Path(tmp) / "jobs.db")
+            store = jobs.JobStore(settings.web_jobs_db_path)
+            job = store.create_job("stable-check")
+            store.finish_job(int(job["id"]), status="failed", returncode=1, stdout_tail="attention")
+            payload = jobs.jobs_payload(
+                limit=10,
+                status="attention",
+                pagination={"limit": 10},
+                filters={"status": "attention"},
+                sort={"field": "id", "direction": "desc", "raw": "-id"},
+                settings=settings,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["jobs"][0]["status"], "attention")
+        self.assertEqual(payload["filters"]["status"], "attention")
+
+    def test_dashboard_payload_has_platform_contract_without_secrets(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                web_jobs_db_path=Path(tmp) / "jobs.db",
+            )
+            payload = dashboard_payload(settings=settings)
+            text = json.dumps(payload, ensure_ascii=False)
+
+        self.assertTrue(payload["ok"])
+        data = payload["data"]
+        self.assertIn("version", data)
+        self.assertIn("services", data)
+        self.assertIn("signals", data)
+        self.assertIn("jobs", data)
+        self.assertIn("resources", data)
+        self.assertNotIn("TG_BOT_TOKEN", text)
+        self.assertNotIn("AI_API_KEY", text)
+
+    def test_api_contract_self_test_returns_required_checks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                web_jobs_db_path=Path(tmp) / "jobs.db",
+            )
+            payload = api_contract_self_test(settings=settings)
+
+        self.assertTrue(payload["ok"])
+        names = {item["name"] for item in payload["checks"]}
+        self.assertIn("dashboard", names)
+        self.assertIn("signals", names)
+        self.assertIn("jobs", names)
+        self.assertIn("update-status", names)
 
     def test_jobs_audit_summary_stays_minimal(self) -> None:
         rerun = web.audit_request_summary("/api/jobs/rerun", {"id": 12, "stdout_tail": "secret"})

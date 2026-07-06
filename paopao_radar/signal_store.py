@@ -378,11 +378,15 @@ class SignalEventStore:
         symbol: str = "",
         status: str = "",
         severity: str = "",
+        sort_field: str = "id",
+        sort_direction: str = "desc",
+        start_ts: int | None = None,
+        end_ts: int | None = None,
     ) -> dict[str, Any]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": _limit(limit, 50, 200)}
         if cursor:
-            clauses.append("id < :cursor")
+            clauses.append("id > :cursor" if str(sort_direction).lower() == "asc" and str(sort_field) == "id" else "id < :cursor")
             params["cursor"] = int(cursor)
         if module:
             clauses.append("module = :module")
@@ -396,10 +400,22 @@ class SignalEventStore:
         if severity:
             clauses.append("severity = :severity")
             params["severity"] = str(severity).strip().lower()
+        if start_ts is not None:
+            clauses.append("ts >= :start_ts")
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= :end_ts")
+            params["end_ts"] = int(end_ts)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        allowed_sort_fields = {"id", "ts", "module", "symbol", "status", "severity", "score"}
+        safe_sort_field = str(sort_field or "id")
+        if safe_sort_field not in allowed_sort_fields:
+            safe_sort_field = "id"
+        safe_sort_direction = "ASC" if str(sort_direction or "").lower() == "asc" else "DESC"
+        tie_direction = "ASC" if safe_sort_direction == "ASC" else "DESC"
         with self.connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM signals {where} ORDER BY id DESC LIMIT :limit",
+                f"SELECT * FROM signals {where} ORDER BY {safe_sort_field} {safe_sort_direction}, id {tie_direction} LIMIT :limit",
                 params,
             ).fetchall()
         items = [_row_to_dict(row) for row in rows]

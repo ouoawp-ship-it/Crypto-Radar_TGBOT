@@ -124,6 +124,27 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual([item["symbol"] for item in btc["items"]], ["BTCUSDT", "BTCUSDT"])
         self.assertEqual(failed["items"][0]["symbol"], "ETHUSDT")
 
+    def test_list_signals_supports_sort_and_time_range(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            for idx, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT"), start=1):
+                append_from_push(
+                    settings,
+                    template_id="TG_FLOW_RADAR",
+                    dedup_key=f"range:{idx}",
+                    status="sent",
+                    sent=True,
+                    text=symbol,
+                    ts=1000 + idx,
+                )
+            store = SignalEventStore(settings.signal_events_db_path)
+            asc = store.list_signals(limit=3, sort_field="ts", sort_direction="asc")
+            ranged = store.list_signals(limit=10, start_ts=1002, end_ts=1002)
+
+        self.assertEqual([item["symbol"] for item in asc["items"]], ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+        self.assertEqual(ranged["count"], 1)
+        self.assertEqual(ranged["items"][0]["symbol"], "ETHUSDT")
+
     def test_stats_returns_status_module_and_top_symbols(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

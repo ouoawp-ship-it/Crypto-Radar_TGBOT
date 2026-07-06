@@ -212,6 +212,33 @@ class JobStoreTests(unittest.TestCase):
         self.assertTrue(cancelled["ok"])
         self.assertEqual(cancelled["job"]["status"], "cancelled")
 
+    def test_jobs_payload_supports_filters_sort_and_pagination_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = temp_settings(tmp)
+            store = jobs.JobStore(settings.web_jobs_db_path)
+            first = store.create_job("api-self-test", allow_reuse=False)
+            second = store.create_job("doctor", allow_reuse=False)
+            store.finish_job(int(first["id"]), status="success", returncode=0)
+            store.finish_job(int(second["id"]), status="failed", returncode=2)
+
+            payload = jobs.jobs_payload(
+                limit=10,
+                status="failed",
+                sort_field="id",
+                sort_direction="asc",
+                pagination={"limit": 10, "cursor": None},
+                filters={"status": "failed"},
+                sort={"field": "id", "direction": "asc", "raw": "id"},
+                settings=settings,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["jobs"][0]["job_type"], "doctor")
+        self.assertEqual(payload["filters"]["status"], "failed")
+        self.assertEqual(payload["sort"]["direction"], "asc")
+        self.assertIn("pagination", payload)
+
     def test_cancel_running_job_returns_clear_message(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = temp_settings(tmp)
@@ -377,6 +404,16 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual(parsed["remote_commit"], "abc1234")
         self.assertIs(parsed["update_available"], True)
         self.assertIsNone(unknown["update_available"])
+
+    def test_api_self_test_uses_api_contract_checks(self) -> None:
+        returncode, stdout, stderr = jobs._run_api_self_test()
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("dashboard", stdout)
+        self.assertIn("signals", stdout)
+        self.assertIn("jobs", stdout)
+        self.assertIn("update-status", stdout)
 
 
 if __name__ == "__main__":

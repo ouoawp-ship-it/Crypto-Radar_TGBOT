@@ -20,6 +20,14 @@ from urllib.parse import parse_qs, urlparse
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
 from .storage import JsonStore
+from .web_services.api_core import (
+    filter_params,
+    normalize_symbol_filter,
+    pagination_params,
+    sort_params,
+    time_range_params,
+)
+from .web_services.dashboard import dashboard_payload
 from .web_services.jobs import (
     LONG_ACTION_JOB_TYPES,
     cancel_job_payload,
@@ -1783,14 +1791,7 @@ def query_int_or(value: Any, default: int = 0) -> int:
 
 
 def normalize_signal_symbol(value: str) -> str:
-    symbol = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
-    if not symbol:
-        return ""
-    if symbol.endswith("USD") and not symbol.endswith("USDT"):
-        symbol = f"{symbol}T"
-    if not symbol.endswith("USDT"):
-        symbol = f"{symbol}USDT"
-    return symbol
+    return normalize_symbol_filter(value).get("symbol", "")
 
 
 def signal_store_for_settings(settings: Settings | None = None):
@@ -1808,23 +1809,48 @@ def signals_payload(
     symbol: str = "",
     status: str = "",
     severity: str = "",
+    sort_field: str = "id",
+    sort_direction: str = "desc",
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+    pagination: dict[str, Any] | None = None,
+    filters: dict[str, Any] | None = None,
+    sort: dict[str, Any] | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
     store = signal_store_for_settings(loaded)
+    normalized_symbol = normalize_signal_symbol(symbol)
     result = store.list_signals(
         limit=clamp_query_int(limit, 50, 200),
         cursor=cursor,
         module=str(module or "").strip().lower(),
-        symbol=normalize_signal_symbol(symbol),
+        symbol=normalized_symbol,
         status=str(status or "").strip().lower(),
         severity=str(severity or "").strip().lower(),
+        sort_field=sort_field,
+        sort_direction=sort_direction,
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
     return {
         "ok": True,
+        "data": {"items": result["items"]},
         "items": result["items"],
         "next_cursor": result["next_cursor"],
         "count": result["count"],
+        "pagination": pagination,
+        "filters": filters if filters is not None else {
+            "module": str(module or "").strip().lower(),
+            "symbol": normalized_symbol,
+            "status": str(status or "").strip().lower(),
+            "severity": str(severity or "").strip().lower(),
+        },
+        "sort": sort if sort is not None else {
+            "field": sort_field,
+            "direction": sort_direction,
+            "raw": f"{'-' if sort_direction == 'desc' else ''}{sort_field}",
+        },
         "db_file": str(loaded.signal_events_db_path),
         "legacy_signal_events_file": str(loaded.signal_events_path),
         "legacy_signal_events_exists": loaded.signal_events_path.exists(),
@@ -5876,7 +5902,13 @@ INDEX_HTML = r"""<!doctype html>
       </div>`;
     }
     async function loadSummary() {
-      const data = await api("/api/summary");
+      let dashboard = null;
+      try {
+        dashboard = await api("/api/dashboard");
+      } catch (_err) {
+        dashboard = null;
+      }
+      const data = (dashboard && dashboard.summary) ? dashboard.summary : await api("/api/summary");
       setSubtitle(`更新时间 ${data.updated_at}${autoRefreshEnabled && currentView === "overview" ? " · 自动刷新中" : ""}`);
       const main = data.services.main || {};
       const structure = data.services.structure || {};
@@ -7868,6 +7900,7 @@ INDEX_HTML = r"""<!doctype html>
         module: document.getElementById("signalModuleFilter")?.value || "",
         status: document.getElementById("signalStatusFilter")?.value || "",
         symbol: document.getElementById("signalSymbolFilter")?.value || "",
+        sort: document.getElementById("signalSortFilter")?.value || "-id",
         anomaly: Boolean(document.getElementById("signalAnomalyFilter")?.checked)
       };
     }
@@ -7879,6 +7912,7 @@ INDEX_HTML = r"""<!doctype html>
       if (filters.status) {
         params.set("status", filters.status);
       }
+      if (filters.sort) params.set("sort", filters.sort);
       return params.toString();
     }
     function signalClientKeep(item, filters) {
@@ -8293,6 +8327,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/summary":
             self.send_json(summary_payload())
             return
+        if path == "/api/dashboard":
+            self.send_json(dashboard_payload())
+            return
         if path == "/api/version":
             self.send_json(git_info())
             return
@@ -8318,10 +8355,23 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_json(update_check_status_payload())
             return
         if path == "/api/jobs":
+            page = pagination_params(query, default_limit=50, max_limit=200)
+            filters = filter_params(query, ("status", "job_type"))
+            sort = sort_params(query, ("id", "created_at", "updated_at", "status", "job_type", "returncode"), default="-id")
+            time_range = time_range_params(query)
             self.send_json(jobs_payload(
-                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
-                status=query.get("status", [""])[0],
-                job_type=query.get("job_type", [""])[0],
+                limit=page["limit"],
+                cursor=page["cursor"],
+                offset=page["offset"],
+                status=filters.get("status", ""),
+                job_type=filters.get("job_type", ""),
+                sort_field=sort["field"],
+                sort_direction=sort["direction"],
+                start_ts=time_range["start_ts"] if time_range.get("applied") else None,
+                end_ts=time_range["end_ts"] if time_range.get("applied") else None,
+                pagination=page,
+                filters={**filters, "time_range": time_range},
+                sort=sort,
             ))
             return
         if path == "/api/jobs/stats":
@@ -8342,15 +8392,28 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_json(load_ai_prompts(Settings.load()))
             return
         if path == "/api/signals":
-            cursor_raw = query.get("cursor", [""])[0]
-            cursor = query_int_or(cursor_raw, 0) if cursor_raw else None
+            page = pagination_params(query, default_limit=50, max_limit=200)
+            filters = filter_params(query, ("module", "symbol", "status", "severity"))
+            if "symbol" in filters:
+                symbol_info = normalize_symbol_filter(filters["symbol"])
+                filters["symbol"] = symbol_info["symbol"]
+                filters["coin"] = symbol_info["coin"]
+            sort = sort_params(query, ("id", "ts", "module", "symbol", "status", "severity", "score"), default="-id")
+            time_range = time_range_params(query)
             self.send_json(signals_payload(
-                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
-                cursor=cursor,
-                module=query.get("module", [""])[0],
-                symbol=query.get("symbol", [""])[0],
-                status=query.get("status", [""])[0],
-                severity=query.get("severity", [""])[0],
+                limit=page["limit"],
+                cursor=page["cursor"],
+                module=filters.get("module", ""),
+                symbol=filters.get("symbol", ""),
+                status=filters.get("status", ""),
+                severity=filters.get("severity", ""),
+                sort_field=sort["field"],
+                sort_direction=sort["direction"],
+                start_ts=time_range["start_ts"] if time_range.get("applied") else None,
+                end_ts=time_range["end_ts"] if time_range.get("applied") else None,
+                pagination=page,
+                filters={**filters, "time_range": time_range},
+                sort=sort,
             ))
             return
         if path == "/api/signals/latest":
