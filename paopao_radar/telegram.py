@@ -835,6 +835,23 @@ class TelegramGateway:
             )
         except Exception as exc:
             print(f"[telegram] signal event index failed {type(exc).__name__}: {exc}", file=sys.stderr)
+        try:
+            from .signal_store import append_from_push as append_signal_store_from_push
+
+            append_signal_store_from_push(
+                self.settings,
+                template_id=template_id,
+                dedup_key=dedup_key,
+                status=result.status,
+                sent=result.sent,
+                text=text,
+                ts=now,
+                topic_id=topic_id,
+                message_ids=result.message_ids or [],
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception as exc:
+            print(f"[telegram] signal store write failed {type(exc).__name__}: {exc}", file=sys.stderr)
 
     @staticmethod
     def _recent_match(history: list[dict[str, Any]], dedup_key: str, cooldown_sec: int) -> bool:

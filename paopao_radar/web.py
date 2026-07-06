@@ -29,6 +29,7 @@ AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
 WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}
 SIGNAL_EVENT_CONFIG_KEYS = {
     "SIGNAL_EVENTS_FILE",
+    "SIGNAL_EVENTS_DB_FILE",
     "SIGNAL_EVENTS_LIMIT",
     "SIGNAL_EVENTS_RETENTION_DAYS",
 }
@@ -108,6 +109,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("AI_REQUEST_TIMEOUT_SEC", "AI 请求超时秒数", "AI 助手", kind="int", minimum=5, maximum=300, help="deepseek-v4-pro 思考模式建议 90-180 秒；如果经常超时就调大，或者改用 deepseek-v4-flash。"),
     ConfigField("AI_PROMPTS_FILE", "AI 提示词文件", "AI 助手", help="默认 ai_prompts.json，存放在 data 目录下。一般不需要修改。"),
     ConfigField("SIGNAL_EVENTS_FILE", "币种档案信号索引文件", "AI 助手", help="默认 signal_events.json，存放在 data 目录下。一般不需要修改。"),
+    ConfigField("SIGNAL_EVENTS_DB_FILE", "信号推送数据库文件", "AI 助手", help="默认 signals.db，存放所有 Telegram 推送结果的结构化记录，供 Web 信号推送页查询。一般不需要修改。"),
     ConfigField("SIGNAL_EVENTS_LIMIT", "币种档案信号保留数量", "AI 助手", kind="int", minimum=100, maximum=50000, help="AI 查询币种时会读取最近的结构化信号事件。建议 5000。"),
     ConfigField("SIGNAL_EVENTS_RETENTION_DAYS", "币种档案信号保留天数", "AI 助手", kind="int", minimum=1, maximum=365, help="超过该天数的信号事件会在新事件写入时自动清理。建议 60。"),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
@@ -1727,6 +1729,129 @@ def push_preview_payload() -> dict[str, Any]:
         },
     ]
     return {"ok": True, "previews": previews, "message": "推送预览只展示格式，不会调用 Telegram，也不会真实发送"}
+
+
+def clamp_query_int(value: Any, default: int, maximum: int) -> int:
+    try:
+        number = int(value if value not in {None, ""} else default)
+    except (TypeError, ValueError):
+        number = default
+    return max(1, min(int(maximum), number))
+
+
+def query_int_or(value: Any, default: int = 0) -> int:
+    try:
+        return int(value if value not in {None, ""} else default)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_signal_symbol(value: str) -> str:
+    symbol = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+    if not symbol:
+        return ""
+    if symbol.endswith("USD") and not symbol.endswith("USDT"):
+        symbol = f"{symbol}T"
+    if not symbol.endswith("USDT"):
+        symbol = f"{symbol}USDT"
+    return symbol
+
+
+def signal_store_for_settings(settings: Settings | None = None):
+    from .signal_store import SignalEventStore
+
+    loaded = settings or Settings.load()
+    return SignalEventStore(loaded.signal_events_db_path)
+
+
+def signals_payload(
+    *,
+    limit: int = 50,
+    cursor: int | None = None,
+    module: str = "",
+    symbol: str = "",
+    status: str = "",
+    severity: str = "",
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    store = signal_store_for_settings(loaded)
+    result = store.list_signals(
+        limit=clamp_query_int(limit, 50, 200),
+        cursor=cursor,
+        module=str(module or "").strip().lower(),
+        symbol=normalize_signal_symbol(symbol),
+        status=str(status or "").strip().lower(),
+        severity=str(severity or "").strip().lower(),
+    )
+    return {
+        "ok": True,
+        "items": result["items"],
+        "next_cursor": result["next_cursor"],
+        "count": result["count"],
+        "db_file": str(loaded.signal_events_db_path),
+        "legacy_signal_events_file": str(loaded.signal_events_path),
+        "legacy_signal_events_exists": loaded.signal_events_path.exists(),
+        "message": "已读取信号推送记录",
+    }
+
+
+def signals_latest_payload(
+    *,
+    after_id: int = 0,
+    limit: int = 100,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    store = signal_store_for_settings(settings)
+    items = store.latest_after(after_id=max(0, int(after_id or 0)), limit=clamp_query_int(limit, 100, 300))
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "message": "已读取最新信号推送记录",
+    }
+
+
+def signals_stats_payload(*, window_sec: int = 86400, settings: Settings | None = None) -> dict[str, Any]:
+    store = signal_store_for_settings(settings)
+    stats = store.stats(window_sec=max(1, int(window_sec or 86400)))
+    return {
+        "ok": True,
+        **stats,
+        "message": "已读取信号推送统计",
+    }
+
+
+def symbol_timeline_payload(
+    symbol: str,
+    *,
+    limit: int = 100,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_signal_symbol(symbol)
+    if not normalized:
+        return {"ok": False, "items": [], "count": 0, "message": "请先输入币种"}
+    store = signal_store_for_settings(settings)
+    items = store.symbol_timeline(normalized, limit=clamp_query_int(limit, 100, 300))
+    return {
+        "ok": True,
+        "symbol": normalized,
+        "items": items,
+        "count": len(items),
+        "message": "已读取同币时间线",
+    }
+
+
+def signal_detail_payload(signal_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
+    store = signal_store_for_settings(settings)
+    item = store.signal_detail(int(signal_id or 0))
+    if not item:
+        return {"ok": False, "item": None, "message": "信号记录不存在"}
+    return {
+        "ok": True,
+        "item": item,
+        "message": "已读取信号详情",
+    }
 
 
 def ai_prompts_test_payload(data: dict[str, Any]) -> dict[str, Any]:
@@ -4337,7 +4462,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.59.0">
+  <div class="app" data-ui-version="v1.60.0">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -4349,6 +4474,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="server"><span class="nav-dot"></span><span class="nav-text"><strong>服务器状态</strong><small>CPU / 内存 / 磁盘</small></span></button>
         <button data-view="ai"><span class="nav-dot"></span><span class="nav-text"><strong>AI 助手</strong><small>Bot 状态</small></span></button>
         <button data-view="price"><span class="nav-dot"></span><span class="nav-text"><strong>价格提醒</strong><small>监控列表</small></span></button>
+        <button data-view="signals"><span class="nav-dot"></span><span class="nav-text"><strong>信号推送</strong><small>结构化记录</small></span></button>
         <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
       </nav>
       <div class="sidebar-section">运维排查</div>
@@ -4445,6 +4571,10 @@ INDEX_HTML = r"""<!doctype html>
         <div id="priceOutput" class="output"></div>
       </section>
 
+      <section id="signals" class="view hidden">
+        <div class="grid" id="signalsGrid"></div>
+      </section>
+
       <section id="prompts" class="view hidden">
         <div class="grid" id="promptGrid"></div>
         <pre id="promptOutput" class="output"></pre>
@@ -4477,6 +4607,7 @@ INDEX_HTML = r"""<!doctype html>
       server: "服务器状态",
       ai: "AI 助手",
       price: "价格提醒",
+      signals: "信号推送",
       prompts: "AI 提示词",
       services: "雷达服务",
       config: "配置中心",
@@ -4511,6 +4642,12 @@ INDEX_HTML = r"""<!doctype html>
         title: "价格提醒管理",
         desc: "查看、筛选、暂停、恢复和删除提醒。Web 适合管理员快速排查；普通提醒创建仍推荐 Telegram 私聊按钮流程。",
         tags: ["目标价", "筛选", "提醒状态"]
+      },
+      signals: {
+        kicker: "推送记录",
+        title: "信号推送展示",
+        desc: "这里读取 signals.db 里的结构化推送记录，不从日志反推，也不会触发行情扫描。适合查看哪些信号发过、是否 dry-run、是否被拦截、发到了哪个话题和 message_id。",
+        tags: ["signals.db", "只读查询", "5秒增量刷新"]
       },
       config: {
         kicker: "配置中心",
@@ -4797,10 +4934,16 @@ INDEX_HTML = r"""<!doctype html>
     let latestAuditData = null;
     let latestReportData = null;
     let latestPriceAlertsData = null;
+    let latestSignalsData = { items: [], next_cursor: null };
+    let latestSignalStats = {};
+    let latestSignalId = 0;
+    let signalDetailId = 0;
+    let latestSignalDetail = null;
+    let latestSignalTimeline = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
     let refreshInFlight = false;
-    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000 };
+    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000 };
     const configCategories = [
       {
         id: "home",
@@ -5041,6 +5184,7 @@ INDEX_HTML = r"""<!doctype html>
         config: "configForms",
         ai: "aiGrid",
         price: "priceGrid",
+        signals: "signalsGrid",
         prompts: "promptGrid",
         actions: "actionGrid",
         services: "serviceGrid",
@@ -7267,6 +7411,238 @@ INDEX_HTML = r"""<!doctype html>
       setSubtitle(failureHtml ? "价格提醒：部分信息读取失败，其余可用信息已显示" : "价格提醒：创建、暂停、恢复和删除");
       renderPriceAlertTable();
     }
+    function signalStatusPill(status) {
+      const key = String(status || "").toLowerCase();
+      const text = {
+        sent: "已发送",
+        dry_run: "演练",
+        skipped: "跳过",
+        blocked: "已拦截",
+        failed: "失败"
+      }[key] || (status || "未知");
+      if (key === "sent") return `<span class="status ok">${escapeHtml(text)}</span>`;
+      if (key === "failed") return `<span class="status bad">${escapeHtml(text)}</span>`;
+      if (key === "blocked") return `<span class="status warn">${escapeHtml(text)}</span>`;
+      return `<span class="status neutral">${escapeHtml(text)}</span>`;
+    }
+    function signalSeverityPill(severity) {
+      const key = String(severity || "info").toLowerCase();
+      const text = { critical: "严重", error: "错误", warning: "警告", warn: "警告", info: "普通" }[key] || key;
+      if (key === "critical" || key === "error") return `<span class="status bad">${escapeHtml(text)}</span>`;
+      if (key === "warning" || key === "warn") return `<span class="status warn">${escapeHtml(text)}</span>`;
+      return `<span class="status neutral">${escapeHtml(text)}</span>`;
+    }
+    function signalFilters() {
+      return {
+        module: document.getElementById("signalModuleFilter")?.value || "",
+        status: document.getElementById("signalStatusFilter")?.value || "",
+        symbol: document.getElementById("signalSymbolFilter")?.value || "",
+        anomaly: Boolean(document.getElementById("signalAnomalyFilter")?.checked)
+      };
+    }
+    function signalFilterQuery(filters, limit = 50) {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      if (filters.module) params.set("module", filters.module);
+      if (filters.symbol) params.set("symbol", filters.symbol);
+      if (filters.status) {
+        params.set("status", filters.status);
+      }
+      return params.toString();
+    }
+    function signalClientKeep(item, filters) {
+      if (!item) return false;
+      if (filters.module && String(item.module || "") !== filters.module) return false;
+      if (filters.status && String(item.status || "") !== filters.status) return false;
+      if (filters.anomaly && !["blocked", "failed"].includes(String(item.status || ""))) return false;
+      const wanted = String(filters.symbol || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+      if (wanted) {
+        const symbol = String(item.symbol || "").toUpperCase();
+        const normalized = wanted.endsWith("USDT") ? wanted : `${wanted}USDT`;
+        if (symbol !== normalized) return false;
+      }
+      return true;
+    }
+    function signalStatsCards(stats) {
+      const top = (stats.top_symbols || []).slice(0, 5).map(item => `${item.symbol} ${item.count}`).join(" · ") || "暂无";
+      return [
+        metric("24h 信号总数", neutralPill(String(stats.total || 0)), `<div class="muted">来自 signals.db</div>`),
+        metric("已发送", signalStatusPill("sent"), `<div class="muted">${stats.sent || 0} 条真实发送</div>`),
+        metric("演练 / 跳过", neutralPill(`${stats.dry_run || 0} / ${stats.skipped || 0}`), `<div class="muted">dry-run 和去重冷却</div>`),
+        metric("异常", (Number(stats.blocked || 0) + Number(stats.failed || 0)) ? signalStatusPill("failed") : neutralPill("0"), `<div class="muted">拦截 ${stats.blocked || 0} · 失败 ${stats.failed || 0}</div>`),
+        `<div class="panel span-12 notice"><strong>高频币种：</strong>${escapeHtml(top)}。本页只读取结构化推送记录，不触发行情扫描；旧的 signal_events.json 仍保留给 AI 币种档案使用。</div>`
+      ].join("");
+    }
+    function signalFiltersPanel(filters) {
+      return `<div class="panel span-12">
+        <div class="toolbar" style="margin-bottom:0">
+          <select id="signalModuleFilter" onchange="loadSignals()">
+            <option value="" ${!filters.module ? "selected" : ""}>全部模块</option>
+            <option value="launch" ${filters.module === "launch" ? "selected" : ""}>启动雷达</option>
+            <option value="structure" ${filters.module === "structure" ? "selected" : ""}>结构雷达</option>
+            <option value="structure_review" ${filters.module === "structure_review" ? "selected" : ""}>结构复盘</option>
+            <option value="flow" ${filters.module === "flow" ? "selected" : ""}>资金流</option>
+            <option value="funding" ${filters.module === "funding" ? "selected" : ""}>资金费率</option>
+            <option value="announcement" ${filters.module === "announcement" ? "selected" : ""}>公告</option>
+            <option value="summary" ${filters.module === "summary" ? "selected" : ""}>摘要</option>
+            <option value="test" ${filters.module === "test" ? "selected" : ""}>测试</option>
+          </select>
+          <select id="signalStatusFilter" onchange="loadSignals()">
+            <option value="" ${!filters.status ? "selected" : ""}>全部状态</option>
+            <option value="sent" ${filters.status === "sent" ? "selected" : ""}>已发送</option>
+            <option value="dry_run" ${filters.status === "dry_run" ? "selected" : ""}>演练</option>
+            <option value="skipped" ${filters.status === "skipped" ? "selected" : ""}>跳过</option>
+            <option value="blocked" ${filters.status === "blocked" ? "selected" : ""}>已拦截</option>
+            <option value="failed" ${filters.status === "failed" ? "selected" : ""}>失败</option>
+          </select>
+          <input id="signalSymbolFilter" value="${escapeHtml(filters.symbol || "")}" placeholder="输入币种，例如 BTC 或 BTCUSDT" onkeydown="if(event.key==='Enter') loadSignals()">
+          <label class="status neutral" style="cursor:pointer"><input id="signalAnomalyFilter" type="checkbox" ${filters.anomaly ? "checked" : ""} onchange="loadSignals()"> 只看异常</label>
+          <button class="btn primary" type="button" onclick="loadSignals()">刷新</button>
+          <button class="btn" type="button" onclick="clearSignalFilters()">清空</button>
+        </div>
+      </div>`;
+    }
+    function signalRows(items) {
+      if (!items.length) return tableEmpty(8, "还没有匹配的信号推送记录", "如果刚更新完代码，等下一次 Telegram 推送后这里会自动出现；也可以先做一次 dry-run 或测试推送验证写入链路。");
+      return items.map(item => {
+        const messageIds = (item.message_ids || []).join(", ") || "-";
+        const stageScore = [item.stage || "", item.score !== null && item.score !== undefined ? `分数 ${item.score}` : ""].filter(Boolean).join(" · ") || "-";
+        const summary = item.excerpt || item.title || "";
+        return `<tr onclick="loadSignalDetail(${Number(item.id)})" style="cursor:pointer">
+          <td>${escapeHtml(item.time || "")}</td>
+          <td>${escapeHtml(item.module || "")}</td>
+          <td>${item.symbol ? `<code>${escapeHtml(item.symbol)}</code>` : "-"}</td>
+          <td>${escapeHtml(item.signal_type || item.template_id || "")}</td>
+          <td>${signalStatusPill(item.status)}</td>
+          <td>${escapeHtml(stageScore)}</td>
+          <td>${escapeHtml(summary.slice(0, 180))}</td>
+          <td><code>${escapeHtml(messageIds)}</code></td>
+        </tr>`;
+      }).join("");
+    }
+    function signalDetailPanel() {
+      const item = latestSignalDetail;
+      if (!item) {
+        return `<div class="panel span-12">${emptyState("请选择一条信号查看详情", "点击上面的信号列表行，可以查看原始文本、template_id、dedup_key、话题 ID、message_id 和同币时间线。")}</div>`;
+      }
+      const timeline = latestSignalTimeline || [];
+      const timelineHtml = timeline.length ? timeline.slice(0, 20).map(event => `<div class="feature-item">
+        <strong>${escapeHtml(event.time || "")} · ${escapeHtml(event.module || "")}</strong>
+        <span>${signalStatusPill(event.status)} ${signalSeverityPill(event.severity)}</span>
+        <div class="hint">${escapeHtml((event.excerpt || event.title || "").slice(0, 240))}</div>
+      </div>`).join("") : emptyState("还没有读取同币时间线", item.symbol ? "点击“读取同币时间线”后，会显示这个币最近的推送记录。" : "这条记录没有币种，通常是公告、摘要、测试或异常推送。");
+      return `<div class="panel span-12">
+        <div class="summary-head">
+          <h3 class="section-title">信号详情 #${escapeHtml(item.id || "")}</h3>
+          <div class="toolbar" style="margin:0">
+            ${item.symbol ? `<button class="btn" type="button" onclick="loadSignalTimeline('${escapeHtml(item.symbol)}')">读取同币时间线</button>` : ""}
+          </div>
+        </div>
+        <div class="readable-list">
+          ${row("状态", `${signalStatusPill(item.status)} ${signalSeverityPill(item.severity)}`)}
+          ${row("模板", `<code>${escapeHtml(item.template_id || "")}</code>`)}
+          ${row("去重键", `<code>${escapeHtml(item.dedup_key || "")}</code>`)}
+          ${row("话题 ID", textValue(item.topic_id || "-"))}
+          ${row("message_ids", `<code>${escapeHtml((item.message_ids || []).join(", ") || "-")}</code>`)}
+          ${row("回复上一条", textValue(item.reply_to_message_id || "-"))}
+        </div>
+        <details class="raw-details compact-details" open>
+          <summary>原始推送正文 <span class="summary-meta">text_html / excerpt</span></summary>
+          <div class="raw-body"><pre>${escapeHtml(item.text_html || item.excerpt || "")}</pre></div>
+        </details>
+        ${rawDetails("高级排查：payload_json", item.payload || {})}
+        <details class="raw-details compact-details" ${timeline.length ? "open" : ""}>
+          <summary>同币时间线 ${item.symbol ? `· ${escapeHtml(item.symbol)}` : ""}</summary>
+          <div class="raw-body"><div class="feature-list">${timelineHtml}</div></div>
+        </details>
+      </div>`;
+    }
+    function renderSignalsPage() {
+      const filters = signalFilters();
+      const items = (latestSignalsData.items || []);
+      const stats = latestSignalStats || {};
+      document.getElementById("signalsGrid").innerHTML = [
+        renderPageIntro("signals", [`${items.length} 条`, latestSignalsData.db_file || "signals.db"]),
+        signalStatsCards(stats),
+        signalFiltersPanel(filters),
+        `<div class="panel span-12">
+          <div class="summary-head">
+            <h3 class="section-title">信号列表</h3>
+            ${neutralPill(`本页 ${items.length} 条`)}
+          </div>
+          <table class="table">
+            <thead><tr><th>时间</th><th>模块</th><th>币种</th><th>类型</th><th>状态</th><th>分数/阶段</th><th>摘要</th><th>message_ids</th></tr></thead>
+            <tbody>${signalRows(items)}</tbody>
+          </table>
+        </div>`,
+        signalDetailPanel()
+      ].join("");
+    }
+    async function loadSignals() {
+      const filters = signalFilters();
+      const limit = filters.anomaly ? 200 : 50;
+      const [stats, data] = await Promise.all([
+        api("/api/signals/stats?window_sec=86400"),
+        api(`/api/signals?${signalFilterQuery(filters, limit)}`)
+      ]);
+      latestSignalStats = stats || {};
+      latestSignalsData = data || { items: [], next_cursor: null };
+      latestSignalsData.items = (latestSignalsData.items || []).filter(item => signalClientKeep(item, filters));
+      latestSignalsData.count = latestSignalsData.items.length;
+      latestSignalId = Math.max(latestSignalId, ...((latestSignalsData.items || []).map(item => Number(item.id || 0))), 0);
+      if (signalDetailId && !(latestSignalsData.items || []).some(item => Number(item.id) === Number(signalDetailId))) {
+        latestSignalDetail = null;
+        latestSignalTimeline = null;
+        signalDetailId = 0;
+      }
+      renderSignalsPage();
+      setSubtitle(`信号推送：${latestSignalsData.count || 0} 条，${autoRefreshEnabled && currentView === "signals" ? "5 秒增量刷新中" : "手动刷新"}`);
+    }
+    async function loadLatestSignals() {
+      const filters = signalFilters();
+      if (!latestSignalId) {
+        await loadSignals();
+        return;
+      }
+      const data = await api(`/api/signals/latest?after_id=${encodeURIComponent(latestSignalId)}&limit=100`);
+      const allIncoming = data.items || [];
+      if (allIncoming.length) {
+        latestSignalId = Math.max(latestSignalId, ...allIncoming.map(item => Number(item.id || 0)));
+      }
+      const incoming = allIncoming.filter(item => signalClientKeep(item, filters));
+      if (incoming.length) {
+        const map = new Map();
+        [...incoming, ...(latestSignalsData.items || [])].forEach(item => map.set(Number(item.id), item));
+        latestSignalsData.items = Array.from(map.values()).sort((a, b) => Number(b.id || 0) - Number(a.id || 0)).slice(0, 200);
+        latestSignalsData.count = latestSignalsData.items.length;
+      }
+      latestSignalStats = await api("/api/signals/stats?window_sec=86400");
+      renderSignalsPage();
+      setSubtitle(`信号推送：最新 ${incoming.length} 条，${autoRefreshEnabled && currentView === "signals" ? "5 秒增量刷新中" : "手动刷新"}`);
+    }
+    async function loadSignalDetail(id) {
+      signalDetailId = Number(id || 0);
+      const data = await api(`/api/signals/detail?id=${encodeURIComponent(signalDetailId)}`);
+      latestSignalDetail = data.item || null;
+      latestSignalTimeline = null;
+      renderSignalsPage();
+    }
+    async function loadSignalTimeline(symbol) {
+      const data = await api(`/api/symbol-timeline?symbol=${encodeURIComponent(symbol || "")}&limit=100`);
+      latestSignalTimeline = data.items || [];
+      renderSignalsPage();
+    }
+    function clearSignalFilters() {
+      const module = document.getElementById("signalModuleFilter");
+      const status = document.getElementById("signalStatusFilter");
+      const symbol = document.getElementById("signalSymbolFilter");
+      const anomaly = document.getElementById("signalAnomalyFilter");
+      if (module) module.value = "";
+      if (status) status.value = "";
+      if (symbol) symbol.value = "";
+      if (anomaly) anomaly.checked = false;
+      loadSignals();
+    }
     async function loadAiPrompts() {
       const data = await api("/api/ai-prompts");
       const prompts = data.prompts || {};
@@ -7373,6 +7749,10 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "config") await loadConfig();
         if (currentView === "ai") await loadAiAssistant();
         if (currentView === "price") await loadPriceAlerts();
+        if (currentView === "signals") {
+          if (isAuto) await loadLatestSignals();
+          else await loadSignals();
+        }
         if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
         if (currentView === "services") { setSubtitle("雷达后台服务开关，停止前会二次确认"); renderServices(); }
@@ -7509,6 +7889,38 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/ai-prompts":
             self.send_json(load_ai_prompts(Settings.load()))
+            return
+        if path == "/api/signals":
+            cursor_raw = query.get("cursor", [""])[0]
+            cursor = query_int_or(cursor_raw, 0) if cursor_raw else None
+            self.send_json(signals_payload(
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                cursor=cursor,
+                module=query.get("module", [""])[0],
+                symbol=query.get("symbol", [""])[0],
+                status=query.get("status", [""])[0],
+                severity=query.get("severity", [""])[0],
+            ))
+            return
+        if path == "/api/signals/latest":
+            self.send_json(signals_latest_payload(
+                after_id=max(0, query_int_or(query.get("after_id", ["0"])[0], 0)),
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+            ))
+            return
+        if path == "/api/signals/stats":
+            self.send_json(signals_stats_payload(
+                window_sec=max(1, query_int_or(query.get("window_sec", ["86400"])[0], 86400)),
+            ))
+            return
+        if path == "/api/symbol-timeline":
+            self.send_json(symbol_timeline_payload(
+                query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+            ))
+            return
+        if path == "/api/signals/detail":
+            self.send_json(signal_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
             return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]

@@ -108,6 +108,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(ai_fields["AI_REQUEST_TIMEOUT_SEC"]["value"], "120")
         self.assertEqual(ai_fields["AI_REQUEST_TIMEOUT_SEC"]["kind"], "int")
         self.assertIn("SIGNAL_EVENTS_FILE", ai_fields)
+        self.assertIn("SIGNAL_EVENTS_DB_FILE", ai_fields)
         self.assertEqual(ai_fields["SIGNAL_EVENTS_LIMIT"]["kind"], "int")
         self.assertEqual(ai_fields["SIGNAL_EVENTS_RETENTION_DAYS"]["kind"], "int")
 
@@ -1410,7 +1411,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("运行健康度", html)
         self.assertIn("最近错误", html)
         self.assertIn("更新备份", html)
-        self.assertIn('data-ui-version="v1.59.0"', html)
+        self.assertIn('data-ui-version="v1.60.0"', html)
         self.assertIn("platformStrip", html)
         self.assertIn("platform-pill", html)
         self.assertIn("Crypto Radar Ops", html)
@@ -1437,6 +1438,14 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("--sidebar", html)
         self.assertIn("--topbar", html)
         self.assertIn('data-view="price"', html)
+        self.assertIn('data-view="signals"', html)
+        self.assertIn('id="signalsGrid"', html)
+        self.assertIn("/api/signals", html)
+        self.assertIn("/api/signals/latest", html)
+        self.assertIn("/api/signals/stats", html)
+        self.assertIn("/api/symbol-timeline", html)
+        self.assertIn("/api/signals/detail", html)
+        self.assertIn("signals.db", html)
         self.assertIn('data-view="audit"', html)
         self.assertIn('data-view="report"', html)
         self.assertIn("/api/audit", html)
@@ -1559,6 +1568,42 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(meta["status"], 200)
         self.assertIn("served_at", meta)
         self.assertIn("request_id", meta)
+
+    def test_signal_web_payloads_return_expected_structures(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            store = web.signal_store_for_settings(settings)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:BTC",
+                status="sent",
+                sent=True,
+                text="BTCUSDT\n分数: 88",
+                ts=1000,
+                topic_id="12",
+                message_ids=[321],
+            )
+
+            listing = web.signals_payload(settings=settings, symbol="BTC", limit=10)
+            latest = web.signals_latest_payload(settings=settings, after_id=0)
+            stats = web.signals_stats_payload(settings=settings, window_sec=10**10)
+            timeline = web.symbol_timeline_payload("BTC", settings=settings)
+            detail = web.signal_detail_payload(listing["items"][0]["id"], settings=settings)
+
+        self.assertTrue(listing["ok"])
+        self.assertEqual(listing["count"], 1)
+        self.assertEqual(listing["items"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(listing["message"], "已读取信号推送记录")
+        self.assertTrue(latest["ok"])
+        self.assertEqual(latest["count"], 1)
+        self.assertEqual(stats["by_status"]["sent"], 1)
+        self.assertEqual(stats["top_symbols"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(timeline["symbol"], "BTCUSDT")
+        self.assertEqual(detail["item"]["message_ids"], [321])
 
     def test_send_json_wraps_dict_payload_with_api_meta(self) -> None:
         handler = object.__new__(web.WebHandler)

@@ -66,6 +66,35 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(len(history), 1)
             self.assertFalse(history[0]["sent"])
 
+    def test_signal_store_failure_does_not_block_history_record(self) -> None:
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with (
+                redirect_stdout(StringIO()),
+                patch("paopao_radar.signal_store.append_from_push", side_effect=RuntimeError("db down")),
+            ):
+                result = gateway.send(
+                    "BTCUSDT",
+                    "TG_LAUNCH_ALERT",
+                    "launch:store-failure",
+                    send=False,
+                    confirm_real_send=False,
+                )
+            history = JsonStore(Path(tmp)).load(history_path, [])
+
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["dedup_key"], "launch:store-failure")
+
     def test_signal_push_records_symbol_event_index(self) -> None:
         with TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "push_history.json"
