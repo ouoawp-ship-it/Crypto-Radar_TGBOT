@@ -1829,6 +1829,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("/api/update-status", html)
         self.assertIn("复制任务报告", html)
         self.assertIn("清理旧任务", html)
+        self.assertIn('attention: ["warning", "关注"]', html)
+        self.assertIn('["attention", "关注"]', html)
+        self.assertIn("last_attention_by_type", html)
 
     def test_jobs_audit_summary_stays_minimal(self) -> None:
         rerun = web.audit_request_summary("/api/jobs/rerun", {"id": 12, "stdout_tail": "secret"})

@@ -1,5 +1,9 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.62.1 维护说明
+
+v1.62.1 修正任务中心的 stable-check 展示口径：`stable-check` 返回码 1 代表“基本可运行，建议关注”，现在会显示为 `attention / 关注`，不再误判为失败任务，也不会进入 failed/timeout 问题中心；成功任务即使 stderr 里有 Git fetch 噪声，也不会生成错误摘要。
+
 轻量级加密市场观察雷达。默认 dry-run，包含一个本地 Web 控制台用于查看状态、日志和修改关键配置，不包含自动交易。
 
 ## 功能和推送周期
@@ -285,7 +289,7 @@ SIGNAL_EVENTS_RETENTION_DAYS=60
 
 `AI_MODEL` 只填写模型名本身，比如 `deepseek-v4-pro`，不要填写成 `AI_MODEL=deepseek-v4-pro`。使用 `deepseek-v4-pro` 或 `deepseek-v4-flash` 时，请求会自动按 DeepSeek v4 接口带上思考模式参数；如果接口返回 400，Web 和 AI Bot 会显示服务端返回的具体错误正文。`deepseek-v4-pro` 思考模式响应较慢，超时时可在 Web 后台把 `AI_REQUEST_TIMEOUT_SEC` 调到 120-180，或者临时改用 `deepseek-v4-flash`。
 
-Web 控制台的「AI 助手」页面用于查看 `paopao-ai` 服务状态、意图分流和提示词入口；「价格提醒」页面用于查看提醒统计、新增 Web 提醒、按状态/类型/关键词筛选提醒，并暂停、恢复或删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。`SIGNAL_EVENTS_FILE` 继续给 AI 币种档案读取旧 JSON 索引；`SIGNAL_EVENTS_DB_FILE` 是 Web「信号推送」页使用的结构化 SQLite 记录，通常保持默认即可。v1.60.1 增加 `signals.db` 兼容视图 `signal_events`，实际写入表仍为 `signals`，旧验收 SQL 和人工排查可以查询 `signal_events`。v1.61.0 起新增 `data/jobs.db` 后台任务库，稳定版验收、doctor、readiness、cleanup、更新检查和 Web API 自检进入 Web「任务中心」异步执行；任务详情只保存脱敏后的 stdout/stderr tail。v1.62.0 起任务中心增加任务统计、失败摘要、复制任务报告、重跑、旧任务清理和同类型长任务并发保护；failed/timeout 任务会进入诊断报告和问题中心。更新检查会结构化显示当前版本、远端版本和建议动作。真正更新代码仍建议在服务器执行 `paopao update --yes`，避免 Web 自更新时重启自身。
+Web 控制台的「AI 助手」页面用于查看 `paopao-ai` 服务状态、意图分流和提示词入口；「价格提醒」页面用于查看提醒统计、新增 Web 提醒、按状态/类型/关键词筛选提醒，并暂停、恢复或删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。`SIGNAL_EVENTS_FILE` 继续给 AI 币种档案读取旧 JSON 索引；`SIGNAL_EVENTS_DB_FILE` 是 Web「信号推送」页使用的结构化 SQLite 记录，通常保持默认即可。v1.60.1 增加 `signals.db` 兼容视图 `signal_events`，实际写入表仍为 `signals`，旧验收 SQL 和人工排查可以查询 `signal_events`。v1.61.0 起新增 `data/jobs.db` 后台任务库，稳定版验收、doctor、readiness、cleanup、更新检查和 Web API 自检进入 Web「任务中心」异步执行；任务详情只保存脱敏后的 stdout/stderr tail。v1.62.0 起任务中心增加任务统计、失败摘要、复制任务报告、重跑、旧任务清理和同类型长任务并发保护；failed/timeout 任务会进入诊断报告和问题中心。v1.62.1 起 stable-check 返回码 1 会显示为“关注”而不是失败，适合网络超时等非阻断观察项。更新检查会结构化显示当前版本、远端版本和建议动作。真正更新代码仍建议在服务器执行 `paopao update --yes`，避免 Web 自更新时重启自身。
 
 Web 控制台的「AI 助手」页提供「编辑 AI 提示词」入口，可以编辑泡泡 AI 助手提示词和专业分析师提示词。泡泡 AI 助手用于日常问答、生活问题、状态解释和提醒说明，默认语气更轻松；专业分析师用于 `分析这段：...`、`帮我分析...` 以及自动识别出的雷达/市场数据。提示词默认保存在 `data/ai_prompts.json`，保存后会自动重启 `paopao-ai`。
 
@@ -452,4 +456,4 @@ paopao
 
 中文菜单里的“更新项目代码”会在拉取新代码后安全同步 `.env.oi`：新增的普通配置项会自动补上，明确列入迁移白名单的默认参数会自动升级；`TG_BOT_TOKEN`、`TG_CHAT_ID`、`COINALYZE_API_KEY` 和各类话题 ID 不会被覆盖。
 
-项目版本号写在 `VERSION` 文件里，当前为 `v1.62.0`，这是 v1 完整稳定版后的任务中心增强和 Web 诊断/更新闭环优化版本；中文菜单检查/更新时会同时显示版本号和 git 提交号。
+项目版本号写在 `VERSION` 文件里，当前为 `v1.62.1`，这是 v1 完整稳定版后的任务中心状态口径维护版本；中文菜单检查/更新时会同时显示版本号和 git 提交号。

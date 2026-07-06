@@ -18,13 +18,14 @@ from ..config import BASE_DIR, Settings
 
 
 DEFAULT_JOBS_DB_PATH = BASE_DIR / "data" / "jobs.db"
-JOB_STATUSES = {"queued", "running", "success", "failed", "timeout", "cancelled"}
+JOB_STATUSES = {"queued", "running", "success", "attention", "failed", "timeout", "cancelled"}
 JOB_STDOUT_LIMIT = 12000
 JOB_STDERR_LIMIT = 6000
 JOB_ERROR_LIMIT = 1000
 JOB_REPORT_TAIL_LIMIT = 12000
 CONCURRENT_GUARD_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test"}
 ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
+STABLE_CHECK_ATTENTION_RE = re.compile(r"(状态|摘要|网络重试噪声|日志稳定性):\s*(.+)")
 
 
 def zh(text: str) -> str:
@@ -99,6 +100,27 @@ def _row_to_job(row: sqlite3.Row | None) -> dict[str, Any] | None:
     item["command"] = _json_loads(str(item.pop("command_json", "[]")), [])
     item["metadata"] = _json_loads(str(item.pop("metadata_json", "{}")), {})
     return item
+
+
+def normalized_job_status(job: dict[str, Any] | None) -> str:
+    item = job or {}
+    status = str(item.get("status") or "")
+    job_type = str(item.get("job_type") or "")
+    try:
+        returncode = int(item.get("returncode") or 0)
+    except (TypeError, ValueError):
+        returncode = 0
+    if job_type == "stable-check" and status == "failed" and returncode == 1:
+        return "attention"
+    return status
+
+
+def job_status_from_returncode(spec: JobSpec, returncode: int) -> str:
+    if int(returncode) == 0:
+        return "success"
+    if spec.job_type == "stable-check" and int(returncode) == 1:
+        return "attention"
+    return "failed"
 
 
 @dataclass
@@ -198,8 +220,15 @@ class JobStore:
         where: list[str] = []
         params: list[Any] = []
         if status:
-            where.append("status = ?")
-            params.append(status)
+            if status == "attention":
+                where.append("(status = ? OR (job_type = 'stable-check' AND status = 'failed' AND returncode = 1))")
+                params.append(status)
+            elif status == "failed":
+                where.append("(status = ? AND NOT (job_type = 'stable-check' AND returncode = 1))")
+                params.append(status)
+            else:
+                where.append("status = ?")
+                params.append(status)
         if job_type:
             where.append("job_type = ?")
             params.append(job_type)
@@ -277,6 +306,17 @@ class JobStore:
                 """
                 SELECT * FROM jobs
                 WHERE status IN ('failed', 'timeout')
+                  AND NOT (job_type = 'stable-check' AND status = 'failed' AND returncode = 1)
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit_recent or 10)),),
+            ).fetchall()
+            recent_attention_rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status = 'attention'
+                   OR (job_type = 'stable-check' AND status = 'failed' AND returncode = 1)
                 ORDER BY updated_at DESC, id DESC
                 LIMIT ?
                 """,
@@ -294,39 +334,56 @@ class JobStore:
             latest_rows = conn.execute(
                 """
                 SELECT * FROM jobs
-                WHERE id IN (
-                  SELECT MAX(id) FROM jobs GROUP BY job_type, status
-                )
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 500
                 """
             ).fetchall()
+            attention_compat = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM jobs
+                    WHERE job_type = 'stable-check' AND status = 'failed' AND returncode = 1
+                    """
+                ).fetchone()["c"]
+            )
         counts = {status: 0 for status in JOB_STATUSES}
         for row in status_rows:
             counts[str(row["status"])] = int(row["c"])
+        if attention_compat:
+            counts["failed"] = max(0, counts.get("failed", 0) - attention_compat)
+            counts["attention"] = counts.get("attention", 0) + attention_compat
         last_success_by_type: dict[str, dict[str, Any]] = {}
+        last_attention_by_type: dict[str, dict[str, Any]] = {}
         last_failed_by_type: dict[str, dict[str, Any]] = {}
         for row in latest_rows:
             job = _row_to_job(row) or {}
             job_type = str(job.get("job_type") or "")
-            status = str(job.get("status") or "")
-            if status == "success":
+            status = normalized_job_status(job)
+            if status == "success" and job_type not in last_success_by_type:
                 last_success_by_type[job_type] = compact_job(job)
-            if status in {"failed", "timeout"}:
+            if status == "attention" and job_type not in last_attention_by_type:
+                last_attention_by_type[job_type] = compact_job(job)
+            if status in {"failed", "timeout"} and job_type not in last_failed_by_type:
                 last_failed_by_type[job_type] = compact_job(job)
         recent_failed = [compact_job(_row_to_job(row) or {}) for row in recent_failed_rows]
+        recent_attention = [compact_job(_row_to_job(row) or {}) for row in recent_attention_rows]
         recent_running = [compact_job(_row_to_job(row) or {}) for row in recent_running_rows]
         return {
             "total": total,
             "running": counts.get("running", 0),
             "queued": counts.get("queued", 0),
             "success": counts.get("success", 0),
+            "attention": counts.get("attention", 0),
             "failed": counts.get("failed", 0),
             "timeout": counts.get("timeout", 0),
             "cancelled": counts.get("cancelled", 0),
             "recent_failed": recent_failed,
+            "recent_attention": recent_attention,
             "recent_running": recent_running,
             "by_type": {str(row["job_type"]): int(row["c"]) for row in type_rows},
             "by_status": counts,
             "last_success_by_type": last_success_by_type,
+            "last_attention_by_type": last_attention_by_type,
             "last_failed_by_type": last_failed_by_type,
         }
 
@@ -417,11 +474,12 @@ def sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_job(job: dict[str, Any]) -> dict[str, Any]:
+    status = normalized_job_status(job)
     return {
         "id": job.get("id"),
         "job_type": job.get("job_type", ""),
         "label": job.get("label", ""),
-        "status": job.get("status", ""),
+        "status": status,
         "returncode": job.get("returncode"),
         "created_at": job.get("created_at"),
         "started_at": job.get("started_at"),
@@ -434,6 +492,12 @@ def compact_job(job: dict[str, Any]) -> dict[str, Any]:
 
 def extract_job_error_summary(job: dict[str, Any] | None) -> str:
     item = job or {}
+    status = normalized_job_status(item)
+    if status == "success":
+        return ""
+    if status == "attention" and str(item.get("job_type") or "") == "stable-check":
+        summary = stable_check_attention_summary(str(item.get("stdout_tail") or ""))
+        return summary or zh(r"\u7a33\u5b9a\u7248\u81ea\u68c0\uff1a\u57fa\u672c\u53ef\u8fd0\u884c\uff0c\u5efa\u8bae\u5173\u6ce8\u3002")
     candidates: list[str] = []
     error = str(item.get("error") or "").strip()
     if error:
@@ -451,16 +515,49 @@ def extract_job_error_summary(job: dict[str, Any] | None) -> str:
     return _limit(candidates[0], 500)
 
 
+def stable_check_attention_summary(stdout: str) -> str:
+    status_text = ""
+    summary_text = ""
+    noise_text = ""
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = STABLE_CHECK_ATTENTION_RE.search(line)
+        if not match:
+            continue
+        key = match.group(1)
+        value = match.group(2).strip()
+        if key == "状态" and not status_text:
+            status_text = value
+        elif key == "摘要" and not summary_text:
+            summary_text = value
+        elif key in {"网络重试噪声", "日志稳定性"} and ("超时" in value or "关注" in value) and not noise_text:
+            noise_text = value
+    parts = []
+    if status_text:
+        parts.append(f"稳定版自检：{status_text}")
+    if summary_text:
+        parts.append(f"原因：{summary_text}")
+    if noise_text:
+        parts.append(f"观察项：{noise_text}")
+    if parts:
+        parts.append("影响：非阻断，服务仍可运行")
+    return _limit("；".join(parts), 500)
+
+
 def job_next_action(job: dict[str, Any] | None) -> str:
     item = job or {}
     job_type = str(item.get("job_type") or "")
-    status = str(item.get("status") or "")
+    status = normalized_job_status(item)
     if status in {"queued", "running"}:
         return zh(r"\u4efb\u52a1\u8fd8\u5728\u6267\u884c\uff0c\u7b49\u5f85\u5b8c\u6210\u540e\u518d\u67e5\u770b\u8be6\u60c5\u3002")
     if status == "success":
         if job_type == "update-check":
             return zh(r"\u66f4\u65b0\u68c0\u67e5\u5df2\u5b8c\u6210\uff1b\u771f\u6b63\u66f4\u65b0\u8bf7\u5728\u670d\u52a1\u5668\u6267\u884c paopao update --yes\u3002")
         return zh(r"\u4efb\u52a1\u5df2\u6210\u529f\uff0c\u53ef\u7ee7\u7eed\u89c2\u5bdf\u6216\u4fdd\u7559\u62a5\u544a\u3002")
+    if status == "attention":
+        return zh(r"\u8fd9\u662f\u89c2\u5bdf\u9879\uff0c\u4e0d\u662f\u4ee3\u7801\u9519\u8bef\u3002\u82e5\u63a8\u9001\u548c AI Bot \u6b63\u5e38\uff0c\u53ef\u7ee7\u7eed\u89c2\u5bdf\uff1b\u5982\u679c\u8d85\u65f6\u6301\u7eed\u589e\u52a0\uff0c\u518d\u68c0\u67e5\u670d\u52a1\u5668\u5230 Telegram/API \u7684\u7f51\u7edc\u3002")
     if job_type == "stable-check":
         return zh(r"\u5148\u67e5\u770b\u672c\u4efb\u52a1\u7684 stderr/stdout\uff0c\u518d\u6253\u5f00\u8bca\u65ad\u62a5\u544a\u6309\u5904\u7406\u6e05\u5355\u6392\u67e5\u3002")
     if job_type == "update-check":
@@ -473,11 +570,12 @@ def job_next_action(job: dict[str, Any] | None) -> str:
 def job_report_payload_from_item(job: dict[str, Any]) -> dict[str, Any]:
     command = job.get("command") if isinstance(job.get("command"), list) else []
     metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    status = normalized_job_status(job)
     report = {
         "id": job.get("id"),
         "job_type": job.get("job_type", ""),
         "label": job.get("label", ""),
-        "status": job.get("status", ""),
+        "status": status,
         "returncode": job.get("returncode"),
         "created_at": job.get("created_at"),
         "started_at": job.get("started_at"),
@@ -595,13 +693,14 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
             timeout=spec.timeout_sec,
             shell=False,
         )
+        status = job_status_from_returncode(spec, int(completed.returncode))
         return store.finish_job(
             job_id,
-            status="success" if completed.returncode == 0 else "failed",
+            status=status,
             returncode=int(completed.returncode),
             stdout_tail=completed.stdout,
             stderr_tail=completed.stderr,
-            error="" if completed.returncode == 0 else completed.stderr or completed.stdout,
+            error="" if status in {"success", "attention"} else completed.stderr or completed.stdout,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
@@ -640,6 +739,7 @@ def store_for_settings(settings: Settings | None = None) -> JobStore:
 
 def enrich_job(job: dict[str, Any]) -> dict[str, Any]:
     item = dict(job)
+    item["status"] = normalized_job_status(item)
     item["error_summary"] = extract_job_error_summary(item)
     item["next_action"] = job_next_action(item)
     return item
@@ -709,14 +809,17 @@ def jobs_stats_payload(*, settings: Settings | None = None) -> dict[str, Any]:
             "running": 0,
             "queued": 0,
             "success": 0,
+            "attention": 0,
             "failed": 0,
             "timeout": 0,
             "cancelled": 0,
             "recent_failed": [],
+            "recent_attention": [],
             "recent_running": [],
             "by_type": {},
             "by_status": {},
             "last_success_by_type": {},
+            "last_attention_by_type": {},
             "last_failed_by_type": {},
             "error": message,
             "message": message,

@@ -75,6 +75,84 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual(finished["returncode"], 2)  # type: ignore[index]
         self.assertIn("bad", finished["stdout_tail"])  # type: ignore[index]
 
+    def test_stable_check_returncode_one_is_attention(self) -> None:
+        stable_output = (
+            "泡泡雷达稳定版自检\n"
+            "状态: 基本可运行，建议关注\n"
+            "摘要: 1 个警告项，不一定阻断运行，但建议确认。\n"
+            "网络重试噪声: 关注 - 近期可自动重试的网络超时 11 条。\n"
+        )
+        spec = jobs.JobSpec(
+            "stable-check",
+            "stable check",
+            [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({stable_output.encode('utf-8')!r}); sys.exit(1)"],
+            10,
+        )
+        with TemporaryDirectory() as tmp, patch.dict(jobs.JOB_SPECS, {"stable-check": spec}):
+            store = jobs.JobStore(Path(tmp) / "jobs.db")
+            job = store.create_job("stable-check")
+            finished = jobs.run_job_sync_for_tests(store, int(job["id"]))
+            enriched = jobs.enrich_job(finished or {})
+            stats = store.stats()
+
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "attention")  # type: ignore[index]
+        self.assertEqual(finished["returncode"], 1)  # type: ignore[index]
+        self.assertEqual(enriched["status"], "attention")
+        self.assertIn("稳定版自检", enriched["error_summary"])
+        self.assertIn("非阻断", enriched["error_summary"])
+        self.assertIn("观察项", enriched["next_action"])
+        self.assertEqual(stats["attention"], 1)
+        self.assertEqual(stats["failed"], 0)
+        self.assertEqual(len(stats["recent_failed"]), 0)
+        self.assertEqual(len(stats["recent_attention"]), 1)
+        self.assertIn("stable-check", stats["last_attention_by_type"])
+
+    def test_legacy_stable_check_failed_returncode_one_displays_attention(self) -> None:
+        stable_output = (
+            "状态: 基本可运行，建议关注\n"
+            "摘要: 1 个警告项，不一定阻断运行，但建议确认。\n"
+        )
+        with TemporaryDirectory() as tmp:
+            store = jobs.JobStore(Path(tmp) / "jobs.db")
+            job = store.create_job("stable-check")
+            finished = store.finish_job(
+                int(job["id"]),
+                status="failed",
+                returncode=1,
+                stdout_tail=stable_output,
+                error=stable_output,
+            )
+            enriched = jobs.enrich_job(finished or {})
+            report = jobs.job_report_payload_from_item(finished or {})
+            stats = store.stats()
+            filtered_attention = store.list_jobs(status="attention")
+            filtered_failed = store.list_jobs(status="failed")
+
+        self.assertEqual(enriched["status"], "attention")
+        self.assertEqual(report["status"], "attention")
+        self.assertEqual(stats["attention"], 1)
+        self.assertEqual(stats["failed"], 0)
+        self.assertEqual(len(stats["recent_failed"]), 0)
+        self.assertEqual(len(filtered_attention), 1)
+        self.assertEqual(len(filtered_failed), 0)
+
+    def test_success_job_has_no_error_summary_even_with_stderr_noise(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = jobs.JobStore(Path(tmp) / "jobs.db")
+            job = store.create_job("update-check")
+            finished = store.finish_job(
+                int(job["id"]),
+                status="success",
+                returncode=0,
+                stdout_tail="当前已经是最新版本，不需要更新。",
+                stderr_tail="* branch            main       -> FETCH_HEAD",
+            )
+            enriched = jobs.enrich_job(finished or {})
+
+        self.assertEqual(enriched["status"], "success")
+        self.assertEqual(enriched["error_summary"], "")
+
     def test_timeout_job_records_timeout_status(self) -> None:
         spec = jobs.JobSpec(
             "test-timeout",
@@ -178,6 +256,7 @@ class JobStoreTests(unittest.TestCase):
             stats = store.stats()
 
         self.assertEqual(stats["success"], 1)
+        self.assertEqual(stats["attention"], 0)
         self.assertEqual(stats["failed"], 1)
         self.assertEqual(stats["timeout"], 1)
         self.assertEqual(stats["running"], 1)

@@ -5854,8 +5854,9 @@ INDEX_HTML = r"""<!doctype html>
     function jobsSummaryPanel(jobs) {
       const data = jobs || {};
       const failed = Number(data.failed || 0) + Number(data.timeout || 0);
+      const attention = Number(data.attention || 0);
       const running = Number(data.running || 0) + Number(data.queued || 0);
-      const stable = (data.last_success_by_type && data.last_success_by_type["stable-check"]) || (data.last_failed_by_type && data.last_failed_by_type["stable-check"]) || {};
+      const stable = (data.last_attention_by_type && data.last_attention_by_type["stable-check"]) || (data.last_success_by_type && data.last_success_by_type["stable-check"]) || (data.last_failed_by_type && data.last_failed_by_type["stable-check"]) || {};
       return `<div class="panel span-12">
         <div class="summary-head">
           <div>
@@ -5867,6 +5868,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="mini-metrics">
           <div class="mini-metric"><div class="label">运行中</div><div class="value">${neutralPill(String(running))}</div><div class="muted">queued + running</div></div>
           <div class="mini-metric"><div class="label">最近失败</div><div class="value">${failed ? statusPill(String(failed), false) : neutralPill("0")}</div><div class="muted">进入问题中心</div></div>
+          <div class="mini-metric"><div class="label">关注项</div><div class="value">${attention ? warnPill(String(attention)) : neutralPill("0")}</div><div class="muted">非阻断观察</div></div>
           <div class="mini-metric"><div class="label">任务总数</div><div class="value">${neutralPill(String(data.total || 0))}</div><div class="muted">当前保留</div></div>
           <div class="mini-metric"><div class="label">最近验收</div><div class="value">${stable.status ? jobStatusPill(stable.status) : neutralPill("暂无")}</div><div class="muted">stable-check job</div></div>
         </div>
@@ -6190,7 +6192,7 @@ INDEX_HTML = r"""<!doctype html>
       lines.push("");
       const jobs = data.jobs || {};
       lines.push("后台任务状态:");
-      lines.push(`- 统计: 全部 ${jobs.total || 0} | 排队 ${jobs.queued || 0} | 运行 ${jobs.running || 0} | 成功 ${jobs.success || 0} | 失败 ${jobs.failed || 0} | 超时 ${jobs.timeout || 0} | 已取消 ${jobs.cancelled || 0}`);
+      lines.push(`- 统计: 全部 ${jobs.total || 0} | 排队 ${jobs.queued || 0} | 运行 ${jobs.running || 0} | 成功 ${jobs.success || 0} | 关注 ${jobs.attention || 0} | 失败 ${jobs.failed || 0} | 超时 ${jobs.timeout || 0} | 已取消 ${jobs.cancelled || 0}`);
       const failedJobs = jobs.recent_failed || [];
       if (!failedJobs.length) {
         lines.push("- 最近失败/超时: 暂无");
@@ -6750,12 +6752,13 @@ INDEX_HTML = r"""<!doctype html>
               <h3 class="section-title">后台任务状态</h3>
               <div class="summary-meta">只展示任务统计和失败摘要，不包含 stdout/stderr 全文。</div>
             </div>
-            <div class="issue-meta">${failedJobs.length ? statusPill(`${failedJobs.length} 个失败/超时`, false) : neutralPill("无失败任务")}${neutralPill(`${jobs.running || 0} 运行中`)}</div>
+            <div class="issue-meta">${failedJobs.length ? statusPill(`${failedJobs.length} 个失败/超时`, false) : neutralPill("无失败任务")}${Number(jobs.attention || 0) ? warnPill(`${jobs.attention} 个关注`) : ""}${neutralPill(`${jobs.running || 0} 运行中`)}</div>
           </div>
           <div class="mini-metrics">
             <div class="mini-metric"><div class="label">全部任务</div><div class="value">${neutralPill(String(jobs.total || 0))}</div><div class="muted">jobs.db</div></div>
             <div class="mini-metric"><div class="label">排队/运行</div><div class="value">${Number(jobs.queued || 0) + Number(jobs.running || 0) ? neutralPill(String(Number(jobs.queued || 0) + Number(jobs.running || 0))) : neutralPill("0")}</div><div class="muted">后台线程</div></div>
             <div class="mini-metric"><div class="label">成功</div><div class="value">${neutralPill(String(jobs.success || 0))}</div><div class="muted">历史成功</div></div>
+            <div class="mini-metric"><div class="label">关注</div><div class="value">${Number(jobs.attention || 0) ? warnPill(String(jobs.attention || 0)) : neutralPill("0")}</div><div class="muted">非阻断观察</div></div>
             <div class="mini-metric"><div class="label">失败/超时</div><div class="value">${failedJobs.length ? statusPill(String(failedJobs.length), false) : neutralPill("0")}</div><div class="muted">进入问题中心</div></div>
           </div>
           ${failedJobs.length ? `<div class="feature-list" style="margin-top:10px">${failedJobs.slice(0, 5).map(job => `<div class="feature-item"><strong>#${escapeHtml(job.id)} ${escapeHtml(job.job_type || "")}</strong><span class="muted">${escapeHtml(job.status || "")} · ${escapeHtml(job.error_summary || "无错误摘要")}</span></div>`).join("")}</div>` : emptyState("最近没有失败或超时任务", "任务中心仍会保留成功任务、运行中任务和 stdout/stderr tail。")}
@@ -7271,6 +7274,7 @@ INDEX_HTML = r"""<!doctype html>
         queued: ["neutral", "排队中"],
         running: ["warning", "运行中"],
         success: ["ok", "成功"],
+        attention: ["warning", "关注"],
         failed: ["bad", "失败"],
         timeout: ["warning", "超时"],
         cancelled: ["neutral", "已取消"]
@@ -7350,12 +7354,13 @@ INDEX_HTML = r"""<!doctype html>
     function jobStatsCards() {
       const stats = latestJobsStats || {};
       const failedTotal = Number(stats.failed || 0) + Number(stats.timeout || 0);
-      const stable = (stats.last_success_by_type && stats.last_success_by_type["stable-check"]) || (stats.last_failed_by_type && stats.last_failed_by_type["stable-check"]) || {};
+      const stable = (stats.last_attention_by_type && stats.last_attention_by_type["stable-check"]) || (stats.last_success_by_type && stats.last_success_by_type["stable-check"]) || (stats.last_failed_by_type && stats.last_failed_by_type["stable-check"]) || {};
       const update = (stats.last_success_by_type && stats.last_success_by_type["update-check"]) || (stats.last_failed_by_type && stats.last_failed_by_type["update-check"]) || {};
       return [
         metric("全部任务", escapeHtml(stats.total ?? 0), `<div class="muted">jobs.db 当前记录</div>`),
         metric("运行中", escapeHtml((Number(stats.running || 0) + Number(stats.queued || 0))), `<div class="muted">running / queued</div>`),
         metric("成功", escapeHtml(stats.success ?? 0), `<div class="muted">最近保留范围内</div>`),
+        metric("关注", Number(stats.attention || 0) ? warnPill(String(stats.attention || 0)) : neutralPill("0"), `<div class="muted">stable-check 非阻断观察</div>`),
         metric("失败/超时", failedTotal ? statusPill(String(failedTotal), false) : neutralPill("0"), `<div class="muted">会进入问题中心</div>`),
         metric("最近 stable-check", stable.status ? jobStatusPill(stable.status) : neutralPill("暂无"), `<div class="muted">${escapeHtml(jobTime(stable.updated_at || stable.finished_at || 0))}</div>`),
         metric("最近 update-check", update.status ? jobStatusPill(update.status) : neutralPill("暂无"), `<div class="muted">更新仍用 paopao update --yes</div>`)
@@ -7387,6 +7392,7 @@ INDEX_HTML = r"""<!doctype html>
                 ["queued", "排队中"],
                 ["running", "运行中"],
                 ["success", "成功"],
+                ["attention", "关注"],
                 ["failed", "失败"],
                 ["timeout", "超时"],
                 ["cancelled", "已取消"]
@@ -7414,7 +7420,7 @@ INDEX_HTML = r"""<!doctype html>
         <td>
           <button class="btn" type="button" onclick="loadJobDetail(${Number(job.id)})">详情</button>
           <button class="btn" type="button" onclick="copyJobReport(${Number(job.id)})">复制报告</button>
-          ${["failed", "timeout", "success", "cancelled"].includes(String(job.status || "")) ? `<button class="btn blue" type="button" onclick="rerunJob(${Number(job.id)})">重跑</button>` : ""}
+          ${["attention", "failed", "timeout", "success", "cancelled"].includes(String(job.status || "")) ? `<button class="btn blue" type="button" onclick="rerunJob(${Number(job.id)})">重跑</button>` : ""}
           ${job.status === "queued" ? `<button class="btn danger" type="button" onclick="cancelJob(${Number(job.id)})">取消</button>` : ""}
         </td>
       </tr>`).join("");
@@ -7434,7 +7440,7 @@ INDEX_HTML = r"""<!doctype html>
           ${row("命令", `<code>${escapeHtml((job.command || []).join(" "))}</code>`)}
           ${row("Return Code", textValue(job.returncode, "-"))}
           ${row("耗时", textValue(jobDuration(job), "-"))}
-          ${row("错误摘要", job.error_summary ? `<span class="status bad">${escapeHtml(job.error_summary)}</span>` : neutralPill("无"))}
+          ${row("错误摘要", job.error_summary ? `<span class="status ${job.status === "attention" ? "warning" : "bad"}">${escapeHtml(job.error_summary)}</span>` : neutralPill("无"))}
           ${row("下一步", textValue(job.next_action || "查看 stdout/stderr，必要时重跑任务。"))}
         </div>
         <div class="toolbar" style="margin:10px 0">
