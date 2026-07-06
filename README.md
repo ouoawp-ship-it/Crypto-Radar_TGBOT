@@ -1,5 +1,10 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.66.0 说明
+
+v1.66.0 深化 Signal Timeline：新增轻量全局「信号时间线」入口，并增强 Coin Detail 的按日期分组时间线。时间线支持币种、模块、状态、关键词和时间窗口筛选，Timeline item 可直接打开 Signal Detail，便于按事件顺序排查某个币种或全局信号的发送、跳过、失败和 Telegram 记录。
+本版本只做 Web 展示和只读查询增强，数据仍然全部来自 `signals.db` / `signal_events` 兼容视图；不触发行情扫描，不新增外部数据源，不改变 `signals.db` / `jobs.db` 结构，也不改变 Telegram 推送主流程。
+
 ## v1.65.0 说明
 
 v1.65.0 新增 Web「Coin Detail / 币种详情」页面：可以从 Signal Card 或 Dashboard 最新信号直接进入 BTC/BTCUSDT 等单币种视角，查看该币种最近信号时间线、模块分布、状态统计、最新同币种 Signal Card、Telegram message/topic 记录和单条信号详情。

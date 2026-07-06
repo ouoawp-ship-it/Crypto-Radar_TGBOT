@@ -47,6 +47,7 @@ from .web_services.signals import (
     signal_detail_view,
     signal_stats_display,
 )
+from .web_services.timeline import timeline_payload
 
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
@@ -3999,8 +4000,14 @@ INDEX_HTML = r"""<!doctype html>
       padding: 10px;
       background: #fff;
       cursor: pointer;
+      transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
     }
     .coin-timeline-item:hover { border-color: #b8cbe1; box-shadow: var(--shadow); }
+    .coin-timeline-item.selected {
+      border-color: #7aa7d9;
+      box-shadow: 0 0 0 3px rgba(42, 118, 198, .12), var(--shadow);
+      transform: translateY(-1px);
+    }
     .coin-empty { border: 1px dashed var(--line-strong); border-radius: 8px; padding: 18px; background: #f8fafc; color: var(--muted); }
     .coin-health-badge.good { color: var(--good); }
     .coin-health-badge.warn { color: #b77900; }
@@ -4760,6 +4767,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="price"><span class="nav-dot"></span><span class="nav-text"><strong>价格提醒</strong><small>监控列表</small></span></button>
         <button data-view="signals"><span class="nav-dot"></span><span class="nav-text"><strong>信号推送</strong><small>结构化记录</small></span></button>
         <button data-view="coin"><span class="nav-dot"></span><span class="nav-text"><strong>Coin Detail</strong><small>单币种情报</small></span></button>
+        <button data-view="timeline"><span class="nav-dot"></span><span class="nav-text"><strong>信号时间线</strong><small>全局 Timeline</small></span></button>
         <button data-view="jobs"><span class="nav-dot"></span><span class="nav-text"><strong>任务中心</strong><small>后台长任务</small></span></button>
         <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
       </nav>
@@ -4865,6 +4873,10 @@ INDEX_HTML = r"""<!doctype html>
         <div class="grid" id="coinGrid"></div>
       </section>
 
+      <section id="timeline" class="view hidden">
+        <div class="grid" id="timelineGrid"></div>
+      </section>
+
       <section id="jobs" class="view hidden">
         <div class="grid" id="jobsGrid"></div>
         <pre id="jobOutput" class="output"></pre>
@@ -4904,6 +4916,7 @@ INDEX_HTML = r"""<!doctype html>
       price: "价格提醒",
       signals: "信号推送",
       coin: "Coin Detail",
+      timeline: "信号时间线",
       jobs: "任务中心",
       prompts: "AI 提示词",
       services: "雷达服务",
@@ -4951,6 +4964,12 @@ INDEX_HTML = r"""<!doctype html>
         title: "Coin Detail",
         desc: "按 BTC / BTCUSDT 查看单币种的信号时间线、模块分布、状态统计和 Telegram 记录。本页只读 signals.db，不触发行情扫描。",
         tags: ["signals.db", "单币种", "低频刷新"]
+      },
+      timeline: {
+        kicker: "Signal Timeline",
+        title: "信号时间线",
+        desc: "按日期查看全局或单币种信号事件，支持币种、模块、状态和关键词筛选。数据只来自 signals.db，不触发行情扫描。",
+        tags: ["signals.db", "Timeline", "只读查询"]
       },
       jobs: {
         kicker: "后台任务",
@@ -5255,6 +5274,9 @@ INDEX_HTML = r"""<!doctype html>
     let latestCoinSearchData = { items: [] };
     let latestCoinSignalDetail = null;
     let latestCoinSignalDetailView = null;
+    let latestTimelineData = { items: [], groups: [], summary: {} };
+    let latestTimelineDetail = null;
+    let latestTimelineDetailView = null;
     let latestJobsData = { jobs: [] };
     let latestJobsStats = {};
     let latestJobFilters = { job_type: "", status: "", failedOnly: false };
@@ -5262,7 +5284,7 @@ INDEX_HTML = r"""<!doctype html>
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
     let refreshInFlight = false;
-    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, coin: 30000, jobs: 3000 };
+    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, coin: 30000, timeline: 30000, jobs: 3000 };
     const configCategories = [
       {
         id: "home",
@@ -8325,6 +8347,23 @@ INDEX_HTML = r"""<!doctype html>
       const key = String(tone || "neutral").toLowerCase();
       return ["good", "warn", "bad", "info", "neutral"].includes(key) ? key : "neutral";
     }
+    function loadingPanel(text = "\u6b63\u5728\u8bfb\u53d6...") {
+      return `<div class="panel span-12 signal-empty"><div class="empty"><strong>${escapeHtml(text)}</strong><span>\u8bf7\u7a0d\u5019\uff0c\u9875\u9762\u4e0d\u4f1a\u89e6\u53d1\u884c\u60c5\u626b\u63cf\u3002</span></div></div>`;
+    }
+    function emptyPanel(title, desc) {
+      return `<div class="signal-empty">${emptyState(title, desc)}</div>`;
+    }
+    function errorPanel(message, retry = "refreshCurrent()") {
+      return `<div class="panel span-12 signal-error">
+        <h3 class="section-title">\u8bfb\u53d6\u5931\u8d25</h3>
+        <div class="hint">${escapeHtml(message || "\u63a5\u53e3\u8fd4\u56de\u5f02\u5e38")}</div>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="btn primary" type="button" onclick="${retry}">\u91cd\u8bd5</button>
+          <button class="btn" type="button" onclick="switchView('report')">\u8bca\u65ad\u62a5\u544a</button>
+          <button class="btn" type="button" onclick="switchView('logs')">\u65e5\u5fd7\u4e2d\u5fc3</button>
+        </div>
+      </div>`;
+    }
     function signalDisplay(item) {
       return item && item.display ? item.display : {
         title: item?.title || item?.signal_type || item?.template_id || `Signal #${item?.id || ""}`,
@@ -8615,22 +8654,118 @@ INDEX_HTML = r"""<!doctype html>
         </div>`;
       }).join("")}</div>`;
     }
+    function timelineEventDisplay(event) {
+      const signal = event.signal || event;
+      const display = event.display || signalDisplay(signal);
+      return {
+        id: Number(event.id || signal.id || 0),
+        time_label: event.time_label || display.time_label || signal.time || "-",
+        date_label: event.date_label || String(signal.time || "").slice(0, 10) || "-",
+        module_label: event.module_label || display.module_label || signal.module || "-",
+        status_label: event.status_label || display.status_label || signal.status || "-",
+        tone: signalToneClass(event.tone || display.card_tone),
+        title: event.title || display.title || "",
+        summary: event.summary || display.summary || "",
+        score_label: event.score_label || display.score_label || "-",
+        stage_label: event.stage_label || display.stage_label || "-",
+        symbol: event.symbol || signal.symbol || "",
+        telegram: event.telegram || { message_ids: signal.message_ids || [] }
+      };
+    }
+    function timelineSummaryBar(summary = {}) {
+      return `<div class="signal-stat-grid">
+        ${metric("\u603b\u4fe1\u53f7", neutralPill(String(summary.total || 0)), `<div class="muted">${escapeHtml(summary.headline || "")}</div>`)}
+        ${metric("\u5df2\u53d1\u9001", signalStatusPill("sent"), `<div class="muted">${summary.sent || 0} \u6761</div>`)}
+        ${metric("\u8df3\u8fc7 / Dry-run", neutralPill(`${summary.skipped || 0} / ${summary.dry_run || 0}`), `<div class="muted">\u975e\u5f02\u5e38\u72b6\u6001</div>`)}
+        ${metric("\u5931\u8d25 / \u963b\u6b62", (Number(summary.failed || 0) + Number(summary.blocked || 0)) ? signalStatusPill("failed") : neutralPill("0"), `<div class="muted">${summary.failed || 0} / ${summary.blocked || 0}</div>`)}
+        ${metric("\u4e3b\u8981\u6a21\u5757", neutralPill(summary.dominant_module_label || "-"), `<div class="muted">${escapeHtml(summary.latest_at || "-")}</div>`)}
+      </div>`;
+    }
+    function timelineFilterOptions(prefix, filters, reloadFn, includeSymbol = true) {
+      return `<div class="toolbar" style="margin-bottom:0">
+        ${includeSymbol ? `<input id="${prefix}SymbolFilter" value="${escapeHtml(filters.symbol || "")}" placeholder="BTC / BTCUSDT" onkeydown="if(event.key==='Enter') ${reloadFn}()">` : ""}
+        <select id="${prefix}ModuleFilter" onchange="${reloadFn}()">
+          <option value="" ${!filters.module ? "selected" : ""}>\u5168\u90e8\u6a21\u5757</option>
+          <option value="launch" ${filters.module === "launch" ? "selected" : ""}>\u542f\u52a8\u96f7\u8fbe</option>
+          <option value="funding" ${filters.module === "funding" ? "selected" : ""}>\u8d44\u91d1\u8d39\u7387</option>
+          <option value="flow" ${filters.module === "flow" ? "selected" : ""}>\u8d44\u91d1\u6d41</option>
+          <option value="structure" ${filters.module === "structure" ? "selected" : ""}>\u7ed3\u6784\u96f7\u8fbe</option>
+          <option value="structure_review" ${filters.module === "structure_review" ? "selected" : ""}>\u7ed3\u6784\u590d\u76d8</option>
+          <option value="announcement" ${filters.module === "announcement" ? "selected" : ""}>\u516c\u544a</option>
+          <option value="summary" ${filters.module === "summary" ? "selected" : ""}>\u6458\u8981</option>
+          <option value="test" ${filters.module === "test" ? "selected" : ""}>\u6d4b\u8bd5</option>
+        </select>
+        <select id="${prefix}StatusFilter" onchange="${reloadFn}()">
+          <option value="" ${!filters.status ? "selected" : ""}>\u5168\u90e8\u72b6\u6001</option>
+          <option value="sent" ${filters.status === "sent" ? "selected" : ""}>\u5df2\u53d1\u9001</option>
+          <option value="dry_run" ${filters.status === "dry_run" ? "selected" : ""}>Dry-run</option>
+          <option value="skipped" ${filters.status === "skipped" ? "selected" : ""}>\u5df2\u8df3\u8fc7</option>
+          <option value="blocked" ${filters.status === "blocked" ? "selected" : ""}>\u5df2\u963b\u6b62</option>
+          <option value="failed" ${filters.status === "failed" ? "selected" : ""}>\u5931\u8d25</option>
+        </select>
+        <select id="${prefix}WindowFilter" onchange="${reloadFn}()">
+          <option value="86400" ${String(filters.window_sec || "") === "86400" ? "selected" : ""}>24h</option>
+          <option value="604800" ${String(filters.window_sec || "") === "604800" || !filters.window_sec ? "selected" : ""}>7d</option>
+          <option value="2592000" ${String(filters.window_sec || "") === "2592000" ? "selected" : ""}>30d</option>
+        </select>
+        <input id="${prefix}QFilter" value="${escapeHtml(filters.q || "")}" placeholder="\u5173\u952e\u8bcd / \u6458\u8981" onkeydown="if(event.key==='Enter') ${reloadFn}()">
+        <button class="btn primary" type="button" onclick="${reloadFn}()">\u5237\u65b0</button>
+        <button class="btn" type="button" onclick="clearTimelineFilters('${prefix}', '${reloadFn}')">\u6e05\u9664\u7b5b\u9009</button>
+      </div>`;
+    }
+    function readTimelineFilters(prefix, includeSymbol = true) {
+      return {
+        symbol: includeSymbol ? (document.getElementById(`${prefix}SymbolFilter`)?.value || "") : "",
+        module: document.getElementById(`${prefix}ModuleFilter`)?.value || "",
+        status: document.getElementById(`${prefix}StatusFilter`)?.value || "",
+        window_sec: document.getElementById(`${prefix}WindowFilter`)?.value || "604800",
+        q: document.getElementById(`${prefix}QFilter`)?.value || ""
+      };
+    }
+    function clearTimelineFilters(prefix, reloadFn) {
+      [`${prefix}SymbolFilter`, `${prefix}ModuleFilter`, `${prefix}StatusFilter`, `${prefix}QFilter`].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+      const windowEl = document.getElementById(`${prefix}WindowFilter`);
+      if (windowEl) windowEl.value = "604800";
+      if (reloadFn === "loadTimeline") loadTimeline();
+      else loadCoinDetail(currentCoinSymbol);
+    }
+    function renderTimelineItem(event, detailFn, selectedId = 0) {
+      const d = timelineEventDisplay(event);
+      const ids = ((d.telegram || {}).message_ids || []).join(", ") || "-";
+      const selected = Number(selectedId || 0) === Number(d.id || 0) ? " selected" : "";
+      return `<article class="coin-timeline-item${selected}" onclick="${detailFn}(${Number(d.id || 0)})">
+        <div class="signal-meta-row"><strong>${escapeHtml(d.time_label)}</strong>${signalBadgeHtml({ label: d.module_label, tone: "info" }, false)}${signalBadgeHtml({ label: d.status_label, tone: d.tone }, false)}<code>${escapeHtml(d.symbol || "")}</code></div>
+        <div class="signal-card-title">${escapeHtml(d.title || "")}</div>
+        <div class="signal-card-summary">${escapeHtml((d.summary || "").slice(0, 220))}</div>
+        <div class="signal-meta-row"><span>\u5206\u6570: ${escapeHtml(d.score_label || "-")}</span><span>\u9636\u6bb5: ${escapeHtml(d.stage_label || "-")}</span><span>message: <code>${escapeHtml(ids)}</code></span><button class="btn blue" type="button" onclick="event.stopPropagation(); ${detailFn}(${Number(d.id || 0)})">\u8be6\u60c5</button></div>
+      </article>`;
+    }
+    function renderTimelineGroups(groups, detailFn, selectedId = 0) {
+      if (!(groups || []).length) return emptyPanel("\u5f53\u524d\u7b5b\u9009\u4e0b\u6ca1\u6709\u65f6\u95f4\u7ebf\u4e8b\u4ef6", "\u53ef\u4ee5\u653e\u5bbd\u6a21\u5757\u3001\u72b6\u6001\u6216\u65f6\u95f4\u8303\u56f4\u3002");
+      return `<div class="coin-timeline">${groups.map(group => `<section class="coin-timeline-day">
+        <div class="summary-head">
+          <h3>${escapeHtml(group.label || group.date || "-")}</h3>
+          <div class="signal-meta-row">
+            ${neutralPill(`${group.count || 0} \u6761`)}
+            ${(group.modules || []).slice(0, 4).map(item => signalBadgeHtml({ label: `${item.name} ${item.count}`, tone: "info" }, false)).join("")}
+            ${(group.statuses || []).slice(0, 4).map(item => signalBadgeHtml({ label: `${item.name} ${item.count}`, tone: item.name === "failed" ? "bad" : (item.name === "blocked" ? "warn" : "neutral") }, false)).join("")}
+          </div>
+        </div>
+        ${(group.items || []).map(item => renderTimelineItem(item, detailFn, selectedId)).join("")}
+      </section>`).join("")}</div>`;
+    }
     function coinTimelinePanel(data) {
-      const groups = data.timeline || [];
-      if (!groups.length) return `<div class="panel span-8 coin-empty">${emptyState(`\u6682\u65e0 ${escapeHtml(data.symbol || currentCoinSymbol || "\u8be5\u5e01\u79cd")} \u7684\u4fe1\u53f7\u8bb0\u5f55`, "\u53ef\u4ee5\u8fd4\u56de\u4fe1\u53f7\u63a8\u9001\u9875\u67e5\u770b\u5168\u5c40\u4fe1\u53f7\uff0c\u6216\u7b49\u5f85\u4e0b\u4e00\u8f6e\u626b\u63cf\u3002")}</div>`;
+      const groups = data.timeline_groups || data.timeline || [];
+      const summary = data.timeline_summary || data.summary || {};
+      const filters = (data.filters || {});
       return `<div class="panel span-8">
-        <h3 class="section-title">\u4fe1\u53f7\u65f6\u95f4\u7ebf</h3>
-        <div class="coin-timeline">${groups.map(group => `<section class="coin-timeline-day">
-          <h3>${escapeHtml(group.date || "-")}</h3>
-          ${(group.items || []).map(item => {
-            const display = signalDisplay(item);
-            return `<article class="coin-timeline-item" onclick="loadCoinSignalDetail(${Number(item.id || 0)})">
-              <div class="signal-meta-row"><strong>${escapeHtml(display.time_label || item.time || "-")}</strong>${signalBadgeHtml({ label: display.module_label, tone: "info" }, false)}${signalBadgeHtml({ label: display.status_label, tone: display.card_tone }, false)}</div>
-              <div>${escapeHtml(display.title || "")}</div>
-              <div class="muted">${escapeHtml((display.summary || "").slice(0, 180))}</div>
-            </article>`;
-          }).join("")}
-        </section>`).join("")}</div>
+        <div class="summary-head"><h3 class="section-title">\u4fe1\u53f7\u65f6\u95f4\u7ebf</h3>${neutralPill(data.symbol || currentCoinSymbol || "-")}</div>
+        ${timelineFilterOptions("coinTimeline", filters, "loadCoinDetail", false)}
+        ${timelineSummaryBar(summary)}
+        ${renderTimelineGroups(groups, "loadCoinSignalDetail", latestCoinSignalDetail?.id || 0)}
       </div>`;
     }
     function coinLatestCards(data) {
@@ -8688,7 +8823,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>`;
     }
     function renderCoinPage() {
-      const data = latestCoinData || { summary: { total: 0 }, module_counts: [], status_counts: [], timeline: [], latest: [], telegram: {} };
+      const data = latestCoinData || { summary: { total: 0 }, module_counts: [], status_counts: [], timeline: [], timeline_groups: [], timeline_summary: {}, latest: [], telegram: {} };
       document.getElementById("coinGrid").innerHTML = [
         renderPageIntro("coin", [data.symbol || currentCoinSymbol || "\u672a\u9009\u62e9"]),
         coinSearchPanel(data),
@@ -8722,7 +8857,15 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       currentCoinSymbol = input;
-      latestCoinData = await api(`/api/coin-detail?symbol=${encodeURIComponent(input)}&limit=100&window_sec=604800`);
+      const filters = readTimelineFilters("coinTimeline", false);
+      const params = new URLSearchParams();
+      params.set("symbol", input);
+      params.set("limit", "100");
+      params.set("window_sec", filters.window_sec || "604800");
+      if (filters.module) params.set("module", filters.module);
+      if (filters.status) params.set("status", filters.status);
+      if (filters.q) params.set("q", filters.q);
+      latestCoinData = await api(`/api/coin-detail?${params.toString()}`);
       renderCoinPage();
     }
     async function loadCoinSignalDetail(id) {
@@ -8730,6 +8873,56 @@ INDEX_HTML = r"""<!doctype html>
       latestCoinSignalDetail = data.item || null;
       latestCoinSignalDetailView = data.detail || null;
       renderCoinPage();
+    }
+    function timelineFilters() {
+      return readTimelineFilters("timeline", true);
+    }
+    function renderTimelineDetailPanel() {
+      const item = latestTimelineDetail;
+      const detail = latestTimelineDetailView;
+      if (!item || !detail) {
+        return `<div class="panel span-4">${emptyState("\u8bf7\u9009\u62e9\u4e00\u6761\u65f6\u95f4\u7ebf\u4e8b\u4ef6", "\u70b9\u51fb\u5de6\u4fa7 timeline item \u67e5\u770b\u8be6\u60c5\u3002")}</div>`;
+      }
+      const header = detail.header || {};
+      return `<div class="panel span-4 signal-detail-panel" style="position:static;max-height:none">
+        <div class="summary-head">
+          <div><h3 class="section-title">${escapeHtml(header.title || `Signal #${item.id || ""}`)}</h3><div class="summary-meta">${escapeHtml(header.subtitle || "")} / ${escapeHtml(header.time_label || "")}</div></div>
+          <button class="btn" type="button" onclick="latestTimelineDetail=null; latestTimelineDetailView=null; renderTimelinePage()">\u5173\u95ed</button>
+        </div>
+        <div class="signal-meta-row">${(header.badges || []).map(badge => signalBadgeHtml(badge, false)).join("")}</div>
+        ${((detail.sections || [])).map(section => `<div class="signal-detail-section"><h4>${escapeHtml(section.title || "")}</h4><div class="readable-list">${(section.rows || []).map(r => row(r.label, r.code ? `<code>${escapeHtml(r.value || "")}</code>` : textValue(r.value || "-"))).join("")}</div></div>`).join("")}
+        <details class="raw-details compact-details"><summary>payload_json</summary><div class="raw-body"><pre>${escapeHtml((detail.raw || {}).payload_json || "{}")}</pre></div></details>
+      </div>`;
+    }
+    function renderTimelinePage() {
+      const data = latestTimelineData || { groups: [], items: [], summary: {}, filters: {} };
+      const filters = data.filters || timelineFilters();
+      document.getElementById("timelineGrid").innerHTML = [
+        renderPageIntro("timeline", [filters.symbol || "\u5168\u5c40", `${data.count || 0} \u6761`]),
+        `<div class="panel span-12">${timelineFilterOptions("timeline", filters, "loadTimeline", true)}</div>`,
+        `<div class="panel span-12">${timelineSummaryBar(data.summary || {})}</div>`,
+        `<div class="panel span-8"><h3 class="section-title">Timeline</h3>${renderTimelineGroups(data.groups || [], "loadTimelineSignalDetail", latestTimelineDetail?.id || 0)}</div>`,
+        renderTimelineDetailPanel()
+      ].join("");
+      setSubtitle(`\u4fe1\u53f7\u65f6\u95f4\u7ebf\uff1a${data.count || 0} \u6761\uff0c${filters.symbol || "\u5168\u5c40"}`);
+    }
+    async function loadTimeline() {
+      const filters = timelineFilters();
+      const params = new URLSearchParams();
+      params.set("limit", "100");
+      params.set("window_sec", filters.window_sec || "604800");
+      if (filters.symbol) params.set("symbol", normalizeCoinInput(filters.symbol));
+      if (filters.module) params.set("module", filters.module);
+      if (filters.status) params.set("status", filters.status);
+      if (filters.q) params.set("q", filters.q);
+      latestTimelineData = await api(`/api/signal-timeline?${params.toString()}`);
+      renderTimelinePage();
+    }
+    async function loadTimelineSignalDetail(id) {
+      const data = await api(`/api/signals/detail?id=${encodeURIComponent(Number(id || 0))}`);
+      latestTimelineDetail = data.item || null;
+      latestTimelineDetailView = data.detail || null;
+      renderTimelinePage();
     }
     async function loadAiPrompts() {
       const data = await api("/api/ai-prompts");
@@ -8842,6 +9035,7 @@ INDEX_HTML = r"""<!doctype html>
           else await loadSignals();
         }
         if (currentView === "coin") await loadCoinDetail(currentCoinSymbol);
+        if (currentView === "timeline") await loadTimeline();
         if (currentView === "jobs") await loadJobs(isAuto);
         if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
@@ -9063,6 +9257,17 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/signals/detail":
             self.send_json(signal_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
             return
+        if path == "/api/signal-timeline":
+            self.send_json(timeline_payload(
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+                cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+                module=query.get("module", [""])[0],
+                status=query.get("status", [""])[0],
+                q=query.get("q", [""])[0],
+            ))
+            return
         if path == "/api/coin-detail":
             coin_value = query.get("symbol", query.get("coin", [""]))[0]
             if not str(coin_value or "").strip():
@@ -9072,6 +9277,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 coin_value,
                 limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
                 window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+                module=query.get("module", [""])[0],
+                status=query.get("status", [""])[0],
+                q=query.get("q", [""])[0],
             ))
             return
         if path == "/api/coin-search":
@@ -9090,6 +9298,10 @@ class WebHandler(BaseHTTPRequestHandler):
                 coin_value,
                 limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
                 cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+                module=query.get("module", [""])[0],
+                status=query.get("status", [""])[0],
+                q=query.get("q", [""])[0],
             ))
             return
         if path == "/api/logs":

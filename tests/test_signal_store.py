@@ -212,6 +212,30 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(first["count"], 1)
         self.assertEqual(older["count"], 1)
 
+    def test_timeline_queries_support_filters_and_special_search_text(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(settings, template_id="TG_LAUNCH_ALERT", dedup_key="timeline:a", status="sent", sent=True, text="BTCUSDT launch alpha", ts=1000)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="timeline:b", status="failed", sent=False, text="BTCUSDT flow beta", ts=1001)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="timeline:c", status="sent", sent=True, text="ETHUSDT flow alpha_%", ts=1002)
+            store = SignalEventStore(settings.signal_events_db_path)
+            btc = store.list_timeline(symbol="BTC", limit=10, start_ts=999, end_ts=1003)
+            failed = store.list_timeline(status="failed", limit=10, start_ts=999, end_ts=1003)
+            flow = store.list_timeline(module="flow", limit=10, start_ts=999, end_ts=1003)
+            alpha = store.list_timeline(q="alpha", limit=10, start_ts=999, end_ts=1003)
+            special = store.list_timeline(q="alpha_%", limit=10, start_ts=999, end_ts=1003)
+            stats = store.timeline_stats(symbol="BTCUSDT", start_ts=999, end_ts=1003)
+
+        self.assertEqual(btc["count"], 2)
+        self.assertEqual(failed["count"], 1)
+        self.assertEqual(failed["items"][0]["status"], "failed")
+        self.assertEqual(flow["count"], 2)
+        self.assertEqual(alpha["count"], 2)
+        self.assertIsInstance(special["items"], list)
+        self.assertEqual(stats["total"], 2)
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(stats["by_module"]["flow"], 1)
+
     def test_signal_events_view_matches_signals_table(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

@@ -9,6 +9,7 @@ from ..config import Settings
 from ..signal_store import SignalEventStore
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .signals import enhance_signal_item, enhance_signal_items, signal_stats_display
+from .timeline import group_timeline_by_day, timeline_payload, timeline_summary
 
 
 COIN_QUERY_RE = re.compile(r"^[A-Za-z0-9]{1,24}$")
@@ -128,6 +129,9 @@ def coin_detail_payload(
     *,
     limit: int = 100,
     window_sec: int = 604800,
+    module: str = "",
+    status: str = "",
+    q: str = "",
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_coin_query(symbol_or_coin)
@@ -136,10 +140,27 @@ def coin_detail_payload(
     start_ts, end_ts = _window_bounds(window_sec)
     safe_limit = max(1, min(int(limit or 100), 300))
     store = _store(settings)
-    stats = store.stats_by_symbol(normalized["symbol"], start_ts=start_ts, end_ts=end_ts)
-    listed = store.list_by_symbol(normalized["symbol"], limit=safe_limit, start_ts=start_ts, end_ts=end_ts)
+    listed = store.list_timeline(
+        symbol=normalized["symbol"],
+        limit=safe_limit,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        module=str(module or "").strip().lower(),
+        status=str(status or "").strip().lower(),
+        q=str(q or "").strip()[:80],
+    )
     items = enhance_signal_items(listed["items"])
     latest = items[:20]
+    tl_summary = timeline_summary(listed["items"])
+    tl_groups = group_timeline_by_day(listed["items"])
+    stats = store.timeline_stats(
+        symbol=normalized["symbol"],
+        start_ts=start_ts,
+        end_ts=end_ts,
+        module=str(module or "").strip().lower(),
+        status=str(status or "").strip().lower(),
+        q=str(q or "").strip()[:80],
+    )
     stats_display = signal_stats_display({
         "by_module": stats.get("by_module", {}),
         "by_status": stats.get("by_status", {}),
@@ -173,7 +194,9 @@ def coin_detail_payload(
         "summary": summary,
         "module_counts": stats_display["by_module_display"],
         "status_counts": stats_display["by_status_display"],
-        "timeline": _timeline_groups(items),
+        "timeline": tl_groups,
+        "timeline_summary": tl_summary,
+        "timeline_groups": tl_groups,
         "latest": latest,
         "telegram": _telegram_summary(items),
         "related": {
@@ -187,6 +210,9 @@ def coin_detail_payload(
             "symbol": normalized["symbol"],
             "limit": safe_limit,
             "window_sec": int(window_sec or 604800),
+            "module": str(module or "").strip().lower(),
+            "status": str(status or "").strip().lower(),
+            "q": str(q or "").strip()[:80],
         },
         "message": "已读取币种详情",
     }
@@ -198,22 +224,31 @@ def coin_timeline_payload(
     *,
     limit: int = 100,
     cursor: int | None = None,
+    window_sec: int = 604800,
+    module: str = "",
+    status: str = "",
+    q: str = "",
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_coin_query(symbol_or_coin)
     if not normalized.get("ok"):
         return api_error(normalized.get("error") or "币种参数无效", code="bad_request")
-    safe_limit = max(1, min(int(limit or 100), 300))
-    store = _store(settings)
-    listed = store.list_by_symbol(normalized["symbol"], limit=safe_limit, cursor=cursor)
-    items = enhance_signal_items(listed["items"])
-    return api_ok(
-        {"items": items},
-        items=items,
-        timeline=_timeline_groups(items),
-        count=len(items),
-        next_cursor=listed.get("next_cursor"),
-        coin=normalized["coin"],
+    payload = timeline_payload(
         symbol=normalized["symbol"],
-        message="已读取币种时间线",
+        limit=limit,
+        cursor=cursor,
+        window_sec=window_sec,
+        module=module,
+        status=status,
+        q=q,
+        settings=settings,
     )
+    payload["coin"] = normalized["coin"]
+    payload["symbol"] = normalized["symbol"]
+    payload["timeline"] = payload.get("groups", [])
+    payload["message"] = "已读取币种时间线"
+    if isinstance(payload.get("data"), dict):
+        payload["data"]["coin"] = normalized["coin"]
+        payload["data"]["symbol"] = normalized["symbol"]
+        payload["data"]["timeline"] = payload.get("groups", [])
+    return payload

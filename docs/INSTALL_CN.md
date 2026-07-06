@@ -1,5 +1,10 @@
 # 泡泡抓币中文安装目录
 
+## v1.66.0 运维说明
+
+Web 新增轻量「信号时间线」入口，并增强 Coin Detail 的按日期分组时间线。时间线数据来自 `signals.db` / `signal_events` 兼容视图，可以按币种、模块、状态、关键词和 24h / 7d / 30d 时间窗口查看信号历史；点击 Timeline item 可打开同一套 Signal Detail 面板。
+时间线页面不访问外部行情 API，不触发行情扫描，也不会发送 Telegram 消息。如果时间线为空，先确认 `signals.db` 是否已有结构化推送记录，或放宽筛选条件。`signals.db`、`jobs.db`、`data/*.json`、日志、图表和生产 `.env.oi.bak*` 仍然是运行数据，不应提交到 Git。
+
 ## v1.65.0 运维说明
 
 Web 新增「Coin Detail / 币种详情」页面，用于按单币种排查信号历史。你可以输入 `BTC` 或 `BTCUSDT`，查看最近 7 天该币种的信号数量、已发送/失败/阻止统计、活跃模块、按日期分组的时间线、最近 Telegram message_ids/topic_ids 和同币种最新信号。

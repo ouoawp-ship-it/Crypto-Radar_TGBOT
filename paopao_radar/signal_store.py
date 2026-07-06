@@ -666,6 +666,160 @@ class SignalEventStore:
             for row in rows
         ]
 
+    def list_timeline(
+        self,
+        *,
+        symbol: str = "",
+        limit: int = 100,
+        cursor: int | None = None,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        module: str = "",
+        status: str = "",
+        q: str = "",
+        sort_direction: str = "desc",
+    ) -> dict[str, Any]:
+        normalized = str(symbol or "").strip().upper()
+        if normalized and not normalized.endswith("USDT"):
+            normalized = f"{normalized}USDT"
+        direction = "ASC" if str(sort_direction or "").lower() == "asc" else "DESC"
+        cursor_op = ">" if direction == "ASC" else "<"
+        clauses: list[str] = []
+        params: dict[str, Any] = {"limit": _limit(limit, 100, 300)}
+        if normalized:
+            clauses.append("symbol = :symbol")
+            params["symbol"] = normalized
+        if cursor:
+            clauses.append(f"id {cursor_op} :cursor")
+            params["cursor"] = int(cursor)
+        if start_ts is not None:
+            clauses.append("ts >= :start_ts")
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= :end_ts")
+            params["end_ts"] = int(end_ts)
+        if module:
+            clauses.append("module = :module")
+            params["module"] = str(module).strip().lower()
+        if status:
+            clauses.append("status = :status")
+            params["status"] = str(status).strip().lower()
+        q_text = str(q or "").strip()[:80]
+        if q_text:
+            clauses.append(
+                """
+                (
+                    symbol LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR coin LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR module LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR template_id LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR signal_type LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR status LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR excerpt LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR title LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                )
+                """
+            )
+            params["q_like"] = _like_pattern(q_text)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM signals {where} ORDER BY ts {direction}, id {direction} LIMIT :limit",
+                params,
+            ).fetchall()
+        items = [_row_to_dict(row) for row in rows]
+        return {
+            "items": items,
+            "next_cursor": items[-1]["id"] if items else None,
+            "count": len(items),
+            "symbol": normalized,
+        }
+
+    def timeline_stats(
+        self,
+        *,
+        symbol: str = "",
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        module: str = "",
+        status: str = "",
+        q: str = "",
+    ) -> dict[str, Any]:
+        normalized = str(symbol or "").strip().upper()
+        if normalized and not normalized.endswith("USDT"):
+            normalized = f"{normalized}USDT"
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if normalized:
+            clauses.append("symbol = :symbol")
+            params["symbol"] = normalized
+        if start_ts is not None:
+            clauses.append("ts >= :start_ts")
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= :end_ts")
+            params["end_ts"] = int(end_ts)
+        if module:
+            clauses.append("module = :module")
+            params["module"] = str(module).strip().lower()
+        if status:
+            clauses.append("status = :status")
+            params["status"] = str(status).strip().lower()
+        q_text = str(q or "").strip()[:80]
+        if q_text:
+            clauses.append(
+                """
+                (
+                    symbol LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR coin LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR module LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR template_id LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR signal_type LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR status LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR excerpt LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR title LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                )
+                """
+            )
+            params["q_like"] = _like_pattern(q_text)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM signals {where}", params).fetchone()[0])
+            by_status = {
+                str(row["status"]): int(row["count"])
+                for row in conn.execute(
+                    f"SELECT status, COUNT(*) AS count FROM signals {where} GROUP BY status ORDER BY count DESC",
+                    params,
+                ).fetchall()
+            }
+            by_module = {
+                str(row["module"]): int(row["count"])
+                for row in conn.execute(
+                    f"SELECT module, COUNT(*) AS count FROM signals {where} GROUP BY module ORDER BY count DESC",
+                    params,
+                ).fetchall()
+            }
+            bounds = conn.execute(
+                f"SELECT MIN(time) AS first_at, MAX(time) AS latest_at, MIN(ts) AS first_ts, MAX(ts) AS latest_ts FROM signals {where}",
+                params,
+            ).fetchone()
+        return {
+            "symbol": normalized,
+            "coin": _coin_from_symbol(normalized),
+            "total": total,
+            "sent": by_status.get("sent", 0),
+            "dry_run": by_status.get("dry_run", 0),
+            "skipped": by_status.get("skipped", 0),
+            "blocked": by_status.get("blocked", 0),
+            "failed": by_status.get("failed", 0),
+            "by_module": by_module,
+            "by_status": by_status,
+            "first_at": str(bounds["first_at"] or "") if bounds else "",
+            "latest_at": str(bounds["latest_at"] or "") if bounds else "",
+            "first_ts": int(bounds["first_ts"] or 0) if bounds else 0,
+            "latest_ts": int(bounds["latest_ts"] or 0) if bounds else 0,
+        }
+
     def signal_detail(self, signal_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM signals WHERE id = ?", (int(signal_id),)).fetchone()

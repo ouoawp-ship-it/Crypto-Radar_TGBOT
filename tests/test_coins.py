@@ -87,6 +87,10 @@ class CoinDetailTests(unittest.TestCase):
         self.assertTrue(payload["module_counts"])
         self.assertTrue(payload["status_counts"])
         self.assertTrue(payload["timeline"])
+        self.assertIn("timeline_summary", payload)
+        self.assertIn("timeline_groups", payload)
+        self.assertEqual(payload["timeline_summary"]["total"], 2)
+        self.assertEqual(payload["timeline_groups"][0]["count"], 2)
         self.assertEqual(payload["telegram"]["latest_message_ids"], [102, 101])
         self.assertIn("display", payload["latest"][0])
         self.assertTrue(search["items"])
@@ -94,6 +98,8 @@ class CoinDetailTests(unittest.TestCase):
         self.assertTrue(timeline["ok"])
         self.assertEqual(timeline["symbol"], "BTCUSDT")
         self.assertTrue(timeline["items"])
+        self.assertTrue(timeline["groups"])
+        self.assertIn("summary", timeline)
 
     def test_coin_outputs_do_not_expose_sensitive_field_names(self) -> None:
         with TemporaryDirectory() as tmp:

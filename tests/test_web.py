@@ -17,6 +17,7 @@ from paopao_radar.web_services import jobs
 from paopao_radar.web_services.api_core import api_contract_self_test
 from paopao_radar.web_services.coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
 from paopao_radar.web_services.dashboard import dashboard_payload
+from paopao_radar.web_services.timeline import timeline_payload
 
 
 class WebConsoleTests(unittest.TestCase):
@@ -1731,6 +1732,7 @@ class WebConsoleTests(unittest.TestCase):
             missing = coin_detail_payload("", settings=settings)
             search = coin_search_payload("btc", settings=settings, window_sec=10**10)
             timeline = coin_timeline_payload("BTCUSDT", settings=settings)
+            signal_timeline = timeline_payload(symbol="BTC", settings=settings, window_sec=10**10)
 
         self.assertTrue(detail["ok"])
         self.assertEqual(detail["symbol"], "BTCUSDT")
@@ -1738,6 +1740,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("module_counts", detail)
         self.assertIn("status_counts", detail)
         self.assertIn("timeline", detail)
+        self.assertIn("timeline_summary", detail)
+        self.assertIn("timeline_groups", detail)
         self.assertIn("telegram", detail)
         self.assertFalse(missing["ok"])
         self.assertEqual(missing["code"], "bad_request")
@@ -1745,13 +1749,26 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(search["items"][0]["symbol"], "BTCUSDT")
         self.assertTrue(timeline["ok"])
         self.assertEqual(timeline["symbol"], "BTCUSDT")
+        self.assertIn("summary", timeline)
+        self.assertIn("groups", timeline)
+        self.assertTrue(signal_timeline["ok"])
+        self.assertEqual(signal_timeline["symbol"], "BTCUSDT")
 
         html = web.INDEX_HTML
         self.assertIn('data-view="coin"', html)
+        self.assertIn('data-view="timeline"', html)
         self.assertIn('id="coinGrid"', html)
+        self.assertIn('id="timelineGrid"', html)
         self.assertIn("/api/coin-detail", html)
         self.assertIn("/api/coin-search", html)
+        self.assertIn("/api/signal-timeline", html)
         self.assertIn("openCoinDetail", html)
+        self.assertIn("loadTimelineSignalDetail", html)
+        self.assertIn("timelineFilterOptions", html)
+        self.assertIn("function loadingPanel", html)
+        self.assertIn("function emptyPanel", html)
+        self.assertIn("function errorPanel", html)
+        self.assertIn('["good", "warn", "bad", "info", "neutral"]', html)
         self.assertIn("Coin Detail", html)
 
     def test_send_json_wraps_dict_payload_with_api_meta(self) -> None:
@@ -2115,9 +2132,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("signals", names)
         self.assertIn("jobs", names)
         self.assertIn("update-status", names)
+        self.assertIn("signal-timeline", names)
         self.assertIn("coin-search", names)
         self.assertIn("coin-detail", names)
         self.assertIn("coin-timeline", names)
+        self.assertIn("coin-detail-timeline", names)
 
     def test_jobs_audit_summary_stays_minimal(self) -> None:
         rerun = web.audit_request_summary("/api/jobs/rerun", {"id": 12, "stdout_tail": "secret"})
