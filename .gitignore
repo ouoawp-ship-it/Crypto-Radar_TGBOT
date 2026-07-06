@@ -17,6 +17,8 @@ crypto_monitor_merged.py
 
 data/*.json
 data/*.db
+data/*.db-*
+data/*.log
 data/*.tmp
 data/*.txt
 data/charts/

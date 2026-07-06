@@ -20,6 +20,14 @@ from urllib.parse import parse_qs, urlparse
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
 from .storage import JsonStore
+from .web_services.jobs import (
+    LONG_ACTION_JOB_TYPES,
+    cancel_job_payload,
+    create_job_payload,
+    job_detail_payload,
+    jobs_payload,
+)
+from .web_services.ops import update_check_status_payload
 
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
@@ -611,6 +619,21 @@ def audit_request_summary(path: str, data: dict[str, Any]) -> dict[str, Any]:
     if path == "/api/action":
         name = str(data.get("name", ""))
         return {"action": "执行检查测试", "target": name, "details": {"name": name}}
+    if path == "/api/jobs":
+        job_type = str(data.get("job_type", ""))
+        job_id = data.get("id") or data.get("job_id")
+        return {
+            "action": "创建后台任务",
+            "target": job_type,
+            "details": {"job_type": job_type, "job_id": job_id},
+        }
+    if path == "/api/jobs/cancel":
+        job_id = data.get("id") or data.get("job_id")
+        return {
+            "action": "取消后台任务",
+            "target": str(job_id or ""),
+            "details": {"job_id": job_id},
+        }
     if path == "/api/service":
         name = str(data.get("name", ""))
         service, action = SERVICE_ACTIONS.get(name, ("", ""))
@@ -1131,6 +1154,11 @@ def run_cli_action(name: str) -> dict[str, Any]:
     action = CLI_ACTIONS.get(name)
     if action is None:
         return {"ok": False, "returncode": 2, "stderr": "未知动作", "stdout": ""}
+    if name in LONG_ACTION_JOB_TYPES:
+        result = create_job_payload(name, {"source": "api/action", "name": name})
+        result["label"] = action["label"]
+        result["job_created"] = bool(result.get("ok"))
+        return result
     result = run_subprocess(action["argv"], timeout=int(action.get("timeout", 30)), use_python=True)
     ok_returncodes = action.get("ok_returncodes")
     if isinstance(ok_returncodes, list):
@@ -1515,6 +1543,7 @@ def server_status_payload() -> dict[str, Any]:
 
 
 def update_check_payload() -> dict[str, Any]:
+    return update_check_status_payload()
     script = BASE_DIR / "scripts" / "update_server.sh"
     if not script.exists():
         return {"ok": False, "message": "未找到更新脚本 scripts/update_server.sh", "stdout": "", "stderr": ""}
@@ -4475,6 +4504,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="ai"><span class="nav-dot"></span><span class="nav-text"><strong>AI 助手</strong><small>Bot 状态</small></span></button>
         <button data-view="price"><span class="nav-dot"></span><span class="nav-text"><strong>价格提醒</strong><small>监控列表</small></span></button>
         <button data-view="signals"><span class="nav-dot"></span><span class="nav-text"><strong>信号推送</strong><small>结构化记录</small></span></button>
+        <button data-view="jobs"><span class="nav-dot"></span><span class="nav-text"><strong>任务中心</strong><small>后台长任务</small></span></button>
         <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
       </nav>
       <div class="sidebar-section">运维排查</div>
@@ -4575,6 +4605,11 @@ INDEX_HTML = r"""<!doctype html>
         <div class="grid" id="signalsGrid"></div>
       </section>
 
+      <section id="jobs" class="view hidden">
+        <div class="grid" id="jobsGrid"></div>
+        <pre id="jobOutput" class="output"></pre>
+      </section>
+
       <section id="prompts" class="view hidden">
         <div class="grid" id="promptGrid"></div>
         <pre id="promptOutput" class="output"></pre>
@@ -4608,6 +4643,7 @@ INDEX_HTML = r"""<!doctype html>
       ai: "AI 助手",
       price: "价格提醒",
       signals: "信号推送",
+      jobs: "任务中心",
       prompts: "AI 提示词",
       services: "雷达服务",
       config: "配置中心",
@@ -4648,6 +4684,12 @@ INDEX_HTML = r"""<!doctype html>
         title: "信号推送展示",
         desc: "这里读取 signals.db 里的结构化推送记录，不从日志反推，也不会触发行情扫描。适合查看哪些信号发过、是否 dry-run、是否被拦截、发到了哪个话题和 message_id。",
         tags: ["signals.db", "只读查询", "5秒增量刷新"]
+      },
+      jobs: {
+        kicker: "后台任务",
+        title: "任务中心",
+        desc: "稳定版验收、doctor、readiness、cleanup、更新检查这类耗时操作会进入后台执行。页面只创建任务和查看结果，不让 HTTP 请求一直卡住。",
+        tags: ["jobs.db", "异步执行", "输出脱敏"]
       },
       config: {
         kicker: "配置中心",
@@ -4940,10 +4982,12 @@ INDEX_HTML = r"""<!doctype html>
     let signalDetailId = 0;
     let latestSignalDetail = null;
     let latestSignalTimeline = null;
+    let latestJobsData = { jobs: [] };
+    let latestJobDetail = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
     let refreshInFlight = false;
-    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000 };
+    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, jobs: 3000 };
     const configCategories = [
       {
         id: "home",
@@ -7079,6 +7123,144 @@ INDEX_HTML = r"""<!doctype html>
         }, action.label, "action");
       }
     }
+    const jobActionList = [
+      { type: "stable-check", label: "稳定版验收", desc: "后台执行 python main.py stable-check，会保存验收历史。" },
+      { type: "doctor", label: "Doctor 环境检查", desc: "输出配置、状态文件和运行环境诊断。" },
+      { type: "readiness", label: "Readiness 准备度", desc: "检查真实推送前需要满足的配置和状态。" },
+      { type: "cleanup", label: "Cleanup 清理", desc: "清理运行垃圾和过期临时文件。" },
+      { type: "update-check", label: "更新检查", desc: "只检查 GitHub 是否有更新；真正更新仍在服务器执行 paopao update --yes。" },
+      { type: "api-self-test", label: "Web API 自检", desc: "轻量检查 Web 摘要、日志和信号统计接口，不访问外网。" }
+    ];
+    function jobStatusPill(status) {
+      const text = String(status || "unknown");
+      const map = {
+        queued: ["neutral", "排队中"],
+        running: ["warning", "运行中"],
+        success: ["ok", "成功"],
+        failed: ["bad", "失败"],
+        timeout: ["warning", "超时"],
+        cancelled: ["neutral", "已取消"]
+      };
+      const item = map[text] || ["neutral", text];
+      return `<span class="status ${item[0]}">${escapeHtml(item[1])}</span>`;
+    }
+    function jobTime(value) {
+      if (!value) return "-";
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return "-";
+      return new Date(n * 1000).toLocaleString();
+    }
+    function jobDuration(job) {
+      const ms = Number(job.duration_ms || 0);
+      if (ms > 0) return `${ms}ms`;
+      if (job.started_at && !job.finished_at) return "运行中";
+      return "-";
+    }
+    async function createJob(jobType) {
+      const data = await api("/api/jobs", {
+        method: "POST",
+        body: JSON.stringify({ job_type: jobType })
+      });
+      latestJobDetail = data.job || latestJobDetail;
+      document.getElementById("jobOutput").textContent = JSON.stringify(data, null, 2);
+      await loadJobs(false);
+    }
+    async function cancelJob(jobId) {
+      const data = await api("/api/jobs/cancel", {
+        method: "POST",
+        body: JSON.stringify({ id: jobId })
+      });
+      document.getElementById("jobOutput").textContent = JSON.stringify(data, null, 2);
+      await loadJobs(false);
+    }
+    async function loadJobDetail(jobId) {
+      const data = await api(`/api/jobs/detail?id=${encodeURIComponent(jobId)}`);
+      latestJobDetail = data.job || null;
+      renderJobsPage();
+    }
+    function jobActionsPanel() {
+      return `<div class="panel span-12">
+        <div class="toolbar" style="margin-bottom:0">
+          ${jobActionList.map(item => `<button class="btn primary" type="button" onclick="createJob('${escapeHtml(item.type)}')" title="${escapeHtml(item.desc)}">${escapeHtml(item.label)}</button>`).join("")}
+          <button class="btn" type="button" onclick="loadJobs(false)">刷新任务</button>
+        </div>
+        <div class="hint" style="margin-top:8px">任务创建后会马上返回编号，后台线程继续执行。输出只保存 tail，并在写入 jobs.db 前做脱敏。</div>
+      </div>`;
+    }
+    function jobRows(jobs) {
+      if (!jobs.length) return tableEmpty(9, "暂无后台任务", "点击上面的按钮创建 stable-check、doctor、readiness、cleanup 或更新检查任务。");
+      return jobs.map(job => `<tr>
+        <td><code>${escapeHtml(job.id)}</code></td>
+        <td>${escapeHtml(job.job_type || "")}</td>
+        <td>${jobStatusPill(job.status)}</td>
+        <td>${escapeHtml(jobTime(job.created_at))}</td>
+        <td>${escapeHtml(jobTime(job.started_at))}</td>
+        <td>${escapeHtml(jobTime(job.finished_at))}</td>
+        <td>${escapeHtml(jobDuration(job))}</td>
+        <td>${job.returncode === null || job.returncode === undefined ? "-" : escapeHtml(job.returncode)}</td>
+        <td>
+          <button class="btn" type="button" onclick="loadJobDetail(${Number(job.id)})">详情</button>
+          ${job.status === "queued" ? `<button class="btn danger" type="button" onclick="cancelJob(${Number(job.id)})">取消</button>` : ""}
+        </td>
+      </tr>`).join("");
+    }
+    function jobDetailPanel() {
+      const job = latestJobDetail;
+      if (!job) {
+        return `<div class="panel span-12">${emptyState("请选择一个任务查看详情", "点击任务列表里的“详情”，可以查看 command、stdout_tail、stderr_tail、error 和 metadata。")}</div>`;
+      }
+      return `<div class="panel span-12">
+        <div class="summary-head">
+          <h3 class="section-title">任务详情 #${escapeHtml(job.id || "")}</h3>
+          ${jobStatusPill(job.status)}
+        </div>
+        <div class="readable-list">
+          ${row("类型", textValue(job.job_type))}
+          ${row("命令", `<code>${escapeHtml((job.command || []).join(" "))}</code>`)}
+          ${row("Return Code", textValue(job.returncode, "-"))}
+          ${row("耗时", textValue(jobDuration(job), "-"))}
+          ${row("错误摘要", job.error ? `<span class="status bad">${escapeHtml(job.error)}</span>` : neutralPill("无"))}
+        </div>
+        <details class="raw-details compact-details" open>
+          <summary>stdout_tail <span class="summary-meta">最多 12000 字符</span></summary>
+          <div class="raw-body"><pre>${escapeHtml(job.stdout_tail || "")}</pre></div>
+        </details>
+        <details class="raw-details compact-details" ${job.stderr_tail ? "open" : ""}>
+          <summary>stderr_tail <span class="summary-meta">最多 6000 字符</span></summary>
+          <div class="raw-body"><pre>${escapeHtml(job.stderr_tail || "")}</pre></div>
+        </details>
+        ${rawDetails("metadata", job.metadata || {})}
+      </div>`;
+    }
+    function renderJobsPage() {
+      const jobs = latestJobsData.jobs || [];
+      const running = jobs.filter(job => ["queued", "running"].includes(String(job.status || ""))).length;
+      document.getElementById("jobsGrid").innerHTML = [
+        renderPageIntro("jobs", [`${jobs.length} 个任务`, running ? `${running} 个运行中` : "无运行中任务"]),
+        jobActionsPanel(),
+        `<div class="panel span-12">
+          <table class="table">
+            <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>创建</th><th>开始</th><th>结束</th><th>耗时</th><th>返回码</th><th>操作</th></tr></thead>
+            <tbody>${jobRows(jobs)}</tbody>
+          </table>
+        </div>`,
+        jobDetailPanel()
+      ].join("");
+      setSubtitle(running ? `后台还有 ${running} 个任务在排队或运行。` : "后台任务空闲；没有运行中的长任务。");
+    }
+    async function loadJobs(isAuto = false) {
+      const data = await api("/api/jobs?limit=80");
+      latestJobsData = data;
+      if (latestJobDetail && latestJobDetail.id) {
+        try {
+          const detail = await api(`/api/jobs/detail?id=${encodeURIComponent(latestJobDetail.id)}`);
+          latestJobDetail = detail.job || latestJobDetail;
+        } catch (err) {
+          if (!isAuto) throw err;
+        }
+      }
+      renderJobsPage();
+    }
     function renderServices() {
       document.getElementById("serviceGrid").innerHTML = `
         ${renderPageIntro("services", [`${serviceGroups.length} 个服务`, "STOP 二次确认"])}
@@ -7147,14 +7329,16 @@ INDEX_HTML = r"""<!doctype html>
       setSubtitle(data.message || "更新检查、推送预览和配置备份入口");
     }
     async function checkUpdate() {
-      document.getElementById("updateOutput").textContent = "正在检查 GitHub 更新...";
-      const data = await api("/api/update-check");
+      document.getElementById("updateOutput").textContent = "正在创建更新检查后台任务...";
+      const data = await api("/api/jobs", {
+        method: "POST",
+        body: JSON.stringify({ job_type: "update-check" })
+      });
       document.getElementById("updateOutput").textContent = [
-        data.message || "更新检查完成",
-        "",
-        data.stdout || "",
-        data.stderr ? `\n错误输出:\n${data.stderr}` : ""
-      ].join("\n").trim();
+        data.message || "更新检查任务已创建",
+        data.job ? `任务编号: ${data.job.id}` : "",
+        "可到“任务中心”查看 stdout/stderr tail。真正更新请继续在服务器执行 paopao update --yes。"
+      ].filter(Boolean).join("\n");
     }
     async function loadGuide() {
       const data = await api("/api/summary");
@@ -7753,6 +7937,7 @@ INDEX_HTML = r"""<!doctype html>
           if (isAuto) await loadLatestSignals();
           else await loadSignals();
         }
+        if (currentView === "jobs") await loadJobs(isAuto);
         if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
         if (currentView === "services") { setSubtitle("雷达后台服务开关，停止前会二次确认"); renderServices(); }
@@ -7882,6 +8067,16 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/update-check":
             self.send_json(update_check_payload())
             return
+        if path == "/api/jobs":
+            self.send_json(jobs_payload(
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                status=query.get("status", [""])[0],
+                job_type=query.get("job_type", [""])[0],
+            ))
+            return
+        if path == "/api/jobs/detail":
+            self.send_json(job_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
+            return
         if path == "/api/price-alerts":
             from .ai_assistant import price_alerts_payload
 
@@ -7981,6 +8176,16 @@ class WebHandler(BaseHTTPRequestHandler):
             if path == "/api/config-backup-delete":
                 name = str(data.get("name", ""))
                 self.send_audited_json(path, data, delete_env_backup(name), started_at=started_at)
+                return
+            if path == "/api/jobs":
+                result = create_job_payload(str(data.get("job_type", "")), {"source": "api/jobs"})
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            if path == "/api/jobs/cancel":
+                result = cancel_job_payload(query_int_or(str(data.get("id") or data.get("job_id") or "0"), 0))
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return
             if path == "/api/action":
                 self.send_audited_json(path, data, run_cli_action(str(data.get("name", ""))), started_at=started_at)

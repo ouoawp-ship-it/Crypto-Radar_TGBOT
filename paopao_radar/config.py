@@ -146,6 +146,7 @@ class Settings:
     ai_prompts_path: Path = BASE_DIR / "data" / "ai_prompts.json"
     signal_events_path: Path = BASE_DIR / "data" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "signals.db"
+    web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
@@ -276,10 +277,13 @@ class Settings:
     def __post_init__(self) -> None:
         default_signal_path = BASE_DIR / "data" / "signal_events.json"
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
+        default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
             object.__setattr__(self, "signal_events_db_path", self.data_dir / "signals.db")
+        if self.data_dir != BASE_DIR / "data" and self.web_jobs_db_path == default_web_jobs_db_path:
+            object.__setattr__(self, "web_jobs_db_path", self.data_dir / "jobs.db")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -329,6 +333,7 @@ class Settings:
             ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
             signal_events_path=data_path(data_dir, "SIGNAL_EVENTS_FILE", "signal_events.json"),
             signal_events_db_path=data_path(data_dir, "SIGNAL_EVENTS_DB_FILE", "signals.db"),
+            web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
@@ -502,6 +507,8 @@ class Settings:
                 "signal_events_file": str(self.signal_events_path),
                 "signal_events_db_file": str(self.signal_events_db_path),
                 "signal_events_db_exists": self.signal_events_db_path.exists(),
+                "web_jobs_db_file": str(self.web_jobs_db_path),
+                "web_jobs_db_exists": self.web_jobs_db_path.exists(),
                 "signal_events_limit": self.signal_events_limit,
                 "signal_events_retention_days": self.signal_events_retention_days,
             },

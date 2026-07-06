@@ -411,13 +411,15 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(clear["ok"])
         self.assertEqual(cleared["total"], 0)
 
-    def test_stable_check_web_action_treats_blocked_result_as_successful_execution(self) -> None:
-        with patch.object(web, "run_subprocess", return_value={"ok": False, "returncode": 2, "stdout": "未达稳定版标准", "stderr": ""}):
+    def test_stable_check_web_action_creates_background_job(self) -> None:
+        with patch.object(web, "create_job_payload", return_value={"ok": True, "job": {"id": 12, "job_type": "stable-check"}}) as create_job:
             result = web.run_cli_action("stable-check")
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["returncode"], 2)
-        self.assertEqual(result["label"], "执行稳定版验收")
+        self.assertTrue(result["job_created"])
+        self.assertEqual(result["job"]["id"], 12)
+        self.assertEqual(result["label"], web.CLI_ACTIONS["stable-check"]["label"])
+        create_job.assert_called_once()
 
     def test_ops_snapshot_payload_redacts_sensitive_log_values(self) -> None:
         summary = {
