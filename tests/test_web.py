@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 import unittest
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -1655,6 +1655,45 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["_meta"]["path"], "/api/missing")
         self.assertEqual(payload["_meta"]["status"], 404)
         self.assertIn(("Cache-Control", "no-store"), headers)
+
+    def test_send_html_ignores_broken_pipe_client_disconnect(self) -> None:
+        class BrokenWriter:
+            def write(self, payload: bytes) -> None:
+                raise BrokenPipeError("client closed")
+
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/"
+        handler.wfile = BrokenWriter()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda key, value: None
+        handler.end_headers = lambda: None
+
+        stderr = StringIO()
+        with patch("paopao_radar.web.sys.stderr", stderr):
+            web.WebHandler.send_html(handler, "<html></html>")
+
+        self.assertEqual(stderr.getvalue(), "[web] client disconnected during response\n")
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertFalse(web.is_error_log_line(stderr.getvalue()))
+
+    def test_send_json_ignores_connection_reset_client_disconnect(self) -> None:
+        class ResetWriter:
+            def write(self, payload: bytes) -> None:
+                raise ConnectionResetError("client reset")
+
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/api/test"
+        handler.wfile = ResetWriter()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda key, value: None
+        handler.end_headers = lambda: None
+
+        stderr = StringIO()
+        with patch("paopao_radar.web.sys.stderr", stderr):
+            web.WebHandler.send_json(handler, {"ok": True})
+
+        self.assertEqual(stderr.getvalue(), "[web] client disconnected during response\n")
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_overview_uses_readable_summaries_and_collapsed_raw_data(self) -> None:
         html = web.INDEX_HTML

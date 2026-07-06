@@ -8244,6 +8244,7 @@ INDEX_HTML = r"""<!doctype html>
 
 class WebHandler(BaseHTTPRequestHandler):
     server_version = "PaopaoRadarWeb/1.0"
+    CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write(f"[web] {self.address_string()} {fmt % args}\n")
@@ -8265,12 +8266,7 @@ class WebHandler(BaseHTTPRequestHandler):
             meta = existing_meta if isinstance(existing_meta, dict) else {}
             payload_obj["_meta"] = {**meta, **self.api_meta(int(status))}
         payload = json.dumps(payload_obj, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        self.send_payload(payload, status, "application/json; charset=utf-8")
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
         self.send_json({"ok": False, "error": message, "message": message, "code": code}, status)
@@ -8292,12 +8288,18 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def send_html(self, html: str) -> None:
         payload = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        self.send_payload(payload, 200, "text/html; charset=utf-8")
+
+    def send_payload(self, payload: bytes, status: int, content_type: str) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except self.CLIENT_DISCONNECT_ERRORS:
+            sys.stderr.write("[web] client disconnected during response\n")
 
     def read_json(self) -> dict[str, Any]:
         size = int(self.headers.get("Content-Length", "0") or 0)
