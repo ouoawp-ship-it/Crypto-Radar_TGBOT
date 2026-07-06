@@ -285,7 +285,7 @@ SIGNAL_EVENTS_RETENTION_DAYS=60
 
 `AI_MODEL` 只填写模型名本身，比如 `deepseek-v4-pro`，不要填写成 `AI_MODEL=deepseek-v4-pro`。使用 `deepseek-v4-pro` 或 `deepseek-v4-flash` 时，请求会自动按 DeepSeek v4 接口带上思考模式参数；如果接口返回 400，Web 和 AI Bot 会显示服务端返回的具体错误正文。`deepseek-v4-pro` 思考模式响应较慢，超时时可在 Web 后台把 `AI_REQUEST_TIMEOUT_SEC` 调到 120-180，或者临时改用 `deepseek-v4-flash`。
 
-Web 控制台的「AI 助手」页面用于查看 `paopao-ai` 服务状态、意图分流和提示词入口；「价格提醒」页面用于查看提醒统计、新增 Web 提醒、按状态/类型/关键词筛选提醒，并暂停、恢复或删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。`SIGNAL_EVENTS_FILE` 继续给 AI 币种档案读取旧 JSON 索引；`SIGNAL_EVENTS_DB_FILE` 是 Web「信号推送」页使用的结构化 SQLite 记录，通常保持默认即可。
+Web 控制台的「AI 助手」页面用于查看 `paopao-ai` 服务状态、意图分流和提示词入口；「价格提醒」页面用于查看提醒统计、新增 Web 提醒、按状态/类型/关键词筛选提醒，并暂停、恢复或删除提醒。Web 创建提醒需要填写接收提醒的 Telegram 用户 ID，或者先配置 `AI_DEFAULT_CHAT_ID`；从 Telegram 私聊创建提醒会自动识别当前私聊。`SIGNAL_EVENTS_FILE` 继续给 AI 币种档案读取旧 JSON 索引；`SIGNAL_EVENTS_DB_FILE` 是 Web「信号推送」页使用的结构化 SQLite 记录，通常保持默认即可。v1.60.1 增加 `signals.db` 兼容视图 `signal_events`，实际写入表仍为 `signals`，旧验收 SQL 和人工排查可以查询 `signal_events`。
 
 Web 控制台的「AI 助手」页提供「编辑 AI 提示词」入口，可以编辑泡泡 AI 助手提示词和专业分析师提示词。泡泡 AI 助手用于日常问答、生活问题、状态解释和提醒说明，默认语气更轻松；专业分析师用于 `分析这段：...`、`帮我分析...` 以及自动识别出的雷达/市场数据。提示词默认保存在 `data/ai_prompts.json`，保存后会自动重启 `paopao-ai`。
 

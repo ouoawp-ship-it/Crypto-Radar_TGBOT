@@ -42,6 +42,30 @@ SIGNAL_COLUMNS = (
     "payload_json",
     "error",
 )
+SIGNAL_COMPAT_DEFAULTS = {
+    "id": "NULL",
+    "ts": "0",
+    "time": "''",
+    "module": "''",
+    "template_id": "''",
+    "signal_type": "''",
+    "symbol": "''",
+    "coin": "''",
+    "stage": "''",
+    "severity": "'info'",
+    "score": "NULL",
+    "title": "''",
+    "excerpt": "''",
+    "text_html": "''",
+    "dedup_key": "''",
+    "status": "''",
+    "sent": "0",
+    "topic_id": "''",
+    "message_ids_json": "'[]'",
+    "reply_to_message_id": "0",
+    "payload_json": "'{}'",
+    "error": "''",
+}
 
 
 def _json_dumps(value: Any) -> str:
@@ -207,9 +231,41 @@ class SignalEventStore:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS signal_store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
+        self._ensure_compat_views(conn)
         conn.execute(
             "INSERT OR REPLACE INTO signal_store_meta(key, value) VALUES('schema_version', ?)",
             (str(SIGNAL_STORE_SCHEMA_VERSION),),
+        )
+
+    def _ensure_compat_views(self, conn: sqlite3.Connection) -> None:
+        existing = conn.execute(
+            "SELECT type FROM sqlite_master WHERE name = 'signal_events' LIMIT 1"
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "INSERT OR REPLACE INTO signal_store_meta(key, value) VALUES('signal_events_object_type', ?)",
+                (str(existing["type"]),),
+            )
+            return
+        available_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(signals)").fetchall()
+        }
+        select_columns = []
+        for column in SIGNAL_COLUMNS:
+            if column in available_columns:
+                select_columns.append(column)
+            else:
+                select_columns.append(f"{SIGNAL_COMPAT_DEFAULTS[column]} AS {column}")
+        conn.execute(
+            f"""
+            CREATE VIEW IF NOT EXISTS signal_events AS
+            SELECT {", ".join(select_columns)}
+            FROM signals
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO signal_store_meta(key, value) VALUES('signal_events_object_type', 'view')"
         )
 
     def append_from_push(

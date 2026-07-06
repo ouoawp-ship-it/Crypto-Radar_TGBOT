@@ -18,25 +18,26 @@ class SignalEventStoreTests(unittest.TestCase):
             signal_events_db_path=Path(tmp) / "signals.db",
         )
 
-    def test_init_creates_table_and_indexes(self) -> None:
+    def test_init_creates_table_indexes_and_compat_view(self) -> None:
         with TemporaryDirectory() as tmp:
             store = SignalEventStore(Path(tmp) / "signals.db")
             with store.connect():
                 pass
             with closing(sqlite3.connect(Path(tmp) / "signals.db")) as conn:
-                names = {
-                    row[0]
+                objects = {
+                    row[1]: row[0]
                     for row in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+                        "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index', 'view')"
                     ).fetchall()
                 }
 
-        self.assertIn("signals", names)
-        self.assertIn("idx_signals_ts", names)
-        self.assertIn("idx_signals_symbol_ts", names)
-        self.assertIn("idx_signals_module_ts", names)
-        self.assertIn("idx_signals_template_ts", names)
-        self.assertIn("ux_signals_dedup_symbol", names)
+        self.assertEqual(objects["signals"], "table")
+        self.assertEqual(objects["signal_events"], "view")
+        self.assertEqual(objects["idx_signals_ts"], "index")
+        self.assertEqual(objects["idx_signals_symbol_ts"], "index")
+        self.assertEqual(objects["idx_signals_module_ts"], "index")
+        self.assertEqual(objects["idx_signals_template_ts"], "index")
+        self.assertEqual(objects["ux_signals_dedup_symbol"], "index")
 
     def test_append_from_push_extracts_multiple_symbols(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -137,6 +138,125 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(stats["by_status"]["sent"], 1)
         self.assertEqual(stats["by_module"]["flow"], 2)
         self.assertEqual(stats["top_symbols"][0]["symbol"], "BTCUSDT")
+
+    def test_signal_events_view_matches_signals_table(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_TEST_MESSAGE",
+                dedup_key="test:view",
+                status="dry_run",
+                sent=False,
+                text="Telegram test message",
+                ts=1000,
+            )
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                signals_count = conn.execute("SELECT COUNT(*) AS c FROM signals").fetchone()["c"]
+                compat_count = conn.execute("SELECT COUNT(*) AS c FROM signal_events").fetchone()["c"]
+                latest = conn.execute(
+                    """
+                    SELECT template_id, status, module, excerpt
+                    FROM signal_events
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+        self.assertEqual(signals_count, 1)
+        self.assertEqual(compat_count, 1)
+        self.assertEqual(latest["template_id"], "TG_TEST_MESSAGE")
+        self.assertEqual(latest["status"], "dry_run")
+        self.assertEqual(latest["module"], "test")
+        self.assertIn("Telegram test message", latest["excerpt"])
+
+    def test_existing_signals_database_gets_signal_events_view(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "signals.db"
+            store = SignalEventStore(db_path)
+            with store.connect():
+                pass
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("DROP VIEW signal_events")
+                conn.commit()
+                missing = conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'signal_events'"
+                ).fetchone()[0]
+            self.assertEqual(missing, 0)
+
+            with store.connect():
+                pass
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT type FROM sqlite_master WHERE name = 'signal_events'"
+                ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "view")
+
+    def test_signal_events_view_defaults_missing_legacy_columns(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "signals.db"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE signals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts INTEGER NOT NULL,
+                        time TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        template_id TEXT NOT NULL,
+                        signal_type TEXT NOT NULL,
+                        symbol TEXT NOT NULL DEFAULT '',
+                        coin TEXT NOT NULL DEFAULT '',
+                        stage TEXT NOT NULL DEFAULT '',
+                        severity TEXT NOT NULL DEFAULT 'info',
+                        score REAL,
+                        title TEXT NOT NULL DEFAULT '',
+                        excerpt TEXT NOT NULL DEFAULT '',
+                        text_html TEXT NOT NULL DEFAULT '',
+                        dedup_key TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        sent INTEGER NOT NULL DEFAULT 0,
+                        topic_id TEXT NOT NULL DEFAULT '',
+                        message_ids_json TEXT NOT NULL DEFAULT '[]',
+                        reply_to_message_id INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO signals (
+                        ts, time, module, template_id, signal_type, symbol, coin, stage, severity,
+                        score, title, excerpt, text_html, dedup_key, status, sent, topic_id,
+                        message_ids_json, reply_to_message_id
+                    ) VALUES (
+                        1000, '1970-01-01T00:16:40+00:00', 'test', 'TG_TEST_MESSAGE', '测试',
+                        'BTCUSDT', 'BTC', '', 'info', NULL, 'title', 'excerpt', 'body',
+                        'dedup', 'dry_run', 0, '', '[]', 0
+                    )
+                    """
+                )
+                conn.commit()
+
+            with SignalEventStore(db_path).connect():
+                pass
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                latest = conn.execute(
+                    """
+                    SELECT payload_json, error
+                    FROM signal_events
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+        self.assertEqual(latest["payload_json"], "{}")
+        self.assertEqual(latest["error"], "")
 
 
 if __name__ == "__main__":
