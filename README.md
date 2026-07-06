@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.67.0 说明
+
+v1.67.0 将 Web 拆成同域双入口：`/` 是公开信号前台，显示 Paoxx Signal Radar 的脱敏只读信号、统计、活跃币种和公开时间线；`/admin` 是原有后台控制台，继续使用 `WEB_ADMIN_TOKEN` 访问私有 `/api/*`。
+
+新增 `/public-api/*` 公开只读接口，用于公开信号列表、信号详情、统计、币种详情、币种搜索和信号时间线。公开接口会裁剪 `dedup_key`、Telegram topic/message/reply 字段、`payload_json`、原始 `text_html`、配置、任务、日志、审计和服务控制信息；`/api/*` 仍是后台私有 API，不改变现有控制台功能。
+
 ## v1.66.0 说明
 
 v1.66.0 深化 Signal Timeline：新增轻量全局「信号时间线」入口，并增强 Coin Detail 的按日期分组时间线。时间线支持币种、模块、状态、关键词和时间窗口筛选，Timeline item 可直接打开 Signal Detail，便于按事件顺序排查某个币种或全局信号的发送、跳过、失败和 Telegram 记录。

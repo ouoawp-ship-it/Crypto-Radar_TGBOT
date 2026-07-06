@@ -42,6 +42,14 @@ from .web_services.jobs import (
     rerun_job_payload,
 )
 from .web_services.ops import update_check_status_payload
+from .web_services.public import (
+    public_coin_detail_payload,
+    public_coin_search_payload,
+    public_signal_detail_payload,
+    public_signal_stats_payload,
+    public_signals_payload,
+    public_timeline_payload,
+)
 from .web_services.signals import (
     enhance_signal_items,
     signal_detail_view,
@@ -3608,6 +3616,69 @@ def check_auth(handler: BaseHTTPRequestHandler) -> bool:
     query_token = parse_qs(parsed.query).get("token", [""])[0]
     header_token = handler.headers.get("X-Admin-Token", "")
     return token in {query_token, header_token}
+
+
+PUBLIC_INDEX_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paoxx Signal Radar</title>
+  <style>
+    :root{--bg:#f5f7fb;--panel:#fff;--text:#172033;--muted:#667085;--line:#dbe3ef;--accent:#206bc4;--good:#2fb344;--warn:#f59f00;--bad:#d63939;--info:#206bc4}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    header{position:sticky;top:0;z-index:5;background:rgba(255,255,255,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+    .wrap{max-width:1180px;margin:0 auto;padding:18px}
+    .top{display:flex;justify-content:space-between;gap:16px;align-items:center}.brand h1{margin:0;font-size:26px}.brand p{margin:4px 0 0;color:var(--muted)}
+    .admin-link{border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--accent);text-decoration:none;background:#fff;font-weight:700}
+    .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;box-shadow:0 8px 24px rgba(20,32,54,.06)}
+    .span-12{grid-column:span 12}.span-8{grid-column:span 8}.span-4{grid-column:span 4}.span-3{grid-column:span 3}
+    .metric strong{display:block;font-size:22px}.metric span,.muted{color:var(--muted);font-size:13px}.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    input,select,button{border:1px solid var(--line);border-radius:8px;padding:9px 10px;background:#fff;color:var(--text)}button{cursor:pointer;font-weight:800}.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .cards{display:grid;gap:12px}.card{border:1px solid var(--line);border-radius:10px;padding:12px;background:#fff;display:grid;gap:8px}.card:hover{border-color:#adc3dd;box-shadow:0 8px 20px rgba(20,32,54,.08)}
+    .head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.title{font-weight:850}.summary{color:#344054;font-size:14px;line-height:1.45}.meta{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+    .badge{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font-size:12px;font-weight:800;background:#f8fafc}.good{color:var(--good);background:#edf9f0}.warn{color:#a16207;background:#fff7df}.bad{color:var(--bad);background:#fff0f0}.info{color:var(--info);background:#edf5ff}.neutral{color:#64748b;background:#f8fafc}
+    .timeline-day{border-left:2px solid #dbe6f3;padding-left:12px;display:grid;gap:8px}.timeline-day h3{margin:0;color:var(--muted);font-size:13px}.timeline-item{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff;display:grid;gap:6px}
+    .empty{border:1px dashed var(--line);border-radius:10px;padding:18px;color:var(--muted);background:#f8fafc}.detail pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:260px;overflow:auto}
+    @media(max-width:860px){.span-8,.span-4,.span-3{grid-column:span 12}.top{align-items:flex-start;flex-direction:column}}
+  </style>
+</head>
+<body>
+  <header><div class="wrap top"><div class="brand"><h1>Paoxx Signal Radar</h1><p>Public crypto signal feed. Read-only, redacted, powered by signals.db.</p></div><a class="admin-link" href="/admin">Admin Console</a></div></header>
+  <main class="wrap">
+    <section class="grid">
+      <div class="panel span-12"><div class="toolbar">
+        <input id="q" placeholder="Search keyword">
+        <input id="symbol" placeholder="BTC / BTCUSDT">
+        <select id="module"><option value="">All modules</option><option value="launch">Launch</option><option value="funding">Funding</option><option value="flow">Flow</option><option value="structure">Structure</option><option value="structure_review">Review</option><option value="announcement">Announcement</option><option value="summary">Summary</option><option value="test">Test</option></select>
+        <select id="status"><option value="">All status</option><option value="sent">Sent</option><option value="dry_run">Dry-run</option><option value="skipped">Skipped</option><option value="blocked">Blocked</option><option value="failed">Failed</option></select>
+        <select id="window"><option value="86400">24h</option><option value="604800" selected>7d</option><option value="2592000">30d</option></select>
+        <button class="primary" onclick="loadPublic()">Refresh</button>
+      </div></div>
+      <div id="stats" class="span-12 grid"></div>
+      <div class="panel span-8"><div class="head"><h2>Latest Signal Cards</h2><span class="muted" id="signalCount"></span></div><div id="signals" class="cards"></div></div>
+      <div class="panel span-4"><h2>Active Coins</h2><div id="coins" class="cards"></div><div id="coinDetail"></div></div>
+      <div class="panel span-12"><h2>Public Signal Timeline</h2><div id="timeline"></div></div>
+      <div class="panel span-12 detail"><h2>Signal Detail</h2><div id="detail" class="empty">Select a signal card to view public details.</div></div>
+    </section>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+    async function api(path){ const r = await fetch(path, {cache:"no-store"}); const data = await r.json(); if(!r.ok || data.ok === false) throw new Error(data.message || data.error || r.statusText); return data; }
+    function tone(status){ const key=String(status||"").toLowerCase(); if(key==="sent") return "good"; if(key==="failed") return "bad"; if(key==="blocked") return "warn"; if(key==="dry_run") return "info"; return "neutral"; }
+    function params(limit=50){ const p=new URLSearchParams(); p.set("limit", String(limit)); p.set("window_sec", $("window").value || "604800"); ["q","symbol","module","status"].forEach(id=>{ const v=$(id).value.trim(); if(v) p.set(id,v); }); return p; }
+    function card(item){ const d=item.display||{}; return `<article class="card" onclick="loadDetail(${Number(item.id||0)})"><div class="head"><div><div class="title">${esc(d.title||item.signal_type||"Signal")}</div><div class="muted">${esc(d.time_label||item.time||"-")} / ${esc(item.symbol||"Global")}</div></div><span class="badge ${tone(item.status)}">${esc(d.status_label||item.status||"-")}</span></div><div class="summary">${esc(d.summary||item.excerpt||"")}</div><div class="meta"><span class="badge info">${esc(d.module_label||item.module||"-")}</span><span>score ${esc(d.score_label ?? item.score ?? "-")}</span><span>stage ${esc(d.stage_label||item.stage||"-")}</span></div></article>`; }
+    function statsHtml(stats){ return [["24h Signals",stats.total||0],["Sent",stats.sent||0],["Dry-run",stats.dry_run||0],["Blocked/Failed",Number(stats.blocked||0)+Number(stats.failed||0)]].map(([k,v])=>`<div class="panel span-3 metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join(""); }
+    function timelineHtml(groups){ if(!groups||!groups.length) return `<div class="empty">No timeline events. Try a wider time window or fewer filters.</div>`; return `<div class="cards">${groups.map(g=>`<section class="timeline-day"><h3>${esc(g.label||g.date)} / ${esc(g.count||0)} events</h3>${(g.items||[]).map(card).join("")}</section>`).join("")}</div>`; }
+    async function loadDetail(id){ const data=await api(`/public-api/signals/detail?id=${encodeURIComponent(id)}`); const rows=((data.detail||{}).sections||[]).map(s=>`<h3>${esc(s.title)}</h3>${(s.rows||[]).map(r=>`<p><b>${esc(r.label)}:</b> ${esc(r.value)}</p>`).join("")}`).join(""); $("detail").innerHTML = rows || `<div class="empty">No public detail.</div>`; }
+    async function loadCoin(symbol){ $("symbol").value = symbol || ""; const data=await api(`/public-api/coin-detail?symbol=${encodeURIComponent(symbol)}&limit=20&window_sec=${encodeURIComponent($("window").value||"604800")}`); const s=data.summary||{}; $("coinDetail").innerHTML=`<div class="empty"><b>${esc(data.symbol)}</b><br>${esc(s.headline||"")}<br>Total: ${esc(s.total||0)}</div>`; }
+    async function loadPublic(){ $("signals").innerHTML=`<div class="empty">Loading...</div>`; const [stats, signals, coins, timeline] = await Promise.all([api(`/public-api/signals/stats?window_sec=86400`), api(`/public-api/signals?${params(30)}`), api(`/public-api/coin-search?limit=10&window_sec=${encodeURIComponent($("window").value||"604800")}`), api(`/public-api/signal-timeline?${params(80)}`)]); $("stats").innerHTML=statsHtml(stats); $("signalCount").textContent=`${signals.count||0} shown`; $("signals").innerHTML=(signals.items||[]).length ? (signals.items||[]).map(card).join("") : `<div class="empty">No public signals match the filters.</div>`; $("coins").innerHTML=(coins.items||[]).length ? coins.items.map(c=>`<button onclick="loadCoin('${esc(c.symbol)}')">${esc(c.label||c.symbol)} · ${esc(c.count||0)}</button>`).join("") : `<div class="empty">No active coins.</div>`; $("timeline").innerHTML=timelineHtml(timeline.groups||[]); }
+    loadPublic().catch(err=>{ $("signals").innerHTML=`<div class="empty">${esc(err.message)}</div>`; });
+  </script>
+</body>
+</html>
+"""
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -9138,12 +9209,69 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
         if path == "/":
+            self.send_html(PUBLIC_INDEX_HTML)
+            return
+        if path == "/admin" or path.startswith("/admin/"):
             self.send_html(INDEX_HTML)
+            return
+        if path == "/public-api/signals":
+            self.send_json(public_signals_payload(
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+                module=query.get("module", [""])[0],
+                symbol=query.get("symbol", [""])[0],
+                status=query.get("status", [""])[0],
+                q=query.get("q", [""])[0],
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
+            ))
+            return
+        if path == "/public-api/signals/detail":
+            self.send_json(public_signal_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
+            return
+        if path == "/public-api/signals/stats":
+            self.send_json(public_signal_stats_payload(
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
+            ))
+            return
+        if path == "/public-api/coin-detail":
+            coin_value = query.get("symbol", query.get("coin", [""]))[0]
+            if not str(coin_value or "").strip():
+                self.send_json(api_error("请输入币种，例如 BTC 或 BTCUSDT", code="bad_request"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(public_coin_detail_payload(
+                coin_value,
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+                module=query.get("module", [""])[0],
+                status=query.get("status", [""])[0],
+                q=query.get("q", [""])[0],
+            ))
+            return
+        if path == "/public-api/coin-search":
+            self.send_json(public_coin_search_payload(
+                q=query.get("q", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["20"])[0], 20, 100),
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+            ))
+            return
+        if path == "/public-api/signal-timeline":
+            self.send_json(public_timeline_payload(
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+                cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+                window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+                module=query.get("module", [""])[0],
+                status=query.get("status", [""])[0],
+                q=query.get("q", [""])[0],
+            ))
+            return
+        if path.startswith("/public-api/"):
+            self.send_json(api_error("公开接口不存在", code="not_found"), HTTPStatus.NOT_FOUND)
             return
         if not self.require_auth():
             return
-        query = parse_qs(parsed.query)
         if path == "/api/summary":
             self.send_json(summary_payload())
             return

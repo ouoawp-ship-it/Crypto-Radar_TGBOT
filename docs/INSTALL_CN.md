@@ -1,5 +1,38 @@
 # 泡泡抓币中文安装目录
 
+## v1.67.0 运维说明
+
+Web 现在拆成公开前台和后台控制台两个入口：`/` 显示公开信号前台，不需要管理令牌，只读取脱敏后的 `/public-api/*`；`/admin` 显示原后台控制台，后台 `/api/*` 继续需要 `WEB_ADMIN_TOKEN`。公开前台不会显示配置中心、任务中心、日志、审计、服务控制、更新入口、服务器资源或 Git 细节。
+
+如果使用 `paoxx.com` 这类域名部署，建议 DNS A 记录指向服务器 IP，由 Nginx 负责 HTTPS 入口并反代到本机 `127.0.0.1:8080`：`/` 作为公开信号前台，`/admin` 作为后台控制台，`/public-api/*` 作为公开只读 API，`/api/*` 作为后台私有 API。生产环境建议关闭公网 8080，只开放 80/443，启用 HTTPS，并对 `/public-api/*` 增加 Nginx 限流。
+
+示例反代结构如下，按实际证书路径和域名调整：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name paoxx.com;
+
+    ssl_certificate /etc/letsencrypt/live/paoxx.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/paoxx.com/privkey.pem;
+
+    location /public-api/ {
+        limit_req zone=public_api burst=30 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
+
 ## v1.66.0 运维说明
 
 Web 新增轻量「信号时间线」入口，并增强 Coin Detail 的按日期分组时间线。时间线数据来自 `signals.db` / `signal_events` 兼容视图，可以按币种、模块、状态、关键词和 24h / 7d / 30d 时间窗口查看信号历史；点击 Timeline item 可打开同一套 Signal Detail 面板。

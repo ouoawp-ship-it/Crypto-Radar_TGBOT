@@ -2147,6 +2147,153 @@ class WebConsoleTests(unittest.TestCase):
         self.assertNotIn("stdout_tail", rerun["details"])
         self.assertNotIn("stderr_tail", cleanup["details"])
 
+    def test_public_frontend_and_admin_entrypoints_are_split(self) -> None:
+        self.assertIn("Paoxx Signal Radar", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/signals", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/signals/stats", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/coin-search", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/coin-detail", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/signal-timeline", web.PUBLIC_INDEX_HTML)
+        self.assertIn('href="/admin"', web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/jobs", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/logs", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/audit", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("WEB_ADMIN_TOKEN", web.PUBLIC_INDEX_HTML)
+
+        self.assertIn("Crypto Radar Ops", web.INDEX_HTML)
+        self.assertIn("/api/jobs", web.INDEX_HTML)
+        self.assertIn("/api/signals", web.INDEX_HTML)
+
+    def test_get_root_admin_and_public_api_routing(self) -> None:
+        def make_handler(path: str):
+            handler = object.__new__(web.WebHandler)
+            handler.path = path
+            handler.headers = {}
+            handler.server = type("Server", (), {"admin_token": "secret"})()
+            handler.wfile = BytesIO()
+            handler.send_response = lambda status: statuses.append(status)
+            handler.send_header = lambda key, value: headers.append((key, value))
+            handler.end_headers = lambda: None
+            return handler
+
+        statuses: list[int] = []
+        headers: list[tuple[str, str]] = []
+        root = make_handler("/")
+        web.WebHandler.do_GET(root)
+        self.assertEqual(statuses[-1], 200)
+        self.assertIn("Paoxx Signal Radar", root.wfile.getvalue().decode("utf-8"))
+
+        statuses.clear()
+        headers.clear()
+        admin = make_handler("/admin")
+        web.WebHandler.do_GET(admin)
+        self.assertEqual(statuses[-1], 200)
+        self.assertIn("Crypto Radar Ops", admin.wfile.getvalue().decode("utf-8"))
+
+        statuses.clear()
+        headers.clear()
+        private_api = make_handler("/api/summary")
+        web.WebHandler.do_GET(private_api)
+        self.assertEqual(statuses[-1], 401)
+        private_payload = json.loads(private_api.wfile.getvalue().decode("utf-8"))
+        self.assertFalse(private_payload["ok"])
+        self.assertEqual(private_payload["code"], "unauthorized")
+
+        statuses.clear()
+        headers.clear()
+        public_api = make_handler("/public-api/signals?limit=1")
+        with patch("paopao_radar.web.public_signals_payload", return_value={"ok": True, "items": [], "count": 0, "message": "public"}):
+            web.WebHandler.do_GET(public_api)
+        self.assertEqual(statuses[-1], 200)
+        public_payload = json.loads(public_api.wfile.getvalue().decode("utf-8"))
+        self.assertTrue(public_payload["ok"])
+        self.assertEqual(public_payload["count"], 0)
+
+    def test_public_payloads_strip_private_signal_fields(self) -> None:
+        forbidden = (
+            "dedup_key",
+            "topic_id",
+            "message_ids",
+            "message_ids_json",
+            "reply_to_message_id",
+            "payload_json",
+            "text_html",
+            "raw",
+            "config",
+            "jobs",
+            "logs",
+            "audit",
+            "token",
+            "api_key",
+        )
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                web_jobs_db_path=Path(tmp) / "jobs.db",
+            )
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="public:btc",
+                status="sent",
+                sent=True,
+                text="BTCUSDT public signal with token=should-not-leak",
+                ts=int(time.time()),
+                topic_id="42",
+                message_ids=[1001, 1002],
+                reply_to_message_id=999,
+            )
+            listing = web.public_signals_payload(settings=settings, limit=10, window_sec=10**10)
+            signal_id = int(listing["items"][0]["id"])
+            detail = web.public_signal_detail_payload(signal_id, settings=settings)
+            stats = web.public_signal_stats_payload(settings=settings, window_sec=10**10)
+            coin = web.public_coin_detail_payload("BTC", settings=settings, window_sec=10**10)
+            timeline = web.public_timeline_payload(symbol="BTC", settings=settings, window_sec=10**10)
+
+        self.assertTrue(listing["ok"])
+        self.assertTrue(detail["ok"])
+        self.assertTrue(stats["ok"])
+        self.assertTrue(coin["ok"])
+        self.assertTrue(timeline["ok"])
+        self.assertEqual(set(listing["items"][0]) - {"id", "time", "module", "symbol", "status", "signal_type", "score", "stage", "excerpt", "display"}, set())
+        combined = json.dumps(
+            {
+                "listing": listing,
+                "detail": detail,
+                "stats": stats,
+                "coin": coin,
+                "timeline": timeline,
+            },
+            ensure_ascii=False,
+        )
+        for key in forbidden:
+            self.assertNotIn(key, combined)
+        self.assertNotIn("should-not-leak", combined)
+
+    def test_public_coin_detail_and_timeline_are_usable_without_private_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="public:eth", status="dry_run", sent=False, text="ETHUSDT public timeline", ts=int(time.time()))
+            search = web.public_coin_search_payload(q="", settings=settings, window_sec=10**10)
+            coin = web.public_coin_detail_payload("ETH", settings=settings, window_sec=10**10)
+            timeline = web.public_timeline_payload(symbol="ETH", settings=settings, window_sec=10**10)
+
+        self.assertTrue(search["ok"])
+        self.assertTrue(search["items"])
+        self.assertEqual(search["items"][0]["symbol"], "ETHUSDT")
+        self.assertTrue(coin["ok"])
+        self.assertEqual(coin["symbol"], "ETHUSDT")
+        self.assertIn("timeline_groups", coin)
+        self.assertTrue(timeline["ok"])
+        self.assertEqual(timeline["symbol"], "ETHUSDT")
+        self.assertIn("groups", timeline)
+
 
 if __name__ == "__main__":
     unittest.main()
