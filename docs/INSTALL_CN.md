@@ -1,5 +1,11 @@
 # 泡泡抓币中文安装目录
 
+## v1.64.0 运维说明
+
+Web「信号推送」页现在可以按币种、模块、状态、关键词、时间窗口和排序条件筛选信号。点击 Signal Card 可以查看该条推送的 Telegram topic/message、dedup_key、payload_json、同币种最近信号和原始摘要，适合日常排查“某条信号为什么发送/跳过/失败”。
+
+Signal Card 和 Dashboard 最新信号都只读取 `signals.db`，不会触发行情扫描，也不会改变 Telegram 推送链路。`signals.db`、`jobs.db`、`data/*.json`、日志和图表仍然是运行数据，不应提交到 Git；生产环境里的 `.env.oi.bak*` 备份文件也不要提交或移动。
+
 ## v1.62.1 维护说明
 
 v1.62.1 修正 Web 任务中心的 stable-check 状态口径。`stable-check` 返回码 1 只表示“基本可运行，建议关注”，通常是网络超时等可观察项；Web 会显示为“关注”，不会当作后台任务失败处理。成功的 update-check 等任务也不会把正常 Git fetch 输出当作错误摘要。

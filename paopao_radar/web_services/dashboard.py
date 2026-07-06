@@ -59,8 +59,15 @@ def dashboard_payload(*, settings: Settings | None = None) -> dict[str, Any]:
         "signals": {
             "total_24h": signal_stats.get("total", 0),
             "sent_24h": signal_stats.get("sent", 0),
+            "dry_run_24h": signal_stats.get("dry_run", 0),
+            "skipped_24h": signal_stats.get("skipped", 0),
+            "blocked_24h": signal_stats.get("blocked", 0),
             "failed_24h": signal_stats.get("failed", 0),
             "top_symbols": signal_stats.get("top_symbols", []),
+            "top_symbols_display": signal_stats.get("top_symbols_display", []),
+            "by_status_display": signal_stats.get("by_status_display", []),
+            "by_module_display": signal_stats.get("by_module_display", []),
+            "latest_failed": signal_stats.get("latest_failed", []),
             "latest": signal_latest.get("items", []),
         },
         "jobs": {

@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.64.0 说明
+
+v1.64.0 将 Web「信号推送」页升级为 Signal Card UI：信号列表改为卡片展示，支持关键词、币种、模块、状态、时间窗口和排序筛选；点击卡片可打开详情面板，查看 Telegram topic/message、dedup_key、payload_json、同币种最近信号等结构化信息。Dashboard 也会展示最新信号简版卡片和 24h 信号统计。
+
+本版本只增强 Web 展示和查询体验，不改变 `signals.db` / `jobs.db` 结构，不改变 `signal_events` 兼容视图，也不改变 Telegram 推送主流程或行情扫描策略。Signal Card 数据全部来自结构化 `signals.db`，不会触发行情扫描。
+
 ## v1.62.1 维护说明
 
 v1.62.1 修正任务中心的 stable-check 展示口径：`stable-check` 返回码 1 代表“基本可运行，建议关注”，现在会显示为 `attention / 关注`，不再误判为失败任务，也不会进入 failed/timeout 问题中心；成功任务即使 stderr 里有 Git fetch 噪声，也不会生成错误摘要。

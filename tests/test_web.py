@@ -1611,6 +1611,110 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(timeline["symbol"], "BTCUSDT")
         self.assertEqual(detail["item"]["message_ids"], [321])
 
+    def test_signal_payload_display_fields_and_q_search(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="display:sent", status="sent", sent=True, text="BTCUSDT flow signal", ts=1000)
+            append_from_push(settings, template_id="TG_TEST_MESSAGE", dedup_key="display:dry", status="dry_run", sent=False, text="无币种测试消息", ts=1001)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="display:failed", status="failed", sent=False, text="ETHUSDT failed delivery", ts=1002)
+
+            sent_payload = web.signals_payload(settings=settings, status="sent", q="flow", limit=10)
+            dry_payload = web.signals_payload(settings=settings, status="dry_run", limit=10)
+            failed_payload = web.signals_payload(settings=settings, status="failed", limit=10)
+
+        self.assertTrue(sent_payload["ok"])
+        self.assertEqual(sent_payload["count"], 1)
+        sent_display = sent_payload["items"][0]["display"]
+        self.assertEqual(sent_display["card_tone"], "good")
+        self.assertEqual(sent_display["status_label"], "已发送")
+        self.assertIn("pagination", sent_payload)
+        self.assertIn("filters", sent_payload)
+        self.assertIn("sort", sent_payload)
+        dry_display = dry_payload["items"][0]["display"]
+        self.assertEqual(dry_display["status_label"], "Dry-run")
+        self.assertEqual(dry_display["symbol_label"], "全局/无币种")
+        self.assertEqual(dry_display["score_label"], "-")
+        failed_display = failed_payload["items"][0]["display"]
+        self.assertEqual(failed_display["card_tone"], "bad")
+        self.assertEqual(failed_display["status_label"], "失败")
+
+    def test_signal_detail_payload_exposes_detail_sections_and_related(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            for idx in range(12):
+                append_from_push(
+                    settings,
+                    template_id="TG_FLOW_RADAR",
+                    dedup_key=f"detail:btc:{idx}",
+                    status="sent",
+                    sent=True,
+                    text=f"BTCUSDT detail event {idx}",
+                    ts=1000 + idx,
+                    topic_id="42",
+                    message_ids=[idx],
+                )
+            listing = web.signals_payload(settings=settings, symbol="BTC", limit=1)
+            signal_id = int(listing["items"][0]["id"])
+            with web.signal_store_for_settings(settings).connect() as conn:
+                conn.execute("UPDATE signals SET payload_json = ? WHERE id = ?", ("{bad json", signal_id))
+            detail = web.signal_detail_payload(signal_id, settings=settings)
+            missing = web.signal_detail_payload(999999, settings=settings)
+
+        self.assertTrue(detail["ok"])
+        self.assertIn("detail", detail)
+        view = detail["detail"]
+        self.assertIn("header", view)
+        self.assertIn("sections", view)
+        self.assertIn("raw", view)
+        self.assertIn("related", view)
+        self.assertLessEqual(len(view["related"]["same_symbol"]), 10)
+        self.assertIn("payload_json", view["raw"])
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["code"], "not_found")
+
+    def test_signal_stats_payload_exposes_display_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="stats:sent", status="sent", sent=True, text="BTCUSDT", ts=1000)
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="stats:failed", status="failed", sent=False, text="ETHUSDT", ts=1001)
+            stats = web.signals_stats_payload(settings=settings, window_sec=10**10)
+
+        self.assertEqual(stats["by_status"]["sent"], 1)
+        self.assertIn("by_module_display", stats)
+        self.assertIn("by_status_display", stats)
+        self.assertIn("top_symbols_display", stats)
+        self.assertEqual(stats["latest_sent"][0]["display"]["status_label"], "已发送")
+        self.assertEqual(stats["latest_failed"][0]["display"]["card_tone"], "bad")
+
+    def test_dashboard_payload_latest_signals_include_display(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                web_jobs_db_path=Path(tmp) / "jobs.db",
+            )
+            append_from_push(settings, template_id="TG_FLOW_RADAR", dedup_key="dashboard:btc", status="sent", sent=True, text="BTCUSDT dashboard", ts=1000)
+            payload = dashboard_payload(settings=settings)
+
+        self.assertTrue(payload["ok"])
+        latest = payload["data"]["signals"]["latest"]
+        self.assertTrue(latest)
+        self.assertIn("display", latest[0])
+        self.assertIn("top_symbols_display", payload["data"]["signals"])
+
     def test_send_json_wraps_dict_payload_with_api_meta(self) -> None:
         handler = object.__new__(web.WebHandler)
         handler.path = "/api/test?x=1"
@@ -1875,6 +1979,10 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn('attention: ["warning", "关注"]', html)
         self.assertIn('["attention", "关注"]', html)
         self.assertIn("last_attention_by_type", html)
+        self.assertIn("signal-card", html)
+        self.assertIn("signal-detail-panel", html)
+        self.assertIn("signalSearchFilter", html)
+        self.assertIn("applySignalFilter", html)
 
     def test_signals_payload_exposes_api_core_metadata_and_symbol_normalization(self) -> None:
         with TemporaryDirectory() as tmp:

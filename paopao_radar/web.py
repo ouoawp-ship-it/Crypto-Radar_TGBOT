@@ -40,6 +40,11 @@ from .web_services.jobs import (
     rerun_job_payload,
 )
 from .web_services.ops import update_check_status_payload
+from .web_services.signals import (
+    enhance_signal_items,
+    signal_detail_view,
+    signal_stats_display,
+)
 
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
@@ -1809,6 +1814,7 @@ def signals_payload(
     symbol: str = "",
     status: str = "",
     severity: str = "",
+    q: str = "",
     sort_field: str = "id",
     sort_direction: str = "desc",
     start_ts: int | None = None,
@@ -1832,20 +1838,24 @@ def signals_payload(
         sort_direction=sort_direction,
         start_ts=start_ts,
         end_ts=end_ts,
+        q=q,
     )
+    items = enhance_signal_items(result["items"])
+    default_filters = {
+        "module": str(module or "").strip().lower(),
+        "symbol": normalized_symbol,
+        "status": str(status or "").strip().lower(),
+        "severity": str(severity or "").strip().lower(),
+        "q": str(q or "").strip()[:80],
+    }
     return {
         "ok": True,
-        "data": {"items": result["items"]},
-        "items": result["items"],
+        "data": {"items": items},
+        "items": items,
         "next_cursor": result["next_cursor"],
         "count": result["count"],
         "pagination": pagination,
-        "filters": filters if filters is not None else {
-            "module": str(module or "").strip().lower(),
-            "symbol": normalized_symbol,
-            "status": str(status or "").strip().lower(),
-            "severity": str(severity or "").strip().lower(),
-        },
+        "filters": filters if filters is not None else default_filters,
         "sort": sort if sort is not None else {
             "field": sort_field,
             "direction": sort_direction,
@@ -1865,7 +1875,9 @@ def signals_latest_payload(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     store = signal_store_for_settings(settings)
-    items = store.latest_after(after_id=max(0, int(after_id or 0)), limit=clamp_query_int(limit, 100, 300))
+    items = enhance_signal_items(
+        store.latest_after(after_id=max(0, int(after_id or 0)), limit=clamp_query_int(limit, 100, 300))
+    )
     return {
         "ok": True,
         "items": items,
@@ -1877,9 +1889,21 @@ def signals_latest_payload(
 def signals_stats_payload(*, window_sec: int = 86400, settings: Settings | None = None) -> dict[str, Any]:
     store = signal_store_for_settings(settings)
     stats = store.stats(window_sec=max(1, int(window_sec or 86400)))
+    latest_sent = enhance_signal_items(store.list_signals(limit=5, status="sent")["items"])
+    latest_failed = enhance_signal_items(store.list_signals(limit=5, status="failed")["items"])
+    latest_by_module = {}
+    by_module = stats.get("by_module", {}) if isinstance(stats.get("by_module"), dict) else {}
+    for module_name in list(by_module.keys())[:8]:
+        latest_by_module[str(module_name)] = enhance_signal_items(
+            store.list_signals(limit=1, module=str(module_name))["items"]
+        )
     return {
         "ok": True,
         **stats,
+        **signal_stats_display(stats),
+        "latest_sent": latest_sent,
+        "latest_failed": latest_failed,
+        "latest_by_module": latest_by_module,
         "message": "已读取信号推送统计",
     }
 
@@ -1894,7 +1918,7 @@ def symbol_timeline_payload(
     if not normalized:
         return {"ok": False, "items": [], "count": 0, "message": "请先输入币种"}
     store = signal_store_for_settings(settings)
-    items = store.symbol_timeline(normalized, limit=clamp_query_int(limit, 100, 300))
+    items = enhance_signal_items(store.symbol_timeline(normalized, limit=clamp_query_int(limit, 100, 300)))
     return {
         "ok": True,
         "symbol": normalized,
@@ -1908,10 +1932,19 @@ def signal_detail_payload(signal_id: int, *, settings: Settings | None = None) -
     store = signal_store_for_settings(settings)
     item = store.signal_detail(int(signal_id or 0))
     if not item:
-        return {"ok": False, "item": None, "message": "信号记录不存在"}
+        return {"ok": False, "item": None, "detail": None, "code": "not_found", "message": "信号记录不存在"}
+    related = []
+    if item.get("symbol"):
+        related = [
+            related_item
+            for related_item in store.symbol_timeline(str(item.get("symbol") or ""), limit=11)
+            if int(related_item.get("id") or 0) != int(item.get("id") or 0)
+        ][:10]
+    enhanced = enhance_signal_items([item])[0]
     return {
         "ok": True,
-        "item": item,
+        "item": enhanced,
+        "detail": signal_detail_view(item, related),
         "message": "已读取信号详情",
     }
 
@@ -3860,6 +3893,73 @@ INDEX_HTML = r"""<!doctype html>
     .status.bad { background: #fdecec; color: var(--bad); border-color: #f8cccc; }
     .status.warn, .status.warning { background: #fff6df; color: #b77900; border-color: #ffe4a3; }
     .status.neutral { background: #f1f5f9; color: var(--silver); }
+    .status.info { background: #eaf4ff; color: var(--info); border-color: #cde3ff; }
+    .signal-toolbar { display: grid; gap: 10px; }
+    .signal-toolbar .toolbar { margin-bottom: 0; }
+    .signal-stat-grid { grid-column: span 12; display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); gap: 10px; }
+    .signal-stat {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+    .signal-stat .label { color: var(--muted); font-size: 12px; font-weight: 750; }
+    .signal-stat .value { font-size: 20px; font-weight: 850; margin-top: 4px; }
+    .signal-stat .hint { margin-top: 4px; }
+    .signal-stat-wide { grid-column: 1 / -1; }
+    .signal-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 12px; align-items: start; }
+    .signal-card-grid { display: grid; gap: 10px; }
+    .signal-card {
+      display: grid;
+      gap: 9px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--silver);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+    }
+    .signal-card:hover { border-color: #b8cbe1; box-shadow: var(--shadow-strong); transform: translateY(-1px); }
+    .signal-card.selected { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(32,107,196,.12); }
+    .signal-card.good { border-left-color: var(--good); }
+    .signal-card.warn { border-left-color: var(--warn); }
+    .signal-card.bad { border-left-color: var(--bad); }
+    .signal-card.info { border-left-color: var(--info); }
+    .signal-card.neutral { border-left-color: var(--silver); }
+    .signal-card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+    .signal-card-title { margin: 0; font-size: 15px; line-height: 1.35; font-weight: 850; }
+    .signal-card-summary { color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+    .signal-meta-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+    .signal-badge {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #dde6f0;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #f8fafc;
+      color: var(--silver);
+    }
+    button.signal-badge { cursor: pointer; }
+    .signal-badge.good { background: #eaf7ee; color: var(--good); border-color: #cfeedd; }
+    .signal-badge.warn { background: #fff6df; color: #b77900; border-color: #ffe4a3; }
+    .signal-badge.bad { background: #fdecec; color: var(--bad); border-color: #f8cccc; }
+    .signal-badge.info { background: #eaf4ff; color: var(--info); border-color: #cde3ff; }
+    .signal-detail-panel {
+      position: sticky;
+      top: 76px;
+      max-height: calc(100vh - 96px);
+      overflow: auto;
+    }
+    .signal-detail-section { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    .signal-detail-section h4 { margin: 0 0 8px; font-size: 13px; }
+    .signal-empty, .signal-error { border: 1px dashed var(--line-strong); border-radius: 8px; padding: 18px; background: #f8fafc; color: var(--muted); }
+    .signal-error { border-color: #f8cccc; background: #fff7f7; color: var(--bad); }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .toolbar select {
       width: auto;
@@ -4568,6 +4668,9 @@ INDEX_HTML = r"""<!doctype html>
       .config-module-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       .mini-metrics { grid-template-columns: 1fr; }
+      .signal-stat-grid { grid-template-columns: 1fr; }
+      .signal-layout { grid-template-columns: 1fr; }
+      .signal-detail-panel { position: static; max-height: none; }
       .field-heading { grid-template-columns: 1fr; }
       .field-current { justify-self: start; text-align: left; }
       .page-intro { grid-template-columns: 1fr; }
@@ -5086,6 +5189,7 @@ INDEX_HTML = r"""<!doctype html>
     let latestSignalId = 0;
     let signalDetailId = 0;
     let latestSignalDetail = null;
+    let latestSignalDetailView = null;
     let latestSignalTimeline = null;
     let latestJobsData = { jobs: [] };
     let latestJobsStats = {};
@@ -5901,6 +6005,41 @@ INDEX_HTML = r"""<!doctype html>
         ${failed ? `<div class="toolbar" style="margin-top:10px"><button class="btn blue" onclick="switchView('jobs')">打开任务中心</button></div>` : ""}
       </div>`;
     }
+    function overviewSignalsPanel(dashboard) {
+      const root = (dashboard && dashboard.data) || {};
+      const signals = root.signals || {};
+      const latest = signals.latest || [];
+      const failed = Number(signals.failed_24h || 0);
+      const blocked = Number(signals.blocked_24h || 0);
+      const cards = latest.slice(0, 5).map(item => {
+        const display = signalDisplay(item);
+        const tone = signalToneClass(display.card_tone);
+        return `<article class="signal-card ${tone}" onclick="switchView('signals')">
+          <div class="signal-card-head">
+            <div>
+              <h3 class="signal-card-title">${escapeHtml(display.title || "")}</h3>
+              <div class="signal-meta-row">${escapeHtml(display.time_label || item.time || "-")} / ${escapeHtml(display.symbol_label || item.symbol || "-")}</div>
+            </div>
+            <span class="signal-badge ${tone}">${escapeHtml(display.status_label || item.status || "")}</span>
+          </div>
+          <div class="signal-card-summary">${escapeHtml(display.summary || "")}</div>
+        </article>`;
+      }).join("");
+      const action = failed || blocked
+        ? `<button class="btn blue" type="button" onclick="switchView('signals')">\u67e5\u770b\u5f02\u5e38\u4fe1\u53f7</button>`
+        : `<button class="btn" type="button" onclick="switchView('signals')">\u6253\u5f00\u4fe1\u53f7\u63a8\u9001</button>`;
+      return `<div class="panel span-12">
+        <div class="summary-head">
+          <div>
+            <h3 class="section-title">Latest Signals</h3>
+            <div class="summary-meta">\u6765\u81ea /api/dashboard\uff0c\u53ea\u8bfb signals.db\uff0c\u4e0d\u89e6\u53d1\u884c\u60c5\u626b\u63cf\u3002</div>
+          </div>
+          <div class="issue-meta">${neutralPill(`24h ${signals.total_24h || 0}`)}${(failed || blocked) ? warnPill(`${failed + blocked} \u5f02\u5e38`) : neutralPill("\u65e0\u5931\u8d25\u4fe1\u53f7")}</div>
+        </div>
+        <div class="toolbar">${action}</div>
+        ${cards ? `<div class="signal-card-grid">${cards}</div>` : emptyState("\u6682\u65e0\u4fe1\u53f7", "\u7b49\u5f85\u4e0b\u4e00\u8f6e\u626b\u63cf\u6216\u6253\u5f00\u4fe1\u53f7\u63a8\u9001\u9875\u67e5\u770b\u5386\u53f2\u3002")}
+      </div>`;
+    }
     async function loadSummary() {
       let dashboard = null;
       try {
@@ -5931,6 +6070,7 @@ INDEX_HTML = r"""<!doctype html>
         serviceCard("Web 控制台", web),
         serviceCard("AI 助手", ai),
         jobsSummaryPanel(data.jobs || {}),
+        overviewSignalsPanel(dashboard),
         recentErrorsPanel(data.recent_errors || []),
         healthPanel(data.health || []),
         detailGrid("运行摘要和关键配置", overviewDetails, "默认折叠，排查时展开"),
@@ -8057,6 +8197,7 @@ INDEX_HTML = r"""<!doctype html>
       latestSignalId = Math.max(latestSignalId, ...((latestSignalsData.items || []).map(item => Number(item.id || 0))), 0);
       if (signalDetailId && !(latestSignalsData.items || []).some(item => Number(item.id) === Number(signalDetailId))) {
         latestSignalDetail = null;
+        latestSignalDetailView = null;
         latestSignalTimeline = null;
         signalDetailId = 0;
       }
@@ -8101,11 +8242,255 @@ INDEX_HTML = r"""<!doctype html>
       const module = document.getElementById("signalModuleFilter");
       const status = document.getElementById("signalStatusFilter");
       const symbol = document.getElementById("signalSymbolFilter");
+      const q = document.getElementById("signalSearchFilter");
+      const windowSec = document.getElementById("signalWindowFilter");
+      const sort = document.getElementById("signalSortFilter");
       const anomaly = document.getElementById("signalAnomalyFilter");
       if (module) module.value = "";
       if (status) status.value = "";
       if (symbol) symbol.value = "";
+      if (q) q.value = "";
+      if (windowSec) windowSec.value = "86400";
+      if (sort) sort.value = "-id";
       if (anomaly) anomaly.checked = false;
+      loadSignals();
+    }
+    function signalToneClass(tone) {
+      const key = String(tone || "neutral").toLowerCase();
+      return ["good", "warn", "bad", "info", "neutral"].includes(key) ? key : "neutral";
+    }
+    function signalDisplay(item) {
+      return item && item.display ? item.display : {
+        title: item?.title || item?.signal_type || item?.template_id || `Signal #${item?.id || ""}`,
+        subtitle: item?.symbol || "\u5168\u5c40/\u65e0\u5e01\u79cd",
+        module_label: item?.module || "\u5176\u4ed6",
+        status_label: item?.status || "\u672a\u77e5",
+        severity_label: item?.severity || "\u666e\u901a",
+        symbol_label: item?.symbol || "\u5168\u5c40/\u65e0\u5e01\u79cd",
+        time_label: item?.time || "-",
+        score_label: item?.score ?? "-",
+        stage_label: item?.stage || "-",
+        summary: item?.excerpt || item?.text_html || "",
+        badges: [],
+        card_tone: item?.status === "failed" ? "bad" : (item?.status === "blocked" ? "warn" : "neutral"),
+        primary_action: "\u67e5\u770b\u8be6\u60c5"
+      };
+    }
+    function signalBadgeHtml(badge, clickable = true) {
+      const tone = signalToneClass(badge && badge.tone);
+      const label = escapeHtml((badge && badge.label) || "");
+      const kind = escapeHtml((badge && badge.kind) || "");
+      const value = escapeHtml((badge && badge.value) || "");
+      if (clickable && kind && value && ["module", "status", "symbol"].includes(kind)) {
+        return `<button class="signal-badge ${tone}" type="button" onclick="event.stopPropagation(); applySignalFilter('${kind}', '${value}')">${label}</button>`;
+      }
+      return `<span class="signal-badge ${tone}">${label}</span>`;
+    }
+    function signalFilters() {
+      return {
+        q: document.getElementById("signalSearchFilter")?.value || "",
+        module: document.getElementById("signalModuleFilter")?.value || "",
+        status: document.getElementById("signalStatusFilter")?.value || "",
+        symbol: document.getElementById("signalSymbolFilter")?.value || "",
+        window_sec: document.getElementById("signalWindowFilter")?.value || "86400",
+        sort: document.getElementById("signalSortFilter")?.value || "-id",
+        anomaly: Boolean(document.getElementById("signalAnomalyFilter")?.checked)
+      };
+    }
+    function signalFilterQuery(filters, limit = 50) {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      if (filters.q) params.set("q", filters.q.slice(0, 80));
+      if (filters.module) params.set("module", filters.module);
+      if (filters.symbol) params.set("symbol", filters.symbol);
+      if (filters.status) params.set("status", filters.status);
+      if (filters.window_sec) params.set("window_sec", filters.window_sec);
+      if (filters.sort) params.set("sort", filters.sort);
+      return params.toString();
+    }
+    function signalClientKeep(item, filters) {
+      if (!item) return false;
+      if (filters.module && String(item.module || "") !== filters.module) return false;
+      if (filters.status && String(item.status || "") !== filters.status) return false;
+      if (filters.anomaly && !["blocked", "failed"].includes(String(item.status || ""))) return false;
+      const wanted = String(filters.symbol || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+      if (wanted) {
+        const symbol = String(item.symbol || "").toUpperCase();
+        const normalized = wanted.endsWith("USDT") ? wanted : `${wanted}USDT`;
+        if (symbol !== normalized) return false;
+      }
+      const q = String(filters.q || "").trim().toLowerCase();
+      if (q) {
+        const haystack = [item.symbol, item.coin, item.module, item.template_id, item.signal_type, item.status, item.title, item.excerpt].join(" ").toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    }
+    function signalStatsCards(stats) {
+      const top = (stats.top_symbols_display || stats.top_symbols || []).slice(0, 5).map(item => `${item.label || item.symbol} ${item.count}`).join(" / ") || "\u6682\u65e0";
+      const latestFailed = (stats.latest_failed || [])[0];
+      return `<div class="signal-stat-grid">
+        <div class="signal-stat"><div class="label">24h \u4fe1\u53f7\u603b\u6570</div><div class="value">${escapeHtml(stats.total || 0)}</div><div class="hint">\u6765\u81ea signals.db</div></div>
+        <div class="signal-stat"><div class="label">\u5df2\u53d1\u9001</div><div class="value">${escapeHtml(stats.sent || 0)}</div><div class="hint">\u771f\u5b9e\u63a8\u9001\u6210\u529f</div></div>
+        <div class="signal-stat"><div class="label">Dry-run</div><div class="value">${escapeHtml(stats.dry_run || 0)}</div><div class="hint">\u6f14\u7ec3\u8bb0\u5f55</div></div>
+        <div class="signal-stat"><div class="label">\u8df3\u8fc7</div><div class="value">${escapeHtml(stats.skipped || 0)}</div><div class="hint">\u53bb\u91cd\u6216\u51b7\u5374</div></div>
+        <div class="signal-stat"><div class="label">\u963b\u6b62 / \u5931\u8d25</div><div class="value">${escapeHtml((Number(stats.blocked || 0) + Number(stats.failed || 0)))}</div><div class="hint">${latestFailed ? escapeHtml(signalDisplay(latestFailed).summary.slice(0, 80)) : "\u65e0\u5931\u8d25\u4fe1\u53f7"}</div></div>
+        <div class="signal-stat signal-stat-wide"><div class="label">\u9ad8\u9891\u5e01\u79cd Top 5</div><div class="hint">${escapeHtml(top)}\u3002\u672c\u9875\u53ea\u8bfb\u53d6\u7ed3\u6784\u5316\u63a8\u9001\u8bb0\u5f55\uff0c\u4e0d\u89e6\u53d1\u884c\u60c5\u626b\u63cf\u3002</div></div>
+      </div>`;
+    }
+    function signalFiltersPanel(filters) {
+      return `<div class="panel span-12 signal-toolbar">
+        <div class="toolbar">
+          <input id="signalSearchFilter" value="${escapeHtml(filters.q || "")}" placeholder="\u641c\u7d22\u5e01\u79cd\u3001\u6a21\u5757\u3001\u6a21\u677f\u3001\u6458\u8981" onkeydown="if(event.key==='Enter') loadSignals()">
+          <input id="signalSymbolFilter" value="${escapeHtml(filters.symbol || "")}" placeholder="\u5e01\u79cd\uff0c\u4f8b\u5982 BTC \u6216 BTCUSDT" onkeydown="if(event.key==='Enter') loadSignals()">
+          <select id="signalModuleFilter" onchange="loadSignals()">
+            <option value="" ${!filters.module ? "selected" : ""}>\u5168\u90e8\u6a21\u5757</option>
+            <option value="launch" ${filters.module === "launch" ? "selected" : ""}>\u542f\u52a8\u96f7\u8fbe</option>
+            <option value="structure" ${filters.module === "structure" ? "selected" : ""}>\u7ed3\u6784\u96f7\u8fbe</option>
+            <option value="structure_review" ${filters.module === "structure_review" ? "selected" : ""}>\u7ed3\u6784\u590d\u76d8</option>
+            <option value="flow" ${filters.module === "flow" ? "selected" : ""}>\u8d44\u91d1\u6d41</option>
+            <option value="funding" ${filters.module === "funding" ? "selected" : ""}>\u8d44\u91d1\u8d39\u7387</option>
+            <option value="announcement" ${filters.module === "announcement" ? "selected" : ""}>\u516c\u544a</option>
+            <option value="summary" ${filters.module === "summary" ? "selected" : ""}>\u8d44\u91d1\u6458\u8981</option>
+            <option value="test" ${filters.module === "test" ? "selected" : ""}>\u6d4b\u8bd5</option>
+          </select>
+          <select id="signalStatusFilter" onchange="loadSignals()">
+            <option value="" ${!filters.status ? "selected" : ""}>\u5168\u90e8\u72b6\u6001</option>
+            <option value="sent" ${filters.status === "sent" ? "selected" : ""}>\u5df2\u53d1\u9001</option>
+            <option value="dry_run" ${filters.status === "dry_run" ? "selected" : ""}>Dry-run</option>
+            <option value="skipped" ${filters.status === "skipped" ? "selected" : ""}>\u5df2\u8df3\u8fc7</option>
+            <option value="blocked" ${filters.status === "blocked" ? "selected" : ""}>\u5df2\u963b\u6b62</option>
+            <option value="failed" ${filters.status === "failed" ? "selected" : ""}>\u5931\u8d25</option>
+          </select>
+          <select id="signalWindowFilter" onchange="loadSignals()">
+            <option value="3600" ${filters.window_sec === "3600" ? "selected" : ""}>\u6700\u8fd1 1h</option>
+            <option value="21600" ${filters.window_sec === "21600" ? "selected" : ""}>\u6700\u8fd1 6h</option>
+            <option value="86400" ${filters.window_sec === "86400" ? "selected" : ""}>\u6700\u8fd1 24h</option>
+            <option value="604800" ${filters.window_sec === "604800" ? "selected" : ""}>\u6700\u8fd1 7d</option>
+          </select>
+          <select id="signalSortFilter" onchange="loadSignals()">
+            <option value="-id" ${filters.sort === "-id" ? "selected" : ""}>\u6700\u65b0\u4f18\u5148</option>
+            <option value="id" ${filters.sort === "id" ? "selected" : ""}>\u6700\u65e9\u4f18\u5148</option>
+            <option value="module" ${filters.sort === "module" ? "selected" : ""}>\u6a21\u5757</option>
+            <option value="status" ${filters.sort === "status" ? "selected" : ""}>\u72b6\u6001</option>
+            <option value="-score" ${filters.sort === "-score" ? "selected" : ""}>\u5206\u6570\u9ad8\u5230\u4f4e</option>
+          </select>
+        </div>
+        <div class="toolbar">
+          <label class="status neutral" style="cursor:pointer"><input id="signalAnomalyFilter" type="checkbox" ${filters.anomaly ? "checked" : ""} onchange="loadSignals()"> \u53ea\u770b\u5f02\u5e38</label>
+          <button class="btn primary" type="button" onclick="loadSignals()">\u5237\u65b0</button>
+          <button class="btn" type="button" onclick="clearSignalFilters()">\u6e05\u9664\u7b5b\u9009</button>
+        </div>
+      </div>`;
+    }
+    function signalCard(item) {
+      const display = signalDisplay(item);
+      const tone = signalToneClass(display.card_tone);
+      const selected = Number(item.id || 0) === Number(signalDetailId || 0) ? " selected" : "";
+      const messageIds = (item.message_ids || []).join(", ") || "-";
+      const badges = (display.badges || []).slice(0, 6).map(badge => signalBadgeHtml(badge)).join("");
+      return `<article class="signal-card ${tone}${selected}" onclick="loadSignalDetail(${Number(item.id || 0)})">
+        <div class="signal-card-head">
+          <div>
+            <h3 class="signal-card-title">${escapeHtml(display.title || "")}</h3>
+            <div class="signal-meta-row">${escapeHtml(display.time_label || item.time || "-")} / ${escapeHtml(display.subtitle || "")}</div>
+          </div>
+          <span class="signal-badge ${tone}">${escapeHtml(display.status_label || item.status || "")}</span>
+        </div>
+        <div class="signal-meta-row">${badges}</div>
+        <div class="signal-card-summary">${escapeHtml(display.summary || "")}</div>
+        <div class="signal-meta-row">
+          <span>\u5206\u6570: ${escapeHtml(display.score_label || "-")}</span>
+          <span>\u9636\u6bb5: ${escapeHtml(display.stage_label || "-")}</span>
+          <span>message: <code>${escapeHtml(messageIds)}</code></span>
+          <button class="btn blue" type="button" onclick="event.stopPropagation(); loadSignalDetail(${Number(item.id || 0)})">${escapeHtml(display.primary_action || "\u67e5\u770b\u8be6\u60c5")}</button>
+        </div>
+      </article>`;
+    }
+    function signalCardList(items) {
+      if (!items.length) return `<div class="signal-empty">${emptyState("\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u4fe1\u53f7", "\u8c03\u6574\u7b5b\u9009\u6761\u4ef6\u6216\u7b49\u5f85\u4e0b\u4e00\u8f6e\u626b\u63cf\u3002")}</div>`;
+      return `<div class="signal-card-grid">${items.map(signalCard).join("")}</div>`;
+    }
+    function signalDetailPanel() {
+      const item = latestSignalDetail;
+      const detail = latestSignalDetailView;
+      if (!item || !detail) {
+        return `<aside class="panel signal-detail-panel">${emptyState("\u8bf7\u9009\u62e9\u4e00\u6761\u4fe1\u53f7", "\u70b9\u51fb\u5de6\u4fa7 Signal Card\uff0c\u53ef\u4ee5\u67e5\u770b Telegram\u3001dedup\u3001payload \u548c\u540c\u5e01\u79cd\u6700\u8fd1\u8bb0\u5f55\u3002")}</aside>`;
+      }
+      const header = detail.header || {};
+      const sections = (detail.sections || []).map(section => `<div class="signal-detail-section">
+        <h4>${escapeHtml(section.title || "")}</h4>
+        <div class="readable-list">${(section.rows || []).map(r => row(r.label, r.code ? `<code>${escapeHtml(r.value || "")}</code>` : textValue(r.value || "-"))).join("")}</div>
+      </div>`).join("");
+      const related = (((detail.related || {}).same_symbol) || []).slice(0, 10).map(event => {
+        const display = signalDisplay(event);
+        return `<div class="feature-item"><strong>${escapeHtml(display.time_label)} / ${escapeHtml(display.module_label)}</strong><span>${escapeHtml(display.status_label)} / ${escapeHtml(display.summary.slice(0, 120))}</span></div>`;
+      }).join("") || emptyState("\u6682\u65e0\u540c\u5e01\u79cd\u8bb0\u5f55", "\u8fd9\u6761\u4fe1\u53f7\u53ef\u80fd\u662f\u5168\u5c40\u516c\u544a\u3001\u6458\u8981\u6216\u6d4b\u8bd5\u6d88\u606f\u3002");
+      return `<aside class="panel signal-detail-panel">
+        <div class="summary-head">
+          <div>
+            <h3 class="section-title">${escapeHtml(header.title || `Signal #${item.id || ""}`)}</h3>
+            <div class="summary-meta">${escapeHtml(header.subtitle || "")} / ${escapeHtml(header.time_label || "")}</div>
+          </div>
+          <button class="btn" type="button" onclick="latestSignalDetail=null; latestSignalDetailView=null; signalDetailId=0; renderSignalsPage()">\u5173\u95ed</button>
+        </div>
+        <div class="signal-meta-row">${(header.badges || []).map(badge => signalBadgeHtml(badge)).join("")}</div>
+        ${sections}
+        <details class="raw-details compact-details">
+          <summary>payload_json <span class="summary-meta">\u5b89\u5168\u89e3\u6790\u540e\u5c55\u793a</span></summary>
+          <div class="raw-body"><pre>${escapeHtml((detail.raw || {}).payload_json || "{}")}</pre></div>
+        </details>
+        <details class="raw-details compact-details">
+          <summary>message_ids_json</summary>
+          <div class="raw-body"><pre>${escapeHtml((detail.raw || {}).message_ids_json || "[]")}</pre></div>
+        </details>
+        <div class="signal-detail-section">
+          <h4>\u540c\u5e01\u79cd\u6700\u8fd1\u4fe1\u53f7</h4>
+          <div class="feature-list">${related}</div>
+        </div>
+      </aside>`;
+    }
+    function renderSignalsPage() {
+      const filters = signalFilters();
+      const items = (latestSignalsData.items || []);
+      const stats = latestSignalStats || {};
+      document.getElementById("signalsGrid").innerHTML = [
+        renderPageIntro("signals", [`${items.length} \u6761`, latestSignalsData.db_file || "signals.db"]),
+        signalStatsCards(stats),
+        signalFiltersPanel(filters),
+        `<div class="panel span-12">
+          <div class="summary-head">
+            <h3 class="section-title">Signal Cards</h3>
+            ${neutralPill(`\u672c\u9875 ${items.length} \u6761`)}
+          </div>
+          <div class="signal-layout">
+            ${signalCardList(items)}
+            ${signalDetailPanel()}
+          </div>
+        </div>`
+      ].join("");
+    }
+    async function loadSignalDetail(id) {
+      signalDetailId = Number(id || 0);
+      const data = await api(`/api/signals/detail?id=${encodeURIComponent(signalDetailId)}`);
+      latestSignalDetail = data.item || null;
+      latestSignalDetailView = data.detail || null;
+      latestSignalTimeline = ((data.detail || {}).related || {}).same_symbol || [];
+      renderSignalsPage();
+    }
+    function applySignalFilter(kind, value) {
+      if (kind === "symbol") {
+        const symbol = document.getElementById("signalSymbolFilter");
+        if (symbol) symbol.value = value || "";
+      }
+      if (kind === "module") {
+        const module = document.getElementById("signalModuleFilter");
+        if (module) module.value = value || "";
+      }
+      if (kind === "status") {
+        const status = document.getElementById("signalStatusFilter");
+        if (status) status.value = value || "";
+      }
       loadSignals();
     }
     async function loadAiPrompts() {
@@ -8395,7 +8780,7 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/signals":
             page = pagination_params(query, default_limit=50, max_limit=200)
-            filters = filter_params(query, ("module", "symbol", "status", "severity"))
+            filters = filter_params(query, ("module", "symbol", "status", "severity", "q"))
             if "symbol" in filters:
                 symbol_info = normalize_symbol_filter(filters["symbol"])
                 filters["symbol"] = symbol_info["symbol"]
@@ -8409,6 +8794,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 symbol=filters.get("symbol", ""),
                 status=filters.get("status", ""),
                 severity=filters.get("severity", ""),
+                q=filters.get("q", ""),
                 sort_field=sort["field"],
                 sort_direction=sort["direction"],
                 start_ts=time_range["start_ts"] if time_range.get("applied") else None,

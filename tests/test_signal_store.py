@@ -145,6 +145,36 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(ranged["count"], 1)
         self.assertEqual(ranged["items"][0]["symbol"], "ETHUSDT")
 
+    def test_list_signals_supports_q_search(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="search:btc",
+                status="sent",
+                sent=True,
+                text="BTCUSDT strong flow breakout",
+                ts=1000,
+            )
+            append_from_push(
+                settings,
+                template_id="TG_FUNDING_RADAR",
+                dedup_key="search:eth",
+                status="sent",
+                sent=True,
+                text="ETHUSDT funding watch",
+                ts=1001,
+            )
+            store = SignalEventStore(settings.signal_events_db_path)
+            btc = store.list_signals(q="btc")
+            funding = store.list_signals(q="funding")
+
+        self.assertEqual(btc["count"], 1)
+        self.assertEqual(btc["items"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(funding["count"], 1)
+        self.assertEqual(funding["items"][0]["symbol"], "ETHUSDT")
+
     def test_stats_returns_status_module_and_top_symbols(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

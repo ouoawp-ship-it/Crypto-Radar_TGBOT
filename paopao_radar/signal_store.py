@@ -91,6 +91,12 @@ def _limit(value: int | str | None, default: int, maximum: int) -> int:
     return max(1, min(maximum, number))
 
 
+def _like_pattern(value: str) -> str:
+    escaped = str(value or "").strip()[:80]
+    escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _clean_title(text: str) -> str:
     for line in str(text or "").splitlines():
         cleaned = clean_signal_text(line)
@@ -382,6 +388,7 @@ class SignalEventStore:
         sort_direction: str = "desc",
         start_ts: int | None = None,
         end_ts: int | None = None,
+        q: str = "",
     ) -> dict[str, Any]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": _limit(limit, 50, 200)}
@@ -406,6 +413,23 @@ class SignalEventStore:
         if end_ts is not None:
             clauses.append("ts <= :end_ts")
             params["end_ts"] = int(end_ts)
+        q_text = str(q or "").strip()[:80]
+        if q_text:
+            clauses.append(
+                """
+                (
+                    symbol LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR coin LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR module LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR template_id LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR signal_type LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR status LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR excerpt LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                    OR title LIKE :q_like ESCAPE '\\' COLLATE NOCASE
+                )
+                """
+            )
+            params["q_like"] = _like_pattern(q_text)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         allowed_sort_fields = {"id", "ts", "module", "symbol", "status", "severity", "score"}
         safe_sort_field = str(sort_field or "id")
