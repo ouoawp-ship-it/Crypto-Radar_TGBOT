@@ -22,6 +22,9 @@ JOB_STATUSES = {"queued", "running", "success", "failed", "timeout", "cancelled"
 JOB_STDOUT_LIMIT = 12000
 JOB_STDERR_LIMIT = 6000
 JOB_ERROR_LIMIT = 1000
+JOB_REPORT_TAIL_LIMIT = 12000
+CONCURRENT_GUARD_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test"}
+ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
 
 
 def zh(text: str) -> str:
@@ -101,6 +104,8 @@ def _row_to_job(row: sqlite3.Row | None) -> dict[str, Any] | None:
 @dataclass
 class JobStore:
     db_path: Path = DEFAULT_JOBS_DB_PATH
+    stdout_tail_chars: int = JOB_STDOUT_LIMIT
+    stderr_tail_chars: int = JOB_STDERR_LIMIT
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -143,11 +148,25 @@ class JobStore:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(job_type, created_at DESC)")
 
-    def create_job(self, job_type: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    def create_job(self, job_type: str, metadata: dict[str, Any] | None = None, *, allow_reuse: bool = True) -> dict[str, Any]:
         spec = validate_job_type(job_type)
         now = _now()
         safe_metadata = sanitize_metadata(metadata or {})
         with self.connect() as conn:
+            if allow_reuse and spec.job_type in CONCURRENT_GUARD_JOB_TYPES:
+                active = conn.execute(
+                    """
+                    SELECT * FROM jobs
+                    WHERE job_type = ? AND status IN ('queued', 'running')
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (spec.job_type,),
+                ).fetchone()
+                if active:
+                    job = _row_to_job(active) or {}
+                    job["reused"] = True
+                    return job
             cur = conn.execute(
                 """
                 INSERT INTO jobs (
@@ -165,7 +184,9 @@ class JobStore:
             )
             job_id = int(cur.lastrowid)
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        return _row_to_job(row) or {}
+        job = _row_to_job(row) or {}
+        job["reused"] = False
+        return job
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -238,14 +259,118 @@ class JobStore:
                     now,
                     duration_ms,
                     returncode,
-                    _tail(stdout_tail, JOB_STDOUT_LIMIT),
-                    _tail(stderr_tail, JOB_STDERR_LIMIT),
+                    _tail(stdout_tail, max(1000, int(self.stdout_tail_chars or JOB_STDOUT_LIMIT))),
+                    _tail(stderr_tail, max(1000, int(self.stderr_tail_chars or JOB_STDERR_LIMIT))),
                     _limit(error, JOB_ERROR_LIMIT),
                     int(job_id),
                 ),
             )
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
         return _row_to_job(row)
+
+    def stats(self, *, limit_recent: int = 10) -> dict[str, Any]:
+        with self.connect() as conn:
+            total = int(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"])
+            status_rows = conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status").fetchall()
+            type_rows = conn.execute("SELECT job_type, COUNT(*) AS c FROM jobs GROUP BY job_type ORDER BY c DESC, job_type").fetchall()
+            recent_failed_rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status IN ('failed', 'timeout')
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit_recent or 10)),),
+            ).fetchall()
+            recent_running_rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status IN ('queued', 'running')
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit_recent or 10)),),
+            ).fetchall()
+            latest_rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE id IN (
+                  SELECT MAX(id) FROM jobs GROUP BY job_type, status
+                )
+                """
+            ).fetchall()
+        counts = {status: 0 for status in JOB_STATUSES}
+        for row in status_rows:
+            counts[str(row["status"])] = int(row["c"])
+        last_success_by_type: dict[str, dict[str, Any]] = {}
+        last_failed_by_type: dict[str, dict[str, Any]] = {}
+        for row in latest_rows:
+            job = _row_to_job(row) or {}
+            job_type = str(job.get("job_type") or "")
+            status = str(job.get("status") or "")
+            if status == "success":
+                last_success_by_type[job_type] = compact_job(job)
+            if status in {"failed", "timeout"}:
+                last_failed_by_type[job_type] = compact_job(job)
+        recent_failed = [compact_job(_row_to_job(row) or {}) for row in recent_failed_rows]
+        recent_running = [compact_job(_row_to_job(row) or {}) for row in recent_running_rows]
+        return {
+            "total": total,
+            "running": counts.get("running", 0),
+            "queued": counts.get("queued", 0),
+            "success": counts.get("success", 0),
+            "failed": counts.get("failed", 0),
+            "timeout": counts.get("timeout", 0),
+            "cancelled": counts.get("cancelled", 0),
+            "recent_failed": recent_failed,
+            "recent_running": recent_running,
+            "by_type": {str(row["job_type"]): int(row["c"]) for row in type_rows},
+            "by_status": counts,
+            "last_success_by_type": last_success_by_type,
+            "last_failed_by_type": last_failed_by_type,
+        }
+
+    def cleanup_jobs(self, *, retention_days: int = 30, limit: int = 500) -> dict[str, Any]:
+        safe_days = max(1, int(retention_days or 30))
+        safe_limit = max(50, int(limit or 500))
+        cutoff = _now() - safe_days * 86400
+        with self.connect() as conn:
+            total_before = int(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"])
+            old_ids = [
+                int(row["id"])
+                for row in conn.execute(
+                    """
+                    SELECT id FROM jobs
+                    WHERE status NOT IN ('queued', 'running') AND created_at < ?
+                    """,
+                    (cutoff,),
+                ).fetchall()
+            ]
+            overflow_ids = [
+                int(row["id"])
+                for row in conn.execute(
+                    """
+                    SELECT id FROM jobs
+                    WHERE status NOT IN ('queued', 'running')
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT -1 OFFSET ?
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+            ]
+            delete_ids = sorted(set(old_ids + overflow_ids))
+            if delete_ids:
+                placeholders = ",".join("?" for _ in delete_ids)
+                conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", delete_ids)
+            kept_count = int(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"])
+        return {
+            "ok": True,
+            "path": str(self.db_path),
+            "deleted_count": max(0, total_before - kept_count),
+            "kept_count": kept_count,
+            "retention_days": safe_days,
+            "limit": safe_limit,
+        }
 
     def cancel_job(self, job_id: int) -> dict[str, Any]:
         now = _now()
@@ -289,6 +414,104 @@ def sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         else:
             safe[text_key] = redact_text(_json_dumps(value))
     return safe
+
+
+def compact_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": job.get("id"),
+        "job_type": job.get("job_type", ""),
+        "label": job.get("label", ""),
+        "status": job.get("status", ""),
+        "returncode": job.get("returncode"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "updated_at": job.get("updated_at"),
+        "duration_ms": job.get("duration_ms"),
+        "error_summary": extract_job_error_summary(job),
+    }
+
+
+def extract_job_error_summary(job: dict[str, Any] | None) -> str:
+    item = job or {}
+    candidates: list[str] = []
+    error = str(item.get("error") or "").strip()
+    if error:
+        candidates.append(error)
+    stderr_lines = [line.strip() for line in str(item.get("stderr_tail") or "").splitlines() if line.strip()]
+    if stderr_lines:
+        candidates.append(stderr_lines[-1])
+    stdout_lines = [line.strip() for line in str(item.get("stdout_tail") or "").splitlines() if line.strip()]
+    for line in reversed(stdout_lines):
+        if ERROR_LINE_PATTERN.search(line):
+            candidates.append(line)
+            break
+    if not candidates:
+        return ""
+    return _limit(candidates[0], 500)
+
+
+def job_next_action(job: dict[str, Any] | None) -> str:
+    item = job or {}
+    job_type = str(item.get("job_type") or "")
+    status = str(item.get("status") or "")
+    if status in {"queued", "running"}:
+        return zh(r"\u4efb\u52a1\u8fd8\u5728\u6267\u884c\uff0c\u7b49\u5f85\u5b8c\u6210\u540e\u518d\u67e5\u770b\u8be6\u60c5\u3002")
+    if status == "success":
+        if job_type == "update-check":
+            return zh(r"\u66f4\u65b0\u68c0\u67e5\u5df2\u5b8c\u6210\uff1b\u771f\u6b63\u66f4\u65b0\u8bf7\u5728\u670d\u52a1\u5668\u6267\u884c paopao update --yes\u3002")
+        return zh(r"\u4efb\u52a1\u5df2\u6210\u529f\uff0c\u53ef\u7ee7\u7eed\u89c2\u5bdf\u6216\u4fdd\u7559\u62a5\u544a\u3002")
+    if job_type == "stable-check":
+        return zh(r"\u5148\u67e5\u770b\u672c\u4efb\u52a1\u7684 stderr/stdout\uff0c\u518d\u6253\u5f00\u8bca\u65ad\u62a5\u544a\u6309\u5904\u7406\u6e05\u5355\u6392\u67e5\u3002")
+    if job_type == "update-check":
+        return zh(r"\u66f4\u65b0\u68c0\u67e5\u5931\u8d25\u65f6\uff0c\u4f18\u5148\u68c0\u67e5\u670d\u52a1\u5668\u7f51\u7edc/GitHub \u8bbf\u95ee\uff1b\u9700\u8981\u66f4\u65b0\u65f6\u4ecd\u6267\u884c paopao update --yes\u3002")
+    if status in {"failed", "timeout"}:
+        return zh(r"\u6253\u5f00\u4efb\u52a1\u8be6\u60c5\u67e5\u770b\u9519\u8bef\u6458\u8981\u548c stderr_tail\uff1b\u5fc5\u8981\u65f6\u518d\u5230\u65e5\u5fd7\u4e2d\u5fc3\u6309\u65f6\u95f4\u70b9\u6392\u67e5\u3002")
+    return zh(r"\u53ef\u7ee7\u7eed\u67e5\u770b\u4efb\u52a1\u8be6\u60c5\u6216\u91cd\u8dd1\u540c\u7c7b\u4efb\u52a1\u3002")
+
+
+def job_report_payload_from_item(job: dict[str, Any]) -> dict[str, Any]:
+    command = job.get("command") if isinstance(job.get("command"), list) else []
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    report = {
+        "id": job.get("id"),
+        "job_type": job.get("job_type", ""),
+        "label": job.get("label", ""),
+        "status": job.get("status", ""),
+        "returncode": job.get("returncode"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "duration_ms": job.get("duration_ms"),
+        "command": [redact_text(part) for part in command],
+        "error_summary": extract_job_error_summary(job),
+        "stdout_tail": _tail(job.get("stdout_tail", ""), JOB_REPORT_TAIL_LIMIT),
+        "stderr_tail": _tail(job.get("stderr_tail", ""), JOB_REPORT_TAIL_LIMIT),
+        "metadata": sanitize_metadata(metadata),
+        "next_action": job_next_action(job),
+    }
+    lines = [
+        zh(r"\u6ce1\u6ce1\u96f7\u8fbe\u540e\u53f0\u4efb\u52a1\u62a5\u544a"),
+        f"id: {report['id']}",
+        f"job_type: {report['job_type']}",
+        f"status: {report['status']}",
+        f"returncode: {report['returncode']}",
+        f"created_at: {report['created_at']}",
+        f"started_at: {report['started_at']}",
+        f"finished_at: {report['finished_at']}",
+        f"duration_ms: {report['duration_ms']}",
+        "command: " + " ".join(report["command"]),
+        "error_summary: " + str(report["error_summary"] or ""),
+        "next_action: " + str(report["next_action"] or ""),
+        "",
+        "stdout_tail:",
+        str(report["stdout_tail"] or ""),
+        "",
+        "stderr_tail:",
+        str(report["stderr_tail"] or ""),
+    ]
+    report["text"] = redact_text("\n".join(lines))
+    return report
 
 
 def _preflight_command(spec: JobSpec) -> str:
@@ -408,7 +631,18 @@ def run_job_sync_for_tests(store: JobStore, job_id: int) -> dict[str, Any] | Non
 
 def store_for_settings(settings: Settings | None = None) -> JobStore:
     loaded = settings or Settings.load()
-    return JobStore(loaded.web_jobs_db_path)
+    return JobStore(
+        loaded.web_jobs_db_path,
+        stdout_tail_chars=max(1000, int(getattr(loaded, "web_jobs_stdout_tail_chars", JOB_STDOUT_LIMIT) or JOB_STDOUT_LIMIT)),
+        stderr_tail_chars=max(1000, int(getattr(loaded, "web_jobs_stderr_tail_chars", JOB_STDERR_LIMIT) or JOB_STDERR_LIMIT)),
+    )
+
+
+def enrich_job(job: dict[str, Any]) -> dict[str, Any]:
+    item = dict(job)
+    item["error_summary"] = extract_job_error_summary(item)
+    item["next_action"] = job_next_action(item)
+    return item
 
 
 def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *, settings: Settings | None = None, start: bool = True) -> dict[str, Any]:
@@ -420,19 +654,25 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         return {"ok": False, "message": message, "error": message, "code": "job_create_failed"}
-    if start:
+    reused = bool(job.get("reused"))
+    if start and not reused:
         try:
             run_job_async(store, int(job["id"]))
         except Exception as exc:
             store.finish_job(int(job["id"]), status="failed", returncode=1, error=f"{type(exc).__name__}: {exc}")
             job = store.get_job(int(job["id"])) or job
-    return {"ok": True, "job": job, "message": zh(r"\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u6b63\u5728\u540e\u53f0\u6267\u884c")}
+    return {
+        "ok": True,
+        "job": enrich_job(job),
+        "reused": reused,
+        "message": zh(r"\u5df2\u6709\u540c\u7c7b\u578b\u4efb\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u5df2\u8fd4\u56de\u73b0\u6709\u4efb\u52a1") if reused else zh(r"\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u6b63\u5728\u540e\u53f0\u6267\u884c"),
+    }
 
 
 def jobs_payload(*, limit: int = 50, status: str = "", job_type: str = "", settings: Settings | None = None) -> dict[str, Any]:
     store = store_for_settings(settings)
     jobs = store.list_jobs(limit=limit, status=status, job_type=job_type)
-    return {"ok": True, "jobs": jobs, "count": len(jobs), "message": zh(r"\u5df2\u8bfb\u53d6\u4efb\u52a1\u8bb0\u5f55")}
+    return {"ok": True, "jobs": [enrich_job(job) for job in jobs], "count": len(jobs), "message": zh(r"\u5df2\u8bfb\u53d6\u4efb\u52a1\u8bb0\u5f55")}
 
 
 def job_detail_payload(job_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
@@ -440,7 +680,7 @@ def job_detail_payload(job_id: int, *, settings: Settings | None = None) -> dict
     job = store.get_job(int(job_id or 0))
     if not job:
         return {"ok": False, "message": zh(r"\u4efb\u52a1\u4e0d\u5b58\u5728"), "error": zh(r"\u4efb\u52a1\u4e0d\u5b58\u5728"), "code": "not_found"}
-    return {"ok": True, "job": job, "message": zh(r"\u5df2\u8bfb\u53d6\u4efb\u52a1\u8be6\u60c5")}
+    return {"ok": True, "job": enrich_job(job), "message": zh(r"\u5df2\u8bfb\u53d6\u4efb\u52a1\u8be6\u60c5")}
 
 
 def cancel_job_payload(job_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
@@ -453,4 +693,69 @@ def cancel_job_payload(job_id: int, *, settings: Settings | None = None) -> dict
 def recent_job_payload(job_type: str, *, settings: Settings | None = None) -> dict[str, Any]:
     store = store_for_settings(settings)
     jobs = store.list_jobs(limit=1, job_type=job_type)
-    return jobs[0] if jobs else {}
+    return enrich_job(jobs[0]) if jobs else {}
+
+
+def jobs_stats_payload(*, settings: Settings | None = None) -> dict[str, Any]:
+    try:
+        store = store_for_settings(settings)
+        stats = store.stats()
+        return {"ok": True, **stats, "message": zh(r"\u5df2\u8bfb\u53d6\u540e\u53f0\u4efb\u52a1\u7edf\u8ba1")}
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        return {
+            "ok": False,
+            "total": 0,
+            "running": 0,
+            "queued": 0,
+            "success": 0,
+            "failed": 0,
+            "timeout": 0,
+            "cancelled": 0,
+            "recent_failed": [],
+            "recent_running": [],
+            "by_type": {},
+            "by_status": {},
+            "last_success_by_type": {},
+            "last_failed_by_type": {},
+            "error": message,
+            "message": message,
+        }
+
+
+def job_report_payload(job_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
+    store = store_for_settings(settings)
+    job = store.get_job(int(job_id or 0))
+    if not job:
+        return {"ok": False, "message": zh(r"\u4efb\u52a1\u4e0d\u5b58\u5728"), "error": zh(r"\u4efb\u52a1\u4e0d\u5b58\u5728"), "code": "not_found"}
+    return {"ok": True, "report": job_report_payload_from_item(job), "message": zh(r"\u5df2\u751f\u6210\u4efb\u52a1\u62a5\u544a")}
+
+
+def rerun_job_payload(job_id: int, *, settings: Settings | None = None, start: bool = True) -> dict[str, Any]:
+    store = store_for_settings(settings)
+    job = store.get_job(int(job_id or 0))
+    if not job:
+        return {"ok": False, "message": zh(r"\u4efb\u52a1\u4e0d\u5b58\u5728"), "error": zh(r"\u4efb\u52a1\u4e0d\u5b58\u5728"), "code": "not_found"}
+    try:
+        validate_job_type(str(job.get("job_type") or ""))
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc), "error": str(exc), "code": "invalid_job_type"}
+    result = create_job_payload(str(job["job_type"]), {"source": "api/jobs/rerun", "rerun_from": int(job["id"])}, settings=settings, start=start)
+    result["rerun_from"] = int(job["id"])
+    return result
+
+
+def cleanup_jobs_payload(
+    *,
+    retention_days: int | None = None,
+    limit: int | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    store = store_for_settings(loaded)
+    result = store.cleanup_jobs(
+        retention_days=int(retention_days if retention_days not in {None, ""} else loaded.web_jobs_retention_days),
+        limit=int(limit if limit not in {None, ""} else loaded.web_jobs_limit),
+    )
+    result["message"] = zh(r"\u65e7\u4efb\u52a1\u6e05\u7406\u5b8c\u6210")
+    return result

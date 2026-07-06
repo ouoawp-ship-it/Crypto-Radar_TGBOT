@@ -147,6 +147,10 @@ class Settings:
     signal_events_path: Path = BASE_DIR / "data" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "signals.db"
     web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
+    web_jobs_retention_days: int = 30
+    web_jobs_limit: int = 500
+    web_jobs_stdout_tail_chars: int = 12000
+    web_jobs_stderr_tail_chars: int = 6000
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
@@ -334,6 +338,10 @@ class Settings:
             signal_events_path=data_path(data_dir, "SIGNAL_EVENTS_FILE", "signal_events.json"),
             signal_events_db_path=data_path(data_dir, "SIGNAL_EVENTS_DB_FILE", "signals.db"),
             web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
+            web_jobs_retention_days=env_int("WEB_JOBS_RETENTION_DAYS", 30),
+            web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
+            web_jobs_stdout_tail_chars=env_int("WEB_JOBS_STDOUT_TAIL_CHARS", 12000),
+            web_jobs_stderr_tail_chars=env_int("WEB_JOBS_STDERR_TAIL_CHARS", 6000),
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
@@ -509,6 +517,10 @@ class Settings:
                 "signal_events_db_exists": self.signal_events_db_path.exists(),
                 "web_jobs_db_file": str(self.web_jobs_db_path),
                 "web_jobs_db_exists": self.web_jobs_db_path.exists(),
+                "web_jobs_retention_days": self.web_jobs_retention_days,
+                "web_jobs_limit": self.web_jobs_limit,
+                "web_jobs_stdout_tail_chars": self.web_jobs_stdout_tail_chars,
+                "web_jobs_stderr_tail_chars": self.web_jobs_stderr_tail_chars,
                 "signal_events_limit": self.signal_events_limit,
                 "signal_events_retention_days": self.signal_events_retention_days,
             },

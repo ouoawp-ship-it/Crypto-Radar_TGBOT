@@ -23,9 +23,13 @@ from .storage import JsonStore
 from .web_services.jobs import (
     LONG_ACTION_JOB_TYPES,
     cancel_job_payload,
+    cleanup_jobs_payload,
     create_job_payload,
     job_detail_payload,
+    job_report_payload,
     jobs_payload,
+    jobs_stats_payload,
+    rerun_job_payload,
 )
 from .web_services.ops import update_check_status_payload
 
@@ -633,6 +637,22 @@ def audit_request_summary(path: str, data: dict[str, Any]) -> dict[str, Any]:
             "action": "取消后台任务",
             "target": str(job_id or ""),
             "details": {"job_id": job_id},
+        }
+    if path == "/api/jobs/rerun":
+        job_id = data.get("id") or data.get("job_id")
+        return {
+            "action": "重跑后台任务",
+            "target": str(job_id or ""),
+            "details": {"job_id": job_id},
+        }
+    if path == "/api/jobs/cleanup":
+        return {
+            "action": "清理后台任务",
+            "target": "jobs",
+            "details": {
+                "retention_days": data.get("retention_days"),
+                "limit": data.get("limit"),
+            },
         }
     if path == "/api/service":
         name = str(data.get("name", ""))
@@ -1544,19 +1564,6 @@ def server_status_payload() -> dict[str, Any]:
 
 def update_check_payload() -> dict[str, Any]:
     return update_check_status_payload()
-    script = BASE_DIR / "scripts" / "update_server.sh"
-    if not script.exists():
-        return {"ok": False, "message": "未找到更新脚本 scripts/update_server.sh", "stdout": "", "stderr": ""}
-    if not command_exists("bash"):
-        return {"ok": False, "message": "当前环境没有 bash，服务器上可以使用 paopao update --yes 更新", "stdout": "", "stderr": ""}
-    result = run_subprocess(["bash", str(script), "--check"], timeout=120)
-    return {
-        "ok": bool(result.get("ok")),
-        "message": "更新检查完成" if result.get("ok") else "更新检查失败",
-        "stdout": result.get("stdout", ""),
-        "stderr": result.get("stderr", ""),
-        "command": result.get("command", ""),
-    }
 
 
 def load_json_or_empty(path: Path) -> Any:
@@ -1952,6 +1959,7 @@ def summary_payload() -> dict[str, Any]:
         "runtime": runtime,
         "config": config,
         "health": build_health_items(services, runtime, config),
+        "jobs": jobs_stats_payload(),
         "recent_errors": recent_errors_payload(runtime),
         "state_files": store.exists_summary([
             settings.runtime_status_path,
@@ -2083,12 +2091,16 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
     audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
     failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    jobs = snapshot.get("jobs", {}) if isinstance(snapshot.get("jobs"), dict) else {}
+    recent_failed_jobs = jobs.get("recent_failed", []) if isinstance(jobs.get("recent_failed"), list) else []
     release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
     release_trend_status = str(release_trend.get("status") or "")
     problem_center = snapshot.get("problem_center", {}) if isinstance(snapshot.get("problem_center"), dict) else {}
     problem_counts = problem_center.get("counts", {}) if isinstance(problem_center.get("counts"), dict) else {}
     deployment = snapshot.get("deployment_acceptance", {}) if isinstance(snapshot.get("deployment_acceptance"), dict) else {}
     deployment_status = str(deployment.get("status") or "")
+    jobs = snapshot.get("jobs", {}) if isinstance(snapshot.get("jobs"), dict) else {}
+    recent_failed_jobs = jobs.get("recent_failed", []) if isinstance(jobs.get("recent_failed"), list) else []
     log_error_total = sum(
         int(item.get("error_count", 0) or 0)
         for item in logs.values()
@@ -2108,6 +2120,12 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
         recommendations.append("最近存在失败的 Web 后台操作，先到“审计记录”按失败筛选，确认是不是配置保存、服务控制或测试动作失败。")
     if log_error_total:
         recommendations.append(f"近期日志中检测到 {log_error_total} 条错误/异常关键字，优先查看诊断报告里的日志片段和日志中心原文。")
+    if recent_failed_jobs:
+        recommendations.append("后台任务存在失败或超时记录：先打开任务中心查看错误摘要和 stderr_tail，再决定是否重跑任务。")
+        if any(str(item.get("job_type") or "") == "stable-check" for item in recent_failed_jobs if isinstance(item, dict)):
+            recommendations.append("stable-check 后台任务失败时，先复制任务报告，再对照诊断报告处理清单排查。")
+        if any(str(item.get("job_type") or "") == "update-check" for item in recent_failed_jobs if isinstance(item, dict)):
+            recommendations.append("update-check 失败通常和网络或 GitHub 访问有关；真实更新仍建议在服务器执行 paopao update --yes。")
     if transient_total >= 10 and not log_error_total:
         recommendations.append(f"近期 Telegram 网络超时 {transient_total} 次。服务会自动重试；如果 AI Bot 明显不回复，再检查服务器到 api.telegram.org 的网络。")
     if release_trend_status == "regressed":
@@ -2205,6 +2223,8 @@ def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
     audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
     failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
+    jobs = snapshot.get("jobs", {}) if isinstance(snapshot.get("jobs"), dict) else {}
+    recent_failed_jobs = jobs.get("recent_failed", []) if isinstance(jobs.get("recent_failed"), list) else []
     if failed_audit:
         first = failed_audit[0] if isinstance(failed_audit[0], dict) else {}
         add(
@@ -2216,6 +2236,27 @@ def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             target="audit",
             action="进入审计记录页选择“只看失败”，确认失败动作、接口和错误摘要。",
         )
+
+    if recent_failed_jobs:
+        timeout_count = sum(1 for item in recent_failed_jobs if isinstance(item, dict) and str(item.get("status") or "") == "timeout")
+        for item in recent_failed_jobs[:6]:
+            if not isinstance(item, dict):
+                continue
+            job_type = str(item.get("job_type") or "unknown")
+            status = str(item.get("status") or "")
+            severity = "warning"
+            if job_type == "stable-check" or (status == "timeout" and timeout_count >= 3):
+                severity = "critical"
+            detail = str(item.get("error_summary") or item.get("error") or "任务失败但没有可读错误摘要。")
+            add(
+                severity=severity,
+                module="后台任务",
+                title=f"{job_type} 任务{status or '失败'}",
+                detail=detail,
+                count=1,
+                target="jobs",
+                action="打开任务中心查看任务详情、stdout_tail 和 stderr_tail；确认后可重跑同类任务。",
+            )
 
     target_labels = {"main": "主服务", "structure": "结构雷达", "web": "Web 控制台", "ai": "AI 助手"}
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
@@ -2262,6 +2303,8 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
     audit = snapshot.get("audit", {}) if isinstance(snapshot.get("audit"), dict) else {}
     failed_audit = audit.get("failed_recent", []) if isinstance(audit.get("failed_recent"), list) else []
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
+    jobs = snapshot.get("jobs", {}) if isinstance(snapshot.get("jobs"), dict) else {}
+    recent_failed_jobs = jobs.get("recent_failed", []) if isinstance(jobs.get("recent_failed"), list) else []
     release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
     release_trend_status = str(release_trend.get("status") or "")
     trend_regressed = release_trend_status == "regressed"
@@ -2284,7 +2327,7 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
     )
     stability_status = str(stability.get("status") or "")
     current_blocking = bool(critical_count or bad_health_count or stability_status == "blocked")
-    current_attention = bool(warning_count or warn_health_count or log_error_total or failed_audit or stability_status == "attention")
+    current_attention = bool(warning_count or warn_health_count or log_error_total or failed_audit or recent_failed_jobs or stability_status == "attention")
     actionable_trend_worse = bool(trend_worse and current_attention)
     pure_trend_worse = bool(trend_worse and not current_attention and not current_blocking)
 
@@ -2339,6 +2382,8 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
         next_steps.append("打开日志中心，选择对应模块并勾选“只看错误”，按最早错误时间排查。")
     if failed_audit:
         next_steps.append("打开审计记录，筛选失败操作，确认最近的配置保存或服务控制是否已经重试成功。")
+    if recent_failed_jobs:
+        next_steps.append("打开任务中心，查看失败/超时任务的错误摘要和 stderr_tail；需要时重跑同类任务。")
     if transient_total >= 10 and not log_error_total:
         next_steps.append("Telegram/API 网络超时偏多但可自动重试；如果 Bot 明显不回复，再检查服务器网络。")
     if trend_regressed:
@@ -2434,6 +2479,17 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
             button="查看失败审计",
         )
 
+    if recent_failed_jobs:
+        first_job = recent_failed_jobs[0] if isinstance(recent_failed_jobs[0], dict) else {}
+        add_action(
+            "failed-jobs",
+            severity="critical" if str(first_job.get("job_type") or "") == "stable-check" else "warning",
+            title="查看失败或超时任务",
+            detail=str(first_job.get("error_summary") or "后台任务出现失败或超时。先看任务详情里的错误摘要、stdout_tail 和 stderr_tail。"),
+            target="jobs",
+            button="打开任务中心",
+        )
+
     if transient_total >= 10 and not log_error_total:
         worst_transient_target = ""
         worst_transient_count = -1
@@ -2512,6 +2568,7 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
             "warn_health": warn_health_count,
             "recent_errors": len(recent_errors),
             "failed_audit": len(failed_audit),
+            "failed_jobs": len(recent_failed_jobs),
             "log_errors": log_error_total,
             "transient_timeouts": transient_total,
             "stability_fail": int(stability.get("fail_count", 0) or 0),
@@ -3468,6 +3525,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
         },
         "log_errors": log_errors,
     }
+    snapshot["jobs"] = jobs_stats_payload()
     snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
     snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
     snapshot["issues"] = build_ops_issues(snapshot)
@@ -3856,6 +3914,27 @@ INDEX_HTML = r"""<!doctype html>
     .table tr:hover td { background: rgba(89, 215, 255, .045); }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .field { display: grid; gap: 6px; }
+    .field-inline {
+      display: inline-grid;
+      grid-template-columns: auto minmax(140px, 190px);
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .checkline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .checkline input { width: auto; min-height: 0; box-shadow: none; }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      color: #40536b;
+    }
     label { font-weight: 700; font-size: 13px; }
     input, select, textarea {
       width: 100%;
@@ -4983,6 +5062,8 @@ INDEX_HTML = r"""<!doctype html>
     let latestSignalDetail = null;
     let latestSignalTimeline = null;
     let latestJobsData = { jobs: [] };
+    let latestJobsStats = {};
+    let latestJobFilters = { job_type: "", status: "", failedOnly: false };
     let latestJobDetail = null;
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
@@ -5770,6 +5851,28 @@ INDEX_HTML = r"""<!doctype html>
         <div id="configBackupList" class="feature-list" style="margin-top:10px"></div>
       </div>`;
     }
+    function jobsSummaryPanel(jobs) {
+      const data = jobs || {};
+      const failed = Number(data.failed || 0) + Number(data.timeout || 0);
+      const running = Number(data.running || 0) + Number(data.queued || 0);
+      const stable = (data.last_success_by_type && data.last_success_by_type["stable-check"]) || (data.last_failed_by_type && data.last_failed_by_type["stable-check"]) || {};
+      return `<div class="panel span-12">
+        <div class="summary-head">
+          <div>
+            <h3 class="section-title">后台任务健康</h3>
+            <div class="summary-meta">stable-check、doctor、readiness、cleanup、update-check 等长任务会记录到 jobs.db。</div>
+          </div>
+          <div class="issue-meta">${failed ? statusPill(`${failed} 失败/超时`, false) : neutralPill("无失败任务")}${running ? warnPill(`${running} 运行中`) : neutralPill("空闲")}</div>
+        </div>
+        <div class="mini-metrics">
+          <div class="mini-metric"><div class="label">运行中</div><div class="value">${neutralPill(String(running))}</div><div class="muted">queued + running</div></div>
+          <div class="mini-metric"><div class="label">最近失败</div><div class="value">${failed ? statusPill(String(failed), false) : neutralPill("0")}</div><div class="muted">进入问题中心</div></div>
+          <div class="mini-metric"><div class="label">任务总数</div><div class="value">${neutralPill(String(data.total || 0))}</div><div class="muted">当前保留</div></div>
+          <div class="mini-metric"><div class="label">最近验收</div><div class="value">${stable.status ? jobStatusPill(stable.status) : neutralPill("暂无")}</div><div class="muted">stable-check job</div></div>
+        </div>
+        ${failed ? `<div class="toolbar" style="margin-top:10px"><button class="btn blue" onclick="switchView('jobs')">打开任务中心</button></div>` : ""}
+      </div>`;
+    }
     async function loadSummary() {
       const data = await api("/api/summary");
       setSubtitle(`更新时间 ${data.updated_at}${autoRefreshEnabled && currentView === "overview" ? " · 自动刷新中" : ""}`);
@@ -5793,6 +5896,7 @@ INDEX_HTML = r"""<!doctype html>
         serviceCard("结构雷达", structure),
         serviceCard("Web 控制台", web),
         serviceCard("AI 助手", ai),
+        jobsSummaryPanel(data.jobs || {}),
         recentErrorsPanel(data.recent_errors || []),
         healthPanel(data.health || []),
         detailGrid("运行摘要和关键配置", overviewDetails, "默认折叠，排查时展开"),
@@ -6084,6 +6188,16 @@ INDEX_HTML = r"""<!doctype html>
         lines.push(`问题复查: ${stateReview.summary}`);
       }
       lines.push("");
+      const jobs = data.jobs || {};
+      lines.push("后台任务状态:");
+      lines.push(`- 统计: 全部 ${jobs.total || 0} | 排队 ${jobs.queued || 0} | 运行 ${jobs.running || 0} | 成功 ${jobs.success || 0} | 失败 ${jobs.failed || 0} | 超时 ${jobs.timeout || 0} | 已取消 ${jobs.cancelled || 0}`);
+      const failedJobs = jobs.recent_failed || [];
+      if (!failedJobs.length) {
+        lines.push("- 最近失败/超时: 暂无");
+      } else {
+        failedJobs.slice(0, 5).forEach(item => lines.push(`- 最近失败/超时: #${item.id || ""} ${item.job_type || ""} ${item.status || ""} ${item.error_summary || ""}`));
+      }
+      lines.push("");
       const stability = data.stability || {};
       lines.push("稳定版自检:");
       lines.push(`- 状态: ${stability.label || ""} ${stability.summary || ""}`);
@@ -6187,6 +6301,7 @@ INDEX_HTML = r"""<!doctype html>
     function issueActionButton(issue) {
       const target = String(issue.target || "");
       if (target === "audit") return `<button class="btn" type="button" onclick="switchView('audit')">查看失败审计</button>`;
+      if (target === "jobs") return `<button class="btn" type="button" onclick="switchView('jobs')">打开任务中心</button>`;
       if (["main", "structure", "web", "ai"].includes(target)) return `<button class="btn" type="button" onclick="openLogsForError('${escapeHtml(target)}')">查看相关日志</button>`;
       return `<button class="btn" type="button" onclick="switchView('logs')">打开日志中心</button>`;
     }
@@ -6432,7 +6547,7 @@ INDEX_HTML = r"""<!doctype html>
     function actionPlanButton(action) {
       const target = String((action && action.target) || "");
       const logTarget = String((action && action.log_target) || "");
-      const allowedViews = ["overview", "ai", "price", "services", "config", "logs", "audit", "report", "actions", "preview", "guide"];
+      const allowedViews = ["overview", "ai", "price", "services", "config", "logs", "audit", "report", "actions", "preview", "guide", "jobs"];
       if (target === "logs" && ["main", "structure", "web", "ai", "funding"].includes(logTarget)) {
         return `<button class="btn primary" type="button" onclick="openLogsForError('${escapeHtml(logTarget)}')">${escapeHtml(action.button || "查看日志")}</button>`;
       }
@@ -6618,6 +6733,8 @@ INDEX_HTML = r"""<!doctype html>
       const releaseReadiness = data.release_readiness || {};
       const releaseTrend = data.release_trend || {};
       const deploymentAcceptance = data.deployment_acceptance || {};
+      const jobs = data.jobs || {};
+      const failedJobs = jobs.recent_failed || [];
       const logErrorTotal = countLogErrors(data.log_errors || {});
       const transientTotal = countTransientLogs(data.log_errors || {});
       setSubtitle(`诊断报告 ${data.generated_at || ""}`);
@@ -6627,6 +6744,23 @@ INDEX_HTML = r"""<!doctype html>
         ${deploymentAcceptancePanel(deploymentAcceptance)}
         ${releaseTrendPanel(releaseTrend)}
         ${problemCenterPanel(problemCenter)}
+        <div class="panel span-12">
+          <div class="summary-head">
+            <div>
+              <h3 class="section-title">后台任务状态</h3>
+              <div class="summary-meta">只展示任务统计和失败摘要，不包含 stdout/stderr 全文。</div>
+            </div>
+            <div class="issue-meta">${failedJobs.length ? statusPill(`${failedJobs.length} 个失败/超时`, false) : neutralPill("无失败任务")}${neutralPill(`${jobs.running || 0} 运行中`)}</div>
+          </div>
+          <div class="mini-metrics">
+            <div class="mini-metric"><div class="label">全部任务</div><div class="value">${neutralPill(String(jobs.total || 0))}</div><div class="muted">jobs.db</div></div>
+            <div class="mini-metric"><div class="label">排队/运行</div><div class="value">${Number(jobs.queued || 0) + Number(jobs.running || 0) ? neutralPill(String(Number(jobs.queued || 0) + Number(jobs.running || 0))) : neutralPill("0")}</div><div class="muted">后台线程</div></div>
+            <div class="mini-metric"><div class="label">成功</div><div class="value">${neutralPill(String(jobs.success || 0))}</div><div class="muted">历史成功</div></div>
+            <div class="mini-metric"><div class="label">失败/超时</div><div class="value">${failedJobs.length ? statusPill(String(failedJobs.length), false) : neutralPill("0")}</div><div class="muted">进入问题中心</div></div>
+          </div>
+          ${failedJobs.length ? `<div class="feature-list" style="margin-top:10px">${failedJobs.slice(0, 5).map(job => `<div class="feature-item"><strong>#${escapeHtml(job.id)} ${escapeHtml(job.job_type || "")}</strong><span class="muted">${escapeHtml(job.status || "")} · ${escapeHtml(job.error_summary || "无错误摘要")}</span></div>`).join("")}</div>` : emptyState("最近没有失败或超时任务", "任务中心仍会保留成功任务、运行中任务和 stdout/stderr tail。")}
+          <div class="toolbar" style="margin-top:10px"><button class="btn blue" onclick="switchView('jobs')">打开任务中心</button></div>
+        </div>
         <div class="panel span-12">
           <div class="summary-head">
             <div>
@@ -7165,6 +7299,15 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("jobOutput").textContent = JSON.stringify(data, null, 2);
       await loadJobs(false);
     }
+    async function rerunJob(jobId) {
+      const data = await api("/api/jobs/rerun", {
+        method: "POST",
+        body: JSON.stringify({ id: jobId })
+      });
+      latestJobDetail = data.job || latestJobDetail;
+      document.getElementById("jobOutput").textContent = JSON.stringify(data, null, 2);
+      await loadJobs(false);
+    }
     async function cancelJob(jobId) {
       const data = await api("/api/jobs/cancel", {
         method: "POST",
@@ -7173,33 +7316,105 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("jobOutput").textContent = JSON.stringify(data, null, 2);
       await loadJobs(false);
     }
+    async function cleanupJobs() {
+      const data = await api("/api/jobs/cleanup", {
+        method: "POST",
+        body: JSON.stringify({ retention_days: 30, limit: 500 })
+      });
+      document.getElementById("jobOutput").textContent = JSON.stringify(data, null, 2);
+      await loadJobs(false);
+    }
+    async function copyJobReport(jobId) {
+      const data = await api(`/api/jobs/report?id=${encodeURIComponent(jobId)}`);
+      const text = (data.report && data.report.text) || JSON.stringify(data.report || data, null, 2);
+      const ok = await copyTextToClipboard(text);
+      const output = document.getElementById("jobOutput");
+      output.textContent = ok ? "任务报告已复制。" : `${text}\n\n复制失败：请选中文本后按 Ctrl+C。`;
+      if (!ok) selectElementText("jobOutput");
+    }
     async function loadJobDetail(jobId) {
       const data = await api(`/api/jobs/detail?id=${encodeURIComponent(jobId)}`);
       latestJobDetail = data.job || null;
       renderJobsPage();
     }
+    function jobFilterQuery() {
+      const status = document.getElementById("jobStatusFilter")?.value || "";
+      const type = document.getElementById("jobTypeFilter")?.value || "";
+      const failedOnly = document.getElementById("jobFailedOnly")?.checked;
+      latestJobFilters = { job_type: type, status, failedOnly: Boolean(failedOnly) };
+      const params = new URLSearchParams({ limit: "100" });
+      if (type) params.set("job_type", type);
+      if (status) params.set("status", status);
+      return { query: params.toString(), failedOnly };
+    }
+    function jobStatsCards() {
+      const stats = latestJobsStats || {};
+      const failedTotal = Number(stats.failed || 0) + Number(stats.timeout || 0);
+      const stable = (stats.last_success_by_type && stats.last_success_by_type["stable-check"]) || (stats.last_failed_by_type && stats.last_failed_by_type["stable-check"]) || {};
+      const update = (stats.last_success_by_type && stats.last_success_by_type["update-check"]) || (stats.last_failed_by_type && stats.last_failed_by_type["update-check"]) || {};
+      return [
+        metric("全部任务", escapeHtml(stats.total ?? 0), `<div class="muted">jobs.db 当前记录</div>`),
+        metric("运行中", escapeHtml((Number(stats.running || 0) + Number(stats.queued || 0))), `<div class="muted">running / queued</div>`),
+        metric("成功", escapeHtml(stats.success ?? 0), `<div class="muted">最近保留范围内</div>`),
+        metric("失败/超时", failedTotal ? statusPill(String(failedTotal), false) : neutralPill("0"), `<div class="muted">会进入问题中心</div>`),
+        metric("最近 stable-check", stable.status ? jobStatusPill(stable.status) : neutralPill("暂无"), `<div class="muted">${escapeHtml(jobTime(stable.updated_at || stable.finished_at || 0))}</div>`),
+        metric("最近 update-check", update.status ? jobStatusPill(update.status) : neutralPill("暂无"), `<div class="muted">更新仍用 paopao update --yes</div>`)
+      ].join("");
+    }
     function jobActionsPanel() {
       return `<div class="panel span-12">
         <div class="toolbar" style="margin-bottom:0">
           ${jobActionList.map(item => `<button class="btn primary" type="button" onclick="createJob('${escapeHtml(item.type)}')" title="${escapeHtml(item.desc)}">${escapeHtml(item.label)}</button>`).join("")}
+          <button class="btn danger" type="button" onclick="cleanupJobs()" title="保留最近 30 天和最多 500 条任务记录，不删除 jobs.db 文件。">清理旧任务</button>
           <button class="btn" type="button" onclick="loadJobs(false)">刷新任务</button>
         </div>
         <div class="hint" style="margin-top:8px">任务创建后会马上返回编号，后台线程继续执行。输出只保存 tail，并在写入 jobs.db 前做脱敏。</div>
       </div>`;
     }
+    function jobFiltersPanel() {
+      return `<div class="panel span-12">
+        <div class="toolbar">
+          <label class="field-inline">类型
+            <select id="jobTypeFilter" onchange="loadJobs(false)">
+              <option value="">全部</option>
+              ${jobActionList.map(item => `<option value="${escapeHtml(item.type)}" ${latestJobFilters.job_type === item.type ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field-inline">状态
+            <select id="jobStatusFilter" onchange="loadJobs(false)">
+              <option value="">全部</option>
+              ${[
+                ["queued", "排队中"],
+                ["running", "运行中"],
+                ["success", "成功"],
+                ["failed", "失败"],
+                ["timeout", "超时"],
+                ["cancelled", "已取消"]
+              ].map(([value, label]) => `<option value="${value}" ${latestJobFilters.status === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <label class="checkline"><input id="jobFailedOnly" type="checkbox" onchange="loadJobs(false)" ${latestJobFilters.failedOnly ? "checked" : ""}> 只看失败/超时</label>
+        </div>
+        <div class="hint">筛选只影响列表显示；任务详情和诊断报告仍会保留完整记录。</div>
+      </div>`;
+    }
     function jobRows(jobs) {
-      if (!jobs.length) return tableEmpty(9, "暂无后台任务", "点击上面的按钮创建 stable-check、doctor、readiness、cleanup 或更新检查任务。");
+      if (!jobs.length) return tableEmpty(11, "暂无后台任务", "点击上面的按钮创建 stable-check、doctor、readiness、cleanup 或更新检查任务。");
       return jobs.map(job => `<tr>
         <td><code>${escapeHtml(job.id)}</code></td>
         <td>${escapeHtml(job.job_type || "")}</td>
         <td>${jobStatusPill(job.status)}</td>
         <td>${escapeHtml(jobTime(job.created_at))}</td>
+        <td>${escapeHtml(jobTime(job.updated_at))}</td>
         <td>${escapeHtml(jobTime(job.started_at))}</td>
         <td>${escapeHtml(jobTime(job.finished_at))}</td>
         <td>${escapeHtml(jobDuration(job))}</td>
         <td>${job.returncode === null || job.returncode === undefined ? "-" : escapeHtml(job.returncode)}</td>
+        <td class="mono">${escapeHtml(job.error_summary || "-")}</td>
         <td>
           <button class="btn" type="button" onclick="loadJobDetail(${Number(job.id)})">详情</button>
+          <button class="btn" type="button" onclick="copyJobReport(${Number(job.id)})">复制报告</button>
+          ${["failed", "timeout", "success", "cancelled"].includes(String(job.status || "")) ? `<button class="btn blue" type="button" onclick="rerunJob(${Number(job.id)})">重跑</button>` : ""}
           ${job.status === "queued" ? `<button class="btn danger" type="button" onclick="cancelJob(${Number(job.id)})">取消</button>` : ""}
         </td>
       </tr>`).join("");
@@ -7219,7 +7434,13 @@ INDEX_HTML = r"""<!doctype html>
           ${row("命令", `<code>${escapeHtml((job.command || []).join(" "))}</code>`)}
           ${row("Return Code", textValue(job.returncode, "-"))}
           ${row("耗时", textValue(jobDuration(job), "-"))}
-          ${row("错误摘要", job.error ? `<span class="status bad">${escapeHtml(job.error)}</span>` : neutralPill("无"))}
+          ${row("错误摘要", job.error_summary ? `<span class="status bad">${escapeHtml(job.error_summary)}</span>` : neutralPill("无"))}
+          ${row("下一步", textValue(job.next_action || "查看 stdout/stderr，必要时重跑任务。"))}
+        </div>
+        <div class="toolbar" style="margin:10px 0">
+          <button class="btn primary" type="button" onclick="copyJobReport(${Number(job.id || 0)})">复制任务报告</button>
+          <button class="btn blue" type="button" onclick="rerunJob(${Number(job.id || 0)})">重跑此任务</button>
+          ${job.job_type === "update-check" ? `<span class="hint">实际更新请在服务器执行 <code>paopao update --yes</code>，Web 不做自更新。</span>` : ""}
         </div>
         <details class="raw-details compact-details" open>
           <summary>stdout_tail <span class="summary-meta">最多 12000 字符</span></summary>
@@ -7233,14 +7454,18 @@ INDEX_HTML = r"""<!doctype html>
       </div>`;
     }
     function renderJobsPage() {
-      const jobs = latestJobsData.jobs || [];
+      const failedOnly = latestJobFilters.failedOnly;
+      let jobs = latestJobsData.jobs || [];
+      if (failedOnly) jobs = jobs.filter(job => ["failed", "timeout"].includes(String(job.status || "")));
       const running = jobs.filter(job => ["queued", "running"].includes(String(job.status || ""))).length;
       document.getElementById("jobsGrid").innerHTML = [
         renderPageIntro("jobs", [`${jobs.length} 个任务`, running ? `${running} 个运行中` : "无运行中任务"]),
+        jobStatsCards(),
         jobActionsPanel(),
+        jobFiltersPanel(),
         `<div class="panel span-12">
           <table class="table">
-            <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>创建</th><th>开始</th><th>结束</th><th>耗时</th><th>返回码</th><th>操作</th></tr></thead>
+            <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>创建</th><th>更新</th><th>开始</th><th>结束</th><th>耗时</th><th>返回码</th><th>错误摘要</th><th>操作</th></tr></thead>
             <tbody>${jobRows(jobs)}</tbody>
           </table>
         </div>`,
@@ -7249,8 +7474,13 @@ INDEX_HTML = r"""<!doctype html>
       setSubtitle(running ? `后台还有 ${running} 个任务在排队或运行。` : "后台任务空闲；没有运行中的长任务。");
     }
     async function loadJobs(isAuto = false) {
-      const data = await api("/api/jobs?limit=80");
+      const filter = jobFilterQuery();
+      const [data, stats] = await Promise.all([
+        api(`/api/jobs?${filter.query}`),
+        api("/api/jobs/stats")
+      ]);
       latestJobsData = data;
+      latestJobsStats = stats;
       if (latestJobDetail && latestJobDetail.id) {
         try {
           const detail = await api(`/api/jobs/detail?id=${encodeURIComponent(latestJobDetail.id)}`);
@@ -7297,8 +7527,12 @@ INDEX_HTML = r"""<!doctype html>
       `).join("");
     }
     async function loadPreviewPanel() {
-      const data = await api("/api/push-preview");
+      const [data, updateStatus] = await Promise.all([
+        api("/api/push-preview"),
+        api("/api/update-status")
+      ]);
       const previews = data.previews || [];
+      const updateJob = updateStatus.latest_check_job || {};
       document.getElementById("previewGrid").innerHTML = `
         ${renderPageIntro("preview", [`${previews.length} 个推送样例`, "不真实发送"])}
         ${previews.map(item => `
@@ -7313,8 +7547,15 @@ INDEX_HTML = r"""<!doctype html>
             <div class="feature-item"><strong>只检查</strong><span class="muted">读取当前版本和 GitHub 版本，不会拉代码。</span></div>
             <div class="feature-item"><strong>真正更新</strong><span class="muted">服务器执行 paopao update --yes；更新后会自动重启服务并执行 stable-check。</span></div>
           </div>
+          <div class="readable-list" style="margin-top:10px">
+            ${row("当前版本", textValue(`${updateStatus.current_version || "-"} ${updateStatus.current_commit || ""}`.trim()))}
+            ${row("最近检查", updateJob.id ? `${jobStatusPill(updateJob.status)} <span class="muted">#${escapeHtml(updateJob.id)} · ${escapeHtml(jobTime(updateJob.updated_at || updateJob.finished_at || updateJob.created_at))}</span>` : neutralPill("暂无"))}
+            ${row("更新判断", updateStatus.update_available === true ? statusPill("有更新", false) : (updateStatus.update_available === false ? neutralPill("已是最新") : neutralPill("无法判断")))}
+            ${row("摘要", textValue(updateStatus.summary || "请先发起更新检查。"))}
+          </div>
           <div class="toolbar" style="margin-top:10px">
             <button class="btn primary" onclick="checkUpdate()">检查 GitHub 更新</button>
+            <button class="btn blue" onclick="switchView('jobs')">打开任务中心</button>
           </div>
         </div>
         <div class="panel span-4">
@@ -8067,6 +8308,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/update-check":
             self.send_json(update_check_payload())
             return
+        if path == "/api/update-status":
+            self.send_json(update_check_status_payload())
+            return
         if path == "/api/jobs":
             self.send_json(jobs_payload(
                 limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
@@ -8074,8 +8318,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 job_type=query.get("job_type", [""])[0],
             ))
             return
+        if path == "/api/jobs/stats":
+            self.send_json(jobs_stats_payload())
+            return
         if path == "/api/jobs/detail":
             self.send_json(job_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
+            return
+        if path == "/api/jobs/report":
+            self.send_json(job_report_payload(query_int_or(query.get("id", ["0"])[0], 0)))
             return
         if path == "/api/price-alerts":
             from .ai_assistant import price_alerts_payload
@@ -8184,6 +8434,19 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/jobs/cancel":
                 result = cancel_job_payload(query_int_or(str(data.get("id") or data.get("job_id") or "0"), 0))
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            if path == "/api/jobs/rerun":
+                result = rerun_job_payload(query_int_or(str(data.get("id") or data.get("job_id") or "0"), 0))
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            if path == "/api/jobs/cleanup":
+                result = cleanup_jobs_payload(
+                    retention_days=data.get("retention_days"),
+                    limit=data.get("limit"),
+                )
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return

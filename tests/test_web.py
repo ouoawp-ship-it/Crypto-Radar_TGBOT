@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import paopao_radar.cli as cli
 from paopao_radar import web
 from paopao_radar.config import Settings
+from paopao_radar.web_services import jobs
 
 
 class WebConsoleTests(unittest.TestCase):
@@ -1755,6 +1756,88 @@ class WebConsoleTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         run_web.assert_called_once_with("127.0.0.1", 8090, "secret")
+
+    def test_jobs_payloads_report_and_update_status_use_temp_db(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp), web_jobs_db_path=Path(tmp) / "jobs.db")
+            store = jobs.JobStore(settings.web_jobs_db_path)
+            update = store.create_job("update-check")
+            store.finish_job(
+                int(update["id"]),
+                status="success",
+                returncode=0,
+                stdout_tail=(
+                    "当前版本 : v1.61.0 (6b9d485) feat\n"
+                    "GitHub版本: v1.62.0 (abc1234) feat\n"
+                    "发现新版本，可以更新\n"
+                ),
+            )
+            failed = store.create_job("doctor")
+            store.finish_job(int(failed["id"]), status="failed", returncode=1, stderr_tail="Traceback: bad")
+
+            stats = web.jobs_stats_payload(settings=settings)
+            report = web.job_report_payload(int(failed["id"]), settings=settings)
+            update_status = web.update_check_status_payload(settings=settings)
+
+        self.assertTrue(stats["ok"])
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(stats["success"], 1)
+        self.assertTrue(report["ok"])
+        self.assertIn("doctor", report["report"]["text"])
+        self.assertEqual(update_status["current_version"], "v1.61.0")
+        self.assertEqual(update_status["parsed"]["remote_version"], "v1.62.0")
+        self.assertIs(update_status["update_available"], True)
+
+    def test_failed_jobs_enter_ops_issues_and_problem_center(self) -> None:
+        snapshot = {
+            "health": [],
+            "recent_errors": [],
+            "audit": {"failed_recent": []},
+            "log_errors": {},
+            "jobs": {
+                "recent_failed": [
+                    {
+                        "id": 7,
+                        "job_type": "stable-check",
+                        "status": "failed",
+                        "error_summary": "stable failed",
+                    }
+                ]
+            },
+            "stability": {"status": "ready", "checks": []},
+            "release_trend": {"status": "stable"},
+        }
+
+        issues = web.build_ops_issues(snapshot)
+        snapshot["issues"] = issues
+        center = web.build_problem_center(snapshot)
+        recommendations = web.build_ops_recommendations(snapshot)
+
+        self.assertTrue(any(item["target"] == "jobs" for item in issues))
+        self.assertTrue(any(item["severity"] == "critical" for item in issues))
+        self.assertTrue(any(item["key"] == "failed-jobs" for item in center["action_plan"]))
+        self.assertGreaterEqual(center["counts"]["failed_jobs"], 1)
+        self.assertTrue(any("任务中心" in item for item in recommendations))
+
+    def test_jobs_frontend_and_api_routes_are_present(self) -> None:
+        html = web.INDEX_HTML
+
+        self.assertIn("/api/jobs/stats", html)
+        self.assertIn("/api/jobs/report", html)
+        self.assertIn("/api/jobs/rerun", html)
+        self.assertIn("/api/jobs/cleanup", html)
+        self.assertIn("/api/update-status", html)
+        self.assertIn("复制任务报告", html)
+        self.assertIn("清理旧任务", html)
+
+    def test_jobs_audit_summary_stays_minimal(self) -> None:
+        rerun = web.audit_request_summary("/api/jobs/rerun", {"id": 12, "stdout_tail": "secret"})
+        cleanup = web.audit_request_summary("/api/jobs/cleanup", {"retention_days": 30, "limit": 500, "stderr_tail": "secret"})
+
+        self.assertEqual(rerun["details"], {"job_id": 12})
+        self.assertEqual(cleanup["details"], {"retention_days": 30, "limit": 500})
+        self.assertNotIn("stdout_tail", rerun["details"])
+        self.assertNotIn("stderr_tail", cleanup["details"])
 
 
 if __name__ == "__main__":
