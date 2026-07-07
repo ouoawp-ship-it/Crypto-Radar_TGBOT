@@ -1377,9 +1377,11 @@ class WebConsoleTests(unittest.TestCase):
         )
 
     def test_non_loopback_web_requires_token_only_in_legacy_token_mode(self) -> None:
-        with patch.object(web, "load_env_file", return_value={}):
+        settings = Settings(web_auth_mode="token")
+        with patch.object(web, "load_env_file", return_value={}), patch.object(web.Settings, "load", return_value=settings), patch.object(web, "ThreadingHTTPServer") as server:
             with patch.dict(os.environ, {"WEB_AUTH_MODE": "token", "WEB_ADMIN_TOKEN": ""}):
                 self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
+        server.assert_not_called()
 
     def test_index_localizes_bool_options_and_explains_actions(self) -> None:
         html = web.INDEX_HTML
