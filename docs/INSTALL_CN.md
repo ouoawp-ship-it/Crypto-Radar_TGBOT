@@ -1,5 +1,11 @@
 # 泡泡抓币中文安装目录
 
+## v1.68.1 运维说明
+
+v1.68.1 修复 `scripts/check_https_deploy.sh` 的 HTTPS 验收误判。后台 `/admin` 页面检查现在使用普通 GET、`curl -L`、临时文件和固定字符串匹配，允许命中 `泡泡雷达控制台`、`brand-title` 或 `/admin` 即通过；失败时会显示 HTTP_CODE、下载字节数和页面前 8 行摘要。
+
+证书路径 `/etc/letsencrypt/live/paoxx.com/fullchain.pem` 和 `privkey.pem` 可能需要 sudo 权限，普通用户无法读取不等于证书缺失。脚本会优先使用 `sudo test -f` 检查；如果路径权限导致失败，会再用 `certbot certificates --cert-name paoxx.com` 或 `certbot renew --dry-run` 的成功结果兜底，避免把权限问题误判为阻断。脚本不会读取或打印私钥内容。
+
 ## v1.68.0 运维说明
 
 生产 HTTPS 入口已经固定为：公开前台 `https://paoxx.com/`，后台控制台 `https://paoxx.com/admin`，公开 API `https://paoxx.com/public-api/*`，私有 API `https://paoxx.com/api/*`。私有 API 必须带 `WEB_ADMIN_TOKEN`，未授权访问应返回 `401 Unauthorized`。

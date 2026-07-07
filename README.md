@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.68.1 说明
+
+v1.68.1 修复 HTTPS 部署验收脚本的误判：后台 `/admin` 页面改为 GET + `-L` 下载到临时文件，并用固定字符串匹配 `泡泡雷达控制台`、`brand-title` 或 `/admin`；失败时会显示 HTTP_CODE、下载字节数和页面前 8 行摘要，便于定位 Nginx/页面内容问题。
+
+证书文件检查现在会优先使用 `sudo test -f`，普通用户无法读取 `/etc/letsencrypt/live` 下的证书符号链接时，会再用 `certbot certificates --cert-name paoxx.com` 或 `certbot renew --dry-run` 的成功结果兜底，避免把权限问题误判为证书缺失。`privkey.pem` 只检查存在，不读取内容。
+
 ## v1.68.0 说明
 
 v1.68.0 增加固定生产 HTTPS 部署验收脚本 `scripts/check_https_deploy.sh`，用于服务器更新后验证正式入口、Nginx 80/443、公开前台、后台页面、公开 API、私有 API 401 隔离、systemd 服务、Let's Encrypt 证书文件、可选 stable-check、可选 certbot dry-run 和最近日志阻断关键词。

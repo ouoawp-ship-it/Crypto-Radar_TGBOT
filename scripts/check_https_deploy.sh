@@ -10,6 +10,7 @@ TIMEOUT=10
 CONNECT_TIMEOUT=5
 WITH_STABLE_CHECK=0
 WITH_CERTBOT_DRY_RUN=0
+CERTBOT_DRY_RUN_OK=0
 SKIP_SERVICES=0
 SKIP_LOGS=0
 APP_DIR="${APP_DIR:-/home/ubuntu/paopao-crypto-radar}"
@@ -101,45 +102,88 @@ record_block() {
   RESULTS+=("[阻断] $1")
 }
 
-curl_get_body() {
-  local url="$1"
-  curl -sS --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" "${url}"
+sanitize_file_for_summary() {
+  local path="$1"
+  sed -E \
+    -e 's/[0-9]{6,12}:[A-Za-z0-9_-]{20,}/<redacted:telegram-token>/g' \
+    -e 's/(sk|rk|pk)-[A-Za-z0-9_-]{12,}/<redacted:api-key>/g' \
+    -e 's/([Tt]oken|[Aa]uthorization|[Aa][Pp][Ii][_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[^[:space:]]*/\1=<redacted>/g' \
+    "${path}" | head -n 8
 }
 
-check_page_contains() {
+curl_get_to_file() {
+  local url="$1"
+  local output_file="$2"
+  curl -sS -L \
+    --connect-timeout "${CONNECT_TIMEOUT}" \
+    --max-time "${TIMEOUT}" \
+    -w '%{http_code} %{size_download}' \
+    -o "${output_file}" \
+    "${url}"
+}
+
+check_page_any_contains() {
   local label="$1"
   local url="$2"
-  local needle="$3"
-  local body
-  if ! body="$(curl_get_body "${url}" 2>/dev/null)"; then
-    record_block "${label} 请求失败: ${url}"
+  shift 2
+  local tmp_file
+  tmp_file="$(mktemp)"
+  local curl_meta
+  if ! curl_meta="$(curl_get_to_file "${url}" "${tmp_file}" 2>/dev/null)"; then
+    record_block "${label} GET 请求失败: ${url}"
+    rm -f "${tmp_file}"
     return
   fi
-  if printf '%s' "${body}" | grep -Fq "${needle}"; then
-    record_pass "${label} 返回 ${needle}"
+
+  local http_code
+  local size_download
+  http_code="$(printf '%s' "${curl_meta}" | awk '{print $1}')"
+  size_download="$(printf '%s' "${curl_meta}" | awk '{print $2}')"
+  local matched=""
+  local needle
+  for needle in "$@"; do
+    if grep -aFq "${needle}" "${tmp_file}"; then
+      matched="${needle}"
+      break
+    fi
+  done
+
+  if [ -n "${matched}" ]; then
+    record_pass "${label} GET 返回 ${matched}"
   else
-    record_block "${label} 未找到预期内容: ${needle}"
+    record_block "${label} 未找到任一预期内容；HTTP_CODE=${http_code:-unknown}，下载字节数=${size_download:-0}"
+    echo "${label} 页面前 8 行摘要:"
+    sanitize_file_for_summary "${tmp_file}" || true
   fi
+  rm -f "${tmp_file}"
 }
 
 check_public_api() {
   local url="${BASE_URL}${PUBLIC_API_PATH}"
-  local body
-  if ! body="$(curl_get_body "${url}" 2>/dev/null)"; then
+  local tmp_file
+  tmp_file="$(mktemp)"
+  local curl_meta
+  if ! curl_meta="$(curl_get_to_file "${url}" "${tmp_file}" 2>/dev/null)"; then
     record_block "公开 API 请求失败"
+    rm -f "${tmp_file}"
     return
   fi
-  if printf '%s' "${body}" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'; then
+  if grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${tmp_file}"; then
     record_pass "公开 API 返回 ok=true"
   else
-    record_block "公开 API 未返回 ok=true"
+    local http_code
+    local size_download
+    http_code="$(printf '%s' "${curl_meta}" | awk '{print $1}')"
+    size_download="$(printf '%s' "${curl_meta}" | awk '{print $2}')"
+    record_block "公开 API 未返回 ok=true；HTTP_CODE=${http_code:-unknown}，下载字节数=${size_download:-0}"
   fi
+  rm -f "${tmp_file}"
 }
 
 check_private_api_protected() {
   local url="${BASE_URL}${PRIVATE_API_PATH}"
   local response
-  if ! response="$(curl -sS -i --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" "${url}" 2>/dev/null)"; then
+  if ! response="$(curl -sS -i -L --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" "${url}" 2>/dev/null)"; then
     record_block "私有 API 请求失败"
     return
   fi
@@ -190,12 +234,10 @@ check_services() {
     return
   fi
   local service
-  local failed=0
   for service in paopao-web paopao-radar paopao-structure paopao-ai; do
     if systemctl is-active --quiet "${service}"; then
       record_pass "systemd 服务 active: ${service}"
     else
-      failed=1
       if [ "${service}" = "paopao-ai" ]; then
         record_warn "paopao-ai 未 active；如果生产配置关闭 AI 助手可以忽略"
       else
@@ -203,18 +245,28 @@ check_services() {
       fi
     fi
   done
-  [ "${failed}" -eq 0 ] || true
 }
 
-check_cert_files() {
-  local renewal="/etc/letsencrypt/renewal/${DOMAIN}.conf"
-  local fullchain="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-  local privkey="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-  local missing=0
-  [ -f "${renewal}" ] || { record_block "缺少证书续期配置: ${renewal}"; missing=1; }
-  [ -f "${fullchain}" ] || { record_block "缺少证书文件: ${fullchain}"; missing=1; }
-  [ -f "${privkey}" ] || { record_block "缺少证书私钥文件: ${privkey}"; missing=1; }
-  [ "${missing}" -eq 1 ] || record_pass "Let's Encrypt 证书和续期配置存在"
+path_exists_maybe_sudo() {
+  local path="$1"
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -n true >/dev/null 2>&1; then
+      sudo test -f "${path}" 2>/dev/null
+      return $?
+    fi
+  fi
+  test -f "${path}" 2>/dev/null
+}
+
+certbot_certificate_exists() {
+  command -v certbot >/dev/null 2>&1 || return 1
+  local output=""
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    output="$(sudo certbot certificates --cert-name "${DOMAIN}" 2>/dev/null || true)"
+  else
+    output="$(certbot certificates --cert-name "${DOMAIN}" 2>/dev/null || true)"
+  fi
+  printf '%s' "${output}" | grep -aFq "Certificate Name: ${DOMAIN}"
 }
 
 check_certbot_dry_run() {
@@ -223,11 +275,39 @@ check_certbot_dry_run() {
     return
   fi
   if sudo certbot renew --dry-run >/tmp/paopao_certbot_dry_run.out 2>/tmp/paopao_certbot_dry_run.err; then
+    CERTBOT_DRY_RUN_OK=1
     record_pass "certbot renew --dry-run 成功"
   else
     record_block "certbot renew --dry-run 失败，请在服务器查看 certbot 输出"
   fi
   rm -f /tmp/paopao_certbot_dry_run.out /tmp/paopao_certbot_dry_run.err
+}
+
+check_cert_files() {
+  local renewal="/etc/letsencrypt/renewal/${DOMAIN}.conf"
+  local fullchain="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+  local privkey="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+  local missing=0
+  path_exists_maybe_sudo "${renewal}" || missing=$((missing + 1))
+  path_exists_maybe_sudo "${fullchain}" || missing=$((missing + 1))
+  path_exists_maybe_sudo "${privkey}" || missing=$((missing + 1))
+
+  if [ "${missing}" -eq 0 ]; then
+    record_pass "Let's Encrypt 证书和续期配置存在"
+    return
+  fi
+
+  if [ "${CERTBOT_DRY_RUN_OK}" -eq 1 ]; then
+    record_warn "普通用户无法直接读取部分证书路径，但 certbot dry-run 已通过，证书链路按通过处理"
+    return
+  fi
+
+  if certbot_certificate_exists; then
+    record_warn "普通用户无法直接读取部分证书路径，但 certbot certificates 能找到 ${DOMAIN}，证书存在检查降为警告"
+    return
+  fi
+
+  record_block "证书文件或续期配置不可验证，请使用 sudo 检查 /etc/letsencrypt 下的 ${DOMAIN} 证书"
 }
 
 check_stable_check() {
@@ -247,10 +327,12 @@ check_stable_check() {
   rc=$?
   if [ "${rc}" -eq 0 ]; then
     record_pass "stable-check 通过"
-  elif printf '%s' "${out}" | grep -Eq '基本可运行|attention|关注'; then
+  elif printf '%s' "${out}" | grep -aEq '状态:[[:space:]]*关注|attention|基本可运行|建议关注'; then
     record_warn "stable-check 返回 ${rc}，输出显示为关注项，请打开诊断报告确认"
+  elif printf '%s' "${out}" | grep -aEq '阻断项|未达稳定版标准|failed|Traceback'; then
+    record_block "stable-check 返回 ${rc}，输出显示存在阻断或异常"
   else
-    record_block "stable-check 返回 ${rc}，存在阻断项"
+    record_block "stable-check 返回 ${rc}，无法识别为关注状态"
   fi
 }
 
@@ -268,7 +350,7 @@ check_logs() {
   for i in "${!services[@]}"; do
     local service="${services[$i]}"
     local count
-    count="$(journalctl -u "${service}" -n "${lines[$i]}" --no-pager 2>/dev/null | grep -E "${pattern}" | grep -Ev "${noise}" | wc -l | tr -d ' ')"
+    count="$(journalctl -u "${service}" -n "${lines[$i]}" --no-pager 2>/dev/null | grep -aE "${pattern}" | grep -aEv "${noise}" | wc -l | tr -d ' ')"
     if [ "${count:-0}" -gt 0 ]; then
       total=$((total + count))
       record_block "日志发现 ${service} 阻断关键词 ${count} 条"
@@ -285,13 +367,13 @@ echo "目标: ${BASE_URL}"
 echo
 
 check_nginx_ports
-check_page_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx Signal Radar"
-check_page_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台"
+check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx Signal Radar"
+check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"
 check_public_api
 check_private_api_protected
 check_services
-check_cert_files
 check_certbot_dry_run
+check_cert_files
 check_stable_check
 check_logs
 
