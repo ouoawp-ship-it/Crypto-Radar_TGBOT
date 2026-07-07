@@ -157,6 +157,11 @@ class Settings:
     web_session_secret: str = ""
     web_session_ttl_sec: int = 86400
     web_auth_cookie_name: str = "paopao_admin_session"
+    web_auth_max_failures: int = 5
+    web_auth_lockout_sec: int = 600
+    web_auth_failure_window_sec: int = 900
+    web_auth_audit_limit: int = 500
+    web_session_refresh_threshold_ratio: float = 0.5
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
@@ -354,6 +359,11 @@ class Settings:
             web_session_secret=os.getenv("WEB_SESSION_SECRET", "").strip(),
             web_session_ttl_sec=env_int("WEB_SESSION_TTL_SEC", 86400),
             web_auth_cookie_name=(os.getenv("WEB_AUTH_COOKIE_NAME", "paopao_admin_session").strip() or "paopao_admin_session"),
+            web_auth_max_failures=env_int("WEB_AUTH_MAX_FAILURES", 5),
+            web_auth_lockout_sec=env_int("WEB_AUTH_LOCKOUT_SEC", 600),
+            web_auth_failure_window_sec=env_int("WEB_AUTH_FAILURE_WINDOW_SEC", 900),
+            web_auth_audit_limit=env_int("WEB_AUTH_AUDIT_LIMIT", 500),
+            web_session_refresh_threshold_ratio=env_float("WEB_SESSION_REFRESH_THRESHOLD_RATIO", 0.5),
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
@@ -553,6 +563,11 @@ class Settings:
                 "session_secret_configured": bool(self.web_session_secret),
                 "session_ttl_sec": self.web_session_ttl_sec,
                 "auth_cookie_name": self.web_auth_cookie_name,
+                "auth_max_failures": self.web_auth_max_failures,
+                "auth_lockout_sec": self.web_auth_lockout_sec,
+                "auth_failure_window_sec": self.web_auth_failure_window_sec,
+                "auth_audit_limit": self.web_auth_audit_limit,
+                "session_refresh_threshold_ratio": self.web_session_refresh_threshold_ratio,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

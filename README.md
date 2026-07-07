@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.70.3 说明
+
+v1.70.3 加固后台账号密码登录：同一用户名和来源 IP 连续失败默认 5 次会锁定 10 分钟，失败计数窗口默认 15 分钟；登录成功后会清除该来源的失败计数。
+
+后台认证审计会记录登录成功、登录失败、登录锁定、退出登录、会话过期、会话无效和密码变更等事件，运行数据保存在 `data/admin_auth_audit.json`，失败锁定状态保存在 `data/admin_auth_state.json`。审计只保存用户名、事件类型、结果、原因和 IP/User-Agent 哈希，不记录明文密码、密码哈希、Cookie、session secret 或旧访问令牌。
+
+后台登录状态现在会显示当前用户、登录时间、会话到期时间和剩余时间；当会话剩余时间低于 TTL 的一半时，已登录访问后台 API 会安全续期并重新签发带 `HttpOnly`、`SameSite=Lax`、HTTPS 下 `Secure` 的会话 Cookie。写操作继续校验 `X-CSRF-Token`。
+
+新增可调配置：`WEB_AUTH_MAX_FAILURES`、`WEB_AUTH_LOCKOUT_SEC`、`WEB_AUTH_FAILURE_WINDOW_SEC`、`WEB_AUTH_AUDIT_LIMIT`、`WEB_SESSION_REFRESH_THRESHOLD_RATIO`。如忘记密码，仍在服务器本地执行 `.venv/bin/python main.py admin-password set` 后重启 `paopao-web`。
+
 ## v1.70.2 说明
 
 v1.70.2 调整后台账号密码设置命令的交互体验：执行 `.venv/bin/python main.py admin-password set` 时，密码输入会明文显示，便于在服务器终端确认输入内容。请确保当前终端环境安全。

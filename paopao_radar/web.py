@@ -19,12 +19,19 @@ from urllib.parse import parse_qs, urlparse
 
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .auth import (
+    append_auth_audit,
+    auth_audit_payload,
     build_clear_cookie,
     build_session_cookie,
+    check_auth_lockout,
+    clear_auth_failures,
     cookie_value,
     create_session_value,
+    record_auth_failure,
     verify_password,
+    iso_timestamp,
     verify_session_value,
+    verify_session_value_detailed,
 )
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
 from .storage import JsonStore
@@ -73,7 +80,20 @@ MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
 STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
 AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
-WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN", "WEB_AUTH_MODE", "WEB_ADMIN_USERNAME", "WEB_SESSION_TTL_SEC", "WEB_AUTH_COOKIE_NAME"}
+WEB_CONFIG_KEYS = {
+    "WEB_HOST",
+    "WEB_PORT",
+    "WEB_ADMIN_TOKEN",
+    "WEB_AUTH_MODE",
+    "WEB_ADMIN_USERNAME",
+    "WEB_SESSION_TTL_SEC",
+    "WEB_AUTH_COOKIE_NAME",
+    "WEB_AUTH_MAX_FAILURES",
+    "WEB_AUTH_LOCKOUT_SEC",
+    "WEB_AUTH_FAILURE_WINDOW_SEC",
+    "WEB_AUTH_AUDIT_LIMIT",
+    "WEB_SESSION_REFRESH_THRESHOLD_RATIO",
+}
 SIGNAL_EVENT_CONFIG_KEYS = {
     "SIGNAL_EVENTS_FILE",
     "SIGNAL_EVENTS_DB_FILE",
@@ -172,6 +192,11 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("WEB_ADMIN_USERNAME", "后台用户名", "Web 控制台"),
     ConfigField("WEB_SESSION_TTL_SEC", "登录有效期秒数", "Web 控制台", kind="int", minimum=300, maximum=604800),
     ConfigField("WEB_AUTH_COOKIE_NAME", "登录 Cookie 名称", "Web 控制台"),
+    ConfigField("WEB_AUTH_MAX_FAILURES", "登录失败锁定次数", "Web 控制台", kind="int", minimum=1, maximum=20),
+    ConfigField("WEB_AUTH_LOCKOUT_SEC", "登录锁定秒数", "Web 控制台", kind="int", minimum=60, maximum=86400),
+    ConfigField("WEB_AUTH_FAILURE_WINDOW_SEC", "失败计数窗口秒数", "Web 控制台", kind="int", minimum=60, maximum=86400),
+    ConfigField("WEB_AUTH_AUDIT_LIMIT", "登录审计保留条数", "Web 控制台", kind="int", minimum=50, maximum=5000),
+    ConfigField("WEB_SESSION_REFRESH_THRESHOLD_RATIO", "会话续期阈值比例", "Web 控制台", kind="float", minimum=0.1, maximum=0.9),
     ConfigField("COINALYZE_ENABLE", "启用 Coinalyze", "Coinalyze", kind="bool"),
     ConfigField("COINALYZE_API_KEY", "Coinalyze API Key", "Coinalyze", secret=True),
     ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300, help="建议 21600 秒（6 小时）。越小推送越频繁，越大越安静。"),
@@ -1312,7 +1337,7 @@ def config_change_impact(changed: list[str]) -> dict[str, Any]:
     if sensitive_keys:
         labels = "、".join(EDITABLE_CONFIG.get(key, ConfigField(key, key, "")).label for key in sensitive_keys)
         warnings.append(f"包含敏感配置：{labels}。审计和诊断只记录字段名，不记录具体值。")
-    if changed_set & {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN", "WEB_AUTH_MODE", "WEB_ADMIN_USERNAME", "WEB_SESSION_TTL_SEC", "WEB_AUTH_COOKIE_NAME"}:
+    if changed_set & WEB_CONFIG_KEYS:
         warnings.append("Web 入口或认证配置会在保存返回后短暂重启；如果页面断开，稍后重新打开后台登录。")
     if changed_set & {"TG_BOT_TOKEN", "TG_CHAT_ID", "TELEGRAM_USE_TOPIC", "TG_AUTO_CREATE_TOPICS"} or any(key.endswith("_TOPIC_ID") for key in changed_set):
         warnings.append("Telegram 推送配置会影响真实消息发送；保存后建议先执行 Telegram 测试消息或 readiness。")
@@ -3649,6 +3674,50 @@ def auth_mode(settings: Settings) -> str:
     return "token" if mode == "token" else "password"
 
 
+def request_client_ip(handler: BaseHTTPRequestHandler) -> str:
+    remote = ""
+    try:
+        remote = str((getattr(handler, "client_address", ("", 0)) or ("", 0))[0] or "")
+    except Exception:
+        remote = ""
+    local_remote = remote in {"", "127.0.0.1", "::1", "localhost"}
+    if local_remote:
+        forwarded_for = handler.headers.get("X-Forwarded-For", "")
+        if forwarded_for:
+            candidate = forwarded_for.split(",", 1)[0].strip()
+            if candidate:
+                return candidate[:128]
+        real_ip = handler.headers.get("X-Real-IP", "").strip()
+        if real_ip:
+            return real_ip[:128]
+    return (remote or "unknown")[:128]
+
+
+def audit_auth_event(
+    handler: BaseHTTPRequestHandler,
+    event: str,
+    *,
+    username: str = "",
+    result: str = "",
+    reason: str = "",
+) -> None:
+    settings = handler_settings(handler)
+    try:
+        append_auth_audit(
+            settings.data_dir,
+            event=event,
+            username=username,
+            ip=request_client_ip(handler),
+            user_agent=handler.headers.get("User-Agent", ""),
+            result=result,
+            reason=reason,
+            limit=settings.web_auth_audit_limit,
+            secret=settings.web_session_secret,
+        )
+    except Exception as exc:
+        sys.stderr.write(f"[web] auth audit write failed: {type(exc).__name__}: {exc}\n")
+
+
 def session_payload(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     cached = getattr(handler, "auth_session", None)
     if isinstance(cached, dict):
@@ -3658,13 +3727,61 @@ def session_payload(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
         return None
     cookie_name = settings.web_auth_cookie_name or "paopao_admin_session"
     raw_cookie = cookie_value(handler.headers.get("Cookie", ""), cookie_name)
-    payload = verify_session_value(
+    payload, reason = verify_session_value_detailed(
         raw_cookie,
         settings.web_session_secret,
         expected_username=settings.web_admin_username,
     )
     if payload:
         setattr(handler, "auth_session", payload)
+    elif raw_cookie and not getattr(handler, "auth_session_invalid_audited", False):
+        setattr(handler, "auth_session_invalid_audited", True)
+        audit_auth_event(
+            handler,
+            "session_expired" if reason == "expired" else "session_invalid",
+            username=settings.web_admin_username,
+            result="failed",
+            reason=reason,
+        )
+    return payload
+
+
+def maybe_refresh_session(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
+    settings = handler_settings(handler)
+    if auth_mode(settings) != "password":
+        return None
+    payload = session_payload(handler)
+    if not payload:
+        return None
+    now = int(time.time())
+    expires_at = int(payload.get("exp", 0) or 0)
+    ttl_sec = max(60, int(settings.web_session_ttl_sec or 86400))
+    remaining = expires_at - now
+    threshold_ratio = min(0.9, max(0.1, float(settings.web_session_refresh_threshold_ratio or 0.5)))
+    if remaining <= 0 or remaining >= int(ttl_sec * threshold_ratio):
+        return payload
+    csrf = str(payload.get("csrf", ""))
+    value, refreshed_csrf = create_session_value(
+        settings.web_admin_username,
+        settings.web_session_secret,
+        ttl_sec=ttl_sec,
+        csrf=csrf,
+    )
+    refreshed, _reason = verify_session_value_detailed(
+        value,
+        settings.web_session_secret,
+        expected_username=settings.web_admin_username,
+    )
+    if refreshed:
+        setattr(handler, "auth_session", refreshed)
+        setattr(handler, "auth_refresh_cookie", build_session_cookie(
+            settings.web_auth_cookie_name,
+            value,
+            max_age=ttl_sec,
+            secure=request_is_https(handler),
+        ))
+        refreshed["csrf"] = refreshed_csrf
+        return refreshed
     return payload
 
 
@@ -4916,13 +5033,14 @@ INDEX_HTML = r"""<!doctype html>
         <label for="passwordInput">密码</label>
         <input id="passwordInput" type="password" autocomplete="current-password">
       </div>
+      <div class="hint">连续输错会触发保护；登录失败次数过多，请稍后再试。</div>
       <div id="authMessage" class="muted" style="margin-top:10px"></div>
       <div class="toolbar" style="margin:12px 0 0">
         <button id="loginButton" class="btn primary" onclick="loginAdmin()">登录</button>
       </div>
     </div>
   </div>
-  <div id="adminApp" class="app hidden" data-ui-version="v1.70.1">
+  <div id="adminApp" class="app hidden" data-ui-version="v1.70.3">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -4960,6 +5078,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="toolbar topbar-actions">
           <span id="versionBadge" class="version-chip">版本 <small>读取中</small></span>
+          <span id="authStatusBadge" class="version-chip">当前用户 <small>未登录</small></span>
           <button class="btn" onclick="refreshCurrent()">刷新</button>
           <button id="autoRefreshButton" class="btn" onclick="toggleAutoRefresh()">自动刷新：关闭</button>
           <button class="btn danger" onclick="logoutAdmin()">退出登录</button>
@@ -5604,10 +5723,34 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("adminApp").classList.remove("hidden");
       document.getElementById("authMessage").textContent = "";
     }
+    function formatSessionTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+    function formatRemaining(sec) {
+      const value = Math.max(0, Number(sec || 0));
+      if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor((value % 3600) / 60)}分钟`;
+      if (value >= 60) return `${Math.floor(value / 60)}分钟`;
+      return `${value}秒`;
+    }
+    function updateAuthStatusBadge(data = {}) {
+      const badge = document.getElementById("authStatusBadge");
+      if (!badge) return;
+      if (!data.logged_in) {
+        badge.innerHTML = "当前用户 <small>未登录</small>";
+        return;
+      }
+      const remaining = Number(data.remaining_sec || 0);
+      const warning = remaining > 0 && remaining < 600 ? " · 登录即将过期，请保存当前操作。" : "";
+      badge.innerHTML = `当前用户 <small>${escapeHtml(data.username || "-")} · 会话到期 ${escapeHtml(formatSessionTime(data.expires_at))} · 剩余时间 ${escapeHtml(formatRemaining(remaining))}${warning}</small>`;
+    }
     async function refreshAuthStatus() {
       const res = await fetch("/api/auth/status", { credentials: "same-origin", cache: "no-store" });
       const data = await res.json();
       csrfToken = data.csrf_token || "";
+      updateAuthStatusBadge(data);
       return data;
     }
     async function loginAdmin() {
@@ -5625,8 +5768,13 @@ INDEX_HTML = r"""<!doctype html>
           body: JSON.stringify({ username, password })
         });
         const data = await res.json();
-        if (!res.ok || data.ok === false) throw new Error(data.message || "用户名或密码错误");
+        if (!res.ok || data.ok === false) {
+          const retry = Number(data.retry_after_sec || 0);
+          const retryText = retry > 0 ? ` 请约 ${formatRemaining(retry)} 后再试。` : "";
+          throw new Error((data.message || "用户名或密码错误") + retryText);
+        }
         csrfToken = data.csrf_token || "";
+        updateAuthStatusBadge(data);
         document.getElementById("passwordInput").value = "";
         hideAuth();
         await refreshCurrent();
@@ -5642,6 +5790,7 @@ INDEX_HTML = r"""<!doctype html>
         await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin", headers: headers() });
       } finally {
         csrfToken = "";
+        updateAuthStatusBadge({ logged_in: false });
         showAuth("已退出登录");
       }
     }
@@ -9351,7 +9500,11 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
-            for key, value in (extra_headers or {}).items():
+            headers = dict(extra_headers or {})
+            refresh_cookie = getattr(self, "auth_refresh_cookie", "")
+            if refresh_cookie and "Set-Cookie" not in headers:
+                headers["Set-Cookie"] = str(refresh_cookie)
+            for key, value in headers.items():
                 self.send_header(key, value)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
@@ -9372,16 +9525,28 @@ class WebHandler(BaseHTTPRequestHandler):
     def auth_status_payload(self) -> dict[str, Any]:
         settings = handler_settings(self)
         mode = auth_mode(settings)
-        payload = session_payload(self) if mode == "password" else None
+        payload = maybe_refresh_session(self) if mode == "password" else None
         logged_in = bool(payload) if mode == "password" else check_auth(self)
+        issued_at = int((payload or {}).get("iat", 0) or 0)
+        expires_at = int((payload or {}).get("exp", 0) or 0)
+        now = int(time.time())
         return {
             "ok": True,
             "logged_in": logged_in,
             "auth_mode": mode,
             "username": settings.web_admin_username if logged_in else "",
+            "issued_at": iso_timestamp(issued_at) if logged_in and issued_at else "",
+            "expires_at": iso_timestamp(expires_at) if logged_in and expires_at else "",
+            "ttl_sec": int(settings.web_session_ttl_sec or 86400),
+            "remaining_sec": max(0, expires_at - now) if logged_in and expires_at else 0,
             "csrf_token": str((payload or {}).get("csrf", "")) if logged_in else "",
             "password_configured": bool(settings.web_admin_password_hash),
             "session_configured": bool(settings.web_session_secret),
+            "lockout_config": {
+                "max_failures": settings.web_auth_max_failures,
+                "lockout_sec": settings.web_auth_lockout_sec,
+                "failure_window_sec": settings.web_auth_failure_window_sec,
+            },
             "message": "已登录" if logged_in else "未登录",
         }
 
@@ -9438,19 +9603,70 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", ""))
+        client_ip = request_client_ip(self)
+        lockout = check_auth_lockout(
+            settings.data_dir,
+            settings.web_session_secret,
+            username or settings.web_admin_username,
+            client_ip,
+            window_sec=settings.web_auth_failure_window_sec,
+        )
+        if lockout.get("locked"):
+            retry_after = int(lockout.get("retry_after_sec", settings.web_auth_lockout_sec) or settings.web_auth_lockout_sec)
+            result = {
+                "ok": False,
+                "error": {"code": "locked", "message": "登录失败次数过多，请稍后再试。"},
+                "message": "登录失败次数过多，请稍后再试。",
+                "code": "locked",
+                "retry_after_sec": retry_after,
+            }
+            audit_auth_event(self, "login_locked", username=username, result="locked", reason="lockout_active")
+            try:
+                append_web_audit("/api/auth/login", {"username": username}, result, status=HTTPStatus.TOO_MANY_REQUESTS, started_at=started_at, data_dir=settings.data_dir)
+            except Exception as exc:
+                sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+            self.send_json(result, HTTPStatus.TOO_MANY_REQUESTS)
+            return
         if username != settings.web_admin_username or not verify_password(password, settings.web_admin_password_hash):
+            failure = record_auth_failure(
+                settings.data_dir,
+                settings.web_session_secret,
+                username or settings.web_admin_username,
+                client_ip,
+                max_failures=settings.web_auth_max_failures,
+                lockout_sec=settings.web_auth_lockout_sec,
+                window_sec=settings.web_auth_failure_window_sec,
+            )
+            if failure.get("locked"):
+                retry_after = int(failure.get("retry_after_sec", settings.web_auth_lockout_sec) or settings.web_auth_lockout_sec)
+                result = {
+                    "ok": False,
+                    "error": {"code": "locked", "message": "登录失败次数过多，请稍后再试。"},
+                    "message": "登录失败次数过多，请稍后再试。",
+                    "code": "locked",
+                    "retry_after_sec": retry_after,
+                }
+                audit_auth_event(self, "login_locked", username=username, result="locked", reason="max_failures")
+                try:
+                    append_web_audit("/api/auth/login", {"username": username}, result, status=HTTPStatus.TOO_MANY_REQUESTS, started_at=started_at, data_dir=settings.data_dir)
+                except Exception as exc:
+                    sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+                self.send_json(result, HTTPStatus.TOO_MANY_REQUESTS)
+                return
             result = {
                 "ok": False,
                 "error": {"code": "unauthorized", "message": "用户名或密码错误"},
                 "message": "用户名或密码错误",
                 "code": "unauthorized",
             }
+            audit_auth_event(self, "login_failed", username=username, result="failed", reason="bad_credentials")
             try:
                 append_web_audit("/api/auth/login", {"username": username}, result, status=HTTPStatus.UNAUTHORIZED, started_at=started_at, data_dir=settings.data_dir)
             except Exception as exc:
                 sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
             self.send_json(result, HTTPStatus.UNAUTHORIZED)
             return
+        clear_auth_failures(settings.data_dir, settings.web_session_secret, settings.web_admin_username, client_ip)
         value, csrf = create_session_value(
             settings.web_admin_username,
             settings.web_session_secret,
@@ -9469,6 +9685,7 @@ class WebHandler(BaseHTTPRequestHandler):
             "username": settings.web_admin_username,
             "csrf_token": csrf,
         }
+        audit_auth_event(self, "login_success", username=settings.web_admin_username, result="success", reason="")
         try:
             append_web_audit("/api/auth/login", {"username": username}, result, status=200, started_at=started_at, data_dir=settings.data_dir)
         except Exception as exc:
@@ -9483,6 +9700,8 @@ class WebHandler(BaseHTTPRequestHandler):
             secure=request_is_https(self),
         )
         result = {"ok": True, "message": "已退出登录", "logged_in": False}
+        payload = session_payload(self)
+        audit_auth_event(self, "logout", username=str((payload or {}).get("username", "")), result="success", reason="")
         try:
             append_web_audit("/api/auth/logout", {}, result, status=200, started_at=started_at, data_dir=settings.data_dir)
         except Exception as exc:
@@ -9491,6 +9710,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def require_auth(self, *, write: bool = False) -> bool:
         if check_auth(self):
+            maybe_refresh_session(self)
             if write and not check_csrf(self):
                 self.send_forbidden()
                 return False
@@ -9510,6 +9730,11 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/auth/status":
             self.send_json(self.auth_status_payload())
+            return
+        if path == "/api/auth/audit":
+            if not self.require_auth():
+                return
+            self.send_json(auth_audit_payload(handler_settings(self).data_dir, limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200)))
             return
         if path == "/public-api/signals":
             self.send_json(public_signals_payload(

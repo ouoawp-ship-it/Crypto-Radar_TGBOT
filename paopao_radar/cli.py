@@ -30,7 +30,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime
 
-from .auth import generate_password_hash, generate_session_secret
+from .auth import append_auth_audit, generate_password_hash, generate_session_secret
 from .config import ENV_FILE, Settings, load_env_file
 from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
@@ -313,6 +313,20 @@ def run_admin_password(args: argparse.Namespace) -> int:
         "WEB_AUTH_COOKIE_NAME": os.getenv("WEB_AUTH_COOKIE_NAME", "paopao_admin_session").strip() or "paopao_admin_session",
     }
     update_env_values(ENV_FILE, updates)
+    try:
+        append_auth_audit(
+            Path(os.getenv("DATA_DIR", str(ENV_FILE.parent / "data"))),
+            event="password_changed",
+            username=username,
+            ip="local-cli",
+            user_agent="main.py admin-password set",
+            result="success",
+            reason="password_set",
+            limit=max(1, int(os.getenv("WEB_AUTH_AUDIT_LIMIT", "500") or "500")),
+            secret=updates["WEB_SESSION_SECRET"],
+        )
+    except Exception:
+        pass
     print(f"后台用户名已设置：{username}")
     print("后台密码哈希已更新")
     if current_secret:

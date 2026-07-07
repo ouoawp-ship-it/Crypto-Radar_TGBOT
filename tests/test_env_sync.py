@@ -55,6 +55,11 @@ class EnvSyncTests(unittest.TestCase):
                     "WEB_SESSION_SECRET=",
                     "WEB_SESSION_TTL_SEC=86400",
                     "WEB_AUTH_COOKIE_NAME=paopao_admin_session",
+                    "WEB_AUTH_MAX_FAILURES=5",
+                    "WEB_AUTH_LOCKOUT_SEC=600",
+                    "WEB_AUTH_FAILURE_WINDOW_SEC=900",
+                    "WEB_AUTH_AUDIT_LIMIT=500",
+                    "WEB_SESSION_REFRESH_THRESHOLD_RATIO=0.5",
                     "WEB_ADMIN_TOKEN=",
                     "AI_REQUEST_TIMEOUT_SEC=90",
                     "AI_ALLOWED_CHAT_IDS=",
@@ -77,6 +82,11 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("WEB_SESSION_SECRET=", text)
         self.assertIn("WEB_SESSION_TTL_SEC=86400", text)
         self.assertIn("WEB_AUTH_COOKIE_NAME=paopao_admin_session", text)
+        self.assertIn("WEB_AUTH_MAX_FAILURES=5", text)
+        self.assertIn("WEB_AUTH_LOCKOUT_SEC=600", text)
+        self.assertIn("WEB_AUTH_FAILURE_WINDOW_SEC=900", text)
+        self.assertIn("WEB_AUTH_AUDIT_LIMIT=500", text)
+        self.assertIn("WEB_SESSION_REFRESH_THRESHOLD_RATIO=0.5", text)
         self.assertIn("WEB_ADMIN_TOKEN=", text)
         self.assertIn("AI_REQUEST_TIMEOUT_SEC=90", text)
         self.assertIn("NEW_NORMAL_SETTING=true", text)

@@ -1,5 +1,31 @@
 # 泡泡抓币中文安装目录
 
+## v1.70.3 运维说明
+
+v1.70.3 为后台账号密码登录增加安全加固。默认同一用户名和来源 IP 连续输错 5 次后锁定 10 分钟，失败计数窗口为 900 秒；锁定期间即使密码正确也会返回 429，并在登录页显示“登录失败次数过多，请稍后再试”。
+
+后台认证审计会记录登录成功、登录失败、登录锁定、退出登录、会话过期、会话无效和密码变更。审计文件为 `data/admin_auth_audit.json`，失败/锁定状态文件为 `data/admin_auth_state.json`，默认最多保留最近 500 条审计。审计不会记录明文密码、密码哈希、Cookie、session secret、旧访问令牌、完整 User-Agent 或完整 IP，只保存哈希和事件枚举。
+
+后台登录后会显示当前用户、登录时间、会话到期和剩余时间；当会话剩余时间低于 TTL 的一半时，后台 API 会自动安全续期。写操作继续需要登录会话和 `X-CSRF-Token`，公开 `/public-api/*` 不受影响，仍然无需登录且保持脱敏。
+
+相关配置项:
+
+```bash
+WEB_AUTH_MAX_FAILURES=5
+WEB_AUTH_LOCKOUT_SEC=600
+WEB_AUTH_FAILURE_WINDOW_SEC=900
+WEB_AUTH_AUDIT_LIMIT=500
+WEB_SESSION_REFRESH_THRESHOLD_RATIO=0.5
+```
+
+如果忘记后台密码，可在服务器本地重新设置:
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+.venv/bin/python main.py admin-password set
+sudo systemctl restart paopao-web
+```
+
 ## v1.70.2 运维说明
 
 v1.70.2 调整后台账号密码设置命令：执行 `.venv/bin/python main.py admin-password set` 时，密码输入会明文显示，方便确认输入内容。请先确认当前终端环境安全。
