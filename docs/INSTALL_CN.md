@@ -1,5 +1,11 @@
 # 泡泡抓币中文安装目录
 
+## v1.69.0 运维说明
+
+公开前台 `https://paoxx.com/` 现在更适合日常查看信号：可以按币种、模块、状态、时间窗口和关键词筛选 Signal Card；点击卡片打开公开脱敏详情弹窗；点击币种进入单币详情视角；全市场时间线入口用于按时间顺序查看最近公开信号。
+
+这些页面只读取 `/public-api/*`，不会读取后台 `/api/*`，不会显示任务、日志、审计、配置、服务控制或 Telegram 私有 topic/message/reply 数据。移动端会自动单列显示筛选栏、信号卡片、时间线和详情弹窗。服务器更新脚本的结束提示已改为正式 HTTPS 入口：公开前台 `https://paoxx.com/`，后台 `https://paoxx.com/admin`；8080 只作为本机/Nginx 反代后端入口。
+
 ## v1.68.1 运维说明
 
 v1.68.1 修复 `scripts/check_https_deploy.sh` 的 HTTPS 验收误判。后台 `/admin` 页面检查现在使用普通 GET、`curl -L`、临时文件和固定字符串匹配，允许命中 `泡泡雷达控制台`、`brand-title` 或 `/admin` 即通过；失败时会显示 HTTP_CODE、下载字节数和页面前 8 行摘要。

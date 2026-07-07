@@ -69,6 +69,14 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("sudo test -f", combined)
         self.assertIn("certbot certificates", combined)
 
+    def test_update_script_points_to_https_public_and_admin_entries(self) -> None:
+        script = Path("scripts/update_server.sh").read_text(encoding="utf-8")
+
+        self.assertIn("https://paoxx.com/", script)
+        self.assertIn("https://paoxx.com/admin", script)
+        self.assertIn("8080 仅作为本机/Nginx 反代后端入口", script)
+        self.assertNotIn("http://服务器IP:8080/", script)
+
 
 if __name__ == "__main__":
     unittest.main()
