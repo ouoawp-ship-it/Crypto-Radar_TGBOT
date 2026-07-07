@@ -1,5 +1,19 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.68.0 说明
+
+v1.68.0 增加固定生产 HTTPS 部署验收脚本 `scripts/check_https_deploy.sh`，用于服务器更新后验证正式入口、Nginx 80/443、公开前台、后台页面、公开 API、私有 API 401 隔离、systemd 服务、Let's Encrypt 证书文件、可选 stable-check、可选 certbot dry-run 和最近日志阻断关键词。
+
+正式入口为：公开前台 `https://paoxx.com/`，后台控制台 `https://paoxx.com/admin`，公开 API `https://paoxx.com/public-api/*`，私有 API `https://paoxx.com/api/*` 且必须携带 `WEB_ADMIN_TOKEN`。验收命令：
+
+```bash
+bash scripts/check_https_deploy.sh
+bash scripts/check_https_deploy.sh --with-stable-check
+bash scripts/check_https_deploy.sh --with-certbot-dry-run
+```
+
+注意：`curl -I https://paoxx.com` 可能返回 `501 Unsupported method ('HEAD')`，因为当前 paopao-web 不支持 HEAD；页面验收请使用普通 GET 检查内容。生产环境中本机 8080 监听不等于公网暴露，云安全组应关闭公网 8080，只保留 80/443 作为正式入口。
+
 ## v1.67.0 说明
 
 v1.67.0 将 Web 拆成同域双入口：`/` 是公开信号前台，显示 Paoxx Signal Radar 的脱敏只读信号、统计、活跃币种和公开时间线；`/admin` 是原有后台控制台，继续使用 `WEB_ADMIN_TOKEN` 访问私有 `/api/*`。

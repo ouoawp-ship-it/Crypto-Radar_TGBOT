@@ -1,5 +1,24 @@
 # 泡泡抓币中文安装目录
 
+## v1.68.0 运维说明
+
+生产 HTTPS 入口已经固定为：公开前台 `https://paoxx.com/`，后台控制台 `https://paoxx.com/admin`，公开 API `https://paoxx.com/public-api/*`，私有 API `https://paoxx.com/api/*`。私有 API 必须带 `WEB_ADMIN_TOKEN`，未授权访问应返回 `401 Unauthorized`。
+
+服务器更新后建议执行固定验收脚本：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar || exit 1
+bash scripts/check_https_deploy.sh
+bash scripts/check_https_deploy.sh --with-stable-check
+bash scripts/check_https_deploy.sh --with-certbot-dry-run
+```
+
+默认脚本不会执行 `certbot renew --dry-run`，只检查 `/etc/letsencrypt/renewal/paoxx.com.conf`、`/etc/letsencrypt/live/paoxx.com/fullchain.pem` 和 `privkey.pem` 是否存在；只有传入 `--with-certbot-dry-run` 才会执行证书续期 dry-run。生产稳定版验收使用 `.venv/bin/python main.py stable-check`，不要依赖全局 `python` 命令。
+
+注意：`curl -I https://paoxx.com` 可能返回 `501 Unsupported method ('HEAD')`，这是 paopao-web 当前不支持 HEAD，不代表 HTTPS 异常。验收页面时请使用普通 GET，例如 `curl -sS https://paoxx.com/` 并检查页面内容包含 `Paoxx Signal Radar`。
+
+8080 在本机监听不等于公网暴露。Nginx 会反代到本机 paopao-web，生产环境应在云安全组关闭公网 8080，只开放 80/443 作为正式入口；脚本发现本机 8080 监听时只提示确认云安全组，不直接判定阻断。
+
 ## v1.67.0 运维说明
 
 Web 现在拆成公开前台和后台控制台两个入口：`/` 显示公开信号前台，不需要管理令牌，只读取脱敏后的 `/public-api/*`；`/admin` 显示原后台控制台，后台 `/api/*` 继续需要 `WEB_ADMIN_TOKEN`。公开前台不会显示配置中心、任务中心、日志、审计、服务控制、更新入口、服务器资源或 Git 细节。
