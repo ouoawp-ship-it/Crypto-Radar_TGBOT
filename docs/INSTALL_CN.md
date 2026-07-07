@@ -1,5 +1,11 @@
 # 泡泡抓币中文安装目录
 
+## v1.72.2 运维说明
+
+v1.72.2 将 outcome 价格源不可用与系统错误拆开处理。Binance 返回 HTTP 400、invalid symbol、Bad Request、symbol not found 或空 K 线数据时，结果会写入 `data_status=unavailable`、`result_label=数据不足`，不会计入真实系统 `error`。执行 `outcome-scan` 时会自动把旧库中 `HTTP Error 400` 这类历史误分类记录修复为 `unavailable`。
+
+扫描报告会单独输出“数据不足 / 价格源不可用摘要”，按 `symbol horizon` 显示原因，便于确认哪些交易对当前价格源无法覆盖。1000 前缀、非 Binance 现货交易对、部分新币可能需要后续 futures 或多交易所行情源补齐；在补齐前会显示为“数据不足 / 价格源不可用”，不应作为 stable-check 的阻断错误处理。
+
 ## v1.72.0 运维说明
 
 v1.72.0 新增 Signal Outcome Tracking。系统会从 `signals.db` / `signal_events` 兼容视图读取 `status=sent`、带有效 `USDT` 交易对和可解析时间的信号，为 1h / 4h / 24h / 72h 四个窗口创建追踪记录，并在窗口到期后读取公开行情 K 线计算后续表现。

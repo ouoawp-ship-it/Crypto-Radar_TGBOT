@@ -17,6 +17,7 @@ from paopao_radar.outcome_tracker import (
     OutcomeStore,
     calculate_outcome_metrics,
     outcome_result_label,
+    scan_report_text,
     scan_outcomes,
 )
 from paopao_radar.signal_store import append_from_push
@@ -157,6 +158,93 @@ class OutcomeTrackerTests(unittest.TestCase):
         self.assertEqual(eth["data_status"], "unavailable")
         self.assertEqual(error["counts"]["error"], 1)
         self.assertEqual(sol["data_status"], "error")
+
+    def test_http_400_invalid_symbol_is_unavailable_with_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            add_signal(settings, symbol="LABUSDT", status="sent", ts=now - 7200)
+
+            def invalid_symbol(*_args):
+                raise RuntimeError("HTTP Error 400: Bad Request")
+
+            result = scan_outcomes(settings=settings, horizon="1h", symbol="LABUSDT", now_ts=now, price_fetcher=invalid_symbol)
+            row = OutcomeStore(settings.outcome_db_path).list_outcomes(horizon="1h", symbol="LABUSDT")["items"][0]
+            stats = OutcomeStore(settings.outcome_db_path).stats(horizon="1h", symbol="LABUSDT")
+            report = scan_report_text(result)
+
+        self.assertEqual(result["counts"]["unavailable"], 1)
+        self.assertEqual(result["counts"]["error"], 0)
+        self.assertEqual(row["data_status"], "unavailable")
+        self.assertEqual(row["result_label"], "数据不足")
+        self.assertIn("价格源不支持该交易对", row["error"])
+        self.assertEqual(stats["unavailable_count"], 1)
+        self.assertEqual(stats["error_count"], 0)
+        self.assertIn("数据不足 / 价格源不可用摘要", report)
+        self.assertIn("LABUSDT 1h", report)
+
+    def test_invalid_symbol_cache_skips_repeated_horizon_fetches(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            add_signal(settings, symbol="EVAAUSDT", status="sent", ts=now - 20000)
+            calls = {"count": 0}
+
+            def invalid_symbol(*_args):
+                calls["count"] += 1
+                raise RuntimeError("HTTP Error 400: Bad Request")
+
+            result = scan_outcomes(settings=settings, now_ts=now, price_fetcher=invalid_symbol)
+            rows = OutcomeStore(settings.outcome_db_path).list_outcomes(symbol="EVAAUSDT", limit=10)["items"]
+
+        self.assertEqual(calls["count"], 1)
+        self.assertGreaterEqual(result["counts"]["unavailable"], 2)
+        self.assertEqual(result["counts"]["error"], 0)
+        self.assertTrue(all(row["data_status"] == "unavailable" for row in rows if row["horizon"] in {"1h", "4h"}))
+
+    def test_1000_prefix_symbol_marks_unavailable_without_fetch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            add_signal(settings, symbol="1000BONKUSDT", status="sent", ts=now - 7200)
+
+            def should_not_fetch(*_args):
+                raise AssertionError("1000 prefix should not call spot price source")
+
+            result = scan_outcomes(settings=settings, horizon="1h", symbol="1000BONKUSDT", now_ts=now, price_fetcher=should_not_fetch)
+            row = OutcomeStore(settings.outcome_db_path).list_outcomes(horizon="1h", symbol="1000BONKUSDT")["items"][0]
+
+        self.assertEqual(result["counts"]["unavailable"], 1)
+        self.assertEqual(result["counts"]["error"], 0)
+        self.assertEqual(row["data_status"], "unavailable")
+        self.assertIn("1000 前缀交易对", row["error"])
+
+    def test_historical_http_400_errors_repair_to_unavailable(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            store = OutcomeStore(settings.outcome_db_path)
+            store.ensure_schema()
+            with store.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO signal_outcomes (
+                        signal_id, symbol, coin, signal_time, horizon, horizon_sec,
+                        due_time, direction, result_label, result_tone, data_status,
+                        data_source, error, created_at, updated_at
+                    ) VALUES (99, 'LABUSDT', 'LAB', ?, '1h', 3600, ?, 'long',
+                        '数据不足', 'muted', 'error', 'binance',
+                        'HTTPError: HTTP Error 400: Bad Request', 'now', 'now')
+                    """,
+                    (time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 7200)), time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 3600))),
+                )
+
+            result = scan_outcomes(settings=settings, horizon="1h", symbol="LABUSDT", now_ts=now, price_fetcher=fake_klines)
+            row = OutcomeStore(settings.outcome_db_path).list_outcomes(horizon="1h", symbol="LABUSDT")["items"][0]
+
+        self.assertEqual(result["counts"]["repaired_unavailable"], 1)
+        self.assertEqual(row["data_status"], "unavailable")
+        self.assertEqual(row["error"], "价格源不支持该交易对或暂无 K 线数据")
 
     def test_metric_and_label_helpers(self) -> None:
         metrics = calculate_outcome_metrics(fake_klines("BTCUSDT", 0, 0, "1m", 10))

@@ -1,5 +1,13 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.72.2 说明
+
+v1.72.2 修正 Signal Outcome Tracking 的价格源不可用口径：Binance HTTP 400、invalid symbol、Bad Request、symbol not found 和空 K 线数据会标记为 `unavailable / 数据不足`，不再归类为系统 `error`。扫描开始时会自动把旧库中 `HTTP Error 400` 这类历史误分类记录修复为 `unavailable`，`/public-api/outcomes/stats` 的 `error_count` 也不再包含这些价格源不支持的交易对。
+
+`outcome-scan` 报告现在会单独输出“数据不足 / 价格源不可用摘要”，包含 symbol、horizon 和原因；真正的代码异常、数据库异常或不可预期解析异常才进入“错误摘要”。同一轮扫描会缓存无效交易对，避免同一 symbol 在 1h / 4h / 24h / 72h 多个窗口中反复请求价格源。
+
+部分信号币种可能不在当前价格源可查询范围内，例如 1000 前缀合约、非 Binance 现货交易对或部分新币。v1.72.2 会把这类结果标记为“数据不足 / 价格源不可用”，不会视为系统错误；后续版本可补充公开 futures K 线或多交易所行情源。本版本不改 Telegram 主推送流程，不执行自动交易，不接交易所下单 API。
+
 ## v1.72.0 说明
 
 v1.72.0 新增 Signal Outcome Tracking，用于追踪已发送结构化信号在 1h / 4h / 24h / 72h 后的价格表现。结果会写入独立运行库 `data/outcomes.db` 的 `signal_outcomes` 表，不迁移或破坏 `signals.db` / `jobs.db`，也不改变 Telegram 推送主流程。

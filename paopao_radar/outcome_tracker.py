@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
@@ -27,6 +28,18 @@ OUTCOME_WINDOWS: dict[str, int] = {
 VALID_DATA_STATUSES = {"pending", "ready", "success", "unavailable", "error"}
 VALID_RESULTS = {"表现较强", "小幅走强", "震荡", "小幅走弱", "明显回撤", "数据不足"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,24}USDT$")
+INVALID_PRICE_ERROR_PATTERNS = (
+    "HTTP Error 400",
+    "Bad Request",
+    "invalid symbol",
+    "symbol not found",
+    "empty kline data",
+    "ReadTimeout",
+    "TimeoutError",
+    "timed out",
+)
+PRICE_UNAVAILABLE_REASON = "价格源不支持该交易对或暂无 K 线数据"
+PREFIX_1000_UNAVAILABLE_REASON = "当前价格源不支持 1000 前缀交易对，后续可接入公开合约 K 线补齐"
 
 KlineFetcher = Callable[[str, int, int, str, int], list[dict[str, float]]]
 
@@ -64,6 +77,30 @@ def _coin(symbol: str) -> str:
 def normalize_outcome_symbol(value: Any) -> str:
     symbol = normalize_symbol_filter(value).get("symbol", "")
     return symbol if SYMBOL_RE.fullmatch(symbol) else ""
+
+
+def _is_1000_prefix_symbol(symbol: str) -> bool:
+    return bool(re.fullmatch(r"1000[A-Z0-9]{2,20}USDT", str(symbol or "").upper()))
+
+
+def price_unavailable_reason(symbol: str) -> str:
+    if _is_1000_prefix_symbol(symbol):
+        # v1.72.2 keeps spot Binance as the active source. A future version can add public futures K lines here.
+        return PREFIX_1000_UNAVAILABLE_REASON
+    return PRICE_UNAVAILABLE_REASON
+
+
+def is_price_unavailable_error(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError) and int(getattr(exc, "code", 0) or 0) == 400:
+        return True
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(pattern.lower() in message for pattern in INVALID_PRICE_ERROR_PATTERNS)
+
+
+def _unavailable_summary(symbol: str, horizon: str, source: str, reason: str) -> str:
+    prefix = f"{str(symbol or '').upper()} {str(horizon or '')}".strip()
+    source_text = str(source or "price-source").strip()
+    return f"{prefix}: {source_text} {reason}".strip()
 
 
 def safe_outcome_windows(values: tuple[str, ...] | list[str] | str | None = None) -> dict[str, int]:
@@ -313,6 +350,42 @@ class OutcomeStore:
                 rows,
             )
             return max(0, conn.total_changes - before)
+
+    def repair_unavailable_errors(self, *, data_source: str = "binance", dry_run: bool = False) -> int:
+        like_clauses = []
+        params: dict[str, Any] = {
+            "data_source": str(data_source or "binance").lower(),
+            "result_label": "数据不足",
+            "result_tone": "muted",
+            "reason": PRICE_UNAVAILABLE_REASON,
+            "updated_at": _iso(),
+        }
+        for index, pattern in enumerate(INVALID_PRICE_ERROR_PATTERNS):
+            key = f"pattern_{index}"
+            like_clauses.append(f"LOWER(COALESCE(error, '')) LIKE :{key}")
+            params[key] = f"%{pattern.lower()}%"
+        where = (
+            "data_status = 'error' "
+            "AND LOWER(COALESCE(data_source, '')) = :data_source "
+            f"AND ({' OR '.join(like_clauses)})"
+        )
+        with self.connect() as conn:
+            count = int(conn.execute(f"SELECT COUNT(*) FROM signal_outcomes WHERE {where}", params).fetchone()[0])
+            if dry_run or count <= 0:
+                return count
+            conn.execute(
+                f"""
+                UPDATE signal_outcomes
+                SET data_status = 'unavailable',
+                    result_label = :result_label,
+                    result_tone = :result_tone,
+                    error = :reason,
+                    updated_at = :updated_at
+                WHERE {where}
+                """,
+                params,
+            )
+            return count
 
     def due_outcomes(
         self,
@@ -594,6 +667,7 @@ def scan_outcomes(
     pending_planned = store.create_pending(candidates, windows, dry_run=dry_run)
     due = [] if dry_run else store.due_outcomes(now_ts=now_ts, limit=safe_limit, horizon=horizon, symbol=symbol)
     fetcher = price_fetcher or fetch_binance_klines
+    repaired_unavailable = store.repair_unavailable_errors(data_source=loaded.outcome_price_source, dry_run=dry_run)
     counts = {
         "candidate_signals": len(candidates),
         "new_pending": pending_planned,
@@ -601,11 +675,40 @@ def scan_outcomes(
         "success": 0,
         "unavailable": 0,
         "error": 0,
+        "repaired_unavailable": repaired_unavailable,
         "dry_run": bool(dry_run),
     }
     errors: list[str] = []
+    unavailable_summaries: list[str] = []
+    invalid_symbol_cache: dict[str, str] = {}
+
+    def mark_unavailable(row_data: dict[str, Any], reason: str) -> None:
+        row_symbol = str(row_data.get("symbol") or "").upper()
+        row_horizon = str(row_data.get("horizon") or "")
+        store.update_outcome(int(row_data["id"]), {
+            "data_status": "unavailable",
+            "data_source": loaded.outcome_price_source,
+            "result_label": "数据不足",
+            "result_tone": "muted",
+            "error": reason,
+            **_decision_snapshot(row_symbol, loaded),
+        })
+        counts["unavailable"] += 1
+        if len(unavailable_summaries) < 10:
+            unavailable_summaries.append(_unavailable_summary(row_symbol, row_horizon, loaded.outcome_price_source, reason))
+
     for row in due:
+        row_symbol = str(row.get("symbol") or "").upper()
+        row_horizon = str(row.get("horizon") or "")
         try:
+            if row_symbol in invalid_symbol_cache:
+                mark_unavailable(row, invalid_symbol_cache[row_symbol])
+                continue
+            if _is_1000_prefix_symbol(row_symbol) and str(loaded.outcome_price_source or "").lower() == "binance":
+                reason = price_unavailable_reason(row_symbol)
+                invalid_symbol_cache[row_symbol] = reason
+                mark_unavailable(row, reason)
+                continue
             signal_time_text = str(row.get("signal_time") or "")
             try:
                 start_ts = int(datetime.fromisoformat(signal_time_text.replace("Z", "+00:00")).timestamp())
@@ -614,31 +717,32 @@ def scan_outcomes(
                 start_ts = int(datetime.fromisoformat(str(row.get("due_time")).replace("Z", "+00:00")).timestamp()) - int(row.get("horizon_sec") or 0)
             end_ts = start_ts + int(row.get("horizon_sec") or 0)
             interval = interval_for_horizon(int(row.get("horizon_sec") or 0))
-            klines = fetcher(str(row.get("symbol") or ""), start_ts, end_ts + 60, interval, int(loaded.outcome_http_timeout_sec or 10))
+            klines = fetcher(row_symbol, start_ts, end_ts + 60, interval, int(loaded.outcome_http_timeout_sec or 10))
             if not klines:
-                store.update_outcome(int(row["id"]), {
-                    "data_status": "unavailable",
-                    "data_source": loaded.outcome_price_source,
-                    "result_label": "数据不足",
-                    "result_tone": "muted",
-                    "error": "价格数据不可用",
-                    **_decision_snapshot(str(row.get("symbol") or ""), loaded),
-                })
-                counts["unavailable"] += 1
+                reason = price_unavailable_reason(row_symbol)
+                invalid_symbol_cache[row_symbol] = reason
+                mark_unavailable(row, reason)
             else:
                 metrics = calculate_outcome_metrics(klines)
                 status = "success" if metrics.get("final_return_pct") is not None else "unavailable"
                 store.update_outcome(int(row["id"]), {
                     **metrics,
-                    **_decision_snapshot(str(row.get("symbol") or ""), loaded),
+                    **_decision_snapshot(row_symbol, loaded),
                     "data_status": status,
                     "data_source": loaded.outcome_price_source,
-                    "error": "" if status == "success" else "价格数据不足",
+                    "error": "" if status == "success" else PRICE_UNAVAILABLE_REASON,
                 })
                 counts["success" if status == "success" else "unavailable"] += 1
+                if status == "unavailable" and len(unavailable_summaries) < 10:
+                    unavailable_summaries.append(_unavailable_summary(row_symbol, row_horizon, loaded.outcome_price_source, PRICE_UNAVAILABLE_REASON))
             if loaded.outcome_request_sleep_sec:
                 time.sleep(max(0.0, float(loaded.outcome_request_sleep_sec)))
         except Exception as exc:
+            if is_price_unavailable_error(exc):
+                reason = price_unavailable_reason(row_symbol)
+                invalid_symbol_cache[row_symbol] = reason
+                mark_unavailable(row, reason)
+                continue
             message = str(redact_api_payload(f"{type(exc).__name__}: {exc}"))[:300]
             store.update_outcome(int(row["id"]), {
                 "data_status": "error",
@@ -646,10 +750,10 @@ def scan_outcomes(
                 "result_label": "数据不足",
                 "result_tone": "muted",
                 "error": message,
-                **_decision_snapshot(str(row.get("symbol") or ""), loaded),
+                **_decision_snapshot(row_symbol, loaded),
             })
             counts["error"] += 1
-            errors.append(message)
+            errors.append(f"{row_symbol} {row_horizon}: {message}")
     return {
         "ok": True,
         "counts": counts,
@@ -661,6 +765,7 @@ def scan_outcomes(
             "horizon": str(horizon or ""),
             "backfill_days": int(backfill_days or loaded.outcome_backfill_days or 7),
         },
+        "unavailable": unavailable_summaries[:10],
         "errors": errors[:5],
         "message": "信号结果追踪扫描完成" if not dry_run else "信号结果追踪 dry-run 完成",
     }
@@ -674,10 +779,15 @@ def scan_report_text(result: dict[str, Any]) -> str:
         f"到期待计算: {counts.get('due', 0)}",
         f"成功计算: {counts.get('success', 0)}",
         f"数据不足: {counts.get('unavailable', 0)}",
+        f"历史误分类修复: {counts.get('repaired_unavailable', 0)}",
         f"失败: {counts.get('error', 0)}",
     ]
     if counts.get("dry_run"):
         lines.append("模式: dry-run，未写入新结果。")
+    unavailable = result.get("unavailable") or []
+    if unavailable:
+        lines.append("数据不足 / 价格源不可用摘要:")
+        lines.extend(f"- {item}" for item in unavailable[:10])
     errors = result.get("errors") or []
     if errors:
         lines.append("错误摘要:")
