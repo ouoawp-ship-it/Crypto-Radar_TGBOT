@@ -2182,6 +2182,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("置信度", web.PUBLIC_INDEX_HTML)
         self.assertIn("风险等级", web.PUBLIC_INDEX_HTML)
         self.assertIn("观察点", web.PUBLIC_INDEX_HTML)
+        self.assertIn("决策分布", web.PUBLIC_INDEX_HTML)
+        self.assertIn("风险分布", web.PUBLIC_INDEX_HTML)
+        self.assertIn("模型解释", web.PUBLIC_INDEX_HTML)
+        self.assertIn("校准说明", web.PUBLIC_INDEX_HTML)
+        self.assertIn("组成因子", web.PUBLIC_INDEX_HTML)
         self.assertIn("禁止追高", web.PUBLIC_INDEX_HTML)
         self.assertIn("等待回踩", web.PUBLIC_INDEX_HTML)
         self.assertIn("可试仓", web.PUBLIC_INDEX_HTML)
@@ -2220,6 +2225,10 @@ class WebConsoleTests(unittest.TestCase):
             "Failed to load",
             "No signals",
             "Decision",
+            "Calibration",
+            "Distribution",
+            "Factor",
+            "Risk Level",
             "Confidence",
             "Risk",
             "Watch",
@@ -2308,8 +2317,15 @@ class WebConsoleTests(unittest.TestCase):
         statuses.clear()
         headers.clear()
         public_decision = make_handler("/public-api/decision?symbol=BTC")
-        with patch("paopao_radar.web.public_decision_payload", return_value={"ok": True, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
+        with patch("paopao_radar.web.public_decision_payload", return_value={"ok": True, "data": {"symbol": "BTCUSDT", "decision": {"label": "观察"}}, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
             web.WebHandler.do_GET(public_decision)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        public_decision_stats = make_handler("/public-api/decisions/stats")
+        with patch("paopao_radar.web.public_decisions_stats_payload", return_value={"ok": True, "data": {"distribution": {}}}):
+            web.WebHandler.do_GET(public_decision_stats)
         self.assertEqual(statuses[-1], 200)
 
         statuses.clear()
@@ -2320,10 +2336,16 @@ class WebConsoleTests(unittest.TestCase):
 
         statuses.clear()
         headers.clear()
+        private_decision_stats = make_handler("/api/decisions/stats")
+        web.WebHandler.do_GET(private_decision_stats)
+        self.assertEqual(statuses[-1], 401)
+
+        statuses.clear()
+        headers.clear()
         authorized_decision = make_handler("/api/decision?symbol=BTC")
         authorized_decision.server.settings = Settings(web_auth_mode="token")
         authorized_decision.headers = {"X-Admin-Token": "secret"}
-        with patch("paopao_radar.web.decision_for_symbol_payload", return_value={"ok": True, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
+        with patch("paopao_radar.web.decision_for_symbol_payload", return_value={"ok": True, "data": {"symbol": "BTCUSDT", "decision": {"label": "观察"}}, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
             web.WebHandler.do_GET(authorized_decision)
         self.assertEqual(statuses[-1], 200)
 
@@ -2369,12 +2391,14 @@ class WebConsoleTests(unittest.TestCase):
             stats = web.public_signal_stats_payload(settings=settings, window_sec=10**10)
             coin = web.public_coin_detail_payload("BTC", settings=settings, window_sec=10**10)
             timeline = web.public_timeline_payload(symbol="BTC", settings=settings, window_sec=10**10)
+            decision_stats = web.public_decisions_stats_payload(settings=settings, window_sec=10**10, limit=5)
 
         self.assertTrue(listing["ok"])
         self.assertTrue(detail["ok"])
         self.assertTrue(stats["ok"])
         self.assertTrue(coin["ok"])
         self.assertTrue(timeline["ok"])
+        self.assertTrue(decision_stats["ok"])
         self.assertEqual(set(listing["items"][0]) - {"id", "time", "module", "symbol", "status", "signal_type", "score", "stage", "excerpt", "display", "decision"}, set())
         decision = web.public_decision_payload("BTC", settings=settings, window_sec=10**10)
         decisions = web.public_decisions_payload(settings=settings, window_sec=10**10, limit=5)
@@ -2387,6 +2411,7 @@ class WebConsoleTests(unittest.TestCase):
                 "timeline": timeline,
                 "decision": decision,
                 "decisions": decisions,
+                "decision_stats": decision_stats,
             },
             ensure_ascii=False,
         )

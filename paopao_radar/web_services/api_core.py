@@ -265,7 +265,7 @@ def api_contract_self_test(*, settings: Any = None) -> dict[str, Any]:
     from .. import web as web_module
     from .coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
     from .dashboard import dashboard_payload
-    from .decision import decision_for_symbol_payload, decisions_payload
+    from .decision import decision_for_symbol_payload, decisions_payload, decisions_stats_payload
     from .jobs import jobs_payload, jobs_stats_payload
     from .ops import update_check_status_payload
     from .timeline import timeline_payload
@@ -277,6 +277,7 @@ def api_contract_self_test(*, settings: Any = None) -> dict[str, Any]:
     run_check("update-status", lambda: update_check_status_payload(settings=settings))
     run_check("signal-timeline", lambda: timeline_payload(limit=1, settings=settings))
     run_check("decisions", lambda: decisions_payload(limit=1, settings=settings))
+    run_check("decisions-stats", lambda: decisions_stats_payload(limit=1, settings=settings))
     coin_search = coin_search_payload(q="", limit=1, settings=settings)
     run_check("coin-search", lambda: coin_search)
     sample_items = coin_search.get("items", []) if isinstance(coin_search, Mapping) else []

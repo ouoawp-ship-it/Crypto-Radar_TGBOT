@@ -7,7 +7,8 @@ from typing import Any
 from .web_services.api_core import redact_api_payload
 
 
-MODEL_VERSION = "signal-decision-v1"
+MODEL_FAMILY = "signal-decision-v1"
+MODEL_VERSION = "signal-decision-v1.1"
 NOT_ADVICE_TEXT = "仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。"
 
 DEFAULT_DECISION_WEIGHTS: dict[str, float] = {
@@ -19,15 +20,40 @@ DEFAULT_DECISION_WEIGHTS: dict[str, float] = {
     "failure_penalty": -0.20,
 }
 
+DECISION_LABELS: dict[str, str] = {
+    "observe": "观察",
+    "wait_pullback": "等待回踩",
+    "probe": "可试仓",
+    "avoid_chase": "禁止追高",
+    "risk_alert": "风险警报",
+}
+
 DECISION_DISPLAY: dict[str, dict[str, str]] = {
     "observe": {"label": "观察", "tone": "neutral"},
     "wait_pullback": {"label": "等待回踩", "tone": "warning"},
-    "trial_position": {"label": "可试仓", "tone": "good"},
-    "no_chase": {"label": "禁止追高", "tone": "warning"},
+    "probe": {"label": "可试仓", "tone": "good"},
+    "avoid_chase": {"label": "禁止追高", "tone": "warning"},
     "risk_alert": {"label": "风险警报", "tone": "bad"},
 }
 
-MODULE_WEIGHTS: dict[str, int] = {
+DEFAULT_DECISION_THRESHOLDS: dict[str, int] = {
+    "probe_min_total": 70,
+    "probe_max_risk": 55,
+    "wait_pullback_min_total": 58,
+    "avoid_chase_min_density": 75,
+    "risk_alert_min_risk": 80,
+}
+
+MODULE_WEIGHTS: dict[str, float] = {
+    "launch": 1.0,
+    "flow": 0.9,
+    "structure": 1.0,
+    "structure_review": 0.8,
+    "funding": 0.7,
+    "ai": 0.6,
+}
+
+MODULE_BASE_SCORES: dict[str, int] = {
     "launch": 64,
     "flow": 62,
     "structure": 58,
@@ -38,6 +64,7 @@ MODULE_WEIGHTS: dict[str, int] = {
     "test": 25,
 }
 
+MAJOR_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"}
 STRONG_KEYWORDS = ("强", "突破", "启动", "放量", "拉升", "异动", "共振", "确认", "站稳", "流入")
 MEDIUM_KEYWORDS = ("关注", "接近", "临界", "增强", "回踩", "支撑", "箱体", "资金流")
 RISK_KEYWORDS = (
@@ -50,10 +77,10 @@ RISK_KEYWORDS = (
     "假突破",
     "破位",
     "失败",
-    "风险",
-    "过热",
 )
-STRUCTURE_KEYWORDS = ("structure", "结构", "突破", "回踩", "箱体", "支撑", "压力", "确认", "站稳")
+HEAT_KEYWORDS = ("过热", "连续", "拉升", "追高")
+STRUCTURE_CONFIRM_KEYWORDS = ("突破", "回踩", "箱体", "支撑", "压力", "确认", "颈线", "2B", "123", "站稳")
+STRUCTURE_KEYWORDS = ("structure", "结构", *STRUCTURE_CONFIRM_KEYWORDS)
 STRUCTURE_NEGATIVE_KEYWORDS = ("假突破", "破位", "跌破")
 PULLBACK_KEYWORDS = ("拉升", "追高", "过热", "等待", "回踩", "连续", "启动")
 
@@ -70,6 +97,7 @@ def _text(item: dict[str, Any]) -> str:
     fields = (
         item.get("title"),
         item.get("excerpt"),
+        item.get("text"),
         item.get("text_html"),
         item.get("signal_type"),
         item.get("stage"),
@@ -107,7 +135,7 @@ def signal_strength_score(items: list[dict[str, Any]]) -> int:
     for item in items:
         explicit = _score_value(item)
         module = str(item.get("module") or "").lower()
-        base = explicit if explicit is not None else MODULE_WEIGHTS.get(module, 40)
+        base = explicit if explicit is not None else MODULE_BASE_SCORES.get(module, 40)
         text = _text(item)
         if _contains(text, STRONG_KEYWORDS):
             base += 12
@@ -134,40 +162,93 @@ def module_confluence_score(items: list[dict[str, Any]]) -> int:
     return 0
 
 
-def signal_density_score(items: list[dict[str, Any]]) -> int:
+def signal_density_score(items: list[dict[str, Any]], *, symbol: str = "") -> int:
     count = len(items)
     if count <= 0:
         return 0
+    normalized = str(symbol or (items[0].get("symbol") if items else "") or "").upper()
+    major_adjust = normalized in MAJOR_SYMBOLS
     if count == 1:
         return 22
     if count <= 3:
         return 52
     if count <= 8:
-        return 70
+        return 66 if major_adjust else 70
     if count <= 15:
-        return 82
-    return 95
+        return 72 if major_adjust else 82
+    return 78 if major_adjust else 95
 
 
-def crowding_risk_score(items: list[dict[str, Any]]) -> int:
+def _risk_evidence(items: list[dict[str, Any]]) -> dict[str, Any]:
+    keywords: list[str] = []
+    triggers: list[str] = []
+    funding_risk_count = 0
+    failed_or_blocked = 0
+    negative_structure = 0
+    heat_count = 0
+    for item in items:
+        text = _text(item)
+        module = str(item.get("module") or "").lower()
+        status = str(item.get("status") or "").lower()
+        matched = [keyword for keyword in RISK_KEYWORDS if keyword.lower() in text.lower()]
+        for keyword in matched:
+            if keyword not in keywords:
+                keywords.append(keyword)
+        if module == "funding" and matched:
+            funding_risk_count += 1
+        if status in {"failed", "blocked"}:
+            failed_or_blocked += 1
+        if _contains(text, STRUCTURE_NEGATIVE_KEYWORDS):
+            negative_structure += 1
+        if _contains(text, HEAT_KEYWORDS):
+            heat_count += 1
+    if funding_risk_count:
+        triggers.append("funding_crowding")
+    if keywords:
+        triggers.append("risk_keywords")
+    if failed_or_blocked:
+        triggers.append("failed_or_blocked")
+    if negative_structure:
+        triggers.append("structure_break")
+    return {
+        "keywords": keywords[:8],
+        "triggers": triggers,
+        "funding_risk_count": funding_risk_count,
+        "failed_or_blocked": failed_or_blocked,
+        "negative_structure": negative_structure,
+        "heat_count": heat_count,
+        "has_clear_risk": bool(triggers),
+    }
+
+
+def crowding_risk_score(items: list[dict[str, Any]], *, symbol: str = "") -> int:
     if not items:
         return 0
     risk = 0
     funding_count = 0
+    evidence = _risk_evidence(items)
+    normalized = str(symbol or (items[0].get("symbol") if items else "") or "").upper()
+    major_adjust = normalized in MAJOR_SYMBOLS
     for item in items:
         text = _text(item)
         module = str(item.get("module") or "").lower()
         status = str(item.get("status") or "").lower()
         if module == "funding":
             funding_count += 1
-            risk += 10
+            risk += 8
         risk += min(35, _keyword_count(text, RISK_KEYWORDS) * 14)
         if status in {"failed", "blocked"}:
             risk += 16
-    if funding_count >= 3:
-        risk += 54
-    if len(items) >= 10:
-        risk += 16
+    if funding_count >= 3 and evidence["funding_risk_count"]:
+        risk += 34
+    elif funding_count >= 3:
+        risk += 12
+    if evidence["heat_count"] and len(items) >= 6:
+        risk += 10
+    if len(items) >= 10 and not major_adjust:
+        risk += 8
+    if major_adjust and not evidence["has_clear_risk"]:
+        risk = min(risk, 54)
     return _clamp(risk)
 
 
@@ -213,7 +294,17 @@ def _confidence(scores: dict[str, int], code: str) -> int:
     return _clamp(baseline + raw * 0.65)
 
 
-def _decision_code(scores: dict[str, int], items: list[dict[str, Any]]) -> str:
+def _decision_rule_name(code: str) -> str:
+    return {
+        "risk_alert": "risk_priority",
+        "avoid_chase": "anti_chase",
+        "probe": "confluence_confirmed",
+        "wait_pullback": "wait_confirmation",
+        "observe": "default_observe",
+    }.get(code, "default_observe")
+
+
+def _decision_code(scores: dict[str, int], items: list[dict[str, Any]], *, symbol: str = "") -> str:
     strength = scores["signal_strength"]
     confluence = scores["module_confluence"]
     density = scores["signal_density"]
@@ -221,15 +312,19 @@ def _decision_code(scores: dict[str, int], items: list[dict[str, Any]]) -> str:
     structure = scores["structure_confirmation"]
     penalty = scores["failure_penalty"]
     joined_text = " ".join(_text(item) for item in items)
+    evidence = _risk_evidence(items)
+    normalized = str(symbol or (items[0].get("symbol") if items else "") or "").upper()
+    major_adjust = normalized in MAJOR_SYMBOLS
 
-    if risk >= 82 or (risk >= 68 and penalty >= 35):
+    risk_threshold = DEFAULT_DECISION_THRESHOLDS["risk_alert_min_risk"] + (8 if major_adjust else 0)
+    if evidence["has_clear_risk"] and (risk >= risk_threshold or (risk >= 68 and penalty >= 35)):
         return "risk_alert"
-    if risk >= 58 and (strength >= 65 or density >= 75):
-        return "no_chase"
-    if confluence >= 70 and structure >= 45 and risk < 45 and penalty < 25 and strength >= 55:
-        return "trial_position"
+    if (risk >= 58 and (strength >= 65 or density >= 75)) or (density >= DEFAULT_DECISION_THRESHOLDS["avoid_chase_min_density"] and strength >= 72):
+        return "avoid_chase"
+    if confluence >= 70 and structure >= 45 and risk < DEFAULT_DECISION_THRESHOLDS["probe_max_risk"] and penalty < 25 and strength >= 55 and density < 85:
+        return "probe"
     if strength >= 85 and confluence >= 55 and density >= 50 and risk < 58 and structure < 35:
-        return "no_chase"
+        return "avoid_chase"
     if strength >= 66 and confluence >= 45 and (structure < 55 or _contains(joined_text, PULLBACK_KEYWORDS) or density >= 70):
         return "wait_pullback"
     if strength >= 75 and risk < 58 and structure < 55 and any(str(item.get("module") or "").lower() in {"launch", "flow"} for item in items):
@@ -244,9 +339,9 @@ def _summary_for(code: str, symbol: str) -> str:
     prefix = f"{symbol} " if symbol else ""
     if code == "risk_alert":
         return f"{prefix}风险信号显著，优先考虑防守，停止追入并等待风险缓和。"
-    if code == "no_chase":
+    if code == "avoid_chase":
         return f"{prefix}信号较强但短线热度或拥挤风险偏高，不适合追高。"
-    if code == "trial_position":
+    if code == "probe":
         return f"{prefix}多模块信号共振且风险未明显恶化，可考虑小仓位试探并严格风控。"
     if code == "wait_pullback":
         return f"{prefix}已有启动或突破迹象，但更适合等待回踩、重新站稳或结构确认。"
@@ -274,6 +369,9 @@ def _reasons(items: list[dict[str, Any]], scores: dict[str, int]) -> list[str]:
 
 def _risks(items: list[dict[str, Any]], scores: dict[str, int]) -> list[str]:
     risks: list[str] = []
+    evidence = _risk_evidence(items)
+    if evidence["keywords"]:
+        risks.append(f"风险词命中：{'、'.join(evidence['keywords'][:6])}")
     if scores["crowding_risk"] >= 60:
         risks.append("短线拥挤或追高风险偏高")
     if scores["failure_penalty"] >= 25:
@@ -289,15 +387,72 @@ def _risks(items: list[dict[str, Any]], scores: dict[str, int]) -> list[str]:
 
 def _watch_points(code: str, scores: dict[str, int]) -> list[str]:
     points = ["观察下一轮资金流是否继续增强", "关注 funding 是否继续拥挤"]
-    if code in {"wait_pullback", "no_chase"}:
+    if code in {"wait_pullback", "avoid_chase"}:
         points.insert(0, "等待回踩后重新站稳")
-    if code == "trial_position":
+    if code == "probe":
         points.insert(0, "仅考虑小仓位试探，并预先设置风控条件")
     if code == "risk_alert":
         points.insert(0, "优先确认风险是否缓和，避免新增暴露")
     if scores["structure_confirmation"] < 50:
         points.append("等待结构雷达给出更明确确认")
     return points[:6]
+
+
+def _factor_explanations(scores: dict[str, int], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    modules = sorted({str(item.get("module") or "").lower() for item in items if item.get("module")})
+    evidence = _risk_evidence(items)
+    return [
+        {
+            "factor": "signal_strength",
+            "label": "信号强度",
+            "score": scores["signal_strength"],
+            "explanation": "最近信号分数和文本强度处于中高水平。" if scores["signal_strength"] >= 60 else "信号强度仍偏保守，需要更多确认。",
+        },
+        {
+            "factor": "module_confluence",
+            "label": "模块共振",
+            "score": scores["module_confluence"],
+            "explanation": f"最近窗口出现 {len(modules)} 个模块：{'、'.join(modules[:6]) or '暂无'}。",
+        },
+        {
+            "factor": "signal_density",
+            "label": "信号密度",
+            "score": scores["signal_density"],
+            "explanation": "短时间信号密度偏高，主要用于判断热度，不单独触发风险警报。" if scores["signal_density"] >= 70 else "信号密度处于可观察范围。",
+        },
+        {
+            "factor": "crowding_risk",
+            "label": "拥挤风险",
+            "score": scores["crowding_risk"],
+            "explanation": f"风险词命中：{'、'.join(evidence['keywords'][:6])}。" if evidence["keywords"] else "未发现明显资金费率拥挤、假突破或破位风险词。",
+        },
+        {
+            "factor": "structure_confirmation",
+            "label": "结构确认",
+            "score": scores["structure_confirmation"],
+            "explanation": "结构雷达出现突破、回踩或确认迹象。" if scores["structure_confirmation"] >= 45 else "结构确认不足，仍需等待下一轮结构信号。",
+        },
+        {
+            "factor": "failure_penalty",
+            "label": "失败惩罚",
+            "score": scores["failure_penalty"],
+            "explanation": "近期 failed / blocked / skipped 较多，已降低置信度。" if scores["failure_penalty"] else "近期没有明显失败或阻止信号拖累。",
+        },
+    ]
+
+
+def _calibration(symbol: str, scores: dict[str, int], items: list[dict[str, Any]], code: str) -> dict[str, Any]:
+    normalized = str(symbol or (items[0].get("symbol") if items else "") or "").upper()
+    evidence = _risk_evidence(items)
+    return {
+        "major_symbol_adjusted": normalized in MAJOR_SYMBOLS,
+        "density_percentile": round(scores["signal_density"] / 100, 4),
+        "risk_triggered_by": evidence["triggers"],
+        "risk_keywords": evidence["keywords"][:8],
+        "decision_rule": _decision_rule_name(code),
+        "model_version": MODEL_VERSION,
+        "model_family": MODEL_FAMILY,
+    }
 
 
 def _related_signals(items: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
@@ -318,21 +473,59 @@ def _related_signals(items: list[dict[str, Any]], limit: int = 8) -> list[dict[s
 
 def evaluate_decision(items: list[dict[str, Any]], *, symbol: str = "") -> dict[str, Any]:
     safe_items = [dict(redact_api_payload(item)) for item in items]
+    normalized_symbol = str(symbol or (safe_items[0].get("symbol") if safe_items else "") or "").upper()
+    if normalized_symbol and not normalized_symbol.endswith("USDT"):
+        normalized_symbol = f"{normalized_symbol}USDT"
+    if not safe_items:
+        scores = {
+            "signal_strength": 0,
+            "module_confluence": 0,
+            "signal_density": 0,
+            "crowding_risk": 0,
+            "structure_confirmation": 0,
+            "failure_penalty": 0,
+            "total": 0,
+        }
+        code = "observe"
+        display = DECISION_DISPLAY[code]
+        return {
+            "model_version": MODEL_FAMILY,
+            "model_runtime_version": MODEL_VERSION,
+            "symbol": normalized_symbol,
+            "decision": {
+                "label": display["label"],
+                "code": code,
+                "tone": display["tone"],
+                "confidence": 0,
+                "risk_level": "低",
+                "summary": f"{normalized_symbol} 暂无足够信号，保持观察。" if normalized_symbol else "暂无足够信号，保持观察。",
+                "not_advice": NOT_ADVICE_TEXT,
+            },
+            "scores": scores,
+            "reasons": ["暂无足够信号"],
+            "risks": [],
+            "watch_points": ["等待更多结构化信号"],
+            "factor_explanations": _factor_explanations(scores, safe_items),
+            "calibration": _calibration(normalized_symbol, scores, safe_items, code),
+            "related_signals": [],
+            "weights": dict(DEFAULT_DECISION_WEIGHTS),
+            "thresholds": dict(DEFAULT_DECISION_THRESHOLDS),
+        }
     scores = {
         "signal_strength": signal_strength_score(safe_items),
         "module_confluence": module_confluence_score(safe_items),
-        "signal_density": signal_density_score(safe_items),
-        "crowding_risk": crowding_risk_score(safe_items),
+        "signal_density": signal_density_score(safe_items, symbol=normalized_symbol),
+        "crowding_risk": crowding_risk_score(safe_items, symbol=normalized_symbol),
         "structure_confirmation": structure_confirmation_score(safe_items),
         "failure_penalty": failure_penalty(safe_items),
     }
-    code = _decision_code(scores, safe_items)
+    code = _decision_code(scores, safe_items, symbol=normalized_symbol)
     confidence = _confidence(scores, code)
     scores["total"] = confidence
     display = DECISION_DISPLAY[code]
-    normalized_symbol = str(symbol or (safe_items[0].get("symbol") if safe_items else "") or "").upper()
     return {
-        "model_version": MODEL_VERSION,
+        "model_version": MODEL_FAMILY,
+        "model_runtime_version": MODEL_VERSION,
         "symbol": normalized_symbol,
         "decision": {
             "label": display["label"],
@@ -347,8 +540,11 @@ def evaluate_decision(items: list[dict[str, Any]], *, symbol: str = "") -> dict[
         "reasons": _reasons(safe_items, scores),
         "risks": _risks(safe_items, scores),
         "watch_points": _watch_points(code, scores),
+        "factor_explanations": _factor_explanations(scores, safe_items),
+        "calibration": _calibration(normalized_symbol, scores, safe_items, code),
         "related_signals": _related_signals(safe_items),
         "weights": dict(DEFAULT_DECISION_WEIGHTS),
+        "thresholds": dict(DEFAULT_DECISION_THRESHOLDS),
     }
 
 

@@ -1,5 +1,22 @@
 # 泡泡抓币中文安装目录
 
+## v1.71.0 运维说明
+
+v1.71.0 统一决策模型 API 契约。单币接口 `/public-api/decision?symbol=BTCUSDT` 和 `/api/decision?symbol=BTCUSDT` 都返回 `ok + data + _meta`，其中 `data` 包含 `model_version`、`symbol`、`decision`、`scores`、`reasons`、`risks`、`watch_points`、`factor_explanations`、`calibration` 和最近相关信号。为兼容旧前端，顶层旧字段仍保留。
+
+新增统计接口:
+
+```text
+/public-api/decisions/stats
+/api/decisions/stats
+```
+
+公开统计返回决策分布、风险分布、可试仓列表、风险/禁止追高列表和摘要；私有统计会额外返回模型权重、阈值和校准说明。未登录访问 `/api/decisions/stats` 仍应返回 `401 Unauthorized`。
+
+模型校准版本为 `signal-decision-v1.1`。BTC、ETH、SOL、BNB、XRP 等高频币种不会仅因信号数量多就直接判为风险警报；风险警报必须有明确风险因子，例如资金费率拥挤、结算周期缩短、假突破、破位、失败/阻止信号增加等。高密度强信号但无明确风险因子时，模型会优先输出“等待回踩”或“禁止追高”。
+
+公开前台“决策模型”和“币种详情”会展示决策分布、风险分布、模型解释、校准说明和组成因子。该模型仅用于信号整理和风险提示，不构成投资建议，不执行自动交易，也不会改动 Telegram 主推送流程。
+
 ## v1.70.3 运维说明
 
 v1.70.3 为后台账号密码登录增加安全加固。默认同一用户名和来源 IP 连续输错 5 次后锁定 10 分钟，失败计数窗口为 900 秒；锁定期间即使密码正确也会返回 429，并在登录页显示“登录失败次数过多，请稍后再试”。

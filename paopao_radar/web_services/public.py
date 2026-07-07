@@ -6,7 +6,7 @@ from ..config import Settings
 from ..signal_store import SignalEventStore
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .coins import coin_detail_payload, coin_search_payload
-from .decision import decision_for_symbol_payload, decisions_payload, enhance_signals_with_decisions
+from .decision import decision_for_symbol_payload, decisions_payload, decisions_stats_payload, enhance_signals_with_decisions
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
 from .timeline import timeline_payload
 
@@ -232,6 +232,21 @@ def public_decisions_payload(
         risk=risk,
         window_sec=window_sec,
         settings=settings,
+    )
+    return _strip_forbidden(payload)
+
+
+def public_decisions_stats_payload(
+    *,
+    window_sec: int = 86400,
+    limit: int = 100,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    payload = decisions_stats_payload(
+        window_sec=window_sec,
+        limit=limit,
+        settings=settings,
+        include_model_config=False,
     )
     return _strip_forbidden(payload)
 

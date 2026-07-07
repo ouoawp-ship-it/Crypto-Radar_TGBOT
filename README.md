@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.71.0 说明
+
+v1.71.0 统一 Signal Decision Model 的 API 契约：`/public-api/decision` 和 `/api/decision` 现在都采用 `ok + data + _meta` 结构，旧的顶层 `decision/scores/reasons` 字段仍保留用于前端兼容。`/public-api/decisions` 和 `/api/decisions` 的 `data` 中补齐 `items`、`summary`、`distribution`、`filters` 和 `pagination`。
+
+新增决策统计接口：公开 `/public-api/decisions/stats`，私有 `/api/decisions/stats`。统计会返回最近窗口内的决策分布、风险分布、可试仓列表、风险/禁止追高列表和摘要；私有接口额外返回模型权重、阈值和校准说明。
+
+模型校准为 `signal-decision-v1.1`：BTC、ETH、SOL、BNB、XRP 等高频币种不会仅因信号数量多就直接判为风险警报；风险警报需要明确风险因子，例如资金费率拥挤、结算周期缩短、假突破、破位、失败/阻止信号增加等。强信号但无明确风险因子时更倾向于“等待回踩”或“禁止追高”。
+
+每个决策结果新增 `factor_explanations` 和 `calibration`，用于说明信号强度、模块共振、信号密度、拥挤风险、结构确认、失败惩罚如何影响结论。公开前台和后台 API 仍然只做只读展示，本模型仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.70.3 说明
 
 v1.70.3 加固后台账号密码登录：同一用户名和来源 IP 连续失败默认 5 次会锁定 10 分钟，失败计数窗口默认 15 分钟；登录成功后会清除该来源的失败计数。
