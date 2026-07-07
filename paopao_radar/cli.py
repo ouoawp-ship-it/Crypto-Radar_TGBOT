@@ -37,6 +37,7 @@ from .flow_radar import FlowRadarEngine
 from .funding_alert import FundingAlertEngine
 from .liquidity_router import build_liquidity_enhancer
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
+from .outcome_tracker import scan_outcomes, scan_report_text
 from .radar import RadarEngine, fmt_price
 from .storage import JsonStore
 from .structure_radar import (
@@ -137,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -147,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-cleanup", action="store_true", help="用于 cleanup：忽略清理间隔，立即执行")
     parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
+    parser.add_argument("--limit", type=int, default=None, help="用于 outcome-scan：本次最多处理多少条信号/结果")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数；structure-radar 使用 15m/1h 这类K线周期")
@@ -160,6 +162,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 统计过去 N 小时的结构信号")
+    parser.add_argument("--horizon", default="", help="用于 outcome-scan：只处理 1h/4h/24h/72h 中的一个窗口")
+    parser.add_argument("--symbol", default="", help="用于 outcome-scan：只处理某个币种，例如 BTC 或 BTCUSDT")
+    parser.add_argument("--dry-run", action="store_true", help="用于 outcome-scan：只预览，不写入新结果")
+    parser.add_argument("--backfill-days", type=int, default=None, help="用于 outcome-scan：回填最近 N 天已发送信号")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
@@ -336,6 +342,20 @@ def run_admin_password(args: argparse.Namespace) -> int:
     print("请重启 paopao-web 服务生效：")
     print("sudo systemctl restart paopao-web")
     return 0
+
+
+def run_outcome_scan(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    result = scan_outcomes(
+        settings=settings,
+        limit=getattr(args, "limit", None),
+        horizon=str(getattr(args, "horizon", "") or ""),
+        symbol=str(getattr(args, "symbol", "") or ""),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        backfill_days=getattr(args, "backfill_days", None),
+    )
+    print(scan_report_text(result))
+    return 0 if result.get("ok", True) else 1
 
 
 def command_mode(args: argparse.Namespace) -> str:
@@ -1766,6 +1786,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0
+    if args.command == "outcome-scan":
+        return run_outcome_scan(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

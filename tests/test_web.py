@@ -123,6 +123,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("SIGNAL_EVENTS_DB_FILE", ai_fields)
         self.assertEqual(ai_fields["SIGNAL_EVENTS_LIMIT"]["kind"], "int")
         self.assertEqual(ai_fields["SIGNAL_EVENTS_RETENTION_DAYS"]["kind"], "int")
+        self.assertIn("OUTCOME_TRACKING_ENABLE", ai_fields)
+        self.assertIn("OUTCOME_DB_PATH", ai_fields)
+        self.assertIn("OUTCOME_WINDOWS", ai_fields)
+        self.assertEqual(ai_fields["OUTCOME_SCAN_LIMIT"]["kind"], "int")
+        self.assertEqual(ai_fields["OUTCOME_BACKFILL_DAYS"]["kind"], "int")
 
     def test_config_payload_reads_auto_created_topic_routes(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -2154,10 +2159,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("signal-timeline", names)
         self.assertIn("decisions", names)
         self.assertIn("decision", names)
+        self.assertIn("outcomes", names)
+        self.assertIn("outcomes-stats", names)
         self.assertIn("coin-search", names)
         self.assertIn("coin-detail", names)
         self.assertIn("coin-timeline", names)
         self.assertIn("coin-detail-timeline", names)
+        self.assertIn("symbol-outcomes", names)
 
     def test_jobs_audit_summary_stays_minimal(self) -> None:
         rerun = web.audit_request_summary("/api/jobs/rerun", {"id": 12, "stdout_tail": "secret"})
@@ -2191,6 +2199,13 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("等待回踩", web.PUBLIC_INDEX_HTML)
         self.assertIn("可试仓", web.PUBLIC_INDEX_HTML)
         self.assertIn("风险警报", web.PUBLIC_INDEX_HTML)
+        self.assertIn("结果追踪", web.PUBLIC_INDEX_HTML)
+        self.assertIn("最终涨跌", web.PUBLIC_INDEX_HTML)
+        self.assertIn("最高涨幅", web.PUBLIC_INDEX_HTML)
+        self.assertIn("最大回撤", web.PUBLIC_INDEX_HTML)
+        self.assertIn("表现较强", web.PUBLIC_INDEX_HTML)
+        self.assertIn("明显回撤", web.PUBLIC_INDEX_HTML)
+        self.assertIn("数据不足", web.PUBLIC_INDEX_HTML)
         self.assertIn("加载失败", web.PUBLIC_INDEX_HTML)
         self.assertIn("暂无符合条件的信号", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/signals", web.PUBLIC_INDEX_HTML)
@@ -2200,6 +2215,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("/public-api/signal-timeline", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/decision", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/decisions", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/outcomes", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/outcomes/stats", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/symbol-outcomes", web.PUBLIC_INDEX_HTML)
         self.assertIn('href="/admin"', web.PUBLIC_INDEX_HTML)
         self.assertIn("signal-card-grid", web.PUBLIC_INDEX_HTML)
         self.assertIn("signalDetailModal", web.PUBLIC_INDEX_HTML)
@@ -2213,6 +2231,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("openSignalDetail", web.PUBLIC_INDEX_HTML)
         self.assertIn("openCoin", web.PUBLIC_INDEX_HTML)
         self.assertIn("@media(max-width:560px)", web.PUBLIC_INDEX_HTML)
+        self.assertIn("结果追踪", web.INDEX_HTML)
+        self.assertIn("/api/outcomes", web.INDEX_HTML)
+        self.assertIn("/api/outcomes/stats", web.INDEX_HTML)
+        self.assertIn("/api/symbol-outcomes", web.INDEX_HTML)
+        self.assertIn("/api/outcomes/scan", web.INDEX_HTML)
         for old_text in (
             "Public crypto signal feed",
             "Read-only, redacted",
@@ -2237,6 +2260,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertNotIn("/api/jobs", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/decision", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/decisions", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/outcomes", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/dashboard", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/config", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/logs", web.PUBLIC_INDEX_HTML)
@@ -2330,6 +2354,27 @@ class WebConsoleTests(unittest.TestCase):
 
         statuses.clear()
         headers.clear()
+        public_outcomes = make_handler("/public-api/outcomes?limit=1")
+        with patch("paopao_radar.web.public_outcomes_payload", return_value={"ok": True, "data": {"items": []}, "items": [], "count": 0}):
+            web.WebHandler.do_GET(public_outcomes)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        public_outcome_stats = make_handler("/public-api/outcomes/stats?horizon=24h")
+        with patch("paopao_radar.web.public_outcome_stats_payload", return_value={"ok": True, "data": {"total": 0}}):
+            web.WebHandler.do_GET(public_outcome_stats)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        public_symbol_outcomes = make_handler("/public-api/symbol-outcomes?symbol=BTC")
+        with patch("paopao_radar.web.public_symbol_outcomes_payload", return_value={"ok": True, "data": {"items": []}, "items": [], "count": 0}):
+            web.WebHandler.do_GET(public_symbol_outcomes)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
         private_decision = make_handler("/api/decision?symbol=BTC")
         web.WebHandler.do_GET(private_decision)
         self.assertEqual(statuses[-1], 401)
@@ -2338,6 +2383,12 @@ class WebConsoleTests(unittest.TestCase):
         headers.clear()
         private_decision_stats = make_handler("/api/decisions/stats")
         web.WebHandler.do_GET(private_decision_stats)
+        self.assertEqual(statuses[-1], 401)
+
+        statuses.clear()
+        headers.clear()
+        private_outcomes = make_handler("/api/outcomes")
+        web.WebHandler.do_GET(private_outcomes)
         self.assertEqual(statuses[-1], 401)
 
         statuses.clear()

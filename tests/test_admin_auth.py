@@ -354,6 +354,28 @@ class AdminAuthTests(unittest.TestCase):
                 web.WebHandler.do_POST(allowed)
             self.assertEqual(statuses[-1], 200)
 
+            missing_scan, statuses, _headers = self.make_handler(
+                "/api/outcomes/scan",
+                settings,
+                method_body={},
+                headers={"Cookie": cookie_pair},
+            )
+            web.WebHandler.do_POST(missing_scan)
+            body = json.loads(missing_scan.wfile.getvalue().decode("utf-8"))
+            self.assertEqual(statuses[-1], 403)
+            self.assertEqual(body["error"]["code"], "forbidden")
+
+            outcome_scan, statuses, _headers = self.make_handler(
+                "/api/outcomes/scan",
+                settings,
+                method_body={},
+                headers={"Cookie": cookie_pair, "X-CSRF-Token": csrf},
+            )
+            with patch("paopao_radar.web.create_job_payload", return_value={"ok": True, "job": {"id": 2, "job_type": "outcome-scan", "status": "queued"}}), patch("paopao_radar.web.append_web_audit"):
+                web.WebHandler.do_POST(outcome_scan)
+            self.assertEqual(statuses[-1], 200)
+            self.assertIn("outcome-scan", outcome_scan.wfile.getvalue().decode("utf-8"))
+
     def test_token_mode_is_only_used_when_explicitly_configured(self) -> None:
         with TemporaryDirectory() as tmp:
             password_mode = Settings(data_dir=Path(tmp), web_auth_mode="password")

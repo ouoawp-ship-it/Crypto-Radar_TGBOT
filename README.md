@@ -1,5 +1,26 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.72.0 说明
+
+v1.72.0 新增 Signal Outcome Tracking，用于追踪已发送结构化信号在 1h / 4h / 24h / 72h 后的价格表现。结果会写入独立运行库 `data/outcomes.db` 的 `signal_outcomes` 表，不迁移或破坏 `signals.db` / `jobs.db`，也不改变 Telegram 推送主流程。
+
+每条 outcome 会记录 signal_id、symbol、signal_time、horizon、entry price、future price、最高价、最低价、最终涨跌、最高涨幅、最大回撤、结果标签、数据状态，并附带 outcome 扫描时的决策快照。结果标签包括：表现较强、小幅走强、震荡、小幅走弱、明显回撤、数据不足。v1 默认使用多头观察口径，仅用于复盘和模型校准。
+
+新增 CLI：
+
+```bash
+.venv/bin/python main.py outcome-scan
+.venv/bin/python main.py outcome-scan --limit 100
+.venv/bin/python main.py outcome-scan --horizon 1h
+.venv/bin/python main.py outcome-scan --symbol BTCUSDT
+.venv/bin/python main.py outcome-scan --dry-run
+.venv/bin/python main.py outcome-scan --backfill-days 7
+```
+
+新增 API：公开只读 `/public-api/outcomes`、`/public-api/outcomes/stats`、`/public-api/symbol-outcomes`；后台私有 `/api/outcomes`、`/api/outcomes/stats`、`/api/symbol-outcomes`、`POST /api/outcomes/scan`。公开 API 继续脱敏，不返回 payload_json、text_html、dedup_key、Telegram topic/message/reply、jobs、audit、config、logs 或任何 token/secret 字段。
+
+公开前台和后台控制台新增“结果追踪”入口，展示最近追踪结果、最终涨跌、最高涨幅、最大回撤、数据状态、按币种的历史结果追踪以及后台手动触发扫描按钮。本功能不执行自动交易，不接交易所下单 API，不做仓位管理，不操作真实资金。
+
 ## v1.71.0 说明
 
 v1.71.0 统一 Signal Decision Model 的 API 契约：`/public-api/decision` 和 `/api/decision` 现在都采用 `ok + data + _meta` 结构，旧的顶层 `decision/scores/reasons` 字段仍保留用于前端兼容。`/public-api/decisions` 和 `/api/decisions` 的 `data` 中补齐 `items`、`summary`、`distribution`、`filters` 和 `pagination`。

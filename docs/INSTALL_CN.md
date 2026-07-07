@@ -1,5 +1,42 @@
 # 泡泡抓币中文安装目录
 
+## v1.72.0 运维说明
+
+v1.72.0 新增 Signal Outcome Tracking。系统会从 `signals.db` / `signal_events` 兼容视图读取 `status=sent`、带有效 `USDT` 交易对和可解析时间的信号，为 1h / 4h / 24h / 72h 四个窗口创建追踪记录，并在窗口到期后读取公开行情 K 线计算后续表现。
+
+结果保存在独立运行库 `data/outcomes.db`，表名为 `signal_outcomes`。记录字段包括 signal_id、symbol、signal_time、horizon、entry_price、future_price、max_high_price、min_low_price、final_return_pct、max_gain_pct、max_drawdown_pct、result_label、data_status，以及 outcome 扫描时的决策快照。`signals.db`、`jobs.db` 和 `outcomes.db` 都是运行数据，不应提交到 Git。
+
+常用命令：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+.venv/bin/python main.py outcome-scan
+.venv/bin/python main.py outcome-scan --backfill-days 7
+.venv/bin/python main.py outcome-scan --dry-run
+.venv/bin/python main.py outcome-scan --limit 50 --horizon 1h --symbol BTCUSDT
+```
+
+新增公开只读 API：
+
+```text
+/public-api/outcomes
+/public-api/outcomes/stats
+/public-api/symbol-outcomes
+```
+
+新增后台私有 API：
+
+```text
+/api/outcomes
+/api/outcomes/stats
+/api/symbol-outcomes
+POST /api/outcomes/scan
+```
+
+`POST /api/outcomes/scan` 需要后台登录会话和 CSRF，会创建 `outcome-scan` 后台任务。公开 API 继续脱敏，不返回 payload_json、text_html、dedup_key、Telegram topic/message/reply、jobs、audit、config、logs、Cookie、Authorization 或 token/secret 字段。
+
+结果追踪只用于复盘、统计和模型校准；它不会执行自动交易，不接交易所私有下单接口，不设置杠杆，不挂止盈止损，不操作真实资金，也不会改变 Telegram 推送节奏。
+
 ## v1.71.0 运维说明
 
 v1.71.0 统一决策模型 API 契约。单币接口 `/public-api/decision?symbol=BTCUSDT` 和 `/api/decision?symbol=BTCUSDT` 都返回 `ok + data + _meta`，其中 `data` 包含 `model_version`、`symbol`、`decision`、`scores`、`reasons`、`risks`、`watch_points`、`factor_explanations`、`calibration` 和最近相关信号。为兼容旧前端，顶层旧字段仍保留。

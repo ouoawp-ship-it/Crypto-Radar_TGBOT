@@ -24,7 +24,7 @@ JOB_STDOUT_LIMIT = 12000
 JOB_STDERR_LIMIT = 6000
 JOB_ERROR_LIMIT = 1000
 JOB_REPORT_TAIL_LIMIT = 12000
-CONCURRENT_GUARD_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test"}
+CONCURRENT_GUARD_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test", "outcome-scan"}
 ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
 STABLE_CHECK_ATTENTION_RE = re.compile(r"(状态|摘要|网络重试噪声|日志稳定性):\s*(.+)")
 
@@ -51,10 +51,11 @@ JOB_SPECS: dict[str, JobSpec] = {
     "doctor": JobSpec("doctor", zh(r"\u73af\u5883\u8bca\u65ad doctor"), _python_command("doctor"), 90),
     "readiness": JobSpec("readiness", zh(r"\u8bfb\u53d6\u771f\u5b9e\u63a8\u9001\u51c6\u5907\u5ea6"), _python_command("readiness"), 90),
     "cleanup": JobSpec("cleanup", zh(r"\u6e05\u7406\u8fd0\u884c\u5783\u573e"), _python_command("cleanup", "--force-cleanup"), 120),
+    "outcome-scan": JobSpec("outcome-scan", zh(r"\u4fe1\u53f7\u7ed3\u679c\u8ffd\u8e2a\u626b\u63cf"), _python_command("outcome-scan"), 300),
     "update-check": JobSpec("update-check", zh(r"\u68c0\u67e5 GitHub \u66f4\u65b0"), ["bash", "scripts/update_server.sh", "--check"], 180),
     "api-self-test": JobSpec("api-self-test", zh(r"Web API \u81ea\u68c0"), ["internal", "api-self-test"], 60, internal=True),
 }
-LONG_ACTION_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup"}
+LONG_ACTION_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "outcome-scan"}
 
 
 TOKEN_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (

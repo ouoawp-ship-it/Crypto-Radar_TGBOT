@@ -151,6 +151,14 @@ class Settings:
     web_jobs_limit: int = 500
     web_jobs_stdout_tail_chars: int = 12000
     web_jobs_stderr_tail_chars: int = 6000
+    outcome_tracking_enable: bool = True
+    outcome_db_path: Path = BASE_DIR / "data" / "outcomes.db"
+    outcome_windows: tuple[str, ...] = ("1h", "4h", "24h", "72h")
+    outcome_scan_limit: int = 100
+    outcome_backfill_days: int = 7
+    outcome_price_source: str = "binance"
+    outcome_http_timeout_sec: int = 10
+    outcome_request_sleep_sec: float = 0.1
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -293,12 +301,15 @@ class Settings:
         default_signal_path = BASE_DIR / "data" / "signal_events.json"
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
         default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
+        default_outcome_db_path = BASE_DIR / "data" / "outcomes.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
             object.__setattr__(self, "signal_events_db_path", self.data_dir / "signals.db")
         if self.data_dir != BASE_DIR / "data" and self.web_jobs_db_path == default_web_jobs_db_path:
             object.__setattr__(self, "web_jobs_db_path", self.data_dir / "jobs.db")
+        if self.data_dir != BASE_DIR / "data" and self.outcome_db_path == default_outcome_db_path:
+            object.__setattr__(self, "outcome_db_path", self.data_dir / "outcomes.db")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -353,6 +364,14 @@ class Settings:
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
             web_jobs_stdout_tail_chars=env_int("WEB_JOBS_STDOUT_TAIL_CHARS", 12000),
             web_jobs_stderr_tail_chars=env_int("WEB_JOBS_STDERR_TAIL_CHARS", 6000),
+            outcome_tracking_enable=env_bool("OUTCOME_TRACKING_ENABLE", True),
+            outcome_db_path=data_path(data_dir, "OUTCOME_DB_PATH", "outcomes.db"),
+            outcome_windows=env_csv("OUTCOME_WINDOWS", ("1h", "4h", "24h", "72h")),
+            outcome_scan_limit=env_int("OUTCOME_SCAN_LIMIT", 100),
+            outcome_backfill_days=env_int("OUTCOME_BACKFILL_DAYS", 7),
+            outcome_price_source=(os.getenv("OUTCOME_PRICE_SOURCE", "binance").strip().lower() or "binance"),
+            outcome_http_timeout_sec=env_int("OUTCOME_HTTP_TIMEOUT_SEC", 10),
+            outcome_request_sleep_sec=env_float("OUTCOME_REQUEST_SLEEP_SEC", 0.1),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -568,6 +587,17 @@ class Settings:
                 "auth_failure_window_sec": self.web_auth_failure_window_sec,
                 "auth_audit_limit": self.web_auth_audit_limit,
                 "session_refresh_threshold_ratio": self.web_session_refresh_threshold_ratio,
+            },
+            "outcomes": {
+                "enable": self.outcome_tracking_enable,
+                "db_file": str(self.outcome_db_path),
+                "db_exists": self.outcome_db_path.exists(),
+                "windows": list(self.outcome_windows),
+                "scan_limit": self.outcome_scan_limit,
+                "backfill_days": self.outcome_backfill_days,
+                "price_source": self.outcome_price_source,
+                "http_timeout_sec": self.outcome_http_timeout_sec,
+                "request_sleep_sec": self.outcome_request_sleep_sec,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,
