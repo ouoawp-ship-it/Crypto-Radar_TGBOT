@@ -21,7 +21,7 @@ MODULE_DISPLAY: dict[str, tuple[str, str]] = {
 }
 STATUS_DISPLAY: dict[str, tuple[str, str]] = {
     "sent": ("已发送", "good"),
-    "dry_run": ("Dry-run", "info"),
+    "dry_run": ("演练", "info"),
     "skipped": ("已跳过", "neutral"),
     "blocked": ("已阻止", "warn"),
     "failed": ("失败", "bad"),

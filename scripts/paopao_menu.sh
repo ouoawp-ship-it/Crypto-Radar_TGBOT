@@ -4,6 +4,8 @@ set -Eeuo pipefail
 APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
+PUBLIC_FRONTEND_URL="${PUBLIC_FRONTEND_URL:-https://paoxx.com/}"
+ADMIN_CONSOLE_URL="${ADMIN_CONSOLE_URL:-https://paoxx.com/admin}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
@@ -58,15 +60,30 @@ service_unit_exists() {
   command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${name}.service" >/dev/null 2>&1
 }
 
-web_public_url() {
-  local port
-  port="$(get_env_value WEB_PORT)"
-  [ -n "$port" ] || port="8080"
-  if [ "$port" = "80" ]; then
-    printf 'http://服务器IP/'
+token_status() {
+  local token
+  token="$(get_env_value WEB_ADMIN_TOKEN)"
+  if [ -n "$token" ]; then
+    printf '已配置，默认不在菜单首页明文显示'
   else
-    printf 'http://服务器IP:%s/' "$port"
+    printf '未配置，请先选择 7 更新项目，或执行安装/更新脚本'
   fi
+}
+
+show_web_entry() {
+  local host port
+  host="$(get_env_value WEB_HOST)"
+  port="$(get_env_value WEB_PORT)"
+  [ -n "$host" ] || host="0.0.0.0"
+  [ -n "$port" ] || port="8080"
+  printf '公开前台: %s\n' "$PUBLIC_FRONTEND_URL"
+  printf '后台控制台: %s\n' "$ADMIN_CONSOLE_URL"
+  printf '本机监听配置: %s:%s\n' "$host" "$port"
+  printf '访问令牌: %s\n' "$(token_status)"
+  printf '\n说明:\n'
+  printf '  1. 日常访问请使用 %s。\n' "$ADMIN_CONSOLE_URL"
+  printf '  2. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。\n'
+  printf '  3. 如需查看或重置访问令牌，请使用专门菜单项。\n'
 }
 
 show_web_token() {
@@ -76,12 +93,32 @@ show_web_token() {
   token="$(get_env_value WEB_ADMIN_TOKEN)"
   [ -n "$host" ] || host="0.0.0.0"
   [ -n "$port" ] || port="8080"
-  printf 'Web 控制台地址: %s\n' "$(web_public_url)"
+  printf '后台控制台: %s\n' "$ADMIN_CONSOLE_URL"
   printf '监听配置: %s:%s\n' "$host" "$port"
+  if [ -z "$token" ]; then
+    printf '访问令牌未配置。请返回菜单选择 7 更新项目，或重新运行安装脚本。\n'
+    return 0
+  fi
+  printf '即将显示后台访问令牌，请确认当前终端环境安全。是否继续？y/N '
+  local confirm
+  read -r confirm || confirm=""
+  case "$confirm" in
+    y|Y|yes|YES)
+      printf '访问令牌: %s\n' "$token"
+      ;;
+    *)
+      printf '已取消显示访问令牌。\n'
+      ;;
+  esac
+}
+
+show_token_noninteractive() {
+  local token
+  token="$(get_env_value WEB_ADMIN_TOKEN)"
   if [ -n "$token" ]; then
     printf '访问令牌: %s\n' "$token"
   else
-    printf '访问令牌未配置。请返回菜单选择 6 更新项目，或重新运行安装脚本。\n'
+    printf '访问令牌未配置。请返回菜单选择 7 更新项目，或重新运行安装脚本。\n'
   fi
 }
 
@@ -137,8 +174,6 @@ pause_menu() {
 }
 
 show_menu_header() {
-  local token
-  token="$(get_env_value WEB_ADMIN_TOKEN)"
   cat <<EOF
 ============================================================
 泡泡雷达中文控制台
@@ -146,24 +181,27 @@ show_menu_header() {
 项目目录: ${APP_DIR}
 当前版本: $(project_version) ($(project_commit))
 
-Web 地址: $(web_public_url)
-访问令牌: ${token:-未配置，请先选择 6 更新项目，或执行安装/更新脚本}
+公开前台: ${PUBLIC_FRONTEND_URL}
+后台控制台: ${ADMIN_CONSOLE_URL}
+访问令牌: $(token_status)
 
 说明:
-  1. 服务器只需要记住一个入口命令：paopao。
-  2. 打开上面的 Web 地址，输入访问令牌，就能进入网页控制台。
-  3. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
+  1. 日常访问请使用 ${ADMIN_CONSOLE_URL}。
+  2. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。
+  3. 如需查看或重置访问令牌，请使用专门菜单项。
+  4. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
      readiness、doctor、cleanup、结构复盘，都在 Web 页面里操作。
-  4. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
+  5. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
 
 请选择:
-  1. 查看 Web 地址和令牌
-  2. 查看 Web 控制台服务状态
-  3. 查看 Web 控制台实时日志
-  4. 重启 Web 控制台服务
-  5. 检查 GitHub 是否有更新
-  6. 更新项目代码
-  7. 查看当前版本
+  1. 查看正式访问入口
+  2. 查看后台访问令牌
+  3. 查看 Web 控制台服务状态
+  4. 查看 Web 控制台实时日志
+  5. 重启 Web 控制台服务
+  6. 检查 GitHub 是否有更新
+  7. 更新项目代码
+  8. 查看当前版本
   0. 退出
 ============================================================
 EOF
@@ -174,15 +212,16 @@ show_menu() {
     show_menu_header
     read -r -p "输入编号: " choice
     case "$choice" in
-      1) show_web_token; pause_menu ;;
-      2) show_web_status; pause_menu ;;
-      3) show_web_logs ;;
-      4) restart_web_service; pause_menu ;;
-      5) update_project --check; pause_menu ;;
-      6) update_project --yes; pause_menu ;;
-      7) show_version; pause_menu ;;
+      1) show_web_entry; pause_menu ;;
+      2) show_web_token; pause_menu ;;
+      3) show_web_status; pause_menu ;;
+      4) show_web_logs ;;
+      5) restart_web_service; pause_menu ;;
+      6) update_project --check; pause_menu ;;
+      7) update_project --yes; pause_menu ;;
+      8) show_version; pause_menu ;;
       0) exit 0 ;;
-      *) printf '无效选项，请输入 0-7。\n'; pause_menu ;;
+      *) printf '无效选项，请输入 0-8。\n'; pause_menu ;;
     esac
   done
 }
@@ -194,13 +233,14 @@ show_help() {
 入口指令:
   paopao
 
-Web 地址:
-  $(web_public_url)
+正式访问入口:
+  公开前台: ${PUBLIC_FRONTEND_URL}
+  后台控制台: ${ADMIN_CONSOLE_URL}
 
 说明:
   输入 paopao 后，直接用数字选择功能。
   配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等日常控制功能，都在 Web 页面里完成。
-  服务器菜单只保留 Web 地址/令牌、Web 服务排查、项目更新和版本查看。
+  服务器菜单只保留正式入口、令牌查看、Web 服务排查、项目更新和版本查看。
 
 项目目录: ${APP_DIR}
 EOF
@@ -219,7 +259,13 @@ case "$command" in
     run_main web "$@"
     ;;
   web-token|token|url)
-    show_web_token
+    if [ "$command" = "url" ]; then
+      show_web_entry
+    elif [ -t 0 ]; then
+      show_web_token
+    else
+      show_token_noninteractive
+    fi
     ;;
   web-status|status)
     show_web_status

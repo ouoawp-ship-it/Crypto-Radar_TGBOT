@@ -23,7 +23,7 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertTrue(os.access(path, os.X_OK))
 
         script = path.read_text(encoding="utf-8")
-        self.assertIn("Paoxx Signal Radar", script)
+        self.assertIn("Paoxx 信号雷达", script)
         self.assertIn("泡泡雷达控制台", script)
         self.assertIn("/public-api/signals", script)
         self.assertIn("/api/dashboard", script)
@@ -74,8 +74,22 @@ class UpdateServerScriptTests(unittest.TestCase):
 
         self.assertIn("https://paoxx.com/", script)
         self.assertIn("https://paoxx.com/admin", script)
-        self.assertIn("8080 仅作为本机/Nginx 反代后端入口", script)
+        self.assertIn("本机后端入口 8080 仅供 Nginx 反代使用", script)
         self.assertNotIn("http://服务器IP:8080/", script)
+
+    def test_server_menu_uses_https_entries_and_redacts_token_by_default(self) -> None:
+        menu = Path("scripts/paopao_menu.sh").read_text(encoding="utf-8")
+        install = Path("scripts/install_server.sh").read_text(encoding="utf-8")
+        combined = menu + "\n" + install
+
+        self.assertIn("https://paoxx.com/", combined)
+        self.assertIn("https://paoxx.com/admin", combined)
+        self.assertIn("访问令牌: 已配置，默认不在菜单首页明文显示", combined)
+        self.assertIn("查看后台访问令牌", combined)
+        self.assertIn("8080 仅作为 Nginx 反代后端入口，不作为公网入口", combined)
+        self.assertNotIn("Web 地址: $(web_public_url)", menu)
+        self.assertNotIn("访问令牌: ${token:-", menu)
+        self.assertNotIn("http://服务器IP:8080/", combined)
 
 
 if __name__ == "__main__":

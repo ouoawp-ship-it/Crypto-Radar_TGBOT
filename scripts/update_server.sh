@@ -438,5 +438,6 @@ restart_services_if_present
 run_post_update_stable_check
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
-printf '[paopao-update] 公开前台: https://paoxx.com/ | 后台控制台: https://paoxx.com/admin\n'
-printf '[paopao-update] 8080 仅作为本机/Nginx 反代后端入口；生产公网入口请使用 80/443。\n'
+printf '[paopao-update] 公开前台: https://paoxx.com/\n'
+printf '[paopao-update] 后台控制台: https://paoxx.com/admin\n'
+printf '[paopao-update] 本机后端入口 8080 仅供 Nginx 反代使用，不作为公网访问入口。\n'

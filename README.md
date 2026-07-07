@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.69.1 说明
+
+v1.69.1 修正生产入口显示和公开前台中文化：`paopao update`、安装完成提示和服务器中文菜单默认显示正式入口 `https://paoxx.com/` 与 `https://paoxx.com/admin`，不再把旧的服务器 8080 示例地址当作公网访问地址。8080 只作为本机/Nginx 反代后端入口。
+
+服务器中文菜单首页不再明文打印后台访问令牌，只显示“已配置，默认不在菜单首页明文显示”；如需查看令牌，需要进入专门菜单项并确认当前终端环境安全。公开前台用户界面统一中文，品牌名保留 Paoxx，描述性文案使用中文；公开页面仍只调用 `/public-api/*` 并保持脱敏边界。
+
 ## v1.69.0 说明
 
 v1.69.0 打磨公开前台体验：`https://paoxx.com/` 首页信号卡片升级为更清晰的 Signal Card，支持币种、模块、状态、时间窗口和关键词筛选；点击卡片可打开公开脱敏的信号详情弹窗，点击币种可进入单币详情视角。
@@ -28,7 +34,7 @@ bash scripts/check_https_deploy.sh --with-certbot-dry-run
 
 ## v1.67.0 说明
 
-v1.67.0 将 Web 拆成同域双入口：`/` 是公开信号前台，显示 Paoxx Signal Radar 的脱敏只读信号、统计、活跃币种和公开时间线；`/admin` 是原有后台控制台，继续使用 `WEB_ADMIN_TOKEN` 访问私有 `/api/*`。
+v1.67.0 将 Web 拆成同域双入口：`/` 是公开信号前台，显示 Paoxx 信号雷达的脱敏只读信号、统计、活跃币种和公开时间线；`/admin` 是原有后台控制台，继续使用 `WEB_ADMIN_TOKEN` 访问私有 `/api/*`。
 
 新增 `/public-api/*` 公开只读接口，用于公开信号列表、信号详情、统计、币种详情、币种搜索和信号时间线。公开接口会裁剪 `dedup_key`、Telegram topic/message/reply 字段、`payload_json`、原始 `text_html`、配置、任务、日志、审计和服务控制信息；`/api/*` 仍是后台私有 API，不改变现有控制台功能。
 
@@ -174,13 +180,14 @@ python main.py cleanup --force-cleanup
 
 ## Web 控制台
 
-Web 控制台默认作为 `paopao-web.service` 安装，监听 `0.0.0.0:8080`，浏览器直接访问:
+Web 控制台默认作为 `paopao-web.service` 安装，由 Nginx 反代提供正式 HTTPS 入口。日常访问:
 
 ```text
-http://服务器IP:8080/
+公开前台: https://paoxx.com/
+后台控制台: https://paoxx.com/admin
 ```
 
-页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，可在服务器输入 `paopao`，选择“查看 Web 地址和令牌”。
+后台页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，默认菜单和更新输出不再明文打印；如需查看令牌，可在服务器输入 `paopao`，选择专门的“查看后台访问令牌”菜单项。8080 只作为本机/Nginx 反代后端入口，生产公网入口请使用 80/443。
 
 服务器快捷入口只需要记住一个命令:
 
@@ -188,7 +195,7 @@ http://服务器IP:8080/
 paopao
 ```
 
-进入中文菜单后，用数字选择查看地址/令牌、Web 服务状态、Web 实时日志、重启 Web 服务、检查更新、更新项目和查看版本。配置修改、主服务/结构雷达控制、测试消息、readiness、doctor、cleanup、结构复盘等日常动作在 Web 页面里完成。
+进入中文菜单后，用数字选择查看正式入口、查看后台令牌、Web 服务状态、Web 实时日志、重启 Web 服务、检查更新、更新项目和查看版本。配置修改、主服务/结构雷达控制、测试消息、readiness、doctor、cleanup、结构复盘等日常动作在 Web 页面里完成。
 
 前台调试启动仍然保留在脚本里，但正常使用不需要记任何 Web 子命令。
 

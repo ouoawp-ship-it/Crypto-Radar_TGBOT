@@ -68,7 +68,7 @@ MANAGED_MIGRATIONS = {
     "WEB_HOST": {
         "old": {"", "127.0.0.1", "localhost"},
         "new": "0.0.0.0",
-        "note": "Web 控制台默认开放 http://服务器IP:8080/",
+        "note": "正式入口为 https://paoxx.com/admin；8080 仅作为本机/Nginx 反代后端入口",
     },
     "WEB_PORT": {
         "old": {"", "80"},

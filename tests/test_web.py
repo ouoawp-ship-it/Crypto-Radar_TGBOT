@@ -1638,7 +1638,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("filters", sent_payload)
         self.assertIn("sort", sent_payload)
         dry_display = dry_payload["items"][0]["display"]
-        self.assertEqual(dry_display["status_label"], "Dry-run")
+        self.assertEqual(dry_display["status_label"], "演练")
         self.assertEqual(dry_display["symbol_label"], "全局/无币种")
         self.assertEqual(dry_display["score_label"], "-")
         failed_display = failed_payload["items"][0]["display"]
@@ -2148,7 +2148,16 @@ class WebConsoleTests(unittest.TestCase):
         self.assertNotIn("stderr_tail", cleanup["details"])
 
     def test_public_frontend_and_admin_entrypoints_are_split(self) -> None:
-        self.assertIn("Paoxx Signal Radar", web.PUBLIC_INDEX_HTML)
+        self.assertIn("Paoxx 信号雷达", web.PUBLIC_INDEX_HTML)
+        self.assertIn("公开加密货币信号流", web.PUBLIC_INDEX_HTML)
+        self.assertIn("只读展示", web.PUBLIC_INDEX_HTML)
+        self.assertIn("后台控制台", web.PUBLIC_INDEX_HTML)
+        self.assertIn("最新信号卡片", web.PUBLIC_INDEX_HTML)
+        self.assertIn("活跃币种", web.PUBLIC_INDEX_HTML)
+        self.assertIn("信号时间线", web.PUBLIC_INDEX_HTML)
+        self.assertIn("币种详情", web.PUBLIC_INDEX_HTML)
+        self.assertIn("加载失败", web.PUBLIC_INDEX_HTML)
+        self.assertIn("暂无符合条件的信号", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/signals", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/signals/stats", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/coin-search", web.PUBLIC_INDEX_HTML)
@@ -2158,7 +2167,6 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("signal-card-grid", web.PUBLIC_INDEX_HTML)
         self.assertIn("signalDetailModal", web.PUBLIC_INDEX_HTML)
         self.assertIn('data-view="timeline"', web.PUBLIC_INDEX_HTML)
-        self.assertIn("All-Market Timeline", web.PUBLIC_INDEX_HTML)
         self.assertIn("filterSymbol", web.PUBLIC_INDEX_HTML)
         self.assertIn("filterModule", web.PUBLIC_INDEX_HTML)
         self.assertIn("filterStatus", web.PUBLIC_INDEX_HTML)
@@ -2168,7 +2176,22 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("openSignalDetail", web.PUBLIC_INDEX_HTML)
         self.assertIn("openCoin", web.PUBLIC_INDEX_HTML)
         self.assertIn("@media(max-width:560px)", web.PUBLIC_INDEX_HTML)
+        for old_text in (
+            "Public crypto signal feed",
+            "Read-only, redacted",
+            "Admin Console",
+            "Latest Signal Cards",
+            "Active Coins",
+            "Signal Timeline",
+            "Coin Detail",
+            "Load More",
+            "Failed to load",
+            "No signals",
+        ):
+            self.assertNotIn(old_text, web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/jobs", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/dashboard", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/config", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/logs", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/audit", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("WEB_ADMIN_TOKEN", web.PUBLIC_INDEX_HTML)
@@ -2194,7 +2217,7 @@ class WebConsoleTests(unittest.TestCase):
         root = make_handler("/")
         web.WebHandler.do_GET(root)
         self.assertEqual(statuses[-1], 200)
-        self.assertIn("Paoxx Signal Radar", root.wfile.getvalue().decode("utf-8"))
+        self.assertIn("Paoxx 信号雷达", root.wfile.getvalue().decode("utf-8"))
 
         statuses.clear()
         headers.clear()

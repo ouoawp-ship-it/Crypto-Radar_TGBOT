@@ -367,7 +367,7 @@ echo "目标: ${BASE_URL}"
 echo
 
 check_nginx_ports
-check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx Signal Radar"
+check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达"
 check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"
 check_public_api
 check_private_api_protected
