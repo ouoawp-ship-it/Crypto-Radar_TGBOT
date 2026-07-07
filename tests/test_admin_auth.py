@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import unittest
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from paopao_radar import auth, web
+from paopao_radar import auth, cli, web
 from paopao_radar.config import Settings
 
 
@@ -204,6 +206,70 @@ class AdminAuthTests(unittest.TestCase):
             )
             handler.server.admin_token = "legacy"
             self.assertTrue(web.check_auth(handler))
+
+    def test_admin_password_set_defaults_to_visible_input_and_writes_hash_only(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            env_path = Path(tmp) / ".env.oi"
+            args = SimpleNamespace(admin_action="set", hidden=False)
+            output = StringIO()
+            with patch.object(cli, "ENV_FILE", env_path), patch(
+                "builtins.input",
+                side_effect=["paopao", "visible-password", "visible-password"],
+            ), patch("getpass.getpass", side_effect=AssertionError("hidden input should not be used")), patch(
+                "sys.stdout",
+                output,
+            ):
+                code = cli.run_admin_password(args)
+
+            text = env_path.read_text(encoding="utf-8")
+            stdout = output.getvalue()
+            self.assertEqual(code, 0)
+            self.assertIn("提示：当前密码输入会明文显示，请确认终端环境安全。", stdout)
+            self.assertIn("WEB_ADMIN_USERNAME=paopao", text)
+            self.assertIn("WEB_ADMIN_PASSWORD_HASH=pbkdf2_sha256$", text)
+            self.assertNotIn("WEB_ADMIN_PASSWORD=", text)
+            self.assertNotIn("visible-password", text)
+            self.assertNotIn("visible-password", stdout)
+            stored_hash = next(line.split("=", 1)[1] for line in text.splitlines() if line.startswith("WEB_ADMIN_PASSWORD_HASH="))
+            self.assertTrue(auth.verify_password("visible-password", stored_hash))
+
+    def test_admin_password_mismatch_does_not_write_new_hash(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            env_path = Path(tmp) / ".env.oi"
+            original = "WEB_ADMIN_PASSWORD_HASH=old-hash\nWEB_SESSION_SECRET=keep-secret\n"
+            env_path.write_text(original, encoding="utf-8")
+            args = SimpleNamespace(admin_action="set", hidden=False)
+            output = StringIO()
+            with patch.object(cli, "ENV_FILE", env_path), patch(
+                "builtins.input",
+                side_effect=["paopao", "one-password", "two-password"],
+            ), patch("sys.stdout", output):
+                code = cli.run_admin_password(args)
+
+            self.assertEqual(code, 2)
+            self.assertEqual(env_path.read_text(encoding="utf-8"), original)
+            self.assertIn("两次输入的密码不一致，请重新执行设置命令。", output.getvalue())
+
+    def test_admin_password_hidden_option_uses_getpass(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            env_path = Path(tmp) / ".env.oi"
+            args = SimpleNamespace(admin_action="set", hidden=True)
+            output = StringIO()
+            with patch.object(cli, "ENV_FILE", env_path), patch(
+                "builtins.input",
+                side_effect=["paopao"],
+            ), patch("getpass.getpass", side_effect=["hidden-password", "hidden-password"]) as getpass_mock, patch(
+                "sys.stdout",
+                output,
+            ):
+                code = cli.run_admin_password(args)
+
+            text = env_path.read_text(encoding="utf-8")
+            self.assertEqual(code, 0)
+            self.assertEqual(getpass_mock.call_count, 2)
+            self.assertNotIn("当前密码输入会明文显示", output.getvalue())
+            self.assertNotIn("hidden-password", text)
+            self.assertNotIn("hidden-password", output.getvalue())
 
 
 if __name__ == "__main__":

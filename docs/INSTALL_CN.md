@@ -1,5 +1,15 @@
 # 泡泡抓币中文安装目录
 
+## v1.70.2 运维说明
+
+v1.70.2 调整后台账号密码设置命令：执行 `.venv/bin/python main.py admin-password set` 时，密码输入会明文显示，方便确认输入内容。请先确认当前终端环境安全。
+
+系统仍然不会保存明文密码，只保存 `WEB_ADMIN_PASSWORD_HASH=pbkdf2_sha256$...`。如果需要隐藏输入，可以执行：
+
+```bash
+.venv/bin/python main.py admin-password set --hidden
+```
+
 ## v1.70.1 运维说明
 
 v1.70.1 将后台控制台改为自定义用户名 + 密码登录。后台入口仍是 `https://paoxx.com/admin`；公开前台 `https://paoxx.com/` 和 `/public-api/*` 不受影响，继续只读、脱敏、无需登录。首次设置或重置后台账号密码:
@@ -10,7 +20,7 @@ cd /home/ubuntu/paopao-crypto-radar
 sudo systemctl restart paopao-web
 ```
 
-密码不会明文保存，只保存 `PBKDF2-HMAC-SHA256` 哈希；登录成功后写入签名会话 Cookie，包含 `HttpOnly`、`SameSite=Lax`，HTTPS 反代下会带 `Secure`。默认菜单和更新输出不会显示后台密码、密码哈希、会话密钥或旧访问令牌。
+设置密码时终端会明文显示输入内容，便于确认；请确保当前终端环境安全。如需隐藏输入，可使用 `.venv/bin/python main.py admin-password set --hidden`。密码不会明文保存，只保存 `PBKDF2-HMAC-SHA256` 哈希；登录成功后写入签名会话 Cookie，包含 `HttpOnly`、`SameSite=Lax`，HTTPS 反代下会带 `Secure`。默认菜单和更新输出不会显示后台密码、密码哈希、会话密钥或旧访问令牌。
 
 新增配置项包括 `WEB_AUTH_MODE=password`、`WEB_ADMIN_USERNAME`、`WEB_ADMIN_PASSWORD_HASH`、`WEB_SESSION_SECRET`、`WEB_SESSION_TTL_SEC` 和 `WEB_AUTH_COOKIE_NAME`。`WEB_ADMIN_TOKEN` 仅保留给显式设置 `WEB_AUTH_MODE=token` 的旧模式兼容或紧急回滚，不再作为默认登录方式。
 
@@ -297,6 +307,8 @@ cd /home/ubuntu/paopao-crypto-radar
 .venv/bin/python main.py admin-password set
 sudo systemctl restart paopao-web
 ```
+
+设置密码时终端会明文显示输入内容，便于确认；请确保当前终端环境安全。如需隐藏输入，可使用 `.venv/bin/python main.py admin-password set --hidden`。
 
 相关配置项:
 

@@ -167,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST")
     parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
     parser.add_argument("--web-token", default="", help="旧 token 认证模式访问令牌；也可用 WEB_ADMIN_TOKEN")
+    parser.add_argument("--hidden", action="store_true", help="用于 admin-password set：隐藏输入密码")
     parser.add_argument("--json", action="store_true", help="用于 stable-check：输出完整 JSON 快照")
     parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
     return parser
@@ -283,17 +284,24 @@ def update_env_values(path: Path, updates: dict[str, str]) -> None:
 def run_admin_password(args: argparse.Namespace) -> int:
     action = str(getattr(args, "admin_action", "") or "set")
     if action != "set":
-        print("用法: python main.py admin-password set")
+        print("用法: python main.py admin-password set [--hidden]")
         return 2
     load_env_file(ENV_FILE)
+    hidden = bool(getattr(args, "hidden", False))
+    if not hidden:
+        print("提示：当前密码输入会明文显示，请确认终端环境安全。")
     username = input("后台用户名 [admin]: ").strip() or "admin"
-    password = getpass.getpass("后台密码: ")
-    confirm = getpass.getpass("再次输入后台密码: ")
+    if hidden:
+        password = getpass.getpass("后台密码: ")
+        confirm = getpass.getpass("再次输入后台密码: ")
+    else:
+        password = input("后台密码: ")
+        confirm = input("再次输入后台密码: ")
     if not password:
         print("密码不能为空")
         return 2
     if password != confirm:
-        print("两次输入的密码不一致")
+        print("两次输入的密码不一致，请重新执行设置命令。")
         return 2
     current_secret = os.getenv("WEB_SESSION_SECRET", "").strip()
     updates = {

@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.70.2 说明
+
+v1.70.2 调整后台账号密码设置命令的交互体验：执行 `.venv/bin/python main.py admin-password set` 时，密码输入会明文显示，便于在服务器终端确认输入内容。请确保当前终端环境安全。
+
+系统仍然不会保存明文密码，只会写入 `WEB_ADMIN_PASSWORD_HASH=pbkdf2_sha256$...`。如果需要隐藏输入，可以执行 `.venv/bin/python main.py admin-password set --hidden`。
+
 ## v1.70.1 说明
 
 v1.70.1 将后台控制台认证从默认 `WEB_ADMIN_TOKEN` 令牌输入改为自定义用户名 + 密码登录。首次部署或从旧版本升级后，在服务器执行：
@@ -10,7 +16,7 @@ cd /home/ubuntu/paopao-crypto-radar
 sudo systemctl restart paopao-web
 ```
 
-密码不会明文保存，只保存 `PBKDF2-HMAC-SHA256` 哈希；登录成功后由服务端写入带签名的 `HttpOnly`、`SameSite=Lax` 会话 Cookie，HTTPS 反代下会设置 `Secure`。后台入口仍为 `https://paoxx.com/admin`，未登录访问 `/api/*` 会返回 `401 Unauthorized`；`/public-api/*` 继续公开只读、脱敏、不需要登录。
+设置密码时终端会明文显示输入内容，便于确认；请确保当前终端环境安全。如需隐藏输入，可使用 `.venv/bin/python main.py admin-password set --hidden`。密码不会明文保存，只保存 `PBKDF2-HMAC-SHA256` 哈希；登录成功后由服务端写入带签名的 `HttpOnly`、`SameSite=Lax` 会话 Cookie，HTTPS 反代下会设置 `Secure`。后台入口仍为 `https://paoxx.com/admin`，未登录访问 `/api/*` 会返回 `401 Unauthorized`；`/public-api/*` 继续公开只读、脱敏、不需要登录。
 
 `WEB_ADMIN_TOKEN` 配置项保留为 `WEB_AUTH_MODE=token` 的旧模式兼容或紧急回滚用途，但不再作为默认后台登录方式。默认菜单、更新输出和后台页面都不会明文显示后台密码、密码哈希、会话密钥或旧访问令牌。
 
@@ -215,7 +221,7 @@ cd /home/ubuntu/paopao-crypto-radar
 sudo systemctl restart paopao-web
 ```
 
-密码不会明文保存，只保存哈希；默认菜单和更新输出不会明文打印后台密码、密码哈希、会话密钥或旧访问令牌。8080 只作为本机/Nginx 反代后端入口，生产公网入口请使用 80/443。
+设置密码时终端会明文显示输入内容，便于确认；请确保当前终端环境安全。如需隐藏输入，可使用 `.venv/bin/python main.py admin-password set --hidden`。密码不会明文保存，只保存哈希；默认菜单和更新输出不会明文打印后台密码、密码哈希、会话密钥或旧访问令牌。8080 只作为本机/Nginx 反代后端入口，生产公网入口请使用 80/443。
 
 服务器快捷入口只需要记住一个命令:
 
