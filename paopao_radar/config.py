@@ -151,6 +151,12 @@ class Settings:
     web_jobs_limit: int = 500
     web_jobs_stdout_tail_chars: int = 12000
     web_jobs_stderr_tail_chars: int = 6000
+    web_auth_mode: str = "password"
+    web_admin_username: str = "admin"
+    web_admin_password_hash: str = ""
+    web_session_secret: str = ""
+    web_session_ttl_sec: int = 86400
+    web_auth_cookie_name: str = "paopao_admin_session"
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
@@ -342,6 +348,12 @@ class Settings:
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
             web_jobs_stdout_tail_chars=env_int("WEB_JOBS_STDOUT_TAIL_CHARS", 12000),
             web_jobs_stderr_tail_chars=env_int("WEB_JOBS_STDERR_TAIL_CHARS", 6000),
+            web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
+            web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
+            web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
+            web_session_secret=os.getenv("WEB_SESSION_SECRET", "").strip(),
+            web_session_ttl_sec=env_int("WEB_SESSION_TTL_SEC", 86400),
+            web_auth_cookie_name=(os.getenv("WEB_AUTH_COOKIE_NAME", "paopao_admin_session").strip() or "paopao_admin_session"),
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
@@ -535,6 +547,12 @@ class Settings:
                 "host": web_host,
                 "port": web_port,
                 "admin_token_configured": bool(web_admin_token),
+                "auth_mode": self.web_auth_mode,
+                "admin_username_configured": bool(self.web_admin_username),
+                "admin_password_hash_configured": bool(self.web_admin_password_hash),
+                "session_secret_configured": bool(self.web_session_secret),
+                "session_ttl_sec": self.web_session_ttl_sec,
+                "auth_cookie_name": self.web_auth_cookie_name,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

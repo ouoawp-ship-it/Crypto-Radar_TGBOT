@@ -50,6 +50,8 @@ class WebConsoleTests(unittest.TestCase):
             env_path.write_text(
                 "TG_BOT_TOKEN=123456:abcdefghijklmnopqrstuvwxyz\n"
                 "WEB_ADMIN_TOKEN=admin-secret-token\n"
+                "WEB_AUTH_MODE=password\n"
+                "WEB_ADMIN_USERNAME=paopao\n"
                 "TG_CHAT_ID=-1001234567890\n",
                 encoding="utf-8",
             )
@@ -68,8 +70,11 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(telegram_fields["TG_BOT_TOKEN"]["display_value"], "123456:abcdefghijklmnopqrstuvwxyz")
         self.assertTrue(telegram_fields["TG_BOT_TOKEN"]["configured"])
         self.assertIn("...", telegram_fields["TG_BOT_TOKEN"]["masked"])
-        self.assertEqual(web_fields["WEB_ADMIN_TOKEN"]["value"], "admin-secret-token")
-        self.assertEqual(web_fields["WEB_ADMIN_TOKEN"]["display_value"], "admin-secret-token")
+        self.assertNotIn("WEB_ADMIN_TOKEN", web_fields)
+        self.assertEqual(web_fields["WEB_AUTH_MODE"]["value"], "password")
+        self.assertEqual(web_fields["WEB_ADMIN_USERNAME"]["value"], "paopao")
+        self.assertNotIn("WEB_ADMIN_PASSWORD_HASH", web_fields)
+        self.assertNotIn("WEB_SESSION_SECRET", web_fields)
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["value"], "-1001234567890")
         self.assertEqual(telegram_fields["TG_CHAT_ID"]["display_value"], "-1001234567890")
 
@@ -958,7 +963,14 @@ class WebConsoleTests(unittest.TestCase):
                 "ai": {"active_ok": True},
             },
             "config": {
-                "web": {"host": "0.0.0.0", "port": 8080, "admin_token_configured": True},
+                "web": {
+                    "host": "0.0.0.0",
+                    "port": 8080,
+                    "auth_mode": "password",
+                    "admin_password_hash_configured": True,
+                    "session_secret_configured": True,
+                    "admin_token_configured": False,
+                },
                 "telegram": {"bot_token_configured": True, "chat_id_configured": True},
                 "ai_assistant": {"enable": True, "bot_token_configured": True},
             },
@@ -974,7 +986,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(deployment["fail_count"], 0)
         self.assertTrue(any(item["key"] == "web_entry" and item["status"] == "ok" for item in deployment["checks"]))
 
-    def test_deployment_acceptance_blocks_on_missing_web_token(self) -> None:
+    def test_deployment_acceptance_blocks_on_missing_admin_password_config(self) -> None:
         snapshot = {
             "git": {"version": "v1.48.0", "commit": "abc123"},
             "services": {
@@ -983,7 +995,14 @@ class WebConsoleTests(unittest.TestCase):
                 "web": {"active_ok": True},
             },
             "config": {
-                "web": {"host": "0.0.0.0", "port": 8080, "admin_token_configured": False},
+                "web": {
+                    "host": "0.0.0.0",
+                    "port": 8080,
+                    "auth_mode": "password",
+                    "admin_password_hash_configured": False,
+                    "session_secret_configured": False,
+                    "admin_token_configured": False,
+                },
                 "telegram": {"bot_token_configured": True, "chat_id_configured": True},
                 "ai_assistant": {"enable": False},
             },
@@ -1352,9 +1371,9 @@ class WebConsoleTests(unittest.TestCase):
             ["restart-main", "restart-structure", "restart-ai"],
         )
 
-    def test_non_loopback_web_requires_token(self) -> None:
+    def test_non_loopback_web_requires_token_only_in_legacy_token_mode(self) -> None:
         with patch.object(web, "load_env_file", return_value={}):
-            with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
+            with patch.dict(os.environ, {"WEB_AUTH_MODE": "token", "WEB_ADMIN_TOKEN": ""}):
                 self.assertEqual(web.run_web_server("0.0.0.0", 8080, ""), 2)
 
     def test_index_localizes_bool_options_and_explains_actions(self) -> None:
@@ -1420,7 +1439,7 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("运行健康度", html)
         self.assertIn("最近错误", html)
         self.assertIn("更新备份", html)
-        self.assertIn('data-ui-version="v1.60.0"', html)
+        self.assertIn('data-ui-version="v1.70.1"', html)
         self.assertIn("platformStrip", html)
         self.assertIn("platform-pill", html)
         self.assertIn("Crypto Radar Ops", html)
@@ -2218,13 +2237,21 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("Crypto Radar Ops", web.INDEX_HTML)
         self.assertIn("/api/jobs", web.INDEX_HTML)
         self.assertIn("/api/signals", web.INDEX_HTML)
+        self.assertIn("用户名", web.INDEX_HTML)
+        self.assertIn("密码", web.INDEX_HTML)
+        self.assertIn("退出登录", web.INDEX_HTML)
+        self.assertIn("/api/auth/login", web.INDEX_HTML)
+        self.assertIn("/api/auth/status", web.INDEX_HTML)
+        self.assertNotIn("Admin Token", web.INDEX_HTML)
+        self.assertNotIn("WEB_ADMIN_TOKEN", web.INDEX_HTML)
+        self.assertNotIn("paopaoAdminToken", web.INDEX_HTML)
 
     def test_get_root_admin_and_public_api_routing(self) -> None:
         def make_handler(path: str):
             handler = object.__new__(web.WebHandler)
             handler.path = path
             handler.headers = {}
-            handler.server = type("Server", (), {"admin_token": "secret"})()
+            handler.server = type("Server", (), {"admin_token": "secret", "settings": Settings(web_auth_mode="password")})()
             handler.wfile = BytesIO()
             handler.send_response = lambda status: statuses.append(status)
             handler.send_header = lambda key, value: headers.append((key, value))
@@ -2287,6 +2314,7 @@ class WebConsoleTests(unittest.TestCase):
         statuses.clear()
         headers.clear()
         authorized_decision = make_handler("/api/decision?symbol=BTC")
+        authorized_decision.server.settings = Settings(web_auth_mode="token")
         authorized_decision.headers = {"X-Admin-Token": "secret"}
         with patch("paopao_radar.web.decision_for_symbol_payload", return_value={"ok": True, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
             web.WebHandler.do_GET(authorized_decision)

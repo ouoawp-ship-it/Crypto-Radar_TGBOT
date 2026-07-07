@@ -49,6 +49,12 @@ class EnvSyncTests(unittest.TestCase):
                     "FLOW_INTERVAL_SEC=3600",
                     "WEB_HOST=0.0.0.0",
                     "WEB_PORT=8080",
+                    "WEB_AUTH_MODE=password",
+                    "WEB_ADMIN_USERNAME=admin",
+                    "WEB_ADMIN_PASSWORD_HASH=",
+                    "WEB_SESSION_SECRET=",
+                    "WEB_SESSION_TTL_SEC=86400",
+                    "WEB_AUTH_COOKIE_NAME=paopao_admin_session",
                     "WEB_ADMIN_TOKEN=",
                     "AI_REQUEST_TIMEOUT_SEC=90",
                     "AI_ALLOWED_CHAT_IDS=",
@@ -65,7 +71,13 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("FLOW_INTERVAL_SEC=3600", text)
         self.assertIn("WEB_HOST=0.0.0.0", text)
         self.assertIn("WEB_PORT=8080", text)
-        self.assertRegex(text, r"WEB_ADMIN_TOKEN=[A-Za-z0-9_-]{24,}")
+        self.assertIn("WEB_AUTH_MODE=password", text)
+        self.assertIn("WEB_ADMIN_USERNAME=admin", text)
+        self.assertIn("WEB_ADMIN_PASSWORD_HASH=", text)
+        self.assertIn("WEB_SESSION_SECRET=", text)
+        self.assertIn("WEB_SESSION_TTL_SEC=86400", text)
+        self.assertIn("WEB_AUTH_COOKIE_NAME=paopao_admin_session", text)
+        self.assertIn("WEB_ADMIN_TOKEN=", text)
         self.assertIn("AI_REQUEST_TIMEOUT_SEC=90", text)
         self.assertIn("NEW_NORMAL_SETTING=true", text)
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)
@@ -79,7 +91,6 @@ class EnvSyncTests(unittest.TestCase):
             "FLOW_INTERVAL_SEC",
             "WEB_HOST",
             "WEB_PORT",
-            "WEB_ADMIN_TOKEN",
             "AI_REQUEST_TIMEOUT_SEC",
         })
 

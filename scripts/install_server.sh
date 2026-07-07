@@ -144,18 +144,12 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
 
-generate_web_admin_token() {
-  "$PYTHON_BIN" - <<'PY'
-import secrets
-print(secrets.token_urlsafe(24))
-PY
-}
-
 ensure_web_public_config() {
-  local host port token
+  local host port password_hash session_secret
   host="$(get_env_value WEB_HOST)"
   port="$(get_env_value WEB_PORT)"
-  token="$(get_env_value WEB_ADMIN_TOKEN)"
+  password_hash="$(get_env_value WEB_ADMIN_PASSWORD_HASH)"
+  session_secret="$(get_env_value WEB_SESSION_SECRET)"
 
   if [ -z "$host" ] || [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]; then
     set_env_value WEB_HOST "0.0.0.0"
@@ -163,11 +157,9 @@ ensure_web_public_config() {
   if [ -z "$port" ] || [ "$port" = "80" ]; then
     set_env_value WEB_PORT "8080"
   fi
-  if [ -z "$token" ]; then
-    token="$(generate_web_admin_token)"
-    set_env_value WEB_ADMIN_TOKEN "$token"
-    chmod 600 "$ENV_FILE" || true
-    log "已生成 Web 控制台访问令牌。查看令牌: 输入 paopao 后选择 1"
+  set_env_value WEB_AUTH_MODE "password"
+  if [ -z "$password_hash" ] || [ -z "$session_secret" ]; then
+    log "后台账号密码未完整配置。安装完成后执行: .venv/bin/python main.py admin-password set"
   fi
 }
 
@@ -926,11 +918,11 @@ EOF
 正式访问入口:
   公开前台: https://paoxx.com/
   后台控制台: https://paoxx.com/admin
-  访问令牌: 已配置，默认不在菜单首页明文显示；输入 paopao 后选择“查看后台访问令牌”
+  后台登录: 使用自定义账号 + 密码；输入 paopao 后选择“设置后台账号密码”
 
 说明:
   服务器只需要记住 paopao 这一个入口命令。
-  进入中文菜单后，用数字查看正式入口、后台令牌、Web 服务状态、实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
+  进入中文菜单后，用数字查看正式入口、设置后台账号密码、Web 服务状态、实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
   8080 仅作为 Nginx 反代后端入口，不作为公网访问入口。
   配置修改、主服务/结构雷达启停、测试消息、readiness、doctor、cleanup、结构复盘等控制功能在 Web 控制台完成。
 

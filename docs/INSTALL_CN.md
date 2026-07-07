@@ -1,12 +1,26 @@
 # 泡泡抓币中文安装目录
 
+## v1.70.1 运维说明
+
+v1.70.1 将后台控制台改为自定义用户名 + 密码登录。后台入口仍是 `https://paoxx.com/admin`；公开前台 `https://paoxx.com/` 和 `/public-api/*` 不受影响，继续只读、脱敏、无需登录。首次设置或重置后台账号密码:
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+.venv/bin/python main.py admin-password set
+sudo systemctl restart paopao-web
+```
+
+密码不会明文保存，只保存 `PBKDF2-HMAC-SHA256` 哈希；登录成功后写入签名会话 Cookie，包含 `HttpOnly`、`SameSite=Lax`，HTTPS 反代下会带 `Secure`。默认菜单和更新输出不会显示后台密码、密码哈希、会话密钥或旧访问令牌。
+
+新增配置项包括 `WEB_AUTH_MODE=password`、`WEB_ADMIN_USERNAME`、`WEB_ADMIN_PASSWORD_HASH`、`WEB_SESSION_SECRET`、`WEB_SESSION_TTL_SEC` 和 `WEB_AUTH_COOKIE_NAME`。`WEB_ADMIN_TOKEN` 仅保留给显式设置 `WEB_AUTH_MODE=token` 的旧模式兼容或紧急回滚，不再作为默认登录方式。
+
 ## v1.70.0 运维说明
 
 v1.70.0 新增 Signal Decision Model v1。它只读取 `signals.db` / `signal_events` 兼容视图，把现有信号整理成五类决策状态：`观察`、`等待回踩`、`可试仓`、`禁止追高`、`风险警报`。每个结果会说明置信度、风险等级、主要依据、风险提示、下一步观察点、组成因子分数和最近相关信号。
 
 该模型仅用于信号整理和风险提示，不构成投资建议，不执行自动交易，不接交易所下单 API，不会自动下单、挂止盈止损或操作真实资金。本版也不改变 Telegram 推送主流程。
 
-新增接口：私有后台 API `/api/decision`、`/api/decisions` 继续需要后台令牌；公开只读 API `/public-api/decision`、`/public-api/decisions` 会脱敏输出，不返回 `payload_json`、`text_html`、`dedup_key`、Telegram topic/message/reply、jobs、audit、config、logs 或 token 类字段。公开前台新增“决策模型”区域，信号卡片和币种详情会显示当前决策、置信度、风险等级和观察点。
+新增接口：私有后台 API `/api/decision`、`/api/decisions` 继续需要后台登录会话；公开只读 API `/public-api/decision`、`/public-api/decisions` 会脱敏输出，不返回 `payload_json`、`text_html`、`dedup_key`、Telegram topic/message/reply、jobs、audit、config、logs 或 token 类字段。公开前台新增“决策模型”区域，信号卡片和币种详情会显示当前决策、置信度、风险等级和观察点。
 
 ## v1.69.1 运维说明
 
@@ -28,7 +42,7 @@ v1.68.1 修复 `scripts/check_https_deploy.sh` 的 HTTPS 验收误判。后台 `
 
 ## v1.68.0 运维说明
 
-生产 HTTPS 入口已经固定为：公开前台 `https://paoxx.com/`，后台控制台 `https://paoxx.com/admin`，公开 API `https://paoxx.com/public-api/*`，私有 API `https://paoxx.com/api/*`。私有 API 必须带 `WEB_ADMIN_TOKEN`，未授权访问应返回 `401 Unauthorized`。
+生产 HTTPS 入口已经固定为：公开前台 `https://paoxx.com/`，后台控制台 `https://paoxx.com/admin`，公开 API `https://paoxx.com/public-api/*`，私有 API `https://paoxx.com/api/*`。私有 API 必须有后台登录后的安全会话 Cookie，未授权访问应返回 `401 Unauthorized`。
 
 服务器更新后建议执行固定验收脚本：
 
@@ -47,7 +61,7 @@ bash scripts/check_https_deploy.sh --with-certbot-dry-run
 
 ## v1.67.0 运维说明
 
-Web 现在拆成公开前台和后台控制台两个入口：`/` 显示公开信号前台，不需要管理令牌，只读取脱敏后的 `/public-api/*`；`/admin` 显示原后台控制台，后台 `/api/*` 继续需要 `WEB_ADMIN_TOKEN`。公开前台不会显示配置中心、任务中心、日志、审计、服务控制、更新入口、服务器资源或 Git 细节。
+Web 现在拆成公开前台和后台控制台两个入口：`/` 显示公开信号前台，不需要登录，只读取脱敏后的 `/public-api/*`；`/admin` 显示后台控制台，后台 `/api/*` 需要用户名 + 密码登录后的安全会话 Cookie。公开前台不会显示配置中心、任务中心、日志、审计、服务控制、更新入口、服务器资源或 Git 细节。
 
 如果使用 `paoxx.com` 这类域名部署，建议 DNS A 记录指向服务器 IP，由 Nginx 负责 HTTPS 入口并反代到本机 `127.0.0.1:8080`：`/` 作为公开信号前台，`/admin` 作为后台控制台，`/public-api/*` 作为公开只读 API，`/api/*` 作为后台私有 API。生产环境建议关闭公网 8080，只开放 80/443，启用 HTTPS，并对 `/public-api/*` 增加 Nginx 限流。
 
@@ -257,7 +271,7 @@ paopao
 
 ```text
 1. 查看正式访问入口
-2. 查看后台访问令牌
+2. 设置后台账号密码
 3. 查看 Web 控制台服务状态
 4. 查看 Web 控制台实时日志
 5. 重启 Web 控制台服务
@@ -267,7 +281,7 @@ paopao
 0. 退出
 ```
 
-菜单顶部会显示正式入口、访问令牌配置状态、项目版本，以及哪些功能应该去 Web 页面操作；默认不会明文打印访问令牌。配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
+菜单顶部会显示正式入口、后台登录配置状态、项目版本，以及哪些功能应该去 Web 页面操作；默认不会明文打印后台密码、密码哈希、会话密钥或旧访问令牌。配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等控制功能已经移到 Web 控制台。
 
 Web 控制台会作为 `paopao-web.service` 安装并启动，生产环境浏览器访问:
 
@@ -276,23 +290,28 @@ Web 控制台会作为 `paopao-web.service` 安装并启动，生产环境浏览
 后台控制台: https://paoxx.com/admin
 ```
 
-8080 仅作为本机/Nginx 反代后端入口，不作为公网访问入口。后台页面会要求输入 `WEB_ADMIN_TOKEN`。更新脚本会自动生成令牌，查看令牌:
+8080 仅作为本机/Nginx 反代后端入口，不作为公网访问入口。后台页面会要求输入用户名和密码。首次设置或重置后台账号密码:
 
 ```bash
-paopao
+cd /home/ubuntu/paopao-crypto-radar
+.venv/bin/python main.py admin-password set
+sudo systemctl restart paopao-web
 ```
-
-进入菜单后选择 `2. 查看后台访问令牌`。
 
 相关配置项:
 
 ```bash
 WEB_HOST=0.0.0.0
 WEB_PORT=8080
-WEB_ADMIN_TOKEN=
+WEB_AUTH_MODE=password
+WEB_ADMIN_USERNAME=admin
+WEB_ADMIN_PASSWORD_HASH=
+WEB_SESSION_SECRET=
+WEB_SESSION_TTL_SEC=86400
+WEB_AUTH_COOKIE_NAME=paopao_admin_session
 ```
 
-如果 `WEB_ADMIN_TOKEN` 为空，程序会拒绝启动公网监听；安装/更新脚本会自动补齐。
+如果 `WEB_ADMIN_PASSWORD_HASH` 或 `WEB_SESSION_SECRET` 尚未配置，后台登录页会提示先执行设置命令。`WEB_ADMIN_TOKEN` 仅保留给显式设置 `WEB_AUTH_MODE=token` 的旧模式兼容或紧急回滚，不再作为默认登录方式。
 
 如果是从旧版本更新上来，想只安装快捷命令:
 

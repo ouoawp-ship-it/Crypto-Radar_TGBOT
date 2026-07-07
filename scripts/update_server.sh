@@ -124,18 +124,12 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
 
-generate_web_admin_token() {
-  "$PYTHON_BIN" - <<'PY'
-import secrets
-print(secrets.token_urlsafe(24))
-PY
-}
-
 ensure_web_public_config() {
-  local host port token
+  local host port password_hash session_secret
   host="$(get_env_value WEB_HOST)"
   port="$(get_env_value WEB_PORT)"
-  token="$(get_env_value WEB_ADMIN_TOKEN)"
+  password_hash="$(get_env_value WEB_ADMIN_PASSWORD_HASH)"
+  session_secret="$(get_env_value WEB_SESSION_SECRET)"
 
   if [ -z "$host" ] || [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]; then
     set_env_value WEB_HOST "0.0.0.0"
@@ -143,11 +137,9 @@ ensure_web_public_config() {
   if [ -z "$port" ] || [ "$port" = "80" ]; then
     set_env_value WEB_PORT "8080"
   fi
-  if [ -z "$token" ]; then
-    token="$(generate_web_admin_token)"
-    set_env_value WEB_ADMIN_TOKEN "$token"
-    chmod 600 "${APP_DIR}/.env.oi" || true
-    printf '[paopao-update] 已生成 Web 控制台访问令牌。查看令牌: 输入 paopao 后选择 1\n'
+  set_env_value WEB_AUTH_MODE "password"
+  if [ -z "$password_hash" ] || [ -z "$session_secret" ]; then
+    printf '[paopao-update] 后台账号密码未完整配置。请执行: .venv/bin/python main.py admin-password set\n'
   fi
 }
 

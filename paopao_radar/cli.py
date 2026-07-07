@@ -19,7 +19,9 @@ from __future__ import annotations
 """
 
 import argparse
+import getpass
 import json
+import os
 import re
 import sys
 import time
@@ -28,7 +30,8 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime
 
-from .config import Settings
+from .auth import generate_password_hash, generate_session_secret
+from .config import ENV_FILE, Settings, load_env_file
 from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
 from .funding_alert import FundingAlertEngine
@@ -134,9 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
+    parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
     parser.add_argument("--apply", action="store_true", help="用于 migrate-state：真正复制旧状态文件")
@@ -162,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
     parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST")
     parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
-    parser.add_argument("--web-token", default="", help="web 控制台访问令牌；也可用 WEB_ADMIN_TOKEN")
+    parser.add_argument("--web-token", default="", help="旧 token 认证模式访问令牌；也可用 WEB_ADMIN_TOKEN")
     parser.add_argument("--json", action="store_true", help="用于 stable-check：输出完整 JSON 快照")
     parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
     return parser
@@ -253,6 +257,63 @@ def build_status(settings: Settings, store: JsonStore) -> dict[str, object]:
 def print_status(settings: Settings, store: JsonStore) -> None:
     status = build_status(settings, store)
     print(json.dumps(status, ensure_ascii=False, indent=2))
+
+
+def update_env_values(path: Path, updates: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    positions: dict[str, int] = {}
+    for index, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        positions.setdefault(key, index)
+    for key, value in updates.items():
+        if key in positions:
+            lines[positions[key]] = f"{key}={value}"
+        else:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(f"{key}={value}")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    for key, value in updates.items():
+        os.environ[key] = value
+
+
+def run_admin_password(args: argparse.Namespace) -> int:
+    action = str(getattr(args, "admin_action", "") or "set")
+    if action != "set":
+        print("用法: python main.py admin-password set")
+        return 2
+    load_env_file(ENV_FILE)
+    username = input("后台用户名 [admin]: ").strip() or "admin"
+    password = getpass.getpass("后台密码: ")
+    confirm = getpass.getpass("再次输入后台密码: ")
+    if not password:
+        print("密码不能为空")
+        return 2
+    if password != confirm:
+        print("两次输入的密码不一致")
+        return 2
+    current_secret = os.getenv("WEB_SESSION_SECRET", "").strip()
+    updates = {
+        "WEB_AUTH_MODE": "password",
+        "WEB_ADMIN_USERNAME": username,
+        "WEB_ADMIN_PASSWORD_HASH": generate_password_hash(password),
+        "WEB_SESSION_SECRET": current_secret or generate_session_secret(),
+        "WEB_SESSION_TTL_SEC": os.getenv("WEB_SESSION_TTL_SEC", "86400").strip() or "86400",
+        "WEB_AUTH_COOKIE_NAME": os.getenv("WEB_AUTH_COOKIE_NAME", "paopao_admin_session").strip() or "paopao_admin_session",
+    }
+    update_env_values(ENV_FILE, updates)
+    print(f"后台用户名已设置：{username}")
+    print("后台密码哈希已更新")
+    if current_secret:
+        print("会话密钥已保留")
+    else:
+        print("会话密钥已生成")
+    print("请重启 paopao-web 服务生效：")
+    print("sudo systemctl restart paopao-web")
+    return 0
 
 
 def command_mode(args: argparse.Namespace) -> str:
@@ -1638,6 +1699,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_ai_assistant_service()
     if args.command == "stable-check":
         return print_stable_check(as_json=args.json, save=not args.no_save)
+    if args.command == "admin-password":
+        return run_admin_password(args)
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":

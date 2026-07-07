@@ -84,8 +84,11 @@ class UpdateServerScriptTests(unittest.TestCase):
 
         self.assertIn("https://paoxx.com/", combined)
         self.assertIn("https://paoxx.com/admin", combined)
-        self.assertIn("访问令牌: 已配置，默认不在菜单首页明文显示", combined)
-        self.assertIn("查看后台访问令牌", combined)
+        self.assertIn("后台登录", combined)
+        self.assertIn("设置后台账号密码", combined)
+        self.assertIn("admin-password", combined)
+        self.assertNotIn("查看后台访问令牌", combined)
+        self.assertNotIn("访问令牌: 已配置，默认不在菜单首页明文显示", combined)
         self.assertIn("8080 仅作为 Nginx 反代后端入口，不作为公网入口", combined)
         self.assertNotIn("Web 地址: $(web_public_url)", menu)
         self.assertNotIn("访问令牌: ${token:-", menu)

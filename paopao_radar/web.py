@@ -18,6 +18,14 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
+from .auth import (
+    build_clear_cookie,
+    build_session_cookie,
+    cookie_value,
+    create_session_value,
+    verify_password,
+    verify_session_value,
+)
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
 from .storage import JsonStore
 from .web_services.api_core import (
@@ -65,7 +73,7 @@ MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
 STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
 AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
-WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}
+WEB_CONFIG_KEYS = {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN", "WEB_AUTH_MODE", "WEB_ADMIN_USERNAME", "WEB_SESSION_TTL_SEC", "WEB_AUTH_COOKIE_NAME"}
 SIGNAL_EVENT_CONFIG_KEYS = {
     "SIGNAL_EVENTS_FILE",
     "SIGNAL_EVENTS_DB_FILE",
@@ -160,7 +168,10 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("STRUCTURE_REVIEW_ENABLE", "结构复盘", "模块开关", kind="bool"),
     ConfigField("WEB_HOST", "Web 监听地址", "Web 控制台"),
     ConfigField("WEB_PORT", "Web 端口", "Web 控制台", kind="int", minimum=1, maximum=65535),
-    ConfigField("WEB_ADMIN_TOKEN", "Web 访问令牌", "Web 控制台", secret=True),
+    ConfigField("WEB_AUTH_MODE", "后台认证模式", "Web 控制台", help="默认 password；token 仅用于旧模式紧急回滚。"),
+    ConfigField("WEB_ADMIN_USERNAME", "后台用户名", "Web 控制台"),
+    ConfigField("WEB_SESSION_TTL_SEC", "登录有效期秒数", "Web 控制台", kind="int", minimum=300, maximum=604800),
+    ConfigField("WEB_AUTH_COOKIE_NAME", "登录 Cookie 名称", "Web 控制台"),
     ConfigField("COINALYZE_ENABLE", "启用 Coinalyze", "Coinalyze", kind="bool"),
     ConfigField("COINALYZE_API_KEY", "Coinalyze API Key", "Coinalyze", secret=True),
     ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300, help="建议 21600 秒（6 小时）。越小推送越频繁，越大越安静。"),
@@ -256,7 +267,7 @@ CONFIG_FIELD_PURPOSE: dict[str, str] = {
     "TG_TOPIC_ID": "没有单独话题 ID 时使用的默认话题。",
     "WEB_HOST": "Web 后台监听地址。普通部署保持 0.0.0.0 即可让服务器 IP 可以访问。",
     "WEB_PORT": "Web 后台访问端口。默认 8080。",
-    "WEB_ADMIN_TOKEN": "Web 后台访问令牌，控制谁能进入管理后台。",
+    "WEB_ADMIN_TOKEN": "旧 token 认证模式访问令牌，仅用于 WEB_AUTH_MODE=token 紧急回滚。",
     "TG_TOPIC_INTRO_ENABLE": "控制自动话题创建后是否发送话题说明。",
     "TG_TOPIC_INTRO_PIN": "控制话题说明是否置顶。",
     "CLEANUP_ENABLE": "控制后台是否按计划清理临时文件、过期图表和超限历史记录。",
@@ -681,6 +692,10 @@ def audit_request_summary(path: str, data: dict[str, Any]) -> dict[str, Any]:
                 "limit": data.get("limit"),
             },
         }
+    if path == "/api/auth/login":
+        return {"action": "后台登录", "target": str(data.get("username") or ""), "details": {"username": str(data.get("username") or "")}}
+    if path == "/api/auth/logout":
+        return {"action": "退出后台登录", "target": "admin", "details": {}}
     if path == "/api/service":
         name = str(data.get("name", ""))
         service, action = SERVICE_ACTIONS.get(name, ("", ""))
@@ -1291,14 +1306,14 @@ def config_change_impact(changed: list[str]) -> dict[str, Any]:
     if changed_set & AI_CONFIG_KEYS:
         add_service("restart-ai", "AI 助手需要重新读取 Bot Token、AI 接口、允许群组、价格提醒或币种档案配置。")
     if changed_set & WEB_CONFIG_KEYS:
-        add_service("restart-web", "Web 控制台地址、端口或访问令牌变更后需要重启 Web 服务。", scheduled=True)
+        add_service("restart-web", "Web 控制台地址、端口或认证配置变更后需要重启 Web 服务。", scheduled=True)
 
     warnings: list[str] = []
     if sensitive_keys:
         labels = "、".join(EDITABLE_CONFIG.get(key, ConfigField(key, key, "")).label for key in sensitive_keys)
         warnings.append(f"包含敏感配置：{labels}。审计和诊断只记录字段名，不记录具体值。")
-    if changed_set & {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN"}:
-        warnings.append("Web 入口配置会在保存返回后短暂重启；如果页面断开，稍后按新的地址或令牌重新打开。")
+    if changed_set & {"WEB_HOST", "WEB_PORT", "WEB_ADMIN_TOKEN", "WEB_AUTH_MODE", "WEB_ADMIN_USERNAME", "WEB_SESSION_TTL_SEC", "WEB_AUTH_COOKIE_NAME"}:
+        warnings.append("Web 入口或认证配置会在保存返回后短暂重启；如果页面断开，稍后重新打开后台登录。")
     if changed_set & {"TG_BOT_TOKEN", "TG_CHAT_ID", "TELEGRAM_USE_TOPIC", "TG_AUTO_CREATE_TOPICS"} or any(key.endswith("_TOPIC_ID") for key in changed_set):
         warnings.append("Telegram 推送配置会影响真实消息发送；保存后建议先执行 Telegram 测试消息或 readiness。")
     if changed_set & {"AI_BOT_TOKEN", "AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "AI_ALLOWED_CHAT_IDS", "AI_PROVIDER_ENABLE"}:
@@ -3220,11 +3235,16 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
     web_config = config.get("web", {}) if isinstance(config.get("web"), dict) else {}
     web_host = str(web_config.get("host") or "")
     web_port = int(web_config.get("port", 0) or 0)
-    web_token_ok = bool(web_config.get("admin_token_configured"))
-    if not web_token_ok:
+    web_auth_mode = str(web_config.get("auth_mode") or "password").lower()
+    web_auth_ok = (
+        bool(web_config.get("admin_password_hash_configured") and web_config.get("session_secret_configured"))
+        if web_auth_mode != "token"
+        else bool(web_config.get("admin_token_configured"))
+    )
+    if not web_auth_ok:
         web_status = "fail"
-        web_detail = "WEB_ADMIN_TOKEN 未配置，公网入口不安全。"
-        web_action = "服务器执行 bash scripts/update_server.sh --yes 自动补齐；或到配置中心填写 Web 访问令牌并保存。"
+        web_detail = "后台账号密码或会话密钥未配置，后台无法安全登录。"
+        web_action = "服务器执行 .venv/bin/python main.py admin-password set 后重启 paopao-web。"
     elif web_host in {"0.0.0.0", "::"} and 1 <= web_port <= 65535:
         web_status = "ok"
         web_detail = f"Web 入口监听 {web_host}:{web_port}，可通过服务器 IP 访问。"
@@ -3611,14 +3631,70 @@ def ops_snapshot_payload() -> dict[str, Any]:
     return snapshot
 
 
-def check_auth(handler: BaseHTTPRequestHandler) -> bool:
-    token = getattr(handler.server, "admin_token", "")  # type: ignore[attr-defined]
-    if not token:
+def handler_settings(handler: BaseHTTPRequestHandler) -> Settings:
+    settings = getattr(handler.server, "settings", None)  # type: ignore[attr-defined]
+    return settings if isinstance(settings, Settings) else Settings.load()
+
+
+def request_is_https(handler: BaseHTTPRequestHandler) -> bool:
+    forwarded_proto = handler.headers.get("X-Forwarded-Proto", "")
+    if forwarded_proto.lower().split(",", 1)[0].strip() == "https":
         return True
-    parsed = urlparse(handler.path)
-    query_token = parse_qs(parsed.query).get("token", [""])[0]
-    header_token = handler.headers.get("X-Admin-Token", "")
-    return token in {query_token, header_token}
+    request = getattr(handler, "request", None)
+    return getattr(request, "type", "") == "https"
+
+
+def auth_mode(settings: Settings) -> str:
+    mode = str(getattr(settings, "web_auth_mode", "password") or "password").strip().lower()
+    return "token" if mode == "token" else "password"
+
+
+def session_payload(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
+    cached = getattr(handler, "auth_session", None)
+    if isinstance(cached, dict):
+        return cached
+    settings = handler_settings(handler)
+    if auth_mode(settings) != "password":
+        return None
+    cookie_name = settings.web_auth_cookie_name or "paopao_admin_session"
+    raw_cookie = cookie_value(handler.headers.get("Cookie", ""), cookie_name)
+    payload = verify_session_value(
+        raw_cookie,
+        settings.web_session_secret,
+        expected_username=settings.web_admin_username,
+    )
+    if payload:
+        setattr(handler, "auth_session", payload)
+    return payload
+
+
+def check_auth(handler: BaseHTTPRequestHandler) -> bool:
+    settings = handler_settings(handler)
+    if auth_mode(settings) == "token":
+        token = getattr(handler.server, "admin_token", "") or os.getenv("WEB_ADMIN_TOKEN", "")  # type: ignore[attr-defined]
+        if not token:
+            return False
+        parsed = urlparse(handler.path)
+        query_token = parse_qs(parsed.query).get("token", [""])[0]
+        header_token = handler.headers.get("X-Admin-Token", "")
+        return token in {query_token, header_token}
+    return session_payload(handler) is not None
+
+
+def check_csrf(handler: BaseHTTPRequestHandler) -> bool:
+    settings = handler_settings(handler)
+    if auth_mode(settings) == "token":
+        return True
+    payload = session_payload(handler) or {}
+    expected = str(payload.get("csrf", ""))
+    supplied = handler.headers.get("X-CSRF-Token", "")
+    return bool(expected and supplied and hmac_compare(expected, supplied))
+
+
+def hmac_compare(left: str, right: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(str(left or ""), str(right or ""))
 
 
 PUBLIC_INDEX_HTML = r"""<!doctype html>
@@ -4831,17 +4907,22 @@ INDEX_HTML = r"""<!doctype html>
 <body>
   <div id="auth" class="auth hidden">
     <div class="auth-box">
-      <h2>访问令牌</h2>
+      <h2>泡泡雷达后台登录</h2>
       <div class="field">
-        <label for="tokenInput">WEB_ADMIN_TOKEN</label>
-        <input id="tokenInput" type="password" autocomplete="current-password">
+        <label for="usernameInput">用户名</label>
+        <input id="usernameInput" type="text" autocomplete="username" value="admin">
       </div>
+      <div class="field">
+        <label for="passwordInput">密码</label>
+        <input id="passwordInput" type="password" autocomplete="current-password">
+      </div>
+      <div id="authMessage" class="muted" style="margin-top:10px"></div>
       <div class="toolbar" style="margin:12px 0 0">
-        <button class="btn primary" onclick="saveToken()">进入</button>
+        <button id="loginButton" class="btn primary" onclick="loginAdmin()">登录</button>
       </div>
     </div>
   </div>
-  <div class="app" data-ui-version="v1.60.0">
+  <div id="adminApp" class="app hidden" data-ui-version="v1.70.1">
     <aside>
       <div class="brand">
         <div class="brand-title">泡泡雷达控制台</div>
@@ -4881,6 +4962,7 @@ INDEX_HTML = r"""<!doctype html>
           <span id="versionBadge" class="version-chip">版本 <small>读取中</small></span>
           <button class="btn" onclick="refreshCurrent()">刷新</button>
           <button id="autoRefreshButton" class="btn" onclick="toggleAutoRefresh()">自动刷新：关闭</button>
+          <button class="btn danger" onclick="logoutAdmin()">退出登录</button>
         </div>
       </header>
 
@@ -5326,7 +5408,7 @@ INDEX_HTML = r"""<!doctype html>
         service: "paopao-web",
         desc: "就是当前这个网页后台服务。重启后页面会短暂断开，刷新浏览器即可。",
         actions: [
-          { id: "restart-web", label: "重启 Web 控制台", button: "重启", level: "warn", note: "改完 Web 端口、Web 令牌或更新代码后使用。" },
+          { id: "restart-web", label: "重启 Web 控制台", button: "重启", level: "warn", note: "改完 Web 端口、后台账号密码配置或更新代码后使用。" },
           { id: "start-web", label: "启动 Web 控制台", button: "启动", level: "", note: "浏览器打不开控制台，且服务器服务状态显示 Web 已停止时使用。" },
           { id: "stop-web", label: "停止 Web 控制台", button: "停止", level: "danger", note: "会让网页控制台打不开。除非你明确要关闭 Web 入口，否则不建议点。" }
         ]
@@ -5490,8 +5572,8 @@ INDEX_HTML = r"""<!doctype html>
       {
         id: "web",
         label: "Web 控制台",
-        desc: "Web 后台监听地址、访问端口和访问令牌配置。",
-        impact: "影响浏览器打开后台的地址、端口和登录令牌。",
+        desc: "Web 后台监听地址、访问端口和账号密码登录配置。",
+        impact: "影响浏览器打开后台的地址、端口和登录方式。",
         apply: "保存后自动延迟重启 Web 控制台。",
         sections: ["Web 控制台"]
       },
@@ -5506,26 +5588,70 @@ INDEX_HTML = r"""<!doctype html>
       }
     ];
 
-    function token() { return localStorage.getItem("paopaoAdminToken") || ""; }
+    let csrfToken = "";
     function headers() {
       const h = {"Content-Type": "application/json"};
-      if (token()) h["X-Admin-Token"] = token();
+      if (csrfToken) h["X-CSRF-Token"] = csrfToken;
       return h;
     }
-    function showAuth() { document.getElementById("auth").classList.remove("hidden"); }
-    function hideAuth() { document.getElementById("auth").classList.add("hidden"); }
-    function saveToken() {
-      localStorage.setItem("paopaoAdminToken", document.getElementById("tokenInput").value);
-      hideAuth();
-      refreshCurrent();
+    function showAuth(message = "") {
+      document.getElementById("auth").classList.remove("hidden");
+      document.getElementById("adminApp").classList.add("hidden");
+      if (message) document.getElementById("authMessage").textContent = message;
+    }
+    function hideAuth() {
+      document.getElementById("auth").classList.add("hidden");
+      document.getElementById("adminApp").classList.remove("hidden");
+      document.getElementById("authMessage").textContent = "";
+    }
+    async function refreshAuthStatus() {
+      const res = await fetch("/api/auth/status", { credentials: "same-origin", cache: "no-store" });
+      const data = await res.json();
+      csrfToken = data.csrf_token || "";
+      return data;
+    }
+    async function loginAdmin() {
+      const btn = document.getElementById("loginButton");
+      const username = document.getElementById("usernameInput").value.trim();
+      const password = document.getElementById("passwordInput").value;
+      btn.textContent = "登录中...";
+      btn.disabled = true;
+      document.getElementById("authMessage").textContent = "";
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) throw new Error(data.message || "用户名或密码错误");
+        csrfToken = data.csrf_token || "";
+        document.getElementById("passwordInput").value = "";
+        hideAuth();
+        await refreshCurrent();
+      } catch (err) {
+        showAuth(err.message || "用户名或密码错误");
+      } finally {
+        btn.textContent = "登录";
+        btn.disabled = false;
+      }
+    }
+    async function logoutAdmin() {
+      try {
+        await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin", headers: headers() });
+      } finally {
+        csrfToken = "";
+        showAuth("已退出登录");
+      }
     }
     async function api(path, options = {}) {
       const started = performance.now();
-      const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const res = await fetch(path, { ...options, credentials: "same-origin", headers: { ...headers(), ...(options.headers || {}) } });
       const elapsedMs = Math.round(performance.now() - started);
       if (res.status === 401) {
-        showAuth();
-        throw new Error("需要访问令牌");
+        showAuth("登录已过期，请重新登录");
+        throw new Error("请先登录后台");
       }
       const text = await res.text();
       let data;
@@ -7531,8 +7657,6 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({ updates, clear })
       });
       document.getElementById("configOutput").textContent = formatSaveResult(data, changes);
-      if (data.ok && updates.WEB_ADMIN_TOKEN) localStorage.setItem("paopaoAdminToken", updates.WEB_ADMIN_TOKEN);
-      if (data.ok && clearKeys.has("WEB_ADMIN_TOKEN")) localStorage.removeItem("paopaoAdminToken");
       clearKeys.clear();
       try {
         await loadConfig();
@@ -7967,10 +8091,10 @@ INDEX_HTML = r"""<!doctype html>
           <h3 class="section-title">使用规则</h3>
           <div class="feature-list">
             <div class="feature-item"><strong>访问地址</strong><span class="muted">生产入口使用 https://paoxx.com/admin；8080 仅作为本机/Nginx 反代后端入口。</span></div>
-            <div class="feature-item"><strong>登录令牌</strong><span class="muted">输入 WEB_ADMIN_TOKEN。服务器输入 paopao 后选择“查看后台访问令牌”可查看。不要把令牌发到公开群。</span></div>
+            <div class="feature-item"><strong>后台登录</strong><span class="muted">使用服务器本地设置的用户名和密码登录。密码只保存哈希，不在页面显示明文。</span></div>
             <div class="feature-item"><strong>单人管理员</strong><span class="muted">这个后台按你自己使用设计，登录后默认拥有全部操作权限，不引入多用户登录和复杂权限角色。</span></div>
-            <div class="feature-item"><strong>配置生效</strong><span class="muted">保存配置后会自动应用：主服务和结构雷达会自动重启，Web 端口或令牌变更会让 Web 控制台短暂重启。</span></div>
-            <div class="feature-item"><strong>服务器入口</strong><span class="muted">服务器只需要记住 paopao。进入中文菜单后查看 Web 地址、令牌、状态、日志和更新入口。</span></div>
+            <div class="feature-item"><strong>配置生效</strong><span class="muted">保存配置后会自动应用：主服务和结构雷达会自动重启，Web 端口或认证配置变更会让 Web 控制台短暂重启。</span></div>
+            <div class="feature-item"><strong>服务器入口</strong><span class="muted">服务器只需要记住 paopao。进入中文菜单后查看正式入口、设置后台账号密码、查看状态、日志和更新入口。</span></div>
             <div class="feature-item"><strong>安全边界</strong><span class="muted">Web 后端只执行白名单动作，不提供任意 shell 命令入口。</span></div>
           </div>
         </div>
@@ -9139,9 +9263,28 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
     document.querySelectorAll("nav button").forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));
-    updateAutoRefreshButton();
-    loadVersionBadge();
-    refreshCurrent();
+    document.getElementById("passwordInput").addEventListener("keydown", event => {
+      if (event.key === "Enter") loginAdmin();
+    });
+    async function initAdminApp() {
+      updateAutoRefreshButton();
+      try {
+        const status = await refreshAuthStatus();
+        if (!status.logged_in) {
+          const message = status.password_configured && status.session_configured
+            ? "请使用后台账号密码登录"
+            : "后台账号密码尚未配置，请在服务器执行设置命令。";
+          showAuth(message);
+          return;
+        }
+        hideAuth();
+        loadVersionBadge();
+        await refreshCurrent();
+      } catch (err) {
+        showAuth("登录状态检查失败，请稍后重试");
+      }
+    }
+    initAdminApp();
   </script>
 </body>
 </html>
@@ -9164,7 +9307,7 @@ class WebHandler(BaseHTTPRequestHandler):
             "request_id": f"{int(time.time() * 1000)}-{threading.get_ident()}",
         }
 
-    def send_json(self, data: Any, status: int = 200) -> None:
+    def send_json(self, data: Any, status: int = 200, *, extra_headers: dict[str, str] | None = None) -> None:
         payload_obj = data
         if isinstance(data, dict):
             payload_obj = dict(data)
@@ -9172,7 +9315,7 @@ class WebHandler(BaseHTTPRequestHandler):
             meta = existing_meta if isinstance(existing_meta, dict) else {}
             payload_obj["_meta"] = {**meta, **self.api_meta(int(status))}
         payload = json.dumps(payload_obj, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_payload(payload, status, "application/json; charset=utf-8")
+        self.send_payload(payload, status, "application/json; charset=utf-8", extra_headers=extra_headers)
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
         self.send_json({"ok": False, "error": message, "message": message, "code": code}, status)
@@ -9196,11 +9339,20 @@ class WebHandler(BaseHTTPRequestHandler):
         payload = html.encode("utf-8")
         self.send_payload(payload, 200, "text/html; charset=utf-8")
 
-    def send_payload(self, payload: bytes, status: int, content_type: str) -> None:
+    def send_payload(
+        self,
+        payload: bytes,
+        status: int,
+        content_type: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         try:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -9217,10 +9369,133 @@ class WebHandler(BaseHTTPRequestHandler):
             raise ValueError("请求体必须是 JSON 对象")
         return data
 
-    def require_auth(self) -> bool:
+    def auth_status_payload(self) -> dict[str, Any]:
+        settings = handler_settings(self)
+        mode = auth_mode(settings)
+        payload = session_payload(self) if mode == "password" else None
+        logged_in = bool(payload) if mode == "password" else check_auth(self)
+        return {
+            "ok": True,
+            "logged_in": logged_in,
+            "auth_mode": mode,
+            "username": settings.web_admin_username if logged_in else "",
+            "csrf_token": str((payload or {}).get("csrf", "")) if logged_in else "",
+            "password_configured": bool(settings.web_admin_password_hash),
+            "session_configured": bool(settings.web_session_secret),
+            "message": "已登录" if logged_in else "未登录",
+        }
+
+    def send_unauthorized(self, message: str = "请先登录后台") -> None:
+        self.send_json(
+            {
+                "ok": False,
+                "error": {"code": "unauthorized", "message": message},
+                "message": message,
+                "code": "unauthorized",
+            },
+            HTTPStatus.UNAUTHORIZED,
+        )
+
+    def send_forbidden(self, message: str = "请求校验失败，请刷新页面后重试") -> None:
+        self.send_json(
+            {
+                "ok": False,
+                "error": {"code": "forbidden", "message": message},
+                "message": message,
+                "code": "forbidden",
+            },
+            HTTPStatus.FORBIDDEN,
+        )
+
+    def handle_auth_login(self) -> None:
+        started_at = time.time()
+        settings = handler_settings(self)
+        if auth_mode(settings) == "token":
+            result = {"ok": False, "error": {"code": "unsupported_auth_mode", "message": "当前为旧令牌模式"}, "message": "当前为旧令牌模式", "code": "unsupported_auth_mode"}
+            try:
+                append_web_audit("/api/auth/login", {}, result, status=HTTPStatus.BAD_REQUEST, started_at=started_at, data_dir=settings.data_dir)
+            except Exception as exc:
+                sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+            self.send_json(result, HTTPStatus.BAD_REQUEST)
+            return
+        if not settings.web_admin_password_hash or not settings.web_session_secret:
+            result = {
+                "ok": False,
+                "error": {"code": "auth_not_configured", "message": "后台账号密码尚未配置，请在服务器执行设置命令。"},
+                "message": "后台账号密码尚未配置，请在服务器执行设置命令。",
+                "code": "auth_not_configured",
+            }
+            try:
+                append_web_audit("/api/auth/login", {}, result, status=HTTPStatus.BAD_REQUEST, started_at=started_at, data_dir=settings.data_dir)
+            except Exception as exc:
+                sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+            self.send_json(result, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            data = self.read_json()
+        except ValueError as exc:
+            self.send_error_json(str(exc), HTTPStatus.BAD_REQUEST, "bad_request")
+            return
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", ""))
+        if username != settings.web_admin_username or not verify_password(password, settings.web_admin_password_hash):
+            result = {
+                "ok": False,
+                "error": {"code": "unauthorized", "message": "用户名或密码错误"},
+                "message": "用户名或密码错误",
+                "code": "unauthorized",
+            }
+            try:
+                append_web_audit("/api/auth/login", {"username": username}, result, status=HTTPStatus.UNAUTHORIZED, started_at=started_at, data_dir=settings.data_dir)
+            except Exception as exc:
+                sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+            self.send_json(result, HTTPStatus.UNAUTHORIZED)
+            return
+        value, csrf = create_session_value(
+            settings.web_admin_username,
+            settings.web_session_secret,
+            ttl_sec=settings.web_session_ttl_sec,
+        )
+        cookie_header = build_session_cookie(
+            settings.web_auth_cookie_name,
+            value,
+            max_age=settings.web_session_ttl_sec,
+            secure=request_is_https(self),
+        )
+        result = {
+            "ok": True,
+            "message": "登录成功",
+            "logged_in": True,
+            "username": settings.web_admin_username,
+            "csrf_token": csrf,
+        }
+        try:
+            append_web_audit("/api/auth/login", {"username": username}, result, status=200, started_at=started_at, data_dir=settings.data_dir)
+        except Exception as exc:
+            sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+        self.send_json(result, extra_headers={"Set-Cookie": cookie_header})
+
+    def handle_auth_logout(self) -> None:
+        started_at = time.time()
+        settings = handler_settings(self)
+        cookie_header = build_clear_cookie(
+            settings.web_auth_cookie_name or "paopao_admin_session",
+            secure=request_is_https(self),
+        )
+        result = {"ok": True, "message": "已退出登录", "logged_in": False}
+        try:
+            append_web_audit("/api/auth/logout", {}, result, status=200, started_at=started_at, data_dir=settings.data_dir)
+        except Exception as exc:
+            sys.stderr.write(f"[web] audit write failed: {type(exc).__name__}: {exc}\n")
+        self.send_json(result, extra_headers={"Set-Cookie": cookie_header})
+
+    def require_auth(self, *, write: bool = False) -> bool:
         if check_auth(self):
+            if write and not check_csrf(self):
+                self.send_forbidden()
+                return False
             return True
-        self.send_error_json("需要访问令牌", HTTPStatus.UNAUTHORIZED, "unauthorized")
+        self.send_unauthorized()
         return False
 
     def do_GET(self) -> None:
@@ -9232,6 +9507,9 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/admin" or path.startswith("/admin/"):
             self.send_html(INDEX_HTML)
+            return
+        if path == "/api/auth/status":
+            self.send_json(self.auth_status_payload())
             return
         if path == "/public-api/signals":
             self.send_json(public_signals_payload(
@@ -9514,9 +9792,15 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
-        if not self.require_auth():
-            return
         path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            self.handle_auth_login()
+            return
+        if path == "/api/auth/logout":
+            self.handle_auth_logout()
+            return
+        if not self.require_auth(write=True):
+            return
         started_at = time.time()
         data: dict[str, Any] = {}
         try:
@@ -9637,13 +9921,19 @@ def run_web_server(host: str = "", port: int = 0, admin_token: str = "") -> int:
     load_env_file()
     host = host or os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = int(port or os.getenv("WEB_PORT", "8080") or 8080)
+    settings = Settings.load()
+    mode = auth_mode(settings)
     token = admin_token or os.getenv("WEB_ADMIN_TOKEN", "")
-    if not is_loopback_host(host) and not token:
-        print("web: refused to bind non-loopback host without WEB_ADMIN_TOKEN", file=sys.stderr)
+    if mode == "token" and not is_loopback_host(host) and not token:
+        print("web: refused to bind non-loopback host in token mode without WEB_ADMIN_TOKEN", file=sys.stderr)
         return 2
     server = ThreadingHTTPServer((host, int(port)), WebHandler)
+    server.settings = settings  # type: ignore[attr-defined]
     server.admin_token = token  # type: ignore[attr-defined]
-    auth_note = "enabled" if token else "disabled"
+    if mode == "password":
+        auth_note = "password configured" if settings.web_admin_password_hash and settings.web_session_secret else "password not configured"
+    else:
+        auth_note = "token enabled" if token else "token disabled"
     print(f"web: listening on http://{host}:{port} (auth {auth_note})")
     try:
         server.serve_forever()

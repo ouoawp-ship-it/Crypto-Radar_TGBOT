@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import secrets
 from pathlib import Path
 
 
@@ -24,6 +23,12 @@ PRESERVE_KEYS = {
     "COINALYZE_API_KEY",
     "COINALYZE_ENABLE",
     "WEB_ADMIN_TOKEN",
+    "WEB_AUTH_MODE",
+    "WEB_ADMIN_USERNAME",
+    "WEB_ADMIN_PASSWORD_HASH",
+    "WEB_SESSION_SECRET",
+    "WEB_SESSION_TTL_SEC",
+    "WEB_AUTH_COOKIE_NAME",
     "AI_ASSISTANT_ENABLE",
     "AI_BOT_TOKEN",
     "AI_ADMIN_USER_IDS",
@@ -144,14 +149,6 @@ def sync_env(env_path: Path, example_path: Path) -> dict[str, list[str]]:
         if current in rule["old"] and current != rule["new"]:
             lines[index[key]] = f"{key}={rule['new']}"
             updated.append(key)
-
-    token_key = "WEB_ADMIN_TOKEN"
-    if token_key in index:
-        parsed = split_env_line(lines[index[token_key]])
-        current = clean_value(parsed[1] if parsed else "")
-        if not current:
-            lines[index[token_key]] = f"{token_key}={secrets.token_urlsafe(24)}"
-            updated.append(token_key)
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"added": added, "updated": updated, "preserved": preserved}

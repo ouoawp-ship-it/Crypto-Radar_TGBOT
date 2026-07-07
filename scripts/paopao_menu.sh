@@ -60,13 +60,15 @@ service_unit_exists() {
   command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${name}.service" >/dev/null 2>&1
 }
 
-token_status() {
-  local token
-  token="$(get_env_value WEB_ADMIN_TOKEN)"
-  if [ -n "$token" ]; then
-    printf '已配置，默认不在菜单首页明文显示'
+admin_login_status() {
+  local username password_hash
+  username="$(get_env_value WEB_ADMIN_USERNAME)"
+  password_hash="$(get_env_value WEB_ADMIN_PASSWORD_HASH)"
+  [ -n "$username" ] || username="admin"
+  if [ -n "$password_hash" ]; then
+    printf '使用自定义账号 + 密码（用户：%s）' "$username"
   else
-    printf '未配置，请先选择 7 更新项目，或执行安装/更新脚本'
+    printf '尚未设置，请选择 2 设置后台账号密码'
   fi
 }
 
@@ -79,47 +81,15 @@ show_web_entry() {
   printf '公开前台: %s\n' "$PUBLIC_FRONTEND_URL"
   printf '后台控制台: %s\n' "$ADMIN_CONSOLE_URL"
   printf '本机监听配置: %s:%s\n' "$host" "$port"
-  printf '访问令牌: %s\n' "$(token_status)"
+  printf '后台登录: %s\n' "$(admin_login_status)"
   printf '\n说明:\n'
   printf '  1. 日常访问请使用 %s。\n' "$ADMIN_CONSOLE_URL"
   printf '  2. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。\n'
-  printf '  3. 如需查看或重置访问令牌，请使用专门菜单项。\n'
+  printf '  3. 如需设置或重置后台登录密码，请使用菜单项 2。\n'
 }
 
-show_web_token() {
-  local host port token
-  host="$(get_env_value WEB_HOST)"
-  port="$(get_env_value WEB_PORT)"
-  token="$(get_env_value WEB_ADMIN_TOKEN)"
-  [ -n "$host" ] || host="0.0.0.0"
-  [ -n "$port" ] || port="8080"
-  printf '后台控制台: %s\n' "$ADMIN_CONSOLE_URL"
-  printf '监听配置: %s:%s\n' "$host" "$port"
-  if [ -z "$token" ]; then
-    printf '访问令牌未配置。请返回菜单选择 7 更新项目，或重新运行安装脚本。\n'
-    return 0
-  fi
-  printf '即将显示后台访问令牌，请确认当前终端环境安全。是否继续？y/N '
-  local confirm
-  read -r confirm || confirm=""
-  case "$confirm" in
-    y|Y|yes|YES)
-      printf '访问令牌: %s\n' "$token"
-      ;;
-    *)
-      printf '已取消显示访问令牌。\n'
-      ;;
-  esac
-}
-
-show_token_noninteractive() {
-  local token
-  token="$(get_env_value WEB_ADMIN_TOKEN)"
-  if [ -n "$token" ]; then
-    printf '访问令牌: %s\n' "$token"
-  else
-    printf '访问令牌未配置。请返回菜单选择 7 更新项目，或重新运行安装脚本。\n'
-  fi
+set_admin_password() {
+  run_main admin-password set
 }
 
 show_web_status() {
@@ -183,19 +153,19 @@ show_menu_header() {
 
 公开前台: ${PUBLIC_FRONTEND_URL}
 后台控制台: ${ADMIN_CONSOLE_URL}
-访问令牌: $(token_status)
+后台登录: $(admin_login_status)
 
 说明:
   1. 日常访问请使用 ${ADMIN_CONSOLE_URL}。
   2. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。
-  3. 如需查看或重置访问令牌，请使用专门菜单项。
+  3. 如需设置或重置后台登录密码，请使用菜单项 2。
   4. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
      readiness、doctor、cleanup、结构复盘，都在 Web 页面里操作。
   5. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
 
 请选择:
   1. 查看正式访问入口
-  2. 查看后台访问令牌
+  2. 设置后台账号密码
   3. 查看 Web 控制台服务状态
   4. 查看 Web 控制台实时日志
   5. 重启 Web 控制台服务
@@ -213,7 +183,7 @@ show_menu() {
     read -r -p "输入编号: " choice
     case "$choice" in
       1) show_web_entry; pause_menu ;;
-      2) show_web_token; pause_menu ;;
+      2) set_admin_password; pause_menu ;;
       3) show_web_status; pause_menu ;;
       4) show_web_logs ;;
       5) restart_web_service; pause_menu ;;
@@ -258,14 +228,14 @@ case "$command" in
   web)
     run_main web "$@"
     ;;
-  web-token|token|url)
-    if [ "$command" = "url" ]; then
-      show_web_entry
-    elif [ -t 0 ]; then
-      show_web_token
-    else
-      show_token_noninteractive
-    fi
+  web-token|token)
+    printf '旧访问令牌查看已不作为默认后台登录方式。请使用: paopao admin-password\n'
+    ;;
+  admin-password|password)
+    set_admin_password
+    ;;
+  url)
+    show_web_entry
     ;;
   web-status|status)
     show_web_status
