@@ -1,5 +1,13 @@
 # 泡泡抓币中文安装目录
 
+## v1.70.0 运维说明
+
+v1.70.0 新增 Signal Decision Model v1。它只读取 `signals.db` / `signal_events` 兼容视图，把现有信号整理成五类决策状态：`观察`、`等待回踩`、`可试仓`、`禁止追高`、`风险警报`。每个结果会说明置信度、风险等级、主要依据、风险提示、下一步观察点、组成因子分数和最近相关信号。
+
+该模型仅用于信号整理和风险提示，不构成投资建议，不执行自动交易，不接交易所下单 API，不会自动下单、挂止盈止损或操作真实资金。本版也不改变 Telegram 推送主流程。
+
+新增接口：私有后台 API `/api/decision`、`/api/decisions` 继续需要后台令牌；公开只读 API `/public-api/decision`、`/public-api/decisions` 会脱敏输出，不返回 `payload_json`、`text_html`、`dedup_key`、Telegram topic/message/reply、jobs、audit、config、logs 或 token 类字段。公开前台新增“决策模型”区域，信号卡片和币种详情会显示当前决策、置信度、风险等级和观察点。
+
 ## v1.69.1 运维说明
 
 公开前台用户界面已统一中文：标题为 `Paoxx 信号雷达`，筛选、信号卡片、详情弹窗、全市场时间线、币种详情、空状态和错误提示都使用中文；Paoxx 仅作为品牌名保留。公开页面仍只读取 `/public-api/*`，不会读取后台 `/api/*` 或显示配置、任务、日志、审计、服务控制、Telegram 私有字段。

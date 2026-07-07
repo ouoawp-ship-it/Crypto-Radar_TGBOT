@@ -2133,6 +2133,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("jobs", names)
         self.assertIn("update-status", names)
         self.assertIn("signal-timeline", names)
+        self.assertIn("decisions", names)
+        self.assertIn("decision", names)
         self.assertIn("coin-search", names)
         self.assertIn("coin-detail", names)
         self.assertIn("coin-timeline", names)
@@ -2156,6 +2158,15 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("活跃币种", web.PUBLIC_INDEX_HTML)
         self.assertIn("信号时间线", web.PUBLIC_INDEX_HTML)
         self.assertIn("币种详情", web.PUBLIC_INDEX_HTML)
+        self.assertIn("决策模型", web.PUBLIC_INDEX_HTML)
+        self.assertIn("当前决策", web.PUBLIC_INDEX_HTML)
+        self.assertIn("置信度", web.PUBLIC_INDEX_HTML)
+        self.assertIn("风险等级", web.PUBLIC_INDEX_HTML)
+        self.assertIn("观察点", web.PUBLIC_INDEX_HTML)
+        self.assertIn("禁止追高", web.PUBLIC_INDEX_HTML)
+        self.assertIn("等待回踩", web.PUBLIC_INDEX_HTML)
+        self.assertIn("可试仓", web.PUBLIC_INDEX_HTML)
+        self.assertIn("风险警报", web.PUBLIC_INDEX_HTML)
         self.assertIn("加载失败", web.PUBLIC_INDEX_HTML)
         self.assertIn("暂无符合条件的信号", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/signals", web.PUBLIC_INDEX_HTML)
@@ -2163,6 +2174,8 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("/public-api/coin-search", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/coin-detail", web.PUBLIC_INDEX_HTML)
         self.assertIn("/public-api/signal-timeline", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/decision", web.PUBLIC_INDEX_HTML)
+        self.assertIn("/public-api/decisions", web.PUBLIC_INDEX_HTML)
         self.assertIn('href="/admin"', web.PUBLIC_INDEX_HTML)
         self.assertIn("signal-card-grid", web.PUBLIC_INDEX_HTML)
         self.assertIn("signalDetailModal", web.PUBLIC_INDEX_HTML)
@@ -2187,9 +2200,15 @@ class WebConsoleTests(unittest.TestCase):
             "Load More",
             "Failed to load",
             "No signals",
+            "Decision",
+            "Confidence",
+            "Risk",
+            "Watch",
         ):
             self.assertNotIn(old_text, web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/jobs", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/decision", web.PUBLIC_INDEX_HTML)
+        self.assertNotIn("/api/decisions", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/dashboard", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/config", web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/logs", web.PUBLIC_INDEX_HTML)
@@ -2245,6 +2264,34 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(public_payload["ok"])
         self.assertEqual(public_payload["count"], 0)
 
+        statuses.clear()
+        headers.clear()
+        public_decisions = make_handler("/public-api/decisions?limit=1")
+        with patch("paopao_radar.web.public_decisions_payload", return_value={"ok": True, "items": [], "decisions": [], "count": 0}):
+            web.WebHandler.do_GET(public_decisions)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        public_decision = make_handler("/public-api/decision?symbol=BTC")
+        with patch("paopao_radar.web.public_decision_payload", return_value={"ok": True, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
+            web.WebHandler.do_GET(public_decision)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        private_decision = make_handler("/api/decision?symbol=BTC")
+        web.WebHandler.do_GET(private_decision)
+        self.assertEqual(statuses[-1], 401)
+
+        statuses.clear()
+        headers.clear()
+        authorized_decision = make_handler("/api/decision?symbol=BTC")
+        authorized_decision.headers = {"X-Admin-Token": "secret"}
+        with patch("paopao_radar.web.decision_for_symbol_payload", return_value={"ok": True, "symbol": "BTCUSDT", "decision": {"label": "观察"}}):
+            web.WebHandler.do_GET(authorized_decision)
+        self.assertEqual(statuses[-1], 200)
+
     def test_public_payloads_strip_private_signal_fields(self) -> None:
         forbidden = (
             "dedup_key",
@@ -2275,7 +2322,7 @@ class WebConsoleTests(unittest.TestCase):
                 dedup_key="public:btc",
                 status="sent",
                 sent=True,
-                text="BTCUSDT public signal with token=should-not-leak",
+                text="BTCUSDT public signal with token=should-not-leak TELEGRAM BOT_TOKEN",
                 ts=int(time.time()),
                 topic_id="42",
                 message_ids=[1001, 1002],
@@ -2293,7 +2340,9 @@ class WebConsoleTests(unittest.TestCase):
         self.assertTrue(stats["ok"])
         self.assertTrue(coin["ok"])
         self.assertTrue(timeline["ok"])
-        self.assertEqual(set(listing["items"][0]) - {"id", "time", "module", "symbol", "status", "signal_type", "score", "stage", "excerpt", "display"}, set())
+        self.assertEqual(set(listing["items"][0]) - {"id", "time", "module", "symbol", "status", "signal_type", "score", "stage", "excerpt", "display", "decision"}, set())
+        decision = web.public_decision_payload("BTC", settings=settings, window_sec=10**10)
+        decisions = web.public_decisions_payload(settings=settings, window_sec=10**10, limit=5)
         combined = json.dumps(
             {
                 "listing": listing,
@@ -2301,6 +2350,8 @@ class WebConsoleTests(unittest.TestCase):
                 "stats": stats,
                 "coin": coin,
                 "timeline": timeline,
+                "decision": decision,
+                "decisions": decisions,
             },
             ensure_ascii=False,
         )

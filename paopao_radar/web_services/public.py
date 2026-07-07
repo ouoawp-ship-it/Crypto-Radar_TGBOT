@@ -6,6 +6,7 @@ from ..config import Settings
 from ..signal_store import SignalEventStore
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .coins import coin_detail_payload, coin_search_payload
+from .decision import decision_for_symbol_payload, decisions_payload, enhance_signals_with_decisions
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
 from .timeline import timeline_payload
 
@@ -30,6 +31,10 @@ FORBIDDEN_PUBLIC_KEYS = {
     "chat_id",
     "api_key",
     "secret",
+    "authorization",
+    "cookie",
+    "telegram",
+    "bot_token",
 }
 
 
@@ -56,7 +61,11 @@ def _strip_forbidden(value: Any) -> Any:
         return clean
     if isinstance(value, list):
         return [_strip_forbidden(item) for item in value]
-    return redact_api_payload(value)
+    redacted = redact_api_payload(value)
+    if isinstance(redacted, str):
+        for marker in ("WEB_ADMIN_TOKEN", "BOT_TOKEN", "TELEGRAM", "Telegram", "Authorization", "Cookie"):
+            redacted = redacted.replace(marker, "<redacted>")
+    return redacted
 
 
 def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -76,6 +85,8 @@ def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
         "excerpt": _short(enhanced.get("excerpt") or enhanced.get("title") or "", 260),
         "display": display,
     }
+    if enhanced.get("decision"):
+        public["decision"] = _strip_forbidden(enhanced.get("decision") or {})
     return _strip_forbidden(public)
 
 
@@ -110,7 +121,8 @@ def public_signals_payload(
         end_ts=end_ts,
         q=str(q or "").strip()[:80],
     )
-    items = _public_items(result.get("items", []))
+    raw_items = enhance_signals_with_decisions(result.get("items", []), window_sec=window_sec, settings=settings)
+    items = _public_items(raw_items)
     return api_ok(
         {"items": items},
         items=items,
@@ -186,6 +198,41 @@ def public_signal_stats_payload(*, window_sec: int = 86400, settings: Settings |
         "latest": latest,
         "message": "已读取公开信号统计",
     }
+    return _strip_forbidden(payload)
+
+
+def public_decision_payload(
+    symbol: str,
+    *,
+    window_sec: int = 86400,
+    limit: int = 50,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    payload = decision_for_symbol_payload(symbol, window_sec=window_sec, limit=limit, settings=settings)
+    return _strip_forbidden(payload)
+
+
+def public_decisions_payload(
+    *,
+    limit: int = 50,
+    cursor: int | None = None,
+    q: str = "",
+    symbol: str = "",
+    decision: str = "",
+    risk: str = "",
+    window_sec: int = 86400,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    payload = decisions_payload(
+        limit=limit,
+        cursor=cursor,
+        q=q,
+        symbol=symbol,
+        decision=decision,
+        risk=risk,
+        window_sec=window_sec,
+        settings=settings,
+    )
     return _strip_forbidden(payload)
 
 
