@@ -1,5 +1,17 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.74.4 说明
+
+v1.74.4 清理生产 Nginx 中重复的 `paoxx.com` server block。安装和更新脚本现在只把 `/etc/nginx/conf.d/00-paoxx-frontend.conf` 作为 active 生产入口，并会禁用 `/etc/nginx/sites-enabled/default`、`/etc/nginx/sites-enabled/paoxx.com` 以及 `/etc/nginx/conf.d` 中其他声明 `server_name paoxx.com` 的旧入口。
+
+被禁用的 active 文件会先备份到 `/etc/nginx/backup-paopao/`。如果旧入口是 symlink，只删除 symlink，保留原始 `sites-available` 历史文件；如果是普通文件，则改名为 `.disabled.<timestamp>`。脚本会执行 `nginx -t 2>&1` 和 `nginx -T 2>&1`，如果出现 `conflicting server name "paoxx.com"` 会失败并提示定位命令：
+
+```bash
+sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d
+```
+
+最终路由保持不变：`/` 和 `/_next/` 走 Next.js `127.0.0.1:3000`；`/admin`、`/api/`、`/public-api/` 走 Python 后端 `127.0.0.1:8080`。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema，也不改后端 API contract。
+
 ## v1.74.3 说明
 
 v1.74.3 修复部署验收脚本的日志误判：`scripts/check_https_deploy.sh` 不再把 `OK observe_history`、`启动观察历史`、readiness 等正常运行日志，或已知可自动重试的单次网络 timeout 当作阻断错误。

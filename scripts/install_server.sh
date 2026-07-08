@@ -916,15 +916,110 @@ EOF
   fi
 }
 
+nginx_frontend_fail() {
+  die "$*"
+}
+
+backup_nginx_legacy_entry() {
+  local path="$1"
+  local backup_dir="$2"
+  local stamp="$3"
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+
+  run_root mkdir -p "$backup_dir"
+  local backup_name
+  backup_name="$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')"
+  run_root cp -a "$path" "${backup_dir}/${backup_name}.${stamp}" || true
+
+  if [ -L "$path" ]; then
+    run_root rm -f "$path"
+  else
+    run_root mv -f "$path" "${path}.disabled.${stamp}"
+  fi
+}
+
+disable_legacy_paoxx_nginx_sites() {
+  local domain="$1"
+  local active_path="$2"
+  local backup_dir="${NGINX_BACKUP_DIR:-/etc/nginx/backup-paopao}"
+  local stamp="${PAOPAO_NGINX_DISABLE_STAMP:-$(date -u +%Y%m%d%H%M%S)}"
+  local legacy
+
+  for legacy in \
+    "/etc/nginx/sites-enabled/default" \
+    "/etc/nginx/sites-enabled/${domain}" \
+    "/etc/nginx/sites-enabled/paoxx.com" \
+    "/etc/nginx/sites-enabled/paopao" \
+    "/etc/nginx/sites-enabled/paopao-web"; do
+    [ "$legacy" = "$active_path" ] && continue
+    backup_nginx_legacy_entry "$legacy" "$backup_dir" "$stamp"
+  done
+
+  if [ -d /etc/nginx/conf.d ]; then
+    while IFS= read -r legacy; do
+      [ -n "$legacy" ] || continue
+      [ "$legacy" = "$active_path" ] && continue
+      case "$legacy" in
+        *.disabled.*) continue ;;
+      esac
+      backup_nginx_legacy_entry "$legacy" "$backup_dir" "$stamp"
+    done < <(grep -RIlE "server_name[[:space:]].*${domain}" /etc/nginx/conf.d 2>/dev/null || true)
+  fi
+}
+
+verify_active_nginx_frontend_route() {
+  local domain="$1"
+  local active_path="$2"
+  local test_output
+  if ! test_output="$(run_root nginx -t 2>&1)"; then
+    printf '%s\n' "$test_output" >&2
+    nginx_frontend_fail "nginx -t failed after writing frontend route"
+  fi
+  if printf '%s' "$test_output" | grep -Fq "conflicting server name \"${domain}\""; then
+    printf '%s\n' "$test_output" >&2
+    printf '[%s] 定位命令: sudo grep -RIn "server_name .*%s" /etc/nginx/sites-enabled /etc/nginx/conf.d\n' "$APP_NAME" "$domain" >&2
+    nginx_frontend_fail "Nginx has duplicate ${domain} server_name blocks"
+  fi
+
+  local active_config
+  active_config="$(run_root nginx -T 2>&1 || true)"
+  if printf '%s' "$active_config" | grep -Fq "conflicting server name \"${domain}\""; then
+    printf '%s\n' "$active_config" | grep -F "conflicting server name" >&2 || true
+    printf '[%s] 定位命令: sudo grep -RIn "server_name .*%s" /etc/nginx/sites-enabled /etc/nginx/conf.d\n' "$APP_NAME" "$domain" >&2
+    nginx_frontend_fail "Nginx active config still has duplicate ${domain} server_name blocks"
+  fi
+  if ! printf '%s' "$active_config" | grep -Fq "$active_path"; then
+    nginx_frontend_fail "Nginx active config missing ${active_path}"
+  fi
+  if ! printf '%s' "$active_config" | grep -Fq 'proxy_pass http://127.0.0.1:3000;'; then
+    nginx_frontend_fail "Nginx active config missing Next.js proxy_pass 127.0.0.1:3000"
+  fi
+  if ! printf '%s' "$active_config" | grep -Fq 'proxy_pass http://127.0.0.1:8080;'; then
+    nginx_frontend_fail "Nginx active config missing Python backend proxy_pass 127.0.0.1:8080"
+  fi
+  if ! printf '%s' "$active_config" | grep -Fq 'location ^~ /_next/'; then
+    nginx_frontend_fail "Nginx active config missing /_next/ route"
+  fi
+
+  local duplicate_declarations
+  duplicate_declarations="$(printf '%s\n' "$active_config" | awk -v domain="$domain" -v active="$active_path" '
+    /^# configuration file / {file=$4; sub(/:$/, "", file)}
+    index($0, "server_name") && index($0, domain) && file != active {print file ": " $0}
+  ')"
+  if [ -n "$duplicate_declarations" ]; then
+    printf '%s\n' "$duplicate_declarations" >&2
+    printf '[%s] 定位命令: sudo grep -RIn "server_name .*%s" /etc/nginx/sites-enabled /etc/nginx/conf.d\n' "$APP_NAME" "$domain" >&2
+    nginx_frontend_fail "Nginx active config has extra ${domain} server_name declarations"
+  fi
+}
+
 install_or_update_nginx_frontend_routes() {
   command -v nginx >/dev/null 2>&1 || {
     log "未找到 nginx，跳过公开前台反代配置"
     return 0
   }
   local domain="${PUBLIC_DOMAIN:-paoxx.com}"
-  local site_path="${NGINX_SITE_PATH:-/etc/nginx/sites-available/${domain}}"
   local active_path="${NGINX_ACTIVE_SITE_PATH:-/etc/nginx/conf.d/00-paoxx-frontend.conf}"
-  local enabled_path="/etc/nginx/sites-enabled/${domain}"
   local fullchain="/etc/letsencrypt/live/${domain}/fullchain.pem"
   local privkey="/etc/letsencrypt/live/${domain}/privkey.pem"
   if ! run_root test -f "$fullchain" || ! run_root test -f "$privkey"; then
@@ -989,35 +1084,8 @@ server {
     }
 }
 EOF
-  if [ "$site_path" != "$active_path" ]; then
-    run_root mkdir -p "$(dirname "$site_path")"
-    run_root cp "$active_path" "$site_path"
-  fi
-
-  local legacy
-  for legacy in \
-    "$enabled_path" \
-    "/etc/nginx/sites-enabled/default" \
-    "/etc/nginx/sites-enabled/paopao" \
-    "/etc/nginx/sites-enabled/paopao-web" \
-    "/etc/nginx/conf.d/${domain}.conf" \
-    "/etc/nginx/conf.d/default.conf" \
-    "/etc/nginx/conf.d/paopao.conf" \
-    "/etc/nginx/conf.d/paopao-web.conf"; do
-    if [ "$legacy" = "$active_path" ] || [ "$legacy" = "$site_path" ]; then
-      continue
-    fi
-    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
-      run_root mv -f "$legacy" "${legacy}.disabled-by-paopao"
-    fi
-  done
-
-  run_root nginx -t
-  local active_config
-  active_config="$(run_root nginx -T 2>/dev/null || true)"
-  printf '%s' "$active_config" | grep -Fq 'proxy_pass http://127.0.0.1:3000;' || die "Nginx active config missing Next.js proxy_pass 127.0.0.1:3000"
-  printf '%s' "$active_config" | grep -Fq 'proxy_pass http://127.0.0.1:8080;' || die "Nginx active config missing Python backend proxy_pass 127.0.0.1:8080"
-  printf '%s' "$active_config" | grep -Fq 'location ^~ /_next/' || die "Nginx active config missing /_next/ route"
+  disable_legacy_paoxx_nginx_sites "$domain" "$active_path"
+  verify_active_nginx_frontend_route "$domain" "$active_path"
 
   if command -v systemctl >/dev/null 2>&1; then
     run_root systemctl reload nginx

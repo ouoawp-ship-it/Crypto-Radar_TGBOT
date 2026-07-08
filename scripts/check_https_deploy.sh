@@ -245,10 +245,37 @@ nginx_active_config_dump() {
     return 1
   fi
   if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    sudo nginx -T 2>/dev/null
+    sudo nginx -T 2>&1
   else
-    nginx -T 2>/dev/null
+    nginx -T 2>&1
   fi
+}
+
+nginx_test_output() {
+  if ! command -v nginx >/dev/null 2>&1; then
+    return 1
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo nginx -t 2>&1
+  else
+    nginx -t 2>&1
+  fi
+}
+
+check_nginx_duplicate_server_names() {
+  local output
+  if ! output="$(nginx_test_output)"; then
+    record_block "nginx -t 执行失败，无法确认 Nginx server_name 冲突"
+    printf '%s\n' "$output" | tail -n 12
+    return
+  fi
+  if printf '%s' "$output" | grep -Fq 'conflicting server name "paoxx.com"'; then
+    record_block "Nginx 存在重复 paoxx.com server block"
+    printf '%s\n' "$output" | grep -F 'conflicting server name "paoxx.com"' | head -n 6
+    echo '定位命令: sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d'
+    return
+  fi
+  record_pass "Nginx 无 conflicting server name warning"
 }
 
 check_nginx_active_routes() {
@@ -258,9 +285,16 @@ check_nginx_active_routes() {
     return
   fi
 
+  if printf '%s' "${config}" | grep -Fq 'conflicting server name "paoxx.com"'; then
+    record_block "Nginx active config 存在重复 paoxx.com server block"
+    echo '定位命令: sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d'
+    return
+  fi
+
   local missing=0
   local needle
   for needle in \
+    "/etc/nginx/conf.d/00-paoxx-frontend.conf" \
     "location ^~ /admin" \
     "location ^~ /api/" \
     "location ^~ /public-api/" \
@@ -504,6 +538,7 @@ echo "目标: ${BASE_URL}"
 echo
 
 check_nginx_ports
+check_nginx_duplicate_server_names
 check_nginx_active_routes
 check_page_any_contains "本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-frontend" "nextjs-dashboard"
 check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard" "专业加密数据仪表盘"

@@ -1,5 +1,27 @@
 # 泡泡抓币中文安装目录
 
+## v1.74.4 运维说明
+
+v1.74.4 用于清理生产 Nginx 的重复 `paoxx.com` server block。部署后 active 入口应只保留 `/etc/nginx/conf.d/00-paoxx-frontend.conf`；旧的 `/etc/nginx/sites-enabled/default`、`/etc/nginx/sites-enabled/paoxx.com` 和 `/etc/nginx/conf.d` 中其他包含 `server_name paoxx.com` 的入口会被禁用。
+
+禁用前会备份到 `/etc/nginx/backup-paopao/`。如果旧入口是 symlink，只删除 symlink，保留 `sites-available` 原始文件；如果是普通文件，会改名为 `.disabled.<timestamp>`。部署脚本会运行 `nginx -t 2>&1` 和 `nginx -T 2>&1`，如果仍有 `conflicting server name "paoxx.com"` 会停止并提示：
+
+```bash
+sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d
+```
+
+最终路由必须保持：
+
+```text
+/admin       -> http://127.0.0.1:8080
+/api/        -> http://127.0.0.1:8080
+/public-api/ -> http://127.0.0.1:8080
+/_next/      -> http://127.0.0.1:3000
+/            -> http://127.0.0.1:3000
+```
+
+`scripts/check_https_deploy.sh` 会把重复 `server_name paoxx.com` 的 Nginx warning 判为阻断，同时继续检查 `paopao-frontend`、本机 3000、HTTPS `paoxx-frontend` marker、`nginx -T` 中的 3000/8080 路由、`/admin`、`/public-api` 和私有 `/api` 401。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema 或后端 API contract。
+
 ## v1.74.3 运维说明
 
 v1.74.3 修复 `bash scripts/check_https_deploy.sh --with-stable-check` 的日志误判。类似下面的正常运行日志不会再被当成阻断项：
