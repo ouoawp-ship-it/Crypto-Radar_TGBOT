@@ -43,6 +43,14 @@ from .web_services.api_core import (
     sort_params,
     time_range_params,
 )
+from .web_services.backtest import (
+    backtest_decision_payload,
+    backtest_detail_payload,
+    backtest_matrix_payload,
+    public_backtest_decision_payload,
+    public_backtest_detail_payload,
+    public_backtest_matrix_payload,
+)
 from .web_services.coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
 from .web_services.dashboard import dashboard_payload
 from .web_services.decision import decision_for_symbol_payload, decisions_payload, decisions_stats_payload
@@ -3870,7 +3878,7 @@ PUBLIC_INDEX_HTML = r"""<!doctype html>
 <body>
   <header><div class="wrap top"><div class="brand"><h1>Paoxx 信号雷达</h1><p>公开加密货币信号流。只读展示，已脱敏，数据来自 signals.db。</p></div><a class="admin-link" href="/admin">后台控制台</a></div></header>
   <main class="wrap">
-    <div class="tabs"><button class="tab active" data-view="home">首页</button><button class="tab" data-view="decision">决策模型</button><button class="tab" data-view="timeline">信号时间线</button><button class="tab" data-view="coin">币种详情</button><button class="tab" data-view="outcomes">结果追踪</button></div>
+    <div class="tabs"><button class="tab active" data-view="home">首页</button><button class="tab" data-view="decision">决策模型</button><button class="tab" data-view="timeline">信号时间线</button><button class="tab" data-view="coin">币种详情</button><button class="tab" data-view="outcomes">结果追踪</button><button class="tab" data-view="backtest">决策回测</button></div>
     <section class="grid">
       <div class="panel span-12"><div class="toolbar" id="publicFilters">
         <input id="filterQ" placeholder="关键词">
@@ -3886,6 +3894,7 @@ PUBLIC_INDEX_HTML = r"""<!doctype html>
       <div id="timelineView" class="span-12 panel hidden"><div class="head"><h2>全市场信号时间线</h2><span class="muted" id="timelineCount"></span></div><div id="timeline" class="cards"></div></div>
       <div id="coinView" class="span-12 grid hidden"><div class="panel span-5"><h2>币种详情</h2><div id="coinDetail" class="empty">点击币种标签，或搜索 BTC / BTCUSDT。</div></div><div class="panel span-7"><h2>币种时间线</h2><div id="coinTimeline" class="cards"></div></div><div class="panel span-12"><h2>历史结果追踪</h2><div id="coinOutcomes" class="cards"><div class="empty">选择币种后展示不同窗口表现。</div></div></div></div>
       <div id="outcomesView" class="span-12 panel hidden"><div class="head"><h2>信号结果追踪</h2><span class="muted">复盘已发送信号后 1h / 4h / 24h / 72h 的价格表现，不执行自动交易。</span></div><p class="muted">可按结果筛选：表现较强 / 小幅走强 / 震荡 / 小幅走弱 / 明显回撤 / 数据不足。</p><div id="outcomeStats" class="cards"><div class="empty">正在加载结果追踪统计...</div></div><div id="outcomes" class="cards"></div></div>
+      <div id="backtestView" class="span-12 panel hidden" data-detail-api="/public-api/backtest/decision/detail"><div class="head"><h2>决策回测</h2><span class="muted">基于 signal_outcomes 统计决策后续表现，只做模型校准，不执行自动交易。</span></div><p class="muted">模型诊断、样本质量、平均最终涨跌、正收益比例、平均最大回撤、等待回踩、可试仓、禁止追高、风险警报。</p><div id="backtestSummary" class="cards"><div class="empty">正在加载决策回测看板...</div></div><div id="backtestDecisionCards" class="cards"></div><div id="backtestMatrix" class="cards"></div><div id="backtestDiagnosis" class="cards"></div></div>
     </section>
   </main>
   <div id="signalDetailModal" class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><div class="head"><h2 id="modalTitle">信号详情</h2><button class="btn" id="closeModal">关闭</button></div><div id="modalBody" class="empty">正在加载...</div></div></div>
@@ -3897,7 +3906,7 @@ PUBLIC_INDEX_HTML = r"""<!doctype html>
     function payloadData(payload){ return payload && payload.data && typeof payload.data === "object" ? payload.data : payload; }
     function tone(status){ const key=String(status||"").toLowerCase(); if(key==="sent") return "good"; if(key==="failed") return "bad"; if(key==="blocked") return "warn"; if(key==="dry_run") return "info"; return "neutral"; }
     function badge(label,toneName="neutral",attrs=""){ return `<span class="badge ${toneName}" ${attrs}>${esc(label||"-")}</span>`; }
-    function setView(view){ state.view=view; document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.view===view)); ["home","decision","timeline","coin","outcomes"].forEach(name=>$(name+"View").classList.toggle("hidden",name!==view)); loadPublic().catch(showError); }
+    function setView(view){ state.view=view; document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.view===view)); ["home","decision","timeline","coin","outcomes","backtest"].forEach(name=>$(name+"View").classList.toggle("hidden",name!==view)); loadPublic().catch(showError); }
     function filterParams(limit=50){ const p=new URLSearchParams(); p.set("limit", String(limit)); p.set("window_sec", $("filterWindow").value || "604800"); [["q","filterQ"],["symbol","filterSymbol"],["module","filterModule"],["status","filterStatus"]].forEach(([key,id])=>{ const v=$(id).value.trim(); if(v) p.set(key,v); }); return p; }
     function decisionMini(decision){ if(!decision||!decision.label) return ""; const decisionTone = decision.tone==="bad"?"bad":decision.tone==="good"?"good":decision.tone==="warning"?"warn":"neutral"; return `<div class="meta">${badge(`决策：${decision.label}`,decisionTone)}${badge(`置信度：${decision.confidence ?? 0}`,"info")}${badge(`风险：${decision.risk_level||"低"}`,decision.risk_level==="高"?"bad":decision.risk_level==="中"?"warn":"good")}</div>`; }
     function signalCard(item){ const d=item.display||{}; const itemTone=tone(item.status); const symbol=item.symbol||""; return `<article class="signal-card ${itemTone}" data-signal-id="${Number(item.id||0)}"><div class="head"><div><div class="title">${esc(d.title||item.signal_type||"信号")}</div><div class="muted">${esc(d.time_label||item.time||"-")}</div></div>${badge(d.status_label||item.status,itemTone,`data-filter-status="${esc(item.status||"")}"`)}</div><div class="summary">${esc(d.summary||item.excerpt||"")}</div><div class="meta">${badge(d.module_label||item.module,"info",`data-filter-module="${esc(item.module||"")}"`)}${symbol?badge(symbol,"neutral",`data-coin="${esc(symbol)}"`):badge("全局/无币种","neutral")}<span>分数 ${esc(d.score_label ?? item.score ?? "-")}</span><span>阶段 ${esc(d.stage_label||item.stage||"-")}</span></div>${decisionMini(item.decision)}<div class="coin-actions"><button class="btn" data-signal-id="${Number(item.id||0)}">详情</button>${symbol?`<button class="btn" data-open-coin="${esc(symbol)}">币种详情</button>`:""}</div></article>`; }
@@ -3911,12 +3920,18 @@ PUBLIC_INDEX_HTML = r"""<!doctype html>
     function outcomeStatsHtml(payload){ const data=payloadData(payload)||{}; const summary=data.summary||{}; return `<section class="coin-card"><h3>结果追踪统计</h3><p>${esc(summary.headline||"暂无追踪统计。")}</p><div class="meta">${badge(`总数 ${data.total||0}`,"info")}${badge(`已计算 ${data.success_count||0}`,"good")}${badge(`待计算 ${data.pending_count||0}`,"neutral")}${badge(`数据不足 ${data.unavailable_count||0}`,"warn")}${badge(`平均最终涨跌 ${pct(data.avg_final_return_pct)}`,"info")}${badge(`平均最大回撤 ${pct(data.avg_max_drawdown_pct)}`,"warn")}</div></section>`; }
     function outcomeCard(item){ return `<article class="signal-card ${outcomeTone(item)}"><div class="head"><div><div class="title">${esc(item.symbol||"-")} · ${esc(item.horizon||"-")}</div><div class="muted">${esc(item.signal_time||"-")}</div></div>${badge(item.result_label||"数据不足",outcomeTone(item))}</div><div class="meta">${badge(`决策 ${item.decision_label||"-"}`,"info")}${badge(`状态 ${item.data_status||"-"}`,"neutral")}${badge(`模块 ${item.module||"-"}`,"neutral")}</div><div class="summary">最终涨跌 ${pct(item.final_return_pct)}，最高涨幅 ${pct(item.max_gain_pct)}，最大回撤 ${pct(item.max_drawdown_pct)}</div><div class="meta">${badge(`入场价 ${item.entry_price ?? "-"}`,"neutral")}${badge(`未来价 ${item.future_price ?? "-"}`,"neutral")}</div></article>`; }
     function outcomeListHtml(items){ if(!items||!items.length) return `<div class="empty">暂无结果追踪数据。可以等待下一次扫描，或放宽筛选条件。</div>`; return items.map(outcomeCard).join(""); }
+    function backtestMetricCard(label,value,toneName="info"){ return `<div class="coin-card">${badge(label,toneName)}<h3>${esc(value ?? "-")}</h3></div>`; }
+    function backtestSummaryHtml(data){ const s=data.summary||{}; return `<div class="signal-card-grid">${backtestMetricCard("\u6837\u672c\u603b\u6570",s.total_count||0)}${backtestMetricCard("\u5df2\u8ba1\u7b97\u6837\u672c",s.success_count||0,"good")}${backtestMetricCard("\u8986\u76d6\u7387",`${Math.round(Number(s.coverage_ratio||0)*100)}%`,"info")}${backtestMetricCard("\u5e73\u5747\u6700\u7ec8\u6da8\u8dcc",pct(s.avg_final_return_pct),"neutral")}${backtestMetricCard("\u6b63\u6536\u76ca\u6bd4\u4f8b",`${Math.round(Number(s.positive_ratio||0)*100)}%`,"good")}${backtestMetricCard("\u660e\u663e\u56de\u64a4\u6bd4\u4f8b",`${Math.round(Number(s.drawdown_ratio||0)*100)}%`,"warn")}</div><p class="muted">${esc(s.headline||"\u6682\u65e0\u56de\u6d4b\u6458\u8981\u3002")}</p>`; }
+    function backtestDecisionCardsHtml(groups){ if(!groups||!groups.length) return `<div class="empty">\u6682\u65e0\u51b3\u7b56\u56de\u6d4b\u6837\u672c\u3002</div>`; return groups.map(g=>`<article class="signal-card ${g.key==="probe"?"good":g.key==="risk_alert"?"bad":g.key==="avoid_chase"?"warn":"neutral"}"><div class="head"><h3>${esc(g.label||g.key)}</h3>${badge(g.sample_quality||"\u6837\u672c\u4e0d\u8db3","info")}</div><div class="meta">${badge(`\u6837\u672c\u6570 ${g.success_count||0}/${g.total_count||0}`,"neutral")}${badge(`\u5e73\u5747\u6700\u7ec8\u6da8\u8dcc ${pct(g.avg_final_return_pct)}`,"info")}${badge(`\u6b63\u6536\u76ca\u6bd4\u4f8b ${Math.round(Number(g.positive_ratio||0)*100)}%`,"good")}${badge(`\u5e73\u5747\u6700\u5927\u56de\u64a4 ${pct(g.avg_max_drawdown_pct)}`,"warn")}</div><p class="summary">\u671f\u671b\u8bc4\u5206 ${esc(g.expectancy_score ?? "-")}\uff0c\u8986\u76d6\u7387 ${Math.round(Number(g.coverage_ratio||0)*100)}%\u3002</p></article>`).join(""); }
+    function backtestMatrixHtml(data){ const items=data.items||[]; const horizons=data.horizons||["1h","4h","24h","72h"]; if(!items.length) return `<div class="empty">\u6682\u65e0\u51b3\u7b56 x \u5468\u671f\u77e9\u9635\u3002</div>`; return `<table style="width:100%;border-collapse:collapse"><thead><tr><th>\u51b3\u7b56 / \u5468\u671f</th>${horizons.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${items.map(row=>`<tr><td>${esc(row.decision_label||row.decision_code)}</td>${horizons.map(h=>{const cell=(row.horizons||{})[h]||{}; return `<td>${pct(cell.avg_final_return_pct)}<br><span class="muted">\u6b63\u6536\u76ca ${Math.round(Number(cell.positive_ratio||0)*100)}% / \u6837\u672c ${cell.success_count||0}</span></td>`;}).join("")}</tr>`).join("")}</tbody></table>`; }
+    function backtestDiagnosisHtml(d){ d=d||{}; const list = arr => (arr||[]).length ? `<ul>${(arr||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="muted">\u6682\u65e0\u3002</p>`; return `<section class="coin-card"><h3>\u6a21\u578b\u8bca\u65ad\uff1a${esc(d.overall_label||"\u89c2\u5bdf\u4e2d")}</h3><p>${esc(d.overall_summary||"\u6837\u672c\u4ecd\u5728\u79ef\u7d2f\u3002")}</p><h3>\u6709\u6548\u9879</h3>${list(d.strengths)}<h3>\u5f31\u9879</h3>${list(d.weaknesses)}<h3>\u6821\u51c6\u5efa\u8bae</h3>${list(d.calibration_hints)}<h3>\u6570\u636e\u8b66\u544a</h3>${list(d.data_warnings)}</section>`; }
+    function renderBacktest(summaryPayload,matrixPayload){ const data=payloadData(summaryPayload)||{}; const matrix=payloadData(matrixPayload)||{}; $("backtestSummary").innerHTML=backtestSummaryHtml(data); $("backtestDecisionCards").innerHTML=`<h3>\u51b3\u7b56\u8868\u73b0\u5361\u7247</h3><div class="signal-card-grid">${backtestDecisionCardsHtml(data.decision_groups||[])}</div>`; $("backtestMatrix").innerHTML=`<h3>\u51b3\u7b56 x \u5468\u671f\u77e9\u9635</h3>${backtestMatrixHtml(matrix)}`; $("backtestDiagnosis").innerHTML=backtestDiagnosisHtml(data.model_diagnosis||{}); }
     async function openSignalDetail(id){ $("signalDetailModal").classList.add("open"); $("modalBody").innerHTML=`<div class="loading">正在加载信号详情...</div>`; const data=await api(`/public-api/signals/detail?id=${encodeURIComponent(id)}`); const detail=data.detail||{}; const header=detail.header||{}; $("modalTitle").textContent=header.title||"信号详情"; $("modalBody").innerHTML=((detail.sections||[]).map(section=>`<section><h3>${esc(section.title||"")}</h3>${(section.rows||[]).map(row=>`<p><b>${esc(row.label)}:</b> ${esc(row.value||"-")}</p>`).join("")}</section>`).join("") || `<div class="empty">暂无公开详情。</div>`) + relatedHtml(detail.related); }
     function relatedHtml(related){ const items=((related||{}).same_symbol||[]).slice(0,5); if(!items.length) return ""; return `<section><h3>相关信号</h3><div class="cards">${items.map(signalCard).join("")}</div></section>`; }
     async function openCoin(symbol){ state.selectedCoin=symbol||$("filterSymbol").value.trim(); if(!state.selectedCoin) return; $("filterSymbol").value=state.selectedCoin; setView("coin"); const params=filterParams(50); params.set("symbol",state.selectedCoin); const [coinPayload, decisionPayload, outcomePayload]=await Promise.all([api(`/public-api/coin-detail?${params.toString()}`),api(`/public-api/decision?symbol=${encodeURIComponent(state.selectedCoin)}&window_sec=${encodeURIComponent($("filterWindow").value||"86400")}`),api(`/public-api/symbol-outcomes?symbol=${encodeURIComponent(state.selectedCoin)}&limit=20`)]); const data=payloadData(coinPayload); const decisionData=payloadData(decisionPayload); const outcomeData=payloadData(outcomePayload); const s=data.summary||{}; const decision=decisionData.decision||{}; const factors=(decisionData.factor_explanations||[]).map(f=>`<p><b>${esc(f.label||f.factor)}：</b>${esc(f.score ?? "-")}，${esc(f.explanation||"")}</p>`).join(""); const calibration=decisionData.calibration||{}; $("coinDetail").innerHTML=`<div class="coin-card"><h3>${esc(data.symbol||state.selectedCoin)}</h3><p>${esc(s.headline||"暂无摘要。")}</p><div class="meta">${badge(s.health_label||s.health||"正常",s.health==="risk"?"bad":s.health==="attention"?"warn":"good")}${badge(`${s.total||0} 条信号`,"info")}${badge(`${s.active_modules||0} 个模块`,"neutral")}</div></div><section class="coin-card"><h3>当前决策</h3>${decisionMini(decision)}<p>${esc(decision.summary||"暂无决策摘要。")}</p><p><b>决策依据：</b>${esc((decisionData.reasons||[]).join("；")||"-")}</p><p><b>风险提示：</b>${esc((decisionData.risks||[]).join("；")||"-")}</p><p><b>观察点：</b>${esc((decisionData.watch_points||[]).join("；")||"-")}</p><h3>模型解释</h3>${factors||"<p>暂无组成因子。</p>"}<p><b>校准说明：</b>${calibration.major_symbol_adjusted?"已按高频币种校准；":""}决策规则 ${esc(calibration.decision_rule||"-")}，风险触发 ${esc((calibration.risk_triggered_by||[]).join("、")||"无明确风险触发")}。</p><p class="muted">${esc(decision.not_advice||"仅用于信号整理和风险提示，不构成投资建议。")}</p></section>${distributionHtml("模块分布",data.module_counts||[])}${distributionHtml("状态分布",data.status_counts||[])}`; $("coinTimeline").innerHTML=timelineHtml(data.timeline_groups||data.timeline||[]); $("coinOutcomes").innerHTML=outcomeListHtml(outcomeData.items||[]); }
     function distributionHtml(title,items){ if(!items.length) return ""; const total=items.reduce((n,x)=>n+Number(x.count||0),0)||1; return `<h3>${esc(title)}</h3>${items.map(x=>`<p><span>${esc(x.label||x.module||x.status)}</span><span class="muted"> ${esc(x.count||0)}</span><br><progress max="100" value="${Math.round(Number(x.count||0)*100/total)}"></progress></p>`).join("")}`; }
     function showError(err){ const msg=esc(err.message||String(err)); const panel=`<div class="error">加载失败，请稍后重试：${msg}<br><button class="btn" onclick="loadPublic()">重试</button></div>`; if(state.view==="timeline") $("timeline").innerHTML=panel; else $("signals").innerHTML=panel; }
-    async function loadPublic(){ if(state.loading) return; state.loading=true; try{ $("stats").innerHTML=statsHtml(await api(`/public-api/signals/stats?window_sec=86400`)); const [signalsPayload, coinsPayload, timelinePayload, decisionsPayload, decisionStatsPayload, outcomesPayload, outcomeStatsPayload]=await Promise.all([api(`/public-api/signals?${filterParams(40)}`),api(`/public-api/coin-search?limit=12&window_sec=${encodeURIComponent($("filterWindow").value||"604800")}`),api(`/public-api/signal-timeline?${filterParams(100)}`),api(`/public-api/decisions?${filterParams(30)}`),api(`/public-api/decisions/stats?window_sec=${encodeURIComponent($("filterWindow").value||"86400")}`),api(`/public-api/outcomes?${filterParams(30)}`),api(`/public-api/outcomes/stats?horizon=24h`)]); const signals=payloadData(signalsPayload); const coins=payloadData(coinsPayload); const timeline=payloadData(timelinePayload); const decisions=payloadData(decisionsPayload); const outcomes=payloadData(outcomesPayload); $("signalCount").textContent=`已显示 ${signals.count||0} 条`; $("signals").innerHTML=(signals.items||[]).length?(signals.items||[]).map(signalCard).join(""):`<div class="empty">暂无符合条件的信号。</div>`; $("coins").innerHTML=coinListHtml(coins.items||[]); $("timelineCount").textContent=`${timeline.count||0} 条事件`; $("timeline").innerHTML=timelineHtml(timeline.groups||[]); $("decisionStats").innerHTML=decisionStatsHtml(decisionStatsPayload); $("decisions").innerHTML=decisionListHtml(decisions.decisions||decisions.items||[]); $("outcomeStats").innerHTML=outcomeStatsHtml(outcomeStatsPayload); $("outcomes").innerHTML=outcomeListHtml(outcomes.items||[]); } finally { state.loading=false; } }
+    async function loadPublic(){ if(state.loading) return; state.loading=true; try{ $("stats").innerHTML=statsHtml(await api(`/public-api/signals/stats?window_sec=86400`)); const [signalsPayload, coinsPayload, timelinePayload, decisionsPayload, decisionStatsPayload, outcomesPayload, outcomeStatsPayload, backtestPayload, backtestMatrixPayload]=await Promise.all([api(`/public-api/signals?${filterParams(40)}`),api(`/public-api/coin-search?limit=12&window_sec=${encodeURIComponent($("filterWindow").value||"604800")}`),api(`/public-api/signal-timeline?${filterParams(100)}`),api(`/public-api/decisions?${filterParams(30)}`),api(`/public-api/decisions/stats?window_sec=${encodeURIComponent($("filterWindow").value||"86400")}`),api(`/public-api/outcomes?${filterParams(30)}`),api(`/public-api/outcomes/stats?horizon=24h`),api(`/public-api/backtest/decision?horizon=1h&window_sec=${encodeURIComponent($("filterWindow").value||"604800")}`),api(`/public-api/backtest/decision/matrix?window_sec=${encodeURIComponent($("filterWindow").value||"604800")}`)]); const signals=payloadData(signalsPayload); const coins=payloadData(coinsPayload); const timeline=payloadData(timelinePayload); const decisions=payloadData(decisionsPayload); const outcomes=payloadData(outcomesPayload); $("signalCount").textContent=`已显示 ${signals.count||0} 条`; $("signals").innerHTML=(signals.items||[]).length?(signals.items||[]).map(signalCard).join(""):`<div class="empty">暂无符合条件的信号。</div>`; $("coins").innerHTML=coinListHtml(coins.items||[]); $("timelineCount").textContent=`${timeline.count||0} 条事件`; $("timeline").innerHTML=timelineHtml(timeline.groups||[]); $("decisionStats").innerHTML=decisionStatsHtml(decisionStatsPayload); $("decisions").innerHTML=decisionListHtml(decisions.decisions||decisions.items||[]); $("outcomeStats").innerHTML=outcomeStatsHtml(outcomeStatsPayload); $("outcomes").innerHTML=outcomeListHtml(outcomes.items||[]); renderBacktest(backtestPayload, backtestMatrixPayload); } finally { state.loading=false; } }
     $("applyFilters").addEventListener("click",()=>loadPublic().catch(showError)); $("clearFilters").addEventListener("click",()=>{["filterQ","filterSymbol","filterModule","filterStatus"].forEach(id=>$(id).value="");$("filterWindow").value="604800";loadPublic().catch(showError);}); $("closeModal").addEventListener("click",()=>$("signalDetailModal").classList.remove("open")); document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>setView(t.dataset.view)));
     document.addEventListener("click",event=>{ const target=event.target.closest("[data-signal-id],[data-open-coin],[data-coin],[data-filter-module],[data-filter-status]"); if(!target) return; if(target.dataset.signalId){ openSignalDetail(target.dataset.signalId).catch(showError); return; } if(target.dataset.openCoin||target.dataset.coin){ openCoin(target.dataset.openCoin||target.dataset.coin).catch(showError); return; } if(target.dataset.filterModule){ $("filterModule").value=target.dataset.filterModule; loadPublic().catch(showError); return; } if(target.dataset.filterStatus){ $("filterStatus").value=target.dataset.filterStatus; loadPublic().catch(showError); }});
     loadPublic().catch(showError);
@@ -5091,6 +5106,7 @@ INDEX_HTML = r"""<!doctype html>
         <button data-view="coin"><span class="nav-dot"></span><span class="nav-text"><strong>Coin Detail</strong><small>单币种情报</small></span></button>
         <button data-view="timeline"><span class="nav-dot"></span><span class="nav-text"><strong>信号时间线</strong><small>全局 Timeline</small></span></button>
         <button data-view="outcomes"><span class="nav-dot"></span><span class="nav-text"><strong>结果追踪</strong><small>后续表现</small></span></button>
+        <button data-view="backtest"><span class="nav-dot"></span><span class="nav-text"><strong>决策回测</strong><small>模型表现</small></span></button>
         <button data-view="jobs"><span class="nav-dot"></span><span class="nav-text"><strong>任务中心</strong><small>后台长任务</small></span></button>
         <button data-view="services"><span class="nav-dot"></span><span class="nav-text"><strong>雷达服务</strong><small>启停控制</small></span></button>
       </nav>
@@ -5207,6 +5223,10 @@ INDEX_HTML = r"""<!doctype html>
         <pre id="outcomeOutput" class="output"></pre>
       </section>
 
+      <section id="backtest" class="view hidden">
+        <div class="grid" id="backtestGrid"></div>
+      </section>
+
       <section id="jobs" class="view hidden">
         <div class="grid" id="jobsGrid"></div>
         <pre id="jobOutput" class="output"></pre>
@@ -5248,6 +5268,7 @@ INDEX_HTML = r"""<!doctype html>
       coin: "Coin Detail",
       timeline: "信号时间线",
       outcomes: "结果追踪",
+      backtest: "决策回测",
       jobs: "任务中心",
       prompts: "AI 提示词",
       services: "雷达服务",
@@ -5307,6 +5328,12 @@ INDEX_HTML = r"""<!doctype html>
         title: "信号后续表现追踪",
         desc: "追踪已发送信号在 1h / 4h / 24h / 72h 后的最终涨跌、最高涨幅和最大回撤。数据来自公开行情，只用于复盘和模型校准，不执行自动交易。",
         tags: ["outcomes.db", "复盘统计", "只读展示"]
+      },
+      backtest: {
+        kicker: "决策回测",
+        title: "决策回测看板",
+        desc: "基于 signal_outcomes 聚合不同决策在 1h / 4h / 24h / 72h 后的表现，查看样本质量、平均最终涨跌、正收益比例、回撤和模型诊断。只用于模型校准，不执行自动交易。",
+        tags: ["决策表现", "模型诊断", "只读统计"]
       },
       jobs: {
         kicker: "后台任务",
@@ -5623,7 +5650,7 @@ INDEX_HTML = r"""<!doctype html>
     let autoRefreshTimer = null;
     let autoRefreshEnabled = false;
     let refreshInFlight = false;
-    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, coin: 30000, timeline: 30000, outcomes: 30000, jobs: 3000 };
+    const autoRefreshIntervalsMs = { server: 3000, overview: 15000, logs: 15000, audit: 15000, signals: 5000, coin: 30000, timeline: 30000, outcomes: 30000, backtest: 60000, jobs: 3000 };
     const configCategories = [
       {
         id: "home",
@@ -5941,6 +5968,7 @@ INDEX_HTML = r"""<!doctype html>
         signals: "signalsGrid",
         coin: "coinGrid",
         outcomes: "outcomesGrid",
+        backtest: "backtestGrid",
         prompts: "promptGrid",
         actions: "actionGrid",
         services: "serviceGrid",
@@ -9397,6 +9425,54 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("outcomeOutput").textContent = JSON.stringify(result, null, 2);
       await loadOutcomes();
     }
+
+    function backtestAdminMetric(label, value) {
+      return `<div class="panel span-2"><div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "-")}</strong></div></div>`;
+    }
+    function backtestAdminPercent(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? `${number.toFixed(2)}%` : "-";
+    }
+    function backtestAdminGroups(groups) {
+      if (!groups || !groups.length) return `<div class="empty">\u6682\u65e0\u51b3\u7b56\u56de\u6d4b\u6837\u672c\u3002</div>`;
+      return `<div class="signal-card-grid">${groups.map(g => `<article class="signal-card ${g.key === "probe" ? "good" : g.key === "risk_alert" ? "bad" : g.key === "avoid_chase" ? "warn" : "neutral"}">
+        <div class="signal-card-head"><h3 class="signal-card-title">${escapeHtml(g.label || g.key)}</h3>${signalBadgeHtml({ label: g.sample_quality || "\u6837\u672c\u4e0d\u8db3", tone: "info" }, false)}</div>
+        <div class="signal-card-summary">\u5e73\u5747\u6700\u7ec8\u6da8\u8dcc ${backtestAdminPercent(g.avg_final_return_pct)}\uff0c\u6b63\u6536\u76ca\u6bd4\u4f8b ${Math.round(Number(g.positive_ratio || 0) * 100)}%\uff0c\u5e73\u5747\u6700\u5927\u56de\u64a4 ${backtestAdminPercent(g.avg_max_drawdown_pct)}</div>
+        <div class="signal-meta-row"><span>\u6837\u672c ${g.success_count || 0}/${g.total_count || 0}</span><span>\u8986\u76d6\u7387 ${Math.round(Number(g.coverage_ratio || 0) * 100)}%</span><span>\u671f\u671b\u8bc4\u5206 ${escapeHtml(g.expectancy_score ?? "-")}</span></div>
+      </article>`).join("")}</div>`;
+    }
+    function backtestAdminMatrix(matrix) {
+      const items = matrix.items || [];
+      const horizons = matrix.horizons || ["1h", "4h", "24h", "72h"];
+      if (!items.length) return `<div class="empty">\u6682\u65e0\u51b3\u7b56 x \u5468\u671f\u77e9\u9635\u3002</div>`;
+      return `<table><thead><tr><th>\u51b3\u7b56 / \u5468\u671f</th>${horizons.map(h => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${items.map(row => `<tr><td>${escapeHtml(row.decision_label || row.decision_code)}</td>${horizons.map(h => { const cell = (row.horizons || {})[h] || {}; return `<td>${backtestAdminPercent(cell.avg_final_return_pct)}<br><span class="muted">\u6b63\u6536\u76ca ${Math.round(Number(cell.positive_ratio || 0) * 100)}% / \u6837\u672c ${cell.success_count || 0}</span></td>`; }).join("")}</tr>`).join("")}</tbody></table>`;
+    }
+    function backtestAdminDiagnosis(diagnosis) {
+      const list = items => (items || []).length ? `<ul>${(items || []).map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : `<p class="muted">\u6682\u65e0\u3002</p>`;
+      return `<div class="panel span-12"><h3 class="section-title">\u6a21\u578b\u8bca\u65ad\uff1a${escapeHtml(diagnosis.overall_label || "\u89c2\u5bdf\u4e2d")}</h3><p>${escapeHtml(diagnosis.overall_summary || "\u6837\u672c\u4ecd\u5728\u79ef\u7d2f\u3002")}</p><div class="grid"><div class="panel span-3"><h4>\u6709\u6548\u9879</h4>${list(diagnosis.strengths)}</div><div class="panel span-3"><h4>\u5f31\u9879</h4>${list(diagnosis.weaknesses)}</div><div class="panel span-3"><h4>\u6821\u51c6\u5efa\u8bae</h4>${list(diagnosis.calibration_hints)}</div><div class="panel span-3"><h4>\u6570\u636e\u8b66\u544a</h4>${list(diagnosis.data_warnings)}</div></div></div>`;
+    }
+    async function loadBacktest() {
+      const [summaryPayload, matrixPayload] = await Promise.all([
+        api("/api/backtest/decision?horizon=all&window_sec=2592000"),
+        api("/api/backtest/decision/matrix?window_sec=2592000")
+      ]);
+      const data = summaryPayload.data || summaryPayload;
+      const matrix = matrixPayload.data || matrixPayload;
+      const summary = data.summary || {};
+      document.getElementById("backtestGrid").innerHTML = [
+        renderPageIntro("backtest", [summary.sample_quality || "\u89c2\u5bdf\u4e2d", `${summary.success_count || 0}/${summary.total_count || 0} \u5df2\u8ba1\u7b97`]),
+        backtestAdminMetric("\u6837\u672c\u603b\u6570", summary.total_count || 0),
+        backtestAdminMetric("\u5df2\u8ba1\u7b97\u6837\u672c", summary.success_count || 0),
+        backtestAdminMetric("\u8986\u76d6\u7387", `${Math.round(Number(summary.coverage_ratio || 0) * 100)}%`),
+        backtestAdminMetric("\u5e73\u5747\u6700\u7ec8\u6da8\u8dcc", backtestAdminPercent(summary.avg_final_return_pct)),
+        backtestAdminMetric("\u6b63\u6536\u76ca\u6bd4\u4f8b", `${Math.round(Number(summary.positive_ratio || 0) * 100)}%`),
+        backtestAdminMetric("\u5e73\u5747\u6700\u5927\u56de\u64a4", backtestAdminPercent(summary.avg_max_drawdown_pct)),
+        `<div class="panel span-12"><h3 class="section-title">\u51b3\u7b56\u8868\u73b0</h3>${backtestAdminGroups(data.decision_groups || [])}</div>`,
+        `<div class="panel span-12"><h3 class="section-title">\u51b3\u7b56 x \u5468\u671f\u77e9\u9635</h3>${backtestAdminMatrix(matrix)}</div>`,
+        backtestAdminDiagnosis(data.model_diagnosis || {})
+      ].join("");
+      setSubtitle("\u51b3\u7b56\u56de\u6d4b\uff1a\u53ea\u8bfb\u7edf\u8ba1\uff0c\u7528\u4e8e\u6a21\u578b\u6821\u51c6\uff0c\u4e0d\u6267\u884c\u81ea\u52a8\u4ea4\u6613");
+    }
     async function loadAiPrompts() {
       const data = await api("/api/ai-prompts");
       const prompts = data.prompts || {};
@@ -9510,6 +9586,7 @@ INDEX_HTML = r"""<!doctype html>
         if (currentView === "coin") await loadCoinDetail(currentCoinSymbol);
         if (currentView === "timeline") await loadTimeline();
         if (currentView === "outcomes") await loadOutcomes();
+        if (currentView === "backtest") await loadBacktest();
         if (currentView === "jobs") await loadJobs(isAuto);
         if (currentView === "prompts") await loadAiPrompts();
         if (currentView === "actions") { setSubtitle("固定白名单动作，说明写在每张卡片里"); renderActions(); }
@@ -9967,6 +10044,31 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        if path == "/public-api/backtest/decision":
+            self.send_json(public_backtest_decision_payload(
+                horizon=query.get("horizon", ["all"])[0],
+                window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
+                module=query.get("module", [""])[0],
+                decision=query.get("decision", [""])[0],
+                risk_level=query.get("risk_level", [""])[0],
+                min_samples=max(0, query_int_or(query.get("min_samples", ["0"])[0], 0)),
+            ))
+            return
+        if path == "/public-api/backtest/decision/matrix":
+            self.send_json(public_backtest_matrix_payload(
+                window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
+                module=query.get("module", [""])[0],
+                risk_level=query.get("risk_level", [""])[0],
+            ))
+            return
+        if path == "/public-api/backtest/decision/detail":
+            self.send_json(public_backtest_detail_payload(
+                decision=query.get("decision", [""])[0],
+                horizon=query.get("horizon", ["all"])[0],
+                limit=clamp_query_int(query.get("limit", ["20"])[0], 20, 100),
+                window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
+            ))
+            return
         if path.startswith("/public-api/"):
             self.send_json(api_error("公开接口不存在", code="not_found"), HTTPStatus.NOT_FOUND)
             return
@@ -10198,6 +10300,31 @@ class WebHandler(BaseHTTPRequestHandler):
                 horizon=query.get("horizon", [""])[0],
                 limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 300),
                 window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
+            ))
+            return
+        if path == "/api/backtest/decision":
+            self.send_json(backtest_decision_payload(
+                horizon=query.get("horizon", ["all"])[0],
+                window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
+                module=query.get("module", [""])[0],
+                decision=query.get("decision", [""])[0],
+                risk_level=query.get("risk_level", [""])[0],
+                min_samples=max(0, query_int_or(query.get("min_samples", ["0"])[0], 0)),
+            ))
+            return
+        if path == "/api/backtest/decision/matrix":
+            self.send_json(backtest_matrix_payload(
+                window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
+                module=query.get("module", [""])[0],
+                risk_level=query.get("risk_level", [""])[0],
+            ))
+            return
+        if path == "/api/backtest/decision/detail":
+            self.send_json(backtest_detail_payload(
+                decision=query.get("decision", [""])[0],
+                horizon=query.get("horizon", ["all"])[0],
+                limit=clamp_query_int(query.get("limit", ["20"])[0], 20, 100),
+                window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
         if path == "/api/logs":

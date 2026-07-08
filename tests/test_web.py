@@ -2249,14 +2249,13 @@ class WebConsoleTests(unittest.TestCase):
             "Load More",
             "Failed to load",
             "No signals",
-            "Decision",
-            "Calibration",
-            "Distribution",
-            "Factor",
+            "Decision Model",
+            "Calibration Notes",
+            "Decision Distribution",
+            "Factor Explanation",
             "Risk Level",
             "Confidence",
-            "Risk",
-            "Watch",
+            "Watch Points",
         ):
             self.assertNotIn(old_text, web.PUBLIC_INDEX_HTML)
         self.assertNotIn("/api/jobs", web.PUBLIC_INDEX_HTML)

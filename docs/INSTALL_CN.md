@@ -1,5 +1,40 @@
 # 泡泡抓币中文安装目录
 
+## v1.73.0 运维说明
+
+v1.73.0 新增“决策回测”看板。它只读取 `data/outcomes.db` 的 `signal_outcomes` 表，统计不同决策在 1h / 4h / 24h / 72h 后的表现，用于评估 Signal Decision Model 是否需要继续校准。
+
+新增公开只读 API：
+
+```text
+/public-api/backtest/decision
+/public-api/backtest/decision/matrix
+/public-api/backtest/decision/detail
+```
+
+新增后台私有 API：
+
+```text
+/api/backtest/decision
+/api/backtest/decision/matrix
+/api/backtest/decision/detail
+```
+
+后台私有 API 继续需要登录；公开 API 继续脱敏，不返回 payload_json、text_html、dedup_key、Telegram topic/message/reply、jobs、audit、config、logs、Cookie、Authorization 或 token/secret 字段。
+
+统计口径：
+
+```text
+success      已计算成功，参与平均收益、回撤、正收益比例等指标。
+pending      结果窗口未到期，只参与覆盖率统计，不当作亏损。
+unavailable  价格源无法提供该交易对数据，只参与覆盖率统计，不当作亏损。
+error        系统异常，需要后台排查，不参与收益统计。
+```
+
+看板会输出样本数、覆盖率、平均最终涨跌、平均最大涨幅、平均最大回撤、正收益比例、明显回撤比例、期望评分和样本质量，并生成模型诊断结论，例如可试仓是否有效、风险警报是否有过滤价值、禁止追高是否过度压制强趋势、等待回踩是否符合先回撤后转正特征。
+
+该功能仅用于复盘、统计和模型校准；不会执行自动交易，不接交易所私有下单接口，不设置杠杆，不挂止盈止损，不操作真实资金，也不会改变 Telegram 推送节奏。
+
 ## v1.72.2 运维说明
 
 v1.72.2 将 outcome 价格源不可用与系统错误拆开处理。Binance 返回 HTTP 400、invalid symbol、Bad Request、symbol not found 或空 K 线数据时，结果会写入 `data_status=unavailable`、`result_label=数据不足`，不会计入真实系统 `error`。执行 `outcome-scan` 时会自动把旧库中 `HTTP Error 400` 这类历史误分类记录修复为 `unavailable`。

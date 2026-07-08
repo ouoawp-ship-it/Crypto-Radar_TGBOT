@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.73.0 说明
+
+v1.73.0 新增 Decision Backtest Dashboard，用 `data/outcomes.db` 的 `signal_outcomes` 统计不同决策在 1h / 4h / 24h / 72h 后的真实表现。看板按 decision_code、horizon、module、risk_level 和 confidence bucket 聚合，输出样本数、覆盖率、平均最终涨跌、平均最大涨幅、平均最大回撤、正收益比例、明显回撤比例、期望评分和样本质量。
+
+新增公开只读 API：`/public-api/backtest/decision`、`/public-api/backtest/decision/matrix`、`/public-api/backtest/decision/detail`；新增后台私有 API：`/api/backtest/decision`、`/api/backtest/decision/matrix`、`/api/backtest/decision/detail`。公开 API 继续脱敏，不返回 payload_json、text_html、Telegram topic/message/reply、jobs、audit、config、logs 或任何 token/secret 字段。
+
+公开前台和后台控制台新增“决策回测”入口。看板会展示决策表现卡片、决策 x 周期矩阵和模型诊断，帮助判断“可试仓”“风险警报”“禁止追高”“等待回踩”“观察”等决策是否符合后续表现。`pending` 只表示结果窗口未到期，`unavailable` 表示价格源无数据，`error` 表示系统异常；只有 `success` 样本参与收益、回撤和正收益比例统计。
+
+本功能仅用于复盘统计和模型校准，不执行自动交易，不接交易所下单 API，不改 Telegram 主推送流程，不改 `signals.db` / `jobs.db` 结构，也不破坏已有 `outcomes.db` 数据。
+
 ## v1.72.2 说明
 
 v1.72.2 修正 Signal Outcome Tracking 的价格源不可用口径：Binance HTTP 400、invalid symbol、Bad Request、symbol not found 和空 K 线数据会标记为 `unavailable / 数据不足`，不再归类为系统 `error`。扫描开始时会自动把旧库中 `HTTP Error 400` 这类历史误分类记录修复为 `unavailable`，`/public-api/outcomes/stats` 的 `error_count` 也不再包含这些价格源不支持的交易对。
