@@ -1,5 +1,17 @@
 # 泡泡抓币中文安装目录
 
+## v1.74.3 运维说明
+
+v1.74.3 修复 `bash scripts/check_https_deploy.sh --with-stable-check` 的日志误判。类似下面的正常运行日志不会再被当成阻断项：
+
+```text
+OK observe_history: 启动观察历史 500 轮
+```
+
+部署验收日志扫描会先过滤白名单，例如 `OK observe_history`、`启动观察历史`、稳定版自检、readiness wait、可自动重试网络超时、测试重试队列和单次 ReadTimeout / ConnectTimeout。随后只按明确错误规则判定阻断，例如 `Traceback`、`Exception occurred during processing`、`Unhandled exception`、`RuntimeError`、`sqlite database is locked`、`no such table`、`EADDRINUSE`、`ECONNREFUSED`、`500 Internal Server Error`、明确的 `/api/ 500` / `/public-api/ 500` / `/admin 500`、`ERROR`、`CRITICAL` 等。
+
+如果仍发现阻断日志，验收脚本会输出服务名、匹配规则、判定原因和脱敏后的原始日志行。v1.74.2 的 Next.js / Nginx active route 验收保持不变：`paopao-frontend`、本机 3000、HTTPS `paoxx-frontend` marker、`nginx -T` 中的 3000/8080 路由、`/admin`、`/public-api` 和私有 `/api` 401 仍会继续检查。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema 或后端 API contract。
+
 ## v1.74.2 运维说明
 
 v1.74.2 修复公开前台公网路由未切到 Next.js 的问题。`paopao-frontend.service` 和本机 `127.0.0.1:3000` 正常，不代表公网 `https://paoxx.com/` 一定已经走 Next.js；必须看 Nginx 实际生效配置。

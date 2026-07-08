@@ -1,5 +1,13 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.74.3 说明
+
+v1.74.3 修复部署验收脚本的日志误判：`scripts/check_https_deploy.sh` 不再把 `OK observe_history`、`启动观察历史`、readiness 等正常运行日志，或已知可自动重试的单次网络 timeout 当作阻断错误。
+
+日志扫描现在先应用部署验收专用白名单，再按明确错误规则判断阻断项，例如 `Traceback`、`Exception occurred during processing`、`Unhandled exception`、`RuntimeError`、`sqlite database is locked`、`no such table`、`EADDRINUSE`、`ECONNREFUSED`、`500 Internal Server Error`、明确的 `/api/ 500` / `/public-api/ 500` / `/admin 500`、`ERROR`、`CRITICAL` 等。脚本输出阻断日志时会显示服务名、匹配规则、判定原因和脱敏后的原始日志行，便于排查。
+
+v1.74.2 的 Next.js 前台验收仍保留：`paopao-frontend` active、本机 3000、HTTPS 页面 marker、`nginx -T` active route、`/admin`、`/public-api` 和私有 `/api` 401 都继续检查。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema 或后端 API contract。
+
 ## v1.74.2 说明
 
 v1.74.2 修复 Next.js 公开前台在本机 3000 正常、但公网 `https://paoxx.com/` 仍返回旧 Python 前台的问题。原因是 v1.74.1 写入了 Nginx 站点模板，但线上实际生效的 server block 仍可能来自旧 default / legacy 配置，`/` 继续被反代到 `paopao-web` 的 8080。

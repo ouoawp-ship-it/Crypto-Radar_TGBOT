@@ -395,6 +395,55 @@ check_stable_check() {
   fi
 }
 
+is_benign_deploy_log_line() {
+  local line="$1"
+  printf '%s' "${line}" | grep -aEq 'OK observe_history|启动观察历史|稳定版自检|readiness wait|可自动重试网络超时|queued send retry context=retry_test|callback failed ReadTimeout: Read timed out|BrokenPipeError|ConnectionResetError|client disconnected|ReadTimeout|ConnectTimeout'
+}
+
+deploy_log_block_rule() {
+  local line="$1"
+  if printf '%s' "${line}" | grep -aFq 'Traceback'; then
+    printf 'Traceback\tPython traceback indicates an unhandled exception'
+  elif printf '%s' "${line}" | grep -aFq 'Exception occurred during processing'; then
+    printf 'Exception occurred during processing\tsocketserver request handler raised an exception'
+  elif printf '%s' "${line}" | grep -aFq 'Unhandled exception'; then
+    printf 'Unhandled exception\tapplication reported an unhandled exception'
+  elif printf '%s' "${line}" | grep -aFq 'RuntimeError'; then
+    printf 'RuntimeError\tapplication raised RuntimeError'
+  elif printf '%s' "${line}" | grep -aFq 'sqlite database is locked'; then
+    printf 'sqlite database is locked\tSQLite write/read lock contention'
+  elif printf '%s' "${line}" | grep -aFq 'no such table'; then
+    printf 'no such table\tSQLite schema/table is missing'
+  elif printf '%s' "${line}" | grep -aFq 'EADDRINUSE'; then
+    printf 'EADDRINUSE\tservice port is already in use'
+  elif printf '%s' "${line}" | grep -aFq 'ECONNREFUSED'; then
+    printf 'ECONNREFUSED\tupstream connection was refused'
+  elif printf '%s' "${line}" | grep -aFq '500 Internal Server Error'; then
+    printf '500 Internal Server Error\tHTTP 500 response was logged'
+  elif printf '%s' "${line}" | grep -aEq '/api/.*[[:space:]]500([^0-9]|$)'; then
+    printf '/api/ 500\tprivate API returned HTTP 500'
+  elif printf '%s' "${line}" | grep -aEq '/public-api/.*[[:space:]]500([^0-9]|$)'; then
+    printf '/public-api/ 500\tpublic API returned HTTP 500'
+  elif printf '%s' "${line}" | grep -aEq '/admin([^[:space:]]*)?[[:space:]]500([^0-9]|$)'; then
+    printf '/admin 500\tadmin route returned HTTP 500'
+  elif printf '%s' "${line}" | grep -aFq 'Web JS error'; then
+    printf 'Web JS error\tbrowser-side JavaScript error was reported'
+  elif printf '%s' "${line}" | grep -aFq 'TelegramGateway._record failed'; then
+    printf 'TelegramGateway._record failed\tTelegram signal recording failed'
+  elif printf '%s' "${line}" | grep -aEq '(^|[^A-Za-z])ERROR([^A-Za-z]|$)'; then
+    printf 'ERROR\tapplication logged explicit ERROR'
+  elif printf '%s' "${line}" | grep -aEq '(^|[^A-Za-z])CRITICAL([^A-Za-z]|$)'; then
+    printf 'CRITICAL\tapplication logged explicit CRITICAL'
+  fi
+}
+
+sanitize_log_line() {
+  sed -E \
+    -e 's/[0-9]{6,12}:[A-Za-z0-9_-]{20,}/<redacted:telegram-token>/g' \
+    -e 's/(sk|rk|pk)-[A-Za-z0-9_-]{12,}/<redacted:api-key>/g' \
+    -e 's/([Tt]oken|[Aa]uthorization|[Aa][Pp][Ii][_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[^[:space:]]*/\1=<redacted>/g'
+}
+
 check_logs() {
   if [ "${SKIP_LOGS}" -eq 1 ]; then
     record_warn "已跳过 journalctl 日志检查"
@@ -402,8 +451,6 @@ check_logs() {
   fi
   local services=(paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai)
   local lines=(200 300 150 150 150)
-  local pattern='Traceback|Exception occurred during processing|sqlite database is locked|no such table|/api/.* 500|/public-api/.* 500|/admin 500| 500 |Web JS error|EADDRINUSE|ECONNREFUSED|TelegramGateway\._record failed'
-  local noise='BrokenPipeError|ConnectionResetError|client disconnected|ReadTimeout'
   local total=0
   local i
   for i in "${!services[@]}"; do
@@ -417,18 +464,34 @@ check_logs() {
     else
       journal_output="$(journalctl -u "${service}" -n "${lines[$i]}" --no-pager 2>/dev/null || true)"
     fi
-    matches="$(printf '%s\n' "${journal_output}" | grep -aE "${pattern}" | grep -aEv "${noise}" || true)"
-    if [ -n "${matches}" ]; then
+    local matches_file
+    matches_file="$(mktemp)"
+    while IFS= read -r line; do
+      [ -n "${line}" ] || continue
+      if is_benign_deploy_log_line "${line}"; then
+        continue
+      fi
+      local rule_reason
+      rule_reason="$(deploy_log_block_rule "${line}")"
+      if [ -n "${rule_reason}" ]; then
+        printf '%s\t%s\n' "${rule_reason}" "${line}" >> "${matches_file}"
+      fi
+    done <<EOF
+${journal_output}
+EOF
+    if [ -s "${matches_file}" ]; then
       local count
-      count="$(printf '%s\n' "${matches}" | wc -l | tr -d ' ')"
+      count="$(wc -l < "${matches_file}" | tr -d ' ')"
       total=$((total + count))
-      record_block "日志发现 ${service} 阻断关键词 ${count} 条，匹配片段如下"
-      echo "${service} 日志匹配片段:"
-      printf '%s\n' "${matches}" | tail -n 8 | sed -E \
-        -e 's/[0-9]{6,12}:[A-Za-z0-9_-]{20,}/<redacted:telegram-token>/g' \
-        -e 's/(sk|rk|pk)-[A-Za-z0-9_-]{12,}/<redacted:api-key>/g' \
-        -e 's/([Tt]oken|[Aa]uthorization|[Aa][Pp][Ii][_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[^[:space:]]*/\1=<redacted>/g'
+      record_block "日志发现 ${service} 阻断错误 ${count} 条"
+      echo "${service} 日志阻断片段:"
+      tail -n 8 "${matches_file}" | while IFS="$(printf '\t')" read -r rule reason raw_line; do
+        printf '匹配规则: %s\n' "${rule}"
+        printf '判定原因: %s\n' "${reason}"
+        printf '日志: %s\n' "${raw_line}" | sanitize_log_line
+      done
     fi
+    rm -f "${matches_file}"
   done
   if [ "${total}" -eq 0 ]; then
     record_pass "日志未发现阻断错误"

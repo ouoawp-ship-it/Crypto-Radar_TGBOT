@@ -164,7 +164,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("location ^~ /_next/", check)
         self.assertIn("proxy_pass http://127.0.0.1:3000;", check)
         self.assertIn("proxy_pass http://127.0.0.1:8080;", check)
-        self.assertIn("日志匹配片段", check)
+        self.assertIn("日志阻断片段", check)
 
     def test_docs_describe_nextjs_frontend_split(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -174,6 +174,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("v1.74.0", combined)
         self.assertIn("v1.74.1", combined)
         self.assertIn("v1.74.2", combined)
+        self.assertIn("v1.74.3", combined)
         self.assertIn("frontend/", combined)
         self.assertIn("Next.js", combined)
         self.assertIn("paopao-frontend", combined)
