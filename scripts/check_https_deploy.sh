@@ -240,6 +240,45 @@ check_nginx_ports() {
   fi
 }
 
+nginx_active_config_dump() {
+  if ! command -v nginx >/dev/null 2>&1; then
+    return 1
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo nginx -T 2>/dev/null
+  else
+    nginx -T 2>/dev/null
+  fi
+}
+
+check_nginx_active_routes() {
+  local config
+  if ! config="$(nginx_active_config_dump)" || [ -z "${config}" ]; then
+    record_block "无法读取 nginx -T 生效配置，不能确认公网路由是否指向 Next.js"
+    return
+  fi
+
+  local missing=0
+  local needle
+  for needle in \
+    "location ^~ /admin" \
+    "location ^~ /api/" \
+    "location ^~ /public-api/" \
+    "location ^~ /_next/" \
+    "location / {" \
+    "proxy_pass http://127.0.0.1:3000;" \
+    "proxy_pass http://127.0.0.1:8080;"; do
+    if ! printf '%s' "${config}" | grep -Fq "${needle}"; then
+      record_block "nginx -T 生效配置缺少: ${needle}"
+      missing=$((missing + 1))
+    fi
+  done
+
+  if [ "${missing}" -eq 0 ]; then
+    record_pass "nginx -T 生效配置包含 Next.js 3000 和 Python 8080 路由"
+  fi
+}
+
 check_services() {
   if [ "${SKIP_SERVICES}" -eq 1 ]; then
     record_warn "已跳过 systemd 服务检查"
@@ -402,6 +441,7 @@ echo "目标: ${BASE_URL}"
 echo
 
 check_nginx_ports
+check_nginx_active_routes
 check_page_any_contains "本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-frontend" "nextjs-dashboard"
 check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard" "专业加密数据仪表盘"
 check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"

@@ -1,5 +1,29 @@
 # 泡泡抓币中文安装目录
 
+## v1.74.2 运维说明
+
+v1.74.2 修复公开前台公网路由未切到 Next.js 的问题。`paopao-frontend.service` 和本机 `127.0.0.1:3000` 正常，不代表公网 `https://paoxx.com/` 一定已经走 Next.js；必须看 Nginx 实际生效配置。
+
+更新脚本现在会写入 `/etc/nginx/conf.d/00-paoxx-frontend.conf`，并禁用旧 default / legacy 站点入口，避免旧 Python 前台继续接管 `/`。生效路由要求：
+
+```text
+/admin       -> http://127.0.0.1:8080
+/api/        -> http://127.0.0.1:8080
+/public-api/ -> http://127.0.0.1:8080
+/_next/      -> http://127.0.0.1:3000
+/            -> http://127.0.0.1:3000
+```
+
+验收时优先执行：
+
+```bash
+sudo nginx -T 2>/dev/null | grep -E "proxy_pass http://127.0.0.1:3000|proxy_pass http://127.0.0.1:8080"
+curl -s https://paoxx.com/ | grep -E "paoxx-frontend|nextjs-dashboard"
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
+`scripts/check_https_deploy.sh` 已改为检查 `nginx -T` 的 active config，而不是只检查仓库里的模板。`/admin`、`/api/`、`/public-api/` 仍由 Python 后端提供；`/` 和 `/_next/` 由 Next.js 提供。本版本不改 Telegram 主推送流程，不引入自动交易。
+
 ## v1.74.1 运维说明
 
 v1.74.1 补齐 Next.js 公开前台生产接线。`paopao update --yes` 会构建 `frontend/`、安装或更新 `paopao-frontend.service`、启动并重启该服务、写入 Nginx 反代配置并 reload Nginx，然后再执行 stable-check。
@@ -278,6 +302,13 @@ server {
 
     location ^~ /admin {
         proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ^~ /_next/ {
+        proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;

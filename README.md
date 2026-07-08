@@ -1,5 +1,13 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.74.2 说明
+
+v1.74.2 修复 Next.js 公开前台在本机 3000 正常、但公网 `https://paoxx.com/` 仍返回旧 Python 前台的问题。原因是 v1.74.1 写入了 Nginx 站点模板，但线上实际生效的 server block 仍可能来自旧 default / legacy 配置，`/` 继续被反代到 `paopao-web` 的 8080。
+
+安装和更新脚本现在会写入实际生效的 `/etc/nginx/conf.d/00-paoxx-frontend.conf`，并把旧的 `sites-enabled/default`、旧 paopao 站点和旧 `conf.d` 入口改名为 `*.disabled-by-paopao`，避免它们继续接管 `/`。生效路由固定为：`/admin`、`/api/`、`/public-api/` 走 Python 后端 `127.0.0.1:8080`，`/_next/` 和 `/` 走 Next.js `127.0.0.1:3000`。
+
+`scripts/check_https_deploy.sh` 现在会读取 `nginx -T` 的 active config，确认同时存在 `proxy_pass http://127.0.0.1:3000;` 和 `proxy_pass http://127.0.0.1:8080;`，不再只依赖模板文件或本机 3000 健康状态。Telegram 主推送流程、后台 API 鉴权、数据库结构和自动交易能力均未改变；本版本没有引入自动交易。
+
 ## v1.74.1 说明
 
 v1.74.1 修正 Next.js 公开前台的生产接线：更新和安装脚本会优先使用 `npm ci` 构建 `frontend/`，写入 `paopao-frontend.service`，用真实 `npm` 路径启动 Next.js，并确保服务只监听 `127.0.0.1:3000`。脚本会写入可重复执行的 Nginx 路由配置：`/admin`、`/api/`、`/public-api/` 继续反代到 Python 后端 `127.0.0.1:8080`，`/` 反代到 Next.js `127.0.0.1:3000`。

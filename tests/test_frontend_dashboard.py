@@ -130,6 +130,10 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("127.0.0.1:3000", check)
         self.assertIn("paoxx-frontend", check)
         self.assertIn("nextjs-dashboard", check)
+        self.assertIn("/etc/nginx/conf.d/00-paoxx-frontend.conf", combined)
+        self.assertIn("NGINX_ACTIVE_SITE_PATH", combined)
+        self.assertIn("disabled-by-paopao", combined)
+        self.assertIn("nginx -T", combined)
 
     def test_nginx_routes_keep_backend_paths_before_frontend_root(self) -> None:
         install = (ROOT / "scripts/install_server.sh").read_text(encoding="utf-8")
@@ -139,11 +143,14 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             admin_idx = source.index("location ^~ /admin")
             api_idx = source.index("location ^~ /api/")
             public_idx = source.index("location ^~ /public-api/")
+            next_idx = source.index("location ^~ /_next/")
             root_idx = source.index("location / {")
             self.assertLess(admin_idx, root_idx)
             self.assertLess(api_idx, root_idx)
             self.assertLess(public_idx, root_idx)
+            self.assertLess(next_idx, root_idx)
             self.assertIn("proxy_pass http://127.0.0.1:8080;", source[admin_idx:root_idx])
+            self.assertIn("proxy_pass http://127.0.0.1:3000;", source[next_idx:root_idx])
             self.assertIn("proxy_pass http://127.0.0.1:3000;", source[root_idx:])
 
     def test_https_check_requires_nextjs_marker_not_legacy_public_copy(self) -> None:
@@ -151,6 +158,12 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn('"本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-frontend" "nextjs-dashboard"', check)
         self.assertIn('"HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard"', check)
         self.assertNotIn('"HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达"', check)
+        self.assertIn("check_nginx_active_routes", check)
+        self.assertIn("nginx_active_config_dump", check)
+        self.assertIn("nginx -T", check)
+        self.assertIn("location ^~ /_next/", check)
+        self.assertIn("proxy_pass http://127.0.0.1:3000;", check)
+        self.assertIn("proxy_pass http://127.0.0.1:8080;", check)
         self.assertIn("日志匹配片段", check)
 
     def test_docs_describe_nextjs_frontend_split(self) -> None:
@@ -160,10 +173,13 @@ class NextjsPublicDashboardTests(unittest.TestCase):
 
         self.assertIn("v1.74.0", combined)
         self.assertIn("v1.74.1", combined)
+        self.assertIn("v1.74.2", combined)
         self.assertIn("frontend/", combined)
         self.assertIn("Next.js", combined)
         self.assertIn("paopao-frontend", combined)
         self.assertIn("127.0.0.1:3000", combined)
+        self.assertIn("/etc/nginx/conf.d/00-paoxx-frontend.conf", combined)
+        self.assertIn("/_next/", combined)
         self.assertIn("paoxx-frontend=nextjs-dashboard", combined)
         self.assertIn("/admin", combined)
         self.assertIn("/api/*", combined)

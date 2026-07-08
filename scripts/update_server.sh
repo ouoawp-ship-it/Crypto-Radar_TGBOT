@@ -366,16 +366,18 @@ install_or_update_nginx_frontend_routes() {
   }
   local domain="${PUBLIC_DOMAIN:-paoxx.com}"
   local site_path="${NGINX_SITE_PATH:-/etc/nginx/sites-available/${domain}}"
+  local active_path="${NGINX_ACTIVE_SITE_PATH:-/etc/nginx/conf.d/00-paoxx-frontend.conf}"
   local enabled_path="/etc/nginx/sites-enabled/${domain}"
   local fullchain="/etc/letsencrypt/live/${domain}/fullchain.pem"
   local privkey="/etc/letsencrypt/live/${domain}/privkey.pem"
-  if [ ! -f "$fullchain" ] || [ ! -f "$privkey" ]; then
+  if ! run_root test -f "$fullchain" || ! run_root test -f "$privkey"; then
     printf '[paopao-update] 未找到 %s 证书文件，跳过 Nginx 反代配置写入\n' "$domain"
     return 0
   fi
 
-  printf '[paopao-update] 写入 Nginx 公开前台反代配置: %s\n' "$site_path"
-  run_root tee "$site_path" >/dev/null <<EOF
+  printf '[paopao-update] 写入 Nginx 公开前台 active 反代配置: %s\n' "$active_path"
+  run_root mkdir -p "$(dirname "$active_path")"
+  run_root tee "$active_path" >/dev/null <<EOF
 server {
     listen 80;
     server_name ${domain};
@@ -413,6 +415,14 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
+    location ^~ /_next/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host \$host;
@@ -422,8 +432,45 @@ server {
     }
 }
 EOF
-  run_root ln -sfn "$site_path" "$enabled_path"
+  if [ "$site_path" != "$active_path" ]; then
+    run_root mkdir -p "$(dirname "$site_path")"
+    run_root cp "$active_path" "$site_path"
+  fi
+
+  local legacy
+  for legacy in \
+    "$enabled_path" \
+    "/etc/nginx/sites-enabled/default" \
+    "/etc/nginx/sites-enabled/paopao" \
+    "/etc/nginx/sites-enabled/paopao-web" \
+    "/etc/nginx/conf.d/${domain}.conf" \
+    "/etc/nginx/conf.d/default.conf" \
+    "/etc/nginx/conf.d/paopao.conf" \
+    "/etc/nginx/conf.d/paopao-web.conf"; do
+    if [ "$legacy" = "$active_path" ] || [ "$legacy" = "$site_path" ]; then
+      continue
+    fi
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+      run_root mv -f "$legacy" "${legacy}.disabled-by-paopao"
+    fi
+  done
+
   run_root nginx -t
+  local active_config
+  active_config="$(run_root nginx -T 2>/dev/null || true)"
+  if ! printf '%s' "$active_config" | grep -Fq 'proxy_pass http://127.0.0.1:3000;'; then
+    printf '[paopao-update] Nginx active config missing Next.js proxy_pass 127.0.0.1:3000\n' >&2
+    exit 1
+  fi
+  if ! printf '%s' "$active_config" | grep -Fq 'proxy_pass http://127.0.0.1:8080;'; then
+    printf '[paopao-update] Nginx active config missing Python backend proxy_pass 127.0.0.1:8080\n' >&2
+    exit 1
+  fi
+  if ! printf '%s' "$active_config" | grep -Fq 'location ^~ /_next/'; then
+    printf '[paopao-update] Nginx active config missing /_next/ route\n' >&2
+    exit 1
+  fi
+
   if command -v systemctl >/dev/null 2>&1; then
     run_root systemctl reload nginx
   else

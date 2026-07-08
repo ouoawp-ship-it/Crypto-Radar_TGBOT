@@ -1,6 +1,6 @@
 {
   "name": "paoxx-public-dashboard",
-  "version": "1.74.1",
+  "version": "1.74.2",
   "private": true,
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3000",
