@@ -5,13 +5,16 @@ import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
   title: "Paoxx 信号雷达",
-  description: "加密市场信号、决策、结果追踪与回测仪表盘"
+  description: "专业加密数据仪表盘，聚合信号、决策、结果追踪与回测。",
+  other: {
+    "paoxx-frontend": "nextjs-dashboard"
+  }
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body>
+      <body data-paoxx-frontend="nextjs-dashboard">
         <AppShell>{children}</AppShell>
       </body>
     </html>

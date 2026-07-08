@@ -58,7 +58,8 @@ project_commit() {
 
 service_unit_exists() {
   local name="$1"
-  command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${name}.service" >/dev/null 2>&1
+  command -v systemctl >/dev/null 2>&1 \
+    && systemctl list-unit-files "${name}.service" --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "${name}.service"
 }
 
 admin_login_status() {

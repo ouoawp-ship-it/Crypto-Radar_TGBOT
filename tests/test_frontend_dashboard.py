@@ -86,6 +86,9 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         source = read_frontend_sources()
         for text in (
             "Paoxx 信号雷达",
+            "paoxx-frontend",
+            "nextjs-dashboard",
+            "专业加密数据仪表盘",
             "信号雷达",
             "决策模型",
             "结果追踪",
@@ -111,14 +114,44 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         combined = "\n".join([install, update, check, menu])
 
         self.assertIn("paopao-frontend", combined)
+        self.assertIn("npm ci", install)
         self.assertIn("npm install", install)
+        self.assertIn("npm ci", update)
         self.assertIn("npm run build", install)
         self.assertIn("npm install", update)
         self.assertIn("npm run build", update)
         self.assertIn("--hostname 127.0.0.1 --port 3000", combined)
+        self.assertIn("Environment=HOSTNAME=127.0.0.1", combined)
+        self.assertIn("enable --now", combined)
+        self.assertIn("command -v npm", combined)
         self.assertIn("Node.js 22 LTS", combined)
         self.assertIn("Next.js Dashboard", combined)
         self.assertIn("paopao-frontend", check)
+        self.assertIn("127.0.0.1:3000", check)
+        self.assertIn("paoxx-frontend", check)
+        self.assertIn("nextjs-dashboard", check)
+
+    def test_nginx_routes_keep_backend_paths_before_frontend_root(self) -> None:
+        install = (ROOT / "scripts/install_server.sh").read_text(encoding="utf-8")
+        update = (ROOT / "scripts/update_server.sh").read_text(encoding="utf-8")
+        docs = (ROOT / "docs/INSTALL_CN.md").read_text(encoding="utf-8")
+        for source in (install, update, docs):
+            admin_idx = source.index("location ^~ /admin")
+            api_idx = source.index("location ^~ /api/")
+            public_idx = source.index("location ^~ /public-api/")
+            root_idx = source.index("location / {")
+            self.assertLess(admin_idx, root_idx)
+            self.assertLess(api_idx, root_idx)
+            self.assertLess(public_idx, root_idx)
+            self.assertIn("proxy_pass http://127.0.0.1:8080;", source[admin_idx:root_idx])
+            self.assertIn("proxy_pass http://127.0.0.1:3000;", source[root_idx:])
+
+    def test_https_check_requires_nextjs_marker_not_legacy_public_copy(self) -> None:
+        check = (ROOT / "scripts/check_https_deploy.sh").read_text(encoding="utf-8")
+        self.assertIn('"本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-frontend" "nextjs-dashboard"', check)
+        self.assertIn('"HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard"', check)
+        self.assertNotIn('"HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达"', check)
+        self.assertIn("日志匹配片段", check)
 
     def test_docs_describe_nextjs_frontend_split(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -126,10 +159,12 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         combined = readme + "\n" + install
 
         self.assertIn("v1.74.0", combined)
+        self.assertIn("v1.74.1", combined)
         self.assertIn("frontend/", combined)
         self.assertIn("Next.js", combined)
         self.assertIn("paopao-frontend", combined)
         self.assertIn("127.0.0.1:3000", combined)
+        self.assertIn("paoxx-frontend=nextjs-dashboard", combined)
         self.assertIn("/admin", combined)
         self.assertIn("/api/*", combined)
         self.assertIn("/public-api/*", combined)

@@ -52,6 +52,10 @@ node_major_version() {
   node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null
 }
 
+npm_bin_path() {
+  command -v npm 2>/dev/null || true
+}
+
 ensure_node_runtime() {
   local major=""
   major="$(node_major_version || true)"
@@ -79,6 +83,14 @@ ensure_node_runtime() {
   run_root apt-get install -y nodejs
 }
 
+frontend_install_deps() {
+  if [ -f package-lock.json ]; then
+    npm ci
+  else
+    npm install
+  fi
+}
+
 build_frontend_dashboard() {
   if [ ! -f "${APP_DIR}/frontend/package.json" ]; then
     printf '[paopao-update] 未发现 frontend/package.json，跳过 Next.js 公开前台构建\n'
@@ -89,7 +101,7 @@ build_frontend_dashboard() {
   printf '[paopao-update] 构建 Next.js 公开前台\n'
   (
     cd "${APP_DIR}/frontend"
-    npm install
+    frontend_install_deps
     npm run build
   )
 }
@@ -316,27 +328,107 @@ EOF
 install_or_update_frontend_service() {
   command -v systemctl >/dev/null 2>&1 || return 0
   [ -f "${APP_DIR}/frontend/package.json" ] || return 0
+  ensure_node_runtime
+  local npm_bin
+  npm_bin="$(npm_bin_path)"
+  if [ -z "$npm_bin" ]; then
+    printf '[paopao-update] 未检测到 npm，无法安装 Next.js 公开前台 systemd 服务\n' >&2
+    exit 1
+  fi
   local service_path="/etc/systemd/system/${FRONTEND_SERVICE_NAME}.service"
   run_root tee "$service_path" >/dev/null <<EOF
 [Unit]
 Description=Paopao Next.js Public Frontend
-After=network-online.target ${WEB_SERVICE_NAME}.service
-Wants=network-online.target
+After=network.target ${WEB_SERVICE_NAME}.service
 
 [Service]
 Type=simple
 User=${SUDO_USER:-$(id -un)}
 WorkingDirectory=${APP_DIR}/frontend
-ExecStart=/usr/bin/env npm run start -- --hostname 127.0.0.1 --port 3000
-Restart=always
-RestartSec=10
 Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=${npm_bin} run start -- --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
   run_root systemctl daemon-reload
-  run_root systemctl enable "$FRONTEND_SERVICE_NAME" >/dev/null 2>&1 || true
+  run_root systemctl enable --now "$FRONTEND_SERVICE_NAME"
+}
+
+install_or_update_nginx_frontend_routes() {
+  command -v nginx >/dev/null 2>&1 || {
+    printf '[paopao-update] 未找到 nginx，跳过公开前台反代配置\n'
+    return 0
+  }
+  local domain="${PUBLIC_DOMAIN:-paoxx.com}"
+  local site_path="${NGINX_SITE_PATH:-/etc/nginx/sites-available/${domain}}"
+  local enabled_path="/etc/nginx/sites-enabled/${domain}"
+  local fullchain="/etc/letsencrypt/live/${domain}/fullchain.pem"
+  local privkey="/etc/letsencrypt/live/${domain}/privkey.pem"
+  if [ ! -f "$fullchain" ] || [ ! -f "$privkey" ]; then
+    printf '[paopao-update] 未找到 %s 证书文件，跳过 Nginx 反代配置写入\n' "$domain"
+    return 0
+  fi
+
+  printf '[paopao-update] 写入 Nginx 公开前台反代配置: %s\n' "$site_path"
+  run_root tee "$site_path" >/dev/null <<EOF
+server {
+    listen 80;
+    server_name ${domain};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
+
+    ssl_certificate ${fullchain};
+    ssl_certificate_key ${privkey};
+
+    location ^~ /admin {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ^~ /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ^~ /public-api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+EOF
+  run_root ln -sfn "$site_path" "$enabled_path"
+  run_root nginx -t
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl reload nginx
+  else
+    run_root nginx -s reload
+  fi
 }
 
 install_or_update_ai_service() {
@@ -464,6 +556,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     install_or_update_frontend_service
     install_or_update_ai_service
     restart_services_if_present
+    install_or_update_nginx_frontend_routes
     run_post_update_stable_check
   fi
   printf '\n当前已经是最新版本，不需要更新。\n'
@@ -512,6 +605,7 @@ install_or_update_web_service
 install_or_update_frontend_service
 install_or_update_ai_service
 restart_services_if_present
+install_or_update_nginx_frontend_routes
 run_post_update_stable_check
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"

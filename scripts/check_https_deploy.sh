@@ -211,9 +211,13 @@ check_nginx_ports() {
 
   local has_80=0
   local has_443=0
+  local has_3000_loopback=0
+  local has_3000_public=0
   local has_8080=0
   printf '%s\n' "${output}" | grep -E '(^|[[:space:]])[^[:space:]]*:80[[:space:]]' | grep -qi nginx && has_80=1
   printf '%s\n' "${output}" | grep -E '(^|[[:space:]])[^[:space:]]*:443[[:space:]]' | grep -qi nginx && has_443=1
+  printf '%s\n' "${output}" | grep -E '127\.0\.0\.1:3000|localhost:3000|\[::1\]:3000' >/dev/null 2>&1 && has_3000_loopback=1
+  printf '%s\n' "${output}" | grep -E '0\.0\.0\.0:3000|\*:3000|\[::\]:3000' >/dev/null 2>&1 && has_3000_public=1
   printf '%s\n' "${output}" | grep -E '(^|[[:space:]])[^[:space:]]*:8080[[:space:]]' >/dev/null 2>&1 && has_8080=1
 
   if [ "${has_80}" -eq 1 ] && [ "${has_443}" -eq 1 ]; then
@@ -226,6 +230,14 @@ check_nginx_ports() {
   if [ "${has_8080}" -eq 1 ]; then
     record_warn "本机 8080 仍在监听，这是 Nginx 反代后端入口；请确认云安全组已关闭公网 8080"
   fi
+  if [ "${has_3000_loopback}" -eq 1 ]; then
+    record_pass "Next.js 前台监听 127.0.0.1:3000"
+  else
+    record_block "Next.js 前台未监听 127.0.0.1:3000"
+  fi
+  if [ "${has_3000_public}" -eq 1 ]; then
+    record_block "Next.js 前台监听在公网地址 3000，请改为 127.0.0.1"
+  fi
 }
 
 check_services() {
@@ -235,6 +247,14 @@ check_services() {
   fi
   local service
   for service in paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai; do
+    if ! systemctl list-unit-files "${service}.service" --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "${service}.service"; then
+      if [ "${service}" = "paopao-ai" ]; then
+        record_warn "systemd 服务不存在: ${service}；如果生产配置关闭 AI 助手可以忽略"
+      else
+        record_block "systemd 服务不存在: ${service}"
+      fi
+      continue
+    fi
     if systemctl is-active --quiet "${service}"; then
       record_pass "systemd 服务 active: ${service}"
     else
@@ -349,11 +369,26 @@ check_logs() {
   local i
   for i in "${!services[@]}"; do
     local service="${services[$i]}"
-    local count
-    count="$(journalctl -u "${service}" -n "${lines[$i]}" --no-pager 2>/dev/null | grep -aE "${pattern}" | grep -aEv "${noise}" | wc -l | tr -d ' ')"
-    if [ "${count:-0}" -gt 0 ]; then
+    local since=""
+    local journal_output
+    local matches
+    since="$(systemctl show "${service}" -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+    if [ -n "${since}" ] && [ "${since}" != "n/a" ]; then
+      journal_output="$(journalctl -u "${service}" --since "${since}" -n "${lines[$i]}" --no-pager 2>/dev/null || true)"
+    else
+      journal_output="$(journalctl -u "${service}" -n "${lines[$i]}" --no-pager 2>/dev/null || true)"
+    fi
+    matches="$(printf '%s\n' "${journal_output}" | grep -aE "${pattern}" | grep -aEv "${noise}" || true)"
+    if [ -n "${matches}" ]; then
+      local count
+      count="$(printf '%s\n' "${matches}" | wc -l | tr -d ' ')"
       total=$((total + count))
-      record_block "日志发现 ${service} 阻断关键词 ${count} 条"
+      record_block "日志发现 ${service} 阻断关键词 ${count} 条，匹配片段如下"
+      echo "${service} 日志匹配片段:"
+      printf '%s\n' "${matches}" | tail -n 8 | sed -E \
+        -e 's/[0-9]{6,12}:[A-Za-z0-9_-]{20,}/<redacted:telegram-token>/g' \
+        -e 's/(sk|rk|pk)-[A-Za-z0-9_-]{12,}/<redacted:api-key>/g' \
+        -e 's/([Tt]oken|[Aa]uthorization|[Aa][Pp][Ii][_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[^[:space:]]*/\1=<redacted>/g'
     fi
   done
   if [ "${total}" -eq 0 ]; then
@@ -367,7 +402,8 @@ echo "目标: ${BASE_URL}"
 echo
 
 check_nginx_ports
-check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达" "决策回测" "结果追踪" "模型诊断"
+check_page_any_contains "本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-frontend" "nextjs-dashboard"
+check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard" "专业加密数据仪表盘"
 check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"
 check_public_api
 check_private_api_protected

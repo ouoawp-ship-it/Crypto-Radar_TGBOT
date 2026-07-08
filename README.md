@@ -1,5 +1,11 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.74.1 说明
+
+v1.74.1 修正 Next.js 公开前台的生产接线：更新和安装脚本会优先使用 `npm ci` 构建 `frontend/`，写入 `paopao-frontend.service`，用真实 `npm` 路径启动 Next.js，并确保服务只监听 `127.0.0.1:3000`。脚本会写入可重复执行的 Nginx 路由配置：`/admin`、`/api/`、`/public-api/` 继续反代到 Python 后端 `127.0.0.1:8080`，`/` 反代到 Next.js `127.0.0.1:3000`。
+
+Next.js 页面新增隐藏标识 `paoxx-frontend=nextjs-dashboard`，部署验收脚本会同时检查本机 3000、HTTPS 公开前台、`paopao-frontend` systemd 服务和 Nginx 80/443，避免把旧 Python 公开前台误判为新前台成功。日志检查会输出匹配到的服务名和原始片段，便于定位真实阻断项。
+
 ## v1.74.0 说明
 
 v1.74.0 新增 `frontend/` Next.js 公开前台，把 `https://paoxx.com/` 升级为专业加密数据仪表盘。公开前台使用 React、TypeScript、Tailwind CSS、App Router 和 Recharts，展示信号雷达、决策模型、结果追踪、决策回测、单币详情和公开 API 说明。

@@ -402,6 +402,10 @@ node_major_version() {
   node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null
 }
 
+npm_bin_path() {
+  command -v npm 2>/dev/null || true
+}
+
 ensure_node_runtime() {
   local major=""
   major="$(node_major_version || true)"
@@ -424,6 +428,14 @@ ensure_node_runtime() {
     | run_root tee /etc/apt/sources.list.d/nodesource.list >/dev/null
   run_root apt-get update
   run_root apt-get install -y nodejs
+}
+
+frontend_install_deps() {
+  if [ -f package-lock.json ]; then
+    npm ci
+  else
+    npm install
+  fi
 }
 
 ensure_env_file_exists() {
@@ -649,7 +661,7 @@ build_frontend_dashboard() {
   log "安装并构建 Next.js 公开前台"
   (
     cd "${APP_DIR}/frontend"
-    npm install
+    frontend_install_deps
     npm run build
   )
 }
@@ -862,37 +874,117 @@ install_frontend_systemd_service() {
     log "未发现 frontend/package.json，不安装 Next.js 公开前台 systemd 服务"
     return 0
   fi
+  ensure_node_runtime
+  local npm_bin
+  npm_bin="$(npm_bin_path)"
+  if [ -z "$npm_bin" ]; then
+    die "未检测到 npm，无法安装 Next.js 公开前台 systemd 服务"
+  fi
 
   log "安装 systemd 服务: ${FRONTEND_SERVICE_NAME}"
   local service_path="/etc/systemd/system/${FRONTEND_SERVICE_NAME}.service"
   run_root tee "$service_path" >/dev/null <<EOF
 [Unit]
 Description=Paopao Next.js Public Frontend
-After=network-online.target ${WEB_SERVICE_NAME}.service
-Wants=network-online.target
+After=network.target ${WEB_SERVICE_NAME}.service
 
 [Service]
 Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}/frontend
-ExecStart=/usr/bin/env npm run start -- --hostname 127.0.0.1 --port 3000
-Restart=always
-RestartSec=10
 Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=${npm_bin} run start -- --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
   run_root systemctl daemon-reload
-  run_root systemctl enable "$FRONTEND_SERVICE_NAME"
 
   if [ "$AUTO_START" = "1" ]; then
     log "启动 Next.js 公开前台服务"
+    run_root systemctl enable --now "$FRONTEND_SERVICE_NAME"
     run_root systemctl restart "$FRONTEND_SERVICE_NAME"
     run_root systemctl --no-pager --full status "$FRONTEND_SERVICE_NAME" || true
   else
+    run_root systemctl enable "$FRONTEND_SERVICE_NAME"
     log "AUTO_START=0，Next.js 公开前台服务已安装但未启动"
+  fi
+}
+
+install_or_update_nginx_frontend_routes() {
+  command -v nginx >/dev/null 2>&1 || {
+    log "未找到 nginx，跳过公开前台反代配置"
+    return 0
+  }
+  local domain="${PUBLIC_DOMAIN:-paoxx.com}"
+  local site_path="${NGINX_SITE_PATH:-/etc/nginx/sites-available/${domain}}"
+  local enabled_path="/etc/nginx/sites-enabled/${domain}"
+  local fullchain="/etc/letsencrypt/live/${domain}/fullchain.pem"
+  local privkey="/etc/letsencrypt/live/${domain}/privkey.pem"
+  if [ ! -f "$fullchain" ] || [ ! -f "$privkey" ]; then
+    log "未找到 ${domain} 证书文件，跳过 Nginx 反代配置写入"
+    return 0
+  fi
+
+  log "写入 Nginx 公开前台反代配置: ${site_path}"
+  run_root tee "$site_path" >/dev/null <<EOF
+server {
+    listen 80;
+    server_name ${domain};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
+
+    ssl_certificate ${fullchain};
+    ssl_certificate_key ${privkey};
+
+    location ^~ /admin {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ^~ /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ^~ /public-api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+EOF
+  run_root ln -sfn "$site_path" "$enabled_path"
+  run_root nginx -t
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl reload nginx
+  else
+    run_root nginx -s reload
   fi
 }
 
@@ -996,6 +1088,7 @@ EOF
   install_cleanup_systemd_timer
   install_web_systemd_service
   install_frontend_systemd_service
+  install_or_update_nginx_frontend_routes
   install_ai_systemd_service
   install_shortcut_command
 

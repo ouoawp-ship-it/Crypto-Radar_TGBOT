@@ -1,5 +1,24 @@
 # 泡泡抓币中文安装目录
 
+## v1.74.1 运维说明
+
+v1.74.1 补齐 Next.js 公开前台生产接线。`paopao update --yes` 会构建 `frontend/`、安装或更新 `paopao-frontend.service`、启动并重启该服务、写入 Nginx 反代配置并 reload Nginx，然后再执行 stable-check。
+
+`paopao-frontend.service` 使用服务器上实际的 `npm` 路径，工作目录为 `/home/ubuntu/paopao-crypto-radar/frontend`，只监听 `127.0.0.1:3000`，不会暴露到公网。`/admin`、`/api/`、`/public-api/` 必须优先反代到 Python 后端 `127.0.0.1:8080`，根路径 `/` 最后反代到 Next.js `127.0.0.1:3000`。
+
+部署验收脚本现在会检查：
+
+```text
+paopao-frontend.service 是否存在并 active
+127.0.0.1:3000 是否监听
+https://paoxx.com/ 是否包含 paoxx-frontend / nextjs-dashboard 标识
+https://paoxx.com/admin 是否仍返回后台
+/public-api 是否 ok=true
+/api 未登录是否 401
+```
+
+Next.js 页面带有隐藏标识 `paoxx-frontend=nextjs-dashboard`，因此旧 Python fallback 不会再被误判为新前台。日志验收如果发现阻断关键词，会输出服务名和匹配片段，便于定位。
+
 ## v1.74.0 运维说明
 
 v1.74.0 新增 `frontend/` Next.js 公开前台。公开前台负责 `https://paoxx.com/` 的中文数据仪表盘，页面包括：首页、信号雷达、决策模型、结果追踪、决策回测、单币详情和公开 API。Python 后端继续负责 Telegram、数据采集、`/admin`、`/api/*`、`/public-api/*`。
@@ -242,7 +261,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/paoxx.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/paoxx.com/privkey.pem;
 
-    location /public-api/ {
+    location ^~ /public-api/ {
         limit_req zone=public_api burst=30 nodelay;
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
@@ -250,14 +269,14 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
-    location /api/ {
+    location ^~ /api/ {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
 
-    location /admin {
+    location ^~ /admin {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -23,7 +23,8 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertTrue(os.access(path, os.X_OK))
 
         script = path.read_text(encoding="utf-8")
-        self.assertIn("Paoxx 信号雷达", script)
+        self.assertIn("paoxx-frontend", script)
+        self.assertIn("nextjs-dashboard", script)
         self.assertIn("泡泡雷达控制台", script)
         self.assertIn("/public-api/signals", script)
         self.assertIn("/api/dashboard", script)
