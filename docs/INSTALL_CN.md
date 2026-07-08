@@ -1,5 +1,41 @@
 # 泡泡抓币中文安装目录
 
+## v1.74.0 运维说明
+
+v1.74.0 新增 `frontend/` Next.js 公开前台。公开前台负责 `https://paoxx.com/` 的中文数据仪表盘，页面包括：首页、信号雷达、决策模型、结果追踪、决策回测、单币详情和公开 API。Python 后端继续负责 Telegram、数据采集、`/admin`、`/api/*`、`/public-api/*`。
+
+生产服务结构：
+
+```text
+paopao-frontend: Next.js 公开前台，监听 127.0.0.1:3000
+paopao-web: Python 后台和 API，监听 8080
+Nginx: 统一 HTTPS 入口
+```
+
+Nginx 反代建议：
+
+```text
+/             -> http://127.0.0.1:3000
+/radar        -> http://127.0.0.1:3000
+/decision     -> http://127.0.0.1:3000
+/outcomes     -> http://127.0.0.1:3000
+/backtest     -> http://127.0.0.1:3000
+/coin/...     -> http://127.0.0.1:3000
+/admin        -> http://127.0.0.1:8080
+/api/         -> http://127.0.0.1:8080
+/public-api/  -> http://127.0.0.1:8080
+```
+
+更新脚本会自动安装或检查 Node.js 20+，执行 `frontend` 的 `npm install` 和 `npm run build`，并安装/重启 `paopao-frontend` systemd 服务。部署后执行：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
+公开前台只访问 `/public-api/*`，不会读取后台 `/api/*`、Cookie、Authorization、后台配置、日志、审计、Telegram 私有字段或任何 token/secret。本版本不改 Telegram 主推送流程，不实现自动交易，不接交易所下单 API，不修改 `signals.db` / `outcomes.db` / `jobs.db` schema。
+
 ## v1.73.0 运维说明
 
 v1.73.0 新增“决策回测”看板。它只读取 `data/outcomes.db` 的 `signal_outcomes` 表，统计不同决策在 1h / 4h / 24h / 72h 后的表现，用于评估 Signal Decision Model 是否需要继续校准。
@@ -214,8 +250,22 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
-    location / {
+    location /api/ {
         proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /admin {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;

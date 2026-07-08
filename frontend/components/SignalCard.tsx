@@ -1,0 +1,46 @@
+import Link from "next/link";
+import type { SignalItem } from "@/lib/types";
+import { safeText, toneForDecision } from "@/lib/format";
+import { DataStatusBadge } from "./DataStatusBadge";
+
+function statusTone(status?: string) {
+  if (status === "sent") return "good";
+  if (status === "failed") return "bad";
+  if (status === "blocked") return "warn";
+  if (status === "dry_run") return "info";
+  return "neutral";
+}
+
+export function SignalCard({ item }: { item: SignalItem }) {
+  const display = item.display || {};
+  const symbol = item.symbol || display.symbol_label || "";
+  const decision = item.decision;
+  return (
+    <article className="panel p-4 transition hover:border-cyanline/30 hover:shadow-glow">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-black text-white">{safeText(display.title || item.signal_type, "信号卡片")}</div>
+          <div className="mt-1 text-xs text-slate-500">{safeText(display.time_label || item.time)}</div>
+        </div>
+        <DataStatusBadge label={display.status_label || item.status || "未知"} tone={statusTone(item.status)} />
+      </div>
+      <p className="mt-3 line-clamp-3 text-sm leading-6 text-slate-300">{safeText(display.summary || item.excerpt, "暂无公开摘要。")}</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <DataStatusBadge label={display.module_label || item.module || "模块"} tone="info" />
+        <DataStatusBadge label={symbol || "全局"} />
+        <DataStatusBadge label={`分数 ${safeText(display.score_label || item.score)}`} />
+        {decision?.label ? <DataStatusBadge label={`决策 ${decision.label}`} tone={toneForDecision(decision.code)} /> : null}
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {symbol ? (
+          <Link className="btn" href={`/coin/${encodeURIComponent(symbol)}`}>
+            币种详情
+          </Link>
+        ) : null}
+        <Link className="btn" href="/radar">
+          查看信号流
+        </Link>
+      </div>
+    </article>
+  );
+}

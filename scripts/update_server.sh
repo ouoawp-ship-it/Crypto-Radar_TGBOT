@@ -5,6 +5,7 @@ SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
+FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="${BRANCH:-main}"
@@ -41,8 +42,56 @@ usage() {
   STRUCTURE_SERVICE_NAME=paopao-structure
   CLEANUP_SERVICE_NAME=paopao-cleanup
   WEB_SERVICE_NAME=paopao-web
+  FRONTEND_SERVICE_NAME=paopao-frontend
   AI_SERVICE_NAME=paopao-ai
 EOF
+}
+
+node_major_version() {
+  command -v node >/dev/null 2>&1 || return 1
+  node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null
+}
+
+ensure_node_runtime() {
+  local major=""
+  major="$(node_major_version || true)"
+  if [ -n "$major" ] && [ "$major" -ge 20 ]; then
+    printf '[paopao-update] Node.js 已满足 Next.js 前台构建要求: %s\n' "$(node --version)"
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    printf '[paopao-update] 未检测到 Node.js 20+，且当前系统没有 apt-get。请手动安装 Node.js LTS。\n' >&2
+    exit 1
+  fi
+
+  printf '[paopao-update] 安装 Node.js 22 LTS，用于构建 Next.js 公开前台\n'
+  run_root apt-get update
+  run_root apt-get install -y curl ca-certificates gnupg
+  local key_tmp="/tmp/nodesource.gpg.$$"
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o "$key_tmp"
+  run_root install -d -m 0755 /etc/apt/keyrings
+  run_root gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg "$key_tmp"
+  rm -f "$key_tmp"
+  printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' \
+    | run_root tee /etc/apt/sources.list.d/nodesource.list >/dev/null
+  run_root apt-get update
+  run_root apt-get install -y nodejs
+}
+
+build_frontend_dashboard() {
+  if [ ! -f "${APP_DIR}/frontend/package.json" ]; then
+    printf '[paopao-update] 未发现 frontend/package.json，跳过 Next.js 公开前台构建\n'
+    return 0
+  fi
+
+  ensure_node_runtime
+  printf '[paopao-update] 构建 Next.js 公开前台\n'
+  (
+    cd "${APP_DIR}/frontend"
+    npm install
+    npm run build
+  )
 }
 
 while [ "$#" -gt 0 ]; do
@@ -264,6 +313,32 @@ EOF
   run_root systemctl enable "$WEB_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
+install_or_update_frontend_service() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [ -f "${APP_DIR}/frontend/package.json" ] || return 0
+  local service_path="/etc/systemd/system/${FRONTEND_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao Next.js Public Frontend
+After=network-online.target ${WEB_SERVICE_NAME}.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SUDO_USER:-$(id -un)}
+WorkingDirectory=${APP_DIR}/frontend
+ExecStart=/usr/bin/env npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$FRONTEND_SERVICE_NAME" >/dev/null 2>&1 || true
+}
+
 install_or_update_ai_service() {
   command -v systemctl >/dev/null 2>&1 || return 0
   local service_path="/etc/systemd/system/${AI_SERVICE_NAME}.service"
@@ -300,6 +375,7 @@ export SERVICE_NAME="${SERVICE_NAME}"
 export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
+export FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME}"
 export AI_SERVICE_NAME="${AI_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
@@ -330,6 +406,11 @@ restart_services_if_present() {
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${WEB_SERVICE_NAME}.service" >/dev/null 2>&1; then
     run_root systemctl restart "$WEB_SERVICE_NAME"
     run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${FRONTEND_SERVICE_NAME}.service" >/dev/null 2>&1; then
+    run_root systemctl restart "$FRONTEND_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$FRONTEND_SERVICE_NAME" || true
   fi
 
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${AI_SERVICE_NAME}.service" >/dev/null 2>&1; then
@@ -375,10 +456,12 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     sync_env_file
     ensure_web_public_config
     run_post_update_cleanup
+    build_frontend_dashboard
     install_shortcut_command
     install_or_update_structure_service
     install_or_update_cleanup_timer
     install_or_update_web_service
+    install_or_update_frontend_service
     install_or_update_ai_service
     restart_services_if_present
     run_post_update_stable_check
@@ -420,16 +503,19 @@ ensure_web_public_config
 "$PYTHON_BIN" -m compileall paopao_radar main.py
 "$PYTHON_BIN" -m unittest discover -s tests -v
 run_post_update_cleanup
+build_frontend_dashboard
 
 install_shortcut_command
 install_or_update_structure_service
 install_or_update_cleanup_timer
 install_or_update_web_service
+install_or_update_frontend_service
 install_or_update_ai_service
 restart_services_if_present
 run_post_update_stable_check
 
 printf '\n[paopao-update] 更新完成: %s (%s)  %s\n' "$(version_for_ref HEAD)" "$(short_commit HEAD)" "$(commit_title HEAD)"
-printf '[paopao-update] 公开前台: https://paoxx.com/\n'
+printf '[paopao-update] 公开前台: https://paoxx.com/ （Next.js Dashboard）\n'
 printf '[paopao-update] 后台控制台: https://paoxx.com/admin\n'
+printf '[paopao-update] 本机前台入口 3000 仅供 Nginx 反代使用，不作为公网访问入口。\n'
 printf '[paopao-update] 本机后端入口 8080 仅供 Nginx 反代使用，不作为公网访问入口。\n'

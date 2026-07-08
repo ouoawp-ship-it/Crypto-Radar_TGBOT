@@ -27,3 +27,9 @@ bn_signal_history.json
 fr_snapshot.json
 heat_history.json
 *.log
+
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/tsconfig.tsbuildinfo

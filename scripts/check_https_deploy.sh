@@ -35,7 +35,7 @@ usage() {
 
 说明:
   默认不执行 certbot renew --dry-run。
-  页面检查使用 GET，不使用 HEAD；paopao-web 对 HEAD 可能返回 501。
+  页面检查使用 GET，不使用 HEAD；公开前台由 paopao-frontend 提供，/admin 和 API 由 paopao-web 提供。
 EOF
 }
 
@@ -234,7 +234,7 @@ check_services() {
     return
   fi
   local service
-  for service in paopao-web paopao-radar paopao-structure paopao-ai; do
+  for service in paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai; do
     if systemctl is-active --quiet "${service}"; then
       record_pass "systemd 服务 active: ${service}"
     else
@@ -341,9 +341,9 @@ check_logs() {
     record_warn "已跳过 journalctl 日志检查"
     return
   fi
-  local services=(paopao-web paopao-radar paopao-structure paopao-ai)
-  local lines=(300 150 150 150)
-  local pattern='Traceback|Exception occurred during processing|sqlite database is locked|no such table|/api/.* 500|/public-api/.* 500|/admin 500|Web JS error|TelegramGateway\._record failed'
+  local services=(paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai)
+  local lines=(200 300 150 150 150)
+  local pattern='Traceback|Exception occurred during processing|sqlite database is locked|no such table|/api/.* 500|/public-api/.* 500|/admin 500| 500 |Web JS error|EADDRINUSE|ECONNREFUSED|TelegramGateway\._record failed'
   local noise='BrokenPipeError|ConnectionResetError|client disconnected|ReadTimeout'
   local total=0
   local i
@@ -367,7 +367,7 @@ echo "目标: ${BASE_URL}"
 echo
 
 check_nginx_ports
-check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达"
+check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达" "决策回测" "结果追踪" "模型诊断"
 check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"
 check_public_api
 check_private_api_protected

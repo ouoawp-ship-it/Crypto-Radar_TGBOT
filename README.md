@@ -1,5 +1,21 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.74.0 说明
+
+v1.74.0 新增 `frontend/` Next.js 公开前台，把 `https://paoxx.com/` 升级为专业加密数据仪表盘。公开前台使用 React、TypeScript、Tailwind CSS、App Router 和 Recharts，展示信号雷达、决策模型、结果追踪、决策回测、单币详情和公开 API 说明。
+
+生产结构调整为：`paopao-frontend` 只监听 `127.0.0.1:3000`，负责公开前台；`paopao-web` 继续负责 `/admin`、`/api/*` 和 `/public-api/*`；Nginx 统一提供 HTTPS 入口，将 `/`、`/radar`、`/decision`、`/outcomes`、`/backtest`、`/coin/*` 指向 Next.js，将 `/admin`、`/api/`、`/public-api/` 指向 Python 后端。旧 Python 内嵌公开前台保留为 fallback，不删除。
+
+新前台只调用 `/public-api/*`，不会读取后台 `/api/*`、Cookie、Authorization、后台配置、日志、审计、Telegram 私有字段或任何 token/secret。Python 后端继续负责 Telegram、数据采集、后台控制台、私有 API 和公开 API；本版本不改 Telegram 主推送流程，不实现自动交易，不接交易所下单 API，不修改 `signals.db` / `outcomes.db` / `jobs.db` schema。
+
+部署后可用：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
 ## v1.73.0 说明
 
 v1.73.0 新增 Decision Backtest Dashboard，用 `data/outcomes.db` 的 `signal_outcomes` 统计不同决策在 1h / 4h / 24h / 72h 后的真实表现。看板按 decision_code、horizon、module、risk_level 和 confidence bucket 聚合，输出样本数、覆盖率、平均最终涨跌、平均最大涨幅、平均最大回撤、正收益比例、明显回撤比例、期望评分和样本质量。

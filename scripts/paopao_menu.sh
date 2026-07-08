@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
+FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
 PUBLIC_FRONTEND_URL="${PUBLIC_FRONTEND_URL:-https://paoxx.com/}"
 ADMIN_CONSOLE_URL="${ADMIN_CONSOLE_URL:-https://paoxx.com/admin}"
@@ -78,13 +79,14 @@ show_web_entry() {
   port="$(get_env_value WEB_PORT)"
   [ -n "$host" ] || host="0.0.0.0"
   [ -n "$port" ] || port="8080"
-  printf '公开前台: %s\n' "$PUBLIC_FRONTEND_URL"
+  printf '公开前台: %s（Next.js Dashboard）\n' "$PUBLIC_FRONTEND_URL"
   printf '后台控制台: %s\n' "$ADMIN_CONSOLE_URL"
-  printf '本机监听配置: %s:%s\n' "$host" "$port"
+  printf '本机前台监听: 127.0.0.1:3000（仅供 Nginx 反代）\n'
+  printf '本机后端监听: %s:%s（仅供 Nginx 反代）\n' "$host" "$port"
   printf '后台登录: %s\n' "$(admin_login_status)"
   printf '\n说明:\n'
   printf '  1. 日常访问请使用 %s。\n' "$ADMIN_CONSOLE_URL"
-  printf '  2. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。\n'
+  printf '  2. 3000 是 Next.js 公开前台本机入口，8080 是 Python 后端入口，均不作为公网入口。\n'
   printf '  3. 如需设置或重置后台登录密码，请使用菜单项 2。\n'
 }
 
@@ -93,6 +95,11 @@ set_admin_password() {
 }
 
 show_web_status() {
+  if service_unit_exists "$FRONTEND_SERVICE_NAME"; then
+    run_root systemctl --no-pager --full status "$FRONTEND_SERVICE_NAME" || true
+  else
+    printf '未找到 Next.js 公开前台 systemd 服务: %s\n' "$FRONTEND_SERVICE_NAME"
+  fi
   if service_unit_exists "$WEB_SERVICE_NAME"; then
     run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
   else
@@ -109,6 +116,12 @@ show_web_logs() {
 }
 
 restart_web_service() {
+  if service_unit_exists "$FRONTEND_SERVICE_NAME"; then
+    run_root systemctl restart "$FRONTEND_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$FRONTEND_SERVICE_NAME" || true
+  else
+    printf '未找到 Next.js 公开前台 systemd 服务: %s\n' "$FRONTEND_SERVICE_NAME"
+  fi
   if service_unit_exists "$WEB_SERVICE_NAME"; then
     run_root systemctl restart "$WEB_SERVICE_NAME"
     run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
@@ -118,6 +131,10 @@ restart_web_service() {
 }
 
 start_web_service() {
+  if service_unit_exists "$FRONTEND_SERVICE_NAME"; then
+    run_root systemctl start "$FRONTEND_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$FRONTEND_SERVICE_NAME" || true
+  fi
   if service_unit_exists "$WEB_SERVICE_NAME"; then
     run_root systemctl start "$WEB_SERVICE_NAME"
     run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
@@ -151,24 +168,25 @@ show_menu_header() {
 项目目录: ${APP_DIR}
 当前版本: $(project_version) ($(project_commit))
 
-公开前台: ${PUBLIC_FRONTEND_URL}
+公开前台: ${PUBLIC_FRONTEND_URL}（Next.js Dashboard）
 后台控制台: ${ADMIN_CONSOLE_URL}
 后台登录: $(admin_login_status)
 
 说明:
   1. 日常访问请使用 ${ADMIN_CONSOLE_URL}。
-  2. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。
-  3. 如需设置或重置后台登录密码，请使用菜单项 2。
-  4. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
+  2. 公开前台由 ${FRONTEND_SERVICE_NAME} 提供，监听 127.0.0.1:3000。
+  3. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。
+  4. 如需设置或重置后台登录密码，请使用菜单项 2。
+  5. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
      readiness、doctor、cleanup、结构复盘，都在 Web 页面里操作。
-  5. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
+  6. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
 
 请选择:
   1. 查看正式访问入口
   2. 设置后台账号密码
-  3. 查看 Web 控制台服务状态
+  3. 查看前台和 Web 控制台服务状态
   4. 查看 Web 控制台实时日志
-  5. 重启 Web 控制台服务
+  5. 重启前台和 Web 控制台服务
   6. 检查 GitHub 是否有更新
   7. 更新项目代码
   8. 查看当前版本
@@ -204,13 +222,13 @@ show_help() {
   paopao
 
 正式访问入口:
-  公开前台: ${PUBLIC_FRONTEND_URL}
+  公开前台: ${PUBLIC_FRONTEND_URL}（Next.js Dashboard）
   后台控制台: ${ADMIN_CONSOLE_URL}
 
 说明:
   输入 paopao 后，直接用数字选择功能。
   配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等日常控制功能，都在 Web 页面里完成。
-  服务器菜单只保留正式入口、令牌查看、Web 服务排查、项目更新和版本查看。
+  服务器菜单只保留正式入口、后台密码设置、前台/Web 服务排查、项目更新和版本查看。
 
 项目目录: ${APP_DIR}
 EOF

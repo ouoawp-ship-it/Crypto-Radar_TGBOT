@@ -6,6 +6,7 @@ SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
+FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -390,10 +391,39 @@ install_os_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     log "安装 Linux 基础依赖"
     run_root apt-get update
-    run_root apt-get install -y git python3 python3-venv python3-pip
+    run_root apt-get install -y git python3 python3-venv python3-pip curl ca-certificates gnupg
   else
     log "未找到 apt-get，跳过系统依赖安装"
   fi
+}
+
+node_major_version() {
+  command -v node >/dev/null 2>&1 || return 1
+  node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null
+}
+
+ensure_node_runtime() {
+  local major=""
+  major="$(node_major_version || true)"
+  if [ -n "$major" ] && [ "$major" -ge 20 ]; then
+    log "Node.js 已满足 Next.js 前台构建要求: $(node --version)"
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    die "未检测到 Node.js 20+。请先安装 Node.js LTS 后再构建 frontend。"
+  fi
+
+  log "安装 Node.js 22 LTS，用于构建 Next.js 公开前台"
+  local key_tmp="/tmp/nodesource.gpg.$$"
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o "$key_tmp"
+  run_root install -d -m 0755 /etc/apt/keyrings
+  run_root gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg "$key_tmp"
+  rm -f "$key_tmp"
+  printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' \
+    | run_root tee /etc/apt/sources.list.d/nodesource.list >/dev/null
+  run_root apt-get update
+  run_root apt-get install -y nodejs
 }
 
 ensure_env_file_exists() {
@@ -609,6 +639,21 @@ run_checks() {
   "${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -v
 }
 
+build_frontend_dashboard() {
+  if [ ! -f "${APP_DIR}/frontend/package.json" ]; then
+    log "未发现 frontend/package.json，跳过 Next.js 公开前台构建"
+    return 0
+  fi
+
+  ensure_node_runtime
+  log "安装并构建 Next.js 公开前台"
+  (
+    cd "${APP_DIR}/frontend"
+    npm install
+    npm run build
+  )
+}
+
 bootstrap_history_if_needed() {
   if [ "$BOOTSTRAP_HISTORY" != "1" ]; then
     return 0
@@ -808,6 +853,49 @@ EOF
   fi
 }
 
+install_frontend_systemd_service() {
+  command -v systemctl >/dev/null 2>&1 || {
+    log "未找到 systemctl，不安装 Next.js 公开前台 systemd 服务"
+    return 0
+  }
+  if [ ! -f "${APP_DIR}/frontend/package.json" ]; then
+    log "未发现 frontend/package.json，不安装 Next.js 公开前台 systemd 服务"
+    return 0
+  fi
+
+  log "安装 systemd 服务: ${FRONTEND_SERVICE_NAME}"
+  local service_path="/etc/systemd/system/${FRONTEND_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao Next.js Public Frontend
+After=network-online.target ${WEB_SERVICE_NAME}.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}/frontend
+ExecStart=/usr/bin/env npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$FRONTEND_SERVICE_NAME"
+
+  if [ "$AUTO_START" = "1" ]; then
+    log "启动 Next.js 公开前台服务"
+    run_root systemctl restart "$FRONTEND_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$FRONTEND_SERVICE_NAME" || true
+  else
+    log "AUTO_START=0，Next.js 公开前台服务已安装但未启动"
+  fi
+}
+
 install_ai_systemd_service() {
   command -v systemctl >/dev/null 2>&1 || {
     log "未找到 systemctl，不安装 AI 助手 systemd 服务"
@@ -859,6 +947,7 @@ export SERVICE_NAME="${SERVICE_NAME}"
 export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
+export FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME}"
 export AI_SERVICE_NAME="${AI_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
@@ -899,12 +988,14 @@ EOF
   ensure_web_public_config
   install_python_deps
   run_checks
+  build_frontend_dashboard
   bootstrap_history_if_needed
   run_readiness
   install_systemd_service
   install_structure_systemd_service
   install_cleanup_systemd_timer
   install_web_systemd_service
+  install_frontend_systemd_service
   install_ai_systemd_service
   install_shortcut_command
 
@@ -916,13 +1007,14 @@ EOF
   paopao
 
 正式访问入口:
-  公开前台: https://paoxx.com/
+  公开前台: https://paoxx.com/（Next.js Dashboard）
   后台控制台: https://paoxx.com/admin
   后台登录: 使用自定义账号 + 密码；输入 paopao 后选择“设置后台账号密码”
 
 说明:
   服务器只需要记住 paopao 这一个入口命令。
   进入中文菜单后，用数字查看正式入口、设置后台账号密码、Web 服务状态、实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
+  paopao-frontend 监听 127.0.0.1:3000，只供 Nginx 反代公开前台。
   8080 仅作为 Nginx 反代后端入口，不作为公网访问入口。
   配置修改、主服务/结构雷达启停、测试消息、readiness、doctor、cleanup、结构复盘等控制功能在 Web 控制台完成。
 
