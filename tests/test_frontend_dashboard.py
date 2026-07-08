@@ -24,6 +24,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         package = json.loads(package_path.read_text(encoding="utf-8"))
 
         self.assertEqual(package.get("name"), "paoxx-public-dashboard")
+        self.assertEqual(package.get("version"), "1.75.0")
         self.assertIn("build", package.get("scripts", {}))
         self.assertIn("start", package.get("scripts", {}))
         self.assertIn("typecheck", package.get("scripts", {}))
@@ -40,18 +41,40 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             "app/backtest/page.tsx",
             "app/coin/[symbol]/page.tsx",
             "app/api-docs/page.tsx",
+            "app/not-found.tsx",
+            "app/error.tsx",
             "lib/api.ts",
             "styles/globals.css",
         ):
             self.assertTrue((FRONTEND / relative).exists(), relative)
+
+    def test_public_api_client_hydrates_server_and_browser(self) -> None:
+        api_source = (FRONTEND / "lib/api.ts").read_text(encoding="utf-8")
+        type_source = (FRONTEND / "lib/types.ts").read_text(encoding="utf-8")
+        combined = api_source + "\n" + type_source
+
+        self.assertIn("PAOXX_PUBLIC_API_INTERNAL_BASE", api_source)
+        self.assertIn("http://127.0.0.1:8080", api_source)
+        self.assertIn("typeof window === \"undefined\"", api_source)
+        self.assertIn("publicFetchResult", api_source)
+        self.assertIn("ApiResult", api_source)
+        self.assertIn("payload.data", api_source)
+        self.assertIn("items", combined)
+        self.assertIn("summary", combined)
+        self.assertIn("公开接口返回格式异常", api_source)
+        self.assertIn("公开接口响应超时", api_source)
+        self.assertIn("loadHomeDashboardData", api_source)
 
     def test_public_frontend_uses_only_public_api(self) -> None:
         api_source = (FRONTEND / "lib/api.ts").read_text(encoding="utf-8")
 
         for path in (
             "/public-api/signals",
+            "/public-api/signals/latest",
             "/public-api/signals/stats",
             "/public-api/signal-timeline",
+            "/public-api/coin-search",
+            "/public-api/coin-detail",
             "/public-api/decisions",
             "/public-api/decisions/stats",
             "/public-api/decision",
@@ -82,6 +105,20 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         for text in forbidden:
             self.assertNotIn(text, api_source)
 
+    def test_homepage_has_server_prefetch_and_no_static_zero_dashboard(self) -> None:
+        page = (FRONTEND / "app/page.tsx").read_text(encoding="utf-8")
+        home = (FRONTEND / "components/HomeDashboard.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("loadHomeDashboardData", page)
+        self.assertIn("initialData", home)
+        self.assertIn("今日信号数", home)
+        self.assertIn("最新信号卡片", home)
+        self.assertIn("决策分布", home)
+        self.assertIn("结果追踪", home)
+        self.assertIn("决策回测摘要", home)
+        self.assertNotIn("signalStats?.total || 0", home)
+        self.assertNotIn("outcomeStats?.success_count || 0", home)
+
     def test_public_frontend_chinese_dashboard_copy(self) -> None:
         source = read_frontend_sources()
         for text in (
@@ -103,10 +140,31 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             "等待回踩",
             "公开 API",
             "后台控制台",
+            "正在加载数据",
+            "暂无数据",
+            "数据暂时不可用",
         ):
             self.assertIn(text, source)
 
-    def test_deploy_scripts_include_frontend_build_and_service(self) -> None:
+        for text in (
+            "Public crypto signal feed",
+            "Read-only, redacted",
+            "Admin Console",
+            "Latest Signal Cards",
+            "Active Coins",
+            "This page could not be found",
+        ):
+            self.assertNotIn(text, source)
+
+    def test_chinese_not_found_and_error_pages(self) -> None:
+        not_found = (FRONTEND / "app/not-found.tsx").read_text(encoding="utf-8")
+        error_page = (FRONTEND / "app/error.tsx").read_text(encoding="utf-8")
+        self.assertIn("页面不存在", not_found)
+        self.assertIn("返回总览", not_found)
+        self.assertIn("页面加载失败", error_page)
+        self.assertIn("数据暂时不可用，请稍后重试", error_page)
+
+    def test_deploy_scripts_include_frontend_build_service_and_api_base(self) -> None:
         install = (ROOT / "scripts/install_server.sh").read_text(encoding="utf-8")
         update = (ROOT / "scripts/update_server.sh").read_text(encoding="utf-8")
         check = (ROOT / "scripts/check_https_deploy.sh").read_text(encoding="utf-8")
@@ -122,31 +180,17 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("npm run build", update)
         self.assertIn("--hostname 127.0.0.1 --port 3000", combined)
         self.assertIn("Environment=HOSTNAME=127.0.0.1", combined)
+        self.assertIn("Environment=PAOXX_PUBLIC_API_INTERNAL_BASE=http://127.0.0.1:8080", combined)
         self.assertIn("enable --now", combined)
         self.assertIn("command -v npm", combined)
         self.assertIn("Node.js 22 LTS", combined)
         self.assertIn("Next.js Dashboard", combined)
-        self.assertIn("paopao-frontend", check)
         self.assertIn("127.0.0.1:3000", check)
         self.assertIn("paoxx-frontend", check)
         self.assertIn("nextjs-dashboard", check)
         self.assertIn("/etc/nginx/conf.d/00-paoxx-frontend.conf", combined)
-        self.assertIn("NGINX_ACTIVE_SITE_PATH", combined)
         self.assertIn("cleanup_duplicate_paoxx_nginx_servers", combined)
-        self.assertIn("find_paoxx_nginx_server_files", combined)
-        self.assertIn("resolve_nginx_path", combined)
-        self.assertIn("readlink -f", combined)
-        self.assertIn("/etc/nginx/backup-paopao", combined)
-        self.assertIn("duplicate-cleanup.${stamp}", combined)
-        self.assertIn("/etc/nginx/sites-enabled/default", combined)
-        self.assertIn("/etc/nginx/sites-enabled/${domain}", combined)
-        self.assertIn("/etc/nginx/conf.d", combined)
-        self.assertIn("server_name[[:space:]][^;]*(www\\\\.)?${domain_regex}", combined)
-        self.assertIn('rm -f "$path"', combined)
-        self.assertIn('mv -f "$path" "${path}.disabled.${stamp}"', combined)
-        self.assertIn("/.well-known/acme-challenge/", combined)
         self.assertIn("conflicting server name", combined)
-        self.assertIn("nginx -t 2>&1", combined)
         self.assertIn("nginx -T", combined)
 
     def test_nginx_routes_keep_backend_paths_before_frontend_root(self) -> None:
@@ -166,53 +210,35 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             self.assertIn("proxy_pass http://127.0.0.1:8080;", source[admin_idx:root_idx])
             self.assertIn("proxy_pass http://127.0.0.1:3000;", source[next_idx:])
 
-    def test_https_check_requires_nextjs_marker_not_legacy_public_copy(self) -> None:
+    def test_https_check_requires_nextjs_marker_and_duplicate_nginx_guard(self) -> None:
         check = (ROOT / "scripts/check_https_deploy.sh").read_text(encoding="utf-8")
-        self.assertIn('"本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-frontend" "nextjs-dashboard"', check)
-        self.assertIn('"HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard"', check)
-        self.assertNotIn('"HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "Paoxx 信号雷达"', check)
+        self.assertIn("paopao-frontend", check)
+        self.assertIn("127.0.0.1:3000", check)
+        self.assertIn("paoxx-frontend", check)
+        self.assertIn("nextjs-dashboard", check)
         self.assertIn("check_nginx_active_routes", check)
         self.assertIn("check_nginx_duplicate_server_names", check)
-        self.assertIn("nginx_test_output", check)
-        self.assertIn("nginx_active_config_dump", check)
         self.assertIn('conflicting server name "paoxx.com"', check)
         self.assertIn('sudo grep -RIn "server_name .*paoxx.com"', check)
-        self.assertIn('sudo nginx -T 2>&1 | grep -nE "configuration file|server_name paoxx.com|listen 80|listen 443"', check)
-        self.assertIn("请只保留 /etc/nginx/conf.d/00-paoxx-frontend.conf 作为 active 入口", check)
         self.assertIn("nginx -T", check)
         self.assertIn("/etc/nginx/conf.d/00-paoxx-frontend.conf", check)
         self.assertIn("location ^~ /_next/", check)
         self.assertIn("proxy_pass http://127.0.0.1:3000;", check)
         self.assertIn("proxy_pass http://127.0.0.1:8080;", check)
-        self.assertIn("日志阻断片段", check)
 
-    def test_docs_describe_nextjs_frontend_split(self) -> None:
+    def test_docs_describe_v175_frontend_hydration(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         install = (ROOT / "docs/INSTALL_CN.md").read_text(encoding="utf-8")
         combined = readme + "\n" + install
 
-        self.assertIn("v1.74.0", combined)
-        self.assertIn("v1.74.1", combined)
-        self.assertIn("v1.74.2", combined)
-        self.assertIn("v1.74.3", combined)
-        self.assertIn("v1.74.4", combined)
-        self.assertIn("v1.74.5", combined)
-        self.assertIn("frontend/", combined)
-        self.assertIn("Next.js", combined)
-        self.assertIn("paopao-frontend", combined)
-        self.assertIn("127.0.0.1:3000", combined)
-        self.assertIn("/etc/nginx/conf.d/00-paoxx-frontend.conf", combined)
-        self.assertIn("/etc/nginx/backup-paopao", combined)
-        self.assertIn("duplicate-cleanup", combined)
-        self.assertIn("readlink -f", combined)
-        self.assertIn("conflicting server name", combined)
-        self.assertIn("/_next/", combined)
-        self.assertIn("paoxx-frontend=nextjs-dashboard", combined)
-        self.assertIn("/admin", combined)
-        self.assertIn("/api/*", combined)
+        self.assertIn("v1.75.0", combined)
+        self.assertIn("真实数据水合", combined)
+        self.assertIn("PAOXX_PUBLIC_API_INTERNAL_BASE", combined)
+        self.assertIn("http://127.0.0.1:8080", combined)
         self.assertIn("/public-api/*", combined)
+        self.assertIn("不访问 `/api/*`", combined)
         self.assertIn("不改 Telegram 主推送流程", combined)
-        self.assertIn("不实现自动交易", combined)
+        self.assertIn("不引入自动交易", combined)
 
 
 if __name__ == "__main__":

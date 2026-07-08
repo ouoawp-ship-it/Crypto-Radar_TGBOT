@@ -1,15 +1,19 @@
-"use client";
-
 import type {
   ApiEnvelope,
+  ApiResult,
   BacktestMatrixPayload,
   BacktestPayload,
+  CoinItem,
   DecisionItem,
+  ListPayload,
   OutcomeItem,
   SignalItem
 } from "./types";
 
-type Query = Record<string, string | number | undefined | null>;
+export type Query = Record<string, string | number | boolean | undefined | null>;
+
+const INTERNAL_BASE = process.env.PAOXX_PUBLIC_API_INTERNAL_BASE || "http://127.0.0.1:8080";
+const REQUEST_TIMEOUT_MS = 8000;
 
 function toQuery(query?: Query): string {
   const params = new URLSearchParams();
@@ -20,14 +24,75 @@ function toQuery(query?: Query): string {
   return text ? `?${text}` : "";
 }
 
-async function publicFetch<T>(path: `/public-api/${string}`, query?: Query): Promise<T> {
-  const res = await fetch(`${path}${toQuery(query)}`, { cache: "no-store" });
-  const payload = (await res.json()) as ApiEnvelope<T> & T;
-  if (!res.ok || payload.ok === false) {
-    const message = typeof payload.message === "string" ? payload.message : "公开接口请求失败";
-    throw new Error(message);
+function publicApiUrl(path: `/public-api/${string}`, query?: Query): string {
+  const suffix = `${path}${toQuery(query)}`;
+  if (typeof window === "undefined") return `${INTERNAL_BASE}${suffix}`;
+  return suffix;
+}
+
+function chineseError(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") return fallback;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.message === "string" && record.message.trim()) return record.message;
+  const error = record.error;
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object") {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return message;
   }
-  return ((payload.data && typeof payload.data === "object" ? payload.data : payload) as T);
+  return fallback;
+}
+
+function unwrapPayload<T>(payload: ApiEnvelope<T> & T): T {
+  if (payload && typeof payload === "object" && "data" in payload && payload.data !== undefined) {
+    return payload.data as T;
+  }
+  return payload as T;
+}
+
+export async function publicFetchResult<T>(path: `/public-api/${string}`, query?: Query): Promise<ApiResult<T>> {
+  const url = publicApiUrl(path, query);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    const text = await res.text();
+    let payload: (ApiEnvelope<T> & T) | null = null;
+    try {
+      payload = text ? (JSON.parse(text) as ApiEnvelope<T> & T) : ({} as ApiEnvelope<T> & T);
+    } catch {
+      return {
+        ok: false,
+        status: res.status,
+        path,
+        error: "公开接口返回格式异常，请稍后重试。"
+      };
+    }
+    if (!res.ok || payload.ok === false) {
+      return {
+        ok: false,
+        status: res.status,
+        path,
+        error: chineseError(payload, "公开接口暂时不可用，请稍后重试。")
+      };
+    }
+    return { ok: true, status: res.status, path, data: unwrapPayload<T>(payload) };
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === "AbortError";
+    return {
+      ok: false,
+      path,
+      error: aborted ? "公开接口响应超时，请稍后重试。" : "数据暂时不可用，请稍后重试。"
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function publicFetch<T>(path: `/public-api/${string}`, query?: Query): Promise<T> {
+  const result = await publicFetchResult<T>(path, query);
+  if (!result.ok || result.data === undefined) throw new Error(result.error || "公开接口请求失败");
+  return result.data;
 }
 
 export function getSignalStats(windowSec = 86400) {
@@ -35,18 +100,19 @@ export function getSignalStats(windowSec = 86400) {
 }
 
 export function getSignals(query: Query = {}) {
-  return publicFetch<{ items?: SignalItem[]; count?: number }>("/public-api/signals", query);
+  return publicFetch<ListPayload<SignalItem>>("/public-api/signals", query);
+}
+
+export function getLatestSignals(query: Query = {}) {
+  return publicFetch<ListPayload<SignalItem>>("/public-api/signals/latest", query).catch(() => getSignals(query));
 }
 
 export function getTimeline(query: Query = {}) {
-  return publicFetch<{ items?: SignalItem[]; groups?: Array<{ label?: string; items?: SignalItem[] }>; count?: number }>(
-    "/public-api/signal-timeline",
-    query
-  );
+  return publicFetch<ListPayload<SignalItem> & { groups?: Array<{ label?: string; items?: SignalItem[] }> }>("/public-api/signal-timeline", query);
 }
 
 export function getCoinSearch(query: Query = {}) {
-  return publicFetch<{ items?: Array<{ symbol?: string; label?: string; count?: number; subtitle?: string }> }>("/public-api/coin-search", query);
+  return publicFetch<ListPayload<CoinItem>>("/public-api/coin-search", query);
 }
 
 export function getDecisionStats(windowSec = 86400) {
@@ -54,7 +120,7 @@ export function getDecisionStats(windowSec = 86400) {
 }
 
 export function getDecisions(query: Query = {}) {
-  return publicFetch<{ items?: DecisionItem[]; decisions?: DecisionItem[]; summary?: Record<string, unknown> }>("/public-api/decisions", query);
+  return publicFetch<ListPayload<DecisionItem> & { decisions?: DecisionItem[]; distribution?: Record<string, unknown> }>("/public-api/decisions", query);
 }
 
 export function getDecision(symbol: string) {
@@ -62,7 +128,7 @@ export function getDecision(symbol: string) {
 }
 
 export function getOutcomes(query: Query = {}) {
-  return publicFetch<{ items?: OutcomeItem[]; count?: number }>("/public-api/outcomes", query);
+  return publicFetch<ListPayload<OutcomeItem>>("/public-api/outcomes", query);
 }
 
 export function getOutcomeStats(horizon = "1h") {
@@ -70,15 +136,19 @@ export function getOutcomeStats(horizon = "1h") {
 }
 
 export function getSymbolOutcomes(symbol: string, query: Query = {}) {
-  return publicFetch<{ items?: OutcomeItem[]; count?: number }>("/public-api/symbol-outcomes", { symbol, ...query });
+  return publicFetch<ListPayload<OutcomeItem>>("/public-api/symbol-outcomes", { symbol, ...query });
 }
 
 export function getCoinDetail(symbol: string) {
   return publicFetch<Record<string, unknown>>("/public-api/coin-detail", { symbol });
 }
 
-export function getSymbolTimeline(symbol: string) {
-  return publicFetch<{ items?: SignalItem[]; groups?: Array<{ label?: string; items?: SignalItem[] }> }>("/public-api/signal-timeline", { symbol, limit: 80 });
+export function getSymbolTimeline(symbol: string, query: Query = {}) {
+  return publicFetch<ListPayload<SignalItem> & { groups?: Array<{ label?: string; items?: SignalItem[] }> }>("/public-api/signal-timeline", {
+    symbol,
+    limit: 80,
+    ...query
+  });
 }
 
 export function getBacktestDecision(query: Query = {}) {
@@ -90,5 +160,51 @@ export function getBacktestMatrix(query: Query = {}) {
 }
 
 export function getBacktestDetail(query: Query = {}) {
-  return publicFetch<{ items?: OutcomeItem[]; count?: number }>("/public-api/backtest/decision/detail", query);
+  return publicFetch<ListPayload<OutcomeItem>>("/public-api/backtest/decision/detail", query);
+}
+
+export type HomeDashboardData = {
+  signalStats?: Record<string, unknown>;
+  signals?: SignalItem[];
+  coins?: CoinItem[];
+  decisionStats?: Record<string, unknown>;
+  decisions?: DecisionItem[];
+  outcomeStats?: Record<string, unknown>;
+  backtest?: BacktestPayload;
+  matrix?: BacktestMatrixPayload;
+  errors?: string[];
+};
+
+export async function loadHomeDashboardData(): Promise<HomeDashboardData> {
+  const tasks = await Promise.allSettled([
+    getSignalStats(),
+    getLatestSignals({ limit: 8, window_sec: 86400 }),
+    getCoinSearch({ limit: 10, window_sec: 604800 }),
+    getDecisionStats(86400),
+    getDecisions({ limit: 6, window_sec: 86400 }),
+    getOutcomeStats("1h"),
+    getBacktestDecision({ horizon: "1h", window_sec: 2592000 }),
+    getBacktestMatrix({ window_sec: 2592000 })
+  ]);
+  const errors: string[] = [];
+  const value = <T>(index: number): T | undefined => {
+    const item = tasks[index];
+    if (item.status === "fulfilled") return item.value as T;
+    errors.push(item.reason instanceof Error ? item.reason.message : "数据暂时不可用");
+    return undefined;
+  };
+  const signalsPayload = value<ListPayload<SignalItem>>(1);
+  const coinsPayload = value<ListPayload<CoinItem>>(2);
+  const decisionsPayload = value<ListPayload<DecisionItem> & { decisions?: DecisionItem[] }>(4);
+  return {
+    signalStats: value<Record<string, unknown>>(0),
+    signals: signalsPayload?.items || [],
+    coins: coinsPayload?.items || [],
+    decisionStats: value<Record<string, unknown>>(3),
+    decisions: decisionsPayload?.items || decisionsPayload?.decisions || [],
+    outcomeStats: value<Record<string, unknown>>(5),
+    backtest: value<BacktestPayload>(6),
+    matrix: value<BacktestMatrixPayload>(7),
+    errors
+  };
 }

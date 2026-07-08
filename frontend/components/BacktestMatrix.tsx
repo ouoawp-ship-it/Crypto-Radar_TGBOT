@@ -5,7 +5,7 @@ import { EmptyState } from "./EmptyState";
 export function BacktestMatrix({ data }: { data?: BacktestMatrixPayload }) {
   const items = data?.items || [];
   const horizons = data?.horizons || ["1h", "4h", "24h", "72h"];
-  if (!items.length) return <EmptyState title="暂无回测矩阵" text="等待更多 outcome 成功样本后会自动生成。" />;
+  if (!items.length) return <EmptyState title="暂无回测矩阵" text="等待更多结果追踪成功样本后会自动生成。" />;
   return (
     <div className="panel overflow-hidden">
       <div className="border-b border-white/10 p-4 text-sm font-black text-white">决策 x 周期矩阵</div>

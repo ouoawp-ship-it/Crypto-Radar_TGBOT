@@ -5,7 +5,7 @@ import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
   title: "Paoxx 信号雷达",
-  description: "专业加密数据仪表盘，聚合信号、决策、结果追踪与回测。",
+  description: "专业加密数据仪表盘，聚合信号、决策、结果追踪与回测统计。",
   other: {
     "paoxx-frontend": "nextjs-dashboard"
   }

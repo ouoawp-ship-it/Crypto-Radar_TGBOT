@@ -1,15 +1,7 @@
 import Link from "next/link";
 import type { SignalItem } from "@/lib/types";
-import { safeText, toneForDecision } from "@/lib/format";
+import { moduleLabel, safeText, statusLabel, toneForDecision, toneForStatus } from "@/lib/format";
 import { DataStatusBadge } from "./DataStatusBadge";
-
-function statusTone(status?: string) {
-  if (status === "sent") return "good";
-  if (status === "failed") return "bad";
-  if (status === "blocked") return "warn";
-  if (status === "dry_run") return "info";
-  return "neutral";
-}
 
 export function SignalCard({ item }: { item: SignalItem }) {
   const display = item.display || {};
@@ -22,13 +14,14 @@ export function SignalCard({ item }: { item: SignalItem }) {
           <div className="text-sm font-black text-white">{safeText(display.title || item.signal_type, "信号卡片")}</div>
           <div className="mt-1 text-xs text-slate-500">{safeText(display.time_label || item.time)}</div>
         </div>
-        <DataStatusBadge label={display.status_label || item.status || "未知"} tone={statusTone(item.status)} />
+        <DataStatusBadge label={display.status_label || statusLabel(item.status)} tone={toneForStatus(item.status)} />
       </div>
       <p className="mt-3 line-clamp-3 text-sm leading-6 text-slate-300">{safeText(display.summary || item.excerpt, "暂无公开摘要。")}</p>
       <div className="mt-4 flex flex-wrap gap-2">
-        <DataStatusBadge label={display.module_label || item.module || "模块"} tone="info" />
+        <DataStatusBadge label={display.module_label || moduleLabel(item.module)} tone="info" />
         <DataStatusBadge label={symbol || "全局"} />
         <DataStatusBadge label={`分数 ${safeText(display.score_label || item.score)}`} />
+        {display.stage_label || item.stage ? <DataStatusBadge label={`阶段 ${safeText(display.stage_label || item.stage)}`} /> : null}
         {decision?.label ? <DataStatusBadge label={`决策 ${decision.label}`} tone={toneForDecision(decision.code)} /> : null}
       </div>
       <div className="mt-4 flex flex-wrap gap-2">

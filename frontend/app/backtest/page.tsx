@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BacktestMatrix } from "@/components/BacktestMatrix";
+import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
@@ -16,8 +17,10 @@ export default function BacktestPage() {
   const [matrix, setMatrix] = useState<BacktestMatrixPayload>({});
   const [detail, setDetail] = useState<OutcomeItem[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   async function load(nextHorizon = horizon) {
+    setLoading(true);
     setError("");
     try {
       const [payload, matrixPayload, detailPayload] = await Promise.all([
@@ -30,11 +33,13 @@ export default function BacktestPage() {
       setDetail(detailPayload.items || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "决策回测加载失败");
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    void load();
+    void load("1h");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -45,7 +50,11 @@ export default function BacktestPage() {
 
   return (
     <div className="space-y-5">
-      <PageTitle title="决策回测" subtitle="基于 signal_outcomes 统计不同决策在后续窗口里的表现，用于模型诊断和校准。" tags={["模型诊断", "样本质量", "不执行自动交易"]} />
+      <PageTitle
+        title="决策回测"
+        subtitle="基于 signal_outcomes 统计不同决策在后续窗口里的表现，用于模型诊断和校准。"
+        tags={["模型诊断", "样本质量", "不执行自动交易"]}
+      />
       <div className="panel flex flex-wrap gap-2 p-4">
         {["1h", "4h", "24h", "72h", "all"].map((item) => (
           <button
@@ -61,8 +70,8 @@ export default function BacktestPage() {
         ))}
       </div>
       <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-        <MetricCard label="样本总数" value={s.total_count || 0} />
-        <MetricCard label="已计算样本" value={s.success_count || 0} tone="good" />
+        <MetricCard label="样本总数" value={s.total_count ?? "-"} />
+        <MetricCard label="已计算样本" value={s.success_count ?? "-"} tone="good" />
         <MetricCard label="覆盖率" value={ratioPct(s.coverage_ratio)} />
         <MetricCard label="平均最终涨跌" value={pct(s.avg_final_return_pct)} />
         <MetricCard label="正收益比例" value={ratioPct(s.positive_ratio)} tone="good" />
@@ -85,6 +94,10 @@ export default function BacktestPage() {
               <b className="text-cyan-200">校准建议：</b>
               {safeText((d.calibration_hints || []).join("；"), "继续观察")}
             </div>
+            <div>
+              <b className="text-slate-200">样本质量：</b>
+              {safeText(s.sample_quality, "样本不足")}
+            </div>
           </div>
         </div>
         <BacktestMatrix data={matrix} />
@@ -96,6 +109,7 @@ export default function BacktestPage() {
             <OutcomeCard key={`${item.symbol}-${index}`} item={item} />
           ))}
         </div>
+        {!loading && !detail.length ? <EmptyState title="暂无样本详情" text="等待更多已计算的风险警报样本。" /> : null}
       </section>
     </div>
   );

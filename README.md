@@ -679,3 +679,10 @@ paopao
 ## v1.63.0 Web Platform API Core
 
 v1.63.0 adds the Web Platform API Core for the next Web v2.0 stages. It introduces shared API response helpers, pagination/filter/sort/time-range parsing, normalized symbol filters, and the lightweight `/api/dashboard` aggregation endpoint. The `api-self-test` job now runs an API contract self-test for dashboard, signals, jobs, job stats, and update status. This is a backend foundation release for future Signals, Coin Detail, Timeline, and Dashboard work; it does not trigger scans and does not change the Telegram push path.
+## v1.75.0 说明
+
+v1.75.0 对 Next.js 公开前台做真实数据水合和体验打磨。首页、信号雷达、决策模型、结果追踪、决策回测、单币详情和公开 API 页面继续只读取 `/public-api/*`，但现在会通过统一的 `frontend/lib/api.ts` 处理 `ok + data`、顶层 `items/summary`、非 2xx、JSON 解析失败、超时和空数据，页面会显示中文的加载、空状态、错误和重试提示。
+
+生产环境的 `paopao-frontend.service` 新增 `PAOXX_PUBLIC_API_INTERNAL_BASE=http://127.0.0.1:8080`，Next.js 服务端渲染优先从本机 Python 后端读取公开 API，浏览器端仍使用同域相对路径 `/public-api/*`。公开前台不访问 `/api/*`，不读取后台 Cookie，不写入 Authorization，不包含任何后台 token 或 secret。
+
+前台体验补齐：总览页展示今日信号数、风险警报、可试仓、等待回踩、结果追踪和回测摘要；各业务页支持真实筛选、中文错误/空状态、手机横向导航、单币 BTC/BTCUSDT 归一化查询、中文 404 和中文页面错误提示。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema，也不改后端 API contract。

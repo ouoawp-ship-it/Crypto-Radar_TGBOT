@@ -6,5 +6,3 @@ export const navItems = [
   { href: "/backtest", label: "决策回测" },
   { href: "/api-docs", label: "公开 API" }
 ];
-
-export const forbiddenPrivatePaths = ["/api/dashboard", "/api/jobs", "/api/config", "/api/audit", "/api/logs"];

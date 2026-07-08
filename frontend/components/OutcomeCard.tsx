@@ -1,15 +1,15 @@
 import type { OutcomeItem } from "@/lib/types";
-import { pct, safeText } from "@/lib/format";
+import { formatDateTime, pct, safeText, statusLabel, toneForStatus } from "@/lib/format";
 import { DataStatusBadge } from "./DataStatusBadge";
 
 export function OutcomeCard({ item }: { item: OutcomeItem }) {
-  const tone = item.result_tone || (item.data_status === "success" ? "info" : "neutral");
+  const tone = item.result_tone || toneForStatus(item.data_status);
   return (
     <article className="panel p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-base font-black text-white">{safeText(item.symbol)}</div>
-          <div className="text-xs text-slate-500">{safeText(item.signal_time)}</div>
+          <div className="text-xs text-slate-500">{formatDateTime(item.signal_time)}</div>
         </div>
         <DataStatusBadge label={item.result_label || "数据不足"} tone={tone} />
       </div>
@@ -30,7 +30,7 @@ export function OutcomeCard({ item }: { item: OutcomeItem }) {
       <div className="mt-4 flex flex-wrap gap-2">
         <DataStatusBadge label={`窗口 ${item.horizon || "-"}`} />
         <DataStatusBadge label={`决策 ${item.decision_label || "-"}`} tone="info" />
-        <DataStatusBadge label={`状态 ${item.data_status || "-"}`} />
+        <DataStatusBadge label={`状态 ${statusLabel(item.data_status)}`} tone={toneForStatus(item.data_status)} />
       </div>
     </article>
   );
