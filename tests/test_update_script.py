@@ -40,6 +40,8 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("conflicting server name \"paoxx.com\"", script)
         self.assertIn("Nginx 存在重复 paoxx.com server block", script)
         self.assertIn('sudo grep -RIn "server_name .*paoxx.com"', script)
+        self.assertIn('sudo nginx -T 2>&1 | grep -nE "configuration file|server_name paoxx.com|listen 80|listen 443"', script)
+        self.assertIn("请只保留 /etc/nginx/conf.d/00-paoxx-frontend.conf 作为 active 入口", script)
         self.assertIn("/etc/nginx/conf.d/00-paoxx-frontend.conf", script)
         self.assertIn("grep -aF", script)
         self.assertIn("path_exists_maybe_sudo()", script)

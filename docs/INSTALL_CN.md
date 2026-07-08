@@ -1,5 +1,28 @@
 # 泡泡抓币中文安装目录
 
+## v1.74.5 运维说明
+
+v1.74.5 加固 active Nginx 清理逻辑。部署脚本现在会扫描 `/etc/nginx/sites-enabled` 和 `/etc/nginx/conf.d` 下所有 active 文件，查找 `server_name paoxx.com` 或 `server_name ... www.paoxx.com`，再用 `readlink -f` 和 keep file 对比，只保留 `/etc/nginx/conf.d/00-paoxx-frontend.conf`。
+
+被禁用项会先备份到 `/etc/nginx/backup-paopao/duplicate-cleanup.<timestamp>/`。旧入口如果是 symlink，只删除 symlink；如果是普通文件，则改名为 `.disabled.<timestamp>`。不会删除 `/etc/nginx/sites-available` 中的历史源文件，不会删除 Let's Encrypt 证书，也不会删除 certbot 需要的 SSL 配置。HTTP 80 会保留：
+
+```nginx
+location ^~ /.well-known/acme-challenge/ {
+    root /var/www/html;
+}
+```
+
+部署后检查：
+
+```bash
+sudo nginx -t 2>&1
+sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true
+sudo nginx -T 2>&1 | grep -nE "configuration file|server_name paoxx.com|listen 80|listen 443"
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
+预期只剩 `/etc/nginx/conf.d/00-paoxx-frontend.conf` 声明 `paoxx.com`，且 `check_https_deploy.sh` 阻断为 0。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema 或后端 API contract。
+
 ## v1.74.4 运维说明
 
 v1.74.4 用于清理生产 Nginx 的重复 `paoxx.com` server block。部署后 active 入口应只保留 `/etc/nginx/conf.d/00-paoxx-frontend.conf`；旧的 `/etc/nginx/sites-enabled/default`、`/etc/nginx/sites-enabled/paoxx.com` 和 `/etc/nginx/conf.d` 中其他包含 `server_name paoxx.com` 的入口会被禁用。

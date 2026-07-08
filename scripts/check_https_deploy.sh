@@ -273,6 +273,8 @@ check_nginx_duplicate_server_names() {
     record_block "Nginx 存在重复 paoxx.com server block"
     printf '%s\n' "$output" | grep -F 'conflicting server name "paoxx.com"' | head -n 6
     echo '定位命令: sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d'
+    echo '定位命令: sudo nginx -T 2>&1 | grep -nE "configuration file|server_name paoxx.com|listen 80|listen 443"'
+    echo '请只保留 /etc/nginx/conf.d/00-paoxx-frontend.conf 作为 active 入口。'
     return
   fi
   record_pass "Nginx 无 conflicting server name warning"
@@ -288,6 +290,8 @@ check_nginx_active_routes() {
   if printf '%s' "${config}" | grep -Fq 'conflicting server name "paoxx.com"'; then
     record_block "Nginx active config 存在重复 paoxx.com server block"
     echo '定位命令: sudo grep -RIn "server_name .*paoxx.com" /etc/nginx/sites-enabled /etc/nginx/conf.d'
+    echo '定位命令: sudo nginx -T 2>&1 | grep -nE "configuration file|server_name paoxx.com|listen 80|listen 443"'
+    echo '请只保留 /etc/nginx/conf.d/00-paoxx-frontend.conf 作为 active 入口。'
     return
   fi
 

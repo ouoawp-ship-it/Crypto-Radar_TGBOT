@@ -364,6 +364,10 @@ nginx_frontend_fail() {
   exit 1
 }
 
+resolve_nginx_path() {
+  readlink -f "$1" 2>/dev/null || printf '%s' "$1"
+}
+
 backup_nginx_legacy_entry() {
   local path="$1"
   local backup_dir="$2"
@@ -382,33 +386,73 @@ backup_nginx_legacy_entry() {
   fi
 }
 
-disable_legacy_paoxx_nginx_sites() {
+find_paoxx_nginx_server_files() {
   local domain="$1"
-  local active_path="$2"
-  local backup_dir="${NGINX_BACKUP_DIR:-/etc/nginx/backup-paopao}"
+  local domain_regex
+  domain_regex="$(printf '%s' "$domain" | sed 's/\./\\./g')"
+  local pattern="server_name[[:space:]][^;]*(www\\.)?${domain_regex}"
+  local dir file
+  {
+    for file in \
+      "/etc/nginx/sites-enabled/default" \
+      "/etc/nginx/sites-enabled/${domain}" \
+      "/etc/nginx/sites-enabled/paoxx.com"; do
+      if [ -e "$file" ] || [ -L "$file" ]; then
+        printf '%s\n' "$file"
+      fi
+    done
+    for dir in /etc/nginx/sites-enabled /etc/nginx/conf.d; do
+      [ -d "$dir" ] || continue
+      find "$dir" -maxdepth 1 \( -type f -o -type l \) -print 2>/dev/null | while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        case "$file" in
+          *.disabled.*) continue ;;
+        esac
+        if grep -Iq . "$file" 2>/dev/null && grep -Eq "$pattern" "$file" 2>/dev/null; then
+          printf '%s\n' "$file"
+        fi
+      done
+    done
+  } | awk '!seen[$0]++'
+}
+
+cleanup_duplicate_paoxx_nginx_servers() {
+  local domain="$1"
+  local keep_path="$2"
+  local backup_root="${NGINX_BACKUP_DIR:-/etc/nginx/backup-paopao}"
   local stamp="${PAOPAO_NGINX_DISABLE_STAMP:-$(date -u +%Y%m%d%H%M%S)}"
-  local legacy
+  local backup_dir="${backup_root}/duplicate-cleanup.${stamp}"
+  local keep_real
+  keep_real="$(resolve_nginx_path "$keep_path")"
+  local file file_real disabled_count=0
 
-  for legacy in \
-    "/etc/nginx/sites-enabled/default" \
-    "/etc/nginx/sites-enabled/${domain}" \
-    "/etc/nginx/sites-enabled/paoxx.com" \
-    "/etc/nginx/sites-enabled/paopao" \
-    "/etc/nginx/sites-enabled/paopao-web"; do
-    [ "$legacy" = "$active_path" ] && continue
-    backup_nginx_legacy_entry "$legacy" "$backup_dir" "$stamp"
-  done
+  while IFS= read -r file; do
+    [ -e "$file" ] || [ -L "$file" ] || continue
+    file_real="$(resolve_nginx_path "$file")"
+    if [ "$file_real" = "$keep_real" ]; then
+      continue
+    fi
+    backup_nginx_legacy_entry "$file" "$backup_dir" "$stamp"
+    disabled_count=$((disabled_count + 1))
+    printf '[paopao-update] Disabled duplicate nginx entry: %s\n' "$file"
+  done < <(find_paoxx_nginx_server_files "$domain")
 
-  if [ -d /etc/nginx/conf.d ]; then
-    while IFS= read -r legacy; do
-      [ -n "$legacy" ] || continue
-      [ "$legacy" = "$active_path" ] && continue
-      case "$legacy" in
-        *.disabled.*) continue ;;
-      esac
-      backup_nginx_legacy_entry "$legacy" "$backup_dir" "$stamp"
-    done < <(grep -RIlE "server_name[[:space:]].*${domain}" /etc/nginx/conf.d 2>/dev/null || true)
+  local remaining=""
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    file_real="$(resolve_nginx_path "$file")"
+    if [ "$file_real" != "$keep_real" ]; then
+      remaining="${remaining}${file}
+"
+    fi
+  done < <(find_paoxx_nginx_server_files "$domain")
+  if [ -n "$remaining" ]; then
+    printf '%s\n' "$remaining" >&2
+    printf '[paopao-update] 定位命令: sudo grep -RIn "server_name .*%s" /etc/nginx/sites-enabled /etc/nginx/conf.d\n' "$domain" >&2
+    nginx_frontend_fail "Nginx duplicate ${domain} server blocks remain after cleanup"
   fi
+
+  printf '[paopao-update] Nginx duplicate cleanup complete, disabled=%s, backup=%s\n' "$disabled_count" "$backup_dir"
 }
 
 verify_active_nginx_frontend_route() {
@@ -477,7 +521,14 @@ install_or_update_nginx_frontend_routes() {
 server {
     listen 80;
     server_name ${domain};
-    return 301 https://\$host\$request_uri;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
 server {
@@ -528,7 +579,7 @@ server {
     }
 }
 EOF
-  disable_legacy_paoxx_nginx_sites "$domain" "$active_path"
+  cleanup_duplicate_paoxx_nginx_servers "$domain" "$active_path"
   verify_active_nginx_frontend_route "$domain" "$active_path"
 
   if command -v systemctl >/dev/null 2>&1; then
