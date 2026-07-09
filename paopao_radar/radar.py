@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 from .config import Settings
 from .data_sources import BinanceDataSource
-from .funding_sources import MultiExchangeFundingClient
+from .funding_sources import MultiExchangeFundingClient, funding_last_settlement_text, funding_settlement_period_text
 from .storage import JsonStore
 from .time_windows import ClosedWindow, closed_window
 
@@ -1647,9 +1647,11 @@ class RadarEngine:
         label = str(row.get("extreme_label") or "").strip()
         if label:
             text = f"{text}（{label}）"
+        last_time = funding_last_settlement_text(row) or "未知"
+        period = funding_settlement_period_text(row)
         next_time = str(row.get("next_funding_time") or "").strip() or "未知"
         exchange = str(row.get("exchange") or "Unknown").strip()
-        return f"{exchange}: {text}｜下次结算 {next_time}"
+        return f"{exchange}: {text}｜上次结算 {last_time}｜周期 {period}｜下次结算 {next_time}"
 
     @staticmethod
     def _format_launch_funding_transitions(rows: list[dict[str, Any]]) -> list[str]:

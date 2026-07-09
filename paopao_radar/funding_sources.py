@@ -42,6 +42,32 @@ def funding_interval_label(hours: int) -> str:
     return f"{hours}H" if hours > 0 else "未知周期"
 
 
+def funding_latest_time_ms(points: list[dict[str, Any]]) -> int:
+    times = sorted(to_int(item.get("time_ms")) for item in points if to_int(item.get("time_ms")) > 0)
+    return times[-1] if times else 0
+
+
+def funding_settlement_period_text(row: dict[str, Any]) -> str:
+    previous_interval = to_int(row.get("previous_interval_hours"))
+    current_interval = to_int(row.get("current_interval_hours")) or to_int(row.get("interval_hours"))
+    if previous_interval > 0 and current_interval > 0 and previous_interval != current_interval:
+        return f"{funding_interval_label(previous_interval)}→{funding_interval_label(current_interval)}"
+    return funding_interval_label(current_interval)
+
+
+def funding_last_settlement_text(row: dict[str, Any]) -> str:
+    explicit = str(row.get("last_funding_time") or row.get("previous_funding_time") or "").strip()
+    if explicit:
+        return explicit
+    last_ms = to_int(row.get("last_funding_time_ms") or row.get("previous_funding_time_ms"))
+    if last_ms <= 0:
+        next_ms = to_int(row.get("next_funding_time_ms"))
+        interval_hours = to_int(row.get("current_interval_hours")) or to_int(row.get("interval_hours"))
+        if next_ms > 0 and interval_hours > 0:
+            last_ms = next_ms - interval_hours * 3_600_000
+    return funding_time_text(last_ms) if last_ms > 0 else ""
+
+
 def funding_cycle_text(funding_pct: float, interval_hours: int) -> str:
     if interval_hours > 0:
         return f"{funding_pct:+.3f}%/{funding_interval_label(interval_hours)}"
@@ -179,6 +205,7 @@ class MultiExchangeFundingClient:
         interval_hours: int = 0,
     ) -> dict[str, Any]:
         transition = funding_interval_transition(history, next_time_ms)
+        last_time_ms = funding_latest_time_ms(history)
         interval = (
             interval_hours
             or int(transition.get("current_interval_hours", 0) or 0)
@@ -189,6 +216,10 @@ class MultiExchangeFundingClient:
             "symbol": display_symbol,
             "funding_pct": funding_pct,
             "interval_hours": interval,
+            "current_interval_hours": interval,
+            "previous_interval_hours": to_int(transition.get("previous_interval_hours")),
+            "last_funding_time_ms": last_time_ms,
+            "last_funding_time": funding_time_text(last_time_ms),
             "next_funding_time_ms": next_time_ms,
             "next_funding_time": funding_time_text(next_time_ms),
             "funding_interval_transition": str(transition.get("transition_text") or ""),

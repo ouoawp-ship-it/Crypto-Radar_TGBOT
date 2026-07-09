@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.funding_alert import FundingAlertEngine, classify_funding_alert
+from paopao_radar.funding_alert import FundingAlertEngine, classify_funding_alert, funding_row_text, funding_table
 from paopao_radar.storage import JsonStore
 
 
@@ -69,6 +69,28 @@ class FundingSource:
 
 
 class FundingAlertTests(unittest.TestCase):
+    def test_funding_table_shows_previous_settlement_and_interval_change(self) -> None:
+        settings = Settings(data_dir=Path("."))
+        row = {
+            "exchange": "Bitget",
+            "funding_pct": -1.216,
+            "interval_hours": 1,
+            "current_interval_hours": 1,
+            "previous_interval_hours": 4,
+            "last_funding_time": "2026-07-01 16:00:00",
+            "next_funding_time": "2026-07-01 17:00:00",
+        }
+        table = funding_table([row], settings)
+        line = funding_row_text(row, settings)
+
+        self.assertIn("上次结算", table)
+        self.assertIn("本次周期", table)
+        self.assertIn("07-01 16:00", table)
+        self.assertIn("4H→1H", table)
+        self.assertIn("07-01 17:00", table)
+        self.assertIn("上次结算 2026-07-01 16:00:00", line)
+        self.assertIn("周期 4H→1H", line)
+
     def test_classifies_multi_exchange_negative_funding(self) -> None:
         settings = Settings(
             funding_alert_extreme_negative_pct=-0.5,

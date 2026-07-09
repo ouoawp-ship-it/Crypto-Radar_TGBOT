@@ -13,8 +13,10 @@ from .funding_sources import (
     MultiExchangeFundingClient,
     funding_cycle_text,
     funding_extreme_label,
+    funding_last_settlement_text,
     funding_interval_hours,
     funding_interval_label,
+    funding_settlement_period_text,
     funding_time_text,
     to_float,
     to_int,
@@ -131,8 +133,10 @@ def funding_row_text(row: dict[str, Any], settings: Settings | None = None) -> s
         label = funding_extreme_label(funding_pct)
     if label:
         text = f"{text}（{label}）"
+    last_time = funding_last_settlement_text(row) or "未知"
+    period = funding_settlement_period_text(row)
     next_time = str(row.get("next_funding_time") or "").strip() or "未知"
-    return f"{exchange}: {text}｜下次结算 {tg_escape(next_time)}"
+    return f"{exchange}: {text}｜上次结算 {tg_escape(last_time)}｜周期 {tg_escape(period)}｜下次结算 {tg_escape(next_time)}"
 
 
 def short_funding_time(value: str) -> str:
@@ -146,7 +150,7 @@ def short_funding_time(value: str) -> str:
 
 
 def funding_table(rows: list[dict[str, Any]], settings: Settings) -> str:
-    lines = [f"{'交易所':<9}{'费率/周期':<18}{'下次结算'}"]
+    lines = [f"{'交易所':<9}{'费率/周期':<18}{'上次结算':<14}{'本次周期':<9}{'下次结算'}"]
     for row in rows:
         exchange = str(row.get("exchange") or "Unknown").strip()[:9]
         funding_pct = to_float(row.get("funding_pct"))
@@ -154,8 +158,10 @@ def funding_table(rows: list[dict[str, Any]], settings: Settings) -> str:
         rate = funding_cycle_text(funding_pct, interval_hours)
         label = funding_rate_label(funding_pct, settings)
         rate_text = f"{rate} {label}".strip()
+        last_time = short_funding_time(funding_last_settlement_text(row))
+        period = funding_settlement_period_text(row)
         next_time = short_funding_time(str(row.get("next_funding_time") or ""))
-        lines.append(f"{exchange:<9}{rate_text:<18}{next_time}")
+        lines.append(f"{exchange:<9}{rate_text:<18}{last_time:<14}{period:<9}{next_time}")
     return "<pre>" + tg_escape("\n".join(lines)) + "</pre>"
 
 
@@ -444,12 +450,18 @@ class FundingAlertEngine:
             if current_interval <= 0 and previous_next > 0 and current_next > previous_next:
                 current_interval = funding_interval_hours(current_next - previous_next)
                 row["interval_hours"] = current_interval
+                row["current_interval_hours"] = current_interval
+            if previous_next > 0 and not row.get("last_funding_time_ms"):
+                row["last_funding_time_ms"] = previous_next
+                row["last_funding_time"] = str(previous.get("next_funding_time") or funding_time_text(previous_next))
             if (
                 not row.get("funding_interval_transition")
                 and previous_interval > 0
                 and current_interval > 0
                 and current_interval < previous_interval
             ):
+                row["previous_interval_hours"] = previous_interval
+                row["current_interval_hours"] = current_interval
                 previous_time = str(previous.get("next_funding_time") or funding_time_text(previous_next))
                 current_time = str(row.get("next_funding_time") or funding_time_text(current_next))
                 row["funding_interval_transition"] = (
@@ -596,6 +608,10 @@ class FundingAlertEngine:
             str(row.get("exchange") or ""): {
                 "funding_pct": round(to_float(row.get("funding_pct")), 6),
                 "interval_hours": to_int(row.get("interval_hours")),
+                "current_interval_hours": to_int(row.get("current_interval_hours")) or to_int(row.get("interval_hours")),
+                "previous_interval_hours": to_int(row.get("previous_interval_hours")),
+                "last_funding_time_ms": to_int(row.get("last_funding_time_ms")),
+                "last_funding_time": str(row.get("last_funding_time") or ""),
                 "next_funding_time_ms": to_int(row.get("next_funding_time_ms")),
                 "next_funding_time": str(row.get("next_funding_time") or ""),
             }

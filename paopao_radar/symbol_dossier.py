@@ -9,7 +9,14 @@ from typing import Any
 
 from .config import Settings
 from .data_sources import BinanceDataSource
-from .funding_sources import MultiExchangeFundingClient, funding_cycle_text, to_float, to_int
+from .funding_sources import (
+    MultiExchangeFundingClient,
+    funding_cycle_text,
+    funding_last_settlement_text,
+    funding_settlement_period_text,
+    to_float,
+    to_int,
+)
 from .price_alerts import format_price, normalize_symbol
 from .storage import JsonStore
 from .structure_radar import calculate_box, normalize_candles
@@ -791,9 +798,11 @@ def funding_rows_text(rows: list[dict[str, Any]]) -> list[str]:
     for row in rows[:6]:
         exchange = str(row.get("exchange") or "Unknown")
         rate = funding_cycle_text(to_float(row.get("funding_pct")), to_int(row.get("interval_hours")))
+        last_time = funding_last_settlement_text(row) or "未知"
+        period = funding_settlement_period_text(row)
         next_time = str(row.get("next_funding_time") or "未知")
         label = str(row.get("extreme_label") or "")
-        lines.append(f"{exchange}: {rate}{'（' + label + '）' if label else ''}｜下次 {next_time}")
+        lines.append(f"{exchange}: {rate}{'（' + label + '）' if label else ''}｜上次 {last_time}｜周期 {period}｜下次 {next_time}")
     return lines
 
 

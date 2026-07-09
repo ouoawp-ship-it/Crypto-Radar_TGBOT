@@ -357,6 +357,9 @@ class RadarScoringTests(unittest.TestCase):
                         "exchange": "Binance",
                         "funding_pct": -2.0,
                         "interval_hours": 1,
+                        "previous_interval_hours": 4,
+                        "current_interval_hours": 1,
+                        "last_funding_time": "2026-07-01 16:00:00",
                         "next_funding_time": "2026-07-01 17:00:00",
                         "extreme_label": "极负",
                         "funding_interval_transition": (
@@ -368,14 +371,15 @@ class RadarScoringTests(unittest.TestCase):
                         "exchange": "OKX",
                         "funding_pct": 0.01,
                         "interval_hours": 8,
+                        "last_funding_time": "2026-07-01 16:00:00",
                         "next_funding_time": "2026-07-02 00:00:00",
                     },
                 ],
             })
 
             self.assertIn("<blockquote><b>多交易所资金费率</b></blockquote>", text)
-            self.assertIn("Binance: -2.000%/1H（极负）｜下次结算 2026-07-01 17:00:00", text)
-            self.assertIn("OKX: +0.010%/8H｜下次结算 2026-07-02 00:00:00", text)
+            self.assertIn("Binance: -2.000%/1H（极负）｜上次结算 2026-07-01 16:00:00｜周期 4H→1H｜下次结算 2026-07-01 17:00:00", text)
+            self.assertIn("OKX: +0.010%/8H｜上次结算 2026-07-01 16:00:00｜周期 8H｜下次结算 2026-07-02 00:00:00", text)
             self.assertIn("Binance周期: 2026-07-01 16:00:00 4H结算一次", text)
 
     def test_launch_alert_replies_to_previous_symbol_message(self) -> None:

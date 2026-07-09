@@ -112,6 +112,9 @@ class FundingSourceTests(unittest.TestCase):
         self.assertEqual([row["exchange"] for row in rows], ["Binance", "OKX", "Bybit", "Bitget", "Gate"])
         self.assertEqual(rows[0]["funding_pct"], -2.0)
         self.assertEqual(rows[0]["interval_hours"], 1)
+        self.assertEqual(rows[0]["last_funding_time"], "2026-07-01 16:00:00")
+        self.assertEqual(rows[0]["current_interval_hours"], 1)
+        self.assertEqual(rows[0]["previous_interval_hours"], 4)
         self.assertEqual(rows[0]["extreme_label"], "极负")
         self.assertIn("4H结算一次", rows[0]["funding_interval_transition"])
         self.assertTrue(all(row["next_funding_time"].endswith("17:00:00") for row in rows))
@@ -119,4 +122,3 @@ class FundingSourceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
