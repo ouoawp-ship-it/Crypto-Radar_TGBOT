@@ -6,7 +6,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.funding_alert import FundingAlertEngine, classify_funding_alert, funding_row_text, funding_table
+from paopao_radar.funding_alert import (
+    FundingAlertEngine,
+    _display_width,
+    classify_funding_alert,
+    funding_row_text,
+    funding_table,
+    funding_table_lines,
+)
 from paopao_radar.storage import JsonStore
 
 
@@ -90,6 +97,52 @@ class FundingAlertTests(unittest.TestCase):
         self.assertIn("07-01 17:00", table)
         self.assertIn("上次结算 2026-07-01 16:00:00", line)
         self.assertIn("周期 4H→1H", line)
+
+    def test_funding_table_lines_keep_columns_aligned(self) -> None:
+        settings = Settings(data_dir=Path("."))
+        rows = [
+            {
+                "exchange": "Binance",
+                "funding_pct": -2.0,
+                "interval_hours": 1,
+                "current_interval_hours": 1,
+                "previous_interval_hours": 4,
+                "last_funding_time": "2026-07-01 16:00:00",
+                "next_funding_time": "2026-07-01 17:00:00",
+            },
+            {
+                "exchange": "OKX",
+                "funding_pct": 0.01,
+                "interval_hours": 8,
+                "last_funding_time": "2026-07-01 16:00:00",
+                "next_funding_time": "2026-07-02 00:00:00",
+            },
+        ]
+
+        _, binance_line, okx_line = funding_table_lines(rows, settings)
+
+        self.assertEqual(
+            _display_width(binance_line.split("07-01 16:00", 1)[0]),
+            _display_width(okx_line.split("07-01 16:00", 1)[0]),
+        )
+        binance_period_prefix = (
+            binance_line.split("07-01 16:00", 1)[0]
+            + "07-01 16:00"
+            + binance_line.split("07-01 16:00", 1)[1].split("4H→1H", 1)[0]
+        )
+        okx_period_prefix = (
+            okx_line.split("07-01 16:00", 1)[0]
+            + "07-01 16:00"
+            + okx_line.split("07-01 16:00", 1)[1].split("8H", 1)[0]
+        )
+        self.assertEqual(
+            _display_width(binance_period_prefix),
+            _display_width(okx_period_prefix),
+        )
+        self.assertEqual(
+            _display_width(binance_line.split("07-01 17:00", 1)[0]),
+            _display_width(okx_line.split("07-02 00:00", 1)[0]),
+        )
 
     def test_classifies_multi_exchange_negative_funding(self) -> None:
         settings = Settings(

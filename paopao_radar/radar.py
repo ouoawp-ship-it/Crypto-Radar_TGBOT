@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .funding_alert import funding_table
 from .funding_sources import MultiExchangeFundingClient, funding_last_settlement_text, funding_settlement_period_text
 from .storage import JsonStore
 from .time_windows import ClosedWindow, closed_window
@@ -1695,9 +1696,9 @@ class RadarEngine:
             row for row in raw_funding_exchanges
             if isinstance(row, dict) and row.get("exchange")
         ]
-        funding_exchange_lines = [self._format_launch_funding_exchange(row) for row in funding_exchanges]
+        funding_exchange_table = funding_table(funding_exchanges, self.settings) if funding_exchanges else ""
         funding_transition_lines = self._format_launch_funding_transitions(funding_exchanges)
-        single_funding_available = funding_available and not funding_exchange_lines
+        single_funding_available = funding_available and not funding_exchange_table
         score_legend = (
             f"分数图例: <{self.settings.launch_watch_score}未触发 | "
             f"{self.settings.launch_watch_score}-{self.settings.launch_primed_score - 1}提前观察 | "
@@ -1726,8 +1727,8 @@ class RadarEngine:
             *([f"资金费率: {funding_text}"] if single_funding_available else []),
             *([f"结算周期: {funding_transition}"] if funding_transition and single_funding_available else []),
             *(
-                ["", tg_quote("多交易所资金费率"), *funding_exchange_lines, *funding_transition_lines]
-                if funding_exchange_lines
+                ["", tg_quote("多交易所资金费率"), funding_exchange_table, *funding_transition_lines]
+                if funding_exchange_table
                 else []
             ),
             "",

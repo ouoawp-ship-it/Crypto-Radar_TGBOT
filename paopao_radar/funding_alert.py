@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -149,10 +150,47 @@ def short_funding_time(value: str) -> str:
     return text[:14]
 
 
-def funding_table(rows: list[dict[str, Any]], settings: Settings) -> str:
-    lines = [f"{'交易所':<9}{'费率/周期':<18}{'上次结算':<14}{'本次周期':<9}{'下次结算'}"]
+def _display_width(value: Any) -> int:
+    total = 0
+    for char in str(value or ""):
+        total += 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+    return total
+
+
+def _display_ljust(value: Any, width: int) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    result = []
+    used = 0
+    for char in text:
+        char_width = 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+        if used + char_width > width:
+            break
+        result.append(char)
+        used += char_width
+    return "".join(result) + (" " * max(0, width - used))
+
+
+FUNDING_TABLE_COLUMNS = (
+    ("交易所", 8),
+    ("费率/周期", 18),
+    ("上次结算", 12),
+    ("本次周期", 10),
+    ("下次结算", 12),
+)
+
+
+def _funding_table_row(values: list[Any]) -> str:
+    padded = [
+        _display_ljust(value, width)
+        for value, (_, width) in zip(values, FUNDING_TABLE_COLUMNS)
+    ]
+    return "  ".join(padded).rstrip()
+
+
+def funding_table_lines(rows: list[dict[str, Any]], settings: Settings) -> list[str]:
+    lines = [_funding_table_row([label for label, _ in FUNDING_TABLE_COLUMNS])]
     for row in rows:
-        exchange = str(row.get("exchange") or "Unknown").strip()[:9]
+        exchange = str(row.get("exchange") or "Unknown").strip()
         funding_pct = to_float(row.get("funding_pct"))
         interval_hours = to_int(row.get("interval_hours"))
         rate = funding_cycle_text(funding_pct, interval_hours)
@@ -161,8 +199,12 @@ def funding_table(rows: list[dict[str, Any]], settings: Settings) -> str:
         last_time = short_funding_time(funding_last_settlement_text(row))
         period = funding_settlement_period_text(row)
         next_time = short_funding_time(str(row.get("next_funding_time") or ""))
-        lines.append(f"{exchange:<9}{rate_text:<18}{last_time:<14}{period:<9}{next_time}")
-    return "<pre>" + tg_escape("\n".join(lines)) + "</pre>"
+        lines.append(_funding_table_row([exchange, rate_text, last_time, period, next_time]))
+    return lines
+
+
+def funding_table(rows: list[dict[str, Any]], settings: Settings) -> str:
+    return "<pre>" + tg_escape("\n".join(funding_table_lines(rows, settings))) + "</pre>"
 
 
 def classify_funding_alert(rows: list[dict[str, Any]], settings: Settings) -> dict[str, Any]:

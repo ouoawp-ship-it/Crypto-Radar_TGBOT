@@ -378,8 +378,15 @@ class RadarScoringTests(unittest.TestCase):
             })
 
             self.assertIn("<blockquote><b>多交易所资金费率</b></blockquote>", text)
-            self.assertIn("Binance: -2.000%/1H（极负）｜上次结算 2026-07-01 16:00:00｜周期 4H→1H｜下次结算 2026-07-01 17:00:00", text)
-            self.assertIn("OKX: +0.010%/8H｜上次结算 2026-07-01 16:00:00｜周期 8H｜下次结算 2026-07-02 00:00:00", text)
+            self.assertIn("<pre>交易所", text)
+            self.assertIn("费率/周期", text)
+            self.assertIn("上次结算", text)
+            self.assertIn("本次周期", text)
+            self.assertIn("Binance", text)
+            self.assertIn("-2.000%/1H", text)
+            self.assertIn("4H→1H", text)
+            self.assertIn("OKX", text)
+            self.assertIn("+0.010%/8H", text)
             self.assertIn("Binance周期: 2026-07-01 16:00:00 4H结算一次", text)
 
     def test_launch_alert_replies_to_previous_symbol_message(self) -> None:
