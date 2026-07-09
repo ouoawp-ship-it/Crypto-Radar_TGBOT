@@ -679,6 +679,12 @@ paopao
 ## v1.63.0 Web Platform API Core
 
 v1.63.0 adds the Web Platform API Core for the next Web v2.0 stages. It introduces shared API response helpers, pagination/filter/sort/time-range parsing, normalized symbol filters, and the lightweight `/api/dashboard` aggregation endpoint. The `api-self-test` job now runs an API contract self-test for dashboard, signals, jobs, job stats, and update status. This is a backend foundation release for future Signals, Coin Detail, Timeline, and Dashboard work; it does not trigger scans and does not change the Telegram push path.
+## v1.75.1 说明
+
+v1.75.1 修复公开前台首页的生产超时提示噪声：当某个非核心 public API 请求偶发超时，但首页已经拿到其它真实数据时，不再在顶部显示“部分数据暂时不可用”。只有所有核心首页数据都不可用时，才显示“公开数据暂时不可用”错误提示。
+
+同时，`paopao-frontend.service` 增加 `PAOXX_PUBLIC_API_TIMEOUT_MS=15000`，服务端读取本机 `/public-api/*` 的默认超时从 8 秒提高到 15 秒；首页最新信号改为直接读取稳定的 `/public-api/signals`，避免先探测可选 alias 造成额外等待。本版本不改 Telegram 主推送流程，不引入自动交易，不改数据库 schema，也不改后端 API contract。
+
 ## v1.75.0 说明
 
 v1.75.0 对 Next.js 公开前台做真实数据水合和体验打磨。首页、信号雷达、决策模型、结果追踪、决策回测、单币详情和公开 API 页面继续只读取 `/public-api/*`，但现在会通过统一的 `frontend/lib/api.ts` 处理 `ok + data`、顶层 `items/summary`、非 2xx、JSON 解析失败、超时和空数据，页面会显示中文的加载、空状态、错误和重试提示。

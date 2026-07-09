@@ -80,6 +80,16 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
   const probeCount = distributionCount(data.decisionStats, "probe");
   const riskCount = distributionCount(data.decisionStats, "risk_alert");
   const pullbackCount = distributionCount(data.decisionStats, "wait_pullback");
+  const hasAnyData = Boolean(
+    data.signalStats ||
+      (data.signals || []).length ||
+      (data.coins || []).length ||
+      data.decisionStats ||
+      (data.decisions || []).length ||
+      data.outcomeStats ||
+      data.backtest ||
+      data.matrix
+  );
 
   return (
     <div className="space-y-5">
@@ -90,9 +100,9 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       />
 
       {loading ? <div className="panel p-4 text-sm text-slate-400">正在加载数据...</div> : null}
-      {data.errors?.length ? (
+      {data.errors?.length && !hasAnyData ? (
         <div className="panel border-warn/30 bg-warn/10 p-4 text-sm text-amber-100">
-          部分数据暂时不可用：{data.errors.slice(0, 2).join("；")}
+          公开数据暂时不可用：{data.errors.slice(0, 2).join("；")}
         </div>
       ) : null}
 

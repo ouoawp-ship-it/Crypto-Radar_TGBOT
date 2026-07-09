@@ -950,6 +950,22 @@ TG_CHAT_ID=你的群ID
 ## v1.63.0 Web Platform API Core
 
 v1.63.0 adds `/api/dashboard` as a lightweight aggregation API. It only reads current service status, signals.db, jobs.db, resources, and update-check state; it does not trigger market scans or external update apply. The `api-self-test` background job now checks the Web API contract directly. `jobs.db` and `signals.db` remain runtime data and must not be committed. Production updates should still be run from the server with `paopao update --yes`.
+## v1.75.1 运维说明
+
+v1.75.1 用于降低首页 public API 偶发慢请求造成的提示噪声。部署后 `paopao-frontend.service` 应包含：
+
+```ini
+Environment=PAOXX_PUBLIC_API_INTERNAL_BASE=http://127.0.0.1:8080
+Environment=PAOXX_PUBLIC_API_TIMEOUT_MS=15000
+```
+
+首页只有在核心公开数据全部不可用时才显示“公开数据暂时不可用”。如果只是某个统计接口慢或短时超时，页面会继续展示已拿到的真实数据，不再显示“部分数据暂时不可用”。部署命令仍为：
+
+```bash
+paopao update --yes || bash scripts/update_server.sh --yes
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
 ## v1.75.0 运维说明
 
 v1.75.0 升级 Next.js 公开前台的数据接入。部署后 `paopao-frontend.service` 会带上：

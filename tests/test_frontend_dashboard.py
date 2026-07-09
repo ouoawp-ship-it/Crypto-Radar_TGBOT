@@ -24,7 +24,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         package = json.loads(package_path.read_text(encoding="utf-8"))
 
         self.assertEqual(package.get("name"), "paoxx-public-dashboard")
-        self.assertEqual(package.get("version"), "1.75.0")
+        self.assertEqual(package.get("version"), "1.75.1")
         self.assertIn("build", package.get("scripts", {}))
         self.assertIn("start", package.get("scripts", {}))
         self.assertIn("typecheck", package.get("scripts", {}))
@@ -55,6 +55,8 @@ class NextjsPublicDashboardTests(unittest.TestCase):
 
         self.assertIn("PAOXX_PUBLIC_API_INTERNAL_BASE", api_source)
         self.assertIn("http://127.0.0.1:8080", api_source)
+        self.assertIn("PAOXX_PUBLIC_API_TIMEOUT_MS", api_source)
+        self.assertIn("15000", api_source)
         self.assertIn("typeof window === \"undefined\"", api_source)
         self.assertIn("publicFetchResult", api_source)
         self.assertIn("ApiResult", api_source)
@@ -111,6 +113,9 @@ class NextjsPublicDashboardTests(unittest.TestCase):
 
         self.assertIn("loadHomeDashboardData", page)
         self.assertIn("initialData", home)
+        self.assertIn("hasAnyData", home)
+        self.assertIn("公开数据暂时不可用", home)
+        self.assertNotIn("部分数据暂时不可用", home)
         self.assertIn("今日信号数", home)
         self.assertIn("最新信号卡片", home)
         self.assertIn("决策分布", home)
@@ -181,6 +186,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("--hostname 127.0.0.1 --port 3000", combined)
         self.assertIn("Environment=HOSTNAME=127.0.0.1", combined)
         self.assertIn("Environment=PAOXX_PUBLIC_API_INTERNAL_BASE=http://127.0.0.1:8080", combined)
+        self.assertIn("Environment=PAOXX_PUBLIC_API_TIMEOUT_MS=15000", combined)
         self.assertIn("enable --now", combined)
         self.assertIn("command -v npm", combined)
         self.assertIn("Node.js 22 LTS", combined)

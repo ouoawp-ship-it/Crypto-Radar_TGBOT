@@ -13,7 +13,7 @@ import type {
 export type Query = Record<string, string | number | boolean | undefined | null>;
 
 const INTERNAL_BASE = process.env.PAOXX_PUBLIC_API_INTERNAL_BASE || "http://127.0.0.1:8080";
-const REQUEST_TIMEOUT_MS = 8000;
+const REQUEST_TIMEOUT_MS = Number(process.env.PAOXX_PUBLIC_API_TIMEOUT_MS || 15000);
 
 function toQuery(query?: Query): string {
   const params = new URLSearchParams();
@@ -178,7 +178,7 @@ export type HomeDashboardData = {
 export async function loadHomeDashboardData(): Promise<HomeDashboardData> {
   const tasks = await Promise.allSettled([
     getSignalStats(),
-    getLatestSignals({ limit: 8, window_sec: 86400 }),
+    getSignals({ limit: 8, window_sec: 86400 }),
     getCoinSearch({ limit: 10, window_sec: 604800 }),
     getDecisionStats(86400),
     getDecisions({ limit: 6, window_sec: 86400 }),

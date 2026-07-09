@@ -349,6 +349,7 @@ Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=HOSTNAME=127.0.0.1
 Environment=PAOXX_PUBLIC_API_INTERNAL_BASE=http://127.0.0.1:8080
+Environment=PAOXX_PUBLIC_API_TIMEOUT_MS=15000
 ExecStart=${npm_bin} run start -- --hostname 127.0.0.1 --port 3000
 Restart=always
 RestartSec=5
