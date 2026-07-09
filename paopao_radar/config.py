@@ -159,6 +159,21 @@ class Settings:
     outcome_price_source: str = "binance"
     outcome_http_timeout_sec: int = 10
     outcome_request_sleep_sec: float = 0.1
+    lifecycle_tracker_enable: bool = True
+    lifecycle_db_path: Path = BASE_DIR / "data" / "lifecycle.db"
+    lifecycle_scan_interval_sec: int = 900
+    lifecycle_lookback_hours: int = 24
+    lifecycle_active_max_symbols: int = 80
+    lifecycle_binance_cache_ttl_sec: int = 300
+    lifecycle_http_timeout_sec: int = 10
+    lifecycle_telegram_enable: bool = True
+    lifecycle_telegram_min_score: int = 60
+    lifecycle_telegram_min_event_interval_sec: int = 3600
+    lifecycle_fail_price_drop_pct: float = 8.0
+    lifecycle_cooling_pullback_pct: float = 5.0
+    lifecycle_oi_accumulation_pct: float = 8.0
+    lifecycle_volume_expansion_multiplier: float = 2.0
+    lifecycle_funding_crowded_threshold: float = 0.0008
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -302,6 +317,7 @@ class Settings:
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
         default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
         default_outcome_db_path = BASE_DIR / "data" / "outcomes.db"
+        default_lifecycle_db_path = BASE_DIR / "data" / "lifecycle.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
@@ -310,6 +326,8 @@ class Settings:
             object.__setattr__(self, "web_jobs_db_path", self.data_dir / "jobs.db")
         if self.data_dir != BASE_DIR / "data" and self.outcome_db_path == default_outcome_db_path:
             object.__setattr__(self, "outcome_db_path", self.data_dir / "outcomes.db")
+        if self.data_dir != BASE_DIR / "data" and self.lifecycle_db_path == default_lifecycle_db_path:
+            object.__setattr__(self, "lifecycle_db_path", self.data_dir / "lifecycle.db")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -372,6 +390,21 @@ class Settings:
             outcome_price_source=(os.getenv("OUTCOME_PRICE_SOURCE", "binance").strip().lower() or "binance"),
             outcome_http_timeout_sec=env_int("OUTCOME_HTTP_TIMEOUT_SEC", 10),
             outcome_request_sleep_sec=env_float("OUTCOME_REQUEST_SLEEP_SEC", 0.1),
+            lifecycle_tracker_enable=env_bool("LIFECYCLE_TRACKER_ENABLE", True),
+            lifecycle_db_path=data_path(data_dir, "LIFECYCLE_DB_PATH", "lifecycle.db"),
+            lifecycle_scan_interval_sec=env_int("LIFECYCLE_SCAN_INTERVAL_SEC", 900),
+            lifecycle_lookback_hours=env_int("LIFECYCLE_LOOKBACK_HOURS", 24),
+            lifecycle_active_max_symbols=env_int("LIFECYCLE_ACTIVE_MAX_SYMBOLS", 80),
+            lifecycle_binance_cache_ttl_sec=env_int("LIFECYCLE_BINANCE_CACHE_TTL_SEC", 300),
+            lifecycle_http_timeout_sec=env_int("LIFECYCLE_HTTP_TIMEOUT_SEC", env_int("HTTP_TIMEOUT_SEC", 10)),
+            lifecycle_telegram_enable=env_bool("LIFECYCLE_TELEGRAM_ENABLE", True),
+            lifecycle_telegram_min_score=env_int("LIFECYCLE_TELEGRAM_MIN_SCORE", 60),
+            lifecycle_telegram_min_event_interval_sec=env_int("LIFECYCLE_TELEGRAM_MIN_EVENT_INTERVAL_SEC", 3600),
+            lifecycle_fail_price_drop_pct=env_float("LIFECYCLE_FAIL_PRICE_DROP_PCT", 8.0),
+            lifecycle_cooling_pullback_pct=env_float("LIFECYCLE_COOLING_PULLBACK_PCT", 5.0),
+            lifecycle_oi_accumulation_pct=env_float("LIFECYCLE_OI_ACCUMULATION_PCT", 8.0),
+            lifecycle_volume_expansion_multiplier=env_float("LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER", 2.0),
+            lifecycle_funding_crowded_threshold=env_float("LIFECYCLE_FUNDING_CROWDED_THRESHOLD", 0.0008),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -598,6 +631,24 @@ class Settings:
                 "price_source": self.outcome_price_source,
                 "http_timeout_sec": self.outcome_http_timeout_sec,
                 "request_sleep_sec": self.outcome_request_sleep_sec,
+            },
+            "lifecycle": {
+                "enable": self.lifecycle_tracker_enable,
+                "db_file": str(self.lifecycle_db_path),
+                "db_exists": self.lifecycle_db_path.exists(),
+                "scan_interval_sec": self.lifecycle_scan_interval_sec,
+                "lookback_hours": self.lifecycle_lookback_hours,
+                "active_max_symbols": self.lifecycle_active_max_symbols,
+                "binance_cache_ttl_sec": self.lifecycle_binance_cache_ttl_sec,
+                "http_timeout_sec": self.lifecycle_http_timeout_sec,
+                "telegram_enable": self.lifecycle_telegram_enable,
+                "telegram_min_score": self.lifecycle_telegram_min_score,
+                "telegram_min_event_interval_sec": self.lifecycle_telegram_min_event_interval_sec,
+                "fail_price_drop_pct": self.lifecycle_fail_price_drop_pct,
+                "cooling_pullback_pct": self.lifecycle_cooling_pullback_pct,
+                "oi_accumulation_pct": self.lifecycle_oi_accumulation_pct,
+                "volume_expansion_multiplier": self.lifecycle_volume_expansion_multiplier,
+                "funding_crowded_threshold": self.lifecycle_funding_crowded_threshold,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

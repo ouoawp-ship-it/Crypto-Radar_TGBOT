@@ -9,9 +9,9 @@ import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getBacktestDetail, getCoinDetail, getDecision, getSymbolOutcomes, getSymbolTimeline } from "@/lib/api";
-import { compact, normalizeSymbol, safeText } from "@/lib/format";
-import type { DecisionItem, OutcomeItem, SignalItem } from "@/lib/types";
+import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getSymbolOutcomes, getSymbolTimeline } from "@/lib/api";
+import { compact, normalizeSymbol, pct, safeText } from "@/lib/format";
+import type { DecisionItem, LifecycleDetailPayload, OutcomeItem, SignalItem } from "@/lib/types";
 
 export default function CoinPage() {
   const params = useParams<{ symbol: string }>();
@@ -22,6 +22,7 @@ export default function CoinPage() {
   const [timeline, setTimeline] = useState<SignalItem[]>([]);
   const [outcomes, setOutcomes] = useState<OutcomeItem[]>([]);
   const [samples, setSamples] = useState<OutcomeItem[]>([]);
+  const [lifecycle, setLifecycle] = useState<LifecycleDetailPayload>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -34,12 +35,13 @@ export default function CoinPage() {
     setLoading(true);
     setError("");
     try {
-      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload] = await Promise.all([
+      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload] = await Promise.all([
         getCoinDetail(normalized),
         getDecision(normalized),
         getSymbolTimeline(normalized),
         getSymbolOutcomes(normalized, { limit: 20 }),
-        getBacktestDetail({ symbol: normalized, limit: 10, window_sec: 2592000 })
+        getBacktestDetail({ symbol: normalized, limit: 10, window_sec: 2592000 }),
+        getLifecycleDetail(normalized)
       ]);
       setSymbol(normalized);
       setDetail(coin);
@@ -47,6 +49,7 @@ export default function CoinPage() {
       setTimeline(timelinePayload.items || (timelinePayload.groups || []).flatMap((group) => group.items || []));
       setOutcomes(outcomePayload.items || []);
       setSamples(backtestPayload.items || []);
+      setLifecycle(lifecyclePayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "币种详情加载失败");
     } finally {
@@ -86,6 +89,43 @@ export default function CoinPage() {
         <MetricCard label="健康状态" value={safeText(summary.health_label || summary.health, "观察")} />
       </section>
       {decision ? <DecisionCard item={decision} /> : <EmptyState title="暂无当前决策" text="等待更多同币种信号后会生成决策。" />}
+      {lifecycle.lifecycle ? (
+        <section className="panel p-4">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-black text-white">生命周期状态</h2>
+              <p className="text-sm text-slate-400">首次信号 {safeText(lifecycle.lifecycle.first_signal_level, "-")} · 最高周期 {safeText(lifecycle.lifecycle.highest_level, "-")} · {safeText(lifecycle.lifecycle.state_label, "启动观察")}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <span className="chip">强度 {compact(lifecycle.lifecycle.lifecycle_score)}</span>
+              <span className="chip">风险 {compact(lifecycle.lifecycle.risk_score)}</span>
+            </div>
+          </div>
+          <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-3">
+            <span>首次信号：{safeText(lifecycle.lifecycle.first_signal_at, "-")}</span>
+            <span>最新信号：{safeText(lifecycle.lifecycle.latest_signal_at, "-")}</span>
+            <span>Binance 价格：{pct(lifecycle.lifecycle.price_change_from_first_pct)}</span>
+            <span>Binance OI：{pct(lifecycle.lifecycle.oi_change_from_first_pct)}</span>
+            <span>合约 CVD：{safeText(lifecycle.lifecycle.futures_cvd_status, "数据不足")}</span>
+            <span>现货 CVD：{safeText(lifecycle.lifecycle.spot_cvd_status, "数据不足")}</span>
+            <span>资金费率：{safeText(lifecycle.lifecycle.funding_status, "数据不足")}</span>
+            <span>旁路观察：其他交易所仅看当前价格和资金费率</span>
+            <span>{safeText(lifecycle.lifecycle.not_advice, "仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。")}</span>
+          </div>
+          <h3 className="mt-5 text-base font-black text-white">生命周期事件时间线</h3>
+          <div className="mt-3 grid gap-2">
+            {(lifecycle.events || []).slice(0, 8).map((event, index) => (
+              <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm text-slate-300" key={`${event.event_time}-${index}`}>
+                <b className="text-white">{safeText(event.event_label || event.event_type)}</b>
+                <span className="ml-2 text-slate-500">{safeText(event.event_time)}</span>
+                <p className="mt-1">周期 {safeText(event.event_level, "-")}，价格 {pct(event.price_change_from_first_pct)}，OI {pct(event.oi_change_pct)}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <EmptyState title="暂无生命周期状态" text="该币种首次出现有效信号后会自动建档并持续跟随。" />
+      )}
       <section className="grid gap-5 xl:grid-cols-2">
         <div>
           <h2 className="mb-3 text-lg font-black text-white">信号历史</h2>

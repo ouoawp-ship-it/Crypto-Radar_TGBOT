@@ -2376,6 +2376,27 @@ class WebConsoleTests(unittest.TestCase):
 
         statuses.clear()
         headers.clear()
+        public_lifecycle_summary = make_handler("/public-api/lifecycle/summary")
+        with patch("paopao_radar.web.public_lifecycle_summary_payload", return_value={"ok": True, "data": {"summary": {}}}):
+            web.WebHandler.do_GET(public_lifecycle_summary)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        public_lifecycle_list = make_handler("/public-api/lifecycle/list?limit=1")
+        with patch("paopao_radar.web.public_lifecycle_list_payload", return_value={"ok": True, "data": {"items": []}, "items": [], "count": 0}):
+            web.WebHandler.do_GET(public_lifecycle_list)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
+        public_lifecycle_detail = make_handler("/public-api/lifecycle/detail?symbol=BTC")
+        with patch("paopao_radar.web.public_lifecycle_detail_payload", return_value={"ok": True, "data": {"symbol": "BTCUSDT"}, "symbol": "BTCUSDT"}):
+            web.WebHandler.do_GET(public_lifecycle_detail)
+        self.assertEqual(statuses[-1], 200)
+
+        statuses.clear()
+        headers.clear()
         private_decision = make_handler("/api/decision?symbol=BTC")
         web.WebHandler.do_GET(private_decision)
         self.assertEqual(statuses[-1], 401)
@@ -2390,6 +2411,12 @@ class WebConsoleTests(unittest.TestCase):
         headers.clear()
         private_outcomes = make_handler("/api/outcomes")
         web.WebHandler.do_GET(private_outcomes)
+        self.assertEqual(statuses[-1], 401)
+
+        statuses.clear()
+        headers.clear()
+        private_lifecycle = make_handler("/api/lifecycle/summary")
+        web.WebHandler.do_GET(private_lifecycle)
         self.assertEqual(statuses[-1], 401)
 
         statuses.clear()

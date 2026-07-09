@@ -267,6 +267,7 @@ def api_contract_self_test(*, settings: Any = None) -> dict[str, Any]:
     from .dashboard import dashboard_payload
     from .decision import decision_for_symbol_payload, decisions_payload, decisions_stats_payload
     from .jobs import jobs_payload, jobs_stats_payload
+    from .lifecycle import lifecycle_list_payload, lifecycle_summary_payload
     from .ops import update_check_status_payload
     from .outcomes import outcome_stats_payload, outcomes_payload, symbol_outcomes_payload
     from .timeline import timeline_payload
@@ -281,6 +282,8 @@ def api_contract_self_test(*, settings: Any = None) -> dict[str, Any]:
     run_check("decisions-stats", lambda: decisions_stats_payload(limit=1, settings=settings))
     run_check("outcomes", lambda: outcomes_payload(limit=1, settings=settings))
     run_check("outcomes-stats", lambda: outcome_stats_payload(settings=settings))
+    run_check("lifecycle-summary", lambda: lifecycle_summary_payload(settings=settings))
+    run_check("lifecycle-list", lambda: lifecycle_list_payload(limit=1, settings=settings))
     coin_search = coin_search_payload(q="", limit=1, settings=settings)
     run_check("coin-search", lambda: coin_search)
     sample_items = coin_search.get("items", []) if isinstance(coin_search, Mapping) else []

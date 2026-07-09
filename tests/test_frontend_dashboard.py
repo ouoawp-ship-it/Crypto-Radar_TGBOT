@@ -24,7 +24,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         package = json.loads(package_path.read_text(encoding="utf-8"))
 
         self.assertEqual(package.get("name"), "paoxx-public-dashboard")
-        self.assertEqual(package.get("version"), "1.75.1")
+        self.assertEqual(package.get("version"), "1.76.0")
         self.assertIn("build", package.get("scripts", {}))
         self.assertIn("start", package.get("scripts", {}))
         self.assertIn("typecheck", package.get("scripts", {}))
@@ -39,6 +39,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             "app/decision/page.tsx",
             "app/outcomes/page.tsx",
             "app/backtest/page.tsx",
+            "app/lifecycle/page.tsx",
             "app/coin/[symbol]/page.tsx",
             "app/api-docs/page.tsx",
             "app/not-found.tsx",
@@ -86,6 +87,11 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             "/public-api/backtest/decision",
             "/public-api/backtest/decision/matrix",
             "/public-api/backtest/decision/detail",
+            "/public-api/lifecycle/summary",
+            "/public-api/lifecycle/list",
+            "/public-api/lifecycle/detail",
+            "/public-api/lifecycle/events",
+            "/public-api/lifecycle/metrics",
         ):
             self.assertIn(path, api_source)
 
@@ -101,6 +107,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             "WEB_ADMIN_TOKEN",
             "WEB_SESSION_SECRET",
             "WEB_ADMIN_PASSWORD_HASH",
+            "BOT_TOKEN",
             "Authorization",
             "Cookie",
         )
@@ -242,6 +249,11 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("PAOXX_PUBLIC_API_INTERNAL_BASE", combined)
         self.assertIn("http://127.0.0.1:8080", combined)
         self.assertIn("/public-api/*", combined)
+        self.assertIn("v1.76.0", combined)
+        self.assertIn("Binance-Centric Signal Lifecycle Tracker", combined)
+        self.assertIn("/public-api/lifecycle/summary", combined)
+        self.assertIn("lifecycle-backfill", combined)
+        self.assertIn("lifecycle-scan", combined)
         self.assertIn("不访问 `/api/*`", combined)
         self.assertIn("不改 Telegram 主推送流程", combined)
         self.assertIn("不引入自动交易", combined)

@@ -58,6 +58,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_FUNDING_ALERT": "资金费率警报",
     "TG_STRUCTURE_RADAR": "结构突破",
     "TG_STRUCTURE_REVIEW": "结构复盘",
+    "TG_LIFECYCLE_FOLLOWUP": "生命周期跟随",
 }
 
 TOPIC_INTRO_VERSION = "2026-05-26-multisource-liquidity-v1"

@@ -74,6 +74,20 @@ from .web_services.outcomes import (
     public_symbol_outcomes_payload,
     symbol_outcomes_payload,
 )
+from .web_services.lifecycle import (
+    lifecycle_detail_payload,
+    lifecycle_events_payload,
+    lifecycle_list_payload,
+    lifecycle_metrics_payload,
+    lifecycle_run_backfill_payload,
+    lifecycle_run_scan_payload,
+    lifecycle_summary_payload,
+    public_lifecycle_detail_payload,
+    public_lifecycle_events_payload,
+    public_lifecycle_list_payload,
+    public_lifecycle_metrics_payload,
+    public_lifecycle_summary_payload,
+)
 from .web_services.public import (
     public_coin_detail_payload,
     public_coin_search_payload,
@@ -127,6 +141,23 @@ OUTCOME_CONFIG_KEYS = {
     "OUTCOME_HTTP_TIMEOUT_SEC",
     "OUTCOME_REQUEST_SLEEP_SEC",
 }
+LIFECYCLE_CONFIG_KEYS = {
+    "LIFECYCLE_TRACKER_ENABLE",
+    "LIFECYCLE_DB_PATH",
+    "LIFECYCLE_SCAN_INTERVAL_SEC",
+    "LIFECYCLE_LOOKBACK_HOURS",
+    "LIFECYCLE_ACTIVE_MAX_SYMBOLS",
+    "LIFECYCLE_BINANCE_CACHE_TTL_SEC",
+    "LIFECYCLE_HTTP_TIMEOUT_SEC",
+    "LIFECYCLE_TELEGRAM_ENABLE",
+    "LIFECYCLE_TELEGRAM_MIN_SCORE",
+    "LIFECYCLE_TELEGRAM_MIN_EVENT_INTERVAL_SEC",
+    "LIFECYCLE_FAIL_PRICE_DROP_PCT",
+    "LIFECYCLE_COOLING_PULLBACK_PCT",
+    "LIFECYCLE_OI_ACCUMULATION_PCT",
+    "LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER",
+    "LIFECYCLE_FUNDING_CROWDED_THRESHOLD",
+}
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
     "AI_BOT_TOKEN",
@@ -144,7 +175,7 @@ AI_CONFIG_KEYS = {
     "AI_MODEL",
     "AI_REQUEST_TIMEOUT_SEC",
     "AI_PROMPTS_FILE",
-} | SIGNAL_EVENT_CONFIG_KEYS | OUTCOME_CONFIG_KEYS
+} | SIGNAL_EVENT_CONFIG_KEYS | OUTCOME_CONFIG_KEYS | LIFECYCLE_CONFIG_KEYS
 WEB_AUDIT_LOG_FILE = "web_audit_log.json"
 WEB_AUDIT_LIMIT = 1000
 PROBLEM_STATE_FILE = "problem_state.json"
@@ -214,6 +245,16 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("OUTCOME_PRICE_SOURCE", "结果追踪价格源", "AI 助手", help="v1 使用 Binance 公开 K 线，不需要交易所私钥。"),
     ConfigField("OUTCOME_HTTP_TIMEOUT_SEC", "结果追踪请求超时", "AI 助手", kind="int", minimum=1, maximum=60),
     ConfigField("OUTCOME_REQUEST_SLEEP_SEC", "结果追踪请求间隔", "AI 助手", kind="float", minimum=0, maximum=5),
+    ConfigField("LIFECYCLE_TRACKER_ENABLE", "启用生命周期跟随", "AI 助手", kind="bool", help="基于首次有效信号建立单币生命周期，核心数据以 Binance 为主，不执行自动交易。"),
+    ConfigField("LIFECYCLE_DB_PATH", "生命周期数据库文件", "AI 助手", help="默认 data/lifecycle.db，独立于 signals.db/outcomes.db。运行数据不应提交。"),
+    ConfigField("LIFECYCLE_SCAN_INTERVAL_SEC", "生命周期扫描间隔", "AI 助手", kind="int", minimum=60, maximum=86400),
+    ConfigField("LIFECYCLE_LOOKBACK_HOURS", "生命周期信号回看小时", "AI 助手", kind="int", minimum=1, maximum=720),
+    ConfigField("LIFECYCLE_ACTIVE_MAX_SYMBOLS", "单轮生命周期币种上限", "AI 助手", kind="int", minimum=1, maximum=500),
+    ConfigField("LIFECYCLE_BINANCE_CACHE_TTL_SEC", "Binance 生命周期缓存 TTL", "AI 助手", kind="int", minimum=30, maximum=3600),
+    ConfigField("LIFECYCLE_TELEGRAM_ENABLE", "启用生命周期 Telegram 跟随", "AI 助手", kind="bool"),
+    ConfigField("LIFECYCLE_TELEGRAM_MIN_SCORE", "生命周期推送最低强度", "AI 助手", kind="int", minimum=0, maximum=100),
+    ConfigField("LIFECYCLE_FAIL_PRICE_DROP_PCT", "启动失败价格跌幅阈值", "AI 助手", kind="float", minimum=1, maximum=50),
+    ConfigField("LIFECYCLE_FUNDING_CROWDED_THRESHOLD", "Funding 拥挤阈值", "AI 助手", kind="float", minimum=0, maximum=0.01),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -10069,6 +10110,35 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        if path == "/public-api/lifecycle/summary":
+            self.send_json(public_lifecycle_summary_payload())
+            return
+        if path == "/public-api/lifecycle/list":
+            self.send_json(public_lifecycle_list_payload(
+                symbol=query.get("symbol", [""])[0],
+                state=query.get("state", [""])[0],
+                level=query.get("level", [""])[0],
+                risk=query.get("risk", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 300),
+                cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+            ))
+            return
+        if path == "/public-api/lifecycle/detail":
+            self.send_json(public_lifecycle_detail_payload(query.get("symbol", [""])[0]))
+            return
+        if path == "/public-api/lifecycle/events":
+            self.send_json(public_lifecycle_events_payload(
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+            ))
+            return
+        if path == "/public-api/lifecycle/metrics":
+            self.send_json(public_lifecycle_metrics_payload(
+                symbol=query.get("symbol", [""])[0],
+                timeframe=query.get("timeframe", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+            ))
+            return
         if path.startswith("/public-api/"):
             self.send_json(api_error("公开接口不存在", code="not_found"), HTTPStatus.NOT_FOUND)
             return
@@ -10327,6 +10397,35 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        if path == "/api/lifecycle/summary":
+            self.send_json(lifecycle_summary_payload())
+            return
+        if path == "/api/lifecycle/list":
+            self.send_json(lifecycle_list_payload(
+                symbol=query.get("symbol", [""])[0],
+                state=query.get("state", [""])[0],
+                level=query.get("level", [""])[0],
+                risk=query.get("risk", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 300),
+                cursor=query_int_or(query.get("cursor", ["0"])[0], 0) or None,
+            ))
+            return
+        if path == "/api/lifecycle/detail":
+            self.send_json(lifecycle_detail_payload(query.get("symbol", [""])[0]))
+            return
+        if path == "/api/lifecycle/events":
+            self.send_json(lifecycle_events_payload(
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+            ))
+            return
+        if path == "/api/lifecycle/metrics":
+            self.send_json(lifecycle_metrics_payload(
+                symbol=query.get("symbol", [""])[0],
+                timeframe=query.get("timeframe", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 300),
+            ))
+            return
         if path == "/api/logs":
             target = query.get("target", ["main"])[0]
             lines = int(query.get("lines", ["200"])[0] or 200)
@@ -10418,6 +10517,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/outcomes/scan":
                 result = create_job_payload("outcome-scan", {"source": "api/outcomes/scan"})
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            if path == "/api/lifecycle/run-scan":
+                result = create_job_payload("lifecycle-scan", {"source": "api/lifecycle/run-scan"})
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            if path == "/api/lifecycle/run-backfill":
+                result = create_job_payload("lifecycle-backfill", {"source": "api/lifecycle/run-backfill"})
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return

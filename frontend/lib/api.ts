@@ -6,6 +6,9 @@ import type {
   CoinItem,
   DecisionItem,
   ListPayload,
+  LifecycleDetailPayload,
+  LifecycleItem,
+  LifecycleSummaryPayload,
   OutcomeItem,
   SignalItem
 } from "./types";
@@ -163,6 +166,26 @@ export function getBacktestDetail(query: Query = {}) {
   return publicFetch<ListPayload<OutcomeItem>>("/public-api/backtest/decision/detail", query);
 }
 
+export function getLifecycleSummary() {
+  return publicFetch<LifecycleSummaryPayload>("/public-api/lifecycle/summary");
+}
+
+export function getLifecycles(query: Query = {}) {
+  return publicFetch<ListPayload<LifecycleItem>>("/public-api/lifecycle/list", query);
+}
+
+export function getLifecycleDetail(symbol: string) {
+  return publicFetch<LifecycleDetailPayload>("/public-api/lifecycle/detail", { symbol });
+}
+
+export function getLifecycleEvents(symbol: string, query: Query = {}) {
+  return publicFetch<ListPayload<Record<string, unknown>>>("/public-api/lifecycle/events", { symbol, ...query });
+}
+
+export function getLifecycleMetrics(symbol: string, query: Query = {}) {
+  return publicFetch<ListPayload<Record<string, unknown>>>("/public-api/lifecycle/metrics", { symbol, ...query });
+}
+
 export type HomeDashboardData = {
   signalStats?: Record<string, unknown>;
   signals?: SignalItem[];
@@ -172,6 +195,7 @@ export type HomeDashboardData = {
   outcomeStats?: Record<string, unknown>;
   backtest?: BacktestPayload;
   matrix?: BacktestMatrixPayload;
+  lifecycle?: LifecycleSummaryPayload;
   errors?: string[];
 };
 
@@ -184,7 +208,8 @@ export async function loadHomeDashboardData(): Promise<HomeDashboardData> {
     getDecisions({ limit: 6, window_sec: 86400 }),
     getOutcomeStats("1h"),
     getBacktestDecision({ horizon: "1h", window_sec: 2592000 }),
-    getBacktestMatrix({ window_sec: 2592000 })
+    getBacktestMatrix({ window_sec: 2592000 }),
+    getLifecycleSummary()
   ]);
   const errors: string[] = [];
   const value = <T>(index: number): T | undefined => {
@@ -205,6 +230,7 @@ export async function loadHomeDashboardData(): Promise<HomeDashboardData> {
     outcomeStats: value<Record<string, unknown>>(5),
     backtest: value<BacktestPayload>(6),
     matrix: value<BacktestMatrixPayload>(7),
+    lifecycle: value<LifecycleSummaryPayload>(8),
     errors
   };
 }

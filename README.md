@@ -1,5 +1,23 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.76.0 说明
+
+v1.76.0 新增 Binance-Centric Signal Lifecycle Tracker。系统会在一个币首次出现有效信号后自动创建 `data/lifecycle.db` 生命周期档案，并把后续同币种信号归并到同一生命周期，识别同级确认、周期升级、短线冷却、风险升高、启动失败等事件。
+
+生命周期核心指标以 Binance 为主：价格、K 线、成交量、OI、合约 taker buy/sell 近似 CVD、现货 aggTrades 近似 CVD 和 funding rate。其他交易所仅作为旁路观察，最多展示当前价格、资金费率及与 Binance 的偏离，不参与 `lifecycle_score`、`risk_score` 或状态流转。
+
+新增 CLI：
+
+```bash
+python main.py lifecycle-backfill --lookback-hours 168
+python main.py lifecycle-scan --lookback-hours 24 --limit-symbols 80
+python main.py lifecycle-status --symbol BTCUSDT
+```
+
+新增公开只读 API：`/public-api/lifecycle/summary`、`/public-api/lifecycle/list`、`/public-api/lifecycle/detail`、`/public-api/lifecycle/events`、`/public-api/lifecycle/metrics`。新增私有 API：`/api/lifecycle/summary`、`/api/lifecycle/list`、`/api/lifecycle/detail`、`/api/lifecycle/events`、`/api/lifecycle/run-scan`、`/api/lifecycle/run-backfill`。
+
+Next.js 公开前台新增“生命周期”页面，首页和单币详情页也会展示生命周期跟随概览。生命周期 Telegram 跟随提醒是新增辅助消息，不改变现有 Telegram 主推送流程。该功能仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.74.5 说明
 
 v1.74.5 继续加固生产 Nginx active 配置清理。v1.74.4 已能检测重复 `paoxx.com` server block，但清理逻辑仍可能漏掉部分 active 文件；本版本改为按 `/etc/nginx/sites-enabled` 和 `/etc/nginx/conf.d` 的实际 active 文件扫描，并用 `readlink -f` 对比 keep file，只保留 `/etc/nginx/conf.d/00-paoxx-frontend.conf`。

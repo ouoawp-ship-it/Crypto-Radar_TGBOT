@@ -1,5 +1,50 @@
 # 泡泡抓币中文安装目录
 
+## v1.76.0 运维说明
+
+v1.76.0 新增 Binance-Centric Signal Lifecycle Tracker。生命周期数据写入独立运行库 `data/lifecycle.db`，不迁移也不破坏 `signals.db`、`outcomes.db` 或 `jobs.db`。一个币首次出现有效信号后会自动建档，后续同币种信号会进入同一生命周期，用于观察同级确认、周期升级、短线冷却、风险升高和启动失败。
+
+生命周期核心数据只以 Binance 为主，包括价格、K 线、成交量、OI、合约 taker buy/sell 近似 CVD、现货 aggTrades 近似 CVD 和 funding rate。其他交易所只作为旁路观察，仅看当前价格和资金费率偏离，不参与生命周期评分或状态流转。
+
+常用命令：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+.venv/bin/python main.py lifecycle-backfill --lookback-hours 168
+.venv/bin/python main.py lifecycle-scan --lookback-hours 24 --limit-symbols 80
+.venv/bin/python main.py lifecycle-status --symbol BTCUSDT
+```
+
+生产部署后可先 dry-run：
+
+```bash
+.venv/bin/python main.py lifecycle-backfill --lookback-hours 168 --dry-run
+.venv/bin/python main.py lifecycle-scan --lookback-hours 24 --limit-symbols 30 --dry-run
+```
+
+公开只读 API：
+
+```text
+/public-api/lifecycle/summary
+/public-api/lifecycle/list
+/public-api/lifecycle/detail?symbol=BTCUSDT
+/public-api/lifecycle/events?symbol=BTCUSDT
+/public-api/lifecycle/metrics?symbol=BTCUSDT
+```
+
+后台私有 API 仍需要登录：
+
+```text
+/api/lifecycle/summary
+/api/lifecycle/list
+/api/lifecycle/detail?symbol=BTCUSDT
+/api/lifecycle/events?symbol=BTCUSDT
+/api/lifecycle/run-scan
+/api/lifecycle/run-backfill
+```
+
+公开前台新增 `/lifecycle` 生命周期页面，单币详情页 `/coin/BTCUSDT` 会展示生命周期状态、首次信号、最高周期、Binance 价格/OI/CVD/funding 跟随和事件时间线。生命周期 Telegram 跟随提醒是新增辅助消息，不改变现有 Telegram 主推送流程。该功能仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.74.5 运维说明
 
 v1.74.5 加固 active Nginx 清理逻辑。部署脚本现在会扫描 `/etc/nginx/sites-enabled` 和 `/etc/nginx/conf.d` 下所有 active 文件，查找 `server_name paoxx.com` 或 `server_name ... www.paoxx.com`，再用 `readlink -f` 和 keep file 对比，只保留 `/etc/nginx/conf.d/00-paoxx-frontend.conf`。

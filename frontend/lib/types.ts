@@ -90,6 +90,70 @@ export type OutcomeItem = {
   future_price?: number | null;
 };
 
+export type LifecycleItem = {
+  id?: number;
+  symbol?: string;
+  coin?: string;
+  current_state?: string;
+  state_label?: string;
+  first_signal_id?: number | null;
+  first_signal_at?: string;
+  first_signal_module?: string;
+  first_signal_type?: string;
+  first_signal_level?: string;
+  highest_level?: string;
+  lifecycle_score?: number | null;
+  risk_score?: number | null;
+  latest_signal_id?: number | null;
+  latest_signal_at?: string;
+  latest_price?: number | null;
+  latest_oi?: number | null;
+  latest_funding_rate?: number | null;
+  price_change_from_first_pct?: number | null;
+  oi_change_from_first_pct?: number | null;
+  futures_cvd_status?: string;
+  spot_cvd_status?: string;
+  funding_status?: string;
+  exchange_context?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  reasons?: string[];
+  not_advice?: string;
+};
+
+export type LifecycleEvent = {
+  id?: number;
+  symbol?: string;
+  event_time?: string;
+  event_type?: string;
+  event_label?: string;
+  event_level?: string;
+  state_label?: string;
+  previous_state?: string;
+  new_state?: string;
+  price_change_from_first_pct?: number | null;
+  oi_change_pct?: number | null;
+  futures_cvd_delta?: number | null;
+  spot_cvd_delta?: number | null;
+  funding_rate?: number | null;
+  event_score?: number | null;
+  risk_score?: number | null;
+  reasons?: string[];
+};
+
+export type LifecycleSummaryPayload = {
+  summary?: Record<string, unknown>;
+  items?: LifecycleItem[];
+  not_advice?: string;
+};
+
+export type LifecycleDetailPayload = {
+  symbol?: string;
+  lifecycle?: LifecycleItem;
+  events?: LifecycleEvent[];
+  metrics?: Array<Record<string, unknown>>;
+  not_advice?: string;
+};
+
 export type BacktestGroup = {
   key?: string;
   label?: string;

@@ -36,6 +36,7 @@ from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
 from .funding_alert import FundingAlertEngine
 from .liquidity_router import build_liquidity_enhancer
+from .lifecycle_engine import backfill_lifecycles, lifecycle_report_text, lifecycle_status_payload, scan_lifecycles
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
 from .outcome_tracker import scan_outcomes, scan_report_text
 from .radar import RadarEngine, fmt_price
@@ -138,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -149,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--limit", type=int, default=None, help="用于 outcome-scan：本次最多处理多少条信号/结果")
+    parser.add_argument("--limit-symbols", type=int, default=None, help="用于 lifecycle-scan：本次最多处理多少个币种")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数；structure-radar 使用 15m/1h 这类K线周期")
@@ -166,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", default="", help="用于 outcome-scan：只处理某个币种，例如 BTC 或 BTCUSDT")
     parser.add_argument("--dry-run", action="store_true", help="用于 outcome-scan：只预览，不写入新结果")
     parser.add_argument("--backfill-days", type=int, default=None, help="用于 outcome-scan：回填最近 N 天已发送信号")
+    parser.add_argument("--push", action="store_true", help="用于 lifecycle-scan：对重要生命周期事件尝试 Telegram 跟随推送；真实发送仍需 --send --confirm-real-send")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
@@ -356,6 +359,40 @@ def run_outcome_scan(args: argparse.Namespace) -> int:
     )
     print(scan_report_text(result))
     return 0 if result.get("ok", True) else 1
+
+
+def run_lifecycle_backfill(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    result = backfill_lifecycles(
+        settings=settings,
+        lookback_hours=int(getattr(args, "lookback_hours", None) or settings.lifecycle_lookback_hours or 168),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print(lifecycle_report_text(result))
+    return 0 if result.get("ok", True) else 1
+
+
+def run_lifecycle_scan(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    result = scan_lifecycles(
+        settings=settings,
+        lookback_hours=int(getattr(args, "lookback_hours", None) or settings.lifecycle_lookback_hours or 24),
+        limit_symbols=int(getattr(args, "limit_symbols", None) or getattr(args, "limit", None) or settings.lifecycle_active_max_symbols or 80),
+        symbol=str(getattr(args, "symbol", "") or ""),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        push=bool(getattr(args, "push", False)),
+        send=bool(getattr(args, "send", False)),
+        confirm_real_send=bool(getattr(args, "confirm_real_send", False)),
+    )
+    print(lifecycle_report_text(result))
+    return 0 if result.get("ok", True) else 1
+
+
+def run_lifecycle_status(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    payload = lifecycle_status_payload(settings=settings, symbol=str(getattr(args, "symbol", "") or ""))
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("ok", True) else 1
 
 
 def command_mode(args: argparse.Namespace) -> str:
@@ -1788,6 +1825,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "outcome-scan":
         return run_outcome_scan(args)
+    if args.command == "lifecycle-backfill":
+        return run_lifecycle_backfill(args)
+    if args.command == "lifecycle-scan":
+        return run_lifecycle_scan(args)
+    if args.command == "lifecycle-status":
+        return run_lifecycle_status(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

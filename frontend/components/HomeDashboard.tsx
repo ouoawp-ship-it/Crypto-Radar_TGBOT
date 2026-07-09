@@ -9,7 +9,7 @@ import { ErrorState } from "./ErrorState";
 import { MetricCard } from "./MetricCard";
 import { PageTitle } from "./PageTitle";
 import { SignalCard } from "./SignalCard";
-import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getOutcomeStats, getSignalStats, getLatestSignals, type HomeDashboardData } from "@/lib/api";
+import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getLifecycleSummary, getOutcomeStats, getSignalStats, getLatestSignals, type HomeDashboardData } from "@/lib/api";
 import { compact, pct, ratioPct, safeText } from "@/lib/format";
 
 function readNumber(record: Record<string, unknown> | undefined, ...keys: string[]) {
@@ -43,7 +43,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
     setLoading(true);
     setError("");
     try {
-      const [signalStats, signals, coins, decisionStats, decisions, outcomeStats, backtest, matrix] = await Promise.all([
+      const [signalStats, signals, coins, decisionStats, decisions, outcomeStats, backtest, matrix, lifecycle] = await Promise.all([
         getSignalStats(),
         getLatestSignals({ limit: 8, window_sec: 86400 }),
         getCoinSearch({ limit: 10, window_sec: 604800 }),
@@ -51,7 +51,8 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         getDecisions({ limit: 6, window_sec: 86400 }),
         getOutcomeStats("1h"),
         getBacktestDecision({ horizon: "1h", window_sec: 2592000 }),
-        getBacktestMatrix({ window_sec: 2592000 })
+        getBacktestMatrix({ window_sec: 2592000 }),
+        getLifecycleSummary()
       ]);
       setData({
         signalStats,
@@ -62,6 +63,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         outcomeStats,
         backtest,
         matrix,
+        lifecycle,
         errors: []
       });
     } catch (err) {
@@ -88,8 +90,10 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       (data.decisions || []).length ||
       data.outcomeStats ||
       data.backtest ||
-      data.matrix
+      data.matrix ||
+      data.lifecycle
   );
+  const lifecycleSummary = data.lifecycle?.summary || {};
 
   return (
     <div className="space-y-5">
@@ -115,6 +119,10 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         <MetricCard label="1h 平均最终涨跌" value={pct(data.outcomeStats?.avg_final_return_pct)} tone="neutral" />
         <MetricCard label="1h 正收益比例" value={ratioPct(data.outcomeStats?.positive_ratio)} tone="info" />
         <MetricCard label="数据覆盖率" value={ratioPct(summary.coverage_ratio)} />
+        <MetricCard label="活跃生命周期" value={compact(lifecycleSummary.active_count)} tone="info" />
+        <MetricCard label="周期升级" value={compact(Number(lifecycleSummary.upgraded_1h_count || 0) + Number(lifecycleSummary.upgraded_4h_count || 0) + Number(lifecycleSummary.trend_confirmed_count || 0))} tone="good" />
+        <MetricCard label="风险升高" value={compact(lifecycleSummary.risk_warning_count)} tone="bad" />
+        <MetricCard label="短线冷却" value={compact(lifecycleSummary.cooling_count)} tone="warn" />
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[1.3fr_0.7fr]">
@@ -165,6 +173,28 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
           <h2 className="mb-3 text-lg font-black text-white">决策回测摘要</h2>
           <BacktestMatrix data={data.matrix} />
         </div>
+      </section>
+
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-lg font-black text-white">生命周期跟随概览</h2>
+          <a className="btn" href="/lifecycle">查看生命周期</a>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {(data.lifecycle?.items || []).slice(0, 4).map((item) => (
+            <a className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-black text-white">{safeText(item.symbol)}</h3>
+                  <p className="text-sm text-slate-400">{safeText(item.state_label || item.current_state, "启动观察")}</p>
+                </div>
+                <span className="chip">最高周期 {safeText(item.highest_level, "-")}</span>
+              </div>
+              <p className="mt-3 text-sm text-slate-300">价格 {pct(item.price_change_from_first_pct)}，OI {pct(item.oi_change_from_first_pct)}，风险 {compact(item.risk_score)}</p>
+            </a>
+          ))}
+        </div>
+        {!(data.lifecycle?.items || []).length ? <p className="text-sm text-slate-500">暂无生命周期数据，首次有效信号出现后会自动建档。</p> : null}
       </section>
     </div>
   );
