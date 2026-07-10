@@ -17,7 +17,36 @@ from .symbol_dossier import clean_signal_text, extract_symbols_from_text, signal
 
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
-SIGNAL_STORE_SCHEMA_VERSION = 1
+SIGNAL_STORE_SCHEMA_VERSION = 2
+SIGNAL_STORE_REQUIRED_OBJECTS = {
+    "signals": "table",
+    "idx_signals_ts": "index",
+    "idx_signals_symbol_ts": "index",
+    "idx_signals_symbol_id": "index",
+    "idx_signals_module_ts": "index",
+    "idx_signals_template_ts": "index",
+    "ux_signals_dedup_symbol": "index",
+}
+SIGNAL_DECISION_COLUMNS = (
+    "id",
+    "ts",
+    "time",
+    "module",
+    "template_id",
+    "signal_type",
+    "symbol",
+    "stage",
+    "severity",
+    "score",
+    "title",
+    "excerpt",
+    "text_html",
+    "status",
+)
+SIGNAL_COLUMN_MIGRATIONS = {
+    "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+    "error": "TEXT NOT NULL DEFAULT ''",
+}
 SIGNAL_COLUMNS = (
     "id",
     "ts",
@@ -41,6 +70,16 @@ SIGNAL_COLUMNS = (
     "reply_to_message_id",
     "payload_json",
     "error",
+)
+SIGNAL_LIST_PROJECTION = ", ".join(
+    "substr(excerpt, 1, 260) AS excerpt"
+    if column == "excerpt"
+    else "'' AS text_html"
+    if column == "text_html"
+    else "'{}' AS payload_json"
+    if column == "payload_json"
+    else column
+    for column in SIGNAL_COLUMNS
 )
 SIGNAL_COMPAT_DEFAULTS = {
     "id": "NULL",
@@ -177,6 +216,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+def _row_to_decision_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {key: row[key] for key in SIGNAL_DECISION_COLUMNS}
+
+
 @dataclass(frozen=True)
 class SignalEventStore:
     db_path: Path = DEFAULT_SIGNAL_DB_PATH
@@ -199,6 +242,8 @@ class SignalEventStore:
             conn.close()
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        if self._schema_is_current(conn):
+            return
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS signals (
@@ -227,8 +272,10 @@ class SignalEventStore:
             )
             """
         )
+        self._ensure_signal_columns(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol_ts ON signals(symbol, ts DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol_id ON signals(symbol, id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_module_ts ON signals(module, ts DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_template_ts ON signals(template_id, ts DESC)")
         conn.execute(
@@ -243,16 +290,61 @@ class SignalEventStore:
             (str(SIGNAL_STORE_SCHEMA_VERSION),),
         )
 
+    @staticmethod
+    def _schema_is_current(conn: sqlite3.Connection) -> bool:
+        try:
+            version = conn.execute(
+                "SELECT value FROM signal_store_meta WHERE key = 'schema_version'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        if version is None or str(version["value"]) != str(SIGNAL_STORE_SCHEMA_VERSION):
+            return False
+
+        names = tuple((*SIGNAL_STORE_REQUIRED_OBJECTS, "signal_events"))
+        placeholders = ", ".join("?" for _ in names)
+        objects = {
+            str(row["name"]): str(row["type"])
+            for row in conn.execute(
+                f"SELECT name, type FROM sqlite_master WHERE name IN ({placeholders})",
+                names,
+            ).fetchall()
+        }
+        if any(
+            objects.get(name) != object_type
+            for name, object_type in SIGNAL_STORE_REQUIRED_OBJECTS.items()
+        ):
+            return False
+        if objects.get("signal_events") not in {"table", "view"}:
+            return False
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(signals)").fetchall()
+        }
+        return set(SIGNAL_COLUMNS).issubset(columns)
+
+    @staticmethod
+    def _ensure_signal_columns(conn: sqlite3.Connection) -> None:
+        available = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(signals)").fetchall()
+        }
+        for column, definition in SIGNAL_COLUMN_MIGRATIONS.items():
+            if column not in available:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {column} {definition}")
+
     def _ensure_compat_views(self, conn: sqlite3.Connection) -> None:
         existing = conn.execute(
             "SELECT type FROM sqlite_master WHERE name = 'signal_events' LIMIT 1"
         ).fetchone()
-        if existing:
+        if existing and str(existing["type"]) != "view":
             conn.execute(
                 "INSERT OR REPLACE INTO signal_store_meta(key, value) VALUES('signal_events_object_type', ?)",
                 (str(existing["type"]),),
             )
             return
+        if existing:
+            conn.execute("DROP VIEW IF EXISTS signal_events")
         available_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(signals)").fetchall()
@@ -389,6 +481,8 @@ class SignalEventStore:
         start_ts: int | None = None,
         end_ts: int | None = None,
         q: str = "",
+        compact: bool = False,
+        conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": _limit(limit, 50, 200)}
@@ -437,9 +531,16 @@ class SignalEventStore:
             safe_sort_field = "id"
         safe_sort_direction = "ASC" if str(sort_direction or "").lower() == "asc" else "DESC"
         tie_direction = "ASC" if safe_sort_direction == "ASC" else "DESC"
-        with self.connect() as conn:
+        projection = SIGNAL_LIST_PROJECTION if compact else "*"
+        if conn is None:
+            with self.connect() as active_conn:
+                rows = active_conn.execute(
+                    f"SELECT {projection} FROM signals {where} ORDER BY {safe_sort_field} {safe_sort_direction}, id {tie_direction} LIMIT :limit",
+                    params,
+                ).fetchall()
+        else:
             rows = conn.execute(
-                f"SELECT * FROM signals {where} ORDER BY {safe_sort_field} {safe_sort_direction}, id {tie_direction} LIMIT :limit",
+                f"SELECT {projection} FROM signals {where} ORDER BY {safe_sort_field} {safe_sort_direction}, id {tie_direction} LIMIT :limit",
                 params,
             ).fetchall()
         items = [_row_to_dict(row) for row in rows]
@@ -449,54 +550,64 @@ class SignalEventStore:
             "count": len(items),
         }
 
-    def latest_after(self, *, after_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+    def latest_after(
+        self,
+        *,
+        after_id: int = 0,
+        limit: int = 100,
+        compact: bool = False,
+    ) -> list[dict[str, Any]]:
+        projection = SIGNAL_LIST_PROJECTION if compact else "*"
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM signals WHERE id > ? ORDER BY id ASC LIMIT ?",
+                f"SELECT {projection} FROM signals WHERE id > ? ORDER BY id ASC LIMIT ?",
                 (max(0, int(after_id or 0)), _limit(limit, 100, 300)),
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
     def stats(self, *, window_sec: int = 86400) -> dict[str, Any]:
-        now = int(time.time())
-        cutoff = now - max(1, int(window_sec or 86400))
         with self.connect() as conn:
-            total = int(conn.execute("SELECT COUNT(*) FROM signals WHERE ts >= ?", (cutoff,)).fetchone()[0])
-            by_status = {
-                str(row["status"]): int(row["count"])
-                for row in conn.execute(
-                    "SELECT status, COUNT(*) AS count FROM signals WHERE ts >= ? GROUP BY status ORDER BY count DESC",
-                    (cutoff,),
-                ).fetchall()
-            }
-            by_module = {
-                str(row["module"]): int(row["count"])
-                for row in conn.execute(
-                    "SELECT module, COUNT(*) AS count FROM signals WHERE ts >= ? GROUP BY module ORDER BY count DESC",
-                    (cutoff,),
-                ).fetchall()
-            }
-            by_template = {
-                str(row["template_id"]): int(row["count"])
-                for row in conn.execute(
-                    "SELECT template_id, COUNT(*) AS count FROM signals WHERE ts >= ? GROUP BY template_id ORDER BY count DESC",
-                    (cutoff,),
-                ).fetchall()
-            }
-            top_symbols = [
-                {"symbol": str(row["symbol"]), "count": int(row["count"])}
-                for row in conn.execute(
-                    """
-                    SELECT symbol, COUNT(*) AS count
-                    FROM signals
-                    WHERE ts >= ? AND symbol != ''
-                    GROUP BY symbol
-                    ORDER BY count DESC, symbol ASC
-                    LIMIT 12
-                    """,
-                    (cutoff,),
-                ).fetchall()
-            ]
+            return self._stats_from_conn(conn, window_sec=window_sec)
+
+    @staticmethod
+    def _stats_from_conn(conn: sqlite3.Connection, *, window_sec: int) -> dict[str, Any]:
+        cutoff = int(time.time()) - max(1, int(window_sec or 86400))
+        total = int(conn.execute("SELECT COUNT(*) FROM signals WHERE ts >= ?", (cutoff,)).fetchone()[0])
+        by_status = {
+            str(row["status"]): int(row["count"])
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS count FROM signals WHERE ts >= ? GROUP BY status ORDER BY count DESC",
+                (cutoff,),
+            ).fetchall()
+        }
+        by_module = {
+            str(row["module"]): int(row["count"])
+            for row in conn.execute(
+                "SELECT module, COUNT(*) AS count FROM signals WHERE ts >= ? GROUP BY module ORDER BY count DESC",
+                (cutoff,),
+            ).fetchall()
+        }
+        by_template = {
+            str(row["template_id"]): int(row["count"])
+            for row in conn.execute(
+                "SELECT template_id, COUNT(*) AS count FROM signals WHERE ts >= ? GROUP BY template_id ORDER BY count DESC",
+                (cutoff,),
+            ).fetchall()
+        }
+        top_symbols = [
+            {"symbol": str(row["symbol"]), "count": int(row["count"])}
+            for row in conn.execute(
+                """
+                SELECT symbol, COUNT(*) AS count
+                FROM signals
+                WHERE ts >= ? AND symbol != ''
+                GROUP BY symbol
+                ORDER BY count DESC, symbol ASC
+                LIMIT 12
+                """,
+                (cutoff,),
+            ).fetchall()
+        ]
         return {
             "total": total,
             "sent": by_status.get("sent", 0),
@@ -511,13 +622,82 @@ class SignalEventStore:
             "window_sec": int(window_sec or 86400),
         }
 
-    def symbol_timeline(self, symbol: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    def stats_with_latest(
+        self,
+        *,
+        window_sec: int = 86400,
+        status_limit: int = 5,
+        latest_limit: int = 8,
+        module_limit: int = 8,
+    ) -> dict[str, Any]:
+        safe_status_limit = _limit(status_limit, 5, 50)
+        safe_latest_limit = _limit(latest_limit, 8, 100)
+        safe_module_limit = _limit(module_limit, 8, 20)
+        with self.connect() as conn:
+            result = self._stats_from_conn(conn, window_sec=window_sec)
+
+            def latest_for_status(status: str) -> list[dict[str, Any]]:
+                rows = conn.execute(
+                    f"SELECT {SIGNAL_LIST_PROJECTION} FROM signals WHERE status = ? ORDER BY id DESC LIMIT ?",
+                    (status, safe_status_limit),
+                ).fetchall()
+                return [_row_to_dict(row) for row in rows]
+
+            latest_rows = conn.execute(
+                f"SELECT {SIGNAL_LIST_PROJECTION} FROM signals ORDER BY id DESC LIMIT ?",
+                (safe_latest_limit,),
+            ).fetchall()
+            modules = list(result.get("by_module", {}))[:safe_module_limit]
+            latest_by_module = {str(module): [] for module in modules}
+            if modules:
+                placeholders = ", ".join("?" for _ in modules)
+                module_rows = conn.execute(
+                    f"""
+                    SELECT {SIGNAL_LIST_PROJECTION}
+                    FROM signals
+                    WHERE id IN (
+                        SELECT MAX(id)
+                        FROM signals
+                        WHERE module IN ({placeholders})
+                        GROUP BY module
+                    )
+                    ORDER BY id DESC
+                    """,
+                    modules,
+                ).fetchall()
+                for row in module_rows:
+                    item = _row_to_dict(row)
+                    latest_by_module[str(item.get("module") or "")] = [item]
+
+            result.update({
+                "latest": [_row_to_dict(row) for row in latest_rows],
+                "latest_sent": latest_for_status("sent"),
+                "latest_failed": latest_for_status("failed"),
+                "latest_by_module": latest_by_module,
+            })
+            return result
+
+    def symbol_timeline(
+        self,
+        symbol: str,
+        *,
+        limit: int = 100,
+        compact: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
         normalized = str(symbol or "").strip().upper()
         if normalized and not normalized.endswith("USDT"):
             normalized = f"{normalized}USDT"
-        with self.connect() as conn:
+        projection = SIGNAL_LIST_PROJECTION if compact else "*"
+        if conn is None:
+            with self.connect() as active_conn:
+                rows = active_conn.execute(
+                    f"SELECT {projection} FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                    (normalized, _limit(limit, 100, 300)),
+                ).fetchall()
+        else:
             rows = conn.execute(
-                "SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                f"SELECT {projection} FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT ?",
                 (normalized, _limit(limit, 100, 300)),
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
@@ -558,6 +738,85 @@ class SignalEventStore:
             "count": len(items),
             "symbol": normalized,
         }
+
+    def list_by_symbols(
+        self,
+        symbols: list[str],
+        *,
+        limit_per_symbol: int = 50,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        normalized_symbols = self._normalize_symbol_list(symbols)
+        grouped = {symbol: [] for symbol in normalized_symbols}
+        for symbol, items in self.iter_by_symbols(
+            normalized_symbols,
+            limit_per_symbol=limit_per_symbol,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        ):
+            grouped[symbol] = items
+        return grouped
+
+    @staticmethod
+    def _normalize_symbol_list(symbols: list[str]) -> list[str]:
+        normalized_symbols: list[str] = []
+        seen: set[str] = set()
+        for value in symbols:
+            normalized = str(value or "").strip().upper()
+            if normalized and not normalized.endswith("USDT"):
+                normalized = f"{normalized}USDT"
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                normalized_symbols.append(normalized)
+        return normalized_symbols[:200]
+
+    def iter_by_symbols(
+        self,
+        symbols: list[str],
+        *,
+        limit_per_symbol: int = 50,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+        normalized_symbols = self._normalize_symbol_list(symbols)
+        if not normalized_symbols:
+            return
+
+        clauses = ["symbol = ?"]
+        bounds: list[Any] = []
+        if start_ts is not None:
+            clauses.append("ts >= ?")
+            bounds.append(int(start_ts))
+        if end_ts is not None:
+            clauses.append("ts <= ?")
+            bounds.append(int(end_ts))
+        safe_limit = _limit(limit_per_symbol, 50, 200)
+        where = " AND ".join(clauses)
+        projection = ", ".join(SIGNAL_DECISION_COLUMNS)
+
+        def load(active_conn: sqlite3.Connection) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+            for symbol in normalized_symbols:
+                rows = active_conn.execute(
+                    f"""
+                    SELECT {projection}
+                    FROM signals INDEXED BY idx_signals_symbol_id
+                    WHERE {where}
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    [symbol, *bounds, safe_limit],
+                )
+                items = [_row_to_decision_dict(row) for row in rows]
+                if items:
+                    yield symbol, items
+
+        if conn is None:
+            with self.connect() as active_conn:
+                yield from load(active_conn)
+        else:
+            yield from load(conn)
 
     def stats_by_symbol(
         self,
@@ -622,6 +881,7 @@ class SignalEventStore:
         limit: int = 20,
         start_ts: int | None = None,
         end_ts: int | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> list[dict[str, Any]]:
         clauses = ["symbol != ''"]
         params: dict[str, Any] = {"limit": _limit(limit, 20, 100)}
@@ -636,7 +896,26 @@ class SignalEventStore:
             clauses.append("(symbol LIKE :q_like ESCAPE '\\' COLLATE NOCASE OR coin LIKE :q_like ESCAPE '\\' COLLATE NOCASE)")
             params["q_like"] = _like_pattern(q_text)
         where = " AND ".join(clauses)
-        with self.connect() as conn:
+        if conn is None:
+            with self.connect() as active_conn:
+                rows = active_conn.execute(
+                    f"""
+                    SELECT
+                        symbol,
+                        coin,
+                        COUNT(*) AS count,
+                        MAX(time) AS latest_at,
+                        COUNT(DISTINCT module) AS module_count,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+                    FROM signals
+                    WHERE {where}
+                    GROUP BY symbol, coin
+                    ORDER BY count DESC, latest_at DESC, symbol ASC
+                    LIMIT :limit
+                    """,
+                    params,
+                ).fetchall()
+        else:
             rows = conn.execute(
                 f"""
                 SELECT
@@ -678,6 +957,8 @@ class SignalEventStore:
         status: str = "",
         q: str = "",
         sort_direction: str = "desc",
+        compact: bool = False,
+        conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         normalized = str(symbol or "").strip().upper()
         if normalized and not normalized.endswith("USDT"):
@@ -722,9 +1003,16 @@ class SignalEventStore:
             )
             params["q_like"] = _like_pattern(q_text)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
+        projection = SIGNAL_LIST_PROJECTION if compact else "*"
+        if conn is None:
+            with self.connect() as active_conn:
+                rows = active_conn.execute(
+                    f"SELECT {projection} FROM signals {where} ORDER BY ts {direction}, id {direction} LIMIT :limit",
+                    params,
+                ).fetchall()
+        else:
             rows = conn.execute(
-                f"SELECT * FROM signals {where} ORDER BY ts {direction}, id {direction} LIMIT :limit",
+                f"SELECT {projection} FROM signals {where} ORDER BY ts {direction}, id {direction} LIMIT :limit",
                 params,
             ).fetchall()
         items = [_row_to_dict(row) for row in rows]
@@ -744,6 +1032,7 @@ class SignalEventStore:
         module: str = "",
         status: str = "",
         q: str = "",
+        conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         normalized = str(symbol or "").strip().upper()
         if normalized and not normalized.endswith("USDT"):
@@ -783,26 +1072,33 @@ class SignalEventStore:
             )
             params["q_like"] = _like_pattern(q_text)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
-            total = int(conn.execute(f"SELECT COUNT(*) FROM signals {where}", params).fetchone()[0])
+        def load(active_conn: sqlite3.Connection) -> tuple[int, dict[str, int], dict[str, int], sqlite3.Row | None]:
+            total = int(active_conn.execute(f"SELECT COUNT(*) FROM signals {where}", params).fetchone()[0])
             by_status = {
                 str(row["status"]): int(row["count"])
-                for row in conn.execute(
+                for row in active_conn.execute(
                     f"SELECT status, COUNT(*) AS count FROM signals {where} GROUP BY status ORDER BY count DESC",
                     params,
                 ).fetchall()
             }
             by_module = {
                 str(row["module"]): int(row["count"])
-                for row in conn.execute(
+                for row in active_conn.execute(
                     f"SELECT module, COUNT(*) AS count FROM signals {where} GROUP BY module ORDER BY count DESC",
                     params,
                 ).fetchall()
             }
-            bounds = conn.execute(
+            bounds = active_conn.execute(
                 f"SELECT MIN(time) AS first_at, MAX(time) AS latest_at, MIN(ts) AS first_ts, MAX(ts) AS latest_ts FROM signals {where}",
                 params,
             ).fetchone()
+            return total, by_status, by_module, bounds
+
+        if conn is None:
+            with self.connect() as active_conn:
+                total, by_status, by_module, bounds = load(active_conn)
+        else:
+            total, by_status, by_module, bounds = load(conn)
         return {
             "symbol": normalized,
             "coin": _coin_from_symbol(normalized),
@@ -820,8 +1116,16 @@ class SignalEventStore:
             "latest_ts": int(bounds["latest_ts"] or 0) if bounds else 0,
         }
 
-    def signal_detail(self, signal_id: int) -> dict[str, Any] | None:
-        with self.connect() as conn:
+    def signal_detail(
+        self,
+        signal_id: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        if conn is None:
+            with self.connect() as active_conn:
+                row = active_conn.execute("SELECT * FROM signals WHERE id = ?", (int(signal_id),)).fetchone()
+        else:
             row = conn.execute("SELECT * FROM signals WHERE id = ?", (int(signal_id),)).fetchone()
         return _row_to_dict(row) if row else None
 

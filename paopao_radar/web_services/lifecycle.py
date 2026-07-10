@@ -37,7 +37,7 @@ def _limit(value: Any, default: int = 50, maximum: int = 300) -> int:
 
 
 def _summary_payload(store: LifecycleStore, *, public: bool) -> dict[str, Any]:
-    summary = store.summary()
+    summary = store.summary(compact_top=True)
     top_items = [enrich_lifecycle_display(item) for item in summary.pop("top_items", [])]
     if public:
         top_items = [public_lifecycle_item(item) for item in top_items]
@@ -46,8 +46,9 @@ def _summary_payload(store: LifecycleStore, *, public: bool) -> dict[str, Any]:
         "items": top_items,
         "not_advice": NOT_ADVICE,
     }
-    payload = api_ok(redact_api_payload(data), message="已读取生命周期概览")
-    payload.update(redact_api_payload(data))
+    safe_data = redact_api_payload(data)
+    payload = api_ok(safe_data, message="已读取生命周期概览")
+    payload.update(safe_data)
     return payload
 
 
@@ -74,6 +75,7 @@ def lifecycle_list_payload(
         state=str(state or ""),
         level=str(level or ""),
         risk=str(risk or ""),
+        compact=True,
     )
     items = [enrich_lifecycle_display(item) for item in listed.get("items", [])]
     if public:
@@ -91,8 +93,9 @@ def lifecycle_list_payload(
         "filters": filters,
         "not_advice": NOT_ADVICE,
     }
-    payload = api_ok(redact_api_payload(data), message="已读取生命周期列表")
-    payload.update(redact_api_payload(data))
+    safe_data = redact_api_payload(data)
+    payload = api_ok(safe_data, message="已读取生命周期列表")
+    payload.update(safe_data)
     return payload
 
 
@@ -106,9 +109,10 @@ def lifecycle_detail_payload(
     if not normalized:
         return api_error("请提供币种，例如 BTCUSDT。", code="bad_request", message="请提供币种，例如 BTCUSDT。")
     store = _store(settings)
-    lifecycle = enrich_lifecycle_display(store.get_lifecycle(normalized))
-    events = [enrich_event_display(item) for item in store.list_events(symbol=normalized, limit=30)]
-    snapshots = store.list_snapshots(symbol=normalized, limit=60)
+    with store.connect() as conn:
+        lifecycle = enrich_lifecycle_display(store.get_lifecycle(normalized, conn=conn))
+        events = [enrich_event_display(item) for item in store.list_events(symbol=normalized, limit=30, conn=conn)]
+        snapshots = store.list_snapshots(symbol=normalized, limit=60, conn=conn)
     if public:
         lifecycle = public_lifecycle_item(lifecycle)
         events = [public_lifecycle_event(item) for item in events]
@@ -120,8 +124,9 @@ def lifecycle_detail_payload(
         "metrics": snapshots,
         "not_advice": NOT_ADVICE,
     }
-    payload = api_ok(redact_api_payload(data), message="已读取单币生命周期")
-    payload.update(redact_api_payload(data))
+    safe_data = redact_api_payload(data)
+    payload = api_ok(safe_data, message="已读取单币生命周期")
+    payload.update(safe_data)
     return payload
 
 

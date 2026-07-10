@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,6 +24,20 @@ PUBLIC_SENSITIVE_TEXT_RE = re.compile(
 JSON_FIELDS = {"exchange_context_json", "metrics_json", "reasons_json"}
 EVENT_JSON_FIELDS = {"metrics_json", "reasons_json", "exchange_context_json"}
 SNAPSHOT_JSON_FIELDS = {"metrics_json"}
+LIFECYCLE_LIST_PROJECTION = """
+    id, symbol, first_signal_id, first_signal_at, first_signal_module, first_signal_template,
+    first_signal_type, first_signal_level, first_signal_level_rank, first_signal_score,
+    '' AS first_signal_excerpt, first_price, first_market_cap_usd, first_volume_15m,
+    first_quote_volume_15m, first_oi, first_oi_value_usdt, first_futures_cvd_15m,
+    first_spot_cvd_15m, first_funding_rate, current_state, highest_level, highest_level_rank,
+    lifecycle_score, risk_score, latest_signal_id, latest_signal_at, latest_price,
+    latest_market_cap_usd, latest_oi, latest_oi_value_usdt, latest_futures_cvd_15m,
+    latest_spot_cvd_15m, latest_funding_rate, price_change_from_first_pct,
+    market_cap_change_from_first_pct, oi_change_from_first_pct, oi_value_change_from_first_pct,
+    futures_cvd_change_from_first, spot_cvd_change_from_first, NULL AS exchange_context_json,
+    NULL AS metrics_json, NULL AS reasons_json, is_active, created_at, updated_at, closed_at,
+    close_reason
+"""
 
 
 def utc_iso(ts: int | float | None = None) -> str:
@@ -94,6 +108,7 @@ def _row_to_dict(row: sqlite3.Row | None, *, json_fields: set[str]) -> dict[str,
 @dataclass
 class LifecycleStore:
     db_path: Path = DEFAULT_LIFECYCLE_DB_PATH
+    _schema_ready: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.db_path = Path(self.db_path)
@@ -106,11 +121,23 @@ class LifecycleStore:
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=15000")
-            self.ensure_schema(conn)
+            if not self._schema_ready:
+                self.ensure_schema(conn)
             yield conn
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
             conn.commit()
         finally:
             conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Open one atomic write transaction for a lifecycle processing batch."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
 
     def ensure_schema(self, conn: sqlite3.Connection | None = None) -> None:
         own_conn = conn is None
@@ -239,23 +266,79 @@ class LifecycleStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle_snapshots_symbol ON lifecycle_metric_snapshots(symbol, snapshot_time DESC)")
             if own_conn:
                 conn.commit()
+            self._schema_ready = True
         finally:
             if own_conn:
                 conn.close()
 
-    def get_lifecycle(self, symbol: str) -> dict[str, Any] | None:
+    def get_lifecycle(
+        self,
+        symbol: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
         normalized = normalize_lifecycle_symbol(symbol)
         if not normalized:
             return None
-        with self.connect() as conn:
-            row = conn.execute("SELECT * FROM signal_lifecycles WHERE symbol = ?", (normalized,)).fetchone()
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.get_lifecycle(normalized, conn=owned_conn)
+        row = conn.execute("SELECT * FROM signal_lifecycles WHERE symbol = ?", (normalized,)).fetchone()
         return _row_to_dict(row, json_fields=JSON_FIELDS)
 
-    def create_lifecycle(self, values: dict[str, Any], *, dry_run: bool = False) -> tuple[dict[str, Any], bool]:
+    def processed_signal_ids(
+        self,
+        signal_ids: list[int] | set[int] | tuple[int, ...],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> set[int]:
+        requested = {safe_int(value) for value in signal_ids if safe_int(value) > 0}
+        if not requested:
+            return set()
+        if conn is None:
+            if not self.db_path.exists():
+                return set()
+            with self.connect() as owned_conn:
+                return self.processed_signal_ids(requested, conn=owned_conn)
+        processed: set[int] = set()
+        ordered = sorted(requested)
+        for offset in range(0, len(ordered), 800):
+            chunk = ordered[offset : offset + 800]
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT DISTINCT signal_id FROM lifecycle_events WHERE signal_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            processed.update(safe_int(row[0]) for row in rows if safe_int(row[0]) > 0)
+        return processed
+
+    def is_signal_processed(
+        self,
+        signal_id: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        normalized = safe_int(signal_id)
+        return normalized > 0 and normalized in self.processed_signal_ids({normalized}, conn=conn)
+
+    def create_lifecycle(
+        self,
+        values: dict[str, Any],
+        *,
+        dry_run: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         symbol = normalize_lifecycle_symbol(values.get("symbol"))
         if not symbol:
             raise ValueError("invalid lifecycle symbol")
-        existing = self.get_lifecycle(symbol)
+        if conn is None and not dry_run:
+            with self.connect() as owned_conn:
+                return self.create_lifecycle(values, conn=owned_conn)
+        existing = None
+        if conn is not None:
+            existing = self.get_lifecycle(symbol, conn=conn)
+        elif self.db_path.exists():
+            existing = self.get_lifecycle(symbol)
         if existing:
             return existing, False
         now = utc_iso()
@@ -291,17 +374,26 @@ class LifecycleStore:
             "exchange_context_json", "metrics_json", "reasons_json", "is_active", "created_at", "updated_at",
             "closed_at", "close_reason",
         ]
+        assert conn is not None
         params = {key: row.get(key) for key in columns}
-        with self.connect() as conn:
-            placeholders = ", ".join(f":{key}" for key in columns)
-            conn.execute(
-                f"INSERT OR IGNORE INTO signal_lifecycles ({', '.join(columns)}) VALUES ({placeholders})",
-                params,
-            )
-        created = self.get_lifecycle(symbol)
-        return created or {}, True
+        placeholders = ", ".join(f":{key}" for key in columns)
+        before = conn.total_changes
+        conn.execute(
+            f"INSERT OR IGNORE INTO signal_lifecycles ({', '.join(columns)}) VALUES ({placeholders})",
+            params,
+        )
+        created = conn.total_changes > before
+        stored = self.get_lifecycle(symbol, conn=conn)
+        return stored or {}, created
 
-    def update_lifecycle(self, symbol: str, values: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any] | None:
+    def update_lifecycle(
+        self,
+        symbol: str,
+        values: dict[str, Any],
+        *,
+        dry_run: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
         normalized = normalize_lifecycle_symbol(symbol)
         if not normalized:
             return None
@@ -324,18 +416,29 @@ class LifecycleStore:
         }
         updates = {key: value for key, value in updates.items() if key in allowed}
         if dry_run:
-            current = self.get_lifecycle(normalized) or {}
+            current = self.get_lifecycle(normalized, conn=conn) if conn is not None else None
+            if current is None and self.db_path.exists():
+                current = self.get_lifecycle(normalized)
+            current = current or {}
             current.update(updates)
             return current
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.update_lifecycle(normalized, updates, conn=owned_conn)
         if not updates:
-            return self.get_lifecycle(normalized)
+            return self.get_lifecycle(normalized, conn=conn)
         assignments = ", ".join(f"{key} = :{key}" for key in updates)
         params = {**updates, "symbol": normalized}
-        with self.connect() as conn:
-            conn.execute(f"UPDATE signal_lifecycles SET {assignments} WHERE symbol = :symbol", params)
-        return self.get_lifecycle(normalized)
+        conn.execute(f"UPDATE signal_lifecycles SET {assignments} WHERE symbol = :symbol", params)
+        return self.get_lifecycle(normalized, conn=conn)
 
-    def insert_event(self, values: dict[str, Any], *, dry_run: bool = False) -> tuple[dict[str, Any], bool]:
+    def insert_event(
+        self,
+        values: dict[str, Any],
+        *,
+        dry_run: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         row = dict(values)
         row["symbol"] = normalize_lifecycle_symbol(row.get("symbol"))
         row["metrics_json"] = json_dumps(row.pop("metrics", row.get("metrics_json", {})))
@@ -357,22 +460,30 @@ class LifecycleStore:
             fake["reasons"] = json_loads(fake.pop("reasons_json"), [])
             fake["exchange_context"] = json_loads(fake.pop("exchange_context_json"), {})
             return fake, True
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.insert_event(values, conn=owned_conn)
         params = {key: row.get(key) for key in columns}
-        with self.connect() as conn:
-            before = conn.total_changes
-            conn.execute(
-                f"INSERT OR IGNORE INTO lifecycle_events ({', '.join(columns)}) VALUES ({', '.join(f':{key}' for key in columns)})",
-                params,
-            )
-            inserted = conn.total_changes > before
-            event = conn.execute("SELECT * FROM lifecycle_events WHERE dedup_key = ?", (row.get("dedup_key"),)).fetchone()
+        before = conn.total_changes
+        conn.execute(
+            f"INSERT OR IGNORE INTO lifecycle_events ({', '.join(columns)}) VALUES ({', '.join(f':{key}' for key in columns)})",
+            params,
+        )
+        inserted = conn.total_changes > before
+        event = conn.execute("SELECT * FROM lifecycle_events WHERE dedup_key = ?", (row.get("dedup_key"),)).fetchone()
         return _row_to_dict(event, json_fields=EVENT_JSON_FIELDS) or {}, inserted
 
     def mark_event_pushed(self, event_id: int) -> None:
         with self.connect() as conn:
             conn.execute("UPDATE lifecycle_events SET pushed_to_telegram = 1 WHERE id = ?", (int(event_id),))
 
-    def insert_snapshot(self, values: dict[str, Any], *, dry_run: bool = False) -> bool:
+    def insert_snapshot(
+        self,
+        values: dict[str, Any],
+        *,
+        dry_run: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
         row = dict(values)
         row["symbol"] = normalize_lifecycle_symbol(row.get("symbol"))
         row["metrics_json"] = json_dumps(row.pop("metrics", row.get("metrics_json", {})))
@@ -384,14 +495,16 @@ class LifecycleStore:
         ]
         if dry_run:
             return True
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.insert_snapshot(values, conn=owned_conn)
         params = {key: row.get(key) for key in columns}
-        with self.connect() as conn:
-            before = conn.total_changes
-            conn.execute(
-                f"INSERT OR IGNORE INTO lifecycle_metric_snapshots ({', '.join(columns)}) VALUES ({', '.join(f':{key}' for key in columns)})",
-                params,
-            )
-            return conn.total_changes > before
+        before = conn.total_changes
+        conn.execute(
+            f"INSERT OR IGNORE INTO lifecycle_metric_snapshots ({', '.join(columns)}) VALUES ({', '.join(f':{key}' for key in columns)})",
+            params,
+        )
+        return conn.total_changes > before
 
     def list_lifecycles(
         self,
@@ -403,6 +516,8 @@ class LifecycleStore:
         level: str = "",
         risk: str = "",
         active_only: bool = True,
+        compact: bool = False,
+        conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 300))}
@@ -429,41 +544,74 @@ class LifecycleStore:
             clauses.append("id < :cursor")
             params["cursor"] = int(cursor)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM signal_lifecycles {where} ORDER BY updated_at DESC, id DESC LIMIT :limit",
-                params,
-            ).fetchall()
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.list_lifecycles(
+                    limit=limit,
+                    cursor=cursor,
+                    symbol=symbol,
+                    state=state,
+                    level=level,
+                    risk=risk,
+                    active_only=active_only,
+                    compact=compact,
+                    conn=owned_conn,
+                )
+        projection = LIFECYCLE_LIST_PROJECTION if compact else "*"
+        rows = conn.execute(
+            f"SELECT {projection} FROM signal_lifecycles {where} ORDER BY updated_at DESC, id DESC LIMIT :limit",
+            params,
+        ).fetchall()
         items = [_row_to_dict(row, json_fields=JSON_FIELDS) or {} for row in rows]
         return {"items": items, "count": len(items), "next_cursor": items[-1]["id"] if items else None}
 
-    def summary(self) -> dict[str, Any]:
-        with self.connect() as conn:
-            total = int(conn.execute("SELECT COUNT(*) FROM signal_lifecycles").fetchone()[0])
-            active = int(conn.execute("SELECT COUNT(*) FROM signal_lifecycles WHERE is_active = 1").fetchone()[0])
-            state_counts = {
-                str(row["current_state"] or "unknown"): int(row["count"])
-                for row in conn.execute(
-                    "SELECT current_state, COUNT(*) AS count FROM signal_lifecycles GROUP BY current_state"
-                ).fetchall()
-            }
-            level_counts = {
-                str(row["highest_level"] or "unknown"): int(row["count"])
-                for row in conn.execute(
-                    "SELECT highest_level, COUNT(*) AS count FROM signal_lifecycles GROUP BY highest_level"
-                ).fetchall()
-            }
-            top = [
-                _row_to_dict(row, json_fields=JSON_FIELDS) or {}
-                for row in conn.execute(
-                    """
-                    SELECT * FROM signal_lifecycles
-                    WHERE is_active = 1
-                    ORDER BY lifecycle_score DESC, risk_score DESC, updated_at DESC
-                    LIMIT 10
-                    """
-                ).fetchall()
-            ]
+    def summary(
+        self,
+        *,
+        compact_top: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.summary(compact_top=compact_top, conn=owned_conn)
+        aggregate_rows = conn.execute(
+            """
+            SELECT 'total' AS dimension, '' AS key, COUNT(*) AS count,
+                   COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active
+            FROM signal_lifecycles
+            UNION ALL
+            SELECT 'state', COALESCE(current_state, 'unknown'), COUNT(*), 0
+            FROM signal_lifecycles GROUP BY current_state
+            UNION ALL
+            SELECT 'level', COALESCE(highest_level, 'unknown'), COUNT(*), 0
+            FROM signal_lifecycles GROUP BY highest_level
+            """
+        ).fetchall()
+        total_row = next((row for row in aggregate_rows if row["dimension"] == "total"), None)
+        total = int(total_row["count"] if total_row is not None else 0)
+        active = int(total_row["active"] if total_row is not None else 0)
+        state_counts = {
+            str(row["key"]): int(row["count"])
+            for row in aggregate_rows
+            if row["dimension"] == "state"
+        }
+        level_counts = {
+            str(row["key"]): int(row["count"])
+            for row in aggregate_rows
+            if row["dimension"] == "level"
+        }
+        projection = LIFECYCLE_LIST_PROJECTION if compact_top else "*"
+        top = [
+            _row_to_dict(row, json_fields=JSON_FIELDS) or {}
+            for row in conn.execute(
+                f"""
+                SELECT {projection} FROM signal_lifecycles
+                WHERE is_active = 1
+                ORDER BY lifecycle_score DESC, risk_score DESC, updated_at DESC
+                LIMIT 10
+                """
+            ).fetchall()
+        ]
         return {
             "total_count": total,
             "active_count": active,
@@ -480,7 +628,13 @@ class LifecycleStore:
             "top_items": top,
         }
 
-    def list_events(self, *, symbol: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    def list_events(
+        self,
+        *,
+        symbol: str = "",
+        limit: int = 100,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": max(1, min(int(limit or 100), 300))}
         normalized = normalize_lifecycle_symbol(symbol)
@@ -488,14 +642,23 @@ class LifecycleStore:
             clauses.append("symbol = :symbol")
             params["symbol"] = normalized
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM lifecycle_events {where} ORDER BY event_time DESC, id DESC LIMIT :limit",
-                params,
-            ).fetchall()
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.list_events(symbol=symbol, limit=limit, conn=owned_conn)
+        rows = conn.execute(
+            f"SELECT * FROM lifecycle_events {where} ORDER BY event_time DESC, id DESC LIMIT :limit",
+            params,
+        ).fetchall()
         return [_row_to_dict(row, json_fields=EVENT_JSON_FIELDS) or {} for row in rows]
 
-    def list_snapshots(self, *, symbol: str = "", timeframe: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    def list_snapshots(
+        self,
+        *,
+        symbol: str = "",
+        timeframe: str = "",
+        limit: int = 100,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": max(1, min(int(limit or 100), 500))}
         normalized = normalize_lifecycle_symbol(symbol)
@@ -506,11 +669,13 @@ class LifecycleStore:
             clauses.append("timeframe = :timeframe")
             params["timeframe"] = str(timeframe)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM lifecycle_metric_snapshots {where} ORDER BY snapshot_time DESC, id DESC LIMIT :limit",
-                params,
-            ).fetchall()
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.list_snapshots(symbol=symbol, timeframe=timeframe, limit=limit, conn=owned_conn)
+        rows = conn.execute(
+            f"SELECT * FROM lifecycle_metric_snapshots {where} ORDER BY snapshot_time DESC, id DESC LIMIT :limit",
+            params,
+        ).fetchall()
         return [_row_to_dict(row, json_fields=SNAPSHOT_JSON_FIELDS) or {} for row in rows]
 
 

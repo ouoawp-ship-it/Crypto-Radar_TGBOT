@@ -3,14 +3,28 @@ from __future__ import annotations
 import json
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.decision_model import evaluate_decision
-from paopao_radar.signal_store import append_from_push
+from paopao_radar.signal_store import SignalEventStore, append_from_push
 from paopao_radar.web_services.decision import decision_for_symbol_payload, decisions_payload, decisions_stats_payload
 from paopao_radar.web_services.public import public_decision_payload, public_decisions_payload, public_decisions_stats_payload
+
+
+class CountingSignalEventStore(SignalEventStore):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "connection_count", 0)
+
+    @contextmanager
+    def connect(self):
+        object.__setattr__(self, "connection_count", self.connection_count + 1)
+        with super().connect() as conn:
+            yield conn
 
 
 class DecisionModelTests(unittest.TestCase):
@@ -171,6 +185,7 @@ class DecisionApiTests(unittest.TestCase):
         self.assertIn("decisions", payload)
         self.assertIn("summary", payload["data"])
         self.assertIn("distribution", payload["data"])
+        self.assertTrue(all(item.get("coin") for item in payload["items"]))
 
     def test_public_decision_payload_is_redacted(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -207,6 +222,52 @@ class DecisionApiTests(unittest.TestCase):
         self.assertIn("observe", data["distribution"])
         ratio_sum = sum(float(item.get("ratio", 0)) for item in data["distribution"].values())
         self.assertLessEqual(abs(ratio_sum - 1), 0.01)
+
+    def test_decision_lists_batch_symbol_queries(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.make_settings(tmp)
+            self.seed(settings)
+            with patch(
+                "paopao_radar.web_services.decision.decision_for_symbol_payload",
+                side_effect=AssertionError("per-symbol query should not run"),
+            ):
+                listed = decisions_payload(settings=settings, limit=10)
+                stats = decisions_stats_payload(settings=settings, limit=10)
+
+        self.assertTrue(listed["ok"])
+        self.assertTrue(stats["ok"])
+
+    def test_decision_stats_reuses_one_request_connection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.make_settings(tmp)
+            self.seed(settings)
+            store = CountingSignalEventStore(settings.signal_events_db_path)
+            with patch("paopao_radar.web_services.decision._store", return_value=store):
+                payload = decisions_stats_payload(settings=settings, limit=10)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(store.connection_count, 1)
+
+    def test_batched_decision_keeps_full_signal_text_semantics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.make_settings(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_FUNDING_ALERT",
+                dedup_key="decision:long-risk-text",
+                status="blocked",
+                sent=False,
+                text="BTCUSDT " + ("x" * 1300) + " 高杠杆 风险加剧 假突破",
+                ts=int(time.time()),
+            )
+            single = decision_for_symbol_payload("BTCUSDT", settings=settings)
+            batched = decisions_payload(symbol="BTCUSDT", settings=settings, limit=1)["items"][0]
+
+        self.assertEqual(batched["scores"], single["scores"])
+        self.assertEqual(
+            batched["calibration"]["risk_keywords"],
+            single["calibration"]["risk_keywords"],
+        )
 
     def test_decisions_stats_empty_payload(self) -> None:
         with TemporaryDirectory() as tmp:

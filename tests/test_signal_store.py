@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
 from paopao_radar.signal_store import SignalEventStore, append_from_push
+
+
+class CountingSignalEventStore(SignalEventStore):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "connection_count", 0)
+
+    @contextmanager
+    def connect(self):
+        object.__setattr__(self, "connection_count", self.connection_count + 1)
+        with super().connect() as conn:
+            yield conn
 
 
 class SignalEventStoreTests(unittest.TestCase):
@@ -293,6 +305,81 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[0], "view")
 
+    def test_current_schema_check_does_not_rewrite_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = SignalEventStore(Path(tmp) / "signals.db")
+            with store.connect():
+                pass
+
+            with store.connect() as conn:
+                changes = conn.total_changes
+
+        self.assertEqual(changes, 0)
+
+    def test_list_by_symbols_limits_each_symbol_in_one_query(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            for index, symbol in enumerate(("BTCUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDT"), 1):
+                append_from_push(
+                    settings,
+                    template_id="TG_TEST_MESSAGE",
+                    dedup_key=f"batch:{index}",
+                    status="sent",
+                    sent=True,
+                    text=f"{symbol} test {index}",
+                    ts=1000 + index,
+                )
+            grouped = SignalEventStore(settings.signal_events_db_path).list_by_symbols(
+                ["BTC", "ETHUSDT"],
+                limit_per_symbol=1,
+            )
+
+        self.assertEqual(set(grouped), {"BTCUSDT", "ETHUSDT"})
+        self.assertEqual([item["id"] for item in grouped["BTCUSDT"]], [2])
+        self.assertEqual([item["id"] for item in grouped["ETHUSDT"]], [4])
+
+    def test_compact_projection_preserves_shape_and_defers_large_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="compact:btc",
+                status="sent",
+                sent=True,
+                text="BTCUSDT " + ("x" * 5000),
+                ts=1000,
+            )
+            store = SignalEventStore(settings.signal_events_db_path)
+            compact = store.list_signals(limit=1, compact=True)["items"][0]
+            detail = store.signal_detail(int(compact["id"])) or {}
+
+        self.assertEqual(set(compact), set(detail))
+        self.assertEqual(compact["text_html"], "")
+        self.assertEqual(compact["payload"], {})
+        self.assertLessEqual(len(compact["excerpt"]), 260)
+        self.assertGreater(len(detail["text_html"]), 5000)
+        self.assertEqual(detail["payload"]["source"], "telegram_push")
+
+    def test_stats_with_latest_uses_one_connection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="stats:one-connection",
+                status="sent",
+                sent=True,
+                text="BTCUSDT stats",
+                ts=1000,
+            )
+            store = CountingSignalEventStore(settings.signal_events_db_path)
+            payload = store.stats_with_latest(window_sec=10**10)
+
+        self.assertEqual(store.connection_count, 1)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["latest_sent"][0]["symbol"], "BTCUSDT")
+
     def test_signal_events_view_defaults_missing_legacy_columns(self) -> None:
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "signals.db"
@@ -338,7 +425,8 @@ class SignalEventStoreTests(unittest.TestCase):
                 )
                 conn.commit()
 
-            with SignalEventStore(db_path).connect():
+            store = SignalEventStore(db_path)
+            with store.connect():
                 pass
 
             with closing(sqlite3.connect(db_path)) as conn:
@@ -351,9 +439,26 @@ class SignalEventStoreTests(unittest.TestCase):
                     LIMIT 1
                     """
                 ).fetchone()
+            inserted_count = store.append_from_push(
+                template_id="TG_TEST_MESSAGE",
+                dedup_key="legacy:write",
+                status="sent",
+                sent=True,
+                text="ETHUSDT legacy migration write",
+                ts=1001,
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                migrated = conn.execute(
+                    "SELECT payload_json, error FROM signals WHERE dedup_key = ?",
+                    ("legacy:write",),
+                ).fetchone()
 
         self.assertEqual(latest["payload_json"], "{}")
         self.assertEqual(latest["error"], "")
+        self.assertEqual(inserted_count, 1)
+        self.assertIsNotNone(migrated)
+        self.assertIn("telegram_push", migrated[0])
+        self.assertEqual(migrated[1], "")
 
 
 if __name__ == "__main__":

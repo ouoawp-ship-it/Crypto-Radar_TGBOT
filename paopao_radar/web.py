@@ -1969,6 +1969,7 @@ def signals_payload(
         start_ts=start_ts,
         end_ts=end_ts,
         q=q,
+        compact=True,
     )
     items = enhance_signal_items(result["items"])
     default_filters = {
@@ -2006,7 +2007,11 @@ def signals_latest_payload(
 ) -> dict[str, Any]:
     store = signal_store_for_settings(settings)
     items = enhance_signal_items(
-        store.latest_after(after_id=max(0, int(after_id or 0)), limit=clamp_query_int(limit, 100, 300))
+        store.latest_after(
+            after_id=max(0, int(after_id or 0)),
+            limit=clamp_query_int(limit, 100, 300),
+            compact=True,
+        )
     )
     return {
         "ok": True,
@@ -2018,15 +2023,14 @@ def signals_latest_payload(
 
 def signals_stats_payload(*, window_sec: int = 86400, settings: Settings | None = None) -> dict[str, Any]:
     store = signal_store_for_settings(settings)
-    stats = store.stats(window_sec=max(1, int(window_sec or 86400)))
-    latest_sent = enhance_signal_items(store.list_signals(limit=5, status="sent")["items"])
-    latest_failed = enhance_signal_items(store.list_signals(limit=5, status="failed")["items"])
-    latest_by_module = {}
-    by_module = stats.get("by_module", {}) if isinstance(stats.get("by_module"), dict) else {}
-    for module_name in list(by_module.keys())[:8]:
-        latest_by_module[str(module_name)] = enhance_signal_items(
-            store.list_signals(limit=1, module=str(module_name))["items"]
-        )
+    stats = store.stats_with_latest(window_sec=max(1, int(window_sec or 86400)))
+    latest_sent = enhance_signal_items(stats.pop("latest_sent", []))
+    latest_failed = enhance_signal_items(stats.pop("latest_failed", []))
+    stats.pop("latest", None)
+    latest_by_module = {
+        str(module): enhance_signal_items(items)
+        for module, items in stats.pop("latest_by_module", {}).items()
+    }
     return {
         "ok": True,
         **stats,
@@ -2048,7 +2052,13 @@ def symbol_timeline_payload(
     if not normalized:
         return {"ok": False, "items": [], "count": 0, "message": "请先输入币种"}
     store = signal_store_for_settings(settings)
-    items = enhance_signal_items(store.symbol_timeline(normalized, limit=clamp_query_int(limit, 100, 300)))
+    items = enhance_signal_items(
+        store.symbol_timeline(
+            normalized,
+            limit=clamp_query_int(limit, 100, 300),
+            compact=True,
+        )
+    )
     return {
         "ok": True,
         "symbol": normalized,
@@ -2060,16 +2070,22 @@ def symbol_timeline_payload(
 
 def signal_detail_payload(signal_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
     store = signal_store_for_settings(settings)
-    item = store.signal_detail(int(signal_id or 0))
-    if not item:
-        return {"ok": False, "item": None, "detail": None, "code": "not_found", "message": "信号记录不存在"}
-    related = []
-    if item.get("symbol"):
-        related = [
-            related_item
-            for related_item in store.symbol_timeline(str(item.get("symbol") or ""), limit=11)
-            if int(related_item.get("id") or 0) != int(item.get("id") or 0)
-        ][:10]
+    with store.connect() as conn:
+        item = store.signal_detail(int(signal_id or 0), conn=conn)
+        if not item:
+            return {"ok": False, "item": None, "detail": None, "code": "not_found", "message": "信号记录不存在"}
+        related = []
+        if item.get("symbol"):
+            related = [
+                related_item
+                for related_item in store.symbol_timeline(
+                    str(item.get("symbol") or ""),
+                    limit=11,
+                    compact=True,
+                    conn=conn,
+                )
+                if int(related_item.get("id") or 0) != int(item.get("id") or 0)
+            ][:10]
     enhanced = enhance_signal_items([item])[0]
     return {
         "ok": True,

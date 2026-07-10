@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { BacktestMatrix } from "./BacktestMatrix";
 import { DecisionCard } from "./DecisionCard";
@@ -149,9 +150,9 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
             <h2 className="mb-3 text-lg font-black text-white">活跃币种</h2>
             <div className="flex flex-wrap gap-2">
               {(data.coins || []).map((coin) => (
-                <a className="chip" href={`/coin/${encodeURIComponent(coin.symbol || "")}`} key={coin.symbol}>
+                <Link className="chip" href={`/coin/${encodeURIComponent(coin.symbol || "")}`} key={coin.symbol}>
                   {safeText(coin.label || coin.symbol)} · {compact(coin.count)}
-                </a>
+                </Link>
               ))}
             </div>
             {!(data.coins || []).length ? <p className="text-sm text-slate-500">暂无活跃币种数据。</p> : null}
@@ -178,11 +179,11 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       <section className="panel p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-lg font-black text-white">生命周期跟随概览</h2>
-          <a className="btn" href="/lifecycle">查看生命周期</a>
+          <Link className="btn" href="/lifecycle">查看生命周期</Link>
         </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {(data.lifecycle?.items || []).slice(0, 4).map((item) => (
-            <a className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
+            <Link className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-base font-black text-white">{safeText(item.symbol)}</h3>
@@ -191,7 +192,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
                 <span className="chip">最高周期 {safeText(item.highest_level, "-")}</span>
               </div>
               <p className="mt-3 text-sm text-slate-300">价格 {pct(item.price_change_from_first_pct)}，OI {pct(item.oi_change_from_first_pct)}，风险 {compact(item.risk_score)}</p>
-            </a>
+            </Link>
           ))}
         </div>
         {!(data.lifecycle?.items || []).length ? <p className="text-sm text-slate-500">暂无生命周期数据，首次有效信号出现后会自动建档。</p> : null}

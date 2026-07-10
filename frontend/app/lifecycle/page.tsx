@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
@@ -93,7 +94,7 @@ export default function LifecyclePage() {
 
       <section className="grid gap-3 xl:grid-cols-2">
         {items.map((item) => (
-          <a className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
+          <Link className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-black text-white">{safeText(item.symbol)}</h2>
@@ -113,7 +114,7 @@ export default function LifecyclePage() {
               <span>首次信号 {safeText(item.first_signal_at, "-")}</span>
             </div>
             <p className="mt-3 text-xs text-slate-500">{safeText(item.not_advice, "仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。")}</p>
-          </a>
+          </Link>
         ))}
       </section>
       {!items.length && !loading ? <EmptyState title="暂无生命周期数据" text="一个币首次出现有效信号后会自动创建生命周期档案。" /> : null}

@@ -8,6 +8,36 @@ from ..outcome_tracker import OutcomeStore, scan_outcomes
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 
 
+PUBLIC_OUTCOME_COLUMNS = (
+    "id",
+    "signal_id",
+    "symbol",
+    "coin",
+    "signal_time",
+    "horizon",
+    "horizon_sec",
+    "direction",
+    "entry_price",
+    "future_price",
+    "max_high_price",
+    "min_low_price",
+    "final_return_pct",
+    "max_gain_pct",
+    "max_drawdown_pct",
+    "result_label",
+    "result_tone",
+    "decision_code",
+    "decision_label",
+    "decision_confidence",
+    "risk_level",
+    "module",
+    "signal_type",
+    "signal_score",
+    "signal_stage",
+    "data_status",
+)
+
+
 def _settings(settings: Settings | None = None) -> Settings:
     return settings or Settings.load()
 
@@ -45,34 +75,7 @@ def _time_bounds(window_sec: int) -> tuple[str, str]:
 
 
 def _public_item(item: dict[str, Any]) -> dict[str, Any]:
-    allowed = {
-        "id",
-        "signal_id",
-        "symbol",
-        "coin",
-        "signal_time",
-        "horizon",
-        "horizon_sec",
-        "direction",
-        "entry_price",
-        "future_price",
-        "max_high_price",
-        "min_low_price",
-        "final_return_pct",
-        "max_gain_pct",
-        "max_drawdown_pct",
-        "result_label",
-        "result_tone",
-        "decision_code",
-        "decision_label",
-        "decision_confidence",
-        "risk_level",
-        "module",
-        "signal_type",
-        "signal_score",
-        "signal_stage",
-        "data_status",
-    }
+    allowed = set(PUBLIC_OUTCOME_COLUMNS)
     return {key: redact_api_payload(value) for key, value in item.items() if key in allowed}
 
 
@@ -110,20 +113,29 @@ def outcomes_payload(
     start_time, end_time = _time_bounds(_safe_window(window_sec, 604800))
     normalized = normalize_symbol_filter(symbol).get("symbol", "") if str(symbol or "").strip() else ""
     store = _store(loaded)
-    listed = store.list_outcomes(
-        limit=_limit(limit),
-        cursor=cursor,
-        symbol=normalized,
-        horizon=str(horizon or ""),
-        decision=str(decision or ""),
-        result=str(result or ""),
-        module=str(module or ""),
-        data_status=str(data_status or ""),
-        start_time=start_time,
-        end_time=end_time,
-        sort=sort,
-    )
-    stats = store.stats(horizon=str(horizon or ""), symbol=normalized, decision=str(decision or ""), module=str(module or ""))
+    with store.connect() as connection:
+        listed = store.list_outcomes(
+            limit=_limit(limit),
+            cursor=cursor,
+            symbol=normalized,
+            horizon=str(horizon or ""),
+            decision=str(decision or ""),
+            result=str(result or ""),
+            module=str(module or ""),
+            data_status=str(data_status or ""),
+            start_time=start_time,
+            end_time=end_time,
+            sort=sort,
+            columns=PUBLIC_OUTCOME_COLUMNS if public else None,
+            connection=connection,
+        )
+        stats = store.stats(
+            horizon=str(horizon or ""),
+            symbol=normalized,
+            decision=str(decision or ""),
+            module=str(module or ""),
+            connection=connection,
+        )
     raw_items = listed.get("items", [])
     items = [_public_item(item) for item in raw_items] if public else redact_api_payload(raw_items)
     filters = {

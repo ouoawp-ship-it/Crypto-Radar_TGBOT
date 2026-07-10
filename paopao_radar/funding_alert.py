@@ -304,16 +304,31 @@ class FundingAlertEngine:
         alerts: list[dict[str, Any]] = []
         scanned = 0
         rows_seen = 0
-
+        symbols = [str(candidate.get("symbol") or "") for candidate in candidates]
+        current_rows_by_symbol = client.snapshot_many(symbols, include_history=False)
+        scan_metrics = dict(client.last_batch_metrics)
+        prepared: list[tuple[dict[str, Any], str, list[dict[str, Any]], dict[str, Any]]] = []
+        history_symbols: list[str] = []
         for candidate in candidates:
             symbol = str(candidate.get("symbol") or "")
-            rows = client.snapshot(symbol, include_history=False)
+            rows = current_rows_by_symbol.get(symbol, [])
             if not rows:
                 continue
             scanned += 1
             rows_seen += len(rows)
             rows = self._apply_state_transitions(symbol, rows, state)
             classification = classify_funding_alert(rows, self.settings)
+            prepared.append((candidate, symbol, rows, classification))
+            if classification:
+                history_symbols.append(symbol)
+
+        full_rows_by_symbol = (
+            client.snapshot_many(history_symbols, include_history=True)
+            if history_symbols
+            else {}
+        )
+        history_metrics = dict(client.last_batch_metrics) if history_symbols else {}
+        for candidate, symbol, rows, classification in prepared:
             if not classification:
                 decay_alert = self._maybe_decay_alert(symbol, candidate, rows, state, now_ts)
                 if decay_alert:
@@ -321,7 +336,7 @@ class FundingAlertEngine:
                     self._mark_alert(decay_alert["dedup_key"], state, now_ts)
                 continue
 
-            full_rows = client.snapshot(symbol, include_history=True)
+            full_rows = full_rows_by_symbol.get(symbol, [])
             if full_rows:
                 full_rows = self._apply_state_transitions(symbol, full_rows, state)
                 rows = full_rows
@@ -357,6 +372,8 @@ class FundingAlertEngine:
                 "funding_rows": rows_seen,
                 "alerts": len(alerts),
                 "exchanges": list(self.settings.funding_alert_exchanges),
+                "scan_metrics": scan_metrics,
+                "history_metrics": history_metrics,
             },
         }
 
@@ -424,7 +441,8 @@ class FundingAlertEngine:
                 "mcap_source": "",
             })
         candidates.sort(key=lambda item: item["quote_volume"], reverse=True)
-        candidates = candidates[: self.settings.funding_alert_scan_limit]
+        batch_limit = max(1, int(getattr(self.settings, "funding_max_symbols_per_batch", 120) or 120))
+        candidates = candidates[: min(self.settings.funding_alert_scan_limit, batch_limit)]
         self._enrich_market_caps(source, candidates)
         return candidates
 

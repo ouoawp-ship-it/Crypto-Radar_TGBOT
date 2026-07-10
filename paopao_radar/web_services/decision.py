@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 from typing import Any
 
@@ -108,14 +109,64 @@ def _candidate_symbols(
     limit: int = 50,
     window_sec: int = 86400,
     settings: Settings | None = None,
+    store: SignalEventStore | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
     start_ts, end_ts = _window_bounds(window_sec)
-    store = _store(settings)
+    loaded_store = store or _store(settings)
     if str(symbol or "").strip():
         info = _normalize_symbol(symbol)
         normalized = info.get("symbol", "")
         return [{"symbol": normalized, "coin": info.get("coin", ""), "count": 0}] if normalized else []
-    return store.search_symbols(q=str(q or "").strip()[:40], limit=_safe_limit(limit, 50, 100), start_ts=start_ts, end_ts=end_ts)
+    return loaded_store.search_symbols(
+        q=str(q or "").strip()[:40],
+        limit=_safe_limit(limit, 50, 100),
+        start_ts=start_ts,
+        end_ts=end_ts,
+        conn=conn,
+    )
+
+
+def _decision_results_for_symbols(
+    symbols: list[str],
+    *,
+    window_sec: int,
+    limit_per_symbol: int = 50,
+    settings: Settings | None = None,
+    store: SignalEventStore | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, dict[str, Any]]:
+    normalized_symbols: list[str] = []
+    seen: set[str] = set()
+    for value in symbols:
+        normalized = _normalize_symbol(value).get("symbol", "")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            normalized_symbols.append(normalized)
+    if not normalized_symbols:
+        return {}
+    start_ts, end_ts = _window_bounds(window_sec)
+    grouped = (store or _store(settings)).iter_by_symbols(
+        normalized_symbols,
+        limit_per_symbol=_safe_limit(limit_per_symbol, 50, 200),
+        start_ts=start_ts,
+        end_ts=end_ts,
+        conn=conn,
+    )
+    results = {
+        symbol: {
+            **evaluate_decision(items, symbol=symbol),
+            "coin": _normalize_symbol(symbol).get("coin", ""),
+        }
+        for symbol, items in grouped
+    }
+    for symbol in normalized_symbols:
+        if symbol not in results:
+            results[symbol] = {
+                **evaluate_decision([], symbol=symbol),
+                "coin": _normalize_symbol(symbol).get("coin", ""),
+            }
+    return results
 
 
 def decisions_payload(
@@ -131,14 +182,31 @@ def decisions_payload(
 ) -> dict[str, Any]:
     del cursor  # reserved for future pagination; list is currently ranked by active symbols.
     safe_limit = _safe_limit(limit, 50, 100)
-    candidates = _candidate_symbols(symbol=symbol, q=q, limit=safe_limit, window_sec=window_sec, settings=settings)
+    store = _store(settings)
+    with store.connect() as conn:
+        candidates = _candidate_symbols(
+            symbol=symbol,
+            q=q,
+            limit=safe_limit,
+            window_sec=window_sec,
+            settings=settings,
+            store=store,
+            conn=conn,
+        )
+        results = _decision_results_for_symbols(
+            [str(candidate.get("symbol") or "") for candidate in candidates[:safe_limit]],
+            window_sec=window_sec,
+            settings=settings,
+            store=store,
+            conn=conn,
+        )
     items: list[dict[str, Any]] = []
     for candidate in candidates[:safe_limit]:
         normalized = str(candidate.get("symbol") or "")
         if not normalized:
             continue
-        payload = decision_for_symbol_payload(normalized, window_sec=window_sec, limit=50, settings=settings)
-        if not payload.get("ok"):
+        payload = results.get(normalized)
+        if not payload:
             continue
         if decision and str(payload.get("decision", {}).get("code") or "") != str(decision):
             continue
@@ -240,14 +308,29 @@ def decisions_stats_payload(
     include_model_config: bool = False,
 ) -> dict[str, Any]:
     safe_limit = _safe_limit(limit, 100, 200)
-    candidates = _candidate_symbols(limit=safe_limit, window_sec=window_sec, settings=settings)
+    store = _store(settings)
+    with store.connect() as conn:
+        candidates = _candidate_symbols(
+            limit=safe_limit,
+            window_sec=window_sec,
+            settings=settings,
+            store=store,
+            conn=conn,
+        )
+        results = _decision_results_for_symbols(
+            [str(candidate.get("symbol") or "") for candidate in candidates[:safe_limit]],
+            window_sec=window_sec,
+            settings=settings,
+            store=store,
+            conn=conn,
+        )
     items: list[dict[str, Any]] = []
     for candidate in candidates[:safe_limit]:
         normalized = str(candidate.get("symbol") or "")
         if not normalized:
             continue
-        payload = decision_for_symbol_payload(normalized, window_sec=window_sec, limit=50, settings=settings)
-        if not payload.get("ok"):
+        payload = results.get(normalized)
+        if not payload:
             continue
         items.append({
             "symbol": payload.get("symbol", normalized),
@@ -314,13 +397,19 @@ def enhance_signals_with_decisions(
     *,
     window_sec: int = 86400,
     settings: Settings | None = None,
+    store: SignalEventStore | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    decisions_by_symbol: dict[str, dict[str, Any]] = {}
+    decisions_by_symbol = _decision_results_for_symbols(
+        [str(item.get("symbol") or "") for item in items],
+        window_sec=window_sec,
+        settings=settings,
+        store=store,
+        conn=conn,
+    )
     enhanced: list[dict[str, Any]] = []
     for item in items:
         symbol = str(item.get("symbol") or "").upper()
-        if symbol and symbol not in decisions_by_symbol:
-            decisions_by_symbol[symbol] = decision_for_symbol_payload(symbol, window_sec=window_sec, limit=50, settings=settings)
         decision_payload_for_symbol = decisions_by_symbol.get(symbol, {"decision": {"label": "观察", "code": "observe", "tone": "neutral", "confidence": 0, "risk_level": "低"}})
         enhanced.append(enhance_signal_with_decision(item, decision_payload_for_symbol))
     return enhanced

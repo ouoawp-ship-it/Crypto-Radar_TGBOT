@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Any, Optional
 from urllib.parse import urlencode
 
@@ -72,11 +73,37 @@ class DataQuality:
 
 
 class HttpClient:
-    def __init__(self, settings: Settings, quality: DataQuality):
+    def __init__(
+        self,
+        settings: Settings,
+        quality: DataQuality,
+        session: requests.Session | None = None,
+    ):
         self.settings = settings
         self.quality = quality
+        self._owns_session = session is None
+        self._closed = False
+        self.session = session if session is not None else requests.Session()
         self.cache: dict[str, tuple[float, Any]] = {}
         self.fuse_until: dict[str, float] = {}
+        self._state_lock = RLock()
+
+    def close(self) -> None:
+        if self._owns_session and not self._closed:
+            self.session.close()
+            self._closed = True
+
+    def __enter__(self) -> HttpClient:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def get_json(
         self,
@@ -89,14 +116,16 @@ class HttpClient:
     ) -> Any:
         now = time.time()
         fuse_key = quality_key
-        if self.fuse_until.get(fuse_key, 0) > now:
-            self.quality.fail(quality_key, "fused")
-            self.quality.fused[fuse_key] = self.fuse_until[fuse_key]
-            return None
+        with self._state_lock:
+            if self.fuse_until.get(fuse_key, 0) > now:
+                self.quality.fail(quality_key, "fused")
+                self.quality.fused[fuse_key] = self.fuse_until[fuse_key]
+                return None
 
         key = cache_key or self._cache_key(url, params)
         if self.settings.http_cache_enable:
-            cached = self.cache.get(key)
+            with self._state_lock:
+                cached = self.cache.get(key)
             if cached and now - cached[0] <= self.settings.http_cache_ttl_sec:
                 return cached[1]
 
@@ -105,23 +134,26 @@ class HttpClient:
         last_reason = ""
         for attempt in range(1, retry_count + 1):
             try:
-                response = requests.get(url, params=params, headers=HTTP_HEADERS, timeout=timeout_sec)
+                response = self.session.get(url, params=params, headers=HTTP_HEADERS, timeout=timeout_sec)
                 if response.status_code == 200:
                     data = response.json()
-                    if self.settings.http_cache_enable:
-                        self.cache[key] = (time.time(), data)
-                    self.quality.ok(quality_key)
+                    with self._state_lock:
+                        if self.settings.http_cache_enable:
+                            self.cache[key] = (time.time(), data)
+                        self.quality.ok(quality_key)
                     return data
                 last_reason = f"status={response.status_code}"
                 if response.status_code in {403, 418, 429}:
-                    self.fuse_until[fuse_key] = time.time() + self.settings.fuse_seconds
-                    self.quality.fused[fuse_key] = self.fuse_until[fuse_key]
+                    with self._state_lock:
+                        self.fuse_until[fuse_key] = time.time() + self.settings.fuse_seconds
+                        self.quality.fused[fuse_key] = self.fuse_until[fuse_key]
                     break
             except Exception as exc:
                 last_reason = type(exc).__name__
             if attempt < retry_count:
                 time.sleep(self.settings.http_backoff_sec * attempt)
-        self.quality.fail(quality_key, last_reason or "unknown")
+        with self._state_lock:
+            self.quality.fail(quality_key, last_reason or "unknown")
         return None
 
     @staticmethod

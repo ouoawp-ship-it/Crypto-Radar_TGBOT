@@ -89,10 +89,13 @@ def timeline_event_display(signal_item: dict[str, Any]) -> dict[str, Any]:
 
 
 def group_timeline_by_day(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _group_timeline_events([timeline_event_display(item) for item in items])
+
+
+def _group_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     order: list[str] = []
-    for item in items:
-        event = timeline_event_display(item)
+    for event in events:
         date = str(event.get("date_label") or "unknown")
         if date not in grouped:
             order.append(date)
@@ -112,7 +115,10 @@ def group_timeline_by_day(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def timeline_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
-    events = [timeline_event_display(item) for item in items]
+    return _timeline_summary_events([timeline_event_display(item) for item in items])
+
+
+def _timeline_summary_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     statuses = Counter(str(item.get("status") or "") for item in events)
     modules = Counter(str(item.get("module") or "") for item in events)
     dominant_module = modules.most_common(1)[0][0] if modules else ""
@@ -173,11 +179,12 @@ def timeline_payload(
         module=str(module or "").strip().lower(),
         status=str(status or "").strip().lower(),
         q=str(q or "").strip()[:80],
+        compact=True,
     )
     items = listed.get("items", [])
     events = [timeline_event_display(item) for item in items]
-    groups = group_timeline_by_day(items)
-    summary = timeline_summary(items)
+    groups = _group_timeline_events(events)
+    summary = _timeline_summary_events(events)
     payload = {
         "ok": True,
         "symbol": normalized_symbol,

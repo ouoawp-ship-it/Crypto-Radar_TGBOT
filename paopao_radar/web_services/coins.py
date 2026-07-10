@@ -140,27 +140,31 @@ def coin_detail_payload(
     start_ts, end_ts = _window_bounds(window_sec)
     safe_limit = max(1, min(int(limit or 100), 300))
     store = _store(settings)
-    listed = store.list_timeline(
-        symbol=normalized["symbol"],
-        limit=safe_limit,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        module=str(module or "").strip().lower(),
-        status=str(status or "").strip().lower(),
-        q=str(q or "").strip()[:80],
-    )
+    with store.connect() as conn:
+        listed = store.list_timeline(
+            symbol=normalized["symbol"],
+            limit=safe_limit,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            module=str(module or "").strip().lower(),
+            status=str(status or "").strip().lower(),
+            q=str(q or "").strip()[:80],
+            compact=True,
+            conn=conn,
+        )
+        stats = store.timeline_stats(
+            symbol=normalized["symbol"],
+            start_ts=start_ts,
+            end_ts=end_ts,
+            module=str(module or "").strip().lower(),
+            status=str(status or "").strip().lower(),
+            q=str(q or "").strip()[:80],
+            conn=conn,
+        )
     items = enhance_signal_items(listed["items"])
     latest = items[:20]
     tl_summary = timeline_summary(listed["items"])
     tl_groups = group_timeline_by_day(listed["items"])
-    stats = store.timeline_stats(
-        symbol=normalized["symbol"],
-        start_ts=start_ts,
-        end_ts=end_ts,
-        module=str(module or "").strip().lower(),
-        status=str(status or "").strip().lower(),
-        q=str(q or "").strip()[:80],
-    )
     stats_display = signal_stats_display({
         "by_module": stats.get("by_module", {}),
         "by_status": stats.get("by_status", {}),

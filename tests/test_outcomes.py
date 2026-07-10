@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import closing, contextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
@@ -22,6 +22,7 @@ from paopao_radar.outcome_tracker import (
 )
 from paopao_radar.signal_store import append_from_push
 from paopao_radar.web_services.outcomes import (
+    PUBLIC_OUTCOME_COLUMNS,
     outcome_stats_payload,
     outcomes_payload,
     public_outcomes_payload,
@@ -202,6 +203,84 @@ class OutcomeTrackerTests(unittest.TestCase):
         self.assertEqual(result["counts"]["error"], 0)
         self.assertTrue(all(row["data_status"] == "unavailable" for row in rows if row["horizon"] in {"1h", "4h"}))
 
+    def test_scan_reuses_price_windows_and_decision_per_symbol(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            signal_ts = now - 300000
+            add_signal(settings, symbol="BTCUSDT", status="sent", ts=signal_ts)
+            calls: list[tuple[str, int, int, str]] = []
+
+            def timestamped_klines(symbol: str, start_ts: int, end_ts: int, interval: str, _timeout: int) -> list[dict[str, float]]:
+                calls.append((symbol, start_ts, end_ts, interval))
+                offsets = (0, 3600, 14400) if interval == "1m" else (0, 86400, 259200)
+                return [
+                    {
+                        "open_time": float(start_ts + offset),
+                        "high": 101.0 + index,
+                        "low": 99.0,
+                        "close": 100.0 + index,
+                    }
+                    for index, offset in enumerate(offsets)
+                ]
+
+            decision = {
+                "decision_code": "wait",
+                "decision_label": "等待",
+                "decision_confidence": 60,
+                "risk_level": "low",
+            }
+            with patch("paopao_radar.outcome_tracker._decision_snapshot", return_value=decision) as decision_snapshot:
+                result = scan_outcomes(settings=settings, limit=10, now_ts=now, price_fetcher=timestamped_klines)
+
+            rows = OutcomeStore(settings.outcome_db_path).list_outcomes(symbol="BTCUSDT", limit=10)["items"]
+
+        self.assertEqual(result["counts"]["success"], 4)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({call[3] for call in calls}, {"1m", "5m"})
+        self.assertEqual(decision_snapshot.call_count, 1)
+        self.assertTrue(all(row["decision_code"] == "wait" for row in rows))
+
+    def test_completed_horizons_are_skipped_without_fetch_or_decision(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            add_signal(settings, symbol="BTCUSDT", status="sent", ts=now - 7200)
+            first = scan_outcomes(settings=settings, horizon="1h", now_ts=now, price_fetcher=fake_klines)
+
+            with patch("paopao_radar.outcome_tracker._decision_snapshot") as decision_snapshot:
+                second = scan_outcomes(
+                    settings=settings,
+                    horizon="1h",
+                    now_ts=now,
+                    price_fetcher=lambda *_args: self.fail("completed horizon must not refetch prices"),
+                )
+
+        self.assertEqual(first["counts"]["success"], 1)
+        self.assertEqual(second["counts"]["due"], 0)
+        decision_snapshot.assert_not_called()
+
+    def test_batch_update_rolls_back_every_row_on_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            store = OutcomeStore(settings.outcome_db_path)
+            store.create_pending(
+                [{"id": 1, "ts": now - 7200, "time": "2026-01-01T00:00:00+00:00", "symbol": "BTCUSDT"}],
+                {"1h": 3600, "4h": 14400},
+            )
+            rows = store.list_outcomes(limit=10)["items"]
+
+            with self.assertRaises(ValueError):
+                store.update_outcomes([
+                    (int(rows[0]["id"]), {"data_status": "success"}),
+                    ("not-an-id", {"data_status": "success"}),  # type: ignore[list-item]
+                ])
+
+            after = store.list_outcomes(limit=10)["items"]
+
+        self.assertTrue(all(row["data_status"] == "pending" for row in after))
+
     def test_1000_prefix_symbol_marks_unavailable_without_fetch(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = make_settings(tmp)
@@ -277,6 +356,44 @@ class OutcomeTrackerTests(unittest.TestCase):
         serialized = json.dumps(public_listing, ensure_ascii=False)
         for forbidden in ("payload_json", "text_html", "dedup_key", "message_ids", "topic_id", "reply_to_message_id", "WEB_ADMIN_TOKEN", "Cookie"):
             self.assertNotIn(forbidden, serialized)
+
+    def test_outcome_list_reuses_connection_and_projects_public_columns(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            add_signal(settings, symbol="BTCUSDT", status="sent", ts=now - 7200)
+            scan_outcomes(settings=settings, horizon="1h", now_ts=now, price_fetcher=fake_klines)
+            original_connect = OutcomeStore.connect
+            original_list = OutcomeStore.list_outcomes
+            calls = {"connections": 0, "selects": 0}
+            captured: dict[str, object] = {}
+
+            @contextmanager
+            def counted_connect(store: OutcomeStore):
+                calls["connections"] += 1
+                with original_connect(store) as connection:
+                    connection.set_trace_callback(
+                        lambda statement: calls.__setitem__(
+                            "selects",
+                            calls["selects"] + int(statement.lstrip().upper().startswith(("SELECT", "WITH"))),
+                        )
+                    )
+                    yield connection
+
+            def observed_list(store: OutcomeStore, *args, **kwargs):
+                captured["columns"] = kwargs.get("columns")
+                captured["connection"] = kwargs.get("connection")
+                return original_list(store, *args, **kwargs)
+
+            with patch.object(OutcomeStore, "connect", new=counted_connect), patch.object(OutcomeStore, "list_outcomes", new=observed_list):
+                payload = public_outcomes_payload(settings=settings, limit=5)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(calls["connections"], 1)
+        self.assertEqual(calls["selects"], 2)
+        self.assertEqual(captured["columns"], PUBLIC_OUTCOME_COLUMNS)
+        self.assertIsNotNone(captured["connection"])
+        self.assertEqual(set(payload["items"][0]), set(PUBLIC_OUTCOME_COLUMNS))
 
     def test_cli_outcome_scan_dry_run_uses_tracker(self) -> None:
         with TemporaryDirectory() as tmp:

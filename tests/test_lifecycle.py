@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import closing, contextmanager, redirect_stdout
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -126,6 +127,33 @@ class LifecycleStoreTests(unittest.TestCase):
         self.assertEqual(len(listed), 1)
         self.assertEqual(len(events), 2)
 
+    def test_lifecycle_batch_rolls_back_lifecycle_event_and_snapshot_together(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            candidates = [signal(1, level="15m"), signal(2, level="15m")]
+            original_insert_snapshot = LifecycleStore.insert_snapshot
+            snapshot_calls = 0
+
+            def fail_second_snapshot(store, values, *, dry_run=False, conn=None):
+                nonlocal snapshot_calls
+                snapshot_calls += 1
+                if snapshot_calls == 2:
+                    raise RuntimeError("snapshot write failed")
+                return original_insert_snapshot(store, values, dry_run=dry_run, conn=conn)
+
+            with patch("paopao_radar.lifecycle_engine.candidate_lifecycle_signals", return_value=candidates):
+                with patch.object(LifecycleStore, "insert_snapshot", new=fail_second_snapshot):
+                    with self.assertRaisesRegex(RuntimeError, "snapshot write failed"):
+                        scan_lifecycles(settings=settings, metrics_provider=lambda _symbol, _level: metrics())
+
+            with closing(sqlite3.connect(settings.lifecycle_db_path)) as conn:
+                counts = {
+                    table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    for table in ("signal_lifecycles", "lifecycle_events", "lifecycle_metric_snapshots")
+                }
+
+        self.assertEqual(counts, {"signal_lifecycles": 0, "lifecycle_events": 0, "lifecycle_metric_snapshots": 0})
+
 
 class LifecycleEngineTests(unittest.TestCase):
     def test_extract_signal_level_supports_core_timeframes(self) -> None:
@@ -215,6 +243,58 @@ class LifecycleEngineTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(Path(tmp, "lifecycle.db").exists())
 
+    def test_scan_reuses_metrics_per_symbol_timeframe(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            candidates = [
+                signal(1, level="15m"),
+                signal(2, level="15m"),
+                signal(3, level="1h"),
+            ]
+            provider_calls: list[tuple[str, str]] = []
+
+            def provider(symbol: str, timeframe: str) -> dict:
+                provider_calls.append((symbol, timeframe))
+                return metrics()
+
+            with patch("paopao_radar.lifecycle_engine.candidate_lifecycle_signals", return_value=candidates):
+                result = scan_lifecycles(settings=settings, metrics_provider=provider)
+
+        self.assertEqual(result["counts"]["events"], 3)
+        self.assertEqual(provider_calls, [("BTCUSDT", "15m"), ("BTCUSDT", "1h")])
+
+    def test_processed_unavailable_signal_is_skipped_before_provider_call(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            candidates = [signal(1, level="15m")]
+            provider_calls = 0
+
+            def unavailable_provider(_symbol: str, _timeframe: str) -> dict:
+                nonlocal provider_calls
+                provider_calls += 1
+                raise TimeoutError("market data timeout")
+
+            with patch("paopao_radar.lifecycle_engine.candidate_lifecycle_signals", return_value=candidates):
+                first = scan_lifecycles(settings=settings, metrics_provider=unavailable_provider)
+                second = scan_lifecycles(settings=settings, metrics_provider=unavailable_provider)
+
+            events = LifecycleStore(settings.lifecycle_db_path).list_events(symbol="BTCUSDT")
+
+        self.assertEqual(first["counts"]["events"], 1)
+        self.assertEqual(second["counts"]["events"], 0)
+        self.assertEqual(second["counts"]["skipped"], 1)
+        self.assertEqual(provider_calls, 1)
+        self.assertEqual(events[0]["metrics"]["data_source_status"], "unavailable")
+
+    def test_dry_run_with_selected_signal_does_not_create_database(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            with patch("paopao_radar.lifecycle_engine.candidate_lifecycle_signals", return_value=[signal(1)]):
+                result = scan_lifecycles(settings=settings, dry_run=True)
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(settings.lifecycle_db_path.exists())
+
     def test_cli_lifecycle_commands_use_engine_helpers(self) -> None:
         with TemporaryDirectory() as tmp:
             with patch("paopao_radar.cli.Settings.load", return_value=make_settings(tmp)):
@@ -250,6 +330,21 @@ class BinanceLifecycleDataTests(unittest.TestCase):
 
         self.assertEqual(snapshot["data_source_status"], "unavailable")
         self.assertIn("Binance", snapshot["data_source_reason"])
+
+    def test_market_cap_map_is_parsed_once_for_multiple_symbols(self) -> None:
+        with TemporaryDirectory() as tmp:
+            client = BinanceLifecycleDataClient(make_settings(tmp))
+            with patch.object(
+                client.source,
+                "coinpaprika_market_caps",
+                return_value={"BTC": 1_000_000, "ETH": 500_000},
+            ) as market_caps:
+                btc = client.market_cap("BTCUSDT")
+                eth = client.market_cap("ETHUSDT")
+
+        self.assertEqual(btc["market_cap_usd"], 1_000_000)
+        self.assertEqual(eth["market_cap_usd"], 500_000)
+        market_caps.assert_called_once_with()
 
 
 class LifecycleApiTests(unittest.TestCase):
@@ -317,6 +412,49 @@ class LifecycleApiTests(unittest.TestCase):
         self.assertTrue(empty["ok"])
         self.assertEqual(empty["symbol"], "BTCUSDT")
         self.assertEqual(listed["filters"]["symbol"], "BTCUSDT")
+
+    def test_list_and_summary_use_compact_projection_while_detail_stays_full(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            large_metrics = metrics()
+            large_metrics["large_blob"] = "x" * 20_000
+            large_metrics["exchange_context"] = {"items": [], "note": "y" * 20_000}
+            engine = LifecycleEngine(settings, metrics_provider=lambda _symbol, _level: large_metrics)
+            engine.process_signal(signal(1, text="z" * 20_000))
+
+            listed = lifecycle_list_payload(settings=settings)
+            summary = public_lifecycle_summary_payload(settings=settings)
+            detail = lifecycle_detail_payload("BTCUSDT", settings=settings)
+
+        list_item = listed["items"][0]
+        summary_item = summary["items"][0]
+        self.assertEqual(list_item["metrics"], {})
+        self.assertEqual(list_item["exchange_context"], {})
+        self.assertEqual(list_item["reasons"], [])
+        self.assertEqual(list_item["first_signal_excerpt"], "")
+        self.assertEqual(summary_item["metrics"], {})
+        self.assertIn("large_blob", detail["lifecycle"]["metrics"])
+        self.assertGreater(len(json.dumps(detail)), len(json.dumps(listed)) * 5)
+
+    def test_detail_reuses_one_database_connection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            LifecycleEngine(settings, metrics_provider=lambda _symbol, _level: metrics()).process_signal(signal(1))
+            original_connect = LifecycleStore.connect
+            connect_calls = 0
+
+            @contextmanager
+            def counted_connect(store):
+                nonlocal connect_calls
+                connect_calls += 1
+                with original_connect(store) as conn:
+                    yield conn
+
+            with patch.object(LifecycleStore, "connect", new=counted_connect):
+                detail = lifecycle_detail_payload("BTCUSDT", settings=settings)
+
+        self.assertTrue(detail["ok"])
+        self.assertEqual(connect_calls, 1)
 
 
 class LifecycleTelegramTests(unittest.TestCase):

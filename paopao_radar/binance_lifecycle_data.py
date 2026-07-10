@@ -199,7 +199,10 @@ class BinanceLifecycleDataClient:
     def market_cap(self, symbol: str) -> dict[str, Any]:
         assert self.source is not None
         coin = symbol[:-4] if symbol.endswith("USDT") else symbol
-        caps = self.source.coinpaprika_market_caps() or self.source.market_caps()
+        caps = self._cached("market_caps")
+        if caps is None:
+            caps = self.source.coinpaprika_market_caps() or self.source.market_caps()
+            self._store("market_caps", caps)
         value = safe_float(caps.get(coin)) if isinstance(caps, dict) else None
         return {"market_cap_usd": value, "market_cap_status": "ok" if value else "unavailable"}
 

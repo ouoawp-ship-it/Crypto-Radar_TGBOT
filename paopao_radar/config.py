@@ -237,6 +237,9 @@ class Settings:
     funding_alert_enable: bool = True
     funding_alert_interval_sec: int = 180
     funding_alert_scan_limit: int = 120
+    funding_scan_concurrency: int = 8
+    funding_request_timeout_sec: int = 8
+    funding_max_symbols_per_batch: int = 120
     funding_alert_min_quote_volume: float = 5_000_000
     funding_alert_exchanges: tuple[str, ...] = ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")
     funding_alert_history_limit: int = 4
@@ -463,6 +466,9 @@ class Settings:
             funding_alert_enable=env_bool("FUNDING_ALERT_ENABLE", True),
             funding_alert_interval_sec=env_int("FUNDING_ALERT_INTERVAL_SEC", 180),
             funding_alert_scan_limit=env_int("FUNDING_ALERT_SCAN_LIMIT", 120),
+            funding_scan_concurrency=env_int("FUNDING_SCAN_CONCURRENCY", 8),
+            funding_request_timeout_sec=env_int("FUNDING_REQUEST_TIMEOUT_SEC", 8),
+            funding_max_symbols_per_batch=env_int("FUNDING_MAX_SYMBOLS_PER_BATCH", 120),
             funding_alert_min_quote_volume=env_float("FUNDING_ALERT_MIN_QUOTE_VOLUME", 5_000_000),
             funding_alert_exchanges=env_csv("FUNDING_ALERT_EXCHANGES", ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")),
             funding_alert_history_limit=env_int("FUNDING_ALERT_HISTORY_LIMIT", 4),
@@ -702,6 +708,9 @@ class Settings:
                 "enable": self.funding_alert_enable,
                 "interval_sec": self.funding_alert_interval_sec,
                 "scan_limit": self.funding_alert_scan_limit,
+                "scan_concurrency": self.funding_scan_concurrency,
+                "request_timeout_sec": self.funding_request_timeout_sec,
+                "max_symbols_per_batch": self.funding_max_symbols_per_batch,
                 "min_quote_volume": self.funding_alert_min_quote_volume,
                 "exchanges": list(self.funding_alert_exchanges),
                 "history_limit": self.funding_alert_history_limit,

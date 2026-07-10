@@ -107,7 +107,7 @@ export function getSignals(query: Query = {}) {
 }
 
 export function getLatestSignals(query: Query = {}) {
-  return publicFetch<ListPayload<SignalItem>>("/public-api/signals/latest", query).catch(() => getSignals(query));
+  return getSignals(query);
 }
 
 export function getTimeline(query: Query = {}) {

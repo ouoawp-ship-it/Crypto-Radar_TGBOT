@@ -1,0 +1,88 @@
+# Performance Optimization Phase 2
+
+本报告记录 v1.76.3 的离线、可复现合成基准。所有数据均写入临时 SQLite，Funding 和行情请求使用受控延迟的本地 fake，不访问交易所；结果用于比较相同机器上的相对变化，不代表生产环境 SLO。
+
+## Funding scan
+
+命令：
+
+```bash
+python scripts/benchmark_funding_scan.py --symbols 120 --latency-ms 2 --concurrency 8
+```
+
+工作量为 120 symbols × 5 exchanges，共 600 次请求。
+
+| 指标 | 串行基线 | Phase 2 |
+|---|---:|---:|
+| 总耗时 | 1.7793 s | 0.2729 s |
+| 加速比 | 1.00× | 6.52× |
+| 成功率 | 100% | 100% |
+| 失败率 | 0% | 0% |
+| 平均响应 | 2.966 ms | 3.594 ms |
+| 峰值并发 | 1 | 8 |
+
+并发实现只创建固定数量 worker，任务源为惰性迭代器。每个 exchange-symbol job 的 current/history 请求共享 `FUNDING_REQUEST_TIMEOUT_SEC` deadline；单交易所异常只记为该 job 失败。
+
+## Outcome scan
+
+命令：
+
+```bash
+python scripts/benchmark_outcome_scan.py --symbols 100 --request-delay-ms 2
+```
+
+工作量为 100 symbols × 4 horizons，共 400 个 outcome。
+
+| 指标 | 逐 horizon 基线 | Phase 2 | 变化 |
+|---|---:|---:|---:|
+| 总耗时 | 1.1685 s | 0.7089 s | -39.33% |
+| 行情请求 | 400 | 200 | -50% |
+| decision 计算 | 400 | 100 | -75% |
+| SQLite 写事务 | 400 | 1 | -99.75% |
+
+`1h/4h` 复用合并后的 1m K 线窗口，`24h/72h` 复用 5m 窗口；结果按 `open_time` 切回原 horizon，且合并跨度不超过交易所 1000 根 K 线限制。
+
+## Lifecycle scan
+
+命令：
+
+```bash
+python scripts/benchmark_lifecycle_phase2.py --symbols 100 --repeats 2 --provider-delay-ms 0.5
+```
+
+工作量为 100 symbols × 4 timeframes × 每格 2 条信号，共 800 条信号。逐条基线保留真实 SQLite connect/commit 成本，因此在 Windows 上运行约 2.5 分钟。
+
+| 指标 | 逐条基线 | Phase 2 | 变化 |
+|---|---:|---:|---:|
+| 总耗时 | 150080.31 ms | 1511.17 ms | 99.31× |
+| provider calls | 800 | 400 | -50% |
+| SQLite connections | 1599 | 2 | -99.87% |
+
+Phase 2 在扫描前批量跳过已有 lifecycle event 的 signal，按 `(symbol, timeframe)` 缓存指标，并在行情预取后以一个 `BEGIN IMMEDIATE` 事务写入 lifecycle、event 和 snapshot。
+
+## Web API
+
+命令：
+
+```bash
+python scripts/benchmark_api_phase2.py
+```
+
+默认数据集为 10 symbols × 每币 8 条 signal、每个大字段 4 KB；每个变体预热 1 次并采样 12 次。延迟包含 service 执行与 UTF-8 JSON 序列化，P95 使用 nearest-rank 计算。
+
+| 接口 | P95 基线 | P95 Phase 2 | P95 变化 | 连接/请求 | JSON bytes |
+|---|---:|---:|---:|---:|---:|
+| `/signals` | 117.619 ms | 19.185 ms | -83.69% | 1 → 1 | 1,344,758 → 165,402 (-87.70%) |
+| `/decision` | 814.771 ms | 182.791 ms | -77.57% | 11 → 1 | 74,949 → 74,949 |
+| `/outcomes` | 31.795 ms | 30.494 ms | -4.09% | 2 → 1 | 59,269 → 59,269 |
+| `/lifecycle` detail | 35.139 ms | 27.348 ms | -22.17% | 3 → 1 | 128,836 → 128,834 |
+
+Signals 列表保留既有字段键，但延迟加载 `payload_json`、`text_html` 和长 excerpt；signal detail 仍读取完整内容。Lifecycle 列表/summary top 使用相同策略，detail 保持完整。Outcome stats 使用一条 CTE 聚合，Decision 对同批 symbols 共用一个请求连接和批量读取路径。
+
+## 验收边界
+
+- 未修改 Telegram 推送内容或发送规则。
+- 未修改信号算法和 decision model 规则。
+- 未新增或删除业务表/业务字段，未改变数据库核心 schema。
+- API 顶层结构及既有字段键保持不变；大字段正文改由详情接口加载。
+- 不包含自动交易或交易所下单能力。

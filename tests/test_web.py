@@ -4,6 +4,7 @@ import os
 import json
 import time
 import unittest
+from contextlib import contextmanager
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,12 +13,24 @@ from unittest.mock import Mock, patch
 import paopao_radar.cli as cli
 from paopao_radar import web
 from paopao_radar.config import Settings
-from paopao_radar.signal_store import append_from_push
+from paopao_radar.signal_store import SignalEventStore, append_from_push
 from paopao_radar.web_services import jobs
 from paopao_radar.web_services.api_core import api_contract_self_test
 from paopao_radar.web_services.coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
 from paopao_radar.web_services.dashboard import dashboard_payload
 from paopao_radar.web_services.timeline import timeline_payload
+
+
+class CountingSignalEventStore(SignalEventStore):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "connection_count", 0)
+
+    @contextmanager
+    def connect(self):
+        object.__setattr__(self, "connection_count", self.connection_count + 1)
+        with super().connect() as conn:
+            yield conn
 
 
 class WebConsoleTests(unittest.TestCase):
@@ -1708,6 +1721,43 @@ class WebConsoleTests(unittest.TestCase):
         self.assertIn("payload_json", view["raw"])
         self.assertFalse(missing["ok"])
         self.assertEqual(missing["code"], "not_found")
+
+    def test_signal_list_and_detail_reuse_one_request_connection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            for index in range(2):
+                append_from_push(
+                    settings,
+                    template_id="TG_FLOW_RADAR",
+                    dedup_key=f"request-connection:{index}",
+                    status="sent",
+                    sent=True,
+                    text=f"BTCUSDT request connection {index}",
+                    ts=int(time.time()) + index,
+                )
+            store = CountingSignalEventStore(settings.signal_events_db_path)
+
+            with patch("paopao_radar.web_services.public._store", return_value=store):
+                listing = web.public_signals_payload(settings=settings, window_sec=10**10)
+            self.assertTrue(listing["ok"])
+            self.assertEqual(store.connection_count, 1)
+
+            signal_id = int(listing["items"][0]["id"])
+            object.__setattr__(store, "connection_count", 0)
+            with patch("paopao_radar.web.signal_store_for_settings", return_value=store):
+                admin_detail = web.signal_detail_payload(signal_id, settings=settings)
+            self.assertTrue(admin_detail["ok"])
+            self.assertEqual(store.connection_count, 1)
+
+            object.__setattr__(store, "connection_count", 0)
+            with patch("paopao_radar.web_services.public._store", return_value=store):
+                public_detail = web.public_signal_detail_payload(signal_id, settings=settings)
+            self.assertTrue(public_detail["ok"])
+            self.assertEqual(store.connection_count, 1)
 
     def test_signal_stats_payload_exposes_display_fields(self) -> None:
         with TemporaryDirectory() as tmp:

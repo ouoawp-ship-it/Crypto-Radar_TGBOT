@@ -111,17 +111,26 @@ def public_signals_payload(
 
     end_ts = int(time.time())
     start_ts = end_ts - max(1, min(int(window_sec or 86400), 2592000))
-    result = store.list_signals(
-        limit=max(1, min(int(limit or 50), 200)),
-        cursor=cursor,
-        module=str(module or "").strip().lower(),
-        symbol=normalized,
-        status=str(status or "").strip().lower(),
-        start_ts=start_ts,
-        end_ts=end_ts,
-        q=str(q or "").strip()[:80],
-    )
-    raw_items = enhance_signals_with_decisions(result.get("items", []), window_sec=window_sec, settings=settings)
+    with store.connect() as conn:
+        result = store.list_signals(
+            limit=max(1, min(int(limit or 50), 200)),
+            cursor=cursor,
+            module=str(module or "").strip().lower(),
+            symbol=normalized,
+            status=str(status or "").strip().lower(),
+            start_ts=start_ts,
+            end_ts=end_ts,
+            q=str(q or "").strip()[:80],
+            compact=True,
+            conn=conn,
+        )
+        raw_items = enhance_signals_with_decisions(
+            result.get("items", []),
+            window_sec=window_sec,
+            settings=settings,
+            store=store,
+            conn=conn,
+        )
     items = _public_items(raw_items)
     return api_ok(
         {"items": items},
@@ -141,16 +150,22 @@ def public_signals_payload(
 
 def public_signal_detail_payload(signal_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
     store = _store(settings)
-    item = store.signal_detail(int(signal_id or 0))
-    if not item:
-        return api_error("信号不存在", code="not_found")
-    related = []
-    if item.get("symbol"):
-        related = [
-            related_item
-            for related_item in store.symbol_timeline(str(item.get("symbol") or ""), limit=8)
-            if int(related_item.get("id") or 0) != int(item.get("id") or 0)
-        ][:6]
+    with store.connect() as conn:
+        item = store.signal_detail(int(signal_id or 0), conn=conn)
+        if not item:
+            return api_error("信号不存在", code="not_found")
+        related = []
+        if item.get("symbol"):
+            related = [
+                related_item
+                for related_item in store.symbol_timeline(
+                    str(item.get("symbol") or ""),
+                    limit=8,
+                    compact=True,
+                    conn=conn,
+                )
+                if int(related_item.get("id") or 0) != int(item.get("id") or 0)
+            ][:6]
     detail = signal_detail_view(item, related)
     header = _strip_forbidden(detail.get("header") or {})
     public_sections = [
@@ -189,8 +204,11 @@ def public_signal_detail_payload(signal_id: int, *, settings: Settings | None = 
 def public_signal_stats_payload(*, window_sec: int = 86400, settings: Settings | None = None) -> dict[str, Any]:
     store = _store(settings)
     safe_window = max(1, min(int(window_sec or 86400), 2592000))
-    stats = store.stats(window_sec=safe_window)
-    latest = _public_items(store.list_signals(limit=8, start_ts=None, end_ts=None).get("items", []))
+    stats = store.stats_with_latest(window_sec=safe_window)
+    latest = _public_items(stats.pop("latest", []))
+    stats.pop("latest_sent", None)
+    stats.pop("latest_failed", None)
+    stats.pop("latest_by_module", None)
     payload = {
         "ok": True,
         **stats,

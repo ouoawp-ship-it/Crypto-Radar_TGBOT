@@ -31,7 +31,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("next", package.get("dependencies", {}))
         self.assertIn("react", package.get("dependencies", {}))
         self.assertIn("tailwindcss", package.get("devDependencies", {}))
-        self.assertIn("recharts", package.get("dependencies", {}))
+        self.assertNotIn("recharts", package.get("dependencies", {}))
 
         for relative in (
             "app/page.tsx",
@@ -73,7 +73,6 @@ class NextjsPublicDashboardTests(unittest.TestCase):
 
         for path in (
             "/public-api/signals",
-            "/public-api/signals/latest",
             "/public-api/signals/stats",
             "/public-api/signal-timeline",
             "/public-api/coin-search",
@@ -94,6 +93,7 @@ class NextjsPublicDashboardTests(unittest.TestCase):
             "/public-api/lifecycle/metrics",
         ):
             self.assertIn(path, api_source)
+        self.assertNotIn("/public-api/signals/latest", api_source)
 
         forbidden = (
             "/api/dashboard",

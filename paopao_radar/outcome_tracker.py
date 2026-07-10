@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +27,39 @@ OUTCOME_WINDOWS: dict[str, int] = {
 }
 VALID_DATA_STATUSES = {"pending", "ready", "success", "unavailable", "error"}
 VALID_RESULTS = {"表现较强", "小幅走强", "震荡", "小幅走弱", "明显回撤", "数据不足"}
+OUTCOME_COLUMNS = (
+    "id",
+    "signal_id",
+    "symbol",
+    "coin",
+    "signal_time",
+    "horizon",
+    "horizon_sec",
+    "due_time",
+    "direction",
+    "entry_price",
+    "future_price",
+    "max_high_price",
+    "min_low_price",
+    "final_return_pct",
+    "max_gain_pct",
+    "max_drawdown_pct",
+    "result_label",
+    "result_tone",
+    "decision_code",
+    "decision_label",
+    "decision_confidence",
+    "risk_level",
+    "module",
+    "signal_type",
+    "signal_score",
+    "signal_stage",
+    "data_status",
+    "data_source",
+    "error",
+    "created_at",
+    "updated_at",
+)
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,24}USDT$")
 INVALID_PRICE_ERROR_PATTERNS = (
     "HTTP Error 400",
@@ -242,6 +275,10 @@ class OutcomeStore:
             conn.execute("PRAGMA busy_timeout=15000")
             self.ensure_schema(conn)
             yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        else:
             conn.commit()
         finally:
             conn.close()
@@ -414,6 +451,12 @@ class OutcomeStore:
         return [dict(row) for row in rows]
 
     def update_outcome(self, outcome_id: int, values: dict[str, Any]) -> None:
+        self.update_outcomes([(outcome_id, values)])
+
+    def update_outcomes(self, outcomes: list[tuple[int, dict[str, Any]]]) -> None:
+        """Update a scan batch atomically, rolling the whole batch back on failure."""
+        if not outcomes:
+            return
         allowed = {
             "entry_price",
             "future_price",
@@ -432,12 +475,14 @@ class OutcomeStore:
             "data_source",
             "error",
         }
-        updates = {key: value for key, value in values.items() if key in allowed}
-        updates["updated_at"] = _iso()
-        assignments = ", ".join(f"{key} = :{key}" for key in updates)
-        params = {**updates, "id": int(outcome_id)}
+        updated_at = _iso()
         with self.connect() as conn:
-            conn.execute(f"UPDATE signal_outcomes SET {assignments} WHERE id = :id", params)
+            for outcome_id, values in outcomes:
+                updates = {key: value for key, value in values.items() if key in allowed}
+                updates["updated_at"] = updated_at
+                assignments = ", ".join(f"{key} = :{key}" for key in updates)
+                params = {**updates, "id": int(outcome_id)}
+                conn.execute(f"UPDATE signal_outcomes SET {assignments} WHERE id = :id", params)
 
     def list_outcomes(
         self,
@@ -453,6 +498,8 @@ class OutcomeStore:
         start_time: str = "",
         end_time: str = "",
         sort: str = "-id",
+        columns: tuple[str, ...] | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         clauses: list[str] = []
         params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 300))}
@@ -489,9 +536,14 @@ class OutcomeStore:
             clauses.append("id > :cursor" if direction == "ASC" else "id < :cursor")
             params["cursor"] = int(cursor)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
+        selected_columns = tuple(column for column in (columns or OUTCOME_COLUMNS) if column in OUTCOME_COLUMNS)
+        if "id" not in selected_columns:
+            selected_columns = ("id", *selected_columns)
+        projection = ", ".join(selected_columns)
+        context = self.connect() if connection is None else nullcontext(connection)
+        with context as conn:
             rows = conn.execute(
-                f"SELECT * FROM signal_outcomes {where} ORDER BY {sort_field} {direction}, id {direction} LIMIT :limit",
+                f"SELECT {projection} FROM signal_outcomes {where} ORDER BY {sort_field} {direction}, id {direction} LIMIT :limit",
                 params,
             ).fetchall()
         items = [dict(row) for row in rows]
@@ -504,6 +556,7 @@ class OutcomeStore:
         symbol: str = "",
         decision: str = "",
         module: str = "",
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         clauses: list[str] = []
         params: dict[str, Any] = {}
@@ -521,51 +574,51 @@ class OutcomeStore:
             clauses.append("module = :module")
             params["module"] = str(module).strip().lower()
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.connect() as conn:
-            total = int(conn.execute(f"SELECT COUNT(*) FROM signal_outcomes {where}", params).fetchone()[0])
-            status_counts = {
-                str(row["data_status"]): int(row["count"])
-                for row in conn.execute(
-                    f"SELECT data_status, COUNT(*) AS count FROM signal_outcomes {where} GROUP BY data_status",
-                    params,
-                ).fetchall()
-            }
-            result_counts = {
-                str(row["result_label"] or "数据不足"): int(row["count"])
-                for row in conn.execute(
-                    f"SELECT result_label, COUNT(*) AS count FROM signal_outcomes {where} GROUP BY result_label ORDER BY count DESC",
-                    params,
-                ).fetchall()
-            }
-            decision_counts = {
-                str(row["decision_code"] or "unknown"): int(row["count"])
-                for row in conn.execute(
-                    f"SELECT decision_code, COUNT(*) AS count FROM signal_outcomes {where} GROUP BY decision_code ORDER BY count DESC",
-                    params,
-                ).fetchall()
-            }
-            module_counts = {
-                str(row["module"] or "unknown"): int(row["count"])
-                for row in conn.execute(
-                    f"SELECT module, COUNT(*) AS count FROM signal_outcomes {where} GROUP BY module ORDER BY count DESC",
-                    params,
-                ).fetchall()
-            }
-            aggregates = conn.execute(
+        context = self.connect() if connection is None else nullcontext(connection)
+        with context as conn:
+            rows = conn.execute(
                 f"""
-                SELECT
-                    AVG(final_return_pct) AS avg_final_return_pct,
-                    AVG(max_gain_pct) AS avg_max_gain_pct,
-                    AVG(max_drawdown_pct) AS avg_max_drawdown_pct,
-                    SUM(CASE WHEN final_return_pct > 0 THEN 1 ELSE 0 END) AS positive,
-                    SUM(CASE WHEN result_label = '表现较强' THEN 1 ELSE 0 END) AS strong,
-                    SUM(CASE WHEN result_label = '明显回撤' THEN 1 ELSE 0 END) AS drawdown,
-                    SUM(CASE WHEN data_status = 'success' THEN 1 ELSE 0 END) AS success
-                FROM signal_outcomes {where}
+                WITH filtered AS (
+                    SELECT data_status, result_label, decision_code, module,
+                           final_return_pct, max_gain_pct, max_drawdown_pct
+                    FROM signal_outcomes {where}
+                )
+                SELECT 'aggregate' AS category, '' AS group_key, COUNT(*) AS item_count,
+                       AVG(final_return_pct) AS avg_final_return_pct,
+                       AVG(max_gain_pct) AS avg_max_gain_pct,
+                       AVG(max_drawdown_pct) AS avg_max_drawdown_pct,
+                       SUM(CASE WHEN final_return_pct > 0 THEN 1 ELSE 0 END) AS positive,
+                       SUM(CASE WHEN result_label = '表现较强' THEN 1 ELSE 0 END) AS strong,
+                       SUM(CASE WHEN result_label = '明显回撤' THEN 1 ELSE 0 END) AS drawdown,
+                       SUM(CASE WHEN data_status = 'success' THEN 1 ELSE 0 END) AS success
+                FROM filtered
+                UNION ALL
+                SELECT 'status', COALESCE(data_status, ''), COUNT(*),
+                       NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                FROM filtered GROUP BY data_status
+                UNION ALL
+                SELECT 'result', COALESCE(NULLIF(result_label, ''), '数据不足'), COUNT(*),
+                       NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                FROM filtered GROUP BY COALESCE(NULLIF(result_label, ''), '数据不足')
+                UNION ALL
+                SELECT 'decision', COALESCE(NULLIF(decision_code, ''), 'unknown'), COUNT(*),
+                       NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                FROM filtered GROUP BY COALESCE(NULLIF(decision_code, ''), 'unknown')
+                UNION ALL
+                SELECT 'module', COALESCE(NULLIF(module, ''), 'unknown'), COUNT(*),
+                       NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                FROM filtered GROUP BY COALESCE(NULLIF(module, ''), 'unknown')
+                ORDER BY category, item_count DESC
                 """,
                 params,
-            ).fetchone()
-        success_count = int((aggregates or {})["success"] or 0) if aggregates else 0
+            ).fetchall()
+        aggregates = next((row for row in rows if row["category"] == "aggregate"), None)
+        total = int(aggregates["item_count"] or 0) if aggregates else 0
+        status_counts = {str(row["group_key"]): int(row["item_count"]) for row in rows if row["category"] == "status"}
+        result_counts = {str(row["group_key"]): int(row["item_count"]) for row in rows if row["category"] == "result"}
+        decision_counts = {str(row["group_key"]): int(row["item_count"]) for row in rows if row["category"] == "decision"}
+        module_counts = {str(row["group_key"]): int(row["item_count"]) for row in rows if row["category"] == "module"}
+        success_count = int(aggregates["success"] or 0) if aggregates else 0
         denominator = max(1, success_count)
         return {
             "total": total,
@@ -639,6 +692,103 @@ def _decision_snapshot(symbol: str, settings: Settings) -> dict[str, Any]:
         return {"decision_code": "", "decision_label": "", "decision_confidence": 0, "risk_level": ""}
 
 
+@dataclass
+class _OutcomePriceRequest:
+    row: dict[str, Any]
+    symbol: str
+    interval: str
+    start_ts: int
+    end_ts: int
+
+
+@dataclass
+class _OutcomePriceRequestGroup:
+    symbol: str
+    interval: str
+    start_ts: int
+    end_ts: int
+    requests: list[_OutcomePriceRequest]
+
+
+def _price_request_for_outcome(row: dict[str, Any]) -> _OutcomePriceRequest:
+    signal_time_text = str(row.get("signal_time") or "")
+    horizon_sec = int(row.get("horizon_sec") or 0)
+    try:
+        start_ts = int(datetime.fromisoformat(signal_time_text.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        # Signals also store ts in the source table, but outcome rows persist the ISO text only.
+        start_ts = int(datetime.fromisoformat(str(row.get("due_time")).replace("Z", "+00:00")).timestamp()) - horizon_sec
+    return _OutcomePriceRequest(
+        row=row,
+        symbol=str(row.get("symbol") or "").upper(),
+        interval=interval_for_horizon(horizon_sec),
+        start_ts=start_ts,
+        end_ts=start_ts + horizon_sec + 60,
+    )
+
+
+def _interval_seconds(interval: str) -> int:
+    value = str(interval or "").strip().lower()
+    if value.endswith("m"):
+        return max(1, _safe_int(value[:-1], 1)) * 60
+    if value.endswith("h"):
+        return max(1, _safe_int(value[:-1], 1)) * 3600
+    return 60
+
+
+def _group_price_requests(rows: list[dict[str, Any]]) -> list[_OutcomePriceRequestGroup]:
+    """Merge overlapping horizon windows without exceeding Binance's 1,000-bar cap."""
+    buckets: dict[tuple[str, str], list[_OutcomePriceRequest]] = {}
+    for row in rows:
+        request = _price_request_for_outcome(row)
+        buckets.setdefault((request.symbol, request.interval), []).append(request)
+
+    groups: list[_OutcomePriceRequestGroup] = []
+    for (symbol, interval), requests in buckets.items():
+        max_span_sec = _interval_seconds(interval) * 999
+        current: _OutcomePriceRequestGroup | None = None
+        for request in sorted(requests, key=lambda item: (item.start_ts, item.end_ts, int(item.row.get("id") or 0))):
+            merged_end = max(current.end_ts, request.end_ts) if current is not None else request.end_ts
+            if (
+                current is not None
+                and request.start_ts <= current.end_ts
+                and merged_end - current.start_ts <= max_span_sec
+            ):
+                current.end_ts = merged_end
+                current.requests.append(request)
+                continue
+            current = _OutcomePriceRequestGroup(
+                symbol=symbol,
+                interval=interval,
+                start_ts=request.start_ts,
+                end_ts=request.end_ts,
+                requests=[request],
+            )
+            groups.append(current)
+    return groups
+
+
+def _klines_for_request(
+    klines: list[dict[str, float]],
+    request: _OutcomePriceRequest,
+) -> list[dict[str, float]]:
+    timestamps: list[float | None] = []
+    for item in klines:
+        timestamp = _safe_float(item.get("open_time"))
+        if timestamp is not None and timestamp > 10_000_000_000:
+            timestamp /= 1000.0
+        timestamps.append(timestamp)
+    if not any(timestamp is not None for timestamp in timestamps):
+        # Custom/test fetchers predating open_time returned only OHLC values. Preserve
+        # their behavior; the built-in Binance fetcher always supplies timestamps.
+        return list(klines)
+    return [
+        item
+        for item, timestamp in zip(klines, timestamps)
+        if timestamp is not None and request.start_ts <= timestamp <= request.end_ts
+    ]
+
+
 def scan_outcomes(
     *,
     settings: Settings | None = None,
@@ -681,79 +831,99 @@ def scan_outcomes(
     errors: list[str] = []
     unavailable_summaries: list[str] = []
     invalid_symbol_cache: dict[str, str] = {}
+    decision_cache: dict[str, dict[str, Any]] = {}
+    updates: list[tuple[int, dict[str, Any]]] = []
+
+    def decision_for_symbol(row_symbol: str) -> dict[str, Any]:
+        if row_symbol not in decision_cache:
+            decision_cache[row_symbol] = _decision_snapshot(row_symbol, loaded)
+        return decision_cache[row_symbol]
 
     def mark_unavailable(row_data: dict[str, Any], reason: str) -> None:
         row_symbol = str(row_data.get("symbol") or "").upper()
         row_horizon = str(row_data.get("horizon") or "")
-        store.update_outcome(int(row_data["id"]), {
+        updates.append((int(row_data["id"]), {
             "data_status": "unavailable",
             "data_source": loaded.outcome_price_source,
             "result_label": "数据不足",
             "result_tone": "muted",
             "error": reason,
-            **_decision_snapshot(row_symbol, loaded),
-        })
+            **decision_for_symbol(row_symbol),
+        }))
         counts["unavailable"] += 1
         if len(unavailable_summaries) < 10:
             unavailable_summaries.append(_unavailable_summary(row_symbol, row_horizon, loaded.outcome_price_source, reason))
 
-    for row in due:
-        row_symbol = str(row.get("symbol") or "").upper()
-        row_horizon = str(row.get("horizon") or "")
+    def mark_error(row_data: dict[str, Any], exc: BaseException) -> None:
+        row_symbol = str(row_data.get("symbol") or "").upper()
+        row_horizon = str(row_data.get("horizon") or "")
+        message = str(redact_api_payload(f"{type(exc).__name__}: {exc}"))[:300]
+        updates.append((int(row_data["id"]), {
+            "data_status": "error",
+            "data_source": loaded.outcome_price_source,
+            "result_label": "数据不足",
+            "result_tone": "muted",
+            "error": message,
+            **decision_for_symbol(row_symbol),
+        }))
+        counts["error"] += 1
+        errors.append(f"{row_symbol} {row_horizon}: {message}")
+
+    for group in _group_price_requests(due):
+        row_symbol = group.symbol
+        if row_symbol in invalid_symbol_cache:
+            for request in group.requests:
+                mark_unavailable(request.row, invalid_symbol_cache[row_symbol])
+            continue
+        if _is_1000_prefix_symbol(row_symbol) and str(loaded.outcome_price_source or "").lower() == "binance":
+            reason = price_unavailable_reason(row_symbol)
+            invalid_symbol_cache[row_symbol] = reason
+            for request in group.requests:
+                mark_unavailable(request.row, reason)
+            continue
         try:
-            if row_symbol in invalid_symbol_cache:
-                mark_unavailable(row, invalid_symbol_cache[row_symbol])
-                continue
-            if _is_1000_prefix_symbol(row_symbol) and str(loaded.outcome_price_source or "").lower() == "binance":
-                reason = price_unavailable_reason(row_symbol)
-                invalid_symbol_cache[row_symbol] = reason
-                mark_unavailable(row, reason)
-                continue
-            signal_time_text = str(row.get("signal_time") or "")
-            try:
-                start_ts = int(datetime.fromisoformat(signal_time_text.replace("Z", "+00:00")).timestamp())
-            except Exception:
-                # Signals also store ts in the source table, but outcome rows persist the ISO text only.
-                start_ts = int(datetime.fromisoformat(str(row.get("due_time")).replace("Z", "+00:00")).timestamp()) - int(row.get("horizon_sec") or 0)
-            end_ts = start_ts + int(row.get("horizon_sec") or 0)
-            interval = interval_for_horizon(int(row.get("horizon_sec") or 0))
-            klines = fetcher(row_symbol, start_ts, end_ts + 60, interval, int(loaded.outcome_http_timeout_sec or 10))
+            klines = fetcher(
+                row_symbol,
+                group.start_ts,
+                group.end_ts,
+                group.interval,
+                int(loaded.outcome_http_timeout_sec or 10),
+            )
+            if loaded.outcome_request_sleep_sec:
+                time.sleep(max(0.0, float(loaded.outcome_request_sleep_sec)))
             if not klines:
                 reason = price_unavailable_reason(row_symbol)
                 invalid_symbol_cache[row_symbol] = reason
-                mark_unavailable(row, reason)
-            else:
-                metrics = calculate_outcome_metrics(klines)
+                for request in group.requests:
+                    mark_unavailable(request.row, reason)
+                continue
+
+            for request in group.requests:
+                row = request.row
+                row_horizon = str(row.get("horizon") or "")
+                metrics = calculate_outcome_metrics(_klines_for_request(klines, request))
                 status = "success" if metrics.get("final_return_pct") is not None else "unavailable"
-                store.update_outcome(int(row["id"]), {
+                updates.append((int(row["id"]), {
                     **metrics,
-                    **_decision_snapshot(row_symbol, loaded),
+                    **decision_for_symbol(row_symbol),
                     "data_status": status,
                     "data_source": loaded.outcome_price_source,
                     "error": "" if status == "success" else PRICE_UNAVAILABLE_REASON,
-                })
+                }))
                 counts["success" if status == "success" else "unavailable"] += 1
                 if status == "unavailable" and len(unavailable_summaries) < 10:
                     unavailable_summaries.append(_unavailable_summary(row_symbol, row_horizon, loaded.outcome_price_source, PRICE_UNAVAILABLE_REASON))
-            if loaded.outcome_request_sleep_sec:
-                time.sleep(max(0.0, float(loaded.outcome_request_sleep_sec)))
         except Exception as exc:
             if is_price_unavailable_error(exc):
                 reason = price_unavailable_reason(row_symbol)
                 invalid_symbol_cache[row_symbol] = reason
-                mark_unavailable(row, reason)
+                for request in group.requests:
+                    mark_unavailable(request.row, reason)
                 continue
-            message = str(redact_api_payload(f"{type(exc).__name__}: {exc}"))[:300]
-            store.update_outcome(int(row["id"]), {
-                "data_status": "error",
-                "data_source": loaded.outcome_price_source,
-                "result_label": "数据不足",
-                "result_tone": "muted",
-                "error": message,
-                **_decision_snapshot(row_symbol, loaded),
-            })
-            counts["error"] += 1
-            errors.append(f"{row_symbol} {row_horizon}: {message}")
+            for request in group.requests:
+                mark_error(request.row, exc)
+
+    store.update_outcomes(updates)
     return {
         "ok": True,
         "counts": counts,

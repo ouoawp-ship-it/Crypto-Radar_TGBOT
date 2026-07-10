@@ -1,5 +1,20 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.76.3 说明
+
+v1.76.3 完成 Performance Optimization Phase 2：资金费率扫描改为 6–8 个固定 worker 的有界异步并发，并增加单任务 deadline、失败隔离和批次上限；Outcome / Lifecycle 扫描按币种与周期复用行情和 decision，跳过已完成记录，并使用单次 SQLite 事务批量写入；Signals / Decision / Outcomes / Lifecycle API 使用请求级连接、SQL 聚合和轻量列表投影，详情接口继续返回完整字段。
+
+新增离线可复现 benchmark：
+
+```bash
+python scripts/benchmark_funding_scan.py --symbols 120 --latency-ms 2 --concurrency 8
+python scripts/benchmark_outcome_scan.py --symbols 100 --request-delay-ms 2
+python scripts/benchmark_lifecycle_phase2.py --symbols 100 --repeats 2
+python scripts/benchmark_api_phase2.py
+```
+
+详细口径和本机结果见 `docs/PERFORMANCE_PHASE2.md`。本版本不修改 Telegram 推送逻辑、信号算法、decision model 规则或数据库核心 schema，不引入自动交易。
+
 ## v1.76.2 说明
 
 v1.76.2 修复 Telegram 多交易所资金费率展示对齐问题：资金费率警报和启动预警统一使用等宽表格，按显示宽度对齐“交易所、费率/周期、上次结算、本次周期、下次结算”，避免中文列名、极负标签和 `8H→4H` / `4H→1H` 周期变化导致列错位。

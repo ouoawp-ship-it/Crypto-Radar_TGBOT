@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -477,7 +478,31 @@ class LifecycleEngine:
             client = BinanceLifecycleDataClient(self.settings)
             self.metrics_provider = client.snapshot
 
-    def metrics_for_signal(self, signal: dict[str, Any], level: str, *, dry_run: bool = False) -> dict[str, Any]:
+    def metrics_for_signal(
+        self,
+        signal: dict[str, Any],
+        level: str,
+        *,
+        dry_run: bool = False,
+        cache: dict[tuple[str, str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        symbol = normalize_lifecycle_symbol(signal.get("symbol"))
+        timeframe = level if level in LEVEL_RANKS else "15m"
+        cache_key = (symbol, timeframe)
+        if cache is not None and cache_key in cache:
+            return cache[cache_key]
+        result = self._metrics_for_signal_uncached(signal, level, dry_run=dry_run)
+        if cache is not None:
+            cache[cache_key] = result
+        return result
+
+    def _metrics_for_signal_uncached(
+        self,
+        signal: dict[str, Any],
+        level: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
         if dry_run:
             return {
                 "symbol": normalize_lifecycle_symbol(signal.get("symbol")),
@@ -499,15 +524,50 @@ class LifecycleEngine:
                 "exchange_context": {"items": [], "note": "Binance 生命周期数据暂不可用。"},
             }
 
-    def process_signal(self, signal: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
+    def process_signal(
+        self,
+        signal: dict[str, Any],
+        *,
+        dry_run: bool = False,
+        conn: sqlite3.Connection | None = None,
+        metrics_cache: dict[tuple[str, str], dict[str, Any]] | None = None,
+        metrics: dict[str, Any] | None = None,
+        check_processed: bool = True,
+    ) -> dict[str, Any]:
         assert self.store is not None
         if not is_valid_lifecycle_signal(signal):
             return {"ok": True, "skipped": True, "reason": "not_lifecycle_signal"}
+        signal_id = safe_int(signal.get("id"))
+        if (
+            check_processed
+            and not dry_run
+            and signal_id > 0
+            and self.store.is_signal_processed(signal_id, conn=conn)
+        ):
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "already_processed",
+                "created": False,
+                "event_inserted": False,
+            }
         symbol = normalize_lifecycle_symbol(signal.get("symbol"))
         level, level_rank = extract_signal_level(signal)
-        metrics = self.metrics_for_signal(signal, level, dry_run=dry_run)
+        if metrics is None:
+            metrics = self.metrics_for_signal(signal, level, dry_run=dry_run, cache=metrics_cache)
+        if not dry_run and conn is None:
+            with self.store.transaction() as owned_conn:
+                return self.process_signal(
+                    signal,
+                    conn=owned_conn,
+                    metrics_cache=metrics_cache,
+                    metrics=metrics,
+                    check_processed=check_processed,
+                )
         existing = None
-        if not dry_run or self.store.db_path.exists():
+        if conn is not None:
+            existing = self.store.get_lifecycle(symbol, conn=conn)
+        elif self.store.db_path.exists():
             existing = self.store.get_lifecycle(symbol)
         if existing is None:
             first_score, first_risk, reasons = calculate_lifecycle_scores(
@@ -527,7 +587,7 @@ class LifecycleEngine:
                 risk_score=first_risk,
                 reasons=reasons or ["首次有效信号已创建生命周期档案。"],
             )
-            lifecycle, created = self.store.create_lifecycle(lifecycle_values, dry_run=dry_run)
+            lifecycle, created = self.store.create_lifecycle(lifecycle_values, dry_run=dry_run, conn=conn)
             event_payload = lifecycle_event_payload(
                 lifecycle=lifecycle,
                 signal=signal,
@@ -541,8 +601,8 @@ class LifecycleEngine:
                 score=first_score,
                 risk_score=first_risk,
             )
-            event, inserted = self.store.insert_event(event_payload, dry_run=dry_run)
-            self.store.insert_snapshot(_snapshot_values(symbol, level, metrics), dry_run=dry_run)
+            event, inserted = self.store.insert_event(event_payload, dry_run=dry_run, conn=conn)
+            self.store.insert_snapshot(_snapshot_values(symbol, level, metrics), dry_run=dry_run, conn=conn)
             return {"ok": True, "created": created, "event_inserted": inserted, "lifecycle": lifecycle, "event": event}
 
         merged_metrics = build_lifecycle_metrics(lifecycle=existing, signal=signal, metrics=metrics)
@@ -597,7 +657,7 @@ class LifecycleEngine:
             "metrics": merged_metrics,
             "reasons": reasons,
         }
-        lifecycle = self.store.update_lifecycle(symbol, update, dry_run=dry_run) or existing
+        lifecycle = self.store.update_lifecycle(symbol, update, dry_run=dry_run, conn=conn) or existing
         event_payload = lifecycle_event_payload(
             lifecycle=lifecycle,
             signal=signal,
@@ -611,8 +671,8 @@ class LifecycleEngine:
             score=score,
             risk_score=risk_score,
         )
-        event, inserted = self.store.insert_event(event_payload, dry_run=dry_run)
-        self.store.insert_snapshot(_snapshot_values(symbol, level, merged_metrics), dry_run=dry_run)
+        event, inserted = self.store.insert_event(event_payload, dry_run=dry_run, conn=conn)
+        self.store.insert_snapshot(_snapshot_values(symbol, level, merged_metrics), dry_run=dry_run, conn=conn)
         return {"ok": True, "created": False, "event_inserted": inserted, "lifecycle": lifecycle, "event": event}
 
 
@@ -688,8 +748,60 @@ def scan_lifecycles(
     engine = LifecycleEngine(loaded, store=store, metrics_provider=metrics_provider)
     counts = {"signals": len(selected), "created": 0, "events": 0, "skipped": 0, "telegram": 0, "dry_run": bool(dry_run)}
     events: list[dict[str, Any]] = []
-    for item in selected:
-        result = engine.process_signal(item, dry_run=dry_run)
+    metrics_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    results: list[dict[str, Any] | None] = [None] * len(selected)
+
+    if dry_run:
+        for index, item in enumerate(selected):
+            results[index] = engine.process_signal(item, dry_run=True, metrics_cache=metrics_cache)
+    else:
+        signal_ids = [safe_int(item.get("id")) for item in selected if safe_int(item.get("id")) > 0]
+        processed_ids = store.processed_signal_ids(signal_ids)
+        pending: list[tuple[int, dict[str, Any]]] = []
+        scheduled_ids: set[int] = set()
+        for index, item in enumerate(selected):
+            signal_id = safe_int(item.get("id"))
+            if signal_id > 0 and (signal_id in processed_ids or signal_id in scheduled_ids):
+                results[index] = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "already_processed",
+                    "created": False,
+                    "event_inserted": False,
+                }
+                continue
+            if signal_id > 0:
+                scheduled_ids.add(signal_id)
+            pending.append((index, item))
+
+        for _, item in pending:
+            level, _ = extract_signal_level(item)
+            engine.metrics_for_signal(item, level, cache=metrics_cache)
+
+        if pending:
+            with store.transaction() as conn:
+                pending_ids = [safe_int(item.get("id")) for _, item in pending if safe_int(item.get("id")) > 0]
+                concurrently_processed = store.processed_signal_ids(pending_ids, conn=conn)
+                for index, item in pending:
+                    if safe_int(item.get("id")) in concurrently_processed:
+                        results[index] = {
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "already_processed",
+                            "created": False,
+                            "event_inserted": False,
+                        }
+                        continue
+                    results[index] = engine.process_signal(
+                        item,
+                        conn=conn,
+                        metrics_cache=metrics_cache,
+                        check_processed=False,
+                    )
+
+    for result in results:
+        if result is None:
+            continue
         if result.get("skipped"):
             counts["skipped"] += 1
             continue
