@@ -68,6 +68,60 @@ class NextjsPublicDashboardTests(unittest.TestCase):
         self.assertIn("公开接口响应超时", api_source)
         self.assertIn("loadHomeDashboardData", api_source)
 
+    def test_public_api_client_deduplicates_and_uses_short_server_cache(self) -> None:
+        api_source = (FRONTEND / "lib/api.ts").read_text(encoding="utf-8")
+
+        # Stable query ordering makes logically identical requests share one key.
+        self.assertIn("left.localeCompare(right)", api_source)
+        self.assertIn("inFlightPublicRequests", api_source)
+        self.assertIn("inFlightPublicRequests.get(requestKey)", api_source)
+        self.assertIn("inFlightPublicRequests.set(requestKey, request)", api_source)
+        self.assertIn("inFlightPublicRequests.delete(requestKey)", api_source)
+        self.assertIn("clientPublicResponses", api_source)
+        self.assertIn("cached.expiresAt > now", api_source)
+        self.assertIn("MAX_CLIENT_CACHE_ENTRIES", api_source)
+        self.assertIn("invalidatePublicApiCache", api_source)
+        self.assertIn("clientCacheGeneration", api_source)
+        self.assertIn("cacheGeneration === clientCacheGeneration", api_source)
+        self.assertIn("inFlightPublicRequests.clear()", api_source)
+        self.assertIn("typeof window !== \"undefined\" && result.ok", api_source)
+
+        # Public SSR reads use short Next.js revalidation, while browser refreshes
+        # and explicit bypasses never reuse a stale HTTP response.
+        self.assertIn('path.startsWith("/public-api/backtest/")', api_source)
+        self.assertIn('path === "/public-api/outcomes/stats"', api_source)
+        self.assertIn('path.endsWith("/stats")', api_source)
+        self.assertIn("next: { revalidate:", api_source)
+        self.assertIn('cache: "no-store"', api_source)
+        self.assertIn("options.bypassCache", api_source)
+        self.assertIn('path: `/public-api/${string}`', api_source)
+        self.assertIn('if (!path.startsWith("/public-api/"))', api_source)
+
+        # This public dashboard has no private API client, so /api calls cannot
+        # accidentally enter the public response cache.
+        self.assertNotIn('path: `/api/${string}`', api_source)
+        self.assertNotIn('next: { revalidate: 300', api_source)
+
+    def test_user_actions_invalidate_public_cache_but_initial_loads_do_not(self) -> None:
+        home = (FRONTEND / "components/HomeDashboard.tsx").read_text(encoding="utf-8")
+        self.assertIn("invalidatePublicApiCache();", home)
+        self.assertNotIn("useEffect", home)
+
+        for relative in (
+            "app/radar/page.tsx",
+            "app/outcomes/page.tsx",
+            "app/backtest/page.tsx",
+            "app/lifecycle/page.tsx",
+            "app/decision/page.tsx",
+            "app/coin/[symbol]/page.tsx",
+        ):
+            source = (FRONTEND / relative).read_text(encoding="utf-8")
+            self.assertIn("invalidatePublicApiCache", source, relative)
+            self.assertIn("refresh = false", source, relative)
+            self.assertIn("if (refresh) invalidatePublicApiCache();", source, relative)
+            self.assertIn("useEffect(() => {", source, relative)
+            self.assertGreaterEqual(source.count(", true)") + source.count("load(true)"), 2, relative)
+
     def test_public_frontend_uses_only_public_api(self) -> None:
         api_source = (FRONTEND / "lib/api.ts").read_text(encoding="utf-8")
 

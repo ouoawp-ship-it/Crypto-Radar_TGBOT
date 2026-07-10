@@ -9,7 +9,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getSymbolOutcomes, getSymbolTimeline } from "@/lib/api";
+import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
 import { compact, normalizeSymbol, pct, safeText } from "@/lib/format";
 import type { DecisionItem, LifecycleDetailPayload, OutcomeItem, SignalItem } from "@/lib/types";
 
@@ -26,7 +26,8 @@ export default function CoinPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function load(nextSymbol = symbol) {
+  async function load(nextSymbol = symbol, refresh = false) {
+    if (refresh) invalidatePublicApiCache();
     const normalized = normalizeSymbol(nextSymbol);
     if (!normalized) {
       setError("请提供币种，例如 BTCUSDT。");
@@ -62,7 +63,7 @@ export default function CoinPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSymbol]);
 
-  if (error) return <ErrorState message={error} onRetry={() => load()} />;
+  if (error) return <ErrorState message={error} onRetry={() => load(symbol, true)} />;
 
   const summary = (detail.summary || {}) as Record<string, unknown>;
 
@@ -75,7 +76,7 @@ export default function CoinPage() {
       />
       <section className="panel flex flex-col gap-3 p-4 sm:flex-row">
         <input className="input flex-1" value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="输入 BTC 或 BTCUSDT" />
-        <button className="btn" onClick={() => load(symbol)}>
+        <button className="btn" onClick={() => load(symbol, true)}>
           {loading ? "加载中" : "切换币种"}
         </button>
         <a className="btn inline-flex items-center justify-center" href={`https://www.tradingview.com/chart/?symbol=BINANCE:${encodeURIComponent(symbol)}`} target="_blank" rel="noreferrer">

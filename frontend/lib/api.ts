@@ -15,16 +15,79 @@ import type {
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 
+export type PublicFetchOptions = {
+  /** Bypass and refresh both the Next.js and browser short caches. */
+  bypassCache?: boolean;
+  /** Override the endpoint's short server-side cache window. */
+  revalidateSec?: number;
+};
+
 const INTERNAL_BASE = process.env.PAOXX_PUBLIC_API_INTERNAL_BASE || "http://127.0.0.1:8080";
 const REQUEST_TIMEOUT_MS = Number(process.env.PAOXX_PUBLIC_API_TIMEOUT_MS || 15000);
+const MAX_CLIENT_CACHE_ENTRIES = 128;
+const inFlightPublicRequests = new Map<string, Promise<unknown>>();
+const clientPublicResponses = new Map<string, { expiresAt: number; result: ApiResult<unknown> }>();
+let clientCacheGeneration = 0;
+
+function pruneClientPublicResponses(now: number): void {
+  for (const [key, entry] of clientPublicResponses) {
+    if (entry.expiresAt <= now) clientPublicResponses.delete(key);
+  }
+  while (clientPublicResponses.size > MAX_CLIENT_CACHE_ENTRIES) {
+    const oldest = clientPublicResponses.keys().next().value as string | undefined;
+    if (!oldest) break;
+    clientPublicResponses.delete(oldest);
+  }
+}
+
+export function invalidatePublicApiCache(pathPrefix?: `/public-api/${string}`): void {
+  clientCacheGeneration += 1;
+  if (!pathPrefix) {
+    clientPublicResponses.clear();
+    inFlightPublicRequests.clear();
+    return;
+  }
+  for (const key of clientPublicResponses.keys()) {
+    if (key.startsWith(pathPrefix)) clientPublicResponses.delete(key);
+  }
+  for (const key of inFlightPublicRequests.keys()) {
+    if (key.startsWith(pathPrefix)) inFlightPublicRequests.delete(key);
+  }
+}
 
 function toQuery(query?: Query): string {
   const params = new URLSearchParams();
-  Object.entries(query || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
-  });
+  Object.entries(query || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+    });
   const text = params.toString();
   return text ? `?${text}` : "";
+}
+
+function publicApiRevalidateSec(path: `/public-api/${string}`): number {
+  if (path.startsWith("/public-api/backtest/")) return 30;
+  if (path === "/public-api/outcomes/stats") return 30;
+  if (path.endsWith("/stats")) return 15;
+  return 10;
+}
+
+function publicRequestInit(
+  path: `/public-api/${string}`,
+  signal: AbortSignal,
+  options: PublicFetchOptions
+): RequestInit & { next?: { revalidate: number } } {
+  // Browser TTL reuse is handled by this module; its network fetch remains
+  // no-store so an explicit refresh reaches the public API. Private /api paths
+  // cannot be passed to this typed client.
+  if (typeof window !== "undefined" || options.bypassCache) {
+    return { cache: "no-store", signal };
+  }
+  return {
+    next: { revalidate: Math.max(1, options.revalidateSec ?? publicApiRevalidateSec(path)) },
+    signal
+  };
 }
 
 function publicApiUrl(path: `/public-api/${string}`, query?: Query): string {
@@ -53,12 +116,15 @@ function unwrapPayload<T>(payload: ApiEnvelope<T> & T): T {
   return payload as T;
 }
 
-export async function publicFetchResult<T>(path: `/public-api/${string}`, query?: Query): Promise<ApiResult<T>> {
-  const url = publicApiUrl(path, query);
+async function runPublicRequest<T>(
+  path: `/public-api/${string}`,
+  url: string,
+  options: PublicFetchOptions
+): Promise<ApiResult<T>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    const res = await fetch(url, publicRequestInit(path, controller.signal, options));
     const text = await res.text();
     let payload: (ApiEnvelope<T> & T) | null = null;
     try {
@@ -92,8 +158,55 @@ export async function publicFetchResult<T>(path: `/public-api/${string}`, query?
   }
 }
 
-export async function publicFetch<T>(path: `/public-api/${string}`, query?: Query): Promise<T> {
-  const result = await publicFetchResult<T>(path, query);
+export async function publicFetchResult<T>(
+  path: `/public-api/${string}`,
+  query?: Query,
+  options: PublicFetchOptions = {}
+): Promise<ApiResult<T>> {
+  if (!path.startsWith("/public-api/")) {
+    return { ok: false, status: 400, path, error: "仅允许请求公开只读接口" };
+  }
+  const url = publicApiUrl(path, query);
+  const ttl = Math.max(1, options.revalidateSec ?? publicApiRevalidateSec(path));
+  const clientCacheKey = `${url}|ttl:${ttl}`;
+  if (typeof window !== "undefined") {
+    if (options.bypassCache) invalidatePublicApiCache(path);
+    const now = Date.now();
+    pruneClientPublicResponses(now);
+    if (!options.bypassCache) {
+      const cached = clientPublicResponses.get(clientCacheKey) as { expiresAt: number; result: ApiResult<T> } | undefined;
+      if (cached && cached.expiresAt > now) return cached.result;
+    }
+  }
+  const cacheGeneration = clientCacheGeneration;
+  const requestKey = `${url}|${options.bypassCache ? "bypass" : `ttl:${ttl}`}`;
+  const pending = inFlightPublicRequests.get(requestKey) as Promise<ApiResult<T>> | undefined;
+  if (pending) return pending;
+
+  const request = runPublicRequest<T>(path, url, options);
+  inFlightPublicRequests.set(requestKey, request);
+  try {
+    const result = await request;
+    if (typeof window !== "undefined" && result.ok && cacheGeneration === clientCacheGeneration) {
+      clientPublicResponses.delete(clientCacheKey);
+      clientPublicResponses.set(clientCacheKey, {
+        expiresAt: Date.now() + ttl * 1000,
+        result: result as ApiResult<unknown>
+      });
+      pruneClientPublicResponses(Date.now());
+    }
+    return result;
+  } finally {
+    if (inFlightPublicRequests.get(requestKey) === request) inFlightPublicRequests.delete(requestKey);
+  }
+}
+
+export async function publicFetch<T>(
+  path: `/public-api/${string}`,
+  query?: Query,
+  options: PublicFetchOptions = {}
+): Promise<T> {
+  const result = await publicFetchResult<T>(path, query, options);
   if (!result.ok || result.data === undefined) throw new Error(result.error || "公开接口请求失败");
   return result.data;
 }

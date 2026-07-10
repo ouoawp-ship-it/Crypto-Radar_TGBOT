@@ -6,7 +6,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getSignals, getSignalStats, getTimeline } from "@/lib/api";
+import { getSignals, getSignalStats, getTimeline, invalidatePublicApiCache } from "@/lib/api";
 import { compact } from "@/lib/format";
 import type { SignalItem } from "@/lib/types";
 
@@ -28,7 +28,8 @@ export default function RadarPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function load(nextFilters = filters) {
+  async function load(nextFilters = filters, refresh = false) {
+    if (refresh) invalidatePublicApiCache();
     setLoading(true);
     setError("");
     try {
@@ -52,7 +53,7 @@ export default function RadarPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (error) return <ErrorState message={error} onRetry={() => load()} />;
+  if (error) return <ErrorState message={error} onRetry={() => load(filters, true)} />;
 
   return (
     <div className="space-y-5">
@@ -87,14 +88,14 @@ export default function RadarPage() {
         </select>
         <input className="input" placeholder="关键词" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} />
         <div className="flex gap-2">
-          <button className="btn flex-1" onClick={() => load()}>
+          <button className="btn flex-1" onClick={() => load(filters, true)}>
             {loading ? "搜索中" : "搜索"}
           </button>
           <button
             className="btn"
             onClick={() => {
               setFilters(defaultFilters);
-              void load(defaultFilters);
+              void load(defaultFilters, true);
             }}
           >
             重置

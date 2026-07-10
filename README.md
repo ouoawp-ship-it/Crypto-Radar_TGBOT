@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.76.4 说明
+
+v1.76.4 完成 Runtime Cache & File Lock Hardening。运行期 JSON 状态写入统一采用 per-file lock、临时文件、`flush + fsync` 和原子替换，历史类数据采用长度上限或 append-only JSONL，兼容读取旧 JSON 数组，避免多进程写入产生半文件并限制长期运行时的全量重写成本。
+
+Dashboard 对 `systemctl`、Git 版本、服务摘要、健康摘要和 stable-check 最近结果使用 5–30 秒线程安全短缓存；服务启停/重启、配置保存、更新任务、诊断和 stable-check 等变更操作会主动失效相关缓存。Next.js 公开前台只对 `/public-api/*` 的只读资源做请求去重和 10–30 秒服务端缓存，用户主动刷新仍可绕过缓存；后台私有 `/api/*`、Cookie、Authorization 和任何 token/secret 不进入缓存。
+
+v1.76.3 的 Funding 有界并发、Outcome/Lifecycle 批量事务、API 请求级连接复用和字段投影继续由原 benchmark 回归验证。详细设计、缓存 TTL、兼容性与验收命令见 `docs/RUNTIME_HARDENING.md`；性能基准口径见 `docs/PERFORMANCE_PHASE2.md`。
+
+本版本不改变 Telegram 主推送语义、生命周期评分、decision model 规则、API contract 或数据库核心 schema，不引入自动交易或交易所下单能力。
+
 ## v1.76.3 说明
 
 v1.76.3 完成 Performance Optimization Phase 2：资金费率扫描改为 6–8 个固定 worker 的有界异步并发，并增加单任务 deadline、失败隔离和批次上限；Outcome / Lifecycle 扫描按币种与周期复用行情和 decision，跳过已完成记录，并使用单次 SQLite 事务批量写入；Signals / Decision / Outcomes / Lifecycle API 使用请求级连接、SQL 聚合和轻量列表投影，详情接口继续返回完整字段。

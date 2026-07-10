@@ -4,6 +4,7 @@ import os
 import json
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -640,6 +641,38 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(payload["latest"]["commit"], "ccc333")
         self.assertEqual(payload["latest"]["release_status"], "blocked")
         self.assertEqual(payload["count"], 2)
+
+    def test_concurrent_stability_saves_keep_latest_and_history_aligned(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            def save(index: int) -> None:
+                snapshot = {
+                    "generated_at": f"2026-07-10 10:00:{index:02d}",
+                    "git": {"version": "v1.76.4", "branch": "main", "commit": f"commit-{index}"},
+                    "stability": {
+                        "status": "ready",
+                        "label": "ready",
+                        "summary": "concurrent",
+                        "ok_count": 7,
+                        "warn_count": 0,
+                        "fail_count": 0,
+                    },
+                    "problem_center": {"status": "ok", "summary": "ok", "counts": {}},
+                    "issues": [],
+                    "log_errors": {},
+                }
+                web.save_stability_snapshot(snapshot, data_dir=data_dir, limit=8)
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(save, range(8)))
+
+            latest = web.locked_read_json(web.stability_latest_path(data_dir), {})
+            history = web.load_stability_history(data_dir=data_dir, limit=8)
+
+        self.assertEqual(len(history), 8)
+        self.assertEqual(latest["git"]["commit"], history[0]["commit"])
+        self.assertEqual(len({row["commit"] for row in history}), 8)
 
     def test_release_trend_detects_improvement_regression_and_single_history(self) -> None:
         improved = web.build_release_trend(

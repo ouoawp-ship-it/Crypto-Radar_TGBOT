@@ -1,6 +1,6 @@
 # Performance Optimization Phase 2
 
-本报告记录 v1.76.3 的离线、可复现合成基准。所有数据均写入临时 SQLite，Funding 和行情请求使用受控延迟的本地 fake，不访问交易所；结果用于比较相同机器上的相对变化，不代表生产环境 SLO。
+本报告记录 v1.76.3 的离线、可复现合成基准，并作为 v1.76.4 Runtime Cache & File Lock Hardening 的性能回归基线。所有数据均写入临时 SQLite，Funding 和行情请求使用受控延迟的本地 fake，不访问交易所；结果用于比较相同机器上的相对变化，不代表生产环境 SLO。
 
 ## Funding scan
 
@@ -78,6 +78,27 @@ python scripts/benchmark_api_phase2.py
 | `/lifecycle` detail | 35.139 ms | 27.348 ms | -22.17% | 3 → 1 | 128,836 → 128,834 |
 
 Signals 列表保留既有字段键，但延迟加载 `payload_json`、`text_html` 和长 excerpt；signal detail 仍读取完整内容。Lifecycle 列表/summary top 使用相同策略，detail 保持完整。Outcome stats 使用一条 CTE 聚合，Decision 对同批 symbols 共用一个请求连接和批量读取路径。
+
+## v1.76.4 回归验收
+
+v1.76.4 不重写 Phase 2 扫描和数据库查询路径。发布前使用较小工作量执行同一组离线 benchmark，确认结构性指标没有回退：
+
+```bash
+python scripts/benchmark_funding_scan.py --symbols 30 --latency-ms 2 --concurrency 8
+python scripts/benchmark_outcome_scan.py --symbols 30 --request-delay-ms 2
+python scripts/benchmark_lifecycle_phase2.py --symbols 30 --repeats 2 --provider-delay-ms 0.1
+python scripts/benchmark_api_phase2.py --symbols 6 --rows-per-symbol 4 --blob-bytes 1000 --samples 5
+```
+
+验收关注以下不随机器绝对耗时变化的结构性指标：
+
+- Funding 峰值并发接近 8，固定 worker 与单请求 timeout 继续生效。
+- Outcome 同一 symbol 的 decision 只计算一次，行情窗口复用，SQLite 写入仍为单次批量事务。
+- Lifecycle provider 调用保持合并，SQLite 连接数保持批量路径的低连接数量。
+- `/signals` 列表 payload 不重新带回 `payload_json`、`text_html` 等大字段。
+- `/decision` 每请求数据库连接数保持为 1，Outcomes/Lifecycle 的聚合和请求级连接复用继续生效。
+
+Runtime hardening 的短缓存不进入上述业务结果：Dashboard 仅缓存服务状态、Git/版本和只读摘要；Next.js 仅缓存公开只读 `/public-api/*`。缓存 loader 失败不写入缓存，TTL 到期自动刷新，变更操作主动失效。JSON lock 与原子替换只改变持久化方式，不改变业务数据 contract。完整说明见 `RUNTIME_HARDENING.md`。
 
 ## 验收边界
 

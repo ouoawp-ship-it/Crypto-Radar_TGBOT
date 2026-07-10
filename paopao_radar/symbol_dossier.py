@@ -23,6 +23,7 @@ from .structure_radar import calculate_box, normalize_candles
 
 
 CST = timezone(timedelta(hours=8))
+MAX_LEGACY_SIGNAL_HISTORY_ITEMS = 500
 
 TEMPLATE_LABELS = {
     "TG_LAUNCH_ALERT": "启动雷达",
@@ -254,18 +255,20 @@ def append_signal_events(
 ) -> int:
     if not events:
         return 0
-    records = store.load(settings.signal_events_path, [])
-    if not isinstance(records, list):
-        records = []
-    records.extend(events)
     now = int(time.time())
     cutoff = now - max(1, int(settings.signal_events_retention_days)) * 86400
-    records = [
-        record for record in records
-        if isinstance(record, dict) and int(record.get("ts", now) or now) >= cutoff
-    ]
-    limit = max(100, int(settings.signal_events_limit))
-    store.save(settings.signal_events_path, records[-limit:])
+    limit = min(MAX_LEGACY_SIGNAL_HISTORY_ITEMS, max(100, int(settings.signal_events_limit)))
+
+    def append(current: Any) -> list[dict[str, Any]]:
+        records = current if isinstance(current, list) else []
+        retained = [
+            record for record in records
+            if isinstance(record, dict) and int(record.get("ts", now) or now) >= cutoff
+        ]
+        retained.extend(events)
+        return retained[-limit:]
+
+    store.update(settings.signal_events_path, append, [])
     return len(events)
 
 

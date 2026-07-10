@@ -6,7 +6,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
-import { getOutcomes, getOutcomeStats } from "@/lib/api";
+import { getOutcomes, getOutcomeStats, invalidatePublicApiCache } from "@/lib/api";
 import { compact, pct, ratioPct } from "@/lib/format";
 import type { OutcomeItem } from "@/lib/types";
 
@@ -18,7 +18,8 @@ export default function OutcomesPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function load(nextHorizon = horizon, nextStatus = status) {
+  async function load(nextHorizon = horizon, nextStatus = status, refresh = false) {
+    if (refresh) invalidatePublicApiCache();
     setLoading(true);
     setError("");
     try {
@@ -37,7 +38,7 @@ export default function OutcomesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (error) return <ErrorState message={error} onRetry={() => load()} />;
+  if (error) return <ErrorState message={error} onRetry={() => load(horizon, status, true)} />;
 
   return (
     <div className="space-y-5">
@@ -53,7 +54,7 @@ export default function OutcomesPage() {
             key={item}
             onClick={() => {
               setHorizon(item);
-              void load(item, status);
+              void load(item, status, true);
             }}
           >
             {item}
@@ -64,7 +65,7 @@ export default function OutcomesPage() {
           value={status}
           onChange={(event) => {
             setStatus(event.target.value);
-            void load(horizon, event.target.value);
+            void load(horizon, event.target.value, true);
           }}
         >
           <option value="">全部数据状态</option>

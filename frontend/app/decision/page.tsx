@@ -6,7 +6,7 @@ import { DistributionChart } from "@/components/DistributionChart";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { PageTitle } from "@/components/PageTitle";
-import { getDecision, getDecisionStats, getDecisions } from "@/lib/api";
+import { getDecision, getDecisionStats, getDecisions, invalidatePublicApiCache } from "@/lib/api";
 import { normalizeSymbol, safeText } from "@/lib/format";
 import type { DecisionItem } from "@/lib/types";
 
@@ -26,7 +26,8 @@ export default function DecisionPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function load(nextSymbol = symbol) {
+  async function load(nextSymbol = symbol, refresh = false) {
+    if (refresh) invalidatePublicApiCache();
     setLoading(true);
     setError("");
     try {
@@ -48,7 +49,7 @@ export default function DecisionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (error) return <ErrorState message={error} onRetry={() => load()} />;
+  if (error) return <ErrorState message={error} onRetry={() => load(symbol, true)} />;
 
   return (
     <div className="space-y-5">
@@ -71,7 +72,7 @@ export default function DecisionPage() {
         <h2 className="text-lg font-black text-white">单币决策入口</h2>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <input className="input flex-1" value={symbol} placeholder="输入 BTC 或 BTCUSDT" onChange={(event) => setSymbol(event.target.value.toUpperCase())} />
-          <button className="btn" onClick={() => load(symbol)}>
+          <button className="btn" onClick={() => load(symbol, true)}>
             {loading ? "查询中" : "查询"}
           </button>
         </div>

@@ -7,7 +7,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
-import { getBacktestDecision, getBacktestDetail, getBacktestMatrix } from "@/lib/api";
+import { getBacktestDecision, getBacktestDetail, getBacktestMatrix, invalidatePublicApiCache } from "@/lib/api";
 import { pct, ratioPct, safeText } from "@/lib/format";
 import type { BacktestMatrixPayload, BacktestPayload, OutcomeItem } from "@/lib/types";
 
@@ -19,7 +19,8 @@ export default function BacktestPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function load(nextHorizon = horizon) {
+  async function load(nextHorizon = horizon, refresh = false) {
+    if (refresh) invalidatePublicApiCache();
     setLoading(true);
     setError("");
     try {
@@ -43,7 +44,7 @@ export default function BacktestPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (error) return <ErrorState message={error} onRetry={() => load()} />;
+  if (error) return <ErrorState message={error} onRetry={() => load(horizon, true)} />;
 
   const s = summary.summary || {};
   const d = summary.model_diagnosis || {};
@@ -62,7 +63,7 @@ export default function BacktestPage() {
             key={item}
             onClick={() => {
               setHorizon(item);
-              void load(item);
+              void load(item, true);
             }}
           >
             {item === "all" ? "全部周期" : item}

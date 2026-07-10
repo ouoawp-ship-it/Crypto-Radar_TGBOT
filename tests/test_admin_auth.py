@@ -4,6 +4,7 @@ import inspect
 import json
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -250,6 +251,57 @@ class AdminAuthTests(unittest.TestCase):
             self.assertNotIn("secret-pass", text)
             self.assertNotIn("WEB_ADMIN_PASSWORD_HASH", text)
             self.assertNotIn("unit-session-secret", text)
+
+    def test_auth_failure_updates_are_atomic_under_concurrency(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            def record(_index: int) -> dict[str, object]:
+                return auth.record_auth_failure(
+                    data_dir,
+                    "unit-session-secret",
+                    "admin",
+                    "198.51.100.10",
+                    max_failures=1000,
+                    lockout_sec=600,
+                    window_sec=900,
+                    now=1000,
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(record, range(32)))
+
+            state = json.loads(auth.admin_auth_state_path(data_dir).read_text(encoding="utf-8"))
+            key = auth.auth_failure_key("unit-session-secret", "admin", "198.51.100.10")
+            self.assertEqual(state["failures"][key]["count"], 32)
+            self.assertEqual(max(int(result["count"]) for result in results), 32)
+            self.assertFalse(any(result["locked"] for result in results))
+            self.assertEqual(list(data_dir.glob("admin_auth_state.json.tmp.*")), [])
+
+    def test_auth_audit_concurrent_append_remains_valid_and_capped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            def append(index: int) -> None:
+                auth.append_auth_audit(
+                    data_dir,
+                    event="login_failed",
+                    username="admin",
+                    ip=f"198.51.100.{index}",
+                    result="failed",
+                    reason="bad_credentials",
+                    limit=25,
+                    secret="unit-session-secret",
+                    now=1000 + index,
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(append, range(40)))
+
+            records = json.loads(auth.admin_auth_audit_path(data_dir).read_text(encoding="utf-8"))
+            self.assertEqual(len(records), 25)
+            self.assertTrue(all(isinstance(record, dict) for record in records))
+            self.assertEqual(auth.auth_audit_payload(data_dir, limit=50)["count"], 25)
 
     def test_auth_status_rejects_expired_and_tampered_cookie(self) -> None:
         with TemporaryDirectory() as tmp:

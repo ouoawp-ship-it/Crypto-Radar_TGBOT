@@ -5,20 +5,19 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
-import os
 import secrets
-import threading
 import time
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
+
+from .atomic_json import locked_read_json, locked_update_json
 
 
 PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
 DEFAULT_PASSWORD_ITERATIONS = 260_000
 AUTH_STATE_FILE = "admin_auth_state.json"
 AUTH_AUDIT_FILE = "admin_auth_audit.json"
-_AUTH_FILE_LOCK = threading.Lock()
 
 
 def _b64_encode(raw: bytes) -> str:
@@ -175,22 +174,6 @@ def iso_timestamp(ts: int | float | None = None) -> str:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
-def _load_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
-
-def _save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
-
-
 def hash_for_audit(secret: str, value: str) -> str:
     text = str(value or "")
     if not text:
@@ -215,28 +198,59 @@ def check_auth_lockout(
 ) -> dict[str, Any]:
     current = int(time.time() if now is None else now)
     key = auth_failure_key(secret, username, ip)
-    with _AUTH_FILE_LOCK:
-        state = _load_json(admin_auth_state_path(Path(data_dir)), {"failures": {}})
-        failures = state.get("failures") if isinstance(state, dict) else {}
-        if not isinstance(failures, dict):
-            failures = {}
-        entry = failures.get(key)
-        if not isinstance(entry, dict):
-            return {"locked": False, "retry_after_sec": 0, "key": key, "count": 0}
-        locked_until = int(entry.get("locked_until", 0) or 0)
-        if locked_until > current:
+    path = admin_auth_state_path(Path(data_dir))
+    state = locked_read_json(path, {"failures": {}})
+    failures = state.get("failures") if isinstance(state, dict) else {}
+    if not isinstance(failures, dict):
+        failures = {}
+    entry = failures.get(key)
+    if not isinstance(entry, dict):
+        return {"locked": False, "retry_after_sec": 0, "key": key, "count": 0}
+    locked_until = int(entry.get("locked_until", 0) or 0)
+    if locked_until > current:
+        return {
+            "locked": True,
+            "retry_after_sec": max(1, locked_until - current),
+            "key": key,
+            "count": int(entry.get("count", 0) or 0),
+        }
+    first_failed_at = int(entry.get("first_failed_at", 0) or 0)
+    if first_failed_at and current - first_failed_at > max(1, int(window_sec or 900)):
+        cleanup_result: dict[str, int] = {"count": 0, "locked_until": 0}
+
+        def remove_expired(raw_state: Any) -> dict[str, Any]:
+            normalized = raw_state if isinstance(raw_state, dict) else {"failures": {}}
+            current_failures = normalized.get("failures")
+            if not isinstance(current_failures, dict):
+                current_failures = {}
+            current_entry = current_failures.get(key)
+            if not isinstance(current_entry, dict):
+                normalized["failures"] = current_failures
+                return normalized
+            entry_first_failed_at = int(current_entry.get("first_failed_at", 0) or 0)
+            entry_locked_until = int(current_entry.get("locked_until", 0) or 0)
+            expired = (
+                entry_locked_until <= current
+                and entry_first_failed_at
+                and current - entry_first_failed_at > max(1, int(window_sec or 900))
+            )
+            if expired:
+                current_failures.pop(key, None)
+            else:
+                cleanup_result["count"] = int(current_entry.get("count", 0) or 0)
+                cleanup_result["locked_until"] = entry_locked_until
+            normalized["failures"] = current_failures
+            return normalized
+
+        locked_update_json(path, remove_expired, {"failures": {}})
+        if cleanup_result["locked_until"] > current:
             return {
                 "locked": True,
-                "retry_after_sec": max(1, locked_until - current),
+                "retry_after_sec": max(1, cleanup_result["locked_until"] - current),
                 "key": key,
-                "count": int(entry.get("count", 0) or 0),
+                "count": cleanup_result["count"],
             }
-        first_failed_at = int(entry.get("first_failed_at", 0) or 0)
-        if first_failed_at and current - first_failed_at > max(1, int(window_sec or 900)):
-            failures.pop(key, None)
-            state["failures"] = failures
-            _save_json(admin_auth_state_path(Path(data_dir)), state)
-            return {"locked": False, "retry_after_sec": 0, "key": key, "count": 0}
+        return {"locked": False, "retry_after_sec": 0, "key": key, "count": cleanup_result["count"]}
     return {"locked": False, "retry_after_sec": 0, "key": key, "count": int(entry.get("count", 0) or 0)}
 
 
@@ -254,11 +268,11 @@ def record_auth_failure(
     current = int(time.time() if now is None else now)
     key = auth_failure_key(secret, username, ip)
     limit = max(1, int(max_failures or 5))
-    with _AUTH_FILE_LOCK:
-        path = admin_auth_state_path(Path(data_dir))
-        state = _load_json(path, {"failures": {}})
-        if not isinstance(state, dict):
-            state = {"failures": {}}
+    path = admin_auth_state_path(Path(data_dir))
+    result = {"locked": False, "locked_until": 0, "count": 0}
+
+    def add_failure(raw_state: Any) -> dict[str, Any]:
+        state = raw_state if isinstance(raw_state, dict) else {"failures": {}}
         failures = state.get("failures")
         if not isinstance(failures, dict):
             failures = {}
@@ -282,29 +296,32 @@ def record_auth_failure(
         })
         failures[key] = entry
         state["failures"] = failures
-        _save_json(path, state)
+        result.update({"locked": locked, "locked_until": locked_until, "count": count})
+        return state
+
+    locked_update_json(path, add_failure, {"failures": {}})
     return {
-        "locked": locked,
-        "retry_after_sec": max(0, locked_until - current) if locked else 0,
+        "locked": bool(result["locked"]),
+        "retry_after_sec": max(0, int(result["locked_until"]) - current) if result["locked"] else 0,
         "key": key,
-        "count": count,
+        "count": int(result["count"]),
     }
 
 
 def clear_auth_failures(data_dir: Path, secret: str, username: str, ip: str) -> None:
     key = auth_failure_key(secret, username, ip)
-    with _AUTH_FILE_LOCK:
-        path = admin_auth_state_path(Path(data_dir))
-        state = _load_json(path, {"failures": {}})
-        if not isinstance(state, dict):
-            return
+    path = admin_auth_state_path(Path(data_dir))
+
+    def remove_failure(raw_state: Any) -> dict[str, Any]:
+        state = raw_state if isinstance(raw_state, dict) else {"failures": {}}
         failures = state.get("failures")
         if not isinstance(failures, dict):
-            return
-        if key in failures:
-            failures.pop(key, None)
-            state["failures"] = failures
-            _save_json(path, state)
+            failures = {}
+        failures.pop(key, None)
+        state["failures"] = failures
+        return state
+
+    locked_update_json(path, remove_failure, {"failures": {}})
 
 
 def append_auth_audit(
@@ -329,20 +346,21 @@ def append_auth_audit(
         "result": str(result or ""),
         "reason": str(reason or ""),
     }
-    with _AUTH_FILE_LOCK:
-        path = admin_auth_audit_path(Path(data_dir))
-        records = _load_json(path, [])
-        if not isinstance(records, list):
-            records = []
+    path = admin_auth_audit_path(Path(data_dir))
+    max_count = max(1, int(limit or 500))
+
+    def append_record(raw_records: Any) -> list[dict[str, Any]]:
+        records = list(raw_records) if isinstance(raw_records, list) else []
         records.append(record)
-        max_count = max(1, int(limit or 500))
         if len(records) > max_count:
             records = records[-max_count:]
-        _save_json(path, records)
+        return records
+
+    locked_update_json(path, append_record, [])
 
 
 def auth_audit_payload(data_dir: Path, *, limit: int = 50) -> dict[str, Any]:
-    records = _load_json(admin_auth_audit_path(Path(data_dir)), [])
+    records = locked_read_json(admin_auth_audit_path(Path(data_dir)), [])
     if not isinstance(records, list):
         records = []
     safe_limit = max(1, min(int(limit or 50), 500))

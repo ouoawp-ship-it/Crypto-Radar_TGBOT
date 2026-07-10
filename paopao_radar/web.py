@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -33,7 +34,10 @@ from .auth import (
     verify_session_value,
     verify_session_value_detailed,
 )
+from .atomic_json import locked_read_json, locked_update_json, locked_write_json
 from .config import BASE_DIR, ENV_FILE, Settings, load_env_file, normalize_ai_model
+from .runtime_cache import get_or_set as runtime_cache_get_or_set
+from .runtime_cache import invalidate as invalidate_runtime_cache
 from .storage import JsonStore
 from .web_services.api_core import (
     api_error,
@@ -111,6 +115,9 @@ MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
 STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
 AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
+DASHBOARD_SERVICE_CACHE_TTL_SEC = 5
+DASHBOARD_GIT_CACHE_TTL_SEC = 30
+STABILITY_FILE_CACHE_TTL_SEC = 10
 WEB_CONFIG_KEYS = {
     "WEB_HOST",
     "WEB_PORT",
@@ -691,6 +698,8 @@ def restore_env_backup(name: str, *, path: Path | None = None) -> dict[str, Any]
     load_env_file(env_path)
     after = read_env_values(env_path)
     changed = sorted(key for key in set(before) | set(after) if before.get(key, "") != after.get(key, ""))
+    invalidate_runtime_cache("dashboard:")
+    invalidate_runtime_cache("ops:")
     return {
         "ok": True,
         "restored": backup.name,
@@ -1268,6 +1277,8 @@ def write_env_updates(
         else:
             os.environ.pop(key, None)
     load_env_file(env_path)
+    invalidate_runtime_cache("dashboard:")
+    invalidate_runtime_cache("ops:")
     return {
         "ok": True,
         "changed": sorted(normalized),
@@ -1317,6 +1328,9 @@ def run_cli_action(name: str) -> dict[str, Any]:
     action = CLI_ACTIONS.get(name)
     if action is None:
         return {"ok": False, "returncode": 2, "stderr": "未知动作", "stdout": ""}
+    invalidate_runtime_cache("dashboard:")
+    if name in {"stable-check", "doctor", "readiness", "cleanup"}:
+        invalidate_runtime_cache("stable:")
     if name in LONG_ACTION_JOB_TYPES:
         result = create_job_payload(name, {"source": "api/action", "name": name})
         result["label"] = action["label"]
@@ -1327,6 +1341,7 @@ def run_cli_action(name: str) -> dict[str, Any]:
     if isinstance(ok_returncodes, list):
         result["ok"] = int(result.get("returncode", 0) or 0) in {int(code) for code in ok_returncodes}
     result["label"] = action["label"]
+    invalidate_runtime_cache("dashboard:")
     return result
 
 
@@ -1345,7 +1360,11 @@ def run_service_action(name: str) -> dict[str, Any]:
     service, action = item
     if action == "stop" and not name.startswith("stop-"):
         return {"ok": False, "returncode": 2, "stderr": "停止服务需要明确动作", "stdout": ""}
-    return run_subprocess(sudo_systemctl_command(service, action), timeout=30)
+    invalidate_runtime_cache("dashboard:")
+    try:
+        return run_subprocess(sudo_systemctl_command(service, action), timeout=30)
+    finally:
+        invalidate_runtime_cache("dashboard:")
 
 
 def schedule_service_action(name: str, *, delay_sec: float = 1.2) -> dict[str, Any]:
@@ -1353,13 +1372,17 @@ def schedule_service_action(name: str, *, delay_sec: float = 1.2) -> dict[str, A
     if item is None:
         return {"ok": False, "returncode": 2, "stderr": "未知服务动作", "stdout": ""}
     service, action = item
+    invalidate_runtime_cache("dashboard:")
 
     def worker() -> None:
         time.sleep(delay_sec)
-        result = run_subprocess(sudo_systemctl_command(service, action), timeout=30)
-        sys.stderr.write(
-            f"[web] delayed {action} {service}: ok={result.get('ok')} returncode={result.get('returncode')}\n"
-        )
+        try:
+            result = run_subprocess(sudo_systemctl_command(service, action), timeout=30)
+            sys.stderr.write(
+                f"[web] delayed {action} {service}: ok={result.get('ok')} returncode={result.get('returncode')}\n"
+            )
+        finally:
+            invalidate_runtime_cache("dashboard:")
 
     thread = threading.Thread(target=worker, name=f"web-{action}-{service}", daemon=True)
     thread.start()
@@ -1513,7 +1536,7 @@ def command_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def service_status(service: str) -> dict[str, Any]:
+def _load_service_status(service: str) -> dict[str, Any]:
     if not command_exists("systemctl"):
         return {"service": service, "available": False, "active": "unknown", "enabled": "unknown"}
     active = run_subprocess(["systemctl", "is-active", service], timeout=8)
@@ -1527,7 +1550,16 @@ def service_status(service: str) -> dict[str, Any]:
     }
 
 
-def git_info() -> dict[str, str]:
+def service_status(service: str) -> dict[str, Any]:
+    cached = runtime_cache_get_or_set(
+        f"dashboard:service:{service}",
+        DASHBOARD_SERVICE_CACHE_TTL_SEC,
+        lambda: _load_service_status(service),
+    )
+    return dict(cached)
+
+
+def _load_git_info() -> dict[str, str]:
     version_path = BASE_DIR / "VERSION"
     version = version_path.read_text(encoding="utf-8", errors="ignore").strip() if version_path.exists() else "unknown"
     commit = run_subprocess(["git", "rev-parse", "--short", "HEAD"], timeout=10)
@@ -1539,6 +1571,11 @@ def git_info() -> dict[str, str]:
         "branch": branch["stdout"].strip() or "unknown",
         "subject": subject["stdout"].strip() or "",
     }
+
+
+def git_info() -> dict[str, str]:
+    cached = runtime_cache_get_or_set("dashboard:git", DASHBOARD_GIT_CACHE_TTL_SEC, _load_git_info)
+    return dict(cached)
 
 
 def percent_value(used: float | int | None, total: float | int | None) -> float | None:
@@ -3619,12 +3656,7 @@ def stability_record_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def load_stability_history(data_dir: Path | None = None, limit: int = STABILITY_HISTORY_LIMIT) -> list[dict[str, Any]]:
     path = stability_history_path(data_dir)
-    if not path.exists():
-        return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    payload = locked_read_json(path, [], quarantine_corrupt=True)
     rows = payload if isinstance(payload, list) else payload.get("records", []) if isinstance(payload, dict) else []
     records = [row for row in rows if isinstance(row, dict)]
     return records[: max(1, min(STABILITY_HISTORY_LIMIT, int(limit or STABILITY_HISTORY_LIMIT)))]
@@ -3639,64 +3671,76 @@ def save_stability_snapshot(
     base_dir.mkdir(parents=True, exist_ok=True)
     latest_path = stability_latest_path(base_dir)
     history_path = stability_history_path(base_dir)
-    previous_records = load_stability_history(base_dir, limit=limit)
-    provisional_record = stability_record_from_snapshot(snapshot)
     max_records = max(1, min(STABILITY_HISTORY_LIMIT, int(limit or STABILITY_HISTORY_LIMIT)))
-    provisional_records = [provisional_record, *previous_records][:max_records]
-    snapshot["stability_history"] = {
-        "latest_path": str(latest_path),
-        "history_path": str(history_path),
-        "latest": provisional_record,
-        "records": provisional_records,
-        "count": len(provisional_records),
-    }
-    snapshot["release_readiness"] = build_release_readiness(snapshot)
-    record = stability_record_from_snapshot(snapshot)
-    records = [record, *previous_records]
-    trimmed = records[:max_records]
-    snapshot["stability_history"] = {
-        "latest_path": str(latest_path),
-        "history_path": str(history_path),
-        "latest": record,
-        "records": trimmed,
-        "count": len(trimmed),
-    }
-    snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
-    snapshot["problem_center"] = build_problem_center(snapshot, load_problem_state(base_dir))
-    snapshot["release_readiness"] = build_release_readiness(snapshot)
-    snapshot["deployment_acceptance"] = build_deployment_acceptance(snapshot)
-    record = stability_record_from_snapshot(snapshot)
-    trimmed = [record, *previous_records][:max_records]
-    snapshot["stability_history"] = {
-        "latest_path": str(latest_path),
-        "history_path": str(history_path),
-        "latest": record,
-        "records": trimmed,
-        "count": len(trimmed),
-    }
-    snapshot["recommendations"] = build_ops_recommendations(snapshot)
-    latest_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    history_path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+    problem_state = load_problem_state(base_dir)
+    saved_record: dict[str, Any] = {}
+    saved_history: list[dict[str, Any]] = []
+
+    def save_under_history_lock(current: Any) -> list[dict[str, Any]]:
+        nonlocal saved_record, saved_history
+        rows = current if isinstance(current, list) else current.get("records", []) if isinstance(current, dict) else []
+        previous_records = [item for item in rows if isinstance(item, dict)][:max_records]
+
+        provisional_record = stability_record_from_snapshot(snapshot)
+        provisional_records = [provisional_record, *previous_records][:max_records]
+        snapshot["stability_history"] = {
+            "latest_path": str(latest_path),
+            "history_path": str(history_path),
+            "latest": provisional_record,
+            "records": provisional_records,
+            "count": len(provisional_records),
+        }
+        snapshot["release_readiness"] = build_release_readiness(snapshot)
+        record = stability_record_from_snapshot(snapshot)
+        trimmed = [record, *previous_records][:max_records]
+        snapshot["stability_history"] = {
+            "latest_path": str(latest_path),
+            "history_path": str(history_path),
+            "latest": record,
+            "records": trimmed,
+            "count": len(trimmed),
+        }
+        snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
+        snapshot["problem_center"] = build_problem_center(snapshot, problem_state)
+        snapshot["release_readiness"] = build_release_readiness(snapshot)
+        snapshot["deployment_acceptance"] = build_deployment_acceptance(snapshot)
+        record = stability_record_from_snapshot(snapshot)
+        trimmed = [record, *previous_records][:max_records]
+        snapshot["stability_history"] = {
+            "latest_path": str(latest_path),
+            "history_path": str(history_path),
+            "latest": record,
+            "records": trimmed,
+            "count": len(trimmed),
+        }
+        snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
+        snapshot["recommendations"] = build_ops_recommendations(snapshot)
+
+        # Serialize latest and history through the history lock so concurrent
+        # stable-check jobs cannot leave the two files pointing at different
+        # snapshots. Each individual file still uses its own atomic replace.
+        locked_write_json(latest_path, snapshot)
+        saved_record = record
+        saved_history = trimmed
+        return trimmed
+
+    locked_update_json(history_path, save_under_history_lock, [])
+    invalidate_runtime_cache("stable:")
     return {
         "saved": True,
         "latest_path": str(latest_path),
         "history_path": str(history_path),
-        "record": record,
-        "history_count": len(trimmed),
+        "record": saved_record,
+        "history_count": len(saved_history),
     }
 
 
-def stability_history_payload(data_dir: Path | None = None, limit: int = 8) -> dict[str, Any]:
-    base_dir = data_dir or Settings.load().data_dir
+def _load_stability_history_payload(base_dir: Path, limit: int) -> dict[str, Any]:
     latest_path = stability_latest_path(base_dir)
     latest_record: dict[str, Any] | None = None
-    if latest_path.exists():
-        try:
-            latest_snapshot = json.loads(latest_path.read_text(encoding="utf-8"))
-            if isinstance(latest_snapshot, dict):
-                latest_record = stability_record_from_snapshot(latest_snapshot)
-        except Exception:
-            latest_record = None
+    latest_snapshot = locked_read_json(latest_path, {}, quarantine_corrupt=True)
+    if isinstance(latest_snapshot, dict) and latest_snapshot:
+        latest_record = stability_record_from_snapshot(latest_snapshot)
     records = load_stability_history(base_dir, limit=limit)
     return {
         "latest_path": str(latest_path),
@@ -3705,6 +3749,18 @@ def stability_history_payload(data_dir: Path | None = None, limit: int = 8) -> d
         "records": records,
         "count": len(records),
     }
+
+
+def stability_history_payload(data_dir: Path | None = None, limit: int = 8) -> dict[str, Any]:
+    base_dir = data_dir or Settings.load().data_dir
+    safe_limit = max(1, min(STABILITY_HISTORY_LIMIT, int(limit or 8)))
+    cache_key = f"stable:history:{base_dir.resolve()}:{safe_limit}"
+    cached = runtime_cache_get_or_set(
+        cache_key,
+        STABILITY_FILE_CACHE_TTL_SEC,
+        lambda: _load_stability_history_payload(base_dir, safe_limit),
+    )
+    return copy.deepcopy(cached)
 
 
 def ops_snapshot_payload() -> dict[str, Any]:

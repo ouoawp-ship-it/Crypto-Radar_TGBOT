@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any
 
+from .atomic_json import locked_read_json, locked_update_json, locked_write_json
 from .config import Settings
 
 
@@ -109,14 +109,8 @@ def _prompt_path(settings: Settings | None = None, path: Path | None = None) -> 
 def load_ai_prompts(settings: Settings | None = None, path: Path | None = None) -> dict[str, Any]:
     prompt_path = _prompt_path(settings, path)
     defaults = default_prompts()
-    loaded: dict[str, Any] = {}
-    if prompt_path.exists():
-        try:
-            data = json.loads(prompt_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                loaded = data
-        except Exception:
-            loaded = {}
+    data = locked_read_json(prompt_path, {})
+    loaded = data if isinstance(data, dict) else {}
     prompts = {
         key: str(loaded.get(key) or defaults[key]).strip() or defaults[key]
         for key in PROMPT_KEYS
@@ -137,8 +131,7 @@ def save_ai_prompts(
     path: Path | None = None,
 ) -> dict[str, Any]:
     prompt_path = _prompt_path(settings, path)
-    current = load_ai_prompts(settings, prompt_path)["prompts"]
-    changed: list[str] = []
+    validated_updates: dict[str, str] = {}
     for key in PROMPT_KEYS:
         if key not in updates:
             continue
@@ -147,15 +140,29 @@ def save_ai_prompts(
             return {"ok": False, "error": f"{key} 不能为空"}
         if len(value) > MAX_PROMPT_LEN:
             return {"ok": False, "error": f"{key} 不能超过 {MAX_PROMPT_LEN} 字符"}
-        if value != current[key]:
-            current[key] = value
-            changed.append(key)
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        **current,
-        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    prompt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        validated_updates[key] = value
+
+    defaults = default_prompts()
+    changed: list[str] = []
+
+    def merge_prompts(raw_payload: Any) -> dict[str, str]:
+        loaded = raw_payload if isinstance(raw_payload, dict) else {}
+        current = {
+            key: str(loaded.get(key) or defaults[key]).strip() or defaults[key]
+            for key in PROMPT_KEYS
+        }
+        for key in PROMPT_KEYS:
+            value = validated_updates.get(key)
+            if value is not None and value != current[key]:
+                current[key] = value
+                changed.append(key)
+        return {
+            **current,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    payload = locked_update_json(prompt_path, merge_prompts, {})
+    current = {key: str(payload[key]) for key in PROMPT_KEYS}
     return {
         "ok": True,
         "path": str(prompt_path),
@@ -168,11 +175,7 @@ def save_ai_prompts(
 def reset_ai_prompts(settings: Settings | None = None, path: Path | None = None) -> dict[str, Any]:
     prompt_path = _prompt_path(settings, path)
     defaults = default_prompts()
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(
-        json.dumps({**defaults, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    locked_write_json(prompt_path, {**defaults, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")})
     return {
         "ok": True,
         "path": str(prompt_path),

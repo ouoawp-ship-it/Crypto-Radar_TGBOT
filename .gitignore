@@ -2,8 +2,13 @@
 __pycache__/
 *.py[cod]
 
-.env.oi
 .env
+.env.*
+!.env.example
+!.env.oi.example
+
+*.bak
+*.bak.*
 
 *.bat
 crypto_monitor_merged.py
@@ -18,7 +23,10 @@ crypto_monitor_merged.py
 data/*.json
 data/*.db
 data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
 data/*.log
+data/*.lock
 data/*.tmp
 data/*.txt
 data/charts/
@@ -33,3 +41,6 @@ frontend/.next/
 frontend/out/
 frontend/.turbo/
 frontend/tsconfig.tsbuildinfo
+node_modules/
+.next/
+logs/

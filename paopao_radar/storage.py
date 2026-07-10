@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import json
-import os
-import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
+
+from .atomic_json import locked_read_json, locked_update_json, locked_write_json
+
+
+T = TypeVar("T")
 
 
 class JsonStore:
@@ -13,33 +15,23 @@ class JsonStore:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def load(self, path: Path, default: Any) -> Any:
-        if not path.exists():
-            return default
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            corrupt = path.with_suffix(path.suffix + f".corrupt.{int(time.time())}")
-            try:
-                path.replace(corrupt)
-            except Exception:
-                pass
-            return default
+        return locked_read_json(path, default, quarantine_corrupt=True)
 
     def save(self, path: Path, data: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        text = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        locked_write_json(path, data)
+
+    def update(self, path: Path, update_fn: Callable[[Any], T], default: Any) -> T:
+        return locked_update_json(path, update_fn, default)
 
     def append_record(self, path: Path, record: dict[str, Any], limit: int = 2000) -> None:
-        records = self.load(path, [])
-        if not isinstance(records, list):
-            records = []
-        records.append(record)
-        if limit > 0 and len(records) > limit:
-            records = records[-limit:]
-        self.save(path, records)
+        def append(records: Any) -> list[Any]:
+            history = list(records) if isinstance(records, list) else []
+            history.append(record)
+            if limit > 0 and len(history) > limit:
+                history = history[-limit:]
+            return history
+
+        self.update(path, append, [])
 
     def exists_summary(self, paths: list[Path]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []

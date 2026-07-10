@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..config import BASE_DIR, Settings
+from ..runtime_cache import invalidate as invalidate_runtime_cache
 from .api_core import api_list_payload
 
 
@@ -27,6 +28,14 @@ JOB_REPORT_TAIL_LIMIT = 12000
 CONCURRENT_GUARD_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test", "outcome-scan", "lifecycle-scan", "lifecycle-backfill"}
 ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
 STABLE_CHECK_ATTENTION_RE = re.compile(r"(状态|摘要|网络重试噪声|日志稳定性):\s*(.+)")
+
+
+def invalidate_job_runtime_cache(job_type: str = "") -> None:
+    invalidate_runtime_cache("dashboard:")
+    if job_type in {"stable-check", "doctor", "readiness", "cleanup"}:
+        invalidate_runtime_cache("stable:")
+    if job_type == "update-check":
+        invalidate_runtime_cache("ops:")
 
 
 def zh(text: str) -> str:
@@ -672,18 +681,25 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
         return None
     if job.get("status") != "running":
         return job
+    job_type = str(job.get("job_type") or "")
+    invalidate_job_runtime_cache(job_type)
+
+    def finish_job(**kwargs: Any) -> dict[str, Any] | None:
+        result = store.finish_job(job_id, **kwargs)
+        invalidate_job_runtime_cache(job_type)
+        return result
+
     try:
         spec = validate_job_type(str(job["job_type"]))
     except ValueError as exc:
-        return store.finish_job(job_id, status="failed", returncode=2, error=str(exc), stderr_tail=str(exc))
+        return finish_job(status="failed", returncode=2, error=str(exc), stderr_tail=str(exc))
     preflight_error = _preflight_command(spec)
     if preflight_error:
-        return store.finish_job(job_id, status="failed", returncode=127, error=preflight_error, stderr_tail=preflight_error)
+        return finish_job(status="failed", returncode=127, error=preflight_error, stderr_tail=preflight_error)
     if spec.internal:
         try:
             returncode, stdout, stderr = _run_api_self_test()
-            return store.finish_job(
-                job_id,
+            return finish_job(
                 status="success" if returncode == 0 else "failed",
                 returncode=returncode,
                 stdout_tail=stdout,
@@ -692,7 +708,7 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
             )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
-            return store.finish_job(job_id, status="failed", returncode=1, error=message, stderr_tail=message)
+            return finish_job(status="failed", returncode=1, error=message, stderr_tail=message)
     try:
         completed = subprocess.run(
             spec.command,
@@ -705,8 +721,7 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
             shell=False,
         )
         status = job_status_from_returncode(spec, int(completed.returncode))
-        return store.finish_job(
-            job_id,
+        return finish_job(
             status=status,
             returncode=int(completed.returncode),
             stdout_tail=completed.stdout,
@@ -717,8 +732,7 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
         stderr = exc.stderr if isinstance(exc.stderr, str) else ""
         message = zh(r"\u4efb\u52a1\u8d85\u65f6\uff1a") + f"{spec.timeout_sec}s"
-        return store.finish_job(
-            job_id,
+        return finish_job(
             status="timeout",
             returncode=124,
             stdout_tail=stdout,
@@ -727,7 +741,7 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
         )
     except OSError as exc:
         message = f"{type(exc).__name__}: {exc}"
-        return store.finish_job(job_id, status="failed", returncode=127, stderr_tail=message, error=message)
+        return finish_job(status="failed", returncode=127, stderr_tail=message, error=message)
 
 
 def run_job_async(store: JobStore, job_id: int) -> None:
@@ -765,12 +779,14 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         return {"ok": False, "message": message, "error": message, "code": "job_create_failed"}
+    invalidate_job_runtime_cache(job_type)
     reused = bool(job.get("reused"))
     if start and not reused:
         try:
             run_job_async(store, int(job["id"]))
         except Exception as exc:
             store.finish_job(int(job["id"]), status="failed", returncode=1, error=f"{type(exc).__name__}: {exc}")
+            invalidate_job_runtime_cache(job_type)
             job = store.get_job(int(job["id"])) or job
     return {
         "ok": True,
@@ -833,6 +849,9 @@ def job_detail_payload(job_id: int, *, settings: Settings | None = None) -> dict
 def cancel_job_payload(job_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
     store = store_for_settings(settings)
     result = store.cancel_job(int(job_id or 0))
+    if result.get("ok"):
+        job = result.get("job") if isinstance(result.get("job"), dict) else {}
+        invalidate_job_runtime_cache(str(job.get("job_type") or ""))
     result.setdefault("message", zh(r"\u4efb\u52a1\u53d6\u6d88\u8bf7\u6c42\u5df2\u5904\u7406"))
     return result
 
@@ -907,5 +926,6 @@ def cleanup_jobs_payload(
         retention_days=int(retention_days if retention_days not in {None, ""} else loaded.web_jobs_retention_days),
         limit=int(limit if limit not in {None, ""} else loaded.web_jobs_limit),
     )
+    invalidate_job_runtime_cache("cleanup")
     result["message"] = zh(r"\u65e7\u4efb\u52a1\u6e05\u7406\u5b8c\u6210")
     return result

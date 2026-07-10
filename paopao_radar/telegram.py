@@ -17,6 +17,9 @@ from .storage import JsonStore
 from .time_windows import CST
 
 
+MAX_TELEGRAM_HISTORY_ITEMS = 1000
+
+
 @dataclass
 class PushResult:
     status: str
@@ -782,16 +785,40 @@ class TelegramGateway:
         data = self.store.load(self.settings.tg_push_history_path, [])
         return data if isinstance(data, list) else []
 
-    def _save_history(self, history: list[dict[str, Any]]) -> None:
+    def _append_history_record(self, record: dict[str, Any]) -> None:
         now = int(time.time())
         retention_days = max(1, int(self.settings.tg_push_history_retention_days))
         cutoff = now - retention_days * 86400
-        retained = [
-            record for record in history
-            if int(record.get("ts", now)) >= cutoff
-        ]
-        limit = max(100, int(self.settings.tg_push_history_limit))
-        self.store.save(self.settings.tg_push_history_path, retained[-limit:])
+        limit = min(MAX_TELEGRAM_HISTORY_ITEMS, max(100, int(self.settings.tg_push_history_limit)))
+
+        def append(history: Any) -> list[dict[str, Any]]:
+            records = history if isinstance(history, list) else []
+            retained = [
+                item for item in records
+                if isinstance(item, dict) and int(item.get("ts", now)) >= cutoff
+            ]
+            retained.append(record)
+            if len(retained) <= limit:
+                return retained
+
+            # Sent entries are the decision ledger for cooldown/hourly/daily
+            # limits.  Never let high-volume skipped or dry-run audit entries
+            # evict a still-retained sent entry, otherwise compaction could
+            # change Telegram delivery semantics.  Non-sent audit entries use
+            # the remaining bounded capacity.
+            sent_count = sum(1 for item in retained if item.get("status") == "sent")
+            audit_budget = max(0, limit - sent_count)
+            compacted_reversed: list[dict[str, Any]] = []
+            for item in reversed(retained):
+                if item.get("status") == "sent":
+                    compacted_reversed.append(item)
+                elif audit_budget > 0:
+                    compacted_reversed.append(item)
+                    audit_budget -= 1
+            compacted_reversed.reverse()
+            return compacted_reversed
+
+        self.store.update(self.settings.tg_push_history_path, append, [])
 
     def _record(
         self,
@@ -804,7 +831,7 @@ class TelegramGateway:
         reply_to_message_id: int | None = None,
     ) -> None:
         now = utc_ts()
-        history.append({
+        record = {
             "ts": now,
             "time": datetime.now(timezone.utc).isoformat(),
             "template_id": template_id,
@@ -816,8 +843,9 @@ class TelegramGateway:
             "message_ids": result.message_ids or [],
             "reply_to_message_id": int(reply_to_message_id or 0),
             "preview": text[:240],
-        })
-        self._save_history(history)
+        }
+        history.append(record)
+        self._append_history_record(record)
         try:
             from .symbol_dossier import append_signal_events_from_push
 

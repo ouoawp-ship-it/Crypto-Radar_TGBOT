@@ -1,5 +1,36 @@
 # 泡泡抓币中文安装目录
 
+## v1.76.4 运维说明
+
+v1.76.4 增加运行期短缓存和 JSON 文件锁加固。JSON 状态文件使用跨进程 per-file lock 与原子替换，历史文件设置长度上限或使用 append-only JSONL，并继续兼容旧 JSON 数组。Dashboard 查询服务状态、Git 版本和 stable-check 最近结果时使用 5–30 秒短缓存；服务、配置、更新、诊断或 stable-check 状态变化后会主动失效缓存。
+
+公开 Next.js 前台只对只读 `/public-api/*` 请求做 10–30 秒短缓存和同请求去重；后台私有 `/api/*` 不缓存，用户主动刷新可绕过缓存。部署不会删除服务器上的 `.env.oi.bak.*` 备份；这些文件由 `.gitignore` 排除，不应提交到 Git。
+
+升级与验收：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+cat VERSION
+git rev-parse --short HEAD
+git status --short
+
+bash -n scripts/update_server.sh
+bash -n scripts/install_server.sh
+bash -n scripts/paopao_menu.sh
+bash -n scripts/check_https_deploy.sh
+.venv/bin/python -m compileall paopao_radar
+
+systemctl is-active paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai
+sudo nginx -t
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
+升级后 `VERSION` 应为 `v1.76.4`，工作区除既有运行文件外应保持干净；`.env`、`.env.*`、`*.bak`、数据库、日志、`.next` 和 `node_modules` 均不得进入提交。完整设计与回归说明见 `docs/RUNTIME_HARDENING.md`。
+
+本版本不改变 Telegram 主推送流程、生命周期评分、decision model 阈值、API contract 或数据库 schema，也不包含自动交易。
+
 ## v1.76.2 运维说明
 
 v1.76.2 修复多交易所资金费率消息的表格对齐。资金费率警报和启动预警中的“多交易所资金费率”会使用统一等宽表格展示，列包含交易所、费率/周期、上次结算、本次周期和下次结算；当周期出现 8H→4H 或 4H→1H 变化时仍保持列对齐。

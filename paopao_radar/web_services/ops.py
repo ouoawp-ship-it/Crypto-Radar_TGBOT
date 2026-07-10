@@ -5,6 +5,8 @@ import subprocess
 from typing import Any
 
 from ..config import BASE_DIR, Settings
+from ..runtime_cache import get_or_set as runtime_cache_get_or_set
+from ..runtime_cache import invalidate as invalidate_runtime_cache
 from .jobs import create_job_payload, recent_job_payload, redact_text, zh
 
 
@@ -12,7 +14,7 @@ VERSION_RE = re.compile(r"(?:当前版本|current).*?:\s*([^\s(]+)\s*\(([^)]+)\)
 REMOTE_RE = re.compile(r"(?:GitHub版本|remote|github).*?:\s*([^\s(]+)\s*\(([^)]+)\)", re.IGNORECASE)
 
 
-def _current_version() -> str:
+def _load_current_version() -> str:
     path = BASE_DIR / "VERSION"
     try:
         return path.read_text(encoding="utf-8").strip()
@@ -20,7 +22,11 @@ def _current_version() -> str:
         return ""
 
 
-def _current_commit() -> str:
+def _current_version() -> str:
+    return runtime_cache_get_or_set("ops:current-version", 30, _load_current_version)
+
+
+def _load_current_commit() -> str:
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -35,6 +41,10 @@ def _current_commit() -> str:
         return completed.stdout.strip() if completed.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _current_commit() -> str:
+    return runtime_cache_get_or_set("ops:current-commit", 30, _load_current_commit)
 
 
 def parse_update_check_output(stdout: Any, stderr: Any = "") -> dict[str, Any]:
@@ -124,4 +134,6 @@ def update_check_status_payload(*, settings: Settings | None = None) -> dict[str
 
 
 def create_update_check_job(*, settings: Settings | None = None) -> dict[str, Any]:
+    invalidate_runtime_cache("ops:")
+    invalidate_runtime_cache("dashboard:")
     return create_job_payload("update-check", {"source": "web-update-check"}, settings=settings)

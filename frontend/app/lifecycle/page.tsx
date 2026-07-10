@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { PageTitle } from "@/components/PageTitle";
-import { getLifecycleSummary, getLifecycles } from "@/lib/api";
+import { getLifecycleSummary, getLifecycles, invalidatePublicApiCache } from "@/lib/api";
 import { compact, pct, safeText } from "@/lib/format";
 import type { LifecycleItem, LifecycleSummaryPayload } from "@/lib/types";
 
@@ -20,7 +20,8 @@ export default function LifecyclePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function load() {
+  async function load(refresh = false) {
+    if (refresh) invalidatePublicApiCache();
     setLoading(true);
     setError("");
     try {
@@ -42,7 +43,7 @@ export default function LifecyclePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (error && !items.length) return <ErrorState message={error} onRetry={load} />;
+  if (error && !items.length) return <ErrorState message={error} onRetry={() => load(true)} />;
   const s = summary.summary || {};
 
   return (
@@ -87,7 +88,7 @@ export default function LifecyclePage() {
           <option value="中">中风险</option>
           <option value="高">高风险</option>
         </select>
-        <button className="btn" onClick={load} disabled={loading}>
+        <button className="btn" onClick={() => load(true)} disabled={loading}>
           {loading ? "加载中" : "筛选"}
         </button>
       </section>

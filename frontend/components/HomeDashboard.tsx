@@ -10,7 +10,7 @@ import { ErrorState } from "./ErrorState";
 import { MetricCard } from "./MetricCard";
 import { PageTitle } from "./PageTitle";
 import { SignalCard } from "./SignalCard";
-import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getLifecycleSummary, getOutcomeStats, getSignalStats, getLatestSignals, type HomeDashboardData } from "@/lib/api";
+import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getLifecycleSummary, getOutcomeStats, getSignalStats, getLatestSignals, invalidatePublicApiCache, type HomeDashboardData } from "@/lib/api";
 import { compact, pct, ratioPct, safeText } from "@/lib/format";
 
 function readNumber(record: Record<string, unknown> | undefined, ...keys: string[]) {
@@ -41,6 +41,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
   const [error, setError] = useState("");
 
   async function load() {
+    invalidatePublicApiCache();
     setLoading(true);
     setError("");
     try {
