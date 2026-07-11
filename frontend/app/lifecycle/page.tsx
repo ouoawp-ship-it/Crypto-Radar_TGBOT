@@ -50,7 +50,7 @@ export default function LifecyclePage() {
     <div className="space-y-5">
       <PageTitle
         title="生命周期跟随"
-        subtitle="一个币首次出现有效信号后自动建档，持续跟随 Binance 价格、成交量、OI、CVD 和资金费率变化。"
+        subtitle="一个币首次出现有效信号后自动建档，持续跟随 Binance 价格、成交量、OI、CVD 和资金费率变化。仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。"
         tags={["Binance 核心口径", "单币生命周期", "不执行自动交易"]}
       />
       <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Any
 
 from ..config import Settings
@@ -15,8 +17,16 @@ from ..lifecycle_store import (
     normalize_lifecycle_symbol,
     public_lifecycle_event,
     public_lifecycle_item,
+    public_lifecycle_redact,
 )
 from .api_core import api_error, api_ok, redact_api_payload
+
+
+PUBLIC_SNAPSHOT_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(?:token|secret|password|cookie|authorization|chat_?id|topic_?id|message_?id|"
+    r"dedup_?key|api_?key|payload_?json|text_?html|database|"
+    r"(?:^|_)(?:db|server|file)?_?path(?:_|$)|(?:^|_)(?:raw|config|audit|logs?|jobs?)(?:_|$))"
+)
 
 
 def _settings(settings: Settings | None = None) -> Settings:
@@ -116,7 +126,7 @@ def lifecycle_detail_payload(
     if public:
         lifecycle = public_lifecycle_item(lifecycle)
         events = [public_lifecycle_event(item) for item in events]
-        snapshots = [redact_api_payload(_public_snapshot(item)) for item in snapshots]
+        snapshots = [_public_snapshot(item) for item in snapshots]
     data = {
         "symbol": normalized,
         "lifecycle": lifecycle,
@@ -216,7 +226,20 @@ def _public_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         "oi_value_usdt", "futures_cvd_delta", "spot_cvd_delta", "funding_rate", "market_cap_usd",
         "metrics", "created_at",
     }
-    return {key: value for key, value in item.items() if key in allowed}
+    return _redact_public_nested({key: value for key, value in item.items() if key in allowed})
+
+
+def _redact_public_nested(value: Any) -> Any:
+    """Drop private keys at every depth and redact sensitive scalar values."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _redact_public_nested(item)
+            for key, item in value.items()
+            if not PUBLIC_SNAPSHOT_SENSITIVE_KEY_RE.search(str(key))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_public_nested(item) for item in value]
+    return public_lifecycle_redact(value)
 
 
 def public_lifecycle_summary_payload(**kwargs: Any) -> dict[str, Any]:

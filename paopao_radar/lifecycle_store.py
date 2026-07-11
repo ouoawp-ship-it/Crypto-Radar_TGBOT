@@ -136,8 +136,53 @@ class LifecycleStore:
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """Open one atomic write transaction for a lifecycle processing batch."""
         with self.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin_immediate_with_retry(conn)
             yield conn
+
+    @staticmethod
+    def _begin_immediate_with_retry(
+        conn: sqlite3.Connection,
+        *,
+        attempts: int = 5,
+        base_delay_sec: float = 0.05,
+    ) -> None:
+        """Acquire the SQLite writer lock with a small bounded backoff.
+
+        ``busy_timeout`` handles the normal case.  The explicit retry protects
+        short bursts where another radar worker is between transactions and is
+        intentionally kept bounded so a lifecycle scan cannot stall the bot.
+        """
+        for attempt in range(max(1, int(attempts))):
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as exc:
+                reason = str(exc).lower()
+                if not any(token in reason for token in ("locked", "busy")):
+                    raise
+                if attempt + 1 >= max(1, int(attempts)):
+                    raise
+                time.sleep(max(0.0, float(base_delay_sec)) * (2**attempt))
+
+    @staticmethod
+    def _ensure_index(
+        conn: sqlite3.Connection,
+        *,
+        name: str,
+        table: str,
+        columns: tuple[str, ...],
+    ) -> None:
+        """Create an index and repair an older index with the same name."""
+        existing = tuple(
+            str(row[2])
+            for row in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
+        )
+        if existing and existing != columns:
+            conn.execute(f'DROP INDEX IF EXISTS "{name}"')
+            existing = ()
+        if not existing:
+            quoted_columns = ", ".join(f'"{column}"' for column in columns)
+            conn.execute(f'CREATE INDEX IF NOT EXISTS "{name}" ON "{table}" ({quoted_columns})')
 
     def ensure_schema(self, conn: sqlite3.Connection | None = None) -> None:
         own_conn = conn is None
@@ -158,7 +203,7 @@ class LifecycleStore:
                     first_signal_template TEXT,
                     first_signal_type TEXT,
                     first_signal_level TEXT,
-                    first_signal_level_rank INTEGER,
+                    first_signal_level_rank INTEGER DEFAULT 0,
                     first_signal_score REAL,
                     first_signal_excerpt TEXT,
                     first_price REAL,
@@ -172,7 +217,7 @@ class LifecycleStore:
                     first_funding_rate REAL,
                     current_state TEXT NOT NULL,
                     highest_level TEXT,
-                    highest_level_rank INTEGER,
+                    highest_level_rank INTEGER DEFAULT 0,
                     lifecycle_score REAL DEFAULT 0,
                     risk_score REAL DEFAULT 0,
                     latest_signal_id INTEGER,
@@ -210,7 +255,7 @@ class LifecycleStore:
                     event_time TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     event_level TEXT,
-                    event_level_rank INTEGER,
+                    event_level_rank INTEGER DEFAULT 0,
                     signal_id INTEGER,
                     source_module TEXT,
                     source_template TEXT,
@@ -259,11 +304,46 @@ class LifecycleStore:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_lifecycles_state ON signal_lifecycles(current_state)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_lifecycles_updated ON signal_lifecycles(updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle_events_symbol ON lifecycle_events(symbol, event_time DESC)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle_events_type ON lifecycle_events(event_type)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle_snapshots_symbol ON lifecycle_metric_snapshots(symbol, snapshot_time DESC)")
+            self._ensure_index(
+                conn,
+                name="idx_signal_lifecycles_state",
+                table="signal_lifecycles",
+                columns=("current_state", "is_active"),
+            )
+            self._ensure_index(
+                conn,
+                name="idx_signal_lifecycles_updated",
+                table="signal_lifecycles",
+                columns=("updated_at",),
+            )
+            self._ensure_index(
+                conn,
+                name="idx_lifecycle_events_symbol_time",
+                table="lifecycle_events",
+                columns=("symbol", "event_time"),
+            )
+            self._ensure_index(
+                conn,
+                name="idx_lifecycle_events_type",
+                table="lifecycle_events",
+                columns=("event_type", "event_time"),
+            )
+            self._ensure_index(
+                conn,
+                name="idx_lifecycle_snapshots_symbol_tf_time",
+                table="lifecycle_metric_snapshots",
+                columns=("symbol", "timeframe", "snapshot_time"),
+            )
+            # Compatibility aliases retained for older diagnostics/tests.  The
+            # exact v1.77 indexes above are the ones used by new queries.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_events_symbol "
+                "ON lifecycle_events(symbol, event_time DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_snapshots_symbol "
+                "ON lifecycle_metric_snapshots(symbol, snapshot_time DESC)"
+            )
             if own_conn:
                 conn.commit()
             self._schema_ready = True
@@ -565,6 +645,95 @@ class LifecycleStore:
         items = [_row_to_dict(row, json_fields=JSON_FIELDS) or {} for row in rows]
         return {"items": items, "count": len(items), "next_cursor": items[-1]["id"] if items else None}
 
+    def list_active_lifecycles(
+        self,
+        *,
+        limit: int = 80,
+        symbol: str = "",
+        exclude_symbols: set[str] | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the bounded active set used by the periodic tracker.
+
+        This intentionally returns full rows because the engine needs the
+        previous metrics JSON to detect threshold crossings.  Public list APIs
+        continue to use their compact projection.
+        """
+        safe_limit = max(1, min(int(limit or 80), 500))
+        normalized = normalize_lifecycle_symbol(symbol)
+        excluded = {
+            item
+            for item in (normalize_lifecycle_symbol(value) for value in (exclude_symbols or set()))
+            if item
+        }
+        clauses = ["is_active = 1"]
+        params: dict[str, Any] = {"limit": safe_limit}
+        if normalized:
+            clauses.append("symbol = :symbol")
+            params["symbol"] = normalized
+        if excluded:
+            placeholders: list[str] = []
+            for index, value in enumerate(sorted(excluded)):
+                key = f"excluded_{index}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            clauses.append(f"symbol NOT IN ({', '.join(placeholders)})")
+        if conn is None:
+            with self.connect() as owned_conn:
+                return self.list_active_lifecycles(
+                    limit=safe_limit,
+                    symbol=normalized,
+                    exclude_symbols=excluded,
+                    conn=owned_conn,
+                )
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM signal_lifecycles
+            WHERE {' AND '.join(clauses)}
+            ORDER BY lifecycle_score DESC, risk_score DESC, updated_at ASC, id ASC
+            LIMIT :limit
+            """,
+            params,
+        ).fetchall()
+        return [_row_to_dict(row, json_fields=JSON_FIELDS) or {} for row in rows]
+
+    def recent_signal_count(
+        self,
+        symbol: str,
+        *,
+        start_time: str,
+        end_time: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        """Count distinct lifecycle source signals in a bounded time window."""
+        normalized = normalize_lifecycle_symbol(symbol)
+        if not normalized:
+            return 0
+        if conn is None:
+            if not self.db_path.exists():
+                return 0
+            with self.connect() as owned_conn:
+                return self.recent_signal_count(
+                    normalized,
+                    start_time=start_time,
+                    end_time=end_time,
+                    conn=owned_conn,
+                )
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT signal_id)
+            FROM lifecycle_events
+            WHERE symbol = ?
+              AND signal_id IS NOT NULL
+              AND signal_id > 0
+              AND event_time >= ?
+              AND event_time <= ?
+            """,
+            (normalized, str(start_time), str(end_time)),
+        ).fetchone()
+        return int(row[0] if row is not None else 0)
+
     def summary(
         self,
         *,
@@ -710,7 +879,11 @@ def public_lifecycle_event(item: dict[str, Any]) -> dict[str, Any]:
 def public_lifecycle_redact(value: Any) -> Any:
     redacted = redact_api_payload(value)
     if isinstance(redacted, dict):
-        return {str(key): public_lifecycle_redact(item) for key, item in redacted.items()}
+        return {
+            str(key): public_lifecycle_redact(item)
+            for key, item in redacted.items()
+            if not PUBLIC_SENSITIVE_TEXT_RE.search(str(key))
+        }
     if isinstance(redacted, list):
         return [public_lifecycle_redact(item) for item in redacted]
     if isinstance(redacted, str) and PUBLIC_SENSITIVE_TEXT_RE.search(redacted):

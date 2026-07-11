@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.77.0 说明
+
+v1.77.0 完成 Binance-Centric Signal Lifecycle Tracker 的生产加固。系统会在单币首次有效信号后建立独立的 `data/lifecycle.db` 档案，把后续同币信号归并到同一生命周期，并识别同级确认、15m → 1h → 4h → 24h 周期升级、短线冷却、风险升高、启动失败和生命周期结束。历史回填、增量扫描与单币状态可通过 `lifecycle-backfill`、`lifecycle-scan` 和 `lifecycle-status` CLI 执行；主循环按配置间隔刷新活跃生命周期。
+
+生命周期核心评分和状态流转只使用 Binance 价格、K 线/成交量、当前与历史 OI、合约 taker buy/sell 近似 CVD、现货 aggTrades 近似 CVD 和资金费率。OKX、Bybit 与 Hyperliquid 只提供当前价格、资金费率及相对 Binance 偏差的旁路观察，绝不参与 `lifecycle_score`、`risk_score` 或状态流转。所有请求复用连接、TTL 缓存、超时降级和最多 8 个 worker 的有界预取；现货 CVD 或旁路交易所不可用不会阻断扫描。
+
+公开 `/public-api/lifecycle/*` 使用字段投影与递归脱敏，私有 `/api/lifecycle/*` 继续受既有登录和 CSRF 保护。Next.js `/lifecycle`、首页概览和 `/coin/[symbol]` 展示生命周期状态、事件时间线及 Binance 跟随指标。生命周期 Telegram 提醒是独立、可开关、去重和限流的辅助能力，默认关闭，不改变既有 Telegram 主推送流程。
+
+仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.76.4 说明
 
 v1.76.4 完成 Runtime Cache & File Lock Hardening。运行期 JSON 状态写入统一采用 per-file lock、临时文件、`flush + fsync` 和原子替换，历史类数据采用长度上限或 append-only JSONL，兼容读取旧 JSON 数组，避免多进程写入产生半文件并限制长期运行时的全量重写成本。

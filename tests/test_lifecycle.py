@@ -108,7 +108,7 @@ class LifecycleStoreTests(unittest.TestCase):
         self.assertIn("lifecycle_events", objects)
         self.assertIn("lifecycle_metric_snapshots", objects)
         self.assertIn("idx_signal_lifecycles_state", objects)
-        self.assertIn("idx_lifecycle_events_symbol", objects)
+        self.assertIn("idx_lifecycle_events_symbol_time", objects)
 
     def test_create_lifecycle_is_unique_by_symbol_and_event_dedupes(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -298,7 +298,7 @@ class LifecycleEngineTests(unittest.TestCase):
     def test_cli_lifecycle_commands_use_engine_helpers(self) -> None:
         with TemporaryDirectory() as tmp:
             with patch("paopao_radar.cli.Settings.load", return_value=make_settings(tmp)):
-                with patch("paopao_radar.cli.backfill_lifecycles", return_value={"ok": True, "counts": {"created": 0}}):
+                with patch("paopao_radar.cli.scan_lifecycles", return_value={"ok": True, "counts": {"created": 0}}):
                     with redirect_stdout(StringIO()) as output:
                         code = cli.main(["lifecycle-backfill", "--lookback-hours", "168", "--dry-run"])
             self.assertEqual(code, 0)

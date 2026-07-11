@@ -16,6 +16,16 @@ const groups = [
   {
     title: "决策回测接口",
     items: ["/public-api/backtest/decision", "/public-api/backtest/decision/matrix", "/public-api/backtest/decision/detail"]
+  },
+  {
+    title: "生命周期接口",
+    items: [
+      "/public-api/lifecycle/summary",
+      "/public-api/lifecycle/list",
+      "/public-api/lifecycle/detail?symbol=BTCUSDT",
+      "/public-api/lifecycle/events?symbol=BTCUSDT",
+      "/public-api/lifecycle/metrics?symbol=BTCUSDT"
+    ]
   }
 ];
 

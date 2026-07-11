@@ -166,7 +166,7 @@ class Settings:
     lifecycle_active_max_symbols: int = 80
     lifecycle_binance_cache_ttl_sec: int = 300
     lifecycle_http_timeout_sec: int = 10
-    lifecycle_telegram_enable: bool = True
+    lifecycle_telegram_enable: bool = False
     lifecycle_telegram_min_score: int = 60
     lifecycle_telegram_min_event_interval_sec: int = 3600
     lifecycle_fail_price_drop_pct: float = 8.0
@@ -400,7 +400,7 @@ class Settings:
             lifecycle_active_max_symbols=env_int("LIFECYCLE_ACTIVE_MAX_SYMBOLS", 80),
             lifecycle_binance_cache_ttl_sec=env_int("LIFECYCLE_BINANCE_CACHE_TTL_SEC", 300),
             lifecycle_http_timeout_sec=env_int("LIFECYCLE_HTTP_TIMEOUT_SEC", env_int("HTTP_TIMEOUT_SEC", 10)),
-            lifecycle_telegram_enable=env_bool("LIFECYCLE_TELEGRAM_ENABLE", True),
+            lifecycle_telegram_enable=env_bool("LIFECYCLE_TELEGRAM_ENABLE", False),
             lifecycle_telegram_min_score=env_int("LIFECYCLE_TELEGRAM_MIN_SCORE", 60),
             lifecycle_telegram_min_event_interval_sec=env_int("LIFECYCLE_TELEGRAM_MIN_EVENT_INTERVAL_SEC", 3600),
             lifecycle_fail_price_drop_pct=env_float("LIFECYCLE_FAIL_PRICE_DROP_PCT", 8.0),

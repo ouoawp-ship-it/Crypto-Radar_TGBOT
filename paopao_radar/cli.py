@@ -36,7 +36,7 @@ from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
 from .funding_alert import FundingAlertEngine
 from .liquidity_router import build_liquidity_enhancer
-from .lifecycle_engine import backfill_lifecycles, lifecycle_report_text, lifecycle_status_payload, scan_lifecycles
+from .lifecycle_engine import lifecycle_report_text, lifecycle_status_payload, scan_lifecycles
 from .maintenance import cleanup_runtime_artifacts, cleanup_structure_charts, legacy_state_report, migrate_legacy_state
 from .outcome_tracker import scan_outcomes, scan_report_text
 from .radar import RadarEngine, fmt_price
@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--limit", type=int, default=None, help="用于 outcome-scan：本次最多处理多少条信号/结果")
-    parser.add_argument("--limit-symbols", type=int, default=None, help="用于 lifecycle-scan：本次最多处理多少个币种")
+    parser.add_argument("--limit-symbols", type=int, default=None, help="用于 lifecycle-backfill/lifecycle-scan：本次最多处理多少个币种")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数；structure-radar 使用 15m/1h 这类K线周期")
@@ -163,10 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-score", type=float, default=None, help="structure-radar 临时覆盖最低推送分数")
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
-    parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 统计过去 N 小时的结构信号")
+    parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 或 lifecycle 命令的回看小时数")
     parser.add_argument("--horizon", default="", help="用于 outcome-scan：只处理 1h/4h/24h/72h 中的一个窗口")
-    parser.add_argument("--symbol", default="", help="用于 outcome-scan：只处理某个币种，例如 BTC 或 BTCUSDT")
-    parser.add_argument("--dry-run", action="store_true", help="用于 outcome-scan：只预览，不写入新结果")
+    parser.add_argument("--symbol", default="", help="用于 outcome/lifecycle 命令：只处理某个币种，例如 BTC 或 BTCUSDT")
+    parser.add_argument("--dry-run", action="store_true", help="用于 outcome/lifecycle 命令：只预览，不写数据库或发送 Telegram")
     parser.add_argument("--backfill-days", type=int, default=None, help="用于 outcome-scan：回填最近 N 天已发送信号")
     parser.add_argument("--push", action="store_true", help="用于 lifecycle-scan：对重要生命周期事件尝试 Telegram 跟随推送；真实发送仍需 --send --confirm-real-send")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
@@ -363,10 +363,20 @@ def run_outcome_scan(args: argparse.Namespace) -> int:
 
 def run_lifecycle_backfill(args: argparse.Namespace) -> int:
     settings = Settings.load()
-    result = backfill_lifecycles(
+    lookback_hours = int(getattr(args, "lookback_hours", None) or 168)
+    limit_symbols = max(
+        1,
+        min(
+            int(getattr(args, "limit_symbols", None) or settings.lifecycle_active_max_symbols or 80),
+            500,
+        ),
+    )
+    result = scan_lifecycles(
         settings=settings,
-        lookback_hours=int(getattr(args, "lookback_hours", None) or settings.lifecycle_lookback_hours or 168),
+        lookback_hours=lookback_hours,
+        limit_symbols=limit_symbols,
         dry_run=bool(getattr(args, "dry_run", False)),
+        push=False,
     )
     print(lifecycle_report_text(result))
     return 0 if result.get("ok", True) else 1
@@ -393,6 +403,37 @@ def run_lifecycle_status(args: argparse.Namespace) -> int:
     payload = lifecycle_status_payload(settings=settings, symbol=str(getattr(args, "symbol", "") or ""))
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload.get("ok", True) else 1
+
+
+def run_lifecycle_tracker_cycle(settings: Settings, args: argparse.Namespace) -> dict[str, object]:
+    """Run one isolated lifecycle cycle without changing the main push flow."""
+    if not bool(settings.lifecycle_tracker_enable):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "lifecycle_tracker_disabled",
+            "counts": {},
+        }
+    real_send = bool(getattr(args, "send", False) and getattr(args, "confirm_real_send", False))
+    try:
+        return scan_lifecycles(
+            settings=settings,
+            lookback_hours=max(1, int(settings.lifecycle_lookback_hours or 24)),
+            limit_symbols=max(1, min(int(settings.lifecycle_active_max_symbols or 80), 500)),
+            dry_run=False,
+            push=bool(settings.lifecycle_telegram_enable),
+            send=real_send,
+            confirm_real_send=real_send,
+        )
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        print(f"[loop] lifecycle failed: {error}", file=sys.stderr)
+        return {
+            "ok": False,
+            "error": error,
+            "message": "生命周期扫描失败，主服务继续运行。",
+            "counts": {},
+        }
 
 
 def command_mode(args: argparse.Namespace) -> str:
@@ -1371,6 +1412,8 @@ def run_loop(args: argparse.Namespace) -> int:
         delay_sec=settings.flow_close_delay_sec,
     )
     next_funding_alert = time.time()
+    lifecycle_interval = max(60, int(settings.lifecycle_scan_interval_sec or 900))
+    next_lifecycle = time.time()
     write_runtime_status(
         settings,
         store,
@@ -1382,11 +1425,14 @@ def run_loop(args: argparse.Namespace) -> int:
         launch_interval_sec=max(60, args.launch_interval),
         flow_interval_sec=max(60, settings.flow_interval_sec),
         funding_alert_interval_sec=max(60, settings.funding_alert_interval_sec),
+        lifecycle_tracker_enable=bool(settings.lifecycle_tracker_enable),
+        lifecycle_scan_interval_sec=lifecycle_interval,
         summary_close_delay_sec=settings.radar_summary_close_delay_sec,
         flow_close_delay_sec=settings.flow_close_delay_sec,
         next_summary_at=timestamp_from_epoch(next_summary),
         next_flow_at=timestamp_from_epoch(next_flow),
         next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
+        next_lifecycle_at=timestamp_from_epoch(next_lifecycle) if settings.lifecycle_tracker_enable else "",
         no_launch=bool(args.no_launch),
         no_flow=bool(args.no_flow),
         no_funding_alert=bool(getattr(args, "no_funding_alert", False)),
@@ -1539,6 +1585,26 @@ def run_loop(args: argparse.Namespace) -> int:
                 launch_pushes=launch_pushes,
                 diagnostics={"launch": launch_diag},
                 last_error=launch_error,
+            )
+        if bool(settings.lifecycle_tracker_enable) and now >= next_lifecycle:
+            lifecycle_result = run_lifecycle_tracker_cycle(settings, args)
+            lifecycle_ok = bool(lifecycle_result.get("ok", False))
+            lifecycle_error = str(lifecycle_result.get("error") or "")
+            lifecycle_counts = lifecycle_result.get("counts") if isinstance(lifecycle_result.get("counts"), dict) else {}
+            print(json.dumps({"lifecycle": lifecycle_counts}, ensure_ascii=False, indent=2))
+            lifecycle_interval = max(60, int(settings.lifecycle_scan_interval_sec or 900))
+            next_lifecycle = time.time() + lifecycle_interval
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running" if lifecycle_ok else "lifecycle_failed",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                last_lifecycle_at=timestamp_from_epoch(time.time()),
+                next_lifecycle_at=timestamp_from_epoch(next_lifecycle),
+                lifecycle_counts=lifecycle_counts,
+                last_error=lifecycle_error,
             )
         time.sleep(3)
 

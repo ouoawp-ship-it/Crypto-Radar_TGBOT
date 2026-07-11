@@ -100,6 +100,12 @@ python scripts/benchmark_api_phase2.py --symbols 6 --rows-per-symbol 4 --blob-by
 
 Runtime hardening 的短缓存不进入上述业务结果：Dashboard 仅缓存服务状态、Git/版本和只读摘要；Next.js 仅缓存公开只读 `/public-api/*`。缓存 loader 失败不写入缓存，TTL 到期自动刷新，变更操作主动失效。JSON lock 与原子替换只改变持久化方式，不改变业务数据 contract。完整说明见 `RUNTIME_HARDENING.md`。
 
+## v1.77.0 结构性回归
+
+v1.77.0 在相同小规模命令下完成回归。Funding 150 个合成 exchange-symbol 请求的峰值并发为 8，耗时从 0.4452 秒降至 0.0593 秒，成功率 100%。Outcome 的行情请求保持 120 → 60、decision 计算 120 → 30、事务 120 → 1。
+
+Lifecycle 的 240 条合成信号保持 provider 调用 240 → 120、SQLite 连接 479 → 2，批量路径耗时 1036.56 ms；新增生命周期数据预取同样使用最多 8 个 worker，并按 `(symbol, timeframe)` 去重。API 回归继续保持 `/signals` payload 减少 62.75%、`/decision` 连接 7 → 1、`/outcomes` 连接 2 → 1、`/lifecycle` detail 连接 3 → 1。绝对耗时受机器负载影响，验收以并发上限、请求/计算次数、事务数、连接数和字段投影等结构性指标为准。
+
 ## 验收边界
 
 - 未修改 Telegram 推送内容或发送规则。

@@ -66,6 +66,11 @@ export default function CoinPage() {
   if (error) return <ErrorState message={error} onRetry={() => load(symbol, true)} />;
 
   const summary = (detail.summary || {}) as Record<string, unknown>;
+  const lifecycleMetrics = lifecycle.lifecycle?.metrics || {};
+  const exchangeContext = lifecycle.lifecycle?.exchange_context || {};
+  const exchangeItems = (Array.isArray(exchangeContext.items) ? exchangeContext.items : []).filter(
+    (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)
+  );
 
   return (
     <div className="space-y-5">
@@ -106,12 +111,30 @@ export default function CoinPage() {
             <span>首次信号：{safeText(lifecycle.lifecycle.first_signal_at, "-")}</span>
             <span>最新信号：{safeText(lifecycle.lifecycle.latest_signal_at, "-")}</span>
             <span>Binance 价格：{pct(lifecycle.lifecycle.price_change_from_first_pct)}</span>
+            <span>Binance 成交量：{compact(lifecycleMetrics.volume)}</span>
+            <span>Binance 报价成交额：{compact(lifecycleMetrics.quote_volume)}</span>
             <span>Binance OI：{pct(lifecycle.lifecycle.oi_change_from_first_pct)}</span>
             <span>合约 CVD：{safeText(lifecycle.lifecycle.futures_cvd_status, "数据不足")}</span>
             <span>现货 CVD：{safeText(lifecycle.lifecycle.spot_cvd_status, "数据不足")}</span>
             <span>资金费率：{safeText(lifecycle.lifecycle.funding_status, "数据不足")}</span>
             <span>旁路观察：其他交易所仅看当前价格和资金费率</span>
             <span>{safeText(lifecycle.lifecycle.not_advice, "仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。")}</span>
+          </div>
+          <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <h3 className="text-sm font-black text-white">其他交易所旁路观察</h3>
+            {exchangeItems.length ? (
+              <div className="mt-2 grid gap-2 text-sm text-slate-300 md:grid-cols-2">
+                {exchangeItems.map((item, index) => (
+                  <div className="rounded-lg border border-white/10 p-2" key={`${safeText(item.exchange, "exchange")}-${index}`}>
+                    <b className="text-white">{safeText(item.exchange, "其他交易所")}</b>
+                    <p>当前价格 {compact(item.current_price)} · 资金费率 {compact(item.funding_rate)}</p>
+                    <p>价格偏离 Binance {pct(item.price_deviation_vs_binance_pct)} · 费率偏离 {compact(item.funding_deviation_vs_binance)}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-slate-500">暂无旁路行情；其他交易所仅展示当前价格和资金费率，不参与生命周期评分。</p>
+            )}
           </div>
           <h3 className="mt-5 text-base font-black text-white">生命周期事件时间线</h3>
           <div className="mt-3 grid gap-2">

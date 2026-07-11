@@ -1,5 +1,37 @@
 # 泡泡抓币中文安装目录
 
+## v1.77.0 运维说明
+
+v1.77.0 新增并加固 Binance-Centric Signal Lifecycle Tracker。生命周期运行数据写入独立的 `data/lifecycle.db`，不会修改 `signals.db`、`outcomes.db` 或 `jobs.db` 既有 schema。核心判断只使用 Binance 价格、成交量、OI、现货/合约 CVD 近似值与资金费率；OKX、Bybit、Hyperliquid 仅作为当前价格和资金费率旁路观察，不参与评分或状态机。
+
+生命周期跟随默认启用，周期为 900 秒；单轮最多处理 80 个币。生命周期 Telegram 辅助提醒默认关闭：
+
+```dotenv
+LIFECYCLE_TRACKER_ENABLE=true
+LIFECYCLE_SCAN_INTERVAL_SEC=900
+LIFECYCLE_ACTIVE_MAX_SYMBOLS=80
+LIFECYCLE_TELEGRAM_ENABLE=false
+```
+
+升级后先以 dry-run 验证，再初始化并扫描：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py lifecycle-backfill --lookback-hours 168 --dry-run
+.venv/bin/python main.py lifecycle-backfill --lookback-hours 168
+.venv/bin/python main.py lifecycle-scan --lookback-hours 24 --limit-symbols 30 --dry-run
+.venv/bin/python main.py lifecycle-scan --lookback-hours 24 --limit-symbols 30
+.venv/bin/python main.py lifecycle-status --symbol BTCUSDT
+
+bash scripts/check_https_deploy.sh --with-stable-check
+```
+
+生产环境应保持 `LIFECYCLE_TELEGRAM_ENABLE=false`，确认提醒频率后再人工开启。完整数据口径、状态机、API 和故障降级说明见 `docs/LIFECYCLE_TRACKER.md`，API 清单见 `docs/API.md`。
+
+仅用于信号整理和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.76.4 运维说明
 
 v1.76.4 增加运行期短缓存和 JSON 文件锁加固。JSON 状态文件使用跨进程 per-file lock 与原子替换，历史文件设置长度上限或使用 append-only JSONL，并继续兼容旧 JSON 数组。Dashboard 查询服务状态、Git 版本和 stable-check 最近结果时使用 5–30 秒短缓存；服务、配置、更新、诊断或 stable-check 状态变化后会主动失效缓存。

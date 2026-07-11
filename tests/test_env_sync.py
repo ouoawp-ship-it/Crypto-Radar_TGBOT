@@ -76,7 +76,7 @@ class EnvSyncTests(unittest.TestCase):
                     "LIFECYCLE_ACTIVE_MAX_SYMBOLS=80",
                     "LIFECYCLE_BINANCE_CACHE_TTL_SEC=300",
                     "LIFECYCLE_HTTP_TIMEOUT_SEC=10",
-                    "LIFECYCLE_TELEGRAM_ENABLE=true",
+                    "LIFECYCLE_TELEGRAM_ENABLE=false",
                     "LIFECYCLE_TELEGRAM_MIN_SCORE=60",
                     "LIFECYCLE_TELEGRAM_MIN_EVENT_INTERVAL_SEC=3600",
                     "LIFECYCLE_FAIL_PRICE_DROP_PCT=8",
@@ -126,7 +126,7 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("LIFECYCLE_ACTIVE_MAX_SYMBOLS=80", text)
         self.assertIn("LIFECYCLE_BINANCE_CACHE_TTL_SEC=300", text)
         self.assertIn("LIFECYCLE_HTTP_TIMEOUT_SEC=10", text)
-        self.assertIn("LIFECYCLE_TELEGRAM_ENABLE=true", text)
+        self.assertIn("LIFECYCLE_TELEGRAM_ENABLE=false", text)
         self.assertIn("LIFECYCLE_TELEGRAM_MIN_SCORE=60", text)
         self.assertIn("LIFECYCLE_TELEGRAM_MIN_EVENT_INTERVAL_SEC=3600", text)
         self.assertIn("LIFECYCLE_FAIL_PRICE_DROP_PCT=8", text)
