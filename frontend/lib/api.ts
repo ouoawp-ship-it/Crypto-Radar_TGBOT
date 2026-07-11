@@ -26,6 +26,10 @@ import type {
   LifecycleReplayPayload,
   LifecycleSimilarityPayload,
   LifecycleSummaryPayload,
+  OptimizationReadinessPayload,
+  OptimizationReportPayload,
+  OptimizationScenariosPayload,
+  OptimizationSummaryPayload,
   OutcomeItem,
   SignalItem
 } from "./types";
@@ -93,6 +97,7 @@ function publicApiRevalidateSec(path: `/public-api/${string}`): number {
   if (path.startsWith("/public-api/lifecycle/outcomes/quality/")) return 30;
   if (path === "/public-api/lifecycle/calibration-readiness") return 30;
   if (path.startsWith("/public-api/calibration/")) return 30;
+  if (path.startsWith("/public-api/optimization/")) return 30;
   if (path.startsWith("/public-api/lifecycle/outcomes/")) return 10;
   if (path === "/public-api/outcomes/stats") return 30;
   if (path.endsWith("/stats")) return 15;
@@ -484,6 +489,38 @@ export function getCalibrationRisk() {
 export function getCalibrationReadiness() {
   return publicFetch<CalibrationReadinessPayload>(
     "/public-api/calibration/readiness",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getOptimizationSummary() {
+  return publicFetch<OptimizationSummaryPayload>(
+    "/public-api/optimization/summary",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getOptimizationScenarios() {
+  return publicFetch<OptimizationScenariosPayload>(
+    "/public-api/optimization/scenarios",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getOptimizationReport() {
+  return publicFetch<OptimizationReportPayload>(
+    "/public-api/optimization/report",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getOptimizationReadiness() {
+  return publicFetch<OptimizationReadinessPayload>(
+    "/public-api/optimization/readiness",
     undefined,
     { revalidateSec: 30 }
   );

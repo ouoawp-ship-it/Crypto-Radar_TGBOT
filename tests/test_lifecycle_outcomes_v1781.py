@@ -145,7 +145,7 @@ class LifecycleOutcomeSchemaTests(unittest.TestCase):
                 names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         self.assertGreaterEqual(version, 1781)
-        self.assertEqual(LIFECYCLE_SCHEMA_VERSION, 1790)
+        self.assertEqual(LIFECYCLE_SCHEMA_VERSION, 1800)
         self.assertIn("lifecycle_outcome_links", names)
         self.assertIn("lifecycle_outcome_coverage", names)
         self.assertIn("ux_lifecycle_outcome_links_one_primary", names)

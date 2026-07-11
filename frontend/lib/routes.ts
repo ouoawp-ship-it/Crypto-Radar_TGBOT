@@ -6,5 +6,6 @@ export const navItems = [
   { href: "/outcomes", label: "结果追踪" },
   { href: "/backtest", label: "决策回测" },
   { href: "/calibration", label: "模型校准" },
+  { href: "/optimization", label: "模型优化模拟" },
   { href: "/api-docs", label: "公开 API" }
 ];

@@ -574,6 +574,116 @@ export type CalibrationReadinessPayload = {
   [key: string]: unknown;
 };
 
+export type OptimizationFactorChange = {
+  factor?: string;
+  factor_key?: string;
+  factor_label?: string;
+  label?: string;
+  old_value?: number | string | boolean | null;
+  new_value?: number | string | boolean | null;
+  production_value?: number | string | boolean | null;
+  candidate_value?: number | string | boolean | null;
+  delta?: number | string | null;
+  delta_pct?: number | null;
+  [key: string]: unknown;
+};
+
+export type OptimizationComparisonMetric = {
+  metric?: string;
+  metric_key?: string;
+  label?: string;
+  production?: number | string | null;
+  production_value?: number | string | null;
+  candidate?: number | string | null;
+  candidate_value?: number | string | null;
+  delta?: number | string | null;
+  delta_pct?: number | null;
+  [key: string]: unknown;
+};
+
+export type OptimizationScenarioItem = {
+  scenario?: string;
+  scenario_id?: string | number;
+  scenario_key?: string;
+  name?: string;
+  scenario_name?: string;
+  label?: string;
+  description?: string;
+  status?: string;
+  recommendation?: string;
+  reasons?: string[];
+  confidence?: number | string | Record<string, unknown> | null;
+  confidence_label?: string;
+  manual_review?: boolean | string;
+  manual_review_required?: boolean;
+  immutable?: boolean;
+  auto_apply?: boolean;
+  factor_changes?: OptimizationFactorChange[] | Record<string, unknown>;
+  parameter_changes?: OptimizationFactorChange[] | Record<string, unknown>;
+  factors?: OptimizationFactorChange[] | Record<string, unknown>;
+  production_params?: Record<string, unknown>;
+  candidate_params?: Record<string, unknown>;
+  comparisons?: OptimizationComparisonMetric[] | Record<string, unknown>;
+  production?: Record<string, unknown>;
+  candidate?: Record<string, unknown>;
+  delta?: Record<string, unknown>;
+  recommendations?: string[] | Array<Record<string, unknown>>;
+  readiness?: OptimizationReadinessPayload | Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type OptimizationSummaryPayload = {
+  optimization_version?: string;
+  production_model?: string | Record<string, unknown>;
+  production_model_version?: string;
+  base_model?: string | Record<string, unknown>;
+  model_version?: string;
+  status?: string;
+  status_label?: string;
+  generated_at?: string;
+  does_not_modify_model?: boolean;
+  immutable?: boolean;
+  auto_apply?: boolean;
+  scenario_count?: number;
+  recommended_scenario_count?: number;
+  summary?: Record<string, unknown>;
+  not_advice?: string;
+  [key: string]: unknown;
+};
+
+export type OptimizationScenariosPayload = OptimizationSummaryPayload & {
+  items?: OptimizationScenarioItem[];
+  scenarios?: OptimizationScenarioItem[];
+};
+
+export type OptimizationReportPayload = OptimizationScenariosPayload & {
+  report?: Record<string, unknown>;
+  comparisons?: OptimizationScenarioItem[] | OptimizationComparisonMetric[] | Record<string, unknown>;
+  runs?: OptimizationScenarioItem[];
+  recommendations?: Array<Record<string, unknown>>;
+  readiness?: OptimizationReadinessPayload | Record<string, unknown>;
+};
+
+export type OptimizationReadinessPayload = {
+  ready?: boolean;
+  label?: string;
+  status?: string;
+  passed?: string[];
+  blocked?: string[];
+  warnings?: string[];
+  current?: Record<string, unknown>;
+  required?: Record<string, unknown>;
+  generated_at?: string;
+  optimization_version?: string;
+  production_model?: string | Record<string, unknown>;
+  base_model?: string | Record<string, unknown>;
+  does_not_modify_model?: boolean;
+  immutable?: boolean;
+  auto_apply?: boolean;
+  not_advice?: string;
+  [key: string]: unknown;
+};
+
 export type LifecycleOutcomeReasonsPayload = {
   reasons?: Record<string, number>;
   unlinked_reasons?: Record<string, number>;

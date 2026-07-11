@@ -133,6 +133,10 @@ from .web_services.lifecycle_calibration import (
     calibration_report_payload,
     public_calibration_section_payload,
 )
+from .web_services.model_optimization import (
+    optimization_report_payload,
+    public_optimization_section_payload,
+)
 from .web_services.public import (
     public_coin_detail_payload,
     public_coin_search_payload,
@@ -227,6 +231,9 @@ LIFECYCLE_CONFIG_KEYS = {
     "MODEL_CALIBRATION_ENABLE",
     "MODEL_CALIBRATION_INTERVAL_SEC",
     "MODEL_CALIBRATION_CACHE_TTL_SEC",
+    "MODEL_OPTIMIZATION_ENABLE",
+    "MODEL_OPTIMIZATION_INTERVAL_SEC",
+    "MODEL_OPTIMIZATION_CACHE_TTL_SEC",
 }
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
@@ -347,6 +354,9 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("MODEL_CALIBRATION_ENABLE", "启用模型校准验证报告", "AI 助手", kind="bool", help="只生成只读验证报告，不自动修改 Decision Model 或生命周期权重。"),
     ConfigField("MODEL_CALIBRATION_INTERVAL_SEC", "模型校准验证报告间隔", "AI 助手", kind="int", minimum=3600, maximum=604800),
     ConfigField("MODEL_CALIBRATION_CACHE_TTL_SEC", "模型校准 API 缓存 TTL", "AI 助手", kind="int", minimum=1, maximum=300),
+    ConfigField("MODEL_OPTIMIZATION_ENABLE", "启用模型优化定时模拟", "AI 助手", kind="bool", help="默认关闭；只生成供人工审核的候选方案，不自动应用参数。"),
+    ConfigField("MODEL_OPTIMIZATION_INTERVAL_SEC", "模型优化模拟间隔", "AI 助手", kind="int", minimum=3600, maximum=604800),
+    ConfigField("MODEL_OPTIMIZATION_CACHE_TTL_SEC", "模型优化 API 缓存 TTL", "AI 助手", kind="int", minimum=1, maximum=300),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -8189,6 +8199,8 @@ INDEX_HTML = r"""<!doctype html>
       { type: "lifecycle-calibration-readiness", label: "模型校准准入", desc: "只判断数据是否达到门槛，不自动修改模型。" },
       { type: "calibration-report", label: "模型校准验证报告", desc: "基于已成熟 Outcome 生成只读验证报告，不修改任何线上阈值。" },
       { type: "calibration-rebuild", label: "重建模型校准报告", desc: "手动强制重建校准验证报告；仍不会自动应用建议参数。" },
+      { type: "optimization-run", label: "模型优化候选模拟", desc: "基于全历史成熟样本运行离线候选模拟，不会修改线上模型。" },
+      { type: "optimization-rebuild", label: "重建模型优化报告", desc: "手动重建已持久化的优化模拟报告；公开 API 仅读取报告。" },
       { type: "api-self-test", label: "Web API 自检", desc: "轻量检查 Web 摘要、日志和信号统计接口，不访问外网。" }
     ];
     function jobStatusPill(status) {
@@ -10320,6 +10332,20 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        optimization_public_paths = {
+            "/public-api/optimization/summary": "summary",
+            "/public-api/optimization/scenarios": "scenarios",
+            "/public-api/optimization/report": "report",
+            "/public-api/optimization/readiness": "readiness",
+        }
+        if path in optimization_public_paths:
+            self.send_json(public_optimization_section_payload(
+                optimization_public_paths[path],
+                scenario=query.get("scenario", [""])[0],
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 1000),
+            ))
+            return
         calibration_public_paths = {
             "/public-api/calibration/summary": "summary",
             "/public-api/calibration/decision": "decision",
@@ -10733,6 +10759,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        if path == "/api/optimization/report":
+            self.send_json(optimization_report_payload(
+                scenario=query.get("scenario", [""])[0],
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 1000),
+            ))
+            return
         if path == "/api/calibration/report":
             self.send_json(calibration_report_payload(
                 symbol=query.get("symbol", [""])[0],
@@ -10958,6 +10991,27 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/lifecycle/run-backfill":
                 result = create_job_payload("lifecycle-backfill", {"source": "api/lifecycle/run-backfill"})
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            optimization_job_types = {
+                "/api/optimization/run": "optimization-run",
+                "/api/optimization/report": "optimization-run",
+                "/api/optimization/rebuild": "optimization-rebuild",
+            }
+            if path in optimization_job_types:
+                metadata: dict[str, Any] = {
+                    "source": path,
+                    "scenario": str(data.get("scenario") or ""),
+                    "symbol": str(data.get("symbol") or ""),
+                    "force": data.get("force", False),
+                }
+                if data.get("limit") not in (None, ""):
+                    # An omitted limit means full-history optimization. Keep
+                    # explicit values raw so the jobs boundary can reject
+                    # booleans, malformed input, or unsafe ranges.
+                    metadata["limit"] = data.get("limit")
+                result = create_job_payload(optimization_job_types[path], metadata)
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return
