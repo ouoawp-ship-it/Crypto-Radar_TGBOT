@@ -1,5 +1,45 @@
 # API
 
+## Lifecycle Outcome data quality API
+
+v1.78.2 新增预计算、只读、短缓存的数据质量接口：
+
+```text
+GET /public-api/lifecycle/outcomes/quality/summary
+GET /public-api/lifecycle/outcomes/quality/reasons
+GET /public-api/lifecycle/outcomes/quality/modules
+GET /public-api/lifecycle/outcomes/quality/levels
+GET /public-api/lifecycle/outcomes/quality/horizons
+GET /public-api/lifecycle/outcomes/quality/timeline
+GET /public-api/lifecycle/calibration-readiness
+```
+
+quality 接口接受可选 `symbol`、`lifecycle_id`、`horizon`、`module` 和 `time_range=24h|7d|30d|all`。`summary` 分开返回：
+
+- `lifecycle_link_coverage_ratio`：已关联生命周期 / 生命周期总数。
+- `candidate_link_coverage_ratio`：已关联 eligible 候选 / eligible 候选。
+- `due_resolution_ratio`：success + 终止 unavailable/error / 已到期 eligible 候选。
+- `usable_outcome_maturity_ratio`：success / 已到期 eligible 候选。
+- `lifecycle_maturity_ratio`：至少一个 success 的生命周期 / 至少一个已到期 eligible horizon 的生命周期。
+
+现有 `GET /public-api/lifecycle/outcomes/summary` 保留全部旧字段，并兼容增加上述字段。`not_due` 不进入到期分母，`ineligible` 不进入 Outcome 分母，`unavailable` 不计作成功或亏损。API 只读取候选表和聚合结果，不触发外部行情请求或 Outcome 回填。
+
+后台只读接口继续受登录鉴权：
+
+```text
+GET  /api/lifecycle/outcomes/quality/summary
+GET  /api/lifecycle/outcomes/quality/reasons
+GET  /api/lifecycle/calibration-readiness
+POST /api/lifecycle/outcomes/run-refresh-candidates
+POST /api/lifecycle/outcomes/run-classify-gaps
+POST /api/lifecycle/outcomes/run-incremental
+POST /api/lifecycle/outcomes/run-quality-report
+```
+
+POST 执行端点通过 Jobs 系统防重复提交并立即返回 `job_id`，不会在 HTTP 线程运行长任务。校准准入响应包含 `ready`、`label`、`passed`、`blocked`、`warnings`、`current` 和 `required`；它只判断数据质量是否达标，不自动修改模型。
+
+公开响应不包含 candidate/outcome 内部 ID、完整 signal 正文、数据库/服务器路径、异常堆栈、任务 payload、Telegram 标识、token、Cookie 或 Authorization。
+
 ## Lifecycle Outcome coverage API
 
 公开接口只读取已经计算并写入 `lifecycle.db` 的关联与覆盖率结果，不会在 API 请求中触发 Outcome 补算：

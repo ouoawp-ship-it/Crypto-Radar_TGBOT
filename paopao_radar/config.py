@@ -184,6 +184,20 @@ class Settings:
     lifecycle_outcome_backfill_max_outcomes: int = 1000
     lifecycle_outcome_link_time_tolerance_sec: int = 300
     lifecycle_outcome_backfill_interval_sec: int = 3600
+    lifecycle_outcome_processing_stale_sec: int = 1800
+    lifecycle_outcome_retry_max_attempts: int = 5
+    lifecycle_outcome_retry_base_sec: int = 900
+    lifecycle_outcome_retry_max_sec: int = 21600
+    lifecycle_outcome_incremental_enable: bool = True
+    lifecycle_outcome_incremental_interval_sec: int = 3600
+    lifecycle_outcome_incremental_batch_size: int = 200
+    lifecycle_outcome_incremental_max_items: int = 1000
+    lifecycle_outcome_incremental_max_symbols: int = 100
+    lifecycle_calibration_min_24h_success: int = 50
+    lifecycle_calibration_min_72h_success: int = 30
+    lifecycle_calibration_min_due_resolution_ratio: float = 0.90
+    lifecycle_calibration_min_lifecycle_maturity_ratio: float = 0.60
+    lifecycle_calibration_max_error_ratio: float = 0.01
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -428,6 +442,20 @@ class Settings:
             lifecycle_outcome_backfill_max_outcomes=env_int("LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES", 1000),
             lifecycle_outcome_link_time_tolerance_sec=env_int("LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC", 300),
             lifecycle_outcome_backfill_interval_sec=env_int("LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC", 3600),
+            lifecycle_outcome_processing_stale_sec=env_int("LIFECYCLE_OUTCOME_PROCESSING_STALE_SEC", 1800),
+            lifecycle_outcome_retry_max_attempts=env_int("LIFECYCLE_OUTCOME_RETRY_MAX_ATTEMPTS", 5),
+            lifecycle_outcome_retry_base_sec=env_int("LIFECYCLE_OUTCOME_RETRY_BASE_SEC", 900),
+            lifecycle_outcome_retry_max_sec=env_int("LIFECYCLE_OUTCOME_RETRY_MAX_SEC", 21600),
+            lifecycle_outcome_incremental_enable=env_bool("LIFECYCLE_OUTCOME_INCREMENTAL_ENABLE", True),
+            lifecycle_outcome_incremental_interval_sec=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_INTERVAL_SEC", 3600),
+            lifecycle_outcome_incremental_batch_size=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_BATCH_SIZE", 200),
+            lifecycle_outcome_incremental_max_items=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_MAX_ITEMS", 1000),
+            lifecycle_outcome_incremental_max_symbols=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_MAX_SYMBOLS", 100),
+            lifecycle_calibration_min_24h_success=env_int("LIFECYCLE_CALIBRATION_MIN_24H_SUCCESS", 50),
+            lifecycle_calibration_min_72h_success=env_int("LIFECYCLE_CALIBRATION_MIN_72H_SUCCESS", 30),
+            lifecycle_calibration_min_due_resolution_ratio=env_float("LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO", 0.90),
+            lifecycle_calibration_min_lifecycle_maturity_ratio=env_float("LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO", 0.60),
+            lifecycle_calibration_max_error_ratio=env_float("LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO", 0.01),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -685,6 +713,20 @@ class Settings:
                 "outcome_backfill_max_outcomes": self.lifecycle_outcome_backfill_max_outcomes,
                 "outcome_link_time_tolerance_sec": self.lifecycle_outcome_link_time_tolerance_sec,
                 "outcome_backfill_interval_sec": self.lifecycle_outcome_backfill_interval_sec,
+                "outcome_processing_stale_sec": self.lifecycle_outcome_processing_stale_sec,
+                "outcome_retry_max_attempts": self.lifecycle_outcome_retry_max_attempts,
+                "outcome_retry_base_sec": self.lifecycle_outcome_retry_base_sec,
+                "outcome_retry_max_sec": self.lifecycle_outcome_retry_max_sec,
+                "outcome_incremental_enable": self.lifecycle_outcome_incremental_enable,
+                "outcome_incremental_interval_sec": self.lifecycle_outcome_incremental_interval_sec,
+                "outcome_incremental_batch_size": self.lifecycle_outcome_incremental_batch_size,
+                "outcome_incremental_max_items": self.lifecycle_outcome_incremental_max_items,
+                "outcome_incremental_max_symbols": self.lifecycle_outcome_incremental_max_symbols,
+                "calibration_min_24h_success": self.lifecycle_calibration_min_24h_success,
+                "calibration_min_72h_success": self.lifecycle_calibration_min_72h_success,
+                "calibration_min_due_resolution_ratio": self.lifecycle_calibration_min_due_resolution_ratio,
+                "calibration_min_lifecycle_maturity_ratio": self.lifecycle_calibration_min_lifecycle_maturity_ratio,
+                "calibration_max_error_ratio": self.lifecycle_calibration_max_error_ratio,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

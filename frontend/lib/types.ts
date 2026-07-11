@@ -364,8 +364,21 @@ export type LifecycleOutcomeSummaryPayload = {
   linked_lifecycle_count?: number;
   linked_outcome_count?: number;
   link_coverage_ratio?: number | null;
+  lifecycle_link_coverage_ratio?: number | null;
+  eligible_candidate_count?: number;
+  ineligible_candidate_count?: number;
+  linked_candidate_count?: number;
+  candidate_link_coverage_ratio?: number | null;
+  due_candidate_count?: number;
+  resolved_due_candidate_count?: number;
+  due_resolution_ratio?: number | null;
+  successful_due_candidate_count?: number;
+  usable_outcome_maturity_ratio?: number | null;
   mature_lifecycle_count?: number;
   maturity_ratio?: number | null;
+  lifecycle_maturity_ratio?: number | null;
+  generic_unclassified_count?: number;
+  real_error_count?: number;
   horizons?: Record<string, LifecycleOutcomeHorizonCounts>;
   unlinked_reasons?: Record<string, number>;
   summary?: Record<string, unknown>;
@@ -387,6 +400,91 @@ export type LifecycleOutcomeDetailPayload = {
   outcome_link_status?: string;
   link_method?: string;
   confidence_label?: string;
+  candidate_quality?: LifecycleOutcomeQualitySummaryPayload | null;
+  quality?: LifecycleOutcomeQualitySummaryPayload | null;
+  not_advice?: string;
+};
+
+export type LifecycleOutcomeQualityHorizonItem = {
+  horizon?: string;
+  label?: string;
+  candidate_count?: number;
+  eligible?: number;
+  eligible_count?: number;
+  ineligible?: number;
+  ineligible_count?: number;
+  linked?: number;
+  linked_count?: number;
+  not_due?: number;
+  ready?: number;
+  queued?: number;
+  processing?: number;
+  success?: number;
+  unavailable?: number;
+  terminal_unavailable?: number;
+  retry_wait?: number;
+  error?: number;
+  terminal_error?: number;
+  maturity_ratio?: number | null;
+  resolution_ratio?: number | null;
+};
+
+export type LifecycleOutcomeQualityDimensionItem = LifecycleOutcomeQualityHorizonItem & {
+  key?: string;
+  module?: string;
+  first_signal_level?: string;
+  signal_type?: string;
+  time_range?: string;
+  success_count?: number;
+  unavailable_count?: number;
+  error_count?: number;
+  top_gap_reasons?: Record<string, number> | string[] | Array<{ reason?: string; count?: number }>;
+  link_coverage_ratio?: number | null;
+};
+
+export type LifecycleOutcomeQualitySummaryPayload = LifecycleOutcomeSummaryPayload & {
+  candidate_count?: number;
+  outcome_candidate_count?: number;
+  eligible?: number;
+  eligible_count?: number;
+  ineligible?: number;
+  ineligible_count?: number;
+  linked?: number;
+  linked_count?: number;
+  not_due?: number;
+  ready?: number;
+  queued?: number;
+  processing?: number;
+  success?: number;
+  unavailable?: number;
+  terminal_unavailable?: number;
+  retry_wait?: number;
+  terminal_error?: number;
+  generic_no_outcome_row?: number;
+  reasons?: Record<string, number>;
+  status_counts?: Record<string, number>;
+  top_gap_reasons?: Record<string, number>;
+  next_retry_at?: string | null;
+  items?: LifecycleOutcomeQualityDimensionItem[];
+};
+
+export type LifecycleOutcomeQualityListPayload = {
+  items?: LifecycleOutcomeQualityDimensionItem[];
+  summary?: LifecycleOutcomeQualitySummaryPayload | Record<string, unknown>;
+  reasons?: Record<string, number>;
+  generated_at?: string;
+  not_advice?: string;
+};
+
+export type LifecycleCalibrationReadinessPayload = {
+  ready?: boolean;
+  label?: string;
+  passed?: string[];
+  blocked?: string[];
+  warnings?: string[];
+  current?: Record<string, unknown>;
+  required?: Record<string, unknown>;
+  generated_at?: string;
   not_advice?: string;
 };
 

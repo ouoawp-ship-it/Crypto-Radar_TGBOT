@@ -10,9 +10,9 @@ import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getLifecycleIntelligenceDetail, getLifecycleOutcomeDetail, getLifecycleSimilar, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
+import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getLifecycleIntelligenceDetail, getLifecycleOutcomeDetail, getLifecycleOutcomeQualitySummary, getLifecycleSimilar, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
 import { compact, normalizeSymbol, pct, ratioPct, safeText } from "@/lib/format";
-import type { DecisionItem, LifecycleDetailPayload, LifecycleIntelligenceDetailPayload, LifecycleOutcomeDetailPayload, LifecycleSimilarityPayload, OutcomeItem, SignalItem } from "@/lib/types";
+import type { DecisionItem, LifecycleDetailPayload, LifecycleIntelligenceDetailPayload, LifecycleOutcomeDetailPayload, LifecycleOutcomeQualitySummaryPayload, LifecycleSimilarityPayload, OutcomeItem, SignalItem } from "@/lib/types";
 
 function lifecycleOutcomeStatus(detail: LifecycleOutcomeDetailPayload, horizon: string): string {
   const coverage = detail.coverage as Record<string, unknown> | null | undefined;
@@ -53,6 +53,7 @@ export default function CoinPage() {
   const [intelligence, setIntelligence] = useState<LifecycleIntelligenceDetailPayload>({});
   const [similar, setSimilar] = useState<LifecycleSimilarityPayload>({});
   const [outcomeDetail, setOutcomeDetail] = useState<LifecycleOutcomeDetailPayload>({});
+  const [outcomeQuality, setOutcomeQuality] = useState<LifecycleOutcomeQualitySummaryPayload>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -66,7 +67,7 @@ export default function CoinPage() {
     setLoading(true);
     setError("");
     try {
-      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload, intelligencePayload, similarPayload, lifecycleOutcomePayload] = await Promise.all([
+      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload, intelligencePayload, similarPayload, lifecycleOutcomePayload, lifecycleOutcomeQualityPayload] = await Promise.all([
         getCoinDetail(normalized),
         getDecision(normalized),
         getSymbolTimeline(normalized),
@@ -75,7 +76,8 @@ export default function CoinPage() {
         getLifecycleDetail(normalized),
         getLifecycleIntelligenceDetail(normalized),
         getLifecycleSimilar(normalized, 5),
-        getLifecycleOutcomeDetail(normalized).catch(() => ({} as LifecycleOutcomeDetailPayload))
+        getLifecycleOutcomeDetail(normalized).catch(() => ({} as LifecycleOutcomeDetailPayload)),
+        getLifecycleOutcomeQualitySummary({ symbol: normalized }).catch(() => ({} as LifecycleOutcomeQualitySummaryPayload))
       ]);
       setSymbol(normalized);
       setDetail(coin);
@@ -87,6 +89,7 @@ export default function CoinPage() {
       setIntelligence(intelligencePayload);
       setSimilar(similarPayload);
       setOutcomeDetail(lifecycleOutcomePayload);
+      setOutcomeQuality(lifecycleOutcomeQualityPayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "币种详情加载失败");
     } finally {
@@ -114,6 +117,23 @@ export default function CoinPage() {
     max_gain_pct?: number | null;
     max_drawdown_pct?: number | null;
   } | undefined;
+  const coinQuality = {
+    ...(outcomeDetail.candidate_quality || outcomeDetail.quality || {}),
+    ...(outcomeQuality.summary || {}),
+    ...outcomeQuality
+  } as LifecycleOutcomeQualitySummaryPayload;
+  const coinQualityRecord = {
+    ...(coinQuality.status_counts || {}),
+    ...(coinQuality as Record<string, unknown>)
+  } as Record<string, unknown>;
+  const qualityCount = (...keys: string[]): number => {
+    for (const key of keys) {
+      const value = Number(coinQualityRecord[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
+  const qualityReasons = coinQuality.reasons || coinQuality.top_gap_reasons || {};
 
   return (
     <div className="space-y-5">
@@ -204,6 +224,34 @@ export default function CoinPage() {
           <span>关联来源：{safeText(primaryLink?.link_method || outcomeDetail.link_method, "尚未关联")}</span>
           <span>数据成熟度：{safeText(outcomeCoverage?.maturity_label, "等待到期")}</span>
           <span>关联覆盖率：{ratioPct(outcomeCoverage?.link_coverage_ratio)}</span>
+        </div>
+      </section>
+      <section className="panel space-y-4 p-4">
+        <div>
+          <h2 className="text-lg font-black text-white">Outcome 数据质量</h2>
+          <p className="mt-1 text-sm text-slate-400">该币 Lifecycle Outcome 候选的资格、关联、成熟与补算状态；不显示内部候选 ID 或 Outcome ID。</p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+          <MetricCard label="Outcome 候选数" value={compact(qualityCount("candidate_count", "outcome_candidate_count"))} />
+          <MetricCard label="已关联" value={compact(qualityCount("linked_candidate_count", "linked_count"))} tone="good" />
+          <MetricCard label="已成熟周期" value={compact(qualityCount("success", "successful_due_candidate_count") || outcomeDetail.mature_horizons?.length)} tone="good" />
+          <MetricCard label="等待到期" value={compact(qualityCount("not_due", "not_due_count") || outcomeDetail.pending_horizons?.length)} tone="info" />
+          <MetricCard label="数据不可用周期" value={compact(qualityCount("terminal_unavailable", "unavailable") || outcomeDetail.unavailable_horizons?.length)} tone="warn" />
+          <MetricCard label="可重试" value={compact(qualityCount("retry_wait", "retryable_count"))} tone="warn" />
+        </div>
+        <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-2">
+          <div className="rounded-lg border border-white/10 p-3">
+            <b className="text-white">缺口原因</b>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {Object.entries(qualityReasons).slice(0, 8).map(([reason, count]) => <span className="chip" key={reason}>{reason} {compact(count)}</span>)}
+              {!Object.keys(qualityReasons).length ? <span className="text-slate-500">当前没有待分类缺口</span> : null}
+            </div>
+          </div>
+          <div className="rounded-lg border border-white/10 p-3">
+            <b className="text-white">下一次补算时间</b>
+            <p className="mt-2 text-slate-400">{safeText(coinQuality.next_retry_at, "无待重试项目；增量任务将按到期状态继续检查")}</p>
+            <p className="mt-2 text-xs text-slate-500">尚未到期不是错误，unavailable 不等于亏损。</p>
+          </div>
         </div>
       </section>
       {lifecycle.lifecycle ? (

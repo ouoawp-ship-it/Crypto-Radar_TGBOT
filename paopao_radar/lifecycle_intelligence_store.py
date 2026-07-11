@@ -16,7 +16,7 @@ from .lifecycle_store import normalize_lifecycle_symbol, safe_float, safe_int
 
 
 DEFAULT_LIFECYCLE_DB_PATH = BASE_DIR / "data" / "lifecycle.db"
-LIFECYCLE_SCHEMA_VERSION = 1781
+LIFECYCLE_SCHEMA_VERSION = 1782
 
 INTELLIGENCE_JSON_FIELDS = {
     "strengths_json": "strengths",
@@ -374,6 +374,38 @@ class IntelligenceStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lifecycle_outcome_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    candidate_key TEXT NOT NULL UNIQUE,
+                    lifecycle_id INTEGER NOT NULL,
+                    lifecycle_event_id INTEGER,
+                    signal_id INTEGER,
+                    symbol TEXT NOT NULL,
+                    signal_time TEXT,
+                    source_module TEXT,
+                    source_template TEXT,
+                    source_signal_type TEXT,
+                    horizon TEXT NOT NULL,
+                    due_at TEXT,
+                    eligibility_status TEXT NOT NULL,
+                    eligibility_reason TEXT,
+                    candidate_status TEXT NOT NULL,
+                    outcome_id INTEGER,
+                    is_terminal INTEGER NOT NULL DEFAULT 0,
+                    is_retryable INTEGER NOT NULL DEFAULT 0,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT,
+                    next_retry_at TEXT,
+                    source_status TEXT,
+                    last_error_code TEXT,
+                    last_error_summary TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             # Forward-compatible migration for databases created by early v1.78 builds.
             self._add_column(conn, "lifecycle_intelligence", "stage TEXT")
             self._add_column(conn, "lifecycle_intelligence", "source_signature TEXT")
@@ -424,6 +456,26 @@ class IntelligenceStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_coverage_label "
                 "ON lifecycle_outcome_coverage(coverage_label, maturity_label)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_candidates_due "
+                "ON lifecycle_outcome_candidates(eligibility_status, candidate_status, due_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_candidates_retry "
+                "ON lifecycle_outcome_candidates(is_retryable, next_retry_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_candidates_lifecycle "
+                "ON lifecycle_outcome_candidates(lifecycle_id, horizon)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_candidates_signal "
+                "ON lifecycle_outcome_candidates(signal_id, horizon)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_candidates_reason "
+                "ON lifecycle_outcome_candidates(eligibility_reason, candidate_status)"
             )
             current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             if current_version < LIFECYCLE_SCHEMA_VERSION:
@@ -1138,6 +1190,294 @@ class IntelligenceStore:
                 (safe_int(lifecycle_id),),
             ).fetchall()
         ]
+
+    def upsert_outcome_candidates(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        preserve_progress: bool = True,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, int]:
+        """Batch-upsert candidate classifications in one transaction.
+
+        Refresh jobs may rediscover a candidate while another worker owns it.
+        ``preserve_progress`` keeps terminal/success and live processing states
+        unless the caller supplies a newer resolved Outcome state.
+        """
+
+        if conn is None:
+            with self.transaction() as owned:
+                return self.upsert_outcome_candidates(
+                    records,
+                    preserve_progress=preserve_progress,
+                    conn=owned,
+                )
+        incoming = [dict(item) for item in records if str(item.get("candidate_key") or "").strip()]
+        if not incoming:
+            return {"processed": 0, "inserted": 0, "updated": 0}
+        keys = sorted({str(item.get("candidate_key") or "").strip() for item in incoming})
+        existing: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(keys), 800):
+            chunk = keys[offset : offset + 800]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in conn.execute(
+                f"SELECT * FROM lifecycle_outcome_candidates WHERE candidate_key IN ({placeholders})",
+                chunk,
+            ).fetchall():
+                existing[str(row["candidate_key"])] = dict(row)
+        now = _iso()
+        terminal_statuses = {"success", "terminal_ineligible", "terminal_unavailable", "terminal_error"}
+        rows: list[dict[str, Any]] = []
+        for raw in incoming:
+            key = str(raw.get("candidate_key") or "").strip()
+            previous = existing.get(key, {})
+            row = dict(raw)
+            incoming_status = str(row.get("candidate_status") or "ready")
+            previous_status = str(previous.get("candidate_status") or "")
+            incoming_outcome_id = safe_int(row.get("outcome_id")) or None
+            if preserve_progress and previous:
+                preserve_terminal = (
+                    previous_status in terminal_statuses
+                    and incoming_outcome_id is None
+                    and not (
+                        previous_status == "terminal_ineligible"
+                        and str(row.get("eligibility_status") or "") == "eligible"
+                    )
+                )
+                if preserve_terminal:
+                    for name in (
+                        "candidate_status", "outcome_id", "is_terminal", "is_retryable",
+                        "last_attempt_at", "next_retry_at", "source_status",
+                        "last_error_code", "last_error_summary",
+                    ):
+                        row[name] = previous.get(name)
+                elif previous_status == "processing" and incoming_status in {
+                    "not_due", "ready", "queued", "linked", "retry_wait", "processing",
+                }:
+                    for name in (
+                        "candidate_status", "outcome_id", "is_terminal", "is_retryable",
+                        "last_attempt_at", "next_retry_at", "source_status",
+                        "last_error_code", "last_error_summary",
+                    ):
+                        row[name] = previous.get(name)
+            lifecycle_id = safe_int(row.get("lifecycle_id"))
+            symbol = normalize_lifecycle_symbol(row.get("symbol"))
+            horizon = str(row.get("horizon") or "").lower()
+            if lifecycle_id <= 0 or not symbol or not horizon:
+                raise ValueError("candidate lifecycle_id, symbol, and horizon are required")
+            attempt_count = max(safe_int(previous.get("attempt_count")), safe_int(row.get("attempt_count")))
+            rows.append({
+                "candidate_key": key,
+                "lifecycle_id": lifecycle_id,
+                "lifecycle_event_id": safe_int(row.get("lifecycle_event_id")) or None,
+                "signal_id": safe_int(row.get("signal_id")) or None,
+                "symbol": symbol,
+                "signal_time": row.get("signal_time"),
+                "source_module": str(row.get("source_module") or ""),
+                "source_template": str(row.get("source_template") or ""),
+                "source_signal_type": str(row.get("source_signal_type") or ""),
+                "horizon": horizon,
+                "due_at": row.get("due_at"),
+                "eligibility_status": str(row.get("eligibility_status") or "unknown"),
+                "eligibility_reason": str(row.get("eligibility_reason") or ""),
+                "candidate_status": str(row.get("candidate_status") or "ready"),
+                "outcome_id": safe_int(row.get("outcome_id")) or None,
+                "is_terminal": int(bool(row.get("is_terminal"))),
+                "is_retryable": int(bool(row.get("is_retryable"))),
+                "attempt_count": attempt_count,
+                "last_attempt_at": row.get("last_attempt_at"),
+                "next_retry_at": row.get("next_retry_at"),
+                "source_status": str(row.get("source_status") or ""),
+                "last_error_code": str(row.get("last_error_code") or "")[:80],
+                "last_error_summary": str(row.get("last_error_summary") or "")[:300],
+                "created_at": str(previous.get("created_at") or row.get("created_at") or now),
+                "updated_at": now,
+            })
+        columns = (
+            "candidate_key", "lifecycle_id", "lifecycle_event_id", "signal_id", "symbol",
+            "signal_time", "source_module", "source_template", "source_signal_type", "horizon",
+            "due_at", "eligibility_status", "eligibility_reason", "candidate_status", "outcome_id",
+            "is_terminal", "is_retryable", "attempt_count", "last_attempt_at", "next_retry_at",
+            "source_status", "last_error_code", "last_error_summary", "created_at", "updated_at",
+        )
+        assignments = ", ".join(
+            f"{name}=excluded.{name}" for name in columns if name not in {"candidate_key", "created_at"}
+        )
+        conn.executemany(
+            f"INSERT INTO lifecycle_outcome_candidates ({', '.join(columns)}) "
+            f"VALUES ({', '.join(':'+name for name in columns)}) "
+            f"ON CONFLICT(candidate_key) DO UPDATE SET {assignments}",
+            [{name: row.get(name) for name in columns} for row in rows],
+        )
+        inserted = sum(1 for row in rows if row["candidate_key"] not in existing)
+        return {"processed": len(rows), "inserted": inserted, "updated": len(rows) - inserted}
+
+    def list_outcome_candidates(
+        self,
+        *,
+        lifecycle_id: int | None = None,
+        symbol: str = "",
+        horizon: str = "",
+        eligibility_status: str = "",
+        candidate_status: str = "",
+        candidate_statuses: list[str] | tuple[str, ...] | None = None,
+        module: str = "",
+        due_before: datetime | str | None = None,
+        retry_due_before: datetime | str | None = None,
+        exclude_eligibility_reasons: list[str] | tuple[str, ...] | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        if conn is None:
+            with self.connect() as owned:
+                return self.list_outcome_candidates(
+                    lifecycle_id=lifecycle_id, symbol=symbol, horizon=horizon,
+                    eligibility_status=eligibility_status, candidate_status=candidate_status,
+                    candidate_statuses=candidate_statuses, module=module,
+                    due_before=due_before, retry_due_before=retry_due_before,
+                    exclude_eligibility_reasons=exclude_eligibility_reasons,
+                    limit=limit, offset=offset, conn=owned,
+                )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if lifecycle_id is not None:
+            clauses.append("lifecycle_id=?")
+            params.append(safe_int(lifecycle_id))
+        if symbol:
+            normalized = normalize_lifecycle_symbol(symbol)
+            if not normalized:
+                return []
+            clauses.append("symbol=?")
+            params.append(normalized)
+        for column, value in (
+            ("horizon", horizon),
+            ("eligibility_status", eligibility_status),
+            ("candidate_status", candidate_status),
+            ("source_module", module),
+        ):
+            if str(value or "").strip():
+                clauses.append(f"{column}=?")
+                params.append(str(value).strip().lower())
+        normalized_statuses = sorted({
+            str(value or "").strip().lower()
+            for value in (candidate_statuses or ())
+            if str(value or "").strip()
+        })
+        if normalized_statuses:
+            clauses.append(f"candidate_status IN ({','.join('?' for _ in normalized_statuses)})")
+            params.extend(normalized_statuses)
+        if due_before is not None:
+            parsed_due = _parse_time(due_before)
+            if parsed_due is not None:
+                clauses.append("due_at IS NOT NULL AND due_at<=?")
+                params.append(_iso(parsed_due))
+        if retry_due_before is not None:
+            parsed_retry = _parse_time(retry_due_before)
+            if parsed_retry is not None:
+                clauses.append("(candidate_status!='retry_wait' OR next_retry_at IS NULL OR next_retry_at<=?)")
+                params.append(_iso(parsed_retry))
+        excluded_reasons = sorted({
+            str(value or "").strip()
+            for value in (exclude_eligibility_reasons or ())
+            if str(value or "").strip()
+        })
+        if excluded_reasons:
+            clauses.append(
+                f"COALESCE(eligibility_reason,'') NOT IN ({','.join('?' for _ in excluded_reasons)})"
+            )
+            params.extend(excluded_reasons)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([max(1, min(safe_int(limit, 1000), 5000)), max(0, safe_int(offset))])
+        return [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT * FROM lifecycle_outcome_candidates {where} "
+                "ORDER BY due_at, lifecycle_id, signal_id, horizon LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+        ]
+
+    def get_outcome_candidate(
+        self,
+        candidate_key: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        if conn is None:
+            with self.connect() as owned:
+                return self.get_outcome_candidate(candidate_key, conn=owned)
+        row = conn.execute(
+            "SELECT * FROM lifecycle_outcome_candidates WHERE candidate_key=?",
+            (str(candidate_key or ""),),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def claim_outcome_candidates(
+        self,
+        candidate_keys: list[str],
+        *,
+        now: datetime | None = None,
+        return_keys: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> int | list[str]:
+        """Atomically claim ready/retry candidates and increment attempts."""
+
+        if conn is None:
+            with self.transaction() as owned:
+                return self.claim_outcome_candidates(
+                    candidate_keys, now=now, return_keys=return_keys, conn=owned,
+                )
+        keys = sorted({str(key or "").strip() for key in candidate_keys if str(key or "").strip()})
+        if not keys:
+            return [] if return_keys else 0
+        claimed_at = _iso(now)
+        claimed_keys: list[str] = []
+        for offset in range(0, len(keys), 800):
+            chunk = keys[offset : offset + 800]
+            placeholders = ",".join("?" for _ in chunk)
+            claimable = [
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT candidate_key FROM lifecycle_outcome_candidates "
+                    f"WHERE candidate_key IN ({placeholders}) AND eligibility_status='eligible' "
+                    "AND candidate_status IN ('ready','queued','linked','retry_wait') "
+                    "AND (candidate_status!='retry_wait' OR next_retry_at IS NULL OR next_retry_at<=?)",
+                    [*chunk, claimed_at],
+                ).fetchall()
+            ]
+            if not claimable:
+                continue
+            claim_placeholders = ",".join("?" for _ in claimable)
+            conn.execute(
+                f"UPDATE lifecycle_outcome_candidates SET candidate_status='processing', "
+                "attempt_count=attempt_count+1, last_attempt_at=?, next_retry_at=NULL, updated_at=? "
+                f"WHERE candidate_key IN ({claim_placeholders})",
+                [claimed_at, claimed_at, *claimable],
+            )
+            claimed_keys.extend(claimable)
+        return claimed_keys if return_keys else len(claimed_keys)
+
+    def recover_stale_outcome_candidates(
+        self,
+        stale_before: datetime | str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        if conn is None:
+            with self.transaction() as owned:
+                return self.recover_stale_outcome_candidates(stale_before, conn=owned)
+        threshold = _iso(_parse_time(stale_before))
+        now = _iso()
+        before = conn.total_changes
+        conn.execute(
+            "UPDATE lifecycle_outcome_candidates SET candidate_status='ready', is_retryable=1, "
+            "last_error_code='processing_stale', "
+            "last_error_summary='Interrupted processing was recovered for retry.', updated_at=? "
+            "WHERE candidate_status='processing' AND (last_attempt_at IS NULL OR last_attempt_at < ?)",
+            (now, threshold),
+        )
+        return max(0, conn.total_changes - before)
 
     # Concise aliases used by analytics adapters.
     cache_get = get_analytics_cache

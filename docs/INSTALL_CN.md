@@ -1,5 +1,44 @@
 # 泡泡抓币中文安装目录
 
+## v1.78.2 运维说明
+
+v1.78.2 在既有 `lifecycle.db` 中兼容新增 `lifecycle_outcome_candidates`，不会删除或重写历史 Outcome、Lifecycle、信号或 jobs 数据。部署后严格按“刷新候选 → 分类缺口 → 查看质量 → 小批量增量补算 → 扩大批次”的顺序运行：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py lifecycle-outcome-refresh-candidates --dry-run --pretty
+.venv/bin/python main.py lifecycle-outcome-refresh-candidates --pretty
+.venv/bin/python main.py lifecycle-outcome-classify-gaps --dry-run --pretty
+.venv/bin/python main.py lifecycle-outcome-classify-gaps --pretty
+
+.venv/bin/python main.py lifecycle-outcome-quality --pretty
+.venv/bin/python main.py lifecycle-calibration-readiness --pretty
+.venv/bin/python main.py lifecycle-outcome-incremental --limit 50 --dry-run --pretty
+.venv/bin/python main.py lifecycle-outcome-incremental --limit 50 --pretty
+.venv/bin/python main.py lifecycle-outcome-incremental --limit 200 --pretty
+.venv/bin/python main.py lifecycle-outcome-reconcile --dry-run --pretty
+```
+
+候选刷新和缺口分类不请求外部行情。增量任务只处理 eligible、已到期、尚未解决且已经到达重试时间的候选，并继续复用行情窗口、decision 缓存和批量事务。任务结束后 `processing` 应归零；中断超过 stale timeout 的 processing 会恢复为 ready。
+
+新增配置的默认口径：
+
+```dotenv
+LIFECYCLE_OUTCOME_PROCESSING_STALE_SEC=1800
+LIFECYCLE_OUTCOME_RETRY_MAX_ATTEMPTS=5
+LIFECYCLE_OUTCOME_RETRY_BASE_SEC=900
+LIFECYCLE_OUTCOME_RETRY_MAX_SEC=21600
+LIFECYCLE_OUTCOME_INCREMENTAL_ENABLE=true
+LIFECYCLE_OUTCOME_INCREMENTAL_INTERVAL_SEC=3600
+LIFECYCLE_OUTCOME_INCREMENTAL_BATCH_SIZE=200
+LIFECYCLE_OUTCOME_INCREMENTAL_MAX_ITEMS=1000
+LIFECYCLE_OUTCOME_INCREMENTAL_MAX_SYMBOLS=100
+```
+
+关联覆盖率不是成熟率。尚未到期不是错误，`unavailable` 不等于亏损，`ineligible` 信号不进入 Outcome 分母。模型校准准入只做只读判断，不自动修改任何模型；完整说明见 `docs/LIFECYCLE_OUTCOME_DATA_QUALITY.md` 和 `docs/LIFECYCLE_CALIBRATION_READINESS.md`。
+
 ## v1.78.1 运维说明
 
 v1.78.1 在既有 `lifecycle.db` 中兼容新增 Outcome link/coverage 表，不删除或改写 `signals.db`、`outcomes.db`、`jobs.db` 与既有生命周期数据。部署后必须先只关联已有 Outcome，再从 50 个生命周期的小批量 dry-run 开始补算：

@@ -31,6 +31,8 @@ CONCURRENT_GUARD_JOB_TYPES = {
     "lifecycle-replay", "lifecycle-analytics", "lifecycle-replay-rebuild",
     "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
     "lifecycle-outcome-refresh-analytics",
+    "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-incremental-backfill",
+    "lifecycle-outcome-classify-gaps", "lifecycle-outcome-quality-report", "lifecycle-calibration-readiness",
 }
 LIFECYCLE_RESEARCH_JOB_TYPES = {
     "lifecycle-intelligence",
@@ -41,6 +43,28 @@ LIFECYCLE_RESEARCH_JOB_TYPES = {
     "lifecycle-outcome-backfill",
     "lifecycle-outcome-reconcile",
     "lifecycle-outcome-refresh-analytics",
+    "lifecycle-outcome-refresh-candidates",
+    "lifecycle-outcome-incremental-backfill",
+    "lifecycle-outcome-classify-gaps",
+    "lifecycle-outcome-quality-report",
+    "lifecycle-calibration-readiness",
+}
+LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES = {
+    "lifecycle-outcome-link",
+    "lifecycle-outcome-backfill",
+    "lifecycle-outcome-reconcile",
+    "lifecycle-outcome-refresh-candidates",
+    "lifecycle-outcome-incremental-backfill",
+    "lifecycle-outcome-classify-gaps",
+    "lifecycle-outcome-quality-report",
+    "lifecycle-calibration-readiness",
+}
+LIFECYCLE_OUTCOME_QUALITY_COMMANDS = {
+    "lifecycle-outcome-refresh-candidates": "lifecycle-outcome-refresh-candidates",
+    "lifecycle-outcome-incremental-backfill": "lifecycle-outcome-incremental",
+    "lifecycle-outcome-classify-gaps": "lifecycle-outcome-classify-gaps",
+    "lifecycle-outcome-quality-report": "lifecycle-outcome-quality",
+    "lifecycle-calibration-readiness": "lifecycle-calibration-readiness",
 }
 ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
 STABLE_CHECK_ATTENTION_RE = re.compile(r"(状态|摘要|网络重试噪声|日志稳定性):\s*(.+)")
@@ -89,6 +113,11 @@ JOB_SPECS: dict[str, JobSpec] = {
     "lifecycle-outcome-backfill": JobSpec("lifecycle-outcome-backfill", "生命周期 Outcome 补算", _python_command("lifecycle-outcome-backfill", "--limit", "200"), 1200),
     "lifecycle-outcome-reconcile": JobSpec("lifecycle-outcome-reconcile", "生命周期 Outcome 一致性检查", _python_command("lifecycle-outcome-reconcile", "--limit", "200"), 600),
     "lifecycle-outcome-refresh-analytics": JobSpec("lifecycle-outcome-refresh-analytics", "刷新生命周期 Outcome 统计", _python_command("lifecycle-analytics", "--force-rebuild"), 900),
+    "lifecycle-outcome-refresh-candidates": JobSpec("lifecycle-outcome-refresh-candidates", "刷新生命周期 Outcome 候选", _python_command("lifecycle-outcome-refresh-candidates", "--limit", "200"), 600),
+    "lifecycle-outcome-incremental-backfill": JobSpec("lifecycle-outcome-incremental-backfill", "生命周期 Outcome 增量补算", _python_command("lifecycle-outcome-incremental", "--limit", "200"), 1200),
+    "lifecycle-outcome-classify-gaps": JobSpec("lifecycle-outcome-classify-gaps", "生命周期 Outcome 缺口分类", _python_command("lifecycle-outcome-classify-gaps", "--limit", "200"), 600),
+    "lifecycle-outcome-quality-report": JobSpec("lifecycle-outcome-quality-report", "生命周期 Outcome 数据质量报告", _python_command("lifecycle-outcome-quality"), 900),
+    "lifecycle-calibration-readiness": JobSpec("lifecycle-calibration-readiness", "生命周期模型校准准入检查", _python_command("lifecycle-calibration-readiness"), 300),
     "update-check": JobSpec("update-check", zh(r"\u68c0\u67e5 GitHub \u66f4\u65b0"), ["bash", "scripts/update_server.sh", "--check"], 180),
     "api-self-test": JobSpec("api-self-test", zh(r"Web API \u81ea\u68c0"), ["internal", "api-self-test"], 60, internal=True),
 }
@@ -98,9 +127,7 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
     """Build bounded CLI arguments for authenticated lifecycle job requests."""
     raw_symbol = str(metadata.get("symbol") or "").strip().upper()
     raw_lifecycle_id = metadata.get("lifecycle_id")
-    outcome_job = spec.job_type in {
-        "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
-    }
+    outcome_job = spec.job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES
     if outcome_job and raw_symbol and not re.fullmatch(r"[A-Z0-9]{2,24}(?:USDT)?", raw_symbol):
         raise ValueError("invalid lifecycle symbol")
     if outcome_job and isinstance(raw_lifecycle_id, bool):
@@ -132,9 +159,7 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
         if spec.job_type == "lifecycle-replay-rebuild":
             command.append("--force-rebuild")
         return _python_command(*command)
-    if spec.job_type in {
-        "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
-    }:
+    if spec.job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES:
         def strict_flag(name: str) -> bool:
             value = metadata.get(name, False)
             if value in (None, ""):
@@ -143,7 +168,7 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
                 raise ValueError(f"invalid boolean flag: {name}")
             return value
 
-        command = [spec.job_type]
+        command = [LIFECYCLE_OUTCOME_QUALITY_COMMANDS.get(spec.job_type, spec.job_type)]
         if lifecycle_id:
             command.extend(["--lifecycle-id", str(lifecycle_id)])
         if symbol:
@@ -158,6 +183,13 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
             raise ValueError("invalid lifecycle outcome horizon")
         if horizon in {"1h", "4h", "24h", "72h"}:
             command.extend(["--horizon", horizon])
+        module = str(metadata.get("module") or "").strip().lower()
+        if module and not re.fullmatch(r"[a-z0-9_.:-]{1,64}", module):
+            raise ValueError("invalid lifecycle outcome module")
+        if module:
+            command.extend(["--module", module])
+        if spec.job_type in LIFECYCLE_OUTCOME_QUALITY_COMMANDS and strict_flag("force"):
+            command.append("--force")
         if strict_flag("force_relink"):
             command.append("--force-relink")
         if spec.job_type == "lifecycle-outcome-backfill" and strict_flag("force_outcome_rebuild"):
@@ -174,6 +206,8 @@ LONG_ACTION_JOB_TYPES = {
     "lifecycle-replay-rebuild",
     "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
     "lifecycle-outcome-refresh-analytics",
+    "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-incremental-backfill",
+    "lifecycle-outcome-classify-gaps", "lifecycle-outcome-quality-report", "lifecycle-calibration-readiness",
 }
 
 
@@ -906,9 +940,7 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     try:
         job = store.create_job(job_type, metadata or {})
     except ValueError as exc:
-        code = "invalid_job_scope" if job_type in {
-            "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
-        } else "invalid_job_type"
+        code = "invalid_job_scope" if job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES else "invalid_job_type"
         return {"ok": False, "message": str(exc), "error": str(exc), "code": code}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
@@ -958,7 +990,8 @@ def lifecycle_intelligence_scheduler_tick(
     loaded = settings or Settings.load()
     intelligence_enabled = bool(getattr(loaded, "lifecycle_intelligence_enable", True))
     outcome_enabled = bool(getattr(loaded, "lifecycle_outcome_backfill_enable", True))
-    if not intelligence_enabled and not outcome_enabled:
+    incremental_enabled = bool(getattr(loaded, "lifecycle_outcome_incremental_enable", True))
+    if not intelligence_enabled and not outcome_enabled and not incremental_enabled:
         return {"ok": True, "enabled": False, "submitted": [], "jobs": []}
     timestamp = int(_now() if now is None else now)
     store = store_for_settings(loaded)
@@ -969,17 +1002,32 @@ def lifecycle_intelligence_scheduler_tick(
             ("lifecycle-replay", max(60, int(getattr(loaded, "lifecycle_replay_interval_sec", 3600) or 3600))),
             ("lifecycle-analytics", max(60, int(getattr(loaded, "lifecycle_analytics_interval_sec", 21600) or 21600))),
         ))
-    if outcome_enabled:
+    if outcome_enabled and not incremental_enabled:
+        # Legacy scheduler compatibility. Once the candidate state machine is
+        # enabled, the bounded incremental worker replaces this broad scan.
+        schedule.append((
+            "lifecycle-outcome-backfill",
+            max(300, int(getattr(loaded, "lifecycle_outcome_backfill_interval_sec", 3600) or 3600)),
+        ))
+    if outcome_enabled or incremental_enabled:
+        schedule.append(("lifecycle-outcome-reconcile", 86400))
+    if incremental_enabled:
+        incremental_interval = max(
+            300,
+            int(getattr(loaded, "lifecycle_outcome_incremental_interval_sec", 3600) or 3600),
+        )
         schedule.extend((
-            ("lifecycle-outcome-backfill", max(300, int(getattr(loaded, "lifecycle_outcome_backfill_interval_sec", 3600) or 3600))),
-            ("lifecycle-outcome-reconcile", 86400),
+            ("lifecycle-outcome-refresh-candidates", 900),
+            ("lifecycle-outcome-incremental-backfill", incremental_interval),
+            ("lifecycle-outcome-quality-report", 21600),
+            ("lifecycle-calibration-readiness", 21600),
         ))
     submitted: list[str] = []
     results: list[dict[str, Any]] = []
     for job_type, interval_sec in schedule:
         recent = store.list_jobs(limit=1, job_type=job_type)
         last_created = int((recent[0] if recent else {}).get("created_at") or 0)
-        if job_type.startswith("lifecycle-outcome-") and not last_created:
+        if job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES and not last_created:
             # A web-service restart must not immediately launch a historical
             # backfill or reconciliation job.  Give operators one full
             # configured interval to deploy, inspect, and run the documented
@@ -993,9 +1041,24 @@ def lifecycle_intelligence_scheduler_tick(
                 continue
         if last_created and timestamp - last_created < interval_sec:
             continue
+        metadata: dict[str, Any] = {
+            "source": "lifecycle-research-scheduler",
+            "scheduled_at": timestamp,
+        }
+        if job_type in {
+            "lifecycle-outcome-refresh-candidates",
+            "lifecycle-outcome-incremental-backfill",
+        }:
+            metadata["limit"] = max(
+                1,
+                min(
+                    int(getattr(loaded, "lifecycle_outcome_incremental_batch_size", 200) or 200),
+                    1000,
+                ),
+            )
         result = create_job_payload(
             job_type,
-            {"source": "lifecycle-research-scheduler", "scheduled_at": timestamp},
+            metadata,
             settings=loaded,
             start=start,
         )
@@ -1023,6 +1086,7 @@ def start_lifecycle_intelligence_scheduler(*, settings: Settings | None = None) 
     if not (
         bool(getattr(loaded, "lifecycle_intelligence_enable", True))
         or bool(getattr(loaded, "lifecycle_outcome_backfill_enable", True))
+        or bool(getattr(loaded, "lifecycle_outcome_incremental_enable", True))
     ):
         return None
     global _LIFECYCLE_SCHEDULER_THREAD
@@ -1166,7 +1230,7 @@ def rerun_job_payload(job_id: int, *, settings: Settings | None = None, start: b
         key: original_metadata[key]
         for key in (
             "symbol", "lifecycle_id", "limit", "horizon", "force_relink",
-            "force_outcome_rebuild", "repair",
+            "force_outcome_rebuild", "repair", "module", "force",
         )
         if key in original_metadata
     }

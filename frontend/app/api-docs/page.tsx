@@ -50,7 +50,14 @@ const groups = [
       "/public-api/lifecycle/outcomes/list?limit=10",
       "/public-api/lifecycle/outcomes/detail?symbol=BTCUSDT",
       "/public-api/lifecycle/outcomes/reasons",
-      "/public-api/lifecycle/outcomes/maturity"
+      "/public-api/lifecycle/outcomes/maturity",
+      "/public-api/lifecycle/outcomes/quality/summary",
+      "/public-api/lifecycle/outcomes/quality/reasons",
+      "/public-api/lifecycle/outcomes/quality/modules",
+      "/public-api/lifecycle/outcomes/quality/levels",
+      "/public-api/lifecycle/outcomes/quality/horizons",
+      "/public-api/lifecycle/outcomes/quality/timeline",
+      "/public-api/lifecycle/calibration-readiness"
     ]
   }
 ];
@@ -80,6 +87,7 @@ export default function ApiDocsPage() {
         </p>
         <p className="mt-3">公开数据仅用于信号展示、风险提示和复盘统计；不构成投资建议，不执行自动交易。</p>
         <p className="mt-3">Lifecycle Outcome 的关联覆盖率与数据成熟度是两个不同指标：尚未到期不是失败，pending 不是失败，unavailable 不等于亏损；只有 success Outcome 参与成熟收益统计。</p>
+        <p className="mt-3">v1.78.2 进一步区分生命周期关联覆盖率、候选信号关联覆盖率、到期候选解决率、有效 Outcome 成熟率和生命周期成熟率；模型校准准入接口只判断数据是否足够，不会自动修改模型。</p>
       </section>
     </div>
   );

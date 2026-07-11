@@ -7,6 +7,7 @@ import type {
   DecisionItem,
   ListPayload,
   LifecycleDetailPayload,
+  LifecycleCalibrationReadinessPayload,
   LifecycleIntelligenceDetailPayload,
   LifecycleIntelligenceItem,
   LifecycleIntelligenceSummaryPayload,
@@ -14,6 +15,8 @@ import type {
   LifecycleOutcomeCoverageItem,
   LifecycleOutcomeDetailPayload,
   LifecycleOutcomeMaturityPayload,
+  LifecycleOutcomeQualityListPayload,
+  LifecycleOutcomeQualitySummaryPayload,
   LifecycleOutcomeReasonsPayload,
   LifecycleOutcomeSummaryPayload,
   LifecycleReplayFrame,
@@ -84,6 +87,8 @@ function publicApiRevalidateSec(path: `/public-api/${string}`): number {
     "/public-api/lifecycle/outcomes/reasons",
     "/public-api/lifecycle/outcomes/maturity"
   ].includes(path)) return 30;
+  if (path.startsWith("/public-api/lifecycle/outcomes/quality/")) return 30;
+  if (path === "/public-api/lifecycle/calibration-readiness") return 30;
   if (path.startsWith("/public-api/lifecycle/outcomes/")) return 10;
   if (path === "/public-api/outcomes/stats") return 30;
   if (path.endsWith("/stats")) return 15;
@@ -374,6 +379,62 @@ export function getLifecycleOutcomeReasons() {
 
 export function getLifecycleOutcomeMaturity() {
   return publicFetch<LifecycleOutcomeMaturityPayload>("/public-api/lifecycle/outcomes/maturity");
+}
+
+export function getLifecycleOutcomeQualitySummary(query: Query = {}) {
+  return publicFetch<LifecycleOutcomeQualitySummaryPayload>(
+    "/public-api/lifecycle/outcomes/quality/summary",
+    query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getLifecycleOutcomeQualityReasons(query: Query = {}) {
+  return publicFetch<LifecycleOutcomeQualityListPayload>(
+    "/public-api/lifecycle/outcomes/quality/reasons",
+    query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getLifecycleOutcomeQualityModules(query: Query = {}) {
+  return publicFetch<LifecycleOutcomeQualityListPayload>(
+    "/public-api/lifecycle/outcomes/quality/modules",
+    query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getLifecycleOutcomeQualityLevels(query: Query = {}) {
+  return publicFetch<LifecycleOutcomeQualityListPayload>(
+    "/public-api/lifecycle/outcomes/quality/levels",
+    query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getLifecycleOutcomeQualityHorizons(query: Query = {}) {
+  return publicFetch<LifecycleOutcomeQualityListPayload>(
+    "/public-api/lifecycle/outcomes/quality/horizons",
+    query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getLifecycleOutcomeQualityTimeline(query: Query = {}) {
+  return publicFetch<LifecycleOutcomeQualityListPayload>(
+    "/public-api/lifecycle/outcomes/quality/timeline",
+    query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getLifecycleCalibrationReadiness(query: Query = {}) {
+  return publicFetch<LifecycleCalibrationReadinessPayload>(
+    "/public-api/lifecycle/calibration-readiness",
+    query,
+    { revalidateSec: 30 }
+  );
 }
 
 export type HomeDashboardData = {

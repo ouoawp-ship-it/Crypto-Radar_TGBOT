@@ -1,5 +1,7 @@
 # Lifecycle Outcome Coverage & Backfill
 
+> v1.78.2 将本页 v1.78.1 的关联层继续扩展为候选资格与数据质量层。新口径和增量状态机见 [LIFECYCLE_OUTCOME_DATA_QUALITY.md](LIFECYCLE_OUTCOME_DATA_QUALITY.md)，模型校准准入见 [LIFECYCLE_CALIBRATION_READINESS.md](LIFECYCLE_CALIBRATION_READINESS.md)。
+
 ## 目标与边界
 
 v1.78.1 为生命周期、生命周期事件和 `signal_outcomes` 建立可重复、可审计的确定性关联，补算已到期但缺失的历史 Outcome，并单独统计关联覆盖率与数据成熟度。本功能不修改 Outcome 计算语义、decision model 阈值、生命周期 intelligence 权重或 Telegram 主推送流程，不接交易所下单 API，也不执行自动交易。
@@ -31,7 +33,7 @@ Outcome coverage 使用以下状态：
 - `error`：真实请求、解析或数据库错误。
 - `missing`：该 signal/horizon 尚无 Outcome 记录。
 
-关联覆盖率：已关联 Outcome 的候选信号数 / 可关联候选信号数。
+候选信号关联覆盖率：已关联 Outcome 的 eligible 候选信号数 / eligible 候选信号数。旧字段 `link_coverage_ratio` 为兼容保留，前台不再用一个模糊“覆盖率”同时代表生命周期和候选信号口径。
 
 数据成熟度：`success` horizon 数 / 已到期 horizon 数。尚未到期的 24h/72h 不进入成熟度分母；pending/not_due 不算失败，unavailable 不算亏损或零收益。
 
@@ -82,3 +84,5 @@ docs/generated/lifecycle_outcome_coverage_latest.md
 ```
 
 不能用生命周期总数代替成熟样本数，也不能把 missing、pending、not_due 或 unavailable 当作负收益。
+
+v1.78.2 同时要求：纯汇总、公告、测试、dry-run、失败/阻断/跳过以及不合法交易对等 `ineligible` 候选不得进入 Outcome 分母；尚未到期不是错误；`unavailable` 可以计入到期解决率，但不进入有效 Outcome 成熟率。笼统 `no_outcome_row` 在最新质量报告中必须归零，所有缺口都映射到具体、可操作的原因。

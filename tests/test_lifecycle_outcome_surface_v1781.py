@@ -213,6 +213,7 @@ class LifecycleOutcomeSurfaceJobTests(unittest.TestCase):
                 lifecycle_intelligence_enable=False,
                 lifecycle_outcome_backfill_enable=True,
                 lifecycle_outcome_backfill_interval_sec=3600,
+                lifecycle_outcome_incremental_enable=False,
             )
             base = int(time.time())
             with patch.object(jobs, "_now", return_value=base):

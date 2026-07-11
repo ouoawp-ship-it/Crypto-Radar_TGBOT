@@ -67,9 +67,6 @@ INVALID_PRICE_ERROR_PATTERNS = (
     "invalid symbol",
     "symbol not found",
     "empty kline data",
-    "ReadTimeout",
-    "TimeoutError",
-    "timed out",
 )
 PRICE_UNAVAILABLE_REASON = "价格源不支持该交易对或暂无 K 线数据"
 PREFIX_1000_UNAVAILABLE_REASON = "当前价格源不支持 1000 前缀交易对，后续可接入公开合约 K 线补齐"

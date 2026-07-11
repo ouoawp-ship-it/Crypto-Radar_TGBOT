@@ -121,6 +121,14 @@ from .web_services.lifecycle_outcomes import (
     public_lifecycle_outcome_reasons_payload,
     public_lifecycle_outcome_summary_payload,
 )
+from .web_services.lifecycle_outcome_quality import (
+    lifecycle_calibration_readiness_payload,
+    lifecycle_outcome_quality_payload,
+    lifecycle_outcome_summary_with_quality_payload as lifecycle_outcome_summary_payload,
+    public_lifecycle_calibration_readiness_payload,
+    public_lifecycle_outcome_quality_payload,
+    public_lifecycle_outcome_summary_with_quality_payload as public_lifecycle_outcome_summary_payload,
+)
 from .web_services.public import (
     public_coin_detail_payload,
     public_coin_search_payload,
@@ -198,6 +206,20 @@ LIFECYCLE_CONFIG_KEYS = {
     "LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES",
     "LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC",
     "LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC",
+    "LIFECYCLE_OUTCOME_PROCESSING_STALE_SEC",
+    "LIFECYCLE_OUTCOME_RETRY_MAX_ATTEMPTS",
+    "LIFECYCLE_OUTCOME_RETRY_BASE_SEC",
+    "LIFECYCLE_OUTCOME_RETRY_MAX_SEC",
+    "LIFECYCLE_OUTCOME_INCREMENTAL_ENABLE",
+    "LIFECYCLE_OUTCOME_INCREMENTAL_INTERVAL_SEC",
+    "LIFECYCLE_OUTCOME_INCREMENTAL_BATCH_SIZE",
+    "LIFECYCLE_OUTCOME_INCREMENTAL_MAX_ITEMS",
+    "LIFECYCLE_OUTCOME_INCREMENTAL_MAX_SYMBOLS",
+    "LIFECYCLE_CALIBRATION_MIN_24H_SUCCESS",
+    "LIFECYCLE_CALIBRATION_MIN_72H_SUCCESS",
+    "LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO",
+    "LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO",
+    "LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO",
 }
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
@@ -301,6 +323,20 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES", "Outcome 回填每批结果上限", "AI 助手", kind="int", minimum=1, maximum=5000),
     ConfigField("LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC", "Outcome 旧数据时间容差", "AI 助手", kind="int", minimum=0, maximum=3600, help="仅用于旧数据缺失 signal_id 时的 symbol+时间+模块严格匹配。"),
     ConfigField("LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC", "Outcome 增量回填间隔", "AI 助手", kind="int", minimum=300, maximum=86400),
+    ConfigField("LIFECYCLE_OUTCOME_PROCESSING_STALE_SEC", "Outcome processing 超时恢复", "AI 助手", kind="int", minimum=60, maximum=86400),
+    ConfigField("LIFECYCLE_OUTCOME_RETRY_MAX_ATTEMPTS", "Outcome 最大重试次数", "AI 助手", kind="int", minimum=1, maximum=20),
+    ConfigField("LIFECYCLE_OUTCOME_RETRY_BASE_SEC", "Outcome 重试基础间隔", "AI 助手", kind="int", minimum=60, maximum=86400),
+    ConfigField("LIFECYCLE_OUTCOME_RETRY_MAX_SEC", "Outcome 重试最大间隔", "AI 助手", kind="int", minimum=60, maximum=172800),
+    ConfigField("LIFECYCLE_OUTCOME_INCREMENTAL_ENABLE", "启用 Outcome 候选增量任务", "AI 助手", kind="bool", help="仅处理已到期、合资格且符合重试时间的候选。"),
+    ConfigField("LIFECYCLE_OUTCOME_INCREMENTAL_INTERVAL_SEC", "Outcome 增量任务间隔", "AI 助手", kind="int", minimum=300, maximum=86400),
+    ConfigField("LIFECYCLE_OUTCOME_INCREMENTAL_BATCH_SIZE", "Outcome 候选每批生命周期上限", "AI 助手", kind="int", minimum=1, maximum=1000),
+    ConfigField("LIFECYCLE_OUTCOME_INCREMENTAL_MAX_ITEMS", "Outcome 候选每批项目上限", "AI 助手", kind="int", minimum=1, maximum=5000),
+    ConfigField("LIFECYCLE_OUTCOME_INCREMENTAL_MAX_SYMBOLS", "Outcome 候选每批币种上限", "AI 助手", kind="int", minimum=1, maximum=500),
+    ConfigField("LIFECYCLE_CALIBRATION_MIN_24H_SUCCESS", "校准门禁 24h 成熟样本", "AI 助手", kind="int", minimum=0, maximum=100000),
+    ConfigField("LIFECYCLE_CALIBRATION_MIN_72H_SUCCESS", "校准门禁 72h 成熟样本", "AI 助手", kind="int", minimum=0, maximum=100000),
+    ConfigField("LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO", "校准门禁到期解决率", "AI 助手", kind="float", minimum=0, maximum=1),
+    ConfigField("LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO", "校准门禁生命周期成熟率", "AI 助手", kind="float", minimum=0, maximum=1),
+    ConfigField("LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO", "校准门禁最大错误率", "AI 助手", kind="float", minimum=0, maximum=1, help="只读准入判断，不自动修改模型。"),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -8136,6 +8172,11 @@ INDEX_HTML = r"""<!doctype html>
       { type: "lifecycle-outcome-backfill", label: "Outcome 补算", desc: "有界地补算已到期且缺失的 Outcome，尚未到期不会当作失败。" },
       { type: "lifecycle-outcome-reconcile", label: "Outcome 一致性检查", desc: "检查孤立链接、重复 primary 与 coverage 不一致；默认只读。" },
       { type: "lifecycle-outcome-refresh-analytics", label: "刷新 Outcome 统计", desc: "在关联/补算完成后重建生命周期统计缓存。" },
+      { type: "lifecycle-outcome-refresh-candidates", label: "刷新 Outcome 候选", desc: "只刷新候选资格和到期状态，不请求外部行情。" },
+      { type: "lifecycle-outcome-classify-gaps", label: "分类 Outcome 缺口", desc: "将笼统缺口拆分为可操作原因，不修改模型。" },
+      { type: "lifecycle-outcome-incremental-backfill", label: "Outcome 增量补算", desc: "有界处理已到期、合资格且符合重试时间的候选。" },
+      { type: "lifecycle-outcome-quality-report", label: "Outcome 质量报告", desc: "生成覆盖率、成熟度和具体缺口原因报告。" },
+      { type: "lifecycle-calibration-readiness", label: "模型校准准入", desc: "只判断数据是否达到门槛，不自动修改模型。" },
       { type: "api-self-test", label: "Web API 自检", desc: "轻量检查 Web 摘要、日志和信号统计接口，不访问外网。" }
     ];
     function jobStatusPill(status) {
@@ -8167,7 +8208,7 @@ INDEX_HTML = r"""<!doctype html>
     function lifecycleOutcomeCoveragePanel() {
       const data = latestLifecycleOutcomeStatus || {};
       const horizons = data.horizons || {};
-      const reasons = data.unlinked_reasons || {};
+      const reasons = data.reasons || data.unlinked_reasons || {};
       const pct = value => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "-";
       const horizonText = ["1h", "4h", "24h", "72h"].map(key => {
         const item = horizons[key] || {};
@@ -8179,12 +8220,13 @@ INDEX_HTML = r"""<!doctype html>
       return `<div class="panel span-12">
         <h3 class="section-title">Lifecycle Outcome Coverage</h3>
         <div class="stats-grid">
-          <div class="stat-card"><span>关联覆盖率</span><strong>${pct(data.link_coverage_ratio)}</strong></div>
-          <div class="stat-card"><span>数据成熟度</span><strong>${pct(data.maturity_ratio)}</strong></div>
-          <div class="stat-card"><span>已关联生命周期</span><strong>${Number(data.linked_lifecycle_count || 0)}</strong></div>
-          <div class="stat-card"><span>已成熟生命周期</span><strong>${Number(data.mature_lifecycle_count || 0)}</strong></div>
+          <div class="stat-card"><span>生命周期关联覆盖率</span><strong>${pct(data.lifecycle_link_coverage_ratio ?? data.link_coverage_ratio)}</strong></div>
+          <div class="stat-card"><span>候选信号关联覆盖率</span><strong>${pct(data.candidate_link_coverage_ratio)}</strong></div>
+          <div class="stat-card"><span>到期候选解决率</span><strong>${pct(data.due_resolution_ratio)}</strong></div>
+          <div class="stat-card"><span>有效 Outcome 成熟率</span><strong>${pct(data.usable_outcome_maturity_ratio)}</strong></div>
+          <div class="stat-card"><span>生命周期成熟率</span><strong>${pct(data.lifecycle_maturity_ratio ?? data.maturity_ratio)}</strong></div>
         </div>
-        <p class="muted">关联覆盖率表示是否找到对应 Outcome；数据成熟度表示已到期且成功计算。尚未到期、pending 和 unavailable 都不是失败。</p>
+        <p class="muted">五项指标分别统计生命周期关联、eligible 候选关联、到期解决、有效成功和生命周期成熟。尚未到期、pending 和 unavailable 都不是失败，ineligible 不进入 Outcome 分母。</p>
         <p>${horizonText}</p><p><b>未关联原因：</b>${reasonText}</p>
       </div>`;
     }
@@ -10272,6 +10314,36 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/public-api/lifecycle/outcomes/summary":
             self.send_json(public_lifecycle_outcome_summary_payload())
             return
+        lifecycle_outcome_quality_paths = {
+            "/public-api/lifecycle/outcomes/quality/summary": "summary",
+            "/public-api/lifecycle/outcomes/quality/reasons": "reasons",
+            "/public-api/lifecycle/outcomes/quality/modules": "modules",
+            "/public-api/lifecycle/outcomes/quality/levels": "levels",
+            "/public-api/lifecycle/outcomes/quality/horizons": "horizons",
+            "/public-api/lifecycle/outcomes/quality/timeline": "timeline",
+        }
+        if path in lifecycle_outcome_quality_paths:
+            try:
+                requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
+            except ValueError:
+                self.send_json(api_error("lifecycle_id must be a positive integer.", code="invalid_lifecycle_id"), HTTPStatus.BAD_REQUEST)
+                return
+            requested_horizon = str(query.get("horizon", [""])[0] or "").strip().lower()
+            if requested_horizon and requested_horizon not in {"1h", "4h", "24h", "72h"}:
+                self.send_json(api_error("Unsupported outcome horizon.", code="invalid_horizon"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(public_lifecycle_outcome_quality_payload(
+                lifecycle_outcome_quality_paths[path],
+                symbol=query.get("symbol", [""])[0],
+                lifecycle_id=requested_lifecycle_id,
+                horizon=requested_horizon,
+                module=query.get("module", [""])[0],
+                time_range=query.get("time_range", ["all"])[0],
+            ))
+            return
+        if path == "/public-api/lifecycle/calibration-readiness":
+            self.send_json(public_lifecycle_calibration_readiness_payload())
+            return
         if path in {"/public-api/lifecycle/outcomes/coverage", "/public-api/lifecycle/outcomes/list"}:
             try:
                 requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
@@ -10640,6 +10712,22 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/lifecycle/outcomes/summary":
             self.send_json(lifecycle_outcome_summary_payload())
             return
+        if path in {
+            "/api/lifecycle/outcomes/quality/summary",
+            "/api/lifecycle/outcomes/quality/reasons",
+        }:
+            section = path.rsplit("/", 1)[-1]
+            self.send_json(lifecycle_outcome_quality_payload(
+                section,
+                symbol=query.get("symbol", [""])[0],
+                horizon=query.get("horizon", [""])[0],
+                module=query.get("module", [""])[0],
+                time_range=query.get("time_range", ["all"])[0],
+            ))
+            return
+        if path == "/api/lifecycle/calibration-readiness":
+            self.send_json(lifecycle_calibration_readiness_payload())
+            return
         if path == "/api/lifecycle/outcomes/coverage":
             try:
                 requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
@@ -10862,6 +10950,10 @@ class WebHandler(BaseHTTPRequestHandler):
                 "/api/lifecycle/outcomes/run-link": "lifecycle-outcome-link",
                 "/api/lifecycle/outcomes/run-backfill": "lifecycle-outcome-backfill",
                 "/api/lifecycle/outcomes/run-reconcile": "lifecycle-outcome-reconcile",
+                "/api/lifecycle/outcomes/run-refresh-candidates": "lifecycle-outcome-refresh-candidates",
+                "/api/lifecycle/outcomes/run-classify-gaps": "lifecycle-outcome-classify-gaps",
+                "/api/lifecycle/outcomes/run-incremental": "lifecycle-outcome-incremental-backfill",
+                "/api/lifecycle/outcomes/run-quality-report": "lifecycle-outcome-quality-report",
             }
             if path in lifecycle_outcome_job_types:
                 metadata: dict[str, Any] = {
@@ -10869,9 +10961,11 @@ class WebHandler(BaseHTTPRequestHandler):
                     "symbol": str(data.get("symbol") or "")[:32],
                     "limit": min(1000, max(1, query_int_or(str(data.get("limit") or "200"), 200))),
                     "horizon": str(data.get("horizon") or "")[:8],
+                    "module": str(data.get("module") or ""),
                     "force_relink": data.get("force_relink", False),
                     "force_outcome_rebuild": data.get("force_outcome_rebuild", False),
                     "repair": data.get("repair", False),
+                    "force": data.get("force", False),
                 }
                 if data.get("lifecycle_id") not in (None, ""):
                     # Keep the raw value so the jobs boundary can reject

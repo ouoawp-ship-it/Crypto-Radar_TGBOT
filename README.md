@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.78.2 说明
+
+v1.78.2 新增 Lifecycle Outcome Data Quality & Coverage。系统为每个生命周期 Outcome 候选持久化资格、到期时间、处理状态、重试信息和可操作原因，把旧的笼统 `no_outcome_row` 拆分为等待到期、待补算、不合资格、数据不可用、可重试错误、歧义旧数据或真实错误。分类本身不强制生成 Outcome；只有 eligible、已到期且可计算的候选才进入有界、幂等的增量补算。
+
+页面、API 和报告明确区分五个指标：生命周期关联覆盖率、候选信号关联覆盖率、到期候选解决率、有效 Outcome 成熟率和生命周期成熟率。`not_due` 不进入到期分母，`ineligible` 不进入 Outcome 分母，`unavailable` 可以视为已解决但绝不视为亏损或成功。公开 API 只读取预计算质量结果，按模块、首信号级别、信号类型、horizon 和时间范围展示质量，不会在 HTTP 请求中触发回填。
+
+新增候选刷新、缺口分类、增量补算、质量报告和模型校准准入 CLI/jobs。校准准入只检查成熟样本、解决率、错误率和链接一致性，不自动修改 Decision Model 阈值或 Lifecycle Intelligence 权重。本版本不改变 Telegram 主推送、不默认开启 Lifecycle Telegram、不接下单 API，也不执行自动交易。
+
+详细口径见 [`docs/LIFECYCLE_OUTCOME_DATA_QUALITY.md`](docs/LIFECYCLE_OUTCOME_DATA_QUALITY.md) 与 [`docs/LIFECYCLE_CALIBRATION_READINESS.md`](docs/LIFECYCLE_CALIBRATION_READINESS.md)。系统仅用于信号整理、研究和风险提示，不构成投资建议。
+
 ## v1.78.1 说明
 
 v1.78.1 新增 Lifecycle Outcome Coverage & Backfill，为生命周期与 `signal_outcomes` 建立持久、可审计的确定性关联。关联按首信号 `signal_id`、生命周期事件 `signal_id`、最新信号 `signal_id` 的顺序执行；只有旧数据缺少 signal id 时，才允许在 symbol、信号时间误差和 module/template 同时匹配且候选唯一时兼容关联，绝不使用 symbol-only 匹配。

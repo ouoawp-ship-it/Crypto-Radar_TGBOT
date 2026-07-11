@@ -185,6 +185,32 @@ class OutcomeTrackerTests(unittest.TestCase):
         self.assertIn("数据不足 / 价格源不可用摘要", report)
         self.assertIn("LABUSDT 1h", report)
 
+    def test_timeout_remains_retryable_error_instead_of_unavailable(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            add_signal(settings, symbol="BTCUSDT", status="sent", ts=now - 7200)
+
+            def timed_out(*_args):
+                raise TimeoutError("provider timed out")
+
+            result = scan_outcomes(
+                settings=settings,
+                horizon="1h",
+                symbol="BTCUSDT",
+                now_ts=now,
+                price_fetcher=timed_out,
+            )
+            row = OutcomeStore(settings.outcome_db_path).list_outcomes(
+                horizon="1h",
+                symbol="BTCUSDT",
+            )["items"][0]
+
+        self.assertEqual(result["counts"]["error"], 1)
+        self.assertEqual(result["counts"]["unavailable"], 0)
+        self.assertEqual(row["data_status"], "error")
+        self.assertIn("timed out", row["error"])
+
     def test_invalid_symbol_cache_skips_repeated_horizon_fetches(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = make_settings(tmp)

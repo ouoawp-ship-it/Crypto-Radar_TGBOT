@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -165,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 或 lifecycle 命令的回看小时数")
     parser.add_argument("--horizon", default="", help="用于 outcome-scan/lifecycle-outcome：只处理 1h/4h/24h/72h 中的一个窗口")
+    parser.add_argument("--module", default="", help="用于 lifecycle outcome 质量命令：只处理指定信号模块")
     parser.add_argument("--symbol", default="", help="用于 outcome/lifecycle 命令：只处理某个币种，例如 BTC 或 BTCUSDT")
     parser.add_argument("--lifecycle-id", type=int, default=None, help="用于 lifecycle-replay/lifecycle-outcome：按生命周期 ID 精确处理")
     parser.add_argument("--all-active", action="store_true", help="用于 lifecycle-intelligence：处理全部活跃生命周期")
@@ -174,6 +175,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-relink", action="store_true", help="用于 lifecycle outcome 命令：重新核对已有关联，不重算成功 Outcome")
     parser.add_argument("--force-outcome-rebuild", action="store_true", help="用于 lifecycle-outcome-backfill：明确重算已到期 Outcome")
     parser.add_argument("--repair", action="store_true", help="用于 lifecycle-outcome-reconcile：修复可安全修复的覆盖率数据")
+    parser.add_argument("--force", action="store_true", help="用于 lifecycle outcome 质量命令：明确强制刷新已分类候选")
+    parser.add_argument("--eligible-only", action="store_true", help="用于 lifecycle-outcome-backfill：仅补算合资格候选")
+    parser.add_argument("--due-only", action="store_true", help="用于 lifecycle-outcome-backfill：仅补算已到期候选")
     parser.add_argument("--backfill-days", type=int, default=None, help="用于 outcome-scan：回填最近 N 天已发送信号")
     parser.add_argument("--push", action="store_true", help="用于 lifecycle-scan：对重要生命周期事件尝试 Telegram 跟随推送；真实发送仍需 --send --confirm-real-send")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
@@ -505,6 +509,14 @@ def _lifecycle_outcome_limit(args: argparse.Namespace, settings: Settings) -> in
     return max(1, min(int(getattr(args, "limit", None) or configured), 1000))
 
 
+def _lifecycle_outcome_incremental_limit(args: argparse.Namespace, settings: Settings) -> int:
+    configured = max(
+        1,
+        int(getattr(settings, "lifecycle_outcome_incremental_batch_size", 200) or 200),
+    )
+    return max(1, min(int(getattr(args, "limit", None) or configured), 1000))
+
+
 def run_lifecycle_outcome_link(args: argparse.Namespace) -> int:
     from .lifecycle_outcomes import link_lifecycle_outcomes
 
@@ -525,7 +537,26 @@ def run_lifecycle_outcome_backfill(args: argparse.Namespace) -> int:
     from .lifecycle_outcomes import backfill_lifecycle_outcomes
 
     settings = Settings.load()
-    result = backfill_lifecycle_outcomes(
+    if bool(getattr(args, "eligible_only", False) or getattr(args, "due_only", False)):
+        # v1.78.2's candidate state machine is the authoritative implementation
+        # of eligible+due processing. Keep the legacy command name for operator
+        # compatibility while avoiding a second eligibility definition.
+        from .lifecycle_outcome_quality import incremental_outcome_backfill
+
+        result = _call_lifecycle_quality_function(
+            incremental_outcome_backfill,
+            settings=settings,
+            symbol=str(getattr(args, "symbol", "") or ""),
+            lifecycle_id=getattr(args, "lifecycle_id", None),
+            limit=_lifecycle_outcome_incremental_limit(args, settings),
+            horizon=str(getattr(args, "horizon", "") or ""),
+            module=str(getattr(args, "module", "") or ""),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=bool(getattr(args, "force_outcome_rebuild", False)),
+        )
+        return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+    result = _call_lifecycle_quality_function(
+        backfill_lifecycle_outcomes,
         settings=settings,
         symbol=str(getattr(args, "symbol", "") or ""),
         lifecycle_id=getattr(args, "lifecycle_id", None),
@@ -534,6 +565,8 @@ def run_lifecycle_outcome_backfill(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, "dry_run", False)),
         force_relink=bool(getattr(args, "force_relink", False)),
         force_outcome_rebuild=bool(getattr(args, "force_outcome_rebuild", False)),
+        eligible_only=bool(getattr(args, "eligible_only", False)),
+        due_only=bool(getattr(args, "due_only", False)),
     )
     return _print_lifecycle_intelligence_result(result, args)
 
@@ -562,6 +595,95 @@ def run_lifecycle_outcome_reconcile(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, "dry_run", False)),
     )
     return _print_lifecycle_intelligence_result(result, args)
+
+
+def _call_lifecycle_quality_function(function: object, **kwargs: object) -> object:
+    """Call a quality-core function while keeping minor signature evolution compatible."""
+    import inspect
+
+    signature = inspect.signature(function)  # type: ignore[arg-type]
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    supported = kwargs if accepts_kwargs else {
+        key: value for key, value in kwargs.items() if key in signature.parameters
+    }
+    return function(**supported)  # type: ignore[operator]
+
+
+def _lifecycle_outcome_quality_kwargs(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> dict[str, object]:
+    return {
+        "settings": settings,
+        "symbol": str(getattr(args, "symbol", "") or ""),
+        "lifecycle_id": getattr(args, "lifecycle_id", None),
+        "horizon": str(getattr(args, "horizon", "") or ""),
+        "module": str(getattr(args, "module", "") or ""),
+        "limit": _lifecycle_outcome_incremental_limit(args, settings),
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "force": bool(getattr(args, "force", False)),
+    }
+
+
+def run_lifecycle_outcome_refresh_candidates(args: argparse.Namespace) -> int:
+    from .lifecycle_outcome_quality import refresh_outcome_candidates
+
+    settings = Settings.load()
+    result = _call_lifecycle_quality_function(
+        refresh_outcome_candidates,
+        **_lifecycle_outcome_quality_kwargs(args, settings),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_lifecycle_outcome_classify_gaps(args: argparse.Namespace) -> int:
+    from .lifecycle_outcome_quality import classify_outcome_gaps
+
+    settings = Settings.load()
+    result = _call_lifecycle_quality_function(
+        classify_outcome_gaps,
+        **_lifecycle_outcome_quality_kwargs(args, settings),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_lifecycle_outcome_incremental(args: argparse.Namespace) -> int:
+    from .lifecycle_outcome_quality import incremental_outcome_backfill
+
+    settings = Settings.load()
+    result = _call_lifecycle_quality_function(
+        incremental_outcome_backfill,
+        **_lifecycle_outcome_quality_kwargs(args, settings),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_lifecycle_outcome_quality(args: argparse.Namespace) -> int:
+    from .lifecycle_outcome_quality import lifecycle_outcome_quality
+
+    settings = Settings.load()
+    result = _call_lifecycle_quality_function(
+        lifecycle_outcome_quality,
+        **_lifecycle_outcome_quality_kwargs(args, settings),
+        write_reports=not bool(getattr(args, "dry_run", False)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_lifecycle_calibration_readiness(args: argparse.Namespace) -> int:
+    from .lifecycle_outcome_quality import lifecycle_calibration_readiness
+
+    settings = Settings.load()
+    result = _call_lifecycle_quality_function(
+        lifecycle_calibration_readiness,
+        settings=settings,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        write_reports=not bool(getattr(args, "dry_run", False)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
 
 
 def run_lifecycle_tracker_cycle(settings: Settings, args: argparse.Namespace) -> dict[str, object]:
@@ -2074,6 +2196,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_lifecycle_outcome_status(args)
     if args.command == "lifecycle-outcome-reconcile":
         return run_lifecycle_outcome_reconcile(args)
+    if args.command == "lifecycle-outcome-refresh-candidates":
+        return run_lifecycle_outcome_refresh_candidates(args)
+    if args.command == "lifecycle-outcome-classify-gaps":
+        return run_lifecycle_outcome_classify_gaps(args)
+    if args.command == "lifecycle-outcome-incremental":
+        return run_lifecycle_outcome_incremental(args)
+    if args.command == "lifecycle-outcome-quality":
+        return run_lifecycle_outcome_quality(args)
+    if args.command == "lifecycle-calibration-readiness":
+        return run_lifecycle_calibration_readiness(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 
