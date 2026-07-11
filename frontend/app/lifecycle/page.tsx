@@ -6,9 +6,9 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { PageTitle } from "@/components/PageTitle";
-import { getLifecycleAnalytics, getLifecycleIntelligenceList, getLifecycleIntelligenceSummary, getLifecycleSummary, getLifecycles, invalidatePublicApiCache } from "@/lib/api";
-import { compact, pct, safeText } from "@/lib/format";
-import type { LifecycleIntelligenceItem, LifecycleIntelligenceSummaryPayload, LifecycleItem, LifecycleSummaryPayload } from "@/lib/types";
+import { getLifecycleAnalytics, getLifecycleIntelligenceList, getLifecycleIntelligenceSummary, getLifecycleOutcomeSummary, getLifecycleSummary, getLifecycles, invalidatePublicApiCache } from "@/lib/api";
+import { compact, pct, ratioPct, safeText } from "@/lib/format";
+import type { LifecycleIntelligenceItem, LifecycleIntelligenceSummaryPayload, LifecycleItem, LifecycleOutcomeSummaryPayload, LifecycleSummaryPayload } from "@/lib/types";
 
 function qualityClass(label?: string) {
   if (["强趋势确认", "高质量启动"].includes(label || "")) return "border-emerald-400/40";
@@ -28,6 +28,7 @@ export default function LifecyclePage() {
   const [summary, setSummary] = useState<LifecycleSummaryPayload>({});
   const [items, setItems] = useState<LifecycleItem[]>([]);
   const [intelligenceSummary, setIntelligenceSummary] = useState<LifecycleIntelligenceSummaryPayload>({});
+  const [outcomeQuality, setOutcomeQuality] = useState<LifecycleOutcomeSummaryPayload>({});
   const [intelligenceItems, setIntelligenceItems] = useState<LifecycleIntelligenceItem[]>([]);
   const [upgradePathItems, setUpgradePathItems] = useState<Array<Record<string, unknown>>>([]);
   const [analyticsSummary, setAnalyticsSummary] = useState<Record<string, unknown>>({});
@@ -45,12 +46,13 @@ export default function LifecyclePage() {
     setLoading(true);
     setError("");
     try {
-      const [summaryPayload, listPayload, intelligenceSummaryPayload, intelligenceListPayload, upgradePathPayload] = await Promise.all([
+      const [summaryPayload, listPayload, intelligenceSummaryPayload, intelligenceListPayload, upgradePathPayload, outcomeQualityPayload] = await Promise.all([
         getLifecycleSummary(),
         getLifecycles({ symbol, state, level, risk, limit: 80 }),
         getLifecycleIntelligenceSummary(),
         getLifecycleIntelligenceList({ symbol, state, level, risk, limit: 80 }),
-        getLifecycleAnalytics("upgrade-path")
+        getLifecycleAnalytics("upgrade-path"),
+        getLifecycleOutcomeSummary().catch(() => ({} as LifecycleOutcomeSummaryPayload))
       ]);
       setSummary(summaryPayload);
       setItems(listPayload.items || []);
@@ -60,6 +62,7 @@ export default function LifecyclePage() {
       setAnalyticsSummary(upgradePathPayload.summary || {});
       setModelWarnings(upgradePathPayload.model_data_warnings || []);
       setAnalyticsStatus(upgradePathPayload.status || "insufficient_data");
+      setOutcomeQuality(outcomeQualityPayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生命周期数据暂时不可用，请稍后重试。");
     } finally {
@@ -76,6 +79,10 @@ export default function LifecyclePage() {
   const s = summary.summary || {};
   const smart = intelligenceSummary.summary || {};
   const upgradePaths = upgradePathItems.slice(0, 8);
+  const outcomeData = { ...(outcomeQuality.summary || {}), ...outcomeQuality } as LifecycleOutcomeSummaryPayload;
+  const horizonCounts = (horizon: string, status: string) => Number(outcomeData.horizons?.[horizon]?.[status as keyof NonNullable<typeof outcomeData.horizons>[string]] || 0);
+  const waitingCount = ["1h", "4h", "24h", "72h"].reduce((total, horizon) => total + horizonCounts(horizon, "not_due"), 0);
+  const unavailableCount = ["1h", "4h", "24h", "72h"].reduce((total, horizon) => total + horizonCounts(horizon, "unavailable"), 0);
 
   return (
     <div className="space-y-5">
@@ -94,6 +101,40 @@ export default function LifecyclePage() {
         <MetricCard label="活跃生命周期" value={compact(s.active_count)} tone="info" />
         <MetricCard label="风险升高" value={compact(smart.risk_count ?? s.risk_warning_count)} tone="warn" />
         <MetricCard label="启动失败" value={compact(smart.failed_count)} tone="bad" />
+      </section>
+
+      <section className="panel space-y-4 p-4">
+        <div>
+          <h2 className="font-black text-white">Lifecycle Outcome 数据质量</h2>
+          <p className="mt-1 text-sm text-slate-400">关联覆盖率与数据成熟度分别统计；尚未到期不是错误，数据不可用也不等于亏损。</p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-4 xl:grid-cols-8">
+          <MetricCard label="Outcome 关联覆盖率" value={ratioPct(outcomeData.link_coverage_ratio)} tone="info" />
+          <MetricCard label="已成熟生命周期" value={compact(outcomeData.mature_lifecycle_count)} tone="good" />
+          <MetricCard label="1h 成熟样本" value={compact(horizonCounts("1h", "success"))} />
+          <MetricCard label="4h 成熟样本" value={compact(horizonCounts("4h", "success"))} />
+          <MetricCard label="24h 成熟样本" value={compact(horizonCounts("24h", "success"))} />
+          <MetricCard label="72h 成熟样本" value={compact(horizonCounts("72h", "success"))} />
+          <MetricCard label="等待到期" value={compact(waitingCount)} tone="info" />
+          <MetricCard label="数据不可用" value={compact(unavailableCount)} tone="warn" />
+        </div>
+        <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-2">
+          <div className="rounded-lg border border-white/10 p-3">
+            <b className="text-white">关联覆盖率</b>
+            <p className="mt-1 text-slate-400">生命周期是否成功找到对应 Outcome 记录。当前已关联生命周期 {compact(outcomeData.linked_lifecycle_count)} / {compact(outcomeData.lifecycle_count)}。</p>
+          </div>
+          <div className="rounded-lg border border-white/10 p-3">
+            <b className="text-white">数据成熟度</b>
+            <p className="mt-1 text-slate-400">对应 1h / 4h / 24h / 72h 是否已经到期并成功计算。当前成熟度 {ratioPct(outcomeData.maturity_ratio)}。</p>
+          </div>
+        </div>
+        <div>
+          <b className="text-sm text-white">未关联原因</b>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {Object.entries(outcomeData.unlinked_reasons || {}).map(([reason, count]) => <span className="chip" key={reason}>{reason} {compact(count)}</span>)}
+            {!Object.keys(outcomeData.unlinked_reasons || {}).length ? <span className="text-sm text-slate-500">暂无未关联原因</span> : null}
+          </div>
+        </div>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-3">

@@ -1,5 +1,13 @@
 # Binance-Centric Signal Lifecycle Tracker
 
+## v1.78.1 Outcome coverage 扩展
+
+v1.78.1 为每个生命周期持久记录 Outcome links 与 coverage。候选来自 `first_signal_id`、所有带 signal id 的 lifecycle events 和 `latest_signal_id`；一个生命周期可关联首次、同级确认、周期升级、风险及走弱事件的多个 Outcome。每个生命周期最多一个稳定 primary，默认优先首信号，其次最早有效事件信号。
+
+旧数据只有在缺少 signal id 时才允许兼容匹配，并必须同时满足规范化 symbol、信号时间容差、module/template 一致和候选唯一。候选不唯一会记录 `ambiguous_match`，不会自动关联；任何时候都禁止 symbol-only 关联。
+
+关联覆盖率衡量 Outcome 记录链接情况，数据成熟度只衡量已经到期 horizon 的成功计算情况。`not_due`、`pending`、`unavailable`、`error` 分别保留，不会被转换为失败或零收益。详细设计与 CLI 见 `LIFECYCLE_OUTCOME_COVERAGE.md`。
+
 ## v1.78.0 intelligence / replay 扩展
 
 v1.78.0 保留 v1.77.0 的采集、评分和状态机，新增独立预计算层：`intelligence_score` 用于研究生命周期质量，replay frames 用于回放事件演化，analytics/similarity 用于历史统计和相似案例。新层只读取既有 lifecycle/events/snapshots 与 outcomes，不覆盖 `lifecycle_score`、`risk_score`，不自动改变 decision model 或生命周期阈值。

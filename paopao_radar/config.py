@@ -179,6 +179,11 @@ class Settings:
     lifecycle_replay_interval_sec: int = 3600
     lifecycle_analytics_interval_sec: int = 21600
     lifecycle_similarity_min_samples: int = 5
+    lifecycle_outcome_backfill_enable: bool = True
+    lifecycle_outcome_backfill_batch_size: int = 200
+    lifecycle_outcome_backfill_max_outcomes: int = 1000
+    lifecycle_outcome_link_time_tolerance_sec: int = 300
+    lifecycle_outcome_backfill_interval_sec: int = 3600
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -418,6 +423,11 @@ class Settings:
             lifecycle_replay_interval_sec=env_int("LIFECYCLE_REPLAY_INTERVAL_SEC", 3600),
             lifecycle_analytics_interval_sec=env_int("LIFECYCLE_ANALYTICS_INTERVAL_SEC", 21600),
             lifecycle_similarity_min_samples=env_int("LIFECYCLE_SIMILARITY_MIN_SAMPLES", 5),
+            lifecycle_outcome_backfill_enable=env_bool("LIFECYCLE_OUTCOME_BACKFILL_ENABLE", True),
+            lifecycle_outcome_backfill_batch_size=env_int("LIFECYCLE_OUTCOME_BACKFILL_BATCH_SIZE", 200),
+            lifecycle_outcome_backfill_max_outcomes=env_int("LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES", 1000),
+            lifecycle_outcome_link_time_tolerance_sec=env_int("LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC", 300),
+            lifecycle_outcome_backfill_interval_sec=env_int("LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC", 3600),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -670,6 +680,11 @@ class Settings:
                 "replay_interval_sec": self.lifecycle_replay_interval_sec,
                 "analytics_interval_sec": self.lifecycle_analytics_interval_sec,
                 "similarity_min_samples": self.lifecycle_similarity_min_samples,
+                "outcome_backfill_enable": self.lifecycle_outcome_backfill_enable,
+                "outcome_backfill_batch_size": self.lifecycle_outcome_backfill_batch_size,
+                "outcome_backfill_max_outcomes": self.lifecycle_outcome_backfill_max_outcomes,
+                "outcome_link_time_tolerance_sec": self.lifecycle_outcome_link_time_tolerance_sec,
+                "outcome_backfill_interval_sec": self.lifecycle_outcome_backfill_interval_sec,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

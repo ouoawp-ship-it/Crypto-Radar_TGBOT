@@ -142,62 +142,109 @@ def associate_outcomes(
     lifecycle: dict[str, Any],
     events: Iterable[dict[str, Any]],
     outcomes: Iterable[dict[str, Any]],
+    *,
+    tolerance_sec: int = 300,
 ) -> dict[str, Any]:
-    """Associate Outcome rows without ever falling back to symbol-only matching.
+    """Associate all deterministic Outcome rows without symbol-only matching.
 
-    A single precedence tier is selected: first signal, latest signal, any event
-    signal, then symbol *and* the strict lifecycle time window. This avoids an
-    unrelated historical outcome for the same symbol contaminating a replay.
+    Persisted v1.78.1 links are authoritative.  The in-memory compatibility path
+    follows first signal -> event signals -> latest signal and only allows the
+    legacy time fallback when the lifecycle has no signal IDs at all.
     """
 
     symbol = normalize_lifecycle_symbol(lifecycle.get("symbol"))
+    lifecycle_id = safe_int(lifecycle.get("id") or lifecycle.get("lifecycle_id"))
     candidates = [
         dict(item)
         for item in outcomes
         if normalize_lifecycle_symbol(item.get("symbol")) == symbol
     ]
+    persisted = [
+        item
+        for item in candidates
+        if safe_int(item.get("_lifecycle_id") or item.get("link_lifecycle_id")) == lifecycle_id
+    ]
+    if persisted:
+        primary = next((item for item in persisted if safe_int(item.get("_is_primary") or item.get("is_primary")) == 1), None)
+        method = str((primary or persisted[0]).get("_link_method") or (primary or persisted[0]).get("link_method") or "persisted")
+        return {
+            "method": method,
+            "items": _sort_outcomes(persisted),
+            "count": len(persisted),
+            "persisted": True,
+            "primary_signal_id": safe_int((primary or {}).get("signal_id")) or None,
+        }
+
+    ordered_events = sorted((dict(item) for item in events), key=_event_sort_key)
     first_id = safe_int(lifecycle.get("first_signal_id"))
     latest_id = safe_int(lifecycle.get("latest_signal_id"))
-    event_ids = {
-        safe_int(item.get("signal_id"))
-        for item in events
-        if safe_int(item.get("signal_id")) > 0
-    }
-
-    tiers: list[tuple[str, list[dict[str, Any]]]] = []
+    event_ids: list[int] = []
+    for item in ordered_events:
+        signal_id = safe_int(item.get("signal_id"))
+        if signal_id > 0 and signal_id not in event_ids:
+            event_ids.append(signal_id)
+    ordered_ids: list[tuple[int, str]] = []
     if first_id > 0:
-        tiers.append(("first_signal_id", [item for item in candidates if safe_int(item.get("signal_id")) == first_id]))
-    if latest_id > 0 and latest_id != first_id:
-        tiers.append(("latest_signal_id", [item for item in candidates if safe_int(item.get("signal_id")) == latest_id]))
-    remaining_event_ids = event_ids - {first_id, latest_id}
-    if remaining_event_ids:
-        tiers.append(
-            ("lifecycle_event_signal_id", [item for item in candidates if safe_int(item.get("signal_id")) in remaining_event_ids])
-        )
-    for method, rows in tiers:
+        ordered_ids.append((first_id, "first_signal_id"))
+    ordered_ids.extend((value, "event_signal_id") for value in event_ids if value != first_id)
+    if latest_id > 0 and latest_id not in {value for value, _ in ordered_ids}:
+        ordered_ids.append((latest_id, "latest_signal_id"))
+    if ordered_ids:
+        allowed = {value for value, _ in ordered_ids}
+        rows = [item for item in candidates if safe_int(item.get("signal_id")) in allowed]
         if rows:
-            return {"method": method, "items": _sort_outcomes(rows), "count": len(rows)}
+            methods = {method for value, method in ordered_ids if any(safe_int(item.get("signal_id")) == value for item in rows)}
+            primary_signal_id = next((value for value, _ in ordered_ids if any(safe_int(item.get("signal_id")) == value for item in rows)), 0)
+            method = next((name for value, name in ordered_ids if value == primary_signal_id), "signal_ids")
+            return {
+                "method": method,
+                "items": _sort_outcomes(rows),
+                "count": len(rows),
+                "primary_signal_id": primary_signal_id or None,
+                "methods": sorted(methods),
+            }
+        # Signal-bearing lifecycles must wait for exact Outcome rows; a same-symbol
+        # record from another moment must never be substituted.
+        return {"method": "none", "items": [], "count": 0}
 
-    start = _parse_time(lifecycle.get("first_signal_at") or lifecycle.get("created_at"))
-    closed_at = _parse_time(lifecycle.get("closed_at"))
-    if closed_at is not None:
-        end = closed_at
-    else:
-        end_candidates = [
-            _parse_time(lifecycle.get("latest_signal_at")),
-            _parse_time(lifecycle.get("updated_at")),
-        ]
-        end_candidates.extend(_parse_time(item.get("event_time")) for item in events)
-        valid_ends = [value for value in end_candidates if value is not None]
-        end = max(valid_ends) if valid_ends else None
-    if start is not None and end is not None and end >= start:
-        rows = []
+    sources: list[tuple[datetime, str, str]] = []
+    first_time = _parse_time(lifecycle.get("first_signal_at") or lifecycle.get("created_at"))
+    if first_time is not None:
+        sources.append((first_time, str(lifecycle.get("first_signal_module") or ""), str(lifecycle.get("first_signal_template") or "")))
+    for event in ordered_events:
+        event_time = _parse_time(event.get("event_time"))
+        if event_time is not None:
+            sources.append((event_time, str(event.get("source_module") or ""), str(event.get("source_template") or "")))
+    matched_signal_ids: set[int] = set()
+    for source_time, module, template in sources:
+        if not module and not template:
+            continue
+        distances: dict[int, float] = {}
         for item in candidates:
+            signal_id = safe_int(item.get("signal_id"))
             signal_time = _parse_time(item.get("signal_time"))
-            if signal_time is not None and start <= signal_time <= end:
-                rows.append(item)
-        if rows:
-            return {"method": "symbol_time_window", "items": _sort_outcomes(rows), "count": len(rows)}
+            module_match = bool(module and module.lower() == str(item.get("module") or "").lower())
+            template_match = bool(template and template.lower() == str(item.get("signal_type") or "").lower())
+            if signal_id <= 0 or signal_time is None or not (module_match or template_match):
+                continue
+            distance = abs((signal_time - source_time).total_seconds())
+            if distance <= max(0, int(tolerance_sec)):
+                distances[signal_id] = min(distance, distances.get(signal_id, distance))
+        if not distances:
+            continue
+        minimum = min(distances.values())
+        winners = [signal_id for signal_id, distance in distances.items() if distance == minimum]
+        if len(winners) != 1:
+            return {"method": "ambiguous_match", "items": [], "count": 0, "ambiguous": True}
+        matched_signal_ids.add(winners[0])
+    if matched_signal_ids:
+        rows = [item for item in candidates if safe_int(item.get("signal_id")) in matched_signal_ids]
+        return {
+            "method": "symbol_time_module",
+            "items": _sort_outcomes(rows),
+            "count": len(rows),
+            "primary_signal_id": next(iter(sorted(matched_signal_ids))),
+        }
     return {"method": "none", "items": [], "count": 0}
 
 
@@ -222,10 +269,13 @@ def lifecycle_result_label(
     risk_event_count: int,
     has_outcome: bool,
 ) -> str:
+    # A lifecycle state or live price snapshot is not a matured Outcome.  Keep
+    # result labels neutral until at least one success Outcome exists so
+    # pending/not_due/unavailable records are never presented as a loss.
+    if not has_outcome:
+        return "insufficient_data"
     if str(final_state or "") == "failed":
         return "failed"
-    if not has_outcome and final_return_pct is None and max_price_gain_pct is None:
-        return "insufficient_data"
     final_return = safe_float(final_return_pct)
     max_gain = safe_float(max_price_gain_pct)
     drawdown = safe_float(max_drawdown_pct)
@@ -249,23 +299,36 @@ def lifecycle_result_label(
 
 def _outcome_summary(link: dict[str, Any]) -> dict[str, Any]:
     rows = list(link.get("items") or [])
-    successful = [
+    all_successful = [
         item
         for item in rows
         if str(item.get("data_status") or "").lower() == "success"
         and safe_float(item.get("final_return_pct")) is not None
     ]
-    usable = successful or [item for item in rows if safe_float(item.get("final_return_pct")) is not None]
-    primary = max(usable, key=lambda item: (safe_int(item.get("horizon_sec")), safe_int(item.get("id")))) if usable else None
-    gains = [safe_float(item.get("max_gain_pct")) for item in usable]
-    drawdowns = [safe_float(item.get("max_drawdown_pct")) for item in usable]
+    persisted_primary = next(
+        (item for item in rows if safe_int(item.get("_is_primary") or item.get("is_primary")) == 1),
+        None,
+    )
+    primary_signal_id = safe_int(link.get("primary_signal_id") or (persisted_primary or {}).get("signal_id"))
+    successful = [
+        item for item in all_successful
+        if primary_signal_id <= 0 or safe_int(item.get("signal_id")) == primary_signal_id
+    ]
+    result_row = max(
+        successful,
+        key=lambda item: (safe_int(item.get("horizon_sec")), safe_int(item.get("id"))),
+    ) if successful else None
+    primary = persisted_primary or result_row
+    gains = [safe_float(item.get("max_gain_pct")) for item in successful]
+    drawdowns = [safe_float(item.get("max_drawdown_pct")) for item in successful]
     return {
         "primary": primary,
-        "status": str((primary or {}).get("data_status") or (rows[-1].get("data_status") if rows else "insufficient_data")),
-        "final_return_pct": _round((primary or {}).get("final_return_pct")),
+        "result_row": result_row,
+        "status": "success" if result_row is not None else str((primary or {}).get("data_status") or (rows[-1].get("data_status") if rows else "insufficient_data")),
+        "final_return_pct": _round((result_row or {}).get("final_return_pct")),
         "max_gain_pct": _round(max(value for value in gains if value is not None)) if any(value is not None for value in gains) else None,
         "max_drawdown_pct": _round(min(value for value in drawdowns if value is not None)) if any(value is not None for value in drawdowns) else None,
-        "has_outcome": bool(usable),
+        "has_outcome": bool(successful),
     }
 
 
@@ -356,7 +419,36 @@ def build_replay(
         raise ValueError("valid lifecycle id and symbol are required")
     ordered_events = sorted((dict(item) for item in events), key=_event_sort_key)
     ordered_snapshots = sorted((dict(item) for item in snapshots), key=_snapshot_sort_key)
-    outcome_link = associate_outcomes(lifecycle, ordered_events, outcomes)
+    coverage = lifecycle.get("outcome_coverage") if isinstance(lifecycle.get("outcome_coverage"), dict) else {}
+    if not coverage:
+        coverage = {
+            key: lifecycle.get(key)
+            for key in (
+                "primary_outcome_id", "horizon_1h_status", "horizon_4h_status",
+                "horizon_24h_status", "horizon_72h_status", "linked_horizon_count",
+                "mature_horizon_count", "link_coverage_ratio", "maturity_ratio",
+                "coverage_label", "maturity_label", "unlinked_reason",
+            )
+            if key in lifecycle
+        }
+    coverage_present = (
+        bool(lifecycle.get("outcome_coverage_present"))
+        if "outcome_coverage_present" in lifecycle
+        else bool(coverage)
+    )
+    outcome_rows = [dict(item) for item in outcomes]
+    if coverage_present:
+        persisted_rows = [
+            item for item in outcome_rows
+            if safe_int(item.get("_lifecycle_id") or item.get("link_lifecycle_id")) == lifecycle_id
+        ]
+        outcome_link = (
+            associate_outcomes(lifecycle, ordered_events, persisted_rows)
+            if persisted_rows
+            else {"method": "none", "items": [], "count": 0, "persisted": True}
+        )
+    else:
+        outcome_link = associate_outcomes(lifecycle, ordered_events, outcome_rows)
     outcome_stats = _outcome_summary(outcome_link)
     upgrade_path, reached = _build_upgrade_path(lifecycle, ordered_events)
     intelligence_score = _first_number(
@@ -422,13 +514,9 @@ def build_replay(
     valid_times = [value for value in observed_times if value is not None]
     duration_sec = max(0, int((max(valid_times) - first_time).total_seconds())) if first_time and valid_times else 0
     price_stats = _price_statistics(lifecycle, ordered_events, ordered_snapshots)
-    max_gain = _first_number(outcome_stats.get("max_gain_pct"), price_stats.get("max_price_gain_pct"))
-    if outcome_stats.get("max_gain_pct") is not None and price_stats.get("max_price_gain_pct") is not None:
-        max_gain = max(float(outcome_stats["max_gain_pct"]), float(price_stats["max_price_gain_pct"]))
-    max_drawdown = _first_number(outcome_stats.get("max_drawdown_pct"), price_stats.get("max_drawdown_pct"))
-    if outcome_stats.get("max_drawdown_pct") is not None and price_stats.get("max_drawdown_pct") is not None:
-        max_drawdown = min(float(outcome_stats["max_drawdown_pct"]), float(price_stats["max_drawdown_pct"]))
-    final_return = _first_number(outcome_stats.get("final_return_pct"), price_stats.get("final_return_pct"))
+    max_gain = _first_number(outcome_stats.get("max_gain_pct"))
+    max_drawdown = _first_number(outcome_stats.get("max_drawdown_pct"))
+    final_return = _first_number(outcome_stats.get("final_return_pct"))
     event_types = [str(item.get("event_type") or "") for item in ordered_events]
     final_state = str(lifecycle.get("current_state") or (ordered_events[-1].get("new_state") if ordered_events else ""))
     result_label = lifecycle_result_label(
@@ -440,6 +528,17 @@ def build_replay(
         risk_event_count=sum(1 for value in event_types if value in RISK_EVENTS),
         has_outcome=bool(outcome_stats.get("has_outcome")),
     )
+    horizon_statuses: dict[str, str] = {}
+    for horizon in ("1h", "4h", "24h", "72h"):
+        value = str(coverage.get(f"horizon_{horizon}_status") or "")
+        if not value:
+            rows = [item for item in outcome_link.get("items") or [] if str(item.get("horizon") or "") == horizon]
+            value = str((rows[0] if rows else {}).get("data_status") or "missing")
+        horizon_statuses[horizon] = value
+    primary_row = outcome_stats.get("primary") if isinstance(outcome_stats.get("primary"), dict) else {}
+    mature_horizons = [key for key, value in horizon_statuses.items() if value == "success"]
+    pending_horizons = [key for key, value in horizon_statuses.items() if value in {"not_due", "pending", "ready", "missing"}]
+    unavailable_horizons = [key for key, value in horizon_statuses.items() if value == "unavailable"]
     summary = {
         "lifecycle_id": lifecycle_id,
         "symbol": symbol,
@@ -459,11 +558,32 @@ def build_replay(
         "max_price_gain_pct": _round(max_gain),
         "max_drawdown_pct": _round(max_drawdown),
         "final_return_pct": _round(final_return),
+        "observed_max_price_gain_pct": _round(price_stats.get("max_price_gain_pct")),
+        "observed_max_drawdown_pct": _round(price_stats.get("max_drawdown_pct")),
+        "observed_final_return_pct": _round(price_stats.get("final_return_pct")),
         "final_state": final_state,
         "result_label": result_label,
         "outcome_status": outcome_stats.get("status"),
         "outcome_count": safe_int(outcome_link.get("count")),
         "outcome_link_method": str(outcome_link.get("method") or "none"),
+        "outcome_link_status": str(coverage.get("coverage_label") or ("linked" if outcome_link.get("count") else "unlinked")),
+        "primary_outcome_signal_id": safe_int(primary_row.get("signal_id")) or None,
+        "primary_outcome": {
+            "signal_id": safe_int(primary_row.get("signal_id")) or None,
+            "horizon": str(primary_row.get("horizon") or ""),
+            "status": str(primary_row.get("data_status") or "missing"),
+            "link_method": str(primary_row.get("_link_method") or primary_row.get("link_method") or outcome_link.get("method") or "none"),
+            "final_return_pct": _round(primary_row.get("final_return_pct")) if str(primary_row.get("data_status") or "") == "success" else None,
+            "max_gain_pct": _round(primary_row.get("max_gain_pct")) if str(primary_row.get("data_status") or "") == "success" else None,
+            "max_drawdown_pct": _round(primary_row.get("max_drawdown_pct")) if str(primary_row.get("data_status") or "") == "success" else None,
+        } if primary_row else None,
+        "mature_horizons": mature_horizons,
+        "pending_horizons": pending_horizons,
+        "unavailable_horizons": unavailable_horizons,
+        "outcome_coverage_ratio": _round(coverage.get("link_coverage_ratio")),
+        "outcome_maturity_ratio": _round(coverage.get("maturity_ratio")),
+        "outcome_maturity_label": str(coverage.get("maturity_label") or "无数据"),
+        "outcome_horizons": horizon_statuses,
         "not_advice": NOT_ADVICE,
     }
     fingerprint = source_signature(
@@ -507,6 +627,16 @@ def build_replay(
                 }
                 for item in outcome_link.get("items") or []
             ],
+            "outcome_coverage": {
+                key: coverage.get(key)
+                for key in (
+                    "primary_outcome_id", "candidate_signal_count", "linked_signal_count",
+                    "linked_outcome_count", "horizon_1h_status", "horizon_4h_status",
+                    "horizon_24h_status", "horizon_72h_status", "linked_horizon_count",
+                    "mature_horizon_count", "link_coverage_ratio", "maturity_ratio",
+                    "coverage_label", "maturity_label", "unlinked_reason",
+                )
+            },
         }
     )
     return {
@@ -551,6 +681,7 @@ def _load_batch_sources(
     symbol: str,
     lifecycle_id: int | None,
     limit: int,
+    lifecycle_ids: Iterable[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[int, str]]:
     db_path = Path(getattr(settings, "lifecycle_db_path", settings.data_dir / "lifecycle.db"))
     if not db_path.exists():
@@ -569,6 +700,14 @@ def _load_batch_sources(
         if lifecycle_id:
             clauses.append("l.id = :lifecycle_id")
             params["lifecycle_id"] = safe_int(lifecycle_id)
+        selected_ids = sorted({safe_int(value) for value in (lifecycle_ids or []) if safe_int(value) > 0})
+        if selected_ids:
+            names = []
+            for index, value in enumerate(selected_ids):
+                key = f"selected_id_{index}"
+                names.append(f":{key}")
+                params[key] = value
+            clauses.append(f"l.id IN ({','.join(names)})")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         intelligence_join = ""
         intelligence_column = "0.0 AS intelligence_score"
@@ -585,6 +724,7 @@ def _load_batch_sources(
             "l.id, l.symbol, l.first_signal_id, l.latest_signal_id, l.first_signal_at, "
             "l.latest_signal_at, l.first_signal_level, l.highest_level, l.first_price, "
             "l.latest_price, l.lifecycle_score, l.risk_score, l.current_state, l.is_active, "
+            "l.first_signal_module, l.first_signal_template, l.first_signal_type, "
             "l.created_at, l.updated_at, l.closed_at"
         )
         lifecycles = [
@@ -602,6 +742,7 @@ def _load_batch_sources(
         if ids and _table_exists(conn, "lifecycle_events"):
             event_projection = (
                 "id, lifecycle_id, symbol, event_time, event_type, event_level, signal_id, "
+                "source_module, source_template, "
                 "previous_state, new_state, price, price_change_from_first_pct, oi_change_pct, "
                 "futures_cvd_delta, spot_cvd_delta, funding_rate, event_score, risk_score, metrics_json"
             )
@@ -638,6 +779,39 @@ def _load_batch_sources(
                     projection="lifecycle_id, source_signature",
                 ):
                     existing_signatures[safe_int(row.get("lifecycle_id"))] = str(row.get("source_signature") or "")
+        persisted_links: list[dict[str, Any]] = []
+        if ids and _table_exists(conn, "lifecycle_outcome_links"):
+            persisted_links = _rows_by_ids(
+                conn,
+                "lifecycle_outcome_links",
+                "lifecycle_id",
+                ids,
+                projection=(
+                    "lifecycle_id, outcome_id, signal_id, lifecycle_event_id, horizon, outcome_status, "
+                    "link_role, link_method, link_confidence, is_primary, signal_time, outcome_time"
+                ),
+            )
+        if ids and _table_exists(conn, "lifecycle_outcome_coverage"):
+            coverage_by_id = {
+                safe_int(row.get("lifecycle_id")): row
+                for row in _rows_by_ids(
+                    conn,
+                    "lifecycle_outcome_coverage",
+                    "lifecycle_id",
+                    ids,
+                    projection=(
+                        "lifecycle_id, candidate_signal_count, linked_signal_count, linked_outcome_count, "
+                        "primary_outcome_id, horizon_1h_status, horizon_4h_status, horizon_24h_status, "
+                        "horizon_72h_status, linked_horizon_count, mature_horizon_count, "
+                        "link_coverage_ratio, maturity_ratio, coverage_label, maturity_label, "
+                        "unlinked_reason, calculated_at, updated_at"
+                    ),
+                )
+            }
+            for lifecycle in lifecycles:
+                current_id = safe_int(lifecycle.get("id"))
+                lifecycle["outcome_coverage"] = coverage_by_id.get(current_id, {})
+                lifecycle["outcome_coverage_present"] = current_id in coverage_by_id
     finally:
         conn.close()
 
@@ -647,7 +821,31 @@ def _load_batch_sources(
         outcome_conn = sqlite3.connect(str(outcome_db), timeout=15)
         outcome_conn.row_factory = sqlite3.Row
         try:
-            if _table_exists(outcome_conn, "signal_outcomes"):
+            if _table_exists(outcome_conn, "signal_outcomes") and persisted_links:
+                links_by_outcome = {safe_int(item.get("outcome_id")): item for item in persisted_links}
+                outcome_ids = sorted(value for value in links_by_outcome if value > 0)
+                projection = (
+                    "id, signal_id, symbol, signal_time, horizon, horizon_sec, due_time, module, signal_type, "
+                    "data_status, result_label, final_return_pct, max_gain_pct, max_drawdown_pct, updated_at"
+                )
+                for offset in range(0, len(outcome_ids), 800):
+                    chunk = outcome_ids[offset : offset + 800]
+                    placeholders = ",".join("?" for _ in chunk)
+                    for row in outcome_conn.execute(
+                        f"SELECT {projection} FROM signal_outcomes WHERE id IN ({placeholders})",
+                        chunk,
+                    ).fetchall():
+                        item = dict(row)
+                        link = links_by_outcome.get(safe_int(item.get("id"))) or {}
+                        item.update({
+                            "_lifecycle_id": safe_int(link.get("lifecycle_id")),
+                            "_link_method": str(link.get("link_method") or ""),
+                            "_link_role": str(link.get("link_role") or ""),
+                            "_is_primary": safe_int(link.get("is_primary")),
+                            "_lifecycle_event_id": safe_int(link.get("lifecycle_event_id")) or None,
+                        })
+                        outcomes.append(item)
+            elif _table_exists(outcome_conn, "signal_outcomes"):
                 unique_symbols = sorted(set(filter(None, symbols)))
                 # One bounded batch read per <=500 lifecycle batch. Outcome
                 # signal_time is the original signal time (not the horizon due
@@ -655,7 +853,7 @@ def _load_batch_sources(
                 # signal-id match while avoiding unbounded symbol history reads.
                 placeholders = ",".join("?" for _ in unique_symbols)
                 projection = (
-                    "id, signal_id, symbol, signal_time, horizon, horizon_sec, due_time, "
+                    "id, signal_id, symbol, signal_time, horizon, horizon_sec, due_time, module, signal_type, "
                     "data_status, result_label, final_return_pct, max_gain_pct, max_drawdown_pct, updated_at"
                 )
                 window_starts = [
@@ -701,6 +899,7 @@ def rebuild_replays(
     dry_run: bool = False,
     force: bool = False,
     force_rebuild: bool | None = None,
+    lifecycle_ids: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     if force_rebuild is not None:
@@ -728,6 +927,7 @@ def rebuild_replays(
         settings,
         symbol=symbol,
         lifecycle_id=lifecycle_id,
+        lifecycle_ids=lifecycle_ids,
         limit=limit,
     )
     outcomes_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)

@@ -6,9 +6,32 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { MetricCard } from "@/components/MetricCard";
 import { PageTitle } from "@/components/PageTitle";
-import { getLifecycleIntelligenceDetail, getLifecycleReplay, getLifecycleReplayFrames, getLifecycleSimilar, invalidatePublicApiCache } from "@/lib/api";
-import { compact, normalizeSymbol, pct, safeText } from "@/lib/format";
-import type { LifecycleIntelligenceDetailPayload, LifecycleReplayFrame, LifecycleReplayPayload, LifecycleSimilarityPayload } from "@/lib/types";
+import { getLifecycleIntelligenceDetail, getLifecycleOutcomeDetail, getLifecycleReplay, getLifecycleReplayFrames, getLifecycleSimilar, invalidatePublicApiCache } from "@/lib/api";
+import { compact, normalizeSymbol, pct, ratioPct, safeText } from "@/lib/format";
+import type { LifecycleIntelligenceDetailPayload, LifecycleOutcomeDetailPayload, LifecycleReplayFrame, LifecycleReplayPayload, LifecycleSimilarityPayload } from "@/lib/types";
+
+const OUTCOME_HORIZONS = ["1h", "4h", "24h", "72h"];
+
+function outcomeHorizonStatus(detail: LifecycleOutcomeDetailPayload, horizon: string): string {
+  const coverage = detail.coverage as Record<string, unknown> | null | undefined;
+  const direct = coverage?.[`horizon_${horizon}_status`];
+  if (typeof direct === "string") return direct;
+  const value = detail.horizons?.[horizon];
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    for (const status of ["success", "unavailable", "error", "not_due", "pending", "ready", "missing"]) {
+      if (Number(value[status as keyof typeof value] || 0) > 0) return status;
+    }
+  }
+  return "missing";
+}
+
+function outcomeReasonHorizons(detail: LifecycleOutcomeDetailPayload, key: string): string[] | undefined {
+  const reasons = detail.coverage?.reasons;
+  if (!reasons || Array.isArray(reasons) || typeof reasons !== "object") return undefined;
+  const value = reasons[key];
+  return Array.isArray(value) ? value.map(String) : undefined;
+}
 
 export default function LifecycleReplayPage() {
   const [query, setQuery] = useState("");
@@ -17,6 +40,7 @@ export default function LifecycleReplayPage() {
   const [frames, setFrames] = useState<LifecycleReplayFrame[]>([]);
   const [intelligence, setIntelligence] = useState<LifecycleIntelligenceDetailPayload>({});
   const [similar, setSimilar] = useState<LifecycleSimilarityPayload>({});
+  const [outcomeDetail, setOutcomeDetail] = useState<LifecycleOutcomeDetailPayload>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -30,17 +54,19 @@ export default function LifecycleReplayPage() {
     setLoading(true);
     setError("");
     try {
-      const [summaryPayload, framePayload, intelligencePayload, similarPayload] = await Promise.all([
+      const [summaryPayload, framePayload, intelligencePayload, similarPayload, outcomePayload] = await Promise.all([
         getLifecycleReplay(normalized),
         getLifecycleReplayFrames(normalized, { limit: 100 }),
         getLifecycleIntelligenceDetail(normalized),
-        getLifecycleSimilar(normalized, 5)
+        getLifecycleSimilar(normalized, 5),
+        getLifecycleOutcomeDetail(normalized).catch(() => ({} as LifecycleOutcomeDetailPayload))
       ]);
       setSymbol(normalized);
       setReplay(summaryPayload);
       setFrames(framePayload.items || []);
       setIntelligence(intelligencePayload);
       setSimilar(similarPayload);
+      setOutcomeDetail(outcomePayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生命周期回放加载失败，请稍后重试。");
     } finally {
@@ -60,6 +86,19 @@ export default function LifecycleReplayPage() {
   if (error && symbol) return <ErrorState message={error} onRetry={() => load(true)} />;
   const summary = replay.replay;
   const smart = intelligence.intelligence;
+  const coverage = outcomeDetail.coverage;
+  const primaryLink = outcomeDetail.links?.find((item) => Boolean(item.is_primary));
+  const primaryOutcome = (primaryLink?.outcome || summary?.primary_outcome || primaryLink || outcomeDetail.primary_outcome || outcomeDetail.primary) as {
+    horizon?: string;
+    data_status?: string;
+    outcome_status?: string;
+    status?: string;
+    link_method?: string;
+    final_return_pct?: number | null;
+  } | undefined;
+  const matureHorizons = outcomeDetail.mature_horizons || outcomeReasonHorizons(outcomeDetail, "mature_horizons") || summary?.mature_horizons || OUTCOME_HORIZONS.filter((horizon) => outcomeHorizonStatus(outcomeDetail, horizon) === "success");
+  const pendingHorizons = outcomeDetail.pending_horizons || outcomeReasonHorizons(outcomeDetail, "pending_horizons") || summary?.pending_horizons || OUTCOME_HORIZONS.filter((horizon) => ["not_due", "pending", "ready", "missing"].includes(outcomeHorizonStatus(outcomeDetail, horizon)));
+  const unavailableHorizons = outcomeDetail.unavailable_horizons || outcomeReasonHorizons(outcomeDetail, "unavailable_horizons") || summary?.unavailable_horizons || OUTCOME_HORIZONS.filter((horizon) => outcomeHorizonStatus(outcomeDetail, horizon) === "unavailable");
 
   return (
     <div className="space-y-5">
@@ -100,6 +139,27 @@ export default function LifecycleReplayPage() {
             <span>到达 1H {summary.time_to_1h_sec == null ? "数据不足" : `${compact(summary.time_to_1h_sec)} 秒`}</span>
             <span>到达 4H {summary.time_to_4h_sec == null ? "数据不足" : `${compact(summary.time_to_4h_sec)} 秒`}</span>
             <span>到达 24H {summary.time_to_24h_sec == null ? "数据不足" : `${compact(summary.time_to_24h_sec)} 秒`}</span>
+          </section>
+          <section className="panel space-y-4 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-black text-white">主要 Outcome 与数据成熟度</h2>
+                <p className="mt-1 text-sm text-slate-400">尚未到期不是失败；pending 不进入成熟收益统计，unavailable 不等于亏损。</p>
+              </div>
+              <span className="chip">结果可信度 {safeText(outcomeDetail.confidence_label || smart?.confidence_label || coverage?.coverage_label, "样本积累中")}</span>
+            </div>
+            <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-3">
+              <span>主要 Outcome：{safeText(primaryOutcome?.horizon, "尚未关联")} · {safeText(primaryOutcome?.data_status || primaryOutcome?.outcome_status || primaryOutcome?.status, "missing")}</span>
+              <span>关联方式：{safeText(primaryLink?.link_method || primaryOutcome?.link_method || outcomeDetail.link_method || summary.outcome_link_method || summary.primary_outcome_link_method, "尚未关联")}</span>
+              <span>数据成熟度：{safeText(coverage?.maturity_label || summary.outcome_maturity_label, "等待到期")}</span>
+              <span>已成熟周期：{matureHorizons.length ? matureHorizons.join(" / ") : "暂无"}</span>
+              <span>待到期周期：{pendingHorizons.length ? pendingHorizons.join(" / ") : "暂无"}</span>
+              <span>数据不可用周期：{unavailableHorizons.length ? unavailableHorizons.join(" / ") : "暂无"}</span>
+              <span>关联覆盖率：{ratioPct(coverage?.link_coverage_ratio ?? summary.outcome_coverage_ratio)}</span>
+              <span>成熟度比例：{ratioPct(coverage?.maturity_ratio ?? summary.outcome_maturity_ratio)}</span>
+              <span>主要结果涨跌：{pct(primaryOutcome?.final_return_pct)}</span>
+              <span>生命周期观测价格变化：{pct(summary.observed_final_return_pct)}</span>
+            </div>
           </section>
           <section className="grid gap-4 xl:grid-cols-2">
             <div className="panel p-4">

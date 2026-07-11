@@ -11,7 +11,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from .config import BASE_DIR, Settings
 from .signal_store import SignalEventStore
@@ -431,10 +431,11 @@ class OutcomeStore:
         limit: int = 100,
         horizon: str = "",
         symbol: str = "",
+        signal_ids: Iterable[int] | None = None,
     ) -> list[dict[str, Any]]:
         now_text = _iso(now_ts)
         clauses = ["data_status IN ('pending', 'ready')", "due_time <= :now"]
-        params: dict[str, Any] = {"now": now_text, "limit": max(1, min(int(limit or 100), 500))}
+        params: dict[str, Any] = {"now": now_text, "limit": max(1, min(int(limit or 100), 1000))}
         if horizon:
             clauses.append("horizon = :horizon")
             params["horizon"] = str(horizon)
@@ -442,6 +443,11 @@ class OutcomeStore:
         if normalized:
             clauses.append("symbol = :symbol")
             params["symbol"] = normalized
+        normalized_ids = sorted({_safe_int(value) for value in (signal_ids or ()) if _safe_int(value) > 0})
+        if normalized_ids:
+            placeholders = ", ".join(f":signal_id_{index}" for index in range(len(normalized_ids)))
+            clauses.append(f"signal_id IN ({placeholders})")
+            params.update({f"signal_id_{index}": value for index, value in enumerate(normalized_ids)})
         where = " AND ".join(clauses)
         with self.connect() as conn:
             rows = conn.execute(
@@ -449,6 +455,95 @@ class OutcomeStore:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_by_signal_ids(
+        self,
+        signal_ids: Iterable[int],
+        *,
+        horizons: Iterable[str] | None = None,
+        columns: tuple[str, ...] | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read Outcome rows for explicit signals with one request-scoped connection."""
+
+        normalized_ids = sorted({_safe_int(value) for value in signal_ids if _safe_int(value) > 0})
+        if not normalized_ids:
+            return []
+        selected_columns = tuple(column for column in (columns or OUTCOME_COLUMNS) if column in OUTCOME_COLUMNS)
+        if "id" not in selected_columns:
+            selected_columns = ("id", *selected_columns)
+        projection = ", ".join(selected_columns)
+        normalized_horizons = tuple(
+            value for value in dict.fromkeys(str(item or "").strip().lower() for item in (horizons or ()))
+            if value in OUTCOME_WINDOWS
+        )
+        context = self.connect() if connection is None else nullcontext(connection)
+        result: list[dict[str, Any]] = []
+        with context as conn:
+            for offset in range(0, len(normalized_ids), 800):
+                chunk = normalized_ids[offset : offset + 800]
+                placeholders = ", ".join("?" for _ in chunk)
+                params: list[Any] = list(chunk)
+                horizon_clause = ""
+                if normalized_horizons:
+                    horizon_placeholders = ", ".join("?" for _ in normalized_horizons)
+                    horizon_clause = f" AND horizon IN ({horizon_placeholders})"
+                    params.extend(normalized_horizons)
+                rows = conn.execute(
+                    f"SELECT {projection} FROM signal_outcomes "
+                    f"WHERE signal_id IN ({placeholders}){horizon_clause} "
+                    "ORDER BY signal_id, horizon_sec, id",
+                    params,
+                ).fetchall()
+                result.extend(dict(row) for row in rows)
+        return result
+
+    def reset_for_rebuild(
+        self,
+        signal_ids: Iterable[int],
+        *,
+        horizons: Iterable[str] | None = None,
+        dry_run: bool = False,
+    ) -> int:
+        """Explicitly mark selected rows ready; never used by normal scans."""
+
+        normalized_ids = sorted({_safe_int(value) for value in signal_ids if _safe_int(value) > 0})
+        if not normalized_ids:
+            return 0
+        normalized_horizons = tuple(
+            value for value in dict.fromkeys(str(item or "").strip().lower() for item in (horizons or ()))
+            if value in OUTCOME_WINDOWS
+        )
+        with self.connect() as conn:
+            total = 0
+            for offset in range(0, len(normalized_ids), 800):
+                chunk = normalized_ids[offset : offset + 800]
+                placeholders = ", ".join("?" for _ in chunk)
+                params: list[Any] = list(chunk)
+                horizon_clause = ""
+                if normalized_horizons:
+                    horizon_placeholders = ", ".join("?" for _ in normalized_horizons)
+                    horizon_clause = f" AND horizon IN ({horizon_placeholders})"
+                    params.extend(normalized_horizons)
+                count = int(conn.execute(
+                    f"SELECT COUNT(*) FROM signal_outcomes WHERE signal_id IN ({placeholders}){horizon_clause}",
+                    params,
+                ).fetchone()[0])
+                total += count
+                if dry_run or count <= 0:
+                    continue
+                conn.execute(
+                    f"""
+                    UPDATE signal_outcomes
+                    SET entry_price=NULL, future_price=NULL, max_high_price=NULL, min_low_price=NULL,
+                        final_return_pct=NULL, max_gain_pct=NULL, max_drawdown_pct=NULL,
+                        result_label=NULL, result_tone=NULL, data_status='ready',
+                        data_source=NULL, error='', updated_at=?
+                    WHERE signal_id IN ({placeholders}){horizon_clause}
+                    """,
+                    [_iso(), *params],
+                )
+            return total
 
     def update_outcome(self, outcome_id: int, values: dict[str, Any]) -> None:
         self.update_outcomes([(outcome_id, values)])
@@ -799,25 +894,57 @@ def scan_outcomes(
     backfill_days: int | None = None,
     price_fetcher: KlineFetcher | None = None,
     now_ts: int | None = None,
+    candidate_signals: list[dict[str, Any]] | None = None,
+    signal_ids: Iterable[int] | None = None,
+    force_rebuild: bool = False,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
-    safe_limit = max(1, min(int(limit or loaded.outcome_scan_limit or 100), 500))
+    explicit_candidates = candidate_signals is not None
+    safe_limit = max(
+        1,
+        min(int(limit or loaded.outcome_scan_limit or 100), 1000 if explicit_candidates else 500),
+    )
     windows = safe_outcome_windows(loaded.outcome_windows)
     if horizon:
         key = str(horizon).lower()
         windows = {key: windows[key]} if key in windows else {}
     store = OutcomeStore(loaded.outcome_db_path)
     store.ensure_schema()
-    candidates = _candidate_signals(
+    candidates = list(candidate_signals or []) if explicit_candidates else _candidate_signals(
         settings=loaded,
         limit=safe_limit,
         symbol=symbol,
         backfill_days=int(backfill_days or loaded.outcome_backfill_days or 7),
     )
+    requested_ids = sorted({
+        _safe_int(value)
+        for value in (signal_ids or (_safe_int(item.get("id")) for item in candidates))
+        if _safe_int(value) > 0
+    })
     pending_planned = store.create_pending(candidates, windows, dry_run=dry_run)
-    due = [] if dry_run else store.due_outcomes(now_ts=now_ts, limit=safe_limit, horizon=horizon, symbol=symbol)
+    rebuilt = 0
+    if force_rebuild and requested_ids:
+        rebuilt = store.reset_for_rebuild(
+            requested_ids,
+            horizons=windows.keys(),
+            dry_run=dry_run,
+        )
+    due = [] if dry_run else store.due_outcomes(
+        now_ts=now_ts,
+        limit=safe_limit,
+        horizon=horizon,
+        symbol=symbol,
+        signal_ids=requested_ids if explicit_candidates else None,
+    )
     fetcher = price_fetcher or fetch_binance_klines
-    repaired_unavailable = store.repair_unavailable_errors(data_source=loaded.outcome_price_source, dry_run=dry_run)
+    # The historical repair sweep is intentionally global for the legacy
+    # scanner, but an explicit lifecycle batch must never mutate unrelated
+    # Outcome rows outside its requested signal IDs.
+    repaired_unavailable = (
+        0
+        if explicit_candidates
+        else store.repair_unavailable_errors(data_source=loaded.outcome_price_source, dry_run=dry_run)
+    )
     counts = {
         "candidate_signals": len(candidates),
         "new_pending": pending_planned,
@@ -826,6 +953,7 @@ def scan_outcomes(
         "unavailable": 0,
         "error": 0,
         "repaired_unavailable": repaired_unavailable,
+        "force_rebuilt": rebuilt,
         "dry_run": bool(dry_run),
     }
     errors: list[str] = []
@@ -939,6 +1067,38 @@ def scan_outcomes(
         "errors": errors[:5],
         "message": "信号结果追踪扫描完成" if not dry_run else "信号结果追踪 dry-run 完成",
     }
+
+
+def scan_signal_outcomes(
+    signals: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    limit: int = 1000,
+    horizon: str = "",
+    dry_run: bool = False,
+    price_fetcher: KlineFetcher | None = None,
+    now_ts: int | None = None,
+    force_rebuild: bool = False,
+) -> dict[str, Any]:
+    """Create and calculate Outcome rows for an explicit, bounded signal batch.
+
+    Lifecycle backfill uses this entry point so historical signal IDs are never
+    replaced by an unrelated "latest signal for the same symbol" lookup.
+    """
+
+    bounded = [dict(item) for item in list(signals or [])[: max(1, min(int(limit or 1000), 1000))]]
+    signal_ids = [_safe_int(item.get("id")) for item in bounded if _safe_int(item.get("id")) > 0]
+    return scan_outcomes(
+        settings=settings,
+        limit=max(1, min(int(limit or 1000), 1000)),
+        horizon=horizon,
+        dry_run=dry_run,
+        price_fetcher=price_fetcher,
+        now_ts=now_ts,
+        candidate_signals=bounded,
+        signal_ids=signal_ids,
+        force_rebuild=force_rebuild,
+    )
 
 
 def scan_report_text(result: dict[str, Any]) -> str:

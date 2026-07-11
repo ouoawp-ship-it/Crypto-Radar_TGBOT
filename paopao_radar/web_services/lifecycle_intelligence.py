@@ -21,7 +21,7 @@ INSUFFICIENT_SAMPLES = "当前相似样本不足，暂不生成统计结论。"
 SENSITIVE_KEY_RE = re.compile(
     r"(?i)(token|secret|password|cookie|authorization|chat_?id|topic_?id|message_?id|"
     r"dedup_?key|payload_?json|text_?html|database|api_?key|server_?path|db_?path|"
-    r"internal_?job|exception_?stack|raw_?telegram|source_?signature)"
+    r"internal_?job|exception_?stack|raw_?telegram|source_?signature|(?:^|_)outcome_?id$|primary_outcome_id)"
 )
 
 
@@ -127,6 +127,9 @@ def _intelligence_list_query(
     has_base = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='signal_lifecycles'"
     ).fetchone() is not None
+    has_coverage = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_outcome_coverage'"
+    ).fetchone() is not None
     if (str(state or "").strip() or str(level or "").strip()) and not has_base:
         return [], 0
     if str(state or "").strip():
@@ -152,12 +155,22 @@ def _intelligence_list_query(
         "i.momentum_label, i.capital_confirmation_label, i.risk_label, i.maturity_label, "
         "i.confidence_label, i.model_version, i.calculated_at, i.updated_at, "
         f"{base_projection}, r.upgrade_path, r.result_label, r.final_return_pct, "
-        "r.outcome_status, r.outcome_count"
+        "r.outcome_status, r.outcome_count" + (
+            ", c.coverage_label AS outcome_link_status, c.maturity_label AS outcome_maturity_label, "
+            "c.link_coverage_ratio AS outcome_coverage_ratio, c.maturity_ratio AS outcome_maturity_ratio, "
+            "c.mature_horizon_count, c.horizon_1h_status, c.horizon_4h_status, "
+            "c.horizon_24h_status, c.horizon_72h_status"
+            if has_coverage else
+            ", '' AS outcome_link_status, '' AS outcome_maturity_label, "
+            "0.0 AS outcome_coverage_ratio, 0.0 AS outcome_maturity_ratio, 0 AS mature_horizon_count, "
+            "'' AS horizon_1h_status, '' AS horizon_4h_status, '' AS horizon_24h_status, '' AS horizon_72h_status"
+        )
     )
     base_join = " LEFT JOIN signal_lifecycles l ON l.id = i.lifecycle_id" if has_base else ""
+    coverage_join = " LEFT JOIN lifecycle_outcome_coverage c ON c.lifecycle_id = i.lifecycle_id" if has_coverage else ""
     rows = conn.execute(
         f"SELECT {projection} FROM lifecycle_intelligence i "
-        f"{base_join} LEFT JOIN lifecycle_replays r ON r.lifecycle_id = i.lifecycle_id"
+        f"{base_join} LEFT JOIN lifecycle_replays r ON r.lifecycle_id = i.lifecycle_id{coverage_join}"
         f"{clause} ORDER BY i.intelligence_score DESC, i.updated_at DESC "
         "LIMIT :limit OFFSET :offset",
         params,
@@ -167,23 +180,23 @@ def _intelligence_list_query(
         {key: value for key, value in params.items() if key not in {"limit", "offset"}},
     ).fetchone()[0])
     historical_count = 0
-    if has_base:
+    if has_base and has_coverage:
         historical_count = int(conn.execute(
             """
             SELECT COUNT(*)
               FROM lifecycle_replays hr
-              JOIN signal_lifecycles hl ON hl.id = hr.lifecycle_id
-             WHERE hl.is_active = 0
-                OR COALESCE(hr.outcome_count, 0) > 0
-                OR hr.outcome_status IN ('linked', 'success')
+              JOIN lifecycle_outcome_coverage hc ON hc.lifecycle_id = hr.lifecycle_id
+             WHERE hc.mature_horizon_count > 0
+               AND hr.outcome_status = 'success'
+               AND hr.final_return_pct IS NOT NULL
             """
         ).fetchone()[0])
     items = [dict(row) for row in rows]
     for item in items:
         own_eligible = (
-            int(item.get("is_active", 1) or 0) == 0
-            or int(item.get("outcome_count") or 0) > 0
-            or str(item.get("outcome_status") or "") in {"linked", "success"}
+            int(item.get("mature_horizon_count") or 0) > 0
+            and str(item.get("outcome_status") or "") == "success"
+            and item.get("final_return_pct") is not None
         )
         item["similar_count"] = max(0, historical_count - (1 if own_eligible else 0))
     return items, total
@@ -278,6 +291,7 @@ def lifecycle_intelligence_detail_payload(
     with store.connect() as conn:
         intelligence = store.get_intelligence(symbol=normalized, conn=conn)
         replay = store.get_replay(symbol=normalized, conn=conn)
+        coverage = store.get_outcome_coverage(symbol=normalized, conn=conn)
     if not intelligence:
         return _envelope({
             "symbol": normalized,
@@ -294,6 +308,7 @@ def lifecycle_intelligence_detail_payload(
         "symbol": normalized,
         "intelligence": intelligence,
         "replay": {key: value for key, value in (replay or {}).items() if key not in {"summary", "source_signature"}},
+        "outcome_coverage": coverage,
         "model_version": INTELLIGENCE_MODEL_VERSION,
         "not_advice": NOT_ADVICE,
     }
@@ -422,14 +437,14 @@ def lifecycle_similar_payload(
     except Exception:
         # An empty pre-migration database is a normal rollout state. Public
         # callers receive an insufficient-sample result, never an exception.
-        result = {"ok": True, "status": "insufficient_samples", "similar_count": 0}
+        result = {"ok": True, "status": "insufficient_mature_samples", "similar_count": 0}
     if not isinstance(result, dict):
         result = {}
     result.setdefault("symbol", normalized)
     result.setdefault("model_version", SIMILARITY_MODEL_VERSION)
     result.setdefault("disclaimer", SIMILARITY_DISCLAIMER)
     if int(result.get("similar_count") or 0) < int(loaded.lifecycle_similarity_min_samples or 5):
-        result["status"] = "insufficient_samples"
+        result.setdefault("status", "insufficient_mature_samples")
         result.setdefault("message", INSUFFICIENT_SAMPLES)
     result.pop("ok", None)
     result.setdefault("not_advice", NOT_ADVICE)

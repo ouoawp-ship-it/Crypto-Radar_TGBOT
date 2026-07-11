@@ -16,7 +16,7 @@ from .lifecycle_store import normalize_lifecycle_symbol, safe_float, safe_int
 
 
 DEFAULT_LIFECYCLE_DB_PATH = BASE_DIR / "data" / "lifecycle.db"
-LIFECYCLE_SCHEMA_VERSION = 1780
+LIFECYCLE_SCHEMA_VERSION = 1781
 
 INTELLIGENCE_JSON_FIELDS = {
     "strengths_json": "strengths",
@@ -26,6 +26,7 @@ INTELLIGENCE_JSON_FIELDS = {
 }
 REPLAY_JSON_FIELDS = {"summary_json": "summary"}
 FRAME_JSON_FIELDS = {"metrics_json": "metrics"}
+OUTCOME_COVERAGE_JSON_FIELDS = {"reasons_json": "reasons"}
 
 INTELLIGENCE_COMPACT_COLUMNS = (
     "lifecycle_id",
@@ -324,6 +325,55 @@ class IntelligenceStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lifecycle_outcome_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lifecycle_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    signal_id INTEGER,
+                    lifecycle_event_id INTEGER,
+                    outcome_id INTEGER NOT NULL,
+                    horizon TEXT NOT NULL,
+                    outcome_status TEXT NOT NULL,
+                    link_role TEXT NOT NULL,
+                    link_method TEXT NOT NULL,
+                    link_confidence REAL NOT NULL DEFAULT 1.0,
+                    signal_time TEXT,
+                    outcome_time TEXT,
+                    is_primary INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(lifecycle_id, outcome_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lifecycle_outcome_coverage (
+                    lifecycle_id INTEGER PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    candidate_signal_count INTEGER NOT NULL DEFAULT 0,
+                    linked_signal_count INTEGER NOT NULL DEFAULT 0,
+                    linked_outcome_count INTEGER NOT NULL DEFAULT 0,
+                    primary_outcome_id INTEGER,
+                    horizon_1h_status TEXT,
+                    horizon_4h_status TEXT,
+                    horizon_24h_status TEXT,
+                    horizon_72h_status TEXT,
+                    linked_horizon_count INTEGER NOT NULL DEFAULT 0,
+                    mature_horizon_count INTEGER NOT NULL DEFAULT 0,
+                    link_coverage_ratio REAL NOT NULL DEFAULT 0,
+                    maturity_ratio REAL NOT NULL DEFAULT 0,
+                    coverage_label TEXT,
+                    maturity_label TEXT,
+                    unlinked_reason TEXT,
+                    reasons_json TEXT,
+                    calculated_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             # Forward-compatible migration for databases created by early v1.78 builds.
             self._add_column(conn, "lifecycle_intelligence", "stage TEXT")
             self._add_column(conn, "lifecycle_intelligence", "source_signature TEXT")
@@ -348,6 +398,32 @@ class IntelligenceStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_lifecycle_replay_frames_time "
                 "ON lifecycle_replay_frames(lifecycle_id, event_time)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_links_lifecycle "
+                "ON lifecycle_outcome_links(lifecycle_id, horizon)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_links_signal "
+                "ON lifecycle_outcome_links(signal_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_links_outcome "
+                "ON lifecycle_outcome_links(outcome_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_links_primary "
+                "ON lifecycle_outcome_links(lifecycle_id, is_primary)"
+            )
+            # SQLite partial uniqueness gives the persisted primary selection a
+            # database-level invariant without changing either source database.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_lifecycle_outcome_links_one_primary "
+                "ON lifecycle_outcome_links(lifecycle_id) WHERE is_primary = 1"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_coverage_label "
+                "ON lifecycle_outcome_coverage(coverage_label, maturity_label)"
             )
             current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             if current_version < LIFECYCLE_SCHEMA_VERSION:
@@ -732,6 +808,336 @@ class IntelligenceStore:
         else:
             conn.execute("DELETE FROM lifecycle_analytics_cache")
         return max(0, conn.total_changes - before)
+
+    def replace_outcome_links(
+        self,
+        lifecycle_id: int,
+        links: list[dict[str, Any]],
+        *,
+        primary_outcome_id: int | None = None,
+        replace: bool = False,
+        prune: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        """Upsert one lifecycle's links inside the caller's batch transaction."""
+
+        if conn is None:
+            with self.transaction() as owned:
+                return self.replace_outcome_links(
+                    lifecycle_id,
+                    links,
+                    primary_outcome_id=primary_outcome_id,
+                    replace=replace,
+                    prune=prune,
+                    conn=owned,
+                )
+        normalized_id = safe_int(lifecycle_id)
+        if normalized_id <= 0:
+            raise ValueError("lifecycle_id is required")
+        existing_primary = conn.execute(
+            "SELECT outcome_id, signal_id FROM lifecycle_outcome_links WHERE lifecycle_id = ? AND is_primary = 1",
+            (normalized_id,),
+        ).fetchone()
+        planned_outcome_ids = {
+            safe_int(item.get("outcome_id")) for item in links if safe_int(item.get("outcome_id")) > 0
+        }
+        desired_primary_signal_id = next(
+            (
+                safe_int(item.get("signal_id"))
+                for item in links
+                if safe_int(item.get("outcome_id")) == safe_int(primary_outcome_id)
+            ),
+            0,
+        )
+        if (
+            not replace
+            and existing_primary is not None
+            and safe_int(existing_primary[0]) == safe_int(primary_outcome_id)
+            and safe_int(existing_primary[1]) == desired_primary_signal_id
+        ):
+            primary_outcome_id = safe_int(existing_primary[0])
+        if replace:
+            conn.execute("DELETE FROM lifecycle_outcome_links WHERE lifecycle_id = ?", (normalized_id,))
+        else:
+            if prune:
+                if planned_outcome_ids:
+                    placeholders = ",".join("?" for _ in planned_outcome_ids)
+                    conn.execute(
+                        f"DELETE FROM lifecycle_outcome_links WHERE lifecycle_id = ? "
+                        f"AND outcome_id NOT IN ({placeholders})",
+                        [normalized_id, *sorted(planned_outcome_ids)],
+                    )
+                else:
+                    conn.execute("DELETE FROM lifecycle_outcome_links WHERE lifecycle_id = ?", (normalized_id,))
+            conn.execute(
+                "UPDATE lifecycle_outcome_links SET is_primary = 0 WHERE lifecycle_id = ? AND is_primary = 1",
+                (normalized_id,),
+            )
+        now = _iso()
+        columns = (
+            "lifecycle_id", "symbol", "signal_id", "lifecycle_event_id", "outcome_id",
+            "horizon", "outcome_status", "link_role", "link_method", "link_confidence",
+            "signal_time", "outcome_time", "is_primary", "created_at", "updated_at",
+        )
+        rows: list[dict[str, Any]] = []
+        for raw in links:
+            row = dict(raw)
+            row.update({
+                "lifecycle_id": normalized_id,
+                "symbol": normalize_lifecycle_symbol(row.get("symbol")),
+                "signal_id": safe_int(row.get("signal_id")) or None,
+                "lifecycle_event_id": safe_int(row.get("lifecycle_event_id")) or None,
+                "outcome_id": safe_int(row.get("outcome_id")),
+                "horizon": str(row.get("horizon") or ""),
+                "outcome_status": str(row.get("outcome_status") or "missing"),
+                "link_role": str(row.get("link_role") or "fallback"),
+                "link_method": str(row.get("link_method") or "symbol_time_module"),
+                "link_confidence": max(0.0, min(1.0, safe_float(row.get("link_confidence")) or 0.0)),
+                "is_primary": 1 if safe_int(row.get("outcome_id")) == safe_int(primary_outcome_id) else 0,
+                "created_at": str(row.get("created_at") or now),
+                "updated_at": now,
+            })
+            if row["symbol"] and row["outcome_id"] > 0 and row["horizon"]:
+                rows.append({key: row.get(key) for key in columns})
+        if rows:
+            assignments = ", ".join(
+                f"{key}=excluded.{key}"
+                for key in columns
+                if key not in {"lifecycle_id", "outcome_id", "created_at"}
+            )
+            conn.executemany(
+                f"INSERT INTO lifecycle_outcome_links ({', '.join(columns)}) "
+                f"VALUES ({', '.join(':'+key for key in columns)}) "
+                f"ON CONFLICT(lifecycle_id, outcome_id) DO UPDATE SET {assignments}",
+                rows,
+            )
+        return len(rows)
+
+    def upsert_outcome_coverage(
+        self,
+        record: dict[str, Any],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        if conn is None:
+            with self.transaction() as owned:
+                return self.upsert_outcome_coverage(record, conn=owned)
+        row = dict(record)
+        lifecycle_id = safe_int(row.get("lifecycle_id"))
+        symbol = normalize_lifecycle_symbol(row.get("symbol"))
+        if lifecycle_id <= 0 or not symbol:
+            raise ValueError("lifecycle_id and symbol are required")
+        now = _iso()
+        row.update({
+            "lifecycle_id": lifecycle_id,
+            "symbol": symbol,
+            "reasons_json": _json_dumps(row.pop("reasons", row.get("reasons_json", {}))),
+            "calculated_at": str(row.get("calculated_at") or now),
+            "updated_at": now,
+        })
+        columns = (
+            "lifecycle_id", "symbol", "candidate_signal_count", "linked_signal_count",
+            "linked_outcome_count", "primary_outcome_id", "horizon_1h_status",
+            "horizon_4h_status", "horizon_24h_status", "horizon_72h_status",
+            "linked_horizon_count", "mature_horizon_count", "link_coverage_ratio",
+            "maturity_ratio", "coverage_label", "maturity_label", "unlinked_reason",
+            "reasons_json", "calculated_at", "updated_at",
+        )
+        params = {key: row.get(key) for key in columns}
+        assignments = ", ".join(f"{key}=excluded.{key}" for key in columns if key != "lifecycle_id")
+        conn.execute(
+            f"INSERT INTO lifecycle_outcome_coverage ({', '.join(columns)}) "
+            f"VALUES ({', '.join(':'+key for key in columns)}) "
+            f"ON CONFLICT(lifecycle_id) DO UPDATE SET {assignments}",
+            params,
+        )
+        stored = conn.execute(
+            "SELECT * FROM lifecycle_outcome_coverage WHERE lifecycle_id = ?", (lifecycle_id,)
+        ).fetchone()
+        return _deserialize(stored, OUTCOME_COVERAGE_JSON_FIELDS) or {}
+
+    def write_outcome_plan_batch(
+        self,
+        plans: list[dict[str, Any]],
+        *,
+        preserve_primary: bool = True,
+        replace_links: bool = True,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, int]:
+        """Persist deterministic link/coverage plans without per-lifecycle queries."""
+
+        if conn is None:
+            with self.transaction() as owned:
+                return self.write_outcome_plan_batch(
+                    plans,
+                    preserve_primary=preserve_primary,
+                    replace_links=replace_links,
+                    conn=owned,
+                )
+        normalized = [
+            dict(plan)
+            for plan in plans
+            if safe_int((plan.get("coverage") or {}).get("lifecycle_id")) > 0
+        ]
+        lifecycle_ids = sorted({
+            safe_int((plan.get("coverage") or {}).get("lifecycle_id")) for plan in normalized
+        })
+        if not lifecycle_ids:
+            return {"lifecycles": 0, "links": 0, "coverages": 0}
+        placeholders = ",".join("?" for _ in lifecycle_ids)
+        existing_rows = conn.execute(
+            f"SELECT lifecycle_id, outcome_id, signal_id, is_primary, created_at "
+            f"FROM lifecycle_outcome_links WHERE lifecycle_id IN ({placeholders})",
+            lifecycle_ids,
+        ).fetchall()
+        existing_created = {
+            (safe_int(row["lifecycle_id"]), safe_int(row["outcome_id"])): str(row["created_at"] or "")
+            for row in existing_rows
+        }
+        now = _iso()
+        link_rows: list[dict[str, Any]] = []
+        coverage_rows: list[dict[str, Any]] = []
+        for plan in normalized:
+            coverage = dict(plan.get("coverage") or {})
+            lifecycle_id = safe_int(coverage.get("lifecycle_id"))
+            planned_links = [dict(item) for item in list(plan.get("links") or [])]
+            primary_id = safe_int(coverage.get("primary_outcome_id"))
+            coverage["primary_outcome_id"] = primary_id or None
+            if isinstance(plan.get("coverage"), dict):
+                plan["coverage"]["primary_outcome_id"] = primary_id or None
+            for raw in planned_links:
+                outcome_id = safe_int(raw.get("outcome_id"))
+                symbol = normalize_lifecycle_symbol(raw.get("symbol"))
+                horizon = str(raw.get("horizon") or "")
+                if outcome_id <= 0 or not symbol or not horizon:
+                    continue
+                link_rows.append({
+                    "lifecycle_id": lifecycle_id,
+                    "symbol": symbol,
+                    "signal_id": safe_int(raw.get("signal_id")) or None,
+                    "lifecycle_event_id": safe_int(raw.get("lifecycle_event_id")) or None,
+                    "outcome_id": outcome_id,
+                    "horizon": horizon,
+                    "outcome_status": str(raw.get("outcome_status") or "missing"),
+                    "link_role": str(raw.get("link_role") or "fallback"),
+                    "link_method": str(raw.get("link_method") or "symbol_time_module"),
+                    "link_confidence": max(0.0, min(1.0, safe_float(raw.get("link_confidence")) or 0.0)),
+                    "signal_time": raw.get("signal_time"),
+                    "outcome_time": raw.get("outcome_time"),
+                    "is_primary": int(outcome_id == primary_id),
+                    "created_at": existing_created.get((lifecycle_id, outcome_id)) or now,
+                    "updated_at": now,
+                })
+            coverage_rows.append({
+                **coverage,
+                "symbol": normalize_lifecycle_symbol(coverage.get("symbol")),
+                "reasons_json": _json_dumps(coverage.get("reasons") or {}),
+                "calculated_at": str(coverage.get("calculated_at") or now),
+                "updated_at": now,
+            })
+        if replace_links:
+            conn.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS _lifecycle_outcome_plan_links ("
+                "lifecycle_id INTEGER NOT NULL, outcome_id INTEGER NOT NULL, "
+                "PRIMARY KEY(lifecycle_id, outcome_id)) WITHOUT ROWID"
+            )
+            conn.execute("DELETE FROM _lifecycle_outcome_plan_links")
+            if link_rows:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO _lifecycle_outcome_plan_links(lifecycle_id, outcome_id) VALUES (?, ?)",
+                    [(safe_int(row["lifecycle_id"]), safe_int(row["outcome_id"])) for row in link_rows],
+                )
+            conn.execute(
+                f"DELETE FROM lifecycle_outcome_links "
+                f"WHERE lifecycle_id IN ({placeholders}) "
+                "AND NOT EXISTS (SELECT 1 FROM _lifecycle_outcome_plan_links planned "
+                "WHERE planned.lifecycle_id=lifecycle_outcome_links.lifecycle_id "
+                "AND planned.outcome_id=lifecycle_outcome_links.outcome_id)",
+                lifecycle_ids,
+            )
+        if link_rows:
+            linked_ids = sorted({safe_int(item["lifecycle_id"]) for item in link_rows})
+            linked_placeholders = ",".join("?" for _ in linked_ids)
+            conn.execute(
+                f"UPDATE lifecycle_outcome_links SET is_primary=0 "
+                f"WHERE lifecycle_id IN ({linked_placeholders})",
+                linked_ids,
+            )
+        link_columns = (
+            "lifecycle_id", "symbol", "signal_id", "lifecycle_event_id", "outcome_id",
+            "horizon", "outcome_status", "link_role", "link_method", "link_confidence",
+            "signal_time", "outcome_time", "is_primary", "created_at", "updated_at",
+        )
+        if link_rows:
+            assignments = ", ".join(
+                f"{key}=excluded.{key}" for key in link_columns
+                if key not in {"lifecycle_id", "outcome_id", "created_at"}
+            )
+            conn.executemany(
+                f"INSERT INTO lifecycle_outcome_links ({', '.join(link_columns)}) "
+                f"VALUES ({', '.join(':'+key for key in link_columns)}) "
+                f"ON CONFLICT(lifecycle_id, outcome_id) DO UPDATE SET {assignments}",
+                [{key: row.get(key) for key in link_columns} for row in link_rows],
+            )
+        coverage_columns = (
+            "lifecycle_id", "symbol", "candidate_signal_count", "linked_signal_count",
+            "linked_outcome_count", "primary_outcome_id", "horizon_1h_status",
+            "horizon_4h_status", "horizon_24h_status", "horizon_72h_status",
+            "linked_horizon_count", "mature_horizon_count", "link_coverage_ratio",
+            "maturity_ratio", "coverage_label", "maturity_label", "unlinked_reason",
+            "reasons_json", "calculated_at", "updated_at",
+        )
+        assignments = ", ".join(
+            f"{key}=excluded.{key}" for key in coverage_columns if key != "lifecycle_id"
+        )
+        conn.executemany(
+            f"INSERT INTO lifecycle_outcome_coverage ({', '.join(coverage_columns)}) "
+            f"VALUES ({', '.join(':'+key for key in coverage_columns)}) "
+            f"ON CONFLICT(lifecycle_id) DO UPDATE SET {assignments}",
+            [{key: row.get(key) for key in coverage_columns} for row in coverage_rows],
+        )
+        return {"lifecycles": len(normalized), "links": len(link_rows), "coverages": len(coverage_rows)}
+
+    def get_outcome_coverage(
+        self,
+        lifecycle_id: int | None = None,
+        symbol: str = "",
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        normalized = normalize_lifecycle_symbol(symbol)
+        if not lifecycle_id and not normalized:
+            return None
+        if conn is None:
+            with self.connect() as owned:
+                return self.get_outcome_coverage(lifecycle_id, normalized, conn=owned)
+        if lifecycle_id:
+            row = conn.execute(
+                "SELECT * FROM lifecycle_outcome_coverage WHERE lifecycle_id = ?", (safe_int(lifecycle_id),)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM lifecycle_outcome_coverage WHERE symbol = ?", (normalized,)
+            ).fetchone()
+        return _deserialize(row, OUTCOME_COVERAGE_JSON_FIELDS)
+
+    def list_outcome_links(
+        self,
+        lifecycle_id: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        if conn is None:
+            with self.connect() as owned:
+                return self.list_outcome_links(lifecycle_id, conn=owned)
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM lifecycle_outcome_links WHERE lifecycle_id = ? "
+                "ORDER BY is_primary DESC, signal_time, signal_id, horizon, outcome_id",
+                (safe_int(lifecycle_id),),
+            ).fetchall()
+        ]
 
     # Concise aliases used by analytics adapters.
     cache_get = get_analytics_cache

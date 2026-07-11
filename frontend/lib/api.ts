@@ -11,6 +11,11 @@ import type {
   LifecycleIntelligenceItem,
   LifecycleIntelligenceSummaryPayload,
   LifecycleItem,
+  LifecycleOutcomeCoverageItem,
+  LifecycleOutcomeDetailPayload,
+  LifecycleOutcomeMaturityPayload,
+  LifecycleOutcomeReasonsPayload,
+  LifecycleOutcomeSummaryPayload,
   LifecycleReplayFrame,
   LifecycleReplayPayload,
   LifecycleSimilarityPayload,
@@ -74,6 +79,12 @@ function toQuery(query?: Query): string {
 
 function publicApiRevalidateSec(path: `/public-api/${string}`): number {
   if (path.startsWith("/public-api/backtest/")) return 30;
+  if ([
+    "/public-api/lifecycle/outcomes/summary",
+    "/public-api/lifecycle/outcomes/reasons",
+    "/public-api/lifecycle/outcomes/maturity"
+  ].includes(path)) return 30;
+  if (path.startsWith("/public-api/lifecycle/outcomes/")) return 10;
   if (path === "/public-api/outcomes/stats") return 30;
   if (path.endsWith("/stats")) return 15;
   return 10;
@@ -336,6 +347,33 @@ export function getLifecycleAnalytics(dimension: "first-level" | "upgrade-path" 
 
 export function getLifecycleSimilar(symbol: string, limit = 10) {
   return publicFetch<LifecycleSimilarityPayload>("/public-api/lifecycle/similar", { symbol, limit });
+}
+
+export function getLifecycleOutcomeSummary() {
+  return publicFetch<LifecycleOutcomeSummaryPayload>("/public-api/lifecycle/outcomes/summary");
+}
+
+export function getLifecycleOutcomeCoverage(query: Query = {}) {
+  return publicFetch<ListPayload<LifecycleOutcomeCoverageItem> & { summary?: Record<string, unknown> }>(
+    "/public-api/lifecycle/outcomes/coverage",
+    query
+  );
+}
+
+export function getLifecycleOutcomeList(query: Query = {}) {
+  return publicFetch<ListPayload<LifecycleOutcomeCoverageItem>>("/public-api/lifecycle/outcomes/list", query);
+}
+
+export function getLifecycleOutcomeDetail(symbol: string) {
+  return publicFetch<LifecycleOutcomeDetailPayload>("/public-api/lifecycle/outcomes/detail", { symbol });
+}
+
+export function getLifecycleOutcomeReasons() {
+  return publicFetch<LifecycleOutcomeReasonsPayload>("/public-api/lifecycle/outcomes/reasons");
+}
+
+export function getLifecycleOutcomeMaturity() {
+  return publicFetch<LifecycleOutcomeMaturityPayload>("/public-api/lifecycle/outcomes/maturity");
 }
 
 export type HomeDashboardData = {

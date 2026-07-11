@@ -182,6 +182,14 @@ export type LifecycleIntelligenceItem = {
   result_label?: string;
   final_return_pct?: number | null;
   outcome_status?: string;
+  outcome_link_status?: string;
+  outcome_coverage_label?: string;
+  outcome_maturity_label?: string;
+  outcome_coverage_ratio?: number | null;
+  outcome_maturity_ratio?: number | null;
+  mature_horizons?: string[];
+  pending_horizons?: string[];
+  unavailable_horizons?: string[];
   similar_count?: number;
 };
 
@@ -219,10 +227,25 @@ export type LifecycleReplaySummary = {
   max_price_gain_pct?: number | null;
   max_drawdown_pct?: number | null;
   final_return_pct?: number | null;
+  observed_max_price_gain_pct?: number | null;
+  observed_max_drawdown_pct?: number | null;
+  observed_final_return_pct?: number | null;
   final_state?: string;
   result_label?: string;
   outcome_status?: string;
   outcome_count?: number;
+  outcome_link_method?: string;
+  outcome_link_status?: string;
+  primary_outcome_signal_id?: number | null;
+  primary_outcome_link_method?: string;
+  mature_horizons?: string[];
+  pending_horizons?: string[];
+  unavailable_horizons?: string[];
+  outcome_coverage_ratio?: number | null;
+  outcome_maturity_ratio?: number | null;
+  outcome_maturity_label?: string;
+  outcome_horizons?: Record<string, string>;
+  primary_outcome?: LifecycleOutcomeLinkItem | null;
   summary?: Record<string, unknown>;
 };
 
@@ -267,6 +290,119 @@ export type LifecycleSimilarityPayload = {
   samples?: Array<Record<string, unknown>>;
   model_version?: string;
   disclaimer?: string;
+  not_advice?: string;
+};
+
+export type LifecycleOutcomeHorizonCounts = {
+  success?: number;
+  pending?: number;
+  ready?: number;
+  not_due?: number;
+  unavailable?: number;
+  error?: number;
+  missing?: number;
+};
+
+export type LifecycleOutcomeLinkItem = {
+  lifecycle_id?: number;
+  symbol?: string;
+  signal_id?: number | null;
+  lifecycle_event_id?: number | null;
+  horizon?: string;
+  outcome_status?: string;
+  status?: string;
+  link_role?: string;
+  link_method?: string;
+  link_confidence?: number | null;
+  signal_time?: string;
+  outcome_time?: string;
+  is_primary?: boolean | number;
+  final_return_pct?: number | null;
+  max_gain_pct?: number | null;
+  max_drawdown_pct?: number | null;
+  result_label?: string;
+  outcome?: {
+    signal_id?: number | null;
+    horizon?: string;
+    data_status?: string;
+    status?: string;
+    signal_time?: string;
+    due_time?: string;
+    final_return_pct?: number | null;
+    max_gain_pct?: number | null;
+    max_drawdown_pct?: number | null;
+    result_label?: string;
+    updated_at?: string;
+  } | null;
+};
+
+export type LifecycleOutcomeCoverageItem = {
+  lifecycle_id?: number;
+  symbol?: string;
+  candidate_signal_count?: number;
+  linked_signal_count?: number;
+  linked_outcome_count?: number;
+  horizon_1h_status?: string;
+  horizon_4h_status?: string;
+  horizon_24h_status?: string;
+  horizon_72h_status?: string;
+  linked_horizon_count?: number;
+  mature_horizon_count?: number;
+  link_coverage_ratio?: number | null;
+  maturity_ratio?: number | null;
+  coverage_label?: string;
+  maturity_label?: string;
+  unlinked_reason?: string;
+  reasons?: string[] | Record<string, unknown>;
+  calculated_at?: string;
+  updated_at?: string;
+};
+
+export type LifecycleOutcomeSummaryPayload = {
+  lifecycle_count?: number;
+  candidate_signal_count?: number;
+  linked_lifecycle_count?: number;
+  linked_outcome_count?: number;
+  link_coverage_ratio?: number | null;
+  mature_lifecycle_count?: number;
+  maturity_ratio?: number | null;
+  horizons?: Record<string, LifecycleOutcomeHorizonCounts>;
+  unlinked_reasons?: Record<string, number>;
+  summary?: Record<string, unknown>;
+  generated_at?: string;
+  not_advice?: string;
+};
+
+export type LifecycleOutcomeDetailPayload = {
+  available?: boolean;
+  symbol?: string;
+  coverage?: LifecycleOutcomeCoverageItem | null;
+  primary_outcome?: LifecycleOutcomeLinkItem | null;
+  primary?: LifecycleOutcomeLinkItem | null;
+  links?: LifecycleOutcomeLinkItem[];
+  horizons?: Record<string, LifecycleOutcomeHorizonCounts | string>;
+  mature_horizons?: string[];
+  pending_horizons?: string[];
+  unavailable_horizons?: string[];
+  outcome_link_status?: string;
+  link_method?: string;
+  confidence_label?: string;
+  not_advice?: string;
+};
+
+export type LifecycleOutcomeReasonsPayload = {
+  reasons?: Record<string, number>;
+  unlinked_reasons?: Record<string, number>;
+  total?: number;
+  not_advice?: string;
+};
+
+export type LifecycleOutcomeMaturityPayload = {
+  lifecycle_count?: number;
+  mature_lifecycle_count?: number;
+  maturity_ratio?: number | null;
+  horizons?: Record<string, LifecycleOutcomeHorizonCounts>;
+  labels?: Record<string, number>;
   not_advice?: string;
 };
 

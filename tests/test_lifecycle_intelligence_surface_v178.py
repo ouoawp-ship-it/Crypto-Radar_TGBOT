@@ -225,7 +225,7 @@ class LifecycleIntelligenceApiTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             payload = public_lifecycle_similar_payload("BTCUSDT", settings=make_settings(tmp))
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["data"]["status"], "insufficient_samples")
+        self.assertEqual(payload["data"]["status"], "insufficient_mature_samples")
         self.assertNotIn("Traceback", json.dumps(payload, ensure_ascii=False))
 
     def test_public_payloads_are_projected_paginated_and_redacted(self) -> None:

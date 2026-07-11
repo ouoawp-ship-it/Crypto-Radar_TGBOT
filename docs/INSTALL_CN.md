@@ -1,5 +1,44 @@
 # 泡泡抓币中文安装目录
 
+## v1.78.1 运维说明
+
+v1.78.1 在既有 `lifecycle.db` 中兼容新增 Outcome link/coverage 表，不删除或改写 `signals.db`、`outcomes.db`、`jobs.db` 与既有生命周期数据。部署后必须先只关联已有 Outcome，再从 50 个生命周期的小批量 dry-run 开始补算：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py lifecycle-outcome-link --dry-run --pretty
+.venv/bin/python main.py lifecycle-outcome-link --pretty
+.venv/bin/python main.py lifecycle-outcome-status --pretty
+
+.venv/bin/python main.py lifecycle-outcome-backfill --limit 50 --dry-run --pretty
+.venv/bin/python main.py lifecycle-outcome-backfill --limit 50 --pretty
+.venv/bin/python main.py lifecycle-outcome-status --pretty
+.venv/bin/python main.py lifecycle-outcome-reconcile --dry-run --pretty
+```
+
+小批量无真实 error、重复链接或多 primary 后，再执行：
+
+```bash
+.venv/bin/python main.py lifecycle-outcome-backfill --limit 200 --pretty
+.venv/bin/python main.py lifecycle-outcome-status --pretty
+```
+
+默认配置：
+
+```dotenv
+LIFECYCLE_OUTCOME_BACKFILL_ENABLE=true
+LIFECYCLE_OUTCOME_BACKFILL_BATCH_SIZE=200
+LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES=1000
+LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC=300
+LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC=3600
+```
+
+`--force-relink` 只重建关联，`--force-outcome-rebuild` 才明确允许重算指定缺失/异常结果；默认不会重算成功 Outcome。关联覆盖率与数据成熟度是两个不同指标：尚未到期不是失败，pending 不是失败，unavailable 不等于亏损，只有 success Outcome 参与成熟收益统计。完整口径见 `docs/LIFECYCLE_OUTCOME_COVERAGE.md`。
+
+回填与一致性检查通过独立 CLI/jobs 执行，不进入 Telegram 主线程，不修改模型阈值，也不执行自动交易。
+
 ## v1.78.0 运维说明
 
 v1.78.0 在既有 `lifecycle.db` 内兼容新增 intelligence、replay、replay frames 和 analytics cache 表；不会迁移、删除或改写既有生命周期、信号、Outcome 或 jobs 数据。升级后先执行 dry-run，再生成预计算结果：

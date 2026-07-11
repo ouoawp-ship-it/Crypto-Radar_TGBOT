@@ -242,7 +242,14 @@ def _source_signature(
             for item in events
         ],
         "replay": (replay or {}).get("updated_at") or (replay or {}).get("calculated_at"),
-        "outcome": ((outcome or {}).get("id"), (outcome or {}).get("updated_at")),
+        "outcome": {
+            key: (outcome or {}).get(key)
+            for key in (
+                "id", "coverage_label", "maturity_label", "linked_outcome_count",
+                "mature_horizon_count", "link_coverage_ratio", "maturity_ratio",
+                "horizon_1h_status", "horizon_4h_status", "horizon_24h_status", "horizon_72h_status",
+            )
+        },
     }
     payload = json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -356,12 +363,17 @@ def evaluate_lifecycle(
             values["funding_rate"],
         )
     )
-    if len(ordered_events) >= 4 and observed_metrics >= 4 and (replay or outcome):
+    mature_horizon_count = int((outcome or {}).get("mature_horizon_count") or 0)
+    linked_outcome_count = int((outcome or {}).get("linked_outcome_count") or 0)
+    has_coverage_record = bool(outcome)
+    if len(ordered_events) >= 4 and observed_metrics >= 4 and (replay or outcome) and mature_horizon_count > 0:
         confidence_label = "高置信度"
     elif len(ordered_events) >= 2 and observed_metrics >= 2:
         confidence_label = "可参考"
     else:
         confidence_label = "样本积累中"
+    if has_coverage_record and mature_horizon_count <= 0:
+        confidence_label = "样本积累中" if linked_outcome_count <= 0 else "待 Outcome 成熟"
 
     strengths: list[str] = []
     risks: list[str] = []
@@ -394,6 +406,8 @@ def evaluate_lifecycle(
         watch_points.append("资金费率数据不足，等待后续快照。")
     elif abs(values["funding_rate"]) < 0.0008:
         watch_points.append("持续观察资金费率是否进入拥挤区间。")
+    if has_coverage_record and mature_horizon_count <= 0:
+        watch_points.append("Outcome 尚未成熟；尚未到期、pending 或 unavailable 均不代表失败。")
 
     path = str((replay or {}).get("upgrade_path") or build_upgrade_path(lifecycle, ordered_events))
     funding_text = "资金费率数据待补充" if values["funding_rate"] is None else (
@@ -431,7 +445,16 @@ def evaluate_lifecycle(
             "source_lifecycle_score": lifecycle_score,
             "source_risk_score": existing_risk,
             "max_drawdown_pct": values["max_drawdown_pct"],
+            "outcome_link_status": str((outcome or {}).get("coverage_label") or "unlinked"),
+            "outcome_maturity_label": str((outcome or {}).get("maturity_label") or "无数据"),
+            "outcome_mature_horizon_count": mature_horizon_count,
+            "outcome_linked_outcome_count": linked_outcome_count,
+            "outcome_coverage_ratio": _number((outcome or {}).get("link_coverage_ratio")),
+            "outcome_maturity_ratio": _number((outcome or {}).get("maturity_ratio")),
         },
+        "outcome_link_status": str((outcome or {}).get("coverage_label") or "unlinked"),
+        "outcome_maturity_label": str((outcome or {}).get("maturity_label") or "无数据"),
+        "mature_horizon_count": mature_horizon_count,
         "model_version": INTELLIGENCE_MODEL_VERSION,
         "source_signature": _source_signature(lifecycle, ordered_events, replay, outcome),
         "calculated_at": now,
@@ -460,6 +483,7 @@ def _read_sources(
     active_only: bool,
     limit: int,
     dry_run: bool,
+    lifecycle_ids: Iterable[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     db_path = Path(lifecycle_store.db_path)
     if dry_run and not db_path.exists():
@@ -475,6 +499,10 @@ def _read_sources(
                 params.append(str(symbol).upper())
             if active_only:
                 clauses.append("l.is_active = 1")
+            selected_ids = sorted({int(value) for value in (lifecycle_ids or []) if int(value) > 0})
+            if selected_ids:
+                clauses.append(f"l.id IN ({','.join('?' for _ in selected_ids)})")
+                params.extend(selected_ids)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             has_intelligence = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_intelligence'"
@@ -515,6 +543,10 @@ def _read_sources(
             params.append(str(symbol).upper())
         if active_only:
             clauses.append("l.is_active = 1")
+        selected_ids = sorted({int(value) for value in (lifecycle_ids or []) if int(value) > 0})
+        if selected_ids:
+            clauses.append(f"l.id IN ({','.join('?' for _ in selected_ids)})")
+            params.extend(selected_ids)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         has_intelligence = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_intelligence'"
@@ -568,6 +600,7 @@ def generate_intelligence(
     limit: int = 500,
     lifecycles: list[dict[str, Any]] | None = None,
     events_by_lifecycle: dict[int, list[dict[str, Any]]] | None = None,
+    lifecycle_ids: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     loaded = settings or Settings.load()
@@ -595,6 +628,7 @@ def generate_intelligence(
             active_only=bool(all_active),
             limit=limit,
             dry_run=dry_run,
+            lifecycle_ids=lifecycle_ids,
         )
         events_by_lifecycle = events_by_lifecycle or loaded_events
     events_by_lifecycle = events_by_lifecycle or {}
@@ -607,6 +641,7 @@ def generate_intelligence(
 
     existing_by_id: dict[int, dict[str, Any]] = {}
     replay_by_id: dict[int, dict[str, Any]] = {}
+    outcome_coverage_by_id: dict[int, dict[str, Any]] = {}
     if store is not None:
         try:
             source_ids = sorted({int(item.get("id") or 0) for item in lifecycles if int(item.get("id") or 0) > 0})
@@ -631,6 +666,20 @@ def generate_intelligence(
                     ).fetchall():
                         item = dict(row)
                         replay_by_id[int(item["lifecycle_id"])] = item
+                    has_coverage = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_outcome_coverage'"
+                    ).fetchone()
+                    if has_coverage:
+                        for row in conn.execute(
+                            f"SELECT lifecycle_id, linked_outcome_count, mature_horizon_count, "
+                            f"link_coverage_ratio, maturity_ratio, coverage_label, maturity_label, "
+                            f"horizon_1h_status, horizon_4h_status, horizon_24h_status, horizon_72h_status, "
+                            f"calculated_at, updated_at FROM lifecycle_outcome_coverage "
+                            f"WHERE lifecycle_id IN ({placeholders})",
+                            chunk,
+                        ).fetchall():
+                            item = dict(row)
+                            outcome_coverage_by_id[int(item["lifecycle_id"])] = item
         except (AttributeError, TypeError, sqlite3.Error):
             # Small compatibility fallback for injected test stores.
             try:
@@ -642,6 +691,7 @@ def generate_intelligence(
                     int(item.get("lifecycle_id") or 0): item
                     for item in _items_from_result(store.list_replays(limit=max(1, min(limit, 500)), compact=False))
                 }
+                outcome_coverage_by_id = {}
             except (AttributeError, TypeError, sqlite3.Error):
                 existing_by_id = {}
                 replay_by_id = {}
@@ -657,6 +707,7 @@ def generate_intelligence(
                 lifecycle,
                 events_by_lifecycle.get(lifecycle_id, []),
                 replay=replay_by_id.get(lifecycle_id),
+                outcome=outcome_coverage_by_id.get(lifecycle_id),
             )
             existing = existing_by_id.get(lifecycle_id) or {}
             if not force and existing.get("source_signature") == record.get("source_signature"):

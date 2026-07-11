@@ -203,6 +203,25 @@ class LifecycleIntelligenceStoreTests(unittest.TestCase):
 
 
 class LifecycleReplayTests(unittest.TestCase):
+    def test_zero_persisted_coverage_does_not_fall_back_to_symbol_outcome(self) -> None:
+        value = lifecycle()
+        value["outcome_coverage_present"] = True
+        value["outcome_coverage"] = {
+            "linked_outcome_count": 0,
+            "mature_horizon_count": 0,
+            "link_coverage_ratio": 0.0,
+            "maturity_ratio": 0.0,
+            "horizon_1h_status": "missing",
+            "horizon_4h_status": "missing",
+            "horizon_24h_status": "missing",
+            "horizon_72h_status": "missing",
+        }
+        replay = build_replay(value, events(), [], outcomes())
+
+        self.assertEqual(replay["summary"]["outcome_count"], 0)
+        self.assertEqual(replay["summary"]["result_label"], "insufficient_data")
+        self.assertIsNone(replay["summary"]["final_return_pct"])
+
     def test_frames_sort_by_time_are_contiguous_and_upgrade_times_are_correct(self) -> None:
         replay = build_replay(lifecycle(), events(), [], outcomes())
 
@@ -213,40 +232,48 @@ class LifecycleReplayTests(unittest.TestCase):
         self.assertEqual(replay["time_to_4h_sec"], 10800)
         self.assertEqual(replay["time_to_24h_sec"], 21600)
 
-    def test_outcome_link_prefers_first_signal_id(self) -> None:
+    def test_outcome_link_keeps_primary_first_signal_and_all_exact_event_signals(self) -> None:
         link = associate_outcomes(lifecycle(), events(), outcomes())
         replay = build_replay(lifecycle(), events(), [], outcomes())
 
         self.assertEqual(link["method"], "first_signal_id")
-        self.assertEqual([item["signal_id"] for item in link["items"]], [101])
+        self.assertEqual([item["signal_id"] for item in link["items"]], [101, 104])
+        self.assertEqual(link["primary_signal_id"], 101)
         self.assertEqual(replay["final_return_pct"], 8.0)
         self.assertEqual(replay["result_label"], "strong_success")
 
-    def test_symbol_fallback_requires_strict_time_window(self) -> None:
-        value = {**lifecycle(), "first_signal_id": None, "latest_signal_id": None}
-        event_rows = [{**item, "signal_id": None} for item in events()]
+    def test_legacy_fallback_requires_time_and_module_not_symbol_only(self) -> None:
+        value = {
+            **lifecycle(),
+            "first_signal_id": None,
+            "latest_signal_id": None,
+            "first_signal_module": "flow",
+        }
+        event_rows = [{**item, "signal_id": None, "source_module": "flow"} for item in events()]
         candidates = [
             {
                 "id": 1,
                 "signal_id": 999,
                 "symbol": "BTCUSDT",
                 "signal_time": "2026-07-08T23:00:00+00:00",
+                "module": "flow",
             },
             {
                 "id": 2,
                 "signal_id": 998,
                 "symbol": "BTCUSDT",
-                "signal_time": "2026-07-09T09:00:00+00:00",
+                "signal_time": "2026-07-09T07:02:00+00:00",
+                "module": "flow",
             },
         ]
 
         link = associate_outcomes(value, event_rows, candidates)
 
-        self.assertEqual(link["method"], "symbol_time_window")
+        self.assertEqual(link["method"], "symbol_time_module")
         self.assertEqual([item["id"] for item in link["items"]], [2])
 
     def test_result_label_covers_failure_and_risk_avoided(self) -> None:
-        failed = lifecycle_result_label(
+        pending_failed_state = lifecycle_result_label(
             final_return_pct=None,
             max_price_gain_pct=None,
             max_drawdown_pct=None,
@@ -254,6 +281,15 @@ class LifecycleReplayTests(unittest.TestCase):
             final_state="failed",
             risk_event_count=0,
             has_outcome=False,
+        )
+        failed = lifecycle_result_label(
+            final_return_pct=-8,
+            max_price_gain_pct=1,
+            max_drawdown_pct=-12,
+            highest_level="15m",
+            final_state="failed",
+            risk_event_count=0,
+            has_outcome=True,
         )
         avoided = lifecycle_result_label(
             final_return_pct=-4,
@@ -265,6 +301,7 @@ class LifecycleReplayTests(unittest.TestCase):
             has_outcome=True,
         )
 
+        self.assertEqual(pending_failed_state, "insufficient_data")
         self.assertEqual(failed, "failed")
         self.assertEqual(avoided, "risk_avoided")
 

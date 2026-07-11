@@ -19,6 +19,7 @@ from paopao_radar.outcome_tracker import (
     outcome_result_label,
     scan_report_text,
     scan_outcomes,
+    scan_signal_outcomes,
 )
 from paopao_radar.signal_store import append_from_push
 from paopao_radar.web_services.outcomes import (
@@ -259,6 +260,38 @@ class OutcomeTrackerTests(unittest.TestCase):
         self.assertEqual(first["counts"]["success"], 1)
         self.assertEqual(second["counts"]["due"], 0)
         decision_snapshot.assert_not_called()
+
+    def test_explicit_signal_batch_backfills_only_requested_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            now = int(time.time())
+            signal = {
+                "id": 777,
+                "ts": now - 7200,
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 7200)),
+                "symbol": "BTCUSDT",
+                "module": "flow",
+                "signal_type": "启动",
+                "score": 80,
+            }
+            result = scan_signal_outcomes(
+                [signal], settings=settings, horizon="1h", now_ts=now, price_fetcher=fake_klines,
+            )
+            store = OutcomeStore(settings.outcome_db_path)
+            rows = store.list_by_signal_ids([777, 999], horizons=["1h"])
+
+            second = scan_signal_outcomes(
+                [signal],
+                settings=settings,
+                horizon="1h",
+                now_ts=now,
+                price_fetcher=lambda *_args: self.fail("successful explicit outcome must be skipped"),
+            )
+
+        self.assertEqual(result["counts"]["candidate_signals"], 1)
+        self.assertEqual(result["counts"]["success"], 1)
+        self.assertEqual([(row["signal_id"], row["horizon"]) for row in rows], [(777, "1h")])
+        self.assertEqual(second["counts"]["due"], 0)
 
     def test_batch_update_rolls_back_every_row_on_failure(self) -> None:
         with TemporaryDirectory() as tmp:

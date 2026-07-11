@@ -106,6 +106,17 @@ def _flat(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_outcome_link(item: dict[str, Any]) -> bool:
+    coverage_present = (
+        bool(item.get("outcome_coverage_present"))
+        if "outcome_coverage_present" in item
+        else "linked_outcome_count" in item or "mature_horizon_count" in item
+    )
+    try:
+        linked_outcome_count = int(item.get("linked_outcome_count") or 0)
+    except (TypeError, ValueError):
+        linked_outcome_count = 0
+    if coverage_present:
+        return linked_outcome_count > 0
     outcome_status = str(item.get("outcome_status") or "")
     try:
         outcome_count = int(item.get("outcome_count") or 0)
@@ -115,7 +126,17 @@ def _has_outcome_link(item: dict[str, Any]) -> bool:
 
 
 def _has_result(item: dict[str, Any]) -> bool:
-    return _has_outcome_link(item) and _number(item.get("final_return_pct")) is not None
+    try:
+        mature_count = int(item.get("mature_horizon_count") or 0)
+    except (TypeError, ValueError):
+        mature_count = 0
+    coverage_present = (
+        bool(item.get("outcome_coverage_present"))
+        if "outcome_coverage_present" in item
+        else "linked_outcome_count" in item or "mature_horizon_count" in item
+    )
+    mature = mature_count > 0 if coverage_present else str(item.get("outcome_status") or "") == "success"
+    return mature and _number(item.get("final_return_pct")) is not None
 
 
 def _success(item: dict[str, Any]) -> bool:
@@ -134,10 +155,29 @@ def _group_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
     resolved = [item for item in items if _has_result(item)]
     successes = sum(1 for item in resolved if _success(item))
     failures = sum(1 for item in resolved if _failed(item))
+    horizon_statuses = [
+        str(item.get(f"horizon_{horizon}_status") or "")
+        for item in items
+        for horizon in ("1h", "4h", "24h", "72h")
+    ]
+    linked_lifecycles = sum(_has_outcome_link(item) for item in items)
+    mature_lifecycles = sum(_has_result(item) for item in items)
+    success_outcomes = sum(value == "success" for value in horizon_statuses)
+    due_outcomes = sum(bool(value) and value != "not_due" for value in horizon_statuses)
     return {
         "sample_count": len(items),
-        "outcome_linked_count": sum(_has_outcome_link(item) for item in items),
+        "total_lifecycles": len(items),
+        "outcome_linked_count": linked_lifecycles,
+        "linked_lifecycles": linked_lifecycles,
+        "mature_lifecycles": mature_lifecycles,
         "outcome_sample_count": len(resolved),
+        "success_outcomes": success_outcomes,
+        "pending_outcomes": sum(value in {"pending", "ready", "missing"} for value in horizon_statuses),
+        "not_due_outcomes": sum(value == "not_due" for value in horizon_statuses),
+        "unavailable_outcomes": sum(value == "unavailable" for value in horizon_statuses),
+        "error_outcomes": sum(value == "error" for value in horizon_statuses),
+        "coverage_ratio": _ratio(linked_lifecycles, len(items)),
+        "maturity_ratio": _ratio(success_outcomes, due_outcomes),
         "success_rate": _ratio(successes, len(resolved)),
         "failure_rate": _ratio(failures, len(resolved)),
         "avg_final_return_pct": _average(item.get("final_return_pct") for item in resolved),
@@ -369,6 +409,7 @@ def build_lifecycle_analytics(
     result_distribution: dict[str, int] = defaultdict(int)
     for item in rows:
         result_distribution[str(item.get("result_label") or "insufficient_data")] += 1
+    coverage_metrics = _group_metrics(rows)
     return {
         "model_version": ANALYTICS_MODEL_VERSION,
         "intelligence_model_version": INTELLIGENCE_MODEL_VERSION,
@@ -379,6 +420,16 @@ def build_lifecycle_analytics(
             "closed_count": len(rows) - active_count,
             "outcome_linked_count": len(linked),
             "resolved_outcome_count": len(resolved),
+            "total_lifecycles": len(rows),
+            "linked_lifecycles": coverage_metrics["linked_lifecycles"],
+            "mature_lifecycles": coverage_metrics["mature_lifecycles"],
+            "success_outcomes": coverage_metrics["success_outcomes"],
+            "pending_outcomes": coverage_metrics["pending_outcomes"],
+            "not_due_outcomes": coverage_metrics["not_due_outcomes"],
+            "unavailable_outcomes": coverage_metrics["unavailable_outcomes"],
+            "error_outcomes": coverage_metrics["error_outcomes"],
+            "coverage_ratio": coverage_metrics["coverage_ratio"],
+            "maturity_ratio": coverage_metrics["maturity_ratio"],
             "avg_final_return_pct": _average(item.get("final_return_pct") for item in resolved),
             "avg_max_drawdown_pct": _average(item.get("max_drawdown_pct") for item in resolved),
             "success_count": sum(_success(item) for item in resolved),
@@ -492,10 +543,24 @@ def _load_records(
         context = store.connect()
     with context as conn:
         conn.row_factory = sqlite3.Row
+        has_coverage = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_outcome_coverage'"
+        ).fetchone() is not None
+        coverage_projection = (
+            ", CASE WHEN c.lifecycle_id IS NULL THEN 0 ELSE 1 END AS outcome_coverage_present, "
+            "c.linked_signal_count, c.linked_outcome_count, c.mature_horizon_count, "
+            "c.link_coverage_ratio, c.maturity_ratio, c.coverage_label, c.maturity_label, "
+            "c.horizon_1h_status, c.horizon_4h_status, c.horizon_24h_status, c.horizon_72h_status"
+            if has_coverage else
+            ", 0 AS outcome_coverage_present, 0 AS linked_signal_count, 0 AS linked_outcome_count, 0 AS mature_horizon_count, "
+            "0.0 AS link_coverage_ratio, 0.0 AS maturity_ratio, '' AS coverage_label, '' AS maturity_label, "
+            "'' AS horizon_1h_status, '' AS horizon_4h_status, '' AS horizon_24h_status, '' AS horizon_72h_status"
+        )
+        coverage_join = " LEFT JOIN lifecycle_outcome_coverage AS c ON c.lifecycle_id = l.id" if has_coverage else ""
         records = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT l.id AS lifecycle_id, l.symbol, l.first_signal_level,
                        l.first_signal_module, l.highest_level, l.current_state, l.is_active,
                        l.lifecycle_score, l.risk_score, l.price_change_from_first_pct,
@@ -507,9 +572,11 @@ def _load_records(
                        r.time_to_24h_sec, r.max_price_gain_pct, r.max_drawdown_pct,
                        r.final_return_pct, r.result_label, r.outcome_status,
                        r.outcome_count, r.summary_json
+                       {coverage_projection}
                 FROM signal_lifecycles AS l
                 LEFT JOIN lifecycle_intelligence AS i ON i.lifecycle_id = l.id
                 LEFT JOIN lifecycle_replays AS r ON r.lifecycle_id = l.id
+                {coverage_join}
                 ORDER BY l.id
                 """
             ).fetchall()
@@ -556,6 +623,9 @@ def _markdown_report(data: dict[str, Any]) -> str:
         f"- 活跃数：{summary.get('active_count', 0)}",
         f"- 关闭数：{summary.get('closed_count', 0)}",
         f"- Outcome 关联数：{summary.get('outcome_linked_count', 0)}",
+        f"- 成熟生命周期数：{summary.get('mature_lifecycles', 0)}",
+        f"- Outcome 关联覆盖率：{summary.get('coverage_ratio') if summary.get('coverage_ratio') is not None else '数据不足'}",
+        f"- Outcome 数据成熟度：{summary.get('maturity_ratio') if summary.get('maturity_ratio') is not None else '数据不足'}",
         f"- 平均最终收益：{summary.get('avg_final_return_pct') if summary.get('avg_final_return_pct') is not None else '数据不足'}",
         f"- 平均最大回撤：{summary.get('avg_max_drawdown_pct') if summary.get('avg_max_drawdown_pct') is not None else '数据不足'}",
         "",

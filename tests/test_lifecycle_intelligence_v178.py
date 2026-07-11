@@ -89,7 +89,8 @@ def analytics_record(identifier: int, **overrides: object) -> dict:
         "max_price_gain_pct": 9,
         "max_drawdown_pct": -2,
         "result_label": "success",
-        "outcome_status": "linked",
+        "outcome_status": "success",
+        "mature_horizon_count": 1,
     }
     item.update(overrides)
     return item
@@ -338,10 +339,25 @@ class LifecycleAnalyticsV178Tests(unittest.TestCase):
             is_active=1,
             outcome_status="insufficient_data",
             outcome_count=0,
+            mature_horizon_count=0,
             result_label="success",
             final_return_pct=6,
         )
         data = build_lifecycle_analytics([snapshot_only])
+        self.assertEqual(data["summary"]["outcome_linked_count"], 0)
+        self.assertEqual(data["summary"]["resolved_outcome_count"], 0)
+
+    def test_coverage_zero_overrides_stale_replay_success(self) -> None:
+        stale = analytics_record(
+            1,
+            outcome_coverage_present=1,
+            linked_outcome_count=0,
+            mature_horizon_count=0,
+            outcome_status="success",
+            outcome_count=1,
+            final_return_pct=9,
+        )
+        data = build_lifecycle_analytics([stale])
         self.assertEqual(data["summary"]["outcome_linked_count"], 0)
         self.assertEqual(data["summary"]["resolved_outcome_count"], 0)
         populated = next(item for item in data["first_level"] if item["first_signal_level"] == "15m")
@@ -444,7 +460,7 @@ class LifecycleSimilarityV178Tests(unittest.TestCase):
 
     def test_insufficient_samples_has_no_fake_statistics(self) -> None:
         result = find_similar_lifecycles(analytics_record(100, is_active=1), [analytics_record(1)], min_samples=5)
-        self.assertEqual(result["status"], "insufficient_samples")
+        self.assertEqual(result["status"], "insufficient_mature_samples")
         self.assertIsNone(result["positive_ratio"])
         self.assertEqual(result["samples"], [])
 
@@ -464,10 +480,24 @@ class LifecycleSimilarityV178Tests(unittest.TestCase):
             is_active=1,
             outcome_status="insufficient_data",
             outcome_count=0,
+            mature_horizon_count=0,
             result_label="success",
         )
         result = find_similar_lifecycles(current, [snapshot_only], min_samples=1)
-        self.assertEqual(result["status"], "insufficient_samples")
+        self.assertEqual(result["status"], "insufficient_mature_samples")
+        self.assertEqual(result["similar_count"], 0)
+
+    def test_similarity_rejects_stale_replay_when_coverage_is_zero(self) -> None:
+        stale = analytics_record(
+            1,
+            outcome_coverage_present=1,
+            linked_outcome_count=0,
+            mature_horizon_count=0,
+            outcome_status="success",
+            final_return_pct=8,
+        )
+        result = find_similar_lifecycles(analytics_record(100, is_active=1), [stale], min_samples=1)
+        self.assertEqual(result["status"], "insufficient_mature_samples")
         self.assertEqual(result["similar_count"], 0)
 
 

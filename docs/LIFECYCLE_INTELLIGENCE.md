@@ -1,5 +1,11 @@
 # Lifecycle Intelligence
 
+## v1.78.1 Outcome 置信度口径
+
+智能评价从持久化的 lifecycle Outcome coverage 读取关联状态、成熟度、已成熟 horizon、尚未到期 horizon 与不可用 horizon。缺失、pending 或 not_due 不会扣减既有 `intelligence_score`；成熟样本不足只降低 `confidence_label`。模型权重和既有生命周期评分规则保持不变。
+
+历史统计与相似案例只把已经到期且 `data_status=success` 的 Outcome 放入收益分母。pending/not_due 不参与收益统计，unavailable 单独计数；成熟样本不足时返回 `insufficient_mature_samples`，不会显示虚假的 0% 成功率。
+
 ## 模型边界
 
 `lifecycle-intelligence-v1` 生成独立的 `intelligence_score`（0–100）以及质量、阶段、动能、资金确认、风险、成熟度和置信度标签。它不会覆盖既有 `lifecycle_score` / `risk_score`，不会自动修改 decision model 或任何生产阈值。
@@ -35,6 +41,6 @@
 
 ## 分析与相似案例
 
-analytics 缓存首信号周期、升级路径、模块来源、资金确认组合及风险提示后表现，并可生成脱敏报告 `docs/generated/lifecycle_analytics_latest.json`。`lifecycle-similarity-v1` 使用可解释规则加权距离，只在已完成或具备 Outcome 的历史样本中搜索；样本不足时返回 `insufficient_samples`，不会显示虚假的 0% 成功率。
+analytics 缓存首信号周期、升级路径、模块来源、资金确认组合及风险提示后表现，并可生成脱敏报告 `docs/generated/lifecycle_analytics_latest.json`。`lifecycle-similarity-v1` 使用可解释规则加权距离，只在已完成且具备成熟 success Outcome 的历史样本中搜索；样本不足时返回 `insufficient_mature_samples`，不会显示虚假的 0% 成功率。
 
 历史相似样本仅用于研究，不代表未来结果。

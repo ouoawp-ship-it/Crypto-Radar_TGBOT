@@ -29,12 +29,18 @@ CONCURRENT_GUARD_JOB_TYPES = {
     "stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test",
     "outcome-scan", "lifecycle-scan", "lifecycle-backfill", "lifecycle-intelligence",
     "lifecycle-replay", "lifecycle-analytics", "lifecycle-replay-rebuild",
+    "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
+    "lifecycle-outcome-refresh-analytics",
 }
 LIFECYCLE_RESEARCH_JOB_TYPES = {
     "lifecycle-intelligence",
     "lifecycle-replay",
     "lifecycle-analytics",
     "lifecycle-replay-rebuild",
+    "lifecycle-outcome-link",
+    "lifecycle-outcome-backfill",
+    "lifecycle-outcome-reconcile",
+    "lifecycle-outcome-refresh-analytics",
 }
 ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
 STABLE_CHECK_ATTENTION_RE = re.compile(r"(状态|摘要|网络重试噪声|日志稳定性):\s*(.+)")
@@ -79,6 +85,10 @@ JOB_SPECS: dict[str, JobSpec] = {
     "lifecycle-replay": JobSpec("lifecycle-replay", "生命周期回放回填", _python_command("lifecycle-replay-backfill", "--limit", "500"), 1200),
     "lifecycle-analytics": JobSpec("lifecycle-analytics", "生命周期历史统计", _python_command("lifecycle-analytics"), 900),
     "lifecycle-replay-rebuild": JobSpec("lifecycle-replay-rebuild", "生命周期回放强制重建", _python_command("lifecycle-replay-backfill", "--limit", "500", "--force-rebuild"), 1200),
+    "lifecycle-outcome-link": JobSpec("lifecycle-outcome-link", "生命周期 Outcome 关联", _python_command("lifecycle-outcome-link", "--limit", "200"), 300),
+    "lifecycle-outcome-backfill": JobSpec("lifecycle-outcome-backfill", "生命周期 Outcome 补算", _python_command("lifecycle-outcome-backfill", "--limit", "200"), 1200),
+    "lifecycle-outcome-reconcile": JobSpec("lifecycle-outcome-reconcile", "生命周期 Outcome 一致性检查", _python_command("lifecycle-outcome-reconcile", "--limit", "200"), 600),
+    "lifecycle-outcome-refresh-analytics": JobSpec("lifecycle-outcome-refresh-analytics", "刷新生命周期 Outcome 统计", _python_command("lifecycle-analytics", "--force-rebuild"), 900),
     "update-check": JobSpec("update-check", zh(r"\u68c0\u67e5 GitHub \u66f4\u65b0"), ["bash", "scripts/update_server.sh", "--check"], 180),
     "api-self-test": JobSpec("api-self-test", zh(r"Web API \u81ea\u68c0"), ["internal", "api-self-test"], 60, internal=True),
 }
@@ -86,15 +96,30 @@ JOB_SPECS: dict[str, JobSpec] = {
 
 def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]:
     """Build bounded CLI arguments for authenticated lifecycle job requests."""
-    symbol = re.sub(r"[^A-Z0-9]", "", str(metadata.get("symbol") or "").upper())
+    raw_symbol = str(metadata.get("symbol") or "").strip().upper()
+    raw_lifecycle_id = metadata.get("lifecycle_id")
+    outcome_job = spec.job_type in {
+        "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
+    }
+    if outcome_job and raw_symbol and not re.fullmatch(r"[A-Z0-9]{2,24}(?:USDT)?", raw_symbol):
+        raise ValueError("invalid lifecycle symbol")
+    if outcome_job and isinstance(raw_lifecycle_id, bool):
+        raise ValueError("invalid lifecycle id")
+    symbol = re.sub(r"[^A-Z0-9]", "", raw_symbol)
     if symbol and not symbol.endswith("USDT"):
         symbol += "USDT"
     if not re.fullmatch(r"[A-Z0-9]{2,24}USDT", symbol):
+        if outcome_job and raw_symbol:
+            raise ValueError("invalid lifecycle symbol")
         symbol = ""
     try:
         lifecycle_id = max(0, int(metadata.get("lifecycle_id") or 0))
     except (TypeError, ValueError):
+        if outcome_job and raw_lifecycle_id is not None and raw_lifecycle_id != "":
+            raise ValueError("invalid lifecycle id")
         lifecycle_id = 0
+    if outcome_job and raw_lifecycle_id is not None and raw_lifecycle_id != "" and lifecycle_id <= 0:
+        raise ValueError("invalid lifecycle id")
 
     if spec.job_type == "lifecycle-intelligence" and symbol:
         return _python_command("lifecycle-intelligence", "--symbol", symbol)
@@ -107,6 +132,39 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
         if spec.job_type == "lifecycle-replay-rebuild":
             command.append("--force-rebuild")
         return _python_command(*command)
+    if spec.job_type in {
+        "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
+    }:
+        def strict_flag(name: str) -> bool:
+            value = metadata.get(name, False)
+            if value in (None, ""):
+                return False
+            if not isinstance(value, bool):
+                raise ValueError(f"invalid boolean flag: {name}")
+            return value
+
+        command = [spec.job_type]
+        if lifecycle_id:
+            command.extend(["--lifecycle-id", str(lifecycle_id)])
+        if symbol:
+            command.extend(["--symbol", symbol])
+        try:
+            limit = max(1, min(int(metadata.get("limit") or 200), 1000))
+        except (TypeError, ValueError):
+            limit = 200
+        command.extend(["--limit", str(limit)])
+        horizon = str(metadata.get("horizon") or "").strip().lower()
+        if horizon and horizon not in {"1h", "4h", "24h", "72h"}:
+            raise ValueError("invalid lifecycle outcome horizon")
+        if horizon in {"1h", "4h", "24h", "72h"}:
+            command.extend(["--horizon", horizon])
+        if strict_flag("force_relink"):
+            command.append("--force-relink")
+        if spec.job_type == "lifecycle-outcome-backfill" and strict_flag("force_outcome_rebuild"):
+            command.append("--force-outcome-rebuild")
+        if spec.job_type == "lifecycle-outcome-reconcile" and strict_flag("repair"):
+            command.append("--repair")
+        return _python_command(*command)
     return list(spec.command)
 
 
@@ -114,6 +172,8 @@ LONG_ACTION_JOB_TYPES = {
     "stable-check", "doctor", "readiness", "cleanup", "outcome-scan", "lifecycle-scan",
     "lifecycle-backfill", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-analytics",
     "lifecycle-replay-rebuild",
+    "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
+    "lifecycle-outcome-refresh-analytics",
 }
 
 
@@ -760,6 +820,10 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
         spec = validate_job_type(str(job["job_type"]))
     except ValueError as exc:
         return finish_job(status="failed", returncode=2, error=str(exc), stderr_tail=str(exc))
+    try:
+        command = _lifecycle_job_command(spec, dict(job.get("metadata") or {}))
+    except ValueError as exc:
+        return finish_job(status="failed", returncode=2, error=str(exc), stderr_tail=str(exc))
     preflight_error = _preflight_command(spec)
     if preflight_error:
         return finish_job(status="failed", returncode=127, error=preflight_error, stderr_tail=preflight_error)
@@ -778,7 +842,7 @@ def execute_job(store: JobStore, job_id: int) -> dict[str, Any] | None:
             return finish_job(status="failed", returncode=1, error=message, stderr_tail=message)
     try:
         completed = subprocess.run(
-            spec.command,
+            command,
             cwd=BASE_DIR,
             capture_output=True,
             text=True,
@@ -842,7 +906,10 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     try:
         job = store.create_job(job_type, metadata or {})
     except ValueError as exc:
-        return {"ok": False, "message": str(exc), "error": str(exc), "code": "invalid_job_type"}
+        code = "invalid_job_scope" if job_type in {
+            "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-reconcile",
+        } else "invalid_job_type"
+        return {"ok": False, "message": str(exc), "error": str(exc), "code": code}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         return {"ok": False, "message": message, "error": message, "code": "job_create_failed"}
@@ -878,6 +945,7 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
 _LIFECYCLE_SCHEDULER_LOCK = threading.RLock()
 _LIFECYCLE_SCHEDULER_THREAD: threading.Thread | None = None
 _LIFECYCLE_SCHEDULER_STOP = threading.Event()
+_LIFECYCLE_OUTCOME_SCHEDULER_FIRST_SEEN: dict[tuple[str, str], int] = {}
 
 
 def lifecycle_intelligence_scheduler_tick(
@@ -888,25 +956,46 @@ def lifecycle_intelligence_scheduler_tick(
 ) -> dict[str, Any]:
     """Submit due lifecycle research jobs without running work in the web thread."""
     loaded = settings or Settings.load()
-    if not bool(getattr(loaded, "lifecycle_intelligence_enable", True)):
+    intelligence_enabled = bool(getattr(loaded, "lifecycle_intelligence_enable", True))
+    outcome_enabled = bool(getattr(loaded, "lifecycle_outcome_backfill_enable", True))
+    if not intelligence_enabled and not outcome_enabled:
         return {"ok": True, "enabled": False, "submitted": [], "jobs": []}
     timestamp = int(_now() if now is None else now)
     store = store_for_settings(loaded)
-    schedule = (
-        ("lifecycle-intelligence", max(60, int(getattr(loaded, "lifecycle_intelligence_interval_sec", 900) or 900))),
-        ("lifecycle-replay", max(60, int(getattr(loaded, "lifecycle_replay_interval_sec", 3600) or 3600))),
-        ("lifecycle-analytics", max(60, int(getattr(loaded, "lifecycle_analytics_interval_sec", 21600) or 21600))),
-    )
+    schedule: list[tuple[str, int]] = []
+    if intelligence_enabled:
+        schedule.extend((
+            ("lifecycle-intelligence", max(60, int(getattr(loaded, "lifecycle_intelligence_interval_sec", 900) or 900))),
+            ("lifecycle-replay", max(60, int(getattr(loaded, "lifecycle_replay_interval_sec", 3600) or 3600))),
+            ("lifecycle-analytics", max(60, int(getattr(loaded, "lifecycle_analytics_interval_sec", 21600) or 21600))),
+        ))
+    if outcome_enabled:
+        schedule.extend((
+            ("lifecycle-outcome-backfill", max(300, int(getattr(loaded, "lifecycle_outcome_backfill_interval_sec", 3600) or 3600))),
+            ("lifecycle-outcome-reconcile", 86400),
+        ))
     submitted: list[str] = []
     results: list[dict[str, Any]] = []
     for job_type, interval_sec in schedule:
         recent = store.list_jobs(limit=1, job_type=job_type)
         last_created = int((recent[0] if recent else {}).get("created_at") or 0)
+        if job_type.startswith("lifecycle-outcome-") and not last_created:
+            # A web-service restart must not immediately launch a historical
+            # backfill or reconciliation job.  Give operators one full
+            # configured interval to deploy, inspect, and run the documented
+            # phased backfill manually.  The guard is process-local on purpose:
+            # once a scheduled job exists, its durable created_at controls the
+            # following ticks.
+            scheduler_key = (str(getattr(loaded, "web_jobs_db_path", "")), job_type)
+            with _LIFECYCLE_SCHEDULER_LOCK:
+                first_seen = _LIFECYCLE_OUTCOME_SCHEDULER_FIRST_SEEN.setdefault(scheduler_key, timestamp)
+            if timestamp - first_seen < interval_sec:
+                continue
         if last_created and timestamp - last_created < interval_sec:
             continue
         result = create_job_payload(
             job_type,
-            {"source": "lifecycle-intelligence-scheduler", "scheduled_at": timestamp},
+            {"source": "lifecycle-research-scheduler", "scheduled_at": timestamp},
             settings=loaded,
             start=start,
         )
@@ -931,7 +1020,10 @@ def lifecycle_intelligence_scheduler_tick(
 def start_lifecycle_intelligence_scheduler(*, settings: Settings | None = None) -> threading.Thread | None:
     """Start one daemon scheduler per web process; workers remain subprocess jobs."""
     loaded = settings or Settings.load()
-    if not bool(getattr(loaded, "lifecycle_intelligence_enable", True)):
+    if not (
+        bool(getattr(loaded, "lifecycle_intelligence_enable", True))
+        or bool(getattr(loaded, "lifecycle_outcome_backfill_enable", True))
+    ):
         return None
     global _LIFECYCLE_SCHEDULER_THREAD
     with _LIFECYCLE_SCHEDULER_LOCK:
@@ -1069,7 +1161,17 @@ def rerun_job_payload(job_id: int, *, settings: Settings | None = None, start: b
         validate_job_type(str(job.get("job_type") or ""))
     except ValueError as exc:
         return {"ok": False, "message": str(exc), "error": str(exc), "code": "invalid_job_type"}
-    result = create_job_payload(str(job["job_type"]), {"source": "api/jobs/rerun", "rerun_from": int(job["id"])}, settings=settings, start=start)
+    original_metadata = dict(job.get("metadata") or {})
+    metadata = {
+        key: original_metadata[key]
+        for key in (
+            "symbol", "lifecycle_id", "limit", "horizon", "force_relink",
+            "force_outcome_rebuild", "repair",
+        )
+        if key in original_metadata
+    }
+    metadata.update({"source": "api/jobs/rerun", "rerun_from": int(job["id"])})
+    result = create_job_payload(str(job["job_type"]), metadata, settings=settings, start=start)
     result["rerun_from"] = int(job["id"])
     return result
 

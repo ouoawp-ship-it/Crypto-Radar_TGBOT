@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-cleanup", action="store_true", help="用于 cleanup：忽略清理间隔，立即执行")
     parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
-    parser.add_argument("--limit", type=int, default=None, help="用于 outcome-scan：本次最多处理多少条信号/结果")
+    parser.add_argument("--limit", type=int, default=None, help="用于 outcome/lifecycle-outcome/replay：本次最多处理的有界批量")
     parser.add_argument("--limit-symbols", type=int, default=None, help="用于 lifecycle-backfill/lifecycle-scan：本次最多处理多少个币种")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
@@ -164,13 +164,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-charts", action="store_true", help="structure-radar 保存K线状态图")
     parser.add_argument("--mode", choices=["pre", "confirm"], default="pre", help="structure-radar 运行模式：pre 提前临界，confirm 收线确认")
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 或 lifecycle 命令的回看小时数")
-    parser.add_argument("--horizon", default="", help="用于 outcome-scan：只处理 1h/4h/24h/72h 中的一个窗口")
+    parser.add_argument("--horizon", default="", help="用于 outcome-scan/lifecycle-outcome：只处理 1h/4h/24h/72h 中的一个窗口")
     parser.add_argument("--symbol", default="", help="用于 outcome/lifecycle 命令：只处理某个币种，例如 BTC 或 BTCUSDT")
-    parser.add_argument("--lifecycle-id", type=int, default=None, help="用于 lifecycle-replay：按生命周期 ID 回放")
+    parser.add_argument("--lifecycle-id", type=int, default=None, help="用于 lifecycle-replay/lifecycle-outcome：按生命周期 ID 精确处理")
     parser.add_argument("--all-active", action="store_true", help="用于 lifecycle-intelligence：处理全部活跃生命周期")
     parser.add_argument("--dry-run", action="store_true", help="用于 outcome/lifecycle 命令：只预览，不写数据库或发送 Telegram")
     parser.add_argument("--pretty", action="store_true", help="生命周期智能命令使用缩进 JSON 输出")
     parser.add_argument("--force-rebuild", action="store_true", help="忽略源事件签名缓存并强制重新生成智能评价或回放")
+    parser.add_argument("--force-relink", action="store_true", help="用于 lifecycle outcome 命令：重新核对已有关联，不重算成功 Outcome")
+    parser.add_argument("--force-outcome-rebuild", action="store_true", help="用于 lifecycle-outcome-backfill：明确重算已到期 Outcome")
+    parser.add_argument("--repair", action="store_true", help="用于 lifecycle-outcome-reconcile：修复可安全修复的覆盖率数据")
     parser.add_argument("--backfill-days", type=int, default=None, help="用于 outcome-scan：回填最近 N 天已发送信号")
     parser.add_argument("--push", action="store_true", help="用于 lifecycle-scan：对重要生命周期事件尝试 Telegram 跟随推送；真实发送仍需 --send --confirm-real-send")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
@@ -490,10 +493,74 @@ def run_lifecycle_similar(args: argparse.Namespace) -> int:
         result = {"ok": False, "error": "相似生命周期计算返回格式异常"}
     else:
         if result.get("status") == "not_found":
-            result["status"] = "insufficient_samples"
+            result["status"] = "insufficient_mature_samples"
             result["message"] = "当前相似样本不足，暂不生成统计结论。"
             result["ok"] = True
         result.setdefault("ok", True)
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def _lifecycle_outcome_limit(args: argparse.Namespace, settings: Settings) -> int:
+    configured = max(1, int(getattr(settings, "lifecycle_outcome_backfill_batch_size", 200) or 200))
+    return max(1, min(int(getattr(args, "limit", None) or configured), 1000))
+
+
+def run_lifecycle_outcome_link(args: argparse.Namespace) -> int:
+    from .lifecycle_outcomes import link_lifecycle_outcomes
+
+    settings = Settings.load()
+    result = link_lifecycle_outcomes(
+        settings=settings,
+        symbol=str(getattr(args, "symbol", "") or ""),
+        lifecycle_id=getattr(args, "lifecycle_id", None),
+        limit=_lifecycle_outcome_limit(args, settings),
+        horizon=str(getattr(args, "horizon", "") or ""),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        force_relink=bool(getattr(args, "force_relink", False)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def run_lifecycle_outcome_backfill(args: argparse.Namespace) -> int:
+    from .lifecycle_outcomes import backfill_lifecycle_outcomes
+
+    settings = Settings.load()
+    result = backfill_lifecycle_outcomes(
+        settings=settings,
+        symbol=str(getattr(args, "symbol", "") or ""),
+        lifecycle_id=getattr(args, "lifecycle_id", None),
+        limit=_lifecycle_outcome_limit(args, settings),
+        horizon=str(getattr(args, "horizon", "") or ""),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        force_relink=bool(getattr(args, "force_relink", False)),
+        force_outcome_rebuild=bool(getattr(args, "force_outcome_rebuild", False)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def run_lifecycle_outcome_status(args: argparse.Namespace) -> int:
+    from .lifecycle_outcomes import lifecycle_outcome_status
+
+    result = lifecycle_outcome_status(
+        settings=Settings.load(),
+        symbol=str(getattr(args, "symbol", "") or ""),
+        lifecycle_id=getattr(args, "lifecycle_id", None),
+    )
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def run_lifecycle_outcome_reconcile(args: argparse.Namespace) -> int:
+    from .lifecycle_outcomes import reconcile_lifecycle_outcomes
+
+    settings = Settings.load()
+    result = reconcile_lifecycle_outcomes(
+        settings=settings,
+        symbol=str(getattr(args, "symbol", "") or ""),
+        lifecycle_id=getattr(args, "lifecycle_id", None),
+        limit=_lifecycle_outcome_limit(args, settings),
+        repair=bool(getattr(args, "repair", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
     return _print_lifecycle_intelligence_result(result, args)
 
 
@@ -1999,6 +2066,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_lifecycle_analytics(args)
     if args.command == "lifecycle-similar":
         return run_lifecycle_similar(args)
+    if args.command == "lifecycle-outcome-link":
+        return run_lifecycle_outcome_link(args)
+    if args.command == "lifecycle-outcome-backfill":
+        return run_lifecycle_outcome_backfill(args)
+    if args.command == "lifecycle-outcome-status":
+        return run_lifecycle_outcome_status(args)
+    if args.command == "lifecycle-outcome-reconcile":
+        return run_lifecycle_outcome_reconcile(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

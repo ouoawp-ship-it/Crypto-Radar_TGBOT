@@ -109,6 +109,18 @@ from .web_services.lifecycle_intelligence import (
     public_lifecycle_replay_payload,
     public_lifecycle_similar_payload,
 )
+from .web_services.lifecycle_outcomes import (
+    lifecycle_outcome_coverage_payload,
+    lifecycle_outcome_detail_payload,
+    lifecycle_outcome_reasons_payload,
+    lifecycle_outcome_summary_payload,
+    public_lifecycle_outcome_coverage_payload,
+    public_lifecycle_outcome_detail_payload,
+    public_lifecycle_outcome_list_payload,
+    public_lifecycle_outcome_maturity_payload,
+    public_lifecycle_outcome_reasons_payload,
+    public_lifecycle_outcome_summary_payload,
+)
 from .web_services.public import (
     public_coin_detail_payload,
     public_coin_search_payload,
@@ -181,6 +193,11 @@ LIFECYCLE_CONFIG_KEYS = {
     "LIFECYCLE_OI_ACCUMULATION_PCT",
     "LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER",
     "LIFECYCLE_FUNDING_CROWDED_THRESHOLD",
+    "LIFECYCLE_OUTCOME_BACKFILL_ENABLE",
+    "LIFECYCLE_OUTCOME_BACKFILL_BATCH_SIZE",
+    "LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES",
+    "LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC",
+    "LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC",
 }
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
@@ -279,6 +296,11 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("LIFECYCLE_TELEGRAM_MIN_SCORE", "生命周期推送最低强度", "AI 助手", kind="int", minimum=0, maximum=100),
     ConfigField("LIFECYCLE_FAIL_PRICE_DROP_PCT", "启动失败价格跌幅阈值", "AI 助手", kind="float", minimum=1, maximum=50),
     ConfigField("LIFECYCLE_FUNDING_CROWDED_THRESHOLD", "Funding 拥挤阈值", "AI 助手", kind="float", minimum=0, maximum=0.01),
+    ConfigField("LIFECYCLE_OUTCOME_BACKFILL_ENABLE", "启用生命周期 Outcome 增量回填", "AI 助手", kind="bool", help="只补算已到期且缺失的 Outcome，不修改模型阈值。"),
+    ConfigField("LIFECYCLE_OUTCOME_BACKFILL_BATCH_SIZE", "Outcome 回填每批生命周期上限", "AI 助手", kind="int", minimum=1, maximum=1000),
+    ConfigField("LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES", "Outcome 回填每批结果上限", "AI 助手", kind="int", minimum=1, maximum=5000),
+    ConfigField("LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC", "Outcome 旧数据时间容差", "AI 助手", kind="int", minimum=0, maximum=3600, help="仅用于旧数据缺失 signal_id 时的 symbol+时间+模块严格匹配。"),
+    ConfigField("LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC", "Outcome 增量回填间隔", "AI 助手", kind="int", minimum=300, maximum=86400),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -1977,6 +1999,19 @@ def query_int_or(value: Any, default: int = 0) -> int:
         return int(value if value not in {None, ""} else default)
     except (TypeError, ValueError):
         return default
+
+
+def optional_positive_query_int(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = int(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_lifecycle_id") from exc
+    if number <= 0:
+        raise ValueError("invalid_lifecycle_id")
+    return number
 
 
 def normalize_signal_symbol(value: str) -> str:
@@ -5775,6 +5810,7 @@ INDEX_HTML = r"""<!doctype html>
     let latestOutcomeStats = {};
     let latestJobsData = { jobs: [] };
     let latestJobsStats = {};
+    let latestLifecycleOutcomeStatus = {};
     let latestJobFilters = { job_type: "", status: "", failedOnly: false };
     let latestJobDetail = null;
     let autoRefreshTimer = null;
@@ -8096,6 +8132,10 @@ INDEX_HTML = r"""<!doctype html>
       { type: "readiness", label: "Readiness 准备度", desc: "检查真实推送前需要满足的配置和状态。" },
       { type: "cleanup", label: "Cleanup 清理", desc: "清理运行垃圾和过期临时文件。" },
       { type: "update-check", label: "更新检查", desc: "只检查 GitHub 是否有更新；真正更新仍在服务器执行 paopao update --yes。" },
+      { type: "lifecycle-outcome-link", label: "Outcome 关联", desc: "只关联已有 Outcome，不请求外部行情，不创建新 Outcome。" },
+      { type: "lifecycle-outcome-backfill", label: "Outcome 补算", desc: "有界地补算已到期且缺失的 Outcome，尚未到期不会当作失败。" },
+      { type: "lifecycle-outcome-reconcile", label: "Outcome 一致性检查", desc: "检查孤立链接、重复 primary 与 coverage 不一致；默认只读。" },
+      { type: "lifecycle-outcome-refresh-analytics", label: "刷新 Outcome 统计", desc: "在关联/补算完成后重建生命周期统计缓存。" },
       { type: "api-self-test", label: "Web API 自检", desc: "轻量检查 Web 摘要、日志和信号统计接口，不访问外网。" }
     ];
     function jobStatusPill(status) {
@@ -8123,6 +8163,30 @@ INDEX_HTML = r"""<!doctype html>
       if (ms > 0) return `${ms}ms`;
       if (job.started_at && !job.finished_at) return "运行中";
       return "-";
+    }
+    function lifecycleOutcomeCoveragePanel() {
+      const data = latestLifecycleOutcomeStatus || {};
+      const horizons = data.horizons || {};
+      const reasons = data.unlinked_reasons || {};
+      const pct = value => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "-";
+      const horizonText = ["1h", "4h", "24h", "72h"].map(key => {
+        const item = horizons[key] || {};
+        return `${key}: success ${Number(item.success || 0)} / not_due ${Number(item.not_due || 0)} / pending ${Number(item.pending || 0)} / unavailable ${Number(item.unavailable || 0)}`;
+      }).join("<br>");
+      const reasonText = Object.entries(reasons).length
+        ? Object.entries(reasons).map(([key, value]) => `${escapeHtml(key)}: ${Number(value || 0)}`).join("；")
+        : "暂无未关联原因";
+      return `<div class="panel span-12">
+        <h3 class="section-title">Lifecycle Outcome Coverage</h3>
+        <div class="stats-grid">
+          <div class="stat-card"><span>关联覆盖率</span><strong>${pct(data.link_coverage_ratio)}</strong></div>
+          <div class="stat-card"><span>数据成熟度</span><strong>${pct(data.maturity_ratio)}</strong></div>
+          <div class="stat-card"><span>已关联生命周期</span><strong>${Number(data.linked_lifecycle_count || 0)}</strong></div>
+          <div class="stat-card"><span>已成熟生命周期</span><strong>${Number(data.mature_lifecycle_count || 0)}</strong></div>
+        </div>
+        <p class="muted">关联覆盖率表示是否找到对应 Outcome；数据成熟度表示已到期且成功计算。尚未到期、pending 和 unavailable 都不是失败。</p>
+        <p>${horizonText}</p><p><b>未关联原因：</b>${reasonText}</p>
+      </div>`;
     }
     async function createJob(jobType) {
       const data = await api("/api/jobs", {
@@ -8297,6 +8361,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("jobsGrid").innerHTML = [
         renderPageIntro("jobs", [`${jobs.length} 个任务`, running ? `${running} 个运行中` : "无运行中任务"]),
         jobStatsCards(),
+        lifecycleOutcomeCoveragePanel(),
         jobActionsPanel(),
         jobFiltersPanel(),
         `<div class="panel span-12">
@@ -8311,12 +8376,14 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function loadJobs(isAuto = false) {
       const filter = jobFilterQuery();
-      const [data, stats] = await Promise.all([
+      const [data, stats, outcomeStatus] = await Promise.all([
         api(`/api/jobs?${filter.query}`),
-        api("/api/jobs/stats")
+        api("/api/jobs/stats"),
+        api("/api/lifecycle/outcomes/summary").catch(() => ({ ok: false, data: {} }))
       ]);
       latestJobsData = data;
       latestJobsStats = stats;
+      latestLifecycleOutcomeStatus = outcomeStatus.data || outcomeStatus;
       if (latestJobDetail && latestJobDetail.id) {
         try {
           const detail = await api(`/api/jobs/detail?id=${encodeURIComponent(latestJobDetail.id)}`);
@@ -10202,6 +10269,46 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/public-api/lifecycle/summary":
             self.send_json(public_lifecycle_summary_payload())
             return
+        if path == "/public-api/lifecycle/outcomes/summary":
+            self.send_json(public_lifecycle_outcome_summary_payload())
+            return
+        if path in {"/public-api/lifecycle/outcomes/coverage", "/public-api/lifecycle/outcomes/list"}:
+            try:
+                requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
+            except ValueError:
+                self.send_json(api_error("lifecycle_id 必须是正整数。", code="invalid_lifecycle_id"), HTTPStatus.BAD_REQUEST)
+                return
+            payload_fn = (
+                public_lifecycle_outcome_coverage_payload
+                if path.endswith("/coverage")
+                else public_lifecycle_outcome_list_payload
+            )
+            self.send_json(payload_fn(
+                symbol=query.get("symbol", [""])[0],
+                lifecycle_id=requested_lifecycle_id,
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                offset=max(0, query_int_or(query.get("offset", ["0"])[0], 0)),
+                coverage_label=query.get("coverage_label", [""])[0],
+                maturity_label=query.get("maturity_label", [""])[0],
+            ))
+            return
+        if path == "/public-api/lifecycle/outcomes/detail":
+            try:
+                requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
+            except ValueError:
+                self.send_json(api_error("lifecycle_id 必须是正整数。", code="invalid_lifecycle_id"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(public_lifecycle_outcome_detail_payload(
+                query.get("symbol", [""])[0],
+                lifecycle_id=requested_lifecycle_id,
+            ))
+            return
+        if path == "/public-api/lifecycle/outcomes/reasons":
+            self.send_json(public_lifecycle_outcome_reasons_payload())
+            return
+        if path == "/public-api/lifecycle/outcomes/maturity":
+            self.send_json(public_lifecycle_outcome_maturity_payload())
+            return
         if path == "/public-api/lifecycle/intelligence/summary":
             self.send_json(public_lifecycle_intelligence_summary_payload())
             return
@@ -10530,6 +10637,38 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/lifecycle/summary":
             self.send_json(lifecycle_summary_payload())
             return
+        if path == "/api/lifecycle/outcomes/summary":
+            self.send_json(lifecycle_outcome_summary_payload())
+            return
+        if path == "/api/lifecycle/outcomes/coverage":
+            try:
+                requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
+            except ValueError:
+                self.send_json(api_error("lifecycle_id 必须是正整数。", code="invalid_lifecycle_id"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(lifecycle_outcome_coverage_payload(
+                symbol=query.get("symbol", [""])[0],
+                lifecycle_id=requested_lifecycle_id,
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                offset=max(0, query_int_or(query.get("offset", ["0"])[0], 0)),
+                coverage_label=query.get("coverage_label", [""])[0],
+                maturity_label=query.get("maturity_label", [""])[0],
+            ))
+            return
+        if path == "/api/lifecycle/outcomes/detail":
+            try:
+                requested_lifecycle_id = optional_positive_query_int(query.get("lifecycle_id", [""])[0])
+            except ValueError:
+                self.send_json(api_error("lifecycle_id 必须是正整数。", code="invalid_lifecycle_id"), HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(lifecycle_outcome_detail_payload(
+                query.get("symbol", [""])[0],
+                lifecycle_id=requested_lifecycle_id,
+            ))
+            return
+        if path == "/api/lifecycle/outcomes/reasons":
+            self.send_json(lifecycle_outcome_reasons_payload())
+            return
         if path == "/api/lifecycle/intelligence/summary":
             self.send_json(lifecycle_intelligence_summary_payload())
             return
@@ -10715,6 +10854,34 @@ class WebHandler(BaseHTTPRequestHandler):
                         "symbol": str(data.get("symbol") or "")[:32],
                         "lifecycle_id": query_int_or(str(data.get("lifecycle_id") or "0"), 0),
                     },
+                )
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            lifecycle_outcome_job_types = {
+                "/api/lifecycle/outcomes/run-link": "lifecycle-outcome-link",
+                "/api/lifecycle/outcomes/run-backfill": "lifecycle-outcome-backfill",
+                "/api/lifecycle/outcomes/run-reconcile": "lifecycle-outcome-reconcile",
+            }
+            if path in lifecycle_outcome_job_types:
+                metadata: dict[str, Any] = {
+                    "source": path,
+                    "symbol": str(data.get("symbol") or "")[:32],
+                    "limit": min(1000, max(1, query_int_or(str(data.get("limit") or "200"), 200))),
+                    "horizon": str(data.get("horizon") or "")[:8],
+                    "force_relink": data.get("force_relink", False),
+                    "force_outcome_rebuild": data.get("force_outcome_rebuild", False),
+                    "repair": data.get("repair", False),
+                }
+                if data.get("lifecycle_id") not in (None, ""):
+                    # Keep the raw value so the jobs boundary can reject
+                    # malformed or non-positive scopes.  Omitting the field is
+                    # the intentional bounded-batch mode; an explicit zero is
+                    # invalid and must never broaden into a full batch.
+                    metadata["lifecycle_id"] = data.get("lifecycle_id")
+                result = create_job_payload(
+                    lifecycle_outcome_job_types[path],
+                    metadata,
                 )
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)

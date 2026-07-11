@@ -46,3 +46,6 @@ node_modules/
 logs/
 docs/generated/lifecycle_analytics_latest.json
 docs/generated/lifecycle_analytics_latest.md
+docs/generated/lifecycle_outcome_coverage_latest.json
+docs/generated/lifecycle_outcome_coverage_latest.md
+docs/generated/*.lock

@@ -156,14 +156,21 @@ def similarity_score(current: dict[str, Any], candidate: dict[str, Any]) -> floa
 
 
 def _eligible_historical(item: dict[str, Any]) -> bool:
-    active = int(item.get("is_active", 1) or 0) == 1
     outcome_status = str(item.get("outcome_status") or "")
     try:
-        outcome_count = int(item.get("outcome_count") or 0)
+        mature_count = int(item.get("mature_horizon_count") or 0)
     except (TypeError, ValueError):
-        outcome_count = 0
-    has_outcome = outcome_count > 0 or outcome_status in {"linked", "success"}
-    return (not active) or has_outcome
+        mature_count = 0
+    coverage_present = (
+        bool(item.get("outcome_coverage_present"))
+        if "outcome_coverage_present" in item
+        else "linked_outcome_count" in item or "mature_horizon_count" in item
+    )
+    if coverage_present:
+        return mature_count > 0 and _number(item.get("final_return_pct")) is not None
+    # Compatibility for pre-v1.78.1 injected records: only an explicit success
+    # status is mature.  linked/pending/not_due/unavailable never enter returns.
+    return outcome_status == "success" and _number(item.get("final_return_pct")) is not None
 
 
 def _avg(values: Iterable[Any]) -> float | None:
@@ -181,17 +188,21 @@ def find_similar_lifecycles(
     current_item = _flat(dict(current))
     current_id = int(current_item.get("lifecycle_id", current_item.get("id", 0)) or 0)
     eligible: list[dict[str, Any]] = []
+    unavailable_count = 0
     for raw in candidates:
         item = _flat(dict(raw))
+        unavailable_count += int(str(item.get("outcome_status") or "") == "unavailable")
         item_id = int(item.get("lifecycle_id", item.get("id", 0)) or 0)
         if (current_id and item_id == current_id) or not _eligible_historical(item):
             continue
         eligible.append(item)
     if len(eligible) < max(1, int(min_samples)):
         return {
-            "status": "insufficient_samples",
+            "status": "insufficient_mature_samples",
             "model_version": SIMILARITY_MODEL_VERSION,
             "similar_count": len(eligible),
+            "mature_sample_count": len(eligible),
+            "unavailable_count": unavailable_count,
             "required_samples": max(1, int(min_samples)),
             "avg_final_return_pct": None,
             "positive_ratio": None,
@@ -207,7 +218,7 @@ def find_similar_lifecycles(
         key=lambda pair: (-pair[0], -int(pair[1].get("lifecycle_id", pair[1].get("id", 0)) or 0)),
     )[: max(1, min(int(limit or 10), 50))]
     selected = [item for _, item in scored]
-    with_returns = [item for item in selected if _number(item.get("final_return_pct")) is not None]
+    with_returns = [item for item in selected if _eligible_historical(item)]
     samples = [
         {
             "lifecycle_id": int(item.get("lifecycle_id", item.get("id", 0)) or 0),
@@ -227,11 +238,13 @@ def find_similar_lifecycles(
         "status": "ok",
         "model_version": SIMILARITY_MODEL_VERSION,
         "similar_count": len(eligible),
+        "mature_sample_count": len(with_returns),
+        "unavailable_count": unavailable_count,
         "returned_count": len(samples),
         "avg_final_return_pct": _avg(item.get("final_return_pct") for item in with_returns),
         "positive_ratio": round(sum((_number(item.get("final_return_pct")) or 0.0) > 0 for item in with_returns) / len(with_returns), 4) if with_returns else None,
-        "avg_max_drawdown_pct": _avg(item.get("max_drawdown_pct") for item in selected),
-        "strong_success_ratio": round(sum(str(item.get("result_label") or "") == "strong_success" for item in selected) / len(selected), 4) if selected else None,
+        "avg_max_drawdown_pct": _avg(item.get("max_drawdown_pct") for item in with_returns),
+        "strong_success_ratio": round(sum(str(item.get("result_label") or "") == "strong_success" for item in with_returns) / len(with_returns), 4) if with_returns else None,
         "samples": samples,
         "disclaimer": SIMILARITY_DISCLAIMER,
         "not_advice": NOT_ADVICE,
@@ -259,10 +272,22 @@ def _load_similarity_rows(store: Any, *, dry_run: bool = False) -> list[dict[str
         close_when_done = False
     try:
         conn.row_factory = sqlite3.Row
+        has_coverage = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_outcome_coverage'"
+        ).fetchone() is not None
+        coverage_projection = (
+            ", CASE WHEN c.lifecycle_id IS NULL THEN 0 ELSE 1 END AS outcome_coverage_present, "
+            "c.linked_outcome_count, c.mature_horizon_count, c.link_coverage_ratio, "
+            "c.maturity_ratio, c.coverage_label, c.maturity_label"
+            if has_coverage else
+            ", 0 AS outcome_coverage_present, 0 AS linked_outcome_count, 0 AS mature_horizon_count, 0.0 AS link_coverage_ratio, "
+            "0.0 AS maturity_ratio, '' AS coverage_label, '' AS maturity_label"
+        )
+        coverage_join = " LEFT JOIN lifecycle_outcome_coverage AS c ON c.lifecycle_id = l.id" if has_coverage else ""
         rows = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT l.id AS lifecycle_id, l.symbol, l.first_signal_level,
                        l.first_signal_module, l.highest_level, l.is_active,
                        l.lifecycle_score, l.risk_score, l.price_change_from_first_pct,
@@ -270,11 +295,13 @@ def _load_similarity_rows(store: Any, *, dry_run: bool = False) -> list[dict[str
                        i.intelligence_score, i.quality_label,
                        i.capital_confirmation_label, i.factors_json,
                        r.upgrade_path, r.final_return_pct, r.max_drawdown_pct,
-                       r.result_label, r.outcome_status, r.outcome_count,
+                       r.result_label, r.outcome_status, r.outcome_count
+                       {coverage_projection},
                        GROUP_CONCAT(DISTINCT e.event_type) AS event_types
                 FROM signal_lifecycles AS l
                 LEFT JOIN lifecycle_intelligence AS i ON i.lifecycle_id = l.id
                 LEFT JOIN lifecycle_replays AS r ON r.lifecycle_id = l.id
+                {coverage_join}
                 LEFT JOIN lifecycle_events AS e ON e.lifecycle_id = l.id
                 GROUP BY l.id
                 ORDER BY l.updated_at DESC, l.id DESC
@@ -326,7 +353,7 @@ def find_similar_for_symbol(
     if current is None:
         return {
             "ok": True,
-            "status": "insufficient_samples",
+            "status": "insufficient_mature_samples",
             "symbol": normalized,
             "model_version": SIMILARITY_MODEL_VERSION,
             "similar_count": 0,

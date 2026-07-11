@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.78.1 说明
+
+v1.78.1 新增 Lifecycle Outcome Coverage & Backfill，为生命周期与 `signal_outcomes` 建立持久、可审计的确定性关联。关联按首信号 `signal_id`、生命周期事件 `signal_id`、最新信号 `signal_id` 的顺序执行；只有旧数据缺少 signal id 时，才允许在 symbol、信号时间误差和 module/template 同时匹配且候选唯一时兼容关联，绝不使用 symbol-only 匹配。
+
+`lifecycle.db` 兼容新增 `lifecycle_outcome_links` 与 `lifecycle_outcome_coverage`。关联覆盖率回答“是否找到对应 Outcome 记录”，数据成熟度回答“已到期的 1h / 4h / 24h / 72h 是否成功计算”，两者不会混为一个指标。`not_due`、`pending`、`unavailable` 和 `error` 分开统计：尚未到期不是失败，pending 不是失败，unavailable 不等于亏损，只有 `success` Outcome 参与成熟收益统计。
+
+新增 `lifecycle-outcome-link`、`lifecycle-outcome-backfill`、`lifecycle-outcome-status`、`lifecycle-outcome-reconcile` CLI、后台任务、公开脱敏统计 API、数据质量报告以及生命周期/回放/单币页面的 Outcome 关联卡。回填按候选信号批量读取、批量事务写入并跳过成功、不可用和尚未到期项；不会修改既有 Outcome 计算语义、decision model、intelligence 权重或 Telegram 主推送。
+
+详细口径与运维流程见 [`docs/LIFECYCLE_OUTCOME_COVERAGE.md`](docs/LIFECYCLE_OUTCOME_COVERAGE.md)。系统仅用于信号整理、研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.78.0 说明
 
 v1.78.0 新增 Lifecycle Intelligence & Replay Engine，把首次信号、生命周期事件、Binance 资金确认、风险演化和 `signal_outcomes` 结果连接为可回放、可统计的研究闭环。独立的 `intelligence_score`、质量/阶段/动能/资金确认/风险/成熟度标签不会覆盖既有 `lifecycle_score`、`risk_score`，也不会自动修改 decision model 或生命周期评分阈值。

@@ -10,9 +10,35 @@ import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getLifecycleIntelligenceDetail, getLifecycleSimilar, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
-import { compact, normalizeSymbol, pct, safeText } from "@/lib/format";
-import type { DecisionItem, LifecycleDetailPayload, LifecycleIntelligenceDetailPayload, LifecycleSimilarityPayload, OutcomeItem, SignalItem } from "@/lib/types";
+import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getLifecycleIntelligenceDetail, getLifecycleOutcomeDetail, getLifecycleSimilar, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
+import { compact, normalizeSymbol, pct, ratioPct, safeText } from "@/lib/format";
+import type { DecisionItem, LifecycleDetailPayload, LifecycleIntelligenceDetailPayload, LifecycleOutcomeDetailPayload, LifecycleSimilarityPayload, OutcomeItem, SignalItem } from "@/lib/types";
+
+function lifecycleOutcomeStatus(detail: LifecycleOutcomeDetailPayload, horizon: string): string {
+  const coverage = detail.coverage as Record<string, unknown> | null | undefined;
+  const status = coverage?.[`horizon_${horizon}_status`];
+  if (typeof status === "string") return status;
+  const value = detail.horizons?.[horizon];
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    for (const key of ["success", "unavailable", "error", "not_due", "pending", "ready", "missing"]) {
+      if (Number(value[key as keyof typeof value] || 0) > 0) return key;
+    }
+  }
+  return "missing";
+}
+
+function lifecycleOutcomeStatusLabel(status: string): string {
+  return ({
+    success: "已成功计算",
+    not_due: "尚未到期",
+    pending: "等待扫描",
+    ready: "待计算",
+    unavailable: "数据不可用",
+    error: "计算异常",
+    missing: "尚无记录"
+  } as Record<string, string>)[status] || status;
+}
 
 export default function CoinPage() {
   const params = useParams<{ symbol: string }>();
@@ -26,6 +52,7 @@ export default function CoinPage() {
   const [lifecycle, setLifecycle] = useState<LifecycleDetailPayload>({});
   const [intelligence, setIntelligence] = useState<LifecycleIntelligenceDetailPayload>({});
   const [similar, setSimilar] = useState<LifecycleSimilarityPayload>({});
+  const [outcomeDetail, setOutcomeDetail] = useState<LifecycleOutcomeDetailPayload>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -39,7 +66,7 @@ export default function CoinPage() {
     setLoading(true);
     setError("");
     try {
-      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload, intelligencePayload, similarPayload] = await Promise.all([
+      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload, intelligencePayload, similarPayload, lifecycleOutcomePayload] = await Promise.all([
         getCoinDetail(normalized),
         getDecision(normalized),
         getSymbolTimeline(normalized),
@@ -47,7 +74,8 @@ export default function CoinPage() {
         getBacktestDetail({ symbol: normalized, limit: 10, window_sec: 2592000 }),
         getLifecycleDetail(normalized),
         getLifecycleIntelligenceDetail(normalized),
-        getLifecycleSimilar(normalized, 5)
+        getLifecycleSimilar(normalized, 5),
+        getLifecycleOutcomeDetail(normalized).catch(() => ({} as LifecycleOutcomeDetailPayload))
       ]);
       setSymbol(normalized);
       setDetail(coin);
@@ -58,6 +86,7 @@ export default function CoinPage() {
       setLifecycle(lifecyclePayload);
       setIntelligence(intelligencePayload);
       setSimilar(similarPayload);
+      setOutcomeDetail(lifecycleOutcomePayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "币种详情加载失败");
     } finally {
@@ -78,6 +107,13 @@ export default function CoinPage() {
   const exchangeItems = (Array.isArray(exchangeContext.items) ? exchangeContext.items : []).filter(
     (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)
   );
+  const outcomeCoverage = outcomeDetail.coverage;
+  const primaryLink = outcomeDetail.links?.find((item) => Boolean(item.is_primary));
+  const primaryOutcome = (primaryLink?.outcome || primaryLink || outcomeDetail.primary_outcome || outcomeDetail.primary) as {
+    final_return_pct?: number | null;
+    max_gain_pct?: number | null;
+    max_drawdown_pct?: number | null;
+  } | undefined;
 
   return (
     <div className="space-y-5">
@@ -147,6 +183,27 @@ export default function CoinPage() {
               })}
             </div>
           ) : null}
+        </div>
+      </section>
+      <section className="panel space-y-4 p-4">
+        <div>
+          <h2 className="text-lg font-black text-white">Outcome 关联卡</h2>
+          <p className="mt-1 text-sm text-slate-400">按 lifecycle signal_id 确定性关联；尚未到期不是失败，数据不可用也不等于亏损。</p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-4">
+          {(["1h", "4h", "24h", "72h"] as const).map((horizon) => {
+            const status = lifecycleOutcomeStatus(outcomeDetail, horizon);
+            const tone = status === "success" ? "good" : status === "error" ? "bad" : status === "unavailable" ? "warn" : "info";
+            return <MetricCard key={horizon} label={`${horizon} Outcome`} value={lifecycleOutcomeStatusLabel(status)} tone={tone} />;
+          })}
+        </div>
+        <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-3">
+          <span>最终涨跌：{pct(primaryOutcome?.final_return_pct)}</span>
+          <span>最高涨幅：{pct(primaryOutcome?.max_gain_pct)}</span>
+          <span>最大回撤：{pct(primaryOutcome?.max_drawdown_pct)}</span>
+          <span>关联来源：{safeText(primaryLink?.link_method || outcomeDetail.link_method, "尚未关联")}</span>
+          <span>数据成熟度：{safeText(outcomeCoverage?.maturity_label, "等待到期")}</span>
+          <span>关联覆盖率：{ratioPct(outcomeCoverage?.link_coverage_ratio)}</span>
         </div>
       </section>
       {lifecycle.lifecycle ? (

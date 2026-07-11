@@ -41,6 +41,17 @@ const groups = [
       "/public-api/lifecycle/analytics/capital-confirmation",
       "/public-api/lifecycle/similar?symbol=BTCUSDT&limit=5"
     ]
+  },
+  {
+    title: "生命周期 Outcome 数据质量",
+    items: [
+      "/public-api/lifecycle/outcomes/summary",
+      "/public-api/lifecycle/outcomes/coverage?limit=10",
+      "/public-api/lifecycle/outcomes/list?limit=10",
+      "/public-api/lifecycle/outcomes/detail?symbol=BTCUSDT",
+      "/public-api/lifecycle/outcomes/reasons",
+      "/public-api/lifecycle/outcomes/maturity"
+    ]
   }
 ];
 
@@ -68,6 +79,7 @@ export default function ApiDocsPage() {
           公开 API 不返回后台配置、Telegram 私有字段、密钥、审计、日志、Cookie、Authorization、chat_id、api_key、payload_json、text_html、dedup_key、message_ids、topic_id 或 reply_to_message_id。
         </p>
         <p className="mt-3">公开数据仅用于信号展示、风险提示和复盘统计；不构成投资建议，不执行自动交易。</p>
+        <p className="mt-3">Lifecycle Outcome 的关联覆盖率与数据成熟度是两个不同指标：尚未到期不是失败，pending 不是失败，unavailable 不等于亏损；只有 success Outcome 参与成熟收益统计。</p>
       </section>
     </div>
   );
