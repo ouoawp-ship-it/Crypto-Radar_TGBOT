@@ -1,5 +1,13 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.81.0 说明
+
+v1.81.0 新增 Model Registry & Approval System，使用独立的 `data/model_registry.db` 保存当前生产模型、历史版本、Optimization Candidate、参数 Diff、人工审批、回滚记录和 7d / 30d / 90d / all 表现快照。公开页面只展示版本、状态、健康度与性能摘要，不暴露完整参数或内部配置。
+
+模型状态变更采用人工两阶段流程：模拟完成只能进入 `simulation`，审批默认只进入 `approved`；只有已经人工部署且运行时参数 hash 与候选快照一致时，第二次显式确认才能登记为 `production`。Rollback 同样先记录人工意图并验证运行时，Registry 不会改写 `decision_model.py`、Lifecycle/Risk 权重、生产配置、Telegram 规则或任何历史 Outcome。
+
+CLI、Jobs、私有审批 API 与 `/models` 页面提供 Registry、Diff、Approval、Rollback 和 Health 能力。Performance 只读取既有 Outcome 缓存，不请求外部行情、不重算历史结果，也不会自动替换模型。详细安全口径见 [`docs/MODEL_REGISTRY.md`](docs/MODEL_REGISTRY.md)。系统仅用于模型治理、研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.80.0 说明
 
 v1.80.0 新增 Model Optimization Simulation Engine。系统以已经落库的 Outcome、Lifecycle 与 `calibration-v1` 结果为输入，在隔离的候选参数层中模拟 Decision 阈值、Risk Alert 权重、Lifecycle Intelligence 资金确认权重和信号模块权重，输出 production/candidate/delta 对比、置信度、回撤变化与人工复核建议。

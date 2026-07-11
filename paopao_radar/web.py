@@ -137,6 +137,12 @@ from .web_services.model_optimization import (
     optimization_report_payload,
     public_optimization_section_payload,
 )
+from .web_services.model_registry import (
+    model_detail_payload,
+    model_diff_payload,
+    model_list_payload,
+    public_model_registry_payload,
+)
 from .web_services.public import (
     public_coin_detail_payload,
     public_coin_search_payload,
@@ -10346,6 +10352,20 @@ class WebHandler(BaseHTTPRequestHandler):
                 limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 1000),
             ))
             return
+        model_registry_public_paths = {
+            "/public-api/models/current": "current",
+            "/public-api/models/history": "history",
+            "/public-api/models/performance": "performance",
+            "/public-api/models/health": "health",
+        }
+        if path in model_registry_public_paths:
+            self.send_json(public_model_registry_payload(
+                model_registry_public_paths[path],
+                model=query.get("model", ["signal-decision"])[0],
+                version=query.get("version", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 500),
+            ))
+            return
         calibration_public_paths = {
             "/public-api/calibration/summary": "summary",
             "/public-api/calibration/decision": "decision",
@@ -10766,6 +10786,25 @@ class WebHandler(BaseHTTPRequestHandler):
                 limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 1000),
             ))
             return
+        if path == "/api/models/list":
+            self.send_json(model_list_payload(
+                model=query.get("model", ["signal-decision"])[0],
+                status=query.get("status", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 500),
+            ))
+            return
+        if path == "/api/models/detail":
+            self.send_json(model_detail_payload(
+                model=query.get("model", ["signal-decision"])[0],
+                version=query.get("version", [""])[0],
+            ))
+            return
+        if path == "/api/models/diff":
+            self.send_json(model_diff_payload(
+                model=query.get("model", ["signal-decision"])[0],
+                version=query.get("version", [""])[0],
+            ))
+            return
         if path == "/api/calibration/report":
             self.send_json(calibration_report_payload(
                 symbol=query.get("symbol", [""])[0],
@@ -10991,6 +11030,46 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/lifecycle/run-backfill":
                 result = create_job_payload("lifecycle-backfill", {"source": "api/lifecycle/run-backfill"})
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            model_registry_job_types = {
+                "/api/models/register": "model-register",
+                "/api/models/approve": "model-approve",
+                "/api/models/reject": "model-reject",
+                "/api/models/rollback": "model-rollback",
+            }
+            if path in model_registry_job_types:
+                if path == "/api/models/register" and any(
+                    key in data for key in ("parameters", "parameters_json", "config")
+                ):
+                    result = api_error(
+                        "候选参数必须来自已持久化的 Optimization Simulation，不能通过 API 注入。",
+                        code="candidate_parameters_not_accepted",
+                    )
+                    self.send_audited_json(
+                        path, data, result, status=HTTPStatus.BAD_REQUEST, started_at=started_at,
+                    )
+                    return
+                auth_payload = session_payload(self) or {}
+                approved_by = str(
+                    auth_payload.get("username")
+                    or handler_settings(self).web_admin_username
+                    or "authenticated-admin"
+                )
+                metadata = {
+                    "source": path,
+                    "model": str(data.get("model") or data.get("model_key") or "signal-decision"),
+                    "version": str(data.get("version") or data.get("model_version") or ""),
+                    "approved_by": approved_by,
+                    "reason": str(data.get("reason") or ""),
+                    "source_version": str(data.get("source_version") or ""),
+                    "description": str(data.get("description") or ""),
+                    "scenario": str(data.get("scenario") or ""),
+                    "activate": data.get("activate", False),
+                    "confirm_production": data.get("confirm_production", False),
+                }
+                result = create_job_payload(model_registry_job_types[path], metadata)
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return

@@ -140,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "calibration-report", "calibration-decision", "calibration-lifecycle", "calibration-factors", "calibration-readiness", "optimization-scenarios", "optimization-run", "optimization-report", "optimization-readiness", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "calibration-report", "calibration-decision", "calibration-lifecycle", "calibration-factors", "calibration-readiness", "optimization-scenarios", "optimization-run", "optimization-report", "optimization-readiness", "model-list", "model-show", "model-diff", "model-register", "model-approve", "model-reject", "model-rollback", "model-health", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -168,6 +168,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--horizon", default="", help="用于 outcome-scan/lifecycle-outcome：只处理 1h/4h/24h/72h 中的一个窗口")
     parser.add_argument("--module", default="", help="用于 lifecycle outcome 质量命令：只处理指定信号模块")
     parser.add_argument("--scenario", default="", help="用于模型优化模拟：threshold_tuning/risk_control/lifecycle_quality/module_rebalance")
+    parser.add_argument("--model", default="signal-decision", help="用于模型注册表：模型键，例如 signal-decision")
+    parser.add_argument("--version", default="", help="用于模型注册表：精确模型版本")
+    parser.add_argument("--approved-by", default="", help="用于模型审批：人工审批人标识（会写入审计记录）")
+    parser.add_argument("--reason", default="", help="用于模型审批/拒绝/回滚：人工原因（会写入审计记录）")
+    parser.add_argument("--source-version", default="", help="用于 model-register：候选来源优化版本或 run 标识")
+    parser.add_argument("--description", default="", help="用于 model-register：候选模型说明")
+    parser.add_argument("--activate", action="store_true", help="用于 model-approve：在已批准后请求显式生产激活")
+    parser.add_argument("--confirm-production", action="store_true", help="确认生产激活/回滚；仍须通过 runtime hash 校验")
+    parser.add_argument("--bootstrap-production", action="store_true", help="用于 model-register：显式注册当前只读 runtime 快照为初始 production")
     parser.add_argument("--symbol", default="", help="用于 outcome/lifecycle 命令：只处理某个币种，例如 BTC 或 BTCUSDT")
     parser.add_argument("--lifecycle-id", type=int, default=None, help="用于 lifecycle-replay/lifecycle-outcome：按生命周期 ID 精确处理")
     parser.add_argument("--all-active", action="store_true", help="用于 lifecycle-intelligence：处理全部活跃生命周期")
@@ -964,6 +973,221 @@ def run_optimization_readiness(args: argparse.Namespace) -> int:
         scenario=str(scope.get("scenario") or ""),
     )
     return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+MODEL_KEY_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{1,63}")
+MODEL_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def _model_registry_core_function(*names: str) -> object:
+    for module_name in (
+        "paopao_radar.model_registry",
+        "paopao_radar.model_approval",
+        "paopao_radar.model_performance",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        for name in names:
+            function = getattr(module, name, None)
+            if callable(function):
+                return function
+    raise RuntimeError(f"model registry core function is unavailable: {names[0]}")
+
+
+def _model_registry_scope(args: argparse.Namespace, *, require_version: bool = False) -> dict[str, object]:
+    model_key = str(getattr(args, "model", "") or "signal-decision").strip().lower()
+    version = str(getattr(args, "version", "") or "").strip()
+    if not MODEL_KEY_PATTERN.fullmatch(model_key):
+        raise ValueError("invalid model key")
+    if require_version and not version:
+        raise ValueError("model version is required")
+    if version and not MODEL_VERSION_PATTERN.fullmatch(version):
+        raise ValueError("invalid model version")
+    return {
+        "settings": Settings.load(),
+        "model": model_key,
+        "model_key": model_key,
+        "version": version,
+        "model_version": version,
+    }
+
+
+def _model_actor_args(args: argparse.Namespace) -> tuple[str, str]:
+    approved_by = str(getattr(args, "approved_by", "") or "").strip()
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not approved_by:
+        raise ValueError("--approved-by is required")
+    if not reason:
+        raise ValueError("--reason is required")
+    if len(approved_by) > 128 or len(reason) > 500:
+        raise ValueError("approval identity or reason is too long")
+    if re.search(r"[\x00-\x1f\x7f]", approved_by + reason):
+        raise ValueError("invalid approval identity or reason")
+    return approved_by, reason
+
+
+def _model_cli_result(function_names: tuple[str, ...], args: argparse.Namespace, **kwargs: object) -> int:
+    result = _call_lifecycle_quality_function(
+        _model_registry_core_function(*function_names),
+        **kwargs,
+    )
+    if isinstance(result, (list, tuple)):
+        result = {"ok": True, "items": list(result), "count": len(result)}
+    elif result is None:
+        result = {"ok": False, "code": "model_not_found", "error": "model not found"}
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_model_list(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_scope", "error": str(exc)}, args,
+        )
+    return _model_cli_result(
+        ("list_models", "list_model_history", "model_history"), args,
+        **scope, limit=max(1, min(int(getattr(args, "limit", None) or 100), 500)),
+    )
+
+
+def run_model_show(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_scope", "error": str(exc)}, args,
+        )
+    if scope["version"]:
+        return _model_cli_result(("get_model", "model_detail", "get_model_detail"), args, **scope)
+    return _model_cli_result(("get_current_model", "current_model", "model_current"), args, **scope)
+
+
+def run_model_diff(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args, require_version=True)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_scope", "error": str(exc)}, args,
+        )
+    return _model_cli_result(
+        ("diff_models", "model_diff", "compare_models"), args,
+        **scope, candidate_version=scope["version"],
+    )
+
+
+def run_model_register(args: argparse.Namespace) -> int:
+    try:
+        bootstrap = bool(getattr(args, "bootstrap_production", False))
+        scope = _model_registry_scope(args, require_version=False)
+        source_version = str(getattr(args, "source_version", "") or "").strip()
+        description = str(getattr(args, "description", "") or "").strip()
+        scenario = str(getattr(args, "scenario", "") or "").strip().lower()
+        if scenario and scenario not in OPTIMIZATION_SCENARIOS:
+            raise ValueError("unsupported optimization scenario")
+        if not bootstrap and not scope["version"] and not scenario:
+            raise ValueError("candidate registration requires --version or --scenario")
+        if len(source_version) > 128 or len(description) > 500:
+            raise ValueError("source version or description is too long")
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_registration", "error": str(exc)}, args,
+        )
+    if bootstrap:
+        if scope["model_key"] != "signal-decision" or scope["version"] or scenario or source_version:
+            return _print_lifecycle_intelligence_result(
+                {
+                    "ok": False,
+                    "code": "invalid_production_bootstrap_scope",
+                    "error": "production bootstrap only accepts the deployed signal-decision runtime",
+                },
+                args,
+            )
+        return _model_cli_result(
+            ("bootstrap_production_model", "register_production_model"), args,
+            settings=scope["settings"], dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    return _model_cli_result(
+        ("register_optimization_candidate", "register_candidate_model", "register_model_candidate"), args,
+        **scope,
+        source_version=source_version,
+        description=description,
+        scenario=scenario,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+
+def run_model_approve(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args, require_version=True)
+        approved_by, reason = _model_actor_args(args)
+        activate = bool(getattr(args, "activate", False))
+        confirm = bool(getattr(args, "confirm_production", False))
+        if activate != confirm:
+            raise ValueError("production activation requires --activate and --confirm-production together")
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_approval", "error": str(exc)}, args,
+        )
+    function_names = (
+        ("activate_model", "activate_approved_model", "promote_model")
+        if activate else ("approve_model", "approve_candidate_model")
+    )
+    return _model_cli_result(
+        function_names, args, **scope, approved_by=approved_by, reason=reason,
+        activate=activate, confirm_production=confirm,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+
+def run_model_reject(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args, require_version=True)
+        approved_by, reason = _model_actor_args(args)
+        if bool(getattr(args, "activate", False)) or bool(getattr(args, "confirm_production", False)):
+            raise ValueError("reject does not accept production activation flags")
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_rejection", "error": str(exc)}, args,
+        )
+    return _model_cli_result(
+        ("reject_model", "reject_candidate_model"), args, **scope,
+        approved_by=approved_by, reason=reason,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+
+def run_model_rollback(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args, require_version=True)
+        approved_by, reason = _model_actor_args(args)
+        if bool(getattr(args, "activate", False)):
+            raise ValueError("rollback uses --confirm-production without --activate")
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_rollback", "error": str(exc)}, args,
+        )
+    return _model_cli_result(
+        ("rollback_model", "request_model_rollback"), args, **scope,
+        approved_by=approved_by, reason=reason,
+        confirm_production=bool(getattr(args, "confirm_production", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+
+def run_model_health(args: argparse.Namespace) -> int:
+    try:
+        scope = _model_registry_scope(args)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_model_scope", "error": str(exc)}, args,
+        )
+    return _model_cli_result(
+        ("get_model_health", "model_health", "evaluate_model_health"), args,
+        **scope, refresh=True, dry_run=bool(getattr(args, "dry_run", False)),
+    )
 
 
 def run_lifecycle_tracker_cycle(settings: Settings, args: argparse.Namespace) -> dict[str, object]:
@@ -2504,6 +2728,22 @@ def main(argv: list[str] | None = None) -> int:
         return run_optimization_report(args)
     if args.command == "optimization-readiness":
         return run_optimization_readiness(args)
+    if args.command == "model-list":
+        return run_model_list(args)
+    if args.command == "model-show":
+        return run_model_show(args)
+    if args.command == "model-diff":
+        return run_model_diff(args)
+    if args.command == "model-register":
+        return run_model_register(args)
+    if args.command == "model-approve":
+        return run_model_approve(args)
+    if args.command == "model-reject":
+        return run_model_reject(args)
+    if args.command == "model-rollback":
+        return run_model_rollback(args)
+    if args.command == "model-health":
+        return run_model_health(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

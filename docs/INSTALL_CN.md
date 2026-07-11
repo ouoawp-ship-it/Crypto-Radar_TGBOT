@@ -1,5 +1,26 @@
 # 泡泡抓币中文安装目录
 
+## v1.81.0 运维说明
+
+v1.81.0 使用独立 `data/model_registry.db`，不会修改 `signals.db`、`outcomes.db`、`lifecycle.db` 或 `jobs.db` 的 schema。部署后先注册并核验当前运行时模型，再从已持久化的 v1.80 Optimization Report 导入候选：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py model-register --bootstrap-production --dry-run --pretty
+.venv/bin/python main.py model-register --bootstrap-production --pretty
+.venv/bin/python main.py model-register --model signal-decision --scenario threshold_tuning --pretty
+.venv/bin/python main.py model-register --model lifecycle-risk --scenario risk_control --pretty
+.venv/bin/python main.py model-register --model lifecycle-intelligence --scenario lifecycle_quality --pretty
+.venv/bin/python main.py model-register --model simulation-policy --scenario module_rebalance --pretty
+.venv/bin/python main.py model-list --pretty
+.venv/bin/python main.py model-show --model signal-decision --version signal-decision-v1.1 --pretty
+.venv/bin/python main.py model-health --pretty
+```
+
+`model-approve` 默认只把候选登记为 `approved`，不会直接变成生产版本。Production 激活和 Rollback 必须经过额外的人工确认与运行时 hash 校验；如果代码/参数尚未由独立发布流程部署，命令只返回 `manual_deployment_required`，不会伪造线上状态或修改生产模型。完整说明见 `docs/MODEL_REGISTRY.md`。
+
 ## v1.80.0 运维说明
 
 v1.80.0 在 `lifecycle.db` 中兼容新增 `optimization_scenarios`、`optimization_runs` 与 `optimization_metrics`。模拟只读取现有 Signal、Outcome、Lifecycle 和 Calibration 数据，不请求外部行情、不重算或改写历史 Outcome，也不修改生产模型。
