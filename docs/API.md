@@ -1,5 +1,28 @@
 # API
 
+## Lifecycle intelligence / replay public API
+
+以下接口公开、只读，只读取预计算或缓存结果：
+
+```text
+GET /public-api/lifecycle/intelligence/summary
+GET /public-api/lifecycle/intelligence/list?limit=50
+GET /public-api/lifecycle/intelligence/detail?symbol=BTCUSDT
+GET /public-api/lifecycle/replay?symbol=BTCUSDT
+GET /public-api/lifecycle/replay/frames?symbol=BTCUSDT&limit=100
+GET /public-api/lifecycle/analytics/first-level
+GET /public-api/lifecycle/analytics/upgrade-path
+GET /public-api/lifecycle/analytics/module
+GET /public-api/lifecycle/analytics/capital-confirmation
+GET /public-api/lifecycle/similar?symbol=BTCUSDT&limit=10
+```
+
+列表不返回完整 replay frames、长 excerpt 或完整 metrics JSON；frames 使用 `limit/offset`。所有公开响应统一为 `{"ok": true, "data": ...}`，并递归删除 Telegram 标识、dedup key、原始 payload/text、配置、job payload、异常堆栈、鉴权信息与服务器/数据库路径。
+
+后台提供对应只读 `/api/lifecycle/*` 端点；`run-intelligence`、`run-replay`、`run-analytics` 和 `rebuild-replay` 仍受既有登录/CSRF 保护，通过 jobs system 防重复提交并返回 job id。
+
+历史相似样本仅用于研究，不代表未来结果。系统不执行自动交易。
+
 ## Lifecycle public API
 
 以下接口公开、只读、短缓存并经过字段投影与递归脱敏：

@@ -26,6 +26,21 @@ const groups = [
       "/public-api/lifecycle/events?symbol=BTCUSDT",
       "/public-api/lifecycle/metrics?symbol=BTCUSDT"
     ]
+  },
+  {
+    title: "生命周期智能与回放",
+    items: [
+      "/public-api/lifecycle/intelligence/summary",
+      "/public-api/lifecycle/intelligence/list?limit=10",
+      "/public-api/lifecycle/intelligence/detail?symbol=BTCUSDT",
+      "/public-api/lifecycle/replay?symbol=BTCUSDT",
+      "/public-api/lifecycle/replay/frames?symbol=BTCUSDT&limit=20",
+      "/public-api/lifecycle/analytics/first-level",
+      "/public-api/lifecycle/analytics/upgrade-path",
+      "/public-api/lifecycle/analytics/module",
+      "/public-api/lifecycle/analytics/capital-confirmation",
+      "/public-api/lifecycle/similar?symbol=BTCUSDT&limit=5"
+    ]
   }
 ];
 

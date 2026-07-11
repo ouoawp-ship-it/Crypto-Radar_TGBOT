@@ -174,6 +174,11 @@ class Settings:
     lifecycle_oi_accumulation_pct: float = 8.0
     lifecycle_volume_expansion_multiplier: float = 2.0
     lifecycle_funding_crowded_threshold: float = 0.0008
+    lifecycle_intelligence_enable: bool = True
+    lifecycle_intelligence_interval_sec: int = 900
+    lifecycle_replay_interval_sec: int = 3600
+    lifecycle_analytics_interval_sec: int = 21600
+    lifecycle_similarity_min_samples: int = 5
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -408,6 +413,11 @@ class Settings:
             lifecycle_oi_accumulation_pct=env_float("LIFECYCLE_OI_ACCUMULATION_PCT", 8.0),
             lifecycle_volume_expansion_multiplier=env_float("LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER", 2.0),
             lifecycle_funding_crowded_threshold=env_float("LIFECYCLE_FUNDING_CROWDED_THRESHOLD", 0.0008),
+            lifecycle_intelligence_enable=env_bool("LIFECYCLE_INTELLIGENCE_ENABLE", True),
+            lifecycle_intelligence_interval_sec=env_int("LIFECYCLE_INTELLIGENCE_INTERVAL_SEC", 900),
+            lifecycle_replay_interval_sec=env_int("LIFECYCLE_REPLAY_INTERVAL_SEC", 3600),
+            lifecycle_analytics_interval_sec=env_int("LIFECYCLE_ANALYTICS_INTERVAL_SEC", 21600),
+            lifecycle_similarity_min_samples=env_int("LIFECYCLE_SIMILARITY_MIN_SAMPLES", 5),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -655,6 +665,11 @@ class Settings:
                 "oi_accumulation_pct": self.lifecycle_oi_accumulation_pct,
                 "volume_expansion_multiplier": self.lifecycle_volume_expansion_multiplier,
                 "funding_crowded_threshold": self.lifecycle_funding_crowded_threshold,
+                "intelligence_enable": self.lifecycle_intelligence_enable,
+                "intelligence_interval_sec": self.lifecycle_intelligence_interval_sec,
+                "replay_interval_sec": self.lifecycle_replay_interval_sec,
+                "analytics_interval_sec": self.lifecycle_analytics_interval_sec,
+                "similarity_min_samples": self.lifecycle_similarity_min_samples,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

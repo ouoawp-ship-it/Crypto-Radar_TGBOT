@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import { DecisionCard } from "@/components/DecisionCard";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
@@ -9,9 +10,9 @@ import { MetricCard } from "@/components/MetricCard";
 import { OutcomeCard } from "@/components/OutcomeCard";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
+import { getBacktestDetail, getCoinDetail, getDecision, getLifecycleDetail, getLifecycleIntelligenceDetail, getLifecycleSimilar, getSymbolOutcomes, getSymbolTimeline, invalidatePublicApiCache } from "@/lib/api";
 import { compact, normalizeSymbol, pct, safeText } from "@/lib/format";
-import type { DecisionItem, LifecycleDetailPayload, OutcomeItem, SignalItem } from "@/lib/types";
+import type { DecisionItem, LifecycleDetailPayload, LifecycleIntelligenceDetailPayload, LifecycleSimilarityPayload, OutcomeItem, SignalItem } from "@/lib/types";
 
 export default function CoinPage() {
   const params = useParams<{ symbol: string }>();
@@ -23,6 +24,8 @@ export default function CoinPage() {
   const [outcomes, setOutcomes] = useState<OutcomeItem[]>([]);
   const [samples, setSamples] = useState<OutcomeItem[]>([]);
   const [lifecycle, setLifecycle] = useState<LifecycleDetailPayload>({});
+  const [intelligence, setIntelligence] = useState<LifecycleIntelligenceDetailPayload>({});
+  const [similar, setSimilar] = useState<LifecycleSimilarityPayload>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -36,13 +39,15 @@ export default function CoinPage() {
     setLoading(true);
     setError("");
     try {
-      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload] = await Promise.all([
+      const [coin, currentDecision, timelinePayload, outcomePayload, backtestPayload, lifecyclePayload, intelligencePayload, similarPayload] = await Promise.all([
         getCoinDetail(normalized),
         getDecision(normalized),
         getSymbolTimeline(normalized),
         getSymbolOutcomes(normalized, { limit: 20 }),
         getBacktestDetail({ symbol: normalized, limit: 10, window_sec: 2592000 }),
-        getLifecycleDetail(normalized)
+        getLifecycleDetail(normalized),
+        getLifecycleIntelligenceDetail(normalized),
+        getLifecycleSimilar(normalized, 5)
       ]);
       setSymbol(normalized);
       setDetail(coin);
@@ -51,6 +56,8 @@ export default function CoinPage() {
       setOutcomes(outcomePayload.items || []);
       setSamples(backtestPayload.items || []);
       setLifecycle(lifecyclePayload);
+      setIntelligence(intelligencePayload);
+      setSimilar(similarPayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "币种详情加载失败");
     } finally {
@@ -95,6 +102,53 @@ export default function CoinPage() {
         <MetricCard label="健康状态" value={safeText(summary.health_label || summary.health, "观察")} />
       </section>
       {decision ? <DecisionCard item={decision} /> : <EmptyState title="暂无当前决策" text="等待更多同币种信号后会生成决策。" />}
+      <section className="panel p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-black text-white">生命周期智能评价</h2>
+            <p className="mt-1 text-sm text-slate-400">智能评分、当前阶段、资金确认状态、风险因素与观察点。</p>
+          </div>
+          <Link className="btn" href={`/lifecycle/replay?symbol=${encodeURIComponent(symbol)}`}>打开回放</Link>
+        </div>
+        {intelligence.intelligence ? (
+          <div className="mt-4 space-y-4">
+            <div className="grid gap-4 md:grid-cols-4">
+              <MetricCard label="智能评分" value={compact(intelligence.intelligence.intelligence_score)} tone="info" />
+              <MetricCard label="生命周期质量评分" value={safeText(intelligence.intelligence.quality_label, "-")} tone="good" />
+              <MetricCard label="当前阶段" value={safeText(intelligence.intelligence.stage_label, "-")} />
+              <MetricCard label="风险" value={safeText(intelligence.intelligence.risk_label, "-")} tone="warn" />
+            </div>
+            <p className="text-sm text-slate-300">资金确认状态：{safeText(intelligence.intelligence.capital_confirmation_label, "数据不足")}</p>
+            <p className="text-sm text-slate-300">{safeText(intelligence.intelligence.summary, "智能评价摘要仍在生成")}</p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border border-white/10 p-3"><b className="text-white">风险因素</b><p className="mt-2 text-sm text-slate-400">{(intelligence.intelligence.risks || []).join("；") || "暂未识别显著风险因素"}</p></div>
+              <div className="rounded-lg border border-white/10 p-3"><b className="text-white">观察点</b><p className="mt-2 text-sm text-slate-400">{(intelligence.intelligence.watch_points || []).join("；") || "等待后续生命周期事件"}</p></div>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-slate-500">历史样本仍在积累</p>
+        )}
+        <div className="mt-4 rounded-lg border border-white/10 p-3">
+          <b className="text-white">历史相似生命周期</b>
+          <p className="mt-2 text-sm text-slate-400">相似样本 {compact(similar.similar_count)} · {safeText(similar.message || similar.disclaimer, "当前相似样本不足，暂不生成统计结论。")}</p>
+          {(similar.samples || []).length ? (
+            <div className="mt-3 grid gap-2">
+              {(similar.samples || []).slice(0, 5).map((sample, index) => {
+                const sampleSymbol = safeText(sample.symbol, "-");
+                return (
+                  <Link className="rounded-lg border border-white/10 p-3 text-sm text-slate-300 hover:border-cyan-400/40" href={`/coin/${encodeURIComponent(sampleSymbol)}`} key={`${safeText(sample.lifecycle_id, String(index))}-${sampleSymbol}`}>
+                    <b className="text-white">{sampleSymbol}</b>
+                    <span className="ml-3">相似度 {compact(sample.similarity_score)}</span>
+                    <span className="ml-3">{safeText(sample.upgrade_path, "-")}</span>
+                    <span className="ml-3">结果 {safeText(sample.result_label, "数据不足")}</span>
+                    <span className="ml-3">收益 {pct(sample.final_return_pct)}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </section>
       {lifecycle.lifecycle ? (
         <section className="panel p-4">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">

@@ -25,13 +25,25 @@ JOB_STDOUT_LIMIT = 12000
 JOB_STDERR_LIMIT = 6000
 JOB_ERROR_LIMIT = 1000
 JOB_REPORT_TAIL_LIMIT = 12000
-CONCURRENT_GUARD_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test", "outcome-scan", "lifecycle-scan", "lifecycle-backfill"}
+CONCURRENT_GUARD_JOB_TYPES = {
+    "stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test",
+    "outcome-scan", "lifecycle-scan", "lifecycle-backfill", "lifecycle-intelligence",
+    "lifecycle-replay", "lifecycle-analytics", "lifecycle-replay-rebuild",
+}
+LIFECYCLE_RESEARCH_JOB_TYPES = {
+    "lifecycle-intelligence",
+    "lifecycle-replay",
+    "lifecycle-analytics",
+    "lifecycle-replay-rebuild",
+}
 ERROR_LINE_PATTERN = re.compile(r"(?i)(failed|error|traceback|timeout|exception|\u5f02\u5e38|\u9519\u8bef|\u5931\u8d25|\u8d85\u65f6)")
 STABLE_CHECK_ATTENTION_RE = re.compile(r"(状态|摘要|网络重试噪声|日志稳定性):\s*(.+)")
 
 
 def invalidate_job_runtime_cache(job_type: str = "") -> None:
     invalidate_runtime_cache("dashboard:")
+    if str(job_type).startswith("lifecycle-"):
+        invalidate_runtime_cache("lifecycle:")
     if job_type in {"stable-check", "doctor", "readiness", "cleanup"}:
         invalidate_runtime_cache("stable:")
     if job_type == "update-check":
@@ -63,10 +75,46 @@ JOB_SPECS: dict[str, JobSpec] = {
     "outcome-scan": JobSpec("outcome-scan", zh(r"\u4fe1\u53f7\u7ed3\u679c\u8ffd\u8e2a\u626b\u63cf"), _python_command("outcome-scan"), 300),
     "lifecycle-scan": JobSpec("lifecycle-scan", zh(r"\u751f\u547d\u5468\u671f\u8ddf\u968f\u626b\u63cf"), _python_command("lifecycle-scan"), 300),
     "lifecycle-backfill": JobSpec("lifecycle-backfill", zh(r"\u751f\u547d\u5468\u671f\u56de\u586b"), _python_command("lifecycle-backfill", "--lookback-hours", "168"), 600),
+    "lifecycle-intelligence": JobSpec("lifecycle-intelligence", "生命周期智能评价", _python_command("lifecycle-intelligence"), 900),
+    "lifecycle-replay": JobSpec("lifecycle-replay", "生命周期回放回填", _python_command("lifecycle-replay-backfill", "--limit", "500"), 1200),
+    "lifecycle-analytics": JobSpec("lifecycle-analytics", "生命周期历史统计", _python_command("lifecycle-analytics"), 900),
+    "lifecycle-replay-rebuild": JobSpec("lifecycle-replay-rebuild", "生命周期回放强制重建", _python_command("lifecycle-replay-backfill", "--limit", "500", "--force-rebuild"), 1200),
     "update-check": JobSpec("update-check", zh(r"\u68c0\u67e5 GitHub \u66f4\u65b0"), ["bash", "scripts/update_server.sh", "--check"], 180),
     "api-self-test": JobSpec("api-self-test", zh(r"Web API \u81ea\u68c0"), ["internal", "api-self-test"], 60, internal=True),
 }
-LONG_ACTION_JOB_TYPES = {"stable-check", "doctor", "readiness", "cleanup", "outcome-scan", "lifecycle-scan", "lifecycle-backfill"}
+
+
+def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]:
+    """Build bounded CLI arguments for authenticated lifecycle job requests."""
+    symbol = re.sub(r"[^A-Z0-9]", "", str(metadata.get("symbol") or "").upper())
+    if symbol and not symbol.endswith("USDT"):
+        symbol += "USDT"
+    if not re.fullmatch(r"[A-Z0-9]{2,24}USDT", symbol):
+        symbol = ""
+    try:
+        lifecycle_id = max(0, int(metadata.get("lifecycle_id") or 0))
+    except (TypeError, ValueError):
+        lifecycle_id = 0
+
+    if spec.job_type == "lifecycle-intelligence" and symbol:
+        return _python_command("lifecycle-intelligence", "--symbol", symbol)
+    if spec.job_type in {"lifecycle-replay", "lifecycle-replay-rebuild"} and (symbol or lifecycle_id):
+        command = ["lifecycle-replay"]
+        if lifecycle_id:
+            command.extend(["--lifecycle-id", str(lifecycle_id)])
+        else:
+            command.extend(["--symbol", symbol])
+        if spec.job_type == "lifecycle-replay-rebuild":
+            command.append("--force-rebuild")
+        return _python_command(*command)
+    return list(spec.command)
+
+
+LONG_ACTION_JOB_TYPES = {
+    "stable-check", "doctor", "readiness", "cleanup", "outcome-scan", "lifecycle-scan",
+    "lifecycle-backfill", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-analytics",
+    "lifecycle-replay-rebuild",
+}
 
 
 TOKEN_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -187,17 +235,36 @@ class JobStore:
         spec = validate_job_type(job_type)
         now = _now()
         safe_metadata = sanitize_metadata(metadata or {})
+        command = _lifecycle_job_command(spec, safe_metadata)
         with self.connect() as conn:
+            # Serialize the active-job check and insert so concurrent API and
+            # scheduler submissions cannot both pass the guard.
+            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
             if allow_reuse and spec.job_type in CONCURRENT_GUARD_JOB_TYPES:
-                active = conn.execute(
-                    """
-                    SELECT * FROM jobs
-                    WHERE job_type = ? AND status IN ('queued', 'running')
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT 1
-                    """,
-                    (spec.job_type,),
-                ).fetchone()
+                if spec.job_type in LIFECYCLE_RESEARCH_JOB_TYPES:
+                    guarded_types = sorted(LIFECYCLE_RESEARCH_JOB_TYPES)
+                    placeholders = ",".join("?" for _ in guarded_types)
+                    active = conn.execute(
+                        f"""
+                        SELECT * FROM jobs
+                        WHERE job_type IN ({placeholders})
+                          AND status IN ('queued', 'running')
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        guarded_types,
+                    ).fetchone()
+                else:
+                    active = conn.execute(
+                        """
+                        SELECT * FROM jobs
+                        WHERE job_type = ? AND status IN ('queued', 'running')
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (spec.job_type,),
+                    ).fetchone()
                 if active:
                     job = _row_to_job(active) or {}
                     job["reused"] = True
@@ -211,7 +278,7 @@ class JobStore:
                 (
                     spec.job_type,
                     spec.label,
-                    _json_dumps(spec.command),
+                    _json_dumps(command),
                     now,
                     now,
                     _json_dumps(safe_metadata),
@@ -781,6 +848,17 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
         return {"ok": False, "message": message, "error": message, "code": "job_create_failed"}
     invalidate_job_runtime_cache(job_type)
     reused = bool(job.get("reused"))
+    active_type = str(job.get("job_type") or "")
+    if reused and job_type in LIFECYCLE_RESEARCH_JOB_TYPES and active_type != job_type:
+        return {
+            "ok": False,
+            "job_id": int(job.get("id") or 0),
+            "job": enrich_job(job),
+            "reused": False,
+            "blocked_by_job_type": active_type,
+            "message": "已有其他生命周期研究任务正在运行，请等待完成后重试。",
+            "code": "lifecycle_research_busy",
+        }
     if start and not reused:
         try:
             run_job_async(store, int(job["id"]))
@@ -790,10 +868,92 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
             job = store.get_job(int(job["id"])) or job
     return {
         "ok": True,
+        "job_id": int(job.get("id") or 0),
         "job": enrich_job(job),
         "reused": reused,
         "message": zh(r"\u5df2\u6709\u540c\u7c7b\u578b\u4efb\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u5df2\u8fd4\u56de\u73b0\u6709\u4efb\u52a1") if reused else zh(r"\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u6b63\u5728\u540e\u53f0\u6267\u884c"),
     }
+
+
+_LIFECYCLE_SCHEDULER_LOCK = threading.RLock()
+_LIFECYCLE_SCHEDULER_THREAD: threading.Thread | None = None
+_LIFECYCLE_SCHEDULER_STOP = threading.Event()
+
+
+def lifecycle_intelligence_scheduler_tick(
+    *,
+    settings: Settings | None = None,
+    now: int | None = None,
+    start: bool = True,
+) -> dict[str, Any]:
+    """Submit due lifecycle research jobs without running work in the web thread."""
+    loaded = settings or Settings.load()
+    if not bool(getattr(loaded, "lifecycle_intelligence_enable", True)):
+        return {"ok": True, "enabled": False, "submitted": [], "jobs": []}
+    timestamp = int(_now() if now is None else now)
+    store = store_for_settings(loaded)
+    schedule = (
+        ("lifecycle-intelligence", max(60, int(getattr(loaded, "lifecycle_intelligence_interval_sec", 900) or 900))),
+        ("lifecycle-replay", max(60, int(getattr(loaded, "lifecycle_replay_interval_sec", 3600) or 3600))),
+        ("lifecycle-analytics", max(60, int(getattr(loaded, "lifecycle_analytics_interval_sec", 21600) or 21600))),
+    )
+    submitted: list[str] = []
+    results: list[dict[str, Any]] = []
+    for job_type, interval_sec in schedule:
+        recent = store.list_jobs(limit=1, job_type=job_type)
+        last_created = int((recent[0] if recent else {}).get("created_at") or 0)
+        if last_created and timestamp - last_created < interval_sec:
+            continue
+        result = create_job_payload(
+            job_type,
+            {"source": "lifecycle-intelligence-scheduler", "scheduled_at": timestamp},
+            settings=loaded,
+            start=start,
+        )
+        results.append(result)
+        if result.get("code") == "lifecycle_research_busy":
+            break
+        if result.get("ok"):
+            active_type = str((result.get("job") or {}).get("job_type") or "")
+            if not result.get("reused") or active_type == job_type:
+                submitted.append(job_type)
+            # Keep SQLite pressure bounded: one research job may be active at a
+            # time. A reused job from another dimension blocks this tick.
+            break
+    return {
+        "ok": all(item.get("ok", False) or item.get("code") == "lifecycle_research_busy" for item in results),
+        "enabled": True,
+        "submitted": submitted,
+        "jobs": results,
+    }
+
+
+def start_lifecycle_intelligence_scheduler(*, settings: Settings | None = None) -> threading.Thread | None:
+    """Start one daemon scheduler per web process; workers remain subprocess jobs."""
+    loaded = settings or Settings.load()
+    if not bool(getattr(loaded, "lifecycle_intelligence_enable", True)):
+        return None
+    global _LIFECYCLE_SCHEDULER_THREAD
+    with _LIFECYCLE_SCHEDULER_LOCK:
+        if _LIFECYCLE_SCHEDULER_THREAD and _LIFECYCLE_SCHEDULER_THREAD.is_alive():
+            return _LIFECYCLE_SCHEDULER_THREAD
+        _LIFECYCLE_SCHEDULER_STOP.clear()
+
+        def run() -> None:
+            while not _LIFECYCLE_SCHEDULER_STOP.is_set():
+                try:
+                    lifecycle_intelligence_scheduler_tick(settings=loaded)
+                except Exception as exc:
+                    sys.stderr.write(f"[web] lifecycle intelligence scheduler failed: {type(exc).__name__}: {exc}\n")
+                _LIFECYCLE_SCHEDULER_STOP.wait(60)
+
+        _LIFECYCLE_SCHEDULER_THREAD = threading.Thread(
+            target=run,
+            name="lifecycle-intelligence-scheduler",
+            daemon=True,
+        )
+        _LIFECYCLE_SCHEDULER_THREAD.start()
+        return _LIFECYCLE_SCHEDULER_THREAD
 
 
 def jobs_payload(

@@ -16,6 +16,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <Link className="text-cyan-300" href="/api-docs">
           公开 API
         </Link>
+        <span className="mx-2">·</span>
+        <Link className="text-cyan-300" href="/lifecycle/replay">
+          生命周期回放
+        </Link>
       </footer>
     </div>
   );

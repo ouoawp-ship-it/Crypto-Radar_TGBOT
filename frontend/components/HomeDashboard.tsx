@@ -10,7 +10,7 @@ import { ErrorState } from "./ErrorState";
 import { MetricCard } from "./MetricCard";
 import { PageTitle } from "./PageTitle";
 import { SignalCard } from "./SignalCard";
-import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getLifecycleSummary, getOutcomeStats, getSignalStats, getLatestSignals, invalidatePublicApiCache, type HomeDashboardData } from "@/lib/api";
+import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getLifecycleIntelligenceSummary, getLifecycleSummary, getOutcomeStats, getSignalStats, getLatestSignals, invalidatePublicApiCache, type HomeDashboardData } from "@/lib/api";
 import { compact, pct, ratioPct, safeText } from "@/lib/format";
 
 function readNumber(record: Record<string, unknown> | undefined, ...keys: string[]) {
@@ -45,7 +45,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
     setLoading(true);
     setError("");
     try {
-      const [signalStats, signals, coins, decisionStats, decisions, outcomeStats, backtest, matrix, lifecycle] = await Promise.all([
+      const [signalStats, signals, coins, decisionStats, decisions, outcomeStats, backtest, matrix, lifecycle, lifecycleIntelligence] = await Promise.all([
         getSignalStats(),
         getLatestSignals({ limit: 8, window_sec: 86400 }),
         getCoinSearch({ limit: 10, window_sec: 604800 }),
@@ -54,7 +54,8 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         getOutcomeStats("1h"),
         getBacktestDecision({ horizon: "1h", window_sec: 2592000 }),
         getBacktestMatrix({ window_sec: 2592000 }),
-        getLifecycleSummary()
+        getLifecycleSummary(),
+        getLifecycleIntelligenceSummary()
       ]);
       setData({
         signalStats,
@@ -66,6 +67,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         backtest,
         matrix,
         lifecycle,
+        lifecycleIntelligence,
         errors: []
       });
     } catch (err) {
@@ -94,6 +96,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       data.backtest ||
       data.matrix ||
       data.lifecycle
+      || data.lifecycleIntelligence
   );
   const lifecycleSummary = data.lifecycle?.summary || {};
 
@@ -197,6 +200,27 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
           ))}
         </div>
         {!(data.lifecycle?.items || []).length ? <p className="text-sm text-slate-500">暂无生命周期数据，首次有效信号出现后会自动建档。</p> : null}
+      </section>
+
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-black text-white">生命周期智能榜</h2>
+            <p className="text-sm text-slate-500">预计算 TOP 5，不在首页加载完整回放。</p>
+          </div>
+          <Link className="btn" href="/lifecycle">查看智能排行</Link>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {(data.lifecycleIntelligence?.items || []).slice(0, 5).map((item) => (
+            <Link className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
+              <h3 className="text-base font-black text-white">{safeText(item.symbol)}</h3>
+              <p className="mt-1 text-sm text-cyan-100">{safeText(item.quality_label, "历史样本仍在积累")}</p>
+              <p className="mt-3 text-sm text-slate-300">最高周期 {safeText(item.highest_level, "-")}</p>
+              <p className="text-sm text-slate-300">智能 {compact(item.intelligence_score)} · 风险 {compact(item.risk_score)}</p>
+            </Link>
+          ))}
+        </div>
+        {!(data.lifecycleIntelligence?.items || []).length ? <p className="text-sm text-slate-500">历史样本仍在积累</p> : null}
       </section>
     </div>
   );

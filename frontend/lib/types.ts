@@ -154,6 +154,122 @@ export type LifecycleDetailPayload = {
   not_advice?: string;
 };
 
+export type LifecycleIntelligenceItem = {
+  lifecycle_id?: number;
+  symbol?: string;
+  intelligence_score?: number | null;
+  quality_label?: string;
+  stage?: string;
+  stage_label?: string;
+  momentum_label?: string;
+  capital_confirmation_label?: string;
+  risk_label?: string;
+  maturity_label?: string;
+  confidence_label?: string;
+  summary?: string;
+  strengths?: string[];
+  risks?: string[];
+  watch_points?: string[];
+  model_version?: string;
+  current_state?: string;
+  first_signal_level?: string;
+  highest_level?: string;
+  lifecycle_score?: number | null;
+  risk_score?: number | null;
+  price_change_from_first_pct?: number | null;
+  oi_change_from_first_pct?: number | null;
+  upgrade_path?: string;
+  result_label?: string;
+  final_return_pct?: number | null;
+  outcome_status?: string;
+  similar_count?: number;
+};
+
+export type LifecycleIntelligenceSummaryPayload = {
+  summary?: Record<string, unknown>;
+  quality_distribution?: Array<{ label?: string; count?: number }>;
+  stage_distribution?: Array<{ label?: string; count?: number }>;
+  items?: LifecycleIntelligenceItem[];
+  model_version?: string;
+  not_advice?: string;
+};
+
+export type LifecycleIntelligenceDetailPayload = {
+  symbol?: string;
+  intelligence?: LifecycleIntelligenceItem | null;
+  replay?: LifecycleReplaySummary | null;
+  status?: string;
+  message?: string;
+  model_version?: string;
+  not_advice?: string;
+};
+
+export type LifecycleReplaySummary = {
+  lifecycle_id?: number;
+  symbol?: string;
+  replay_version?: string;
+  frame_count?: number;
+  duration_sec?: number | null;
+  first_signal_level?: string;
+  upgrade_path?: string;
+  highest_level?: string;
+  time_to_1h_sec?: number | null;
+  time_to_4h_sec?: number | null;
+  time_to_24h_sec?: number | null;
+  max_price_gain_pct?: number | null;
+  max_drawdown_pct?: number | null;
+  final_return_pct?: number | null;
+  final_state?: string;
+  result_label?: string;
+  outcome_status?: string;
+  outcome_count?: number;
+  summary?: Record<string, unknown>;
+};
+
+export type LifecycleReplayFrame = {
+  frame_index?: number;
+  event_time?: string;
+  event_type?: string;
+  event_label?: string;
+  state_before?: string;
+  state_after?: string;
+  signal_level?: string;
+  price?: number | null;
+  price_change_from_first_pct?: number | null;
+  oi_change_from_first_pct?: number | null;
+  spot_cvd_delta?: number | null;
+  futures_cvd_delta?: number | null;
+  funding_rate?: number | null;
+  lifecycle_score?: number | null;
+  risk_score?: number | null;
+  intelligence_score?: number | null;
+  summary?: string;
+};
+
+export type LifecycleReplayPayload = {
+  symbol?: string;
+  replay?: LifecycleReplaySummary | null;
+  status?: string;
+  message?: string;
+  model_version?: string;
+  not_advice?: string;
+};
+
+export type LifecycleSimilarityPayload = {
+  symbol?: string;
+  status?: string;
+  message?: string;
+  similar_count?: number;
+  avg_final_return_pct?: number | null;
+  positive_ratio?: number | null;
+  avg_max_drawdown_pct?: number | null;
+  strong_success_ratio?: number | null;
+  samples?: Array<Record<string, unknown>>;
+  model_version?: string;
+  disclaimer?: string;
+  not_advice?: string;
+};
+
 export type BacktestGroup = {
   key?: string;
   label?: string;

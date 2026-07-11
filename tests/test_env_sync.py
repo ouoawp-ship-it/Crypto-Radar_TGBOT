@@ -84,6 +84,11 @@ class EnvSyncTests(unittest.TestCase):
                     "LIFECYCLE_OI_ACCUMULATION_PCT=8",
                     "LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER=2",
                     "LIFECYCLE_FUNDING_CROWDED_THRESHOLD=0.0008",
+                    "LIFECYCLE_INTELLIGENCE_ENABLE=true",
+                    "LIFECYCLE_INTELLIGENCE_INTERVAL_SEC=900",
+                    "LIFECYCLE_REPLAY_INTERVAL_SEC=3600",
+                    "LIFECYCLE_ANALYTICS_INTERVAL_SEC=21600",
+                    "LIFECYCLE_SIMILARITY_MIN_SAMPLES=5",
                     "AI_REQUEST_TIMEOUT_SEC=90",
                     "AI_ALLOWED_CHAT_IDS=",
                     "NEW_NORMAL_SETTING=true",
@@ -134,6 +139,11 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("LIFECYCLE_OI_ACCUMULATION_PCT=8", text)
         self.assertIn("LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER=2", text)
         self.assertIn("LIFECYCLE_FUNDING_CROWDED_THRESHOLD=0.0008", text)
+        self.assertIn("LIFECYCLE_INTELLIGENCE_ENABLE=true", text)
+        self.assertIn("LIFECYCLE_INTELLIGENCE_INTERVAL_SEC=900", text)
+        self.assertIn("LIFECYCLE_REPLAY_INTERVAL_SEC=3600", text)
+        self.assertIn("LIFECYCLE_ANALYTICS_INTERVAL_SEC=21600", text)
+        self.assertIn("LIFECYCLE_SIMILARITY_MIN_SAMPLES=5", text)
         self.assertIn("AI_REQUEST_TIMEOUT_SEC=90", text)
         self.assertIn("NEW_NORMAL_SETTING=true", text)
         self.assertIn("TG_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)

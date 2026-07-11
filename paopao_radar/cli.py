@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -166,7 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 或 lifecycle 命令的回看小时数")
     parser.add_argument("--horizon", default="", help="用于 outcome-scan：只处理 1h/4h/24h/72h 中的一个窗口")
     parser.add_argument("--symbol", default="", help="用于 outcome/lifecycle 命令：只处理某个币种，例如 BTC 或 BTCUSDT")
+    parser.add_argument("--lifecycle-id", type=int, default=None, help="用于 lifecycle-replay：按生命周期 ID 回放")
+    parser.add_argument("--all-active", action="store_true", help="用于 lifecycle-intelligence：处理全部活跃生命周期")
     parser.add_argument("--dry-run", action="store_true", help="用于 outcome/lifecycle 命令：只预览，不写数据库或发送 Telegram")
+    parser.add_argument("--pretty", action="store_true", help="生命周期智能命令使用缩进 JSON 输出")
+    parser.add_argument("--force-rebuild", action="store_true", help="忽略源事件签名缓存并强制重新生成智能评价或回放")
     parser.add_argument("--backfill-days", type=int, default=None, help="用于 outcome-scan：回填最近 N 天已发送信号")
     parser.add_argument("--push", action="store_true", help="用于 lifecycle-scan：对重要生命周期事件尝试 Telegram 跟随推送；真实发送仍需 --send --confirm-real-send")
     parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
@@ -403,6 +407,94 @@ def run_lifecycle_status(args: argparse.Namespace) -> int:
     payload = lifecycle_status_payload(settings=settings, symbol=str(getattr(args, "symbol", "") or ""))
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload.get("ok", True) else 1
+
+
+def _print_lifecycle_intelligence_result(result: dict[str, object], args: argparse.Namespace) -> int:
+    print(json.dumps(result, ensure_ascii=False, indent=2 if bool(getattr(args, "pretty", False)) else None))
+    return 0 if bool(result.get("ok", True)) else 1
+
+
+def run_lifecycle_intelligence(args: argparse.Namespace) -> int:
+    from .lifecycle_intelligence import generate_intelligence
+
+    result = generate_intelligence(
+        settings=Settings.load(),
+        symbol=str(getattr(args, "symbol", "") or ""),
+        all_active=bool(getattr(args, "all_active", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        force=bool(getattr(args, "force_rebuild", False)),
+        limit=max(1, min(int(getattr(args, "limit", None) or 500), 5000)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def run_lifecycle_replay(args: argparse.Namespace, *, backfill: bool = False) -> int:
+    from .lifecycle_replay import get_replay_payload, rebuild_replays
+
+    settings = Settings.load()
+    symbol = "" if backfill else str(getattr(args, "symbol", "") or "")
+    lifecycle_id = None if backfill else getattr(args, "lifecycle_id", None)
+    if not backfill and not symbol.strip() and not lifecycle_id:
+        return _print_lifecycle_intelligence_result(
+            {
+                "ok": False,
+                "code": "missing_lifecycle_target",
+                "error": "lifecycle-replay 需要 --symbol 或 --lifecycle-id。",
+            },
+            args,
+        )
+    result = rebuild_replays(
+        settings=settings,
+        symbol=symbol,
+        lifecycle_id=lifecycle_id,
+        limit=max(1, min(int(getattr(args, "limit", None) or (500 if backfill else 1)), 5000)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        force=bool(getattr(args, "force_rebuild", False)),
+    )
+    if not backfill and not bool(getattr(args, "dry_run", False)) and result.get("ok", True):
+        replay = get_replay_payload(
+            settings=settings,
+            symbol=symbol,
+            lifecycle_id=lifecycle_id,
+            frame_limit=100,
+            frame_offset=0,
+        )
+        result = {**result, "replay": replay.get("data", replay)}
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def run_lifecycle_analytics(args: argparse.Namespace) -> int:
+    from .lifecycle_analytics import generate_lifecycle_analytics
+
+    result = generate_lifecycle_analytics(
+        settings=Settings.load(),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        force=bool(getattr(args, "force_rebuild", False)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)
+
+
+def run_lifecycle_similar(args: argparse.Namespace) -> int:
+    from .lifecycle_similarity import find_similar_for_symbol
+
+    settings = Settings.load()
+    symbol = str(getattr(args, "symbol", "") or "")
+    result = find_similar_for_symbol(
+        settings=settings,
+        symbol=symbol,
+        limit=max(1, min(int(getattr(args, "limit", None) or 10), 50)),
+        min_samples=max(1, int(settings.lifecycle_similarity_min_samples or 5)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    if not isinstance(result, dict):
+        result = {"ok": False, "error": "相似生命周期计算返回格式异常"}
+    else:
+        if result.get("status") == "not_found":
+            result["status"] = "insufficient_samples"
+            result["message"] = "当前相似样本不足，暂不生成统计结论。"
+            result["ok"] = True
+        result.setdefault("ok", True)
+    return _print_lifecycle_intelligence_result(result, args)
 
 
 def run_lifecycle_tracker_cycle(settings: Settings, args: argparse.Namespace) -> dict[str, object]:
@@ -1897,6 +1989,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_lifecycle_scan(args)
     if args.command == "lifecycle-status":
         return run_lifecycle_status(args)
+    if args.command == "lifecycle-intelligence":
+        return run_lifecycle_intelligence(args)
+    if args.command == "lifecycle-replay":
+        return run_lifecycle_replay(args)
+    if args.command == "lifecycle-replay-backfill":
+        return run_lifecycle_replay(args, backfill=True)
+    if args.command == "lifecycle-analytics":
+        return run_lifecycle_analytics(args)
+    if args.command == "lifecycle-similar":
+        return run_lifecycle_similar(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

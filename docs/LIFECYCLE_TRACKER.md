@@ -1,5 +1,13 @@
 # Binance-Centric Signal Lifecycle Tracker
 
+## v1.78.0 intelligence / replay 扩展
+
+v1.78.0 保留 v1.77.0 的采集、评分和状态机，新增独立预计算层：`intelligence_score` 用于研究生命周期质量，replay frames 用于回放事件演化，analytics/similarity 用于历史统计和相似案例。新层只读取既有 lifecycle/events/snapshots 与 outcomes，不覆盖 `lifecycle_score`、`risk_score`，不自动改变 decision model 或生命周期阈值。
+
+数据库迁移仅新增表、索引和兼容版本元信息；既有三张生命周期表及历史记录不删除、不重建。完整说明见 `LIFECYCLE_INTELLIGENCE.md` 与 `LIFECYCLE_REPLAY.md`。
+
+系统仅用于信号整理、研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## 范围与边界
 
 v1.77.0 为首次有效单币信号建立生命周期档案，并持续合并同币后续信号。系统记录首信号级别（15m、1h、4h、24h 或 unknown），识别同级确认、周期升级、短线冷却、风险升高、启动失败与生命周期关闭。

@@ -1,5 +1,15 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.78.0 说明
+
+v1.78.0 新增 Lifecycle Intelligence & Replay Engine，把首次信号、生命周期事件、Binance 资金确认、风险演化和 `signal_outcomes` 结果连接为可回放、可统计的研究闭环。独立的 `intelligence_score`、质量/阶段/动能/资金确认/风险/成熟度标签不会覆盖既有 `lifecycle_score`、`risk_score`，也不会自动修改 decision model 或生命周期评分阈值。
+
+生命周期回放按事件时间预计算连续 frame，记录升级路径、到达 1h/4h/24h 的时间、最大涨幅/回撤、最终收益和结果标签；API 请求只读取预计算结果，不现场重算。历史分析覆盖首信号周期、升级路径、模块来源、资金确认组合与风险提示后表现；相似案例采用可解释的规则加权距离，不引入向量数据库或复杂 ML。
+
+新增 intelligence/replay/analytics/similar CLI、公开只读与后台任务 API、生命周期智能排行、模型数据诊断、`/lifecycle/replay` 页面、单币智能评价和首页 TOP 5。运行时报告写入被 Git 忽略的 `docs/generated/lifecycle_analytics_latest.json`，公开输出经过字段投影、文本裁剪和递归脱敏。
+
+系统仅用于信号整理、研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.77.0 说明
 
 v1.77.0 完成 Binance-Centric Signal Lifecycle Tracker 的生产加固。系统会在单币首次有效信号后建立独立的 `data/lifecycle.db` 档案，把后续同币信号归并到同一生命周期，并识别同级确认、15m → 1h → 4h → 24h 周期升级、短线冷却、风险升高、启动失败和生命周期结束。历史回填、增量扫描与单币状态可通过 `lifecycle-backfill`、`lifecycle-scan` 和 `lifecycle-status` CLI 执行；主循环按配置间隔刷新活跃生命周期。

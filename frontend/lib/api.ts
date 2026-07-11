@@ -7,7 +7,13 @@ import type {
   DecisionItem,
   ListPayload,
   LifecycleDetailPayload,
+  LifecycleIntelligenceDetailPayload,
+  LifecycleIntelligenceItem,
+  LifecycleIntelligenceSummaryPayload,
   LifecycleItem,
+  LifecycleReplayFrame,
+  LifecycleReplayPayload,
+  LifecycleSimilarityPayload,
   LifecycleSummaryPayload,
   OutcomeItem,
   SignalItem
@@ -299,6 +305,39 @@ export function getLifecycleMetrics(symbol: string, query: Query = {}) {
   return publicFetch<ListPayload<Record<string, unknown>>>("/public-api/lifecycle/metrics", { symbol, ...query });
 }
 
+export function getLifecycleIntelligenceSummary() {
+  return publicFetch<LifecycleIntelligenceSummaryPayload>("/public-api/lifecycle/intelligence/summary");
+}
+
+export function getLifecycleIntelligenceList(query: Query = {}) {
+  return publicFetch<ListPayload<LifecycleIntelligenceItem>>("/public-api/lifecycle/intelligence/list", query);
+}
+
+export function getLifecycleIntelligenceDetail(symbol: string) {
+  return publicFetch<LifecycleIntelligenceDetailPayload>("/public-api/lifecycle/intelligence/detail", { symbol });
+}
+
+export function getLifecycleReplay(symbol: string) {
+  return publicFetch<LifecycleReplayPayload>("/public-api/lifecycle/replay", { symbol });
+}
+
+export function getLifecycleReplayFrames(symbol: string, query: Query = {}) {
+  return publicFetch<ListPayload<LifecycleReplayFrame>>("/public-api/lifecycle/replay/frames", { symbol, ...query });
+}
+
+export function getLifecycleAnalytics(dimension: "first-level" | "upgrade-path" | "module" | "capital-confirmation") {
+  return publicFetch<ListPayload<Record<string, unknown>> & {
+    summary?: Record<string, unknown>;
+    model_data_warnings?: string[];
+    status?: string;
+    message?: string;
+  }>(`/public-api/lifecycle/analytics/${dimension}`);
+}
+
+export function getLifecycleSimilar(symbol: string, limit = 10) {
+  return publicFetch<LifecycleSimilarityPayload>("/public-api/lifecycle/similar", { symbol, limit });
+}
+
 export type HomeDashboardData = {
   signalStats?: Record<string, unknown>;
   signals?: SignalItem[];
@@ -309,6 +348,7 @@ export type HomeDashboardData = {
   backtest?: BacktestPayload;
   matrix?: BacktestMatrixPayload;
   lifecycle?: LifecycleSummaryPayload;
+  lifecycleIntelligence?: LifecycleIntelligenceSummaryPayload;
   errors?: string[];
 };
 
@@ -322,7 +362,8 @@ export async function loadHomeDashboardData(): Promise<HomeDashboardData> {
     getOutcomeStats("1h"),
     getBacktestDecision({ horizon: "1h", window_sec: 2592000 }),
     getBacktestMatrix({ window_sec: 2592000 }),
-    getLifecycleSummary()
+    getLifecycleSummary(),
+    getLifecycleIntelligenceSummary()
   ]);
   const errors: string[] = [];
   const value = <T>(index: number): T | undefined => {
@@ -344,6 +385,7 @@ export async function loadHomeDashboardData(): Promise<HomeDashboardData> {
     backtest: value<BacktestPayload>(6),
     matrix: value<BacktestMatrixPayload>(7),
     lifecycle: value<LifecycleSummaryPayload>(8),
+    lifecycleIntelligence: value<LifecycleIntelligenceSummaryPayload>(9),
     errors
   };
 }

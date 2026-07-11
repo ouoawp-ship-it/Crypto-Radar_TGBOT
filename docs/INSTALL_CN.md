@@ -1,5 +1,39 @@
 # 泡泡抓币中文安装目录
 
+## v1.78.0 运维说明
+
+v1.78.0 在既有 `lifecycle.db` 内兼容新增 intelligence、replay、replay frames 和 analytics cache 表；不会迁移、删除或改写既有生命周期、信号、Outcome 或 jobs 数据。升级后先执行 dry-run，再生成预计算结果：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py lifecycle-intelligence --all-active --dry-run
+.venv/bin/python main.py lifecycle-intelligence --all-active
+.venv/bin/python main.py lifecycle-intelligence
+.venv/bin/python main.py lifecycle-replay-backfill --limit 200 --dry-run
+.venv/bin/python main.py lifecycle-replay-backfill --limit 200
+.venv/bin/python main.py lifecycle-analytics --dry-run
+.venv/bin/python main.py lifecycle-analytics
+```
+
+`--all-active` 优先刷新活跃档案；不带 symbol/`--all-active` 的批次会继续处理
+缺失或已过期的关闭档案，确保最终状态、回撤和 Outcome 能进入智能评价。
+
+默认配置：
+
+```dotenv
+LIFECYCLE_INTELLIGENCE_ENABLE=true
+LIFECYCLE_INTELLIGENCE_INTERVAL_SEC=900
+LIFECYCLE_REPLAY_INTERVAL_SEC=3600
+LIFECYCLE_ANALYTICS_INTERVAL_SEC=21600
+LIFECYCLE_SIMILARITY_MIN_SAMPLES=5
+```
+
+计算通过独立 CLI/jobs 执行，不接入 Telegram 主推送线程；生命周期 Telegram 仍默认关闭。完整模型、回放与运维口径见 `docs/LIFECYCLE_INTELLIGENCE.md` 和 `docs/LIFECYCLE_REPLAY.md`。
+
+系统仅用于信号整理、研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.77.0 运维说明
 
 v1.77.0 新增并加固 Binance-Centric Signal Lifecycle Tracker。生命周期运行数据写入独立的 `data/lifecycle.db`，不会修改 `signals.db`、`outcomes.db` 或 `jobs.db` 既有 schema。核心判断只使用 Binance 价格、成交量、OI、现货/合约 CVD 近似值与资金费率；OKX、Bybit、Hyperliquid 仅作为当前价格和资金费率旁路观察，不参与评分或状态机。

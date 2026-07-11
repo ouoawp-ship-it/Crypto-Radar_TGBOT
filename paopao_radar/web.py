@@ -68,6 +68,7 @@ from .web_services.jobs import (
     jobs_payload,
     jobs_stats_payload,
     rerun_job_payload,
+    start_lifecycle_intelligence_scheduler,
 )
 from .web_services.ops import update_check_status_payload
 from .web_services.outcomes import (
@@ -91,6 +92,22 @@ from .web_services.lifecycle import (
     public_lifecycle_list_payload,
     public_lifecycle_metrics_payload,
     public_lifecycle_summary_payload,
+)
+from .web_services.lifecycle_intelligence import (
+    lifecycle_analytics_payload,
+    lifecycle_intelligence_detail_payload,
+    lifecycle_intelligence_list_payload,
+    lifecycle_intelligence_summary_payload,
+    lifecycle_replay_frames_payload,
+    lifecycle_replay_payload,
+    lifecycle_similar_payload,
+    public_lifecycle_analytics_payload,
+    public_lifecycle_intelligence_detail_payload,
+    public_lifecycle_intelligence_list_payload,
+    public_lifecycle_intelligence_summary_payload,
+    public_lifecycle_replay_frames_payload,
+    public_lifecycle_replay_payload,
+    public_lifecycle_similar_payload,
 )
 from .web_services.public import (
     public_coin_detail_payload,
@@ -10185,6 +10202,47 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/public-api/lifecycle/summary":
             self.send_json(public_lifecycle_summary_payload())
             return
+        if path == "/public-api/lifecycle/intelligence/summary":
+            self.send_json(public_lifecycle_intelligence_summary_payload())
+            return
+        if path == "/public-api/lifecycle/intelligence/list":
+            self.send_json(public_lifecycle_intelligence_list_payload(
+                symbol=query.get("symbol", [""])[0],
+                quality=query.get("quality", [""])[0],
+                stage=query.get("stage", [""])[0],
+                state=query.get("state", [""])[0],
+                level=query.get("level", [""])[0],
+                risk=query.get("risk", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                offset=max(0, query_int_or(query.get("offset", ["0"])[0], 0)),
+            ))
+            return
+        if path == "/public-api/lifecycle/intelligence/detail":
+            self.send_json(public_lifecycle_intelligence_detail_payload(query.get("symbol", [""])[0]))
+            return
+        if path == "/public-api/lifecycle/replay":
+            self.send_json(public_lifecycle_replay_payload(
+                query.get("symbol", [""])[0],
+                lifecycle_id=query_int_or(query.get("lifecycle_id", ["0"])[0], 0) or None,
+            ))
+            return
+        if path == "/public-api/lifecycle/replay/frames":
+            self.send_json(public_lifecycle_replay_frames_payload(
+                query.get("symbol", [""])[0],
+                lifecycle_id=query_int_or(query.get("lifecycle_id", ["0"])[0], 0) or None,
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 200),
+                offset=max(0, query_int_or(query.get("offset", ["0"])[0], 0)),
+            ))
+            return
+        if path.startswith("/public-api/lifecycle/analytics/"):
+            self.send_json(public_lifecycle_analytics_payload(path.rsplit("/", 1)[-1]))
+            return
+        if path == "/public-api/lifecycle/similar":
+            self.send_json(public_lifecycle_similar_payload(
+                query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["10"])[0], 10, 50),
+            ))
+            return
         if path == "/public-api/lifecycle/list":
             self.send_json(public_lifecycle_list_payload(
                 symbol=query.get("symbol", [""])[0],
@@ -10472,6 +10530,47 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/lifecycle/summary":
             self.send_json(lifecycle_summary_payload())
             return
+        if path == "/api/lifecycle/intelligence/summary":
+            self.send_json(lifecycle_intelligence_summary_payload())
+            return
+        if path == "/api/lifecycle/intelligence/list":
+            self.send_json(lifecycle_intelligence_list_payload(
+                symbol=query.get("symbol", [""])[0],
+                quality=query.get("quality", [""])[0],
+                stage=query.get("stage", [""])[0],
+                state=query.get("state", [""])[0],
+                level=query.get("level", [""])[0],
+                risk=query.get("risk", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
+                offset=max(0, query_int_or(query.get("offset", ["0"])[0], 0)),
+            ))
+            return
+        if path == "/api/lifecycle/intelligence/detail":
+            self.send_json(lifecycle_intelligence_detail_payload(query.get("symbol", [""])[0]))
+            return
+        if path == "/api/lifecycle/replay":
+            self.send_json(lifecycle_replay_payload(
+                query.get("symbol", [""])[0],
+                lifecycle_id=query_int_or(query.get("lifecycle_id", ["0"])[0], 0) or None,
+            ))
+            return
+        if path == "/api/lifecycle/replay/frames":
+            self.send_json(lifecycle_replay_frames_payload(
+                query.get("symbol", [""])[0],
+                lifecycle_id=query_int_or(query.get("lifecycle_id", ["0"])[0], 0) or None,
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 200),
+                offset=max(0, query_int_or(query.get("offset", ["0"])[0], 0)),
+            ))
+            return
+        if path.startswith("/api/lifecycle/analytics/"):
+            self.send_json(lifecycle_analytics_payload(path.rsplit("/", 1)[-1]))
+            return
+        if path == "/api/lifecycle/similar":
+            self.send_json(lifecycle_similar_payload(
+                query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["10"])[0], 10, 50),
+            ))
+            return
         if path == "/api/lifecycle/list":
             self.send_json(lifecycle_list_payload(
                 symbol=query.get("symbol", [""])[0],
@@ -10602,6 +10701,24 @@ class WebHandler(BaseHTTPRequestHandler):
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return
+            lifecycle_job_types = {
+                "/api/lifecycle/run-intelligence": "lifecycle-intelligence",
+                "/api/lifecycle/run-replay": "lifecycle-replay",
+                "/api/lifecycle/run-analytics": "lifecycle-analytics",
+                "/api/lifecycle/rebuild-replay": "lifecycle-replay-rebuild",
+            }
+            if path in lifecycle_job_types:
+                result = create_job_payload(
+                    lifecycle_job_types[path],
+                    {
+                        "source": path,
+                        "symbol": str(data.get("symbol") or "")[:32],
+                        "lifecycle_id": query_int_or(str(data.get("lifecycle_id") or "0"), 0),
+                    },
+                )
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
             if path == "/api/action":
                 self.send_audited_json(path, data, run_cli_action(str(data.get("name", ""))), started_at=started_at)
                 return
@@ -10677,6 +10794,7 @@ def run_web_server(host: str = "", port: int = 0, admin_token: str = "") -> int:
     else:
         auth_note = "token enabled" if token else "token disabled"
     print(f"web: listening on http://{host}:{port} (auth {auth_note})")
+    start_lifecycle_intelligence_scheduler(settings=settings)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

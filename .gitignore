@@ -44,3 +44,5 @@ frontend/tsconfig.tsbuildinfo
 node_modules/
 .next/
 logs/
+docs/generated/lifecycle_analytics_latest.json
+docs/generated/lifecycle_analytics_latest.md

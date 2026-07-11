@@ -113,3 +113,35 @@ Lifecycle 的 240 条合成信号保持 provider 调用 240 → 120、SQLite 连
 - 未新增或删除业务表/业务字段，未改变数据库核心 schema。
 - API 顶层结构及既有字段键保持不变；大字段正文改由详情接口加载。
 - 不包含自动交易或交易所下单能力。
+
+## v1.78.0 Lifecycle Intelligence / Replay 基准
+
+生命周期智能评价与回放均为预计算读取路径。离线基准会在临时目录生成确定性
+SQLite 数据，不访问交易所，也不会读取或写入生产数据库：
+
+```bash
+python scripts/benchmark_lifecycle_intelligence.py --lifecycles 120 --frames 100 --samples 25
+```
+
+基准覆盖 intelligence 列表、replay 摘要、100 帧分页、analytics 缓存命中和
+similarity top 10；耗时包含 UTF-8 JSON 序列化。目标分别为 P95 `<100ms`、
+`<100ms`、`<150ms`、`<50ms` 和 `<200ms`。列表不读取完整 `metrics_json`，
+Replay API 不现场重算，Analytics 从 `lifecycle_analytics_cache` 读取。
+
+本机 120 lifecycle / 100 frames / 25 samples 验收结果：
+
+| 读取路径 | P95 | JSON bytes | 目标 |
+|---|---:|---:|---:|
+| intelligence list（50 条） | 25.390 ms | 40,932 | < 100 ms |
+| replay summary | 3.537 ms | 799 | < 100 ms |
+| replay frames（100 条） | 28.945 ms | 55,366 | < 150 ms |
+| analytics cached | 2.745 ms | 395 | < 50 ms |
+| similarity top 10 | 15.665 ms | 3,046 | < 200 ms |
+
+结果为当前本地环境的可复现相对基线，不作为生产绝对 SLO。新 API 只保留
+标准 `ok/data` envelope，避免列表和回放帧在响应根重复一份。
+
+同轮 v1.76 结构回归保持：Funding 峰值并发 8、150/150 成功；Outcome 行情
+请求 120 → 60、decision 计算 120 → 30、事务 120 → 1；Lifecycle provider
+调用 240 → 120、SQLite 连接 479 → 2；`/signals` payload 仍减少 62.75%，
+`/decision`、`/outcomes`、`/lifecycle` 请求连接数分别保持 1、1、1。
