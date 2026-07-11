@@ -96,8 +96,8 @@ class CandidateSchemaStoreTests(unittest.TestCase):
             with store.connect() as conn:
                 names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master")}
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        self.assertEqual(LIFECYCLE_SCHEMA_VERSION, 1782)
-        self.assertEqual(version, 1782)
+        self.assertEqual(LIFECYCLE_SCHEMA_VERSION, 1790)
+        self.assertEqual(version, 1790)
         self.assertIn("lifecycle_outcome_candidates", names)
         self.assertIn("idx_lifecycle_outcome_candidates_due", names)
         self.assertIn("idx_lifecycle_outcome_candidates_retry", names)

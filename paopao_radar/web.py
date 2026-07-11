@@ -129,6 +129,10 @@ from .web_services.lifecycle_outcome_quality import (
     public_lifecycle_outcome_quality_payload,
     public_lifecycle_outcome_summary_with_quality_payload as public_lifecycle_outcome_summary_payload,
 )
+from .web_services.lifecycle_calibration import (
+    calibration_report_payload,
+    public_calibration_section_payload,
+)
 from .web_services.public import (
     public_coin_detail_payload,
     public_coin_search_payload,
@@ -220,6 +224,9 @@ LIFECYCLE_CONFIG_KEYS = {
     "LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO",
     "LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO",
     "LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO",
+    "MODEL_CALIBRATION_ENABLE",
+    "MODEL_CALIBRATION_INTERVAL_SEC",
+    "MODEL_CALIBRATION_CACHE_TTL_SEC",
 }
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
@@ -337,6 +344,9 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO", "校准门禁到期解决率", "AI 助手", kind="float", minimum=0, maximum=1),
     ConfigField("LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO", "校准门禁生命周期成熟率", "AI 助手", kind="float", minimum=0, maximum=1),
     ConfigField("LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO", "校准门禁最大错误率", "AI 助手", kind="float", minimum=0, maximum=1, help="只读准入判断，不自动修改模型。"),
+    ConfigField("MODEL_CALIBRATION_ENABLE", "启用模型校准验证报告", "AI 助手", kind="bool", help="只生成只读验证报告，不自动修改 Decision Model 或生命周期权重。"),
+    ConfigField("MODEL_CALIBRATION_INTERVAL_SEC", "模型校准验证报告间隔", "AI 助手", kind="int", minimum=3600, maximum=604800),
+    ConfigField("MODEL_CALIBRATION_CACHE_TTL_SEC", "模型校准 API 缓存 TTL", "AI 助手", kind="int", minimum=1, maximum=300),
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
@@ -8177,6 +8187,8 @@ INDEX_HTML = r"""<!doctype html>
       { type: "lifecycle-outcome-incremental-backfill", label: "Outcome 增量补算", desc: "有界处理已到期、合资格且符合重试时间的候选。" },
       { type: "lifecycle-outcome-quality-report", label: "Outcome 质量报告", desc: "生成覆盖率、成熟度和具体缺口原因报告。" },
       { type: "lifecycle-calibration-readiness", label: "模型校准准入", desc: "只判断数据是否达到门槛，不自动修改模型。" },
+      { type: "calibration-report", label: "模型校准验证报告", desc: "基于已成熟 Outcome 生成只读验证报告，不修改任何线上阈值。" },
+      { type: "calibration-rebuild", label: "重建模型校准报告", desc: "手动强制重建校准验证报告；仍不会自动应用建议参数。" },
       { type: "api-self-test", label: "Web API 自检", desc: "轻量检查 Web 摘要、日志和信号统计接口，不访问外网。" }
     ];
     function jobStatusPill(status) {
@@ -10308,6 +10320,21 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        calibration_public_paths = {
+            "/public-api/calibration/summary": "summary",
+            "/public-api/calibration/decision": "decision",
+            "/public-api/calibration/lifecycle": "lifecycle",
+            "/public-api/calibration/factors": "factors",
+            "/public-api/calibration/risk": "risk",
+            "/public-api/calibration/readiness": "readiness",
+        }
+        if path in calibration_public_paths:
+            self.send_json(public_calibration_section_payload(
+                calibration_public_paths[path],
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 1000),
+            ))
+            return
         if path == "/public-api/lifecycle/summary":
             self.send_json(public_lifecycle_summary_payload())
             return
@@ -10706,6 +10733,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(31536000, max(3600, query_int_or(query.get("window_sec", ["2592000"])[0], 2592000))),
             ))
             return
+        if path == "/api/calibration/report":
+            self.send_json(calibration_report_payload(
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 1000),
+            ))
+            return
         if path == "/api/lifecycle/summary":
             self.send_json(lifecycle_summary_payload())
             return
@@ -10925,6 +10958,22 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/lifecycle/run-backfill":
                 result = create_job_payload("lifecycle-backfill", {"source": "api/lifecycle/run-backfill"})
+                status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
+                return
+            calibration_job_types = {
+                "/api/calibration/run": "calibration-report",
+                "/api/calibration/rebuild": "calibration-rebuild",
+            }
+            if path in calibration_job_types:
+                metadata: dict[str, Any] = {
+                    "source": path,
+                    "symbol": str(data.get("symbol") or ""),
+                    "force": data.get("force", False),
+                }
+                if data.get("limit") not in (None, ""):
+                    metadata["limit"] = data.get("limit")
+                result = create_job_payload(calibration_job_types[path], metadata)
                 status_code = 200 if result.get("ok") else HTTPStatus.BAD_REQUEST
                 self.send_audited_json(path, data, result, status=status_code, started_at=started_at)
                 return

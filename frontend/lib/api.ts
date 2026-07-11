@@ -3,6 +3,9 @@ import type {
   ApiResult,
   BacktestMatrixPayload,
   BacktestPayload,
+  CalibrationReadinessPayload,
+  CalibrationSectionPayload,
+  CalibrationSummaryPayload,
   CoinItem,
   DecisionItem,
   ListPayload,
@@ -89,6 +92,7 @@ function publicApiRevalidateSec(path: `/public-api/${string}`): number {
   ].includes(path)) return 30;
   if (path.startsWith("/public-api/lifecycle/outcomes/quality/")) return 30;
   if (path === "/public-api/lifecycle/calibration-readiness") return 30;
+  if (path.startsWith("/public-api/calibration/")) return 30;
   if (path.startsWith("/public-api/lifecycle/outcomes/")) return 10;
   if (path === "/public-api/outcomes/stats") return 30;
   if (path.endsWith("/stats")) return 15;
@@ -433,6 +437,54 @@ export function getLifecycleCalibrationReadiness(query: Query = {}) {
   return publicFetch<LifecycleCalibrationReadinessPayload>(
     "/public-api/lifecycle/calibration-readiness",
     query,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCalibrationSummary() {
+  return publicFetch<CalibrationSummaryPayload>(
+    "/public-api/calibration/summary",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCalibrationDecision() {
+  return publicFetch<CalibrationSectionPayload>(
+    "/public-api/calibration/decision",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCalibrationLifecycle() {
+  return publicFetch<CalibrationSectionPayload>(
+    "/public-api/calibration/lifecycle",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCalibrationFactors() {
+  return publicFetch<CalibrationSectionPayload>(
+    "/public-api/calibration/factors",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCalibrationRisk() {
+  return publicFetch<CalibrationSectionPayload>(
+    "/public-api/calibration/risk",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCalibrationReadiness() {
+  return publicFetch<CalibrationReadinessPayload>(
+    "/public-api/calibration/readiness",
+    undefined,
     { revalidateSec: 30 }
   );
 }

@@ -51,4 +51,6 @@ docs/generated/lifecycle_outcome_coverage_latest.md
 docs/generated/lifecycle_outcome_quality_latest.json
 docs/generated/lifecycle_outcome_quality_latest.md
 docs/generated/lifecycle_calibration_readiness_latest.json
+docs/generated/model_calibration_latest.json
+docs/generated/model_calibration_latest.md
 docs/generated/*.lock

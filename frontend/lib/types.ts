@@ -488,6 +488,92 @@ export type LifecycleCalibrationReadinessPayload = {
   not_advice?: string;
 };
 
+export type CalibrationMetricItem = {
+  metric_key?: string;
+  key?: string;
+  label?: string;
+  decision_code?: string;
+  decision_label?: string;
+  first_signal_level?: string;
+  timeframe?: string;
+  factor?: string;
+  factor_label?: string;
+  risk_type?: string;
+  risk_label?: string;
+  sample_count?: number;
+  mature_sample_count?: number;
+  total_count?: number;
+  count?: number;
+  success_count?: number;
+  success_ratio?: number | null;
+  success_rate?: number | null;
+  positive_ratio?: number | null;
+  avg_return_pct?: number | null;
+  avg_final_return_pct?: number | null;
+  median_return_pct?: number | null;
+  avg_max_gain_pct?: number | null;
+  avg_max_drawdown_pct?: number | null;
+  drawdown_ratio?: number | null;
+  expectancy_pct?: number | null;
+  confidence_accuracy?: number | null;
+  alert_count?: number;
+  event_count?: number;
+  avg_lead_time_sec?: number | null;
+  avg_lead_time_min?: number | null;
+  effectiveness_ratio?: number | null;
+  avoided_loss_ratio?: number | null;
+  status?: string;
+  conclusion?: string;
+  [key: string]: unknown;
+};
+
+export type CalibrationSummaryPayload = {
+  calibration_version?: string;
+  model_version?: string;
+  generated_at?: string;
+  status?: string;
+  status_label?: string;
+  label?: string;
+  sample_count?: number;
+  total_samples?: number;
+  total_count?: number;
+  mature_sample_count?: number;
+  mature_samples?: number;
+  unavailable_count?: number;
+  maturity_ratio?: number | null;
+  decision_group_count?: number;
+  lifecycle_sample_count?: number;
+  not_advice?: string;
+  summary?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type CalibrationSectionPayload = CalibrationSummaryPayload & {
+  items?: CalibrationMetricItem[];
+  decision_labels?: CalibrationMetricItem[];
+  first_levels?: CalibrationMetricItem[];
+  upgrade_paths?: CalibrationMetricItem[];
+  intelligence_buckets?: CalibrationMetricItem[];
+  factors?: Record<string, CalibrationMetricItem[] | CalibrationMetricItem | unknown>;
+  risk_alerts?: CalibrationMetricItem[] | Record<string, CalibrationMetricItem | unknown>;
+};
+
+export type CalibrationReadinessPayload = {
+  ready?: boolean;
+  label?: string;
+  status?: string;
+  passed?: string[];
+  blocked?: string[];
+  warnings?: string[];
+  current?: Record<string, unknown>;
+  required?: Record<string, unknown>;
+  generated_at?: string;
+  calculated_at?: string;
+  note?: string;
+  not_advice?: string;
+  [key: string]: unknown;
+};
+
 export type LifecycleOutcomeReasonsPayload = {
   reasons?: Record<string, number>;
   unlinked_reasons?: Record<string, number>;

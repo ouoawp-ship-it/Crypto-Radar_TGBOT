@@ -16,7 +16,7 @@ from .lifecycle_store import normalize_lifecycle_symbol, safe_float, safe_int
 
 
 DEFAULT_LIFECYCLE_DB_PATH = BASE_DIR / "data" / "lifecycle.db"
-LIFECYCLE_SCHEMA_VERSION = 1782
+LIFECYCLE_SCHEMA_VERSION = 1790
 
 INTELLIGENCE_JSON_FIELDS = {
     "strengths_json": "strengths",
@@ -406,6 +406,38 @@ class IntelligenceStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calibration_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_version TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    mature_sample_count INTEGER NOT NULL DEFAULT 0,
+                    summary_json TEXT NOT NULL,
+                    recommendations_json TEXT NOT NULL,
+                    source_signature TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calibration_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id INTEGER NOT NULL,
+                    metric_type TEXT NOT NULL,
+                    metric_key TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    success_ratio REAL,
+                    avg_return REAL,
+                    avg_drawdown REAL,
+                    metrics_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(report_id, metric_type, metric_key)
+                )
+                """
+            )
             # Forward-compatible migration for databases created by early v1.78 builds.
             self._add_column(conn, "lifecycle_intelligence", "stage TEXT")
             self._add_column(conn, "lifecycle_intelligence", "source_signature TEXT")
@@ -476,6 +508,18 @@ class IntelligenceStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_lifecycle_outcome_candidates_reason "
                 "ON lifecycle_outcome_candidates(eligibility_reason, candidate_status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_calibration_reports_version_time "
+                "ON calibration_reports(report_version, model_version, generated_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_calibration_reports_signature "
+                "ON calibration_reports(report_version, model_version, source_signature)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_calibration_metrics_report_type "
+                "ON calibration_metrics(report_id, metric_type, metric_key)"
             )
             current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             if current_version < LIFECYCLE_SCHEMA_VERSION:
@@ -1478,6 +1522,130 @@ class IntelligenceStore:
             (now, threshold),
         )
         return max(0, conn.total_changes - before)
+
+    def write_calibration_report(
+        self,
+        record: dict[str, Any],
+        metrics: list[dict[str, Any]],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        """Persist one immutable calibration report and its metrics atomically."""
+
+        if conn is None:
+            with self.transaction() as owned:
+                return self.write_calibration_report(record, metrics, conn=owned)
+        report_version = str(record.get("report_version") or "").strip()
+        model_version = str(record.get("model_version") or "").strip()
+        source = str(record.get("source_signature") or "").strip()
+        if not report_version or not model_version or not source:
+            raise ValueError("report_version, model_version, and source_signature are required")
+        generated_at = str(record.get("generated_at") or _iso())
+        summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+        recommendations = record.get("recommendations")
+        if not isinstance(recommendations, list):
+            recommendations = []
+        cursor = conn.execute(
+            "INSERT INTO calibration_reports ("
+            "report_version,model_version,generated_at,sample_count,mature_sample_count,"
+            "summary_json,recommendations_json,source_signature"
+            ") VALUES (?,?,?,?,?,?,?,?)",
+            (
+                report_version,
+                model_version,
+                generated_at,
+                max(0, safe_int(record.get("sample_count"))),
+                max(0, safe_int(record.get("mature_sample_count"))),
+                _json_dumps(summary),
+                _json_dumps(recommendations),
+                source,
+            ),
+        )
+        report_id = safe_int(cursor.lastrowid)
+        rows: list[tuple[Any, ...]] = []
+        for raw in metrics:
+            item = dict(raw)
+            metric_type = str(item.get("metric_type") or "").strip()
+            metric_key = str(item.get("metric_key") or item.get("key") or "").strip()
+            if not metric_type or not metric_key:
+                continue
+            rows.append((
+                report_id,
+                metric_type,
+                metric_key,
+                max(0, safe_int(item.get("sample_count"))),
+                safe_float(item.get("success_ratio")),
+                safe_float(item.get("avg_return_pct", item.get("avg_return"))),
+                safe_float(item.get("avg_max_drawdown_pct", item.get("avg_drawdown"))),
+                _json_dumps(item),
+                generated_at,
+            ))
+        if rows:
+            conn.executemany(
+                "INSERT INTO calibration_metrics ("
+                "report_id,metric_type,metric_key,sample_count,success_ratio,avg_return,"
+                "avg_drawdown,metrics_json,created_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        return {
+            "id": report_id,
+            "report_version": report_version,
+            "model_version": model_version,
+            "generated_at": generated_at,
+            "sample_count": max(0, safe_int(record.get("sample_count"))),
+            "mature_sample_count": max(0, safe_int(record.get("mature_sample_count"))),
+            "summary": dict(summary),
+            "recommendations": list(recommendations),
+            "source_signature": source,
+            "metrics": [dict(item) for item in metrics if item.get("metric_type")],
+        }
+
+    def latest_calibration_report(
+        self,
+        *,
+        report_version: str = "",
+        model_version: str = "",
+        source_signature: str = "",
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        if conn is None:
+            with self.connect() as owned:
+                return self.latest_calibration_report(
+                    report_version=report_version,
+                    model_version=model_version,
+                    source_signature=source_signature,
+                    conn=owned,
+                )
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("report_version", report_version),
+            ("model_version", model_version),
+            ("source_signature", source_signature),
+        ):
+            if str(value or "").strip():
+                clauses.append(f"{column}=?")
+                params.append(str(value).strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        row = conn.execute(
+            f"SELECT * FROM calibration_reports {where} ORDER BY id DESC LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["summary"] = _json_loads(result.pop("summary_json", None), {})
+        result["recommendations"] = _json_loads(result.pop("recommendations_json", None), [])
+        result["metrics"] = [
+            _json_loads(item[0], {})
+            for item in conn.execute(
+                "SELECT metrics_json FROM calibration_metrics WHERE report_id=? "
+                "ORDER BY metric_type,metric_key,id",
+                (safe_int(result.get("id")),),
+            ).fetchall()
+        ]
+        return result
 
     # Concise aliases used by analytics adapters.
     cache_get = get_analytics_cache

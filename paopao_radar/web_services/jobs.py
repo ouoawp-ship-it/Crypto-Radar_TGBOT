@@ -33,6 +33,7 @@ CONCURRENT_GUARD_JOB_TYPES = {
     "lifecycle-outcome-refresh-analytics",
     "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-incremental-backfill",
     "lifecycle-outcome-classify-gaps", "lifecycle-outcome-quality-report", "lifecycle-calibration-readiness",
+    "calibration-report", "calibration-rebuild",
 }
 LIFECYCLE_RESEARCH_JOB_TYPES = {
     "lifecycle-intelligence",
@@ -48,7 +49,10 @@ LIFECYCLE_RESEARCH_JOB_TYPES = {
     "lifecycle-outcome-classify-gaps",
     "lifecycle-outcome-quality-report",
     "lifecycle-calibration-readiness",
+    "calibration-report",
+    "calibration-rebuild",
 }
+CALIBRATION_JOB_TYPES = {"calibration-report", "calibration-rebuild"}
 LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES = {
     "lifecycle-outcome-link",
     "lifecycle-outcome-backfill",
@@ -59,6 +63,7 @@ LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES = {
     "lifecycle-outcome-quality-report",
     "lifecycle-calibration-readiness",
 }
+DELAYED_RESEARCH_JOB_TYPES = LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES | {"calibration-report"}
 LIFECYCLE_OUTCOME_QUALITY_COMMANDS = {
     "lifecycle-outcome-refresh-candidates": "lifecycle-outcome-refresh-candidates",
     "lifecycle-outcome-incremental-backfill": "lifecycle-outcome-incremental",
@@ -74,6 +79,8 @@ def invalidate_job_runtime_cache(job_type: str = "") -> None:
     invalidate_runtime_cache("dashboard:")
     if str(job_type).startswith("lifecycle-"):
         invalidate_runtime_cache("lifecycle:")
+    if str(job_type).startswith("calibration-"):
+        invalidate_runtime_cache("calibration:")
     if job_type in {"stable-check", "doctor", "readiness", "cleanup"}:
         invalidate_runtime_cache("stable:")
     if job_type == "update-check":
@@ -118,6 +125,8 @@ JOB_SPECS: dict[str, JobSpec] = {
     "lifecycle-outcome-classify-gaps": JobSpec("lifecycle-outcome-classify-gaps", "生命周期 Outcome 缺口分类", _python_command("lifecycle-outcome-classify-gaps", "--limit", "200"), 600),
     "lifecycle-outcome-quality-report": JobSpec("lifecycle-outcome-quality-report", "生命周期 Outcome 数据质量报告", _python_command("lifecycle-outcome-quality"), 900),
     "lifecycle-calibration-readiness": JobSpec("lifecycle-calibration-readiness", "生命周期模型校准准入检查", _python_command("lifecycle-calibration-readiness"), 300),
+    "calibration-report": JobSpec("calibration-report", "模型校准验证报告", _python_command("calibration-report"), 900),
+    "calibration-rebuild": JobSpec("calibration-rebuild", "强制重建模型校准验证报告", _python_command("calibration-report", "--force"), 1200),
     "update-check": JobSpec("update-check", zh(r"\u68c0\u67e5 GitHub \u66f4\u65b0"), ["bash", "scripts/update_server.sh", "--check"], 180),
     "api-self-test": JobSpec("api-self-test", zh(r"Web API \u81ea\u68c0"), ["internal", "api-self-test"], 60, internal=True),
 }
@@ -158,6 +167,33 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
             command.extend(["--symbol", symbol])
         if spec.job_type == "lifecycle-replay-rebuild":
             command.append("--force-rebuild")
+        return _python_command(*command)
+    if spec.job_type in CALIBRATION_JOB_TYPES:
+        if raw_symbol and not re.fullmatch(r"[A-Z0-9]{2,24}(?:USDT)?", raw_symbol):
+            raise ValueError("invalid calibration symbol")
+        if raw_symbol and not symbol:
+            raise ValueError("invalid calibration symbol")
+        raw_limit = metadata.get("limit")
+        limit: int | None = None
+        if raw_limit not in (None, ""):
+            if isinstance(raw_limit, bool):
+                raise ValueError("invalid calibration limit")
+            try:
+                limit = max(1, min(int(raw_limit), 10000))
+            except (TypeError, ValueError):
+                raise ValueError("invalid calibration limit")
+        force = metadata.get("force", False)
+        if force not in (None, "", False, True) or (
+            force not in (None, "") and not isinstance(force, bool)
+        ):
+            raise ValueError("invalid boolean flag: force")
+        command = ["calibration-report"]
+        if limit is not None:
+            command.extend(["--limit", str(limit)])
+        if symbol:
+            command.extend(["--symbol", symbol])
+        if spec.job_type == "calibration-rebuild" or force is True:
+            command.append("--force")
         return _python_command(*command)
     if spec.job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES:
         def strict_flag(name: str) -> bool:
@@ -208,6 +244,7 @@ LONG_ACTION_JOB_TYPES = {
     "lifecycle-outcome-refresh-analytics",
     "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-incremental-backfill",
     "lifecycle-outcome-classify-gaps", "lifecycle-outcome-quality-report", "lifecycle-calibration-readiness",
+    "calibration-report", "calibration-rebuild",
 }
 
 
@@ -940,7 +977,7 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     try:
         job = store.create_job(job_type, metadata or {})
     except ValueError as exc:
-        code = "invalid_job_scope" if job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES else "invalid_job_type"
+        code = "invalid_job_scope" if job_type in (LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES | CALIBRATION_JOB_TYPES) else "invalid_job_type"
         return {"ok": False, "message": str(exc), "error": str(exc), "code": code}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
@@ -991,7 +1028,8 @@ def lifecycle_intelligence_scheduler_tick(
     intelligence_enabled = bool(getattr(loaded, "lifecycle_intelligence_enable", True))
     outcome_enabled = bool(getattr(loaded, "lifecycle_outcome_backfill_enable", True))
     incremental_enabled = bool(getattr(loaded, "lifecycle_outcome_incremental_enable", True))
-    if not intelligence_enabled and not outcome_enabled and not incremental_enabled:
+    calibration_enabled = bool(getattr(loaded, "model_calibration_enable", True))
+    if not intelligence_enabled and not outcome_enabled and not incremental_enabled and not calibration_enabled:
         return {"ok": True, "enabled": False, "submitted": [], "jobs": []}
     timestamp = int(_now() if now is None else now)
     store = store_for_settings(loaded)
@@ -1022,12 +1060,17 @@ def lifecycle_intelligence_scheduler_tick(
             ("lifecycle-outcome-quality-report", 21600),
             ("lifecycle-calibration-readiness", 21600),
         ))
+    if calibration_enabled:
+        schedule.append((
+            "calibration-report",
+            max(3600, int(getattr(loaded, "model_calibration_interval_sec", 21600) or 21600)),
+        ))
     submitted: list[str] = []
     results: list[dict[str, Any]] = []
     for job_type, interval_sec in schedule:
         recent = store.list_jobs(limit=1, job_type=job_type)
         last_created = int((recent[0] if recent else {}).get("created_at") or 0)
-        if job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES and not last_created:
+        if job_type in DELAYED_RESEARCH_JOB_TYPES and not last_created:
             # A web-service restart must not immediately launch a historical
             # backfill or reconciliation job.  Give operators one full
             # configured interval to deploy, inspect, and run the documented
@@ -1087,6 +1130,7 @@ def start_lifecycle_intelligence_scheduler(*, settings: Settings | None = None) 
         bool(getattr(loaded, "lifecycle_intelligence_enable", True))
         or bool(getattr(loaded, "lifecycle_outcome_backfill_enable", True))
         or bool(getattr(loaded, "lifecycle_outcome_incremental_enable", True))
+        or bool(getattr(loaded, "model_calibration_enable", True))
     ):
         return None
     global _LIFECYCLE_SCHEDULER_THREAD

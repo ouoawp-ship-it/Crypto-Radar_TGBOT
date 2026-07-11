@@ -59,6 +59,17 @@ const groups = [
       "/public-api/lifecycle/outcomes/quality/timeline",
       "/public-api/lifecycle/calibration-readiness"
     ]
+  },
+  {
+    title: "模型校准验证",
+    items: [
+      "/public-api/calibration/summary",
+      "/public-api/calibration/decision",
+      "/public-api/calibration/lifecycle",
+      "/public-api/calibration/factors",
+      "/public-api/calibration/risk",
+      "/public-api/calibration/readiness"
+    ]
   }
 ];
 
@@ -88,6 +99,7 @@ export default function ApiDocsPage() {
         <p className="mt-3">公开数据仅用于信号展示、风险提示和复盘统计；不构成投资建议，不执行自动交易。</p>
         <p className="mt-3">Lifecycle Outcome 的关联覆盖率与数据成熟度是两个不同指标：尚未到期不是失败，pending 不是失败，unavailable 不等于亏损；只有 success Outcome 参与成熟收益统计。</p>
         <p className="mt-3">v1.78.2 进一步区分生命周期关联覆盖率、候选信号关联覆盖率、到期候选解决率、有效 Outcome 成熟率和生命周期成熟率；模型校准准入接口只判断数据是否足够，不会自动修改模型。</p>
+        <p className="mt-3">v1.79.0 模型校准接口只读取预计算报告，验证 Decision、生命周期与资金因子的历史表现；不会请求外部行情、重新计算 Outcome 或自动调整模型参数。</p>
       </section>
     </div>
   );

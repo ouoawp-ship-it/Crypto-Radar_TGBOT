@@ -1,5 +1,30 @@
 # API
 
+## Model Calibration Validation API
+
+v1.79.0 新增预计算、只读的模型验证接口：
+
+```text
+GET /public-api/calibration/summary
+GET /public-api/calibration/decision
+GET /public-api/calibration/lifecycle
+GET /public-api/calibration/factors
+GET /public-api/calibration/risk
+GET /public-api/calibration/readiness
+```
+
+`summary` 返回 `calibration-v1` 报告版本、被验证的 `signal-decision-v1.1` 模型版本、总样本、成熟样本、数据质量和人工建议。其他接口只投影对应统计，不返回原始信号正文、内部路径、数据库路径、异常堆栈或任务 payload。API 不请求外部行情，不现场重算历史 Outcome，也不修改模型。
+
+后台接口继续受登录鉴权保护：
+
+```text
+POST /api/calibration/run
+GET  /api/calibration/report
+POST /api/calibration/rebuild
+```
+
+执行接口通过 Jobs 系统防重复提交并返回 `job_id`；`rebuild` 仅强制重建验证报告，不重算或改写历史 Outcome。所有建议仅供人工复核，不构成投资建议，不执行自动交易。
+
 ## Lifecycle Outcome data quality API
 
 v1.78.2 新增预计算、只读、短缓存的数据质量接口：

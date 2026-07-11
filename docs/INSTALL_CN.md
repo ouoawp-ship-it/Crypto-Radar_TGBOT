@@ -1,5 +1,33 @@
 # 泡泡抓币中文安装目录
 
+## v1.79.0 运维说明
+
+v1.79.0 在现有 `lifecycle.db` 中兼容新增 `calibration_reports` 与 `calibration_metrics`。校准只读取 `signals.db`、`outcomes.db` 和 `lifecycle.db` 的既有结果，不请求 Binance 历史数据，不重新计算历史信号或 Outcome，也不修改任何模型参数。
+
+部署与验收：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py calibration-report --dry-run --pretty
+.venv/bin/python main.py calibration-report --pretty
+.venv/bin/python main.py calibration-decision --pretty
+.venv/bin/python main.py calibration-lifecycle --pretty
+.venv/bin/python main.py calibration-factors --pretty
+.venv/bin/python main.py calibration-readiness --pretty
+```
+
+公开 `/public-api/calibration/*` 只读取最近一次持久化报告；后台 `/api/calibration/run` 与 `/api/calibration/rebuild` 通过 Jobs 系统异步执行。默认配置为：
+
+```dotenv
+MODEL_CALIBRATION_ENABLE=true
+MODEL_CALIBRATION_INTERVAL_SEC=21600
+MODEL_CALIBRATION_CACHE_TTL_SEC=30
+```
+
+校准状态只说明样本数量、成熟度和结果稳定性是否足以人工评估，不会自动修改 `signal-decision-v1.1`、Decision 阈值、Lifecycle 评分或风险规则。完整口径见 `docs/MODEL_CALIBRATION_VALIDATION.md`。
+
 ## v1.78.2 运维说明
 
 v1.78.2 在既有 `lifecycle.db` 中兼容新增 `lifecycle_outcome_candidates`，不会删除或重写历史 Outcome、Lifecycle、信号或 jobs 数据。部署后严格按“刷新候选 → 分类缺口 → 查看质量 → 小批量增量补算 → 扩大批次”的顺序运行：

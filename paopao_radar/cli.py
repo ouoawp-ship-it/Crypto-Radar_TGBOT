@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib
 import json
 import os
 import re
@@ -139,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "calibration-report", "calibration-decision", "calibration-lifecycle", "calibration-factors", "calibration-readiness", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -684,6 +685,143 @@ def run_lifecycle_calibration_readiness(args: argparse.Namespace) -> int:
         write_reports=not bool(getattr(args, "dry_run", False)),
     )
     return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def _calibration_core_function(name: str) -> object:
+    module = importlib.import_module("paopao_radar.lifecycle_calibration")
+    aliases = {
+        "calibration_readiness": (
+            "calibration_validation_readiness",
+            "model_calibration_readiness",
+        ),
+    }
+    for candidate in (name, *aliases.get(name, ())):
+        function = getattr(module, candidate, None)
+        if callable(function):
+            return function
+    raise RuntimeError(f"calibration core function is unavailable: {name}")
+
+
+def _calibration_scope(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    default_limit: int | None = 100,
+) -> dict[str, object]:
+    scope: dict[str, object] = {
+        "settings": settings,
+        "symbol": str(getattr(args, "symbol", "") or ""),
+    }
+    requested_limit = getattr(args, "limit", None)
+    if requested_limit is not None:
+        scope["limit"] = max(1, min(int(requested_limit), 10000))
+    elif default_limit is not None:
+        scope["limit"] = max(1, min(int(default_limit), 1000))
+    return scope
+
+
+def _calibration_report_data(result: object) -> dict[str, object]:
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "calibration report is unavailable"}
+    if isinstance(result.get("data"), dict):
+        data = dict(result["data"])
+        for key, value in result.items():
+            if key not in {"data", "message", "error", "code"} and key not in data:
+                data[key] = value
+        return data
+    return dict(result)
+
+
+def _calibration_section(report: dict[str, object], section: str, *, limit: int) -> dict[str, object]:
+    aliases = {
+        "decision": ("decision", "decision_labels"),
+        "lifecycle": ("lifecycle", "first_levels"),
+        "factors": ("factors", "factor_validation"),
+        "risk": ("risk", "risk_alerts"),
+        "readiness": ("readiness", "calibration_readiness"),
+        "summary": ("summary",),
+    }
+    value: object = None
+    for key in aliases.get(section, (section,)):
+        if key in report:
+            value = report.get(key)
+            break
+    metadata = {
+        key: report.get(key)
+        for key in ("calibration_version", "model_version", "status", "generated_at")
+        if key in report
+    }
+    if section == "lifecycle":
+        data: dict[str, object] = {
+            "items": list(value or [])[:limit] if isinstance(value, (list, tuple)) else [],
+            "first_levels": list(report.get("first_levels") or [])[:limit],
+            "upgrade_paths": list(report.get("upgrade_paths") or [])[:limit],
+            "intelligence_buckets": list(report.get("intelligence_buckets") or [])[:limit],
+        }
+    elif section == "decision" and isinstance(value, (list, tuple)):
+        items = list(value)[:limit]
+        data = {"items": items, "decision_labels": items}
+    elif section == "risk" and isinstance(value, (list, tuple)):
+        items = list(value)[:limit]
+        data = {"items": items, "risk_alerts": items}
+    elif isinstance(value, dict):
+        data = dict(value)
+    elif isinstance(value, (list, tuple)):
+        data = {"items": list(value)[:limit]}
+    elif value is None:
+        data = {"items": [], "available": False}
+    else:
+        data = {"value": value}
+    for key, item in metadata.items():
+        data.setdefault(key, item)
+    return {"ok": bool(report.get("ok", True)), "data": data}
+
+
+def run_calibration_report(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    function = _calibration_core_function("generate_calibration_report")
+    result = _call_lifecycle_quality_function(
+        function,
+        **_calibration_scope(args, settings, default_limit=None),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        force=bool(getattr(args, "force", False) or getattr(args, "force_rebuild", False)),
+        write_reports=not bool(getattr(args, "dry_run", False)),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_calibration_section(args: argparse.Namespace, section: str) -> int:
+    settings = Settings.load()
+    scope = _calibration_scope(args, settings, default_limit=100)
+    symbol = str(scope.get("symbol") or "")
+    if symbol:
+        generate_scope = dict(scope)
+        result = _call_lifecycle_quality_function(
+            _calibration_core_function("generate_calibration_report"),
+            **generate_scope,
+            dry_run=True,
+            force=False,
+            write_reports=False,
+        )
+        if section == "readiness" and isinstance(result, dict) and result.get("ok", True):
+            result = _call_lifecycle_quality_function(
+                _calibration_core_function("calibration_readiness"),
+                settings=settings,
+                report=result,
+            )
+    else:
+        function_name = "calibration_readiness" if section == "readiness" else "get_calibration_report"
+        result = _call_lifecycle_quality_function(
+            _calibration_core_function(function_name),
+            **scope,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    report = _calibration_report_data(result)
+    if section == "readiness" and any(key in report for key in ("ready", "passed", "blocked")):
+        payload: object = {"ok": bool(report.get("ok", True)), "data": report}
+    else:
+        payload = _calibration_section(report, section, limit=int(scope["limit"]))
+    return _print_lifecycle_intelligence_result(payload, args)  # type: ignore[arg-type]
 
 
 def run_lifecycle_tracker_cycle(settings: Settings, args: argparse.Namespace) -> dict[str, object]:
@@ -2206,6 +2344,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_lifecycle_outcome_quality(args)
     if args.command == "lifecycle-calibration-readiness":
         return run_lifecycle_calibration_readiness(args)
+    if args.command == "calibration-report":
+        return run_calibration_report(args)
+    if args.command == "calibration-decision":
+        return run_calibration_section(args, "decision")
+    if args.command == "calibration-lifecycle":
+        return run_calibration_section(args, "lifecycle")
+    if args.command == "calibration-factors":
+        return run_calibration_section(args, "factors")
+    if args.command == "calibration-readiness":
+        return run_calibration_section(args, "readiness")
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

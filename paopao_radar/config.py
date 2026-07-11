@@ -198,6 +198,9 @@ class Settings:
     lifecycle_calibration_min_due_resolution_ratio: float = 0.90
     lifecycle_calibration_min_lifecycle_maturity_ratio: float = 0.60
     lifecycle_calibration_max_error_ratio: float = 0.01
+    model_calibration_enable: bool = True
+    model_calibration_interval_sec: int = 21600
+    model_calibration_cache_ttl_sec: int = 30
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -456,6 +459,9 @@ class Settings:
             lifecycle_calibration_min_due_resolution_ratio=env_float("LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO", 0.90),
             lifecycle_calibration_min_lifecycle_maturity_ratio=env_float("LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO", 0.60),
             lifecycle_calibration_max_error_ratio=env_float("LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO", 0.01),
+            model_calibration_enable=env_bool("MODEL_CALIBRATION_ENABLE", True),
+            model_calibration_interval_sec=env_int("MODEL_CALIBRATION_INTERVAL_SEC", 21600),
+            model_calibration_cache_ttl_sec=env_int("MODEL_CALIBRATION_CACHE_TTL_SEC", 30),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -727,6 +733,9 @@ class Settings:
                 "calibration_min_due_resolution_ratio": self.lifecycle_calibration_min_due_resolution_ratio,
                 "calibration_min_lifecycle_maturity_ratio": self.lifecycle_calibration_min_lifecycle_maturity_ratio,
                 "calibration_max_error_ratio": self.lifecycle_calibration_max_error_ratio,
+                "model_calibration_enable": self.model_calibration_enable,
+                "model_calibration_interval_sec": self.model_calibration_interval_sec,
+                "model_calibration_cache_ttl_sec": self.model_calibration_cache_ttl_sec,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

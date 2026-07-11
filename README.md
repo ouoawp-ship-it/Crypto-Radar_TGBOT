@@ -1,5 +1,13 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.79.0 说明
+
+v1.79.0 新增 Model Calibration Validation Engine。系统只读取已经落库的 Signal、Outcome、Lifecycle、Intelligence 与 Replay 数据，验证 `observe`、`wait_pullback`、`probe`、`avoid_chase`、`risk_alert` 的历史表现，并按首次信号周期、升级路径、Intelligence 分桶、OI、Spot/Futures CVD、成交量和 Funding 组合统计成熟样本、收益与回撤。
+
+校准报告版本为 `calibration-v1`，被验证模型版本为 `signal-decision-v1.1`。报告与 API 使用预计算缓存，不请求外部历史行情，不重新计算或修改历史 Outcome。系统只输出异常发现和人工复核建议，绝不会自动修改 Decision Model 阈值、Lifecycle Intelligence 权重、Telegram 推送或任何交易行为。
+
+CLI、公开只读 API 与 `/calibration` 页面提供 Decision、Lifecycle、因子和 Risk Alert 验证结果；后台执行接口通过 Jobs 系统运行。详细口径见 [`docs/MODEL_CALIBRATION_VALIDATION.md`](docs/MODEL_CALIBRATION_VALIDATION.md)。所有结果仅用于研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.78.2 说明
 
 v1.78.2 新增 Lifecycle Outcome Data Quality & Coverage。系统为每个生命周期 Outcome 候选持久化资格、到期时间、处理状态、重试信息和可操作原因，把旧的笼统 `no_outcome_row` 拆分为等待到期、待补算、不合资格、数据不可用、可重试错误、歧义旧数据或真实错误。分类本身不强制生成 Outcome；只有 eligible、已到期且可计算的候选才进入有界、幂等的增量补算。
