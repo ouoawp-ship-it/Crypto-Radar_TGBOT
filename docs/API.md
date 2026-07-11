@@ -1,5 +1,32 @@
 # API
 
+## Model Registry API
+
+v1.81.0 新增公开只读模型治理接口：
+
+```text
+GET /public-api/models/current
+GET /public-api/models/history
+GET /public-api/models/performance
+GET /public-api/models/health
+```
+
+公开接口只返回模型名称、版本、状态、健康度和聚合性能摘要，不返回完整 `parameters_json`、审批人内部标识、数据库路径、任务 payload 或异常堆栈。查询只读取 Registry 缓存，不重算 Outcome、不请求外部行情。
+
+后台接口受登录鉴权保护：
+
+```text
+GET  /api/models/list
+GET  /api/models/detail
+GET  /api/models/diff
+POST /api/models/register
+POST /api/models/approve
+POST /api/models/reject
+POST /api/models/rollback
+```
+
+写接口通过 Jobs 系统执行、防重复并记录审计。审批默认止于 `approved`；登记 Production 或完成 Rollback 必须显式二次确认且通过运行时 hash 校验。API 本身不会改写生产模型或配置。
+
 ## Model Optimization Simulation API
 
 v1.80.0 新增只读的候选模型模拟接口：

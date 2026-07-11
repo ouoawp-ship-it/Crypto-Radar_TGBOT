@@ -79,6 +79,15 @@ const groups = [
       "/public-api/optimization/report",
       "/public-api/optimization/readiness"
     ]
+  },
+  {
+    title: "模型注册与表现",
+    items: [
+      "/public-api/models/current",
+      "/public-api/models/history",
+      "/public-api/models/performance",
+      "/public-api/models/health"
+    ]
   }
 ];
 
@@ -110,6 +119,7 @@ export default function ApiDocsPage() {
         <p className="mt-3">v1.78.2 进一步区分生命周期关联覆盖率、候选信号关联覆盖率、到期候选解决率、有效 Outcome 成熟率和生命周期成熟率；模型校准准入接口只判断数据是否足够，不会自动修改模型。</p>
         <p className="mt-3">v1.79.0 模型校准接口只读取预计算报告，验证 Decision、生命周期与资金因子的历史表现；不会请求外部行情、重新计算 Outcome 或自动调整模型参数。</p>
         <p className="mt-3">v1.80.0 模型优化模拟接口只读取预计算候选报告；生产模型保持 immutable，候选方案固定 auto_apply=false，必须人工审核，不会自动修改模型。</p>
+        <p className="mt-3">v1.81.0 模型注册接口仅公开版本、状态和性能摘要，不公开完整参数或内部配置。模型批准、拒绝、启用与回滚都需要后台登录和人工确认，不会自动应用模型。</p>
       </section>
     </div>
   );

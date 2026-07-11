@@ -35,6 +35,7 @@ CONCURRENT_GUARD_JOB_TYPES = {
     "lifecycle-outcome-classify-gaps", "lifecycle-outcome-quality-report", "lifecycle-calibration-readiness",
     "calibration-report", "calibration-rebuild",
     "optimization-run", "optimization-rebuild",
+    "model-register", "model-approve", "model-reject", "model-rollback",
 }
 LIFECYCLE_RESEARCH_JOB_TYPES = {
     "lifecycle-intelligence",
@@ -57,6 +58,8 @@ LIFECYCLE_RESEARCH_JOB_TYPES = {
 }
 CALIBRATION_JOB_TYPES = {"calibration-report", "calibration-rebuild"}
 OPTIMIZATION_JOB_TYPES = {"optimization-run", "optimization-rebuild"}
+MODEL_REGISTRY_JOB_TYPES = {"model-register", "model-approve", "model-reject", "model-rollback"}
+MODEL_REGISTRY_GUARD_JOB_TYPES = set(MODEL_REGISTRY_JOB_TYPES)
 LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES = {
     "lifecycle-outcome-link",
     "lifecycle-outcome-backfill",
@@ -87,6 +90,8 @@ def invalidate_job_runtime_cache(job_type: str = "") -> None:
         invalidate_runtime_cache("calibration:")
     if str(job_type).startswith("optimization-"):
         invalidate_runtime_cache("optimization:")
+    if str(job_type).startswith("model-"):
+        invalidate_runtime_cache("models:")
     if job_type in {"stable-check", "doctor", "readiness", "cleanup"}:
         invalidate_runtime_cache("stable:")
     if job_type == "update-check":
@@ -135,6 +140,10 @@ JOB_SPECS: dict[str, JobSpec] = {
     "calibration-rebuild": JobSpec("calibration-rebuild", "强制重建模型校准验证报告", _python_command("calibration-report", "--force"), 1200),
     "optimization-run": JobSpec("optimization-run", "模型优化候选模拟", _python_command("optimization-run"), 1200),
     "optimization-rebuild": JobSpec("optimization-rebuild", "强制重建模型优化报告", _python_command("optimization-run", "--force"), 1800),
+    "model-register": JobSpec("model-register", "注册候选模型", _python_command("model-register"), 120),
+    "model-approve": JobSpec("model-approve", "人工审批模型", _python_command("model-approve"), 120),
+    "model-reject": JobSpec("model-reject", "人工拒绝模型", _python_command("model-reject"), 120),
+    "model-rollback": JobSpec("model-rollback", "记录或确认模型回滚", _python_command("model-rollback"), 120),
     "update-check": JobSpec("update-check", zh(r"\u68c0\u67e5 GitHub \u66f4\u65b0"), ["bash", "scripts/update_server.sh", "--check"], 180),
     "api-self-test": JobSpec("api-self-test", zh(r"Web API \u81ea\u68c0"), ["internal", "api-self-test"], 60, internal=True),
 }
@@ -234,6 +243,62 @@ def _lifecycle_job_command(spec: JobSpec, metadata: dict[str, Any]) -> list[str]
         if spec.job_type == "optimization-rebuild" or force is True:
             command.append("--force")
         return _python_command(*command)
+    if spec.job_type in MODEL_REGISTRY_JOB_TYPES:
+        model_key = str(metadata.get("model") or "signal-decision").strip().lower()
+        version = str(metadata.get("version") or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,63}", model_key):
+            raise ValueError("invalid model key")
+        if version and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
+            raise ValueError("invalid model version")
+        if not version and spec.job_type != "model-register":
+            raise ValueError("model version is required")
+
+        def bounded_text(name: str, *, required: bool, maximum: int) -> str:
+            value = str(metadata.get(name) or "").strip()
+            if required and not value:
+                raise ValueError(f"{name} is required")
+            if len(value) > maximum or re.search(r"[\x00-\x1f\x7f]", value):
+                raise ValueError(f"invalid {name}")
+            return value
+
+        command = [spec.job_type, "--model", model_key]
+        if version:
+            command.extend(["--version", version])
+        if spec.job_type == "model-register":
+            source_version = bounded_text("source_version", required=False, maximum=128)
+            description = bounded_text("description", required=False, maximum=500)
+            scenario = str(metadata.get("scenario") or "").strip().lower()
+            if scenario and scenario not in {
+                "threshold_tuning", "risk_control", "lifecycle_quality", "module_rebalance",
+            }:
+                raise ValueError("invalid optimization scenario")
+            if not version and not scenario:
+                raise ValueError("candidate registration requires version or scenario")
+            if source_version:
+                command.extend(["--source-version", source_version])
+            if description:
+                command.extend(["--description", description])
+            if scenario:
+                command.extend(["--scenario", scenario])
+            return _python_command(*command)
+
+        approved_by = bounded_text("approved_by", required=True, maximum=128)
+        reason = bounded_text("reason", required=True, maximum=500)
+        command.extend(["--approved-by", approved_by, "--reason", reason])
+        activate = metadata.get("activate", False)
+        confirm = metadata.get("confirm_production", False)
+        if not isinstance(activate, bool) or not isinstance(confirm, bool):
+            raise ValueError("activate and confirm_production must be boolean")
+        if spec.job_type == "model-approve":
+            if activate != confirm:
+                raise ValueError("production activation requires both activate and confirm_production")
+            if activate:
+                command.extend(["--activate", "--confirm-production"])
+        elif activate or (confirm and spec.job_type != "model-rollback"):
+            raise ValueError("invalid production activation flags")
+        if spec.job_type == "model-rollback" and confirm:
+            command.append("--confirm-production")
+        return _python_command(*command)
     if spec.job_type in LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES:
         def strict_flag(name: str) -> bool:
             value = metadata.get(name, False)
@@ -285,6 +350,7 @@ LONG_ACTION_JOB_TYPES = {
     "lifecycle-outcome-classify-gaps", "lifecycle-outcome-quality-report", "lifecycle-calibration-readiness",
     "calibration-report", "calibration-rebuild",
     "optimization-run", "optimization-rebuild",
+    "model-register", "model-approve", "model-reject", "model-rollback",
 }
 
 
@@ -415,6 +481,19 @@ class JobStore:
             if allow_reuse and spec.job_type in CONCURRENT_GUARD_JOB_TYPES:
                 if spec.job_type in LIFECYCLE_RESEARCH_JOB_TYPES:
                     guarded_types = sorted(LIFECYCLE_RESEARCH_JOB_TYPES)
+                    placeholders = ",".join("?" for _ in guarded_types)
+                    active = conn.execute(
+                        f"""
+                        SELECT * FROM jobs
+                        WHERE job_type IN ({placeholders})
+                          AND status IN ('queued', 'running')
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        guarded_types,
+                    ).fetchone()
+                elif spec.job_type in MODEL_REGISTRY_GUARD_JOB_TYPES:
+                    guarded_types = sorted(MODEL_REGISTRY_GUARD_JOB_TYPES)
                     placeholders = ",".join("?" for _ in guarded_types)
                     active = conn.execute(
                         f"""
@@ -1019,6 +1098,7 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
     except ValueError as exc:
         code = "invalid_job_scope" if job_type in (
             LIFECYCLE_OUTCOME_SCOPE_JOB_TYPES | CALIBRATION_JOB_TYPES | OPTIMIZATION_JOB_TYPES
+            | MODEL_REGISTRY_JOB_TYPES
         ) else "invalid_job_type"
         return {"ok": False, "message": str(exc), "error": str(exc), "code": code}
     except Exception as exc:
@@ -1036,6 +1116,16 @@ def create_job_payload(job_type: str, metadata: dict[str, Any] | None = None, *,
             "blocked_by_job_type": active_type,
             "message": "已有其他生命周期研究任务正在运行，请等待完成后重试。",
             "code": "lifecycle_research_busy",
+        }
+    if reused and job_type in MODEL_REGISTRY_GUARD_JOB_TYPES and active_type != job_type:
+        return {
+            "ok": False,
+            "job_id": int(job.get("id") or 0),
+            "job": enrich_job(job),
+            "reused": False,
+            "blocked_by_job_type": active_type,
+            "message": "已有模型注册表写任务正在运行，请等待完成后重试。",
+            "code": "model_registry_busy",
         }
     if start and not reused:
         try:
@@ -1318,6 +1408,13 @@ def rerun_job_payload(job_id: int, *, settings: Settings | None = None, start: b
         validate_job_type(str(job.get("job_type") or ""))
     except ValueError as exc:
         return {"ok": False, "message": str(exc), "error": str(exc), "code": "invalid_job_type"}
+    if str(job.get("job_type") or "") in MODEL_REGISTRY_JOB_TYPES:
+        return {
+            "ok": False,
+            "message": "模型注册、审批、拒绝或回滚必须提交新的人工请求，不能重跑旧任务。",
+            "error": "manual model action requires a new audited request",
+            "code": "manual_model_action_requires_new_request",
+        }
     original_metadata = dict(job.get("metadata") or {})
     metadata = {
         key: original_metadata[key]

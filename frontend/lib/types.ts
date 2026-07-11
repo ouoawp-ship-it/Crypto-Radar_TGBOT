@@ -684,6 +684,130 @@ export type OptimizationReadinessPayload = {
   [key: string]: unknown;
 };
 
+export type PublicModelItem = {
+  model_key?: string;
+  model_version?: string;
+  model_type?: string;
+  status?: string;
+  health?: string;
+  health_status?: string;
+  source_version?: string;
+  production_since?: string;
+  released_at?: string;
+  deprecated_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  performance_summary?: Record<string, unknown>;
+  approval_status?: string;
+  change_summary?: string;
+  [key: string]: unknown;
+};
+
+export type ModelCurrentPayload = PublicModelItem & {
+  current?: PublicModelItem;
+  model?: PublicModelItem;
+};
+
+export type ModelHistoryPayload = {
+  items?: PublicModelItem[];
+  models?: PublicModelItem[];
+  count?: number;
+  [key: string]: unknown;
+};
+
+export type ModelPerformancePeriod = {
+  period?: string;
+  sample_count?: number;
+  success_ratio?: number | null;
+  avg_return?: number | null;
+  avg_return_pct?: number | null;
+  avg_drawdown?: number | null;
+  avg_drawdown_pct?: number | null;
+  risk_score?: number | null;
+  created_at?: string;
+  [key: string]: unknown;
+};
+
+export type ModelPerformancePayload = {
+  model_key?: string;
+  model_version?: string;
+  periods?: ModelPerformancePeriod[];
+  items?: ModelPerformancePeriod[];
+  snapshots?: ModelPerformancePeriod[];
+  [key: string]: unknown;
+};
+
+export type ModelHealthAlert = {
+  code?: string;
+  label?: string;
+  message?: string;
+  severity?: string;
+  [key: string]: unknown;
+};
+
+export type ModelHealthPayload = {
+  model_key?: string;
+  model_version?: string;
+  status?: string;
+  health_status?: string;
+  health_label?: string;
+  baseline?: Record<string, unknown>;
+  current?: Record<string, unknown> | ModelPerformancePeriod[];
+  alerts?: Array<string | ModelHealthAlert>;
+  warnings?: Array<string | ModelHealthAlert>;
+  checked_at?: string;
+  updated_at?: string;
+  auto_action?: boolean;
+  [key: string]: unknown;
+};
+
+export type PrivateModelItem = PublicModelItem & {
+  id?: number;
+  scenario?: string;
+  scenario_key?: string;
+  run_id?: number | string;
+  simulation_status?: string;
+  simulation_summary?: Record<string, unknown>;
+  approved_at?: string;
+  rejected_at?: string;
+  [key: string]: unknown;
+};
+
+export type ModelDiffChange = {
+  parameter?: string;
+  label?: string;
+  old?: unknown;
+  new?: unknown;
+  old_value?: unknown;
+  new_value?: unknown;
+  impact_scope?: string;
+  simulation_result?: string | Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type ModelDiffPayload = {
+  production?: PublicModelItem;
+  candidate?: PrivateModelItem;
+  changes?: ModelDiffChange[];
+  simulation_summary?: Record<string, unknown>;
+  approval_status?: string;
+  [key: string]: unknown;
+};
+
+export type ModelPrivateListPayload = {
+  items?: PrivateModelItem[];
+  models?: PrivateModelItem[];
+  count?: number;
+  [key: string]: unknown;
+};
+
+export type ModelJobPayload = {
+  job_id?: string | number;
+  status?: string;
+  message?: string;
+  [key: string]: unknown;
+};
+
 export type LifecycleOutcomeReasonsPayload = {
   reasons?: Record<string, number>;
   unlinked_reasons?: Record<string, number>;

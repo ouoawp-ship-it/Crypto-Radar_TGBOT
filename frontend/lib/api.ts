@@ -26,6 +26,10 @@ import type {
   LifecycleReplayPayload,
   LifecycleSimilarityPayload,
   LifecycleSummaryPayload,
+  ModelCurrentPayload,
+  ModelHealthPayload,
+  ModelHistoryPayload,
+  ModelPerformancePayload,
   OptimizationReadinessPayload,
   OptimizationReportPayload,
   OptimizationScenariosPayload,
@@ -98,6 +102,7 @@ function publicApiRevalidateSec(path: `/public-api/${string}`): number {
   if (path === "/public-api/lifecycle/calibration-readiness") return 30;
   if (path.startsWith("/public-api/calibration/")) return 30;
   if (path.startsWith("/public-api/optimization/")) return 30;
+  if (path.startsWith("/public-api/models/")) return 30;
   if (path.startsWith("/public-api/lifecycle/outcomes/")) return 10;
   if (path === "/public-api/outcomes/stats") return 30;
   if (path.endsWith("/stats")) return 15;
@@ -521,6 +526,38 @@ export function getOptimizationReport() {
 export function getOptimizationReadiness() {
   return publicFetch<OptimizationReadinessPayload>(
     "/public-api/optimization/readiness",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getCurrentModel() {
+  return publicFetch<ModelCurrentPayload>(
+    "/public-api/models/current",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getModelHistory() {
+  return publicFetch<ModelHistoryPayload>(
+    "/public-api/models/history",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getModelPerformance() {
+  return publicFetch<ModelPerformancePayload>(
+    "/public-api/models/performance",
+    undefined,
+    { revalidateSec: 30 }
+  );
+}
+
+export function getModelHealth() {
+  return publicFetch<ModelHealthPayload>(
+    "/public-api/models/health",
     undefined,
     { revalidateSec: 30 }
   );
