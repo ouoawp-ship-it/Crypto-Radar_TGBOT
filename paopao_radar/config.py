@@ -201,6 +201,9 @@ class Settings:
     model_calibration_enable: bool = True
     model_calibration_interval_sec: int = 21600
     model_calibration_cache_ttl_sec: int = 30
+    model_optimization_enable: bool = False
+    model_optimization_interval_sec: int = 21600
+    model_optimization_cache_ttl_sec: int = 30
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -462,6 +465,9 @@ class Settings:
             model_calibration_enable=env_bool("MODEL_CALIBRATION_ENABLE", True),
             model_calibration_interval_sec=env_int("MODEL_CALIBRATION_INTERVAL_SEC", 21600),
             model_calibration_cache_ttl_sec=env_int("MODEL_CALIBRATION_CACHE_TTL_SEC", 30),
+            model_optimization_enable=env_bool("MODEL_OPTIMIZATION_ENABLE", False),
+            model_optimization_interval_sec=env_int("MODEL_OPTIMIZATION_INTERVAL_SEC", 21600),
+            model_optimization_cache_ttl_sec=env_int("MODEL_OPTIMIZATION_CACHE_TTL_SEC", 30),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -736,6 +742,9 @@ class Settings:
                 "model_calibration_enable": self.model_calibration_enable,
                 "model_calibration_interval_sec": self.model_calibration_interval_sec,
                 "model_calibration_cache_ttl_sec": self.model_calibration_cache_ttl_sec,
+                "model_optimization_enable": self.model_optimization_enable,
+                "model_optimization_interval_sec": self.model_optimization_interval_sec,
+                "model_optimization_cache_ttl_sec": self.model_optimization_cache_ttl_sec,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

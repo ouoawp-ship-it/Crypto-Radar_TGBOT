@@ -140,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "calibration-report", "calibration-decision", "calibration-lifecycle", "calibration-factors", "calibration-readiness", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "structure-radar", "structure-loop", "structure-review", "runtime-status", "cleanup", "outcome-scan", "lifecycle-backfill", "lifecycle-scan", "lifecycle-status", "lifecycle-intelligence", "lifecycle-replay", "lifecycle-replay-backfill", "lifecycle-analytics", "lifecycle-similar", "lifecycle-outcome-link", "lifecycle-outcome-backfill", "lifecycle-outcome-status", "lifecycle-outcome-reconcile", "lifecycle-outcome-refresh-candidates", "lifecycle-outcome-classify-gaps", "lifecycle-outcome-incremental", "lifecycle-outcome-quality", "lifecycle-calibration-readiness", "calibration-report", "calibration-decision", "calibration-lifecycle", "calibration-factors", "calibration-readiness", "optimization-scenarios", "optimization-run", "optimization-report", "optimization-readiness", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -167,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lookback-hours", type=int, default=None, help="structure-review 或 lifecycle 命令的回看小时数")
     parser.add_argument("--horizon", default="", help="用于 outcome-scan/lifecycle-outcome：只处理 1h/4h/24h/72h 中的一个窗口")
     parser.add_argument("--module", default="", help="用于 lifecycle outcome 质量命令：只处理指定信号模块")
+    parser.add_argument("--scenario", default="", help="用于模型优化模拟：threshold_tuning/risk_control/lifecycle_quality/module_rebalance")
     parser.add_argument("--symbol", default="", help="用于 outcome/lifecycle 命令：只处理某个币种，例如 BTC 或 BTCUSDT")
     parser.add_argument("--lifecycle-id", type=int, default=None, help="用于 lifecycle-replay/lifecycle-outcome：按生命周期 ID 精确处理")
     parser.add_argument("--all-active", action="store_true", help="用于 lifecycle-intelligence：处理全部活跃生命周期")
@@ -822,6 +823,147 @@ def run_calibration_section(args: argparse.Namespace, section: str) -> int:
     else:
         payload = _calibration_section(report, section, limit=int(scope["limit"]))
     return _print_lifecycle_intelligence_result(payload, args)  # type: ignore[arg-type]
+
+
+OPTIMIZATION_SCENARIOS = {
+    "threshold_tuning",
+    "risk_control",
+    "lifecycle_quality",
+    "module_rebalance",
+}
+
+
+def _optimizer_core_function(name: str) -> object:
+    module = importlib.import_module("paopao_radar.model_optimizer")
+    function = getattr(module, name, None)
+    if not callable(function):
+        raise RuntimeError(f"optimizer core function is unavailable: {name}")
+    return function
+
+
+def _optimization_scope(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    default_limit: int | None = None,
+) -> dict[str, object]:
+    scenario = str(getattr(args, "scenario", "") or "").strip().lower()
+    if scenario == "all":
+        scenario = ""
+    if scenario and scenario not in OPTIMIZATION_SCENARIOS:
+        raise ValueError(f"unsupported optimization scenario: {scenario}")
+    scope: dict[str, object] = {
+        "settings": settings,
+        "scenario": scenario,
+        "symbol": str(getattr(args, "symbol", "") or ""),
+    }
+    requested_limit = getattr(args, "limit", None)
+    if requested_limit is not None:
+        scope["limit"] = max(1, min(int(requested_limit), 10000))
+    elif default_limit is not None:
+        scope["limit"] = max(1, min(int(default_limit), 1000))
+    return scope
+
+
+def _optimization_symbol_guard(args: argparse.Namespace) -> dict[str, object] | None:
+    if str(getattr(args, "symbol", "") or "").strip() and not bool(getattr(args, "dry_run", False)):
+        return {
+            "ok": False,
+            "code": "optimization_symbol_requires_dry_run",
+            "error": "单币优化只允许 CLI 内存 dry-run，不会持久化或自动应用参数。",
+        }
+    return None
+
+
+def run_optimization_scenarios(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    result = _call_lifecycle_quality_function(
+        _optimizer_core_function("list_optimization_scenarios"),
+        settings=settings,
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_optimization(args: argparse.Namespace) -> int:
+    blocked = _optimization_symbol_guard(args)
+    if blocked:
+        return _print_lifecycle_intelligence_result(blocked, args)
+    settings = Settings.load()
+    try:
+        scope = _optimization_scope(args, settings)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_optimization_scenario", "error": str(exc)}, args,
+        )
+    dry_run = bool(getattr(args, "dry_run", False))
+    write_reports = not dry_run and not scope.get("symbol") and "limit" not in scope
+    result = _call_lifecycle_quality_function(
+        _optimizer_core_function("run_optimization"),
+        **scope,
+        dry_run=dry_run,
+        force=bool(getattr(args, "force", False) or getattr(args, "force_rebuild", False)),
+        write_reports=write_reports,
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_optimization_report(args: argparse.Namespace) -> int:
+    blocked = _optimization_symbol_guard(args)
+    if blocked:
+        return _print_lifecycle_intelligence_result(blocked, args)
+    settings = Settings.load()
+    try:
+        scope = _optimization_scope(args, settings)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_optimization_scenario", "error": str(exc)}, args,
+        )
+    dry_run = bool(getattr(args, "dry_run", False))
+    if scope.get("symbol"):
+        result = _call_lifecycle_quality_function(
+            _optimizer_core_function("run_optimization"),
+            **scope,
+            dry_run=True,
+            force=False,
+            write_reports=False,
+        )
+    else:
+        result = _call_lifecycle_quality_function(
+            _optimizer_core_function("generate_optimization_report"),
+            **scope,
+            dry_run=dry_run,
+            write_reports=not dry_run,
+        )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
+
+
+def run_optimization_readiness(args: argparse.Namespace) -> int:
+    blocked = _optimization_symbol_guard(args)
+    if blocked:
+        return _print_lifecycle_intelligence_result(blocked, args)
+    settings = Settings.load()
+    try:
+        scope = _optimization_scope(args, settings)
+    except ValueError as exc:
+        return _print_lifecycle_intelligence_result(
+            {"ok": False, "code": "invalid_optimization_scenario", "error": str(exc)}, args,
+        )
+    report: object | None = None
+    if scope.get("symbol"):
+        report = _call_lifecycle_quality_function(
+            _optimizer_core_function("run_optimization"),
+            **scope,
+            dry_run=True,
+            force=False,
+            write_reports=False,
+        )
+    result = _call_lifecycle_quality_function(
+        _optimizer_core_function("optimization_readiness"),
+        settings=settings,
+        report=report,
+        scenario=str(scope.get("scenario") or ""),
+    )
+    return _print_lifecycle_intelligence_result(result, args)  # type: ignore[arg-type]
 
 
 def run_lifecycle_tracker_cycle(settings: Settings, args: argparse.Namespace) -> dict[str, object]:
@@ -2354,6 +2496,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_calibration_section(args, "factors")
     if args.command == "calibration-readiness":
         return run_calibration_section(args, "readiness")
+    if args.command == "optimization-scenarios":
+        return run_optimization_scenarios(args)
+    if args.command == "optimization-run":
+        return run_optimization(args)
+    if args.command == "optimization-report":
+        return run_optimization_report(args)
+    if args.command == "optimization-readiness":
+        return run_optimization_readiness(args)
     if args.command == "price-alerts":
         from .ai_assistant import price_alerts_payload
 

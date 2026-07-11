@@ -1,5 +1,28 @@
 # API
 
+## Model Optimization Simulation API
+
+v1.80.0 新增只读的候选模型模拟接口：
+
+```text
+GET /public-api/optimization/summary
+GET /public-api/optimization/scenarios
+GET /public-api/optimization/report
+GET /public-api/optimization/readiness
+```
+
+公开接口只返回最近一次持久化的 `optimization-v1` 报告，展示 immutable production model、候选场景、production/candidate/delta、置信度和人工建议。公开请求不会执行模拟、请求外部行情、重算 Outcome 或修改模型。
+
+后台接口受登录鉴权保护：
+
+```text
+POST /api/optimization/run
+GET  /api/optimization/report
+POST /api/optimization/rebuild
+```
+
+执行接口通过 Jobs 系统防重复提交并返回 `job_id`。`rebuild` 只强制重建模拟结果和聚合报告，不会写入 `decision_model.py`、Lifecycle/Risk 权重或生产配置。所有建议固定 `auto_apply=false`。
+
 ## Model Calibration Validation API
 
 v1.79.0 新增预计算、只读的模型验证接口：

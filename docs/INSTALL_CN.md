@@ -1,5 +1,32 @@
 # 泡泡抓币中文安装目录
 
+## v1.80.0 运维说明
+
+v1.80.0 在 `lifecycle.db` 中兼容新增 `optimization_scenarios`、`optimization_runs` 与 `optimization_metrics`。模拟只读取现有 Signal、Outcome、Lifecycle 和 Calibration 数据，不请求外部行情、不重算或改写历史 Outcome，也不修改生产模型。
+
+部署后先 dry-run，再执行全场景模拟并生成只读报告：
+
+```bash
+cd /home/ubuntu/paopao-crypto-radar
+paopao update --yes || bash scripts/update_server.sh --yes
+
+.venv/bin/python main.py optimization-scenarios --pretty
+.venv/bin/python main.py optimization-run --dry-run --pretty
+.venv/bin/python main.py optimization-run --pretty
+.venv/bin/python main.py optimization-report --pretty
+.venv/bin/python main.py optimization-readiness --pretty
+```
+
+显式 `--scenario` 只运行白名单场景，`--symbol` 和 `--limit` 仅用于内存 dry-run，不覆盖全局报告。公开 `/public-api/optimization/*` 只读取最新持久化结果；后台 run/rebuild 通过 Jobs 异步执行。
+
+```dotenv
+MODEL_OPTIMIZATION_ENABLE=false
+MODEL_OPTIMIZATION_INTERVAL_SEC=21600
+MODEL_OPTIMIZATION_CACHE_TTL_SEC=30
+```
+
+默认关闭自动调度；人工运行模拟也只会写 Optimization 表和聚合报告。`auto_apply` 永远为 `false`，任何未来模型发布都必须经过独立人工批准流程。完整说明见 `docs/MODEL_OPTIMIZATION_SIMULATION.md`。
+
 ## v1.79.0 运维说明
 
 v1.79.0 在现有 `lifecycle.db` 中兼容新增 `calibration_reports` 与 `calibration_metrics`。校准只读取 `signals.db`、`outcomes.db` 和 `lifecycle.db` 的既有结果，不请求 Binance 历史数据，不重新计算历史信号或 Outcome，也不修改任何模型参数。

@@ -16,7 +16,7 @@ from .lifecycle_store import normalize_lifecycle_symbol, safe_float, safe_int
 
 
 DEFAULT_LIFECYCLE_DB_PATH = BASE_DIR / "data" / "lifecycle.db"
-LIFECYCLE_SCHEMA_VERSION = 1790
+LIFECYCLE_SCHEMA_VERSION = 1800
 
 INTELLIGENCE_JSON_FIELDS = {
     "strengths_json": "strengths",
@@ -438,11 +438,133 @@ class IntelligenceStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS optimization_scenarios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scenario_key TEXT NOT NULL UNIQUE,
+                    scenario_name TEXT NOT NULL,
+                    scenario_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    base_model_version TEXT NOT NULL,
+                    scenario_version TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    candidate_params_json TEXT NOT NULL,
+                    built_in INTEGER NOT NULL DEFAULT 1,
+                    optimization_version TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS optimization_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scenario_id INTEGER NOT NULL,
+                    run_key TEXT NOT NULL UNIQUE,
+                    optimization_version TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    source_signature TEXT NOT NULL,
+                    scope_json TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    mature_sample_count INTEGER NOT NULL DEFAULT 0,
+                    selected_sample_count INTEGER NOT NULL DEFAULT 0,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    confidence_label TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    production_json TEXT NOT NULL,
+                    candidate_json TEXT NOT NULL,
+                    delta_json TEXT NOT NULL,
+                    recommendations_json TEXT NOT NULL,
+                    readiness_json TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS optimization_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    metric_scope TEXT NOT NULL,
+                    metric_type TEXT NOT NULL,
+                    metric_key TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    production_value REAL,
+                    candidate_value REAL,
+                    delta_value REAL,
+                    metric_value REAL,
+                    metrics_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, metric_scope, metric_key)
+                )
+                """
+            )
             # Forward-compatible migration for databases created by early v1.78 builds.
             self._add_column(conn, "lifecycle_intelligence", "stage TEXT")
             self._add_column(conn, "lifecycle_intelligence", "source_signature TEXT")
             self._add_column(conn, "lifecycle_replays", "outcome_count INTEGER DEFAULT 0")
             self._add_column(conn, "lifecycle_replays", "source_signature TEXT")
+            # Forward-compatible migration for pre-release v1.80 databases.
+            self._add_column(conn, "optimization_scenarios", "scenario_key TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "scenario_name TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "name TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "base_model_version TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "scenario_version TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "parameters_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_scenarios", "candidate_params_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_scenarios", "built_in INTEGER NOT NULL DEFAULT 0")
+            self._add_column(conn, "optimization_scenarios", "optimization_version TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "status TEXT NOT NULL DEFAULT 'draft'")
+            self._add_column(conn, "optimization_scenarios", "created_at TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_scenarios", "updated_at TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "run_key TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "optimization_version TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "model_version TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "source_signature TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "scope_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "selected_sample_count INTEGER NOT NULL DEFAULT 0")
+            self._add_column(conn, "optimization_runs", "confidence REAL NOT NULL DEFAULT 0")
+            self._add_column(conn, "optimization_runs", "confidence_label TEXT NOT NULL DEFAULT 'low_confidence'")
+            self._add_column(conn, "optimization_runs", "production_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "candidate_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "delta_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "recommendations_json TEXT NOT NULL DEFAULT '[]'")
+            self._add_column(conn, "optimization_runs", "readiness_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "report_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "result_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column(conn, "optimization_runs", "started_at TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "finished_at TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "generated_at TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_runs", "created_at TEXT NOT NULL DEFAULT ''")
+            self._add_column(conn, "optimization_metrics", "metric_scope TEXT NOT NULL DEFAULT 'comparison'")
+            self._add_column(conn, "optimization_metrics", "metric_type TEXT NOT NULL DEFAULT 'summary'")
+            self._add_column(conn, "optimization_metrics", "sample_count INTEGER NOT NULL DEFAULT 0")
+            self._add_column(conn, "optimization_metrics", "production_value REAL")
+            self._add_column(conn, "optimization_metrics", "candidate_value REAL")
+            self._add_column(conn, "optimization_metrics", "delta_value REAL")
+            self._add_column(conn, "optimization_metrics", "metric_value REAL")
+            self._add_column(conn, "optimization_metrics", "created_at TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "UPDATE optimization_scenarios SET scenario_key='legacy-' || id "
+                "WHERE COALESCE(scenario_key,'')=''"
+            )
+            conn.execute(
+                "UPDATE optimization_scenarios SET name=COALESCE(NULLIF(scenario_name,''),scenario_key) "
+                "WHERE COALESCE(name,'')=''"
+            )
+            conn.execute(
+                "UPDATE optimization_runs SET run_key='legacy-run-' || id "
+                "WHERE COALESCE(run_key,'')=''"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_lifecycle_intelligence_score "
                 "ON lifecycle_intelligence(intelligence_score DESC)"
@@ -520,6 +642,30 @@ class IntelligenceStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_calibration_metrics_report_type "
                 "ON calibration_metrics(report_id, metric_type, metric_key)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_optimization_scenarios_key "
+                "ON optimization_scenarios(scenario_key)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_optimization_runs_key "
+                "ON optimization_runs(run_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optimization_scenarios_type "
+                "ON optimization_scenarios(scenario_type, scenario_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optimization_runs_scenario_time "
+                "ON optimization_runs(scenario_id, generated_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optimization_runs_signature "
+                "ON optimization_runs(optimization_version, model_version, source_signature)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optimization_metrics_run_scope "
+                "ON optimization_metrics(run_id, metric_scope, metric_key)"
             )
             current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             if current_version < LIFECYCLE_SCHEMA_VERSION:
@@ -1646,6 +1792,222 @@ class IntelligenceStore:
             ).fetchall()
         ]
         return result
+
+    def write_optimization_bundle(
+        self,
+        scenarios: list[dict[str, Any]],
+        runs: list[dict[str, Any]],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Persist scenario metadata, runs, and metrics in one transaction."""
+
+        if conn is None:
+            with self.transaction() as owned:
+                return self.write_optimization_bundle(scenarios, runs, conn=owned)
+        now = _iso()
+        for raw in scenarios:
+            scenario = dict(raw)
+            key = str(scenario.get("scenario_key") or "").strip()
+            scenario_type = str(scenario.get("scenario_type") or "").strip()
+            version = str(scenario.get("optimization_version") or "").strip()
+            if not key or not scenario_type or not version:
+                raise ValueError("scenario_key, scenario_type, and optimization_version are required")
+            conn.execute(
+                "INSERT INTO optimization_scenarios ("
+                "scenario_key,scenario_name,scenario_type,name,description,base_model_version,"
+                "scenario_version,parameters_json,candidate_params_json,built_in,"
+                "optimization_version,status,created_at,updated_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(scenario_key) DO UPDATE SET "
+                "scenario_name=excluded.scenario_name,scenario_type=excluded.scenario_type,"
+                "name=excluded.name,description=excluded.description,"
+                "base_model_version=excluded.base_model_version,scenario_version=excluded.scenario_version,"
+                "parameters_json=excluded.parameters_json,candidate_params_json=excluded.candidate_params_json,"
+                "built_in=excluded.built_in,optimization_version=excluded.optimization_version,"
+                "status=excluded.status,updated_at=excluded.updated_at",
+                (
+                    key,
+                    str(scenario.get("scenario_name") or scenario.get("name") or key),
+                    scenario_type,
+                    str(scenario.get("name") or key),
+                    str(scenario.get("description") or ""),
+                    str(scenario.get("base_model_version") or scenario.get("model_version") or ""),
+                    str(scenario.get("scenario_version") or version),
+                    _json_dumps(scenario.get("parameters") or scenario.get("candidate_params") or {}),
+                    _json_dumps(scenario.get("candidate_params") or {}),
+                    1 if scenario.get("built_in", True) else 0,
+                    version,
+                    str(scenario.get("status") or "draft"),
+                    str(scenario.get("created_at") or now),
+                    str(scenario.get("updated_at") or now),
+                ),
+            )
+        scenario_ids = {
+            str(row["scenario_key"]): safe_int(row["id"])
+            for row in conn.execute(
+                "SELECT id,scenario_key FROM optimization_scenarios"
+            ).fetchall()
+        }
+        stored: list[dict[str, Any]] = []
+        for raw in runs:
+            run = dict(raw)
+            scenario_key = str(run.get("scenario_key") or "").strip()
+            run_key = str(run.get("run_key") or "").strip()
+            scenario_id = scenario_ids.get(scenario_key, 0)
+            if not scenario_id or not run_key:
+                raise ValueError("known scenario_key and run_key are required")
+            existing = conn.execute(
+                "SELECT id FROM optimization_runs WHERE run_key=?",
+                (run_key,),
+            ).fetchone()
+            if existing is not None:
+                stored.append({**run, "id": safe_int(existing[0]), "cached": True})
+                continue
+            generated_at = str(run.get("generated_at") or now)
+            cursor = conn.execute(
+                "INSERT INTO optimization_runs ("
+                "scenario_id,run_key,optimization_version,model_version,source_signature,scope_json,"
+                "sample_count,mature_sample_count,selected_sample_count,confidence,confidence_label,"
+                "status,production_json,candidate_json,delta_json,recommendations_json,readiness_json,"
+                "report_json,result_json,started_at,finished_at,generated_at,created_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    scenario_id,
+                    run_key,
+                    str(run.get("optimization_version") or ""),
+                    str(run.get("model_version") or ""),
+                    str(run.get("source_signature") or ""),
+                    _json_dumps(run.get("scope") or {}),
+                    max(0, safe_int(run.get("sample_count"))),
+                    max(0, safe_int(run.get("mature_sample_count"))),
+                    max(0, safe_int(run.get("selected_sample_count"))),
+                    safe_float(run.get("confidence")) or 0.0,
+                    str(run.get("confidence_label") or "low_confidence"),
+                    str(run.get("status") or "insufficient_samples"),
+                    _json_dumps(run.get("production") or {}),
+                    _json_dumps(run.get("candidate") or {}),
+                    _json_dumps(run.get("delta") or {}),
+                    _json_dumps(run.get("recommendations") or []),
+                    _json_dumps(run.get("readiness") or {}),
+                    _json_dumps(run.get("report") or {}),
+                    _json_dumps(run.get("result") or run.get("report") or {}),
+                    str(run.get("started_at") or generated_at),
+                    str(run.get("finished_at") or generated_at),
+                    generated_at,
+                    str(run.get("created_at") or generated_at),
+                ),
+            )
+            run_id = safe_int(cursor.lastrowid)
+            metric_rows: list[tuple[Any, ...]] = []
+            for metric in run.get("metrics") or []:
+                if not isinstance(metric, dict):
+                    continue
+                scope = str(metric.get("metric_scope") or "").strip()
+                key = str(metric.get("metric_key") or "").strip()
+                if not scope or not key:
+                    continue
+                metric_rows.append((
+                    run_id,
+                    scope,
+                    str(metric.get("metric_type") or scope),
+                    key,
+                    max(0, safe_int(metric.get("sample_count"))),
+                    safe_float(metric.get("production_value")),
+                    safe_float(metric.get("candidate_value")),
+                    safe_float(metric.get("delta_value")),
+                    safe_float(metric.get("metric_value")),
+                    _json_dumps(metric.get("metrics") or metric),
+                    generated_at,
+                ))
+            if metric_rows:
+                conn.executemany(
+                    "INSERT INTO optimization_metrics ("
+                    "run_id,metric_scope,metric_type,metric_key,sample_count,production_value,"
+                    "candidate_value,delta_value,metric_value,metrics_json,created_at"
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    metric_rows,
+                )
+            stored.append({**run, "id": run_id, "cached": False})
+        return stored
+
+    def latest_optimization_runs(
+        self,
+        *,
+        scenario_keys: list[str] | tuple[str, ...] = (),
+        optimization_version: str = "",
+        model_version: str = "",
+        source_signature: str = "",
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        if conn is None:
+            with self.connect() as owned:
+                return self.latest_optimization_runs(
+                    scenario_keys=scenario_keys,
+                    optimization_version=optimization_version,
+                    model_version=model_version,
+                    source_signature=source_signature,
+                    conn=owned,
+                )
+        clauses: list[str] = []
+        params: list[Any] = []
+        normalized_keys = [str(key).strip() for key in scenario_keys if str(key).strip()]
+        if normalized_keys:
+            placeholders = ",".join("?" for _ in normalized_keys)
+            clauses.append(f"s.scenario_key IN ({placeholders})")
+            params.extend(normalized_keys)
+        for column, value in (
+            ("r.optimization_version", optimization_version),
+            ("r.model_version", model_version),
+            ("r.source_signature", source_signature),
+        ):
+            if str(value or "").strip():
+                clauses.append(f"{column}=?")
+                params.append(str(value).strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            "SELECT r.*,s.scenario_key,s.scenario_type,s.name AS scenario_name,"
+            "s.description AS scenario_description,s.candidate_params_json "
+            "FROM optimization_runs r JOIN optimization_scenarios s ON s.id=r.scenario_id "
+            f"{where} ORDER BY r.id DESC",
+            params,
+        ).fetchall()
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            result = dict(row)
+            key = str(result.get("scenario_key") or "")
+            if key in latest:
+                continue
+            for stored_name, public_name, default in (
+                ("scope_json", "scope", {}),
+                ("production_json", "production", {}),
+                ("candidate_json", "candidate", {}),
+                ("delta_json", "delta", {}),
+                ("recommendations_json", "recommendations", []),
+                ("readiness_json", "readiness", {}),
+                ("report_json", "report", {}),
+                ("result_json", "result", {}),
+                ("parameters_json", "parameters", {}),
+                ("candidate_params_json", "candidate_params", {}),
+            ):
+                result[public_name] = _json_loads(result.pop(stored_name, None), default)
+            result["metrics"] = []
+            latest[key] = result
+        metrics_by_run: dict[int, list[dict[str, Any]]] = {}
+        run_ids = sorted({safe_int(item.get("id")) for item in latest.values() if safe_int(item.get("id")) > 0})
+        if run_ids:
+            placeholders = ",".join("?" for _ in run_ids)
+            for metric in conn.execute(
+                "SELECT run_id,metrics_json FROM optimization_metrics "
+                f"WHERE run_id IN ({placeholders}) ORDER BY run_id,metric_scope,metric_key,id",
+                run_ids,
+            ).fetchall():
+                metrics_by_run.setdefault(safe_int(metric[0]), []).append(
+                    _json_loads(metric[1], {})
+                )
+        for item in latest.values():
+            item["metrics"] = metrics_by_run.get(safe_int(item.get("id")), [])
+        return [latest[key] for key in normalized_keys if key in latest] if normalized_keys else list(latest.values())
 
     # Concise aliases used by analytics adapters.
     cache_get = get_analytics_cache

@@ -53,4 +53,6 @@ docs/generated/lifecycle_outcome_quality_latest.md
 docs/generated/lifecycle_calibration_readiness_latest.json
 docs/generated/model_calibration_latest.json
 docs/generated/model_calibration_latest.md
+docs/generated/model_optimization_latest.json
+docs/generated/model_optimization_latest.md
 docs/generated/*.lock

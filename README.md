@@ -1,5 +1,13 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.80.0 说明
+
+v1.80.0 新增 Model Optimization Simulation Engine。系统以已经落库的 Outcome、Lifecycle 与 `calibration-v1` 结果为输入，在隔离的候选参数层中模拟 Decision 阈值、Risk Alert 权重、Lifecycle Intelligence 资金确认权重和信号模块权重，输出 production/candidate/delta 对比、置信度、回撤变化与人工复核建议。
+
+生产模型 `signal-decision-v1.1` 始终标记为 immutable。候选方案不是可执行模型，不会改写 `decision_model.py`、Lifecycle/Risk 权重、生产配置、Telegram 规则或历史 Outcome；所有 recommendation 固定 `auto_apply=false`。小于 50 个成熟样本的方案只返回低置信观察，不生成强建议。
+
+CLI、Jobs、公开只读 API 与 `/optimization` 页面提供场景列表、模拟结果、报告和 readiness。API 只读取持久化缓存，不请求外部行情、不现场重算 Outcome 或模拟。详细口径见 [`docs/MODEL_OPTIMIZATION_SIMULATION.md`](docs/MODEL_OPTIMIZATION_SIMULATION.md)。系统仅用于历史研究和风险提示，不构成投资建议，不执行自动交易。
+
 ## v1.79.0 说明
 
 v1.79.0 新增 Model Calibration Validation Engine。系统只读取已经落库的 Signal、Outcome、Lifecycle、Intelligence 与 Replay 数据，验证 `observe`、`wait_pullback`、`probe`、`avoid_chase`、`risk_alert` 的历史表现，并按首次信号周期、升级路径、Intelligence 分桶、OI、Spot/Futures CVD、成交量和 Funding 组合统计成熟样本、收益与回撤。
