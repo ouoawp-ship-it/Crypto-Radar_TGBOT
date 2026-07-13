@@ -9,7 +9,9 @@ const config: Config = {
           canvas: "#F3F4F6",
           bright: "#F8F9FB",
           panel: "#FFFFFF",
-          low: "#EDEEF0"
+          low: "#EDEEF0",
+          container: "#EDEEF0",
+          "container-low": "#F3F4F6"
         },
         text: {
           primary: "#0B0F14",
