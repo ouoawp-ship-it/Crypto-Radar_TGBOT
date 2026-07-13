@@ -4,12 +4,31 @@ const config: Config = {
   content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./lib/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      fontFamily: {
+        sans: [
+          "var(--font-geist-sans)",
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          '"Microsoft YaHei UI"',
+          '"Noto Sans SC"',
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif"
+        ]
+      },
+      fontWeight: {
+        medium: "500",
+        semibold: "560",
+        bold: "650"
+      },
       colors: {
         surface: {
           canvas: "#F3F4F6",
           bright: "#F8F9FB",
           panel: "#FFFFFF",
-          low: "#EDEEF0"
+          low: "#EDEEF0",
+          container: "#EDEEF0",
+          "container-low": "#F3F4F6"
         },
         text: {
           primary: "#0B0F14",

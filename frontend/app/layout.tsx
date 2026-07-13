@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { GeistSans } from "geist/font/sans";
 import "@/styles/globals.css";
 import { AppShell } from "@/components/AppShell";
 
@@ -13,7 +14,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" className={GeistSans.variable}>
       <body data-paoxx-frontend="nextjs-dashboard">
         <AppShell>{children}</AppShell>
       </body>
