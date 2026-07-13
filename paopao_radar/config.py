@@ -151,59 +151,6 @@ class Settings:
     web_jobs_limit: int = 500
     web_jobs_stdout_tail_chars: int = 12000
     web_jobs_stderr_tail_chars: int = 6000
-    outcome_tracking_enable: bool = True
-    outcome_db_path: Path = BASE_DIR / "data" / "outcomes.db"
-    outcome_windows: tuple[str, ...] = ("1h", "4h", "24h", "72h")
-    outcome_scan_limit: int = 100
-    outcome_backfill_days: int = 7
-    outcome_price_source: str = "binance"
-    outcome_http_timeout_sec: int = 10
-    outcome_request_sleep_sec: float = 0.1
-    lifecycle_tracker_enable: bool = True
-    lifecycle_db_path: Path = BASE_DIR / "data" / "lifecycle.db"
-    lifecycle_scan_interval_sec: int = 900
-    lifecycle_lookback_hours: int = 24
-    lifecycle_active_max_symbols: int = 80
-    lifecycle_binance_cache_ttl_sec: int = 300
-    lifecycle_http_timeout_sec: int = 10
-    lifecycle_telegram_enable: bool = False
-    lifecycle_telegram_min_score: int = 60
-    lifecycle_telegram_min_event_interval_sec: int = 3600
-    lifecycle_fail_price_drop_pct: float = 8.0
-    lifecycle_cooling_pullback_pct: float = 5.0
-    lifecycle_oi_accumulation_pct: float = 8.0
-    lifecycle_volume_expansion_multiplier: float = 2.0
-    lifecycle_funding_crowded_threshold: float = 0.0008
-    lifecycle_intelligence_enable: bool = True
-    lifecycle_intelligence_interval_sec: int = 900
-    lifecycle_replay_interval_sec: int = 3600
-    lifecycle_analytics_interval_sec: int = 21600
-    lifecycle_similarity_min_samples: int = 5
-    lifecycle_outcome_backfill_enable: bool = True
-    lifecycle_outcome_backfill_batch_size: int = 200
-    lifecycle_outcome_backfill_max_outcomes: int = 1000
-    lifecycle_outcome_link_time_tolerance_sec: int = 300
-    lifecycle_outcome_backfill_interval_sec: int = 3600
-    lifecycle_outcome_processing_stale_sec: int = 1800
-    lifecycle_outcome_retry_max_attempts: int = 5
-    lifecycle_outcome_retry_base_sec: int = 900
-    lifecycle_outcome_retry_max_sec: int = 21600
-    lifecycle_outcome_incremental_enable: bool = True
-    lifecycle_outcome_incremental_interval_sec: int = 3600
-    lifecycle_outcome_incremental_batch_size: int = 200
-    lifecycle_outcome_incremental_max_items: int = 1000
-    lifecycle_outcome_incremental_max_symbols: int = 100
-    lifecycle_calibration_min_24h_success: int = 50
-    lifecycle_calibration_min_72h_success: int = 30
-    lifecycle_calibration_min_due_resolution_ratio: float = 0.90
-    lifecycle_calibration_min_lifecycle_maturity_ratio: float = 0.60
-    lifecycle_calibration_max_error_ratio: float = 0.01
-    model_calibration_enable: bool = True
-    model_calibration_interval_sec: int = 21600
-    model_calibration_cache_ttl_sec: int = 30
-    model_optimization_enable: bool = False
-    model_optimization_interval_sec: int = 21600
-    model_optimization_cache_ttl_sec: int = 30
     web_auth_mode: str = "password"
     web_admin_username: str = "admin"
     web_admin_password_hash: str = ""
@@ -349,18 +296,12 @@ class Settings:
         default_signal_path = BASE_DIR / "data" / "signal_events.json"
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
         default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
-        default_outcome_db_path = BASE_DIR / "data" / "outcomes.db"
-        default_lifecycle_db_path = BASE_DIR / "data" / "lifecycle.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
             object.__setattr__(self, "signal_events_db_path", self.data_dir / "signals.db")
         if self.data_dir != BASE_DIR / "data" and self.web_jobs_db_path == default_web_jobs_db_path:
             object.__setattr__(self, "web_jobs_db_path", self.data_dir / "jobs.db")
-        if self.data_dir != BASE_DIR / "data" and self.outcome_db_path == default_outcome_db_path:
-            object.__setattr__(self, "outcome_db_path", self.data_dir / "outcomes.db")
-        if self.data_dir != BASE_DIR / "data" and self.lifecycle_db_path == default_lifecycle_db_path:
-            object.__setattr__(self, "lifecycle_db_path", self.data_dir / "lifecycle.db")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -415,59 +356,6 @@ class Settings:
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
             web_jobs_stdout_tail_chars=env_int("WEB_JOBS_STDOUT_TAIL_CHARS", 12000),
             web_jobs_stderr_tail_chars=env_int("WEB_JOBS_STDERR_TAIL_CHARS", 6000),
-            outcome_tracking_enable=env_bool("OUTCOME_TRACKING_ENABLE", True),
-            outcome_db_path=data_path(data_dir, "OUTCOME_DB_PATH", "outcomes.db"),
-            outcome_windows=env_csv("OUTCOME_WINDOWS", ("1h", "4h", "24h", "72h")),
-            outcome_scan_limit=env_int("OUTCOME_SCAN_LIMIT", 100),
-            outcome_backfill_days=env_int("OUTCOME_BACKFILL_DAYS", 7),
-            outcome_price_source=(os.getenv("OUTCOME_PRICE_SOURCE", "binance").strip().lower() or "binance"),
-            outcome_http_timeout_sec=env_int("OUTCOME_HTTP_TIMEOUT_SEC", 10),
-            outcome_request_sleep_sec=env_float("OUTCOME_REQUEST_SLEEP_SEC", 0.1),
-            lifecycle_tracker_enable=env_bool("LIFECYCLE_TRACKER_ENABLE", True),
-            lifecycle_db_path=data_path(data_dir, "LIFECYCLE_DB_PATH", "lifecycle.db"),
-            lifecycle_scan_interval_sec=env_int("LIFECYCLE_SCAN_INTERVAL_SEC", 900),
-            lifecycle_lookback_hours=env_int("LIFECYCLE_LOOKBACK_HOURS", 24),
-            lifecycle_active_max_symbols=env_int("LIFECYCLE_ACTIVE_MAX_SYMBOLS", 80),
-            lifecycle_binance_cache_ttl_sec=env_int("LIFECYCLE_BINANCE_CACHE_TTL_SEC", 300),
-            lifecycle_http_timeout_sec=env_int("LIFECYCLE_HTTP_TIMEOUT_SEC", env_int("HTTP_TIMEOUT_SEC", 10)),
-            lifecycle_telegram_enable=env_bool("LIFECYCLE_TELEGRAM_ENABLE", False),
-            lifecycle_telegram_min_score=env_int("LIFECYCLE_TELEGRAM_MIN_SCORE", 60),
-            lifecycle_telegram_min_event_interval_sec=env_int("LIFECYCLE_TELEGRAM_MIN_EVENT_INTERVAL_SEC", 3600),
-            lifecycle_fail_price_drop_pct=env_float("LIFECYCLE_FAIL_PRICE_DROP_PCT", 8.0),
-            lifecycle_cooling_pullback_pct=env_float("LIFECYCLE_COOLING_PULLBACK_PCT", 5.0),
-            lifecycle_oi_accumulation_pct=env_float("LIFECYCLE_OI_ACCUMULATION_PCT", 8.0),
-            lifecycle_volume_expansion_multiplier=env_float("LIFECYCLE_VOLUME_EXPANSION_MULTIPLIER", 2.0),
-            lifecycle_funding_crowded_threshold=env_float("LIFECYCLE_FUNDING_CROWDED_THRESHOLD", 0.0008),
-            lifecycle_intelligence_enable=env_bool("LIFECYCLE_INTELLIGENCE_ENABLE", True),
-            lifecycle_intelligence_interval_sec=env_int("LIFECYCLE_INTELLIGENCE_INTERVAL_SEC", 900),
-            lifecycle_replay_interval_sec=env_int("LIFECYCLE_REPLAY_INTERVAL_SEC", 3600),
-            lifecycle_analytics_interval_sec=env_int("LIFECYCLE_ANALYTICS_INTERVAL_SEC", 21600),
-            lifecycle_similarity_min_samples=env_int("LIFECYCLE_SIMILARITY_MIN_SAMPLES", 5),
-            lifecycle_outcome_backfill_enable=env_bool("LIFECYCLE_OUTCOME_BACKFILL_ENABLE", True),
-            lifecycle_outcome_backfill_batch_size=env_int("LIFECYCLE_OUTCOME_BACKFILL_BATCH_SIZE", 200),
-            lifecycle_outcome_backfill_max_outcomes=env_int("LIFECYCLE_OUTCOME_BACKFILL_MAX_OUTCOMES", 1000),
-            lifecycle_outcome_link_time_tolerance_sec=env_int("LIFECYCLE_OUTCOME_LINK_TIME_TOLERANCE_SEC", 300),
-            lifecycle_outcome_backfill_interval_sec=env_int("LIFECYCLE_OUTCOME_BACKFILL_INTERVAL_SEC", 3600),
-            lifecycle_outcome_processing_stale_sec=env_int("LIFECYCLE_OUTCOME_PROCESSING_STALE_SEC", 1800),
-            lifecycle_outcome_retry_max_attempts=env_int("LIFECYCLE_OUTCOME_RETRY_MAX_ATTEMPTS", 5),
-            lifecycle_outcome_retry_base_sec=env_int("LIFECYCLE_OUTCOME_RETRY_BASE_SEC", 900),
-            lifecycle_outcome_retry_max_sec=env_int("LIFECYCLE_OUTCOME_RETRY_MAX_SEC", 21600),
-            lifecycle_outcome_incremental_enable=env_bool("LIFECYCLE_OUTCOME_INCREMENTAL_ENABLE", True),
-            lifecycle_outcome_incremental_interval_sec=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_INTERVAL_SEC", 3600),
-            lifecycle_outcome_incremental_batch_size=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_BATCH_SIZE", 200),
-            lifecycle_outcome_incremental_max_items=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_MAX_ITEMS", 1000),
-            lifecycle_outcome_incremental_max_symbols=env_int("LIFECYCLE_OUTCOME_INCREMENTAL_MAX_SYMBOLS", 100),
-            lifecycle_calibration_min_24h_success=env_int("LIFECYCLE_CALIBRATION_MIN_24H_SUCCESS", 50),
-            lifecycle_calibration_min_72h_success=env_int("LIFECYCLE_CALIBRATION_MIN_72H_SUCCESS", 30),
-            lifecycle_calibration_min_due_resolution_ratio=env_float("LIFECYCLE_CALIBRATION_MIN_DUE_RESOLUTION_RATIO", 0.90),
-            lifecycle_calibration_min_lifecycle_maturity_ratio=env_float("LIFECYCLE_CALIBRATION_MIN_LIFECYCLE_MATURITY_RATIO", 0.60),
-            lifecycle_calibration_max_error_ratio=env_float("LIFECYCLE_CALIBRATION_MAX_ERROR_RATIO", 0.01),
-            model_calibration_enable=env_bool("MODEL_CALIBRATION_ENABLE", True),
-            model_calibration_interval_sec=env_int("MODEL_CALIBRATION_INTERVAL_SEC", 21600),
-            model_calibration_cache_ttl_sec=env_int("MODEL_CALIBRATION_CACHE_TTL_SEC", 30),
-            model_optimization_enable=env_bool("MODEL_OPTIMIZATION_ENABLE", False),
-            model_optimization_interval_sec=env_int("MODEL_OPTIMIZATION_INTERVAL_SEC", 21600),
-            model_optimization_cache_ttl_sec=env_int("MODEL_OPTIMIZATION_CACHE_TTL_SEC", 30),
             web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
             web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
             web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
@@ -686,65 +574,6 @@ class Settings:
                 "auth_failure_window_sec": self.web_auth_failure_window_sec,
                 "auth_audit_limit": self.web_auth_audit_limit,
                 "session_refresh_threshold_ratio": self.web_session_refresh_threshold_ratio,
-            },
-            "outcomes": {
-                "enable": self.outcome_tracking_enable,
-                "db_file": str(self.outcome_db_path),
-                "db_exists": self.outcome_db_path.exists(),
-                "windows": list(self.outcome_windows),
-                "scan_limit": self.outcome_scan_limit,
-                "backfill_days": self.outcome_backfill_days,
-                "price_source": self.outcome_price_source,
-                "http_timeout_sec": self.outcome_http_timeout_sec,
-                "request_sleep_sec": self.outcome_request_sleep_sec,
-            },
-            "lifecycle": {
-                "enable": self.lifecycle_tracker_enable,
-                "db_file": str(self.lifecycle_db_path),
-                "db_exists": self.lifecycle_db_path.exists(),
-                "scan_interval_sec": self.lifecycle_scan_interval_sec,
-                "lookback_hours": self.lifecycle_lookback_hours,
-                "active_max_symbols": self.lifecycle_active_max_symbols,
-                "binance_cache_ttl_sec": self.lifecycle_binance_cache_ttl_sec,
-                "http_timeout_sec": self.lifecycle_http_timeout_sec,
-                "telegram_enable": self.lifecycle_telegram_enable,
-                "telegram_min_score": self.lifecycle_telegram_min_score,
-                "telegram_min_event_interval_sec": self.lifecycle_telegram_min_event_interval_sec,
-                "fail_price_drop_pct": self.lifecycle_fail_price_drop_pct,
-                "cooling_pullback_pct": self.lifecycle_cooling_pullback_pct,
-                "oi_accumulation_pct": self.lifecycle_oi_accumulation_pct,
-                "volume_expansion_multiplier": self.lifecycle_volume_expansion_multiplier,
-                "funding_crowded_threshold": self.lifecycle_funding_crowded_threshold,
-                "intelligence_enable": self.lifecycle_intelligence_enable,
-                "intelligence_interval_sec": self.lifecycle_intelligence_interval_sec,
-                "replay_interval_sec": self.lifecycle_replay_interval_sec,
-                "analytics_interval_sec": self.lifecycle_analytics_interval_sec,
-                "similarity_min_samples": self.lifecycle_similarity_min_samples,
-                "outcome_backfill_enable": self.lifecycle_outcome_backfill_enable,
-                "outcome_backfill_batch_size": self.lifecycle_outcome_backfill_batch_size,
-                "outcome_backfill_max_outcomes": self.lifecycle_outcome_backfill_max_outcomes,
-                "outcome_link_time_tolerance_sec": self.lifecycle_outcome_link_time_tolerance_sec,
-                "outcome_backfill_interval_sec": self.lifecycle_outcome_backfill_interval_sec,
-                "outcome_processing_stale_sec": self.lifecycle_outcome_processing_stale_sec,
-                "outcome_retry_max_attempts": self.lifecycle_outcome_retry_max_attempts,
-                "outcome_retry_base_sec": self.lifecycle_outcome_retry_base_sec,
-                "outcome_retry_max_sec": self.lifecycle_outcome_retry_max_sec,
-                "outcome_incremental_enable": self.lifecycle_outcome_incremental_enable,
-                "outcome_incremental_interval_sec": self.lifecycle_outcome_incremental_interval_sec,
-                "outcome_incremental_batch_size": self.lifecycle_outcome_incremental_batch_size,
-                "outcome_incremental_max_items": self.lifecycle_outcome_incremental_max_items,
-                "outcome_incremental_max_symbols": self.lifecycle_outcome_incremental_max_symbols,
-                "calibration_min_24h_success": self.lifecycle_calibration_min_24h_success,
-                "calibration_min_72h_success": self.lifecycle_calibration_min_72h_success,
-                "calibration_min_due_resolution_ratio": self.lifecycle_calibration_min_due_resolution_ratio,
-                "calibration_min_lifecycle_maturity_ratio": self.lifecycle_calibration_min_lifecycle_maturity_ratio,
-                "calibration_max_error_ratio": self.lifecycle_calibration_max_error_ratio,
-                "model_calibration_enable": self.model_calibration_enable,
-                "model_calibration_interval_sec": self.model_calibration_interval_sec,
-                "model_calibration_cache_ttl_sec": self.model_calibration_cache_ttl_sec,
-                "model_optimization_enable": self.model_optimization_enable,
-                "model_optimization_interval_sec": self.model_optimization_interval_sec,
-                "model_optimization_cache_ttl_sec": self.model_optimization_cache_ttl_sec,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

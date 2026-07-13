@@ -10,7 +10,6 @@ from paopao_radar import web
 from paopao_radar.config import Settings
 from paopao_radar.runtime_cache import RuntimeCache, clear
 from paopao_radar.web_services import jobs, ops
-from paopao_radar.web_services.dashboard import dashboard_payload
 
 
 class RuntimeCacheTests(unittest.TestCase):
@@ -111,32 +110,6 @@ class DashboardRuntimeCacheTests(unittest.TestCase):
     @staticmethod
     def _fake_ops_subprocess(*_args: object, **_kwargs: object) -> object:
         return type("Completed", (), {"returncode": 0, "stdout": "abc1234\n"})()
-
-    def test_repeated_dashboard_reuses_systemctl_and_git_results(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                signal_events_path=Path(tmp) / "signal_events.json",
-                signal_events_db_path=Path(tmp) / "signals.db",
-                web_jobs_db_path=Path(tmp) / "jobs.db",
-            )
-            with (
-                patch.object(Settings, "load", return_value=settings),
-                patch.object(web, "command_exists", return_value=True),
-                patch.object(web, "run_subprocess", side_effect=self._fake_web_subprocess) as run_web,
-                patch.object(ops.subprocess, "run", side_effect=self._fake_ops_subprocess) as run_ops,
-            ):
-                first = dashboard_payload(settings=settings)
-                first_web_calls = run_web.call_count
-                first_ops_calls = run_ops.call_count
-                second = dashboard_payload(settings=settings)
-
-        self.assertTrue(first["ok"])
-        self.assertTrue(second["ok"])
-        self.assertEqual(first_web_calls, 11)
-        self.assertEqual(first_ops_calls, 1)
-        self.assertEqual(run_web.call_count, first_web_calls)
-        self.assertEqual(run_ops.call_count, first_ops_calls)
 
     def test_cached_service_dict_cannot_be_mutated_by_caller(self) -> None:
         with (

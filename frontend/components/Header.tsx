@@ -11,13 +11,10 @@ export function Header() {
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-medium tracking-tight text-text-primary">泡泡抓币 Crypto Radar</div>
-            <div className="truncate text-xs text-text-muted">信号、决策、结果与模型健康看板</div>
+            <div className="truncate text-xs text-text-muted">实时信号与雷达运行看板</div>
           </div>
         </Link>
         <div className="flex shrink-0 items-center gap-2">
-          <Link className="btn-secondary hidden sm:inline-flex" href="/api-docs">
-            公开 API
-          </Link>
           <a className="btn" href="/admin">
             后台控制台
           </a>

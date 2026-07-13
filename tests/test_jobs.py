@@ -410,12 +410,9 @@ class JobStoreTests(unittest.TestCase):
 
         self.assertEqual(returncode, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("dashboard", stdout)
         self.assertIn("signals", stdout)
         self.assertIn("jobs", stdout)
         self.assertIn("update-status", stdout)
-        self.assertIn("lifecycle-summary", stdout)
-        self.assertIn("lifecycle-list", stdout)
 
 
 if __name__ == "__main__":

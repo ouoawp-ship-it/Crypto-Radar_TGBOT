@@ -263,45 +263,13 @@ def api_contract_self_test(*, settings: Any = None) -> dict[str, Any]:
             })
 
     from .. import web as web_module
-    from .coins import coin_detail_payload, coin_search_payload, coin_timeline_payload
-    from .dashboard import dashboard_payload
-    from .decision import decision_for_symbol_payload, decisions_payload, decisions_stats_payload
     from .jobs import jobs_payload, jobs_stats_payload
-    from .lifecycle import lifecycle_list_payload, lifecycle_summary_payload
     from .ops import update_check_status_payload
-    from .outcomes import outcome_stats_payload, outcomes_payload, symbol_outcomes_payload
-    from .timeline import timeline_payload
 
-    run_check("dashboard", lambda: dashboard_payload(settings=settings))
     run_check("signals", lambda: web_module.signals_payload(limit=1, settings=settings))
     run_check("jobs", lambda: jobs_payload(limit=1, settings=settings))
     run_check("jobs_stats", lambda: jobs_stats_payload(settings=settings))
     run_check("update-status", lambda: update_check_status_payload(settings=settings))
-    run_check("signal-timeline", lambda: timeline_payload(limit=1, settings=settings))
-    run_check("decisions", lambda: decisions_payload(limit=1, settings=settings))
-    run_check("decisions-stats", lambda: decisions_stats_payload(limit=1, settings=settings))
-    run_check("outcomes", lambda: outcomes_payload(limit=1, settings=settings))
-    run_check("outcomes-stats", lambda: outcome_stats_payload(settings=settings))
-    run_check("lifecycle-summary", lambda: lifecycle_summary_payload(settings=settings))
-    run_check("lifecycle-list", lambda: lifecycle_list_payload(limit=1, settings=settings))
-    coin_search = coin_search_payload(q="", limit=1, settings=settings)
-    run_check("coin-search", lambda: coin_search)
-    sample_items = coin_search.get("items", []) if isinstance(coin_search, Mapping) else []
-    sample_symbol = ""
-    if sample_items and isinstance(sample_items[0], Mapping):
-        sample_symbol = str(sample_items[0].get("symbol") or sample_items[0].get("coin") or "")
-    if sample_symbol:
-        run_check("decision", lambda: decision_for_symbol_payload(sample_symbol, limit=5, settings=settings))
-        run_check("coin-detail", lambda: coin_detail_payload(sample_symbol, limit=5, settings=settings))
-        run_check("coin-timeline", lambda: coin_timeline_payload(sample_symbol, limit=5, settings=settings))
-        run_check("coin-detail-timeline", lambda: {"ok": bool(coin_detail_payload(sample_symbol, limit=5, settings=settings).get("timeline_groups") is not None)})
-        run_check("symbol-outcomes", lambda: symbol_outcomes_payload(sample_symbol, limit=5, settings=settings))
-    else:
-        checks.append({"name": "decision", "ok": True, "skipped": True, "elapsed_ms": 0})
-        checks.append({"name": "coin-detail", "ok": True, "skipped": True, "elapsed_ms": 0})
-        checks.append({"name": "coin-timeline", "ok": True, "skipped": True, "elapsed_ms": 0})
-        checks.append({"name": "coin-detail-timeline", "ok": True, "skipped": True, "elapsed_ms": 0})
-        checks.append({"name": "symbol-outcomes", "ok": True, "skipped": True, "elapsed_ms": 0})
 
     failed = [item for item in checks if not item.get("ok")]
     return api_ok(
