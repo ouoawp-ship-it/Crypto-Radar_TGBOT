@@ -1,5 +1,9 @@
 # 泡泡抓币 Crypto Radar
 
+## v1.81.1 说明
+
+v1.81.1 增强 Telegram 信号币种链接：保留原 CoinGlass 跳转，同时显示可复制的 Binance USDT 交易对代码，并新增 TradingView Binance USDT 永续合约图表直达链接。资金榜单、启动雷达、结构雷达、资金流雷达、资金费率警报和币种公告使用统一链接格式。本补丁不改变信号算法、Telegram 发送流程或任何自动交易边界。
+
 ## v1.81.0 说明
 
 v1.81.0 新增 Model Registry & Approval System，使用独立的 `data/model_registry.db` 保存当前生产模型、历史版本、Optimization Candidate、参数 Diff、人工审批、回滚记录和 7d / 30d / 90d / all 表现快照。公开页面只展示版本、状态、健康度与性能摘要，不暴露完整参数或内部配置。

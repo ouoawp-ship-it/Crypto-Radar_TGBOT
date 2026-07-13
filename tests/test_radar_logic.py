@@ -293,10 +293,11 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn("<blockquote><b>📊 综合榜（评分=费率25 + 市值25 + 横盘25 + OI25）</b></blockquote>", text)
             self.assertIn('href="https://www.coinglass.com/tv/zh/Binance_TESTUSDT"', text)
             self.assertIn("<b>TEST</b>", text)
-            self.assertIn("</a>\n 88分", text)
-            self.assertNotIn("<code>", text)
+            self.assertIn("📋 <code>TESTUSDT</code>", text)
+            self.assertIn('href="https://www.tradingview.com/chart/?symbol=BINANCE%3ATESTUSDT.P"', text)
+            self.assertIn("<b>TV</b></a>\n 88分", text)
             self.assertNotIn("&nbsp;", text)
-            self.assertIn("链接 = 点击币种打开 CoinGlass Binance K线", text)
+            self.assertIn("链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView", text)
 
     def test_launch_alert_translates_state_and_explains_score(self) -> None:
         with TemporaryDirectory() as tmp:

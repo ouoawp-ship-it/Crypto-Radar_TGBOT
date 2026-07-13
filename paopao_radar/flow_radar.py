@@ -6,6 +6,8 @@ from typing import Any
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .market_links import coinglass_tv_url as _coinglass_tv_url
+from .market_links import telegram_coin_links
 from .radar import fmt_money, pct_cell, to_float
 from .time_windows import ClosedWindow, closed_window
 
@@ -40,17 +42,11 @@ def seconds_text(seconds: int) -> str:
 
 
 def coinglass_tv_url(coin_or_symbol: str) -> str:
-    symbol = str(coin_or_symbol).upper()
-    if not symbol.endswith("USDT"):
-        symbol = f"{symbol}USDT"
-    return f"https://www.coinglass.com/tv/zh/Binance_{escape(symbol, quote=True)}"
+    return _coinglass_tv_url(coin_or_symbol)
 
 
 def coin_link(symbol: str) -> str:
-    coin = symbol.upper()
-    if coin.endswith("USDT"):
-        coin = coin[:-4]
-    return f'<a href="{coinglass_tv_url(coin)}"><b>{tg_escape(coin)}</b></a>'
+    return telegram_coin_links(symbol)
 
 
 def flatten_points(data: Any) -> list[Any]:
