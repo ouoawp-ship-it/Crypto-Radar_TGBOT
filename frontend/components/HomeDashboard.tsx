@@ -129,7 +129,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       ) : null}
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="今日信号" value={compact(signalTotal)} hint="最近 24 小时" tone="info" />
+        <MetricCard label="今日信号数" value={compact(signalTotal)} hint="最近 24 小时" tone="info" />
         <MetricCard label="风险警报" value={compact(riskCount)} tone="bad" />
         <MetricCard label="可试仓" value={compact(probeCount)} tone="good" />
         <MetricCard label="等待回踩" value={compact(pullbackCount)} tone="warn" />
@@ -143,7 +143,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         <div className="panel p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="section-title">最新信号</h2>
+              <h2 className="section-title">最新信号卡片</h2>
               <p className="mt-1 text-sm text-text-muted">按时间倒序展示，可进入单币详情继续追踪证据链。</p>
             </div>
             <button className="btn-secondary" onClick={load} disabled={loading}>
@@ -193,6 +193,23 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         </div>
       </section>
 
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="section-title">结果追踪</h2>
+            <p className="mt-1 text-sm text-text-muted">用成熟样本回看决策是否兑现，避免只看信号强度。</p>
+          </div>
+          <Link className="btn-secondary" href="/outcomes">
+            查看结果追踪
+          </Link>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          <MetricCard label="已追踪样本" value={compact(trackedSamples)} />
+          <MetricCard label="1h 平均最终涨跌" value={pct(data.outcomeStats?.avg_final_return_pct)} />
+          <MetricCard label="1h 正收益比例" value={ratioPct(data.outcomeStats?.positive_ratio)} tone="info" />
+        </div>
+      </section>
+
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="活跃生命周期" value={compact(lifecycleSummary.active_count)} tone="info" />
         <MetricCard
@@ -202,6 +219,29 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         />
         <MetricCard label="风险升高" value={compact(lifecycleSummary.risk_warning_count)} tone="bad" />
         <MetricCard label="短线冷却" value={compact(lifecycleSummary.cooling_count)} tone="warn" />
+      </section>
+
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="section-title">生命周期智能榜</h2>
+            <p className="mt-1 text-sm text-text-muted">预计算 TOP 5，优先查看质量标签、最高周期和风险评分。</p>
+          </div>
+          <Link className="btn-secondary" href="/lifecycle">
+            查看智能排行
+          </Link>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {(data.lifecycleIntelligence?.items || []).slice(0, 5).map((item) => (
+            <Link className="panel-muted block p-3 transition hover:border-primary-100 hover:bg-white" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
+              <h3 className="table-number text-base font-semibold text-text-primary">{safeText(item.symbol)}</h3>
+              <p className="mt-1 text-sm text-primary-700">{safeText(item.quality_label, "历史样本仍在积累")}</p>
+              <p className="mt-3 text-sm text-text-secondary">最高周期 {safeText(item.highest_level, "-")}</p>
+              <p className="text-sm text-text-secondary">智能 {compact(item.intelligence_score)} / 风险 {compact(item.risk_score)}</p>
+            </Link>
+          ))}
+        </div>
+        {!(data.lifecycleIntelligence?.items || []).length ? <p className="text-sm text-text-muted">历史样本仍在积累。</p> : null}
       </section>
     </div>
   );
