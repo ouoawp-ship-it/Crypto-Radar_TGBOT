@@ -5,7 +5,7 @@ BASE_URL="https://paoxx.com"
 ROOT_PATH="/"
 ADMIN_PATH="/admin"
 PUBLIC_API_PATH="/public-api/signals?limit=1"
-PRIVATE_API_PATH="/api/dashboard"
+PRIVATE_API_PATH="/api/summary"
 TIMEOUT=10
 CONNECT_TIMEOUT=5
 WITH_STABLE_CHECK=0

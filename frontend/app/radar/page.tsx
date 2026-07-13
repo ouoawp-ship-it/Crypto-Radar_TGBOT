@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { getSignals, getSignalStats, getTimeline, invalidatePublicApiCache } from "@/lib/api";
+import { getSignals, getSignalStats, invalidatePublicApiCache } from "@/lib/api";
 import { compact } from "@/lib/format";
 import type { SignalItem } from "@/lib/types";
 
@@ -107,7 +107,6 @@ export default function RadarPage() {
   const [appliedFilters, setAppliedFilters] = useState<RadarFilters>(defaultFilters);
   const [signals, setSignals] = useState<SignalItem[]>([]);
   const [signalCount, setSignalCount] = useState(0);
-  const [timelineCount, setTimelineCount] = useState<number | undefined>();
   const [stats, setStats] = useState<Record<string, unknown>>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -118,20 +117,14 @@ export default function RadarPage() {
     setError("");
     setAppliedFilters(nextFilters);
     try {
-      const [list, statPayload, timelinePayload] = await Promise.all([
+      const [list, statPayload] = await Promise.all([
         getSignals({ ...nextFilters, limit: 40 }),
-        getSignalStats(Number(nextFilters.window_sec || 86400)),
-        getTimeline({ ...nextFilters, limit: 100 })
+        getSignalStats(Number(nextFilters.window_sec || 86400))
       ]);
       const items = list.items || [];
       setSignals(items);
       setSignalCount(list.count ?? items.length);
       setStats(statPayload);
-      setTimelineCount(
-        timelinePayload.count ??
-          timelinePayload.items?.length ??
-          timelinePayload.groups?.reduce((total, group) => total + (group.items?.length || 0), 0)
-      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "信号雷达加载失败");
     } finally {
@@ -172,13 +165,14 @@ export default function RadarPage() {
   const sent = countValue(stats, "sent", "sent_count");
   const blocked = countValue(stats, "blocked", "blocked_count") || 0;
   const failed = countValue(stats, "failed", "failed_count") || 0;
+  const skipped = countValue(stats, "skipped", "skipped_count") || 0;
   const initialLoading = loading && !signals.length && !error;
 
   return (
     <div className="space-y-5">
       <PageTitle
         title="信号雷达"
-        subtitle="从公开信号流中快速定位值得复盘的市场事件，按时间、模块与状态建立清晰证据链。"
+        subtitle="从公开信号流中快速定位市场事件，按时间、模块与发送状态筛选。"
         tags={["实时信号流", "多维筛选", "只读公开数据"]}
       />
 
@@ -279,7 +273,7 @@ export default function RadarPage() {
         <SummaryItem label="信号总数" value={total} hint={optionLabel(windowOptions, appliedFilters.window_sec)} tone="info" loading={initialLoading} />
         <SummaryItem label="已发送" value={sent} hint="有效公开信号" tone="good" loading={initialLoading} />
         <SummaryItem label="阻止 / 失败" value={blocked + failed} hint="需要复核" tone="bad" loading={initialLoading} />
-        <SummaryItem label="时间线事件" value={timelineCount} hint="关联事件总量" loading={initialLoading} />
+        <SummaryItem label="已跳过" value={skipped} hint="未进入推送" loading={initialLoading} />
       </section>
 
       {error ? <ErrorState message={error} onRetry={() => load(appliedFilters, true)} /> : null}
@@ -291,7 +285,7 @@ export default function RadarPage() {
               <h2 className="text-lg font-semibold text-text-primary">最新信号</h2>
               {!initialLoading && !error ? <span className="chip">{compact(signalCount)} 条</span> : null}
             </div>
-            <p className="mt-1 text-sm text-text-muted">按信号时间倒序排列，优先阅读结论与风险状态。</p>
+            <p className="mt-1 text-sm text-text-muted">按信号时间倒序排列，快速查看模块、状态与摘要。</p>
           </div>
           <span className="text-xs font-semibold text-text-muted">最新优先 · 最多展示 40 条</span>
         </div>
