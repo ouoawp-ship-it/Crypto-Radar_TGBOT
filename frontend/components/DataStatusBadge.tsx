@@ -6,5 +6,5 @@ export function DataStatusBadge({ label, tone = "neutral" }: { label?: string; t
     info: "border-primary-500/25 bg-primary-50 text-primary-700",
     neutral: "border-border-subtle bg-surface-bright text-text-secondary"
   }[tone];
-  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}>{label || "-"}</span>;
+  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${cls}`}>{label || "-"}</span>;
 }

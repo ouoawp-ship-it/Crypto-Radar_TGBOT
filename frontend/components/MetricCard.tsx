@@ -20,8 +20,8 @@ export function MetricCard({
   }[tone];
   return (
     <div className="panel p-4">
-      <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">{label}</div>
-      <div className={`table-number mt-2 text-2xl font-semibold ${toneClass}`}>{safeText(value)}</div>
+      <div className="text-xs font-medium text-text-muted">{label}</div>
+      <div className={`table-number mt-2 text-2xl font-medium ${toneClass}`}>{safeText(value)}</div>
       {hint ? <div className="mt-2 text-xs text-text-muted">{hint}</div> : null}
     </div>
   );

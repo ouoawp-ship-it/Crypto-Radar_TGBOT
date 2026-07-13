@@ -10,7 +10,7 @@ export function Header() {
             CR
           </div>
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-text-primary">泡泡抓币 Crypto Radar</div>
+            <div className="truncate text-sm font-medium tracking-tight text-text-primary">泡泡抓币 Crypto Radar</div>
             <div className="truncate text-xs text-text-muted">信号、决策、结果与模型健康看板</div>
           </div>
         </Link>
@@ -23,7 +23,7 @@ export function Header() {
           </a>
         </div>
       </div>
-      <nav className="mx-auto flex max-w-[1440px] gap-2 overflow-x-auto px-4 pb-3 text-sm font-semibold lg:hidden">
+      <nav className="mx-auto flex max-w-[1440px] gap-2 overflow-x-auto px-4 pb-3 text-sm font-medium lg:hidden">
         {navItems.map((item) => (
           <Link className="whitespace-nowrap rounded-lg border border-border-subtle bg-white px-3 py-2 text-text-secondary" href={item.href} key={item.href}>
             {item.label}
