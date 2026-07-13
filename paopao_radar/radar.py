@@ -10,6 +10,8 @@ from .config import Settings
 from .data_sources import BinanceDataSource
 from .funding_alert import funding_table
 from .funding_sources import MultiExchangeFundingClient, funding_last_settlement_text, funding_settlement_period_text
+from .market_links import coinglass_tv_url as _coinglass_tv_url
+from .market_links import telegram_coin_links
 from .storage import JsonStore
 from .time_windows import ClosedWindow, closed_window
 
@@ -78,16 +80,12 @@ def seconds_text(seconds: int) -> str:
 
 
 def coinglass_tv_url(coin_or_symbol: str) -> str:
-    symbol = str(coin_or_symbol).upper()
-    if not symbol.endswith("USDT"):
-        symbol = f"{symbol}USDT"
-    return f"https://www.coinglass.com/tv/zh/Binance_{escape(symbol, quote=True)}"
+    return _coinglass_tv_url(coin_or_symbol)
 
 
 def coin_link(item: dict[str, Any]) -> str:
     raw = str(item.get("coin") or item.get("symbol") or "")
-    coin = raw[:-4] if raw.endswith("USDT") else raw
-    return f'<a href="{coinglass_tv_url(coin)}"><b>{tg_escape(coin)}</b></a>'
+    return telegram_coin_links(raw)
 
 
 def pct_cell(value: float, width: int = 7, decimals: int = 1) -> str:
@@ -940,7 +938,7 @@ class RadarEngine:
         for symbol in symbols[:max_count]:
             base_symbol = symbol[:-4] if symbol.endswith("USDT") else symbol
             if base_symbol in contract_symbols:
-                parts.append(f'<a href="{coinglass_tv_url(symbol)}"><b>{tg_escape(symbol)}</b></a>')
+                parts.append(telegram_coin_links(symbol))
             else:
                 parts.append(f"{tg_bold(symbol)}（无合约）")
         if len(symbols) > max_count:
@@ -999,7 +997,7 @@ class RadarEngine:
             "暗流 = OI增加但价格没动",
             "窗口 = 本次统计窗口内的完整收线数据",
             "背离 = OI窗口变化% - 价格窗口变化%",
-            "链接 = 点击币种打开 CoinGlass Binance K线",
+            "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
         ])
         return "\n".join(lines)
 

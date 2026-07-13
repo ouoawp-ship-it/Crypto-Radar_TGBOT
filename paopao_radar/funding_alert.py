@@ -22,6 +22,8 @@ from .funding_sources import (
     to_float,
     to_int,
 )
+from .market_links import coinglass_tv_url as _coinglass_tv_url
+from .market_links import telegram_coin_links
 from .storage import JsonStore
 
 
@@ -56,16 +58,11 @@ def tg_quote(title: str) -> str:
 
 
 def coinglass_tv_url(symbol: str) -> str:
-    text = str(symbol or "").upper().strip()
-    if not text.endswith("USDT"):
-        text = f"{text}USDT"
-    return f"https://www.coinglass.com/tv/zh/Binance_{escape(text, quote=True)}"
+    return _coinglass_tv_url(symbol)
 
 
 def coin_link(symbol: str) -> str:
-    text = str(symbol or "").upper().strip()
-    coin = text[:-4] if text.endswith("USDT") else text
-    return f'<a href="{coinglass_tv_url(text)}"><b>{tg_escape(coin)}</b></a>'
+    return telegram_coin_links(symbol)
 
 
 def is_excluded_symbol(symbol: str, excluded: tuple[str, ...]) -> bool:
