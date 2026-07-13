@@ -5,7 +5,7 @@ function numericValue(value: unknown): number {
 
 export function DistributionChart({ data, valueKey = "count" }: { data: Array<Record<string, unknown>>; valueKey?: string }) {
   if (!data.length) {
-    return <div className="panel p-5 text-sm text-slate-500">暂无分布数据。</div>;
+    return <div className="panel p-5 text-sm text-text-muted">暂无分布数据。</div>;
   }
 
   const items = data.map((item, index) => ({
@@ -22,12 +22,12 @@ export function DistributionChart({ data, valueKey = "count" }: { data: Array<Re
           return (
             <div key={`${item.label}-${index}`} role="listitem" aria-label={`${item.label}: ${item.value}`}>
               <div className="mb-1.5 flex items-center justify-between gap-3 text-sm">
-                <span className="truncate text-slate-400" title={item.label}>{item.label}</span>
-                <span className="font-bold tabular-nums text-slate-100">{item.value}</span>
+                <span className="truncate text-text-secondary" title={item.label}>{item.label}</span>
+                <span className="table-number font-semibold text-text-primary">{item.value}</span>
               </div>
-              <div className="h-3 overflow-hidden rounded-full bg-white/[0.06]">
+              <div className="h-2.5 overflow-hidden rounded-full bg-surface-low">
                 <div
-                  className="h-full rounded-full bg-[#28d6c7] transition-[width] duration-300"
+                  className="h-full rounded-full bg-primary-500 transition-[width] duration-300"
                   style={{ width: `${width}%` }}
                 />
               </div>

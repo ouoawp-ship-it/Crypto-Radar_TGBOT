@@ -6,20 +6,35 @@ const config: Config = {
     extend: {
       colors: {
         surface: {
-          950: "#071016",
-          900: "#0b141d",
-          850: "#101b26",
-          800: "#152434"
+          canvas: "#F3F4F6",
+          bright: "#F8F9FB",
+          panel: "#FFFFFF",
+          low: "#EDEEF0"
         },
-        cyanline: "#28d6c7",
-        violetline: "#7c5cff",
-        risk: "#ff4d5e",
-        warn: "#f59e0b",
-        good: "#22c55e"
+        text: {
+          primary: "#0B0F14",
+          secondary: "#354042",
+          muted: "#A1A3A8"
+        },
+        primary: {
+          50: "#EEF0FF",
+          100: "#DEE0FF",
+          500: "#4755AE",
+          700: "#2E3C95",
+          800: "#26337F"
+        },
+        "border-subtle": "#E5E7EB",
+        good: "#10B981",
+        warn: "#F59E0B",
+        risk: "#EF4444"
+      },
+      borderRadius: {
+        lg: "0.75rem",
+        xl: "1rem"
       },
       boxShadow: {
-        glow: "0 18px 60px rgba(40, 214, 199, 0.12)",
-        panel: "0 20px 80px rgba(0,0,0,0.32)"
+        soft: "0 1px 2px rgba(15, 23, 42, 0.04)",
+        floating: "0 8px 24px rgba(15, 23, 42, 0.08)"
       }
     }
   },

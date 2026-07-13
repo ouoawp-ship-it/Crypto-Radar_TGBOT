@@ -3,29 +3,29 @@ import { navItems } from "@/lib/routes";
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-30 border-b border-white/10 bg-surface-950/85 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+    <header className="sticky top-0 z-30 border-b border-border-subtle bg-white/95 backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-6">
         <Link href="/" className="flex min-w-0 items-center gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-cyanline/40 bg-cyanline/10 text-lg font-black text-cyan-200">
-            P
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary-700 text-sm font-semibold text-white">
+            CR
           </div>
           <div className="min-w-0">
-            <div className="truncate text-base font-black tracking-wide text-white">Paoxx 信号雷达</div>
-            <div className="truncate text-xs text-slate-400">加密市场信号、决策、结果追踪与回测仪表盘</div>
+            <div className="truncate text-sm font-semibold text-text-primary">泡泡抓币 Crypto Radar</div>
+            <div className="truncate text-xs text-text-muted">信号、决策、结果与模型健康看板</div>
           </div>
         </Link>
         <div className="flex shrink-0 items-center gap-2">
-          <Link className="hidden rounded-xl border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/5 sm:inline-flex" href="/api-docs">
+          <Link className="btn-secondary hidden sm:inline-flex" href="/api-docs">
             公开 API
           </Link>
-          <a className="rounded-xl border border-cyanline/40 bg-cyanline/10 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyanline/20" href="/admin">
+          <a className="btn" href="/admin">
             后台控制台
           </a>
         </div>
       </div>
-      <nav className="mx-auto flex max-w-7xl gap-2 overflow-x-auto px-4 pb-3 text-sm font-bold lg:hidden">
+      <nav className="mx-auto flex max-w-[1440px] gap-2 overflow-x-auto px-4 pb-3 text-sm font-semibold lg:hidden">
         {navItems.map((item) => (
-          <Link className="whitespace-nowrap rounded-xl border border-white/10 px-3 py-2 text-slate-300 hover:bg-white/5" href={item.href} key={item.href}>
+          <Link className="whitespace-nowrap rounded-lg border border-border-subtle bg-white px-3 py-2 text-text-secondary" href={item.href} key={item.href}>
             {item.label}
           </Link>
         ))}

@@ -54,42 +54,51 @@ export default function DecisionPage() {
   return (
     <div className="space-y-5">
       <PageTitle
-        title="决策模型"
+        title="决策中心"
         subtitle="把公开信号整理为观察、等待回踩、可试仓、禁止追高和风险警报，并展示依据、风险与观察点。"
-        tags={["模型解释", "校准说明", "组成因子"]}
+        tags={["模型解释", "因子证据", "风险分层"]}
       />
+
       <section className="grid gap-5 xl:grid-cols-2">
         <div>
-          <h2 className="mb-3 text-lg font-black text-white">决策分布</h2>
+          <h2 className="mb-3 section-title">决策分布</h2>
           <DistributionChart data={distribution(stats, "distribution")} />
         </div>
         <div>
-          <h2 className="mb-3 text-lg font-black text-white">风险分布</h2>
+          <h2 className="mb-3 section-title">风险分布</h2>
           <DistributionChart data={distribution(stats, "risk_distribution")} />
         </div>
       </section>
+
       <section className="panel p-5">
-        <h2 className="text-lg font-black text-white">单币决策入口</h2>
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <input className="input flex-1" value={symbol} placeholder="输入 BTC 或 BTCUSDT" onChange={(event) => setSymbol(event.target.value.toUpperCase())} />
-          <button className="btn" onClick={() => load(symbol, true)}>
-            {loading ? "查询中" : "查询"}
-          </button>
+        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
+          <div>
+            <h2 className="section-title">单币决策入口</h2>
+            <p className="mt-1 text-sm text-text-muted">输入交易对后拉取当前模型结论和因子解释。</p>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input className="input min-w-64" value={symbol} placeholder="输入 BTC 或 BTCUSDT" onChange={(event) => setSymbol(event.target.value.toUpperCase())} />
+            <button className="btn" onClick={() => load(symbol, true)}>
+              {loading ? "查询中" : "查询"}
+            </button>
+          </div>
         </div>
+
         {single ? <div className="mt-4"><DecisionCard item={single} /></div> : null}
         {single?.factor_explanations?.length ? (
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {single.factor_explanations.map((factor) => (
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-sm text-slate-300" key={factor.factor || factor.label}>
-                <div className="font-bold text-white">{safeText(factor.label)} · {factor.score ?? "-"}</div>
-                <p className="mt-1 text-slate-500">{safeText(factor.explanation, "暂无解释。")}</p>
+              <div className="panel-muted p-3 text-sm text-text-secondary" key={factor.factor || factor.label}>
+                <div className="font-semibold text-text-primary">{safeText(factor.label)} / {factor.score ?? "-"}</div>
+                <p className="mt-1 text-text-muted">{safeText(factor.explanation, "暂无解释。")}</p>
               </div>
             ))}
           </div>
         ) : null}
       </section>
-      <section>
-        <h2 className="mb-3 text-lg font-black text-white">全市场决策榜</h2>
+
+      <section className="panel p-4">
+        <h2 className="mb-3 section-title">全市场决策概览</h2>
         <div className="grid gap-4 md:grid-cols-2">
           {items.map((item) => (
             <DecisionCard key={item.symbol} item={item} />

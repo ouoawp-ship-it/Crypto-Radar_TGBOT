@@ -10,7 +10,20 @@ import { ErrorState } from "./ErrorState";
 import { MetricCard } from "./MetricCard";
 import { PageTitle } from "./PageTitle";
 import { SignalCard } from "./SignalCard";
-import { getBacktestDecision, getBacktestMatrix, getCoinSearch, getDecisionStats, getDecisions, getLifecycleIntelligenceSummary, getLifecycleSummary, getOutcomeStats, getSignalStats, getLatestSignals, invalidatePublicApiCache, type HomeDashboardData } from "@/lib/api";
+import {
+  getBacktestDecision,
+  getBacktestMatrix,
+  getCoinSearch,
+  getDecisionStats,
+  getDecisions,
+  getLifecycleIntelligenceSummary,
+  getLifecycleSummary,
+  getOutcomeStats,
+  getSignalStats,
+  getLatestSignals,
+  invalidatePublicApiCache,
+  type HomeDashboardData
+} from "@/lib/api";
 import { compact, pct, ratioPct, safeText } from "@/lib/format";
 
 function readNumber(record: Record<string, unknown> | undefined, ...keys: string[]) {
@@ -86,6 +99,7 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
   const probeCount = distributionCount(data.decisionStats, "probe");
   const riskCount = distributionCount(data.decisionStats, "risk_alert");
   const pullbackCount = distributionCount(data.decisionStats, "wait_pullback");
+  const lifecycleSummary = data.lifecycle?.summary || {};
   const hasAnyData = Boolean(
     data.signalStats ||
       (data.signals || []).length ||
@@ -95,46 +109,44 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       data.outcomeStats ||
       data.backtest ||
       data.matrix ||
-      data.lifecycle
-      || data.lifecycleIntelligence
+      data.lifecycle ||
+      data.lifecycleIntelligence
   );
-  const lifecycleSummary = data.lifecycle?.summary || {};
 
   return (
     <div className="space-y-5">
       <PageTitle
-        title="Paoxx 信号雷达"
-        subtitle="加密市场信号、决策、结果追踪与回测仪表盘。公开只读展示，所有敏感字段已脱敏。"
-        tags={["公开前台", "只读数据", "不执行自动交易"]}
+        title="总览"
+        subtitle="把信号、决策、生命周期和回测表现集中到一个工作台，优先展示当前市场是否值得行动。"
+        tags={["结论优先", "只读公开数据", "非投资建议"]}
       />
 
-      {loading ? <div className="panel p-4 text-sm text-slate-400">正在加载数据...</div> : null}
+      {loading ? <div className="panel p-4 text-sm text-text-secondary">正在刷新公开数据...</div> : null}
       {data.errors?.length && !hasAnyData ? (
-        <div className="panel border-warn/30 bg-warn/10 p-4 text-sm text-amber-100">
+        <div className="panel border-warn/25 bg-warn/5 p-4 text-sm text-amber-700">
           公开数据暂时不可用：{data.errors.slice(0, 2).join("；")}
         </div>
       ) : null}
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="今日信号数" value={compact(signalTotal)} hint="最近 24 小时" />
-        <MetricCard label="风险警报数" value={compact(riskCount)} tone="bad" />
-        <MetricCard label="可试仓数" value={compact(probeCount)} tone="good" />
-        <MetricCard label="等待回踩数" value={compact(pullbackCount)} tone="warn" />
-        <MetricCard label="已追踪样本数" value={compact(trackedSamples)} />
-        <MetricCard label="1h 平均最终涨跌" value={pct(data.outcomeStats?.avg_final_return_pct)} tone="neutral" />
-        <MetricCard label="1h 正收益比例" value={ratioPct(data.outcomeStats?.positive_ratio)} tone="info" />
-        <MetricCard label="数据覆盖率" value={ratioPct(summary.coverage_ratio)} />
-        <MetricCard label="活跃生命周期" value={compact(lifecycleSummary.active_count)} tone="info" />
-        <MetricCard label="周期升级" value={compact(Number(lifecycleSummary.upgraded_1h_count || 0) + Number(lifecycleSummary.upgraded_4h_count || 0) + Number(lifecycleSummary.trend_confirmed_count || 0))} tone="good" />
-        <MetricCard label="风险升高" value={compact(lifecycleSummary.risk_warning_count)} tone="bad" />
-        <MetricCard label="短线冷却" value={compact(lifecycleSummary.cooling_count)} tone="warn" />
+        <MetricCard label="今日信号" value={compact(signalTotal)} hint="最近 24 小时" tone="info" />
+        <MetricCard label="风险警报" value={compact(riskCount)} tone="bad" />
+        <MetricCard label="可试仓" value={compact(probeCount)} tone="good" />
+        <MetricCard label="等待回踩" value={compact(pullbackCount)} tone="warn" />
+        <MetricCard label="追踪样本" value={compact(trackedSamples)} />
+        <MetricCard label="1h 平均收益" value={pct(data.outcomeStats?.avg_final_return_pct)} />
+        <MetricCard label="1h 正收益率" value={ratioPct(data.outcomeStats?.positive_ratio)} tone="info" />
+        <MetricCard label="覆盖率" value={ratioPct(summary.coverage_ratio)} />
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[1.3fr_0.7fr]">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-black text-white">最新信号卡片</h2>
-            <button className="btn" onClick={load} disabled={loading}>
+      <section className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
+        <div className="panel p-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="section-title">最新信号</h2>
+              <p className="mt-1 text-sm text-text-muted">按时间倒序展示，可进入单币详情继续追踪证据链。</p>
+            </div>
+            <button className="btn-secondary" onClick={load} disabled={loading}>
               {loading ? "刷新中" : "刷新"}
             </button>
           </div>
@@ -143,30 +155,31 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
               <SignalCard key={item.id || `${item.symbol}-${item.time}`} item={item} />
             ))}
           </div>
-          {!loading && !(data.signals || []).length ? <EmptyState title="暂无信号" text="公开 API 当前没有返回最新信号，稍后会自动随扫描数据更新。" /> : null}
+          {!loading && !(data.signals || []).length ? <EmptyState title="暂无信号" text="公开 API 当前没有返回最新信号。" /> : null}
         </div>
+
         <div className="space-y-5">
           <div>
-            <h2 className="mb-3 text-lg font-black text-white">决策分布</h2>
+            <h2 className="mb-3 section-title">决策分布</h2>
             <DistributionChart data={decisionDistribution} />
           </div>
           <div className="panel p-4">
-            <h2 className="mb-3 text-lg font-black text-white">活跃币种</h2>
-            <div className="flex flex-wrap gap-2">
+            <h2 className="section-title">活跃币种</h2>
+            <div className="mt-3 flex flex-wrap gap-2">
               {(data.coins || []).map((coin) => (
                 <Link className="chip" href={`/coin/${encodeURIComponent(coin.symbol || "")}`} key={coin.symbol}>
-                  {safeText(coin.label || coin.symbol)} · {compact(coin.count)}
+                  {safeText(coin.label || coin.symbol)} / {compact(coin.count)}
                 </Link>
               ))}
             </div>
-            {!(data.coins || []).length ? <p className="text-sm text-slate-500">暂无活跃币种数据。</p> : null}
+            {!(data.coins || []).length ? <p className="mt-3 text-sm text-text-muted">暂无活跃币种数据。</p> : null}
           </div>
         </div>
       </section>
 
       <section className="grid gap-5 xl:grid-cols-2">
-        <div>
-          <h2 className="mb-3 text-lg font-black text-white">全市场决策榜</h2>
+        <div className="panel p-4">
+          <h2 className="mb-3 section-title">全市场决策概览</h2>
           <div className="grid gap-3">
             {(data.decisions || []).slice(0, 4).map((item) => (
               <DecisionCard key={item.symbol} item={item} />
@@ -175,52 +188,20 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
           {!(data.decisions || []).length ? <EmptyState title="暂无决策数据" text="等待决策模型产生更多公开结果。" /> : null}
         </div>
         <div>
-          <h2 className="mb-3 text-lg font-black text-white">决策回测摘要</h2>
+          <h2 className="mb-3 section-title">决策回测摘要</h2>
           <BacktestMatrix data={data.matrix} />
         </div>
       </section>
 
-      <section className="panel p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-black text-white">生命周期跟随概览</h2>
-          <Link className="btn" href="/lifecycle">查看生命周期</Link>
-        </div>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {(data.lifecycle?.items || []).slice(0, 4).map((item) => (
-            <Link className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-black text-white">{safeText(item.symbol)}</h3>
-                  <p className="text-sm text-slate-400">{safeText(item.state_label || item.current_state, "启动观察")}</p>
-                </div>
-                <span className="chip">最高周期 {safeText(item.highest_level, "-")}</span>
-              </div>
-              <p className="mt-3 text-sm text-slate-300">价格 {pct(item.price_change_from_first_pct)}，OI {pct(item.oi_change_from_first_pct)}，风险 {compact(item.risk_score)}</p>
-            </Link>
-          ))}
-        </div>
-        {!(data.lifecycle?.items || []).length ? <p className="text-sm text-slate-500">暂无生命周期数据，首次有效信号出现后会自动建档。</p> : null}
-      </section>
-
-      <section className="panel p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-black text-white">生命周期智能榜</h2>
-            <p className="text-sm text-slate-500">预计算 TOP 5，不在首页加载完整回放。</p>
-          </div>
-          <Link className="btn" href="/lifecycle">查看智能排行</Link>
-        </div>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          {(data.lifecycleIntelligence?.items || []).slice(0, 5).map((item) => (
-            <Link className="signal-card block" href={`/coin/${encodeURIComponent(item.symbol || "")}`} key={item.symbol}>
-              <h3 className="text-base font-black text-white">{safeText(item.symbol)}</h3>
-              <p className="mt-1 text-sm text-cyan-100">{safeText(item.quality_label, "历史样本仍在积累")}</p>
-              <p className="mt-3 text-sm text-slate-300">最高周期 {safeText(item.highest_level, "-")}</p>
-              <p className="text-sm text-slate-300">智能 {compact(item.intelligence_score)} · 风险 {compact(item.risk_score)}</p>
-            </Link>
-          ))}
-        </div>
-        {!(data.lifecycleIntelligence?.items || []).length ? <p className="text-sm text-slate-500">历史样本仍在积累</p> : null}
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="活跃生命周期" value={compact(lifecycleSummary.active_count)} tone="info" />
+        <MetricCard
+          label="周期升级"
+          value={compact(Number(lifecycleSummary.upgraded_1h_count || 0) + Number(lifecycleSummary.upgraded_4h_count || 0) + Number(lifecycleSummary.trend_confirmed_count || 0))}
+          tone="good"
+        />
+        <MetricCard label="风险升高" value={compact(lifecycleSummary.risk_warning_count)} tone="bad" />
+        <MetricCard label="短线冷却" value={compact(lifecycleSummary.cooling_count)} tone="warn" />
       </section>
     </div>
   );
