@@ -133,6 +133,9 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("certbot certificates --cert-name", script)
         self.assertIn("CERTBOT_DRY_RUN_OK=1", script)
         self.assertIn("普通用户无法直接读取部分证书路径，但 certbot dry-run 已通过", script)
+        self.assertIn("诊断输出保留在 ${stdout_file} 和 ${stderr_file}", script)
+        self.assertIn("[certbot stdout 尾部]", script)
+        self.assertIn('tail -n 20 "${stderr_file}"', script)
         self.assertIn("HTTP_CODE=", script)
         self.assertIn("下载字节数", script)
         self.assertIn("页面前 8 行摘要", script)
@@ -172,6 +175,45 @@ class UpdateServerScriptTests(unittest.TestCase):
         for source in (install, update):
             self.assertIn("gzip on;", source)
             self.assertIn("gzip_types application/json", source)
+
+    def test_ai_username_is_required_for_web_deep_links(self) -> None:
+        from paopao_radar.web import build_deployment_acceptance, build_health_items, build_stability_checks
+
+        config = {
+            "telegram": {"bot_token_configured": True, "chat_id_configured": True},
+            "ai_assistant": {"enable": True, "bot_token_configured": True, "bot_username": ""},
+            "web": {
+                "host": "0.0.0.0",
+                "port": 8080,
+                "auth_mode": "password",
+                "admin_password_hash_configured": True,
+                "session_secret_configured": True,
+            },
+        }
+        services = {key: {"active_ok": True, "active": "active"} for key in ("main", "structure", "web", "ai")}
+        health = build_health_items(services, {}, config)
+        ai_health = next(item for item in health if item["label"] == "AI 助手 Bot")
+        snapshot = {
+            "config": config,
+            "services": services,
+            "health": health,
+            "git": {"version": "v1.87.3", "commit": "abc123"},
+            "stability": {"status": "ready"},
+            "release_readiness": {"status": "candidate"},
+            "logs": {},
+            "audit": {},
+        }
+        stability = build_stability_checks(snapshot)
+        deployment = build_deployment_acceptance(snapshot)
+        config_check = next(item for item in stability["checks"] if item["key"] == "config")
+        ai_deploy = next(item for item in deployment["checks"] if item["key"] == "ai_bot")
+
+        self.assertEqual(ai_health["status"], "warn")
+        self.assertEqual(ai_health["value"], "缺 AI_BOT_USERNAME")
+        self.assertEqual(config_check["status"], "warn")
+        self.assertIn("AI_BOT_USERNAME", config_check["detail"])
+        self.assertEqual(ai_deploy["status"], "warn")
+        self.assertIn("Web 分析和提醒深链不可用", ai_deploy["detail"])
 
     def test_https_deploy_docs_include_public_urls_and_commands(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")

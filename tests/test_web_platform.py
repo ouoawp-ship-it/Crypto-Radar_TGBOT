@@ -320,7 +320,7 @@ class PublicContextContractTests(unittest.TestCase):
             {
                 "id": index + 1,
                 "public_ref": f"sig_{index:020x}",
-                "ts": now - index * 30,
+                "ts": now - index * 60 if index < 1200 else now - 86400 - (index - 1200) * 60,
                 "time": "2026-07-16T12:00:00+00:00",
                 "module": modules[index % len(modules)],
                 "symbol": f"T{index % 180:03d}USDT",
@@ -339,8 +339,45 @@ class PublicContextContractTests(unittest.TestCase):
             timings.append(time.perf_counter() - started)
 
         self.assertIsNotNone(result)
-        self.assertEqual(len(result["items"]), 2000)
+        self.assertEqual(len(result["items"]), 1201)
         self.assertLess(median(timings), 1.0, f"2,000 条冷计算中位数超出 1 秒保护线: {timings}")
+
+    def test_intelligence_target_projection_keeps_full_history_context(self) -> None:
+        now = 2_000_000
+        events = [
+            {
+                "id": 1,
+                "public_ref": "sig_00000000000000000001",
+                "ts": now - 172800,
+                "time": "old",
+                "module": "launch",
+                "symbol": "BTCUSDT",
+                "status": "sent",
+                "score": 50,
+            },
+            {
+                "id": 2,
+                "public_ref": "sig_00000000000000000002",
+                "ts": now - 60,
+                "time": "current",
+                "module": "launch",
+                "symbol": "BTCUSDT",
+                "status": "sent",
+                "score": 70,
+            },
+        ]
+
+        current = build_radar_intelligence(events, now_ts=now, window_sec=86400)
+        targeted = build_radar_intelligence(
+            events,
+            now_ts=now,
+            window_sec=2_592_000,
+            target_refs={"sig_00000000000000000001"},
+        )
+
+        self.assertEqual([entry["signal"]["id"] for entry in current["items"]], [2])
+        self.assertEqual(current["items"][0]["intelligence"]["lifecycle"]["state"], "restarted")
+        self.assertEqual([entry["signal"]["id"] for entry in targeted["items"]], [1])
 
     def test_public_intelligence_is_redacted_and_reports_empty_state(self) -> None:
         with TemporaryDirectory() as tmp:

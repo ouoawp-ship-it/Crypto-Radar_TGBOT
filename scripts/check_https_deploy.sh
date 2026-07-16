@@ -422,17 +422,23 @@ certbot_certificate_exists() {
 }
 
 check_certbot_dry_run() {
+  local stdout_file="/tmp/paopao_certbot_dry_run.out"
+  local stderr_file="/tmp/paopao_certbot_dry_run.err"
   if [ "${WITH_CERTBOT_DRY_RUN}" -ne 1 ]; then
     record_warn "未执行 certbot renew --dry-run；需要时传入 --with-certbot-dry-run"
     return
   fi
-  if sudo certbot renew --dry-run >/tmp/paopao_certbot_dry_run.out 2>/tmp/paopao_certbot_dry_run.err; then
+  if sudo certbot renew --dry-run >"${stdout_file}" 2>"${stderr_file}"; then
     CERTBOT_DRY_RUN_OK=1
     record_pass "certbot renew --dry-run 成功"
+    rm -f "${stdout_file}" "${stderr_file}"
   else
-    record_block "certbot renew --dry-run 失败，请在服务器查看 certbot 输出"
+    record_block "certbot renew --dry-run 失败；诊断输出保留在 ${stdout_file} 和 ${stderr_file}"
+    echo "[certbot stdout 尾部]"
+    tail -n 20 "${stdout_file}" 2>/dev/null || true
+    echo "[certbot stderr 尾部]"
+    tail -n 20 "${stderr_file}" 2>/dev/null || true
   fi
-  rm -f /tmp/paopao_certbot_dry_run.out /tmp/paopao_certbot_dry_run.err
 }
 
 check_cert_files() {
