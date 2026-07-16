@@ -153,6 +153,12 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("Traceback", script)
         self.assertIn("check_public_intelligence_budget()", script)
         self.assertIn("公开情报接口响应超过 256KiB", script)
+        self.assertIn('PUBLIC_SLO_MS="${PUBLIC_SLO_MS:-800}"', script)
+        self.assertIn("3 次冷请求中位数超标", script)
+        self.assertIn("window_base=$((86000 + $(date +%s) % 500))", script)
+        self.assertIn("check_public_signal_context_actions()", script)
+        self.assertIn("Web -> AI 分析/提醒深链闭环可用", script)
+        self.assertIn("公开信号详情性能超标", script)
         self.assertIn("公开前台安全响应头生效", script)
 
         self.assertIn("no such table", script)
