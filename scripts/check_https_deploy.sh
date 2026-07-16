@@ -541,7 +541,7 @@ check_certbot_dry_run() {
     record_warn "未执行 certbot renew --dry-run；需要时传入 --with-certbot-dry-run"
     return
   fi
-  if sudo certbot renew --dry-run >"${stdout_file}" 2>"${stderr_file}"; then
+  if sudo certbot renew --dry-run --no-random-sleep-on-renew >"${stdout_file}" 2>"${stderr_file}"; then
     CERTBOT_DRY_RUN_OK=1
     record_pass "certbot renew --dry-run 成功"
     rm -f "${stdout_file}" "${stderr_file}"
