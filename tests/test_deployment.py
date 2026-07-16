@@ -175,6 +175,14 @@ class UpdateServerScriptTests(unittest.TestCase):
         for source in (install, update):
             self.assertIn("gzip on;", source)
             self.assertIn("gzip_types application/json", source)
+            self.assertIn("proxy_hide_header X-Content-Type-Options;", source)
+            self.assertIn("proxy_hide_header X-Frame-Options;", source)
+            self.assertIn("proxy_hide_header Strict-Transport-Security;", source)
+
+        https_check = Path("scripts/check_https_deploy.sh").read_text(encoding="utf-8")
+        self.assertIn("header_count()", https_check)
+        self.assertIn("header_count \"${headers_file}\" 'X-Content-Type-Options'", https_check)
+        self.assertIn("header_count \"${frontend_headers_file}\" 'Strict-Transport-Security'", https_check)
 
     def test_ai_username_is_required_for_web_deep_links(self) -> None:
         from paopao_radar.web import build_deployment_acceptance, build_health_items, build_stability_checks

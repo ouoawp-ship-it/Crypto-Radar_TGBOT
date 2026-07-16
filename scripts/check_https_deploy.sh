@@ -111,6 +111,12 @@ sanitize_file_for_summary() {
     "${path}" | head -n 8
 }
 
+header_count() {
+  local path="$1"
+  local header_name="$2"
+  grep -aic "^${header_name}:" "${path}" || true
+}
+
 curl_get_to_file() {
   local url="$1"
   local output_file="$2"
@@ -197,19 +203,25 @@ check_public_health_and_headers() {
   else
     record_block "公开 API 健康端点响应不完整"
   fi
-  if grep -aiEq '^X-Content-Type-Options:[[:space:]]*nosniff' "${headers_file}" && grep -aiEq '^X-Frame-Options:[[:space:]]*DENY' "${headers_file}"; then
+  if grep -aiEq '^X-Content-Type-Options:[[:space:]]*nosniff' "${headers_file}" \
+    && grep -aiEq '^X-Frame-Options:[[:space:]]*DENY' "${headers_file}" \
+    && [ "$(header_count "${headers_file}" 'X-Content-Type-Options')" -eq 1 ] \
+    && [ "$(header_count "${headers_file}" 'X-Frame-Options')" -eq 1 ]; then
     record_pass "HTTPS 安全响应头生效"
   else
-    record_block "HTTPS 缺少 nosniff 或 DENY 安全响应头"
+    record_block "HTTPS 缺少或重复 nosniff / DENY 安全响应头"
   fi
   if ! curl -sS -L --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -D "${frontend_headers_file}" -o /dev/null "${BASE_URL}${ROOT_PATH}"; then
     record_block "公开前台安全响应头请求失败"
   elif grep -aiEq '^X-Content-Type-Options:[[:space:]]*nosniff' "${frontend_headers_file}" \
     && grep -aiEq '^X-Frame-Options:[[:space:]]*DENY' "${frontend_headers_file}" \
-    && grep -aiEq '^Strict-Transport-Security:[[:space:]]*max-age=' "${frontend_headers_file}"; then
+    && grep -aiEq '^Strict-Transport-Security:[[:space:]]*max-age=' "${frontend_headers_file}" \
+    && [ "$(header_count "${frontend_headers_file}" 'X-Content-Type-Options')" -eq 1 ] \
+    && [ "$(header_count "${frontend_headers_file}" 'X-Frame-Options')" -eq 1 ] \
+    && [ "$(header_count "${frontend_headers_file}" 'Strict-Transport-Security')" -eq 1 ]; then
     record_pass "公开前台安全响应头生效"
   else
-    record_block "公开前台缺少 nosniff、DENY 或 HSTS 安全响应头"
+    record_block "公开前台缺少或重复 nosniff、DENY 或 HSTS 安全响应头"
   fi
   rm -f "${response_file}" "${headers_file}" "${frontend_headers_file}"
 }
