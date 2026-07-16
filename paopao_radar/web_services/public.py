@@ -702,20 +702,6 @@ def public_signal_context_payload(
                 if int(related_item.get("id") or 0) != int(item.get("id") or 0)
             ][:6]
 
-    market: dict[str, Any] | None = None
-    market_error = ""
-    if symbol:
-        normalized = _safe_symbol(symbol)
-        try:
-            market = _load_public_snapshot(
-                loaded,
-                normalized["symbol"],
-                snapshot_loader=snapshot_loader,
-                now_ts=now_ts,
-            ) if normalized["symbol"] else None
-        except Exception:
-            market_error = "市场上下文暂时不可用"
-
     stage = str(item.get("stage") or "").strip()
     lifecycle: dict[str, Any] = {
         "state": stage or "recorded",
@@ -726,28 +712,62 @@ def public_signal_context_payload(
     }
     rankings: dict[str, Any] = {}
     resonance: dict[str, Any] = {}
-    try:
-        intelligence_raw = _radar_intelligence_targets(
-            loaded,
-            {str(item.get("public_ref") or item.get("id") or "")},
-            now_ts=int(now_ts or time.time()),
-            window_sec=2_592_000,
-        )
-        signal_ref = str(item.get("public_ref") or "")
-        for entry in intelligence_raw.get("items", []):
-            candidate = entry.get("signal") if isinstance(entry, dict) else {}
-            if signal_ref and str(candidate.get("public_ref") or "") == signal_ref:
-                intelligence = entry.get("intelligence") if isinstance(entry.get("intelligence"), dict) else {}
-                lifecycle = intelligence.get("lifecycle") or lifecycle
-                rankings = {
-                    "self": intelligence.get("self_rank") or {},
-                    "market_strength": intelligence.get("market_strength_rank") or {},
-                    "market_absolute": intelligence.get("market_absolute_rank") or {},
-                }
-                resonance = intelligence.get("resonance") or {}
-                break
-    except Exception:
-        pass
+
+    def load_market_context() -> tuple[dict[str, Any] | None, str]:
+        normalized = _safe_symbol(symbol)
+        if not normalized["symbol"]:
+            return None, ""
+        try:
+            return _load_public_snapshot(
+                loaded,
+                normalized["symbol"],
+                snapshot_loader=snapshot_loader,
+                now_ts=now_ts,
+            ), ""
+        except Exception:
+            return None, "市场上下文暂时不可用"
+
+    def load_intelligence_context() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        derived_lifecycle = lifecycle
+        derived_rankings: dict[str, Any] = {}
+        derived_resonance: dict[str, Any] = {}
+        try:
+            intelligence_raw = _radar_intelligence_targets(
+                loaded,
+                {str(item.get("public_ref") or item.get("id") or "")},
+                now_ts=int(now_ts or time.time()),
+                window_sec=2_592_000,
+            )
+            signal_ref = str(item.get("public_ref") or "")
+            for entry in intelligence_raw.get("items", []):
+                candidate = entry.get("signal") if isinstance(entry, dict) else {}
+                if signal_ref and str(candidate.get("public_ref") or "") == signal_ref:
+                    intelligence = entry.get("intelligence") if isinstance(entry.get("intelligence"), dict) else {}
+                    derived_lifecycle = intelligence.get("lifecycle") or derived_lifecycle
+                    derived_rankings = {
+                        "self": intelligence.get("self_rank") or {},
+                        "market_strength": intelligence.get("market_strength_rank") or {},
+                        "market_absolute": intelligence.get("market_absolute_rank") or {},
+                    }
+                    derived_resonance = intelligence.get("resonance") or {}
+                    break
+        except Exception:
+            pass
+        return derived_lifecycle, derived_rankings, derived_resonance
+
+    market: dict[str, Any] | None = None
+    market_error = ""
+    if symbol:
+        # Market requests are I/O-bound while intelligence is local CPU/SQLite.
+        # Run them together so a cold context request pays the slower branch,
+        # rather than the sum of both independent branches.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="public-signal-context") as executor:
+            market_future = executor.submit(load_market_context)
+            intelligence_future = executor.submit(load_intelligence_context)
+            market, market_error = market_future.result()
+            lifecycle, rankings, resonance = intelligence_future.result()
+    else:
+        lifecycle, rankings, resonance = load_intelligence_context()
     bot_username = str(loaded.ai_bot_username or "").strip().lstrip("@")
     bot_username = bot_username if re.fullmatch(r"[A-Za-z0-9_]{5,32}", bot_username) else ""
     coin = str(item.get("coin") or (symbol[:-4] if symbol.endswith("USDT") else symbol))

@@ -35,6 +35,10 @@ MONEY_LABELS = {
     "oi_usd": ("oi金额", "持仓金额", "open interest"),
     "market_cap": ("流通市值", "市值", "market cap"),
 }
+MONEY_LABEL_CASEFOLDS = {
+    key: tuple(str(label).casefold() for label in labels)
+    for key, labels in MONEY_LABELS.items()
+}
 
 
 def _number(value: Any) -> float | None:
@@ -95,7 +99,15 @@ def absolute_metric(item: dict[str, Any]) -> dict[str, Any] | None:
             return {"key": key, "label": label, "unit": unit, "value": value, "quality": "structured"}
 
     text = str(item.get("text_html") or item.get("excerpt") or "")
+    folded_text = text.casefold()
     for key, label, unit in ABSOLUTE_KEYS:
+        # Most signal messages do not contain an absolute market-size metric.
+        # Avoid running a case-insensitive regex across several KB of HTML unless
+        # one of the accepted labels is present. This is an exact precondition
+        # for the pattern below, so parsed values and ranking semantics stay the
+        # same while cold intelligence builds avoid thousands of full scans.
+        if not any(name in folded_text for name in MONEY_LABEL_CASEFOLDS[key]):
+            continue
         names = "|".join(re.escape(name) for name in MONEY_LABELS[key])
         match = re.search(
             rf"(?:{names})\s*[:：]?\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([KMBT万亿]?)",

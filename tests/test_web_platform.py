@@ -34,14 +34,16 @@ if __name__ == "__main__":
 # Source group: public market context contracts
 
 import json
+import threading
 import time
 from pathlib import Path
 from statistics import median
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.signal_store import SignalEventStore, append_from_push
-from paopao_radar.signal_intelligence import build_radar_intelligence
+from paopao_radar.signal_intelligence import absolute_metric, build_radar_intelligence
 from paopao_radar.web_observability import PublicApiMetrics, PublicTelemetry, SlidingWindowRateLimiter
 from paopao_radar.web_services.public import (
     public_api_health_payload,
@@ -166,6 +168,43 @@ class PublicContextContractTests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertNotIn("private-topic", serialized)
         self.assertNotIn("message_ids", serialized)
+
+    def test_signal_context_loads_market_and_intelligence_concurrently(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:btc:parallel-context",
+                status="sent",
+                sent=True,
+                text="BTCUSDT\n启动雷达\n分数: 88",
+                ts=1_990,
+            )
+            stored_signal = SignalEventStore(settings.signal_events_db_path).list_signals()["items"][0]
+            barrier = threading.Barrier(2)
+
+            def snapshot_loader(loaded: Settings, symbol: str) -> dict[str, object]:
+                barrier.wait(timeout=2)
+                return self.snapshot(loaded, symbol)
+
+            def intelligence_loader(*_args: object, **_kwargs: object) -> dict[str, object]:
+                barrier.wait(timeout=2)
+                return {"items": []}
+
+            with patch(
+                "paopao_radar.web_services.public._radar_intelligence_targets",
+                side_effect=intelligence_loader,
+            ):
+                payload = public_signal_context_payload(
+                    stored_signal["public_ref"],
+                    settings=settings,
+                    snapshot_loader=snapshot_loader,
+                    now_ts=2_010,
+                )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["market"]["symbol"], "BTCUSDT")
 
     def test_public_routes_include_context_and_snapshot(self) -> None:
         source = __import__("inspect").getsource(web.WebHandler.do_GET)
@@ -312,6 +351,26 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertEqual(boards["launch"]["items"][0]["signal"]["public_ref"], "sig_btc_launch")
         self.assertEqual(boards["funding"]["items"][0]["signal"]["public_ref"], "sig_btc_funding")
         self.assertEqual(boards["resonance"]["items"][0]["signal"]["symbol"], "BTCUSDT")
+
+    def test_absolute_metric_prefilter_preserves_structured_and_text_parsing(self) -> None:
+        structured = absolute_metric({
+            "payload": {"quote_volume": 125_000_000},
+            "text_html": "unrelated text",
+        })
+        parsed = absolute_metric({
+            "payload": {},
+            "text_html": "Market snapshot · quote volume: $12.5M",
+        })
+        unrelated = absolute_metric({
+            "payload": {},
+            "text_html": "price and momentum context " * 500,
+        })
+
+        self.assertEqual(structured["value"], 125_000_000)
+        self.assertEqual(structured["quality"], "structured")
+        self.assertEqual(parsed["value"], 12_500_000)
+        self.assertEqual(parsed["quality"], "parsed")
+        self.assertIsNone(unrelated)
 
     def test_intelligence_cold_build_stays_within_production_scale_budget(self) -> None:
         now = int(time.time())
