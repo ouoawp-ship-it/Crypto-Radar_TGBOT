@@ -148,8 +148,8 @@
 - [x] API、排名口径、发布迁移和回滚文档。
 - [x] 安装/更新脚本写入 HTTPS 安全响应头。
 - [x] HTTPS 验收脚本检查公开健康端点和安全响应头。
-- [ ] 形成提交并推送 GitHub PR。
-- [ ] GitHub Actions 全绿并合并主线。
+- [x] 形成提交并推送 GitHub PR。
+- [x] GitHub Actions 全绿并随本 PR 合并主线。
 - [ ] 服务器更新、HTTPS 验收、stable-check 与回滚点确认。
 
 ## 6. 数据与安全门禁
