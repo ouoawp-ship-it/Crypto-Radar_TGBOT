@@ -36,6 +36,7 @@ if __name__ == "__main__":
 import json
 import time
 from pathlib import Path
+from statistics import median
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
@@ -311,6 +312,35 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertEqual(boards["launch"]["items"][0]["signal"]["public_ref"], "sig_btc_launch")
         self.assertEqual(boards["funding"]["items"][0]["signal"]["public_ref"], "sig_btc_funding")
         self.assertEqual(boards["resonance"]["items"][0]["signal"]["symbol"], "BTCUSDT")
+
+    def test_intelligence_cold_build_stays_within_production_scale_budget(self) -> None:
+        now = int(time.time())
+        modules = ("launch", "flow", "funding", "structure", "announcement")
+        events = [
+            {
+                "id": index + 1,
+                "public_ref": f"sig_{index:020x}",
+                "ts": now - index * 30,
+                "time": "2026-07-16T12:00:00+00:00",
+                "module": modules[index % len(modules)],
+                "symbol": f"T{index % 180:03d}USDT",
+                "status": "sent",
+                "score": 50 + index % 50,
+                "excerpt": "24h成交额: $100M",
+                "payload": {"quote_volume": 1_000_000 + index},
+            }
+            for index in range(2000)
+        ]
+        timings = []
+        result = None
+        for _ in range(3):
+            started = time.perf_counter()
+            result = build_radar_intelligence(events, now_ts=now, window_sec=86400, board_limit=5)
+            timings.append(time.perf_counter() - started)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result["items"]), 2000)
+        self.assertLess(median(timings), 1.0, f"2,000 条冷计算中位数超出 1 秒保护线: {timings}")
 
     def test_public_intelligence_is_redacted_and_reports_empty_state(self) -> None:
         with TemporaryDirectory() as tmp:
