@@ -52,31 +52,6 @@ class TelegramGatewayTests(unittest.TestCase):
         self.assertEqual(button["text"], "查看 BTC 信号详情")
         self.assertEqual(button["url"], f"https://paoxx.com/radar?signal={stored['public_ref']}")
 
-    def test_send_photo_dry_run_records_without_real_send(self) -> None:
-        with TemporaryDirectory() as tmp:
-            photo = Path(tmp) / "chart.png"
-            photo.write_bytes(b"\x89PNG\r\n\x1a\n")
-            settings = Settings(
-                data_dir=Path(tmp),
-                tg_push_history_path=Path(tmp) / "history.json",
-                tg_topic_routes_path=Path(tmp) / "routes.json",
-            )
-            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
-
-            result = gateway.send_photo(
-                photo,
-                "caption",
-                "TG_STRUCTURE_RADAR",
-                "photo:unit",
-                send=False,
-                confirm_real_send=False,
-            )
-            history = JsonStore(Path(tmp)).load(settings.tg_push_history_path, [])
-
-        self.assertEqual(result.status, "dry_run")
-        self.assertFalse(result.sent)
-        self.assertEqual(history[-1]["template_id"], "TG_STRUCTURE_RADAR")
-
     def test_dry_run_records_without_real_send(self) -> None:
         with TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "push_history.json"
@@ -249,8 +224,6 @@ class TelegramGatewayTests(unittest.TestCase):
                 tg_test_topic_id="14",
                 tg_flow_radar_topic_id="15",
                 tg_funding_alert_topic_id="16",
-                tg_structure_topic_id="17",
-                tg_structure_review_topic_id="18",
             )
             gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
 
@@ -261,12 +234,10 @@ class TelegramGatewayTests(unittest.TestCase):
                 gateway.send("test", "TG_TEST_MESSAGE", "test:key", send=False, confirm_real_send=False)
                 gateway.send("flow", "TG_FLOW_RADAR", "flow:key", send=False, confirm_real_send=False)
                 gateway.send("funding", "TG_FUNDING_ALERT", "funding:key", send=False, confirm_real_send=False)
-                gateway.send("structure", "TG_STRUCTURE_RADAR", "structure:key", send=False, confirm_real_send=False)
-                gateway.send("review", "TG_STRUCTURE_REVIEW", "review:key", send=False, confirm_real_send=False)
                 gateway.send("other", "OTHER_TEMPLATE", "other:key", send=False, confirm_real_send=False)
 
             history = JsonStore(Path(tmp)).load(history_path, [])
-            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "15", "16", "17", "18", "10"])
+            self.assertEqual([record["topic_id"] for record in history], ["11", "12", "13", "14", "15", "16", "10"])
 
     def test_auto_created_topic_is_reused_from_state(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -412,7 +383,7 @@ class TelegramGatewayTests(unittest.TestCase):
 
             with patch("paopao_radar.telegram.requests.post", side_effect=[Response400(), Response200()]) as post_mock:
                 ok, message_ids = gateway._send_real_message_ids(
-                    "structure",
+                    "launch",
                     parse_mode="HTML",
                     topic_id="12",
                     reply_to_message_id=111,

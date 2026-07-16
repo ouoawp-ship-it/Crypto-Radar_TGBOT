@@ -80,7 +80,6 @@ from .web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_TE
 
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
-STRUCTURE_SERVICE = os.getenv("STRUCTURE_SERVICE_NAME", "paopao-structure")
 WEB_SERVICE = os.getenv("WEB_SERVICE_NAME", "paopao-web")
 AI_SERVICE = os.getenv("AI_SERVICE_NAME", "paopao-ai")
 DASHBOARD_SERVICE_CACHE_TTL_SEC = 5
@@ -170,8 +169,6 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_TEST_TOPIC_ID", "测试消息话题 ID", "Telegram"),
     ConfigField("TG_FLOW_RADAR_TOPIC_ID", "资金流话题 ID", "Telegram"),
     ConfigField("TG_FUNDING_ALERT_TOPIC_ID", "资金费率警报话题 ID", "Telegram"),
-    ConfigField("STRUCTURE_TOPIC_ID", "结构雷达话题 ID", "Telegram"),
-    ConfigField("STRUCTURE_REVIEW_TOPIC_ID", "结构复盘话题 ID", "Telegram"),
     ConfigField("AI_ASSISTANT_ENABLE", "启用 AI 助手 Bot", "AI 助手", kind="bool", help="开启后 paopao-ai 服务会使用独立 AI_BOT_TOKEN 处理私聊和价格提醒。"),
     ConfigField("AI_BOT_TOKEN", "AI 助手 Bot Token", "AI 助手", secret=True, help="建议用 BotFather 单独创建一个机器人，不要和群推送 Bot 共用。"),
     ConfigField("AI_BOT_USERNAME", "AI 助手 Bot 用户名", "AI 助手", help="不含 @，用于从 Web 详情一键打开 AI 分析和提醒流程。"),
@@ -194,10 +191,6 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
-    ConfigField("LIQUIDITY_FALLBACK_ENABLE", "结构外部确认", "模块开关", kind="bool"),
-    ConfigField("BINANCE_ORDERBOOK_LIQUIDITY_ENABLE", "Binance 盘口确认", "模块开关", kind="bool"),
-    ConfigField("STRUCTURE_RADAR_ENABLE", "结构雷达", "模块开关", kind="bool"),
-    ConfigField("STRUCTURE_REVIEW_ENABLE", "结构复盘", "模块开关", kind="bool"),
     ConfigField("WEB_HOST", "Web 监听地址", "Web 控制台"),
     ConfigField("WEB_PORT", "Web 端口", "Web 控制台", kind="int", minimum=1, maximum=65535),
     ConfigField("PAOXX_PUBLIC_BASE_URL", "公开前台地址", "Web 控制台", help="例如 https://paoxx.com，用于 Telegram 与 Web 的信号深链。"),
@@ -213,8 +206,6 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("WEB_AUTH_FAILURE_WINDOW_SEC", "失败计数窗口秒数", "Web 控制台", kind="int", minimum=60, maximum=86400),
     ConfigField("WEB_AUTH_AUDIT_LIMIT", "登录审计保留条数", "Web 控制台", kind="int", minimum=50, maximum=5000),
     ConfigField("WEB_SESSION_REFRESH_THRESHOLD_RATIO", "会话续期阈值比例", "Web 控制台", kind="float", minimum=0.1, maximum=0.9),
-    ConfigField("COINALYZE_ENABLE", "启用 Coinalyze", "Coinalyze", kind="bool"),
-    ConfigField("COINALYZE_API_KEY", "Coinalyze API Key", "Coinalyze", secret=True),
     ConfigField("RADAR_SUMMARY_MIN_INTERVAL_SEC", "资金摘要间隔秒", "雷达参数", kind="int", minimum=300, help="建议 21600 秒（6 小时）。越小推送越频繁，越大越安静。"),
     ConfigField("FLOW_INTERVAL_SEC", "资金流窗口秒", "雷达参数", kind="int", minimum=300, help="建议 3600 秒（1 小时）。资金流按完整闭合窗口统计。"),
     ConfigField("FLOW_SCAN_LIMIT", "资金流扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 8-30。越大覆盖越多币，但请求和计算更重。"),
@@ -234,47 +225,6 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE", "启动多交易所资金费率", "雷达参数", kind="bool", help="开启后，启动预警推送会显示 Binance、OKX、Bybit、Bitget、Gate 的实时资金费率和结算时间。"),
     ConfigField("LAUNCH_FUNDING_EXCHANGES", "启动资金费率交易所", "雷达参数", help="英文逗号分隔，默认 BINANCE,OKX,BYBIT,BITGET,GATE。可删掉你不想请求的交易所。"),
     ConfigField("LAUNCH_FUNDING_HISTORY_LIMIT", "资金费率历史条数", "雷达参数", kind="int", minimum=3, maximum=20, help="用于判断结算周期是否从 8H 缩短到 4H 或 1H。建议 4-6。"),
-    ConfigField("STRUCTURE_TOP_SYMBOLS", "结构雷达扫描数量", "雷达参数", kind="int", minimum=1, maximum=300, help="建议 50-120。越大覆盖越多币，但结构扫描耗时更长。"),
-    ConfigField(
-        "STRUCTURE_NEAR_EDGE_PCT",
-        "结构临界距离 %",
-        "雷达参数",
-        kind="float",
-        minimum=0.1,
-        maximum=10,
-        help="结构临近突破/跌破的边缘距离。降低会减少临界观察信号，提高会放宽临界信号。",
-    ),
-    ConfigField(
-        "STRUCTURE_MIN_SCORE",
-        "结构雷达最低分",
-        "雷达参数",
-        kind="int",
-        minimum=0,
-        maximum=100,
-        help="对应复盘建议里的 STRUCTURE_MIN_SCORE。提高会减少低分结构信号和假突破，降低会增加信号数量。",
-    ),
-    ConfigField(
-        "STRUCTURE_SEND_CHART_TOP_N",
-        "结构图发送数量",
-        "雷达参数",
-        kind="int",
-        minimum=0,
-        maximum=20,
-        help="对应复盘建议里的 STRUCTURE_SEND_CHART_TOP_N。每轮最多给前 N 个结构信号发送 K 线图；设为 0 表示不发结构图。",
-    ),
-    ConfigField(
-        "STRUCTURE_COOLDOWN_SEC",
-        "同币冷却秒数",
-        "雷达参数",
-        kind="int",
-        minimum=0,
-        maximum=86400,
-        help="同一个币种结构信号的冷却时间。提高会减少同币重复推送。",
-    ),
-    ConfigField("LIQUIDITY_SCORE_MAX_DELTA", "外部确认修正上限", "雷达参数", kind="int", minimum=0, maximum=30, help="建议 10-15。越高外部确认对结构分数影响越大。"),
-    ConfigField("LIQUIDITY_MIN_DISTANCE_PCT", "盘口墙最小距离 %", "雷达参数", kind="float", minimum=0, help="建议 0.5。忽略距离现价太近的盘口墙，减少噪音。"),
-    ConfigField("LIQUIDITY_MAX_DISTANCE_PCT", "盘口墙最大距离 %", "雷达参数", kind="float", minimum=0.1, help="建议 5-8。越大越容易找到远处盘口墙，但参考价值会下降。"),
-    ConfigField("BINANCE_ORDERBOOK_DEPTH_LIMIT", "Binance 盘口档位", "雷达参数", kind="int", minimum=5, maximum=1000, help="建议 100。越大盘口更完整，但请求数据更重。"),
 )
 EDITABLE_CONFIG: dict[str, ConfigField] = {field.key: field for field in EDITABLE_CONFIG_FIELDS}
 
@@ -285,8 +235,6 @@ TOPIC_FIELD_ROUTES: dict[str, tuple[str, str]] = {
     "TG_TEST_TOPIC_ID": ("TG_TEST_MESSAGE", "测试消息"),
     "TG_FLOW_RADAR_TOPIC_ID": ("TG_FLOW_RADAR", "资金流雷达"),
     "TG_FUNDING_ALERT_TOPIC_ID": ("TG_FUNDING_ALERT", "资金费率警报"),
-    "STRUCTURE_TOPIC_ID": ("TG_STRUCTURE_RADAR", "结构突破"),
-    "STRUCTURE_REVIEW_TOPIC_ID": ("TG_STRUCTURE_REVIEW", "结构复盘"),
 }
 
 TOPIC_SUMMARY_ROUTE_KEYS: dict[str, str] = {
@@ -296,8 +244,6 @@ TOPIC_SUMMARY_ROUTE_KEYS: dict[str, str] = {
     "TG_TEST_MESSAGE": "test",
     "TG_FLOW_RADAR": "flow_radar",
     "TG_FUNDING_ALERT": "funding_alert",
-    "TG_STRUCTURE_RADAR": "structure_radar",
-    "TG_STRUCTURE_REVIEW": "structure_review",
 }
 
 CONFIG_FIELD_PURPOSE: dict[str, str] = {
@@ -312,12 +258,6 @@ CONFIG_FIELD_PURPOSE: dict[str, str] = {
     "TG_TOPIC_INTRO_ENABLE": "控制自动话题创建后是否发送话题说明。",
     "TG_TOPIC_INTRO_PIN": "控制话题说明是否置顶。",
     "CLEANUP_ENABLE": "控制后台是否按计划清理临时文件、过期图表和超限历史记录。",
-    "LIQUIDITY_FALLBACK_ENABLE": "控制结构雷达是否使用外部盘口/清算数据做辅助确认。",
-    "BINANCE_ORDERBOOK_LIQUIDITY_ENABLE": "控制结构雷达是否读取 Binance 盘口深度做流动性墙确认。",
-    "STRUCTURE_RADAR_ENABLE": "结构雷达总开关，关闭后不再发送结构突破类信号。",
-    "STRUCTURE_REVIEW_ENABLE": "结构复盘总开关，关闭后不再发送结构信号复盘统计。",
-    "COINALYZE_ENABLE": "控制是否启用 Coinalyze 作为结构雷达外部确认数据源。",
-    "COINALYZE_API_KEY": "Coinalyze 接口令牌，只用于可选外部确认，不用于市值数据。",
     "RADAR_SUMMARY_MIN_INTERVAL_SEC": "资金摘要最小推送间隔，控制摘要消息安静程度。",
     "FLOW_INTERVAL_SEC": "资金流雷达统计窗口长度，按完整闭合窗口统计资金流。",
     "FLOW_SCAN_LIMIT": "资金流雷达每轮扫描多少个币。",
@@ -337,7 +277,6 @@ CLI_ACTIONS: dict[str, dict[str, Any]] = {
     "stable-check": {"label": "执行稳定版验收", "argv": ["stable-check"], "timeout": 60, "ok_returncodes": [0, 1, 2]},
     "announcements-test": {"label": "测试 Binance 公告", "argv": ["announcements-test"], "timeout": 90},
     "funding-alert": {"label": "扫描资金费率警报", "argv": ["funding-alert"], "timeout": 180},
-    "structure-review": {"label": "结构信号复盘", "argv": ["structure-review"], "timeout": 120},
     "cleanup": {"label": "立即清理运行垃圾", "argv": ["cleanup", "--force-cleanup"], "timeout": 60},
 }
 
@@ -345,9 +284,6 @@ SERVICE_ACTIONS: dict[str, tuple[str, str]] = {
     "restart-main": (MAIN_SERVICE, "restart"),
     "start-main": (MAIN_SERVICE, "start"),
     "stop-main": (MAIN_SERVICE, "stop"),
-    "restart-structure": (STRUCTURE_SERVICE, "restart"),
-    "start-structure": (STRUCTURE_SERVICE, "start"),
-    "stop-structure": (STRUCTURE_SERVICE, "stop"),
     "restart-web": (WEB_SERVICE, "restart"),
     "start-web": (WEB_SERVICE, "start"),
     "stop-web": (WEB_SERVICE, "stop"),
@@ -430,14 +366,10 @@ def config_field_explain(field: ConfigField) -> dict[str, str]:
         purpose = f"指定“{field.label.replace('话题 ID', '')}”推送使用哪个 Telegram 话题。"
     elif key.startswith("FUNDING_ALERT_"):
         purpose = field.help or f"调整资金费率警报里的“{field.label}”。"
-    elif key.startswith("STRUCTURE_"):
-        purpose = field.help or f"调整结构雷达里的“{field.label}”。"
     elif key.startswith("LAUNCH_FUNDING_") or key == "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE":
         purpose = field.help or f"调整启动预警推送里的“{field.label}”。"
     elif key.startswith("AI_"):
         purpose = field.help or f"调整 AI 助手 Bot 里的“{field.label}”。"
-    elif key.startswith("LIQUIDITY_") or key.startswith("BINANCE_ORDERBOOK_"):
-        purpose = field.help or f"调整结构雷达外部确认里的“{field.label}”。"
     else:
         purpose = field.help or f"配置“{field.label}”。"
 
@@ -451,14 +383,8 @@ def config_field_explain(field: ConfigField) -> dict[str, str]:
         affects = "AI 助手 Bot、AI 行情分析、允许用户/群组和币种档案读取。"
     elif key.startswith("FUNDING_ALERT_"):
         affects = "独立资金费率警报扫描、异常阈值、冷却、回复链和资金费率话题推送。"
-    elif key.startswith("STRUCTURE_"):
-        affects = "结构雷达信号数量、结构复盘、结构图数量和同币冷却。"
     elif key.startswith("LAUNCH_FUNDING_") or key == "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE":
         affects = "启动预警推送里的多交易所资金费率展示和结算周期识别。"
-    elif key in {"COINALYZE_ENABLE", "COINALYZE_API_KEY"}:
-        affects = "结构雷达外部确认；不影响市值数据。"
-    elif key.startswith("LIQUIDITY_") or key.startswith("BINANCE_ORDERBOOK_"):
-        affects = "结构雷达盘口墙、流动性确认和外部确认分数修正。"
     elif key.startswith("FLOW_"):
         affects = "资金流雷达的统计窗口、扫描范围和请求压力。"
     elif key.startswith("RADAR_SUMMARY_"):
@@ -473,7 +399,7 @@ def config_field_explain(field: ConfigField) -> dict[str, str]:
     elif key in AI_CONFIG_KEYS:
         apply = "保存后自动重启 AI 助手服务。"
     else:
-        apply = "保存后自动重启主服务和结构雷达。"
+        apply = "保存后自动重启主服务。"
     return {"purpose": purpose, "affects": affects, "apply": apply}
 
 
@@ -1069,97 +995,6 @@ def review_problem_state(action_plan: list[dict[str, Any]], problem_state: dict[
     }
 
 
-def structure_review_recommendations_payload(path: Path | None = None) -> dict[str, Any]:
-    settings = Settings.load()
-    stats_path = path or settings.structure_stats_path
-    stats = load_json_or_empty(stats_path)
-    if not isinstance(stats, dict):
-        return {"ok": False, "stats_file": str(stats_path), "recommendations": [], "updates": {}, "message": "结构复盘统计文件不可读"}
-
-    summary = stats.get("summary", {}) if isinstance(stats.get("summary"), dict) else {}
-    total = int(summary.get("total", 0) or 0)
-    reviewed = int(summary.get("reviewed", 0) or 0)
-    min_sample = max(1, int(settings.structure_review_min_sample or 1))
-    recommendations: list[dict[str, Any]] = []
-
-    def add_recommendation(key: str, suggested: int | float, reason: str) -> None:
-        current = {
-            "STRUCTURE_MIN_SCORE": settings.structure_min_score,
-            "STRUCTURE_SEND_CHART_TOP_N": settings.structure_send_chart_top_n,
-            "STRUCTURE_NEAR_EDGE_PCT": settings.structure_near_edge_pct,
-            "STRUCTURE_COOLDOWN_SEC": settings.structure_cooldown_sec,
-        }.get(key)
-        if current is None or str(current) == str(suggested):
-            return
-        recommendations.append(
-            {
-                "key": key,
-                "label": EDITABLE_CONFIG.get(key, ConfigField(key, key, "雷达参数")).label,
-                "current": current,
-                "suggested": suggested,
-                "reason": reason,
-            }
-        )
-
-    if reviewed < min_sample:
-        return {
-            "ok": True,
-            "stats_file": str(stats_path),
-            "summary": summary,
-            "recommendations": [],
-            "updates": {},
-            "message": f"已复盘样本 {reviewed} 条，少于最小样本 {min_sample} 条，暂不建议自动调整。",
-        }
-
-    by_level = stats.get("by_level", {}) if isinstance(stats.get("by_level"), dict) else {}
-    b_bucket = by_level.get("B", {}) if isinstance(by_level.get("B"), dict) else {}
-    if int(b_bucket.get("reviewed", 0) or 0) >= 3 and float(b_bucket.get("fake_rate", 0) or 0) >= 0.45:
-        add_recommendation(
-            "STRUCTURE_MIN_SCORE",
-            max(int(settings.structure_min_score) + 5, 70),
-            "B级假突破率偏高，提高最低分可以过滤低质量结构信号。",
-        )
-
-    by_type = stats.get("by_signal_type", {}) if isinstance(stats.get("by_signal_type"), dict) else {}
-    pre_total = sum(
-        int((by_type.get(key, {}) if isinstance(by_type.get(key), dict) else {}).get("total", 0) or 0)
-        for key in ("PRE_BREAKOUT_NEAR", "PRE_BREAKDOWN_NEAR")
-    )
-    if total and pre_total / total >= 0.7 and float(summary.get("hit_rate", 0) or 0) < 0.35:
-        add_recommendation(
-            "STRUCTURE_NEAR_EDGE_PCT",
-            round(max(0.5, float(settings.structure_near_edge_pct) - 0.3), 1),
-            "临界信号占比偏高且命中率不足，收紧临界距离可以减少提前观察噪音。",
-        )
-
-    by_symbol = stats.get("by_symbol", {}) if isinstance(stats.get("by_symbol"), dict) else {}
-    symbol_counts = [int(bucket.get("total", 0) or 0) for bucket in by_symbol.values() if isinstance(bucket, dict)]
-    if symbol_counts and max(symbol_counts) >= max(4, total // 4):
-        add_recommendation(
-            "STRUCTURE_COOLDOWN_SEC",
-            max(int(settings.structure_cooldown_sec) * 2, 7200),
-            "同币重复信号较多，提高冷却时间可以减少同一个币连续刷屏。",
-        )
-
-    if total >= 30 and int(settings.structure_send_chart_top_n) > 2:
-        add_recommendation(
-            "STRUCTURE_SEND_CHART_TOP_N",
-            2,
-            "结构信号数量较多，降低每轮发图数量可以减少图片刷屏。",
-        )
-
-    updates = {item["key"]: str(item["suggested"]) for item in recommendations}
-    message = "已生成可应用的结构复盘参数建议" if updates else "当前样本未显示明显参数问题，暂不建议调整。"
-    return {
-        "ok": True,
-        "stats_file": str(stats_path),
-        "summary": summary,
-        "recommendations": recommendations,
-        "updates": updates,
-        "message": message,
-    }
-
-
 def write_env_updates(
     updates: dict[str, Any],
     *,
@@ -1368,7 +1203,6 @@ def config_change_impact(changed: list[str]) -> dict[str, Any]:
     standard_restart_keys = changed_set - WEB_CONFIG_KEYS - AI_CONFIG_KEYS
     if standard_restart_keys or (changed_set & SIGNAL_EVENT_CONFIG_KEYS):
         add_service("restart-main", "主服务需要重新读取 Telegram、雷达扫描、资金费率或信号索引相关配置。")
-        add_service("restart-structure", "结构雷达需要重新读取结构参数、话题、外部确认或信号索引相关配置。")
     if changed_set & AI_CONFIG_KEYS:
         add_service("restart-ai", "AI 助手需要重新读取 Bot Token、AI 接口、允许群组、价格提醒或币种档案配置。")
     if changed_set & WEB_CONFIG_KEYS:
@@ -1384,8 +1218,6 @@ def config_change_impact(changed: list[str]) -> dict[str, Any]:
         warnings.append("Telegram 推送配置会影响真实消息发送；保存后建议先执行 Telegram 测试消息或 readiness。")
     if changed_set & {"AI_BOT_TOKEN", "AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "AI_ALLOWED_CHAT_IDS", "AI_PROVIDER_ENABLE"}:
         warnings.append("AI 助手配置会影响私聊、行情分析和价格提醒；保存后建议到 AI 助手页确认服务状态。")
-    if changed_set & {"STRUCTURE_MIN_SCORE", "STRUCTURE_SEND_CHART_TOP_N", "STRUCTURE_NEAR_EDGE_PCT", "STRUCTURE_COOLDOWN_SEC"}:
-        warnings.append("结构雷达参数会改变信号数量、图片数量或同币冷却；保存后建议观察结构复盘和下一轮推送。")
     if any(key.startswith("FUNDING_ALERT_") for key in changed_set):
         warnings.append("资金费率警报参数会改变扫描频率、阈值或冷却；保存后建议手动扫描一次资金费率警报。")
 
@@ -1451,11 +1283,10 @@ def auto_apply_config_changes(changed: list[str]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     standard_restart_keys = changed_set - WEB_CONFIG_KEYS - AI_CONFIG_KEYS
     if standard_restart_keys or (changed_set & SIGNAL_EVENT_CONFIG_KEYS):
-        for action_name in ("restart-main", "restart-structure"):
-            result = run_service_action(action_name)
-            service, action = SERVICE_ACTIONS[action_name]
-            result.update({"name": action_name, "service": service, "action": action})
-            results.append(result)
+        result = run_service_action("restart-main")
+        service, action = SERVICE_ACTIONS["restart-main"]
+        result.update({"name": "restart-main", "service": service, "action": action})
+        results.append(result)
     if changed_set & AI_CONFIG_KEYS:
         result = run_service_action("restart-ai")
         service, action = SERVICE_ACTIONS["restart-ai"]
@@ -1780,8 +1611,6 @@ def runtime_last_error(name: str, runtime: Any) -> dict[str, str] | None:
 def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
     telegram = config.get("telegram", {}) if isinstance(config.get("telegram"), dict) else {}
     ai = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
-    liquidity = config.get("liquidity", {}) if isinstance(config.get("liquidity"), dict) else {}
-    structure = config.get("structure_radar", {}) if isinstance(config.get("structure_radar"), dict) else {}
     ai_token_ok = bool(ai.get("bot_token_configured"))
     ai_username_ok = bool(str(ai.get("bot_username") or "").strip())
     ai_ready = bool(ai.get("enable") and ai_token_ok and ai_username_ok)
@@ -1798,7 +1627,6 @@ def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config
 
     items = [
         service_item("主服务", "main"),
-        service_item("结构雷达", "structure"),
         service_item("Web 控制台", "web"),
         service_item("AI 助手", "ai"),
         {
@@ -1823,20 +1651,8 @@ def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config
             "value": "正常" if (not telegram.get("use_topic") or telegram.get("topic_routes_file_exists") or any((telegram.get("topic_routes_configured") or {}).values())) else "未检测到话题 ID",
             "detail": "自动话题会读取 data/tg_topic_routes.json",
         },
-        {
-            "label": "结构雷达开关",
-            "status": "ok" if structure.get("enable") else "warn",
-            "value": "开启" if structure.get("enable") else "关闭",
-            "detail": "关闭后结构雷达不会发送结构信号",
-        },
-        {
-            "label": "外部确认",
-            "status": "ok" if liquidity.get("fallback_enable") else "warn",
-            "value": "开启" if liquidity.get("fallback_enable") else "关闭",
-            "detail": "用于结构雷达盘口和清算辅助确认",
-        },
     ]
-    for label, key in (("主服务状态文件", "main"), ("结构状态文件", "structure")):
+    for label, key in (("主服务状态文件", "main"),):
         item = runtime.get(key, {}) if isinstance(runtime.get(key), dict) else {}
         status = str(item.get("status") or "")
         last_error = str(item.get("last_error") or "")
@@ -1853,7 +1669,7 @@ def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config
 
 def recent_errors_payload(runtime: dict[str, Any]) -> list[dict[str, str]]:
     errors: list[dict[str, str]] = []
-    for name, item in (("主服务", runtime.get("main")), ("结构雷达", runtime.get("structure"))):
+    for name, item in (("主服务", runtime.get("main")),):
         error = runtime_last_error(name, item)
         if error:
             errors.append(error)
@@ -1880,16 +1696,6 @@ def push_preview_payload() -> dict[str, Any]:
                 "真启动候选: BTCUSDT\n"
                 f"扫描数量: {settings.flow_scan_limit}\n"
                 "说明: CVD、OI、费率字段会按真实数据填充；这里仅展示版式。"
-            ),
-        },
-        {
-            "title": "结构雷达样例",
-            "text": (
-                "📐 结构雷达 BTCUSDT\n"
-                f"最低推送分: {settings.structure_min_score}\n"
-                f"每轮结构图数量: {settings.structure_send_chart_top_n}\n"
-                "外部确认: Binance 盘口 / 可选 Coinalyze 清算辅助\n"
-                "说明: 这是静态预览，不会真实发送。"
             ),
         },
     ]
@@ -2099,23 +1905,16 @@ def summary_payload() -> dict[str, Any]:
     telegram["topic_routes_file_exists"] = settings.tg_topic_routes_path.exists()
     services = {
         "main": service_status(MAIN_SERVICE),
-        "structure": service_status(STRUCTURE_SERVICE),
         "web": service_status(WEB_SERVICE),
         "ai": service_status(AI_SERVICE),
     }
-    runtime = {
-        "main": load_json_or_empty(settings.runtime_status_path),
-        "structure": load_json_or_empty(settings.structure_runtime_status_path),
-    }
+    runtime = {"main": load_json_or_empty(settings.runtime_status_path)}
     config = {
         "env_file_exists": redacted.get("env_file_exists"),
         "telegram": telegram,
         "runtime": redacted.get("runtime"),
         "web": redacted.get("web"),
-        "liquidity": redacted.get("liquidity"),
-        "coinalyze": redacted.get("coinalyze"),
         "ai_assistant": redacted.get("ai_assistant"),
-        "structure_radar": redacted.get("structure_radar"),
     }
     return {
         "updated_at": now_text(),
@@ -2128,9 +1927,7 @@ def summary_payload() -> dict[str, Any]:
         "recent_errors": recent_errors_payload(runtime),
         "state_files": store.exists_summary([
             settings.runtime_status_path,
-            settings.structure_runtime_status_path,
             settings.tg_push_history_path,
-            settings.structure_history_path,
         ]),
     }
 
@@ -2145,10 +1942,7 @@ def tail_file(path: Path, lines: int) -> str:
 def logs_payload(target: str, lines: int) -> dict[str, Any]:
     settings = Settings.load()
     lines = max(20, min(2000, int(lines)))
-    if target == "structure":
-        service = STRUCTURE_SERVICE
-        fallback_path = settings.data_dir / "structure.log"
-    elif target == "web":
+    if target == "web":
         service = WEB_SERVICE
         fallback_path = settings.data_dir / "web.log"
     elif target == "ai":
@@ -2330,8 +2124,6 @@ def build_ops_recommendations(snapshot: dict[str, Any]) -> list[str]:
 
 def issue_target_from_source(source: str) -> str:
     text = str(source or "").lower()
-    if "结构" in source or "structure" in text:
-        return "structure"
     if "web" in text:
         return "web"
     if "ai" in text or "助手" in source:
@@ -2436,7 +2228,7 @@ def build_ops_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 action="打开任务中心查看任务详情、stdout_tail 和 stderr_tail；确认后可重跑同类任务。",
             )
 
-    target_labels = {"main": "主服务", "structure": "结构雷达", "web": "Web 控制台", "ai": "AI 助手"}
+    target_labels = {"main": "主服务", "web": "Web 控制台", "ai": "AI 助手"}
     logs = snapshot.get("log_errors", {}) if isinstance(snapshot.get("log_errors"), dict) else {}
     for target, item in logs.items():
         if not isinstance(item, dict):
@@ -2608,7 +2400,7 @@ def build_problem_center(snapshot: dict[str, Any], problem_state: dict[str, Any]
             "service-health",
             severity="critical",
             title="先处理服务或健康异常",
-            detail="如果主服务、结构雷达、Web 控制台或 AI 助手显示异常，先到雷达服务页重启对应服务，再回来看诊断报告。",
+            detail="如果主服务、Web 控制台或 AI 助手显示异常，先到雷达服务页重启对应服务，再回来看诊断报告。",
             target="services",
             button="打开雷达服务",
         )
@@ -2805,7 +2597,7 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
 
     services = snapshot.get("services", {}) if isinstance(snapshot.get("services"), dict) else {}
-    service_labels = {"main": "主服务", "structure": "结构雷达", "web": "Web 控制台", "ai": "AI 助手"}
+    service_labels = {"main": "主服务", "web": "Web 控制台", "ai": "AI 助手"}
     down_services = [
         service_labels.get(key, key)
         for key, item in services.items()
@@ -2815,7 +2607,7 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
         "services",
         "后台服务",
         "ok" if not down_services else "fail",
-        "主服务、结构雷达、Web 控制台和 AI 助手均运行中" if not down_services else f"未运行：{'、'.join(down_services)}",
+        "主服务、Web 控制台和 AI 助手均运行中" if not down_services else f"未运行：{'、'.join(down_services)}",
         "进入“雷达服务”页重启对应服务；如果仍失败，再看日志中心。" if down_services else "",
     )
 
@@ -3078,7 +2870,7 @@ def build_release_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
             "问题中心",
             "warn",
             str(problem_center.get("summary") or "问题中心存在需要关注项"),
-            "按处理清单确认警告是否影响主服务、结构雷达或 AI 助手。",
+            "按处理清单确认警告是否影响主服务或 AI 助手。",
         )
     else:
         add(
@@ -3307,7 +3099,6 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     required_services = {
         "main": "主服务",
-        "structure": "结构雷达",
         "web": "Web 控制台",
     }
     ai_config = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
@@ -3322,7 +3113,7 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
         "services",
         "后台服务",
         "ok" if not down else "fail",
-        "主服务、结构雷达、Web 控制台和已启用的 AI 助手均在运行。" if not down else "未运行：" + "、".join(down),
+        "主服务、Web 控制台和已启用的 AI 助手均在运行。" if not down else "未运行：" + "、".join(down),
         "进入 Web「雷达服务」页重启对应服务；仍失败时查看日志中心。",
     )
 
@@ -3723,7 +3514,7 @@ def ops_snapshot_payload() -> dict[str, Any]:
     problem_state = load_problem_state(settings.data_dir)
     log_errors = {
         target: log_error_excerpt(target, lines=300, limit=20)
-        for target in ("main", "structure", "web", "ai")
+        for target in ("main", "web", "ai")
     }
     snapshot = {
         "ok": True,
@@ -4345,9 +4136,6 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/config-backups":
             self.send_json(env_backup_payload())
-            return
-        if path == "/api/structure-recommendations":
-            self.send_json(structure_review_recommendations_payload())
             return
         if path == "/api/push-preview":
             self.send_json(push_preview_payload())

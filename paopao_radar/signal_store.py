@@ -17,7 +17,16 @@ from .symbol_dossier import clean_signal_text, extract_symbols_from_text, signal
 
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
-SIGNAL_STORE_SCHEMA_VERSION = 3
+SIGNAL_STORE_SCHEMA_VERSION = 4
+ACTIVE_SIGNAL_MODULES = (
+    "funding",
+    "flow",
+    "launch",
+    "announcement",
+    "summary",
+    "test",
+    "telegram",
+)
 SIGNAL_STORE_REQUIRED_OBJECTS = {
     "signals": "table",
     "idx_signals_ts": "index",
@@ -177,10 +186,6 @@ def _module_for_template(template_id: str) -> str:
         return "funding"
     if "FLOW" in value:
         return "flow"
-    if "STRUCTURE_REVIEW" in value:
-        return "structure_review"
-    if "STRUCTURE" in value:
-        return "structure"
     if "LAUNCH" in value:
         return "launch"
     if "ANNOUNCEMENT" in value:
@@ -293,6 +298,11 @@ class SignalEventStore:
             """
         )
         self._ensure_signal_columns(conn)
+        placeholders = ", ".join("?" for _ in ACTIVE_SIGNAL_MODULES)
+        conn.execute(
+            f"DELETE FROM signals WHERE module NOT IN ({placeholders})",
+            ACTIVE_SIGNAL_MODULES,
+        )
         missing_refs = conn.execute(
             "SELECT id, dedup_key, symbol FROM signals WHERE public_ref = ''"
         ).fetchall()

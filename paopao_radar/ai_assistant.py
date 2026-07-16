@@ -81,9 +81,9 @@ HELP_TEXT = """泡泡 AI 助手使用说明
 
 2. 看行情
 直接发送：BTC 怎么看、SOL 可以做多吗
-也可以粘贴启动雷达、结构雷达、资金流、资金费率或市场数据。
+也可以粘贴启动雷达、资金流、资金费率或市场数据。
 
-我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性、结构状态和资金费率，给出偏多 / 偏空 / 观望 / 高风险观望。
+我会读取这个币的历史雷达信号、当前价格、OI、成交量、市值、流动性和资金费率，给出偏多 / 偏空 / 观望 / 高风险观望。
 
 3. 价格提醒
 点击首页“设置价格提醒”，按步骤选择：
@@ -368,7 +368,6 @@ ANALYSIS_INTENT_RE = re.compile(
 PRICE_QUERY_RE = re.compile(r"(价格|现价|报价|行情|多少钱|多少|查价|查一下|看一下|price)", re.IGNORECASE)
 MARKET_DATA_KEYWORDS = (
     "启动雷达",
-    "结构雷达",
     "资金流",
     "雷达信号",
     "触发明细",
@@ -1487,10 +1486,7 @@ def create_alert_from_context(
 
 def runtime_context(settings: Settings) -> str:
     parts: list[str] = []
-    for label, path in (
-        ("主服务", settings.runtime_status_path),
-        ("结构雷达", settings.structure_runtime_status_path),
-    ):
+    for label, path in (("主服务", settings.runtime_status_path),):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:

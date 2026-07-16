@@ -19,7 +19,6 @@ from .funding_sources import (
 )
 from .price_alerts import format_price, normalize_symbol
 from .storage import JsonStore
-from .structure_radar import calculate_box, normalize_candles
 
 
 CST = timezone(timedelta(hours=8))
@@ -27,13 +26,12 @@ MAX_LEGACY_SIGNAL_HISTORY_ITEMS = 500
 
 TEMPLATE_LABELS = {
     "TG_LAUNCH_ALERT": "启动雷达",
-    "TG_STRUCTURE_RADAR": "结构雷达",
-    "TG_STRUCTURE_REVIEW": "结构复盘",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
     "TG_RADAR_SUMMARY": "资金摘要",
     "TG_ANNOUNCEMENT_ALERT": "公告风险",
 }
+ACTIVE_SIGNAL_TEMPLATE_IDS = frozenset((*TEMPLATE_LABELS, "TG_TEST_MESSAGE"))
 
 SYMBOL_ALIASES = {
     "比特币": "BTC",
@@ -320,6 +318,9 @@ def launch_stage_from_score(settings: Settings, score: float) -> str:
 
 
 def event_from_push_record(record: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+    template_id = str(record.get("template_id") or "")
+    if template_id and template_id not in TEMPLATE_LABELS:
+        return None
     preview = str(record.get("preview") or "")
     if symbol not in extract_symbols_from_text(preview):
         return None
@@ -328,8 +329,8 @@ def event_from_push_record(record: dict[str, Any], symbol: str) -> dict[str, Any
         "ts": int(record.get("ts", 0) or 0),
         "time": record.get("time") or "",
         "symbol": symbol,
-        "signal_type": signal_event_template_label(str(record.get("template_id") or "")),
-        "template_id": str(record.get("template_id") or ""),
+        "signal_type": signal_event_template_label(template_id),
+        "template_id": template_id,
         "status": str(record.get("status") or ""),
         "sent": bool(record.get("sent")),
         "message_ids": record.get("message_ids") or [],
@@ -386,50 +387,6 @@ def launch_events(settings: Settings, store: JsonStore, symbol: str) -> list[dic
     return events
 
 
-def structure_events(settings: Settings, store: JsonStore, symbol: str) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    records = load_json_records(store, settings.structure_review_path, [])
-    if isinstance(records, list):
-        for record in records[-1000:]:
-            if not isinstance(record, dict) or str(record.get("symbol") or "").upper() != symbol:
-                continue
-            metrics = record.get("metrics", {}) if isinstance(record.get("metrics"), dict) else {}
-            events.append({
-                "source": "structure_review",
-                "ts": int(record.get("signal_ts", record.get("created_at", 0)) or 0),
-                "symbol": symbol,
-                "signal_type": "结构复盘",
-                "structure_signal": record.get("signal_type"),
-                "level": record.get("level"),
-                "score": record.get("score"),
-                "outcome": record.get("outcome"),
-                "status": record.get("status"),
-                "price_change_15m": metrics.get("price_change_15m"),
-                "price_change_1h": metrics.get("price_change_1h"),
-                "price_change_4h": metrics.get("price_change_4h"),
-                "summary": (
-                    f"{record.get('signal_type')} {record.get('level')}级，结果 {record.get('outcome')}，"
-                    f"15m {fmt_pct(metrics.get('price_change_15m'))}，1h {fmt_pct(metrics.get('price_change_1h'))}"
-                ),
-            })
-    history = load_json_records(store, settings.structure_history_path, [])
-    if isinstance(history, list):
-        for record in history[-200:]:
-            if not isinstance(record, dict):
-                continue
-            if symbol not in [str(item).upper() for item in record.get("top_symbols", []) if item]:
-                continue
-            events.append({
-                "source": "structure_history",
-                "ts": int(record.get("ts", 0) or 0),
-                "symbol": symbol,
-                "signal_type": "结构雷达扫描摘要",
-                "score": record.get("top_score"),
-                "summary": f"出现在结构雷达扫描摘要 top_symbols，模式 {record.get('mode')}，窗口 {record.get('window')}",
-            })
-    return events
-
-
 def funding_state_events(settings: Settings, store: JsonStore, symbol: str) -> list[dict[str, Any]]:
     state = load_json_records(store, settings.funding_alert_state_path, {})
     if not isinstance(state, dict):
@@ -464,6 +421,9 @@ def signal_event_index_events(settings: Settings, store: JsonStore, symbol: str)
         for event in events[-settings.signal_events_limit:]:
             if not isinstance(event, dict) or str(event.get("symbol") or "").upper() != symbol:
                 continue
+            template_id = str(event.get("template_id") or "")
+            if template_id and template_id not in TEMPLATE_LABELS:
+                continue
             result.append({
                 **event,
                 "summary": str(event.get("excerpt") or "")[:260],
@@ -483,7 +443,6 @@ def load_symbol_history(settings: Settings, symbol: str, store: JsonStore | None
     events: list[dict[str, Any]] = []
     events.extend(signal_event_index_events(settings, loaded_store, symbol))
     events.extend(launch_events(settings, loaded_store, symbol))
-    events.extend(structure_events(settings, loaded_store, symbol))
     events.extend(funding_state_events(settings, loaded_store, symbol))
 
     deduped: dict[str, dict[str, Any]] = {}
@@ -585,48 +544,12 @@ def _oi_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _structure_snapshot(settings: Settings, klines: list[list[Any]]) -> dict[str, Any]:
-    candles = normalize_candles(klines)
-    lookback = max(8, min(settings.structure_box_lookback, max(8, len(candles) - 1)))
-    if len(candles) < lookback + 1:
-        return {}
-    latest = candles[-1]
-    box = calculate_box(candles[-(lookback + 1):-1], latest.close, settings.structure_near_edge_pct)
-    if box is None or box.box_high <= box.box_low <= 0:
-        return {}
-    if latest.close > box.box_high:
-        state = "突破上沿"
-        bias = "bullish"
-    elif latest.close < box.box_low:
-        state = "跌破下沿"
-        bias = "bearish"
-    elif box.distance_to_high_pct <= settings.structure_near_edge_pct:
-        state = "临近上沿"
-        bias = "bullish_watch"
-    elif box.distance_to_low_pct <= settings.structure_near_edge_pct:
-        state = "临近下沿"
-        bias = "bearish_watch"
-    else:
-        state = "箱体内震荡"
-        bias = "neutral"
-    return {
-        "state": state,
-        "bias": bias,
-        "box_high": box.box_high,
-        "box_low": box.box_low,
-        "box_width_pct": box.box_width_pct,
-        "position_in_box": box.position_in_box,
-        "distance_to_high_pct": box.distance_to_high_pct,
-        "distance_to_low_pct": box.distance_to_low_pct,
-    }
-
-
 def current_market_snapshot(settings: Settings, symbol: str, source: BinanceDataSource | None = None) -> dict[str, Any]:
     loaded_source = source or BinanceDataSource(settings)
     coin = symbol[:-4] if symbol.endswith("USDT") else symbol
     ticker = _ticker_item(loaded_source, symbol)
     premium = _premium_item(loaded_source, symbol)
-    klines = loaded_source.klines(symbol, interval="15m", limit=max(64, settings.structure_box_lookback + 2))
+    klines = loaded_source.klines(symbol, interval="15m", limit=64)
     oi_rows = loaded_source.open_interest_hist(symbol, period="15m", limit=17)
     mcap, mcap_source = _market_cap(loaded_source, coin)
 
@@ -648,9 +571,6 @@ def current_market_snapshot(settings: Settings, symbol: str, source: BinanceData
     if not snapshot.get("price"):
         snapshot["price"] = to_float(snapshot.get("price"))
     snapshot.update({key: value for key, value in _oi_metrics(oi_rows).items() if value is not None})
-    structure = _structure_snapshot(settings, klines)
-    if structure:
-        snapshot["structure"] = structure
     http = getattr(loaded_source, "http", None)
     if http is not None:
         try:
@@ -707,27 +627,12 @@ def rule_based_verdict(snapshot: dict[str, Any], history: list[dict[str, Any]]) 
     if len(positive_rows) >= 2:
         bearish.append(f"{len(positive_rows)} 家交易所资金费率极正，多头拥挤明显。")
 
-    structure = snapshot.get("structure") if isinstance(snapshot.get("structure"), dict) else {}
-    if structure:
-        state = str(structure.get("state") or "")
-        if structure.get("bias") in {"bullish", "bullish_watch"}:
-            bullish.append(f"当前结构状态：{state}，上沿附近需要看能否放量确认。")
-        elif structure.get("bias") in {"bearish", "bearish_watch"}:
-            bearish.append(f"当前结构状态：{state}，下沿附近需要防跌破延续。")
-        else:
-            risks.append("当前结构仍在箱体内，方向确认度不足。")
-
     for event in history[:12]:
         signal_type = str(event.get("signal_type") or "")
-        outcome = str(event.get("outcome") or "")
         stage = str(event.get("stage") or "")
         score = to_float(event.get("score"))
         if "启动" in signal_type and score >= 75:
             bullish.append(f"历史启动雷达出现过 {stage or '高分信号'}，分数 {score:g}。")
-        if outcome == "valid_breakout":
-            bullish.append("结构复盘出现过有效突破记录。")
-        if outcome in {"fake_breakout", "fake_breakdown"}:
-            risks.append(f"结构复盘出现过 {outcome}，需防假突破。")
         if "资金费率" in signal_type and "极负" in str(event.get("summary") or ""):
             bullish.append("历史资金费率警报提示过极负费率，可能有空头燃料。")
 
@@ -781,8 +686,6 @@ def event_line(event: dict[str, Any]) -> str:
     details: list[str] = []
     if event.get("stage"):
         details.append(f"阶段 {event.get('stage')}")
-    if event.get("structure_signal"):
-        details.append(str(event.get("structure_signal")))
     if event.get("score") not in {None, ""}:
         details.append(f"分数 {to_float(event.get('score')):g}")
     if event.get("outcome") and event.get("outcome") != "pending":
@@ -814,8 +717,6 @@ def format_symbol_dossier_report(dossier: dict[str, Any]) -> str:
     snapshot = dossier.get("snapshot") if isinstance(dossier.get("snapshot"), dict) else {}
     verdict = dossier.get("verdict") if isinstance(dossier.get("verdict"), dict) else {}
     history = dossier.get("history") if isinstance(dossier.get("history"), list) else []
-    structure = snapshot.get("structure") if isinstance(snapshot.get("structure"), dict) else {}
-
     lines = [
         f"{symbol} 币种雷达档案",
         "",
@@ -825,8 +726,6 @@ def format_symbol_dossier_report(dossier: dict[str, Any]) -> str:
         f"24h: {fmt_pct(snapshot.get('price_24h_pct'))}，成交额 {fmt_money(snapshot.get('quote_volume'))}（{liquidity_tier(snapshot.get('quote_volume'))}）",
         f"市值: {fmt_money(snapshot.get('market_cap'))}（{snapshot.get('market_cap_tier') or '未知市值'}{('，来源 ' + snapshot.get('market_cap_source')) if snapshot.get('market_cap_source') else ''}）",
         f"OI 15m/1h/4h: {fmt_pct(snapshot.get('oi_15m_pct'))} / {fmt_pct(snapshot.get('oi_1h_pct'))} / {fmt_pct(snapshot.get('oi_4h_pct'))}",
-        f"结构: {structure.get('state') or '暂无'}"
-        + (f"，箱体 {format_price(to_float(structure.get('box_low')))} - {format_price(to_float(structure.get('box_high')))}" if structure else ""),
         "",
         "多交易所资金费率",
         *funding_rows_text(latest_funding_rows(snapshot)),

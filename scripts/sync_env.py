@@ -15,13 +15,7 @@ PRESERVE_KEYS = {
     "TG_ANNOUNCEMENT_ALERT_TOPIC_ID",
     "TG_FLOW_RADAR_TOPIC_ID",
     "TG_FUNDING_ALERT_TOPIC_ID",
-    "TG_STRUCTURE_TOPIC_ID",
-    "STRUCTURE_TOPIC_ID",
-    "STRUCTURE_REVIEW_TOPIC_ID",
-    "TG_STRUCTURE_REVIEW_TOPIC_ID",
     "TG_TEST_TOPIC_ID",
-    "COINALYZE_API_KEY",
-    "COINALYZE_ENABLE",
     "WEB_ADMIN_TOKEN",
     "WEB_AUTH_MODE",
     "WEB_ADMIN_USERNAME",
@@ -52,6 +46,56 @@ PRESERVE_KEYS = {
     "WEB_JOBS_STDERR_TAIL_CHARS",
     "SIGNAL_EVENTS_LIMIT",
     "SIGNAL_EVENTS_RETENTION_DAYS",
+}
+
+RETIRED_KEYS = {
+    "TG_STRUCTURE_TOPIC_ID",
+    "STRUCTURE_TOPIC_ID",
+    "STRUCTURE_REVIEW_TOPIC_ID",
+    "TG_STRUCTURE_REVIEW_TOPIC_ID",
+    "STRUCTURE_RUNTIME_STATUS_FILE",
+    "LIQUIDITY_FALLBACK_ENABLE",
+    "LIQUIDITY_SCORE_MAX_DELTA",
+    "LIQUIDITY_MIN_DISTANCE_PCT",
+    "LIQUIDITY_MAX_DISTANCE_PCT",
+    "BINANCE_ORDERBOOK_LIQUIDITY_ENABLE",
+    "BINANCE_ORDERBOOK_DEPTH_LIMIT",
+    "COINALYZE_ENABLE",
+    "COINALYZE_API_KEY",
+    "COINALYZE_BASE_URL",
+    "COINALYZE_REQUEST_BUDGET",
+    "COINALYZE_SYMBOL_SUFFIX",
+    "COINALYZE_LIQUIDATION_INTERVAL",
+    "COINALYZE_LIQUIDATION_LOOKBACK_HOURS",
+    "STRUCTURE_RADAR_ENABLE",
+    "STRUCTURE_INTERVAL",
+    "STRUCTURE_HIGHER_INTERVAL",
+    "STRUCTURE_BOX_LOOKBACK",
+    "STRUCTURE_TOP_SYMBOLS",
+    "STRUCTURE_NEAR_EDGE_PCT",
+    "STRUCTURE_MIN_SCORE",
+    "STRUCTURE_SEND_CHART_TOP_N",
+    "STRUCTURE_SAVE_CHARTS",
+    "STRUCTURE_DELETE_CHART_AFTER_SEND",
+    "STRUCTURE_CHART_RETENTION_HOURS",
+    "STRUCTURE_MAX_CHART_FILES",
+    "STRUCTURE_PRE_SCAN_MINUTE",
+    "STRUCTURE_CONFIRM_DELAY_SEC",
+    "STRUCTURE_COOLDOWN_SEC",
+    "STRUCTURE_STATE_FILE",
+    "STRUCTURE_HISTORY_FILE",
+    "STRUCTURE_CHART_DIR",
+    "STRUCTURE_REPLY_CHAIN_ENABLE",
+    "STRUCTURE_REVIEW_ENABLE",
+    "STRUCTURE_REVIEW_LOOKBACK_HOURS",
+    "STRUCTURE_REVIEW_FORWARD_HOURS",
+    "STRUCTURE_REVIEW_MIN_AGE_MINUTES",
+    "STRUCTURE_REVIEW_REPORT_TOP_N",
+    "STRUCTURE_REVIEW_MIN_SAMPLE",
+    "STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC",
+    "STRUCTURE_REVIEW_FILE",
+    "STRUCTURE_STATS_FILE",
+    "STRUCTURE_REVIEW_REPORT_FILE",
 }
 
 MANAGED_MIGRATIONS = {
@@ -132,6 +176,8 @@ def example_values(path: Path) -> list[tuple[str, str]]:
 
 def sync_env(env_path: Path, example_path: Path) -> dict[str, list[str]]:
     lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    removed = [key for line in lines if (parsed := split_env_line(line)) and (key := parsed[0]) in RETIRED_KEYS]
+    lines = [line for line in lines if not ((parsed := split_env_line(line)) and parsed[0] in RETIRED_KEYS)]
     index = env_index(lines)
     added: list[str] = []
     updated: list[str] = []
@@ -156,7 +202,7 @@ def sync_env(env_path: Path, example_path: Path) -> dict[str, list[str]]:
             updated.append(key)
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {"added": added, "updated": updated, "preserved": preserved}
+    return {"added": added, "updated": updated, "preserved": preserved, "removed": removed}
 
 
 def main() -> int:
@@ -170,12 +216,15 @@ def main() -> int:
         "env_sync: "
         f"added={len(result['added'])} "
         f"updated={len(result['updated'])} "
-        f"preserved={len(result['preserved'])}"
+        f"preserved={len(result['preserved'])} "
+        f"removed={len(result['removed'])}"
     )
     if result["updated"]:
         print("env_sync updated: " + ", ".join(result["updated"]))
     if result["added"]:
         print("env_sync added: " + ", ".join(result["added"]))
+    if result["removed"]:
+        print("env_sync removed retired keys: " + ", ".join(result["removed"]))
     return 0
 
 

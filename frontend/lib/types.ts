@@ -121,7 +121,6 @@ export type MarketSnapshot = {
   updated_at?: string;
   age_sec?: number;
   metrics?: Record<string, MarketMetric>;
-  structure?: Record<string, unknown>;
   funding_exchanges?: FundingExchange[];
   tiers?: { market_cap?: string; liquidity?: string };
 };

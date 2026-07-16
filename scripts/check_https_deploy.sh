@@ -491,7 +491,7 @@ check_services() {
     return
   fi
   local service
-  for service in paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai; do
+  for service in paopao-frontend paopao-web paopao-radar paopao-ai; do
     if ! systemctl list-unit-files "${service}.service" --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "${service}.service"; then
       if [ "${service}" = "paopao-ai" ]; then
         record_warn "systemd 服务不存在: ${service}；如果生产配置关闭 AI 助手可以忽略"
@@ -661,7 +661,7 @@ check_logs() {
     record_warn "已跳过 journalctl 日志检查"
     return
   fi
-  local services=(paopao-frontend paopao-web paopao-radar paopao-structure paopao-ai)
+  local services=(paopao-frontend paopao-web paopao-radar paopao-ai)
   local lines=(200 300 150 150 150)
   local total=0
   local i

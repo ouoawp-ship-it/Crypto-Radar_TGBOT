@@ -11,8 +11,6 @@ MODULE_DISPLAY: dict[str, tuple[str, str]] = {
     "launch": ("启动雷达", "info"),
     "funding": ("资金费率", "warn"),
     "flow": ("资金流", "info"),
-    "structure": ("结构雷达", "good"),
-    "structure_review": ("结构复盘", "neutral"),
     "announcement": ("公告", "neutral"),
     "summary": ("资金摘要", "neutral"),
     "test": ("测试", "info"),

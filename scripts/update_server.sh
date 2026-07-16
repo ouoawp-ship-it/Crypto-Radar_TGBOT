@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
-STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
@@ -39,7 +38,6 @@ usage() {
   BRANCH=main
   REMOTE=origin
   SERVICE_NAME=paopao-radar
-  STRUCTURE_SERVICE_NAME=paopao-structure
   CLEANUP_SERVICE_NAME=paopao-cleanup
   WEB_SERVICE_NAME=paopao-web
   FRONTEND_SERVICE_NAME=paopao-frontend
@@ -238,32 +236,6 @@ run_post_update_stable_check() {
   return 0
 }
 
-install_or_update_structure_service() {
-  command -v systemctl >/dev/null 2>&1 || return 0
-  local service_path="/etc/systemd/system/${STRUCTURE_SERVICE_NAME}.service"
-  run_root tee "$service_path" >/dev/null <<EOF
-[Unit]
-Description=Paopao Structure Radar
-After=network-online.target ${SERVICE_NAME}.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${SUDO_USER:-$(id -un)}
-WorkingDirectory=${APP_DIR}
-ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py structure-loop --send --confirm-real-send
-Restart=always
-RestartSec=15
-Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONDONTWRITEBYTECODE=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  run_root systemctl daemon-reload
-  run_root systemctl enable "$STRUCTURE_SERVICE_NAME" >/dev/null 2>&1 || true
-}
-
 install_or_update_cleanup_timer() {
   command -v systemctl >/dev/null 2>&1 || return 0
   local service_path="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.service"
@@ -296,6 +268,38 @@ WantedBy=timers.target
 EOF
   run_root systemctl daemon-reload
   run_root systemctl enable --now "${CLEANUP_SERVICE_NAME}.timer" >/dev/null 2>&1 || true
+}
+
+retire_removed_feature_artifacts() {
+  local legacy_service="paopao-structure"
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl stop "$legacy_service" >/dev/null 2>&1 || true
+    run_root systemctl disable "$legacy_service" >/dev/null 2>&1 || true
+    run_root rm -f "/etc/systemd/system/${legacy_service}.service"
+    run_root systemctl daemon-reload
+  fi
+  pkill -f "${APP_DIR}/main.py structure-loop" >/dev/null 2>&1 || true
+  pkill -f "main.py structure-loop" >/dev/null 2>&1 || true
+
+  local artifact
+  for artifact in \
+    structure_runtime_status.json \
+    structure_state.json \
+    structure_history.json \
+    structure_review.json \
+    structure_stats.json \
+    structure_review_report.txt \
+    structure_report.txt \
+    structure.log; do
+    rm -f -- "${APP_DIR}/data/${artifact}"
+  done
+
+  local data_root chart_root
+  data_root="$(readlink -f "${APP_DIR}/data" 2>/dev/null || true)"
+  chart_root="$(readlink -f "${APP_DIR}/data/charts" 2>/dev/null || true)"
+  if [ -n "$data_root" ] && [ -n "$chart_root" ] && [[ "$chart_root" == "${data_root}/"* ]]; then
+    rm -rf -- "$chart_root"
+  fi
 }
 
 install_or_update_web_service() {
@@ -638,7 +642,6 @@ install_shortcut_command() {
 #!/usr/bin/env bash
 export PAOPAO_APP_DIR="${APP_DIR}"
 export SERVICE_NAME="${SERVICE_NAME}"
-export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
 export FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME}"
@@ -650,23 +653,12 @@ EOF
   fi
 }
 
-stop_legacy_structure_loops() {
-  pkill -f "${APP_DIR}/main.py structure-loop" >/dev/null 2>&1 || true
-  pkill -f "main.py structure-loop" >/dev/null 2>&1 || true
-}
-
 restart_services_if_present() {
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
     run_root systemctl restart "$SERVICE_NAME"
     run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
   else
     printf 'systemd service not found; update completed without main service restart.\n'
-  fi
-
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${STRUCTURE_SERVICE_NAME}.service" >/dev/null 2>&1; then
-    stop_legacy_structure_loops
-    run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
-    run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
   fi
 
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${WEB_SERVICE_NAME}.service" >/dev/null 2>&1; then
@@ -720,11 +712,11 @@ printf 'GitHub版本: %s (%s)  %s\n' "$REMOTE_VERSION" "$(short_commit "$REMOTE_
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
   if [ "$CHECK_ONLY" != "1" ]; then
     sync_env_file
+    retire_removed_feature_artifacts
     ensure_web_public_config
     run_post_update_cleanup
     build_frontend_dashboard
     install_shortcut_command
-    install_or_update_structure_service
     install_or_update_cleanup_timer
     install_or_update_web_service
     install_or_update_frontend_service
@@ -765,6 +757,7 @@ fi
 git pull --ff-only "$REMOTE" "$BRANCH"
 
 sync_env_file
+retire_removed_feature_artifacts
 ensure_web_public_config
 "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
 "$PYTHON_BIN" -m compileall paopao_radar main.py
@@ -773,7 +766,6 @@ run_post_update_cleanup
 build_frontend_dashboard
 
 install_shortcut_command
-install_or_update_structure_service
 install_or_update_cleanup_timer
 install_or_update_web_service
 install_or_update_frontend_service

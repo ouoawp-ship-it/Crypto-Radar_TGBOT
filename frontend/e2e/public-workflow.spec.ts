@@ -43,7 +43,6 @@ const market = {
     oi_15m_pct: { value: 1.8, unit: "percent", source: "binance_futures", status: "fresh", age_sec: 8 },
     funding_pct: { value: -0.02, unit: "percent_per_cycle", source: "binance_futures", status: "fresh", age_sec: 8 }
   },
-  structure: { state: "near_high", bias: "bullish", box_high: 66000, box_low: 62000 },
   funding_exchanges: [{ exchange: "Binance", funding_pct: -0.02, interval_hours: 8 }],
   tiers: { liquidity: "高流动性" }
 };

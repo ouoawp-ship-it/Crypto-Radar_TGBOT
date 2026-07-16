@@ -3,7 +3,6 @@ set -Eeuo pipefail
 
 APP_NAME="${APP_NAME:-paopao-radar}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
-STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME:-paopao-structure}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
@@ -51,7 +50,6 @@ print_banner() {
   2. 创建/检查 .env.oi 配置文件
   3. 输入 Telegram bot token 和群 ID
   4. 选择是否启用 Telegram 话题自动分类
-  5. 可选输入 Coinalyze API key
   6. 创建 Python 虚拟环境并安装依赖
   7. 运行代码检查、单元测试和 readiness
   8. 安装并启动 systemd 服务
@@ -59,7 +57,6 @@ print_banner() {
 注意:
   - TG_BOT_TOKEN 只填 Telegram bot token，例如 123456:ABC...
   - TG_CHAT_ID 只填群 ID，例如 -1001234567890
-  - Coinalyze key 只在 COINALYZE_API_KEY 那一步填写
   - 话题 ID 默认不需要填写，机器人有权限时会自动创建并记录
 ============================================================
 
@@ -113,14 +110,6 @@ is_valid_chat_id() {
 is_valid_topic_id() {
   local value="${1:-}"
   [[ "$value" =~ ^[0-9]{1,20}$ ]]
-}
-
-is_valid_coinalyze_key() {
-  local value="${1:-}"
-  if is_placeholder_value "$value"; then
-    return 1
-  fi
-  [[ "$value" =~ ^[A-Za-z0-9_-]{16,128}$ ]]
 }
 
 set_env_value() {
@@ -212,8 +201,6 @@ sanitize_topic_config() {
     TG_LAUNCH_ALERT_TOPIC_ID \
     TG_ANNOUNCEMENT_ALERT_TOPIC_ID \
     TG_FLOW_RADAR_TOPIC_ID \
-    STRUCTURE_TOPIC_ID \
-    STRUCTURE_REVIEW_TOPIC_ID \
     TG_TEST_TOPIC_ID
   do
     value="$(get_env_value "$key")"
@@ -244,8 +231,6 @@ configure_topics() {
     TG_LAUNCH_ALERT_TOPIC_ID \
     TG_ANNOUNCEMENT_ALERT_TOPIC_ID \
     TG_FLOW_RADAR_TOPIC_ID \
-    STRUCTURE_TOPIC_ID \
-    STRUCTURE_REVIEW_TOPIC_ID \
     TG_TEST_TOPIC_ID
   do
     if is_valid_topic_id "$(get_env_value "$key")"; then
@@ -281,8 +266,6 @@ EOF
     clear_env_value TG_LAUNCH_ALERT_TOPIC_ID
     clear_env_value TG_ANNOUNCEMENT_ALERT_TOPIC_ID
   clear_env_value TG_FLOW_RADAR_TOPIC_ID
-  clear_env_value STRUCTURE_TOPIC_ID
-  clear_env_value STRUCTURE_REVIEW_TOPIC_ID
   clear_env_value TG_TEST_TOPIC_ID
     printf '已选择自动话题模式：不手动写话题 ID。\n'
     return 0
@@ -293,8 +276,6 @@ EOF
   prompt_topic_id TG_LAUNCH_ALERT_TOPIC_ID "启动预警话题 TG_LAUNCH_ALERT_TOPIC_ID"
   prompt_topic_id TG_ANNOUNCEMENT_ALERT_TOPIC_ID "公告风险话题 TG_ANNOUNCEMENT_ALERT_TOPIC_ID"
   prompt_topic_id TG_FLOW_RADAR_TOPIC_ID "资金流雷达话题 TG_FLOW_RADAR_TOPIC_ID"
-  prompt_topic_id STRUCTURE_TOPIC_ID "结构突破话题 STRUCTURE_TOPIC_ID"
-  prompt_topic_id STRUCTURE_REVIEW_TOPIC_ID "结构复盘话题 STRUCTURE_REVIEW_TOPIC_ID"
   prompt_topic_id TG_TEST_TOPIC_ID "测试消息话题 TG_TEST_TOPIC_ID"
 }
 
@@ -343,48 +324,6 @@ EOF
   set_env_value TG_CHAT_ID "$chat_id"
   configure_topics
   chmod 600 "$ENV_FILE" || true
-}
-
-prompt_coinalyze_config_if_needed() {
-  if [ ! -t 0 ]; then
-    return 0
-  fi
-  local enabled existing_key coinalyze_key
-  enabled="$(get_env_value COINALYZE_ENABLE)"
-  existing_key="$(get_env_value COINALYZE_API_KEY)"
-  if [ "$enabled" = "true" ] && is_valid_coinalyze_key "$existing_key"; then
-    log "Coinalyze 已配置，跳过 key 输入"
-    return 0
-  fi
-
-  cat <<EOF
-
-Coinalyze 可选配置:
-  - 直接回车: 不启用 Coinalyze 历史清算辅助
-  - 粘贴 COINALYZE_API_KEY: 启用 Coinalyze 免费清算历史辅助
-
-说明: 这是结构雷达可选清算历史方向辅助，不等同于预测清算池。
-
-EOF
-
-  while true; do
-    read -r -p "COINALYZE_API_KEY 可选，回车跳过: " coinalyze_key
-    if [ -z "$coinalyze_key" ]; then
-      set_env_value COINALYZE_ENABLE "false"
-      set_env_value COINALYZE_API_KEY ""
-      printf '已跳过 Coinalyze。后续仍会使用 Binance 免费盘口降级。\n'
-      return 0
-    fi
-    if is_valid_coinalyze_key "$coinalyze_key"; then
-      set_env_value COINALYZE_ENABLE "true"
-      set_env_value COINALYZE_API_KEY "$coinalyze_key"
-      set_env_value LIQUIDITY_FALLBACK_ENABLE "true"
-      set_env_value BINANCE_ORDERBOOK_LIQUIDITY_ENABLE "true"
-      printf 'COINALYZE_API_KEY 已保存，已启用免费清算历史辅助。\n'
-      return 0
-    fi
-    printf 'COINALYZE_API_KEY 格式不对。回车可跳过，或重新粘贴有效 key。\n'
-  done
 }
 
 install_os_packages() {
@@ -453,29 +392,14 @@ clear_topic_routes_file() {
 
 restart_service_if_requested() {
   command -v systemctl >/dev/null 2>&1 || return 0
-  local has_main has_structure
-  has_main=0
-  has_structure=0
-  if systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
-    has_main=1
-  fi
-  if systemctl list-unit-files "${STRUCTURE_SERVICE_NAME}.service" >/dev/null 2>&1; then
-    has_structure=1
-  fi
-  if [ "$has_main" = "0" ] && [ "$has_structure" = "0" ]; then
+  if ! systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
     return 0
   fi
   if yes_no_default_yes "配置已修改，是否立即重启已安装的泡泡抓币服务"; then
-    if [ "$has_main" = "1" ]; then
-      run_root systemctl restart "$SERVICE_NAME"
-      run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
-    fi
-    if [ "$has_structure" = "1" ]; then
-      run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
-      run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
-    fi
+    run_root systemctl restart "$SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
   else
-    printf '未重启服务。稍后可手动执行: sudo systemctl restart %s %s\n' "$SERVICE_NAME" "$STRUCTURE_SERVICE_NAME"
+    printf '未重启服务。稍后可手动执行: sudo systemctl restart %s\n' "$SERVICE_NAME"
   fi
 }
 
@@ -511,35 +435,6 @@ prompt_chat_id_only() {
   done
 }
 
-prompt_coinalyze_config_force() {
-  local coinalyze_key
-  cat <<EOF
-
-修改 Coinalyze API key:
-  - 直接回车: 关闭 Coinalyze 清算历史辅助
-  - 粘贴新 key: 启用 Coinalyze 免费清算历史辅助
-
-EOF
-  while true; do
-    read -r -p "新的 COINALYZE_API_KEY，回车关闭: " coinalyze_key
-    if [ -z "$coinalyze_key" ]; then
-      set_env_value COINALYZE_ENABLE "false"
-      set_env_value COINALYZE_API_KEY ""
-      printf 'Coinalyze 已关闭。\n'
-      return 0
-    fi
-    if is_valid_coinalyze_key "$coinalyze_key"; then
-      set_env_value COINALYZE_ENABLE "true"
-      set_env_value COINALYZE_API_KEY "$coinalyze_key"
-      set_env_value LIQUIDITY_FALLBACK_ENABLE "true"
-      set_env_value BINANCE_ORDERBOOK_LIQUIDITY_ENABLE "true"
-      printf 'COINALYZE_API_KEY 已更新。\n'
-      return 0
-    fi
-    printf 'COINALYZE_API_KEY 格式不对。回车可关闭，或重新粘贴有效 key。\n'
-  done
-}
-
 print_config_menu() {
   cat <<EOF
 
@@ -550,16 +445,15 @@ print_config_menu() {
 
   1. 修改 TG_BOT_TOKEN
   2. 修改 TG_CHAT_ID / 群 ID
-  3. 修改 COINALYZE_API_KEY
-  4. 修改 Telegram 话题配置
-  5. Telegram / Coinalyze 全部重新填写
-  6. 清理旧 Telegram 话题路由
+  3. 修改 Telegram 话题配置
+  4. 重新填写 Telegram 配置
+  5. 清理旧 Telegram 话题路由
   0. 保存并退出
 
 说明:
   - 修改群 ID 后会自动清理旧话题路由。
   - 清理旧话题路由后，机器人会在新群重新自动创建话题。
-  - 修改 token / 群 ID / key 后建议重启服务。
+  - 修改 token / 群 ID 后建议重启服务。
 ============================================================
 
 EOF
@@ -587,19 +481,14 @@ run_config_wizard() {
         changed=1
         ;;
       3)
-        prompt_coinalyze_config_force
-        changed=1
-        ;;
-      4)
         configure_topics
         changed=1
         ;;
-      5)
+      4)
         prompt_telegram_config
-        prompt_coinalyze_config_force
         changed=1
         ;;
-      6)
+      5)
         clear_topic_routes_file
         changed=1
         ;;
@@ -607,7 +496,7 @@ run_config_wizard() {
         break
         ;;
       *)
-        printf '无效选项，请输入 0-7。\n'
+        printf '无效选项，请输入 0-5。\n'
         ;;
     esac
   done
@@ -630,7 +519,6 @@ ensure_env_file() {
   else
     configure_topics
   fi
-  prompt_coinalyze_config_if_needed
 }
 
 install_python_deps() {
@@ -701,7 +589,6 @@ run_readiness() {
     log "跳过安装阶段 Telegram 测试消息；如需发送，使用 RUN_TELEGRAM_TEST=1"
   fi
 
-  log "结构外部确认使用 Binance 免费盘口，可选 Coinalyze 历史清算辅助"
 }
 
 install_systemd_service() {
@@ -741,46 +628,6 @@ EOF
     run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
   else
     log "AUTO_START=0，服务已安装但未启动"
-  fi
-}
-
-install_structure_systemd_service() {
-  command -v systemctl >/dev/null 2>&1 || {
-    log "未找到 systemctl，不安装结构雷达 systemd 服务"
-    return 0
-  }
-
-  log "安装 systemd 服务: ${STRUCTURE_SERVICE_NAME}"
-  local service_path="/etc/systemd/system/${STRUCTURE_SERVICE_NAME}.service"
-  run_root tee "$service_path" >/dev/null <<EOF
-[Unit]
-Description=Paopao Structure Radar
-After=network-online.target ${SERVICE_NAME}.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-WorkingDirectory=${APP_DIR}
-ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py structure-loop --send --confirm-real-send
-Restart=always
-RestartSec=15
-Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONDONTWRITEBYTECODE=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  run_root systemctl daemon-reload
-  run_root systemctl enable "$STRUCTURE_SERVICE_NAME"
-
-  if [ "$AUTO_START" = "1" ]; then
-    log "启动结构雷达服务"
-    run_root systemctl restart "$STRUCTURE_SERVICE_NAME"
-    run_root systemctl --no-pager --full status "$STRUCTURE_SERVICE_NAME" || true
-  else
-    log "AUTO_START=0，结构雷达服务已安装但未启动"
   fi
 }
 
@@ -1209,7 +1056,6 @@ install_shortcut_command() {
 #!/usr/bin/env bash
 export PAOPAO_APP_DIR="${APP_DIR}"
 export SERVICE_NAME="${SERVICE_NAME}"
-export STRUCTURE_SERVICE_NAME="${STRUCTURE_SERVICE_NAME}"
 export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
 export FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME}"
@@ -1237,7 +1083,7 @@ main() {
       cat <<EOF
 用法:
   bash scripts/install_server.sh          # 中文安装向导
-  bash scripts/install_server.sh config   # 修改 token / 群 ID / Coinalyze key / 话题配置
+  bash scripts/install_server.sh config   # 修改 token / 群 ID / 话题配置
   bash scripts/install_server.sh shortcut # 只安装 paopao 快捷命令
 EOF
       return 0
@@ -1257,7 +1103,6 @@ EOF
   bootstrap_history_if_needed
   run_readiness
   install_systemd_service
-  install_structure_systemd_service
   install_cleanup_systemd_timer
   install_web_systemd_service
   install_frontend_systemd_service
@@ -1282,7 +1127,7 @@ EOF
   进入中文菜单后，用数字查看正式入口、设置后台账号密码、Web 服务状态、实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
   paopao-frontend 监听 127.0.0.1:3000，只供 Nginx 反代公开前台。
   8080 仅作为 Nginx 反代后端入口，不作为公网访问入口。
-  配置修改、主服务/结构雷达启停、测试消息、readiness、doctor、cleanup、结构复盘等控制功能在 Web 控制台完成。
+  配置修改、主服务启停、测试消息、readiness、doctor 和 cleanup 等控制功能在 Web 控制台完成。
 
 中文安装说明:
   ${APP_DIR}/docs/INSTALL_CN.md

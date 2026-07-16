@@ -34,8 +34,6 @@ export function moduleLabel(value?: string): string {
     launch: "启动雷达",
     funding: "资金费率",
     flow: "资金流",
-    structure: "结构雷达",
-    structure_review: "结构复盘",
     announcement: "公告",
     summary: "资金摘要",
     test: "测试",

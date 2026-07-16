@@ -113,8 +113,6 @@ class Settings:
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
     tg_funding_alert_topic_id: str = ""
-    tg_structure_topic_id: str = ""
-    tg_structure_review_topic_id: str = ""
     tg_auto_create_topics: bool = True
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_topic_intro_enable: bool = True
@@ -170,7 +168,6 @@ class Settings:
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
-    structure_runtime_status_path: Path = BASE_DIR / "data" / "structure_runtime_status.json"
     cleanup_enable: bool = True
     cleanup_interval_sec: int = 3600
     cleanup_state_path: Path = BASE_DIR / "data" / "cleanup_state.json"
@@ -185,20 +182,6 @@ class Settings:
     binance_fapi_base_url: str = "https://fapi.binance.com"
     binance_spot_base_url: str = "https://api.binance.com"
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
-
-    liquidity_fallback_enable: bool = True
-    liquidity_score_max_delta: int = 15
-    liquidity_min_distance_pct: float = 0.5
-    liquidity_max_distance_pct: float = 8.0
-    binance_orderbook_liquidity_enable: bool = True
-    binance_orderbook_depth_limit: int = 100
-    coinalyze_enable: bool = False
-    coinalyze_api_key: str = ""
-    coinalyze_base_url: str = "https://api.coinalyze.net/v1"
-    coinalyze_request_budget: int = 40
-    coinalyze_symbol_suffix: str = "_PERP.A"
-    coinalyze_liquidation_interval: str = "1hour"
-    coinalyze_liquidation_lookback_hours: int = 24
 
     radar_scan_limit: int = 120
     radar_min_quote_volume: float = 5_000_000
@@ -235,36 +218,6 @@ class Settings:
     funding_alert_decay_quiet_scans: int = 2
     funding_alert_end_quiet_scans: int = 5
     funding_alert_state_path: Path = BASE_DIR / "data" / "funding_alert_state.json"
-
-    structure_radar_enable: bool = True
-    structure_interval: str = "15m"
-    structure_higher_interval: str = "1h"
-    structure_box_lookback: int = 36
-    structure_top_symbols: int = 80
-    structure_near_edge_pct: float = 1.5
-    structure_min_score: int = 65
-    structure_send_chart_top_n: int = 3
-    structure_save_charts: bool = True
-    structure_delete_chart_after_send: bool = True
-    structure_chart_retention_hours: int = 12
-    structure_max_chart_files: int = 200
-    structure_pre_scan_minute: int = 55
-    structure_confirm_delay_sec: int = 300
-    structure_cooldown_sec: int = 3600
-    structure_state_path: Path = BASE_DIR / "data" / "structure_state.json"
-    structure_history_path: Path = BASE_DIR / "data" / "structure_history.json"
-    structure_chart_dir: Path = BASE_DIR / "data" / "charts"
-    structure_reply_chain_enable: bool = True
-    structure_review_enable: bool = True
-    structure_review_lookback_hours: int = 24
-    structure_review_forward_hours: int = 4
-    structure_review_min_age_minutes: int = 15
-    structure_review_report_top_n: int = 10
-    structure_review_min_sample: int = 10
-    structure_review_max_report_interval_sec: int = 3600
-    structure_review_path: Path = BASE_DIR / "data" / "structure_review.json"
-    structure_stats_path: Path = BASE_DIR / "data" / "structure_stats.json"
-    structure_review_report_path: Path = BASE_DIR / "data" / "structure_review_report.txt"
 
     oi_hist_budget: int = 80
     kline_budget: int = 120
@@ -323,8 +276,6 @@ class Settings:
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_funding_alert_topic_id=env_first("TG_FUNDING_ALERT_TOPIC_ID", "TELEGRAM_FUNDING_ALERT_TOPIC_ID"),
-            tg_structure_topic_id=env_first("STRUCTURE_TOPIC_ID", "TG_STRUCTURE_TOPIC_ID", "TELEGRAM_STRUCTURE_TOPIC_ID"),
-            tg_structure_review_topic_id=env_first("STRUCTURE_REVIEW_TOPIC_ID", "TG_STRUCTURE_REVIEW_TOPIC_ID", "TELEGRAM_STRUCTURE_REVIEW_TOPIC_ID"),
             tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_topic_intro_enable=env_bool("TG_TOPIC_INTRO_ENABLE", True),
@@ -380,7 +331,6 @@ class Settings:
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
-            structure_runtime_status_path=data_path(data_dir, "STRUCTURE_RUNTIME_STATUS_FILE", "structure_runtime_status.json"),
             cleanup_enable=env_bool("CLEANUP_ENABLE", True),
             cleanup_interval_sec=env_int("CLEANUP_INTERVAL_SEC", 3600),
             cleanup_state_path=data_path(data_dir, "CLEANUP_STATE_FILE", "cleanup_state.json"),
@@ -394,19 +344,6 @@ class Settings:
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
-            liquidity_fallback_enable=env_bool("LIQUIDITY_FALLBACK_ENABLE", True),
-            liquidity_score_max_delta=env_int("LIQUIDITY_SCORE_MAX_DELTA", 15),
-            liquidity_min_distance_pct=env_float("LIQUIDITY_MIN_DISTANCE_PCT", 0.5),
-            liquidity_max_distance_pct=env_float("LIQUIDITY_MAX_DISTANCE_PCT", 8.0),
-            binance_orderbook_liquidity_enable=env_bool("BINANCE_ORDERBOOK_LIQUIDITY_ENABLE", True),
-            binance_orderbook_depth_limit=env_int("BINANCE_ORDERBOOK_DEPTH_LIMIT", 100),
-            coinalyze_enable=env_bool("COINALYZE_ENABLE", False),
-            coinalyze_api_key=os.getenv("COINALYZE_API_KEY", "").strip(),
-            coinalyze_base_url=os.getenv("COINALYZE_BASE_URL", "https://api.coinalyze.net/v1").rstrip("/"),
-            coinalyze_request_budget=env_int("COINALYZE_REQUEST_BUDGET", 40),
-            coinalyze_symbol_suffix=os.getenv("COINALYZE_SYMBOL_SUFFIX", "_PERP.A").strip() or "_PERP.A",
-            coinalyze_liquidation_interval=os.getenv("COINALYZE_LIQUIDATION_INTERVAL", "1hour").strip() or "1hour",
-            coinalyze_liquidation_lookback_hours=env_int("COINALYZE_LIQUIDATION_LOOKBACK_HOURS", 24),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
@@ -440,35 +377,6 @@ class Settings:
             funding_alert_decay_quiet_scans=env_int("FUNDING_ALERT_DECAY_QUIET_SCANS", 2),
             funding_alert_end_quiet_scans=env_int("FUNDING_ALERT_END_QUIET_SCANS", 5),
             funding_alert_state_path=data_path(data_dir, "FUNDING_ALERT_STATE_FILE", "funding_alert_state.json"),
-            structure_radar_enable=env_bool("STRUCTURE_RADAR_ENABLE", True),
-            structure_interval=os.getenv("STRUCTURE_INTERVAL", "15m").strip() or "15m",
-            structure_higher_interval=os.getenv("STRUCTURE_HIGHER_INTERVAL", "1h").strip() or "1h",
-            structure_box_lookback=env_int("STRUCTURE_BOX_LOOKBACK", 36),
-            structure_top_symbols=env_int("STRUCTURE_TOP_SYMBOLS", 80),
-            structure_near_edge_pct=env_float("STRUCTURE_NEAR_EDGE_PCT", 1.5),
-            structure_min_score=env_int("STRUCTURE_MIN_SCORE", 65),
-            structure_send_chart_top_n=env_int("STRUCTURE_SEND_CHART_TOP_N", 3),
-            structure_save_charts=env_bool("STRUCTURE_SAVE_CHARTS", True),
-            structure_delete_chart_after_send=env_bool("STRUCTURE_DELETE_CHART_AFTER_SEND", True),
-            structure_chart_retention_hours=env_int("STRUCTURE_CHART_RETENTION_HOURS", 12),
-            structure_max_chart_files=env_int("STRUCTURE_MAX_CHART_FILES", 200),
-            structure_pre_scan_minute=env_int("STRUCTURE_PRE_SCAN_MINUTE", 55),
-            structure_confirm_delay_sec=env_int("STRUCTURE_CONFIRM_DELAY_SEC", 300),
-            structure_cooldown_sec=env_int("STRUCTURE_COOLDOWN_SEC", 3600),
-            structure_state_path=data_path(data_dir, "STRUCTURE_STATE_FILE", "structure_state.json"),
-            structure_history_path=data_path(data_dir, "STRUCTURE_HISTORY_FILE", "structure_history.json"),
-            structure_chart_dir=data_path(data_dir, "STRUCTURE_CHART_DIR", "charts"),
-            structure_reply_chain_enable=env_bool("STRUCTURE_REPLY_CHAIN_ENABLE", True),
-            structure_review_enable=env_bool("STRUCTURE_REVIEW_ENABLE", True),
-            structure_review_lookback_hours=env_int("STRUCTURE_REVIEW_LOOKBACK_HOURS", 24),
-            structure_review_forward_hours=env_int("STRUCTURE_REVIEW_FORWARD_HOURS", 4),
-            structure_review_min_age_minutes=env_int("STRUCTURE_REVIEW_MIN_AGE_MINUTES", 15),
-            structure_review_report_top_n=env_int("STRUCTURE_REVIEW_REPORT_TOP_N", 10),
-            structure_review_min_sample=env_int("STRUCTURE_REVIEW_MIN_SAMPLE", 10),
-            structure_review_max_report_interval_sec=env_int("STRUCTURE_REVIEW_MAX_REPORT_INTERVAL_SEC", 3600),
-            structure_review_path=data_path(data_dir, "STRUCTURE_REVIEW_FILE", "structure_review.json"),
-            structure_stats_path=data_path(data_dir, "STRUCTURE_STATS_FILE", "structure_stats.json"),
-            structure_review_report_path=data_path(data_dir, "STRUCTURE_REVIEW_REPORT_FILE", "structure_review_report.txt"),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
@@ -522,8 +430,6 @@ class Settings:
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
                     "funding_alert": bool(self.tg_funding_alert_topic_id),
-                    "structure_radar": bool(self.tg_structure_topic_id),
-                    "structure_review": bool(self.tg_structure_review_topic_id),
                 },
                 "auto_create_topics": self.tg_auto_create_topics,
                 "topic_routes_file": str(self.tg_topic_routes_path),
@@ -566,7 +472,6 @@ class Settings:
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),
-                "structure_status_file": str(self.structure_runtime_status_path),
                 "cleanup_enable": self.cleanup_enable,
                 "cleanup_interval_sec": self.cleanup_interval_sec,
                 "cleanup_state_file": str(self.cleanup_state_path),
@@ -594,23 +499,6 @@ class Settings:
                 "retry": self.http_retry,
                 "cache_enable": self.http_cache_enable,
                 "cache_ttl_sec": self.http_cache_ttl_sec,
-            },
-            "liquidity": {
-                "fallback_enable": self.liquidity_fallback_enable,
-                "score_max_delta": self.liquidity_score_max_delta,
-                "min_distance_pct": self.liquidity_min_distance_pct,
-                "max_distance_pct": self.liquidity_max_distance_pct,
-                "binance_orderbook_enable": self.binance_orderbook_liquidity_enable,
-                "binance_orderbook_depth_limit": self.binance_orderbook_depth_limit,
-            },
-            "coinalyze": {
-                "enable": self.coinalyze_enable,
-                "api_key_configured": bool(self.coinalyze_api_key),
-                "base_url": self.coinalyze_base_url,
-                "request_budget": self.coinalyze_request_budget,
-                "symbol_suffix": self.coinalyze_symbol_suffix,
-                "liquidation_interval": self.coinalyze_liquidation_interval,
-                "liquidation_lookback_hours": self.coinalyze_liquidation_lookback_hours,
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),
@@ -655,37 +543,6 @@ class Settings:
                 "decay_quiet_scans": self.funding_alert_decay_quiet_scans,
                 "end_quiet_scans": self.funding_alert_end_quiet_scans,
                 "state_file": str(self.funding_alert_state_path),
-            },
-            "structure_radar": {
-                "enable": self.structure_radar_enable,
-                "interval": self.structure_interval,
-                "higher_interval": self.structure_higher_interval,
-                "box_lookback": self.structure_box_lookback,
-                "top_symbols": self.structure_top_symbols,
-                "near_edge_pct": self.structure_near_edge_pct,
-                "min_score": self.structure_min_score,
-                "send_chart_top_n": self.structure_send_chart_top_n,
-                "save_charts": self.structure_save_charts,
-                "delete_chart_after_send": self.structure_delete_chart_after_send,
-                "chart_retention_hours": self.structure_chart_retention_hours,
-                "max_chart_files": self.structure_max_chart_files,
-                "pre_scan_minute": self.structure_pre_scan_minute,
-                "confirm_delay_sec": self.structure_confirm_delay_sec,
-                "cooldown_sec": self.structure_cooldown_sec,
-                "state_file": str(self.structure_state_path),
-                "history_file": str(self.structure_history_path),
-                "chart_dir": str(self.structure_chart_dir),
-                "reply_chain_enable": self.structure_reply_chain_enable,
-                "review_enable": self.structure_review_enable,
-                "review_lookback_hours": self.structure_review_lookback_hours,
-                "review_forward_hours": self.structure_review_forward_hours,
-                "review_min_age_minutes": self.structure_review_min_age_minutes,
-                "review_report_top_n": self.structure_review_report_top_n,
-                "review_min_sample": self.structure_review_min_sample,
-                "review_max_report_interval_sec": self.structure_review_max_report_interval_sec,
-                "review_file": str(self.structure_review_path),
-                "stats_file": str(self.structure_stats_path),
-                "review_report_file": str(self.structure_review_report_path),
             },
             "launch": {
                 "scan_limit": self.launch_scan_limit,

@@ -8,7 +8,6 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -61,11 +60,9 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
-    "TG_STRUCTURE_RADAR": "结构突破",
-    "TG_STRUCTURE_REVIEW": "结构复盘",
 }
 
-TOPIC_INTRO_VERSION = "2026-05-26-multisource-liquidity-v1"
+TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -180,50 +177,6 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "6. 交易所偏离 = 最高资金费率 - 最低资金费率，用来判断是否存在单所盘口异常、局部清算压力或套利资金迁移。",
         "7. 资金费率只代表合约拥挤程度，不等于直接买卖方向。",
         ])
-    if template_id == "TG_STRUCTURE_RADAR":
-        return "\n".join([
-        "📌 <b>结构突破雷达话题说明</b>",
-        "",
-        "这里推送盘整箱体、压缩、临界突破和收线确认信号。",
-        "",
-        "扫描和发送频率：",
-        f"- 提前临界扫描：每小时 {int(settings.structure_pre_scan_minute):02d} 分附近运行，只作为提前预警。",
-        f"- 收线确认扫描：整点收线后延迟 {seconds_cn(settings.structure_confirm_delay_sec)} 运行，使用完整闭合 K 线。",
-        f"- 单币同类结构信号冷却：{seconds_cn(settings.structure_cooldown_sec)}。",
-        f"- K线图：默认最多随每轮前 {int(settings.structure_send_chart_top_n)} 个信号发送。",
-        "",
-        "信号类型：",
-        "- 临近上沿 / 临近下沿：价格靠近箱体边缘，等待突破或跌破。",
-        "- 压缩观察：ATR 或 BB 宽度压缩，说明波动正在收敛。",
-        "- 突破确认 / 跌破确认：完整收线站上箱体上沿或跌破箱体下沿。",
-        "- 假突破 / 假跌破：前面出现临界或突破，后续又收回箱体。",
-        "",
-        "评分说明：",
-        "- 评分 = 边缘距离20 + 结构15 + 触碰10 + 压缩15 + 成交量10 + OI10 + 主动买卖10 + 高周期5 + Funding5。",
-        "- 外部确认：使用Binance盘口深度，可选叠加Coinalyze历史清算；推送会用中文说明盘口流动性和清算方向辅助，分数修正限制在 -15~+15。",
-        "- 等级 = S≥85，A≥70，B≥60，C≥50；低于 STRUCTURE_MIN_SCORE 不推送。",
-        "",
-        "阅读方式：",
-        "1. 先看信号类型，再看距离上沿/下沿和箱体宽度。",
-        "2. 临界信号不是做单确认，确认信号必须等整点后收线判断。",
-        "3. 图表用于快速看箱体上下沿、当前价格、量能和 OI，不代表自动交易建议。",
-        ])
-    if template_id == "TG_STRUCTURE_REVIEW":
-        return "\n".join([
-        "📌 <b>结构复盘话题说明</b>",
-        "",
-        "这里推送结构雷达信号发出后的表现统计，用来判断临界、突破、假突破信号是否有效。",
-        "",
-        "扫描和发送频率：",
-        f"- 默认复盘过去 {int(settings.structure_review_lookback_hours)} 小时的结构信号。",
-        f"- 信号至少等待 {seconds_cn(settings.structure_review_min_age_minutes * 60)} 后开始复盘，最多跟踪 {int(settings.structure_review_forward_hours)} 小时。",
-        f"- 真实推送复盘报告最小间隔：{seconds_cn(settings.structure_review_max_report_interval_sec)}。",
-        "",
-        "阅读方式：",
-        "1. 先看总信号、已完成复盘、有效突破、假突破、无效震荡。",
-        "2. 再看 S/A/B/C 各等级命中率，判断当前分数线是否过松。",
-        "3. 参数建议不会未经确认自动修改 .env.oi；需要时可在 Web 控制台一键应用。",
-        ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([
         "📌 <b>测试消息话题说明</b>",
@@ -319,84 +272,6 @@ class TelegramGateway:
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
         return result
 
-    def send_photo(
-        self,
-        photo_path: str | Path,
-        caption: str,
-        template_id: str,
-        dedup_key: str,
-        *,
-        send: bool,
-        confirm_real_send: bool,
-        cooldown_sec: int | None = None,
-        parse_mode: str = "HTML",
-        reply_to_message_id: int | None = None,
-    ) -> PushResult:
-        now = utc_ts()
-        cooldown = self.settings.tg_default_cooldown_sec if cooldown_sec is None else cooldown_sec
-        history = self._load_history()
-        topic_id = self._topic_id_for_template(template_id)
-        path = Path(photo_path)
-
-        duplicate = self._recent_match(history, dedup_key, cooldown)
-        if duplicate:
-            result = PushResult("skipped", "dedup_cooldown", False)
-            self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-            return result
-
-        if self._hourly_sent_count(history, now) >= self.settings.tg_global_hourly_limit:
-            result = PushResult("skipped", "global_hourly_limit", False)
-            self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-            return result
-
-        if not path.exists():
-            result = PushResult("failed", "photo_not_found", False)
-            self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-            return result
-
-        if not send:
-            print("\n========== TELEGRAM PHOTO DRY-RUN ==========")
-            print(f"template_id: {template_id}")
-            print(f"dedup_key: {dedup_key}")
-            print(f"photo_path: {path}")
-            if topic_id:
-                print(f"topic_id: {topic_id}")
-            print(caption)
-            print("========== END PHOTO DRY-RUN ==============\n")
-            result = PushResult("dry_run", "send_flag_not_set", False)
-            self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-            return result
-
-        if not confirm_real_send:
-            result = PushResult("blocked", "missing_confirm_real_send", False)
-            self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-            return result
-
-        if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
-            result = PushResult("blocked", "telegram_not_configured", False)
-            self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-            return result
-
-        topic_id = self._ensure_topic_id_for_template(template_id)
-        self._ensure_topic_intro(template_id, topic_id)
-        reply_markup = self._public_signal_markup(template_id, dedup_key, caption)
-        ok, message_ids = self._send_real_photo_ids(
-            path,
-            caption,
-            parse_mode=parse_mode,
-            topic_id=topic_id,
-            reply_to_message_id=reply_to_message_id,
-            reply_markup=reply_markup,
-        )
-        result = PushResult(
-            "sent" if ok else "failed",
-            "telegram_api" if ok else "telegram_api_failed",
-            ok,
-            message_ids,
-        )
-        self._record(history, template_id, dedup_key, result, caption, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
-        return result
-
     def _send_real(
         self,
         text: str,
@@ -481,86 +356,6 @@ class TelegramGateway:
             time.sleep(0.25)
         return ok, message_ids
 
-    def _send_real_photo_ids(
-        self,
-        photo_path: Path,
-        caption: str,
-        parse_mode: str,
-        topic_id: str = "",
-        reply_to_message_id: int | None = None,
-        reply_markup: dict[str, Any] | None = None,
-    ) -> tuple[bool, list[int]]:
-        url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendPhoto"
-        payload: dict[str, Any] = {
-            "chat_id": self.settings.tg_chat_id,
-            "caption": caption[:1024],
-            "parse_mode": parse_mode,
-        }
-        if reply_markup:
-            payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False, separators=(",", ":"))
-        if reply_to_message_id:
-            payload["reply_to_message_id"] = int(reply_to_message_id)
-            payload["allow_sending_without_reply"] = True
-        if topic_id and (
-            self.settings.tg_use_topic or str(self.settings.tg_chat_id).startswith("-100")
-        ):
-            try:
-                payload["message_thread_id"] = int(topic_id)
-            except ValueError:
-                pass
-        for attempt in range(1, self.settings.tg_push_retry + 1):
-            try:
-                with photo_path.open("rb") as image:
-                    response = requests.post(
-                        url,
-                        data=payload,
-                        files={"photo": image},
-                        timeout=self.settings.tg_push_timeout_sec,
-                    )
-                if response.status_code == 200:
-                    message_ids: list[int] = []
-                    self._append_message_id(response, message_ids)
-                    return True, message_ids
-                if response.status_code == 400 and payload.get("reply_to_message_id"):
-                    no_reply = dict(payload)
-                    no_reply.pop("reply_to_message_id", None)
-                    no_reply.pop("allow_sending_without_reply", None)
-                    with photo_path.open("rb") as image:
-                        response = requests.post(
-                            url,
-                            data=no_reply,
-                            files={"photo": image},
-                            timeout=self.settings.tg_push_timeout_sec,
-                        )
-                    if response.status_code == 200:
-                        message_ids = []
-                        self._append_message_id(response, message_ids)
-                        return True, message_ids
-                if response.status_code == 400 and parse_mode:
-                    fallback = dict(payload)
-                    fallback.pop("parse_mode", None)
-                    fallback["caption"] = plain_fallback(caption)[:1024]
-                    with photo_path.open("rb") as image:
-                        response = requests.post(
-                            url,
-                            data=fallback,
-                            files={"photo": image},
-                            timeout=self.settings.tg_push_timeout_sec,
-                        )
-                    if response.status_code == 200:
-                        message_ids = []
-                        self._append_message_id(response, message_ids)
-                        return True, message_ids
-                    return False, []
-                if response.status_code in {429, 500, 502, 503, 504}:
-                    time.sleep(min(5, attempt))
-                    continue
-                return False, []
-            except Exception:
-                if attempt < self.settings.tg_push_retry:
-                    time.sleep(min(5, attempt))
-        return False, []
-
     def _public_signal_markup(self, template_id: str, dedup_key: str, text: str) -> dict[str, Any] | None:
         if template_id not in TOPIC_TEMPLATE_NAMES or template_id == "TG_TEST_MESSAGE":
             return None
@@ -611,8 +406,6 @@ class TelegramGateway:
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
-            "TG_STRUCTURE_RADAR": self.settings.tg_structure_topic_id,
-            "TG_STRUCTURE_REVIEW": self.settings.tg_structure_review_topic_id or self.settings.tg_structure_topic_id,
         }
         return topic_routes.get(template_id, "")
 

@@ -178,8 +178,8 @@ show_menu_header() {
   2. 公开前台由 ${FRONTEND_SERVICE_NAME} 提供，监听 127.0.0.1:3000。
   3. 8080 仅作为 Nginx 反代后端入口，不作为公网入口。
   4. 如需设置或重置后台登录密码，请使用菜单项 2。
-  5. 配置修改、日志查看、主服务/结构雷达启停、Telegram 测试、
-     readiness、doctor、cleanup、结构复盘，都在 Web 页面里操作。
+  5. 配置修改、日志查看、主服务启停、Telegram 测试、
+     readiness、doctor 和 cleanup，都在 Web 页面里操作。
   6. 这个中文菜单只保留最常用的服务器维护动作，避免记长命令。
 
 请选择:
@@ -228,7 +228,7 @@ show_help() {
 
 说明:
   输入 paopao 后，直接用数字选择功能。
-  配置修改、服务启停、日志查看、测试消息、readiness、doctor、cleanup、结构复盘等日常控制功能，都在 Web 页面里完成。
+  配置修改、服务启停、日志查看、测试消息、readiness、doctor 和 cleanup 等日常控制功能，都在 Web 页面里完成。
   服务器菜单只保留正式入口、后台密码设置、前台/Web 服务排查、项目更新和版本查看。
 
 项目目录: ${APP_DIR}

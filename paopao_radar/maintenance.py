@@ -109,6 +109,7 @@ def _prune_json_list_by_ts(
     path: Path,
     limit: int,
     retention_days: int | None = None,
+    allowed_template_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     records = store.load(path, [])
     if not isinstance(records, list):
@@ -121,59 +122,19 @@ def _prune_json_list_by_ts(
             record for record in retained
             if not isinstance(record, dict) or _int_value(record.get("ts"), int(time.time())) >= cutoff
         ]
+    if allowed_template_ids is not None:
+        retained = [
+            record for record in retained
+            if not isinstance(record, dict)
+            or not str(record.get("template_id") or "")
+            or str(record.get("template_id") or "") in allowed_template_ids
+        ]
     if limit > 0 and len(retained) > limit:
         retained = retained[-limit:]
     changed = len(retained) != before
     if changed:
         store.save(path, retained)
     return {"path": str(path), "before": before, "after": len(retained), "changed": changed}
-
-
-def cleanup_structure_charts(chart_dir: Path, retention_hours: int, max_files: int) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "chart_dir": str(chart_dir),
-        "scanned": 0,
-        "deleted_old": 0,
-        "deleted_over_limit": 0,
-        "kept": 0,
-        "errors": [],
-    }
-    if not chart_dir.exists():
-        return result
-    if not chart_dir.is_dir():
-        result["errors"].append(f"not_dir:{chart_dir}")
-        return result
-
-    now = time.time()
-    cutoff = now - max(1, int(retention_hours)) * 3600
-    png_files = [path for path in chart_dir.glob("*.png") if path.is_file()]
-    result["scanned"] = len(png_files)
-    kept: list[Path] = []
-
-    for path in png_files:
-        try:
-            if path.stat().st_mtime < cutoff:
-                if _remove_file(path):
-                    result["deleted_old"] += 1
-                continue
-            kept.append(path)
-        except OSError as exc:
-            result["errors"].append(f"{path.name}:{type(exc).__name__}")
-
-    limit = max(0, int(max_files))
-    if limit > 0 and len(kept) > limit:
-        kept.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0)
-        overflow = kept[: len(kept) - limit]
-        remaining = kept[len(kept) - limit:]
-        for path in overflow:
-            try:
-                if _remove_file(path):
-                    result["deleted_over_limit"] += 1
-            except OSError as exc:
-                result["errors"].append(f"{path.name}:{type(exc).__name__}")
-        kept = remaining
-    result["kept"] = sum(1 for path in kept if path.exists())
-    return result
 
 
 def cleanup_generated_root_artifacts(base_dir: Path) -> dict[str, Any]:
@@ -253,12 +214,22 @@ def cleanup_runtime_artifacts(
             if path.stat().st_mtime <= cutoff_logs and _remove_file(path):
                 removed_files.append(str(path))
 
+    from .symbol_dossier import ACTIVE_SIGNAL_TEMPLATE_IDS
+
     pruned = [
         _prune_json_list_by_ts(
             store,
             settings.tg_push_history_path,
             max(100, int(settings.tg_push_history_limit)),
             max(1, int(settings.tg_push_history_retention_days)),
+            ACTIVE_SIGNAL_TEMPLATE_IDS,
+        ),
+        _prune_json_list_by_ts(
+            store,
+            settings.signal_events_path,
+            max(100, int(settings.signal_events_limit)),
+            max(1, int(settings.signal_events_retention_days)),
+            ACTIVE_SIGNAL_TEMPLATE_IDS,
         ),
         _prune_json_list_by_ts(
             store,
@@ -267,11 +238,6 @@ def cleanup_runtime_artifacts(
             None,
         ),
     ]
-    structure_charts = cleanup_structure_charts(
-        settings.structure_chart_dir,
-        settings.structure_chart_retention_hours,
-        settings.structure_max_chart_files,
-    )
     generated_root_artifacts = cleanup_generated_root_artifacts(settings.base_dir)
 
     result = {
@@ -281,7 +247,6 @@ def cleanup_runtime_artifacts(
         "removed_files": removed_files,
         "removed_dirs": removed_dirs,
         "pruned": pruned,
-        "structure_charts": structure_charts,
         "generated_root_artifacts": generated_root_artifacts,
     }
     store.save(settings.cleanup_state_path, {
