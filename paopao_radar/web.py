@@ -3906,7 +3906,13 @@ class WebHandler(BaseHTTPRequestHandler):
             existing_meta = payload_obj.get("_meta")
             meta = existing_meta if isinstance(existing_meta, dict) else {}
             payload_obj["_meta"] = {**meta, **self.api_meta(int(status))}
-        payload = json.dumps(payload_obj, ensure_ascii=False, indent=2).encode("utf-8")
+        is_public_api = parsed_path.startswith("/public-api/")
+        payload = json.dumps(
+            payload_obj,
+            ensure_ascii=False,
+            indent=None if is_public_api else 2,
+            separators=(",", ":") if is_public_api else None,
+        ).encode("utf-8")
         headers = {**getattr(self, "public_rate_headers", {}), **dict(extra_headers or {})}
         self.send_payload(payload, status, "application/json; charset=utf-8", extra_headers=headers)
 
@@ -4270,6 +4276,7 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_json(public_radar_intelligence_payload(
                 window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
                 board_limit=clamp_query_int(query.get("limit", ["5"])[0], 5, 12),
+                signal_refs=query.get("refs", [""])[0],
             ))
             return
         if path.startswith("/public-api/"):

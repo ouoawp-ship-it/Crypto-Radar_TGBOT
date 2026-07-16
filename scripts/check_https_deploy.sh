@@ -183,11 +183,13 @@ check_public_api() {
 check_public_health_and_headers() {
   local response_file
   local headers_file
+  local frontend_headers_file
   response_file="$(mktemp)"
   headers_file="$(mktemp)"
+  frontend_headers_file="$(mktemp)"
   if ! curl -sS -L --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -D "${headers_file}" -o "${response_file}" "${BASE_URL}/public-api/health"; then
     record_block "公开 API 健康端点请求失败"
-    rm -f "${response_file}" "${headers_file}"
+    rm -f "${response_file}" "${headers_file}" "${frontend_headers_file}"
     return
   fi
   if grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${response_file}" && grep -aEq '"status"[[:space:]]*:[[:space:]]*"(ok|degraded)"' "${response_file}"; then
@@ -200,7 +202,37 @@ check_public_health_and_headers() {
   else
     record_block "HTTPS 缺少 nosniff 或 DENY 安全响应头"
   fi
-  rm -f "${response_file}" "${headers_file}"
+  if ! curl -sS -L --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -D "${frontend_headers_file}" -o /dev/null "${BASE_URL}${ROOT_PATH}"; then
+    record_block "公开前台安全响应头请求失败"
+  elif grep -aiEq '^X-Content-Type-Options:[[:space:]]*nosniff' "${frontend_headers_file}" \
+    && grep -aiEq '^X-Frame-Options:[[:space:]]*DENY' "${frontend_headers_file}" \
+    && grep -aiEq '^Strict-Transport-Security:[[:space:]]*max-age=' "${frontend_headers_file}"; then
+    record_pass "公开前台安全响应头生效"
+  else
+    record_block "公开前台缺少 nosniff、DENY 或 HSTS 安全响应头"
+  fi
+  rm -f "${response_file}" "${headers_file}" "${frontend_headers_file}"
+}
+
+check_public_intelligence_budget() {
+  local response_file
+  local curl_meta
+  local body_size
+  response_file="$(mktemp)"
+  if ! curl_meta="$(curl -sS -L --compressed --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -o "${response_file}" -w '%{http_code} %{size_download} %{time_total}' "${BASE_URL}/public-api/radar/intelligence?window_sec=86400&limit=5")"; then
+    record_block "公开情报接口未在 ${TIMEOUT} 秒内完成"
+    rm -f "${response_file}"
+    return
+  fi
+  body_size="$(wc -c < "${response_file}" | tr -d ' ')"
+  if ! grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${response_file}"; then
+    record_block "公开情报接口未返回 ok=true；${curl_meta}"
+  elif [ "${body_size:-0}" -gt 262144 ]; then
+    record_block "公开情报接口响应超过 256KiB：${body_size} bytes；${curl_meta}"
+  else
+    record_pass "公开情报接口响应预算通过：${body_size} bytes；${curl_meta}"
+  fi
+  rm -f "${response_file}"
 }
 
 check_private_api_protected() {
@@ -572,6 +604,7 @@ check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-fr
 check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"
 check_public_api
 check_public_health_and_headers
+check_public_intelligence_budget
 check_private_api_protected
 check_services
 check_certbot_dry_run

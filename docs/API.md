@@ -8,6 +8,8 @@
 
 参数：`limit`、`cursor`、`module`、`symbol`、`status`、`q`、`window_sec`。
 
+列表只返回一个标准 `data` 信封：`data.items`、`data.count`、`data.next_cursor` 与 `data.filters`。不再在顶层重复返回同一份 `items`，卡片字段采用长度受限白名单投影。
+
 ### `GET /public-api/signals/stats`
 
 参数：`window_sec`，最大 30 天。
@@ -42,9 +44,14 @@
 
 接口使用 30 秒服务端单航班缓存，避免同一币种的并发请求重复访问上游。
 
-### `GET /public-api/radar/intelligence?window_sec=86400&limit=5`
+### `GET /public-api/radar/intelligence?window_sec=86400&limit=5&refs=<signal_ref,...>`
 
 返回雷达情报层和四类机会榜：启动候选、跨模块共振、极端费率、结构与公告风险。
+
+- `refs` 可选，最多 40 个稳定 `public_ref` 或旧数字 ID；雷达页用当前 40 条信号精确请求对应情报；
+- 未传 `refs` 时最多返回最新 40 条情报；`projection` 明确返回请求数、命中数和上限；
+- 列表只保留卡片需要的排名、生命周期与共振字段，完整方法、来源和依据继续由单条 context 接口返回；
+- 单次未压缩 JSON 发布预算不超过 256 KiB，Nginx 对 JSON/文本启用 gzip。
 
 - 自身排名：同币同模块近 30 天规则分数百分位；
 - 市场强度：同模块窗口内每币最新规则分数横截面排名；
@@ -73,7 +80,7 @@
 - 普通公开接口默认每来源每分钟 180 次；市场聚合/单币/上下文接口默认 30 次；
 - 仅对 `PUBLIC_API_TRUSTED_PROXY_IPS` 中的直接代理信任 `X-Forwarded-For`；
 - 429 返回 `Retry-After`、`X-RateLimit-Limit`、`X-RateLimit-Remaining` 和 `X-RateLimit-Reset`；
-- JSON 响应增加 `nosniff`、拒绝 iframe、严格来源策略与浏览器权限限制。
+- JSON 与公开前台响应增加 `nosniff`、拒绝 iframe、严格来源策略、浏览器权限限制与 HSTS。
 
 ### 数据状态
 

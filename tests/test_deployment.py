@@ -148,6 +148,10 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("可自动重试网络超时", script)
         self.assertIn("500 Internal Server Error", script)
         self.assertIn("Traceback", script)
+        self.assertIn("check_public_intelligence_budget()", script)
+        self.assertIn("公开情报接口响应超过 256KiB", script)
+        self.assertIn("公开前台安全响应头生效", script)
+
         self.assertIn("no such table", script)
         self.assertIn("匹配规则:", script)
         self.assertIn("判定原因:", script)
@@ -155,6 +159,19 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("日志发现 ${service} 阻断错误", script)
         self.assertNotIn("local pattern=", script)
         self.assertNotIn("| 500 |", script)
+
+    def test_frontend_and_nginx_publish_security_and_compression_headers(self) -> None:
+        next_config = Path("frontend/next.config.mjs").read_text(encoding="utf-8")
+        install = Path("scripts/install_server.sh").read_text(encoding="utf-8")
+        update = Path("scripts/update_server.sh").read_text(encoding="utf-8")
+
+        for source in (next_config, install, update):
+            self.assertIn("X-Content-Type-Options", source)
+            self.assertIn("X-Frame-Options", source)
+            self.assertIn("Strict-Transport-Security", source)
+        for source in (install, update):
+            self.assertIn("gzip on;", source)
+            self.assertIn("gzip_types application/json", source)
 
     def test_https_deploy_docs_include_public_urls_and_commands(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")

@@ -34,6 +34,7 @@ if __name__ == "__main__":
 # Source group: public market context contracts
 
 import json
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -47,6 +48,8 @@ from paopao_radar.web_services.public import (
     public_market_snapshot_payload,
     public_coin_context_payload,
     public_radar_intelligence_payload,
+    public_signal_item,
+    public_signals_payload,
     public_watchlist_market_payload,
     public_signal_context_payload,
 )
@@ -319,6 +322,67 @@ class PublicContextContractTests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False).lower()
         self.assertNotIn("bot_token", serialized)
         self.assertNotIn("dedup_key", serialized)
+
+    def test_public_radar_payloads_are_single_envelope_projected_and_bounded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            now = int(time.time())
+            for index in range(45):
+                append_from_push(
+                    settings,
+                    template_id="TG_LAUNCH_ALERT",
+                    dedup_key=f"performance:{index}",
+                    status="sent",
+                    sent=True,
+                    text=(
+                        f"T{index}USDT\n启动雷达\n分数: {50 + index % 40}\n"
+                        + "价格与 OI 同步增强，进入启动观察。" * 20
+                    ),
+                    ts=now - index,
+                )
+
+            signals_payload = public_signals_payload(limit=40, settings=settings)
+            signal_items = signals_payload["data"]["items"]
+            refs = [item["public_ref"] for item in signal_items[:3]]
+            projected = public_radar_intelligence_payload(
+                settings=settings,
+                now_ts=now,
+                signal_refs=",".join(refs),
+            )
+            default_projection = public_radar_intelligence_payload(settings=settings, now_ts=now)
+
+        self.assertNotIn("items", signals_payload)
+        self.assertEqual(signals_payload["data"]["count"], 40)
+        self.assertEqual(len(signal_items), 40)
+        self.assertLess(len(json.dumps(signals_payload, ensure_ascii=False, separators=(",", ":"))), 100_000)
+        self.assertEqual(projected["data"]["projection"]["requested"], 3)
+        self.assertEqual(projected["data"]["projection"]["returned"], 3)
+        self.assertEqual(
+            [entry["signal"]["public_ref"] for entry in projected["data"]["items"]],
+            refs,
+        )
+        self.assertLess(len(json.dumps(projected, ensure_ascii=False, separators=(",", ":"))), 60_000)
+        self.assertEqual(len(default_projection["data"]["items"]), 40)
+        self.assertLess(len(json.dumps(default_projection, ensure_ascii=False, separators=(",", ":"))), 200_000)
+        invalid = public_radar_intelligence_payload(settings=settings, signal_refs="../../etc/passwd")
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["code"], "invalid_refs")
+
+    def test_public_signal_card_uses_a_bounded_display_projection(self) -> None:
+        item = public_signal_item({
+            "id": 1,
+            "public_ref": "sig_1234567890abcdef1234",
+            "time": "2026-07-16T12:00:00+00:00",
+            "module": "launch",
+            "symbol": "BTCUSDT",
+            "status": "sent",
+            "signal_type": "启动雷达",
+            "excerpt": "市场摘要" * 200,
+        })
+
+        self.assertNotIn("badges", item["display"])
+        self.assertLessEqual(len(item["excerpt"]), 180)
+        self.assertLessEqual(len(item["display"]["summary"]), 180)
 
 
 # Source group: test_admin_auth.py
