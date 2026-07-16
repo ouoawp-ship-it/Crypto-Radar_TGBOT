@@ -165,6 +165,7 @@ export type RadarIntelligence = {
   data_status?: "ready" | "empty" | string;
   methodology?: Record<string, string>;
   summary?: { signals?: number; symbols?: number; resonance_symbols?: number; enhancing_symbols?: number };
+  projection?: { requested?: number; returned?: number; max_items?: number };
   items?: IntelligenceEntry[];
   boards?: OpportunityBoard[];
 };

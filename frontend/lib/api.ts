@@ -119,8 +119,14 @@ export function getMarketSnapshot(symbol: string, options: PublicFetchOptions = 
   return publicFetch<MarketSnapshot>("/public-api/market/snapshot", { symbol }, { revalidateSec: 30, ...options });
 }
 
-export function getRadarIntelligence(windowSec = 86400, limit = 5, options: PublicFetchOptions = {}) {
-  return publicFetch<RadarIntelligence>("/public-api/radar/intelligence", { window_sec: windowSec, limit }, { revalidateSec: 15, ...options });
+export function getRadarIntelligence(
+  windowSec = 86400,
+  limit = 5,
+  signalRefs: Array<number | string> = [],
+  options: PublicFetchOptions = {}
+) {
+  const refs = signalRefs.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 40).join(",");
+  return publicFetch<RadarIntelligence>("/public-api/radar/intelligence", { window_sec: windowSec, limit, refs }, { revalidateSec: 15, ...options });
 }
 
 export function getCoinContext(symbol: string, options: PublicFetchOptions = {}) {

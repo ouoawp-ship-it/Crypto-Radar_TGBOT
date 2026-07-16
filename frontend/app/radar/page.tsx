@@ -146,11 +146,12 @@ export default function RadarPage() {
     try {
       const windowSec = Number(nextFilters.window_sec || 86400);
       const list = await getSignals({ ...nextFilters, limit: 40 });
+      const items = list.items || [];
+      const signalRefs = items.map((item) => item.public_ref || item.id || "").filter(Boolean);
       const [statPayload, intelligencePayload] = await Promise.all([
         getSignalStats(windowSec).catch(() => ({})),
-        getRadarIntelligence(windowSec, 5).catch(() => ({ data_status: "degraded", items: [], boards: [] } as RadarIntelligence))
+        getRadarIntelligence(windowSec, 5, signalRefs).catch(() => ({ data_status: "degraded", items: [], boards: [] } as RadarIntelligence))
       ]);
-      const items = list.items || [];
       const intelligenceByReference = new Map<string, NonNullable<NonNullable<RadarIntelligence["items"]>[number]["intelligence"]>>();
       for (const entry of intelligencePayload.items || []) {
         const reference = entry.signal?.public_ref || entry.signal?.id;

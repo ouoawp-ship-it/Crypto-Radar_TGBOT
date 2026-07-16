@@ -48,8 +48,9 @@ PUBLIC_CONTEXT_SCHEMA_VERSION = "2026-07-16"
 PUBLIC_SNAPSHOT_TTL_SEC = 30
 PUBLIC_SNAPSHOT_MAX_STALE_SEC = 300
 PUBLIC_INTELLIGENCE_TTL_SEC = 15
-PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 300
+PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 40
 PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
+PUBLIC_SIGNAL_REF_RE = re.compile(r"^(?:[0-9]{1,12}|sig_[a-f0-9]{20})$")
 SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
 
 
@@ -85,9 +86,24 @@ def _strip_forbidden(value: Any) -> Any:
 
 def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
     enhanced = enhance_signal_item(item)
-    display = dict(enhanced.get("display") or signal_display(enhanced))
-    display["summary"] = _short(display.get("summary") or enhanced.get("excerpt") or "", 220)
-    display["badges"] = _strip_forbidden(display.get("badges") or [])
+    source_display = dict(enhanced.get("display") or signal_display(enhanced))
+    display_limits = {
+        "title": 120,
+        "module_label": 48,
+        "status_label": 48,
+        "symbol_label": 32,
+        "time_label": 32,
+        "score_label": 24,
+        "stage_label": 48,
+        "summary": 180,
+        "card_tone": 16,
+    }
+    display = {
+        key: _short(source_display.get(key), limit)
+        for key, limit in display_limits.items()
+        if source_display.get(key) not in (None, "")
+    }
+    display["summary"] = _short(display.get("summary") or enhanced.get("excerpt") or "", 180)
     public = {
         "id": enhanced.get("id"),
         "public_ref": enhanced.get("public_ref") or "",
@@ -95,10 +111,10 @@ def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
         "module": enhanced.get("module") or "",
         "symbol": enhanced.get("symbol") or "",
         "status": enhanced.get("status") or "",
-        "signal_type": enhanced.get("signal_type") or "",
+        "signal_type": _short(enhanced.get("signal_type") or "", 80),
         "score": enhanced.get("score"),
-        "stage": enhanced.get("stage") or "",
-        "excerpt": _short(enhanced.get("excerpt") or enhanced.get("title") or "", 260),
+        "stage": _short(enhanced.get("stage") or "", 48),
+        "excerpt": _short(enhanced.get("excerpt") or enhanced.get("title") or "", 180),
         "display": display,
     }
     return _strip_forbidden(public)
@@ -289,10 +305,91 @@ def public_market_snapshot_payload(
     return api_ok(snapshot, message="已读取市场快照")
 
 
+def _radar_intelligence_raw(
+    settings: Settings,
+    *,
+    now_ts: int,
+    window_sec: int,
+    board_limit: int,
+) -> dict[str, Any]:
+    def load() -> dict[str, Any]:
+        source = _store(settings).intelligence_events(
+            start_ts=now_ts - 2_592_000,
+            end_ts=now_ts,
+            limit=2000,
+        )
+        return build_radar_intelligence(
+            source,
+            now_ts=now_ts,
+            window_sec=window_sec,
+            board_limit=board_limit,
+        )
+
+    cache_key = f"public:radar-intelligence:{settings.signal_events_db_path}:{window_sec}:{board_limit}"
+    return runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, load)
+
+
+def _requested_signal_refs(value: str) -> list[str]:
+    refs: list[str] = []
+    for raw in str(value or "").split(",")[:80]:
+        reference = raw.strip().lower()
+        if not PUBLIC_SIGNAL_REF_RE.fullmatch(reference) or reference in refs:
+            continue
+        refs.append(reference)
+        if len(refs) >= PUBLIC_INTELLIGENCE_RESPONSE_LIMIT:
+            break
+    return refs
+
+
+def _compact_rank(value: Any) -> dict[str, Any]:
+    rank = value if isinstance(value, dict) else {}
+    allowed = ("available", "label", "rank", "sample_size", "percentile", "reason")
+    return {key: rank.get(key) for key in allowed if rank.get(key) is not None}
+
+
+def _compact_intelligence(value: Any) -> dict[str, Any]:
+    intelligence = value if isinstance(value, dict) else {}
+    resonance = intelligence.get("resonance") if isinstance(intelligence.get("resonance"), dict) else {}
+    lifecycle = intelligence.get("lifecycle") if isinstance(intelligence.get("lifecycle"), dict) else {}
+    windows = []
+    for source in resonance.get("windows", []):
+        if not isinstance(source, dict):
+            continue
+        windows.append({
+            key: source.get(key)
+            for key in ("key", "active", "module_count", "signal_count")
+            if source.get(key) is not None
+        })
+    return _strip_forbidden({
+        "self_rank": _compact_rank(intelligence.get("self_rank")),
+        "market_strength_rank": _compact_rank(intelligence.get("market_strength_rank")),
+        "market_absolute_rank": _compact_rank(intelligence.get("market_absolute_rank")),
+        "resonance": {
+            key: resonance.get(key)
+            for key in ("label", "active_count", "available")
+            if resonance.get(key) is not None
+        } | {"windows": windows},
+        "lifecycle": {
+            key: lifecycle.get(key)
+            for key in ("state", "label", "age_sec", "basis")
+            if lifecycle.get(key) is not None
+        },
+    })
+
+
+def _public_intelligence_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    signal = entry.get("signal") if isinstance(entry.get("signal"), dict) else {}
+    return {
+        "signal": public_signal_item(signal),
+        "intelligence": _compact_intelligence(entry.get("intelligence")),
+    }
+
+
 def public_radar_intelligence_payload(
     *,
     window_sec: int = 86400,
     board_limit: int = 5,
+    signal_refs: str = "",
     settings: Settings | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
@@ -300,39 +397,50 @@ def public_radar_intelligence_payload(
     now = int(now_ts or time.time())
     safe_window = min(2_592_000, max(3600, int(window_sec or 86400)))
     safe_limit = min(12, max(1, int(board_limit or 5)))
+    requested_refs = _requested_signal_refs(signal_refs)
+    if str(signal_refs or "").strip() and not requested_refs:
+        return api_error("信号引用格式无效", code="invalid_refs")
+    raw = _radar_intelligence_raw(
+        loaded,
+        now_ts=now,
+        window_sec=safe_window,
+        board_limit=safe_limit,
+    )
 
-    def load() -> dict[str, Any]:
-        source = _store(loaded).intelligence_events(
-            start_ts=now - 2_592_000,
-            end_ts=now,
-            limit=2000,
-        )
-        return build_radar_intelligence(source, now_ts=now, window_sec=safe_window, board_limit=safe_limit)
-
-    cache_key = f"public:radar-intelligence:{loaded.signal_events_db_path}:{safe_window}:{safe_limit}"
-    raw = runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, load)
-
-    def public_entry(entry: dict[str, Any]) -> dict[str, Any]:
-        signal = entry.get("signal") if isinstance(entry.get("signal"), dict) else {}
-        intelligence = entry.get("intelligence") if isinstance(entry.get("intelligence"), dict) else {}
-        return {"signal": public_signal_item(signal), "intelligence": _strip_forbidden(intelligence)}
-
-    current_entries = [
-        public_entry(entry)
+    source_entries = [
+        entry
         for entry in raw.get("items", [])
         if isinstance(entry, dict)
         and int((entry.get("signal") or {}).get("ts") or 0) >= now - safe_window
-    ][:PUBLIC_INTELLIGENCE_RESPONSE_LIMIT]
+    ]
+    if requested_refs:
+        entries_by_ref: dict[str, dict[str, Any]] = {}
+        for entry in source_entries:
+            signal = entry.get("signal") if isinstance(entry.get("signal"), dict) else {}
+            public_ref = str(signal.get("public_ref") or "").lower()
+            numeric_ref = str(signal.get("id") or "")
+            if public_ref:
+                entries_by_ref[public_ref] = entry
+            if numeric_ref:
+                entries_by_ref[numeric_ref] = entry
+        selected_entries = [entries_by_ref[reference] for reference in requested_refs if reference in entries_by_ref]
+    else:
+        selected_entries = source_entries[:PUBLIC_INTELLIGENCE_RESPONSE_LIMIT]
+
     public_boards = []
     for source_board in raw.get("boards", []):
         if not isinstance(source_board, dict):
             continue
         public_boards.append({
-            "key": str(source_board.get("key") or ""),
-            "title": str(source_board.get("title") or ""),
-            "description": str(source_board.get("description") or ""),
+            "key": _short(source_board.get("key") or "", 24),
+            "title": _short(source_board.get("title") or "", 48),
+            "description": _short(source_board.get("description") or "", 140),
             "count": int(source_board.get("count") or 0),
-            "items": [public_entry(entry) for entry in source_board.get("items", []) if isinstance(entry, dict)],
+            "items": [
+                _public_intelligence_entry(entry)
+                for entry in source_board.get("items", [])
+                if isinstance(entry, dict)
+            ],
         })
     payload = {
         "schema_version": raw.get("schema_version"),
@@ -341,7 +449,12 @@ def public_radar_intelligence_payload(
         "data_status": raw.get("data_status"),
         "methodology": raw.get("methodology"),
         "summary": raw.get("summary"),
-        "items": current_entries,
+        "projection": {
+            "requested": len(requested_refs),
+            "returned": len(selected_entries),
+            "max_items": PUBLIC_INTELLIGENCE_RESPONSE_LIMIT,
+        },
+        "items": [_public_intelligence_entry(entry) for entry in selected_entries],
         "boards": public_boards,
     }
     return api_ok(_strip_forbidden(payload), message="已读取信号情报排名")
@@ -372,15 +485,15 @@ def public_coin_context_payload(
     target = normalized["symbol"]
     now = int(now_ts or time.time())
     timeline = _store(loaded).symbol_timeline(target, limit=30, compact=False)
-    intelligence_payload = public_radar_intelligence_payload(
+    intelligence_raw = _radar_intelligence_raw(
+        loaded,
+        now_ts=now,
         window_sec=2_592_000,
         board_limit=5,
-        settings=loaded,
-        now_ts=now,
     )
     intelligence_by_ref = {
-        str((entry.get("signal") or {}).get("public_ref") or ""): entry.get("intelligence") or {}
-        for entry in (intelligence_payload.get("data") or {}).get("items", [])
+        str((entry.get("signal") or {}).get("public_ref") or ""): _compact_intelligence(entry.get("intelligence"))
+        for entry in intelligence_raw.get("items", [])
         if isinstance(entry, dict)
     }
     public_timeline = []
@@ -575,14 +688,14 @@ def public_signal_context_payload(
     rankings: dict[str, Any] = {}
     resonance: dict[str, Any] = {}
     try:
-        intelligence_payload = public_radar_intelligence_payload(
+        intelligence_raw = _radar_intelligence_raw(
+            loaded,
+            now_ts=int(now_ts or time.time()),
             window_sec=2_592_000,
             board_limit=5,
-            settings=loaded,
-            now_ts=now_ts,
         )
         signal_ref = str(item.get("public_ref") or "")
-        for entry in (intelligence_payload.get("data") or {}).get("items", []):
+        for entry in intelligence_raw.get("items", []):
             candidate = entry.get("signal") if isinstance(entry, dict) else {}
             if signal_ref and str(candidate.get("public_ref") or "") == signal_ref:
                 intelligence = entry.get("intelligence") if isinstance(entry.get("intelligence"), dict) else {}
@@ -649,16 +762,17 @@ def public_signals_payload(
         )
     items = _public_items(result.get("items", []))
     return api_ok(
-        {"items": items},
-        items=items,
-        count=len(items),
-        next_cursor=result.get("next_cursor"),
-        filters={
-            "module": str(module or "").strip().lower(),
-            "symbol": normalized,
-            "status": str(status or "").strip().lower(),
-            "q": str(q or "").strip()[:80],
-            "window_sec": int(window_sec or 86400),
+        {
+            "items": items,
+            "count": len(items),
+            "next_cursor": result.get("next_cursor"),
+            "filters": {
+                "module": str(module or "").strip().lower(),
+                "symbol": normalized,
+                "status": str(status or "").strip().lower(),
+                "q": str(q or "").strip()[:80],
+                "window_sec": int(window_sec or 86400),
+            },
         },
         message="已读取公开信号",
     )
