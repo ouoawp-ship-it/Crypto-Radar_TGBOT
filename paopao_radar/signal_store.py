@@ -17,7 +17,7 @@ from .symbol_dossier import clean_signal_text, extract_symbols_from_text, signal
 
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
-SIGNAL_STORE_SCHEMA_VERSION = 2
+SIGNAL_STORE_SCHEMA_VERSION = 3
 SIGNAL_STORE_REQUIRED_OBJECTS = {
     "signals": "table",
     "idx_signals_ts": "index",
@@ -25,10 +25,12 @@ SIGNAL_STORE_REQUIRED_OBJECTS = {
     "idx_signals_symbol_id": "index",
     "idx_signals_module_ts": "index",
     "idx_signals_template_ts": "index",
+    "idx_signals_public_ref": "index",
     "ux_signals_dedup_symbol": "index",
 }
 SIGNAL_DECISION_COLUMNS = (
     "id",
+    "public_ref",
     "ts",
     "time",
     "module",
@@ -44,11 +46,13 @@ SIGNAL_DECISION_COLUMNS = (
     "status",
 )
 SIGNAL_COLUMN_MIGRATIONS = {
+    "public_ref": "TEXT NOT NULL DEFAULT ''",
     "payload_json": "TEXT NOT NULL DEFAULT '{}'",
     "error": "TEXT NOT NULL DEFAULT ''",
 }
 SIGNAL_COLUMNS = (
     "id",
+    "public_ref",
     "ts",
     "time",
     "module",
@@ -83,6 +87,7 @@ SIGNAL_LIST_PROJECTION = ", ".join(
 )
 SIGNAL_COMPAT_DEFAULTS = {
     "id": "NULL",
+    "public_ref": "''",
     "ts": "0",
     "time": "''",
     "module": "''",
@@ -208,6 +213,20 @@ def _coin_from_symbol(symbol: str) -> str:
     return value[:-4] if value.endswith("USDT") else value
 
 
+def signal_public_ref(dedup_key: str, symbol: str) -> str:
+    """Build a stable, non-sequential public reference for a pushed signal."""
+    source = f"{str(dedup_key or '').strip()}\x1f{str(symbol or '').strip().upper()}"
+    return f"sig_{hashlib.sha256(source.encode('utf-8', errors='ignore')).hexdigest()[:20]}"
+
+
+def signal_public_targets(dedup_key: str, text: str) -> list[dict[str, str]]:
+    symbols = extract_symbols_from_text(text) or [""]
+    return [
+        {"public_ref": signal_public_ref(dedup_key, symbol), "symbol": str(symbol or "").upper()}
+        for symbol in symbols
+    ]
+
+
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = {key: row[key] for key in SIGNAL_COLUMNS}
     item["sent"] = bool(item.get("sent"))
@@ -248,6 +267,7 @@ class SignalEventStore:
             """
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_ref TEXT NOT NULL DEFAULT '',
                 ts INTEGER NOT NULL,
                 time TEXT NOT NULL,
                 module TEXT NOT NULL,
@@ -273,11 +293,20 @@ class SignalEventStore:
             """
         )
         self._ensure_signal_columns(conn)
+        missing_refs = conn.execute(
+            "SELECT id, dedup_key, symbol FROM signals WHERE public_ref = ''"
+        ).fetchall()
+        for row in missing_refs:
+            conn.execute(
+                "UPDATE signals SET public_ref = ? WHERE id = ?",
+                (signal_public_ref(str(row["dedup_key"] or ""), str(row["symbol"] or "")), int(row["id"])),
+            )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol_ts ON signals(symbol, ts DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol_id ON signals(symbol, id DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_module_ts ON signals(module, ts DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_template_ts ON signals(template_id, ts DESC)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_public_ref ON signals(public_ref)")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_signals_dedup_symbol ON signals(dedup_key, symbol)"
         )
@@ -407,6 +436,7 @@ class SignalEventStore:
             rows.append(
                 {
                     "ts": now,
+                    "public_ref": signal_public_ref(safe_dedup_key, normalized_symbol),
                     "time": _utc_time_text(now),
                     "module": module,
                     "template_id": str(template_id or ""),
@@ -434,16 +464,17 @@ class SignalEventStore:
                 conn.execute(
                     """
                     INSERT INTO signals (
-                        ts, time, module, template_id, signal_type, symbol, coin, stage, severity, score,
+                        public_ref, ts, time, module, template_id, signal_type, symbol, coin, stage, severity, score,
                         title, excerpt, text_html, dedup_key, status, sent, topic_id, message_ids_json,
                         reply_to_message_id, payload_json, error
                     ) VALUES (
-                        :ts, :time, :module, :template_id, :signal_type, :symbol, :coin, :stage, :severity, :score,
+                        :public_ref, :ts, :time, :module, :template_id, :signal_type, :symbol, :coin, :stage, :severity, :score,
                         :title, :excerpt, :text_html, :dedup_key, :status, :sent, :topic_id, :message_ids_json,
                         :reply_to_message_id, :payload_json, :error
                     )
                     ON CONFLICT(dedup_key, symbol) DO UPDATE SET
                         ts=excluded.ts,
+                        public_ref=excluded.public_ref,
                         time=excluded.time,
                         module=excluded.module,
                         template_id=excluded.template_id,
@@ -1118,16 +1149,43 @@ class SignalEventStore:
 
     def signal_detail(
         self,
-        signal_id: int,
+        signal_id: int | str,
         *,
         conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
+        reference = str(signal_id or "").strip()
+        is_numeric = reference.isdigit()
+        where = "id = ?" if is_numeric else "public_ref = ?"
+        value: int | str = int(reference) if is_numeric else reference
         if conn is None:
             with self.connect() as active_conn:
-                row = active_conn.execute("SELECT * FROM signals WHERE id = ?", (int(signal_id),)).fetchone()
+                row = active_conn.execute(f"SELECT * FROM signals WHERE {where}", (value,)).fetchone()
         else:
-            row = conn.execute("SELECT * FROM signals WHERE id = ?", (int(signal_id),)).fetchone()
+            row = conn.execute(f"SELECT * FROM signals WHERE {where}", (value,)).fetchone()
         return _row_to_dict(row) if row else None
+
+    def intelligence_events(
+        self,
+        *,
+        start_ts: int,
+        end_ts: int,
+        limit: int = 2000,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the bounded, sent-only fact set used by public signal intelligence."""
+        safe_limit = max(1, min(5000, int(limit or 2000)))
+        sql = (
+            "SELECT * FROM signals "
+            "WHERE status = 'sent' AND symbol <> '' AND ts >= ? AND ts <= ? "
+            "ORDER BY ts DESC, id DESC LIMIT ?"
+        )
+        params = (int(start_ts), int(end_ts), safe_limit)
+        if conn is None:
+            with self.connect() as active_conn:
+                rows = active_conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_dict(row) for row in rows]
 
 
 def append_from_push(

@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.signal_store import SignalEventStore, append_from_push
+from paopao_radar.signal_store import SignalEventStore, append_from_push, signal_public_ref
 
 
 class CountingSignalEventStore(SignalEventStore):
@@ -433,7 +433,7 @@ class SignalEventStoreTests(unittest.TestCase):
                 conn.row_factory = sqlite3.Row
                 latest = conn.execute(
                     """
-                    SELECT payload_json, error
+                    SELECT payload_json, error, public_ref
                     FROM signal_events
                     ORDER BY id DESC
                     LIMIT 1
@@ -455,6 +455,7 @@ class SignalEventStoreTests(unittest.TestCase):
 
         self.assertEqual(latest["payload_json"], "{}")
         self.assertEqual(latest["error"], "")
+        self.assertEqual(latest["public_ref"], signal_public_ref("dedup", "BTCUSDT"))
         self.assertEqual(inserted_count, 1)
         self.assertIsNotNone(migrated)
         self.assertIn("telegram_push", migrated[0])

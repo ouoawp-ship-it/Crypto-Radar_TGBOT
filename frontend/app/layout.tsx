@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { GeistSans } from "geist/font/sans";
 import "@/styles/globals.css";
 import { AppShell } from "@/components/AppShell";
+import { FrontendTelemetry } from "@/components/FrontendTelemetry";
 
 export const metadata: Metadata = {
   title: "Paoxx 信号雷达",
@@ -16,6 +17,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN" className={GeistSans.variable}>
       <body data-paoxx-frontend="nextjs-dashboard">
+        <FrontendTelemetry />
         <AppShell>{children}</AppShell>
       </body>
     </html>

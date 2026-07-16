@@ -128,8 +128,13 @@ class Settings:
     tg_default_cooldown_sec: int = 6 * 3600
     tg_push_history_limit: int = 2000
     tg_push_history_retention_days: int = 30
+    public_web_base_url: str = "https://paoxx.com"
+    public_api_rate_limit_per_minute: int = 180
+    public_api_heavy_rate_limit_per_minute: int = 30
+    public_api_trusted_proxy_ips: tuple[str, ...] = ("127.0.0.1", "::1")
     ai_assistant_enable: bool = False
     ai_bot_token: str = ""
+    ai_bot_username: str = ""
     ai_admin_user_ids: tuple[str, ...] = ()
     ai_allow_group_chat: bool = False
     ai_allowed_chat_ids: tuple[str, ...] = ()
@@ -333,8 +338,13 @@ class Settings:
             tg_default_cooldown_sec=env_int("TG_DEFAULT_COOLDOWN_SEC", 6 * 3600),
             tg_push_history_limit=env_int("TG_PUSH_HISTORY_LIMIT", 2000),
             tg_push_history_retention_days=env_int("TG_PUSH_HISTORY_RETENTION_DAYS", 30),
+            public_web_base_url=os.getenv("PAOXX_PUBLIC_BASE_URL", "https://paoxx.com").strip().rstrip("/"),
+            public_api_rate_limit_per_minute=env_int("PUBLIC_API_RATE_LIMIT_PER_MINUTE", 180),
+            public_api_heavy_rate_limit_per_minute=env_int("PUBLIC_API_HEAVY_RATE_LIMIT_PER_MINUTE", 30),
+            public_api_trusted_proxy_ips=env_list("PUBLIC_API_TRUSTED_PROXY_IPS", ("127.0.0.1", "::1")),
             ai_assistant_enable=env_bool("AI_ASSISTANT_ENABLE", False),
             ai_bot_token=os.getenv("AI_BOT_TOKEN", "").strip(),
+            ai_bot_username=os.getenv("AI_BOT_USERNAME", "").strip().lstrip("@"),
             ai_admin_user_ids=env_list("AI_ADMIN_USER_IDS"),
             ai_allow_group_chat=env_bool("AI_ALLOW_GROUP_CHAT", False),
             ai_allowed_chat_ids=env_list("AI_ALLOWED_CHAT_IDS"),
@@ -520,10 +530,12 @@ class Settings:
                 "topic_intro_enable": self.tg_topic_intro_enable,
                 "topic_intro_pin": self.tg_topic_intro_pin,
                 "use_topic": self.tg_use_topic,
+                "public_web_base_url": self.public_web_base_url,
             },
             "ai_assistant": {
                 "enable": self.ai_assistant_enable,
                 "bot_token_configured": bool(self.ai_bot_token),
+                "bot_username": self.ai_bot_username,
                 "admin_user_ids_configured": bool(self.ai_admin_user_ids),
                 "admin_user_count": len(self.ai_admin_user_ids),
                 "allow_group_chat": self.ai_allow_group_chat,

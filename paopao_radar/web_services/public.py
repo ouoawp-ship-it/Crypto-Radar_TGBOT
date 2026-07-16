@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import re
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Any
 
 from ..config import Settings
+from ..runtime_cache import get_or_set as runtime_cache_get_or_set
+from ..runtime_cache import stats as runtime_cache_stats
+from ..signal_intelligence import build_radar_intelligence
 from ..signal_store import SignalEventStore
+from ..symbol_dossier import current_market_snapshot
+from ..web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_TELEMETRY
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
 
@@ -34,6 +43,14 @@ FORBIDDEN_PUBLIC_KEYS = {
     "telegram",
     "bot_token",
 }
+
+PUBLIC_CONTEXT_SCHEMA_VERSION = "2026-07-16"
+PUBLIC_SNAPSHOT_TTL_SEC = 30
+PUBLIC_SNAPSHOT_MAX_STALE_SEC = 300
+PUBLIC_INTELLIGENCE_TTL_SEC = 15
+PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 300
+PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
+SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
 
 
 def _store(settings: Settings | None = None) -> SignalEventStore:
@@ -73,6 +90,7 @@ def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
     display["badges"] = _strip_forbidden(display.get("badges") or [])
     public = {
         "id": enhanced.get("id"),
+        "public_ref": enhanced.get("public_ref") or "",
         "time": enhanced.get("time") or "",
         "module": enhanced.get("module") or "",
         "symbol": enhanced.get("symbol") or "",
@@ -88,6 +106,517 @@ def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def _public_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [public_signal_item(item) for item in items]
+
+
+def _utc_time_text(value: int | float) -> str:
+    if float(value or 0) <= 0:
+        return ""
+    return datetime.fromtimestamp(float(value), timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _number(value: Any) -> int | float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _safe_symbol(value: Any) -> dict[str, str]:
+    normalized = normalize_symbol_filter(value)
+    symbol = str(normalized.get("symbol") or "")
+    coin = str(normalized.get("coin") or "")
+    if not symbol or not coin or not PUBLIC_SYMBOL_RE.fullmatch(symbol):
+        return {"symbol": "", "coin": ""}
+    return {"symbol": symbol, "coin": coin}
+
+
+def _snapshot_state(snapshot: dict[str, Any], *, now_ts: int) -> tuple[str, int]:
+    updated_at = int(snapshot.get("updated_at") or 0)
+    age_sec = max(0, int(now_ts) - updated_at) if updated_at > 0 else PUBLIC_SNAPSHOT_MAX_STALE_SEC + 1
+    price = _number(snapshot.get("price"))
+    quote_volume = _number(snapshot.get("quote_volume"))
+    oi_value = _number(snapshot.get("oi_value"))
+    funding_pct = _number(snapshot.get("funding_pct"))
+    available = sum((
+        price is not None and float(price) > 0,
+        quote_volume is not None and float(quote_volume) > 0,
+        oi_value is not None and float(oi_value) > 0,
+        funding_pct is not None,
+    ))
+    if available == 0:
+        return "unavailable", age_sec
+    if age_sec > PUBLIC_SNAPSHOT_MAX_STALE_SEC:
+        return "stale", age_sec
+    if price is None or float(price) <= 0 or available < 3:
+        return "degraded", age_sec
+    return "fresh", age_sec
+
+
+def _metric(
+    snapshot: dict[str, Any],
+    key: str,
+    *,
+    unit: str,
+    source: str,
+    observed_at: str,
+    age_sec: int,
+    snapshot_status: str,
+    quality: str = "direct",
+    zero_is_missing: bool = False,
+) -> dict[str, Any]:
+    value = _number(snapshot.get(key))
+    available = value is not None and not (zero_is_missing and float(value) == 0)
+    status = snapshot_status if available else "unavailable"
+    return {
+        "value": value if available else None,
+        "unit": unit,
+        "source": source,
+        "observed_at": observed_at,
+        "age_sec": age_sec,
+        "status": status,
+        "quality": quality if available else "missing",
+    }
+
+
+def _public_funding_rows(value: Any) -> list[dict[str, Any]]:
+    rows = value if isinstance(value, list) else []
+    safe_rows: list[dict[str, Any]] = []
+    for row in rows[:8]:
+        if not isinstance(row, dict):
+            continue
+        safe_rows.append({
+            "exchange": _short(row.get("exchange") or "", 30),
+            "funding_pct": _number(row.get("funding_pct")),
+            "interval_hours": int(_number(row.get("interval_hours")) or 0),
+            "last_funding_time": _short(row.get("last_funding_time") or "", 40),
+            "next_funding_time": _short(row.get("next_funding_time") or "", 40),
+            "extreme_label": _short(row.get("extreme_label") or "", 30),
+        })
+    return safe_rows
+
+
+def public_market_snapshot_view(snapshot: dict[str, Any], *, now_ts: int | None = None) -> dict[str, Any]:
+    now = int(now_ts or time.time())
+    status, age_sec = _snapshot_state(snapshot, now_ts=now)
+    updated_at = int(snapshot.get("updated_at") or 0)
+    observed_at = _utc_time_text(updated_at)
+    market_cap_source = _short(snapshot.get("market_cap_source") or "", 40) or "aggregated"
+    metrics = {
+        "price": _metric(snapshot, "price", unit="usd", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, zero_is_missing=True),
+        "price_15m_pct": _metric(snapshot, "price_15m_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "price_1h_pct": _metric(snapshot, "price_1h_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "price_4h_pct": _metric(snapshot, "price_4h_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "price_24h_pct": _metric(snapshot, "price_24h_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status),
+        "quote_volume": _metric(snapshot, "quote_volume", unit="usd", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, zero_is_missing=True),
+        "volume_ratio": _metric(snapshot, "volume_ratio", unit="ratio", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "oi_value": _metric(snapshot, "oi_value", unit="usd", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, zero_is_missing=True),
+        "oi_15m_pct": _metric(snapshot, "oi_15m_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "oi_1h_pct": _metric(snapshot, "oi_1h_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "oi_4h_pct": _metric(snapshot, "oi_4h_pct", unit="percent", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status, quality="derived"),
+        "funding_pct": _metric(snapshot, "funding_pct", unit="percent_per_cycle", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status),
+        "market_cap": _metric(snapshot, "market_cap", unit="usd", source=market_cap_source, observed_at=observed_at, age_sec=age_sec, snapshot_status=status, zero_is_missing=True),
+    }
+    structure = snapshot.get("structure") if isinstance(snapshot.get("structure"), dict) else {}
+    public_structure = {
+        key: structure.get(key)
+        for key in (
+            "state", "bias", "box_high", "box_low", "box_width_pct", "position_in_box",
+            "distance_to_high_pct", "distance_to_low_pct",
+        )
+        if key in structure
+    }
+    return _strip_forbidden({
+        "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
+        "symbol": str(snapshot.get("symbol") or ""),
+        "coin": str(snapshot.get("coin") or ""),
+        "status": status,
+        "updated_at": observed_at,
+        "age_sec": age_sec,
+        "metrics": metrics,
+        "structure": public_structure,
+        "funding_exchanges": _public_funding_rows(snapshot.get("funding_exchanges")),
+        "tiers": {
+            "market_cap": _short(snapshot.get("market_cap_tier") or "", 40),
+            "liquidity": _short(snapshot.get("liquidity_tier") or "", 40),
+        },
+    })
+
+
+def _load_public_snapshot(
+    settings: Settings,
+    symbol: str,
+    *,
+    snapshot_loader: SnapshotLoader | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loader = snapshot_loader or current_market_snapshot
+    if snapshot_loader is None:
+        snapshot = runtime_cache_get_or_set(
+            f"public:market-snapshot:{symbol}",
+            PUBLIC_SNAPSHOT_TTL_SEC,
+            lambda: loader(settings, symbol),
+        )
+    else:
+        snapshot = loader(settings, symbol)
+    if not isinstance(snapshot, dict):
+        raise ValueError("市场快照格式无效")
+    return public_market_snapshot_view(snapshot, now_ts=now_ts)
+
+
+def public_market_snapshot_payload(
+    symbol: str,
+    *,
+    settings: Settings | None = None,
+    snapshot_loader: SnapshotLoader | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    normalized = _safe_symbol(symbol)
+    if not normalized["symbol"]:
+        return api_error("币种格式无效", code="invalid_symbol")
+    loaded = settings or Settings.load()
+    try:
+        snapshot = _load_public_snapshot(
+            loaded,
+            normalized["symbol"],
+            snapshot_loader=snapshot_loader,
+            now_ts=now_ts,
+        )
+    except Exception:
+        return api_error("市场快照暂时不可用", code="upstream_unavailable")
+    return api_ok(snapshot, message="已读取市场快照")
+
+
+def public_radar_intelligence_payload(
+    *,
+    window_sec: int = 86400,
+    board_limit: int = 5,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    now = int(now_ts or time.time())
+    safe_window = min(2_592_000, max(3600, int(window_sec or 86400)))
+    safe_limit = min(12, max(1, int(board_limit or 5)))
+
+    def load() -> dict[str, Any]:
+        source = _store(loaded).intelligence_events(
+            start_ts=now - 2_592_000,
+            end_ts=now,
+            limit=2000,
+        )
+        return build_radar_intelligence(source, now_ts=now, window_sec=safe_window, board_limit=safe_limit)
+
+    cache_key = f"public:radar-intelligence:{loaded.signal_events_db_path}:{safe_window}:{safe_limit}"
+    raw = runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, load)
+
+    def public_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        signal = entry.get("signal") if isinstance(entry.get("signal"), dict) else {}
+        intelligence = entry.get("intelligence") if isinstance(entry.get("intelligence"), dict) else {}
+        return {"signal": public_signal_item(signal), "intelligence": _strip_forbidden(intelligence)}
+
+    current_entries = [
+        public_entry(entry)
+        for entry in raw.get("items", [])
+        if isinstance(entry, dict)
+        and int((entry.get("signal") or {}).get("ts") or 0) >= now - safe_window
+    ][:PUBLIC_INTELLIGENCE_RESPONSE_LIMIT]
+    public_boards = []
+    for source_board in raw.get("boards", []):
+        if not isinstance(source_board, dict):
+            continue
+        public_boards.append({
+            "key": str(source_board.get("key") or ""),
+            "title": str(source_board.get("title") or ""),
+            "description": str(source_board.get("description") or ""),
+            "count": int(source_board.get("count") or 0),
+            "items": [public_entry(entry) for entry in source_board.get("items", []) if isinstance(entry, dict)],
+        })
+    payload = {
+        "schema_version": raw.get("schema_version"),
+        "generated_at": raw.get("generated_at"),
+        "window_sec": raw.get("window_sec"),
+        "data_status": raw.get("data_status"),
+        "methodology": raw.get("methodology"),
+        "summary": raw.get("summary"),
+        "items": current_entries,
+        "boards": public_boards,
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取信号情报排名")
+
+
+def _public_bot_actions(settings: Settings, symbol: str) -> dict[str, str]:
+    bot_username = str(settings.ai_bot_username or "").strip().lstrip("@")
+    bot_username = bot_username if re.fullmatch(r"[A-Za-z0-9_]{5,32}", bot_username) else ""
+    coin = symbol[:-4] if symbol.endswith("USDT") else symbol
+    return {
+        "radar_url": f"/radar?symbol={symbol}",
+        "ai_url": f"https://t.me/{bot_username}?start=analyze_{coin}" if bot_username and coin else "",
+        "alert_url": f"https://t.me/{bot_username}?start=alert_{coin}" if bot_username and coin else "",
+    }
+
+
+def public_coin_context_payload(
+    symbol: str,
+    *,
+    settings: Settings | None = None,
+    snapshot_loader: SnapshotLoader | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    normalized = _safe_symbol(symbol)
+    if not normalized["symbol"]:
+        return api_error(normalized["error"], code="invalid_symbol")
+    target = normalized["symbol"]
+    now = int(now_ts or time.time())
+    timeline = _store(loaded).symbol_timeline(target, limit=30, compact=False)
+    intelligence_payload = public_radar_intelligence_payload(
+        window_sec=2_592_000,
+        board_limit=5,
+        settings=loaded,
+        now_ts=now,
+    )
+    intelligence_by_ref = {
+        str((entry.get("signal") or {}).get("public_ref") or ""): entry.get("intelligence") or {}
+        for entry in (intelligence_payload.get("data") or {}).get("items", [])
+        if isinstance(entry, dict)
+    }
+    public_timeline = []
+    for item in timeline:
+        reference = str(item.get("public_ref") or "")
+        public_item = public_signal_item(item)
+        public_item["intelligence"] = _strip_forbidden(intelligence_by_ref.get(reference, {}))
+        public_timeline.append(public_item)
+    snapshot_payload = public_market_snapshot_payload(
+        target,
+        settings=loaded,
+        snapshot_loader=snapshot_loader,
+        now_ts=now,
+    )
+    module_counts: dict[str, int] = {}
+    for item in timeline:
+        module = str(item.get("module") or "other")
+        module_counts[module] = module_counts.get(module, 0) + 1
+    payload = {
+        "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
+        "symbol": target,
+        "coin": target[:-4] if target.endswith("USDT") else target,
+        "market": snapshot_payload.get("data") if snapshot_payload.get("ok") else None,
+        "market_error": "" if snapshot_payload.get("ok") else str(snapshot_payload.get("message") or "市场数据暂时不可用"),
+        "summary": {
+            "signal_count": len(timeline),
+            "sent_count": sum(1 for item in timeline if item.get("status") == "sent"),
+            "module_counts": module_counts,
+            "latest_at": str(timeline[0].get("time") or "") if timeline else "",
+        },
+        "timeline": public_timeline,
+        "actions": _public_bot_actions(loaded, target),
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取单币上下文")
+
+
+def public_watchlist_market_payload(
+    symbols: str,
+    *,
+    settings: Settings | None = None,
+    snapshot_loader: SnapshotLoader | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    normalized_symbols: list[str] = []
+    invalid: list[str] = []
+    for raw in str(symbols or "").split(",")[:20]:
+        value = raw.strip()
+        if not value:
+            continue
+        parsed = _safe_symbol(value)
+        if parsed["symbol"]:
+            if parsed["symbol"] not in normalized_symbols:
+                normalized_symbols.append(parsed["symbol"])
+        else:
+            invalid.append(value[:24])
+    normalized_symbols = normalized_symbols[:12]
+    if not normalized_symbols:
+        return api_error("请提供 1–12 个有效币种", code="invalid_symbols")
+
+    def load_one(target: str) -> tuple[str, dict[str, Any]]:
+        return target, public_market_snapshot_payload(
+            target,
+            settings=loaded,
+            snapshot_loader=snapshot_loader,
+            now_ts=now_ts,
+        )
+
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(normalized_symbols)), thread_name_prefix="public-watchlist") as executor:
+        futures = {executor.submit(load_one, target): target for target in normalized_symbols}
+        for future in as_completed(futures):
+            target = futures[future]
+            try:
+                _, result = future.result()
+            except Exception:
+                result = api_error("市场数据暂时不可用", code="upstream_unavailable")
+            results[target] = result
+    items = [
+        {
+            "symbol": target,
+            "ok": bool(results.get(target, {}).get("ok")),
+            "market": results.get(target, {}).get("data"),
+            "error": "" if results.get(target, {}).get("ok") else str(results.get(target, {}).get("message") or "暂时不可用"),
+            "coin_url": f"/coin/{target}",
+        }
+        for target in normalized_symbols
+    ]
+    return api_ok(_strip_forbidden({"items": items, "count": len(items), "invalid": invalid}), message="已读取自选行情")
+
+
+def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    try:
+        signal_stats = _store(loaded).stats()
+        database = {
+            "status": "ok",
+            "signals": int(signal_stats.get("total") or 0),
+            "latest_at": str(signal_stats.get("latest_at") or ""),
+        }
+    except Exception:
+        database = {"status": "degraded", "signals": None, "latest_at": ""}
+    payload = {
+        "status": "ok" if database["status"] == "ok" else "degraded",
+        "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
+        "database": database,
+        "cache": runtime_cache_stats(),
+        "rate_limit": PUBLIC_API_LIMITER.stats(),
+        "requests": PUBLIC_API_METRICS.stats(),
+        "frontend_telemetry": PUBLIC_TELEMETRY.stats(),
+        "features": {
+            "signal_context": True,
+            "intelligence": True,
+            "coin_context": True,
+            "watchlist": True,
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="公开接口健康状态")
+
+
+def _context_evidence(market: dict[str, Any]) -> list[dict[str, Any]]:
+    metrics = market.get("metrics") if isinstance(market.get("metrics"), dict) else {}
+    definitions = (
+        ("price_1h_pct", "1h 价格", "价格短周期方向"),
+        ("oi_1h_pct", "1h OI", "杠杆资金变化"),
+        ("volume_ratio", "量能倍数", "15m 相对量能"),
+        ("funding_pct", "资金费率", "当前结算周期"),
+        ("quote_volume", "24h 成交额", "绝对流动性"),
+    )
+    evidence = []
+    for key, label, description in definitions:
+        metric = metrics.get(key)
+        if not isinstance(metric, dict) or metric.get("value") is None:
+            continue
+        evidence.append({"key": key, "label": label, "description": description, "metric": metric})
+    structure = market.get("structure") if isinstance(market.get("structure"), dict) else {}
+    if structure.get("state"):
+        evidence.append({
+            "key": "structure",
+            "label": "结构位置",
+            "description": "箱体与边界状态",
+            "value": str(structure.get("state") or ""),
+            "tone": str(structure.get("bias") or "neutral"),
+        })
+    return evidence
+
+
+def public_signal_context_payload(
+    signal_id: int | str,
+    *,
+    settings: Settings | None = None,
+    snapshot_loader: SnapshotLoader | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    store = _store(loaded)
+    with store.connect() as conn:
+        item = store.signal_detail(signal_id, conn=conn)
+        if not item:
+            return api_error("信号不存在", code="not_found")
+        related = []
+        symbol = str(item.get("symbol") or "")
+        if symbol:
+            related = [
+                related_item
+                for related_item in store.symbol_timeline(symbol, limit=10, compact=True, conn=conn)
+                if int(related_item.get("id") or 0) != int(item.get("id") or 0)
+            ][:6]
+
+    market: dict[str, Any] | None = None
+    market_error = ""
+    if symbol:
+        normalized = _safe_symbol(symbol)
+        try:
+            market = _load_public_snapshot(
+                loaded,
+                normalized["symbol"],
+                snapshot_loader=snapshot_loader,
+                now_ts=now_ts,
+            ) if normalized["symbol"] else None
+        except Exception:
+            market_error = "市场上下文暂时不可用"
+
+    stage = str(item.get("stage") or "").strip()
+    lifecycle: dict[str, Any] = {
+        "state": stage or "recorded",
+        "label": stage or "已记录",
+        "derived": False,
+        "started_at": str(item.get("time") or ""),
+        "duration_sec": 0,
+    }
+    rankings: dict[str, Any] = {}
+    resonance: dict[str, Any] = {}
+    try:
+        intelligence_payload = public_radar_intelligence_payload(
+            window_sec=2_592_000,
+            board_limit=5,
+            settings=loaded,
+            now_ts=now_ts,
+        )
+        signal_ref = str(item.get("public_ref") or "")
+        for entry in (intelligence_payload.get("data") or {}).get("items", []):
+            candidate = entry.get("signal") if isinstance(entry, dict) else {}
+            if signal_ref and str(candidate.get("public_ref") or "") == signal_ref:
+                intelligence = entry.get("intelligence") if isinstance(entry.get("intelligence"), dict) else {}
+                lifecycle = intelligence.get("lifecycle") or lifecycle
+                rankings = {
+                    "self": intelligence.get("self_rank") or {},
+                    "market_strength": intelligence.get("market_strength_rank") or {},
+                    "market_absolute": intelligence.get("market_absolute_rank") or {},
+                }
+                resonance = intelligence.get("resonance") or {}
+                break
+    except Exception:
+        pass
+    bot_username = str(loaded.ai_bot_username or "").strip().lstrip("@")
+    bot_username = bot_username if re.fullmatch(r"[A-Za-z0-9_]{5,32}", bot_username) else ""
+    coin = str(item.get("coin") or (symbol[:-4] if symbol.endswith("USDT") else symbol))
+    payload = {
+        "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
+        "signal": public_signal_item(item),
+        "market": market,
+        "market_error": market_error,
+        "evidence": _context_evidence(market or {}),
+        "lifecycle": lifecycle,
+        "rankings": rankings,
+        "resonance": resonance,
+        "related": {"same_symbol": _public_items(related)},
+        "actions": {
+            "signal_url": f"/radar?signal={item.get('public_ref') or int(item.get('id') or 0)}",
+            "symbol_url": f"/radar?symbol={symbol}" if symbol else "/radar",
+            "ai_url": f"https://t.me/{bot_username}?start=analyze_{coin}" if bot_username and coin else "",
+            "alert_url": f"https://t.me/{bot_username}?start=alert_{coin}" if bot_username and coin else "",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取信号上下文")
 
 
 def public_signals_payload(
@@ -135,10 +664,10 @@ def public_signals_payload(
     )
 
 
-def public_signal_detail_payload(signal_id: int, *, settings: Settings | None = None) -> dict[str, Any]:
+def public_signal_detail_payload(signal_id: int | str, *, settings: Settings | None = None) -> dict[str, Any]:
     store = _store(settings)
     with store.connect() as conn:
-        item = store.signal_detail(int(signal_id or 0), conn=conn)
+        item = store.signal_detail(signal_id, conn=conn)
         if not item:
             return api_error("信号不存在", code="not_found")
         related = []

@@ -1,4 +1,4 @@
-import type { ApiEnvelope, ApiResult, ListPayload, SignalItem } from "./types";
+import type { ApiEnvelope, ApiResult, CoinContext, ListPayload, MarketSnapshot, RadarIntelligence, SignalContext, SignalItem, WatchlistMarketPayload } from "./types";
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number };
@@ -7,6 +7,17 @@ const INTERNAL_BASE = process.env.PAOXX_PUBLIC_API_INTERNAL_BASE || "http://127.
 const REQUEST_TIMEOUT_MS = Number(process.env.PAOXX_PUBLIC_API_TIMEOUT_MS || 15000);
 const responseCache = new Map<string, { expiresAt: number; result: ApiResult<unknown> }>();
 const inFlight = new Map<string, Promise<unknown>>();
+
+export function reportPublicTelemetry(event: "frontend_api_error" | "frontend_render_error" | "frontend_unhandled_error" | "frontend_route_loaded"): void {
+  if (typeof window === "undefined") return;
+  void fetch("/public-api/telemetry", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event }),
+    keepalive: true,
+    cache: "no-store"
+  }).catch(() => undefined);
+}
 
 function toQuery(query?: Query): string {
   const params = new URLSearchParams();
@@ -61,6 +72,7 @@ export async function publicFetchResult<T>(
       const raw = await response.text();
       const payload = (raw ? JSON.parse(raw) : {}) as ApiEnvelope<T> & T;
       if (!response.ok || payload.ok === false) {
+        reportPublicTelemetry("frontend_api_error");
         return { ok: false, status: response.status, path, error: errorText(payload, "公开接口暂时不可用") };
       }
       const data = payload && typeof payload === "object" && "data" in payload && payload.data !== undefined
@@ -71,6 +83,7 @@ export async function publicFetchResult<T>(
       return result;
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === "AbortError";
+      reportPublicTelemetry("frontend_api_error");
       return { ok: false, path, error: aborted ? "公开接口响应超时" : "数据暂时不可用" };
     } finally {
       clearTimeout(timer);
@@ -96,6 +109,26 @@ export function getSignalStats(windowSec = 86400) {
 
 export function getSignals(query: Query = {}) {
   return publicFetch<ListPayload<SignalItem>>("/public-api/signals", query);
+}
+
+export function getSignalContext(signalId: number | string, options: PublicFetchOptions = {}) {
+  return publicFetch<SignalContext>("/public-api/signals/context", { id: signalId }, { revalidateSec: 30, ...options });
+}
+
+export function getMarketSnapshot(symbol: string, options: PublicFetchOptions = {}) {
+  return publicFetch<MarketSnapshot>("/public-api/market/snapshot", { symbol }, { revalidateSec: 30, ...options });
+}
+
+export function getRadarIntelligence(windowSec = 86400, limit = 5, options: PublicFetchOptions = {}) {
+  return publicFetch<RadarIntelligence>("/public-api/radar/intelligence", { window_sec: windowSec, limit }, { revalidateSec: 15, ...options });
+}
+
+export function getCoinContext(symbol: string, options: PublicFetchOptions = {}) {
+  return publicFetch<CoinContext>("/public-api/coin/context", { symbol }, { revalidateSec: 30, ...options });
+}
+
+export function getWatchlistMarket(symbols: string[], options: PublicFetchOptions = {}) {
+  return publicFetch<WatchlistMarketPayload>("/public-api/market/watchlist", { symbols: symbols.join(",") }, { revalidateSec: 30, ...options });
 }
 
 export type HomeDashboardData = {

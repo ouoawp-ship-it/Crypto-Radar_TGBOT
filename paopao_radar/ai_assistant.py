@@ -969,7 +969,19 @@ def classify_user_intent(text: str) -> UserIntent:
     if not clean:
         return UserIntent("home")
     lowered = clean.lower()
-    if lowered == "/start":
+    start_match = re.fullmatch(
+        r"/start(?:@[A-Za-z0-9_]+)?(?:\s+(?:(analyze|alert)_([A-Za-z0-9]{2,20})))?",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if start_match:
+        action = str(start_match.group(1) or "").lower()
+        raw_symbol = extract_symbol_text(start_match.group(2) or "")
+        symbol = normalize_symbol(raw_symbol) if raw_symbol else ""
+        if action == "analyze" and symbol:
+            return UserIntent("dossier", symbol=symbol, prompt=f"{symbol} 怎么看")
+        if action == "alert" and symbol:
+            return UserIntent("alert_deep", symbol=symbol)
         return UserIntent("home")
     if clean.startswith("/"):
         return UserIntent("command")
@@ -1758,7 +1770,7 @@ def handle_message(
 
     if intent.kind == "dossier":
         try:
-            return build_symbol_dossier_reply(settings, store, user_id, text)
+            return build_symbol_dossier_reply(settings, store, user_id, intent.prompt or text)
         except Exception as exc:
             return user_facing_error("币种档案查询", exc)
 
@@ -1773,6 +1785,9 @@ def handle_message(
 
     if intent.kind == "alert_setup":
         return "价格提醒需要手动选择交易所和价格源。请点击首页“设置价格提醒”，按步骤确认后才会创建。"
+
+    if intent.kind == "alert_deep":
+        return f"已识别 {intent.symbol}。请使用按钮式会话继续选择提醒类型、市场与交易所，确认前不会创建提醒。"
 
     if intent.kind == "price":
         try:
@@ -1846,6 +1861,17 @@ def handle_message_reply(
             main_menu_markup(),
         )
 
+    if intent.kind == "alert_deep":
+        active_sessions[key] = {
+            "state": "alert_kind",
+            "created_at": int(time.time()),
+            "prefill_symbol": intent.symbol,
+        }
+        return BotReply(
+            f"已从信号详情带入币种：{intent.symbol}\n\n请选择要创建的提醒类型。确认前不会保存任何提醒。",
+            alert_kind_markup(),
+        )
+
     if intent.kind == "analysis":
         prompt = intent.prompt
         if not prompt:
@@ -1857,7 +1883,7 @@ def handle_message_reply(
 
     if intent.kind == "dossier":
         try:
-            return BotReply(build_symbol_dossier_reply(settings, store, user_id, text))
+            return BotReply(build_symbol_dossier_reply(settings, store, user_id, intent.prompt or text))
         except Exception as exc:
             return BotReply(user_facing_error("币种档案查询", exc))
 
@@ -1967,7 +1993,16 @@ def handle_callback_query(
         }
         if alert_type not in labels:
             return BotReply("这个提醒类型暂时无法识别，请重新选择。", alert_kind_markup())
+        prefill_symbol = str(session.pop("prefill_symbol", "") or "").strip()
         session.update({"state": "alert_symbol", "alert_type": alert_type})
+        if prefill_symbol:
+            synthetic_message = {
+                "chat": {"id": chat_id, "type": chat_type},
+                "from": {"id": user_id, "username": username},
+            }
+            advanced = handle_alert_setup_session(settings, active_sessions, synthetic_message, prefill_symbol)
+            if advanced:
+                return advanced
         return BotReply(f"已选择：{labels[alert_type]}\n\n{ALERT_SYMBOL_TEXT}", cancel_markup())
     if data.startswith("alert:market:"):
         session = active_sessions.get(key)
