@@ -345,53 +345,82 @@ class JobStore:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
         return _row_to_job(row)
 
-    def stats(self, *, limit_recent: int = 10) -> dict[str, Any]:
+    def stats(
+        self,
+        *,
+        limit_recent: int = 10,
+        job_types: set[str] | tuple[str, ...] | list[str] | None = None,
+    ) -> dict[str, Any]:
+        normalized_types = None if job_types is None else tuple(sorted({str(item) for item in job_types if str(item)}))
+        if normalized_types is None:
+            scope_sql = "1 = 1"
+            scope_params: tuple[Any, ...] = ()
+        elif normalized_types:
+            scope_sql = f"job_type IN ({','.join('?' for _ in normalized_types)})"
+            scope_params = normalized_types
+        else:
+            scope_sql = "1 = 0"
+            scope_params = ()
+        recent_limit = max(1, int(limit_recent or 10))
         with self.connect() as conn:
-            total = int(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"])
-            status_rows = conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status").fetchall()
-            type_rows = conn.execute("SELECT job_type, COUNT(*) AS c FROM jobs GROUP BY job_type ORDER BY c DESC, job_type").fetchall()
+            total = int(conn.execute(f"SELECT COUNT(*) AS c FROM jobs WHERE {scope_sql}", scope_params).fetchone()["c"])
+            status_rows = conn.execute(
+                f"SELECT status, COUNT(*) AS c FROM jobs WHERE {scope_sql} GROUP BY status",
+                scope_params,
+            ).fetchall()
+            type_rows = conn.execute(
+                f"SELECT job_type, COUNT(*) AS c FROM jobs WHERE {scope_sql} GROUP BY job_type ORDER BY c DESC, job_type",
+                scope_params,
+            ).fetchall()
             recent_failed_rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM jobs
-                WHERE status IN ('failed', 'timeout')
+                WHERE {scope_sql}
+                  AND status IN ('failed', 'timeout')
                   AND NOT (job_type = 'stable-check' AND status = 'failed' AND returncode = 1)
                 ORDER BY updated_at DESC, id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit_recent or 10)),),
+                (*scope_params, recent_limit),
             ).fetchall()
             recent_attention_rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM jobs
-                WHERE status = 'attention'
-                   OR (job_type = 'stable-check' AND status = 'failed' AND returncode = 1)
+                WHERE {scope_sql}
+                  AND (status = 'attention'
+                   OR (job_type = 'stable-check' AND status = 'failed' AND returncode = 1))
                 ORDER BY updated_at DESC, id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit_recent or 10)),),
+                (*scope_params, recent_limit),
             ).fetchall()
             recent_running_rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM jobs
-                WHERE status IN ('queued', 'running')
+                WHERE {scope_sql}
+                  AND status IN ('queued', 'running')
                 ORDER BY updated_at DESC, id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit_recent or 10)),),
+                (*scope_params, recent_limit),
             ).fetchall()
             latest_rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM jobs
+                WHERE {scope_sql}
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 500
-                """
+                """,
+                scope_params,
             ).fetchall()
             attention_compat = int(
                 conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) AS c FROM jobs
-                    WHERE job_type = 'stable-check' AND status = 'failed' AND returncode = 1
-                    """
+                    WHERE {scope_sql}
+                      AND job_type = 'stable-check' AND status = 'failed' AND returncode = 1
+                    """,
+                    scope_params,
                 ).fetchone()["c"]
             )
         counts = {status: 0 for status in JOB_STATUSES}
@@ -878,7 +907,9 @@ def recent_job_payload(job_type: str, *, settings: Settings | None = None) -> di
 def jobs_stats_payload(*, settings: Settings | None = None) -> dict[str, Any]:
     try:
         store = store_for_settings(settings)
-        stats = store.stats()
+        # Keep historical rows for audit/forensics, but operational health only
+        # represents job types that still exist in the current product surface.
+        stats = store.stats(job_types=set(JOB_SPECS))
         return {"ok": True, **stats, "message": zh(r"\u5df2\u8bfb\u53d6\u540e\u53f0\u4efb\u52a1\u7edf\u8ba1")}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"

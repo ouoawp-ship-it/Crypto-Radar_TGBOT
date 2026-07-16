@@ -292,6 +292,30 @@ class JobStoreTests(unittest.TestCase):
         self.assertIn("api-self-test", stats["last_success_by_type"])
         self.assertIn("doctor", stats["last_failed_by_type"])
 
+    def test_stats_can_exclude_archived_job_types_without_deleting_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = jobs.JobStore(Path(tmp) / "jobs.db")
+            active = store.create_job("doctor", allow_reuse=False)
+            archived_spec = jobs.JobSpec(
+                "lifecycle-outcome-reconcile",
+                "archived",
+                [sys.executable, "-c", "print('archived')"],
+                30,
+            )
+            with patch.dict(jobs.JOB_SPECS, {"lifecycle-outcome-reconcile": archived_spec}):
+                archived = store.create_job("lifecycle-outcome-reconcile", allow_reuse=False)
+            store.finish_job(int(active["id"]), status="failed", returncode=2, stderr_tail="active failed")
+            store.finish_job(int(archived["id"]), status="failed", returncode=1, stderr_tail="archived failed")
+
+            scoped = store.stats(job_types={"doctor"})
+            all_stats = store.stats()
+
+        self.assertEqual(scoped["total"], 1)
+        self.assertEqual(scoped["by_type"], {"doctor": 1})
+        self.assertEqual([item["job_type"] for item in scoped["recent_failed"]], ["doctor"])
+        self.assertEqual(all_stats["total"], 2)
+        self.assertIn("lifecycle-outcome-reconcile", all_stats["by_type"])
+
     def test_job_report_is_redacted_and_has_next_action(self) -> None:
         fake_token_suffix = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
         fake_api_suffix = "abcdefghijklmnopqrstuvwxyz"

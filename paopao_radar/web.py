@@ -794,6 +794,7 @@ def web_audit_payload(
     limit: int = 200,
     result: str = "all",
     search: str = "",
+    scope: str = "all",
 ) -> dict[str, Any]:
     store = JsonStore((data_dir or Settings.load().data_dir))
     path = web_audit_log_path(data_dir)
@@ -801,12 +802,19 @@ def web_audit_payload(
     if not isinstance(records, list):
         records = []
     result_filter = str(result or "all").lower()
+    scope_filter = str(scope or "all").lower()
     query = str(search or "").strip().lower()
 
     def keep(record: Any) -> bool:
         if not isinstance(record, dict):
             return False
         ok = bool(record.get("ok"))
+        path_value = str(record.get("path") or "")
+        is_auth = path_value.startswith("/api/auth/")
+        if scope_filter == "operations" and is_auth:
+            return False
+        if scope_filter == "auth" and not is_auth:
+            return False
         if result_filter == "ok" and not ok:
             return False
         if result_filter == "failed" and ok:
@@ -827,6 +835,7 @@ def web_audit_payload(
         "path": str(path),
         "total": len(records),
         "matched": len(filtered),
+        "scope": scope_filter if scope_filter in {"all", "operations", "auth"} else "all",
         "records": limited,
         "message": "已读取 Web 操作审计记录",
     }
@@ -2180,6 +2189,10 @@ EMPTY_ERROR_FIELD_RE = re.compile(
     )
     """
 )
+JSON_STATUS_FIELD_RE = re.compile(
+    r"(?:^|\]:\s+)\s*[\"']?(?:errors?|failed|failures)[\"']?\s*:\s*(?:\d+|false|null|\[\s*\]|\{\s*\})\s*,?\s*$",
+    re.I,
+)
 SENSITIVE_LINE_RE = re.compile(r"(?i)\b(token|api[_-]?key|secret|password)\b\s*[:=]\s*['\"]?[^'\"\s,;]+")
 TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 API_KEY_RE = re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b")
@@ -2210,6 +2223,15 @@ def is_transient_log_line(line: str) -> bool:
 
 
 def is_ignorable_log_line(target: str, line: str) -> bool:
+    text = str(line or "")
+    if JSON_STATUS_FIELD_RE.search(text):
+        return True
+    if str(target or "").lower() != "web":
+        return False
+    return bool(WEB_CLIENT_DISCONNECT_RE.search(text) or WEB_CLIENT_DISCONNECT_CONTEXT_RE.search(text))
+
+
+def is_web_client_disconnect_line(target: str, line: str) -> bool:
     if str(target or "").lower() != "web":
         return False
     text = str(line or "")
@@ -2219,7 +2241,7 @@ def is_ignorable_log_line(target: str, line: str) -> bool:
 def log_error_excerpt(target: str, *, lines: int = 300, limit: int = 20) -> dict[str, Any]:
     payload = logs_payload(target, lines)
     raw_lines = str(payload.get("text") or "").splitlines()
-    transient_lines = [line for line in raw_lines if is_transient_log_line(line) or is_ignorable_log_line(target, line)]
+    transient_lines = [line for line in raw_lines if is_transient_log_line(line) or is_web_client_disconnect_line(target, line)]
     error_lines = [
         line for line in raw_lines
         if is_error_log_line(line) and not is_transient_log_line(line) and not is_ignorable_log_line(target, line)
@@ -3319,7 +3341,7 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
         web_action = "服务器执行 .venv/bin/python main.py admin-password set 后重启 paopao-web。"
     elif web_host in {"0.0.0.0", "::"} and 1 <= web_port <= 65535:
         web_status = "ok"
-        web_detail = f"Web 入口监听 {web_host}:{web_port}，可通过服务器 IP 访问。"
+        web_detail = f"后端入口监听 {web_host}:{web_port}；公网是否可访问由主机防火墙和云安全组决定。"
         web_action = ""
     else:
         web_status = "warn"
@@ -3696,7 +3718,8 @@ def ops_snapshot_payload() -> dict[str, Any]:
     summary = summary_payload()
     settings = Settings.load()
     audit_all = web_audit_payload(limit=10, result="all")
-    audit_failed = web_audit_payload(limit=10, result="failed")
+    audit_failed = web_audit_payload(limit=10, result="failed", scope="operations")
+    audit_auth_failed = web_audit_payload(limit=10, result="failed", scope="auth")
     problem_state = load_problem_state(settings.data_dir)
     log_errors = {
         target: log_error_excerpt(target, lines=300, limit=20)
@@ -3717,6 +3740,8 @@ def ops_snapshot_payload() -> dict[str, Any]:
             "failed_recent": audit_failed.get("records", []),
             "total": audit_all.get("total", 0),
             "failed_matched": audit_failed.get("matched", 0),
+            "auth_failed_recent": audit_auth_failed.get("records", []),
+            "auth_failed_matched": audit_auth_failed.get("matched", 0),
         },
         "log_errors": log_errors,
     }

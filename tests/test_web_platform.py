@@ -266,6 +266,49 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertNotIn("bot_token", serialized)
         self.assertNotIn("password", serialized)
 
+    def test_operational_audit_scope_keeps_auth_failures_separate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            web.append_web_audit(
+                "/api/auth/login",
+                {"username": "paopao"},
+                {"ok": False, "error": "bad credentials"},
+                status=401,
+                started_at=time.time(),
+                data_dir=data_dir,
+            )
+            web.append_web_audit(
+                "/api/service",
+                {"name": "restart-main"},
+                {"ok": False, "error": "restart failed"},
+                status=500,
+                started_at=time.time(),
+                data_dir=data_dir,
+            )
+            operations = web.web_audit_payload(data_dir=data_dir, result="failed", scope="operations")
+            auth = web.web_audit_payload(data_dir=data_dir, result="failed", scope="auth")
+
+        self.assertEqual(operations["matched"], 1)
+        self.assertEqual(operations["records"][0]["path"], "/api/service")
+        self.assertEqual(auth["matched"], 1)
+        self.assertEqual(auth["records"][0]["path"], "/api/auth/login")
+
+    def test_log_error_excerpt_ignores_json_failure_counters(self) -> None:
+        source = "\n".join([
+            'Jul 16 host python[1]:       "failed": 156,',
+            'Jul 16 host python[1]:       "errors": 3,',
+            "Jul 16 host python[1]: RuntimeError: actual failure",
+        ])
+        with patch(
+            "paopao_radar.web.logs_payload",
+            return_value={"source": "test", "text": source, "ok": True},
+        ):
+            payload = web.log_error_excerpt("main")
+
+        self.assertEqual(payload["error_count"], 1)
+        self.assertEqual(payload["transient_count"], 0)
+        self.assertIn("RuntimeError", payload["lines"][0])
+
     def test_json_responses_add_browser_security_headers(self) -> None:
         source = __import__("inspect").getsource(web.WebHandler.send_payload)
         self.assertIn("X-Content-Type-Options", source)
