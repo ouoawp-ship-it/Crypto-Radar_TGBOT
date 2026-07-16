@@ -180,6 +180,29 @@ check_public_api() {
   rm -f "${tmp_file}"
 }
 
+check_public_health_and_headers() {
+  local response_file
+  local headers_file
+  response_file="$(mktemp)"
+  headers_file="$(mktemp)"
+  if ! curl -sS -L --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -D "${headers_file}" -o "${response_file}" "${BASE_URL}/public-api/health"; then
+    record_block "公开 API 健康端点请求失败"
+    rm -f "${response_file}" "${headers_file}"
+    return
+  fi
+  if grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${response_file}" && grep -aEq '"status"[[:space:]]*:[[:space:]]*"(ok|degraded)"' "${response_file}"; then
+    record_pass "公开 API 健康端点返回聚合状态"
+  else
+    record_block "公开 API 健康端点响应不完整"
+  fi
+  if grep -aiEq '^X-Content-Type-Options:[[:space:]]*nosniff' "${headers_file}" && grep -aiEq '^X-Frame-Options:[[:space:]]*DENY' "${headers_file}"; then
+    record_pass "HTTPS 安全响应头生效"
+  else
+    record_block "HTTPS 缺少 nosniff 或 DENY 安全响应头"
+  fi
+  rm -f "${response_file}" "${headers_file}"
+}
+
 check_private_api_protected() {
   local url="${BASE_URL}${PRIVATE_API_PATH}"
   local response
@@ -548,6 +571,7 @@ check_page_any_contains "本机 Next.js 前台" "http://127.0.0.1:3000/" "paoxx-
 check_page_any_contains "HTTPS 公开前台" "${BASE_URL}${ROOT_PATH}" "paoxx-frontend" "nextjs-dashboard" "专业加密数据仪表盘"
 check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达控制台" "brand-title" "/admin"
 check_public_api
+check_public_health_and_headers
 check_private_api_protected
 check_services
 check_certbot_dry_run

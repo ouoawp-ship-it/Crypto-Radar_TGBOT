@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 import time
@@ -9,6 +10,7 @@ from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -300,11 +302,13 @@ class TelegramGateway:
 
         topic_id = self._ensure_topic_id_for_template(template_id)
         self._ensure_topic_intro(template_id, topic_id)
+        reply_markup = self._public_signal_markup(template_id, dedup_key, text)
         ok, message_ids = self._send_real_message_ids(
             text,
             parse_mode=parse_mode,
             topic_id=topic_id,
             reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
         )
         result = PushResult(
             "sent" if ok else "failed",
@@ -375,12 +379,14 @@ class TelegramGateway:
 
         topic_id = self._ensure_topic_id_for_template(template_id)
         self._ensure_topic_intro(template_id, topic_id)
+        reply_markup = self._public_signal_markup(template_id, dedup_key, caption)
         ok, message_ids = self._send_real_photo_ids(
             path,
             caption,
             parse_mode=parse_mode,
             topic_id=topic_id,
             reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
         )
         result = PushResult(
             "sent" if ok else "failed",
@@ -412,12 +418,14 @@ class TelegramGateway:
         parse_mode: str,
         topic_id: str = "",
         reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendMessage"
         ok = True
         message_ids: list[int] = []
         reply_id = int(reply_to_message_id or 0)
-        for idx, chunk in enumerate(chunk_text(text, self.settings.tg_push_split_limit)):
+        chunks = chunk_text(text, self.settings.tg_push_split_limit)
+        for idx, chunk in enumerate(chunks):
             payload: dict[str, Any] = {
                 "chat_id": self.settings.tg_chat_id,
                 "text": chunk,
@@ -427,6 +435,8 @@ class TelegramGateway:
             if reply_id > 0 and idx == 0:
                 payload["reply_to_message_id"] = reply_id
                 payload["allow_sending_without_reply"] = True
+            if reply_markup and idx == len(chunks) - 1:
+                payload["reply_markup"] = reply_markup
             if topic_id and (
                 self.settings.tg_use_topic or str(self.settings.tg_chat_id).startswith("-100")
             ):
@@ -478,6 +488,7 @@ class TelegramGateway:
         parse_mode: str,
         topic_id: str = "",
         reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendPhoto"
         payload: dict[str, Any] = {
@@ -485,6 +496,8 @@ class TelegramGateway:
             "caption": caption[:1024],
             "parse_mode": parse_mode,
         }
+        if reply_markup:
+            payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False, separators=(",", ":"))
         if reply_to_message_id:
             payload["reply_to_message_id"] = int(reply_to_message_id)
             payload["allow_sending_without_reply"] = True
@@ -547,6 +560,29 @@ class TelegramGateway:
                 if attempt < self.settings.tg_push_retry:
                     time.sleep(min(5, attempt))
         return False, []
+
+    def _public_signal_markup(self, template_id: str, dedup_key: str, text: str) -> dict[str, Any] | None:
+        if template_id not in TOPIC_TEMPLATE_NAMES or template_id == "TG_TEST_MESSAGE":
+            return None
+        base_url = str(getattr(self.settings, "public_web_base_url", "") or "").strip().rstrip("/")
+        parsed = urlparse(base_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            return None
+        try:
+            from .signal_store import signal_public_targets
+
+            targets = signal_public_targets(dedup_key, text)
+        except Exception:
+            return None
+        if len(targets) == 1:
+            target = targets[0]
+            signal_ref = str(target.get("public_ref") or "")
+            symbol = str(target.get("symbol") or "")
+            if signal_ref:
+                label = f"查看 {symbol.replace('USDT', '')} 信号详情" if symbol else "查看信号详情"
+                url = f"{base_url}/radar?{urlencode({'signal': signal_ref})}"
+                return {"inline_keyboard": [[{"text": label, "url": url}]]}
+        return {"inline_keyboard": [[{"text": "打开泡泡信号雷达", "url": f"{base_url}/radar"}]]}
 
     @staticmethod
     def _append_message_id(response: requests.Response, message_ids: list[int]) -> None:

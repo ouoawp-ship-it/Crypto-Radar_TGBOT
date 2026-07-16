@@ -1,6 +1,6 @@
 # 泡泡抓币 Crypto Radar
 
-泡泡抓币是一套面向 Telegram 的加密市场雷达与推送系统。当前版本聚焦实时监控、风险提示、信号留档和稳定运维。
+泡泡抓币是一套面向 Telegram 用户的异常机会雷达与信号验证工作台。系统聚焦实时监控、风险提示、可解释信号、主动提醒和稳定运维，不执行交易。
 
 ## 核心功能
 
@@ -10,19 +10,26 @@
 - 资金费率警报：监控极端或快速变化的资金费率。
 - 结构雷达：识别突破、跌破、假突破风险和流动性结构。
 - Binance 公告监听：跟踪上新、下架、Launchpool、HODLer、空投等公告。
-- Telegram 推送：支持话题路由、冷却、去重、限流和推送历史。
-- AI 助手：独立 Bot，提供状态查询、价格提醒和可选 AI 问答。
-- Web 前台：公开总览与信号雷达。
+- Telegram 推送：支持话题路由、冷却、去重、限流、推送历史与精确信号深链。
+- AI 助手：独立 Bot，承接 Web 币种分析深链、目标价/涨跌/OI/费率提醒和可选 AI 问答。
+- 信号情报：自身历史极端度、市场相对强度、同口径绝对规模、跨模块共振和生命周期。
+- Web 前台：公开总览、四类机会榜、证据抽屉、轻量单币上下文和浏览器本地自选。
 - Web 后台：服务、配置、任务、日志、审计、价格提醒和提示词管理。
 
 ## Web 路由
 
 - `/`：公开总览
 - `/radar`：公开信号雷达
+- `/coin/<symbol>`：轻量单币验证上下文
+- `/watchlist`：当前浏览器的本地自选
 - `/admin`：需登录的运维控制台
 - `/public-api/signals`：公开信号列表
 - `/public-api/signals/stats`：公开信号统计
-- `/public-api/signals/detail?id=...`：公开信号详情
+- `/public-api/signals/context?id=...`：证据、排名、共振和生命周期
+- `/public-api/radar/intelligence`：四类机会榜与情报层
+- `/public-api/coin/context?symbol=...`：单币聚合上下文
+- `/public-api/market/watchlist?symbols=...`：批量自选快照
+- `/public-api/health`：脱敏健康、P95、缓存和限流计数
 
 公开接口只返回脱敏后的结构化信号。配置、日志、任务、服务控制和审计接口均需后台认证。
 线上信号接口为 `https://paoxx.com/public-api/signals`。
@@ -62,6 +69,18 @@ npm ci
 npm run dev
 ```
 
+工程门禁：
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+python -m compileall -q paopao_radar tests scripts
+cd frontend
+npm run typecheck
+npm run build
+npm run e2e
+npm audit --audit-level=high
+```
+
 ## 服务器更新
 
 ```bash
@@ -78,5 +97,6 @@ bash scripts/check_https_deploy.sh --with-stable-check
 
 - 不读取交易所私钥，不执行下单。
 - 不提供自动交易。
+- 不恢复回测、模型注册、校准和研究生命周期等研究型 Web 平台。
 - 所有推送均为市场监控和风险提示，不构成投资建议。
 - `.env.oi`、数据库、日志和运行历史不得提交到 Git。

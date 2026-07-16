@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -60,6 +61,12 @@ from .web_services.jobs import (
 )
 from .web_services.ops import update_check_status_payload
 from .web_services.public import (
+    public_coin_context_payload,
+    public_api_health_payload,
+    public_market_snapshot_payload,
+    public_radar_intelligence_payload,
+    public_watchlist_market_payload,
+    public_signal_context_payload,
     public_signal_detail_payload,
     public_signal_stats_payload,
     public_signals_payload,
@@ -69,6 +76,7 @@ from .web_services.signals import (
     signal_detail_view,
     signal_stats_display,
 )
+from .web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_TELEMETRY
 
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
@@ -91,6 +99,10 @@ WEB_CONFIG_KEYS = {
     "WEB_AUTH_FAILURE_WINDOW_SEC",
     "WEB_AUTH_AUDIT_LIMIT",
     "WEB_SESSION_REFRESH_THRESHOLD_RATIO",
+    "PAOXX_PUBLIC_BASE_URL",
+    "PUBLIC_API_RATE_LIMIT_PER_MINUTE",
+    "PUBLIC_API_HEAVY_RATE_LIMIT_PER_MINUTE",
+    "PUBLIC_API_TRUSTED_PROXY_IPS",
 }
 SIGNAL_EVENT_CONFIG_KEYS = {
     "SIGNAL_EVENTS_FILE",
@@ -101,6 +113,7 @@ SIGNAL_EVENT_CONFIG_KEYS = {
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
     "AI_BOT_TOKEN",
+    "AI_BOT_USERNAME",
     "AI_ADMIN_USER_IDS",
     "AI_ALLOW_GROUP_CHAT",
     "AI_ALLOWED_CHAT_IDS",
@@ -161,6 +174,7 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("STRUCTURE_REVIEW_TOPIC_ID", "结构复盘话题 ID", "Telegram"),
     ConfigField("AI_ASSISTANT_ENABLE", "启用 AI 助手 Bot", "AI 助手", kind="bool", help="开启后 paopao-ai 服务会使用独立 AI_BOT_TOKEN 处理私聊和价格提醒。"),
     ConfigField("AI_BOT_TOKEN", "AI 助手 Bot Token", "AI 助手", secret=True, help="建议用 BotFather 单独创建一个机器人，不要和群推送 Bot 共用。"),
+    ConfigField("AI_BOT_USERNAME", "AI 助手 Bot 用户名", "AI 助手", help="不含 @，用于从 Web 详情一键打开 AI 分析和提醒流程。"),
     ConfigField("AI_ADMIN_USER_IDS", "允许使用的 Telegram 用户 ID", "AI 助手", help="多个 ID 用英文逗号分隔。留空表示不限制用户，不建议公开使用。"),
     ConfigField("AI_ALLOW_GROUP_CHAT", "允许群内调用 AI 助手", "AI 助手", kind="bool", help="默认关闭。开启后群里也必须 @机器人 或回复机器人消息才会处理，普通群聊不会触发。"),
     ConfigField("AI_ALLOWED_CHAT_IDS", "允许调用的群/频道 ID", "AI 助手", help="开启群内调用后必须填写。多个用英文逗号分隔，例如 -1001234567890,-1009876543210 或 @channel_username。"),
@@ -186,6 +200,10 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("STRUCTURE_REVIEW_ENABLE", "结构复盘", "模块开关", kind="bool"),
     ConfigField("WEB_HOST", "Web 监听地址", "Web 控制台"),
     ConfigField("WEB_PORT", "Web 端口", "Web 控制台", kind="int", minimum=1, maximum=65535),
+    ConfigField("PAOXX_PUBLIC_BASE_URL", "公开前台地址", "Web 控制台", help="例如 https://paoxx.com，用于 Telegram 与 Web 的信号深链。"),
+    ConfigField("PUBLIC_API_RATE_LIMIT_PER_MINUTE", "公开接口每分钟请求上限", "Web 控制台", kind="int", minimum=30, maximum=3000),
+    ConfigField("PUBLIC_API_HEAVY_RATE_LIMIT_PER_MINUTE", "聚合接口每分钟请求上限", "Web 控制台", kind="int", minimum=5, maximum=600),
+    ConfigField("PUBLIC_API_TRUSTED_PROXY_IPS", "可信反向代理 IP", "Web 控制台", help="默认 127.0.0.1,::1；只有来自这些代理的 X-Forwarded-For 才会被信任。"),
     ConfigField("WEB_AUTH_MODE", "后台认证模式", "Web 控制台", help="默认 password；token 仅用于旧模式紧急回滚。"),
     ConfigField("WEB_ADMIN_USERNAME", "后台用户名", "Web 控制台"),
     ConfigField("WEB_SESSION_TTL_SEC", "登录有效期秒数", "Web 控制台", kind="int", minimum=300, maximum=604800),
@@ -3867,14 +3885,21 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def api_meta(self, status: int) -> dict[str, Any]:
         parsed = urlparse(self.path)
+        duration_ms = max(0.0, (time.perf_counter() - float(getattr(self, "request_started_at", time.perf_counter()))) * 1000)
         return {
             "served_at": now_text(),
             "path": parsed.path,
             "status": int(status),
             "request_id": f"{int(time.time() * 1000)}-{threading.get_ident()}",
+            "duration_ms": round(duration_ms, 1),
         }
 
     def send_json(self, data: Any, status: int = 200, *, extra_headers: dict[str, str] | None = None) -> None:
+        parsed_path = urlparse(self.path).path
+        if parsed_path.startswith("/public-api/") and not getattr(self, "public_metrics_recorded", False):
+            duration_ms = max(0.0, (time.perf_counter() - float(getattr(self, "request_started_at", time.perf_counter()))) * 1000)
+            PUBLIC_API_METRICS.record(parsed_path, int(status), duration_ms)
+            self.public_metrics_recorded = True
         payload_obj = data
         if isinstance(data, dict):
             payload_obj = dict(data)
@@ -3882,7 +3907,8 @@ class WebHandler(BaseHTTPRequestHandler):
             meta = existing_meta if isinstance(existing_meta, dict) else {}
             payload_obj["_meta"] = {**meta, **self.api_meta(int(status))}
         payload = json.dumps(payload_obj, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_payload(payload, status, "application/json; charset=utf-8", extra_headers=extra_headers)
+        headers = {**getattr(self, "public_rate_headers", {}), **dict(extra_headers or {})}
+        self.send_payload(payload, status, "application/json; charset=utf-8", extra_headers=headers)
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
         self.send_json({"ok": False, "error": message, "message": message, "code": code}, status)
@@ -3918,6 +3944,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
             headers = dict(extra_headers or {})
             refresh_cookie = getattr(self, "auth_refresh_cookie", "")
             if refresh_cookie and "Set-Cookie" not in headers:
@@ -4136,7 +4166,53 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_unauthorized()
         return False
 
+    def public_client_ip(self) -> str:
+        remote = str((getattr(self, "client_address", ("", 0)) or ("", 0))[0] or "")
+        settings = handler_settings(self)
+        if remote in set(settings.public_api_trusted_proxy_ips):
+            forwarded = str(self.headers.get("X-Forwarded-For", "") or "").split(",", 1)[0].strip()
+            if forwarded:
+                try:
+                    return str(ipaddress.ip_address(forwarded))
+                except ValueError:
+                    pass
+        try:
+            return str(ipaddress.ip_address(remote))
+        except ValueError:
+            return "unknown"
+
+    def require_public_rate_limit(self, path: str) -> bool:
+        settings = handler_settings(self)
+        heavy_paths = {
+            "/public-api/market/snapshot",
+            "/public-api/market/watchlist",
+            "/public-api/coin/context",
+            "/public-api/signals/context",
+        }
+        heavy = path in heavy_paths
+        limit = (
+            settings.public_api_heavy_rate_limit_per_minute
+            if heavy
+            else settings.public_api_rate_limit_per_minute
+        )
+        bucket = "heavy" if heavy else "standard"
+        result = PUBLIC_API_LIMITER.allow(f"{self.public_client_ip()}:{bucket}", max(1, limit))
+        self.public_rate_headers = {
+            "X-RateLimit-Limit": str(result.limit),
+            "X-RateLimit-Remaining": str(result.remaining),
+            "X-RateLimit-Reset": str(result.reset_after_sec),
+        }
+        if result.allowed:
+            return True
+        self.send_json(
+            api_error("请求过于频繁，请稍后重试", code="rate_limited"),
+            HTTPStatus.TOO_MANY_REQUESTS,
+            extra_headers={"Retry-After": str(result.reset_after_sec)},
+        )
+        return False
+
     def do_GET(self) -> None:
+        self.request_started_at = time.perf_counter()
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -4154,6 +4230,11 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(auth_audit_payload(handler_settings(self).data_dir, limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200)))
             return
+        if path.startswith("/public-api/") and not self.require_public_rate_limit(path):
+            return
+        if path == "/public-api/health":
+            self.send_json(public_api_health_payload())
+            return
         if path == "/public-api/signals":
             self.send_json(public_signals_payload(
                 limit=clamp_query_int(query.get("limit", ["50"])[0], 50, 200),
@@ -4166,11 +4247,29 @@ class WebHandler(BaseHTTPRequestHandler):
             ))
             return
         if path == "/public-api/signals/detail":
-            self.send_json(public_signal_detail_payload(query_int_or(query.get("id", ["0"])[0], 0)))
+            self.send_json(public_signal_detail_payload(query.get("id", [""])[0]))
+            return
+        if path == "/public-api/signals/context":
+            self.send_json(public_signal_context_payload(query.get("id", [""])[0]))
             return
         if path == "/public-api/signals/stats":
             self.send_json(public_signal_stats_payload(
                 window_sec=min(2592000, max(1, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
+            ))
+            return
+        if path == "/public-api/market/snapshot":
+            self.send_json(public_market_snapshot_payload(query.get("symbol", [""])[0]))
+            return
+        if path == "/public-api/coin/context":
+            self.send_json(public_coin_context_payload(query.get("symbol", [""])[0]))
+            return
+        if path == "/public-api/market/watchlist":
+            self.send_json(public_watchlist_market_payload(query.get("symbols", [""])[0]))
+            return
+        if path == "/public-api/radar/intelligence":
+            self.send_json(public_radar_intelligence_payload(
+                window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
+                board_limit=clamp_query_int(query.get("limit", ["5"])[0], 5, 12),
             ))
             return
         if path.startswith("/public-api/"):
@@ -4287,7 +4386,24 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_error_json("接口不存在", HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
+        self.request_started_at = time.perf_counter()
         path = urlparse(self.path).path
+        if path == "/public-api/telemetry":
+            if not self.require_public_rate_limit(path):
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0") or 0)
+                if size > 2048:
+                    self.send_error_json("请求体太大", HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
+                    return
+                data = self.read_json()
+                if not PUBLIC_TELEMETRY.record(str(data.get("event") or "")):
+                    self.send_error_json("不支持的遥测事件", HTTPStatus.BAD_REQUEST, "invalid_event")
+                    return
+                self.send_json({"ok": True, "message": "已记录匿名计数"}, HTTPStatus.ACCEPTED)
+            except (ValueError, json.JSONDecodeError):
+                self.send_error_json("请求体必须是有效 JSON", HTTPStatus.BAD_REQUEST, "bad_request")
+            return
         if path == "/api/auth/login":
             self.handle_auth_login()
             return

@@ -18,17 +18,37 @@ function hasMeaningfulValue(value: unknown) {
   return Boolean(valueText && valueText !== "-" && valueText !== "—");
 }
 
-export function SignalCard({ item, context = "default" }: { item: SignalItem; context?: "default" | "radar" }) {
+function rankText(rank?: { available?: boolean; percentile?: number; rank?: number; sample_size?: number }) {
+  if (!rank?.available) return "样本积累中";
+  return `P${Math.round(Number(rank.percentile || 0))} · #${rank.rank}/${rank.sample_size}`;
+}
+
+export function SignalCard({
+  item,
+  context = "default",
+  onOpen
+}: {
+  item: SignalItem;
+  context?: "default" | "radar";
+  onOpen?: (item: SignalItem) => void;
+}) {
   const display = item.display || {};
   const symbol = item.symbol || item.coin || display.symbol_label || "";
   const cardTone = display.card_tone || toneForStatus(item.status);
   const score = display.score_label || item.score;
   const stage = display.stage_label || item.stage;
+  const signalReference = item.public_ref || item.id;
+  const intelligence = item.intelligence;
+  const lifecycle = intelligence?.lifecycle;
+  const resonanceWindows = intelligence?.resonance?.windows || [];
 
   return (
     <article className={`panel group overflow-hidden border-l-4 p-5 transition hover:border-primary-100 hover:border-l-primary-500 hover:bg-surface-bright ${accentClass(cardTone)}`}>
       <div className="flex items-start justify-between gap-3">
-        <DataStatusBadge label={display.module_label || moduleLabel(item.module)} tone="info" />
+        <div className="flex flex-wrap items-center gap-2">
+          <DataStatusBadge label={display.module_label || moduleLabel(item.module)} tone="info" />
+          {lifecycle?.label ? <DataStatusBadge label={lifecycle.label} tone={lifecycle.state === "enhancing" ? "good" : lifecycle.state === "cooling" || lifecycle.state === "expired" ? "warn" : "neutral"} /> : null}
+        </div>
         <DataStatusBadge label={display.status_label || statusLabel(item.status)} tone={toneForStatus(item.status)} />
       </div>
 
@@ -56,13 +76,37 @@ export function SignalCard({ item, context = "default" }: { item: SignalItem; co
         </div>
       ) : null}
 
+      {intelligence ? (
+        <div className="mt-4 rounded-xl border border-border-subtle bg-surface-bright p-3">
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div><div className="text-text-muted">自身历史极端度</div><div className="table-number mt-1 font-semibold text-text-primary">{rankText(intelligence.self_rank)}</div></div>
+            <div><div className="text-text-muted">市场相对强度</div><div className="table-number mt-1 font-semibold text-text-primary">{rankText(intelligence.market_strength_rank)}</div></div>
+          </div>
+          {resonanceWindows.length ? (
+            <div className="mt-3 flex items-center gap-1.5" aria-label="跨模块信号共振">
+              {resonanceWindows.map((window) => (
+                <span className={`flex-1 rounded-md px-1 py-1.5 text-center text-[10px] font-semibold ${window.active ? "bg-primary-600 text-white" : "bg-surface-container text-text-muted"}`} key={window.key} title={window.active ? `${window.module_count} 个模块共振` : `${window.signal_count || 0} 条信号`}>
+                  {window.key}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {context === "default" ? (
         <div className="mt-5 border-t border-border-subtle pt-4">
-          <Link className="btn-secondary w-full justify-between px-3 group-hover:border-primary-100 group-hover:text-primary-700" href="/radar">
+          <Link className="btn-secondary w-full justify-between px-3 group-hover:border-primary-100 group-hover:text-primary-700" href={signalReference ? `/radar?signal=${signalReference}` : "/radar"}>
             <span>查看信号雷达</span><span aria-hidden="true">→</span>
           </Link>
         </div>
-      ) : null}
+      ) : (
+        <div className="mt-5 border-t border-border-subtle pt-4">
+          <button className="btn-secondary w-full justify-between px-3 group-hover:border-primary-100 group-hover:text-primary-700" disabled={!signalReference} onClick={() => onOpen?.(item)} type="button">
+            <span>查看证据与上下文</span><span aria-hidden="true">→</span>
+          </button>
+        </div>
+      )}
     </article>
   );
 }

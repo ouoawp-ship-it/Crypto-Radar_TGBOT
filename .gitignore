@@ -41,6 +41,9 @@ frontend/.next/
 frontend/out/
 frontend/.turbo/
 frontend/tsconfig.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
 node_modules/
 .next/
 logs/
