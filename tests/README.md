@@ -17,9 +17,7 @@ cannot remain readable in its current file.
 | `test_flow_radar.py` | Flow-radar calculations and windows |
 | `test_funding_alert.py` | Funding alert decisions and state |
 | `test_funding_sources.py` | Funding-provider clients, caching, and interval transitions |
-| `test_market_data.py` | Market-cap, liquidity-provider, and liquidity-router behavior |
-| `test_structure_suite.py` | Structure radar, reviews, and symbol dossiers |
-| `test_charts.py` | Structure chart generation |
+| `test_market_data.py` | Exchange market data, market-cap metadata, data quality, and HTTP behavior |
 | `test_signal_store.py` | Signal persistence, filtering, statistics, and compatibility |
 | `test_storage_core.py` | Atomic JSON, JSON storage, runtime cache, and configuration |
 | `test_jobs.py` | Job persistence, execution, cleanup, and API payloads |

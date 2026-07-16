@@ -197,18 +197,6 @@ export function SignalDetailDrawer({
               {context.market_error ? <p className="mt-2 text-xs text-amber-700">{context.market_error}</p> : null}
             </section>
 
-            {market?.structure && Object.keys(market.structure).length ? (
-              <section className="rounded-xl border border-border-subtle p-5">
-                <h3 className="section-title">结构位置</h3>
-                <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                  <div><div className="text-xs text-text-muted">当前状态</div><div className="mt-1 font-semibold text-text-primary">{safeText(market.structure.state)}</div></div>
-                  <div><div className="text-xs text-text-muted">结构倾向</div><div className="mt-1 font-semibold text-text-primary">{safeText(market.structure.bias)}</div></div>
-                  <div><div className="text-xs text-text-muted">箱体上沿</div><div className="table-number mt-1 font-semibold text-text-primary">{formatMetricValue(market.structure.box_high, "usd")}</div></div>
-                  <div><div className="text-xs text-text-muted">箱体下沿</div><div className="table-number mt-1 font-semibold text-text-primary">{formatMetricValue(market.structure.box_low, "usd")}</div></div>
-                </div>
-              </section>
-            ) : null}
-
             {fundingRows.length ? (
               <section>
                 <h3 className="section-title">多交易所资金费率</h3>

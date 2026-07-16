@@ -378,7 +378,7 @@ def build_radar_intelligence(
         board("resonance", "跨模块共振", "同币在一个或多个时间窗内出现至少两个不同雷达模块。", [row for row in latest if int(row["intelligence"]["resonance"].get("active_count") or 0) > 0]),
         board("funding", "极端费率", "资金费率模块的最新异常；费率代表拥挤，不等于交易方向。", latest_matching(lambda row: row["signal"].get("module") == "funding")),
         board("risk", "结构与公告风险", "结构、公告或高风险级别信号，用于优先排查风险。", latest_matching(
-            lambda row: row["signal"].get("module") in {"structure", "announcement"}
+            lambda row: row["signal"].get("module") == "announcement"
             or row["signal"].get("severity") in {"warning", "critical", "error"}
         )),
     ]

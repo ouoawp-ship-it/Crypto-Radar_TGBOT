@@ -316,6 +316,33 @@ class SignalEventStoreTests(unittest.TestCase):
 
         self.assertEqual(changes, 0)
 
+    def test_schema_upgrade_removes_records_from_retired_modules(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            for index in (1, 2):
+                append_from_push(
+                    settings,
+                    template_id="TG_FLOW_RADAR",
+                    dedup_key=f"migration:{index}",
+                    status="sent",
+                    sent=True,
+                    text=f"BTCUSDT migration {index}",
+                    ts=1000 + index,
+                )
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                conn.execute("UPDATE signals SET module = 'retired' WHERE dedup_key = 'migration:1'")
+                conn.execute(
+                    "UPDATE signal_store_meta SET value = '3' WHERE key = 'schema_version'"
+                )
+                conn.commit()
+
+            store = SignalEventStore(settings.signal_events_db_path)
+            with store.connect():
+                pass
+            items = store.list_signals(limit=10)["items"]
+
+        self.assertEqual([item["dedup_key"] for item in items], ["migration:2"])
+
     def test_list_by_symbols_limits_each_symbol_in_one_query(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

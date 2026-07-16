@@ -8,7 +8,6 @@
 - 启动雷达：按 15m/1h 完整窗口识别预热、临界和启动阶段。
 - 资金流雷达：汇总 CVD、OI、费率和量价变化。
 - 资金费率警报：监控极端或快速变化的资金费率。
-- 结构雷达：识别突破、跌破、假突破风险和流动性结构。
 - Binance 公告监听：跟踪上新、下架、Launchpool、HODLer、空投等公告。
 - Telegram 推送：支持话题路由、冷却、去重、限流、推送历史与精确信号深链。
 - AI 助手：独立 Bot，承接 Web 币种分析深链、目标价/涨跌/OI/费率提醒和可选 AI 问答。
@@ -43,8 +42,6 @@ python main.py readiness
 python main.py stable-check
 python main.py once
 python main.py live --send --confirm-real-send
-python main.py structure-radar
-python main.py structure-loop --send --confirm-real-send
 python main.py ai-assistant
 python main.py web
 ```

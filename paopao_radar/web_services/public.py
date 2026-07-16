@@ -235,15 +235,6 @@ def public_market_snapshot_view(snapshot: dict[str, Any], *, now_ts: int | None 
         "funding_pct": _metric(snapshot, "funding_pct", unit="percent_per_cycle", source="binance_futures", observed_at=observed_at, age_sec=age_sec, snapshot_status=status),
         "market_cap": _metric(snapshot, "market_cap", unit="usd", source=market_cap_source, observed_at=observed_at, age_sec=age_sec, snapshot_status=status, zero_is_missing=True),
     }
-    structure = snapshot.get("structure") if isinstance(snapshot.get("structure"), dict) else {}
-    public_structure = {
-        key: structure.get(key)
-        for key in (
-            "state", "bias", "box_high", "box_low", "box_width_pct", "position_in_box",
-            "distance_to_high_pct", "distance_to_low_pct",
-        )
-        if key in structure
-    }
     return _strip_forbidden({
         "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
         "symbol": str(snapshot.get("symbol") or ""),
@@ -252,7 +243,6 @@ def public_market_snapshot_view(snapshot: dict[str, Any], *, now_ts: int | None 
         "updated_at": observed_at,
         "age_sec": age_sec,
         "metrics": metrics,
-        "structure": public_structure,
         "funding_exchanges": _public_funding_rows(snapshot.get("funding_exchanges")),
         "tiers": {
             "market_cap": _short(snapshot.get("market_cap_tier") or "", 40),
@@ -668,15 +658,6 @@ def _context_evidence(market: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(metric, dict) or metric.get("value") is None:
             continue
         evidence.append({"key": key, "label": label, "description": description, "metric": metric})
-    structure = market.get("structure") if isinstance(market.get("structure"), dict) else {}
-    if structure.get("state"):
-        evidence.append({
-            "key": "structure",
-            "label": "结构位置",
-            "description": "箱体与边界状态",
-            "value": str(structure.get("state") or ""),
-            "tone": str(structure.get("bias") or "neutral"),
-        })
     return evidence
 
 

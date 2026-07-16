@@ -86,7 +86,6 @@ class PublicContextContractTests(unittest.TestCase):
             "market_cap_source": "CoinPaprika",
             "market_cap_tier": "large",
             "liquidity_tier": "deep",
-            "structure": {"state": "突破上沿", "bias": "bullish", "box_high": 59_000.0},
             "funding_exchanges": [
                 {
                     "exchange": "Binance",
@@ -417,7 +416,7 @@ class PublicContextContractTests(unittest.TestCase):
 
     def test_intelligence_cold_build_stays_within_production_scale_budget(self) -> None:
         now = int(time.time())
-        modules = ("launch", "flow", "funding", "structure", "announcement")
+        modules = ("launch", "flow", "funding", "announcement")
         events = [
             {
                 "id": index + 1,

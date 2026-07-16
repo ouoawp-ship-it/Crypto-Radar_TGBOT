@@ -61,7 +61,7 @@ class EnvSyncTests(unittest.TestCase):
             env = Path(tmp) / ".env.oi"
             example = Path(tmp) / ".env.oi.example"
             env.write_text(
-                "TG_BOT_TOKEN=secret\nTG_CHAT_ID=-1001234567890\nRADAR_SUMMARY_MIN_INTERVAL_SEC=1800\nWEB_PORT=80\nCUSTOM_KEEP=1\n",
+                "TG_BOT_TOKEN=secret\nTG_CHAT_ID=-1001234567890\nRADAR_SUMMARY_MIN_INTERVAL_SEC=1800\nWEB_PORT=80\nSTRUCTURE_RADAR_ENABLE=true\nCUSTOM_KEEP=1\n",
                 encoding="utf-8",
             )
             example.write_text(
@@ -76,7 +76,9 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("WEB_PORT=8080", text)
         self.assertIn("AI_REQUEST_TIMEOUT_SEC=90", text)
         self.assertIn("CUSTOM_KEEP=1", text)
+        self.assertNotIn("STRUCTURE_RADAR_ENABLE", text)
         self.assertIn("RADAR_SUMMARY_MIN_INTERVAL_SEC", result["updated"])
+        self.assertIn("STRUCTURE_RADAR_ENABLE", result["removed"])
 
 if __name__ == "__main__":
     unittest.main()
@@ -204,7 +206,7 @@ class UpdateServerScriptTests(unittest.TestCase):
                 "session_secret_configured": True,
             },
         }
-        services = {key: {"active_ok": True, "active": "active"} for key in ("main", "structure", "web", "ai")}
+        services = {key: {"active_ok": True, "active": "active"} for key in ("main", "web", "ai")}
         health = build_health_items(services, {}, config)
         ai_health = next(item for item in health if item["label"] == "AI 助手 Bot")
         snapshot = {
@@ -391,7 +393,6 @@ if __name__ == "__main__":
 import argparse
 import unittest
 from contextlib import redirect_stdout
-from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -590,21 +591,6 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "test")
         self.assertEqual(saved["status"], "running")
         self.assertEqual(saved["task"], "unit")
-
-    def test_structure_runtime_status_uses_separate_file(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings, store, _engine, _gateway = self.make_runtime(tmp)
-            settings = replace(
-                settings,
-                structure_runtime_status_path=Path(tmp) / "structure_runtime_status.json",
-            )
-
-            main.write_runtime_status(settings, store, "structure-loop", "running", task="structure-loop")
-            main_saved = store.load(settings.runtime_status_path, {})
-            structure_saved = store.load(settings.structure_runtime_status_path, {})
-
-        self.assertEqual(main_saved, {})
-        self.assertEqual(structure_saved["task"], "structure-loop")
 
     def test_make_runtime_for_args_applies_scan_limit_overrides(self) -> None:
         with TemporaryDirectory() as tmp:

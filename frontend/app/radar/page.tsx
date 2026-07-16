@@ -25,8 +25,6 @@ const moduleOptions = [
   { value: "launch", label: "启动雷达" },
   { value: "funding", label: "资金费率" },
   { value: "flow", label: "资金流" },
-  { value: "structure", label: "结构雷达" },
-  { value: "structure_review", label: "结构复盘" },
   { value: "announcement", label: "公告" }
 ];
 

@@ -38,7 +38,6 @@ WEB_ADMIN_USERNAME=admin
 ## 服务
 
 - `paopao-radar`：主雷达和 Telegram 推送
-- `paopao-structure`：结构雷达
 - `paopao-web`：Python 后台与 API
 - `paopao-frontend`：Next.js 公开前台
 - `paopao-ai`：AI 助手和价格提醒
@@ -46,7 +45,7 @@ WEB_ADMIN_USERNAME=admin
 查看服务：
 
 ```bash
-sudo systemctl status paopao-radar paopao-structure paopao-web paopao-frontend paopao-ai
+sudo systemctl status paopao-radar paopao-web paopao-frontend paopao-ai
 ```
 
 ## 更新
