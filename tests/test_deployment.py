@@ -113,7 +113,7 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("/public-api/signals", script)
         self.assertIn("/api/summary", script)
         self.assertIn("401", script)
-        self.assertIn("certbot renew --dry-run", script)
+        self.assertIn("certbot renew --dry-run --no-random-sleep-on-renew", script)
         self.assertIn(".venv/bin/python main.py stable-check", script)
         self.assertIn("curl -sS -L", script)
         self.assertIn("--connect-timeout", script)
