@@ -329,6 +329,40 @@ def _radar_intelligence_raw(
     return runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, load)
 
 
+def _radar_intelligence_targets(
+    settings: Settings,
+    refs: set[str],
+    *,
+    now_ts: int,
+    window_sec: int = 2_592_000,
+) -> dict[str, Any]:
+    normalized_refs = {
+        str(reference or "").strip().lower()
+        for reference in refs
+        if str(reference or "").strip()
+    }
+    if not normalized_refs:
+        return {"items": []}
+
+    def load() -> dict[str, Any]:
+        source = _store(settings).intelligence_events(
+            start_ts=now_ts - 2_592_000,
+            end_ts=now_ts,
+            limit=2000,
+        )
+        return build_radar_intelligence(
+            source,
+            now_ts=now_ts,
+            window_sec=window_sec,
+            board_limit=1,
+            target_refs=normalized_refs,
+        )
+
+    cache_refs = ",".join(sorted(normalized_refs))
+    cache_key = f"public:radar-intelligence-targets:{settings.signal_events_db_path}:{window_sec}:{cache_refs}"
+    return runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, load)
+
+
 def _requested_signal_refs(value: str) -> list[str]:
     refs: list[str] = []
     for raw in str(value or "").split(",")[:80]:
@@ -485,11 +519,16 @@ def public_coin_context_payload(
     target = normalized["symbol"]
     now = int(now_ts or time.time())
     timeline = _store(loaded).symbol_timeline(target, limit=30, compact=False)
-    intelligence_raw = _radar_intelligence_raw(
+    timeline_refs = {
+        str(item.get("public_ref") or item.get("id") or "")
+        for item in timeline
+        if str(item.get("public_ref") or item.get("id") or "")
+    }
+    intelligence_raw = _radar_intelligence_targets(
         loaded,
+        timeline_refs,
         now_ts=now,
         window_sec=2_592_000,
-        board_limit=5,
     )
     intelligence_by_ref = {
         str((entry.get("signal") or {}).get("public_ref") or ""): _compact_intelligence(entry.get("intelligence"))
@@ -688,11 +727,11 @@ def public_signal_context_payload(
     rankings: dict[str, Any] = {}
     resonance: dict[str, Any] = {}
     try:
-        intelligence_raw = _radar_intelligence_raw(
+        intelligence_raw = _radar_intelligence_targets(
             loaded,
+            {str(item.get("public_ref") or item.get("id") or "")},
             now_ts=int(now_ts or time.time()),
             window_sec=2_592_000,
-            board_limit=5,
         )
         signal_ref = str(item.get("public_ref") or "")
         for entry in intelligence_raw.get("items", []):

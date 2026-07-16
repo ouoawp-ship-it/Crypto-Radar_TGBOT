@@ -258,6 +258,7 @@ def build_radar_intelligence(
     now_ts: int | None = None,
     window_sec: int = 86400,
     board_limit: int = 5,
+    target_refs: set[str] | None = None,
 ) -> dict[str, Any]:
     now = int(now_ts or time.time())
     safe_window = min(2_592_000, max(3600, int(window_sec or 86400)))
@@ -292,8 +293,19 @@ def build_radar_intelligence(
     }
     absolute_metrics = {id(item): absolute_metric(item) for item in sent_events}
 
+    if target_refs is None:
+        analysis_items = [item for item in sent_events if int(item.get("ts") or 0) >= now - safe_window]
+    else:
+        normalized_refs = {str(reference or "").strip().lower() for reference in target_refs if str(reference or "").strip()}
+        analysis_items = [
+            item
+            for item in sent_events
+            if str(item.get("public_ref") or "").strip().lower() in normalized_refs
+            or str(item.get("id") or "").strip().lower() in normalized_refs
+        ]
+
     analyzed = []
-    for item in sent_events:
+    for item in analysis_items:
         symbol = str(item.get("symbol") or "")
         module = str(item.get("module") or "")
         item_ts = int(item.get("ts") or 0)

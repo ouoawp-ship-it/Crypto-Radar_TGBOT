@@ -1773,6 +1773,9 @@ def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config
     ai = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
     liquidity = config.get("liquidity", {}) if isinstance(config.get("liquidity"), dict) else {}
     structure = config.get("structure_radar", {}) if isinstance(config.get("structure_radar"), dict) else {}
+    ai_token_ok = bool(ai.get("bot_token_configured"))
+    ai_username_ok = bool(str(ai.get("bot_username") or "").strip())
+    ai_ready = bool(ai.get("enable") and ai_token_ok and ai_username_ok)
 
     def service_item(label: str, key: str) -> dict[str, Any]:
         service = services.get(key, {}) if isinstance(services.get(key), dict) else {}
@@ -1797,9 +1800,13 @@ def build_health_items(services: dict[str, Any], runtime: dict[str, Any], config
         },
         {
             "label": "AI 助手 Bot",
-            "status": "ok" if ai.get("enable") and ai.get("bot_token_configured") else ("warn" if ai.get("enable") else "warn"),
-            "value": "已启用" if ai.get("enable") and ai.get("bot_token_configured") else ("缺 AI_BOT_TOKEN" if ai.get("enable") else "未启用"),
-            "detail": "AI 助手和价格提醒使用独立 Telegram Bot，不影响群推送 Bot",
+            "status": "ok" if ai_ready else "warn",
+            "value": (
+                "已启用"
+                if ai_ready
+                else ("缺 AI_BOT_TOKEN" if ai.get("enable") and not ai_token_ok else ("缺 AI_BOT_USERNAME" if ai.get("enable") else "未启用"))
+            ),
+            "detail": "AI 助手和价格提醒使用独立 Telegram Bot；Web 深链还需要公开 Bot 用户名",
         },
         {
             "label": "话题路由",
@@ -2859,13 +2866,17 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
     ai = config.get("ai_assistant", {}) if isinstance(config.get("ai_assistant"), dict) else {}
     telegram_ok = bool(telegram.get("bot_token_configured") and telegram.get("chat_id_configured"))
     ai_enabled = bool(ai.get("enable"))
-    ai_ok = bool(ai_enabled and ai.get("bot_token_configured"))
+    ai_token_ok = bool(ai.get("bot_token_configured"))
+    ai_username_ok = bool(str(ai.get("bot_username") or "").strip())
+    ai_ok = bool(ai_enabled and ai_token_ok and ai_username_ok)
     config_status = "fail" if not telegram_ok else ("warn" if ai_enabled and not ai_ok else "ok")
     config_detail = "Telegram 推送和 AI Bot 配置可用"
     if not telegram_ok:
         config_detail = "Telegram 群推送缺 Token 或群 ID"
-    elif ai_enabled and not ai_ok:
+    elif ai_enabled and not ai_token_ok:
         config_detail = "AI 助手已开启但缺 AI_BOT_TOKEN"
+    elif ai_enabled and not ai_username_ok:
+        config_detail = "AI 助手已开启但缺 AI_BOT_USERNAME，Web 分析和提醒深链不可用"
     elif not ai_enabled:
         config_detail = "Telegram 群推送可用；AI 助手未启用"
     add(
@@ -3327,13 +3338,24 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
 
     if bool(ai_config.get("enable")):
-        ai_ok = bool(ai_config.get("bot_token_configured"))
+        ai_token_ok = bool(ai_config.get("bot_token_configured"))
+        ai_username_ok = bool(str(ai_config.get("bot_username") or "").strip())
+        ai_ok = bool(ai_token_ok and ai_username_ok)
+        if ai_ok:
+            ai_detail = "AI 助手已启用，Bot Token 和公开用户名均已配置。"
+            ai_action = ""
+        elif not ai_token_ok:
+            ai_detail = "AI 助手已启用但缺 AI_BOT_TOKEN。"
+            ai_action = "到配置中心补齐 AI Bot Token；如果暂时不用 AI 助手，可以关闭 AI_ASSISTANT_ENABLE。"
+        else:
+            ai_detail = "AI 助手已启用但缺 AI_BOT_USERNAME，Web 分析和提醒深链不可用。"
+            ai_action = "到配置中心填写 AI 助手 Bot 的公开用户名（不含 @），保存后复查信号详情动作。"
         add(
             "ai_bot",
             "AI 助手配置",
             "ok" if ai_ok else "warn",
-            "AI 助手已启用且 Bot Token 已配置。" if ai_ok else "AI 助手已启用但缺 AI_BOT_TOKEN。",
-            "到配置中心补齐 AI Bot Token；如果暂时不用 AI 助手，可以关闭 AI_ASSISTANT_ENABLE。",
+            ai_detail,
+            ai_action,
         )
     else:
         add("ai_bot", "AI 助手配置", "warn", "AI 助手未启用；不影响群推送，但价格提醒和 AI 分析不可用。")
