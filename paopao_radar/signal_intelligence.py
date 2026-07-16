@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
@@ -110,12 +111,26 @@ def absolute_metric(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _latest_by_symbol(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the latest row per symbol from rows sorted by (ts, id)."""
     latest: dict[str, dict[str, Any]] = {}
-    for item in sorted(items, key=lambda row: (int(row.get("ts") or 0), int(row.get("id") or 0)), reverse=True):
+    for item in reversed(items):
         symbol = str(item.get("symbol") or "")
         if symbol and symbol not in latest:
             latest[symbol] = item
     return list(latest.values())
+
+
+def _time_slice(
+    rows: list[dict[str, Any]],
+    timestamps: list[int],
+    *,
+    start_ts: int,
+    end_ts: int,
+) -> list[dict[str, Any]]:
+    """Slice an ascending time index while preserving same-timestamp rows."""
+    start = bisect_left(timestamps, start_ts)
+    end = bisect_right(timestamps, end_ts)
+    return rows[start:end]
 
 
 def _lifecycle(item: dict[str, Any], history: list[dict[str, Any]], now_ts: int) -> dict[str, Any]:
@@ -157,14 +172,17 @@ def _lifecycle(item: dict[str, Any], history: list[dict[str, Any]], now_ts: int)
     }
 
 
-def _resonance(item: dict[str, Any], symbol_events: list[dict[str, Any]]) -> dict[str, Any]:
+def _resonance(
+    item: dict[str, Any],
+    symbol_events: list[dict[str, Any]],
+    symbol_timestamps: list[int],
+) -> dict[str, Any]:
     anchor = int(item.get("ts") or 0)
+    end = bisect_right(symbol_timestamps, anchor)
     windows = []
     for key, seconds in RESONANCE_WINDOWS:
-        relevant = [
-            row for row in symbol_events
-            if anchor - seconds <= int(row.get("ts") or 0) <= anchor and str(row.get("status") or "") == "sent"
-        ]
+        start = bisect_left(symbol_timestamps, anchor - seconds, 0, end)
+        relevant = symbol_events[start:end]
         modules = sorted({str(row.get("module") or "") for row in relevant if str(row.get("module") or "")})
         windows.append({
             "key": key,
@@ -187,29 +205,22 @@ def _resonance(item: dict[str, Any], symbol_events: list[dict[str, Any]]) -> dic
 
 def _signal_intelligence(
     item: dict[str, Any],
-    events: list[dict[str, Any]],
-    by_symbol: dict[str, list[dict[str, Any]]],
+    *,
+    self_history: list[dict[str, Any]],
+    market_candidates: list[dict[str, Any]],
+    symbol_events: list[dict[str, Any]],
+    symbol_timestamps: list[int],
+    absolute_metrics: dict[int, dict[str, Any] | None],
     now_ts: int,
     market_window_sec: int,
 ) -> dict[str, Any]:
-    symbol = str(item.get("symbol") or "")
-    module = str(item.get("module") or "")
-    item_ts = int(item.get("ts") or 0)
     current_score = _score(item)
-    self_history = [
-        row for row in by_symbol.get(symbol, [])
-        if str(row.get("module") or "") == module and item_ts - 2_592_000 <= int(row.get("ts") or 0) <= item_ts
-    ]
-    market_candidates = _latest_by_symbol([
-        row for row in events
-        if str(row.get("module") or "") == module
-        and item_ts - market_window_sec <= int(row.get("ts") or 0) <= item_ts
-    ])
-    metric = absolute_metric(item)
+    latest_market_candidates = _latest_by_symbol(market_candidates)
+    metric = absolute_metrics.get(id(item))
     absolute_samples: list[float] = []
     if metric:
-        for row in market_candidates:
-            peer = absolute_metric(row)
+        for row in latest_market_candidates:
+            peer = absolute_metrics.get(id(row))
             if peer and peer.get("key") == metric.get("key"):
                 value = _number(peer.get("value"))
                 if value is not None:
@@ -231,12 +242,12 @@ def _signal_intelligence(
         ),
         "market_strength_rank": _rank(
             current_score,
-            [value for value in (_score(row) for row in market_candidates) if value is not None],
+            [value for value in (_score(row) for row in latest_market_candidates) if value is not None],
             label="市场相对强度",
             method=f"同模块近 {max(1, market_window_sec // 3600)} 小时每币最新规则分数横截面排名",
         ),
         "market_absolute_rank": absolute_rank,
-        "resonance": _resonance(item, by_symbol.get(symbol, [])),
+        "resonance": _resonance(item, symbol_events, symbol_timestamps),
         "lifecycle": _lifecycle(item, self_history, now_ts),
     }
 
@@ -255,16 +266,63 @@ def build_radar_intelligence(
         if str(item.get("status") or "") == "sent" and str(item.get("symbol") or "")
     ]
     by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_module: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_symbol_module: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for item in sent_events:
-        by_symbol[str(item.get("symbol") or "")].append(item)
-    for items in by_symbol.values():
+        symbol = str(item.get("symbol") or "")
+        module = str(item.get("module") or "")
+        by_symbol[symbol].append(item)
+        by_module[module].append(item)
+        by_symbol_module[(symbol, module)].append(item)
+    all_groups = [*by_symbol.values(), *by_module.values(), *by_symbol_module.values()]
+    for items in all_groups:
         items.sort(key=lambda row: (int(row.get("ts") or 0), int(row.get("id") or 0)))
+
+    symbol_timestamps = {
+        key: [int(row.get("ts") or 0) for row in rows]
+        for key, rows in by_symbol.items()
+    }
+    module_timestamps = {
+        key: [int(row.get("ts") or 0) for row in rows]
+        for key, rows in by_module.items()
+    }
+    self_timestamps = {
+        key: [int(row.get("ts") or 0) for row in rows]
+        for key, rows in by_symbol_module.items()
+    }
+    absolute_metrics = {id(item): absolute_metric(item) for item in sent_events}
 
     analyzed = []
     for item in sent_events:
+        symbol = str(item.get("symbol") or "")
+        module = str(item.get("module") or "")
+        item_ts = int(item.get("ts") or 0)
+        symbol_rows = by_symbol.get(symbol, [])
+        module_rows = by_module.get(module, [])
+        self_key = (symbol, module)
+        self_rows = by_symbol_module.get(self_key, [])
         analyzed.append({
             "signal": item,
-            "intelligence": _signal_intelligence(item, sent_events, by_symbol, now, safe_window),
+            "intelligence": _signal_intelligence(
+                item,
+                self_history=_time_slice(
+                    self_rows,
+                    self_timestamps.get(self_key, []),
+                    start_ts=item_ts - 2_592_000,
+                    end_ts=item_ts,
+                ),
+                market_candidates=_time_slice(
+                    module_rows,
+                    module_timestamps.get(module, []),
+                    start_ts=item_ts - safe_window,
+                    end_ts=item_ts,
+                ),
+                symbol_events=symbol_rows,
+                symbol_timestamps=symbol_timestamps.get(symbol, []),
+                absolute_metrics=absolute_metrics,
+                now_ts=now,
+                market_window_sec=safe_window,
+            ),
         })
     current = [entry for entry in analyzed if int(entry["signal"].get("ts") or 0) >= now - safe_window]
     latest_entries: dict[str, dict[str, Any]] = {}
