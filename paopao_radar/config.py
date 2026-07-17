@@ -161,8 +161,13 @@ class Settings:
     news_events_retention_days: int = 90
     news_events_limit: int = 5000
     market_snapshot_interval_sec: int = 300
-    market_snapshot_retention_days: int = 7
+    market_snapshot_retention_days: int = 30
     market_snapshot_limit: int = 160
+    market_snapshot_oi_limit: int = 80
+    market_snapshot_workers: int = 8
+    market_flow_fact_interval_sec: int = 900
+    market_flow_fact_limit: int = 40
+    market_readiness_target_days: int = 30
     web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
     web_jobs_retention_days: int = 30
     web_jobs_limit: int = 500
@@ -342,8 +347,13 @@ class Settings:
             news_events_retention_days=env_int("NEWS_EVENTS_RETENTION_DAYS", 90),
             news_events_limit=env_int("NEWS_EVENTS_LIMIT", 5000),
             market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
-            market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 7),
+            market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 30),
             market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 160),
+            market_snapshot_oi_limit=env_int("MARKET_SNAPSHOT_OI_LIMIT", 80),
+            market_snapshot_workers=env_int("MARKET_SNAPSHOT_WORKERS", 8),
+            market_flow_fact_interval_sec=env_int("MARKET_FLOW_FACT_INTERVAL_SEC", 900),
+            market_flow_fact_limit=env_int("MARKET_FLOW_FACT_LIMIT", 40),
+            market_readiness_target_days=env_int("MARKET_READINESS_TARGET_DAYS", 30),
             web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
             web_jobs_retention_days=env_int("WEB_JOBS_RETENTION_DAYS", 30),
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
@@ -498,6 +508,11 @@ class Settings:
                 "market_snapshot_interval_sec": self.market_snapshot_interval_sec,
                 "market_snapshot_retention_days": self.market_snapshot_retention_days,
                 "market_snapshot_limit": self.market_snapshot_limit,
+                "market_snapshot_oi_limit": self.market_snapshot_oi_limit,
+                "market_snapshot_workers": self.market_snapshot_workers,
+                "market_flow_fact_interval_sec": self.market_flow_fact_interval_sec,
+                "market_flow_fact_limit": self.market_flow_fact_limit,
+                "market_readiness_target_days": self.market_readiness_target_days,
                 "web_jobs_db_file": str(self.web_jobs_db_path),
                 "web_jobs_db_exists": self.web_jobs_db_path.exists(),
                 "web_jobs_retention_days": self.web_jobs_retention_days,

@@ -208,6 +208,31 @@ export type MarketCoverage = {
   funding?: number;
 };
 
+export type MarketReadiness = {
+  status?: "ready" | "warming_up" | "partial" | "stale" | "empty" | string;
+  rows?: number;
+  symbols_seen?: number;
+  oldest_at?: string;
+  latest_at?: string;
+  history_span_sec?: number;
+  history_target_sec?: number;
+  requested_window_sec?: number;
+  warmup_progress_pct?: number;
+  warmup_remaining_sec?: number;
+  estimated_full_history_at?: string;
+  freshness?: { status?: string; age_sec?: number | null; budget_sec?: number };
+  coverage?: MarketCoverage & {
+    price_ratio?: number;
+    funding_ratio?: number;
+    oi_target?: number;
+    oi_ratio?: number;
+    flow_target?: number;
+    spot_flow_ratio?: number;
+    futures_flow_ratio?: number;
+  };
+  source_status?: Array<{ source?: string; rows?: number; latest_at?: string }>;
+};
+
 export type MarketOverview = {
   schema_version?: string;
   generated_at?: string;
@@ -215,6 +240,7 @@ export type MarketOverview = {
   data_status?: "ready" | "degraded" | "empty" | string;
   warnings?: string[];
   coverage?: MarketCoverage;
+  readiness?: MarketReadiness;
   overview?: {
     bias?: "inflow" | "outflow" | "broad_up" | "broad_down" | "mixed" | string;
     advancing?: number;
@@ -234,6 +260,7 @@ export type RadarBoards = {
   data_status?: "ready" | "degraded" | "empty" | string;
   warnings?: string[];
   coverage?: MarketCoverage;
+  readiness?: MarketReadiness;
   boards?: CockpitBoard[];
   methodology?: Record<string, string>;
 };

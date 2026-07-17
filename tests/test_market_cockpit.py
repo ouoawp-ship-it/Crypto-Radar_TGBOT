@@ -11,6 +11,7 @@ from paopao_radar.market_cockpit import (
     MarketSnapshotStore,
     build_market_cockpit,
     collect_binance_market_rows,
+    collect_market_flow_facts,
     persist_flow_market_rows,
     persist_market_batch,
 )
@@ -40,6 +41,25 @@ class FakeBinanceSource:
             {"symbol": "ETHUSDT", "lastPrice": "180", "priceChangePercent": "-10", "quoteVolume": "80000000"},
             {"symbol": "XAUUSDT", "lastPrice": "2000", "priceChangePercent": "1", "quoteVolume": "90000000"},
         ]
+
+
+class FakeFactSource(FakeBinanceSource):
+    def open_interest_hist(self, symbol, period="5m", limit=2):
+        base = 1_000_000 if symbol == "BTCUSDT" else 2_000_000
+        return [
+            {"sumOpenInterestValue": str(base)},
+            {"sumOpenInterestValue": str(base * 1.1)},
+        ]
+
+    @staticmethod
+    def _klines(taker_buy: float):
+        return [[3_000, "1", "1", "1", "1", "1", "1", "1000", 0, "0", str(taker_buy)]]
+
+    def spot_klines(self, *_args, **_kwargs):
+        return self._klines(650)
+
+    def klines(self, *_args, **_kwargs):
+        return self._klines(400)
 
 
 class MarketCockpitTests(unittest.TestCase):
@@ -139,6 +159,43 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(saved["count"], 2)
         self.assertEqual(skipped["status"], "skipped")
 
+    def test_batch_collector_rotates_and_enriches_open_interest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            settings = Settings(**{**settings.__dict__, "market_snapshot_oi_limit": 1, "market_snapshot_workers": 2})
+            source = FakeFactSource()
+            first = collect_binance_market_rows(settings, source=source, oi_source=source, now_ts=1_000)
+            second = collect_binance_market_rows(settings, source=source, oi_source=source, now_ts=1_300)
+
+        first_oi = {row["symbol"] for row in first if row.get("oi_usd")}
+        second_oi = {row["symbol"] for row in second if row.get("oi_usd")}
+        self.assertEqual(len(first_oi), 1)
+        self.assertEqual(len(second_oi), 1)
+        self.assertNotEqual(first_oi, second_oi)
+        self.assertTrue(all(row.get("oi_change_pct") == 10 for row in first if row.get("oi_usd")))
+
+    def test_closed_market_flow_facts_are_independent_of_push_frequency(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            settings = Settings(**{
+                **settings.__dict__,
+                "market_flow_fact_interval_sec": 900,
+                "market_flow_fact_limit": 2,
+                "market_snapshot_workers": 2,
+            })
+            observed_at, rows = collect_market_flow_facts(
+                settings,
+                source=FakeFactSource(),
+                symbols=["BTCUSDT", "ETHUSDT"],
+                now_ts=4_600,
+            )
+
+        self.assertEqual(observed_at, 3_600)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["spot_flow_usd"], 300)
+        self.assertEqual(rows[0]["futures_flow_usd"], -200)
+        self.assertEqual(rows[0]["window_sec"], 900)
+
     def test_flow_rows_are_persisted_with_declared_cvd_semantics(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings(tmp)
@@ -177,10 +234,29 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertTrue(overview["ok"])
         self.assertTrue(boards["ok"])
         self.assertEqual(overview["data"]["data_status"], "ready")
+        self.assertEqual(overview["data"]["readiness"]["status"], "ready")
+        self.assertEqual(boards["data"]["readiness"]["coverage"]["oi_ratio"], 1.0)
         self.assertEqual(len(boards["data"]["boards"]), 5)
         serialized = json.dumps({"overview": overview, "boards": boards}, ensure_ascii=False).lower()
         for forbidden in ("bot_token", "api_key", "password", "coverage_json"):
             self.assertNotIn(forbidden, serialized)
+
+    def test_readiness_distinguishes_warmup_from_stale_and_reports_progress(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            settings = Settings(**{**settings.__dict__, "market_readiness_target_days": 30})
+            store = MarketSnapshotStore(settings.market_snapshots_db_path)
+            store.append_many(self.baseline_rows(1_000))
+            store.append_many(self.latest_rows(2_800))
+
+            warming = store.readiness_summary(settings, now_ts=2_800, requested_window_sec=3_600)
+            stale = store.readiness_summary(settings, now_ts=20_000, requested_window_sec=900)
+
+        self.assertEqual(warming["status"], "warming_up")
+        self.assertGreater(warming["warmup_progress_pct"], 0)
+        self.assertLess(warming["warmup_progress_pct"], 1)
+        self.assertEqual(warming["freshness"]["status"], "fresh")
+        self.assertEqual(stale["status"], "stale")
 
     def test_legacy_snapshot_database_is_migrated_without_data_loss(self) -> None:
         with TemporaryDirectory() as tmp:

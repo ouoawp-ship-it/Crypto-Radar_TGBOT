@@ -5,6 +5,7 @@ import math
 import sqlite3
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, Iterator
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .flow_radar import kline_cvd_flow_info
+from .time_windows import closed_window
 
 
 MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-17"
@@ -259,6 +262,106 @@ class MarketSnapshotStore:
                 row = conn.execute("SELECT MAX(observed_at) AS value FROM market_snapshots").fetchone()
         return int(row["value"] or 0) if row else 0
 
+    def readiness_summary(
+        self,
+        settings: Settings,
+        *,
+        now_ts: int | None = None,
+        requested_window_sec: int = 3600,
+    ) -> dict[str, Any]:
+        """Return honest warm-up, coverage and freshness/SLA state."""
+
+        now = int(now_ts or time.time())
+        snapshot_interval = max(60, int(settings.market_snapshot_interval_sec))
+        flow_interval = max(300, int(getattr(settings, "market_flow_fact_interval_sec", 900) or 900))
+        target_sec = max(86400, int(getattr(settings, "market_readiness_target_days", 30) or 30) * 86400)
+        freshness_budget = max(900, snapshot_interval * 3)
+        recent_cutoff = now - max(freshness_budget, flow_interval * 2)
+        with self.connect() as conn:
+            bounds = conn.execute(
+                "SELECT COUNT(*) AS total, MIN(observed_at) AS oldest, MAX(observed_at) AS latest, "
+                "COUNT(DISTINCT symbol) AS symbols FROM market_snapshots"
+            ).fetchone()
+            metric = conn.execute(
+                """
+                SELECT
+                    COUNT(DISTINCT CASE WHEN price IS NOT NULL THEN symbol END) AS price,
+                    COUNT(DISTINCT CASE WHEN funding_pct IS NOT NULL THEN symbol END) AS funding,
+                    COUNT(DISTINCT CASE WHEN oi_usd IS NOT NULL THEN symbol END) AS oi,
+                    COUNT(DISTINCT CASE WHEN spot_flow_usd IS NOT NULL THEN symbol END) AS spot_flow,
+                    COUNT(DISTINCT CASE WHEN futures_flow_usd IS NOT NULL THEN symbol END) AS futures_flow,
+                    COUNT(DISTINCT CASE WHEN price IS NOT NULL THEN symbol END) AS assets
+                FROM market_snapshots WHERE observed_at >= ? AND observed_at <= ?
+                """,
+                (recent_cutoff, now),
+            ).fetchone()
+            source_rows = conn.execute(
+                "SELECT source, COUNT(*) AS count, MAX(observed_at) AS latest "
+                "FROM market_snapshots WHERE observed_at >= ? GROUP BY source ORDER BY source",
+                (now - target_sec,),
+            ).fetchall()
+        total = int(bounds["total"] or 0) if bounds else 0
+        oldest = int(bounds["oldest"] or 0) if bounds else 0
+        latest = int(bounds["latest"] or 0) if bounds else 0
+        span = max(0, latest - oldest) if oldest and latest else 0
+        age = max(0, now - latest) if latest else None
+        assets = int(metric["assets"] or 0) if metric else 0
+        price = int(metric["price"] or 0) if metric else 0
+        funding = int(metric["funding"] or 0) if metric else 0
+        oi = int(metric["oi"] or 0) if metric else 0
+        spot_flow = int(metric["spot_flow"] or 0) if metric else 0
+        futures_flow = int(metric["futures_flow"] or 0) if metric else 0
+        oi_target = min(assets, max(1, int(settings.market_snapshot_limit))) if assets else 0
+        flow_target = min(assets, max(1, int(getattr(settings, "market_flow_fact_limit", 40) or 40))) if assets else 0
+
+        def ratio(value: int, denominator: int) -> float:
+            return round(value / denominator, 4) if denominator else 0.0
+
+        if total <= 0:
+            status = "empty"
+        elif age is None or age > freshness_budget:
+            status = "stale"
+        elif assets <= 0 or ratio(price, assets) < 0.8:
+            status = "partial"
+        elif span < max(300, int(requested_window_sec)):
+            status = "warming_up"
+        elif ratio(oi, oi_target) < 0.5 or min(ratio(spot_flow, flow_target), ratio(futures_flow, flow_target)) < 0.5:
+            status = "partial"
+        else:
+            status = "ready"
+        remaining = max(0, target_sec - span)
+        return {
+            "status": status,
+            "rows": total,
+            "symbols_seen": int(bounds["symbols"] or 0) if bounds else 0,
+            "oldest_at": _iso(oldest),
+            "latest_at": _iso(latest),
+            "history_span_sec": span,
+            "history_target_sec": target_sec,
+            "requested_window_sec": int(requested_window_sec),
+            "warmup_progress_pct": round(min(100.0, span / target_sec * 100), 2),
+            "warmup_remaining_sec": remaining,
+            "estimated_full_history_at": _iso(now + remaining) if remaining else _iso(now),
+            "freshness": {
+                "status": "fresh" if age is not None and age <= freshness_budget else "stale" if age is not None else "empty",
+                "age_sec": age,
+                "budget_sec": freshness_budget,
+            },
+            "coverage": {
+                "assets": assets,
+                "price": price, "price_ratio": ratio(price, assets),
+                "funding": funding, "funding_ratio": ratio(funding, assets),
+                "oi": oi, "oi_target": oi_target, "oi_ratio": ratio(oi, oi_target),
+                "spot_flow": spot_flow, "futures_flow": futures_flow, "flow_target": flow_target,
+                "spot_flow_ratio": ratio(spot_flow, flow_target),
+                "futures_flow_ratio": ratio(futures_flow, flow_target),
+            },
+            "source_status": [
+                {"source": str(row["source"]), "rows": int(row["count"] or 0), "latest_at": _iso(int(row["latest"] or 0))}
+                for row in source_rows
+            ],
+        }
+
     def comparison(
         self,
         *,
@@ -375,6 +478,7 @@ def collect_binance_market_rows(
     source: BinanceDataSource | None = None,
     now_ts: int | None = None,
     limit: int | None = None,
+    oi_source: BinanceDataSource | None = None,
 ) -> list[dict[str, Any]]:
     loaded = source or BinanceDataSource(settings)
     observed_at = int(now_ts or time.time())
@@ -435,7 +539,127 @@ def collect_binance_market_rows(
         })
     rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
     safe_limit = max(20, min(500, int(limit or getattr(settings, "market_snapshot_limit", 160))))
-    return rows[:safe_limit]
+    selected = rows[:safe_limit]
+    oi_limit = max(0, min(len(selected), int(getattr(settings, "market_snapshot_oi_limit", 80) or 0)))
+    if oi_limit and hasattr(oi_source or loaded, "open_interest_hist"):
+        interval = max(60, int(getattr(settings, "market_snapshot_interval_sec", 300) or 300))
+        offset = ((observed_at // interval) * oi_limit) % max(1, len(selected))
+        targets = [selected[(offset + index) % len(selected)] for index in range(oi_limit)]
+        oi_loaded = oi_source or loaded
+
+        def fetch_oi(row: dict[str, Any]) -> tuple[str, float | None, float | None]:
+            history = oi_loaded.open_interest_hist(str(row["symbol"]), period="5m", limit=2)
+            values = [
+                _positive(item.get("sumOpenInterestValue"))
+                for item in history
+                if isinstance(item, dict)
+            ]
+            clean_values = [value for value in values if value is not None]
+            current = clean_values[-1] if clean_values else None
+            previous = clean_values[-2] if len(clean_values) >= 2 else None
+            return str(row["symbol"]), current, _pct(current, previous)
+
+        workers = max(1, min(16, int(getattr(settings, "market_snapshot_workers", 8) or 8)))
+        results: dict[str, tuple[float | None, float | None]] = {}
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="market-oi") as executor:
+            futures = {executor.submit(fetch_oi, row): str(row["symbol"]) for row in targets}
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    _symbol, oi_usd, oi_change_pct = future.result()
+                except Exception:
+                    oi_usd, oi_change_pct = None, None
+                results[symbol] = (oi_usd, oi_change_pct)
+        for row in selected:
+            if str(row["symbol"]) not in results:
+                continue
+            oi_usd, oi_change_pct = results[str(row["symbol"])]
+            row["oi_usd"] = oi_usd
+            row["oi_change_pct"] = oi_change_pct
+            row["coverage"]["oi"] = oi_usd is not None
+    return selected
+
+
+def collect_market_flow_facts(
+    settings: Settings,
+    *,
+    source: BinanceDataSource,
+    symbols: list[str],
+    now_ts: int | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Collect closed 15-minute spot/futures taker-flow facts independent of Telegram pushes."""
+
+    now = int(now_ts or time.time())
+    window_sec = max(300, int(getattr(settings, "market_flow_fact_interval_sec", 900) or 900))
+    window = closed_window(
+        now=datetime.fromtimestamp(now, timezone.utc),
+        interval_sec=window_sec,
+        delay_sec=max(0, min(window_sec // 2, int(getattr(settings, "flow_close_delay_sec", 300) or 300))),
+    )
+    observed_at = int(window.end.timestamp())
+    safe_symbols = [str(symbol).upper() for symbol in symbols if str(symbol).upper().endswith("USDT")]
+    safe_symbols = safe_symbols[: max(0, min(120, int(getattr(settings, "market_flow_fact_limit", 40) or 40)))]
+
+    def fetch(symbol: str) -> dict[str, Any]:
+        start_ms = window.start_ms
+        end_ms = window.end_ms - 1
+        spot = source.spot_klines(symbol, interval="5m", limit=4, start_time=start_ms, end_time=end_ms)
+        futures = source.klines(symbol, interval="5m", limit=4, start_time=start_ms, end_time=end_ms)
+        spot_delta, spot_in, spot_out, spot_ready, _ = kline_cvd_flow_info(spot, window)
+        futures_delta, futures_in, futures_out, futures_ready, _ = kline_cvd_flow_info(futures, window)
+        return {
+            "symbol": symbol,
+            "observed_at": observed_at,
+            "source": "market_flow_15m",
+            "window_sec": window_sec,
+            "spot_inflow_usd": spot_in if spot_ready else None,
+            "spot_outflow_usd": spot_out if spot_ready else None,
+            "spot_flow_usd": spot_delta if spot_ready else None,
+            "futures_inflow_usd": futures_in if futures_ready else None,
+            "futures_outflow_usd": futures_out if futures_ready else None,
+            "futures_flow_usd": futures_delta if futures_ready else None,
+            "coverage": {"spot_flow": spot_ready, "futures_flow": futures_ready},
+            "data_status": "fresh" if spot_ready and futures_ready else "degraded",
+        }
+
+    workers = max(1, min(16, int(getattr(settings, "market_snapshot_workers", 8) or 8)))
+    rows: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="market-flow") as executor:
+        futures = {executor.submit(fetch, symbol): symbol for symbol in safe_symbols}
+        for future in as_completed(futures):
+            try:
+                rows.append(future.result())
+            except Exception:
+                continue
+    rows.sort(key=lambda row: safe_symbols.index(str(row["symbol"])))
+    return observed_at, rows
+
+
+def persist_market_flow_facts(
+    settings: Settings,
+    *,
+    symbols: list[str],
+    store: MarketSnapshotStore,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    now = int(now_ts or time.time())
+    window_sec = max(300, int(getattr(settings, "market_flow_fact_interval_sec", 900) or 900))
+    expected_window = closed_window(
+        now=datetime.fromtimestamp(now, timezone.utc),
+        interval_sec=window_sec,
+        delay_sec=max(0, min(window_sec // 2, int(getattr(settings, "flow_close_delay_sec", 300) or 300))),
+    )
+    expected_at = int(expected_window.end.timestamp())
+    previous = store.latest_timestamp("market_flow_15m")
+    if previous >= expected_at:
+        return {"status": "skipped", "count": 0, "observed_at": previous}
+    dedicated = BinanceDataSource(settings)
+    try:
+        observed_at, rows = collect_market_flow_facts(settings, source=dedicated, symbols=symbols, now_ts=now)
+        count = store.append_many(rows)
+        return {"status": "saved" if count else "empty", "count": count, "observed_at": observed_at}
+    finally:
+        dedicated.http.close()
 
 
 def persist_market_batch(
@@ -452,11 +676,32 @@ def persist_market_batch(
     previous = target.latest_timestamp("binance_futures_batch")
     if not force and previous and now - previous < interval:
         return {"status": "skipped", "count": 0, "observed_at": previous}
-    rows = collect_binance_market_rows(settings, source=source, now_ts=now)
+    dedicated_oi = BinanceDataSource(settings) if isinstance(source, BinanceDataSource) else None
+    try:
+        rows = collect_binance_market_rows(settings, source=source, oi_source=dedicated_oi, now_ts=now)
+    finally:
+        if dedicated_oi is not None:
+            dedicated_oi.http.close()
     count = target.append_many(rows)
+    flow_result = (
+        persist_market_flow_facts(
+            settings,
+            symbols=[str(row.get("symbol") or "") for row in rows],
+            store=target,
+            now_ts=now,
+        )
+        if rows and (source is None or isinstance(source, BinanceDataSource))
+        else {"status": "not_scheduled", "count": 0, "observed_at": 0}
+    )
     retention = max(1, int(settings.market_snapshot_retention_days)) * 86400
     pruned = target.prune(before_ts=now - retention)
-    return {"status": "saved" if count else "empty", "count": count, "pruned": pruned, "observed_at": now}
+    return {
+        "status": "saved" if count else "empty",
+        "count": count,
+        "pruned": pruned,
+        "observed_at": now,
+        "flow_facts": flow_result,
+    }
 
 
 def persist_flow_market_rows(
@@ -707,15 +952,25 @@ def load_market_cockpit(
         window_sec=window_sec,
         max_symbols=max(20, int(settings.market_snapshot_limit)),
     )
+    readiness = target.readiness_summary(settings, now_ts=now, requested_window_sec=normalize_window(window_sec))
     if not latest:
         latest = live_rows if live_rows is not None else collect_binance_market_rows(settings, now_ts=now)
-    return build_market_cockpit(
+    payload = build_market_cockpit(
         latest,
         baselines,
         now_ts=now,
         window_sec=window_sec,
         board_limit=board_limit,
     )
+    payload["readiness"] = readiness
+    readiness_status = str(readiness.get("status") or "empty")
+    if readiness_status == "empty" and payload.get("assets"):
+        readiness_status = "warming_up"
+    if readiness_status in {"warming_up", "partial", "stale"}:
+        payload["data_status"] = readiness_status
+    elif readiness_status == "empty" and not payload.get("assets"):
+        payload["data_status"] = "empty"
+    return payload
 
 
 __all__ = [
@@ -724,8 +979,10 @@ __all__ = [
     "MarketSnapshotStore",
     "build_market_cockpit",
     "collect_binance_market_rows",
+    "collect_market_flow_facts",
     "load_market_cockpit",
     "normalize_window",
     "persist_flow_market_rows",
+    "persist_market_flow_facts",
     "persist_market_batch",
 ]

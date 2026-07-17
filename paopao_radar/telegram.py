@@ -207,6 +207,7 @@ class TelegramGateway:
         daily_limit: int | None = None,
         parse_mode: str = "Markdown",
         reply_to_message_id: int | None = None,
+        signal_records: list[dict[str, Any]] | None = None,
     ) -> PushResult:
         now = utc_ts()
         cooldown = self.settings.tg_default_cooldown_sec if cooldown_sec is None else cooldown_sec
@@ -216,17 +217,17 @@ class TelegramGateway:
         duplicate = self._recent_match(history, dedup_key, cooldown)
         if duplicate:
             result = PushResult("skipped", "dedup_cooldown", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
 
         if daily_limit is not None and daily_limit >= 0 and self._daily_sent_count(history, template_id, now) >= daily_limit:
             result = PushResult("skipped", "template_daily_limit", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
 
         if self._hourly_sent_count(history, now) >= self.settings.tg_global_hourly_limit:
             result = PushResult("skipped", "global_hourly_limit", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
 
         if not send:
@@ -240,17 +241,17 @@ class TelegramGateway:
             print(text)
             print("========== END DRY-RUN ==============\n")
             result = PushResult("dry_run", "send_flag_not_set", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
 
         if not confirm_real_send:
             result = PushResult("blocked", "missing_confirm_real_send", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
 
         if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
             result = PushResult("blocked", "telegram_not_configured", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
 
         topic_id = self._ensure_topic_id_for_template(template_id)
@@ -269,7 +270,7 @@ class TelegramGateway:
             ok,
             message_ids,
         )
-        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id)
+        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
         return result
 
     def _send_real(
@@ -657,6 +658,7 @@ class TelegramGateway:
         text: str,
         topic_id: str = "",
         reply_to_message_id: int | None = None,
+        signal_records: list[dict[str, Any]] | None = None,
     ) -> None:
         now = utc_ts()
         record = {
@@ -706,6 +708,7 @@ class TelegramGateway:
                 topic_id=topic_id,
                 message_ids=result.message_ids or [],
                 reply_to_message_id=reply_to_message_id,
+                structured_records=signal_records,
             )
         except Exception as exc:
             print(f"[telegram] signal store write failed {type(exc).__name__}: {exc}", file=sys.stderr)

@@ -38,6 +38,7 @@ from .market_cockpit import persist_flow_market_rows, persist_market_batch
 from .funding_alert import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
+from .signal_store import SignalEventStore
 from .storage import JsonStore
 from .telegram import TelegramGateway
 from .time_windows import next_closed_window_epoch
@@ -129,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -582,7 +583,7 @@ def run_flow_radar(args: argparse.Namespace) -> int:
     )
     try:
         saved = persist_flow_market_rows(settings, flow)
-        flow["diagnostics"]["market_snapshot"] = {"status": "saved", "count": saved}
+        flow["diagnostics"]["market_snapshot"] = {"status": "saved" if saved else "empty", "count": saved}
     except Exception as exc:
         flow["diagnostics"]["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
     push = gateway.send(
@@ -593,6 +594,7 @@ def run_flow_radar(args: argparse.Namespace) -> int:
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=max(60, settings.flow_interval_sec),
         parse_mode="HTML",
+        signal_records=list(flow.get("items") or flow.get("snapshots") or []),
     )
     print(f"flow_push: {push.status} ({push.reason})")
     print(json.dumps(flow["diagnostics"], ensure_ascii=False, indent=2))
@@ -605,7 +607,7 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
     )
     try:
         saved = persist_flow_market_rows(settings, flow)
-        flow["diagnostics"]["market_snapshot"] = {"status": "saved", "count": saved}
+        flow["diagnostics"]["market_snapshot"] = {"status": "saved" if saved else "empty", "count": saved}
     except Exception as exc:
         flow["diagnostics"]["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
     push = gateway.send(
@@ -616,6 +618,7 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=max(60, settings.flow_interval_sec),
         parse_mode="HTML",
+        signal_records=list(flow.get("items") or flow.get("snapshots") or []),
     )
     print(f"flow_push: {push.status} ({push.reason})")
     return push.status, flow["diagnostics"]
@@ -649,6 +652,7 @@ def push_funding_alert(
             cooldown_sec=max(60, settings.funding_alert_cooldown_sec),
             parse_mode="HTML",
             reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
+            signal_records=[alert],
         )
         print(f"funding_alert_push[{idx}]: {push.status} ({push.reason})")
         push_status = push.status
@@ -942,6 +946,7 @@ def run_once(args: argparse.Namespace) -> int:
                 cooldown_sec=settings.launch_stage_cooldown_sec,
                 parse_mode="HTML",
                 reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
+                signal_records=[alert],
             )
             print(f"launch_push[{idx}]: {push.status} ({push.reason})")
             launch_pushes.append({
@@ -970,6 +975,7 @@ def run_once(args: argparse.Namespace) -> int:
                 confirm_real_send=args.confirm_real_send,
                 cooldown_sec=cooldown,
                 parse_mode="HTML",
+                signal_records=[alert],
             )
             print(f"announcement_push[{idx}]: {push.status} ({push.reason})")
             announcement_pushes.append({
@@ -1174,6 +1180,7 @@ def run_loop(args: argparse.Namespace) -> int:
                         cooldown_sec=settings.launch_stage_cooldown_sec,
                         parse_mode="HTML",
                         reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
+                        signal_records=[alert],
                     )
                     print(f"launch_push[{idx}]: {push.status} ({push.reason})")
                     launch_pushes.append({
@@ -1248,6 +1255,7 @@ def run_trial(args: argparse.Namespace) -> int:
                 cooldown_sec=settings.launch_stage_cooldown_sec,
                 parse_mode="HTML",
                 reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
+                signal_records=[alert],
             )
             print(f"launch_push[{idx}]: {push.status} ({push.reason})")
             launch_pushes.append({
@@ -1505,6 +1513,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate-state":
         print(json.dumps(migrate_legacy_state(settings, apply=args.apply), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "signal-repair":
+        report = SignalEventStore(settings.signal_events_db_path).repair_legacy_signals(apply=args.apply)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("status") == "ok" or args.apply else 1
     if args.command == "once":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)

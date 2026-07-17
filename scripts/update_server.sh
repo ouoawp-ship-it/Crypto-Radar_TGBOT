@@ -211,6 +211,29 @@ run_post_update_cleanup() {
   fi
 }
 
+run_signal_store_migrations() {
+  [ -f "${APP_DIR}/main.py" ] || return 0
+  printf '\n[paopao-update] audit signal store migration\n'
+  set +e
+  "$PYTHON_BIN" main.py signal-repair >/tmp/paopao-signal-repair-audit.json 2>&1
+  local audit_status=$?
+  set -e
+  case "$audit_status" in
+    0)
+      printf '[paopao-update] signal store is clean; no migration required\n'
+      ;;
+    1)
+      printf '[paopao-update] repairing legacy signal rows with an online SQLite backup\n'
+      "$PYTHON_BIN" main.py signal-repair --apply
+      ;;
+    *)
+      cat /tmp/paopao-signal-repair-audit.json >&2 || true
+      printf '[paopao-update] signal store migration audit failed: %s\n' "$audit_status" >&2
+      return "$audit_status"
+      ;;
+  esac
+}
+
 run_post_update_stable_check() {
   if [ ! -f "${APP_DIR}/main.py" ]; then
     return 0
@@ -729,6 +752,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     sync_env_file
     retire_removed_feature_artifacts
     ensure_web_public_config
+    run_signal_store_migrations
     run_post_update_cleanup
     build_frontend_dashboard
     install_shortcut_command
@@ -777,6 +801,7 @@ ensure_web_public_config
 "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
 "$PYTHON_BIN" -m compileall paopao_radar main.py
 "$PYTHON_BIN" -m unittest discover -s tests -v
+run_signal_store_migrations
 run_post_update_cleanup
 build_frontend_dashboard
 
