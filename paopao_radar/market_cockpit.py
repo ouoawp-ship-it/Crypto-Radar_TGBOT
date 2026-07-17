@@ -1,0 +1,731 @@
+from __future__ import annotations
+
+import json
+import math
+import sqlite3
+import time
+from collections import defaultdict
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from .config import Settings
+from .data_sources import BinanceDataSource
+
+
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-17"
+SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
+SNAPSHOT_COLUMNS = (
+    "price",
+    "quote_volume",
+    "market_cap",
+    "oi_usd",
+    "spot_inflow_usd",
+    "spot_outflow_usd",
+    "spot_flow_usd",
+    "futures_inflow_usd",
+    "futures_outflow_usd",
+    "futures_flow_usd",
+    "funding_pct",
+)
+
+
+def _number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _positive(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and number > 0 else None
+
+
+def _pct(current: Any, previous: Any) -> float | None:
+    current_number = _number(current)
+    previous_number = _number(previous)
+    if current_number is None or previous_number is None or previous_number <= 0:
+        return None
+    return (current_number - previous_number) / previous_number * 100
+
+
+def _iso(ts: int | float) -> str:
+    if int(ts or 0) <= 0:
+        return ""
+    return datetime.fromtimestamp(float(ts), timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_window(value: Any, default: int = 3600) -> int:
+    try:
+        requested = int(value)
+    except (TypeError, ValueError):
+        requested = default
+    return requested if requested in SUPPORTED_WINDOWS else default
+
+
+def _coverage(value: Any) -> dict[str, bool]:
+    source = value if isinstance(value, dict) else {}
+    return {str(key): bool(item) for key, item in source.items()}
+
+
+class MarketSnapshotStore:
+    """SQLite history for the public market cockpit.
+
+    Rows are append-only facts from a named collector. Public payloads merge the
+    newest valid field per symbol while retaining each field's observed time.
+    """
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialized = False
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(str(self.db_path), timeout=15)
+        conn.row_factory = sqlite3.Row
+        try:
+            if not self._initialized:
+                self._ensure_schema(conn)
+                self._initialized = True
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _ensure_schema(conn: sqlite3.Connection) -> None:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                observed_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                window_sec INTEGER NOT NULL DEFAULT 0,
+                price REAL,
+                price_change_pct REAL,
+                change_window_sec INTEGER NOT NULL DEFAULT 0,
+                quote_volume REAL,
+                market_cap REAL,
+                oi_usd REAL,
+                oi_change_pct REAL,
+                spot_inflow_usd REAL,
+                spot_outflow_usd REAL,
+                spot_flow_usd REAL,
+                futures_inflow_usd REAL,
+                futures_outflow_usd REAL,
+                futures_flow_usd REAL,
+                funding_pct REAL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                data_status TEXT NOT NULL DEFAULT 'fresh',
+                created_at INTEGER NOT NULL,
+                UNIQUE(symbol, observed_at, source)
+            )
+            """
+        )
+        existing_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(market_snapshots)").fetchall()
+        }
+        migrations = {
+            "market_cap": "REAL",
+            "spot_inflow_usd": "REAL",
+            "spot_outflow_usd": "REAL",
+            "futures_inflow_usd": "REAL",
+            "futures_outflow_usd": "REAL",
+            "data_status": "TEXT NOT NULL DEFAULT 'fresh'",
+        }
+        for column, definition in migrations.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE market_snapshots ADD COLUMN {column} {definition}")
+        conn.execute(
+            """
+            DELETE FROM market_snapshots
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM market_snapshots GROUP BY symbol, observed_at, source
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_market_snapshots_fact ON market_snapshots(symbol, observed_at, source)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_snapshots_time ON market_snapshots(observed_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_snapshots_symbol_time ON market_snapshots(symbol, observed_at DESC)"
+        )
+
+    @staticmethod
+    def _row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            value["coverage"] = json.loads(str(value.pop("coverage_json", "{}") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value["coverage"] = {}
+        return value
+
+    def append_many(self, rows: list[dict[str, Any]]) -> int:
+        prepared: list[dict[str, Any]] = []
+        created_at = int(time.time())
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            symbol = str(raw.get("symbol") or "").strip().upper()
+            observed_at = int(_number(raw.get("observed_at")) or 0)
+            source = str(raw.get("source") or "").strip()[:80]
+            if not symbol.endswith("USDT") or len(symbol) > 24 or observed_at <= 0 or not source:
+                continue
+            prepared.append({
+                "symbol": symbol,
+                "observed_at": observed_at,
+                "source": source,
+                "window_sec": max(0, int(_number(raw.get("window_sec")) or 0)),
+                "price": _positive(raw.get("price")),
+                "price_change_pct": _number(raw.get("price_change_pct")),
+                "change_window_sec": max(0, int(_number(raw.get("change_window_sec")) or 0)),
+                "quote_volume": _positive(raw.get("quote_volume")),
+                "market_cap": _positive(raw.get("market_cap")),
+                "oi_usd": _positive(raw.get("oi_usd")),
+                "oi_change_pct": _number(raw.get("oi_change_pct")),
+                "spot_inflow_usd": _positive(raw.get("spot_inflow_usd")),
+                "spot_outflow_usd": _positive(raw.get("spot_outflow_usd")),
+                "spot_flow_usd": _number(raw.get("spot_flow_usd")),
+                "futures_inflow_usd": _positive(raw.get("futures_inflow_usd")),
+                "futures_outflow_usd": _positive(raw.get("futures_outflow_usd")),
+                "futures_flow_usd": _number(raw.get("futures_flow_usd")),
+                "funding_pct": _number(raw.get("funding_pct")),
+                "coverage_json": json.dumps(_coverage(raw.get("coverage")), ensure_ascii=False, sort_keys=True),
+                "data_status": str(raw.get("data_status") or "fresh")[:24],
+                "created_at": created_at,
+            })
+        if not prepared:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO market_snapshots (
+                    symbol, observed_at, source, window_sec, price, price_change_pct,
+                    change_window_sec, quote_volume, market_cap, oi_usd, oi_change_pct,
+                    spot_inflow_usd, spot_outflow_usd, spot_flow_usd,
+                    futures_inflow_usd, futures_outflow_usd, futures_flow_usd, funding_pct, coverage_json,
+                    data_status, created_at
+                ) VALUES (
+                    :symbol, :observed_at, :source, :window_sec, :price, :price_change_pct,
+                    :change_window_sec, :quote_volume, :market_cap, :oi_usd, :oi_change_pct,
+                    :spot_inflow_usd, :spot_outflow_usd, :spot_flow_usd,
+                    :futures_inflow_usd, :futures_outflow_usd, :futures_flow_usd, :funding_pct, :coverage_json,
+                    :data_status, :created_at
+                )
+                ON CONFLICT(symbol, observed_at, source) DO UPDATE SET
+                    window_sec=excluded.window_sec,
+                    price=excluded.price,
+                    price_change_pct=excluded.price_change_pct,
+                    change_window_sec=excluded.change_window_sec,
+                    quote_volume=excluded.quote_volume,
+                    market_cap=excluded.market_cap,
+                    oi_usd=excluded.oi_usd,
+                    oi_change_pct=excluded.oi_change_pct,
+                    spot_inflow_usd=excluded.spot_inflow_usd,
+                    spot_outflow_usd=excluded.spot_outflow_usd,
+                    spot_flow_usd=excluded.spot_flow_usd,
+                    futures_inflow_usd=excluded.futures_inflow_usd,
+                    futures_outflow_usd=excluded.futures_outflow_usd,
+                    futures_flow_usd=excluded.futures_flow_usd,
+                    funding_pct=excluded.funding_pct,
+                    coverage_json=excluded.coverage_json,
+                    data_status=excluded.data_status
+                """,
+                prepared,
+            )
+        return len(prepared)
+
+    def latest_timestamp(self, source: str = "") -> int:
+        with self.connect() as conn:
+            if source:
+                row = conn.execute(
+                    "SELECT MAX(observed_at) AS value FROM market_snapshots WHERE source = ?",
+                    (source,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT MAX(observed_at) AS value FROM market_snapshots").fetchone()
+        return int(row["value"] or 0) if row else 0
+
+    def comparison(
+        self,
+        *,
+        now_ts: int,
+        window_sec: int,
+        max_symbols: int = 240,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        safe_window = normalize_window(window_sec)
+        start_ts = int(now_ts) - max(2 * safe_window, 2 * 86400)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM market_snapshots
+                WHERE observed_at >= ? AND observed_at <= ?
+                ORDER BY symbol ASC, observed_at ASC, id ASC
+                LIMIT 120000
+                """,
+                (start_ts, int(now_ts)),
+            ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["symbol"])].append(self._row(row))
+
+        latest_rows: list[dict[str, Any]] = []
+        baselines: dict[str, dict[str, Any]] = {}
+        for symbol, history in grouped.items():
+            latest = self._merge_latest(history, now_ts=int(now_ts), max_age_sec=max(2 * safe_window, 7200))
+            if not latest:
+                continue
+            target = int(latest["observed_at"]) - safe_window
+            candidates = [row for row in history if int(row.get("observed_at") or 0) <= target and _positive(row.get("price"))]
+            if candidates:
+                baselines[symbol] = candidates[-1]
+            latest_rows.append(latest)
+
+        latest_rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
+        selected = latest_rows[: max(1, min(500, int(max_symbols or 240)))]
+        allowed = {str(row.get("symbol") or "") for row in selected}
+        return selected, {key: value for key, value in baselines.items() if key in allowed}
+
+    def symbol_series(
+        self,
+        symbol: str,
+        *,
+        start_ts: int,
+        end_ts: int,
+        limit: int = 600,
+    ) -> list[dict[str, Any]]:
+        target = str(symbol or "").strip().upper()
+        safe_limit = max(2, min(2000, int(limit or 600)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM market_snapshots
+                WHERE symbol = ? AND observed_at >= ? AND observed_at <= ?
+                ORDER BY observed_at DESC, id DESC
+                LIMIT ?
+                """,
+                (target, int(start_ts), int(end_ts), safe_limit * 4),
+            ).fetchall()
+        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in reversed(rows):
+            value = self._row(row)
+            grouped[int(value.get("observed_at") or 0)].append(value)
+        points: list[dict[str, Any]] = []
+        for observed_at in sorted(grouped):
+            if observed_at <= 0:
+                continue
+            point: dict[str, Any] = {
+                "observed_at": observed_at,
+                "updated_at": _iso(observed_at),
+                "sources": [],
+            }
+            for row in grouped[observed_at]:
+                source = str(row.get("source") or "")
+                if source and source not in point["sources"]:
+                    point["sources"].append(source)
+                for key in (*SNAPSHOT_COLUMNS, "price_change_pct", "oi_change_pct"):
+                    if row.get(key) is not None:
+                        point[key] = row.get(key)
+            points.append(point)
+        return points[-safe_limit:]
+
+    @staticmethod
+    def _merge_latest(history: list[dict[str, Any]], *, now_ts: int, max_age_sec: int) -> dict[str, Any]:
+        if not history:
+            return {}
+        newest = dict(history[-1])
+        observed: dict[str, int] = {}
+        coverage: dict[str, bool] = {}
+        for row in reversed(history):
+            row_ts = int(row.get("observed_at") or 0)
+            if now_ts - row_ts > max_age_sec:
+                break
+            coverage.update(_coverage(row.get("coverage")))
+            for key in (*SNAPSHOT_COLUMNS, "price_change_pct", "oi_change_pct"):
+                if newest.get(key) is None and row.get(key) is not None:
+                    newest[key] = row.get(key)
+                if key not in observed and row.get(key) is not None:
+                    observed[key] = row_ts
+        newest["coverage"] = coverage
+        newest["metric_observed_at"] = observed
+        return newest
+
+    def prune(self, *, before_ts: int) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM market_snapshots WHERE observed_at < ?", (int(before_ts),))
+            return int(cursor.rowcount or 0)
+
+
+def collect_binance_market_rows(
+    settings: Settings,
+    *,
+    source: BinanceDataSource | None = None,
+    now_ts: int | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    loaded = source or BinanceDataSource(settings)
+    observed_at = int(now_ts or time.time())
+    valid_symbols = {
+        str(item.get("symbol") or "")
+        for item in loaded.usdt_perp_symbols()
+        if isinstance(item, dict)
+    }
+    premium_map = {
+        str(item.get("symbol") or ""): (_number(item.get("lastFundingRate")) or 0.0) * 100
+        for item in loaded.premium_index()
+        if isinstance(item, dict)
+    }
+    market_cap_map: dict[str, float] = {}
+    if hasattr(loaded, "market_caps"):
+        try:
+            raw_caps = loaded.market_caps()
+            market_cap_map = {
+                str(key).upper(): float(value)
+                for key, value in raw_caps.items()
+                if _positive(value) is not None
+            } if isinstance(raw_caps, dict) else {}
+        except Exception:
+            market_cap_map = {}
+    excluded = set(settings.excluded_base_assets)
+    rows: list[dict[str, Any]] = []
+    for item in loaded.ticker_24h():
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").upper()
+        if not symbol.endswith("USDT") or (valid_symbols and symbol not in valid_symbols):
+            continue
+        coin = symbol[:-4]
+        if coin in excluded:
+            continue
+        quote_volume = _positive(item.get("quoteVolume"))
+        price = _positive(item.get("lastPrice"))
+        if quote_volume is None or price is None or quote_volume < settings.radar_min_quote_volume:
+            continue
+        rows.append({
+            "symbol": symbol,
+            "observed_at": observed_at,
+            "source": "binance_futures_batch",
+            "window_sec": 0,
+            "price": price,
+            "price_change_pct": _number(item.get("priceChangePercent")),
+            "change_window_sec": 86400,
+            "quote_volume": quote_volume,
+            "market_cap": market_cap_map.get(coin),
+            "funding_pct": premium_map.get(symbol),
+            "coverage": {
+                "price": True,
+                "volume": True,
+                "market_cap": coin in market_cap_map,
+                "funding": symbol in premium_map,
+            },
+            "data_status": "fresh",
+        })
+    rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
+    safe_limit = max(20, min(500, int(limit or getattr(settings, "market_snapshot_limit", 160))))
+    return rows[:safe_limit]
+
+
+def persist_market_batch(
+    settings: Settings,
+    *,
+    source: BinanceDataSource | None = None,
+    store: MarketSnapshotStore | None = None,
+    now_ts: int | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    now = int(now_ts or time.time())
+    target = store or MarketSnapshotStore(settings.market_snapshots_db_path)
+    interval = max(60, int(settings.market_snapshot_interval_sec))
+    previous = target.latest_timestamp("binance_futures_batch")
+    if not force and previous and now - previous < interval:
+        return {"status": "skipped", "count": 0, "observed_at": previous}
+    rows = collect_binance_market_rows(settings, source=source, now_ts=now)
+    count = target.append_many(rows)
+    retention = max(1, int(settings.market_snapshot_retention_days)) * 86400
+    pruned = target.prune(before_ts=now - retention)
+    return {"status": "saved" if count else "empty", "count": count, "pruned": pruned, "observed_at": now}
+
+
+def persist_flow_market_rows(
+    settings: Settings,
+    flow: dict[str, Any],
+    *,
+    store: MarketSnapshotStore | None = None,
+) -> int:
+    observed_at = int(_number(flow.get("observed_at")) or time.time())
+    window_sec = max(60, int(_number(flow.get("window_sec")) or settings.flow_interval_sec))
+    raw_rows = flow.get("snapshots") if isinstance(flow.get("snapshots"), list) else []
+    rows: list[dict[str, Any]] = []
+    for item in raw_rows:
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "symbol": item.get("symbol"),
+            "observed_at": observed_at,
+            "source": "flow_radar",
+            "window_sec": window_sec,
+            "price": item.get("price"),
+            "quote_volume": item.get("quote_volume"),
+            "market_cap": item.get("market_cap"),
+            "oi_usd": item.get("oi_usd"),
+            "oi_change_pct": item.get("oi_change_pct", item.get("oi_24h")),
+            "spot_inflow_usd": item.get("spot_inflow_usd") if item.get("spot_cvd_ready") else None,
+            "spot_outflow_usd": item.get("spot_outflow_usd") if item.get("spot_cvd_ready") else None,
+            "spot_flow_usd": item.get("spot_cvd_delta") if item.get("spot_cvd_ready") else None,
+            "futures_inflow_usd": item.get("futures_inflow_usd") if item.get("futures_cvd_ready") else None,
+            "futures_outflow_usd": item.get("futures_outflow_usd") if item.get("futures_cvd_ready") else None,
+            "futures_flow_usd": item.get("futures_cvd_delta") if item.get("futures_cvd_ready") else None,
+            "funding_pct": item.get("funding_pct"),
+            "coverage": {
+                "price": bool(item.get("price_ready")),
+                "volume": bool(_positive(item.get("quote_volume"))),
+                "market_cap": bool(_positive(item.get("market_cap"))),
+                "oi": bool(item.get("oi_ready")),
+                "spot_flow": bool(item.get("spot_cvd_ready")),
+                "futures_flow": bool(item.get("futures_cvd_ready")),
+                "funding": item.get("funding_pct") is not None,
+            },
+            "data_status": "fresh" if item.get("price_ready") and item.get("oi_ready") else "degraded",
+        })
+    target = store or MarketSnapshotStore(settings.market_snapshots_db_path)
+    return target.append_many(rows)
+
+
+def _rank_percentiles(items: list[dict[str, Any]], key: str) -> None:
+    available = sorted(
+        (abs(float(item[key])), index)
+        for index, item in enumerate(items)
+        if _number(item.get(key)) is not None
+    )
+    total = len(available)
+    if not total:
+        return
+    for position, (_value, index) in enumerate(available, start=1):
+        items[index].setdefault("strength", {})[key] = round(position / total * 100, 1)
+
+
+def _board_item(item: dict[str, Any], key: str, *, unit: str) -> dict[str, Any]:
+    value = _number(item.get(key))
+    return {
+        "symbol": item.get("symbol"),
+        "coin": item.get("coin"),
+        "price": item.get("price"),
+        "value": value,
+        "unit": unit,
+        "magnitude_usd": abs(value) if value is not None and unit == "usd" else item.get("quote_volume"),
+        "strength_percentile": (item.get("strength") or {}).get(key),
+        "updated_at": item.get("updated_at"),
+        "status": item.get("status"),
+        "quality": (item.get("quality") or {}).get(key, "direct"),
+    }
+
+
+def _two_sided_board(
+    assets: list[dict[str, Any]],
+    *,
+    key: str,
+    board_key: str,
+    title: str,
+    positive_title: str,
+    negative_title: str,
+    unit: str,
+    limit: int,
+) -> dict[str, Any]:
+    available = [item for item in assets if _number(item.get(key)) is not None]
+    positive = sorted((item for item in available if float(item[key]) > 0), key=lambda row: float(row[key]), reverse=True)
+    negative = sorted((item for item in available if float(item[key]) < 0), key=lambda row: float(row[key]))
+    return {
+        "key": board_key,
+        "title": title,
+        "metric": key,
+        "unit": unit,
+        "available": bool(available),
+        "coverage": len(available),
+        "positive": {"title": positive_title, "items": [_board_item(item, key, unit=unit) for item in positive[:limit]]},
+        "negative": {"title": negative_title, "items": [_board_item(item, key, unit=unit) for item in negative[:limit]]},
+        "reason": "" if available else "当前窗口尚未积累可验证数据",
+    }
+
+
+def build_market_cockpit(
+    latest_rows: list[dict[str, Any]],
+    baselines: dict[str, dict[str, Any]] | None = None,
+    *,
+    now_ts: int | None = None,
+    window_sec: int = 3600,
+    board_limit: int = 8,
+) -> dict[str, Any]:
+    now = int(now_ts or time.time())
+    safe_window = normalize_window(window_sec)
+    safe_limit = max(3, min(20, int(board_limit or 8)))
+    baseline_map = baselines or {}
+    assets: list[dict[str, Any]] = []
+    for row in latest_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        price = _positive(row.get("price"))
+        if not symbol.endswith("USDT") or price is None:
+            continue
+        baseline = baseline_map.get(symbol) if isinstance(baseline_map.get(symbol), dict) else {}
+        price_change = _pct(price, baseline.get("price"))
+        price_quality = "derived_window"
+        price_window = safe_window
+        if price_change is None:
+            price_change = _number(row.get("price_change_pct"))
+            price_window = int(_number(row.get("change_window_sec")) or 0)
+            price_quality = "ticker_fallback" if price_change is not None else "missing"
+        oi_change = _pct(row.get("oi_usd"), baseline.get("oi_usd"))
+        oi_quality = "derived_window"
+        if oi_change is None:
+            oi_change = _number(row.get("oi_change_pct"))
+            oi_quality = "collector_window" if oi_change is not None else "missing"
+        observed_at = int(_number(row.get("observed_at")) or 0)
+        age_sec = max(0, now - observed_at) if observed_at else 10**9
+        status = str(row.get("data_status") or "fresh")
+        if age_sec > max(2 * safe_window, 900):
+            status = "stale"
+        assets.append({
+            "symbol": symbol,
+            "coin": symbol[:-4],
+            "price": price,
+            "price_change_pct": price_change,
+            "price_change_window_sec": price_window,
+            "quote_volume": _positive(row.get("quote_volume")),
+            "volume_change_pct": _pct(row.get("quote_volume"), baseline.get("quote_volume")),
+            "market_cap": _positive(row.get("market_cap")),
+            "oi_usd": _positive(row.get("oi_usd")),
+            "oi_change_pct": oi_change,
+            "spot_inflow_usd": _positive(row.get("spot_inflow_usd")),
+            "spot_outflow_usd": _positive(row.get("spot_outflow_usd")),
+            "spot_flow_usd": _number(row.get("spot_flow_usd")),
+            "futures_inflow_usd": _positive(row.get("futures_inflow_usd")),
+            "futures_outflow_usd": _positive(row.get("futures_outflow_usd")),
+            "futures_flow_usd": _number(row.get("futures_flow_usd")),
+            "funding_pct": _number(row.get("funding_pct")),
+            "coverage": _coverage(row.get("coverage")),
+            "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality},
+            "status": status,
+            "updated_at": _iso(observed_at),
+            "age_sec": age_sec,
+        })
+    for key in ("price_change_pct", "volume_change_pct", "oi_change_pct", "spot_flow_usd", "futures_flow_usd", "funding_pct"):
+        _rank_percentiles(assets, key)
+
+    boards = [
+        _two_sided_board(assets, key="price_change_pct", board_key="price", title="价格动量", positive_title="涨幅榜", negative_title="跌幅榜", unit="percent", limit=safe_limit),
+        _two_sided_board(assets, key="oi_change_pct", board_key="oi", title="持仓变化", positive_title="OI 增长", negative_title="OI 下降", unit="percent", limit=safe_limit),
+        _two_sided_board(assets, key="futures_flow_usd", board_key="futures_flow", title="合约主动资金", positive_title="合约流入", negative_title="合约流出", unit="usd", limit=safe_limit),
+        _two_sided_board(assets, key="spot_flow_usd", board_key="spot_flow", title="现货主动资金", positive_title="现货流入", negative_title="现货流出", unit="usd", limit=safe_limit),
+        _two_sided_board(assets, key="funding_pct", board_key="funding", title="资金费率", positive_title="正费率", negative_title="负费率", unit="percent_per_cycle", limit=safe_limit),
+    ]
+    price_assets = [item for item in assets if _number(item.get("price_change_pct")) is not None]
+    advancing = sum(1 for item in price_assets if float(item["price_change_pct"]) > 0)
+    declining = sum(1 for item in price_assets if float(item["price_change_pct"]) < 0)
+    spot_assets = [item for item in assets if _number(item.get("spot_flow_usd")) is not None]
+    futures_assets = [item for item in assets if _number(item.get("futures_flow_usd")) is not None]
+    oi_assets = [item for item in assets if _number(item.get("oi_change_pct")) is not None]
+    spot_net = sum(float(item["spot_flow_usd"]) for item in spot_assets)
+    futures_net = sum(float(item["futures_flow_usd"]) for item in futures_assets)
+    breadth = ((advancing - declining) / len(price_assets) * 100) if price_assets else 0.0
+    if spot_assets or futures_assets:
+        net_flow = spot_net + futures_net
+        bias = "inflow" if net_flow > 0 and breadth >= 0 else "outflow" if net_flow < 0 and breadth <= 0 else "mixed"
+    else:
+        bias = "broad_up" if breadth >= 20 else "broad_down" if breadth <= -20 else "mixed"
+    warnings: list[str] = []
+    if any(item.get("quality", {}).get("price_change_pct") == "ticker_fallback" for item in assets):
+        warnings.append("所选周期历史快照尚未完整时，价格榜使用 24h 行情回退并明确标记。")
+    if len(oi_assets) < max(1, len(assets) // 5):
+        warnings.append("OI 覆盖不足，OI 榜单可能为空或仅覆盖资金流扫描候选。")
+    if len(spot_assets) < max(1, len(assets) // 5) or len(futures_assets) < max(1, len(assets) // 5):
+        warnings.append("现货/合约主动资金来自 CVD 估算，仅覆盖完成资金流扫描的资产。")
+    ready_boards = sum(1 for board in boards[:4] if board["available"])
+    data_status = "ready" if assets and ready_boards == 4 else "degraded" if assets else "empty"
+    assets.sort(key=lambda item: float(item.get("quote_volume") or 0), reverse=True)
+    return {
+        "schema_version": MARKET_COCKPIT_SCHEMA_VERSION,
+        "generated_at": _iso(now),
+        "window_sec": safe_window,
+        "data_status": data_status,
+        "warnings": warnings,
+        "coverage": {
+            "assets": len(assets),
+            "price": len(price_assets),
+            "oi": len(oi_assets),
+            "spot_flow": len(spot_assets),
+            "futures_flow": len(futures_assets),
+            "funding": sum(1 for item in assets if _number(item.get("funding_pct")) is not None),
+        },
+        "overview": {
+            "bias": bias,
+            "advancing": advancing,
+            "declining": declining,
+            "flat": max(0, len(price_assets) - advancing - declining),
+            "breadth_pct": round(breadth, 2),
+            "total_quote_volume": round(sum(float(item.get("quote_volume") or 0) for item in assets), 2),
+            "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
+            "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
+        },
+        "boards": boards,
+        "assets": assets,
+        "methodology": {
+            "price": "优先使用同币窗口首尾快照计算；历史不足时回退交易所 24h 涨跌并标记质量。",
+            "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化。",
+            "flow": "现货与合约资金为 Binance K 线主动买卖成交差（CVD）估算，不代表交易所充提净流入。",
+            "strength": "同一指标当前横截面的绝对变化经验分位数。",
+        },
+    }
+
+
+def load_market_cockpit(
+    settings: Settings,
+    *,
+    window_sec: int = 3600,
+    board_limit: int = 8,
+    now_ts: int | None = None,
+    store: MarketSnapshotStore | None = None,
+    live_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    now = int(now_ts or time.time())
+    target = store or MarketSnapshotStore(settings.market_snapshots_db_path)
+    latest, baselines = target.comparison(
+        now_ts=now,
+        window_sec=window_sec,
+        max_symbols=max(20, int(settings.market_snapshot_limit)),
+    )
+    if not latest:
+        latest = live_rows if live_rows is not None else collect_binance_market_rows(settings, now_ts=now)
+    return build_market_cockpit(
+        latest,
+        baselines,
+        now_ts=now,
+        window_sec=window_sec,
+        board_limit=board_limit,
+    )
+
+
+__all__ = [
+    "MARKET_COCKPIT_SCHEMA_VERSION",
+    "SUPPORTED_WINDOWS",
+    "MarketSnapshotStore",
+    "build_market_cockpit",
+    "collect_binance_market_rows",
+    "load_market_cockpit",
+    "normalize_window",
+    "persist_flow_market_rows",
+    "persist_market_batch",
+]

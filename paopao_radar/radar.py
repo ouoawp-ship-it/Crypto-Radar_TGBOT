@@ -548,6 +548,19 @@ class RadarEngine:
 
     def build_announcement_alerts(self, source: BinanceDataSource, include_seen: bool = False) -> dict[str, Any]:
         articles = source.announcements(page_size=self.settings.announcement_page_size)
+        news_ingestion: dict[str, Any]
+        try:
+            from .news_intelligence import ingest_binance_announcements
+
+            news_ingestion = ingest_binance_announcements(
+                self.settings,
+                articles=articles,
+                source=source,
+            )
+        except Exception as exc:
+            # Announcement pushes must remain available when the independent
+            # information index is temporarily unwritable.
+            news_ingestion = {"status": "degraded", "error": type(exc).__name__}
         state = self.store.load(self.settings.announcement_state_path, {})
         if not isinstance(state, dict):
             state = {}
@@ -575,6 +588,7 @@ class RadarEngine:
             "alerts": alerts[:8],
             "articles_scanned": len(articles),
             "alerts_classified": len(alerts),
+            "news_ingestion": news_ingestion,
         }
 
     def cleanup_expired_announcements(

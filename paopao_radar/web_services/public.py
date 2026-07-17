@@ -7,13 +7,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
+from ..coin_evidence import (
+    build_kline_chart,
+    build_snapshot_series,
+    normalize_chart_interval,
+    normalize_chart_market,
+)
+from ..agent_intelligence import build_agent_overview
 from ..config import Settings
+from ..data_sources import BinanceDataSource
+from ..market_cockpit import MarketSnapshotStore, load_market_cockpit, normalize_window
+from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
+from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
 from ..runtime_cache import get_or_set as runtime_cache_get_or_set
 from ..runtime_cache import stats as runtime_cache_stats
 from ..signal_intelligence import build_radar_intelligence
 from ..signal_store import SignalEventStore
 from ..symbol_dossier import current_market_snapshot
-from ..web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_TELEMETRY
+from ..web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_STREAM_METRICS, PUBLIC_TELEMETRY
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
 
@@ -44,14 +55,27 @@ FORBIDDEN_PUBLIC_KEYS = {
     "bot_token",
 }
 
-PUBLIC_CONTEXT_SCHEMA_VERSION = "2026-07-16"
+PUBLIC_CONTEXT_SCHEMA_VERSION = "2026-07-17"
 PUBLIC_SNAPSHOT_TTL_SEC = 30
 PUBLIC_SNAPSHOT_MAX_STALE_SEC = 300
 PUBLIC_INTELLIGENCE_TTL_SEC = 15
+PUBLIC_MARKET_COCKPIT_TTL_SEC = 15
+PUBLIC_FUNDS_TTL_SEC = 30
+PUBLIC_INFO_TTL_SEC = 60
+PUBLIC_AGENTS_TTL_SEC = 120
 PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 40
 PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 PUBLIC_SIGNAL_REF_RE = re.compile(r"^(?:[0-9]{1,12}|sig_[a-f0-9]{20})$")
 SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
+ChartLoader = Callable[[Settings, str, str, str, int], list[list[Any]]]
+
+
+def _v2_disabled(settings: Settings) -> bool:
+    return str(settings.cockpit_v2_mode or "enabled").strip().lower() == "disabled"
+
+
+def _v2_disabled_payload() -> dict[str, Any]:
+    return api_error("V2 驾驶舱当前已通过回滚开关停用", code="feature_disabled")
 
 
 def _store(settings: Settings | None = None) -> SignalEventStore:
@@ -118,6 +142,25 @@ def public_signal_item(item: dict[str, Any]) -> dict[str, Any]:
         "display": display,
     }
     return _strip_forbidden(public)
+
+
+def public_stream_batch(
+    last_signal_id: int = 0,
+    *,
+    limit: int = 50,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    rows = _store(loaded).events_after_id(last_signal_id, limit=limit)
+    items = [public_signal_item(row) for row in rows]
+    cursor = max([max(0, int(last_signal_id or 0)), *[int(item.get("id") or 0) for item in items]])
+    return {
+        "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
+        "generated_at": _utc_time_text(int(time.time())),
+        "cursor": cursor,
+        "items": items,
+        "count": len(items),
+    }
 
 
 def _public_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -293,6 +336,325 @@ def public_market_snapshot_payload(
     except Exception:
         return api_error("市场快照暂时不可用", code="upstream_unavailable")
     return api_ok(snapshot, message="已读取市场快照")
+
+
+def _market_cockpit_raw(
+    settings: Settings,
+    *,
+    window_sec: int,
+    board_limit: int,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_window = normalize_window(window_sec)
+    safe_limit = max(3, min(20, int(board_limit or 8)))
+
+    def load() -> dict[str, Any]:
+        return load_market_cockpit(
+            settings,
+            window_sec=safe_window,
+            board_limit=safe_limit,
+            now_ts=now_ts,
+        )
+
+    if now_ts is not None:
+        return load()
+    cache_key = f"public:market-cockpit:{settings.market_snapshots_db_path}:{safe_window}:{safe_limit}"
+    return runtime_cache_get_or_set(cache_key, PUBLIC_MARKET_COCKPIT_TTL_SEC, load)
+
+
+def public_market_overview_payload(
+    *,
+    window_sec: int = 3600,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    try:
+        cockpit = _market_cockpit_raw(
+            loaded,
+            window_sec=window_sec,
+            board_limit=8,
+            now_ts=now_ts,
+        )
+    except Exception:
+        return api_error("市场总览暂时不可用", code="upstream_unavailable")
+    payload = {
+        "schema_version": cockpit.get("schema_version"),
+        "generated_at": cockpit.get("generated_at"),
+        "window_sec": cockpit.get("window_sec"),
+        "data_status": cockpit.get("data_status"),
+        "warnings": cockpit.get("warnings") or [],
+        "coverage": cockpit.get("coverage") or {},
+        "overview": cockpit.get("overview") or {},
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取市场总览")
+
+
+def public_radar_boards_payload(
+    *,
+    window_sec: int = 3600,
+    board_limit: int = 8,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    try:
+        cockpit = _market_cockpit_raw(
+            loaded,
+            window_sec=window_sec,
+            board_limit=board_limit,
+            now_ts=now_ts,
+        )
+    except Exception:
+        return api_error("雷达榜单暂时不可用", code="upstream_unavailable")
+    payload = {
+        "schema_version": cockpit.get("schema_version"),
+        "generated_at": cockpit.get("generated_at"),
+        "window_sec": cockpit.get("window_sec"),
+        "data_status": cockpit.get("data_status"),
+        "warnings": cockpit.get("warnings") or [],
+        "coverage": cockpit.get("coverage") or {},
+        "boards": cockpit.get("boards") or [],
+        "methodology": cockpit.get("methodology") or {},
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取雷达榜单")
+
+
+def public_funds_sectors_payload(
+    *,
+    window_sec: int = 3600,
+    market_type: str = "spot",
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    safe_window = normalize_window(window_sec)
+    safe_market = normalize_market_type(market_type)
+
+    def build() -> dict[str, Any]:
+        cockpit = _market_cockpit_raw(
+            loaded,
+            window_sec=safe_window,
+            board_limit=8,
+            now_ts=now_ts,
+        )
+        return build_funds_sectors(cockpit, market_type=safe_market)
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = f"public:funds:sectors:{loaded.market_snapshots_db_path}:{safe_window}:{safe_market}"
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_FUNDS_TTL_SEC, build)
+    except Exception:
+        return api_error("板块资金暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取板块资金")
+
+
+def public_funds_assets_payload(
+    *,
+    window_sec: int = 3600,
+    market_type: str = "spot",
+    search: str = "",
+    sector: str = "",
+    data_status: str = "",
+    sort_key: str = "net_flow_usd",
+    direction: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    try:
+        cockpit = _market_cockpit_raw(
+            loaded,
+            window_sec=window_sec,
+            board_limit=8,
+            now_ts=now_ts,
+        )
+        payload = build_funds_assets(
+            cockpit,
+            market_type=market_type,
+            search=search,
+            sector=sector,
+            data_status=data_status,
+            sort_key=sort_key,
+            direction=direction,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception:
+        return api_error("资产资金表暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取资产资金表")
+
+
+def public_info_feed_payload(
+    *,
+    source_type: str = "",
+    language: str = "",
+    importance: str = "",
+    symbol: str = "",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 30,
+    window_sec: int = 7 * 86_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    now = int(now_ts or time.time())
+    safe_window = max(3600, min(30 * 86_400, int(window_sec or 7 * 86_400)))
+    safe_source_type = str(source_type or "").strip()[:60]
+    safe_language = str(language or "").strip().lower()
+    safe_importance = str(importance or "").strip().lower()
+    safe_symbol = _safe_symbol(symbol)["symbol"] if symbol else ""
+    warnings: list[str] = []
+
+    def build() -> dict[str, Any]:
+        store = NewsEventStore(loaded.news_events_db_path)
+        ingestion: dict[str, Any] = {"status": "cached"}
+        latest = store.latest_collected_at()
+        should_refresh = refresh and now_ts is None and (latest <= 0 or now - latest >= PUBLIC_INFO_TTL_SEC)
+        if should_refresh:
+            try:
+                ingestion = ingest_binance_announcements(loaded, max_pages=1, now_ts=now)
+                ingestion["status"] = "ready"
+            except Exception as exc:
+                ingestion = {"status": "degraded", "error": type(exc).__name__}
+                warnings.append("Binance 官方公告刷新失败，当前展示本地最近一次成功索引。")
+        feed = store.list_feed(
+            start_ts=now - safe_window,
+            end_ts=now,
+            source_type=safe_source_type,
+            language=safe_language,
+            importance=safe_importance,
+            symbol=safe_symbol,
+            query=search,
+            page=page,
+            page_size=page_size,
+        )
+        items = feed["items"]
+        high = sum(1 for item in items if item.get("importance") == "high")
+        rights_ok = sum(1 for item in items if item.get("rights_status") == "official_link_only")
+        data_status = "ready" if items and ingestion.get("status") != "degraded" else "degraded" if items else "unavailable" if ingestion.get("status") == "degraded" else "empty"
+        return {
+            "schema_version": NEWS_SCHEMA_VERSION,
+            "generated_at": _utc_time_text(now),
+            "data_status": data_status,
+            "coverage": {
+                "events": len(items),
+                "clusters": len(items),
+                "high_importance": high,
+                "linked_symbols": len({symbol for item in items for symbol in item.get("symbols") or []}),
+                "rights_verified": rights_ok,
+                "sources": 1 if items else 0,
+            },
+            "warnings": list(dict.fromkeys(warnings)),
+            "filters": {
+                "source_type": safe_source_type,
+                "language": safe_language,
+                "importance": safe_importance,
+                "symbol": safe_symbol,
+                "q": _short(search, 80),
+                "window_sec": safe_window,
+            },
+            "pagination": feed["pagination"],
+            "summary": {
+                "high_importance": high,
+                "risk": sum(1 for item in items if item.get("event_kind") == "risk"),
+                "opportunity": sum(1 for item in items if item.get("event_kind") == "opportunity"),
+                "official": sum(1 for item in items if item.get("source_type") == "official_announcement"),
+            },
+            "channels": [
+                {"key": "official", "label": "官方公告", "status": "ready" if items else "empty", "count": len(items), "rights_status": "official_link_only"},
+                {"key": "authorized_zh", "label": "授权中文资讯", "status": "unavailable", "count": 0, "reason": "尚未配置可验证授权源"},
+                {"key": "authorized_en", "label": "授权英文资讯", "status": "unavailable", "count": 0, "reason": "尚未配置可验证授权源"},
+                {"key": "sentiment", "label": "市场情绪", "status": "unavailable", "count": 0, "reason": "未使用未授权社交数据"},
+            ],
+            "items": items,
+            "ingestion": ingestion,
+            "methodology": {
+                "source_policy": "当前仅索引 Binance 官方公开公告标题、时间和原文链接，不复制受限正文。",
+                "dedup": "按规范化标题聚类；同簇保留全部合法来源链接。",
+                "ai_boundary": "仅高重要度事件生成规则化解读，并明确区分官方标题事实与可能影响推断。",
+                "rights": "official_link_only 表示只展示必要元数据并回链官方原文。",
+            },
+        }
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = ":".join((
+                "public:info", str(loaded.news_events_db_path), safe_source_type, safe_language,
+                safe_importance, safe_symbol, _short(search, 80), str(page), str(page_size), str(safe_window),
+            ))
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_INFO_TTL_SEC, build)
+    except Exception:
+        return api_error("信息中心暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取授权信息事件")
+
+
+def public_agents_overview_payload(
+    *,
+    window_sec: int = 14_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    now = int(now_ts or time.time())
+    safe_window = normalize_window(window_sec)
+
+    def build() -> dict[str, Any]:
+        cockpit = _market_cockpit_raw(
+            loaded,
+            window_sec=safe_window,
+            board_limit=8,
+            now_ts=now_ts,
+        )
+        signals = _store(loaded).intelligence_events(
+            start_ts=now - safe_window,
+            end_ts=now,
+            limit=500,
+        )
+        news_items = NewsEventStore(loaded.news_events_db_path).list_feed(
+            start_ts=now - 86_400,
+            end_ts=now,
+            page=1,
+            page_size=100,
+        )["items"]
+        return build_agent_overview(
+            loaded,
+            now_ts=now,
+            window_sec=safe_window,
+            cockpit=cockpit,
+            signals=signals,
+            news_items=news_items,
+        )
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = f"public:agents:{loaded.market_snapshots_db_path}:{loaded.signal_events_db_path}:{loaded.news_events_db_path}:{safe_window}"
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_AGENTS_TTL_SEC, build)
+    except Exception:
+        return api_error("Agent 决策暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取证据化 Agent 结论")
 
 
 def _radar_intelligence_raw(
@@ -484,14 +846,17 @@ def public_radar_intelligence_payload(
     return api_ok(_strip_forbidden(payload), message="已读取信号情报排名")
 
 
-def _public_bot_actions(settings: Settings, symbol: str) -> dict[str, str]:
+def _public_bot_actions(settings: Settings, symbol: str, signal_ref: str = "") -> dict[str, str]:
     bot_username = str(settings.ai_bot_username or "").strip().lstrip("@")
     bot_username = bot_username if re.fullmatch(r"[A-Za-z0-9_]{5,32}", bot_username) else ""
     coin = symbol[:-4] if symbol.endswith("USDT") else symbol
+    safe_ref = str(signal_ref or "").lower() if PUBLIC_SIGNAL_REF_RE.fullmatch(str(signal_ref or "").lower()) else ""
+    start_context = f"_{safe_ref}" if safe_ref else ""
     return {
-        "radar_url": f"/radar?symbol={symbol}",
-        "ai_url": f"https://t.me/{bot_username}?start=analyze_{coin}" if bot_username and coin else "",
-        "alert_url": f"https://t.me/{bot_username}?start=alert_{coin}" if bot_username and coin else "",
+        "radar_url": f"/radar?symbol={symbol}{'&signal=' + safe_ref if safe_ref else ''}",
+        "share_url": f"/coin/{symbol}{'?signal=' + safe_ref if safe_ref else ''}",
+        "ai_url": f"https://t.me/{bot_username}?start=analyze_{coin}{start_context}" if bot_username and coin else "",
+        "alert_url": f"https://t.me/{bot_username}?start=alert_{coin}{start_context}" if bot_username and coin else "",
     }
 
 
@@ -500,6 +865,10 @@ def public_coin_context_payload(
     *,
     settings: Settings | None = None,
     snapshot_loader: SnapshotLoader | None = None,
+    chart_loader: ChartLoader | None = None,
+    market_type: str = "futures",
+    interval: str = "15m",
+    bars: int = 96,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
@@ -508,6 +877,9 @@ def public_coin_context_payload(
         return api_error(normalized["error"], code="invalid_symbol")
     target = normalized["symbol"]
     now = int(now_ts or time.time())
+    safe_market = normalize_chart_market(market_type)
+    safe_interval = normalize_chart_interval(interval)
+    safe_bars = max(24, min(240, int(bars or 96)))
     timeline = _store(loaded).symbol_timeline(target, limit=30, compact=False)
     timeline_refs = {
         str(item.get("public_ref") or item.get("id") or "")
@@ -537,10 +909,64 @@ def public_coin_context_payload(
         snapshot_loader=snapshot_loader,
         now_ts=now,
     )
+    raw_klines: list[list[Any]] = []
+
+    def load_chart() -> list[list[Any]]:
+        if chart_loader is not None:
+            return chart_loader(loaded, target, safe_market, safe_interval, safe_bars)
+        if snapshot_loader is not None:
+            return []
+        source = BinanceDataSource(loaded)
+        try:
+            method = source.spot_klines if safe_market == "spot" else source.klines
+            return method(target, interval=safe_interval, limit=safe_bars)
+        finally:
+            http = getattr(source, "http", None)
+            if http is not None and hasattr(http, "close"):
+                http.close()
+
+    try:
+        if chart_loader is not None or now_ts is not None:
+            raw_klines = load_chart()
+        else:
+            chart_key = f"public:coin-chart:{target}:{safe_market}:{safe_interval}:{safe_bars}"
+            raw_klines = runtime_cache_get_or_set(chart_key, PUBLIC_SNAPSHOT_TTL_SEC, load_chart)
+    except Exception:
+        raw_klines = []
+    chart = build_kline_chart(
+        raw_klines if isinstance(raw_klines, list) else [],
+        market_type=safe_market,
+        interval=safe_interval,
+        requested=safe_bars,
+    )
+    history_points: list[dict[str, Any]] = []
+    try:
+        if loaded.market_snapshots_db_path.exists():
+            history_points = MarketSnapshotStore(loaded.market_snapshots_db_path).symbol_series(
+                target,
+                start_ts=now - max(86400, int(loaded.market_snapshot_retention_days) * 86400),
+                end_ts=now,
+                limit=240,
+            )
+    except Exception:
+        history_points = []
+    series = build_snapshot_series(history_points)
     module_counts: dict[str, int] = {}
     for item in timeline:
         module = str(item.get("module") or "other")
         module_counts[module] = module_counts.get(module, 0) + 1
+    latest_signal_ref = str(timeline[0].get("public_ref") or "") if timeline else ""
+    related_info = [
+        public_signal_item(item)
+        for item in timeline
+        if str(item.get("module") or "") == "announcement"
+    ][:12]
+    warnings = [
+        *[str(item) for item in chart.get("warnings", []) if str(item)],
+        *[str(item) for item in series.get("warnings", []) if str(item)],
+    ]
+    market_ready = bool(snapshot_payload.get("ok"))
+    data_status = "ready" if market_ready and chart.get("data_status") == "ready" else "degraded" if market_ready or raw_klines or history_points else "unavailable"
     payload = {
         "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
         "symbol": target,
@@ -553,8 +979,24 @@ def public_coin_context_payload(
             "module_counts": module_counts,
             "latest_at": str(timeline[0].get("time") or "") if timeline else "",
         },
+        "data_status": data_status,
+        "warnings": warnings,
+        "chart": chart,
+        "series": series,
+        "related_info": {
+            "data_status": "ready" if related_info else "empty",
+            "items": related_info,
+            "methodology": "仅展示已进入统一信号库的官方公告事件，不抓取受限全文。",
+        },
+        "evidence_coverage": {
+            "market": 1 if market_ready else 0,
+            "chart_points": int((chart.get("coverage") or {}).get("returned") or 0),
+            "snapshot_points": int((series.get("coverage") or {}).get("points") or 0),
+            "signals": len(public_timeline),
+            "announcements": len(related_info),
+        },
         "timeline": public_timeline,
-        "actions": _public_bot_actions(loaded, target),
+        "actions": _public_bot_actions(loaded, target, latest_signal_ref),
     }
     return api_ok(_strip_forbidden(payload), message="已读取单币上下文")
 
@@ -601,6 +1043,37 @@ def public_watchlist_market_payload(
             except Exception:
                 result = api_error("市场数据暂时不可用", code="upstream_unavailable")
             results[target] = result
+    cockpit_by_symbol: dict[str, dict[str, Any]] = {}
+    try:
+        if loaded.market_snapshots_db_path.exists():
+            cockpit = _market_cockpit_raw(
+                loaded,
+                window_sec=3600,
+                board_limit=8,
+                now_ts=now_ts,
+            )
+            cockpit_by_symbol = {
+                str(item.get("symbol") or ""): item
+                for item in cockpit.get("assets", [])
+                if isinstance(item, dict) and item.get("symbol")
+            }
+    except Exception:
+        cockpit_by_symbol = {}
+
+    def compact_flow(target: str) -> dict[str, Any] | None:
+        source = cockpit_by_symbol.get(target)
+        if not isinstance(source, dict):
+            return None
+        return {
+            "window_sec": 3600,
+            "spot_net_flow_usd": _number(source.get("spot_flow_usd")),
+            "futures_net_flow_usd": _number(source.get("futures_flow_usd")),
+            "oi_change_pct": _number(source.get("oi_change_pct")),
+            "funding_pct": _number(source.get("funding_pct")),
+            "updated_at": _short(source.get("updated_at") or "", 40),
+            "data_status": _short(source.get("status") or "degraded", 24),
+            "source": "market_snapshot_store",
+        }
     items = [
         {
             "symbol": target,
@@ -608,6 +1081,7 @@ def public_watchlist_market_payload(
             "market": results.get(target, {}).get("data"),
             "error": "" if results.get(target, {}).get("ok") else str(results.get(target, {}).get("message") or "暂时不可用"),
             "coin_url": f"/coin/{target}",
+            "flow": compact_flow(target),
         }
         for target in normalized_symbols
     ]
@@ -625,19 +1099,44 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
         }
     except Exception:
         database = {"status": "degraded", "signals": None, "latest_at": ""}
+    market_history: dict[str, Any] = {"status": "empty", "latest_at": "", "age_sec": None}
+    try:
+        if loaded.market_snapshots_db_path.exists():
+            latest_market_ts = MarketSnapshotStore(loaded.market_snapshots_db_path).latest_timestamp()
+            market_age = max(0, int(time.time()) - latest_market_ts) if latest_market_ts else None
+            market_history = {
+                "status": "ok" if market_age is not None and market_age <= max(900, loaded.market_snapshot_interval_sec * 3) else "stale",
+                "latest_at": _utc_time_text(latest_market_ts),
+                "age_sec": market_age,
+            }
+    except Exception:
+        market_history = {"status": "degraded", "latest_at": "", "age_sec": None}
     payload = {
         "status": "ok" if database["status"] == "ok" else "degraded",
         "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
         "database": database,
+        "market_history": market_history,
         "cache": runtime_cache_stats(),
         "rate_limit": PUBLIC_API_LIMITER.stats(),
         "requests": PUBLIC_API_METRICS.stats(),
         "frontend_telemetry": PUBLIC_TELEMETRY.stats(),
+        "stream": PUBLIC_STREAM_METRICS.stats(),
+        "cockpit_v2": {
+            "mode": str(loaded.cockpit_v2_mode or "enabled"),
+            "enabled": not _v2_disabled(loaded),
+        },
         "features": {
             "signal_context": True,
             "intelligence": True,
             "coin_context": True,
             "watchlist": True,
+            "market_overview": True,
+            "radar_boards": True,
+            "funds_sectors": True,
+            "funds_assets": True,
+            "info_feed": True,
+            "agents_overview": True,
+            "stream": True,
         },
     }
     return api_ok(_strip_forbidden(payload), message="公开接口健康状态")

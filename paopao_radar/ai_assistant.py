@@ -45,6 +45,7 @@ from .symbol_dossier import (
 from .data_sources import DataQuality, HttpClient
 from .funding_alert import classify_funding_alert, funding_row_text
 from .funding_sources import MultiExchangeFundingClient
+from .signal_store import SignalEventStore
 
 
 HOME_TEXT = """泡泡 AI 助手 Bot
@@ -538,6 +539,7 @@ class UserIntent:
     kind: str
     symbol: str = ""
     prompt: str = ""
+    signal_ref: str = ""
 
 
 class TelegramBotClient:
@@ -969,7 +971,7 @@ def classify_user_intent(text: str) -> UserIntent:
         return UserIntent("home")
     lowered = clean.lower()
     start_match = re.fullmatch(
-        r"/start(?:@[A-Za-z0-9_]+)?(?:\s+(?:(analyze|alert)_([A-Za-z0-9]{2,20})))?",
+        r"/start(?:@[A-Za-z0-9_]+)?(?:\s+(?:(analyze|alert)_([A-Za-z0-9]{2,20})(?:_(sig_[a-f0-9]{20}|[0-9]{1,12}))?))?",
         clean,
         flags=re.IGNORECASE,
     )
@@ -977,10 +979,12 @@ def classify_user_intent(text: str) -> UserIntent:
         action = str(start_match.group(1) or "").lower()
         raw_symbol = extract_symbol_text(start_match.group(2) or "")
         symbol = normalize_symbol(raw_symbol) if raw_symbol else ""
+        signal_ref = str(start_match.group(3) or "").lower()
         if action == "analyze" and symbol:
-            return UserIntent("dossier", symbol=symbol, prompt=f"{symbol} 怎么看")
+            prompt = f"{symbol} 怎么看{f' signal_ref={signal_ref}' if signal_ref else ''}"
+            return UserIntent("dossier", symbol=symbol, prompt=prompt, signal_ref=signal_ref)
         if action == "alert" and symbol:
-            return UserIntent("alert_deep", symbol=symbol)
+            return UserIntent("alert_deep", symbol=symbol, signal_ref=signal_ref)
         return UserIntent("home")
     if clean.startswith("/"):
         return UserIntent("command")
@@ -1696,6 +1700,19 @@ def call_ai_provider(
 
 def build_symbol_dossier_reply(settings: Settings, store: PriceAlertStore, user_id: str, user_text: str) -> str:
     dossier = build_symbol_dossier(settings, user_text)
+    signal_match = re.search(r"\bsignal_ref=(sig_[a-f0-9]{20}|[0-9]{1,12})\b", user_text, flags=re.IGNORECASE)
+    if signal_match:
+        reference = signal_match.group(1).lower()
+        try:
+            signal = SignalEventStore(settings.signal_events_db_path).signal_detail(reference)
+        except Exception:
+            signal = None
+        if isinstance(signal, dict) and str(signal.get("symbol") or "").upper() == str(dossier.get("symbol") or "").upper():
+            dossier["requested_signal"] = {
+                key: signal.get(key)
+                for key in ("id", "public_ref", "time", "module", "signal_type", "symbol", "stage", "severity", "score", "excerpt", "status")
+                if signal.get(key) not in (None, "")
+            }
     local_report = format_symbol_dossier_report(dossier)
     if not settings.ai_provider_enable or not settings.ai_api_key:
         return local_report
@@ -1862,6 +1879,7 @@ def handle_message_reply(
             "state": "alert_kind",
             "created_at": int(time.time()),
             "prefill_symbol": intent.symbol,
+            "source_signal_ref": intent.signal_ref,
         }
         return BotReply(
             f"已从信号详情带入币种：{intent.symbol}\n\n请选择要创建的提醒类型。确认前不会保存任何提醒。",
@@ -2170,8 +2188,8 @@ def handle_callback_query(
                 pair=str(pending.get("pair") or ""),
                 direction=str(pending.get("direction") or ""),
                 target_price=parse_price(pending.get("target_price") or "") if str(pending.get("alert_type") or "target_price") == "target_price" else 0,
-                source="telegram-button",
-                note="button-confirm",
+                source=(f"telegram-signal:{session.get('source_signal_ref')}" if isinstance(session, dict) and session.get("source_signal_ref") else "telegram-button"),
+                note=(f"signal_ref={session.get('source_signal_ref')}" if isinstance(session, dict) and session.get("source_signal_ref") else "button-confirm"),
                 alert_type=str(pending.get("alert_type") or "target_price"),
                 timeframe_sec=int(pending.get("timeframe_sec") or 0),
                 threshold_pct=float(pending.get("threshold_pct") or 0),

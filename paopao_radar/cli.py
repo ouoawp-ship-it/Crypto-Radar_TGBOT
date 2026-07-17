@@ -34,6 +34,7 @@ from .auth import append_auth_audit, generate_password_hash, generate_session_se
 from .config import ENV_FILE, Settings, load_env_file
 from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
+from .market_cockpit import persist_flow_market_rows, persist_market_batch
 from .funding_alert import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
@@ -579,6 +580,11 @@ def run_flow_radar(args: argparse.Namespace) -> int:
     flow = FlowRadarEngine(settings).build(
         BinanceDataSource(settings),
     )
+    try:
+        saved = persist_flow_market_rows(settings, flow)
+        flow["diagnostics"]["market_snapshot"] = {"status": "saved", "count": saved}
+    except Exception as exc:
+        flow["diagnostics"]["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
     push = gateway.send(
         flow["text"],
         flow["template_id"],
@@ -597,6 +603,11 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
     flow = FlowRadarEngine(settings).build(
         BinanceDataSource(settings),
     )
+    try:
+        saved = persist_flow_market_rows(settings, flow)
+        flow["diagnostics"]["market_snapshot"] = {"status": "saved", "count": saved}
+    except Exception as exc:
+        flow["diagnostics"]["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
     push = gateway.send(
         flow["text"],
         flow["template_id"],
@@ -1147,6 +1158,10 @@ def run_loop(args: argparse.Namespace) -> int:
                 settings, _store, engine, gateway = make_runtime_for_args(args)
                 source = BinanceDataSource(settings)
                 launch = engine.build_launch_alerts(source)
+                try:
+                    launch_diag["market_snapshot"] = persist_market_batch(settings, source=source)
+                except Exception as exc:
+                    launch_diag["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
                 sent_launch_alerts = []
                 for idx, message in enumerate(launch["messages"], start=1):
                     alert = launch["alerts"][idx - 1]
@@ -1172,7 +1187,7 @@ def run_loop(args: argparse.Namespace) -> int:
                         alert["message_ids"] = push.message_ids or []
                         sent_launch_alerts.append(alert)
                 engine.mark_launch_pushed(sent_launch_alerts)
-                launch_diag = source.diagnostics()
+                launch_diag["binance"] = source.diagnostics()
                 print(json.dumps({"launch": launch_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
                 launch_ok = False
@@ -1216,6 +1231,10 @@ def run_trial(args: argparse.Namespace) -> int:
         settings, store, engine, gateway = make_runtime_for_args(args)
         source = BinanceDataSource(settings)
         launch = engine.build_launch_alerts(source)
+        try:
+            market_snapshot = persist_market_batch(settings, source=source)
+        except Exception as exc:
+            market_snapshot = {"status": "failed", "error": type(exc).__name__}
         sent_launch_alerts = []
         launch_pushes: list[dict[str, str]] = []
         for idx, message in enumerate(launch["messages"], start=1):
@@ -1242,7 +1261,7 @@ def run_trial(args: argparse.Namespace) -> int:
                 alert["message_ids"] = push.message_ids or []
                 sent_launch_alerts.append(alert)
         engine.mark_launch_pushed(sent_launch_alerts)
-        diagnostics = source.diagnostics()
+        diagnostics = {"binance": source.diagnostics(), "market_snapshot": market_snapshot}
         print(json.dumps({
             "watchlist_count": launch.get("watchlist_count", 0),
             "diagnostics": diagnostics,

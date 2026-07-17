@@ -1,14 +1,29 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { EmptyState } from "@/components/EmptyState";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ErrorState } from "@/components/ErrorState";
-import { PageTitle } from "@/components/PageTitle";
-import { SignalCard } from "@/components/SignalCard";
+import { LegacySignalRadar } from "@/components/LegacySignalRadar";
 import { SignalDetailDrawer } from "@/components/SignalDetailDrawer";
-import { getRadarIntelligence, getSignals, getSignalStats, invalidatePublicApiCache } from "@/lib/api";
+import {
+  getMarketOverview,
+  getRadarBoards,
+  getRadarIntelligence,
+  getSignals,
+  getSignalStats,
+  invalidatePublicApiCache
+} from "@/lib/api";
 import { compact, formatDateTime, safeText } from "@/lib/format";
-import type { OpportunityBoard, RadarIntelligence, SignalItem } from "@/lib/types";
+import { cockpitV2Enabled } from "@/lib/features";
+import type {
+  CockpitBoard,
+  CockpitBoardItem,
+  MarketOverview,
+  OpportunityBoard,
+  RadarBoards,
+  RadarIntelligence,
+  SignalIntelligence,
+  SignalItem
+} from "@/lib/types";
 
 type RadarFilters = {
   symbol: string;
@@ -18,29 +33,41 @@ type RadarFilters = {
   window_sec: string;
 };
 
-const defaultFilters: RadarFilters = { symbol: "", module: "", status: "", q: "", window_sec: "604800" };
+type RadarSnapshot = {
+  signals: SignalItem[];
+  signalCount: number;
+  stats: Record<string, unknown>;
+  intelligence: RadarIntelligence;
+  overview: MarketOverview;
+  boards: RadarBoards;
+  loadedAt: Date;
+};
+
+const defaultFilters: RadarFilters = { symbol: "", module: "", status: "sent", q: "", window_sec: "3600" };
 
 const moduleOptions = [
-  { value: "", label: "全部模块" },
-  { value: "launch", label: "启动雷达" },
+  { value: "", label: "全部事件" },
+  { value: "launch", label: "启动" },
   { value: "funding", label: "资金费率" },
   { value: "flow", label: "资金流" },
   { value: "announcement", label: "公告" }
 ];
 
 const statusOptions = [
-  { value: "", label: "全部状态" },
   { value: "sent", label: "已发送" },
+  { value: "", label: "全部状态" },
   { value: "blocked", label: "已阻止" },
   { value: "failed", label: "失败" },
   { value: "skipped", label: "已跳过" },
   { value: "dry_run", label: "演练" }
 ];
 
-const windowOptions = [
-  { value: "86400", label: "24 小时" },
-  { value: "604800", label: "7 天" },
-  { value: "2592000", label: "30 天" }
+const marketWindows = [
+  { value: "900", label: "15m" },
+  { value: "1800", label: "30m" },
+  { value: "3600", label: "1h" },
+  { value: "14400", label: "4h" },
+  { value: "86400", label: "1d" }
 ];
 
 function optionLabel(options: Array<{ value: string; label: string }>, value: string) {
@@ -56,124 +83,339 @@ function countValue(record: Record<string, unknown>, ...keys: string[]) {
   return undefined;
 }
 
-function SummaryItem({ label, value, hint, tone = "neutral", loading = false }: {
-  label: string;
-  value: unknown;
-  hint: string;
-  tone?: "good" | "bad" | "info" | "neutral";
-  loading?: boolean;
+function signedPercent(value: unknown, digits = 2) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return `${number > 0 ? "+" : ""}${number.toFixed(digits)}%`;
+}
+
+function money(value: unknown, signed = true) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = signed ? (number > 0 ? "+" : number < 0 ? "−" : "") : "";
+  const absolute = Math.abs(number);
+  if (absolute >= 1_000_000_000) return `${sign}$${(absolute / 1_000_000_000).toFixed(2)}B`;
+  if (absolute >= 1_000_000) return `${sign}$${(absolute / 1_000_000).toFixed(1)}M`;
+  if (absolute >= 1_000) return `${sign}$${(absolute / 1_000).toFixed(1)}K`;
+  return `${sign}$${absolute.toFixed(0)}`;
+}
+
+function boardValue(item: CockpitBoardItem) {
+  if (item.unit === "usd") return money(item.value);
+  if (item.unit === "percent_per_cycle") return signedPercent(item.value, 3);
+  return signedPercent(item.value);
+}
+
+function valueTone(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return "text-text-primary";
+  return number > 0 ? "text-emerald-700" : "text-red-700";
+}
+
+function RankBadge({ rank, label }: { rank?: SignalIntelligence["self_rank"]; label: string }) {
+  if (!rank?.available) return <span className="rounded border border-border-subtle px-1.5 py-0.5 text-[10px] text-text-muted" title={rank?.reason}>{label} —</span>;
+  return (
+    <span className="rounded border border-border-subtle bg-surface-bright px-1.5 py-0.5 text-[10px] font-medium text-text-secondary" title={rank.method}>
+      {label} P{Math.round(Number(rank.percentile || 0))} · #{rank.rank}/{rank.sample_size}
+    </span>
+  );
+}
+
+function EventRow({ item, onOpen }: { item: SignalItem; onOpen: (reference: number | string) => void }) {
+  const reference = item.public_ref || item.id;
+  const intelligence = item.intelligence;
+  return (
+    <button
+      aria-label={`${safeText(item.symbol, "全局信号")} 查看证据与上下文`}
+      className="group w-full border-b border-border-subtle px-3 py-3 text-left transition last:border-b-0 hover:bg-surface-bright"
+      disabled={!reference}
+      onClick={() => reference && onOpen(reference)}
+      type="button"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="table-number text-sm font-semibold text-text-primary">{safeText(item.symbol, "GLOBAL")}</span>
+            <span className="truncate rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-semibold text-primary-700">{safeText(item.display?.module_label, item.module)}</span>
+          </div>
+          <div className="mt-1 truncate text-[11px] text-text-muted">{formatDateTime(item.time)} · {safeText(intelligence?.lifecycle?.label, item.display?.status_label)}</div>
+        </div>
+        <span className="table-number shrink-0 text-xs font-semibold text-text-secondary">{item.score !== null && item.score !== undefined ? `${item.score}分` : "—"}</span>
+      </div>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-text-secondary">{safeText(item.display?.summary || item.excerpt, "等待公开摘要")}</p>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <RankBadge label="自身" rank={intelligence?.self_rank} />
+        <RankBadge label="全场" rank={intelligence?.market_strength_rank} />
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted">
+        <span>{intelligence?.resonance?.active_count ? `${intelligence.resonance.active_count} 个周期共振` : "暂无跨周期共振"}</span>
+        <span className="font-semibold text-primary-700 opacity-0 transition group-hover:opacity-100">查看 →</span>
+      </div>
+    </button>
+  );
+}
+
+function BoardSide({ side, positive, onSymbol }: {
+  side?: CockpitBoard["positive"];
+  positive: boolean;
+  onSymbol: (symbol: string) => void;
 }) {
-  const toneClass = {
-    good: "text-emerald-700",
-    bad: "text-red-700",
-    info: "text-primary-700",
-    neutral: "text-text-primary"
-  }[tone];
-
+  const items = side?.items || [];
   return (
-    <div className="min-w-0 bg-white px-4 py-4 sm:px-5">
-      <div className="text-xs font-semibold tracking-wide text-text-muted">{label}</div>
-      {loading ? (
-        <div className="mt-2 h-7 w-16 animate-pulse rounded-md bg-surface-container" />
-      ) : (
-        <div className={`table-number mt-1.5 text-2xl font-semibold ${toneClass}`}>{compact(value)}</div>
-      )}
-      <div className="mt-1 text-xs text-text-muted">{hint}</div>
-    </div>
-  );
-}
-
-function SignalCardSkeleton() {
-  return (
-    <div className="panel animate-pulse overflow-hidden p-5" aria-hidden="true">
-      <div className="flex items-center justify-between gap-4">
-        <div className="h-6 w-20 rounded-full bg-surface-container" />
-        <div className="h-6 w-16 rounded-full bg-surface-container" />
-      </div>
-      <div className="mt-5 h-7 w-36 rounded-md bg-surface-container" />
-      <div className="mt-3 h-4 w-3/4 rounded bg-surface-container" />
-      <div className="mt-5 space-y-2">
-        <div className="h-4 w-full rounded bg-surface-container" />
-        <div className="h-4 w-5/6 rounded bg-surface-container" />
-      </div>
-      <div className="mt-6 h-10 w-full rounded-lg bg-surface-container" />
-    </div>
-  );
-}
-
-function OpportunityBoardCard({ board, onOpen }: { board: OpportunityBoard; onOpen: (reference: number | string) => void }) {
-  const tone = { launch: "bg-primary-50 text-primary-700", resonance: "bg-violet-50 text-violet-700", funding: "bg-amber-50 text-amber-700", risk: "bg-red-50 text-red-700" }[board.key || ""] || "bg-surface-container text-text-secondary";
-  return (
-    <article className="panel overflow-hidden">
-      <div className="border-b border-border-subtle px-4 py-4">
-        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold text-text-primary">{board.title}</h3><span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${tone}`}>{compact(board.count || 0)}</span></div>
-        <p className="mt-1.5 min-h-10 text-xs leading-5 text-text-muted">{board.description}</p>
-      </div>
+    <div className="min-w-0">
+      <div className={`border-b border-border-subtle px-2.5 py-2 text-[11px] font-semibold ${positive ? "text-emerald-700" : "text-red-700"}`}>{side?.title || (positive ? "正向" : "负向")}</div>
       <div className="divide-y divide-border-subtle">
-        {board.items?.length ? board.items.slice(0, 4).map((entry) => {
-          const signal = entry.signal || {};
-          const reference = signal.public_ref || signal.id;
-          return (
-            <button className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-surface-bright" disabled={!reference} key={String(reference || `${signal.symbol}-${signal.time}`)} onClick={() => reference && onOpen(reference)}>
-              <span className="min-w-0"><span className="table-number block truncate text-sm font-semibold text-text-primary">{safeText(signal.symbol, "全局")}</span><span className="mt-0.5 block truncate text-[11px] text-text-muted">{safeText(entry.intelligence?.lifecycle?.label, signal.display?.module_label)} · {formatDateTime(signal.time)}</span></span>
-              <span className="shrink-0 text-primary-700">→</span>
-            </button>
-          );
-        }) : <div className="px-4 py-6 text-center text-xs text-text-muted">当前窗口暂无候选</div>}
+        {items.length ? items.slice(0, 6).map((item, index) => (
+          <button
+            className="grid w-full grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-1.5 px-2.5 py-2 text-left transition hover:bg-surface-bright"
+            key={`${item.symbol}-${index}`}
+            onClick={() => item.symbol && onSymbol(item.symbol)}
+            type="button"
+          >
+            <span className="table-number text-[10px] text-text-muted">{index + 1}</span>
+            <span className="min-w-0">
+              <span className="table-number block truncate text-xs font-semibold text-text-primary">{safeText(item.coin || item.symbol)}</span>
+              <span className="table-number mt-0.5 block truncate text-[9px] text-text-muted">强度 P{Math.round(Number(item.strength_percentile || 0))}</span>
+            </span>
+            <span className={`table-number text-[11px] font-semibold ${valueTone(item.value)}`}>{boardValue(item)}</span>
+          </button>
+        )) : <div className="px-2 py-6 text-center text-[10px] leading-4 text-text-muted">等待有效样本</div>}
       </div>
+    </div>
+  );
+}
+
+function MarketBoardCard({ board, onSymbol }: { board: CockpitBoard; onSymbol: (symbol: string) => void }) {
+  return (
+    <article className="cockpit-panel min-w-0">
+      <div className="cockpit-panel-header">
+        <div>
+          <h3 className="text-xs font-semibold text-text-primary">{safeText(board.title, "市场榜单")}</h3>
+          <div className="mt-0.5 text-[10px] text-text-muted">覆盖 {compact(board.coverage || 0)} 个资产</div>
+        </div>
+        <span className={`h-1.5 w-1.5 rounded-full ${board.available ? "bg-good" : "bg-warn"}`} title={board.available ? "数据可用" : board.reason} />
+      </div>
+      <div className="grid grid-cols-2 divide-x divide-border-subtle">
+        <BoardSide onSymbol={onSymbol} positive side={board.positive} />
+        <BoardSide onSymbol={onSymbol} positive={false} side={board.negative} />
+      </div>
+      {!board.available && board.reason ? <div className="border-t border-border-subtle bg-amber-50/40 px-2.5 py-2 text-[10px] text-amber-700">{board.reason}</div> : null}
     </article>
   );
 }
 
-export default function RadarPage() {
+function LoadingBoard() {
+  return (
+    <div className="cockpit-panel animate-pulse p-3" aria-hidden="true">
+      <div className="h-4 w-28 rounded bg-surface-container" />
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="h-44 rounded bg-surface-container-low" />
+        <div className="h-44 rounded bg-surface-container-low" />
+      </div>
+    </div>
+  );
+}
+
+function MetricLine({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "good" | "bad" | "neutral" }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2.5 last:border-b-0">
+      <span className="text-[11px] text-text-muted">{label}</span>
+      <span className={`table-number text-xs font-semibold ${tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-text-primary"}`}>{value}</span>
+    </div>
+  );
+}
+
+function MarketStatePanel({ overview }: { overview: MarketOverview }) {
+  const state = overview.overview || {};
+  const bias = {
+    inflow: ["资金偏流入", "text-emerald-700", "bg-emerald-500"],
+    outflow: ["资金偏流出", "text-red-700", "bg-red-500"],
+    broad_up: ["市场广度偏强", "text-emerald-700", "bg-emerald-500"],
+    broad_down: ["市场广度偏弱", "text-red-700", "bg-red-500"],
+    mixed: ["市场方向分歧", "text-amber-700", "bg-amber-500"]
+  }[state.bias || "mixed"] || ["市场方向分歧", "text-amber-700", "bg-amber-500"];
+  return (
+    <section className="cockpit-panel">
+      <div className="cockpit-panel-header">
+        <div>
+          <h2 className="text-xs font-semibold text-text-primary">全场态势</h2>
+          <p className="mt-0.5 text-[10px] text-text-muted">结构化市场快照</p>
+        </div>
+        <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold ${bias[1]}`}><span className={`h-1.5 w-1.5 rounded-full ${bias[2]}`} />{bias[0]}</span>
+      </div>
+      <MetricLine label="上涨 / 下跌" value={`${compact(state.advancing || 0)} / ${compact(state.declining || 0)}`} />
+      <MetricLine label="市场广度" value={signedPercent(state.breadth_pct)} tone={Number(state.breadth_pct) > 0 ? "good" : Number(state.breadth_pct) < 0 ? "bad" : "neutral"} />
+      <MetricLine label="现货主动资金" value={money(state.spot_net_flow_usd)} tone={Number(state.spot_net_flow_usd) > 0 ? "good" : Number(state.spot_net_flow_usd) < 0 ? "bad" : "neutral"} />
+      <MetricLine label="合约主动资金" value={money(state.futures_net_flow_usd)} tone={Number(state.futures_net_flow_usd) > 0 ? "good" : Number(state.futures_net_flow_usd) < 0 ? "bad" : "neutral"} />
+      <MetricLine label="24h 成交额覆盖" value={money(state.total_quote_volume, false)} />
+    </section>
+  );
+}
+
+function buildTendencies(boards: CockpitBoard[]) {
+  const values = new Map<string, { symbol: string; hits: number; score: number }>();
+  for (const board of boards.filter((item) => ["price", "oi", "futures_flow", "spot_flow"].includes(item.key || ""))) {
+    for (const item of board.positive?.items || []) {
+      if (!item.symbol) continue;
+      const current = values.get(item.symbol) || { symbol: item.symbol, hits: 0, score: 0 };
+      current.hits += 1;
+      current.score += 1;
+      values.set(item.symbol, current);
+    }
+    for (const item of board.negative?.items || []) {
+      if (!item.symbol) continue;
+      const current = values.get(item.symbol) || { symbol: item.symbol, hits: 0, score: 0 };
+      current.hits += 1;
+      current.score -= 1;
+      values.set(item.symbol, current);
+    }
+  }
+  return [...values.values()].filter((item) => item.hits >= 2).sort((a, b) => b.hits - a.hits || Math.abs(b.score) - Math.abs(a.score)).slice(0, 8);
+}
+
+function TendencyPanel({ boards, onSymbol }: { boards: CockpitBoard[]; onSymbol: (symbol: string) => void }) {
+  const tendencies = useMemo(() => buildTendencies(boards), [boards]);
+  return (
+    <section className="cockpit-panel">
+      <div className="cockpit-panel-header">
+        <div><h2 className="text-xs font-semibold text-text-primary">资金倾向性</h2><p className="mt-0.5 text-[10px] text-text-muted">多榜合流，不等于交易方向</p></div>
+        <span className="text-[10px] text-text-muted">TOP {tendencies.length}</span>
+      </div>
+      <div className="divide-y divide-border-subtle">
+        {tendencies.length ? tendencies.map((item, index) => {
+          const label = item.score >= 2 ? "偏强合流" : item.score <= -2 ? "偏弱合流" : "方向分歧";
+          const tone = item.score >= 2 ? "text-emerald-700" : item.score <= -2 ? "text-red-700" : "text-amber-700";
+          return (
+            <button className="grid w-full grid-cols-[20px_1fr_auto] items-center gap-2 px-3 py-2.5 text-left transition hover:bg-surface-bright" key={item.symbol} onClick={() => onSymbol(item.symbol)} type="button">
+              <span className="table-number text-[10px] text-text-muted">{index + 1}</span>
+              <span className="table-number text-xs font-semibold text-text-primary">{item.symbol.replace("USDT", "")}</span>
+              <span className={`text-[10px] font-semibold ${tone}`}>{item.hits}榜 · {label}</span>
+            </button>
+          );
+        }) : <div className="px-3 py-8 text-center text-xs text-text-muted">等待至少两个榜单出现同币种</div>}
+      </div>
+    </section>
+  );
+}
+
+function OpportunityList({ boards, onOpen }: { boards: OpportunityBoard[]; onOpen: (reference: number | string) => void }) {
+  return (
+    <section className="cockpit-panel">
+      <div className="cockpit-panel-header"><div><h2 className="text-xs font-semibold text-text-primary">机会看板</h2><p className="mt-0.5 text-[10px] text-text-muted">规则事件的收敛入口</p></div></div>
+      <div className="grid divide-y divide-border-subtle md:grid-cols-2 md:divide-x md:divide-y-0 2xl:grid-cols-4">
+        {boards.map((board) => (
+          <div className="min-w-0 p-3" key={board.key}>
+            <div className="flex items-center justify-between gap-2"><h3 className="truncate text-xs font-semibold text-text-primary">{board.title}</h3><span className="table-number rounded bg-surface-container px-1.5 py-0.5 text-[10px] text-text-muted">{compact(board.count || 0)}</span></div>
+            <div className="mt-2 space-y-1">
+              {(board.items || []).slice(0, 3).map((entry) => {
+                const signal = entry.signal || {};
+                const reference = signal.public_ref || signal.id;
+                return (
+                  <button className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1.5 text-left hover:bg-surface-bright" disabled={!reference} key={String(reference || signal.symbol)} onClick={() => reference && onOpen(reference)} type="button">
+                    <span className="table-number truncate text-[11px] font-semibold text-text-secondary">{safeText(signal.symbol, "全局")}</span>
+                    <span className="truncate text-[9px] text-text-muted">{safeText(entry.intelligence?.lifecycle?.label)}</span>
+                  </button>
+                );
+              })}
+              {!board.items?.length ? <div className="py-3 text-center text-[10px] text-text-muted">暂无候选</div> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CockpitRadarPage() {
   const [draftFilters, setDraftFilters] = useState<RadarFilters>(defaultFilters);
   const [appliedFilters, setAppliedFilters] = useState<RadarFilters>(defaultFilters);
-  const [signals, setSignals] = useState<SignalItem[]>([]);
-  const [signalCount, setSignalCount] = useState(0);
-  const [stats, setStats] = useState<Record<string, unknown>>({});
-  const [intelligence, setIntelligence] = useState<RadarIntelligence>({});
+  const [snapshot, setSnapshot] = useState<RadarSnapshot>({ signals: [], signalCount: 0, stats: {}, intelligence: {}, overview: {}, boards: {}, loadedAt: new Date(0) });
+  const [pendingSnapshot, setPendingSnapshot] = useState<RadarSnapshot | null>(null);
+  const [incomingCount, setIncomingCount] = useState(0);
   const [error, setError] = useState("");
+  const [marketError, setMarketError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [streamState, setStreamState] = useState<"connecting" | "live" | "reconnecting" | "paused">("connecting");
   const [selectedSignalId, setSelectedSignalId] = useState<number | string>("");
+  const signalRefs = useRef<Set<string>>(new Set());
 
-  async function load(nextFilters: RadarFilters, refresh = false) {
-    if (refresh) invalidatePublicApiCache();
-    setLoading(true);
+  async function fetchSnapshot(nextFilters: RadarFilters): Promise<RadarSnapshot> {
+    const windowSec = Number(nextFilters.window_sec || 3600);
+    const list = await getSignals({ ...nextFilters, limit: 60 });
+    const items = list.items || [];
+    const refs = items.map((item) => item.public_ref || item.id || "").filter(Boolean);
+    const [statPayload, intelligencePayload, overviewPayload, boardPayload] = await Promise.all([
+      getSignalStats(Math.max(windowSec, 3600)).catch(() => ({})),
+      getRadarIntelligence(Math.max(windowSec, 3600), 5, refs).catch(() => ({ data_status: "degraded", items: [], boards: [] } as RadarIntelligence)),
+      getMarketOverview(windowSec).catch(() => ({ data_status: "empty", warnings: ["市场总览暂时不可用"] } as MarketOverview)),
+      getRadarBoards(windowSec, 8).catch(() => ({ data_status: "empty", warnings: ["雷达榜单暂时不可用"], boards: [] } as RadarBoards))
+    ]);
+    const intelligenceByReference = new Map<string, SignalIntelligence>();
+    for (const entry of intelligencePayload.items || []) {
+      const reference = entry.signal?.public_ref || entry.signal?.id;
+      if (reference && entry.intelligence) intelligenceByReference.set(String(reference), entry.intelligence);
+    }
+    return {
+      signals: items.map((item) => ({ ...item, intelligence: intelligenceByReference.get(String(item.public_ref || item.id || "")) })),
+      signalCount: list.count ?? items.length,
+      stats: statPayload,
+      intelligence: intelligencePayload,
+      overview: overviewPayload,
+      boards: boardPayload,
+      loadedAt: new Date()
+    };
+  }
+
+  function commit(next: RadarSnapshot) {
+    signalRefs.current = new Set(next.signals.map((item) => String(item.public_ref || item.id || "")).filter(Boolean));
+    setSnapshot(next);
+    setPendingSnapshot(null);
+    setIncomingCount(0);
+  }
+
+  async function load(nextFilters: RadarFilters, options: { refresh?: boolean; background?: boolean } = {}) {
+    if (options.refresh) invalidatePublicApiCache();
+    if (options.background) setRefreshing(true); else setLoading(true);
     setError("");
+    setMarketError("");
     setAppliedFilters(nextFilters);
     try {
-      const windowSec = Number(nextFilters.window_sec || 86400);
-      const list = await getSignals({ ...nextFilters, limit: 40 });
-      const items = list.items || [];
-      const signalRefs = items.map((item) => item.public_ref || item.id || "").filter(Boolean);
-      const [statPayload, intelligencePayload] = await Promise.all([
-        getSignalStats(windowSec).catch(() => ({})),
-        getRadarIntelligence(windowSec, 5, signalRefs).catch(() => ({ data_status: "degraded", items: [], boards: [] } as RadarIntelligence))
-      ]);
-      const intelligenceByReference = new Map<string, NonNullable<NonNullable<RadarIntelligence["items"]>[number]["intelligence"]>>();
-      for (const entry of intelligencePayload.items || []) {
-        const reference = entry.signal?.public_ref || entry.signal?.id;
-        if (reference && entry.intelligence) intelligenceByReference.set(String(reference), entry.intelligence);
+      const next = await fetchSnapshot(nextFilters);
+      if (options.background && signalRefs.current.size) {
+        const added = next.signals.filter((item) => !signalRefs.current.has(String(item.public_ref || item.id || ""))).length;
+        if (added > 0) {
+          setPendingSnapshot(next);
+          setIncomingCount(added);
+        } else {
+          commit(next);
+        }
+      } else {
+        commit(next);
       }
-      setSignals(items.map((item) => ({ ...item, intelligence: intelligenceByReference.get(String(item.public_ref || item.id || "")) })));
-      setSignalCount(list.count ?? items.length);
-      setStats(statPayload);
-      setIntelligence(intelligencePayload);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "信号雷达加载失败");
+      if (next.overview.data_status === "empty" || next.boards.data_status === "empty") setMarketError("市场聚合数据正在积累，信号事件仍可正常使用。");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "信号雷达加载失败");
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
   useEffect(() => {
     const syncFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
-      const symbol = (params.get("symbol") || "").toUpperCase();
-      const nextFilters = { ...defaultFilters, symbol };
-      const signalId = (params.get("signal") || "").trim();
+      const requestedWindow = params.get("window") || defaultFilters.window_sec;
+      const nextFilters: RadarFilters = {
+        symbol: (params.get("symbol") || "").toUpperCase(),
+        module: params.get("module") || "",
+        status: params.get("status") ?? defaultFilters.status,
+        q: params.get("q") || "",
+        window_sec: marketWindows.some((item) => item.value === requestedWindow) ? requestedWindow : defaultFilters.window_sec
+      };
       setDraftFilters(nextFilters);
-      setSelectedSignalId(signalId);
+      setSelectedSignalId((params.get("signal") || "").trim());
       void load(nextFilters);
     };
     syncFromUrl();
@@ -181,13 +423,71 @@ export default function RadarPage() {
     return () => window.removeEventListener("popstate", syncFromUrl);
   }, []);
 
-  function selectSignal(signalId: number | string) {
-    const reference = String(signalId || "").trim();
-    if (!reference) return;
+  useEffect(() => {
+    if (paused) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void load(appliedFilters, { background: true });
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [paused, appliedFilters]);
+
+  useEffect(() => {
+    if (paused) {
+      setStreamState("paused");
+      return;
+    }
+    if (typeof EventSource === "undefined") {
+      setStreamState("reconnecting");
+      return;
+    }
+    const source = new EventSource("/public-api/stream?stream_sec=55");
+    setStreamState("connecting");
+    source.onopen = () => setStreamState("live");
+    source.addEventListener("signal", () => {
+      setStreamState("live");
+      if (document.visibilityState === "visible") void load(appliedFilters, { refresh: true, background: true });
+    });
+    source.addEventListener("status", () => setStreamState("live"));
+    source.onerror = () => setStreamState("reconnecting");
+    return () => source.close();
+  }, [paused, appliedFilters]);
+
+  function syncFilterUrl(filters: RadarFilters) {
     const url = new URL(window.location.href);
-    url.searchParams.set("signal", reference);
+    for (const [key, value] of Object.entries(filters)) {
+      const queryKey = key === "window_sec" ? "window" : key;
+      if (value && !(key === "status" && value === defaultFilters.status)) url.searchParams.set(queryKey, value);
+      else url.searchParams.delete(queryKey);
+    }
+    window.history.replaceState({}, "", url);
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    syncFilterUrl(draftFilters);
+    void load(draftFilters, { refresh: true });
+  }
+
+  function reset() {
+    setDraftFilters(defaultFilters);
+    syncFilterUrl(defaultFilters);
+    void load(defaultFilters, { refresh: true });
+  }
+
+  function changeWindow(value: string) {
+    const next = { ...draftFilters, window_sec: value };
+    setDraftFilters(next);
+    syncFilterUrl(next);
+    void load(next, { refresh: true });
+  }
+
+  function selectSignal(reference: number | string) {
+    const value = String(reference || "").trim();
+    if (!value) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("signal", value);
     window.history.pushState({}, "", url);
-    setSelectedSignalId(reference);
+    setSelectedSignalId(value);
   }
 
   function closeSignal() {
@@ -197,197 +497,117 @@ export default function RadarPage() {
     setSelectedSignalId("");
   }
 
-  const activeFilters = useMemo(() => {
-    const items: Array<{ key: keyof RadarFilters; label: string }> = [];
-    if (appliedFilters.symbol) items.push({ key: "symbol", label: `币种：${appliedFilters.symbol}` });
-    if (appliedFilters.q) items.push({ key: "q", label: `关键词：${appliedFilters.q}` });
-    if (appliedFilters.module) items.push({ key: "module", label: optionLabel(moduleOptions, appliedFilters.module) });
-    if (appliedFilters.status) items.push({ key: "status", label: optionLabel(statusOptions, appliedFilters.status) });
-    return items;
-  }, [appliedFilters]);
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void load(draftFilters, true);
-  }
-
-  function reset() {
-    setDraftFilters(defaultFilters);
-    void load(defaultFilters, true);
-  }
-
-  function clearAppliedFilter(key: keyof RadarFilters) {
-    const next = { ...appliedFilters, [key]: "" };
+  function filterSymbol(symbol: string) {
+    const next = { ...draftFilters, symbol };
     setDraftFilters(next);
-    void load(next, true);
+    syncFilterUrl(next);
+    void load(next, { refresh: true });
   }
 
-  const total = intelligence.summary?.signals ?? countValue(stats, "total", "count", "signals_count");
-  const sent = countValue(stats, "sent", "sent_count");
-  const blocked = countValue(stats, "blocked", "blocked_count") || 0;
-  const failed = countValue(stats, "failed", "failed_count") || 0;
-  const skipped = countValue(stats, "skipped", "skipped_count") || 0;
-  const initialLoading = loading && !signals.length && !error;
+  const activeFilterCount = [appliedFilters.symbol, appliedFilters.module, appliedFilters.q, appliedFilters.status !== defaultFilters.status ? appliedFilters.status : ""].filter(Boolean).length;
+  const initialLoading = loading && !snapshot.signals.length;
+  const marketBoards = (snapshot.boards.boards || []).filter((board) => ["price", "oi", "futures_flow", "spot_flow"].includes(board.key || ""));
+  const total = snapshot.intelligence.summary?.signals ?? countValue(snapshot.stats, "total", "count", "signals_count");
 
   return (
-    <div className="space-y-5">
-      <PageTitle
-        title="信号雷达"
-        subtitle="从全局机会榜进入具体信号，用排名、共振、生命周期与市场证据判断优先级。"
-        tags={["机会优先", "可解释排名", "跨模块共振"]}
-      />
-
-      <form className="panel overflow-hidden" onSubmit={submit}>
-        <div className="flex flex-col gap-2 border-b border-border-subtle px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <div>
-            <h2 className="section-title">筛选条件</h2>
-            <p className="mt-1 text-sm text-text-muted">组合条件缩小信号范围，按回车即可应用筛选。</p>
+    <div className="space-y-3">
+      <header className="flex flex-col gap-3 px-0.5 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight text-text-primary">信号雷达</h1>
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${snapshot.boards.data_status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{snapshot.boards.data_status === "ready" ? "LIVE" : "DEGRADED"}</span>
           </div>
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <span className={`h-2 w-2 rounded-full ${loading ? "animate-pulse bg-warn" : "bg-good"}`} />
-            {loading ? "正在同步公开数据" : `数据已更新 · ${optionLabel(windowOptions, appliedFilters.window_sec)}`}
-          </div>
+          <p className="mt-1 text-xs text-text-muted">全市场异动、相对排名、资金合流与生命周期证据</p>
         </div>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+          <span>{snapshot.loadedAt.getTime() ? `更新 ${snapshot.loadedAt.toLocaleTimeString("zh-CN", { hour12: false })}` : "等待首次数据"}</span>
+          <span>·</span><span>{compact(total || 0)} 条信号</span>
+          <span>·</span><span>{compact(snapshot.overview.coverage?.assets || 0)} 个市场资产</span>
+        </div>
+      </header>
 
-        <div className="grid gap-4 px-4 py-5 sm:grid-cols-2 sm:px-5 xl:grid-cols-12">
-          <label className="block sm:col-span-1 xl:col-span-2">
-            <span className="mb-2 block text-xs font-semibold text-text-secondary">币种</span>
-            <input
-              className="input w-full"
-              placeholder="BTC 或 BTCUSDT"
-              value={draftFilters.symbol}
-              onChange={(event) => setDraftFilters({ ...draftFilters, symbol: event.target.value.toUpperCase() })}
-            />
-          </label>
-
-          <label className="block sm:col-span-1 xl:col-span-3">
-            <span className="mb-2 block text-xs font-semibold text-text-secondary">关键词</span>
-            <input
-              className="input w-full"
-              placeholder="搜索信号标题或摘要"
-              value={draftFilters.q}
-              onChange={(event) => setDraftFilters({ ...draftFilters, q: event.target.value })}
-            />
-          </label>
-
-          <label className="block xl:col-span-2">
-            <span className="mb-2 block text-xs font-semibold text-text-secondary">信号模块</span>
-            <select className="input w-full" value={draftFilters.module} onChange={(event) => setDraftFilters({ ...draftFilters, module: event.target.value })}>
+      <form className="cockpit-panel" onSubmit={submit}>
+        <div className="flex flex-col gap-3 p-2.5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+            <input className="input h-9 min-w-0 flex-1 sm:max-w-52" placeholder="BTC 或 BTCUSDT" value={draftFilters.symbol} onChange={(event) => setDraftFilters({ ...draftFilters, symbol: event.target.value.toUpperCase() })} />
+            <input className="input h-9 min-w-0 flex-1 sm:max-w-64" placeholder="搜索标题、摘要或关键词" value={draftFilters.q} onChange={(event) => setDraftFilters({ ...draftFilters, q: event.target.value })} />
+            <select aria-label="事件类型" className="input h-9 sm:w-32" value={draftFilters.module} onChange={(event) => setDraftFilters({ ...draftFilters, module: event.target.value })}>
               {moduleOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
             </select>
-          </label>
-
-          <label className="block xl:col-span-2">
-            <span className="mb-2 block text-xs font-semibold text-text-secondary">发送状态</span>
-            <select className="input w-full" value={draftFilters.status} onChange={(event) => setDraftFilters({ ...draftFilters, status: event.target.value })}>
+            <select aria-label="发送状态" className="input h-9 sm:w-28" value={draftFilters.status} onChange={(event) => setDraftFilters({ ...draftFilters, status: event.target.value })}>
               {statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
             </select>
-          </label>
+            <button className="btn h-9 px-3 text-xs" disabled={loading} type="submit">应用</button>
+            {activeFilterCount ? <button className="btn-secondary h-9 px-3 text-xs" onClick={reset} type="button">清除 {activeFilterCount}</button> : null}
+          </div>
 
-          <fieldset className="sm:col-span-2 xl:col-span-3">
-            <legend className="mb-2 text-xs font-semibold text-text-secondary">时间窗口</legend>
-            <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface-container p-1">
-              {windowOptions.map((item) => {
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <div className="flex rounded-md bg-surface-container p-0.5">
+              {marketWindows.map((item) => {
                 const selected = draftFilters.window_sec === item.value;
-                return (
-                  <button
-                    key={item.value}
-                    type="button"
-                    aria-pressed={selected}
-                    className={`h-10 rounded-md px-2 text-xs font-semibold transition sm:h-8 ${selected ? "bg-white text-primary-700 shadow-soft" : "text-text-secondary hover:text-text-primary"}`}
-                    onClick={() => setDraftFilters({ ...draftFilters, window_sec: item.value })}
-                  >
-                    {item.label}
-                  </button>
-                );
+                return <button aria-pressed={selected} className={`h-8 min-w-11 rounded px-2 text-[11px] font-semibold transition ${selected ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-muted hover:text-text-primary"}`} key={item.value} onClick={() => changeWindow(item.value)} type="button">{item.label}</button>;
               })}
             </div>
-          </fieldset>
-        </div>
-
-        <div className="flex flex-col gap-3 border-t border-border-subtle bg-surface-bright px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <div className="flex min-h-8 flex-wrap items-center gap-2">
-            {activeFilters.length ? activeFilters.map((item) => (
-              <button
-                className="chip gap-1.5 transition hover:border-primary-100 hover:text-primary-700"
-                key={item.key}
-                type="button"
-                onClick={() => clearAppliedFilter(item.key)}
-                aria-label={`移除筛选：${item.label}`}
-              >
-                {item.label}<span aria-hidden="true">×</span>
-              </button>
-            )) : <span className="text-xs text-text-muted">当前显示全部公开信号</span>}
-          </div>
-          <div className="grid grid-cols-[1fr_auto] gap-2 sm:flex">
-            <button className="btn min-w-28" type="submit" disabled={loading}>
-              {loading ? "筛选中..." : "应用筛选"}
-            </button>
-            <button className="btn-secondary" type="button" onClick={reset} disabled={loading}>
-              重置
-            </button>
+            <button className="btn-secondary h-9 whitespace-nowrap px-3 text-xs" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续更新" : "暂停"}</button>
+            <button aria-label="刷新雷达" className="btn-secondary h-9 w-9 px-0" disabled={refreshing || loading} onClick={() => void load(appliedFilters, { refresh: true, background: true })} type="button">{refreshing ? "…" : "↻"}</button>
           </div>
         </div>
       </form>
 
-      <section className="panel grid grid-cols-2 gap-px overflow-hidden bg-border-subtle md:grid-cols-4">
-        <SummaryItem label="有效信号" value={total} hint={optionLabel(windowOptions, appliedFilters.window_sec)} tone="info" loading={initialLoading} />
-        <SummaryItem label="活跃币种" value={intelligence.summary?.symbols} hint="每币保留最新状态" tone="good" loading={initialLoading} />
-        <SummaryItem label="共振币种" value={intelligence.summary?.resonance_symbols} hint="至少两个雷达模块" tone="info" loading={initialLoading} />
-        <SummaryItem label="正在增强" value={intelligence.summary?.enhancing_symbols} hint="规则分数较上次提高" tone="good" loading={initialLoading} />
-      </section>
-
-      {(blocked + failed > 0 || skipped > 0 || Number(sent || 0) === 0) && !initialLoading ? (
-        <p className="px-1 text-xs text-text-muted">投递状态：已发送 {compact(sent)} · 阻止/失败 {compact(blocked + failed)} · 跳过 {compact(skipped)}。发送状态仅用于运维复核，不作为市场强弱依据。</p>
+      {incomingCount && pendingSnapshot ? (
+        <button className="sticky top-[92px] z-20 mx-auto flex rounded-full border border-primary-100 bg-primary-700 px-4 py-2 text-xs font-semibold text-white shadow-floating" onClick={() => commit(pendingSnapshot)} type="button">新增 {incomingCount} 条异动，点击更新</button>
       ) : null}
 
-      {error ? <ErrorState message={error} onRetry={() => load(appliedFilters, true)} /> : null}
+      {error ? <ErrorState message={error} onRetry={() => load(appliedFilters, { refresh: true })} /> : null}
+      {marketError ? <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{marketError}</div> : null}
 
       {!error ? (
-        <section>
-          <div className="mb-4"><h2 className="text-lg font-semibold text-text-primary">机会看板</h2><p className="mt-1 text-sm text-text-muted">四个收敛入口覆盖启动、跨模块共振、极端费率和结构风险；空白表示当前窗口没有足够证据。</p></div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {(intelligence.boards || []).map((board) => <OpportunityBoardCard board={board} key={board.key} onOpen={selectSignal} />)}
-          </div>
-          {!loading && intelligence.data_status === "empty" ? <div className="panel mt-4 border-dashed p-5 text-sm text-text-muted">当前窗口还没有已发送信号。系统会继续扫描；无需用演练或失败记录填充机会榜。</div> : null}
-        </section>
-      ) : null}
-
-      <section>
-        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold text-text-primary">最新信号</h2>
-              {!initialLoading && !error ? <span className="chip">{compact(signalCount)} 条</span> : null}
+        <div className="radar-cockpit-grid grid min-w-0 gap-3 2xl:h-[calc(100vh-11.5rem)]">
+          <section className="cockpit-panel order-2 flex min-h-[520px] min-w-0 flex-col lg:order-2 2xl:order-1 2xl:min-h-0">
+            <div className="cockpit-panel-header shrink-0">
+              <div><h2 className="text-xs font-semibold text-text-primary">异动监控</h2><p className="mt-0.5 text-[10px] text-text-muted">公开事件 · 最新优先</p></div>
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-text-secondary"><span className={`h-1.5 w-1.5 rounded-full ${loading || refreshing || streamState === "connecting" ? "animate-pulse bg-warn" : paused ? "bg-text-muted" : streamState === "reconnecting" ? "animate-pulse bg-amber-500" : "animate-pulse bg-good"}`} />{paused ? "PAUSED" : streamState === "reconnecting" ? "RECONNECTING" : streamState === "connecting" ? "CONNECTING" : "LIVE"}</span>
             </div>
-            <p className="mt-1 text-sm text-text-muted">按信号时间倒序排列，快速查看模块、状态与摘要。</p>
-          </div>
-          <span className="text-xs font-semibold text-text-muted">最新优先 · 最多展示 40 条</span>
+            <div className="cockpit-scroll min-h-0 flex-1 overflow-y-auto">
+              {initialLoading ? Array.from({ length: 7 }).map((_, index) => <div className="animate-pulse border-b border-border-subtle p-3" key={index}><div className="h-4 w-24 rounded bg-surface-container" /><div className="mt-3 h-3 w-full rounded bg-surface-container-low" /><div className="mt-2 h-3 w-3/4 rounded bg-surface-container-low" /></div>) : snapshot.signals.map((item) => <EventRow item={item} key={item.public_ref || item.id || `${item.symbol}-${item.time}`} onOpen={selectSignal} />)}
+              {!loading && !snapshot.signals.length ? <div className="px-4 py-12 text-center"><div className="text-sm font-semibold text-text-primary">当前条件没有异动</div><p className="mt-2 text-xs leading-5 text-text-muted">清除币种或模块筛选，或切换更长时间窗口。</p><button className="btn-secondary mt-4 h-9 text-xs" onClick={reset} type="button">清除筛选</button></div> : null}
+            </div>
+          </section>
+
+          <section aria-label="热钱观察与机会看板" className="order-3 min-w-0 space-y-3 lg:order-3 2xl:order-2 2xl:min-h-0 2xl:overflow-y-auto 2xl:pr-0.5">
+            <section className="cockpit-panel">
+              <div className="cockpit-panel-header">
+                <div><h2 className="text-xs font-semibold text-text-primary">热钱观察榜单</h2><p className="mt-0.5 text-[10px] text-text-muted">绝对量级与横截面强度同时展示</p></div>
+                <span className="rounded bg-surface-container px-2 py-1 text-[10px] font-semibold text-text-secondary">{optionLabel(marketWindows, appliedFilters.window_sec)}</span>
+              </div>
+              <div className="grid gap-2.5 p-2.5 xl:grid-cols-2">
+                {initialLoading ? Array.from({ length: 4 }).map((_, index) => <LoadingBoard key={index} />) : marketBoards.map((board) => <MarketBoardCard board={board} key={board.key} onSymbol={filterSymbol} />)}
+                {!initialLoading && !marketBoards.length ? <div className="col-span-full rounded-md border border-dashed border-border-subtle px-4 py-12 text-center text-sm text-text-muted">市场榜单正在积累快照。信号事件区仍保持可用。</div> : null}
+              </div>
+            </section>
+            <OpportunityList boards={snapshot.intelligence.boards || []} onOpen={selectSignal} />
+          </section>
+
+          <aside className="radar-overview-column order-1 min-w-0 lg:order-1 2xl:order-3 2xl:min-h-0 2xl:overflow-y-auto">
+            <MarketStatePanel overview={snapshot.overview} />
+            <TendencyPanel boards={snapshot.boards.boards || []} onSymbol={filterSymbol} />
+            <section className="cockpit-panel">
+              <div className="cockpit-panel-header"><div><h2 className="text-xs font-semibold text-text-primary">数据覆盖</h2><p className="mt-0.5 text-[10px] text-text-muted">缺失项不按 0 参与判断</p></div><span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${snapshot.overview.data_status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{safeText(snapshot.overview.data_status, "empty").toUpperCase()}</span></div>
+              <MetricLine label="价格" value={`${compact(snapshot.overview.coverage?.price || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
+              <MetricLine label="OI" value={`${compact(snapshot.overview.coverage?.oi || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
+              <MetricLine label="现货主动资金" value={`${compact(snapshot.overview.coverage?.spot_flow || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
+              <MetricLine label="合约主动资金" value={`${compact(snapshot.overview.coverage?.futures_flow || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
+              {(snapshot.overview.warnings || []).length ? <div className="space-y-1.5 border-t border-border-subtle bg-amber-50/40 p-3">{snapshot.overview.warnings?.map((warning) => <p className="text-[10px] leading-4 text-amber-800" key={warning}>• {warning}</p>)}</div> : null}
+            </section>
+          </aside>
         </div>
-
-        {initialLoading ? (
-          <div className="grid gap-4 xl:grid-cols-2">
-            {Array.from({ length: 4 }).map((_, index) => <SignalCardSkeleton key={index} />)}
-          </div>
-        ) : (
-          <div className="grid gap-4 xl:grid-cols-2">
-            {signals.map((item) => (
-              <SignalCard key={item.public_ref || item.id || `${item.symbol}-${item.time}`} item={item} context="radar" onOpen={(selected) => {
-                const reference = selected.public_ref || selected.id;
-                if (reference) selectSignal(reference);
-              }} />
-            ))}
-          </div>
-        )}
-
-        {!loading && !error && !signals.length ? (
-          <EmptyState title="没有匹配的公开信号" text="尝试减少筛选条件、扩大时间窗口，或清除币种与关键词后重新搜索。" />
-        ) : null}
-      </section>
-
-      {selectedSignalId ? (
-        <SignalDetailDrawer signalId={selectedSignalId} onClose={closeSignal} onSelectSignal={selectSignal} />
       ) : null}
+
+      {selectedSignalId ? <SignalDetailDrawer signalId={selectedSignalId} onClose={closeSignal} onSelectSignal={selectSignal} /> : null}
     </div>
   );
+}
+
+export default function RadarPage() {
+  return cockpitV2Enabled ? <CockpitRadarPage /> : <LegacySignalRadar />;
 }

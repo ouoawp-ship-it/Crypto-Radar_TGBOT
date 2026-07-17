@@ -13,8 +13,10 @@ from paopao_radar.ai_assistant import (
     SessionLockRegistry,
     TelegramBotClient,
     alert_created_text,
+    build_symbol_dossier_reply,
     build_chat_completion_payload,
     check_and_send_price_alerts,
+    classify_user_intent,
     clear_ai_settings_cache,
     coinglass_quote_url,
     extract_ai_reply_text,
@@ -36,6 +38,7 @@ from paopao_radar.ai_assistant import (
 )
 from paopao_radar.config import Settings
 from paopao_radar.price_alerts import AlertMarketQuote, PriceAlertStore
+from paopao_radar.signal_store import SignalEventStore, append_from_push
 
 
 class AiAssistantTests(unittest.TestCase):
@@ -147,8 +150,52 @@ class AiAssistantTests(unittest.TestCase):
         self.assertEqual(reply.text, "BTC dossier")
         build_reply.assert_called_once_with(settings, store, "42", "BTCUSDT 怎么看")
 
+    def test_signal_aware_deep_link_preserves_public_reference(self) -> None:
+        reference = "sig_0123456789abcdefabcd"
+        analyze = classify_user_intent(f"/start analyze_BTC_{reference}")
+        alert = classify_user_intent(f"/start alert_BTC_{reference}")
+
+        self.assertEqual(analyze.kind, "dossier")
+        self.assertEqual(analyze.symbol, "BTCUSDT")
+        self.assertEqual(analyze.signal_ref, reference)
+        self.assertIn(f"signal_ref={reference}", analyze.prompt)
+        self.assertEqual(alert.kind, "alert_deep")
+        self.assertEqual(alert.signal_ref, reference)
+
+    def test_symbol_dossier_loads_only_matching_requested_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_db_path=Path(tmp) / "signals.db",
+                ai_price_alerts_db_path=Path(tmp) / "alerts.db",
+            )
+            append_from_push(
+                settings,
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="ai-context:btc",
+                status="sent",
+                sent=True,
+                text="BTCUSDT\n启动雷达\n分数: 88",
+                ts=1_000,
+            )
+            signal = SignalEventStore(settings.signal_events_db_path).symbol_timeline("BTCUSDT", limit=1)[0]
+            reference = str(signal["public_ref"])
+            store = PriceAlertStore(settings.ai_price_alerts_db_path)
+
+            with patch(
+                "paopao_radar.ai_assistant.build_symbol_dossier",
+                return_value={"symbol": "BTCUSDT", "snapshot": {}, "history": [], "verdict": {}},
+            ), patch(
+                "paopao_radar.ai_assistant.format_symbol_dossier_report",
+                side_effect=lambda dossier: str((dossier.get("requested_signal") or {}).get("public_ref") or "missing"),
+            ):
+                reply = build_symbol_dossier_reply(settings, store, "42", f"BTCUSDT 怎么看 signal_ref={reference}")
+
+        self.assertEqual(reply, reference)
+
     def test_signal_detail_alert_deep_link_prefills_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            reference = "sig_0123456789abcdefabcd"
             db_path = Path(tmp) / "alerts.db"
             settings = Settings(
                 data_dir=Path(tmp),
@@ -160,7 +207,7 @@ class AiAssistantTests(unittest.TestCase):
             store = PriceAlertStore(db_path)
             sessions: dict[str, dict[str, object]] = {}
             message = {
-                "text": "/start alert_BTC",
+                "text": f"/start alert_BTC_{reference}",
                 "from": {"id": 42, "username": "tester"},
                 "chat": {"id": 42, "type": "private"},
             }
@@ -170,6 +217,7 @@ class AiAssistantTests(unittest.TestCase):
             self.assertIn("BTCUSDT", first.text if first else "")
             self.assertEqual(sessions["42:42"]["state"], "alert_kind")
             self.assertEqual(sessions["42:42"]["prefill_symbol"], "BTCUSDT")
+            self.assertEqual(sessions["42:42"]["source_signal_ref"], reference)
 
             quotes = [
                 AlertMarketQuote(exchange="binance", market_type="spot", symbol="BTCUSDT", pair="BTCUSDT", price=61230),

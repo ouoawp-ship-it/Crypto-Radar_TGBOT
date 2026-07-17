@@ -54,6 +54,7 @@ export function statusLabel(value?: string): string {
 }
 
 export function formatMetricValue(value: unknown, unit?: string): string {
+  if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   if (unit === "percent" || unit === "percent_per_cycle") {

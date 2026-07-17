@@ -10,6 +10,7 @@ from paopao_radar.flow_radar import (
     flow_category,
     fmt_cvd,
     kline_cvd_delta_info,
+    kline_cvd_flow_info,
     series_delta_info,
 )
 from paopao_radar.time_windows import closed_window
@@ -96,6 +97,13 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(delta, 300.0)
         self.assertTrue(ready)
         self.assertEqual(points, 1)
+
+        gross_delta, inflow, outflow, gross_ready, gross_points = kline_cvd_flow_info(klines)
+        self.assertEqual(gross_delta, 300.0)
+        self.assertEqual(inflow, 650.0)
+        self.assertEqual(outflow, 350.0)
+        self.assertTrue(gross_ready)
+        self.assertEqual(gross_points, 1)
 
     def test_candidate_symbols_keeps_binance_funding_percent_once(self) -> None:
         class Source:

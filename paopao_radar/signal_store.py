@@ -1197,6 +1197,28 @@ class SignalEventStore:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    def events_after_id(self, last_id: int = 0, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Return a bounded ascending stream projection without private payload fields."""
+        safe_id = max(0, int(last_id or 0))
+        safe_limit = max(1, min(200, int(limit or 50)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, public_ref, ts, time, module, signal_type, symbol, status, score, stage, excerpt
+                FROM signals
+                WHERE id > ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (safe_id, safe_limit),
+            ).fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
+
+    def latest_event_id(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT MAX(id) AS value FROM signals").fetchone()
+        return int(row["value"] or 0) if row else 0
+
 
 def append_from_push(
     settings: Settings,

@@ -277,6 +277,61 @@ check_public_intelligence_budget() {
   rm -f "${response_file}"
 }
 
+check_v2_cockpit_contracts() {
+  local health_file
+  health_file="$(mktemp)"
+  if ! curl -sS -L --compressed --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -o "${health_file}" "${BASE_URL}/public-api/health"; then
+    record_block "V2 灰度状态无法读取"
+    rm -f "${health_file}"
+    return
+  fi
+  if grep -aEq '"mode"[[:space:]]*:[[:space:]]*"disabled"' "${health_file}"; then
+    record_warn "V2 驾驶舱处于 disabled 回滚模式；旧信号 API 与 Bot 应继续可用"
+    rm -f "${health_file}"
+    return
+  fi
+  rm -f "${health_file}"
+
+  local spec
+  for spec in \
+    "资金中心|/public-api/funds/sectors?window_sec=3600&market_type=spot" \
+    "信息中心|/public-api/info/feed?page_size=5&window_sec=604800" \
+    "Agent 决策|/public-api/agents/overview?window_sec=14400"; do
+    local label="${spec%%|*}"
+    local path="${spec#*|}"
+    local body
+    local meta
+    body="$(mktemp)"
+    if ! meta="$(curl -sS -L --compressed --connect-timeout "${CONNECT_TIMEOUT}" --max-time "${TIMEOUT}" -o "${body}" -w '%{http_code} %{size_download} %{time_total}' "${BASE_URL}${path}")"; then
+      record_block "${label} V2 契约请求失败"
+      rm -f "${body}"
+      continue
+    fi
+    local code size elapsed
+    code="$(printf '%s' "${meta}" | awk '{print $1}')"
+    size="$(printf '%s' "${meta}" | awk '{print $2}')"
+    elapsed="$(printf '%s' "${meta}" | awk '{print $3}')"
+    if [ "${code}" != "200" ] || ! grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${body}" || ! grep -aEq '"schema_version"' "${body}"; then
+      record_block "${label} V2 契约无效：${meta}"
+    elif [ "${size:-0}" -gt 262144 ]; then
+      record_block "${label} V2 响应超过 256KiB：${size} bytes"
+    else
+      record_pass "${label} V2 契约与响应预算通过：${meta}"
+    fi
+    rm -f "${body}"
+  done
+
+  local stream_file
+  stream_file="$(mktemp)"
+  curl -sS -N --connect-timeout "${CONNECT_TIMEOUT}" --max-time 4 -o "${stream_file}" "${BASE_URL}/public-api/stream?stream_sec=3" 2>/dev/null || true
+  if grep -aEq '^event:[[:space:]]*status' "${stream_file}" && grep -aEq '"state":"connected"' "${stream_file}"; then
+    record_pass "SSE 增量通道返回 connected 状态"
+  else
+    record_block "SSE 增量通道未返回 connected 状态"
+  fi
+  rm -f "${stream_file}"
+}
+
 check_public_signal_context_actions() {
   local signals_file
   local context_file
@@ -724,6 +779,7 @@ check_page_any_contains "HTTPS 后台" "${BASE_URL}${ADMIN_PATH}" "泡泡雷达�
 check_public_api
 check_public_health_and_headers
 check_public_intelligence_budget
+check_v2_cockpit_contracts
 check_public_signal_context_actions
 check_private_api_protected
 check_services
