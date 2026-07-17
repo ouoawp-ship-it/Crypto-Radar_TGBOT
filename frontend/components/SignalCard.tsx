@@ -32,7 +32,7 @@ export function SignalCard({
   const resonanceWindows = intelligence?.resonance?.windows || [];
 
   return (
-    <article className="panel group overflow-hidden p-5 transition hover:border-primary-100 hover:bg-surface-bright">
+    <article className="cockpit-panel group overflow-hidden p-4 transition-colors hover:border-primary-500/25 hover:bg-surface-bright">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <DataStatusBadge label={display.module_label || moduleLabel(item.module)} tone="info" />
@@ -41,15 +41,15 @@ export function SignalCard({
         <DataStatusBadge label={display.status_label || statusLabel(item.status)} tone={toneForStatus(item.status)} />
       </div>
 
-      <div className="mt-5 flex items-start justify-between gap-4">
+      <div className="mt-4 flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h3 className="table-number truncate text-xl font-semibold text-text-primary">{symbol || "全局信号"}</h3>
+          <h3 className="table-number truncate text-lg font-semibold text-text-primary">{symbol || "全局信号"}</h3>
           <p className="mt-1 text-xs text-text-muted">{safeText(display.time_label || formatDateTime(item.time))}</p>
         </div>
         {hasMeaningfulValue(score) ? (
-          <div className="shrink-0 rounded-lg bg-surface-container-low px-3 py-2 text-right">
-            <div className="text-[11px] font-semibold text-text-muted">信号分数</div>
-            <div className="table-number mt-0.5 text-lg font-semibold text-text-primary">{safeText(score)}</div>
+          <div className="shrink-0 rounded-md border border-border-subtle bg-surface-low px-2.5 py-1.5 text-right">
+            <div className="text-[9px] font-semibold text-text-muted">SCORE</div>
+            <div className="table-number mt-0.5 text-base font-semibold text-primary-700">{safeText(score)}</div>
           </div>
         ) : null}
       </div>
@@ -66,7 +66,7 @@ export function SignalCard({
       ) : null}
 
       {intelligence ? (
-        <div className="mt-4 rounded-xl border border-border-subtle bg-surface-bright p-3">
+        <div className="mt-4 rounded-md border border-border-subtle bg-surface-low p-3">
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div><div className="text-text-muted">自身历史极端度</div><div className="table-number mt-1 font-semibold text-text-primary">{rankText(intelligence.self_rank)}</div></div>
             <div><div className="text-text-muted">市场相对强度</div><div className="table-number mt-1 font-semibold text-text-primary">{rankText(intelligence.market_strength_rank)}</div></div>
@@ -74,7 +74,7 @@ export function SignalCard({
           {resonanceWindows.length ? (
             <div className="mt-3 flex items-center gap-1.5" aria-label="跨模块信号共振">
               {resonanceWindows.map((window) => (
-                <span className={`flex-1 rounded-md px-1 py-1.5 text-center text-[10px] font-semibold ${window.active ? "bg-primary-600 text-on-primary" : "bg-surface-container text-text-muted"}`} key={window.key} title={window.active ? `${window.module_count} 个模块共振` : `${window.signal_count || 0} 条信号`}>
+                <span className={`flex-1 rounded-sm px-1 py-1.5 text-center font-mono text-[9px] font-semibold ${window.active ? "bg-primary-500 text-on-primary" : "bg-surface-container text-text-muted"}`} key={window.key} title={window.active ? `${window.module_count} 个模块共振` : `${window.signal_count || 0} 条信号`}>
                   {window.key}
                 </span>
               ))}
@@ -84,13 +84,13 @@ export function SignalCard({
       ) : null}
 
       {context === "default" ? (
-        <div className="mt-5 border-t border-border-subtle pt-4">
+        <div className="mt-4 border-t border-border-subtle pt-3">
           <Link className="btn-secondary w-full justify-between px-3 group-hover:border-primary-100 group-hover:text-primary-700" href={signalReference ? `/radar?signal=${signalReference}` : "/radar"}>
             <span>查看信号雷达</span><span aria-hidden="true">→</span>
           </Link>
         </div>
       ) : (
-        <div className="mt-5 border-t border-border-subtle pt-4">
+        <div className="mt-4 border-t border-border-subtle pt-3">
           <button className="btn-secondary w-full justify-between px-3 group-hover:border-primary-100 group-hover:text-primary-700" disabled={!signalReference} onClick={() => onOpen?.(item)} type="button">
             <span>查看证据与上下文</span><span aria-hidden="true">→</span>
           </button>

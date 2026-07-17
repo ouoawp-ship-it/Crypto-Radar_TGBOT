@@ -1,26 +1,24 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { GeistSans } from "geist/font/sans";
-import Script from "next/script";
+import "@fontsource-variable/dm-sans";
+import "@fontsource-variable/jetbrains-mono";
 import "@/styles/globals.css";
 import { AppShell } from "@/components/AppShell";
 import { FrontendTelemetry } from "@/components/FrontendTelemetry";
 
 export const metadata: Metadata = {
-  title: "Paoxx 信号雷达",
-  description: "极简加密市场信号与雷达运行看板。",
+  title: "Paoxx 市场雷达",
+  description: "面向交易员的市场异常、资金、信息与信号证据驾驶舱。",
   other: {
     "paoxx-frontend": "nextjs-dashboard"
   }
 };
 
-const themeInitializer = `try{var saved=localStorage.getItem("paoxx.theme.v1");var theme=saved==="dark"||saved==="light"?saved:(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=theme;document.documentElement.style.colorScheme=theme}catch(e){}`;
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-CN" className={GeistSans.variable} suppressHydrationWarning>
+    <html data-theme="dark" lang="zh-CN" className={GeistSans.variable} style={{ colorScheme: "dark" }}>
       <body data-paoxx-frontend="nextjs-dashboard">
-        <Script id="paoxx-theme" strategy="beforeInteractive">{themeInitializer}</Script>
         <FrontendTelemetry />
         <AppShell>{children}</AppShell>
       </body>

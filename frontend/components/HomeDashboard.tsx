@@ -56,11 +56,11 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
   const failed = readNumber(data.signalStats, "failed", "failed_count");
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <PageTitle
-        title="总览"
-        subtitle="集中查看雷达产生的最新信号与推送状态，快速确认系统是否正常运行。"
-        tags={["实时信号", "推送状态", "只读公开数据"]}
+        title="市场总览"
+        subtitle="用一屏确认信号活跃度、推送状态与最新异常，再进入雷达查看完整证据。"
+        tags={["REAL-TIME", "市场事实", "只读"]}
       />
 
       {loading ? <div className="panel p-4 text-sm text-text-secondary">正在刷新公开信号...</div> : null}
@@ -73,18 +73,18 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
         <div className="panel border-warn/25 bg-warn/5 p-4 text-sm text-text-secondary">{data.error}</div>
       ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="24 小时信号" value={compact(total)} hint="最近 24 小时" tone="info" />
         <MetricCard label="已发送" value={compact(sent)} hint="成功进入推送流程" tone="good" />
         <MetricCard label="已阻止" value={compact(blocked)} hint="被安全规则拦截" tone="warn" />
         <MetricCard label="发送失败" value={compact(failed)} hint="建议前往后台检查" tone="bad" />
       </section>
 
-      <section className="panel p-4 sm:p-5">
+      <section className="cockpit-panel p-3 sm:p-4">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="section-title">最新信号</h2>
-            <p className="mt-1 text-sm text-text-muted">按时间倒序展示雷达产生的公开信号。</p>
+            <h2 className="section-title">实时异常</h2>
+            <p className="mt-1 text-xs text-text-muted">按时间倒序展示雷达已确认的公开信号。</p>
           </div>
           <div className="flex gap-2">
             <button className="btn-secondary" onClick={load} disabled={loading}>

@@ -247,6 +247,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
   let streamDelivered = false;
   let signalsFail = false;
   let agentsFail = false;
+  let agentRequests = 0;
   await page.route("**/public-api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/public-api/health") return route.fulfill({ json: { ok: true, data: { status: options.healthStatus || "ok" } } });
@@ -275,6 +276,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       return route.fulfill({ json: { ok: true, data: infoFeed } });
     }
     if (url.pathname === "/public-api/agents/overview") {
+      agentRequests += 1;
       if (agentsFail) return route.fulfill({ status: 503, json: { ok: false, message: "AI 决策暂时不可用" } });
       return route.fulfill({ json: { ok: true, data: options.agents || agentsOverview } });
     }
@@ -313,6 +315,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     infoRequests: () => infoRequests,
     lastInfoSearch: () => lastInfoSearch,
     streamRequests: () => streamRequests,
+    agentRequests: () => agentRequests,
     releaseSignal: () => { streamDelivered = true; },
     failSignals: () => { signalsFail = true; },
     failAgents: () => { agentsFail = true; },
@@ -349,24 +352,14 @@ test("home dashboard refreshes its own signal data", async ({ page }) => {
   await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
 });
 
-test("agent refresh keeps labeled prior data but a failed window switch clears mismatched results", async ({ page }) => {
+test("Paoxx AI reservation page does not call the former agent endpoint", async ({ page }) => {
   const state = await mockPublicApi(page);
   await page.goto("/agents");
 
-  const priorSummary = page.getByText(/4h 市场广度/);
-  await expect(priorSummary).toBeVisible();
-  await expect(page.getByRole("button", { name: "4h" })).toHaveAttribute("aria-pressed", "true");
-
-  state.failAgents();
-  await page.getByRole("button", { name: "刷新结论" }).click();
-  const loadAlert = page.locator('[role="alert"]').filter({ hasText: "加载失败" });
-  await expect(loadAlert).toContainText("当前仍显示上次成功数据，内容可能已过期");
-  await expect(priorSummary).toBeVisible();
-
-  await page.getByRole("button", { name: "1h" }).click();
-  await expect(page.getByRole("button", { name: "1h" })).toHaveAttribute("aria-pressed", "true");
-  await expect(loadAlert).not.toContainText("当前仍显示上次成功数据");
-  await expect(priorSummary).not.toBeVisible();
+  await expect(page.getByTestId("paoxx-ai-reserved")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "泡泡智选" })).toBeVisible();
+  await expect(page.getByText("当前不提供第三方 AI 智选、荐币或自动交易功能。", { exact: false })).toBeVisible();
+  expect(state.agentRequests()).toBe(0);
 });
 
 test("320px radar keeps filters, cards and full-width detail usable", async ({ page }) => {
@@ -400,12 +393,13 @@ test("320px radar keeps filters, cards and full-width detail usable", async ({ p
   await expect(page.getByRole("button", { name: "关闭信号详情" })).toBeVisible();
 });
 
-test("theme choice persists across radar reloads", async ({ page }) => {
+test("public cockpit uses the fixed Mercu-style dark visual system", async ({ page }) => {
   await mockPublicApi(page);
   await page.goto("/radar");
-  await page.getByRole("button", { name: "切换到深色主题" }).click();
+
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.getByRole("button", { name: "应用" })).toHaveCSS("color", "rgb(13, 17, 23)");
+  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(7, 9, 13)");
+  await expect(page.getByRole("button", { name: "应用" })).toHaveCSS("color", "rgb(7, 9, 13)");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
@@ -516,27 +510,26 @@ test("390px information center has no horizontal overflow", async ({ page }) => 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
-test("agent cockpit expands every conclusion to ready evidence", async ({ page }) => {
-  await mockPublicApi(page);
+test("Paoxx AI page remains an explicit self-owned reservation", async ({ page }) => {
+  const state = await mockPublicApi(page);
   await page.goto("/agents");
 
-  await expect(page.getByRole("heading", { name: "AI 决策" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "全局 Agent" })).toBeVisible();
-  await expect(page.getByText("BTC / ETH 解盘 Agent")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "异常候选 Agent" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "消息 Agent", level: 2 })).toBeVisible();
-  await page.getByText("展开证据来源").first().click();
-  await expect(page.getByText("上涨广度").first()).toBeVisible();
-  await expect(page.getByText("不构成投资建议", { exact: false }).last()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "泡泡智选" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "先把证据做对，再让模型开口。" })).toBeVisible();
+  await expect(page.getByText("PAOXX NATIVE")).toBeVisible();
+  await expect(page.getByText("公开版本")).toBeVisible();
+  await expect(page.getByText("未开放")).toBeVisible();
+  await expect(page.getByText("全局 Agent")).toHaveCount(0);
+  expect(state.agentRequests()).toBe(0);
 });
 
-test("390px agent cockpit stays usable without horizontal overflow", async ({ page }) => {
+test("390px Paoxx AI reservation stays usable without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
   await page.goto("/agents");
 
-  await expect(page.getByText("BTC 解盘 Agent", { exact: true })).toBeVisible();
-  await expect(page.getByText("Telegram 追问 ↗")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "先把证据做对，再让模型开口。" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "先看实时雷达" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
@@ -600,19 +593,11 @@ test("radar SSE surfaces a new event, reconnects and can be paused", async ({ pa
   await expect(page.getByText("PAUSED", { exact: true })).toBeVisible();
 });
 
-test("degraded Agent data never renders a directional conclusion", async ({ page }) => {
-  const degraded = {
-    ...agentsOverview,
-    data_status: "degraded",
-    agents: {
-      ...agentsOverview.agents,
-      global: { ...globalAgent, state: "insufficient_data", state_label: "数据不足", confidence: null, data_status: "degraded", summary: "关键资金或广度数据未达到 ready，安全门禁已停止生成方向性结论。", evidence_refs: [] }
-    }
-  };
-  await mockPublicApi(page, { agents: degraded });
+test("reserved AI surface never exposes copied directional conclusions", async ({ page }) => {
+  const state = await mockPublicApi(page, { agents: agentsOverview });
   await page.goto("/agents");
 
-  await expect(page.getByText("安全门禁已停止生成方向性结论")).toBeVisible();
-  await expect(page.getByText("数据不足", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("当前页面不请求 AI 决策接口", { exact: false })).toBeVisible();
   await expect(page.getByText("同步增强", { exact: true })).toHaveCount(0);
+  expect(state.agentRequests()).toBe(0);
 });

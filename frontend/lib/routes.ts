@@ -1,14 +1,17 @@
 import { cockpitV2Enabled } from "./features";
 
-const stableItems = [
-  { href: "/", label: "总览" },
-  { href: "/radar", label: "信号雷达" },
+const coreItems = [
+  { href: "/radar", label: "雷达", icon: "radar" as const },
 ];
 
-const v2Items = [
-  { href: "/funds", label: "资金中心" },
-  { href: "/info", label: "信息中心" },
-  { href: "/agents", label: "AI 决策" },
+const cockpitItems = [
+  { href: "/info", label: "信息", icon: "info" as const },
+  { href: "/funds", label: "资金", icon: "funds" as const },
+  { href: "/agents", label: "泡泡智选", icon: "spark" as const, badge: "预留" },
 ];
 
-export const navItems = [...stableItems, ...(cockpitV2Enabled ? v2Items : []), { href: "/watchlist", label: "我的自选" }];
+export const navItems = [
+  ...coreItems,
+  ...(cockpitV2Enabled ? cockpitItems : []),
+  { href: "/watchlist", label: "自选", icon: "watchlist" as const },
+];
