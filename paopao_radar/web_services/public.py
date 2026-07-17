@@ -16,6 +16,7 @@ from ..coin_evidence import (
 from ..agent_intelligence import build_agent_overview
 from ..config import Settings
 from ..data_sources import BinanceDataSource
+from ..data_source_registry import data_source_registry_payload
 from ..market_cockpit import MarketSnapshotStore, load_market_cockpit, normalize_window
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
 from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
@@ -387,9 +388,14 @@ def public_market_overview_payload(
         "data_status": cockpit.get("data_status"),
         "warnings": cockpit.get("warnings") or [],
         "coverage": cockpit.get("coverage") or {},
+        "readiness": cockpit.get("readiness") or {},
         "overview": cockpit.get("overview") or {},
     }
     return api_ok(_strip_forbidden(payload), message="已读取市场总览")
+
+
+def public_data_sources_payload() -> dict[str, Any]:
+    return api_ok(data_source_registry_payload(), message="已读取数据源治理清单")
 
 
 def public_radar_boards_payload(
@@ -418,6 +424,7 @@ def public_radar_boards_payload(
         "data_status": cockpit.get("data_status"),
         "warnings": cockpit.get("warnings") or [],
         "coverage": cockpit.get("coverage") or {},
+        "readiness": cockpit.get("readiness") or {},
         "boards": cockpit.get("boards") or [],
         "methodology": cockpit.get("methodology") or {},
     }
@@ -1102,17 +1109,21 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
     market_history: dict[str, Any] = {"status": "empty", "latest_at": "", "age_sec": None}
     try:
         if loaded.market_snapshots_db_path.exists():
-            latest_market_ts = MarketSnapshotStore(loaded.market_snapshots_db_path).latest_timestamp()
-            market_age = max(0, int(time.time()) - latest_market_ts) if latest_market_ts else None
+            readiness = MarketSnapshotStore(loaded.market_snapshots_db_path).readiness_summary(
+                loaded,
+                now_ts=int(time.time()),
+                requested_window_sec=3600,
+            )
             market_history = {
-                "status": "ok" if market_age is not None and market_age <= max(900, loaded.market_snapshot_interval_sec * 3) else "stale",
-                "latest_at": _utc_time_text(latest_market_ts),
-                "age_sec": market_age,
+                "status": readiness.get("status"),
+                "latest_at": readiness.get("latest_at"),
+                "age_sec": (readiness.get("freshness") or {}).get("age_sec"),
+                "readiness": readiness,
             }
     except Exception:
         market_history = {"status": "degraded", "latest_at": "", "age_sec": None}
     payload = {
-        "status": "ok" if database["status"] == "ok" else "degraded",
+        "status": "ok" if database["status"] == "ok" and market_history.get("status") in {"ready", "warming_up", "partial"} else "degraded",
         "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
         "database": database,
         "market_history": market_history,
@@ -1132,6 +1143,7 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
             "watchlist": True,
             "market_overview": True,
             "radar_boards": True,
+            "data_source_registry": True,
             "funds_sectors": True,
             "funds_assets": True,
             "info_feed": True,

@@ -63,6 +63,7 @@ from .web_services.ops import update_check_status_payload
 from .web_services.public import (
     public_agents_overview_payload,
     public_coin_context_payload,
+    public_data_sources_payload,
     public_api_health_payload,
     public_funds_assets_payload,
     public_funds_sectors_payload,
@@ -2635,6 +2636,27 @@ def build_stability_checks(snapshot: dict[str, Any]) -> dict[str, Any]:
         "先处理异常健康项；警告项可根据实际是否使用对应功能判断。" if health_status != "ok" else "",
     )
 
+    foundation = snapshot.get("data_foundation", {}) if isinstance(snapshot.get("data_foundation"), dict) else {}
+    signal_quality = foundation.get("signals", {}) if isinstance(foundation.get("signals"), dict) else {}
+    artifact_rows = int(signal_quality.get("artifact_rows", 0) or 0)
+    add(
+        "signal_data_quality",
+        "信号数据质量",
+        "fail" if artifact_rows else "ok",
+        f"检测到 {artifact_rows} 条 URL 编码伪币种记录" if artifact_rows else "未检测到 URL 编码伪币种记录",
+        "执行 .venv/bin/python main.py signal-repair --apply；命令会先创建 SQLite 备份。" if artifact_rows else "",
+    )
+    market_quality = foundation.get("market", {}) if isinstance(foundation.get("market"), dict) else {}
+    market_status = str(market_quality.get("status") or "empty")
+    market_check_status = "ok" if market_status in {"ready", "warming_up", "partial"} else "warn"
+    add(
+        "market_data_readiness",
+        "市场事实层",
+        market_check_status,
+        f"状态 {market_status}；30 天历史预热 {float(market_quality.get('warmup_progress_pct', 0) or 0):.2f}%；最近资产 {int((market_quality.get('coverage') or {}).get('assets', 0) or 0)} 个",
+        "确认主服务持续运行并检查 /public-api/health 的 freshness 与 coverage。" if market_check_status != "ok" else "",
+    )
+
     issues = snapshot.get("issues", []) if isinstance(snapshot.get("issues"), list) else []
     critical_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "critical")
     warning_count = sum(1 for item in issues if isinstance(item, dict) and item.get("severity") == "warning")
@@ -3569,6 +3591,20 @@ def ops_snapshot_payload() -> dict[str, Any]:
         },
         "log_errors": log_errors,
     }
+    try:
+        from .market_cockpit import MarketSnapshotStore
+
+        market_quality = MarketSnapshotStore(settings.market_snapshots_db_path).readiness_summary(
+            settings,
+            requested_window_sec=3600,
+        )
+    except Exception as exc:
+        market_quality = {"status": "failed", "error": type(exc).__name__}
+    try:
+        signal_quality = signal_store_for_settings(settings).data_quality_report()
+    except Exception as exc:
+        signal_quality = {"status": "failed", "error": type(exc).__name__, "artifact_rows": 0}
+    snapshot["data_foundation"] = {"market": market_quality, "signals": signal_quality}
     snapshot["jobs"] = jobs_stats_payload()
     snapshot["stability_history"] = stability_history_payload(settings.data_dir, limit=8)
     snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
@@ -4178,6 +4214,9 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/public-api/health":
             self.send_json(public_api_health_payload())
+            return
+        if path == "/public-api/data/sources":
+            self.send_json(public_data_sources_payload())
             return
         if path == "/public-api/stream":
             self.send_public_stream(query)

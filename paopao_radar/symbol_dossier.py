@@ -146,6 +146,25 @@ def clean_signal_text(text: str) -> str:
     return cleaned.strip()
 
 
+def signal_visible_text(text: str) -> str:
+    """Return only user-visible signal text before symbol extraction.
+
+    Telegram HTML and Markdown messages contain market links such as
+    ``BINANCE%3ABTCUSDT.P``.  Scanning the raw markup makes the URL-encoded
+    colon look like a ``3A`` symbol prefix.  Symbol discovery must therefore
+    operate on visible labels, never on link targets or tag attributes.
+    """
+
+    cleaned = unescape(str(text or ""))
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)", r"\1", cleaned)
+    cleaned = re.sub(r"https?://[^\s<>'\"]+", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+    cleaned = re.sub(r"[*_#]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
 def _safe_normalize_symbol(value: str) -> str:
     try:
         symbol = normalize_symbol(value)
@@ -158,7 +177,7 @@ def _safe_normalize_symbol(value: str) -> str:
 
 
 def extract_symbols_from_text(text: str) -> list[str]:
-    raw = str(text or "")
+    raw = signal_visible_text(text)
     found: list[str] = []
 
     def add(value: str) -> None:
@@ -176,7 +195,7 @@ def extract_symbols_from_text(text: str) -> list[str]:
     for match in re.finditer(r"\[([A-Za-z][A-Za-z0-9]{1,20})\]", raw):
         add(match.group(1))
     if not found:
-        cleaned = clean_signal_text(raw)
+        cleaned = raw
         for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9]{1,20})\b", cleaned):
             token = match.group(1).upper()
             if token not in SYMBOL_STOP_WORDS:

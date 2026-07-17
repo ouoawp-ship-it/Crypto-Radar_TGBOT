@@ -112,6 +112,32 @@ function valueTone(value: unknown) {
   return number > 0 ? "text-emerald-700" : "text-red-700";
 }
 
+function dataStatusMeta(status?: string) {
+  switch (status) {
+    case "ready": return { label: "LIVE", detail: "数据就绪", className: "bg-emerald-50 text-emerald-700" };
+    case "warming_up": return { label: "WARMING", detail: "历史数据预热中", className: "bg-sky-50 text-sky-700" };
+    case "partial":
+    case "degraded": return { label: "PARTIAL", detail: "部分指标可用", className: "bg-amber-50 text-amber-700" };
+    case "stale": return { label: "STALE", detail: "数据已过期", className: "bg-red-50 text-red-700" };
+    default: return { label: "WAITING", detail: "等待首批数据", className: "bg-surface-container text-text-muted" };
+  }
+}
+
+function DataStatusBadge({ status }: { status?: string }) {
+  const meta = dataStatusMeta(status);
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${meta.className}`} title={meta.detail}>{meta.label}</span>;
+}
+
+function durationText(value?: number) {
+  const seconds = Math.max(0, Number(value || 0));
+  if (!seconds) return "0 分钟";
+  const days = Math.floor(seconds / 86400);
+  if (days) return `${days} 天`;
+  const hours = Math.floor(seconds / 3600);
+  if (hours) return `${hours} 小时`;
+  return `${Math.max(1, Math.floor(seconds / 60))} 分钟`;
+}
+
 function RankBadge({ rank, label }: { rank?: SignalIntelligence["self_rank"]; label: string }) {
   if (!rank?.available) return <span className="rounded border border-border-subtle px-1.5 py-0.5 text-[10px] text-text-muted" title={rank?.reason}>{label} —</span>;
   return (
@@ -508,6 +534,8 @@ function CockpitRadarPage() {
   const initialLoading = loading && !snapshot.signals.length;
   const marketBoards = (snapshot.boards.boards || []).filter((board) => ["price", "oi", "futures_flow", "spot_flow"].includes(board.key || ""));
   const total = snapshot.intelligence.summary?.signals ?? countValue(snapshot.stats, "total", "count", "signals_count");
+  const readiness = snapshot.overview.readiness || snapshot.boards.readiness;
+  const warmupProgress = Math.max(0, Math.min(100, Number(readiness?.warmup_progress_pct || 0)));
 
   return (
     <div className="space-y-3">
@@ -515,7 +543,7 @@ function CockpitRadarPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight text-text-primary">信号雷达</h1>
-            <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${snapshot.boards.data_status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{snapshot.boards.data_status === "ready" ? "LIVE" : "DEGRADED"}</span>
+            <DataStatusBadge status={snapshot.boards.data_status} />
           </div>
           <p className="mt-1 text-xs text-text-muted">全市场异动、相对排名、资金合流与生命周期证据</p>
         </div>
@@ -592,7 +620,12 @@ function CockpitRadarPage() {
             <MarketStatePanel overview={snapshot.overview} />
             <TendencyPanel boards={snapshot.boards.boards || []} onSymbol={filterSymbol} />
             <section className="cockpit-panel">
-              <div className="cockpit-panel-header"><div><h2 className="text-xs font-semibold text-text-primary">数据覆盖</h2><p className="mt-0.5 text-[10px] text-text-muted">缺失项不按 0 参与判断</p></div><span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${snapshot.overview.data_status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{safeText(snapshot.overview.data_status, "empty").toUpperCase()}</span></div>
+              <div className="cockpit-panel-header"><div><h2 className="text-xs font-semibold text-text-primary">数据覆盖</h2><p className="mt-0.5 text-[10px] text-text-muted">缺失项保持为空，不按 0 参与判断</p></div><DataStatusBadge status={snapshot.overview.data_status} /></div>
+              <div className="border-b border-border-subtle px-3 py-3">
+                <div className="flex items-center justify-between text-[10px] text-text-muted"><span>30 天历史预热</span><span className="table-number font-semibold text-text-secondary">{warmupProgress.toFixed(1)}%</span></div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-container"><div className="h-full rounded-full bg-primary-600 transition-[width]" style={{ width: `${warmupProgress}%` }} /></div>
+                <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted"><span>已积累 {durationText(readiness?.history_span_sec)}</span><span>{readiness?.warmup_remaining_sec ? `约 ${durationText(readiness.warmup_remaining_sec)}后完整` : "目标已完成"}</span></div>
+              </div>
               <MetricLine label="价格" value={`${compact(snapshot.overview.coverage?.price || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
               <MetricLine label="OI" value={`${compact(snapshot.overview.coverage?.oi || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
               <MetricLine label="现货主动资金" value={`${compact(snapshot.overview.coverage?.spot_flow || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />

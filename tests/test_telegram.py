@@ -132,6 +132,32 @@ class TelegramGatewayTests(unittest.TestCase):
         self.assertEqual(events[0]["symbol"], "GWEIUSDT")
         self.assertEqual(events[0]["signal_type"], "启动雷达")
 
+    def test_signal_push_forwards_structured_engine_record_to_sqlite(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                signal_events_path=Path(tmp) / "signal_events.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            with redirect_stdout(StringIO()):
+                gateway.send(
+                    "BTCUSDT 75分",
+                    "TG_LAUNCH_ALERT",
+                    "launch:structured",
+                    send=False,
+                    confirm_real_send=False,
+                    signal_records=[{"symbol": "BTCUSDT", "score": 91, "stage": "breakout", "price": 123}],
+                )
+            item = SignalEventStore(settings.signal_events_db_path).list_signals(limit=1)["items"][0]
+
+        self.assertEqual(item["score"], 91)
+        self.assertEqual(item["stage"], "breakout")
+        self.assertEqual(item["ingest_mode"], "structured")
+        self.assertEqual(item["payload"]["facts"]["price"], 123)
+
     def test_real_send_requires_explicit_confirmation(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(

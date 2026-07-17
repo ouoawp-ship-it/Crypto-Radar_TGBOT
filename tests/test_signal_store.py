@@ -72,6 +72,88 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertTrue(all(item["module"] == "launch" for item in items))
         self.assertTrue(all(item["message_ids"] == [101, 102] for item in items))
 
+    def test_symbol_extraction_ignores_encoded_tradingview_url(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            count = append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="flow:url-artifact",
+                status="sent",
+                sent=True,
+                text='<a href="https://tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P">BTCUSDT</a> 75分',
+                ts=1000,
+            )
+            items = SignalEventStore(settings.signal_events_db_path).list_signals()["items"]
+
+        self.assertEqual(count, 1)
+        self.assertEqual([item["symbol"] for item in items], ["BTCUSDT"])
+        self.assertEqual(items[0]["score"], 75)
+        self.assertEqual(items[0]["ingest_mode"], "text_fallback")
+
+    def test_structured_records_persist_per_symbol_facts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:structured",
+                status="sent",
+                sent=True,
+                text="BTCUSDT 75分 ETHUSDT 61分",
+                ts=1000,
+                structured_records=[
+                    {"symbol": "BTCUSDT", "score": 75, "stage": "breakout", "price": 100.5},
+                    {"symbol": "ETHUSDT", "score": 61, "stage": "watch", "price": 25.5},
+                ],
+            )
+            items = SignalEventStore(settings.signal_events_db_path).list_signals(limit=10)["items"]
+
+        by_symbol = {item["symbol"]: item for item in items}
+        self.assertEqual(by_symbol["BTCUSDT"]["score"], 75)
+        self.assertEqual(by_symbol["ETHUSDT"]["score"], 61)
+        self.assertEqual(by_symbol["BTCUSDT"]["stage"], "breakout")
+        self.assertEqual(by_symbol["BTCUSDT"]["ingest_mode"], "structured")
+        self.assertEqual(by_symbol["BTCUSDT"]["quality_status"], "ready")
+        self.assertEqual(by_symbol["BTCUSDT"]["payload"]["facts"]["price"], 100.5)
+
+    def test_repair_legacy_signals_is_auditable_and_backed_up(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_FLOW_RADAR",
+                dedup_key="legacy:real",
+                status="sent",
+                sent=True,
+                text='<a href="https://tradingview.com/?symbol=BINANCE%3ABTCUSDT.P">BTCUSDT</a> 82分',
+                ts=1000,
+            )
+            with store.connect() as conn:
+                conn.execute(
+                    "UPDATE signals SET symbol = '3ABTCUSDT', coin = '3ABTC', score = NULL WHERE dedup_key = 'legacy:real'"
+                )
+                conn.execute(
+                    "INSERT INTO signals (ts, time, module, template_id, signal_type, symbol, coin, dedup_key, status, sent, text_html) "
+                    "VALUES (1001, '1970-01-01T00:16:41+00:00', 'flow', 'TG_FLOW_RADAR', 'flow', "
+                    "'ETHUSDT', 'ETH', 'legacy:score', 'sent', 1, 'ETHUSDT 79分')"
+                )
+                conn.commit()
+
+            dry_run = store.repair_legacy_signals()
+            applied = store.repair_legacy_signals(apply=True)
+            remaining = store.list_signals(limit=10)["items"]
+            backup_exists = Path(applied["backup_path"]).exists()
+
+        self.assertEqual(dry_run["artifact_rows"], 1)
+        self.assertEqual(dry_run["recoverable_scores"], 1)
+        self.assertFalse(dry_run["applied"])
+        self.assertEqual(applied["deleted"], 1)
+        self.assertEqual(applied["scores_recovered"], 1)
+        self.assertTrue(backup_exists)
+        self.assertEqual([item["symbol"] for item in remaining], ["ETHUSDT"])
+        self.assertEqual(remaining[0]["score"], 79)
+
     def test_append_from_push_without_symbol_writes_empty_symbol_event(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

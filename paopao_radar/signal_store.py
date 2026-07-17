@@ -6,7 +6,7 @@ import re
 import sqlite3
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +17,7 @@ from .symbol_dossier import clean_signal_text, extract_symbols_from_text, signal
 
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
-SIGNAL_STORE_SCHEMA_VERSION = 4
+SIGNAL_STORE_SCHEMA_VERSION = 5
 ACTIVE_SIGNAL_MODULES = (
     "funding",
     "flow",
@@ -58,6 +58,8 @@ SIGNAL_COLUMN_MIGRATIONS = {
     "public_ref": "TEXT NOT NULL DEFAULT ''",
     "payload_json": "TEXT NOT NULL DEFAULT '{}'",
     "error": "TEXT NOT NULL DEFAULT ''",
+    "ingest_mode": "TEXT NOT NULL DEFAULT 'legacy'",
+    "quality_status": "TEXT NOT NULL DEFAULT 'degraded'",
 }
 SIGNAL_COLUMNS = (
     "id",
@@ -83,6 +85,8 @@ SIGNAL_COLUMNS = (
     "reply_to_message_id",
     "payload_json",
     "error",
+    "ingest_mode",
+    "quality_status",
 )
 SIGNAL_LIST_PROJECTION = ", ".join(
     "substr(excerpt, 1, 260) AS excerpt"
@@ -118,7 +122,19 @@ SIGNAL_COMPAT_DEFAULTS = {
     "reply_to_message_id": "0",
     "payload_json": "'{}'",
     "error": "''",
+    "ingest_mode": "'legacy'",
+    "quality_status": "'degraded'",
 }
+
+STRUCTURED_SIGNAL_FIELDS = frozenset({
+    "symbol", "coin", "score", "total_score", "stage", "category", "kind", "state",
+    "severity", "risk_level", "reason", "summary", "title", "price", "price_pct",
+    "price_24h", "quote_volume", "market_cap", "mcap", "oi_usd", "oi_change_pct",
+    "oi_24h", "funding_pct", "spot_cvd_delta", "futures_cvd_delta",
+    "spot_inflow_usd", "spot_outflow_usd", "futures_inflow_usd",
+    "futures_outflow_usd", "data_status", "window_sec", "observed_at", "source",
+    "exchange", "grade", "scenario", "dedup_key", "code", "url",
+})
 
 
 def _json_dumps(value: Any) -> str:
@@ -171,13 +187,64 @@ def _extract_stage(text: str) -> str:
 
 
 def _extract_score(text: str) -> float | None:
-    match = re.search(r"(?:分数|评分|score)\s*[:：]\s*(-?\d+(?:\.\d+)?)", str(text or ""), flags=re.IGNORECASE)
+    match = re.search(
+        r"(?:分数|评分|score)\s*[:：]\s*(-?\d+(?:\.\d+)?)|(-?\d+(?:\.\d+)?)\s*分(?:\b|\s|\|)",
+        clean_signal_text(text),
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None
     try:
-        return float(match.group(1))
+        return float(match.group(1) or match.group(2))
     except ValueError:
         return None
+
+
+def _extract_symbol_score(text: str, symbol: str, *, symbol_count: int) -> float | None:
+    """Recover a score near one explicit symbol without sharing it across a batch."""
+
+    target = str(symbol or "").strip().upper()
+    if not target:
+        return _extract_score(text) if symbol_count <= 1 else None
+    visible = clean_signal_text(text)
+    match = re.search(rf"\b{re.escape(target)}\b", visible, flags=re.IGNORECASE)
+    if match:
+        segment = visible[match.end():match.end() + 360]
+        local = re.search(
+            r"(?:分数|评分|score)\s*[:：]?\s*(-?\d+(?:\.\d+)?)|(-?\d+(?:\.\d+)?)\s*分(?:\b|\s|\|)",
+            segment,
+            flags=re.IGNORECASE,
+        )
+        if local:
+            try:
+                return float(local.group(1) or local.group(2))
+            except ValueError:
+                return None
+    return _extract_score(text) if symbol_count <= 1 else None
+
+
+def _structured_number(record: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number == number and abs(number) != float("inf"):
+            return number
+    return None
+
+
+def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key in STRUCTURED_SIGNAL_FIELDS:
+        value = record.get(key)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            if value is not None:
+                payload[key] = value
+    return payload
 
 
 def _module_for_template(template_id: str) -> str:
@@ -293,7 +360,9 @@ class SignalEventStore:
                 message_ids_json TEXT NOT NULL DEFAULT '[]',
                 reply_to_message_id INTEGER NOT NULL DEFAULT 0,
                 payload_json TEXT NOT NULL DEFAULT '{}',
-                error TEXT NOT NULL DEFAULT ''
+                error TEXT NOT NULL DEFAULT '',
+                ingest_mode TEXT NOT NULL DEFAULT 'legacy',
+                quality_status TEXT NOT NULL DEFAULT 'degraded'
             )
             """
         )
@@ -417,11 +486,9 @@ class SignalEventStore:
         topic_id: str = "",
         message_ids: list[int] | None = None,
         reply_to_message_id: int | None = None,
+        structured_records: list[dict[str, Any]] | None = None,
     ) -> int:
         now = int(ts or time.time())
-        symbols = extract_symbols_from_text(text)
-        if not symbols:
-            symbols = [""]
         clean_excerpt = clean_signal_text(text)[:1200]
         title = _clean_title(text)
         safe_dedup_key = str(dedup_key or "").strip()
@@ -430,19 +497,56 @@ class SignalEventStore:
             safe_dedup_key = f"{template_id or 'telegram'}:{now}:{digest}"
         module = _module_for_template(template_id)
         signal_type = signal_event_template_label(template_id)
-        stage = _extract_stage(text)
-        score = _extract_score(text)
-        severity = _severity_for_status(status, text)
         message_ids_json = _json_dumps([int(item) for item in (message_ids or []) if isinstance(item, int)])
-        payload = {
-            "source": "telegram_push",
-            "schema_version": SIGNAL_STORE_SCHEMA_VERSION,
-            "reason": str(status or ""),
-        }
-        payload_json = _json_dumps(payload)
+        raw_records = [item for item in (structured_records or []) if isinstance(item, dict)]
+        prepared_records: list[dict[str, Any]] = []
+        for record in raw_records:
+            candidates = [record.get("symbol")]
+            if not candidates[0] and isinstance(record.get("symbols"), list):
+                candidates = list(record.get("symbols") or [])
+            for candidate in candidates:
+                normalized_symbol = str(candidate or "").strip().upper()
+                if normalized_symbol and not normalized_symbol.endswith("USDT"):
+                    normalized_symbol = f"{normalized_symbol}USDT"
+                if normalized_symbol and not re.fullmatch(r"[A-Z0-9]{2,24}USDT", normalized_symbol):
+                    continue
+                prepared_records.append({**record, "symbol": normalized_symbol})
+        structured_mode = bool(prepared_records)
+        if not prepared_records:
+            symbols = extract_symbols_from_text(text) or [""]
+            prepared_records = [{"symbol": symbol} for symbol in symbols]
+
         rows = []
-        for symbol in symbols:
-            normalized_symbol = str(symbol or "").upper()
+        symbol_count = len(prepared_records)
+        for record in prepared_records:
+            normalized_symbol = str(record.get("symbol") or "").upper()
+            score = (
+                _structured_number(record, "score", "total_score")
+                if structured_mode
+                else _extract_symbol_score(text, normalized_symbol, symbol_count=symbol_count)
+            )
+            stage = str(
+                record.get("stage")
+                or record.get("category")
+                or record.get("kind")
+                or record.get("state")
+                or _extract_stage(text)
+                or ""
+            )[:80]
+            severity = str(record.get("severity") or record.get("risk_level") or "")[:24]
+            if not severity:
+                severity = _severity_for_status(status, text)
+            record_summary = str(record.get("summary") or record.get("reason") or "").strip()
+            record_title = str(record.get("title") or "").strip()
+            payload = {
+                "source": "telegram_push",
+                "ingest_source": "engine_structured" if structured_mode else "telegram_text",
+                "schema_version": SIGNAL_STORE_SCHEMA_VERSION,
+                "reason": str(status or ""),
+            }
+            if structured_mode:
+                payload["facts"] = _structured_payload(record)
+            quality_status = "ready" if structured_mode and normalized_symbol else "degraded"
             rows.append(
                 {
                     "ts": now,
@@ -456,8 +560,8 @@ class SignalEventStore:
                     "stage": stage,
                     "severity": severity,
                     "score": score,
-                    "title": title,
-                    "excerpt": clean_excerpt,
+                    "title": (record_title or title)[:160],
+                    "excerpt": (record_summary or clean_excerpt)[:1200],
                     "text_html": str(text or "")[:20000],
                     "dedup_key": safe_dedup_key,
                     "status": str(status or ""),
@@ -465,8 +569,10 @@ class SignalEventStore:
                     "topic_id": str(topic_id or ""),
                     "message_ids_json": message_ids_json,
                     "reply_to_message_id": int(reply_to_message_id or 0),
-                    "payload_json": payload_json,
+                    "payload_json": _json_dumps(payload),
                     "error": "" if str(status or "").lower() not in {"failed", "blocked"} else clean_excerpt[:300],
+                    "ingest_mode": "structured" if structured_mode else "text_fallback",
+                    "quality_status": quality_status,
                 }
             )
         with self.connect() as conn:
@@ -476,11 +582,11 @@ class SignalEventStore:
                     INSERT INTO signals (
                         public_ref, ts, time, module, template_id, signal_type, symbol, coin, stage, severity, score,
                         title, excerpt, text_html, dedup_key, status, sent, topic_id, message_ids_json,
-                        reply_to_message_id, payload_json, error
+                        reply_to_message_id, payload_json, error, ingest_mode, quality_status
                     ) VALUES (
                         :public_ref, :ts, :time, :module, :template_id, :signal_type, :symbol, :coin, :stage, :severity, :score,
                         :title, :excerpt, :text_html, :dedup_key, :status, :sent, :topic_id, :message_ids_json,
-                        :reply_to_message_id, :payload_json, :error
+                        :reply_to_message_id, :payload_json, :error, :ingest_mode, :quality_status
                     )
                     ON CONFLICT(dedup_key, symbol) DO UPDATE SET
                         ts=excluded.ts,
@@ -502,7 +608,9 @@ class SignalEventStore:
                         message_ids_json=excluded.message_ids_json,
                         reply_to_message_id=excluded.reply_to_message_id,
                         payload_json=excluded.payload_json,
-                        error=excluded.error
+                        error=excluded.error,
+                        ingest_mode=excluded.ingest_mode,
+                        quality_status=excluded.quality_status
                     """,
                     row,
                 )
@@ -1219,6 +1327,87 @@ class SignalEventStore:
             row = conn.execute("SELECT MAX(id) AS value FROM signals").fetchone()
         return int(row["value"] or 0) if row else 0
 
+    def data_quality_report(self) -> dict[str, Any]:
+        """Audit legacy signal quality without mutating the database."""
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, symbol, text_html, score, ingest_mode, quality_status FROM signals ORDER BY id"
+            ).fetchall()
+        artifact_ids: list[int] = []
+        recoverable_scores = 0
+        structured = 0
+        ready = 0
+        for row in rows:
+            symbol = str(row["symbol"] or "").upper()
+            text = str(row["text_html"] or "")
+            extracted = extract_symbols_from_text(text)
+            if symbol.startswith("3A") and "%3A" in text.upper() and symbol not in extracted:
+                artifact_ids.append(int(row["id"]))
+                continue
+            if row["score"] is None and symbol:
+                if _extract_symbol_score(text, symbol, symbol_count=max(1, len(extracted))) is not None:
+                    recoverable_scores += 1
+            structured += int(str(row["ingest_mode"] or "") == "structured")
+            ready += int(str(row["quality_status"] or "") == "ready")
+        total = len(rows)
+        return {
+            "status": "attention" if artifact_ids or recoverable_scores else "ok",
+            "total": total,
+            "artifact_rows": len(artifact_ids),
+            "artifact_ids": artifact_ids[:100],
+            "recoverable_scores": recoverable_scores,
+            "structured_rows": structured,
+            "ready_rows": ready,
+            "ready_ratio": round(ready / total, 4) if total else 0.0,
+        }
+
+    def repair_legacy_signals(self, *, apply: bool = False) -> dict[str, Any]:
+        """Remove URL-derived symbols and recover legacy scores with an online backup."""
+
+        report = self.data_quality_report()
+        report.update({"applied": False, "deleted": 0, "scores_recovered": 0, "backup_path": ""})
+        if not apply:
+            return report
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = self.db_path.with_name(f"{self.db_path.name}.pre-signal-repair-{stamp}.bak")
+        with self.connect() as source, closing(sqlite3.connect(backup_path)) as backup:
+            source.backup(backup)
+            rows = source.execute(
+                "SELECT id, symbol, text_html, score FROM signals ORDER BY id"
+            ).fetchall()
+            artifact_ids: list[int] = []
+            recovered = 0
+            for row in rows:
+                row_id = int(row["id"])
+                symbol = str(row["symbol"] or "").upper()
+                text = str(row["text_html"] or "")
+                extracted = extract_symbols_from_text(text)
+                if symbol.startswith("3A") and "%3A" in text.upper() and symbol not in extracted:
+                    artifact_ids.append(row_id)
+                    continue
+                if row["score"] is None and symbol:
+                    recovered_score = _extract_symbol_score(text, symbol, symbol_count=max(1, len(extracted)))
+                    if recovered_score is not None:
+                        source.execute(
+                            "UPDATE signals SET score = ?, ingest_mode = 'legacy_repaired' WHERE id = ?",
+                            (recovered_score, row_id),
+                        )
+                        recovered += 1
+            if artifact_ids:
+                placeholders = ",".join("?" for _ in artifact_ids)
+                source.execute(f"DELETE FROM signals WHERE id IN ({placeholders})", artifact_ids)
+            source.commit()
+        report.update({
+            "applied": True,
+            "deleted": len(artifact_ids),
+            "scores_recovered": recovered,
+            "backup_path": str(backup_path),
+            "after": self.data_quality_report(),
+        })
+        return report
+
 
 def append_from_push(
     settings: Settings,
@@ -1232,6 +1421,7 @@ def append_from_push(
     topic_id: str = "",
     message_ids: list[int] | None = None,
     reply_to_message_id: int | None = None,
+    structured_records: list[dict[str, Any]] | None = None,
 ) -> int:
     store = SignalEventStore(getattr(settings, "signal_events_db_path", DEFAULT_SIGNAL_DB_PATH))
     try:
@@ -1245,6 +1435,7 @@ def append_from_push(
             topic_id=topic_id,
             message_ids=message_ids,
             reply_to_message_id=reply_to_message_id,
+            structured_records=structured_records,
         )
     except Exception as exc:
         print(f"[signal_store] append failed {type(exc).__name__}: {exc}", file=sys.stderr)

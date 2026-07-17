@@ -26,26 +26,29 @@ HTTP_HEADERS = {
 class RequestBudget:
     limits: dict[str, int]
     used: dict[str, int] = field(default_factory=dict)
+    _lock: RLock = field(default_factory=RLock, repr=False)
 
     def consume(self, key: str, amount: int = 1) -> bool:
-        limit = self.limits.get(key, 0)
-        current = self.used.get(key, 0)
-        if limit <= 0:
-            return False
-        if current + amount > limit:
-            return False
-        self.used[key] = current + amount
-        return True
+        with self._lock:
+            limit = self.limits.get(key, 0)
+            current = self.used.get(key, 0)
+            if limit <= 0:
+                return False
+            if current + amount > limit:
+                return False
+            self.used[key] = current + amount
+            return True
 
     def snapshot(self) -> dict[str, dict[str, int]]:
-        keys = sorted(set(self.limits) | set(self.used))
-        return {
-            key: {
-                "used": self.used.get(key, 0),
-                "limit": self.limits.get(key, 0),
+        with self._lock:
+            keys = sorted(set(self.limits) | set(self.used))
+            return {
+                key: {
+                    "used": self.used.get(key, 0),
+                    "limit": self.limits.get(key, 0),
+                }
+                for key in keys
             }
-            for key in keys
-        }
 
 
 @dataclass
@@ -54,22 +57,26 @@ class DataQuality:
     failures: dict[str, int] = field(default_factory=dict)
     successes: dict[str, int] = field(default_factory=dict)
     fused: dict[str, float] = field(default_factory=dict)
+    _lock: RLock = field(default_factory=RLock, repr=False)
 
     def ok(self, key: str) -> None:
-        self.successes[key] = self.successes.get(key, 0) + 1
+        with self._lock:
+            self.successes[key] = self.successes.get(key, 0) + 1
 
     def fail(self, key: str, reason: str) -> None:
-        self.failures[key] = self.failures.get(key, 0) + 1
-        if len(self.warnings) < 12:
-            self.warnings.append(f"{key}: {reason}")
+        with self._lock:
+            self.failures[key] = self.failures.get(key, 0) + 1
+            if len(self.warnings) < 12:
+                self.warnings.append(f"{key}: {reason}")
 
     def snapshot(self) -> dict[str, Any]:
-        return {
-            "successes": self.successes,
-            "failures": self.failures,
-            "warnings": self.warnings,
-            "fused": {key: int(until - time.time()) for key, until in self.fused.items() if until > time.time()},
-        }
+        with self._lock:
+            return {
+                "successes": dict(self.successes),
+                "failures": dict(self.failures),
+                "warnings": list(self.warnings),
+                "fused": {key: int(until - time.time()) for key, until in self.fused.items() if until > time.time()},
+            }
 
 
 class HttpClient:
