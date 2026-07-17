@@ -22,6 +22,11 @@ from ..data_source_registry import data_source_registry_payload
 from ..market_cockpit import MarketSnapshotStore, collect_binance_market_rows, load_market_cockpit, normalize_window
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
 from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
+from ..realtime_market import RealtimeFeatureStore, build_realtime_radar_boards
+from ..realtime_intelligence import (
+    build_realtime_intelligence,
+    build_realtime_intelligence_radar_boards,
+)
 from ..runtime_cache import get_or_set as runtime_cache_get_or_set
 from ..runtime_cache import invalidate as invalidate_runtime_cache
 from ..runtime_cache import stats as runtime_cache_stats
@@ -548,18 +553,169 @@ def public_radar_boards_payload(
         )
     except Exception:
         return api_error("雷达榜单暂时不可用", code="upstream_unavailable")
+    coverage = dict(cockpit.get("coverage") or {})
+    boards = list(cockpit.get("boards") or [])
+    methodology = dict(cockpit.get("methodology") or {})
+    current_ts = int(now_ts or time.time())
+    realtime_history: list[dict[str, Any]] = []
+    try:
+        realtime_store = RealtimeFeatureStore(loaded.realtime_features_db_path)
+        realtime_rows = realtime_store.latest_by_symbol(
+            now_ts=current_ts,
+            max_age_sec=180,
+        )
+        if realtime_rows:
+            realtime_history = realtime_store.recent_rows(now_ts=current_ts, window_sec=3600)
+    except Exception:
+        realtime_rows = []
+    coverage["realtime"] = len({str(row.get("symbol") or "") for row in realtime_rows})
+    coverage["realtime_exchanges"] = len({str(row.get("exchange") or "") for row in realtime_rows})
+    if realtime_rows:
+        boards.extend(build_realtime_radar_boards(realtime_rows, limit=board_limit))
+        methodology["realtime"] = "Binance/Bybit/OKX 公共 WebSocket 成交与可用清算按封闭分钟输出；不可用时保留 REST 榜单。"
+        realtime_intelligence = build_realtime_intelligence(
+            realtime_history,
+            now_ts=current_ts,
+            limit=board_limit,
+            include_backtest=False,
+        )
+        if realtime_intelligence.get("data_status") == "ready":
+            boards.extend(build_realtime_intelligence_radar_boards(realtime_intelligence, limit=board_limit))
+            coverage["realtime_intelligence"] = int(
+                (realtime_intelligence.get("coverage") or {}).get("symbols") or 0
+            )
+            methodology["realtime_intelligence"] = (
+                "Surge、短周期潜伏和方向共振仅使用已封闭分钟特征；规则阈值不是收益预测。"
+            )
     payload = {
         "schema_version": cockpit.get("schema_version"),
         "generated_at": cockpit.get("generated_at"),
         "window_sec": cockpit.get("window_sec"),
         "data_status": cockpit.get("data_status"),
         "warnings": cockpit.get("warnings") or [],
-        "coverage": cockpit.get("coverage") or {},
+        "coverage": coverage,
         "readiness": cockpit.get("readiness") or {},
-        "boards": cockpit.get("boards") or [],
-        "methodology": cockpit.get("methodology") or {},
+        "boards": boards,
+        "methodology": methodology,
     }
     return api_ok(_strip_forbidden(payload), message="已读取雷达榜单")
+
+
+def public_realtime_market_payload(
+    *,
+    symbol: str = "",
+    limit: int = 80,
+    max_age_sec: int = 180,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    normalized = ""
+    if str(symbol or "").strip():
+        parsed = normalize_symbol_filter(symbol)
+        normalized = str(parsed.get("symbol") or "")
+        if not normalized:
+            return api_error(str(parsed.get("error") or "币种格式无效"), code="invalid_symbol")
+    now = int(now_ts or time.time())
+    safe_age = max(30, min(900, int(max_age_sec or 180)))
+    safe_limit = max(1, min(200, int(limit or 80)))
+    store = RealtimeFeatureStore(loaded.realtime_features_db_path)
+    try:
+        rows = store.latest_by_symbol(now_ts=now, max_age_sec=safe_age)
+    except Exception:
+        return api_error("实时市场特征暂时不可用", code="upstream_unavailable")
+    items = []
+    for row in rows:
+        if normalized and str(row.get("symbol") or "") != normalized:
+            continue
+        bucket_start = int(row.get("bucket_start") or 0)
+        bucket_sec = max(1, int(row.get("bucket_sec") or 60))
+        bucket_end = bucket_start + bucket_sec
+        age_sec = max(0, now - bucket_end)
+        price_open = _number(row.get("price_open"))
+        price_close = _number(row.get("price_close"))
+        price_change_pct = (
+            (price_close - price_open) / price_open * 100
+            if price_open is not None and price_open > 0 and price_close is not None
+            else None
+        )
+        items.append({
+            "exchange": str(row.get("exchange") or ""),
+            "market": str(row.get("market") or ""),
+            "symbol": str(row.get("symbol") or ""),
+            "bucket_start": bucket_start,
+            "bucket_end": bucket_end,
+            "bucket_sec": bucket_sec,
+            "observed_at": _utc_time_text(bucket_end),
+            "age_sec": age_sec,
+            "data_status": "ready" if age_sec <= max(90, bucket_sec * 2) else "stale",
+            "trade_buy_usd": _number(row.get("trade_buy_usd")),
+            "trade_sell_usd": _number(row.get("trade_sell_usd")),
+            "cvd_usd": _number(row.get("cvd_usd")),
+            "trade_count": int(_number(row.get("trade_count")) or 0),
+            "price_open": price_open,
+            "price_high": _number(row.get("price_high")),
+            "price_low": _number(row.get("price_low")),
+            "price_close": price_close,
+            "price_change_pct": round(price_change_pct, 6) if price_change_pct is not None else None,
+            "long_liquidation_usd": _number(row.get("long_liquidation_usd")),
+            "short_liquidation_usd": _number(row.get("short_liquidation_usd")),
+            "liquidation_count": int(_number(row.get("liquidation_count")) or 0),
+            "source": f"{str(row.get('exchange') or 'unknown')}_futures_websocket",
+        })
+        if len(items) >= safe_limit:
+            break
+    data_status = "ready" if any(item["data_status"] == "ready" for item in items) else "stale" if items else "unavailable"
+    return api_ok({
+        "schema_version": "2026-07-17",
+        "generated_at": _utc_time_text(now),
+        "data_status": data_status,
+        "count": len(items),
+        "filters": {"symbol": normalized, "max_age_sec": safe_age},
+        "items": items,
+        "methodology": {
+            "cvd": "逐笔聚合成交按主动方方向计算的美元成交差。",
+            "liquidations": "Binance/Bybit 按官方强平方向语义映射多空持仓；OKX 不提供公开全市场强平流。",
+            "closed_buckets_only": True,
+        },
+    }, message="已读取实时市场特征")
+
+
+def public_realtime_intelligence_payload(
+    *,
+    limit: int = 10,
+    include_backtest: bool = False,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    now = int(now_ts or time.time())
+    safe_limit = max(1, min(30, int(limit or 10)))
+
+    def build() -> dict[str, Any]:
+        rows = RealtimeFeatureStore(loaded.realtime_features_db_path).recent_rows(
+            now_ts=now,
+            window_sec=86_400,
+        )
+        return build_realtime_intelligence(
+            rows,
+            now_ts=now,
+            limit=safe_limit,
+            include_backtest=bool(include_backtest),
+        )
+
+    try:
+        if now_ts is None:
+            cache_key = (
+                f"public:realtime-intelligence:{loaded.realtime_features_db_path}:"
+                f"{safe_limit}:{int(bool(include_backtest))}"
+            )
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, build)
+        else:
+            payload = build()
+    except Exception:
+        return api_error("实时异常情报暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取实时异常情报")
 
 
 def public_funds_sectors_payload(
@@ -1276,11 +1432,61 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
             }
     except Exception:
         market_history = {"status": "degraded", "latest_at": "", "age_sec": None}
+    realtime_market: dict[str, Any] = {
+        "status": "empty", "latest_at": "", "age_sec": None,
+        "symbols": 0, "features": 0,
+    }
+    try:
+        if loaded.realtime_features_db_path.exists():
+            realtime_stats = RealtimeFeatureStore(loaded.realtime_features_db_path).health_summary(
+                now_ts=int(time.time()),
+                fresh_sec=max(90, int(loaded.realtime_market_bucket_sec) * 2),
+            )
+            expected_exchanges = ["binance"]
+            if bool(getattr(loaded, "realtime_bybit_enable", True)):
+                expected_exchanges.append("bybit")
+            if bool(getattr(loaded, "realtime_okx_enable", True)):
+                expected_exchanges.append("okx")
+            observed_exchanges = realtime_stats.get("exchanges") or {}
+            exchange_health = {
+                exchange: observed_exchanges.get(exchange, {
+                    "status": "empty", "feature_count": 0, "symbol_count": 0,
+                    "latest_bucket_end": 0, "age_sec": None,
+                })
+                for exchange in expected_exchanges
+            }
+            exchange_statuses = [item.get("status") for item in exchange_health.values()]
+            realtime_status = (
+                "ready" if exchange_statuses and all(status == "ready" for status in exchange_statuses)
+                else "partial" if any(status == "ready" for status in exchange_statuses)
+                else "stale" if any(status == "stale" for status in exchange_statuses)
+                else "empty"
+            )
+            realtime_market = {
+                "status": realtime_status,
+                "latest_at": _utc_time_text(int(realtime_stats.get("latest_bucket_end") or 0))
+                if realtime_stats.get("latest_bucket_end") else "",
+                "age_sec": realtime_stats.get("age_sec"),
+                "symbols": int(realtime_stats.get("symbol_count") or 0),
+                "features": int(realtime_stats.get("feature_count") or 0),
+                "exchanges": exchange_health,
+            }
+    except Exception:
+        realtime_market = {
+            "status": "degraded", "latest_at": "", "age_sec": None,
+            "symbols": 0, "features": 0,
+        }
+    healthy = (
+        database["status"] == "ok"
+        and market_history.get("status") in {"ready", "warming_up", "partial"}
+        and realtime_market.get("status") == "ready"
+    )
     payload = {
-        "status": "ok" if database["status"] == "ok" and market_history.get("status") in {"ready", "warming_up", "partial"} else "degraded",
+        "status": "ok" if healthy else "degraded",
         "schema_version": PUBLIC_CONTEXT_SCHEMA_VERSION,
         "database": database,
         "market_history": market_history,
+        "realtime_market": realtime_market,
         "cache": runtime_cache_stats(),
         "rate_limit": PUBLIC_API_LIMITER.stats(),
         "requests": PUBLIC_API_METRICS.stats(),
@@ -1298,6 +1504,8 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
             "watchlist": True,
             "market_overview": True,
             "radar_boards": True,
+            "realtime_market": True,
+            "realtime_intelligence": True,
             "data_source_registry": True,
             "funds_sectors": True,
             "funds_assets": True,

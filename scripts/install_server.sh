@@ -7,6 +7,7 @@ CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
+MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ENV_FILE="${APP_DIR}/.env.oi"
@@ -633,6 +634,46 @@ EOF
   fi
 }
 
+install_market_stream_systemd_service() {
+  command -v systemctl >/dev/null 2>&1 || {
+    log "未找到 systemctl，不安装实时市场流服务"
+    return 0
+  }
+
+  log "安装 systemd 服务: ${MARKET_STREAM_SERVICE_NAME}"
+  local service_path="/etc/systemd/system/${MARKET_STREAM_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao Realtime Market Stream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py market-stream
+Restart=always
+RestartSec=5
+EnvironmentFile=-${ENV_FILE}
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$MARKET_STREAM_SERVICE_NAME"
+  if [ "$AUTO_START" = "1" ]; then
+    log "启动实时市场流服务"
+    run_root systemctl restart "$MARKET_STREAM_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$MARKET_STREAM_SERVICE_NAME" || true
+  else
+    log "AUTO_START=0，实时市场流服务已安装但未启动"
+  fi
+}
+
 install_cleanup_systemd_timer() {
   command -v systemctl >/dev/null 2>&1 || {
     log "未找到 systemctl，不安装自动清理 timer"
@@ -1075,6 +1116,7 @@ export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
 export FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME}"
 export AI_SERVICE_NAME="${AI_SERVICE_NAME}"
+export MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
   run_root chmod +x "$shortcut"
@@ -1118,6 +1160,7 @@ EOF
   bootstrap_history_if_needed
   run_readiness
   install_systemd_service
+  install_market_stream_systemd_service
   install_cleanup_systemd_timer
   install_web_systemd_service
   install_frontend_systemd_service
@@ -1141,6 +1184,7 @@ EOF
   服务器只需要记住 paopao 这一个入口命令。
   进入中文菜单后，用数字查看正式入口、设置后台账号密码、Web 服务状态、实时日志、重启 Web 服务、检查更新、更新项目和查看版本。
   paopao-frontend 监听 127.0.0.1:3000，只供 Nginx 反代公开前台。
+  ${MARKET_STREAM_SERVICE_NAME} 独立采集 Binance、Bybit、OKX 实时成交与可用清算，故障不会终止主雷达。
   8080 仅作为 Nginx 反代后端入口，不作为公网访问入口。
   配置修改、主服务启停、测试消息、readiness、doctor 和 cleanup 等控制功能在 Web 控制台完成。
 

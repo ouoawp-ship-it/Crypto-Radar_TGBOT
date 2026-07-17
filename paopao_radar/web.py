@@ -69,6 +69,8 @@ from .web_services.public import (
     public_funds_sectors_payload,
     public_info_feed_payload,
     public_market_overview_payload,
+    public_realtime_market_payload,
+    public_realtime_intelligence_payload,
     public_market_snapshot_payload,
     public_radar_boards_payload,
     public_radar_intelligence_payload,
@@ -4122,6 +4124,7 @@ class WebHandler(BaseHTTPRequestHandler):
             "/public-api/market/snapshot",
             "/public-api/market/overview",
             "/public-api/radar/boards",
+            "/public-api/radar/realtime-intelligence",
             "/public-api/funds/sectors",
             "/public-api/funds/assets",
             "/public-api/info/feed",
@@ -4270,6 +4273,20 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/public-api/market/overview":
             self.send_json(public_market_overview_payload(
                 window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
+            ))
+            return
+        if path == "/public-api/market/realtime":
+            self.send_json(public_realtime_market_payload(
+                symbol=query.get("symbol", [""])[0],
+                limit=clamp_query_int(query.get("limit", ["80"])[0], 80, 200),
+                max_age_sec=min(900, max(30, query_int_or(query.get("max_age_sec", ["180"])[0], 180))),
+            ))
+            return
+        if path == "/public-api/radar/realtime-intelligence":
+            self.send_json(public_realtime_intelligence_payload(
+                limit=clamp_query_int(query.get("limit", ["10"])[0], 10, 30),
+                include_backtest=str(query.get("backtest", [""])[0]).strip().lower()
+                in {"1", "true", "yes"},
             ))
             return
         if path == "/public-api/coin/context":

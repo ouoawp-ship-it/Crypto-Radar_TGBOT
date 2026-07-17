@@ -5,6 +5,7 @@ APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
+MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 PUBLIC_FRONTEND_URL="${PUBLIC_FRONTEND_URL:-https://paoxx.com/}"
 ADMIN_CONSOLE_URL="${ADMIN_CONSOLE_URL:-https://paoxx.com/admin}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
@@ -106,6 +107,11 @@ show_web_status() {
   else
     printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
   fi
+  if service_unit_exists "$MARKET_STREAM_SERVICE_NAME"; then
+    run_root systemctl --no-pager --full status "$MARKET_STREAM_SERVICE_NAME" || true
+  else
+    printf '未找到实时市场流 systemd 服务: %s\n' "$MARKET_STREAM_SERVICE_NAME"
+  fi
 }
 
 show_web_logs() {
@@ -129,6 +135,12 @@ restart_web_service() {
   else
     printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
   fi
+  if service_unit_exists "$MARKET_STREAM_SERVICE_NAME"; then
+    run_root systemctl restart "$MARKET_STREAM_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$MARKET_STREAM_SERVICE_NAME" || true
+  else
+    printf '未找到实时市场流 systemd 服务: %s\n' "$MARKET_STREAM_SERVICE_NAME"
+  fi
 }
 
 start_web_service() {
@@ -141,6 +153,12 @@ start_web_service() {
     run_root systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
   else
     printf '未找到 Web 控制台 systemd 服务: %s\n' "$WEB_SERVICE_NAME"
+  fi
+  if service_unit_exists "$MARKET_STREAM_SERVICE_NAME"; then
+    run_root systemctl start "$MARKET_STREAM_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$MARKET_STREAM_SERVICE_NAME" || true
+  else
+    printf '未找到实时市场流 systemd 服务: %s\n' "$MARKET_STREAM_SERVICE_NAME"
   fi
 }
 
@@ -185,9 +203,9 @@ show_menu_header() {
 请选择:
   1. 查看正式访问入口
   2. 设置后台账号密码
-  3. 查看前台和 Web 控制台服务状态
+  3. 查看前台、Web 和实时市场流服务状态
   4. 查看 Web 控制台实时日志
-  5. 重启前台和 Web 控制台服务
+  5. 重启前台、Web 和实时市场流服务
   6. 检查 GitHub 是否有更新
   7. 更新项目代码
   8. 查看当前版本

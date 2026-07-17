@@ -204,6 +204,22 @@ check_public_health_and_headers() {
   else
     record_block "公开 API 健康端点响应不完整"
   fi
+  local realtime_status
+  realtime_status="$(python3 - "${response_file}" <<'PY' 2>/dev/null || true
+import json
+import sys
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(((payload.get("data") or {}).get("realtime_market") or {}).get("status") or "missing")
+except Exception:
+    print("invalid")
+PY
+)"
+  if [ "${realtime_status}" = "ready" ]; then
+    record_pass "多交易所实时分钟特征已就绪"
+  else
+    record_block "多交易所实时分钟特征未就绪: ${realtime_status:-missing}"
+  fi
   if grep -aiEq '^X-Content-Type-Options:[[:space:]]*nosniff' "${headers_file}" \
     && grep -aiEq '^X-Frame-Options:[[:space:]]*DENY' "${headers_file}" \
     && [ "$(header_count "${headers_file}" 'X-Content-Type-Options')" -eq 1 ] \
@@ -294,6 +310,8 @@ check_v2_cockpit_contracts() {
 
   local spec
   for spec in \
+    "实时分钟特征|/public-api/market/realtime?limit=3" \
+    "实时异常情报|/public-api/radar/realtime-intelligence?limit=3" \
     "资金中心|/public-api/funds/sectors?window_sec=3600&market_type=spot" \
     "信息中心|/public-api/info/feed?page_size=5&window_sec=604800" \
     "Agent 决策|/public-api/agents/overview?window_sec=14400"; do
@@ -557,7 +575,7 @@ check_services() {
     return
   fi
   local service
-  for service in paopao-frontend paopao-web paopao-radar paopao-ai; do
+  for service in paopao-frontend paopao-web paopao-radar paopao-market-stream paopao-ai; do
     if ! systemctl list-unit-files "${service}.service" --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "${service}.service"; then
       if [ "${service}" = "paopao-ai" ]; then
         record_warn "systemd 服务不存在: ${service}；如果生产配置关闭 AI 助手可以忽略"
@@ -727,7 +745,7 @@ check_logs() {
     record_warn "已跳过 journalctl 日志检查"
     return
   fi
-  local services=(paopao-frontend paopao-web paopao-radar paopao-ai)
+  local services=(paopao-frontend paopao-web paopao-radar paopao-market-stream paopao-ai)
   local lines=(200 300 150 150 150)
   local total=0
   local i

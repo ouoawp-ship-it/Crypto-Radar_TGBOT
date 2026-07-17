@@ -6,6 +6,7 @@ CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-paopao-web}"
 FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME:-paopao-frontend}"
 AI_SERVICE_NAME="${AI_SERVICE_NAME:-paopao-ai}"
+MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
@@ -42,6 +43,7 @@ usage() {
   WEB_SERVICE_NAME=paopao-web
   FRONTEND_SERVICE_NAME=paopao-frontend
   AI_SERVICE_NAME=paopao-ai
+  MARKET_STREAM_SERVICE_NAME=paopao-market-stream
 EOF
 }
 
@@ -352,6 +354,33 @@ WantedBy=multi-user.target
 EOF
   run_root systemctl daemon-reload
   run_root systemctl enable "$WEB_SERVICE_NAME" >/dev/null 2>&1 || true
+}
+
+install_or_update_market_stream_service() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local service_path="/etc/systemd/system/${MARKET_STREAM_SERVICE_NAME}.service"
+  run_root tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=Paopao Realtime Market Stream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SUDO_USER:-$(id -un)}
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py market-stream
+Restart=always
+RestartSec=5
+EnvironmentFile=-${APP_DIR}/.env.oi
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run_root systemctl daemon-reload
+  run_root systemctl enable "$MARKET_STREAM_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
 install_or_update_frontend_service() {
@@ -684,6 +713,7 @@ export CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME}"
 export WEB_SERVICE_NAME="${WEB_SERVICE_NAME}"
 export FRONTEND_SERVICE_NAME="${FRONTEND_SERVICE_NAME}"
 export AI_SERVICE_NAME="${AI_SERVICE_NAME}"
+export MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
     run_root chmod +x /usr/local/bin/paopao
@@ -712,6 +742,11 @@ restart_services_if_present() {
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${AI_SERVICE_NAME}.service" >/dev/null 2>&1; then
     run_root systemctl restart "$AI_SERVICE_NAME"
     run_root systemctl --no-pager --full status "$AI_SERVICE_NAME" || true
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${MARKET_STREAM_SERVICE_NAME}.service" >/dev/null 2>&1; then
+    run_root systemctl restart "$MARKET_STREAM_SERVICE_NAME"
+    run_root systemctl --no-pager --full status "$MARKET_STREAM_SERVICE_NAME" || true
   fi
 }
 
@@ -758,6 +793,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     install_shortcut_command
     install_or_update_cleanup_timer
     install_or_update_web_service
+    install_or_update_market_stream_service
     install_or_update_frontend_service
     install_or_update_ai_service
     restart_services_if_present
@@ -808,6 +844,7 @@ build_frontend_dashboard
 install_shortcut_command
 install_or_update_cleanup_timer
 install_or_update_web_service
+install_or_update_market_stream_service
 install_or_update_frontend_service
 install_or_update_ai_service
 restart_services_if_present

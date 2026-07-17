@@ -1,0 +1,591 @@
+from __future__ import annotations
+
+import math
+from bisect import bisect_left, bisect_right
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from statistics import mean, median
+from typing import Any
+
+
+REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-17.1"
+INTELLIGENCE_WINDOWS = (("5m", 300), ("15m", 900), ("1h", 3600))
+BACKTEST_HORIZONS = (("5m", 300), ("15m", 900), ("1h", 3600))
+MIN_WINDOW_COVERAGE = 0.60
+MIN_BACKTEST_SAMPLES = 30
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _iso_seconds(value: int) -> str:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z") if value > 0 else ""
+
+
+def _bucket_end(row: dict[str, Any]) -> int:
+    return int(row.get("bucket_start") or 0) + max(1, int(row.get("bucket_sec") or 60))
+
+
+def _summarize_rows(
+    selected: list[dict[str, Any]],
+    *,
+    start_ts: int,
+    end_ts: int,
+) -> dict[str, Any]:
+    covered_buckets = {
+        (int(row.get("bucket_start") or 0), max(1, int(row.get("bucket_sec") or 60)))
+        for row in selected
+    }
+    covered_sec = sum(bucket_sec for _bucket_start, bucket_sec in covered_buckets)
+    window_sec = max(1, int(end_ts) - int(start_ts))
+    coverage = min(1.0, covered_sec / window_sec)
+    buy = sum(float(row.get("trade_buy_usd") or 0) for row in selected)
+    sell = sum(float(row.get("trade_sell_usd") or 0) for row in selected)
+    gross = buy + sell
+    cvd = buy - sell
+    exchanges = sorted({str(row.get("exchange") or "") for row in selected if str(row.get("exchange") or "")})
+    price_source_exchange = "binance" if "binance" in exchanges else exchanges[0] if exchanges else ""
+    price_rows = [
+        row for row in selected
+        if str(row.get("exchange") or "") == price_source_exchange
+        if float(row.get("price_open") or 0) > 0 and float(row.get("price_close") or 0) > 0
+    ]
+    price_open = float(price_rows[0].get("price_open") or 0) if price_rows else None
+    price_close = float(price_rows[-1].get("price_close") or 0) if price_rows else None
+    price_high = max((float(row.get("price_high") or 0) for row in price_rows), default=0) or None
+    lows = [float(row.get("price_low") or 0) for row in price_rows if float(row.get("price_low") or 0) > 0]
+    price_low = min(lows) if lows else None
+    price_change_pct = (
+        (price_close - price_open) / price_open * 100
+        if price_open and price_close is not None
+        else None
+    )
+    cvd_ratio_pct = cvd / gross * 100 if gross > 0 else None
+    long_liquidation = sum(float(row.get("long_liquidation_usd") or 0) for row in selected)
+    short_liquidation = sum(float(row.get("short_liquidation_usd") or 0) for row in selected)
+    available = coverage >= MIN_WINDOW_COVERAGE and gross > 0 and price_open is not None and price_close is not None
+    return {
+        "available": available,
+        "start_ts": int(start_ts),
+        "end_ts": int(end_ts),
+        "coverage_ratio": round(coverage, 4),
+        "bucket_count": len(selected),
+        "time_bucket_count": len(covered_buckets),
+        "exchanges": exchanges,
+        "price_source_exchange": price_source_exchange,
+        "trade_buy_usd": round(buy, 2),
+        "trade_sell_usd": round(sell, 2),
+        "gross_trade_usd": round(gross, 2),
+        "cvd_usd": round(cvd, 2),
+        "cvd_ratio_pct": round(cvd_ratio_pct, 4) if cvd_ratio_pct is not None else None,
+        "price_open": price_open,
+        "price_high": price_high,
+        "price_low": price_low,
+        "price_close": price_close,
+        "price_change_pct": round(price_change_pct, 6) if price_change_pct is not None else None,
+        "long_liquidation_usd": round(long_liquidation, 2),
+        "short_liquidation_usd": round(short_liquidation, 2),
+        "trade_count": sum(int(row.get("trade_count") or 0) for row in selected),
+    }
+
+
+def _aggregate_window(
+    rows: list[dict[str, Any]],
+    ends: list[int],
+    *,
+    start_ts: int,
+    end_ts: int,
+) -> dict[str, Any]:
+    left = bisect_right(ends, int(start_ts))
+    right = bisect_right(ends, int(end_ts))
+    return _summarize_rows(rows[left:right], start_ts=start_ts, end_ts=end_ts)
+
+
+def _five_minute_windows(rows: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        end = _bucket_end(row)
+        anchor = ((end + 299) // 300) * 300
+        grouped[anchor].append(row)
+    return [
+        (anchor, _summarize_rows(grouped[anchor], start_ts=anchor - 300, end_ts=anchor))
+        for anchor in sorted(grouped)
+    ]
+
+
+def _window_direction(window: dict[str, Any]) -> str:
+    if not window.get("available"):
+        return "neutral"
+    cvd_ratio = float(window.get("cvd_ratio_pct") or 0)
+    price_change = float(window.get("price_change_pct") or 0)
+    if cvd_ratio >= 1.0 and price_change >= -0.25:
+        return "long"
+    if cvd_ratio <= -1.0 and price_change <= 0.25:
+        return "short"
+    return "neutral"
+
+
+def _surge_from_windows(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    available = bool(current.get("available") and previous.get("available"))
+    current_ratio = _number(current.get("cvd_ratio_pct"))
+    previous_ratio = _number(previous.get("cvd_ratio_pct"))
+    current_gross = float(current.get("gross_trade_usd") or 0)
+    previous_gross = float(previous.get("gross_trade_usd") or 0)
+    flow_acceleration = (
+        current_ratio - previous_ratio
+        if current_ratio is not None and previous_ratio is not None
+        else None
+    )
+    volume_acceleration = (
+        (current_gross / previous_gross - 1) * 100
+        if previous_gross > 0
+        else None
+    )
+    price_change = _number(current.get("price_change_pct")) or 0.0
+    long_liq = float(current.get("long_liquidation_usd") or 0)
+    short_liq = float(current.get("short_liquidation_usd") or 0)
+    liq_total = long_liq + short_liq
+    liq_bias = (short_liq - long_liq) / liq_total * 100 if liq_total > 0 else 0.0
+    signed_impulse = (flow_acceleration or 0) + price_change * 2 + liq_bias * 0.05
+    direction = "long" if signed_impulse > 0 else "short" if signed_impulse < 0 else "neutral"
+    score = min(100.0, (
+        abs(flow_acceleration or 0) * 0.9
+        + min(100.0, abs(volume_acceleration or 0)) * 0.20
+        + min(5.0, abs(price_change)) * 4
+        + min(10.0, liq_total / max(current_gross, 1) * 100) * 1.5
+    )) if available else 0.0
+    triggered = bool(
+        available
+        and direction != "neutral"
+        and score >= 35
+        and abs(flow_acceleration or 0) >= 5
+        and abs(current_ratio or 0) >= 2
+    )
+    return {
+        "available": available,
+        "triggered": triggered,
+        "direction": direction,
+        "score": round(score, 2),
+        "flow_acceleration_pp": round(flow_acceleration, 4) if flow_acceleration is not None else None,
+        "volume_acceleration_pct": round(volume_acceleration, 4) if volume_acceleration is not None else None,
+        "price_change_pct": round(price_change, 6),
+        "liquidation_bias_pct": round(liq_bias, 4),
+        "current": current,
+        "previous": previous,
+        "method": "比较最近两个封闭 5 分钟窗口的主动成交差占比、成交额速度、价格和清算偏向。",
+    }
+
+
+def _surge_at(rows: list[dict[str, Any]], ends: list[int], anchor: int) -> dict[str, Any]:
+    current = _aggregate_window(rows, ends, start_ts=anchor - 300, end_ts=anchor)
+    previous = _aggregate_window(rows, ends, start_ts=anchor - 600, end_ts=anchor - 300)
+    return _surge_from_windows(current, previous)
+
+
+def _ambush(
+    windows: dict[str, dict[str, Any]],
+    surge: dict[str, Any],
+) -> dict[str, Any]:
+    short_window = windows["5m"]
+    long_window = windows["15m"]
+    ratio_5m = _number(short_window.get("cvd_ratio_pct"))
+    ratio_15m = _number(long_window.get("cvd_ratio_pct"))
+    price_15m = abs(_number(long_window.get("price_change_pct")) or 0)
+    aligned = bool(
+        ratio_5m is not None
+        and ratio_15m is not None
+        and ratio_5m * ratio_15m > 0
+    )
+    direction = "long" if aligned and ratio_15m > 0 else "short" if aligned else "neutral"
+    flow_score = min(60.0, (abs(ratio_5m or 0) + abs(ratio_15m or 0)) * 1.2)
+    compression_score = max(0.0, min(20.0, (2.0 - price_15m) / 2.0 * 20.0))
+    acceleration = _number(surge.get("volume_acceleration_pct")) or 0
+    activity_score = max(0.0, min(20.0, acceleration * 0.2))
+    available = bool(short_window.get("available") and long_window.get("available"))
+    score = flow_score + compression_score + activity_score if available else 0.0
+    triggered = bool(
+        available
+        and aligned
+        and not surge.get("triggered")
+        and price_15m <= 2.0
+        and abs(ratio_5m or 0) >= 3
+        and abs(ratio_15m or 0) >= 3
+        and score >= 45
+    )
+    return {
+        "available": available,
+        "triggered": triggered,
+        "direction": direction,
+        "score": round(min(100.0, score), 2),
+        "price_compression_pct": round(price_15m, 6),
+        "cvd_ratio_5m_pct": round(ratio_5m, 4) if ratio_5m is not None else None,
+        "cvd_ratio_15m_pct": round(ratio_15m, 4) if ratio_15m is not None else None,
+        "method": "5m 与 15m 主动成交差同向、价格仍压缩且尚未触发 Surge 时列为短周期潜伏候选。",
+    }
+
+
+def _rank(value: float | None, samples: list[float], *, method: str) -> dict[str, Any]:
+    valid = sorted((sample for sample in samples if math.isfinite(sample)), reverse=True)
+    if value is None or len(valid) < 2:
+        return {
+            "available": False,
+            "sample_size": len(valid),
+            "reason": "至少需要 2 个同口径样本",
+            "method": method,
+        }
+    rank = 1 + sum(1 for sample in valid if sample > value)
+    percentile = 100.0 * sum(1 for sample in valid if sample <= value) / len(valid)
+    return {
+        "available": True,
+        "value": round(value, 4),
+        "rank": rank,
+        "sample_size": len(valid),
+        "percentile": round(percentile, 1),
+        "method": method,
+    }
+
+
+def _historical_strengths(
+    five_minute_windows: list[tuple[int, dict[str, Any]]],
+    anchor: int,
+) -> list[float]:
+    strengths: list[float] = []
+    for window_anchor, window in five_minute_windows:
+        if window_anchor < anchor - 86_400 or window_anchor > anchor:
+            continue
+        ratio = _number(window.get("cvd_ratio_pct"))
+        if window.get("available") and ratio is not None:
+            strengths.append(abs(ratio))
+    return strengths
+
+
+def _resonance(windows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    directions = {
+        key: _window_direction(window)
+        for key, window in windows.items()
+    }
+    active = [direction for direction in directions.values() if direction != "neutral"]
+    counts = Counter(active)
+    direction = counts.most_common(1)[0][0] if counts else "neutral"
+    active_count = counts.get(direction, 0) if direction != "neutral" else 0
+    return {
+        "available": any(window.get("available") for window in windows.values()),
+        "direction": direction if active_count >= 2 else "neutral",
+        "active_count": active_count,
+        "window_count": len(windows),
+        "windows": [
+            {
+                "key": key,
+                "active": directions[key] == direction and active_count >= 2,
+                "direction": directions[key],
+                "coverage_ratio": window.get("coverage_ratio"),
+            }
+            for key, window in windows.items()
+        ],
+        "method": "5m、15m、1h 封闭窗口的 CVD 方向需获得价格非反向确认；至少两个周期同向才算方向共振。",
+    }
+
+
+def _lifecycle(
+    rows: list[dict[str, Any]],
+    ends: list[int],
+    *,
+    anchor: int,
+    surge: dict[str, Any],
+    ambush: dict[str, Any],
+) -> dict[str, Any]:
+    current_active = bool(surge.get("triggered") or ambush.get("triggered"))
+    current_score = max(float(surge.get("score") or 0), float(ambush.get("score") or 0))
+    previous: tuple[int, float] | None = None
+    for offset in range(300, 3_601, 300):
+        candidate_anchor = anchor - offset
+        candidate = _surge_at(rows, ends, candidate_anchor)
+        if candidate.get("triggered"):
+            previous = (candidate_anchor, float(candidate.get("score") or 0))
+            break
+    if current_active and previous is None:
+        state, basis = "new", "过去 1 小时没有同方向 Surge，当前为新异常"
+    elif current_active and previous is not None:
+        gap = anchor - previous[0]
+        if gap > 1_800:
+            state, basis = "restarted", f"沉寂 {max(1, round(gap / 60))} 分钟后再次触发"
+        elif current_score >= previous[1] + 8:
+            state, basis = "enhancing", f"异常分较上次提高 {current_score - previous[1]:.1f}"
+        else:
+            state, basis = "continuing", "最近 30 分钟异常方向持续"
+    elif previous is not None and anchor - previous[0] <= 1_800:
+        state, basis = "cooling", "此前异常仍在 30 分钟观察期内，但当前已低于触发阈值"
+    elif previous is not None:
+        state, basis = "expired", "最近异常已超过 30 分钟且没有重新触发"
+    else:
+        state, basis = "inactive", "当前与过去 1 小时均未达到异常阈值"
+    labels = {
+        "new": "NEW", "enhancing": "增强", "continuing": "持续",
+        "cooling": "降温", "restarted": "重启", "expired": "失效", "inactive": "未触发",
+    }
+    return {"state": state, "label": labels[state], "basis": basis, "observed_at": _iso_seconds(anchor)}
+
+
+def _close_at(
+    rows: list[dict[str, Any]],
+    ends: list[int],
+    target: int,
+    *,
+    exchange: str,
+) -> float | None:
+    index = bisect_left(ends, target)
+    while index < len(rows) and ends[index] <= target + 60:
+        row = rows[index]
+        if str(row.get("exchange") or "") == exchange:
+            value = _number(row.get("price_close"))
+            return value if value is not None and value > 0 else None
+        index += 1
+    return None
+
+
+def _backtest(
+    grouped: dict[str, list[dict[str, Any]]],
+    windows_by_symbol: dict[str, list[tuple[int, dict[str, Any]]]] | None = None,
+) -> dict[str, Any]:
+    outcomes: dict[str, list[float]] = {key: [] for key, _seconds in BACKTEST_HORIZONS}
+    signal_count = 0
+    for symbol, rows in grouped.items():
+        ends = [_bucket_end(row) for row in rows]
+        if len(ends) < 12:
+            continue
+        windows = (windows_by_symbol or {}).get(symbol) or _five_minute_windows(rows)
+        for index in range(1, len(windows)):
+            anchor, current = windows[index]
+            _previous_anchor, previous = windows[index - 1]
+            surge = _surge_from_windows(current, previous)
+            if not surge.get("triggered"):
+                continue
+            entry_price = _number(surge.get("current", {}).get("price_close"))
+            price_exchange = str(surge.get("current", {}).get("price_source_exchange") or "")
+            direction = str(surge.get("direction") or "neutral")
+            if (
+                entry_price is None
+                or entry_price <= 0
+                or not price_exchange
+                or direction not in {"long", "short"}
+            ):
+                continue
+            signal_count += 1
+            direction_sign = 1 if direction == "long" else -1
+            for key, seconds in BACKTEST_HORIZONS:
+                exit_price = _close_at(rows, ends, anchor + seconds, exchange=price_exchange)
+                if exit_price is None:
+                    continue
+                raw_return = (exit_price - entry_price) / entry_price * 100
+                outcomes[key].append(raw_return * direction_sign)
+    horizons: dict[str, Any] = {}
+    for key, _seconds in BACKTEST_HORIZONS:
+        samples = outcomes[key]
+        sample_size = len(samples)
+        horizons[key] = {
+            "status": "ready" if sample_size >= MIN_BACKTEST_SAMPLES else "insufficient",
+            "sample_size": sample_size,
+            "hit_rate_pct": round(sum(1 for value in samples if value > 0) / sample_size * 100, 2) if samples else None,
+            "average_directional_return_pct": round(mean(samples), 6) if samples else None,
+            "median_directional_return_pct": round(median(samples), 6) if samples else None,
+        }
+    return {
+        "status": "ready" if all(item["status"] == "ready" for item in horizons.values()) else "insufficient",
+        "signal_count": signal_count,
+        "minimum_sample_size": MIN_BACKTEST_SAMPLES,
+        "horizons": horizons,
+        "method": "仅用信号时点之后的封闭分钟价格计算 5m/15m/1h 方向收益；不使用未来数据参与信号。",
+        "disclaimer": "历史统计不含手续费、滑点和成交约束，不构成投资建议。",
+    }
+
+
+def build_realtime_intelligence(
+    feature_rows: list[dict[str, Any]],
+    *,
+    now_ts: int,
+    limit: int = 10,
+    include_backtest: bool = False,
+) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in feature_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol.endswith("USDT"):
+            continue
+        grouped[symbol].append(row)
+    for rows in grouped.values():
+        rows.sort(key=lambda row: (_bucket_end(row), str(row.get("exchange") or "")))
+    anchor = max((_bucket_end(row) for rows in grouped.values() for row in rows), default=0)
+    if anchor <= 0:
+        return {
+            "schema_version": REALTIME_INTELLIGENCE_SCHEMA_VERSION,
+            "generated_at": _iso_seconds(int(now_ts)),
+            "observed_at": "",
+            "data_status": "unavailable",
+            "items": [],
+            "boards": [],
+            "backtest": _backtest({}) if include_backtest else None,
+        }
+
+    items: list[dict[str, Any]] = []
+    five_minute_windows_by_symbol: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for symbol, rows in grouped.items():
+        ends = [_bucket_end(row) for row in rows]
+        five_minute_windows = _five_minute_windows(rows)
+        five_minute_windows_by_symbol[symbol] = five_minute_windows
+        windows = {
+            key: _aggregate_window(rows, ends, start_ts=anchor - seconds, end_ts=anchor)
+            for key, seconds in INTELLIGENCE_WINDOWS
+        }
+        surge = _surge_at(rows, ends, anchor)
+        ambush = _ambush(windows, surge)
+        resonance = _resonance(windows)
+        current_strength = abs(_number(windows["5m"].get("cvd_ratio_pct")) or 0)
+        items.append({
+            "symbol": symbol,
+            "coin": symbol[:-4],
+            "observed_at": _iso_seconds(anchor),
+            "data_status": "ready" if windows["5m"].get("available") else "partial",
+            "windows": windows,
+            "surge": surge,
+            "ambush": ambush,
+            "resonance": resonance,
+            "lifecycle": _lifecycle(rows, ends, anchor=anchor, surge=surge, ambush=ambush),
+            "rankings": {
+                "self": _rank(
+                    current_strength,
+                    _historical_strengths(five_minute_windows, anchor),
+                    method="当前 5m CVD 占比绝对值在该币近 24h 非重叠 5m 窗口中的经验分位",
+                ),
+            },
+        })
+
+    strength_samples = [float(item["surge"].get("score") or 0) for item in items]
+    absolute_samples = [float(item["windows"]["5m"].get("gross_trade_usd") or 0) for item in items]
+    for item in items:
+        item["rankings"]["market_strength"] = _rank(
+            float(item["surge"].get("score") or 0),
+            strength_samples,
+            method="同一封闭 5m 时点的 Surge 规则分横截面排名",
+        )
+        item["rankings"]["market_absolute"] = _rank(
+            float(item["windows"]["5m"].get("gross_trade_usd") or 0),
+            absolute_samples,
+            method="同一封闭 5m 时点的合约成交额绝对规模排名",
+        )
+
+    safe_limit = max(1, min(30, int(limit or 10)))
+    surge_items = sorted(
+        (item for item in items if item["surge"].get("triggered")),
+        key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]),
+        reverse=True,
+    )
+    ambush_items = sorted(
+        (item for item in items if item["ambush"].get("triggered")),
+        key=lambda item: (float(item["ambush"].get("score") or 0), item["symbol"]),
+        reverse=True,
+    )
+    boards = [
+        {
+            "key": "surge", "title": "Surge 加速", "count": len(surge_items),
+            "description": "最近两个 5m 封闭窗口的资金速度与价格/清算确认。",
+            "items": surge_items[:safe_limit],
+        },
+        {
+            "key": "ambush", "title": "短周期潜伏", "count": len(ambush_items),
+            "description": "5m/15m 资金同向但价格尚未充分移动的候选。",
+            "items": ambush_items[:safe_limit],
+        },
+    ]
+    return {
+        "schema_version": REALTIME_INTELLIGENCE_SCHEMA_VERSION,
+        "generated_at": _iso_seconds(int(now_ts)),
+        "observed_at": _iso_seconds(anchor),
+        "data_status": "ready" if any(item["data_status"] == "ready" for item in items) else "partial",
+        "coverage": {"symbols": len(items), "surge": len(surge_items), "ambush": len(ambush_items)},
+        "methodology": {
+            "surge": "封闭分钟特征计算，不使用当前未完成分钟。",
+            "ambush": "规则候选，不等于价格预测或交易建议。",
+            "resonance": "只在 5m/15m/1h 同方向且价格未反向时确认。",
+            "ranking": "自身、横截面强度和绝对成交规模使用不同口径。",
+        },
+        "items": sorted(items, key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]), reverse=True),
+        "boards": boards,
+        "backtest": _backtest(grouped, five_minute_windows_by_symbol) if include_backtest else None,
+    }
+
+
+def build_realtime_intelligence_radar_boards(
+    payload: dict[str, Any],
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(20, int(limit or 8)))
+
+    def board_item(item: dict[str, Any], metric: str) -> dict[str, Any]:
+        analysis = item.get(metric) if isinstance(item.get(metric), dict) else {}
+        direction = str(analysis.get("direction") or "neutral")
+        score = float(analysis.get("score") or 0)
+        rank = item.get("rankings", {}).get("market_strength", {})
+        return {
+            "symbol": str(item.get("symbol") or ""),
+            "coin": str(item.get("coin") or ""),
+            "value": round(score if direction == "long" else -score, 2),
+            "unit": "score",
+            "magnitude_usd": None,
+            "strength_percentile": rank.get("percentile"),
+            "updated_at": str(item.get("observed_at") or ""),
+            "status": "fresh",
+            "quality": "websocket_closed_bucket",
+            "direction": direction,
+            "lifecycle": item.get("lifecycle"),
+            "resonance": item.get("resonance"),
+        }
+
+    def build_board(metric: str, key: str, title: str, positive_title: str, negative_title: str) -> dict[str, Any]:
+        items = [
+            item for item in payload.get("items", [])
+            if isinstance(item, dict) and bool((item.get(metric) or {}).get("triggered"))
+        ]
+        positives = sorted(
+            (item for item in items if str((item.get(metric) or {}).get("direction")) == "long"),
+            key=lambda item: float((item.get(metric) or {}).get("score") or 0),
+            reverse=True,
+        )[:safe_limit]
+        negatives = sorted(
+            (item for item in items if str((item.get(metric) or {}).get("direction")) == "short"),
+            key=lambda item: float((item.get(metric) or {}).get("score") or 0),
+            reverse=True,
+        )[:safe_limit]
+        return {
+            "key": key,
+            "title": title,
+            "metric": f"{metric}_score",
+            "unit": "score",
+            "available": bool(items),
+            "coverage": int((payload.get("coverage") or {}).get("symbols") or 0),
+            "positive": {"title": positive_title, "items": [board_item(item, metric) for item in positives]},
+            "negative": {"title": negative_title, "items": [board_item(item, metric) for item in negatives]},
+            "reason": "" if items else "当前没有达到规则阈值的候选",
+        }
+
+    return [
+        build_board("surge", "realtime_surge", "Surge 加速", "多头加速", "空头加速"),
+        build_board("ambush", "realtime_ambush", "短周期潜伏", "多头潜伏", "空头潜伏"),
+    ]
+
+
+__all__ = [
+    "BACKTEST_HORIZONS",
+    "INTELLIGENCE_WINDOWS",
+    "MIN_BACKTEST_SAMPLES",
+    "REALTIME_INTELLIGENCE_SCHEMA_VERSION",
+    "build_realtime_intelligence",
+    "build_realtime_intelligence_radar_boards",
+]

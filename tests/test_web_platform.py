@@ -50,6 +50,7 @@ from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.market_cockpit import MarketSnapshotStore
+from paopao_radar.realtime_market import RealtimeFeatureStore
 from paopao_radar.signal_store import SignalEventStore, append_from_push
 from paopao_radar.signal_intelligence import absolute_metric, build_radar_intelligence
 from paopao_radar.web_observability import PublicApiMetrics, PublicStreamMetrics, PublicTelemetry, SlidingWindowRateLimiter
@@ -217,7 +218,9 @@ class PublicContextContractTests(unittest.TestCase):
         source = __import__("inspect").getsource(web.WebHandler.do_GET)
         self.assertIn("/public-api/signals/context", source)
         self.assertIn("/public-api/market/snapshot", source)
+        self.assertIn("/public-api/market/realtime", source)
         self.assertIn("/public-api/radar/intelligence", source)
+        self.assertIn("/public-api/radar/realtime-intelligence", source)
         self.assertIn("/public-api/coin/context", source)
         self.assertIn("/public-api/market/watchlist", source)
         self.assertIn("/public-api/funds/sectors", source)
@@ -329,6 +332,8 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertIn(payload["data"]["status"], {"ok", "degraded"})
         self.assertEqual(payload["data"]["database"]["signals"], 1)
         self.assertTrue(payload["data"]["database"]["latest_at"])
+        self.assertEqual(payload["data"]["realtime_market"]["status"], "empty")
+        self.assertEqual(payload["data"]["realtime_market"]["symbols"], 0)
         self.assertGreater(payload["data"]["cache"]["max_entries"], 0)
         self.assertIn("evictions", payload["data"]["cache"])
         self.assertGreater(payload["data"]["requests"]["route_limit"], 0)
@@ -337,6 +342,27 @@ class PublicContextContractTests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False).lower()
         self.assertNotIn("bot_token", serialized)
         self.assertNotIn("password", serialized)
+
+    def test_public_health_reports_enabled_exchange_gaps_as_partial(self) -> None:
+        now = int(time.time())
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            RealtimeFeatureStore(settings.realtime_features_db_path).replace_many([{
+                "exchange": "binance", "market": "futures", "symbol": "BTCUSDT",
+                "bucket_start": now - 60, "bucket_sec": 60,
+                "trade_buy_usd": 100, "trade_sell_usd": 50, "cvd_usd": 50,
+                "trade_count": 1, "price_open": 100, "price_high": 100,
+                "price_low": 100, "price_close": 100,
+                "long_liquidation_usd": 0, "short_liquidation_usd": 0,
+                "liquidation_count": 0, "last_event_ms": now * 1000,
+            }])
+            payload = public_api_health_payload(settings=settings)
+
+        realtime = payload["data"]["realtime_market"]
+        self.assertEqual(realtime["status"], "partial")
+        self.assertEqual(realtime["exchanges"]["binance"]["status"], "ready")
+        self.assertEqual(realtime["exchanges"]["bybit"]["status"], "empty")
+        self.assertEqual(realtime["exchanges"]["okx"]["status"], "empty")
 
     def test_operational_audit_scope_keeps_auth_failures_separate(self) -> None:
         with TemporaryDirectory() as tmp:
