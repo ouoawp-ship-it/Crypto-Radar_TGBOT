@@ -5,8 +5,10 @@ export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number
 
 const INTERNAL_BASE = process.env.PAOXX_PUBLIC_API_INTERNAL_BASE || "http://127.0.0.1:8080";
 const REQUEST_TIMEOUT_MS = Number(process.env.PAOXX_PUBLIC_API_TIMEOUT_MS || 15000);
+const MAX_RESPONSE_CACHE_ENTRIES = 100;
 const responseCache = new Map<string, { expiresAt: number; result: ApiResult<unknown> }>();
-const inFlight = new Map<string, Promise<unknown>>();
+const inFlight = new Map<string, { controller: AbortController; promise: Promise<unknown> }>();
+let cacheGeneration = 0;
 
 export function reportPublicTelemetry(event: "frontend_api_error" | "frontend_render_error" | "frontend_unhandled_error" | "frontend_route_loaded"): void {
   if (typeof window === "undefined") return;
@@ -42,8 +44,20 @@ function errorText(payload: unknown, fallback: string): string {
 }
 
 export function invalidatePublicApiCache(): void {
+  cacheGeneration += 1;
   responseCache.clear();
+  for (const entry of inFlight.values()) entry.controller.abort();
   inFlight.clear();
+}
+
+function cacheResponse(url: string, expiresAt: number, result: ApiResult<unknown>): void {
+  responseCache.delete(url);
+  responseCache.set(url, { expiresAt, result });
+  while (responseCache.size > MAX_RESPONSE_CACHE_ENTRIES) {
+    const oldest = responseCache.keys().next().value;
+    if (!oldest) break;
+    responseCache.delete(oldest);
+  }
 }
 
 export async function publicFetchResult<T>(
@@ -56,13 +70,24 @@ export async function publicFetchResult<T>(
   if (typeof window !== "undefined" && !options.bypassCache) {
     const cached = responseCache.get(url) as { expiresAt: number; result: ApiResult<T> } | undefined;
     if (cached && cached.expiresAt > Date.now()) return cached.result;
+    if (cached) responseCache.delete(url);
   }
-  const pending = inFlight.get(url) as Promise<ApiResult<T>> | undefined;
-  if (pending) return pending;
+  if (options.bypassCache) {
+    responseCache.delete(url);
+    inFlight.get(url)?.controller.abort();
+    inFlight.delete(url);
+  }
+  const pending = inFlight.get(url);
+  if (pending) return pending.promise as Promise<ApiResult<T>>;
 
+  const generation = cacheGeneration;
+  const controller = new AbortController();
   const request = (async (): Promise<ApiResult<T>> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         cache: typeof window !== "undefined" || options.bypassCache ? "no-store" : undefined,
@@ -79,21 +104,24 @@ export async function publicFetchResult<T>(
         ? payload.data as T
         : payload as T;
       const result: ApiResult<T> = { ok: true, status: response.status, path, data };
-      if (typeof window !== "undefined") responseCache.set(url, { expiresAt: Date.now() + ttl * 1000, result });
+      if (typeof window !== "undefined" && generation === cacheGeneration) {
+        cacheResponse(url, Date.now() + ttl * 1000, result);
+      }
       return result;
     } catch (error) {
-      const aborted = error instanceof DOMException && error.name === "AbortError";
-      reportPublicTelemetry("frontend_api_error");
-      return { ok: false, path, error: aborted ? "公开接口响应超时" : "数据暂时不可用" };
+      const aborted = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+      if (!aborted || timedOut) reportPublicTelemetry("frontend_api_error");
+      return { ok: false, path, error: timedOut ? "公开接口响应超时" : aborted ? "请求已取消" : "数据暂时不可用" };
     } finally {
       clearTimeout(timer);
     }
   })();
-  inFlight.set(url, request);
+  const entry = { controller, promise: request };
+  inFlight.set(url, entry);
   try {
     return await request;
   } finally {
-    inFlight.delete(url);
+    if (inFlight.get(url) === entry) inFlight.delete(url);
   }
 }
 
@@ -103,12 +131,12 @@ export async function publicFetch<T>(path: `/public-api/${string}`, query?: Quer
   return result.data;
 }
 
-export function getSignalStats(windowSec = 86400) {
-  return publicFetch<Record<string, unknown>>("/public-api/signals/stats", { window_sec: windowSec });
+export function getSignalStats(windowSec = 86400, options: PublicFetchOptions = {}) {
+  return publicFetch<Record<string, unknown>>("/public-api/signals/stats", { window_sec: windowSec }, options);
 }
 
-export function getSignals(query: Query = {}) {
-  return publicFetch<ListPayload<SignalItem>>("/public-api/signals", query);
+export function getSignals(query: Query = {}, options: PublicFetchOptions = {}) {
+  return publicFetch<ListPayload<SignalItem>>("/public-api/signals", query, options);
 }
 
 export function getSignalContext(signalId: number | string, options: PublicFetchOptions = {}) {

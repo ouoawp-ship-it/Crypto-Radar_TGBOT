@@ -340,6 +340,35 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertEqual(load_count, 1)
         self.assertGreaterEqual(cache.stats()["waits"], 1)
 
+    def test_capacity_is_bounded_and_recent_hits_survive_eviction(self) -> None:
+        cache = RuntimeCache(max_entries=2)
+        cache.get_or_set("first", 30, lambda: "first")
+        cache.get_or_set("second", 30, lambda: "second")
+        self.assertEqual(cache.get_or_set("first", 30, lambda: "unexpected"), "first")
+
+        cache.get_or_set("third", 30, lambda: "third")
+        stats = cache.stats()
+
+        self.assertEqual(stats["entries"], 2)
+        self.assertEqual(stats["max_entries"], 2)
+        self.assertEqual(stats["evictions"], 1)
+        second_loader = Mock(return_value="second-reloaded")
+        self.assertEqual(cache.get_or_set("second", 30, second_loader), "second-reloaded")
+        second_loader.assert_called_once_with()
+
+    def test_unrelated_insert_prunes_expired_entries(self) -> None:
+        now = [100.0]
+        cache = RuntimeCache(clock=lambda: now[0], max_entries=10)
+        cache.get_or_set("old-a", 1, lambda: "a")
+        cache.get_or_set("old-b", 1, lambda: "b")
+
+        now[0] = 102.0
+        cache.get_or_set("new", 30, lambda: "new")
+        stats = cache.stats()
+
+        self.assertEqual(stats["entries"], 1)
+        self.assertEqual(stats["expired_pruned"], 2)
+
 
 class DashboardRuntimeCacheTests(unittest.TestCase):
     def setUp(self) -> None:

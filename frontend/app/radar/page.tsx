@@ -9,8 +9,7 @@ import {
   getRadarBoards,
   getRadarIntelligence,
   getSignals,
-  getSignalStats,
-  invalidatePublicApiCache
+  getSignalStats
 } from "@/lib/api";
 import { compact, formatDateTime, safeText } from "@/lib/format";
 import { cockpitV2Enabled } from "@/lib/features";
@@ -44,6 +43,10 @@ type RadarSnapshot = {
 };
 
 const defaultFilters: RadarFilters = { symbol: "", module: "", status: "sent", q: "", window_sec: "3600" };
+
+function emptyRadarSnapshot(): RadarSnapshot {
+  return { signals: [], signalCount: 0, stats: {}, intelligence: {}, overview: {}, boards: {}, loadedAt: new Date(0) };
+}
 
 const moduleOptions = [
   { value: "", label: "全部事件" },
@@ -115,7 +118,7 @@ function valueTone(value: unknown) {
 function dataStatusMeta(status?: string) {
   switch (status) {
     case "ready": return { label: "LIVE", detail: "数据就绪", className: "bg-emerald-50 text-emerald-700" };
-    case "warming_up": return { label: "WARMING", detail: "历史数据预热中", className: "bg-sky-50 text-sky-700" };
+    case "warming_up": return { label: "WARMING", detail: "历史数据预热中", className: "bg-primary-50 text-primary-700" };
     case "partial":
     case "degraded": return { label: "PARTIAL", detail: "部分指标可用", className: "bg-amber-50 text-amber-700" };
     case "stale": return { label: "STALE", detail: "数据已过期", className: "bg-red-50 text-red-700" };
@@ -355,7 +358,7 @@ function OpportunityList({ boards, onOpen }: { boards: OpportunityBoard[]; onOpe
 function CockpitRadarPage() {
   const [draftFilters, setDraftFilters] = useState<RadarFilters>(defaultFilters);
   const [appliedFilters, setAppliedFilters] = useState<RadarFilters>(defaultFilters);
-  const [snapshot, setSnapshot] = useState<RadarSnapshot>({ signals: [], signalCount: 0, stats: {}, intelligence: {}, overview: {}, boards: {}, loadedAt: new Date(0) });
+  const [snapshot, setSnapshot] = useState<RadarSnapshot>(emptyRadarSnapshot);
   const [pendingSnapshot, setPendingSnapshot] = useState<RadarSnapshot | null>(null);
   const [incomingCount, setIncomingCount] = useState(0);
   const [error, setError] = useState("");
@@ -366,17 +369,20 @@ function CockpitRadarPage() {
   const [streamState, setStreamState] = useState<"connecting" | "live" | "reconnecting" | "paused">("connecting");
   const [selectedSignalId, setSelectedSignalId] = useState<number | string>("");
   const signalRefs = useRef<Set<string>>(new Set());
+  const requestRef = useRef(0);
+  const streamRefreshTimerRef = useRef<number | null>(null);
 
-  async function fetchSnapshot(nextFilters: RadarFilters): Promise<RadarSnapshot> {
+  async function fetchSnapshot(nextFilters: RadarFilters, refresh = false): Promise<RadarSnapshot> {
     const windowSec = Number(nextFilters.window_sec || 3600);
-    const list = await getSignals({ ...nextFilters, limit: 60 });
+    const fetchOptions = refresh ? { bypassCache: true } : undefined;
+    const list = await getSignals({ ...nextFilters, limit: 60 }, fetchOptions);
     const items = list.items || [];
     const refs = items.map((item) => item.public_ref || item.id || "").filter(Boolean);
     const [statPayload, intelligencePayload, overviewPayload, boardPayload] = await Promise.all([
-      getSignalStats(Math.max(windowSec, 3600)).catch(() => ({})),
-      getRadarIntelligence(Math.max(windowSec, 3600), 5, refs).catch(() => ({ data_status: "degraded", items: [], boards: [] } as RadarIntelligence)),
-      getMarketOverview(windowSec).catch(() => ({ data_status: "empty", warnings: ["市场总览暂时不可用"] } as MarketOverview)),
-      getRadarBoards(windowSec, 8).catch(() => ({ data_status: "empty", warnings: ["雷达榜单暂时不可用"], boards: [] } as RadarBoards))
+      getSignalStats(Math.max(windowSec, 3600), fetchOptions).catch(() => ({})),
+      getRadarIntelligence(Math.max(windowSec, 3600), 5, refs, fetchOptions).catch(() => ({ data_status: "degraded", items: [], boards: [] } as RadarIntelligence)),
+      getMarketOverview(windowSec, fetchOptions).catch(() => ({ data_status: "empty", warnings: ["市场总览暂时不可用"] } as MarketOverview)),
+      getRadarBoards(windowSec, 8, fetchOptions).catch(() => ({ data_status: "empty", warnings: ["雷达榜单暂时不可用"], boards: [] } as RadarBoards))
     ]);
     const intelligenceByReference = new Map<string, SignalIntelligence>();
     for (const entry of intelligencePayload.items || []) {
@@ -402,13 +408,23 @@ function CockpitRadarPage() {
   }
 
   async function load(nextFilters: RadarFilters, options: { refresh?: boolean; background?: boolean } = {}) {
-    if (options.refresh) invalidatePublicApiCache();
+    const request = ++requestRef.current;
+    const filtersChanged = Object.keys(defaultFilters).some((key) => (
+      nextFilters[key as keyof RadarFilters] !== appliedFilters[key as keyof RadarFilters]
+    ));
     if (options.background) setRefreshing(true); else setLoading(true);
     setError("");
     setMarketError("");
+    if (!options.background && filtersChanged) {
+      setSnapshot(emptyRadarSnapshot());
+      setPendingSnapshot(null);
+      setIncomingCount(0);
+      signalRefs.current.clear();
+    }
     setAppliedFilters(nextFilters);
     try {
-      const next = await fetchSnapshot(nextFilters);
+      const next = await fetchSnapshot(nextFilters, Boolean(options.refresh));
+      if (request !== requestRef.current) return;
       if (options.background && signalRefs.current.size) {
         const added = next.signals.filter((item) => !signalRefs.current.has(String(item.public_ref || item.id || ""))).length;
         if (added > 0) {
@@ -422,10 +438,12 @@ function CockpitRadarPage() {
       }
       if (next.overview.data_status === "empty" || next.boards.data_status === "empty") setMarketError("市场聚合数据正在积累，信号事件仍可正常使用。");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "信号雷达加载失败");
+      if (request === requestRef.current) setError(loadError instanceof Error ? loadError.message : "信号雷达加载失败");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === requestRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }
 
@@ -471,11 +489,22 @@ function CockpitRadarPage() {
     source.onopen = () => setStreamState("live");
     source.addEventListener("signal", () => {
       setStreamState("live");
-      if (document.visibilityState === "visible") void load(appliedFilters, { refresh: true, background: true });
+      if (document.visibilityState !== "visible") return;
+      if (streamRefreshTimerRef.current !== null) window.clearTimeout(streamRefreshTimerRef.current);
+      streamRefreshTimerRef.current = window.setTimeout(() => {
+        streamRefreshTimerRef.current = null;
+        void load(appliedFilters, { refresh: true, background: true });
+      }, 750);
     });
     source.addEventListener("status", () => setStreamState("live"));
     source.onerror = () => setStreamState("reconnecting");
-    return () => source.close();
+    return () => {
+      source.close();
+      if (streamRefreshTimerRef.current !== null) {
+        window.clearTimeout(streamRefreshTimerRef.current);
+        streamRefreshTimerRef.current = null;
+      }
+    };
   }, [paused, appliedFilters]);
 
   function syncFilterUrl(filters: RadarFilters) {
@@ -538,7 +567,7 @@ function CockpitRadarPage() {
   const warmupProgress = Math.max(0, Math.min(100, Number(readiness?.warmup_progress_pct || 0)));
 
   return (
-    <div className="space-y-3">
+    <div aria-busy={loading || refreshing} className="space-y-3">
       <header className="flex flex-col gap-3 px-0.5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -556,37 +585,37 @@ function CockpitRadarPage() {
 
       <form className="cockpit-panel" onSubmit={submit}>
         <div className="flex flex-col gap-3 p-2.5 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
-            <input className="input h-9 min-w-0 flex-1 sm:max-w-52" placeholder="BTC 或 BTCUSDT" value={draftFilters.symbol} onChange={(event) => setDraftFilters({ ...draftFilters, symbol: event.target.value.toUpperCase() })} />
-            <input className="input h-9 min-w-0 flex-1 sm:max-w-64" placeholder="搜索标题、摘要或关键词" value={draftFilters.q} onChange={(event) => setDraftFilters({ ...draftFilters, q: event.target.value })} />
-            <select aria-label="事件类型" className="input h-9 sm:w-32" value={draftFilters.module} onChange={(event) => setDraftFilters({ ...draftFilters, module: event.target.value })}>
+          <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-end">
+            <label className="min-w-0 flex-1 sm:max-w-52"><span className="mb-1 block text-xs font-medium text-text-secondary">币种</span><input className="input h-11 w-full min-w-0" placeholder="BTC 或 BTCUSDT" value={draftFilters.symbol} onChange={(event) => setDraftFilters({ ...draftFilters, symbol: event.target.value.toUpperCase() })} /></label>
+            <label className="min-w-0 flex-1 sm:max-w-64"><span className="mb-1 block text-xs font-medium text-text-secondary">关键词</span><input className="input h-11 w-full min-w-0" placeholder="搜索标题、摘要或关键词" value={draftFilters.q} onChange={(event) => setDraftFilters({ ...draftFilters, q: event.target.value })} /></label>
+            <label className="w-full sm:w-32"><span className="mb-1 block text-xs font-medium text-text-secondary">事件类型</span><select className="input h-11 w-full" value={draftFilters.module} onChange={(event) => setDraftFilters({ ...draftFilters, module: event.target.value })}>
               {moduleOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-            </select>
-            <select aria-label="发送状态" className="input h-9 sm:w-28" value={draftFilters.status} onChange={(event) => setDraftFilters({ ...draftFilters, status: event.target.value })}>
+            </select></label>
+            <label className="w-full sm:w-28"><span className="mb-1 block text-xs font-medium text-text-secondary">发送状态</span><select className="input h-11 w-full" value={draftFilters.status} onChange={(event) => setDraftFilters({ ...draftFilters, status: event.target.value })}>
               {statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-            </select>
-            <button className="btn h-9 px-3 text-xs" disabled={loading} type="submit">应用</button>
-            {activeFilterCount ? <button className="btn-secondary h-9 px-3 text-xs" onClick={reset} type="button">清除 {activeFilterCount}</button> : null}
+            </select></label>
+            <button className="btn h-11 px-3 text-xs" disabled={loading} type="submit">应用</button>
+            {activeFilterCount ? <button className="btn-secondary h-11 px-3 text-xs" onClick={reset} type="button">清除 {activeFilterCount}</button> : null}
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto">
-            <div className="flex rounded-md bg-surface-container p-0.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="grid w-full grid-cols-5 rounded-md bg-surface-container p-0.5 sm:flex sm:w-auto">
               {marketWindows.map((item) => {
                 const selected = draftFilters.window_sec === item.value;
-                return <button aria-pressed={selected} className={`h-8 min-w-11 rounded px-2 text-[11px] font-semibold transition ${selected ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-muted hover:text-text-primary"}`} key={item.value} onClick={() => changeWindow(item.value)} type="button">{item.label}</button>;
+                return <button aria-pressed={selected} className={`h-11 min-w-0 rounded px-2 text-xs font-semibold transition sm:min-w-11 ${selected ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-muted hover:text-text-primary"}`} key={item.value} onClick={() => changeWindow(item.value)} type="button">{item.label}</button>;
               })}
             </div>
-            <button className="btn-secondary h-9 whitespace-nowrap px-3 text-xs" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续更新" : "暂停"}</button>
-            <button aria-label="刷新雷达" className="btn-secondary h-9 w-9 px-0" disabled={refreshing || loading} onClick={() => void load(appliedFilters, { refresh: true, background: true })} type="button">{refreshing ? "…" : "↻"}</button>
+            <button className="btn-secondary h-11 flex-1 whitespace-nowrap px-3 text-xs sm:flex-none" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续更新" : "暂停"}</button>
+            <button aria-label="刷新雷达" className="btn-secondary h-11 w-11 px-0" disabled={refreshing || loading} onClick={() => void load(appliedFilters, { refresh: true, background: true })} type="button">{refreshing ? "…" : "↻"}</button>
           </div>
         </div>
       </form>
 
       {incomingCount && pendingSnapshot ? (
-        <button className="sticky top-[92px] z-20 mx-auto flex rounded-full border border-primary-100 bg-primary-700 px-4 py-2 text-xs font-semibold text-white shadow-floating" onClick={() => commit(pendingSnapshot)} type="button">新增 {incomingCount} 条异动，点击更新</button>
+        <button className="sticky top-[92px] z-20 mx-auto flex rounded-full border border-primary-100 bg-primary-700 px-4 py-2 text-xs font-semibold text-on-primary shadow-floating" onClick={() => commit(pendingSnapshot)} type="button">新增 {incomingCount} 条异动，点击更新</button>
       ) : null}
 
-      {error ? <ErrorState message={error} onRetry={() => load(appliedFilters, { refresh: true })} /> : null}
+      {error ? <ErrorState message={error} onRetry={() => load(appliedFilters, { refresh: true })} retainedData={snapshot.loadedAt.getTime() > 0} /> : null}
       {marketError ? <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{marketError}</div> : null}
 
       {!error ? (
@@ -630,7 +659,7 @@ function CockpitRadarPage() {
               <MetricLine label="OI" value={`${compact(snapshot.overview.coverage?.oi || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
               <MetricLine label="现货主动资金" value={`${compact(snapshot.overview.coverage?.spot_flow || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
               <MetricLine label="合约主动资金" value={`${compact(snapshot.overview.coverage?.futures_flow || 0)} / ${compact(snapshot.overview.coverage?.assets || 0)}`} />
-              {(snapshot.overview.warnings || []).length ? <div className="space-y-1.5 border-t border-border-subtle bg-amber-50/40 p-3">{snapshot.overview.warnings?.map((warning) => <p className="text-[10px] leading-4 text-amber-800" key={warning}>• {warning}</p>)}</div> : null}
+              {(snapshot.overview.warnings || []).length ? <div aria-live="polite" className="space-y-1.5 border-t border-border-subtle bg-amber-50/40 p-3" role="status">{snapshot.overview.warnings?.map((warning) => <p className="text-[10px] leading-4 text-amber-800" key={warning}>• {warning}</p>)}</div> : null}
             </section>
           </aside>
         </div>

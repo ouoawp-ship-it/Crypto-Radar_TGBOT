@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DataStatusBadge } from "@/components/DataStatusBadge";
 import { ErrorState } from "@/components/ErrorState";
 import { FeatureUnavailable } from "@/components/FeatureUnavailable";
@@ -79,16 +79,20 @@ function AgentsPageContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [windowSec, setWindowSec] = useState(14_400);
+  const requestRef = useRef(0);
 
   async function load(refresh = false) {
+    const request = ++requestRef.current;
+    if (!refresh) setPayload(null);
     setLoading(true);
     setError("");
     try {
-      setPayload(await getAgentsOverview(windowSec, { bypassCache: refresh }));
+      const next = await getAgentsOverview(windowSec, { bypassCache: refresh });
+      if (request === requestRef.current) setPayload(next);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "AI 决策加载失败");
+      if (request === requestRef.current) setError(loadError instanceof Error ? loadError.message : "AI 决策加载失败");
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }
 
@@ -98,23 +102,23 @@ function AgentsPageContent() {
   const messages = payload?.agents?.messages || [];
 
   return (
-    <div className="space-y-3">
+    <div aria-busy={loading} className="space-y-3">
       <PageTitle title="AI 决策" subtitle="规则先生成状态，AI 只负责压缩表达；每条结论都能展开到时间、来源和状态明确的证据。" tags={[`引擎 ${safeText(payload?.engine_version)}`, "Evidence First", "不构成投资建议"]} />
 
       <section className="cockpit-panel p-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1">{[
+          <div aria-label="决策时间窗口" className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1" role="group">{[
             { value: 3600, label: "1h" }, { value: 14_400, label: "4h" }, { value: 86_400, label: "1d" }
-          ].map((item) => <button className={`h-8 rounded-md px-4 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => setWindowSec(item.value)} type="button">{item.label}</button>)}</div>
+          ].map((item) => <button aria-pressed={windowSec === item.value} className={`h-8 rounded-md px-4 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => setWindowSec(item.value)} type="button">{item.label}</button>)}</div>
           <div className="flex items-center gap-2"><DataStatusBadge label={safeText(payload?.data_status, loading ? "loading" : "empty").toUpperCase()} tone={statusTone(payload?.data_status)} /><button className="btn-secondary h-9 px-3 text-xs" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "刷新中" : "刷新结论"}</button></div>
         </div>
       </section>
 
-      {error ? <ErrorState message={error} onRetry={() => void load(true)} /> : null}
+      {error ? <ErrorState message={error} onRetry={() => void load(true)} retainedData={Boolean(payload)} /> : null}
 
       <section className="grid grid-cols-2 gap-2 lg:grid-cols-5">
         {[
-          ["结构化结论", payload?.coverage?.insights || 0], ["Ready", payload?.coverage?.ready || 0], ["证据引用", payload?.coverage?.evidence || 0], ["雷达信号", payload?.coverage?.signals || 0], ["资讯输入", payload?.coverage?.news_events || 0]
+          ["结构化结论", payload ? payload.coverage?.insights || 0 : "—"], ["Ready", payload ? payload.coverage?.ready || 0 : "—"], ["证据引用", payload ? payload.coverage?.evidence || 0 : "—"], ["雷达信号", payload ? payload.coverage?.signals || 0 : "—"], ["资讯输入", payload ? payload.coverage?.news_events || 0 : "—"]
         ].map(([label, value]) => <div className="cockpit-panel p-3" key={String(label)}><div className="text-[10px] font-semibold text-text-muted">{label}</div><div className="table-number mt-1 text-xl font-semibold text-text-primary">{value}</div></div>)}
       </section>
 
@@ -144,7 +148,7 @@ function AgentsPageContent() {
         <p className="mt-3 border-t border-primary-100 pt-3 text-[11px] font-semibold text-primary-900">{safeText(payload?.safety?.disclaimer, "市场观察，不构成投资建议。")}</p>
       </section>
 
-      {(payload?.warnings || []).length ? <section className="cockpit-panel border-amber-200 bg-amber-50/70 p-3"><h2 className="text-xs font-semibold text-amber-900">数据降级说明</h2><ul className="mt-2 text-[11px] leading-5 text-amber-800">{payload?.warnings?.map((warning) => <li key={warning}>· {warning}</li>)}</ul></section> : null}
+      {(payload?.warnings || []).length ? <section aria-live="polite" className="cockpit-panel border-amber-200 bg-amber-50/70 p-3" role="status"><h2 className="text-xs font-semibold text-amber-900">数据降级说明</h2><ul className="mt-2 text-[11px] leading-5 text-amber-800">{payload?.warnings?.map((warning) => <li key={warning}>· {warning}</li>)}</ul></section> : null}
     </div>
   );
 }

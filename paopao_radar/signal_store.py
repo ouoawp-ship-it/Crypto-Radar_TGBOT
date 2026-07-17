@@ -721,7 +721,11 @@ class SignalEventStore:
     @staticmethod
     def _stats_from_conn(conn: sqlite3.Connection, *, window_sec: int) -> dict[str, Any]:
         cutoff = int(time.time()) - max(1, int(window_sec or 86400))
-        total = int(conn.execute("SELECT COUNT(*) FROM signals WHERE ts >= ?", (cutoff,)).fetchone()[0])
+        summary = conn.execute(
+            "SELECT COUNT(*) AS total, MAX(time) AS latest_at, MAX(ts) AS latest_ts FROM signals WHERE ts >= ?",
+            (cutoff,),
+        ).fetchone()
+        total = int(summary["total"] or 0) if summary else 0
         by_status = {
             str(row["status"]): int(row["count"])
             for row in conn.execute(
@@ -769,7 +773,34 @@ class SignalEventStore:
             "by_status": by_status,
             "top_symbols": top_symbols,
             "window_sec": int(window_sec or 86400),
+            "latest_at": str(summary["latest_at"] or "") if summary else "",
+            "latest_ts": int(summary["latest_ts"] or 0) if summary else 0,
         }
+
+    def health_summary(self, *, window_sec: int = 86400) -> dict[str, Any]:
+        cutoff = int(time.time()) - max(1, int(window_sec or 86400))
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, MAX(time) AS latest_at, MAX(ts) AS latest_ts FROM signals WHERE ts >= ?",
+                (cutoff,),
+            ).fetchone()
+        return {
+            "total": int(row["total"] or 0) if row else 0,
+            "latest_at": str(row["latest_at"] or "") if row else "",
+            "latest_ts": int(row["latest_ts"] or 0) if row else 0,
+            "window_sec": int(window_sec or 86400),
+        }
+
+    def stats_with_recent(self, *, window_sec: int = 86400, latest_limit: int = 8) -> dict[str, Any]:
+        safe_latest_limit = _limit(latest_limit, 8, 100)
+        with self.connect() as conn:
+            result = self._stats_from_conn(conn, window_sec=window_sec)
+            latest_rows = conn.execute(
+                f"SELECT {SIGNAL_LIST_PROJECTION} FROM signals ORDER BY id DESC LIMIT ?",
+                (safe_latest_limit,),
+            ).fetchall()
+        result["latest"] = [_row_to_dict(row) for row in latest_rows]
+        return result
 
     def stats_with_latest(
         self,
@@ -1269,17 +1300,19 @@ class SignalEventStore:
         self,
         signal_id: int | str,
         *,
+        compact: bool = False,
         conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         reference = str(signal_id or "").strip()
         is_numeric = reference.isdigit()
         where = "id = ?" if is_numeric else "public_ref = ?"
         value: int | str = int(reference) if is_numeric else reference
+        projection = SIGNAL_LIST_PROJECTION if compact else "*"
         if conn is None:
             with self.connect() as active_conn:
-                row = active_conn.execute(f"SELECT * FROM signals WHERE {where}", (value,)).fetchone()
+                row = active_conn.execute(f"SELECT {projection} FROM signals WHERE {where}", (value,)).fetchone()
         else:
-            row = conn.execute(f"SELECT * FROM signals WHERE {where}", (value,)).fetchone()
+            row = conn.execute(f"SELECT {projection} FROM signals WHERE {where}", (value,)).fetchone()
         return _row_to_dict(row) if row else None
 
     def intelligence_events(

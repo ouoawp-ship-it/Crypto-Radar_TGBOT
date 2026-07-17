@@ -2,17 +2,66 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { navItems } from "@/lib/routes";
 import { cockpitV2Preview } from "@/lib/features";
 import { ThemeToggle } from "./ThemeToggle";
 
 export function Header() {
   const pathname = usePathname();
+  const [health, setHealth] = useState<"checking" | "live" | "degraded" | "offline">("checking");
+
+  useEffect(() => {
+    let disposed = false;
+    let activeController: AbortController | null = null;
+
+    async function checkHealth() {
+      activeController?.abort();
+      const controller = new AbortController();
+      activeController = controller;
+      const timer = window.setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch("/public-api/health", { cache: "no-store", signal: controller.signal });
+        const payload = await response.json() as { ok?: boolean; data?: { status?: string } };
+        if (!disposed) {
+          if (!response.ok || payload.ok === false) setHealth("offline");
+          else setHealth(payload.data?.status === "ok" ? "live" : "degraded");
+        }
+      } catch {
+        if (!disposed && activeController === controller) setHealth("offline");
+      } finally {
+        window.clearTimeout(timer);
+      }
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") void checkHealth();
+    };
+    void checkHealth();
+    const interval = window.setInterval(() => void checkHealth(), 60_000);
+    window.addEventListener("online", checkHealth);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      disposed = true;
+      activeController?.abort();
+      window.clearInterval(interval);
+      window.removeEventListener("online", checkHealth);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, []);
+
+  const healthMeta = health === "live"
+    ? { label: "LIVE", detail: "公开 API 正常", dot: "animate-pulse bg-good" }
+    : health === "degraded"
+      ? { label: "DEGRADED", detail: "公开 API 可用，部分数据正在积累或降级", dot: "bg-warn" }
+    : health === "offline"
+      ? { label: "OFFLINE", detail: "公开 API 暂不可用", dot: "bg-risk" }
+      : { label: "CHECK", detail: "正在检查公开 API", dot: "animate-pulse bg-warn" };
   return (
     <header className="sticky top-0 z-30 border-b border-border-subtle bg-surface-panel/95 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-[1920px] items-center justify-between gap-3 px-3 sm:px-4 lg:px-5">
         <Link href="/" className="flex min-w-0 items-center gap-3">
-          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary-700 text-xs font-semibold text-white">
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary-700 text-xs font-semibold text-on-primary">
             PP
           </div>
           <div className="min-w-0">
@@ -39,8 +88,8 @@ export function Header() {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2">
-          <span className="hidden items-center gap-1.5 rounded-full border border-border-subtle px-2.5 py-1 text-[11px] font-semibold text-text-secondary lg:inline-flex">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good" />LIVE
+          <span aria-label={healthMeta.detail} className="hidden items-center gap-1.5 rounded-full border border-border-subtle px-2.5 py-1 text-[11px] font-semibold text-text-secondary lg:inline-flex">
+            <span className={`h-1.5 w-1.5 rounded-full ${healthMeta.dot}`} />{healthMeta.label}
           </span>
           <ThemeToggle />
           <a className="hidden h-9 items-center rounded-md border border-border-subtle bg-surface-panel px-3 text-xs font-semibold text-text-secondary transition hover:border-primary-100 hover:text-primary-700 sm:inline-flex" href="/admin">

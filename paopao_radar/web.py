@@ -3783,6 +3783,16 @@ PUBLIC_INDEX_HTML = r"""<!doctype html>
 INDEX_HTML = read_text_file(BASE_DIR / "paopao_radar" / "admin.html")
 
 
+def parse_content_length(value: Any) -> int:
+    try:
+        size = int(str(value or "0").strip() or "0")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Content-Length 必须是非负整数") from exc
+    if size < 0:
+        raise ValueError("Content-Length 必须是非负整数")
+    return size
+
+
 class WebHandler(BaseHTTPRequestHandler):
     server_version = "PaopaoRadarWeb/1.0"
     protocol_version = "HTTP/1.1"
@@ -3791,6 +3801,13 @@ class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write(f"[web] {self.address_string()} {fmt % args}\n")
 
+    def request_id(self) -> str:
+        current = str(getattr(self, "_request_id", "") or "")
+        if not current:
+            current = os.urandom(12).hex()
+            self._request_id = current
+        return current
+
     def api_meta(self, status: int) -> dict[str, Any]:
         parsed = urlparse(self.path)
         duration_ms = max(0.0, (time.perf_counter() - float(getattr(self, "request_started_at", time.perf_counter()))) * 1000)
@@ -3798,7 +3815,7 @@ class WebHandler(BaseHTTPRequestHandler):
             "served_at": now_text(),
             "path": parsed.path,
             "status": int(status),
-            "request_id": f"{int(time.time() * 1000)}-{threading.get_ident()}",
+            "request_id": self.request_id(),
             "duration_ms": round(duration_ms, 1),
         }
 
@@ -3821,7 +3838,11 @@ class WebHandler(BaseHTTPRequestHandler):
             indent=None if is_public_api else 2,
             separators=(",", ":") if is_public_api else None,
         ).encode("utf-8")
-        headers = {**getattr(self, "public_rate_headers", {}), **dict(extra_headers or {})}
+        headers = {
+            **getattr(self, "public_rate_headers", {}),
+            **dict(extra_headers or {}),
+            "X-Request-ID": self.request_id(),
+        }
         self.send_payload(payload, status, "application/json; charset=utf-8", extra_headers=headers)
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
@@ -3875,7 +3896,7 @@ class WebHandler(BaseHTTPRequestHandler):
             sys.stderr.write("[web] client disconnected during response\n")
 
     def read_json(self) -> dict[str, Any]:
-        size = int(self.headers.get("Content-Length", "0") or 0)
+        size = parse_content_length(self.headers.get("Content-Length", "0"))
         if size > 128 * 1024:
             raise ValueError("请求体太大")
         raw = self.rfile.read(size).decode("utf-8") if size else "{}"
@@ -4428,7 +4449,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if not self.require_public_rate_limit(path):
                 return
             try:
-                size = int(self.headers.get("Content-Length", "0") or 0)
+                size = parse_content_length(self.headers.get("Content-Length", "0"))
                 if size > 2048:
                     self.send_error_json("请求体太大", HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
                     return

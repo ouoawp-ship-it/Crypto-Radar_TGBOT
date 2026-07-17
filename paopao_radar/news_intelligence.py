@@ -481,24 +481,28 @@ def ingest_binance_announcements(
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     collector = source or BinanceDataSource(settings)
-    rows = articles if articles is not None else collector.announcements(page_size=min(50, settings.announcement_page_size), max_pages=max_pages)
-    events = normalize_binance_articles(rows, collected_at=now_ts)
-    store = NewsEventStore(settings.news_events_db_path)
-    written = store.upsert_many(events)
-    retention = store.prune(
-        now_ts=now_ts,
-        retention_days=settings.news_events_retention_days,
-        limit=settings.news_events_limit,
-    )
-    return {
-        "source": "Binance",
-        "source_type": "official_announcement",
-        "articles": len(rows),
-        "events": len(events),
-        "written": written,
-        "retention": retention,
-        "rights_status": "official_link_only",
-    }
+    try:
+        rows = articles if articles is not None else collector.announcements(page_size=min(50, settings.announcement_page_size), max_pages=max_pages)
+        events = normalize_binance_articles(rows, collected_at=now_ts)
+        store = NewsEventStore(settings.news_events_db_path)
+        written = store.upsert_many(events)
+        retention = store.prune(
+            now_ts=now_ts,
+            retention_days=settings.news_events_retention_days,
+            limit=settings.news_events_limit,
+        )
+        return {
+            "source": "Binance",
+            "source_type": "official_announcement",
+            "articles": len(rows),
+            "events": len(events),
+            "written": written,
+            "retention": retention,
+            "rights_status": "official_link_only",
+        }
+    finally:
+        if source is None:
+            collector.http.close()
 
 
 __all__ = [

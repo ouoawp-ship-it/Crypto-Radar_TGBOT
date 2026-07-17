@@ -43,6 +43,7 @@ const config: Config = {
           700: "rgb(var(--primary-700) / <alpha-value>)",
           800: "rgb(var(--primary-800) / <alpha-value>)"
         },
+        "on-primary": "rgb(var(--on-primary) / <alpha-value>)",
         "border-subtle": "rgb(var(--border-subtle) / <alpha-value>)",
         good: "rgb(var(--good) / <alpha-value>)",
         warn: "rgb(var(--warn) / <alpha-value>)",

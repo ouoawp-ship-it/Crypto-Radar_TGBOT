@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { PageTitle } from "@/components/PageTitle";
@@ -17,8 +17,10 @@ export default function WatchlistPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [inputError, setInputError] = useState("");
+  const requestRef = useRef(0);
 
   async function load(nextSymbols: string[], refresh = false) {
+    const request = ++requestRef.current;
     if (!nextSymbols.length) {
       setItems([]);
       setLoading(false);
@@ -28,11 +30,11 @@ export default function WatchlistPage() {
     setError("");
     try {
       const payload = await getWatchlistMarket(nextSymbols, { bypassCache: refresh });
-      setItems(payload.items || []);
+      if (request === requestRef.current) setItems(payload.items || []);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "自选行情加载失败");
+      if (request === requestRef.current) setError(loadError instanceof Error ? loadError.message : "自选行情加载失败");
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }
 
@@ -64,10 +66,11 @@ export default function WatchlistPage() {
     const next = saveWatchlist(symbols.filter((item) => item !== symbol));
     setSymbols(next);
     setItems((current) => current.filter((item) => item.symbol !== symbol));
+    void load(next, true);
   }
 
   return (
-    <div className="space-y-5">
+    <div aria-busy={loading} className="space-y-5">
       <PageTitle title="我的自选" subtitle="把重要币种保存在当前浏览器，用服务端聚合快照快速复查；不需要账号，也不会上传个人交易信息。" tags={["本地保存", `最多 ${WATCHLIST_LIMIT} 个`, "只读行情"]} />
 
       <form className="panel flex flex-col gap-3 p-4 sm:flex-row sm:items-end" onSubmit={add}>
@@ -75,8 +78,8 @@ export default function WatchlistPage() {
         <button className="btn h-10 sm:w-28" type="submit">加入自选</button>
         <button className="btn-secondary h-10 sm:w-24" disabled={!symbols.length || loading} onClick={() => void load(symbols, true)} type="button">{loading ? "刷新中" : "刷新"}</button>
       </form>
-      {inputError ? <p className="px-1 text-xs text-red-700">{inputError}</p> : null}
-      {error ? <ErrorState message={error} onRetry={() => void load(symbols, true)} /> : null}
+      {inputError ? <p className="px-1 text-xs text-red-700" role="alert">{inputError}</p> : null}
+      {error ? <ErrorState message={error} onRetry={() => void load(symbols, true)} retainedData={Boolean(items.length)} /> : null}
 
       {loading && !items.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: Math.max(2, symbols.length) }).map((_, index) => <div className="h-56 animate-pulse rounded-xl bg-surface-container" key={index} />)}</div> : null}
 
@@ -92,7 +95,7 @@ export default function WatchlistPage() {
               <article className="panel overflow-hidden" key={item.symbol}>
                 <div className="flex items-start justify-between gap-3 border-b border-border-subtle p-4">
                   <div><div className="table-number text-xl font-semibold text-text-primary">{safeText(item.symbol)}</div><div className="mt-1 text-xs text-text-muted">{item.ok ? freshnessLabel(market?.status, market?.age_sec) : safeText(item.error, "暂时不可用")}</div></div>
-                  <button aria-label={`移除 ${item.symbol}`} className="grid h-9 w-9 place-items-center rounded-lg border border-border-subtle text-text-muted hover:bg-surface-canvas" onClick={() => remove(String(item.symbol || ""))}>×</button>
+                  <button aria-label={`移除 ${item.symbol}`} className="grid h-9 w-9 place-items-center rounded-lg border border-border-subtle text-text-muted hover:bg-surface-canvas" onClick={() => remove(String(item.symbol || ""))} type="button">×</button>
                 </div>
                 <div className="grid grid-cols-2 gap-px bg-border-subtle">
                   {[["价格", metrics.price], ["24h", metrics.price_24h_pct], ["成交额", metrics.quote_volume], ["OI", metrics.oi_value]].map(([label, metric]) => {

@@ -472,7 +472,7 @@ class MarketSnapshotStore:
             return int(cursor.rowcount or 0)
 
 
-def collect_binance_market_rows(
+def _collect_binance_market_rows(
     settings: Settings,
     *,
     source: BinanceDataSource | None = None,
@@ -578,6 +578,29 @@ def collect_binance_market_rows(
             row["oi_change_pct"] = oi_change_pct
             row["coverage"]["oi"] = oi_usd is not None
     return selected
+
+
+def collect_binance_market_rows(
+    settings: Settings,
+    *,
+    source: BinanceDataSource | None = None,
+    now_ts: int | None = None,
+    limit: int | None = None,
+    oi_source: BinanceDataSource | None = None,
+) -> list[dict[str, Any]]:
+    owns_source = source is None
+    loaded = source or BinanceDataSource(settings)
+    try:
+        return _collect_binance_market_rows(
+            settings,
+            source=loaded,
+            now_ts=now_ts,
+            limit=limit,
+            oi_source=oi_source,
+        )
+    finally:
+        if owns_source:
+            loaded.http.close()
 
 
 def collect_market_flow_facts(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 import unittest
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -462,6 +463,7 @@ class SignalEventStoreTests(unittest.TestCase):
             store = SignalEventStore(settings.signal_events_db_path)
             compact = store.list_signals(limit=1, compact=True)["items"][0]
             detail = store.signal_detail(int(compact["id"])) or {}
+            compact_detail = store.signal_detail(int(compact["id"]), compact=True) or {}
 
         self.assertEqual(set(compact), set(detail))
         self.assertEqual(compact["text_html"], "")
@@ -469,6 +471,8 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertLessEqual(len(compact["excerpt"]), 260)
         self.assertGreater(len(detail["text_html"]), 5000)
         self.assertEqual(detail["payload"]["source"], "telegram_push")
+        self.assertEqual(compact_detail["text_html"], "")
+        self.assertEqual(compact_detail["payload"], {})
 
     def test_stats_with_latest_uses_one_connection(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -488,6 +492,29 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(store.connection_count, 1)
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["latest_sent"][0]["symbol"], "BTCUSDT")
+
+    def test_public_stats_and_health_summaries_avoid_unused_detail_queries(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="stats:public-summary",
+                status="sent",
+                sent=True,
+                text="BTCUSDT stats",
+                ts=int(time.time()),
+            )
+            store = CountingSignalEventStore(settings.signal_events_db_path)
+            public_stats = store.stats_with_recent(window_sec=86400)
+            health = store.health_summary(window_sec=86400)
+
+        self.assertEqual(store.connection_count, 2)
+        self.assertEqual(public_stats["total"], 1)
+        self.assertEqual(public_stats["latest"][0]["symbol"], "BTCUSDT")
+        self.assertNotIn("latest_sent", public_stats)
+        self.assertEqual(health["total"], 1)
+        self.assertTrue(health["latest_at"])
 
     def test_signal_events_view_defaults_missing_legacy_columns(self) -> None:
         with TemporaryDirectory() as tmp:

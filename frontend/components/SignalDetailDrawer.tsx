@@ -18,7 +18,7 @@ function metricTone(metric?: MarketMetric): string {
   const value = Number(metric?.value);
   if (!Number.isFinite(value) || value === 0) return "text-text-primary";
   if (metric?.unit === "percent" || metric?.unit === "percent_per_cycle") {
-    return value > 0 ? "text-emerald-700" : "text-red-700";
+    return value > 0 ? "text-good" : "text-risk";
   }
   return "text-text-primary";
 }
@@ -48,37 +48,74 @@ export function SignalDetailDrawer({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const requestRef = useRef(0);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   async function load(refresh = false) {
+    const request = ++requestRef.current;
     setLoading(true);
     setError("");
     try {
-      setContext(await getSignalContext(signalId, { bypassCache: refresh }));
+      const next = await getSignalContext(signalId, { bypassCache: refresh });
+      if (request === requestRef.current) setContext(next);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "信号上下文加载失败");
+      if (request === requestRef.current) setError(loadError instanceof Error ? loadError.message : "信号上下文加载失败");
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     setContext(null);
     void load();
+    return () => {
+      requestRef.current += 1;
+    };
   }, [signalId]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.style.overflow = "hidden";
     closeRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true");
+      if (!focusable.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", handleKey);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKey);
+      if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
     };
-  }, [onClose]);
+  }, []);
 
   const signal = context?.signal;
   const market = context?.market;
@@ -89,18 +126,19 @@ export function SignalDetailDrawer({
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35 backdrop-blur-[2px]" onMouseDown={onClose}>
       <aside
+        ref={dialogRef}
         aria-label="信号上下文详情"
         aria-modal="true"
-        className="h-full w-full overflow-y-auto bg-white shadow-2xl sm:max-w-[540px]"
+        className="h-full w-full overflow-y-auto bg-surface-panel shadow-2xl sm:max-w-[540px]"
         onMouseDown={(event) => event.stopPropagation()}
         role="dialog"
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-white/95 px-4 py-3 backdrop-blur sm:px-5">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-surface-panel/95 px-4 py-3 backdrop-blur sm:px-5">
           <div>
             <div className="text-xs font-semibold tracking-[0.08em] text-text-muted">SIGNAL CONTEXT</div>
             <div className="mt-0.5 text-sm font-semibold text-text-primary">证据与市场上下文</div>
           </div>
-          <button ref={closeRef} aria-label="关闭信号详情" className="grid h-10 w-10 place-items-center rounded-lg border border-border-subtle text-xl text-text-secondary transition hover:bg-surface-canvas" onClick={onClose}>
+          <button ref={closeRef} aria-label="关闭信号详情" className="grid h-11 w-11 place-items-center rounded-lg border border-border-subtle text-xl text-text-secondary transition hover:bg-surface-canvas" onClick={onClose}>
             ×
           </button>
         </div>
@@ -109,8 +147,8 @@ export function SignalDetailDrawer({
 
         {error ? (
           <div className="m-5 rounded-xl border border-risk/25 bg-risk/5 p-5">
-            <div className="font-semibold text-red-700">上下文加载失败</div>
-            <p className="mt-2 text-sm text-red-700/80">{error}</p>
+            <div className="font-semibold text-risk">上下文加载失败</div>
+            <p className="mt-2 text-sm text-risk">{error}</p>
             <button className="btn mt-4" onClick={() => void load(true)}>重新加载</button>
           </div>
         ) : null}
@@ -158,7 +196,7 @@ export function SignalDetailDrawer({
                 <div className="mt-3 rounded-xl border border-border-subtle p-3">
                   <div className="flex gap-1.5">
                     {context.resonance.windows.map((window) => (
-                      <span className={`flex-1 rounded-md py-2 text-center text-[11px] font-semibold ${window.active ? "bg-primary-600 text-white" : "bg-surface-container text-text-muted"}`} key={window.key}>
+                      <span className={`flex-1 rounded-md py-2 text-center text-[11px] font-semibold ${window.active ? "bg-primary-600 text-on-primary" : "bg-surface-container text-text-muted"}`} key={window.key}>
                         {window.key}
                       </span>
                     ))}
@@ -194,7 +232,7 @@ export function SignalDetailDrawer({
               ) : (
                 <div className="rounded-xl border border-dashed border-border-subtle p-5 text-sm text-text-muted">市场证据暂时不可用，信号原始记录仍可查看。</div>
               )}
-              {context.market_error ? <p className="mt-2 text-xs text-amber-700">{context.market_error}</p> : null}
+              {context.market_error ? <p className="mt-2 text-xs text-warn">{context.market_error}</p> : null}
             </section>
 
             {fundingRows.length ? (
@@ -207,7 +245,7 @@ export function SignalDetailDrawer({
                         <div className="font-semibold text-text-primary">{safeText(row.exchange)}</div>
                         <div className="mt-1 text-xs text-text-muted">{row.interval_hours ? `${row.interval_hours}H 周期` : "结算周期未知"}{row.next_funding_time ? ` · 下次 ${row.next_funding_time}` : ""}</div>
                       </div>
-                      <div className={`table-number self-center font-semibold ${Number(row.funding_pct) >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                      <div className={`table-number self-center font-semibold ${Number(row.funding_pct) >= 0 ? "text-good" : "text-risk"}`}>
                         {formatMetricValue(row.funding_pct, "percent_per_cycle")}
                       </div>
                     </div>

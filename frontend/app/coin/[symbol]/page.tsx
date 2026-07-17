@@ -28,9 +28,10 @@ function MetricCard({ label, metric }: { label: string; metric?: MarketMetric })
   );
 }
 
-function statusTone(status?: string): "good" | "warn" | "neutral" {
+function statusTone(status?: string): "good" | "warn" | "bad" | "neutral" {
   if (status === "ready" || status === "fresh") return "good";
   if (status === "degraded" || status === "stale") return "warn";
+  if (status === "unavailable") return "bad";
   return "neutral";
 }
 
@@ -70,6 +71,7 @@ export default function CoinContextPage() {
   async function load(refresh = false) {
     if (!symbol) return;
     const request = ++requestRef.current;
+    if (!refresh) setData(null);
     setLoading(true);
     setError("");
     try {
@@ -102,9 +104,9 @@ export default function CoinContextPage() {
   }
 
   return (
-    <div className="space-y-3">
+    <div aria-busy={loading} className="space-y-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <PageTitle title={`${data?.coin || symbol.replace("USDT", "")} 单币上下文`} subtitle="用行情、资金、OI、费率、排名与事件证据验证雷达信号，所有缺失值保持不可用。" tags={[safeText(data?.data_status, loading ? "LOADING" : "EMPTY").toUpperCase(), `${data?.evidence_coverage?.chart_points || 0} 根 K 线`, `${data?.summary?.signal_count || 0} 条事件`]} />
+        <PageTitle title={`${data?.coin || symbol.replace("USDT", "")} 单币上下文`} subtitle="用行情、资金、OI、费率、排名与事件证据验证雷达信号，所有缺失值保持不可用。" tags={[safeText(data?.data_status, loading ? "LOADING" : "EMPTY").toUpperCase(), data ? `${data.evidence_coverage?.chart_points || 0} 根 K 线` : "K 线 —", data ? `${data.summary?.signal_count || 0} 条事件` : "事件 —"]} />
         <div className="mb-5 flex flex-wrap gap-2">
           <WatchlistButton symbol={symbol} />
           <Link className="btn-secondary" href={data?.actions?.radar_url || `/radar?symbol=${symbol}`}>只看该币信号</Link>
@@ -114,7 +116,7 @@ export default function CoinContextPage() {
         </div>
       </div>
 
-      {error ? <ErrorState message={error} onRetry={() => void load(true)} /> : null}
+      {error ? <ErrorState message={error} onRetry={() => void load(true)} retainedData={Boolean(data)} /> : null}
       {loading && !data ? <div className="grid grid-cols-2 gap-2 md:grid-cols-4">{Array.from({ length: 8 }).map((_, index) => <div className="h-24 animate-pulse rounded-lg bg-surface-container" key={index} />)}</div> : null}
 
       {data ? (
@@ -136,8 +138,8 @@ export default function CoinContextPage() {
                 <div className="cockpit-panel-header flex-wrap">
                   <div><h2 className="text-sm font-semibold text-text-primary">K 线与成交量</h2><p className="mt-0.5 text-[11px] text-text-muted">{safeText(data.chart?.source, "数据源不可用")} · {data.chart?.coverage?.returned || 0}/{data.chart?.coverage?.requested || 0}</p></div>
                   <div className="flex flex-wrap items-center gap-1">
-                    <div className="flex rounded-md bg-surface-container-low p-0.5">{(["spot", "futures"] as const).map((item) => <button className={`h-7 rounded px-2.5 text-[11px] font-semibold ${marketType === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => setMarketType(item)} type="button">{item === "spot" ? "现货" : "合约"}</button>)}</div>
-                    <div className="flex max-w-full overflow-x-auto rounded-md bg-surface-container-low p-0.5">{INTERVALS.map((item) => <button className={`h-7 rounded px-2 text-[11px] font-semibold ${interval === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => setInterval(item)} type="button">{item}</button>)}</div>
+                    <div aria-label="行情类型" className="flex rounded-md bg-surface-container-low p-0.5" role="group">{(["spot", "futures"] as const).map((item) => <button aria-pressed={marketType === item} className={`h-7 rounded px-2.5 text-[11px] font-semibold ${marketType === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => setMarketType(item)} type="button">{item === "spot" ? "现货" : "合约"}</button>)}</div>
+                    <div aria-label="K 线周期" className="flex max-w-full overflow-x-auto rounded-md bg-surface-container-low p-0.5" role="group">{INTERVALS.map((item) => <button aria-pressed={interval === item} className={`h-7 rounded px-2 text-[11px] font-semibold ${interval === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => setInterval(item)} type="button">{item}</button>)}</div>
                     <button className="btn-secondary h-8 px-3 text-[11px]" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "刷新中" : "刷新"}</button>
                   </div>
                 </div>
@@ -188,7 +190,7 @@ export default function CoinContextPage() {
             </aside>
           </div>
 
-          {(data.warnings || []).length ? <section className="cockpit-panel border-amber-200 bg-amber-50/70 p-3"><h2 className="text-xs font-semibold text-amber-900">数据降级说明</h2><ul className="mt-2 space-y-1 text-[11px] leading-5 text-amber-800">{(data.warnings || []).map((item) => <li key={item}>· {item}</li>)}</ul></section> : null}
+          {(data.warnings || []).length ? <section aria-live="polite" className="cockpit-panel border-amber-200 bg-amber-50/70 p-3" role="status"><h2 className="text-xs font-semibold text-amber-900">数据降级说明</h2><ul className="mt-2 space-y-1 text-[11px] leading-5 text-amber-800">{(data.warnings || []).map((item) => <li key={item}>· {item}</li>)}</ul></section> : null}
         </>
       ) : null}
     </div>

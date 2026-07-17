@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+from math import ceil
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
 import requests
@@ -79,19 +82,196 @@ class DataQuality:
             }
 
 
+@dataclass
+class _UpstreamSourceStats:
+    successes: int = 0
+    failures: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    skipped: int = 0
+    last_success_at: float | None = None
+    last_failure_at: float | None = None
+    last_error: str = ""
+    durations_ms: deque[float] = field(default_factory=deque)
+
+
+class UpstreamSourceMetrics:
+    """Bounded, process-level health metrics for public upstream data sources."""
+
+    def __init__(
+        self,
+        *,
+        sample_limit: int = 200,
+        source_limit: int = 32,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.sample_limit = max(20, int(sample_limit))
+        self.source_limit = max(3, int(source_limit))
+        self._clock = clock
+        self._sources: dict[str, _UpstreamSourceStats] = {}
+        self._collapsed_sources = 0
+        self._lock = RLock()
+
+    def _stats_for(self, source: str) -> _UpstreamSourceStats:
+        normalized = str(source or "unknown").strip().lower() or "unknown"
+        stats = self._sources.get(normalized)
+        if stats is not None:
+            return stats
+        # Keep one slot available for unexpected source names so labels stay bounded.
+        if len(self._sources) < self.source_limit - 1:
+            stats = _UpstreamSourceStats(durations_ms=deque(maxlen=self.sample_limit))
+            self._sources[normalized] = stats
+            return stats
+        self._collapsed_sources += 1
+        stats = self._sources.get("other")
+        if stats is None:
+            stats = _UpstreamSourceStats(durations_ms=deque(maxlen=self.sample_limit))
+            self._sources["other"] = stats
+        return stats
+
+    def record_cache(self, source: str, *, hit: bool) -> None:
+        with self._lock:
+            stats = self._stats_for(source)
+            if hit:
+                stats.cache_hits += 1
+            else:
+                stats.cache_misses += 1
+
+    def record_network(
+        self,
+        source: str,
+        *,
+        success: bool,
+        duration_ms: float,
+        error: str = "",
+    ) -> None:
+        with self._lock:
+            stats = self._stats_for(source)
+            stats.durations_ms.append(max(0.0, float(duration_ms)))
+            if success:
+                stats.successes += 1
+                stats.last_success_at = self._clock()
+            else:
+                stats.failures += 1
+                stats.last_failure_at = self._clock()
+                stats.last_error = self._safe_error(error)
+
+    def record_skip(self, source: str, reason: str) -> None:
+        with self._lock:
+            stats = self._stats_for(source)
+            stats.skipped += 1
+            stats.last_failure_at = self._clock()
+            stats.last_error = self._safe_error(reason or "skipped")
+
+    @staticmethod
+    def _safe_error(value: Any) -> str:
+        error = str(value or "unknown").strip()[:120]
+        if re.fullmatch(r"(?:status=\d{3}|[A-Za-z][A-Za-z0-9_.-]{0,79})", error):
+            return error
+        return "upstream_error"
+
+    @staticmethod
+    def _percentile(values: list[float], quantile: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        index = max(0, ceil(len(ordered) * quantile) - 1)
+        return round(ordered[index], 1)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            now = self._clock()
+            sources: dict[str, dict[str, Any]] = {}
+            for source, stats in self._sources.items():
+                attempts = stats.successes + stats.failures
+                cache_total = stats.cache_hits + stats.cache_misses
+                latest_failed = (
+                    stats.last_failure_at is not None
+                    and (stats.last_success_at is None or stats.last_failure_at >= stats.last_success_at)
+                )
+                if latest_failed:
+                    status = "degraded"
+                elif stats.successes:
+                    status = "ready"
+                else:
+                    status = "unobserved"
+                sources[source] = {
+                    "status": status,
+                    "attempts": attempts,
+                    "successes": stats.successes,
+                    "failures": stats.failures,
+                    "success_rate": round(stats.successes / attempts, 4) if attempts else None,
+                    "p50_ms": self._percentile(list(stats.durations_ms), 0.50),
+                    "p95_ms": self._percentile(list(stats.durations_ms), 0.95),
+                    "max_ms": round(max(stats.durations_ms), 1) if stats.durations_ms else 0.0,
+                    "cache_hits": stats.cache_hits,
+                    "cache_misses": stats.cache_misses,
+                    "cache_hit_rate": round(stats.cache_hits / cache_total, 4) if cache_total else None,
+                    "skipped": stats.skipped,
+                    "data_age_sec": (
+                        max(0, int(now - stats.last_success_at))
+                        if stats.last_success_at is not None
+                        else None
+                    ),
+                    "last_error": stats.last_error,
+                }
+            statuses = {item["status"] for item in sources.values()}
+            if "degraded" in statuses:
+                status = "degraded"
+            elif "ready" in statuses:
+                status = "ready"
+            else:
+                status = "unobserved"
+            return {
+                "scope": "process",
+                "status": status,
+                "source_limit": self.source_limit,
+                "collapsed_sources": self._collapsed_sources,
+                "sources": sources,
+            }
+
+
+UPSTREAM_SOURCE_METRICS = UpstreamSourceMetrics()
+
+
+def _source_id_from_quality_key(quality_key: str) -> str:
+    key = str(quality_key or "http").strip()
+    if key.startswith("funding:"):
+        exchange = key.split(":", 1)[1].strip().lower()
+        return "binance_futures_public" if exchange == "binance" else f"{exchange}_funding_public"
+    if key == "spotKlines":
+        return "binance_spot_public"
+    if key == "announcements":
+        return "binance_announcements"
+    if key == "coinpaprikaMarketCaps":
+        return "coinpaprika_market"
+    if key == "marketCaps":
+        return "binance_market_metadata"
+    if key in {"exchangeInfo", "ticker24hr", "premiumIndex", "openInterestHist", "klines", "fundingRate", "depth"}:
+        return "binance_futures_public"
+    return "other"
+
+
 class HttpClient:
     def __init__(
         self,
         settings: Settings,
         quality: DataQuality,
         session: requests.Session | None = None,
+        *,
+        metrics: UpstreamSourceMetrics | None = None,
+        cache_max_entries: int = 1024,
     ):
         self.settings = settings
         self.quality = quality
         self._owns_session = session is None
         self._closed = False
         self.session = session if session is not None else requests.Session()
-        self.cache: dict[str, tuple[float, Any]] = {}
+        self.metrics = metrics or UPSTREAM_SOURCE_METRICS
+        self.cache_max_entries = max(1, int(cache_max_entries))
+        self.cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._cache_evictions = 0
+        self._cache_expired_pruned = 0
         self.fuse_until: dict[str, float] = {}
         self._state_lock = RLock()
 
@@ -123,22 +303,29 @@ class HttpClient:
     ) -> Any:
         now = time.time()
         fuse_key = quality_key
+        source_id = _source_id_from_quality_key(quality_key)
         with self._state_lock:
             if self.fuse_until.get(fuse_key, 0) > now:
                 self.quality.fail(quality_key, "fused")
                 self.quality.fused[fuse_key] = self.fuse_until[fuse_key]
+                self.metrics.record_skip(source_id, "fused")
                 return None
 
         key = cache_key or self._cache_key(url, params)
         if self.settings.http_cache_enable:
             with self._state_lock:
+                self._prune_cache_locked(now)
                 cached = self.cache.get(key)
-            if cached and now - cached[0] <= self.settings.http_cache_ttl_sec:
+                if cached is not None:
+                    self.cache.move_to_end(key)
+            self.metrics.record_cache(source_id, hit=cached is not None)
+            if cached is not None:
                 return cached[1]
 
         retry_count = self.settings.http_retry if retries is None else retries
         timeout_sec = self.settings.http_timeout_sec if timeout is None else timeout
         last_reason = ""
+        started_at = time.perf_counter()
         for attempt in range(1, retry_count + 1):
             try:
                 response = self.session.get(url, params=params, headers=HTTP_HEADERS, timeout=timeout_sec)
@@ -146,8 +333,18 @@ class HttpClient:
                     data = response.json()
                     with self._state_lock:
                         if self.settings.http_cache_enable:
+                            self._prune_cache_locked(time.time())
+                            self.cache.pop(key, None)
+                            while len(self.cache) >= self.cache_max_entries:
+                                self.cache.popitem(last=False)
+                                self._cache_evictions += 1
                             self.cache[key] = (time.time(), data)
                         self.quality.ok(quality_key)
+                    self.metrics.record_network(
+                        source_id,
+                        success=True,
+                        duration_ms=(time.perf_counter() - started_at) * 1000,
+                    )
                     return data
                 last_reason = f"status={response.status_code}"
                 if response.status_code in {403, 418, 429}:
@@ -161,7 +358,31 @@ class HttpClient:
                 time.sleep(self.settings.http_backoff_sec * attempt)
         with self._state_lock:
             self.quality.fail(quality_key, last_reason or "unknown")
+        self.metrics.record_network(
+            source_id,
+            success=False,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            error=last_reason or "unknown",
+        )
         return None
+
+    def _prune_cache_locked(self, now: float) -> None:
+        ttl = max(0, int(self.settings.http_cache_ttl_sec))
+        expired = [key for key, (stored_at, _) in self.cache.items() if now - stored_at > ttl]
+        for key in expired:
+            self.cache.pop(key, None)
+        self._cache_expired_pruned += len(expired)
+
+    def diagnostics(self) -> dict[str, int]:
+        with self._state_lock:
+            if self.settings.http_cache_enable:
+                self._prune_cache_locked(time.time())
+            return {
+                "entries": len(self.cache),
+                "max_entries": self.cache_max_entries,
+                "evictions": self._cache_evictions,
+                "expired_pruned": self._cache_expired_pruned,
+            }
 
     @staticmethod
     def _cache_key(url: str, params: Optional[dict[str, Any]]) -> str:
@@ -424,4 +645,5 @@ class BinanceDataSource:
         return {
             "budget": self.budget.snapshot(),
             "quality": self.quality.snapshot(),
+            "http": self.http.diagnostics(),
         }

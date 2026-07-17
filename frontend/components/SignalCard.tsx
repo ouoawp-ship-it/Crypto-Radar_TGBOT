@@ -1,17 +1,7 @@
 import Link from "next/link";
-import type { SignalItem, Tone } from "@/lib/types";
+import type { SignalItem } from "@/lib/types";
 import { formatDateTime, moduleLabel, safeText, statusLabel, toneForStatus } from "@/lib/format";
 import { DataStatusBadge } from "./DataStatusBadge";
-
-function accentClass(tone: Tone) {
-  return {
-    good: "border-l-good",
-    warn: "border-l-warn",
-    bad: "border-l-risk",
-    info: "border-l-primary-500",
-    neutral: "border-l-border-subtle"
-  }[tone];
-}
 
 function hasMeaningfulValue(value: unknown) {
   const valueText = String(value ?? "").trim();
@@ -34,7 +24,6 @@ export function SignalCard({
 }) {
   const display = item.display || {};
   const symbol = item.symbol || item.coin || display.symbol_label || "";
-  const cardTone = display.card_tone || toneForStatus(item.status);
   const score = display.score_label || item.score;
   const stage = display.stage_label || item.stage;
   const signalReference = item.public_ref || item.id;
@@ -43,7 +32,7 @@ export function SignalCard({
   const resonanceWindows = intelligence?.resonance?.windows || [];
 
   return (
-    <article className={`panel group overflow-hidden border-l-4 p-5 transition hover:border-primary-100 hover:border-l-primary-500 hover:bg-surface-bright ${accentClass(cardTone)}`}>
+    <article className="panel group overflow-hidden p-5 transition hover:border-primary-100 hover:bg-surface-bright">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <DataStatusBadge label={display.module_label || moduleLabel(item.module)} tone="info" />
@@ -85,7 +74,7 @@ export function SignalCard({
           {resonanceWindows.length ? (
             <div className="mt-3 flex items-center gap-1.5" aria-label="跨模块信号共振">
               {resonanceWindows.map((window) => (
-                <span className={`flex-1 rounded-md px-1 py-1.5 text-center text-[10px] font-semibold ${window.active ? "bg-primary-600 text-white" : "bg-surface-container text-text-muted"}`} key={window.key} title={window.active ? `${window.module_count} 个模块共振` : `${window.signal_count || 0} 条信号`}>
+                <span className={`flex-1 rounded-md px-1 py-1.5 text-center text-[10px] font-semibold ${window.active ? "bg-primary-600 text-on-primary" : "bg-surface-container text-text-muted"}`} key={window.key} title={window.active ? `${window.module_count} 个模块共振` : `${window.signal_count || 0} 条信号`}>
                   {window.key}
                 </span>
               ))}
