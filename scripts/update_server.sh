@@ -12,6 +12,7 @@ BRANCH="${BRANCH:-main}"
 REMOTE="${REMOTE:-origin}"
 AUTO_CONFIRM="${AUTO_CONFIRM:-0}"
 CHECK_ONLY="${CHECK_ONLY:-0}"
+AFTER_PULL_REEXEC="${PAOPAO_UPDATE_AFTER_PULL:-0}"
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
@@ -787,6 +788,11 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     sync_env_file
     retire_removed_feature_artifacts
     ensure_web_public_config
+    if [ "$AFTER_PULL_REEXEC" = "1" ]; then
+      "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
+      "$PYTHON_BIN" -m compileall paopao_radar main.py
+      "$PYTHON_BIN" -m unittest discover -s tests -v
+    fi
     run_signal_store_migrations
     run_post_update_cleanup
     build_frontend_dashboard
@@ -830,6 +836,15 @@ if ! confirm_update; then
 fi
 
 git pull --ff-only "$REMOTE" "$BRANCH"
+
+if [ "$AFTER_PULL_REEXEC" != "1" ]; then
+  exec env PAOPAO_UPDATE_AFTER_PULL=1 \
+    AUTO_CONFIRM=1 CHECK_ONLY=0 BRANCH="$BRANCH" REMOTE="$REMOTE" \
+    SERVICE_NAME="$SERVICE_NAME" CLEANUP_SERVICE_NAME="$CLEANUP_SERVICE_NAME" \
+    WEB_SERVICE_NAME="$WEB_SERVICE_NAME" FRONTEND_SERVICE_NAME="$FRONTEND_SERVICE_NAME" \
+    AI_SERVICE_NAME="$AI_SERVICE_NAME" MARKET_STREAM_SERVICE_NAME="$MARKET_STREAM_SERVICE_NAME" \
+    bash "${APP_DIR}/scripts/update_server.sh" --yes
+fi
 
 sync_env_file
 retire_removed_feature_artifacts

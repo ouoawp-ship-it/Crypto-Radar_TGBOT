@@ -1055,8 +1055,8 @@ class BinanceRealtimeMarketService:
 
     def _websocket_url(self) -> str:
         return str(
-            getattr(self.settings, "binance_futures_ws_url", "wss://fstream.binance.com/ws")
-            or "wss://fstream.binance.com/ws"
+            getattr(self.settings, "binance_futures_ws_url", "wss://fstream.binance.com/market/ws")
+            or "wss://fstream.binance.com/market/ws"
         )
 
     def _load_connection(self) -> tuple[list[str], list[Any], dict[str, Any]]:

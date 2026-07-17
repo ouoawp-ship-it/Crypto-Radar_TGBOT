@@ -80,6 +80,38 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("RADAR_SUMMARY_MIN_INTERVAL_SEC", result["updated"])
         self.assertIn("STRUCTURE_RADAR_ENABLE", result["removed"])
 
+    def test_sync_migrates_only_the_legacy_binance_market_stream_url(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "BINANCE_FUTURES_WS_URL=wss://fstream.binance.com/ws\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "BINANCE_FUTURES_WS_URL=wss://fstream.binance.com/market/ws\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8").strip()
+            env.write_text(
+                "BINANCE_FUTURES_WS_URL=wss://market-gateway.example/ws\n",
+                encoding="utf-8",
+            )
+            custom_result = module.sync_env(env, example)
+            custom_text = env.read_text(encoding="utf-8").strip()
+
+        self.assertEqual(
+            text,
+            "BINANCE_FUTURES_WS_URL=wss://fstream.binance.com/market/ws",
+        )
+        self.assertIn("BINANCE_FUTURES_WS_URL", result["updated"])
+        self.assertEqual(custom_text, "BINANCE_FUTURES_WS_URL=wss://market-gateway.example/ws")
+        self.assertNotIn("BINANCE_FUTURES_WS_URL", custom_result["updated"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -92,6 +124,12 @@ from pathlib import Path
 
 
 class UpdateServerScriptTests(unittest.TestCase):
+    def test_update_script_reexecutes_new_code_after_git_pull(self) -> None:
+        script = Path("scripts/update_server.sh").read_text(encoding="utf-8")
+
+        self.assertIn("PAOPAO_UPDATE_AFTER_PULL", script)
+        self.assertIn("exec env PAOPAO_UPDATE_AFTER_PULL=1", script)
+
     def test_update_script_runs_stable_check_after_restart_paths(self) -> None:
         script = Path("scripts/update_server.sh").read_text(encoding="utf-8")
 
