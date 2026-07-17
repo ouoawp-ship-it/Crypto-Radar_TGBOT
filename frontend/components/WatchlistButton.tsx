@@ -26,7 +26,9 @@ export function WatchlistButton({ symbol, compact = false }: { symbol: string; c
       onClick={() => setActive(toggleWatchSymbol(normalized).includes(normalized))}
       type="button"
     >
-      <span aria-hidden="true">{active ? "★" : "☆"}</span>
+      <svg aria-hidden="true" className={`h-4 w-4 ${active ? "fill-primary-500 text-primary-500" : "fill-none text-text-muted"}`} viewBox="0 0 24 24">
+        <path d="m12 3.8 2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6L7.1 19l.9-5.5-4-3.9 5.5-.8 2.5-5Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.6" />
+      </svg>
       {compact ? (active ? "已自选" : "自选") : (active ? "已加入自选" : "加入自选")}
     </button>
   );

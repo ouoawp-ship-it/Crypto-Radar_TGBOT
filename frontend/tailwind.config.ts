@@ -6,7 +6,8 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans: [
-          "var(--font-geist-sans)",
+          '"DM Sans Variable"',
+          '"DM Sans"',
           '"PingFang SC"',
           '"Hiragino Sans GB"',
           '"Microsoft YaHei UI"',
@@ -14,7 +15,8 @@ const config: Config = {
           "ui-sans-serif",
           "system-ui",
           "sans-serif"
-        ]
+        ],
+        mono: ['"JetBrains Mono Variable"', '"JetBrains Mono"', "ui-monospace", "monospace"]
       },
       fontWeight: {
         medium: "500",
@@ -50,12 +52,14 @@ const config: Config = {
         risk: "rgb(var(--risk) / <alpha-value>)"
       },
       borderRadius: {
-        lg: "0.75rem",
-        xl: "1rem"
+        sm: "0.125rem",
+        md: "0.25rem",
+        lg: "0.375rem",
+        xl: "0.5rem"
       },
       boxShadow: {
-        soft: "0 1px 2px rgba(15, 23, 42, 0.04)",
-        floating: "0 8px 24px rgba(15, 23, 42, 0.08)"
+        soft: "0 1px 2px rgba(0, 0, 0, 0.28)",
+        floating: "0 16px 40px rgba(0, 0, 0, 0.42)"
       }
     }
   },

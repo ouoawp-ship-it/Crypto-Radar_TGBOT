@@ -19,10 +19,12 @@ export function MetricCard({
     neutral: "text-text-primary"
   }[tone];
   return (
-    <div className="panel p-4">
-      <div className="text-xs font-medium text-text-muted">{label}</div>
-      <div className={`table-number mt-2 text-2xl font-medium ${toneClass}`}>{safeText(value)}</div>
-      {hint ? <div className="mt-2 text-xs text-text-muted">{hint}</div> : null}
+    <div className="cockpit-panel min-w-0 p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold text-text-muted">{label}</div>
+        {hint ? <div className="truncate text-[10px] text-text-muted">{hint}</div> : null}
+      </div>
+      <div className={`table-number mt-2 text-xl font-semibold ${toneClass}`}>{safeText(value)}</div>
     </div>
   );
 }
