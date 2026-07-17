@@ -156,6 +156,7 @@ class Settings:
     signal_events_path: Path = BASE_DIR / "data" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "signals.db"
     market_snapshots_db_path: Path = BASE_DIR / "data" / "market_snapshots.db"
+    realtime_features_db_path: Path = BASE_DIR / "data" / "realtime_features.db"
     news_events_db_path: Path = BASE_DIR / "data" / "news_events.db"
     agent_insights_db_path: Path = BASE_DIR / "data" / "agent_insights.db"
     news_events_retention_days: int = 90
@@ -168,6 +169,18 @@ class Settings:
     market_flow_fact_interval_sec: int = 900
     market_flow_fact_limit: int = 40
     market_readiness_target_days: int = 30
+    realtime_market_bucket_sec: int = 60
+    realtime_market_grace_ms: int = 2000
+    realtime_market_flush_interval_sec: int = 1
+    realtime_market_reconnect_sec: int = 5
+    realtime_market_connect_timeout_sec: int = 15
+    realtime_market_idle_timeout_sec: int = 30
+    realtime_market_retention_days: int = 7
+    realtime_market_symbol_limit: int = 80
+    realtime_market_min_quote_volume: float = 5_000_000
+    realtime_market_symbol_refresh_sec: int = 300
+    realtime_bybit_enable: bool = True
+    realtime_okx_enable: bool = True
     web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
     web_jobs_retention_days: int = 30
     web_jobs_limit: int = 500
@@ -200,6 +213,11 @@ class Settings:
     http_cache_ttl_sec: int = 10
     binance_fapi_base_url: str = "https://fapi.binance.com"
     binance_spot_base_url: str = "https://api.binance.com"
+    binance_futures_ws_url: str = "wss://fstream.binance.com/ws"
+    bybit_public_rest_url: str = "https://api.bybit.com"
+    bybit_linear_ws_url: str = "wss://stream.bybit.com/v5/public/linear"
+    okx_public_rest_url: str = "https://www.okx.com"
+    okx_public_ws_url: str = "wss://ws.okx.com:8443/ws/v5/public"
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
 
     radar_scan_limit: int = 120
@@ -273,6 +291,7 @@ class Settings:
         default_signal_path = BASE_DIR / "data" / "signal_events.json"
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
         default_market_snapshots_db_path = BASE_DIR / "data" / "market_snapshots.db"
+        default_realtime_features_db_path = BASE_DIR / "data" / "realtime_features.db"
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
         default_agent_insights_db_path = BASE_DIR / "data" / "agent_insights.db"
         default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
@@ -282,6 +301,8 @@ class Settings:
             object.__setattr__(self, "signal_events_db_path", self.data_dir / "signals.db")
         if self.data_dir != BASE_DIR / "data" and self.market_snapshots_db_path == default_market_snapshots_db_path:
             object.__setattr__(self, "market_snapshots_db_path", self.data_dir / "market_snapshots.db")
+        if self.data_dir != BASE_DIR / "data" and self.realtime_features_db_path == default_realtime_features_db_path:
+            object.__setattr__(self, "realtime_features_db_path", self.data_dir / "realtime_features.db")
         if self.data_dir != BASE_DIR / "data" and self.news_events_db_path == default_news_events_db_path:
             object.__setattr__(self, "news_events_db_path", self.data_dir / "news_events.db")
         if self.data_dir != BASE_DIR / "data" and self.agent_insights_db_path == default_agent_insights_db_path:
@@ -342,6 +363,7 @@ class Settings:
             signal_events_path=data_path(data_dir, "SIGNAL_EVENTS_FILE", "signal_events.json"),
             signal_events_db_path=data_path(data_dir, "SIGNAL_EVENTS_DB_FILE", "signals.db"),
             market_snapshots_db_path=data_path(data_dir, "MARKET_SNAPSHOTS_DB_FILE", "market_snapshots.db"),
+            realtime_features_db_path=data_path(data_dir, "REALTIME_FEATURES_DB_FILE", "realtime_features.db"),
             news_events_db_path=data_path(data_dir, "NEWS_EVENTS_DB_FILE", "news_events.db"),
             agent_insights_db_path=data_path(data_dir, "AGENT_INSIGHTS_DB_FILE", "agent_insights.db"),
             news_events_retention_days=env_int("NEWS_EVENTS_RETENTION_DAYS", 90),
@@ -354,6 +376,18 @@ class Settings:
             market_flow_fact_interval_sec=env_int("MARKET_FLOW_FACT_INTERVAL_SEC", 900),
             market_flow_fact_limit=env_int("MARKET_FLOW_FACT_LIMIT", 40),
             market_readiness_target_days=env_int("MARKET_READINESS_TARGET_DAYS", 30),
+            realtime_market_bucket_sec=env_int("REALTIME_MARKET_BUCKET_SEC", 60),
+            realtime_market_grace_ms=env_int("REALTIME_MARKET_GRACE_MS", 2000),
+            realtime_market_flush_interval_sec=env_int("REALTIME_MARKET_FLUSH_INTERVAL_SEC", 1),
+            realtime_market_reconnect_sec=env_int("REALTIME_MARKET_RECONNECT_SEC", 5),
+            realtime_market_connect_timeout_sec=env_int("REALTIME_MARKET_CONNECT_TIMEOUT_SEC", 15),
+            realtime_market_idle_timeout_sec=env_int("REALTIME_MARKET_IDLE_TIMEOUT_SEC", 30),
+            realtime_market_retention_days=env_int("REALTIME_MARKET_RETENTION_DAYS", 7),
+            realtime_market_symbol_limit=env_int("REALTIME_MARKET_SYMBOL_LIMIT", 80),
+            realtime_market_min_quote_volume=env_float("REALTIME_MARKET_MIN_QUOTE_VOLUME", 5_000_000),
+            realtime_market_symbol_refresh_sec=env_int("REALTIME_MARKET_SYMBOL_REFRESH_SEC", 300),
+            realtime_bybit_enable=env_bool("REALTIME_BYBIT_ENABLE", True),
+            realtime_okx_enable=env_bool("REALTIME_OKX_ENABLE", True),
             web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
             web_jobs_retention_days=env_int("WEB_JOBS_RETENTION_DAYS", 30),
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
@@ -385,6 +419,11 @@ class Settings:
             http_cache_ttl_sec=env_int("DATA_SOURCE_CACHE_TTL_SEC", 10),
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
+            binance_futures_ws_url=os.getenv("BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/ws").rstrip("/"),
+            bybit_public_rest_url=os.getenv("BYBIT_PUBLIC_REST_URL", "https://api.bybit.com").rstrip("/"),
+            bybit_linear_ws_url=os.getenv("BYBIT_LINEAR_WS_URL", "wss://stream.bybit.com/v5/public/linear").rstrip("/"),
+            okx_public_rest_url=os.getenv("OKX_PUBLIC_REST_URL", "https://www.okx.com").rstrip("/"),
+            okx_public_ws_url=os.getenv("OKX_PUBLIC_WS_URL", "wss://ws.okx.com:8443/ws/v5/public").rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
@@ -505,6 +544,17 @@ class Settings:
                 "signal_events_db_exists": self.signal_events_db_path.exists(),
                 "market_snapshots_db_file": str(self.market_snapshots_db_path),
                 "market_snapshots_db_exists": self.market_snapshots_db_path.exists(),
+                "realtime_features_db_file": str(self.realtime_features_db_path),
+                "realtime_features_db_exists": self.realtime_features_db_path.exists(),
+                "realtime_market_bucket_sec": self.realtime_market_bucket_sec,
+                "realtime_market_symbol_limit": self.realtime_market_symbol_limit,
+                "realtime_market_retention_days": self.realtime_market_retention_days,
+                "realtime_market_symbol_refresh_sec": self.realtime_market_symbol_refresh_sec,
+                "realtime_exchanges": {
+                    "binance": True,
+                    "bybit": self.realtime_bybit_enable,
+                    "okx": self.realtime_okx_enable,
+                },
                 "market_snapshot_interval_sec": self.market_snapshot_interval_sec,
                 "market_snapshot_retention_days": self.market_snapshot_retention_days,
                 "market_snapshot_limit": self.market_snapshot_limit,

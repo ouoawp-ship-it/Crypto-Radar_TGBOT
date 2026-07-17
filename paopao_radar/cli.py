@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
@@ -1493,6 +1493,10 @@ def main(argv: list[str] | None = None) -> int:
             if gate != 0:
                 return gate
         return run_funding_alert(args)
+    if args.command == "market-stream":
+        from .realtime_market import run_realtime_market_service
+
+        return run_realtime_market_service(settings)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

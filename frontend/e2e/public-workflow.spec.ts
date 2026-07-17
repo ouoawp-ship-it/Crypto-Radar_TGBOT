@@ -104,6 +104,11 @@ const radarBoards = {
       key: "spot_flow", title: "现货主动资金", available: true, coverage: 12,
       positive: { title: "现货流入", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 4_000_000, unit: "usd", strength_percentile: 97 }] },
       negative: { title: "现货流出", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -3_000_000, unit: "usd", strength_percentile: 91 }] }
+    },
+    {
+      key: "realtime_surge", title: "Surge 加速", available: true, coverage: 12,
+      positive: { title: "多头加速", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 82, unit: "score", strength_percentile: 98 }] },
+      negative: { title: "空头加速", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -76, unit: "score", strength_percentile: 94 }] }
     }
   ]
 };
@@ -331,6 +336,8 @@ test("desktop radar supports opportunity-to-evidence workflow", async ({ page })
   await expect(page.getByRole("heading", { name: "全场态势" })).toBeVisible();
   await expect(page.getByText("资金偏流入")).toBeVisible();
   await expect(page.getByText("涨幅榜")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Surge 加速" })).toBeVisible();
+  await expect(page.getByText("+82.0", { exact: true })).toBeVisible();
   await expect(page.getByText("启动候选", { exact: true })).toBeVisible();
   await expect(page.getByText("P96 · #2/40")).toBeVisible();
   await page.getByRole("button", { name: /查看证据与上下文/ }).click();

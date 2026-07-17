@@ -106,6 +106,11 @@ function money(value: unknown, signed = true) {
 function boardValue(item: CockpitBoardItem) {
   if (item.unit === "usd") return money(item.value);
   if (item.unit === "percent_per_cycle") return signedPercent(item.value, 3);
+  if (item.unit === "score") {
+    const value = Number(item.value);
+    if (!Number.isFinite(value)) return "—";
+    return `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(1)}`;
+  }
   return signedPercent(item.value);
 }
 
@@ -561,7 +566,7 @@ function CockpitRadarPage() {
 
   const activeFilterCount = [appliedFilters.symbol, appliedFilters.module, appliedFilters.q, appliedFilters.status !== defaultFilters.status ? appliedFilters.status : ""].filter(Boolean).length;
   const initialLoading = loading && !snapshot.signals.length;
-  const marketBoards = (snapshot.boards.boards || []).filter((board) => ["price", "oi", "futures_flow", "spot_flow"].includes(board.key || ""));
+  const marketBoards = (snapshot.boards.boards || []).filter((board) => ["price", "oi", "futures_flow", "spot_flow", "realtime_futures_flow", "realtime_liquidations", "realtime_surge", "realtime_ambush"].includes(board.key || ""));
   const total = snapshot.intelligence.summary?.signals ?? countValue(snapshot.stats, "total", "count", "signals_count");
   const readiness = snapshot.overview.readiness || snapshot.boards.readiness;
   const warmupProgress = Math.max(0, Math.min(100, Number(readiness?.warmup_progress_pct || 0)));
@@ -634,7 +639,7 @@ function CockpitRadarPage() {
           <section aria-label="热钱观察与机会看板" className="order-3 min-w-0 space-y-3 lg:order-3 2xl:order-2 2xl:min-h-0 2xl:overflow-y-auto 2xl:pr-0.5">
             <section className="cockpit-panel">
               <div className="cockpit-panel-header">
-                <div><h2 className="text-xs font-semibold text-text-primary">热钱观察榜单</h2><p className="mt-0.5 text-[10px] text-text-muted">绝对量级与横截面强度同时展示</p></div>
+                <div><h2 className="text-xs font-semibold text-text-primary">热钱观察榜单</h2><p className="mt-0.5 text-[10px] text-text-muted">历史榜单、实时 CVD、Surge 与短周期潜伏并列；缺失来源不会被模拟值替代</p></div>
                 <span className="rounded bg-surface-container px-2 py-1 text-[10px] font-semibold text-text-secondary">{optionLabel(marketWindows, appliedFilters.window_sec)}</span>
               </div>
               <div className="grid gap-2.5 p-2.5 xl:grid-cols-2">

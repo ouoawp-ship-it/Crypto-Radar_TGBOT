@@ -36,9 +36,12 @@ PAOXX_COCKPIT_V2_MODE=enabled
 
 如启用独立 AI 助手，再配置 `AI_ASSISTANT_ENABLE=true`、`AI_BOT_TOKEN` 和允许的用户/群 ID。
 
+实时市场流默认同时启用 Binance、Bybit 和 OKX 公共通道，不需要交易所 API Key。若服务器所在区域无法访问某个官方公共通道，可在 `.env.oi` 设置 `REALTIME_BYBIT_ENABLE=false` 或 `REALTIME_OKX_ENABLE=false`；健康接口会按实际启用集合验收，不能在已启用但无数据时伪装为健康。
+
 ## 服务
 
 - `paopao-radar`：主雷达和 Telegram 推送
+- `paopao-market-stream`：Binance、Bybit、OKX 实时成交与可用强平采集
 - `paopao-web`：Python 后台与 API
 - `paopao-frontend`：Next.js 公开前台
 - `paopao-ai`：AI 助手和价格提醒
@@ -46,7 +49,7 @@ PAOXX_COCKPIT_V2_MODE=enabled
 查看服务：
 
 ```bash
-sudo systemctl status paopao-radar paopao-web paopao-frontend paopao-ai
+sudo systemctl status paopao-radar paopao-market-stream paopao-web paopao-frontend paopao-ai
 ```
 
 ## 更新
@@ -108,6 +111,7 @@ bash scripts/check_https_deploy.sh --with-stable-check
 .venv/bin/python main.py readiness
 .venv/bin/python main.py stable-check
 journalctl -u paopao-radar -n 200 --no-pager
+journalctl -u paopao-market-stream -n 200 --no-pager
 journalctl -u paopao-web -n 200 --no-pager
 ```
 
