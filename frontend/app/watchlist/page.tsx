@@ -80,13 +80,14 @@ export default function WatchlistPage() {
 
       {loading && !items.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: Math.max(2, symbols.length) }).map((_, index) => <div className="h-56 animate-pulse rounded-xl bg-surface-container" key={index} />)}</div> : null}
 
-      {!loading && !symbols.length ? <EmptyState title="还没有自选币种" text="输入 BTC、ETH 等币种，或在信号详情与单币页点击“加入自选”。" /> : null}
+      {!loading && !symbols.length ? <section className="panel p-4"><EmptyState title="还没有关注的资产" text="在雷达、资金榜单或单币详情中点击星标，即可在这里持续跟踪。" /><div className="mt-3 flex justify-center gap-2"><Link className="btn" href="/radar">去信号雷达</Link><Link className="btn-secondary" href="/funds">查看资金榜单</Link></div></section> : null}
 
       {items.length ? (
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {items.map((item) => {
             const market = item.market;
             const metrics = market?.metrics || {};
+            const flow = item.flow;
             return (
               <article className="panel overflow-hidden" key={item.symbol}>
                 <div className="flex items-start justify-between gap-3 border-b border-border-subtle p-4">
@@ -98,6 +99,9 @@ export default function WatchlistPage() {
                     const value = metric as typeof metrics.price;
                     return <div className="bg-white p-4" key={String(label)}><div className="text-[11px] font-semibold text-text-muted">{String(label)}</div><div className="table-number mt-1 text-base font-semibold text-text-primary">{value?.value == null ? "—" : formatMetricValue(value.value, value.unit)}</div></div>;
                   })}
+                </div>
+                <div className="grid grid-cols-2 gap-px border-t border-border-subtle bg-border-subtle">
+                  {[["现货 CVD", flow?.spot_net_flow_usd, "usd"], ["合约 CVD", flow?.futures_net_flow_usd, "usd"], ["1h OI", flow?.oi_change_pct, "percent"], ["资金费率", flow?.funding_pct, "percent_per_cycle"]].map(([label, value, unit]) => <div className="bg-surface-panel p-3" key={String(label)}><div className="text-[10px] font-semibold text-text-muted">{String(label)}</div><div className="table-number mt-1 text-sm font-semibold text-text-primary">{formatMetricValue(value, String(unit))}</div></div>)}
                 </div>
                 <div className="grid grid-cols-2 gap-2 p-4"><Link className="btn-secondary" href={item.coin_url || `/coin/${item.symbol}`}>查看上下文</Link><Link className="btn" href={`/radar?symbol=${item.symbol}`}>查看信号</Link></div>
               </article>

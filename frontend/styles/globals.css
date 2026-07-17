@@ -4,6 +4,48 @@
 
 :root {
   color-scheme: light;
+  --surface-canvas: 244 246 248;
+  --surface-bright: 248 250 252;
+  --surface-panel: 255 255 255;
+  --surface-low: 237 241 245;
+  --surface-container: 237 241 245;
+  --surface-container-low: 244 246 248;
+  --text-primary: 17 24 39;
+  --text-secondary: 71 84 103;
+  --text-muted: 139 152 170;
+  --primary-50: 236 253 250;
+  --primary-100: 204 251 241;
+  --primary-500: 20 184 166;
+  --primary-600: 13 148 136;
+  --primary-700: 15 118 110;
+  --primary-800: 17 94 89;
+  --border-subtle: 226 232 240;
+  --good: 22 163 74;
+  --warn: 217 119 6;
+  --risk: 220 38 38;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-canvas: 13 17 23;
+  --surface-bright: 18 23 31;
+  --surface-panel: 17 22 29;
+  --surface-low: 30 38 48;
+  --surface-container: 28 35 44;
+  --surface-container-low: 21 27 35;
+  --text-primary: 236 242 248;
+  --text-secondary: 174 187 202;
+  --text-muted: 116 131 149;
+  --primary-50: 14 42 43;
+  --primary-100: 19 61 59;
+  --primary-500: 45 212 191;
+  --primary-600: 20 184 166;
+  --primary-700: 94 234 212;
+  --primary-800: 153 246 228;
+  --border-subtle: 43 53 65;
+  --good: 74 222 128;
+  --warn: 251 191 36;
+  --risk: 248 113 113;
 }
 
 * {
@@ -11,14 +53,14 @@
 }
 
 html {
-  background: #f3f4f6;
+  background: rgb(var(--surface-canvas));
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: #f3f4f6;
-  color: #0b0f14;
+  background: rgb(var(--surface-canvas));
+  color: rgb(var(--text-primary));
   font-family:
     var(--font-geist-sans), "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans SC",
     ui-sans-serif, system-ui, sans-serif;
@@ -28,6 +70,12 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+:where(a, button, input, select, summary):focus-visible {
+  outline: 2px solid rgb(var(--primary-500));
+  outline-offset: 2px;
 }
 
 h1,
@@ -55,7 +103,7 @@ button:disabled {
 
 @layer components {
   .panel {
-    @apply rounded-xl border border-border-subtle bg-white shadow-soft;
+    @apply rounded-xl border border-border-subtle bg-surface-panel shadow-soft;
   }
 
   .panel-muted {
@@ -63,11 +111,11 @@ button:disabled {
   }
 
   .chip {
-    @apply inline-flex items-center rounded-full border border-border-subtle bg-white px-2.5 py-1 text-xs font-medium text-text-secondary;
+    @apply inline-flex items-center rounded-full border border-border-subtle bg-surface-panel px-2.5 py-1 text-xs font-medium text-text-secondary;
   }
 
   .input {
-    @apply h-10 rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none transition placeholder:text-text-muted focus:border-primary-500 focus:ring-2 focus:ring-primary-100;
+    @apply h-10 rounded-lg border border-border-subtle bg-surface-panel px-3 text-sm text-text-primary outline-none transition placeholder:text-text-muted focus:border-primary-500 focus:ring-2 focus:ring-primary-100;
   }
 
   .btn {
@@ -75,7 +123,7 @@ button:disabled {
   }
 
   .btn-secondary {
-    @apply inline-flex h-10 items-center justify-center rounded-lg border border-border-subtle bg-white px-4 text-sm font-medium text-text-primary transition hover:bg-surface-canvas;
+    @apply inline-flex h-10 items-center justify-center rounded-lg border border-border-subtle bg-surface-panel px-4 text-sm font-medium text-text-primary transition hover:bg-surface-canvas;
   }
 
   .section-title {
@@ -87,4 +135,63 @@ button:disabled {
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.025em;
   }
+
+  .cockpit-panel {
+    @apply overflow-hidden rounded-md border border-border-subtle bg-surface-panel;
+  }
+
+  .cockpit-panel-header {
+    @apply flex min-h-11 items-center justify-between gap-3 border-b border-border-subtle px-3 py-2;
+  }
+
+  .cockpit-scroll {
+    scrollbar-color: rgb(var(--border-subtle)) transparent;
+    scrollbar-width: thin;
+  }
+}
+
+.radar-overview-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (min-width: 1024px) {
+  .radar-cockpit-grid {
+    grid-template-columns: 320px minmax(0, 1fr);
+  }
+
+  .radar-overview-column {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-row: 1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+@media (min-width: 1536px) {
+  .radar-cockpit-grid {
+    grid-template-columns: 280px minmax(640px, 1fr) 300px;
+  }
+
+  .radar-overview-column {
+    display: flex;
+    grid-column: auto;
+    grid-row: auto;
+    grid-template-columns: none;
+  }
+}
+
+html[data-theme="dark"] .bg-white,
+html[data-theme="dark"] .bg-white\/95 {
+  background-color: rgb(var(--surface-panel)) !important;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
 }

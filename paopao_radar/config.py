@@ -89,6 +89,11 @@ def normalize_ai_model(value: str) -> str:
     return text or "deepseek-v4-pro"
 
 
+def normalize_cockpit_v2_mode(value: str) -> str:
+    mode = str(value or "enabled").strip().lower()
+    return mode if mode in {"enabled", "preview", "disabled"} else "enabled"
+
+
 def data_path(data_dir: Path, env_name: str, default_name: str) -> Path:
     value = os.getenv(env_name, default_name)
     path = Path(value)
@@ -130,6 +135,7 @@ class Settings:
     public_api_rate_limit_per_minute: int = 180
     public_api_heavy_rate_limit_per_minute: int = 30
     public_api_trusted_proxy_ips: tuple[str, ...] = ("127.0.0.1", "::1")
+    cockpit_v2_mode: str = "enabled"
     ai_assistant_enable: bool = False
     ai_bot_token: str = ""
     ai_bot_username: str = ""
@@ -149,6 +155,14 @@ class Settings:
     ai_prompts_path: Path = BASE_DIR / "data" / "ai_prompts.json"
     signal_events_path: Path = BASE_DIR / "data" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "signals.db"
+    market_snapshots_db_path: Path = BASE_DIR / "data" / "market_snapshots.db"
+    news_events_db_path: Path = BASE_DIR / "data" / "news_events.db"
+    agent_insights_db_path: Path = BASE_DIR / "data" / "agent_insights.db"
+    news_events_retention_days: int = 90
+    news_events_limit: int = 5000
+    market_snapshot_interval_sec: int = 300
+    market_snapshot_retention_days: int = 7
+    market_snapshot_limit: int = 160
     web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
     web_jobs_retention_days: int = 30
     web_jobs_limit: int = 500
@@ -253,11 +267,20 @@ class Settings:
     def __post_init__(self) -> None:
         default_signal_path = BASE_DIR / "data" / "signal_events.json"
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
+        default_market_snapshots_db_path = BASE_DIR / "data" / "market_snapshots.db"
+        default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
+        default_agent_insights_db_path = BASE_DIR / "data" / "agent_insights.db"
         default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
             object.__setattr__(self, "signal_events_db_path", self.data_dir / "signals.db")
+        if self.data_dir != BASE_DIR / "data" and self.market_snapshots_db_path == default_market_snapshots_db_path:
+            object.__setattr__(self, "market_snapshots_db_path", self.data_dir / "market_snapshots.db")
+        if self.data_dir != BASE_DIR / "data" and self.news_events_db_path == default_news_events_db_path:
+            object.__setattr__(self, "news_events_db_path", self.data_dir / "news_events.db")
+        if self.data_dir != BASE_DIR / "data" and self.agent_insights_db_path == default_agent_insights_db_path:
+            object.__setattr__(self, "agent_insights_db_path", self.data_dir / "agent_insights.db")
         if self.data_dir != BASE_DIR / "data" and self.web_jobs_db_path == default_web_jobs_db_path:
             object.__setattr__(self, "web_jobs_db_path", self.data_dir / "jobs.db")
 
@@ -293,6 +316,7 @@ class Settings:
             public_api_rate_limit_per_minute=env_int("PUBLIC_API_RATE_LIMIT_PER_MINUTE", 180),
             public_api_heavy_rate_limit_per_minute=env_int("PUBLIC_API_HEAVY_RATE_LIMIT_PER_MINUTE", 30),
             public_api_trusted_proxy_ips=env_list("PUBLIC_API_TRUSTED_PROXY_IPS", ("127.0.0.1", "::1")),
+            cockpit_v2_mode=normalize_cockpit_v2_mode(os.getenv("PAOXX_COCKPIT_V2_MODE", "enabled")),
             ai_assistant_enable=env_bool("AI_ASSISTANT_ENABLE", False),
             ai_bot_token=os.getenv("AI_BOT_TOKEN", "").strip(),
             ai_bot_username=os.getenv("AI_BOT_USERNAME", "").strip().lstrip("@"),
@@ -312,6 +336,14 @@ class Settings:
             ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
             signal_events_path=data_path(data_dir, "SIGNAL_EVENTS_FILE", "signal_events.json"),
             signal_events_db_path=data_path(data_dir, "SIGNAL_EVENTS_DB_FILE", "signals.db"),
+            market_snapshots_db_path=data_path(data_dir, "MARKET_SNAPSHOTS_DB_FILE", "market_snapshots.db"),
+            news_events_db_path=data_path(data_dir, "NEWS_EVENTS_DB_FILE", "news_events.db"),
+            agent_insights_db_path=data_path(data_dir, "AGENT_INSIGHTS_DB_FILE", "agent_insights.db"),
+            news_events_retention_days=env_int("NEWS_EVENTS_RETENTION_DAYS", 90),
+            news_events_limit=env_int("NEWS_EVENTS_LIMIT", 5000),
+            market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
+            market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 7),
+            market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 160),
             web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
             web_jobs_retention_days=env_int("WEB_JOBS_RETENTION_DAYS", 30),
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
@@ -461,6 +493,11 @@ class Settings:
                 "signal_events_file": str(self.signal_events_path),
                 "signal_events_db_file": str(self.signal_events_db_path),
                 "signal_events_db_exists": self.signal_events_db_path.exists(),
+                "market_snapshots_db_file": str(self.market_snapshots_db_path),
+                "market_snapshots_db_exists": self.market_snapshots_db_path.exists(),
+                "market_snapshot_interval_sec": self.market_snapshot_interval_sec,
+                "market_snapshot_retention_days": self.market_snapshot_retention_days,
+                "market_snapshot_limit": self.market_snapshot_limit,
                 "web_jobs_db_file": str(self.web_jobs_db_path),
                 "web_jobs_db_exists": self.web_jobs_db_path.exists(),
                 "web_jobs_retention_days": self.web_jobs_retention_days,
@@ -491,6 +528,16 @@ class Settings:
                 "auth_failure_window_sec": self.web_auth_failure_window_sec,
                 "auth_audit_limit": self.web_auth_audit_limit,
                 "session_refresh_threshold_ratio": self.web_session_refresh_threshold_ratio,
+            },
+            "cockpit_v2": {
+                "mode": normalize_cockpit_v2_mode(self.cockpit_v2_mode),
+                "enabled": normalize_cockpit_v2_mode(self.cockpit_v2_mode) != "disabled",
+                "news_events_db_file": str(self.news_events_db_path),
+                "news_events_db_exists": self.news_events_db_path.exists(),
+                "agent_insights_db_file": str(self.agent_insights_db_path),
+                "agent_insights_db_exists": self.agent_insights_db_path.exists(),
+                "news_events_retention_days": self.news_events_retention_days,
+                "news_events_limit": self.news_events_limit,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

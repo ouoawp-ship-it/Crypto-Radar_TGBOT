@@ -44,6 +44,22 @@
 
 接口使用 30 秒服务端单航班缓存，避免同一币种的并发请求重复访问上游。
 
+### `GET /public-api/market/overview?window_sec=3600`
+
+返回全市场广度、成交额、现货/合约主动资金估算及字段覆盖率。所有聚合值都由同一版市场快照契约生成，并携带 `schema_version`、`generated_at`、`data_status`、`warnings` 与 `coverage`。
+
+### `GET /public-api/radar/boards?window_sec=3600&limit=8`
+
+返回价格、OI、合约主动资金、现货主动资金与资金费率榜单。榜单只在对应字段覆盖足够时给出结果；不可用维度返回明确状态，不用其他指标代替。
+
+### `GET /public-api/funds/sectors?window_sec=3600&market_type=spot`
+
+返回板块轮动、净流入/流出、覆盖率和板块领先资产。主动资金为交易所 K 线主动买卖成交差估算，不等同于链上资金流。
+
+### `GET /public-api/funds/assets`
+
+返回可筛选、排序的资产资金表，支持时间窗口、市场类型、板块、方向和关键词。每条记录保留来源、单位、时间和数据状态，可进入单币证据页复核。
+
 ### `GET /public-api/radar/intelligence?window_sec=86400&limit=5&refs=<signal_ref,...>`
 
 返回雷达情报层和四类机会榜：启动候选、跨模块共振、极端费率、结构与公告风险。
@@ -68,6 +84,18 @@
 
 一次读取 1–12 个自选币种的服务端聚合快照。每个币独立返回成功或降级状态，单一上游失败不会使整批失败。
 
+### `GET /public-api/info/feed`
+
+返回官方公告事件、聚类、币种关联、来源链接和授权状态。当前仅保存与展示官方链接允许范围内的结构化事实，不复制第三方受限正文。高重要度事件的规则解读强制区分“事实”和“推断”。
+
+### `GET /public-api/agents/overview?window_sec=14400`
+
+返回全局、BTC/ETH、异常候选和消息 Agent 的结构化结论。方向性结论只有在核心证据 `ready` 时才生成；降级或证据不足时必须返回 `insufficient_data`，并提供证据引用、反证、过期时间、规则版本和免责声明。
+
+### `GET /public-api/stream`
+
+SSE 实时事件流。支持 `Last-Event-ID` 和查询参数续传，发送 `status`、`signal` 与心跳事件；连接时长有上限，客户端断线后自动重连，并始终保留 `/public-api/signals` 轮询兜底。Nginx 必须关闭该路径的代理缓冲和缓存。
+
 ### `GET /public-api/health`
 
 返回公开 API 的安全聚合健康信息：信号库状态、进程内缓存命中统计、请求状态码、各路由 P95、限流计数与匿名前端错误计数；不返回 IP、Token、Cookie 或错误正文。
@@ -82,6 +110,10 @@
 - 仅对 `PUBLIC_API_TRUSTED_PROXY_IPS` 中的直接代理信任 `X-Forwarded-For`；
 - 429 返回 `Retry-After`、`X-RateLimit-Limit`、`X-RateLimit-Remaining` 和 `X-RateLimit-Reset`；
 - JSON 与公开前台响应增加 `nosniff`、拒绝 iframe、严格来源策略、浏览器权限限制与 HSTS。
+
+### V2 灰度开关
+
+`PAOXX_COCKPIT_V2_MODE` 支持 `enabled`、`preview`、`disabled`。`disabled` 仅关闭 V2 市场驾驶舱接口与页面，旧 `/public-api/signals`、Telegram Bot、AI 助手和后台运维保持可用。修改后必须重建 Next.js 前台并重启 Web/前台服务，不能只重启 Python Web。
 
 ### 数据状态
 

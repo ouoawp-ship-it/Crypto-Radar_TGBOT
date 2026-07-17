@@ -375,11 +375,12 @@ class BinanceDataSource:
                 result[symbol] = (cap, rank)
         return {symbol: cap for symbol, (cap, _rank) in result.items()}
 
-    def announcements(self, page_size: int = 50) -> list[dict[str, Any]]:
+    def announcements(self, page_size: int = 50, max_pages: int = 3) -> list[dict[str, Any]]:
         url = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
         articles: list[dict[str, Any]] = []
+        safe_pages = max(1, min(3, int(max_pages or 1)))
         for catalog_id in (48, 161, 93):
-            for page_no in range(1, 4):
+            for page_no in range(1, safe_pages + 1):
                 data = self.http.get_json(
                     url,
                     {"type": 1, "catalogId": catalog_id, "pageNo": page_no, "pageSize": page_size},

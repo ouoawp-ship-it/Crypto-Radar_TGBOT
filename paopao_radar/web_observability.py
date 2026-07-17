@@ -130,6 +130,43 @@ class PublicApiMetrics:
             return {"routes": routes, "status_classes": dict(self._status)}
 
 
+class PublicStreamMetrics:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._active = 0
+        self._opened = 0
+        self._closed = 0
+        self._errors = 0
+        self._events: Counter[str] = Counter()
+
+    def opened(self) -> None:
+        with self._lock:
+            self._active += 1
+            self._opened += 1
+
+    def event(self, event_type: str) -> None:
+        with self._lock:
+            self._events[str(event_type or "unknown")[:40]] += 1
+
+    def closed(self, *, error: bool = False) -> None:
+        with self._lock:
+            self._active = max(0, self._active - 1)
+            self._closed += 1
+            if error:
+                self._errors += 1
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "active": self._active,
+                "opened": self._opened,
+                "closed": self._closed,
+                "errors": self._errors,
+                "events": dict(self._events),
+            }
+
+
 PUBLIC_API_LIMITER = SlidingWindowRateLimiter(window_sec=60)
 PUBLIC_TELEMETRY = PublicTelemetry()
 PUBLIC_API_METRICS = PublicApiMetrics()
+PUBLIC_STREAM_METRICS = PublicStreamMetrics()

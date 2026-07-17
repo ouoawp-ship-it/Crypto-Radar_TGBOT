@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-CN" className={GeistSans.variable}>
+    <html lang="zh-CN" className={GeistSans.variable} suppressHydrationWarning>
       <body data-paoxx-frontend="nextjs-dashboard">
         <FrontendTelemetry />
         <AppShell>{children}</AppShell>

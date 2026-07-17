@@ -18,6 +18,12 @@ cannot remain readable in its current file.
 | `test_funding_alert.py` | Funding alert decisions and state |
 | `test_funding_sources.py` | Funding-provider clients, caching, and interval transitions |
 | `test_market_data.py` | Exchange market data, market-cap metadata, data quality, and HTTP behavior |
+| `test_market_cockpit.py` | Versioned market snapshots, aggregation, legacy SQLite migration, and quality gates |
+| `test_market_funds.py` | Sector rotation, asset flow tables, ranking coverage, and graceful degradation |
+| `test_coin_evidence.py` | Coin evidence timeline, chart/series contracts, and partial-source failures |
+| `test_news_intelligence.py` | Official-event normalization, clustering, rights metadata, and retention |
+| `test_agent_intelligence.py` | Rule-first agents, evidence/counter-evidence gates, expiry, and persistence |
+| `test_cockpit_operations.py` | V2 rollout modes, rollback isolation, SSE projections, and deploy contracts |
 | `test_signal_store.py` | Signal persistence, filtering, statistics, and compatibility |
 | `test_storage_core.py` | Atomic JSON, JSON storage, runtime cache, and configuration |
 | `test_jobs.py` | Job persistence, execution, cleanup, and API payloads |

@@ -549,6 +549,8 @@ build_frontend_dashboard() {
   log "安装并构建 Next.js 公开前台"
   (
     cd "${APP_DIR}/frontend"
+    export NEXT_PUBLIC_PAOXX_COCKPIT_V2_MODE="$(grep -E '^PAOXX_COCKPIT_V2_MODE=' "${ENV_FILE}" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+    export NEXT_PUBLIC_PAOXX_COCKPIT_V2_MODE="${NEXT_PUBLIC_PAOXX_COCKPIT_V2_MODE:-enabled}"
     frontend_install_deps
     npm run build
   )
@@ -967,6 +969,19 @@ server {
 
     location ^~ /api/ {
         proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location = /public-api/stream {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 70s;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;

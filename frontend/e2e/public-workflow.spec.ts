@@ -47,12 +47,224 @@ const market = {
   tiers: { liquidity: "高流动性" }
 };
 
-async function mockPublicApi(page: Page) {
+const newSignal = {
+  ...signal,
+  id: 8,
+  public_ref: "sig_e2e_eth",
+  symbol: "ETHUSDT",
+  coin: "ETH",
+  excerpt: "新增 ETH 资金异动。",
+  display: { ...signal.display, title: "ETH 资金异动", summary: "新增 ETH 资金异动。" }
+};
+
+const marketOverview = {
+  schema_version: "2026-07-17",
+  generated_at: "2026-07-17T12:00:00Z",
+  window_sec: 3600,
+  data_status: "ready",
+  warnings: [],
+  coverage: { assets: 80, price: 80, oi: 24, spot_flow: 12, futures_flow: 12, funding: 80 },
+  overview: {
+    bias: "inflow",
+    advancing: 48,
+    declining: 32,
+    flat: 0,
+    breadth_pct: 20,
+    total_quote_volume: 8_000_000_000,
+    spot_net_flow_usd: 12_000_000,
+    futures_net_flow_usd: 18_000_000
+  }
+};
+
+const radarBoards = {
+  schema_version: "2026-07-17",
+  generated_at: "2026-07-17T12:00:00Z",
+  window_sec: 3600,
+  data_status: "ready",
+  warnings: [],
+  coverage: marketOverview.coverage,
+  methodology: { flow: "Binance K 线主动买卖成交差（CVD）估算" },
+  boards: [
+    {
+      key: "price", title: "价格动量", available: true, coverage: 80,
+      positive: { title: "涨幅榜", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 3.2, unit: "percent", strength_percentile: 96 }] },
+      negative: { title: "跌幅榜", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -2.1, unit: "percent", strength_percentile: 88 }] }
+    },
+    {
+      key: "oi", title: "持仓变化", available: true, coverage: 24,
+      positive: { title: "OI 增长", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", strength_percentile: 94 }] },
+      negative: { title: "OI 下降", items: [{ symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", strength_percentile: 90 }] }
+    },
+    {
+      key: "futures_flow", title: "合约主动资金", available: true, coverage: 12,
+      positive: { title: "合约流入", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 8_000_000, unit: "usd", strength_percentile: 98 }] },
+      negative: { title: "合约流出", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -5_000_000, unit: "usd", strength_percentile: 92 }] }
+    },
+    {
+      key: "spot_flow", title: "现货主动资金", available: true, coverage: 12,
+      positive: { title: "现货流入", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 4_000_000, unit: "usd", strength_percentile: 97 }] },
+      negative: { title: "现货流出", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -3_000_000, unit: "usd", strength_percentile: 91 }] }
+    }
+  ]
+};
+
+const fundsSectors = {
+  schema_version: "2026-07-17",
+  catalog_version: "2026.07.1",
+  generated_at: "2026-07-17T12:00:00Z",
+  window_sec: 3600,
+  market_type: "spot",
+  data_status: "ready",
+  coverage: { assets: 2, flow: 2, gross_flow: 2, oi: 2, market_cap: 2 },
+  warnings: [],
+  summary: { net_flow_usd: 3_000_000, inflow_usd: 12_000_000, outflow_usd: 9_000_000, asset_count: 2, covered_assets: 2, leading_inflow_sector: "layer1", leading_outflow_sector: "layer2" },
+  catalog: [
+    { id: "layer1", label: "L1", description: "一层公链" },
+    { id: "layer2", label: "L2", description: "二层扩容" }
+  ],
+  sectors: [
+    { sector_id: "layer1", label: "L1", net_flow_usd: 8_000_000, magnitude_usd: 8_000_000, inflow_usd: 10_000_000, outflow_usd: 2_000_000, asset_count: 1, covered_assets: 1, coverage_ratio: 1, data_status: "ready", leaders: [{ symbol: "BTCUSDT", net_flow_usd: 8_000_000 }] },
+    { sector_id: "layer2", label: "L2", net_flow_usd: -5_000_000, magnitude_usd: 5_000_000, inflow_usd: 2_000_000, outflow_usd: 7_000_000, asset_count: 1, covered_assets: 1, coverage_ratio: 1, data_status: "ready", leaders: [{ symbol: "ARBUSDT", net_flow_usd: -5_000_000 }] }
+  ]
+};
+
+const fundsAssets = {
+  schema_version: "2026-07-17",
+  catalog_version: "2026.07.1",
+  generated_at: "2026-07-17T12:00:00Z",
+  window_sec: 3600,
+  market_type: "spot",
+  data_status: "ready",
+  coverage: { assets: 2, flow: 2 },
+  warnings: [],
+  pagination: { page: 1, page_size: 50, page_count: 1, total: 2 },
+  items: [
+    { symbol: "BTCUSDT", coin: "BTC", price: 65000, price_change_pct: 2.4, net_flow_usd: 8_000_000, inflow_usd: 10_000_000, outflow_usd: 2_000_000, volume_usd: 1_200_000_000, oi_usd: 820_000_000, oi_change_pct: 1.8, funding_pct: -0.02, market_cap: 1_200_000_000_000, updated_at: "2026-07-17T12:00:00Z", data_status: "ready", sector: { primary_sector_id: "layer1", primary_sector_label: "L1", sector_ids: ["layer1"] } },
+    { symbol: "ARBUSDT", coin: "ARB", price: 1.1, price_change_pct: -1.2, net_flow_usd: -5_000_000, inflow_usd: 2_000_000, outflow_usd: 7_000_000, volume_usd: 120_000_000, oi_usd: 80_000_000, oi_change_pct: -2.4, funding_pct: 0.01, market_cap: 4_000_000_000, updated_at: "2026-07-17T12:00:00Z", data_status: "ready", sector: { primary_sector_id: "layer2", primary_sector_label: "L2", sector_ids: ["layer2"] } }
+  ]
+};
+
+const infoFeed = {
+  schema_version: "2026-07-17",
+  generated_at: "2026-07-17T12:00:00Z",
+  data_status: "ready",
+  coverage: { events: 1, clusters: 1, high_importance: 1, linked_symbols: 1, rights_verified: 1, sources: 1 },
+  warnings: [],
+  pagination: { page: 1, page_size: 30, page_count: 1, total: 1 },
+  summary: { high_importance: 1, risk: 0, opportunity: 1, official: 1 },
+  channels: [
+    { key: "official", label: "官方公告", status: "ready", count: 1, rights_status: "official_link_only" },
+    { key: "authorized_zh", label: "授权中文资讯", status: "unavailable", count: 0, reason: "尚未配置可验证授权源" },
+    { key: "authorized_en", label: "授权英文资讯", status: "unavailable", count: 0, reason: "尚未配置可验证授权源" },
+    { key: "sentiment", label: "市场情绪", status: "unavailable", count: 0, reason: "未使用未授权社交数据" }
+  ],
+  items: [{
+    event_id: "binance_abc",
+    published_at: "2026-07-17T11:30:00Z",
+    collected_at: "2026-07-17T11:31:00Z",
+    source: "Binance",
+    source_type: "official_announcement",
+    title: "Binance Will List Example Token (ABC)",
+    url: "https://www.binance.com/en/support/announcement/example",
+    symbols: ["ABCUSDT"],
+    importance: "high",
+    language: "en",
+    cluster_id: "cluster_abc",
+    cluster_size: 1,
+    event_kind: "opportunity",
+    rights_status: "official_link_only",
+    timestamp_quality: "source",
+    data_status: "ready",
+    source_links: [{ source: "Binance", url: "https://www.binance.com/en/support/announcement/example", rights_status: "official_link_only" }],
+    ai_analysis: {
+      status: "ready",
+      fact_summary: "Binance Will List Example Token (ABC)",
+      possible_impact: "可能提升短期关注度与成交活跃度，不代表价格必然上涨。",
+      verification_needed: ["核对官方原文和生效时间", "验证市场是否已经反应"],
+      fact_inference_boundary: "fact_summary 来自官方标题；possible_impact 为规则推断。"
+    }
+  }]
+};
+
+const agentEvidence = [
+  { ref: "ev_breadth", kind: "market_metric", scope: "global", key: "breadth_pct", label: "上涨广度", value: 25, unit: "percent", source: "market_cockpit", observed_at: "2026-07-17T12:00:00Z", data_status: "ready" },
+  { ref: "ev_spot", kind: "market_metric", scope: "global", key: "spot_net_flow_usd", label: "现货主动资金差", value: 20_000_000, unit: "usd", source: "market_cockpit", observed_at: "2026-07-17T12:00:00Z", data_status: "ready" },
+  { ref: "ev_signal", kind: "signal_event", scope: "BTCUSDT", key: "sig_e2e_btc", label: "启动雷达", value: "BTC 启动信号", source: "signal_store", observed_at: "2026-07-17T11:58:00Z", data_status: "ready", url: "/radar?symbol=BTCUSDT" },
+  { ref: "ev_news", kind: "news_event", scope: "binance_abc", key: "binance_abc", label: "高重要度官方公告", value: "Binance Will List Example Token (ABC)", source: "Binance", observed_at: "2026-07-17T11:30:00Z", data_status: "ready", url: "https://www.binance.com/en/support/announcement/example" }
+];
+
+const globalAgent = {
+  insight_id: "agent_global", agent_type: "global", scope: "market", label: "全局 Agent",
+  generated_at: "2026-07-17T12:00:00Z", expires_at: "2026-07-17T12:03:00Z",
+  state: "strengthening", state_label: "同步增强", confidence: 0.78, data_status: "ready",
+  summary: "4h 市场广度为 `+25.00%`，现货主动资金差 `+$20.00M`；规则状态为同步增强。",
+  evidence_refs: ["ev_breadth", "ev_spot"], counter_evidence_refs: []
+};
+
+const agentsOverview = {
+  schema_version: "2026-07-17", engine_version: "2026.07.1",
+  generated_at: "2026-07-17T12:00:00Z", expires_at: "2026-07-17T12:03:00Z", window_sec: 14400, data_status: "ready",
+  coverage: { insights: 5, ready: 5, evidence: 4, signals: 1, news_events: 1 }, warnings: [],
+  agents: {
+    global: globalAgent,
+    majors: [
+      { ...globalAgent, insight_id: "agent_btc", agent_type: "major", scope: "BTCUSDT", label: "BTC 解盘 Agent", state_label: "偏强观察", summary: "BTC 4h 价格 `+2.20%`、OI `+3.10%`；规则状态为偏强观察。", actions: { coin_url: "/coin/BTCUSDT", radar_url: "/radar?symbol=BTCUSDT", ai_url: "https://t.me/example_bot?start=analyze_BTC" } },
+      { ...globalAgent, insight_id: "agent_eth", agent_type: "major", scope: "ETHUSDT", label: "ETH 解盘 Agent", state: "divergent", state_label: "分歧观察", summary: "ETH 4h 价格与资金出现分歧。", actions: { coin_url: "/coin/ETHUSDT", radar_url: "/radar?symbol=ETHUSDT" } }
+    ],
+    anomalies: [{ ...globalAgent, insight_id: "agent_anomaly", agent_type: "anomaly", scope: "BTCUSDT", label: "BTC 异常候选", state: "observe", state_label: "偏强观察", summary: "BTC 近 4h 出现 `1` 条已发送信号，需验证资金与 OI。", evidence_refs: ["ev_signal"], actions: { coin_url: "/coin/BTCUSDT", radar_url: "/radar?symbol=BTCUSDT" } }],
+    messages: [{ ...globalAgent, insight_id: "agent_message", agent_type: "message", scope: "ABCUSDT", label: "消息 Agent", state: "new_event", state_label: "新增重要事件", summary: "官方公告：Binance Will List Example Token (ABC)。", evidence_refs: ["ev_news"], actions: { info_url: "/info?event=binance_abc", source_url: "https://www.binance.com/en/support/announcement/example" } }]
+  },
+  evidence: agentEvidence,
+  model_info: { provider: "local", model: "rule-engine", version: "2026.07.1", llm_generated: false },
+  safety: { rule_first: true, ready_only_for_direction: true, numbers_formatted_by_code: true, evidence_required: true, disclaimer: "市场观察，不构成投资建议。" }
+};
+
+const coinChartPoints = Array.from({ length: 48 }, (_, index) => ({
+  open_time: new Date(Date.UTC(2026, 6, 16, 0, index * 15)).toISOString(),
+  open_time_ms: Date.UTC(2026, 6, 16, 0, index * 15),
+  open: 64000 + index * 20,
+  high: 64120 + index * 20,
+  low: 63920 + index * 20,
+  close: 64060 + index * 20,
+  quote_volume: 2_000_000 + index * 10_000
+}));
+
+const coinSeriesPoints = Array.from({ length: 8 }, (_, index) => ({
+  observed_at: 1_000 + index * 300,
+  updated_at: new Date(Date.UTC(2026, 6, 16, 0, index * 5)).toISOString(),
+  price: 64000 + index * 100,
+  oi_usd: 800_000_000 + index * 2_000_000,
+  spot_flow_usd: -1_000_000 + index * 400_000,
+  futures_flow_usd: -500_000 + index * 300_000,
+  funding_pct: -0.02
+}));
+
+async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown } = {}) {
+  let signalRequests = 0;
+  let streamRequests = 0;
+  let streamDelivered = false;
   await page.route("**/public-api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/public-api/telemetry") return route.fulfill({ status: 202, json: { ok: true } });
-    if (url.pathname === "/public-api/signals") return route.fulfill({ json: { ok: true, data: { items: [signal], count: 1 } } });
+    if (url.pathname === "/public-api/stream") {
+      streamRequests += 1;
+      if (options.streamSignal) await new Promise((resolve) => setTimeout(resolve, 2000));
+      const event = options.streamSignal ? "event: status\ndata: {\"state\":\"connected\"}\n\nid: 8\nevent: signal\ndata: {\"ref\":\"sig_e2e_eth\",\"symbol\":\"ETHUSDT\"}\n\n" : "event: status\ndata: {\"state\":\"connected\"}\n\n";
+      streamDelivered = options.streamSignal || streamDelivered;
+      return route.fulfill({ status: 200, contentType: "text/event-stream", headers: { "Cache-Control": "no-cache" }, body: event });
+    }
+    if (url.pathname === "/public-api/signals") {
+      signalRequests += 1;
+      const items = options.streamSignal && streamDelivered ? [newSignal, signal] : [signal];
+      return route.fulfill({ json: { ok: true, data: { items, count: items.length } } });
+    }
     if (url.pathname === "/public-api/signals/stats") return route.fulfill({ json: { ok: true, data: { total: 1, sent: 1, blocked: 0, failed: 0, skipped: 0 } } });
+    if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: marketOverview } });
+    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: radarBoards } });
+    if (url.pathname === "/public-api/funds/sectors") return route.fulfill({ json: { ok: true, data: fundsSectors } });
+    if (url.pathname === "/public-api/funds/assets") return route.fulfill({ json: { ok: true, data: fundsAssets } });
+    if (url.pathname === "/public-api/info/feed") return route.fulfill({ json: { ok: true, data: infoFeed } });
+    if (url.pathname === "/public-api/agents/overview") return route.fulfill({ json: { ok: true, data: options.agents || agentsOverview } });
     if (url.pathname === "/public-api/radar/intelligence") return route.fulfill({ json: { ok: true, data: {
       data_status: "ready", summary: { signals: 1, symbols: 1, resonance_symbols: 1, enhancing_symbols: 1 },
       items: [{ signal, intelligence }],
@@ -72,10 +284,18 @@ async function mockPublicApi(page: Page) {
       resonance: intelligence.resonance, related: { same_symbol: [] },
       actions: { symbol_url: "/radar?symbol=BTCUSDT", ai_url: "https://t.me/example_bot?start=analyze_BTC", alert_url: "https://t.me/example_bot?start=alert_BTC" }
     } } });
-    if (url.pathname === "/public-api/coin/context") return route.fulfill({ json: { ok: true, data: { symbol: "BTCUSDT", coin: "BTC", market, summary: { signal_count: 1, sent_count: 1, module_counts: { launch: 1 } }, timeline: [{ ...signal, intelligence }], actions: { radar_url: "/radar?symbol=BTCUSDT" } } } });
+    if (url.pathname === "/public-api/coin/context") return route.fulfill({ json: { ok: true, data: {
+      symbol: "BTCUSDT", coin: "BTC", market, data_status: "ready", warnings: [],
+      summary: { signal_count: 1, sent_count: 1, module_counts: { launch: 1 } },
+      chart: { market_type: "futures", interval: "15m", source: "binance_futures_klines", data_status: "ready", coverage: { requested: 48, returned: 48 }, points: coinChartPoints },
+      series: { data_status: "ready", coverage: { points: 8, price: 8, oi: 8, spot_flow: 8, futures_flow: 8, funding: 8 }, points: coinSeriesPoints },
+      related_info: { data_status: "empty", items: [] }, evidence_coverage: { market: 1, chart_points: 48, snapshot_points: 8, signals: 1, announcements: 0 },
+      timeline: [{ ...signal, intelligence }], actions: { radar_url: "/radar?symbol=BTCUSDT", share_url: "/coin/BTCUSDT" }
+    } } });
     if (url.pathname === "/public-api/market/watchlist") return route.fulfill({ json: { ok: true, data: { items: [{ symbol: "BTCUSDT", ok: true, market, coin_url: "/coin/BTCUSDT" }], count: 1, invalid: [] } } });
     return route.fulfill({ status: 404, json: { ok: false, message: "not mocked" } });
   });
+  return { signalRequests: () => signalRequests, streamRequests: () => streamRequests, releaseSignal: () => { streamDelivered = true; } };
 }
 
 test("desktop radar supports opportunity-to-evidence workflow", async ({ page }) => {
@@ -83,6 +303,10 @@ test("desktop radar supports opportunity-to-evidence workflow", async ({ page })
   await page.goto("/radar");
 
   await expect(page.getByRole("heading", { name: "机会看板" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "热钱观察榜单" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "全场态势" })).toBeVisible();
+  await expect(page.getByText("资金偏流入")).toBeVisible();
+  await expect(page.getByText("涨幅榜")).toBeVisible();
   await expect(page.getByText("启动候选", { exact: true })).toBeVisible();
   await expect(page.getByText("P96 · #2/40")).toBeVisible();
   await page.getByRole("button", { name: /查看证据与上下文/ }).click();
@@ -97,12 +321,22 @@ test("360px radar keeps filters, cards and full-width detail usable", async ({ p
   await page.goto("/radar");
 
   await expect(page.getByPlaceholder("BTC 或 BTCUSDT")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
   await page.getByRole("button", { name: /查看证据与上下文/ }).click();
   const dialog = page.getByRole("dialog", { name: "信号上下文详情" });
   await expect(dialog).toBeVisible();
   const box = await dialog.boundingBox();
   expect(box?.width).toBeGreaterThanOrEqual(350);
   await expect(page.getByRole("button", { name: "关闭信号详情" })).toBeVisible();
+});
+
+test("theme choice persists across radar reloads", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/radar");
+  await page.getByRole("button", { name: "切换到深色主题" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
 test("768px radar keeps the compact drawer and primary actions usable", async ({ page }) => {
@@ -125,9 +359,147 @@ test("coin context and browser-local watchlist form a reusable loop", async ({ p
   await mockPublicApi(page);
   await page.goto("/coin/BTCUSDT");
   await expect(page.getByRole("heading", { name: "BTC 单币上下文" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "K 线与成交量" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "快照证据曲线" })).toBeVisible();
   await page.getByRole("button", { name: /加入自选/ }).click();
   await page.goto("/watchlist");
   await expect(page.getByText("BTCUSDT", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "查看上下文" })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("paoxx.public.watchlist.v1"))).toContain("BTCUSDT");
+});
+
+test("funds center links sector rotation to asset evidence", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/funds");
+
+  await expect(page.getByRole("heading", { name: "资金中心" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "板块资金" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "资产资金表" })).toBeVisible();
+  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("L1", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "证据" }).first()).toHaveAttribute("href", "/coin/BTCUSDT");
+});
+
+test("390px funds center uses cards without horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockPublicApi(page);
+  await page.goto("/funds");
+
+  await expect(page.getByLabel("搜索资产")).toBeVisible();
+  await expect(page.getByRole("link", { name: "证据" }).first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("information center keeps official facts, inferences and source rights traceable", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/info");
+
+  await expect(page.getByRole("heading", { name: "信息中心" })).toBeVisible();
+  await expect(page.getByText("授权中文资讯", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" })).toBeVisible();
+  await page.getByText("展开规则化解读与验证项").click();
+  await expect(page.getByText("可能影响 · 规则推断")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Binance 原文 ↗" })).toHaveAttribute("rel", "noopener noreferrer");
+});
+
+test("390px information center has no horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockPublicApi(page);
+  await page.goto("/info");
+
+  await expect(page.getByLabel("搜索资讯")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("agent cockpit expands every conclusion to ready evidence", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/agents");
+
+  await expect(page.getByRole("heading", { name: "AI 决策" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "全局 Agent" })).toBeVisible();
+  await expect(page.getByText("BTC / ETH 解盘 Agent")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "异常候选 Agent" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "消息 Agent", level: 2 })).toBeVisible();
+  await page.getByText("展开证据来源").first().click();
+  await expect(page.getByText("上涨广度").first()).toBeVisible();
+  await expect(page.getByText("不构成投资建议", { exact: false }).last()).toBeVisible();
+});
+
+test("390px agent cockpit stays usable without horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockPublicApi(page);
+  await page.goto("/agents");
+
+  await expect(page.getByText("BTC 解盘 Agent", { exact: true })).toBeVisible();
+  await expect(page.getByText("Telegram 追问 ↗")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("radar SSE surfaces a new event, reconnects and can be paused", async ({ page }) => {
+  await page.addInitScript(() => {
+    type Listener = (event: MessageEvent) => void;
+    class FakeEventSource {
+      static current: FakeEventSource | null = null;
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      listeners = new Map<string, Listener[]>();
+      constructor() {
+        FakeEventSource.current = this;
+        setTimeout(() => this.onopen?.(), 10);
+      }
+      addEventListener(type: string, listener: Listener) {
+        this.listeners.set(type, [...(this.listeners.get(type) || []), listener]);
+      }
+      close() { if (FakeEventSource.current === this) FakeEventSource.current = null; }
+      emit(type: string, data: string) { for (const listener of this.listeners.get(type) || []) listener(new MessageEvent(type, { data })); }
+    }
+    Object.defineProperty(window, "EventSource", { configurable: true, value: FakeEventSource });
+    (window as unknown as { __emitSseSignal: () => number }).__emitSseSignal = () => {
+      const current = FakeEventSource.current;
+      if (!current) return -1;
+      const count = current.listeners.get("signal")?.length || 0;
+      current.emit("signal", "{\"ref\":\"sig_e2e_eth\"}");
+      return count;
+    };
+    (window as unknown as { __dropSse: () => void }).__dropSse = () => FakeEventSource.current?.onerror?.();
+    (window as unknown as { __restoreSse: () => void }).__restoreSse = () => FakeEventSource.current?.onopen?.();
+  });
+  const state = await mockPublicApi(page, { streamSignal: true });
+  await page.goto("/radar");
+
+  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("LIVE", { exact: true }).last()).toBeVisible();
+  expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
+  state.releaseSignal();
+  const listenerCount = await page.evaluate(() => (window as unknown as { __emitSseSignal: () => number }).__emitSseSignal());
+  expect(listenerCount).toBeGreaterThan(0);
+  await expect.poll(state.signalRequests).toBeGreaterThan(1);
+  const incoming = page.getByRole("button", { name: "新增 1 条异动，点击更新" });
+  await expect(incoming).toBeVisible({ timeout: 12_000 });
+  await incoming.click();
+  await expect(page.getByText("ETHUSDT", { exact: true }).first()).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __dropSse: () => void }).__dropSse());
+  await expect(page.getByText("RECONNECTING", { exact: true })).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __restoreSse: () => void }).__restoreSse());
+  await expect(page.getByText("LIVE", { exact: true }).last()).toBeVisible();
+  await page.getByRole("button", { name: "暂停" }).click();
+  await expect(page.getByText("PAUSED", { exact: true })).toBeVisible();
+});
+
+test("degraded Agent data never renders a directional conclusion", async ({ page }) => {
+  const degraded = {
+    ...agentsOverview,
+    data_status: "degraded",
+    agents: {
+      ...agentsOverview.agents,
+      global: { ...globalAgent, state: "insufficient_data", state_label: "数据不足", confidence: null, data_status: "degraded", summary: "关键资金或广度数据未达到 ready，安全门禁已停止生成方向性结论。", evidence_refs: [] }
+    }
+  };
+  await mockPublicApi(page, { agents: degraded });
+  await page.goto("/agents");
+
+  await expect(page.getByText("安全门禁已停止生成方向性结论")).toBeVisible();
+  await expect(page.getByText("数据不足", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("同步增强", { exact: true })).toHaveCount(0);
 });

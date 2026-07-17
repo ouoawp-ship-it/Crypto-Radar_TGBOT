@@ -717,8 +717,18 @@ def format_symbol_dossier_report(dossier: dict[str, Any]) -> str:
     snapshot = dossier.get("snapshot") if isinstance(dossier.get("snapshot"), dict) else {}
     verdict = dossier.get("verdict") if isinstance(dossier.get("verdict"), dict) else {}
     history = dossier.get("history") if isinstance(dossier.get("history"), list) else []
-    lines = [
-        f"{symbol} 币种雷达档案",
+    requested = dossier.get("requested_signal") if isinstance(dossier.get("requested_signal"), dict) else {}
+    lines = [f"{symbol} 币种雷达档案"]
+    if requested:
+        lines.extend([
+            "",
+            "本次引用信号",
+            f"引用: {requested.get('public_ref') or requested.get('id') or '未知'}",
+            f"类型: {requested.get('signal_type') or requested.get('module') or '未知'}",
+            f"状态: {requested.get('stage') or requested.get('status') or '未知'}{('，分数 ' + str(requested.get('score'))) if requested.get('score') is not None else ''}",
+            f"摘要: {str(requested.get('excerpt') or '')[:260] or '暂无'}",
+        ])
+    lines.extend([
         "",
         "当前状态",
         f"价格: {format_price(to_float(snapshot.get('price')))}",
@@ -731,7 +741,7 @@ def format_symbol_dossier_report(dossier: dict[str, Any]) -> str:
         *funding_rows_text(latest_funding_rows(snapshot)),
         "",
         "历史雷达信号",
-    ]
+    ])
     if history:
         lines.extend(event_line(event) for event in history[:10])
     else:
@@ -755,6 +765,7 @@ def format_symbol_dossier_ai_context(dossier: dict[str, Any], user_text: str) ->
     compact = {
         "user_question": user_text,
         "symbol": dossier.get("symbol"),
+        "requested_signal": dossier.get("requested_signal"),
         "snapshot": dossier.get("snapshot"),
         "history": dossier.get("history", [])[:18],
         "local_rule_verdict": dossier.get("verdict"),

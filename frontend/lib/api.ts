@@ -1,4 +1,4 @@
-import type { ApiEnvelope, ApiResult, CoinContext, ListPayload, MarketSnapshot, RadarIntelligence, SignalContext, SignalItem, WatchlistMarketPayload } from "./types";
+import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, FundsAssetsPayload, FundsSectorsPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, SignalContext, SignalItem, WatchlistMarketPayload } from "./types";
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number };
@@ -119,6 +119,22 @@ export function getMarketSnapshot(symbol: string, options: PublicFetchOptions = 
   return publicFetch<MarketSnapshot>("/public-api/market/snapshot", { symbol }, { revalidateSec: 30, ...options });
 }
 
+export function getMarketOverview(windowSec = 3600, options: PublicFetchOptions = {}) {
+  return publicFetch<MarketOverview>("/public-api/market/overview", { window_sec: windowSec }, { revalidateSec: 15, ...options });
+}
+
+export function getRadarBoards(windowSec = 3600, limit = 8, options: PublicFetchOptions = {}) {
+  return publicFetch<RadarBoards>("/public-api/radar/boards", { window_sec: windowSec, limit }, { revalidateSec: 15, ...options });
+}
+
+export function getFundsSectors(windowSec = 3600, marketType: "spot" | "futures" = "spot", options: PublicFetchOptions = {}) {
+  return publicFetch<FundsSectorsPayload>("/public-api/funds/sectors", { window_sec: windowSec, market_type: marketType }, { revalidateSec: 30, ...options });
+}
+
+export function getFundsAssets(query: Query = {}, options: PublicFetchOptions = {}) {
+  return publicFetch<FundsAssetsPayload>("/public-api/funds/assets", query, { revalidateSec: 30, ...options });
+}
+
 export function getRadarIntelligence(
   windowSec = 86400,
   limit = 5,
@@ -129,12 +145,20 @@ export function getRadarIntelligence(
   return publicFetch<RadarIntelligence>("/public-api/radar/intelligence", { window_sec: windowSec, limit, refs }, { revalidateSec: 15, ...options });
 }
 
-export function getCoinContext(symbol: string, options: PublicFetchOptions = {}) {
-  return publicFetch<CoinContext>("/public-api/coin/context", { symbol }, { revalidateSec: 30, ...options });
+export function getCoinContext(symbol: string, options: PublicFetchOptions = {}, chart: Query = {}) {
+  return publicFetch<CoinContext>("/public-api/coin/context", { symbol, ...chart }, { revalidateSec: 30, ...options });
 }
 
 export function getWatchlistMarket(symbols: string[], options: PublicFetchOptions = {}) {
   return publicFetch<WatchlistMarketPayload>("/public-api/market/watchlist", { symbols: symbols.join(",") }, { revalidateSec: 30, ...options });
+}
+
+export function getInfoFeed(query: Query = {}, options: PublicFetchOptions = {}) {
+  return publicFetch<InfoFeedPayload>("/public-api/info/feed", query, { revalidateSec: 60, ...options });
+}
+
+export function getAgentsOverview(windowSec = 14_400, options: PublicFetchOptions = {}) {
+  return publicFetch<AgentsOverviewPayload>("/public-api/agents/overview", { window_sec: windowSec }, { revalidateSec: 120, ...options });
 }
 
 export type HomeDashboardData = {

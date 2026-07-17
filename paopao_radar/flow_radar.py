@@ -254,8 +254,12 @@ def binance_window_price_pct(source: BinanceDataSource, symbol: str, window: Clo
     return (close_price - open_price) / open_price * 100, True
 
 
-def kline_cvd_delta_info(klines: list[list[Any]], window: ClosedWindow | None = None) -> tuple[float, bool, int]:
-    total = 0.0
+def kline_cvd_flow_info(
+    klines: list[list[Any]],
+    window: ClosedWindow | None = None,
+) -> tuple[float, float, float, bool, int]:
+    taker_buy_total = 0.0
+    taker_sell_total = 0.0
     count = 0
     for kline in klines:
         if not isinstance(kline, list) or len(kline) < 11:
@@ -268,12 +272,29 @@ def kline_cvd_delta_info(klines: list[list[Any]], window: ClosedWindow | None = 
         taker_buy_quote = to_float(kline[10], default=float("nan"))
         if quote_volume != quote_volume or taker_buy_quote != taker_buy_quote:
             continue
-        total += taker_buy_quote * 2 - quote_volume
+        if quote_volume < 0 or taker_buy_quote < 0 or taker_buy_quote > quote_volume:
+            continue
+        taker_buy_total += taker_buy_quote
+        taker_sell_total += quote_volume - taker_buy_quote
         count += 1
-    return total, count > 0, count
+    return taker_buy_total - taker_sell_total, taker_buy_total, taker_sell_total, count > 0, count
+
+
+def kline_cvd_delta_info(klines: list[list[Any]], window: ClosedWindow | None = None) -> tuple[float, bool, int]:
+    delta, _inflow, _outflow, ready, count = kline_cvd_flow_info(klines, window)
+    return delta, ready, count
 
 
 def binance_spot_cvd_stats(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool, int]:
+    delta, _inflow, _outflow, ready, count = binance_spot_flow_stats(source, symbol, window)
+    return delta, ready, count
+
+
+def binance_spot_flow_stats(
+    source: BinanceDataSource,
+    symbol: str,
+    window: ClosedWindow,
+) -> tuple[float, float, float, bool, int]:
     klines = source.spot_klines(
         symbol,
         interval="1h",
@@ -281,10 +302,19 @@ def binance_spot_cvd_stats(source: BinanceDataSource, symbol: str, window: Close
         start_time=window.start_ms,
         end_time=window.end_ms - 1,
     )
-    return kline_cvd_delta_info(klines, window)
+    return kline_cvd_flow_info(klines, window)
 
 
 def binance_futures_cvd_stats(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool, int]:
+    delta, _inflow, _outflow, ready, count = binance_futures_flow_stats(source, symbol, window)
+    return delta, ready, count
+
+
+def binance_futures_flow_stats(
+    source: BinanceDataSource,
+    symbol: str,
+    window: ClosedWindow,
+) -> tuple[float, float, float, bool, int]:
     klines = source.klines(
         symbol,
         interval="1h",
@@ -292,7 +322,7 @@ def binance_futures_cvd_stats(source: BinanceDataSource, symbol: str, window: Cl
         start_time=window.start_ms,
         end_time=window.end_ms - 1,
     )
-    return kline_cvd_delta_info(klines, window)
+    return kline_cvd_flow_info(klines, window)
 
 
 def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
@@ -388,8 +418,8 @@ class FlowRadarEngine:
         for candidate in candidates[: max(1, self.settings.flow_scan_limit)]:
             symbol = candidate["symbol"]
             coin = candidate["coin"]
-            spot_cvd, spot_cvd_ready, spot_cvd_points = binance_spot_cvd_stats(binance, symbol, window)
-            futures_cvd, futures_cvd_ready, futures_cvd_points = binance_futures_cvd_stats(binance, symbol, window)
+            spot_cvd, spot_inflow, spot_outflow, spot_cvd_ready, spot_cvd_points = binance_spot_flow_stats(binance, symbol, window)
+            futures_cvd, futures_inflow, futures_outflow, futures_cvd_ready, futures_cvd_points = binance_futures_flow_stats(binance, symbol, window)
             price_pct, price_ready = binance_window_price_pct(binance, symbol, window)
             oi_24h, oi_fallback_usd, oi_ready, oi_points = binance_oi_stats(
                 binance,
@@ -404,13 +434,19 @@ class FlowRadarEngine:
             item = {
                 "symbol": symbol,
                 "coin": coin,
+                "price": candidate.get("price"),
                 "price_24h": price_pct,
                 "price_ready": price_ready,
                 "oi_24h": oi_24h,
+                "oi_change_pct": oi_24h,
                 "oi_ready": oi_ready,
                 "oi_points": oi_points,
                 "spot_cvd_delta": spot_cvd,
+                "spot_inflow_usd": spot_inflow if spot_cvd_ready else None,
+                "spot_outflow_usd": spot_outflow if spot_cvd_ready else None,
                 "futures_cvd_delta": futures_cvd,
+                "futures_inflow_usd": futures_inflow if futures_cvd_ready else None,
+                "futures_outflow_usd": futures_outflow if futures_cvd_ready else None,
                 "spot_cvd_ready": spot_cvd_ready,
                 "futures_cvd_ready": futures_cvd_ready,
                 "spot_cvd_points": spot_cvd_points,
@@ -432,6 +468,9 @@ class FlowRadarEngine:
             "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
             "text": self._format(rows, candidates, scanned_items, window),
             "items": rows,
+            "snapshots": scanned_items,
+            "observed_at": int(window.end.timestamp()),
+            "window_sec": int(window.interval_sec),
             "diagnostics": {"binance": binance.diagnostics()},
         }
 
@@ -457,6 +496,7 @@ class FlowRadarEngine:
             candidates.append({
                 "symbol": symbol,
                 "coin": coin,
+                "price": to_float(item.get("lastPrice")),
                 "price_24h": price_24h,
                 "quote_volume": quote_volume,
                 "funding_pct": premium_map.get(symbol, 0.0),

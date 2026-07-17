@@ -61,22 +61,29 @@ from .web_services.jobs import (
 )
 from .web_services.ops import update_check_status_payload
 from .web_services.public import (
+    public_agents_overview_payload,
     public_coin_context_payload,
     public_api_health_payload,
+    public_funds_assets_payload,
+    public_funds_sectors_payload,
+    public_info_feed_payload,
+    public_market_overview_payload,
     public_market_snapshot_payload,
+    public_radar_boards_payload,
     public_radar_intelligence_payload,
     public_watchlist_market_payload,
     public_signal_context_payload,
     public_signal_detail_payload,
     public_signal_stats_payload,
     public_signals_payload,
+    public_stream_batch,
 )
 from .web_services.signals import (
     enhance_signal_items,
     signal_detail_view,
     signal_stats_display,
 )
-from .web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_TELEMETRY
+from .web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_STREAM_METRICS, PUBLIC_TELEMETRY
 
 
 MAIN_SERVICE = os.getenv("SERVICE_NAME", "paopao-radar")
@@ -3140,6 +3147,32 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
         web_action = "如果希望直接用服务器 IP 打开，保持 WEB_HOST=0.0.0.0，WEB_PORT=8080。"
     add("web_entry", "Web 入口", web_status, web_detail, web_action)
 
+    cockpit = config.get("cockpit_v2", {}) if isinstance(config.get("cockpit_v2"), dict) else {}
+    if cockpit:
+        cockpit_mode = str(cockpit.get("mode") or "enabled").lower()
+        stores_ready = bool(cockpit.get("news_events_db_exists") and cockpit.get("agent_insights_db_exists"))
+        if cockpit_mode == "enabled" and stores_ready:
+            cockpit_status = "ok"
+            cockpit_detail = "V2 驾驶舱已启用，资讯与 Agent 持久化库均存在。"
+            cockpit_action = ""
+        elif cockpit_mode == "enabled":
+            cockpit_status = "warn"
+            cockpit_detail = "V2 驾驶舱已启用，但资讯或 Agent 持久化库尚未初始化。"
+            cockpit_action = "访问 /info 与 /agents 或执行本地 API 自检后重新 stable-check。"
+        elif cockpit_mode == "preview":
+            cockpit_status = "warn"
+            cockpit_detail = "V2 驾驶舱处于 preview 灰度模式。"
+            cockpit_action = "完成小流量验收后再切换 enabled；异常时改为 disabled 并重建前端。"
+        elif cockpit_mode == "disabled":
+            cockpit_status = "warn"
+            cockpit_detail = "V2 驾驶舱已通过回滚开关停用，旧信号 API 与 Bot 保持运行。"
+            cockpit_action = "确认这是有意回滚；恢复时切换 enabled 并重新构建前端。"
+        else:
+            cockpit_status = "fail"
+            cockpit_detail = f"未知 V2 驾驶舱模式：{cockpit_mode}。"
+            cockpit_action = "PAOXX_COCKPIT_V2_MODE 仅允许 enabled、preview、disabled。"
+        add("cockpit_v2", "V2 驾驶舱灰度", cockpit_status, cockpit_detail, cockpit_action)
+
     telegram = config.get("telegram", {}) if isinstance(config.get("telegram"), dict) else {}
     telegram_ok = bool(telegram.get("bot_token_configured") and telegram.get("chat_id_configured"))
     add(
@@ -3716,6 +3749,7 @@ INDEX_HTML = read_text_file(BASE_DIR / "paopao_radar" / "admin.html")
 
 class WebHandler(BaseHTTPRequestHandler):
     server_version = "PaopaoRadarWeb/1.0"
+    protocol_version = "HTTP/1.1"
     CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -4029,6 +4063,13 @@ class WebHandler(BaseHTTPRequestHandler):
         settings = handler_settings(self)
         heavy_paths = {
             "/public-api/market/snapshot",
+            "/public-api/market/overview",
+            "/public-api/radar/boards",
+            "/public-api/funds/sectors",
+            "/public-api/funds/assets",
+            "/public-api/info/feed",
+            "/public-api/agents/overview",
+            "/public-api/stream",
             "/public-api/market/watchlist",
             "/public-api/coin/context",
             "/public-api/signals/context",
@@ -4055,6 +4096,65 @@ class WebHandler(BaseHTTPRequestHandler):
         )
         return False
 
+    def send_public_stream(self, query: dict[str, list[str]]) -> None:
+        settings = handler_settings(self)
+        duration_sec = clamp_query_int(query.get("stream_sec", ["55"])[0], 55, 300)
+        requested = query_int_or(query.get("last_signal_id", ["0"])[0], 0)
+        header_last = query_int_or(self.headers.get("Last-Event-ID", "0"), 0)
+        cursor = max(0, requested, header_last)
+        if cursor <= 0:
+            cursor = signal_store_for_settings(settings).latest_event_id()
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        PUBLIC_STREAM_METRICS.opened()
+        stream_error = False
+
+        def emit(event_type: str, data: dict[str, Any], event_id: int | None = None) -> None:
+            lines = []
+            if event_id is not None and event_id > 0:
+                lines.append(f"id: {event_id}")
+            lines.append(f"event: {event_type}")
+            lines.append("data: " + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+            lines.append("")
+            self.wfile.write(("\n".join(lines) + "\n").encode("utf-8"))
+            self.wfile.flush()
+            PUBLIC_STREAM_METRICS.event(event_type)
+
+        try:
+            self.wfile.write(b"retry: 3000\n\n")
+            self.wfile.flush()
+            emit("status", {"state": "connected", "cursor": cursor, "generated_at": iso_timestamp()})
+            deadline = time.monotonic() + duration_sec
+            heartbeat_at = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                batch = public_stream_batch(cursor, limit=50, settings=settings)
+                for item in batch.get("items") or []:
+                    signal_id = int(item.get("id") or 0)
+                    emit("signal", {
+                        "ref": item.get("public_ref") or signal_id,
+                        "symbol": item.get("symbol") or "",
+                        "module": item.get("module") or "",
+                        "time": item.get("time") or "",
+                    }, event_id=signal_id)
+                    cursor = max(cursor, signal_id)
+                now_mono = time.monotonic()
+                if now_mono >= heartbeat_at:
+                    emit("status", {"state": "heartbeat", "cursor": cursor, "generated_at": iso_timestamp()})
+                    heartbeat_at = now_mono + 15
+                time.sleep(min(2.0, max(0.1, deadline - now_mono)))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception:
+            stream_error = True
+        finally:
+            PUBLIC_STREAM_METRICS.closed(error=stream_error)
+            self.close_connection = True
+
     def do_GET(self) -> None:
         self.request_started_at = time.perf_counter()
         parsed = urlparse(self.path)
@@ -4078,6 +4178,9 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/public-api/health":
             self.send_json(public_api_health_payload())
+            return
+        if path == "/public-api/stream":
+            self.send_public_stream(query)
             return
         if path == "/public-api/signals":
             self.send_json(public_signals_payload(
@@ -4104,8 +4207,18 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/public-api/market/snapshot":
             self.send_json(public_market_snapshot_payload(query.get("symbol", [""])[0]))
             return
+        if path == "/public-api/market/overview":
+            self.send_json(public_market_overview_payload(
+                window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
+            ))
+            return
         if path == "/public-api/coin/context":
-            self.send_json(public_coin_context_payload(query.get("symbol", [""])[0]))
+            self.send_json(public_coin_context_payload(
+                query.get("symbol", [""])[0],
+                market_type=query.get("market_type", ["futures"])[0],
+                interval=query.get("interval", ["15m"])[0],
+                bars=clamp_query_int(query.get("bars", ["96"])[0], 96, 240),
+            ))
             return
         if path == "/public-api/market/watchlist":
             self.send_json(public_watchlist_market_payload(query.get("symbols", [""])[0]))
@@ -4115,6 +4228,48 @@ class WebHandler(BaseHTTPRequestHandler):
                 window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
                 board_limit=clamp_query_int(query.get("limit", ["5"])[0], 5, 12),
                 signal_refs=query.get("refs", [""])[0],
+            ))
+            return
+        if path == "/public-api/radar/boards":
+            self.send_json(public_radar_boards_payload(
+                window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
+                board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/funds/sectors":
+            self.send_json(public_funds_sectors_payload(
+                window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
+                market_type=query.get("market_type", ["spot"])[0],
+            ))
+            return
+        if path == "/public-api/funds/assets":
+            self.send_json(public_funds_assets_payload(
+                window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
+                market_type=query.get("market_type", ["spot"])[0],
+                search=query.get("q", [""])[0],
+                sector=query.get("sector", [""])[0],
+                data_status=query.get("data_status", [""])[0],
+                sort_key=query.get("sort", ["net_flow_usd"])[0],
+                direction=query.get("direction", ["desc"])[0],
+                page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
+                page_size=clamp_query_int(query.get("page_size", ["50"])[0], 50, 100),
+            ))
+            return
+        if path == "/public-api/info/feed":
+            self.send_json(public_info_feed_payload(
+                source_type=query.get("source_type", [""])[0],
+                language=query.get("language", [""])[0],
+                importance=query.get("importance", [""])[0],
+                symbol=query.get("symbol", [""])[0],
+                search=query.get("q", [""])[0],
+                page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
+                page_size=clamp_query_int(query.get("page_size", ["30"])[0], 30, 100),
+                window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+            ))
+            return
+        if path == "/public-api/agents/overview":
+            self.send_json(public_agents_overview_payload(
+                window_sec=query_int_or(query.get("window_sec", ["14400"])[0], 14400),
             ))
             return
         if path.startswith("/public-api/"):
