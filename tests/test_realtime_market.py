@@ -28,6 +28,13 @@ from paopao_radar.web_services.public import public_radar_boards_payload, public
 
 
 class BinanceMarketEventTests(unittest.TestCase):
+    def test_default_websocket_url_uses_binance_market_route(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(realtime_features_db_path=Path(tmp) / "realtime.db")
+            service = BinanceRealtimeMarketService(settings)
+
+        self.assertEqual(service._websocket_url(), "wss://fstream.binance.com/market/ws")
+
     def test_builds_deduplicated_bounded_subscriptions(self) -> None:
         subscriptions = binance_stream_subscriptions(
             ["BTCUSDT", "ethusdt", "BTCUSDT", "BTCUSD", ""],

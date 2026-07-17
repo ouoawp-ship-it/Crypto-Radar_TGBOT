@@ -99,6 +99,11 @@ RETIRED_KEYS = {
 }
 
 MANAGED_MIGRATIONS = {
+    "BINANCE_FUTURES_WS_URL": {
+        "old": {"", "wss://fstream.binance.com/ws", "wss://fstream.binance.com/stream"},
+        "new": "wss://fstream.binance.com/market/ws",
+        "note": "Binance USD-M market streams moved to the routed /market endpoint",
+    },
     "RADAR_SUMMARY_MIN_INTERVAL_SEC": {
         "old": {"", "1800"},
         "new": "21600",

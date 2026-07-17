@@ -213,7 +213,7 @@ class Settings:
     http_cache_ttl_sec: int = 10
     binance_fapi_base_url: str = "https://fapi.binance.com"
     binance_spot_base_url: str = "https://api.binance.com"
-    binance_futures_ws_url: str = "wss://fstream.binance.com/ws"
+    binance_futures_ws_url: str = "wss://fstream.binance.com/market/ws"
     bybit_public_rest_url: str = "https://api.bybit.com"
     bybit_linear_ws_url: str = "wss://stream.bybit.com/v5/public/linear"
     okx_public_rest_url: str = "https://www.okx.com"
@@ -419,7 +419,9 @@ class Settings:
             http_cache_ttl_sec=env_int("DATA_SOURCE_CACHE_TTL_SEC", 10),
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
-            binance_futures_ws_url=os.getenv("BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/ws").rstrip("/"),
+            binance_futures_ws_url=os.getenv(
+                "BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/market/ws"
+            ).rstrip("/"),
             bybit_public_rest_url=os.getenv("BYBIT_PUBLIC_REST_URL", "https://api.bybit.com").rstrip("/"),
             bybit_linear_ws_url=os.getenv("BYBIT_LINEAR_WS_URL", "wss://stream.bybit.com/v5/public/linear").rstrip("/"),
             okx_public_rest_url=os.getenv("OKX_PUBLIC_REST_URL", "https://www.okx.com").rstrip("/"),
