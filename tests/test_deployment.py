@@ -161,6 +161,7 @@ class UpdateServerScriptTests(unittest.TestCase):
         self.assertIn("check_public_signal_context_actions()", script)
         self.assertIn("Web -> AI 分析/提醒深链闭环可用", script)
         self.assertIn("公开信号详情性能超标", script)
+        self.assertIn("公开信号详情 3 次请求中位数达标", script)
         self.assertIn("公开前台安全响应头生效", script)
 
         self.assertIn("no such table", script)

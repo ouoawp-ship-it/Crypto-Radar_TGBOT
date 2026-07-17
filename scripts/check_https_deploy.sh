@@ -339,6 +339,9 @@ check_public_signal_context_actions() {
   local curl_meta
   local http_code
   local elapsed
+  local median_elapsed
+  local sample
+  local timings=()
   signals_file="$(mktemp)"
   context_file="$(mktemp)"
 
@@ -366,20 +369,29 @@ check_public_signal_context_actions() {
     return
   fi
 
-  if ! curl_meta="$(curl -sS -L --compressed \
-    --connect-timeout "${CONNECT_TIMEOUT}" \
-    --max-time "${TIMEOUT}" \
-    -H 'Cache-Control: no-cache' \
-    -o "${context_file}" \
-    -w '%{http_code} %{time_total}' \
-    "${BASE_URL}/public-api/signals/context?id=${public_ref}")"; then
-    record_block "公开信号详情未在 ${TIMEOUT} 秒内完成"
-    rm -f "${signals_file}" "${context_file}"
-    return
-  fi
-  http_code="$(printf '%s' "${curl_meta}" | awk '{print $1}')"
-  elapsed="$(printf '%s' "${curl_meta}" | awk '{print $2}')"
-  if [ "${http_code}" != "200" ] || ! grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${context_file}"; then
+  for sample in 1 2 3; do
+    if ! curl_meta="$(curl -sS -L --compressed \
+      --connect-timeout "${CONNECT_TIMEOUT}" \
+      --max-time "${TIMEOUT}" \
+      -H 'Cache-Control: no-cache' \
+      -o "${context_file}" \
+      -w '%{http_code} %{time_total}' \
+      "${BASE_URL}/public-api/signals/context?id=${public_ref}")"; then
+      record_block "公开信号详情第 ${sample} 次采样未在 ${TIMEOUT} 秒内完成"
+      rm -f "${signals_file}" "${context_file}"
+      return
+    fi
+    http_code="$(printf '%s' "${curl_meta}" | awk '{print $1}')"
+    elapsed="$(printf '%s' "${curl_meta}" | awk '{print $2}')"
+    if [ "${http_code}" != "200" ] || ! printf '%s' "${elapsed}" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+      record_block "公开信号详情第 ${sample} 次性能采样失败：${curl_meta}"
+      rm -f "${signals_file}" "${context_file}"
+      return
+    fi
+    timings+=("${elapsed}")
+  done
+  median_elapsed="$(printf '%s\n' "${timings[@]}" | sort -n | sed -n '2p')"
+  if ! grep -aEq '"ok"[[:space:]]*:[[:space:]]*true' "${context_file}"; then
     record_block "公开信号详情返回异常：${curl_meta}"
   elif ! grep -aEq '"signal_url"[[:space:]]*:[[:space:]]*"/radar\?signal='"${public_ref}"'"' "${context_file}"; then
     record_block "公开信号详情缺少精确信号深链"
@@ -394,11 +406,10 @@ check_public_signal_context_actions() {
     record_warn "Web -> AI 分析/提醒深链为空；请配置 AI_BOT_USERNAME（不含 @）"
   fi
 
-  if printf '%s' "${elapsed}" | grep -Eq '^[0-9]+([.][0-9]+)?$' \
-    && awk -v elapsed="${elapsed}" -v limit_ms="${PUBLIC_SLO_MS}" 'BEGIN { exit !((elapsed * 1000) <= limit_ms) }'; then
-    record_pass "公开信号详情性能达标：${elapsed}s <= ${PUBLIC_SLO_MS}ms"
+  if awk -v elapsed="${median_elapsed}" -v limit_ms="${PUBLIC_SLO_MS}" 'BEGIN { exit !((elapsed * 1000) <= limit_ms) }'; then
+    record_pass "公开信号详情 3 次请求中位数达标：${median_elapsed}s <= ${PUBLIC_SLO_MS}ms"
   else
-    record_block "公开信号详情性能超标：${elapsed}s > ${PUBLIC_SLO_MS}ms"
+    record_block "公开信号详情性能超标：3 次请求中位数 ${median_elapsed}s > ${PUBLIC_SLO_MS}ms；样本=${timings[*]}"
   fi
   rm -f "${signals_file}" "${context_file}"
 }
