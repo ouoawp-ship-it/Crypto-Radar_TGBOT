@@ -33,6 +33,13 @@ DATA_SOURCES: tuple[dict[str, Any], ...] = (
         "fallback": "serve_last_successful_index_with_stale_marker",
     },
     {
+        "id": "binance_market_metadata", "provider": "Binance",
+        "surface": "Public market metadata", "official": True, "transport": "https_public_content",
+        "metrics": ["market_cap"], "product_roles": ["market_fact_enrichment"],
+        "rights_status": "provider_terms_apply", "retention_policy": "derived_numeric_facts_30d",
+        "content_policy": "numeric_facts_only", "fallback": "use_coinpaprika_market_cap",
+    },
+    {
         "id": "coinpaprika_market", "provider": "CoinPaprika", "surface": "Public market API",
         "official": True, "transport": "https_rest", "metrics": ["market_cap"],
         "product_roles": ["market_fact_enrichment"], "rights_status": "provider_terms_apply",

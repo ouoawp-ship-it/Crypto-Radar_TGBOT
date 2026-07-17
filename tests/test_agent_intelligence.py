@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -119,6 +120,38 @@ class AgentIntelligenceTest(unittest.TestCase):
         self.assertEqual(response["data"]["schema_version"], "2026-07-17")
         self.assertGreater(response["data"]["coverage"]["evidence"], 0)
         self.assertEqual(built["engine_version"], response["data"]["engine_version"])
+
+    def test_public_agent_sources_are_loaded_concurrently(self) -> None:
+        barrier = threading.Barrier(3)
+
+        def cockpit(*_args: object, **_kwargs: object) -> dict[str, object]:
+            barrier.wait(timeout=1)
+            return self.cockpit()
+
+        class SignalStore:
+            @staticmethod
+            def intelligence_events(**_kwargs: object) -> list[dict[str, object]]:
+                barrier.wait(timeout=1)
+                return self.signals()
+
+        class NewsStore:
+            def __init__(self, _path: Path) -> None:
+                pass
+
+            @staticmethod
+            def list_feed(**_kwargs: object) -> dict[str, object]:
+                barrier.wait(timeout=1)
+                return {"items": self.news()}
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch("paopao_radar.web_services.public._market_cockpit_raw", side_effect=cockpit),
+            patch("paopao_radar.web_services.public._store", return_value=SignalStore()),
+            patch("paopao_radar.web_services.public.NewsEventStore", NewsStore),
+        ):
+            response = public_agents_overview_payload(settings=Settings(data_dir=Path(tmp)), now_ts=self.now)
+
+        self.assertTrue(response["ok"])
 
 
 if __name__ == "__main__":

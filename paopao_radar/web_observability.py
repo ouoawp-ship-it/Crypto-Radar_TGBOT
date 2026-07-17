@@ -14,6 +14,12 @@ ALLOWED_TELEMETRY_EVENTS = {
     "frontend_route_loaded",
 }
 
+PUBLIC_API_P95_BUDGET_MS = {
+    "/public-api/signals/context": 800,
+    "/public-api/coin/context": 800,
+    "/public-api/agents/overview": 800,
+}
+
 
 @dataclass(frozen=True)
 class RateLimitResult:
@@ -102,32 +108,84 @@ class PublicTelemetry:
 
 
 class PublicApiMetrics:
-    def __init__(self, sample_limit: int = 500) -> None:
+    def __init__(
+        self,
+        sample_limit: int = 500,
+        route_limit: int = 64,
+        route_budgets_ms: dict[str, int] | None = None,
+    ) -> None:
         self.sample_limit = max(20, int(sample_limit))
+        self.route_limit = max(3, int(route_limit))
+        configured_budgets = PUBLIC_API_P95_BUDGET_MS if route_budgets_ms is None else route_budgets_ms
+        self.route_budgets_ms = {
+            str(path).split("?", 1)[0][:80]: max(1, int(budget))
+            for path, budget in configured_budgets.items()
+        }
         self._lock = threading.RLock()
         self._durations: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=self.sample_limit))
         self._status: Counter[str] = Counter()
+        self._route_status: dict[str, Counter[str]] = defaultdict(Counter)
+        self._collapsed_routes = 0
 
     def record(self, path: str, status: int, duration_ms: float) -> None:
-        safe_path = str(path or "unknown")[:80]
+        safe_path = str(path or "unknown").split("?", 1)[0][:80]
         with self._lock:
+            if (
+                safe_path != "/public-api/_other"
+                and safe_path not in self._durations
+                and len(self._durations) >= self.route_limit - 1
+            ):
+                safe_path = "/public-api/_other"
+                self._collapsed_routes += 1
             self._durations[safe_path].append(max(0.0, float(duration_ms)))
-            self._status[f"{int(status) // 100}xx"] += 1
+            status_class = f"{int(status) // 100}xx"
+            self._status[status_class] += 1
+            self._route_status[safe_path][status_class] += 1
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
             routes: dict[str, Any] = {}
+            breaching_routes: list[str] = []
+            observed_budgeted_routes = 0
             for path, values in self._durations.items():
                 ordered = sorted(values)
                 if not ordered:
                     continue
-                index = min(len(ordered) - 1, max(0, math_ceil(len(ordered) * 0.95) - 1))
-                routes[path] = {
+                p50_index = min(len(ordered) - 1, max(0, math_ceil(len(ordered) * 0.5) - 1))
+                p95_index = min(len(ordered) - 1, max(0, math_ceil(len(ordered) * 0.95) - 1))
+                route = {
                     "count": len(ordered),
-                    "p95_ms": round(ordered[index], 1),
+                    "p50_ms": round(ordered[p50_index], 1),
+                    "p95_ms": round(ordered[p95_index], 1),
                     "max_ms": round(max(ordered), 1),
+                    "status_classes": dict(self._route_status[path]),
                 }
-            return {"routes": routes, "status_classes": dict(self._status)}
+                budget_ms = self.route_budgets_ms.get(path)
+                if budget_ms is not None:
+                    observed_budgeted_routes += 1
+                    route["p95_budget_ms"] = budget_ms
+                    route["within_p95_budget"] = route["p95_ms"] <= budget_ms
+                    if not route["within_p95_budget"]:
+                        breaching_routes.append(path)
+                routes[path] = route
+            if breaching_routes:
+                budget_status = "breaching"
+            elif observed_budgeted_routes:
+                budget_status = "within_budget"
+            else:
+                budget_status = "unobserved"
+            return {
+                "routes": routes,
+                "route_limit": self.route_limit,
+                "collapsed_routes": self._collapsed_routes,
+                "status_classes": dict(self._status),
+                "performance_budget": {
+                    "status": budget_status,
+                    "configured_routes": dict(self.route_budgets_ms),
+                    "observed_routes": observed_budgeted_routes,
+                    "breaching_routes": sorted(breaching_routes),
+                },
+            }
 
 
 class PublicStreamMetrics:

@@ -12,13 +12,14 @@
   --surface-container-low: 244 246 248;
   --text-primary: 17 24 39;
   --text-secondary: 71 84 103;
-  --text-muted: 139 152 170;
+  --text-muted: 100 116 139;
   --primary-50: 236 253 250;
   --primary-100: 204 251 241;
   --primary-500: 20 184 166;
   --primary-600: 13 148 136;
   --primary-700: 15 118 110;
   --primary-800: 17 94 89;
+  --on-primary: 255 255 255;
   --border-subtle: 226 232 240;
   --good: 22 163 74;
   --warn: 217 119 6;
@@ -42,6 +43,7 @@ html[data-theme="dark"] {
   --primary-600: 20 184 166;
   --primary-700: 94 234 212;
   --primary-800: 153 246 228;
+  --on-primary: 13 17 23;
   --border-subtle: 43 53 65;
   --good: 74 222 128;
   --warn: 251 191 36;
@@ -119,7 +121,7 @@ button:disabled {
   }
 
   .btn {
-    @apply inline-flex h-10 items-center justify-center rounded-lg border border-primary-700 bg-primary-700 px-4 text-sm font-medium text-white transition hover:bg-primary-800;
+    @apply inline-flex h-10 items-center justify-center rounded-lg border border-primary-700 bg-primary-700 px-4 text-sm font-medium text-on-primary transition hover:bg-primary-800;
   }
 
   .btn-secondary {
@@ -186,6 +188,84 @@ button:disabled {
 html[data-theme="dark"] .bg-white,
 html[data-theme="dark"] .bg-white\/95 {
   background-color: rgb(var(--surface-panel)) !important;
+}
+
+html[data-theme="dark"] .text-red-600,
+html[data-theme="dark"] .text-red-700,
+html[data-theme="dark"] .text-red-800,
+html[data-theme="dark"] .text-red-900 {
+  color: rgb(var(--risk));
+}
+
+html[data-theme="dark"] .text-emerald-600,
+html[data-theme="dark"] .text-emerald-700,
+html[data-theme="dark"] .text-emerald-800,
+html[data-theme="dark"] .text-emerald-900 {
+  color: rgb(var(--good));
+}
+
+html[data-theme="dark"] .text-amber-600,
+html[data-theme="dark"] .text-amber-700,
+html[data-theme="dark"] .text-amber-800,
+html[data-theme="dark"] .text-amber-900 {
+  color: rgb(var(--warn));
+}
+
+html[data-theme="dark"] .bg-emerald-50 {
+  background-color: rgb(var(--good) / 0.1) !important;
+}
+
+html[data-theme="dark"] .bg-red-50 {
+  background-color: rgb(var(--risk) / 0.1) !important;
+}
+
+html[data-theme="dark"] .bg-amber-50,
+html[data-theme="dark"] .bg-amber-50\/70,
+html[data-theme="dark"] .bg-amber-50\/40 {
+  background-color: rgb(var(--warn) / 0.1) !important;
+}
+
+html[data-theme="dark"] .border-emerald-200 {
+  border-color: rgb(var(--good) / 0.3) !important;
+}
+
+html[data-theme="dark"] .border-red-200 {
+  border-color: rgb(var(--risk) / 0.3) !important;
+}
+
+html[data-theme="dark"] .border-amber-200 {
+  border-color: rgb(var(--warn) / 0.3) !important;
+}
+
+@media (max-width: 767px) {
+  :where(a, button, input, select, summary) {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  a[href] {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  :where(a[href], button) {
+    min-width: 44px;
+  }
+
+  .input {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .scrollbar-none {

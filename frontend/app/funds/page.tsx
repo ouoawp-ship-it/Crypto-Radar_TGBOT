@@ -36,9 +36,10 @@ function tone(value?: number | null) {
   return number > 0 ? "text-emerald-700" : "text-red-700";
 }
 
-function statusTone(status?: string): "good" | "warn" | "neutral" {
+function statusTone(status?: string): "good" | "warn" | "bad" | "neutral" {
   if (status === "ready") return "good";
   if (status === "degraded" || status === "stale") return "warn";
+  if (status === "unavailable") return "bad";
   return "neutral";
 }
 
@@ -115,6 +116,10 @@ function FundsPageContent() {
 
   async function load(refresh = false) {
     const request = ++requestRef.current;
+    if (!refresh) {
+      setSectors(null);
+      setAssets(null);
+    }
     setLoading(true);
     setError("");
     try {
@@ -136,6 +141,10 @@ function FundsPageContent() {
 
   const sectorOptions = sectors?.catalog || [];
   const sectorById = useMemo(() => new Map(sectorOptions.map((item) => [item.id, item.label])), [sectorOptions]);
+  const warnings = useMemo(
+    () => Array.from(new Set([...(sectors?.warnings || []), ...(assets?.warnings || [])])),
+    [sectors?.warnings, assets?.warnings]
+  );
   const pageCount = Math.max(1, Number(assets?.pagination?.page_count || 1));
   const summary = sectors?.summary;
 
@@ -146,28 +155,28 @@ function FundsPageContent() {
   }
 
   return (
-    <div className="space-y-3">
+    <div aria-busy={loading} className="space-y-3">
       <PageTitle title="资金中心" subtitle="把板块轮动、主动买卖成交差与资产级证据放在同一个可追溯工作台中。" tags={[`${marketType === "spot" ? "现货" : "合约"} CVD`, `${WINDOWS.find((item) => item.value === windowSec)?.label || "1h"} 窗口`, `分类 ${safeText(sectors?.catalog_version)}`]} />
 
       <section className="cockpit-panel p-2.5">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1">
-            {(["spot", "futures"] as const).map((item) => <button className={`h-8 rounded-md px-4 text-xs font-semibold ${marketType === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => { setMarketType(item); setPage(1); }} type="button">{item === "spot" ? "现货" : "合约"}</button>)}
+          <div aria-label="行情类型" className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1" role="group">
+            {(["spot", "futures"] as const).map((item) => <button aria-pressed={marketType === item} className={`h-8 rounded-md px-4 text-xs font-semibold ${marketType === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => { setMarketType(item); setPage(1); }} type="button">{item === "spot" ? "现货" : "合约"}</button>)}
           </div>
-          <div className="flex flex-wrap items-center gap-1 rounded-lg bg-surface-container-low p-1">
-            {WINDOWS.map((item) => <button className={`h-8 rounded-md px-3 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => { setWindowSec(item.value); setPage(1); }} type="button">{item.label}</button>)}
+          <div aria-label="资金时间窗口" className="flex flex-wrap items-center gap-1 rounded-lg bg-surface-container-low p-1" role="group">
+            {WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-8 rounded-md px-3 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => { setWindowSec(item.value); setPage(1); }} type="button">{item.label}</button>)}
           </div>
           <button className="btn-secondary h-9 text-xs" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "刷新中" : "刷新数据"}</button>
         </div>
       </section>
 
-      {error ? <ErrorState message={error} onRetry={() => void load(true)} /> : null}
+      {error ? <ErrorState message={error} onRetry={() => void load(true)} retainedData={Boolean(sectors || assets)} /> : null}
 
       <section className="grid grid-cols-2 gap-2 lg:grid-cols-6">
         <SummaryCard label="总净流入" value={formatMetricValue(summary?.net_flow_usd, "usd")} toneClass={tone(summary?.net_flow_usd)} />
         <SummaryCard label="主动买入额" value={formatMetricValue(summary?.inflow_usd, "usd")} detail="已覆盖封闭窗口" />
         <SummaryCard label="主动卖出额" value={formatMetricValue(summary?.outflow_usd, "usd")} detail="已覆盖封闭窗口" />
-        <SummaryCard label="资产覆盖" value={`${summary?.covered_assets || 0} / ${summary?.asset_count || 0}`} />
+        <SummaryCard label="资产覆盖" value={summary ? `${summary.covered_assets || 0} / ${summary.asset_count || 0}` : "—"} />
         <SummaryCard label="流入领先" value={safeText(sectorById.get(summary?.leading_inflow_sector), "—")} />
         <SummaryCard label="流出领先" value={safeText(sectorById.get(summary?.leading_outflow_sector), "—")} />
       </section>
@@ -214,7 +223,7 @@ function FundsPageContent() {
         </section>
       </div>
 
-      {(sectors?.warnings || assets?.warnings || []).length ? <section className="cockpit-panel border-amber-200 bg-amber-50/70 p-3"><h2 className="text-xs font-semibold text-amber-900">数据口径与降级说明</h2><ul className="mt-2 space-y-1 text-[11px] leading-5 text-amber-800">{Array.from(new Set([...(sectors?.warnings || []), ...(assets?.warnings || [])])).map((item) => <li key={item}>· {item}</li>)}</ul></section> : null}
+      {warnings.length ? <section aria-live="polite" className="cockpit-panel border-amber-200 bg-amber-50/70 p-3" role="status"><h2 className="text-xs font-semibold text-amber-900">数据口径与降级说明</h2><ul className="mt-2 space-y-1 text-[11px] leading-5 text-amber-800">{warnings.map((item) => <li key={item}>· {item}</li>)}</ul></section> : null}
     </div>
   );
 }

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.market_cockpit import (
@@ -143,6 +146,60 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertFalse({board["key"]: board for board in payload["boards"]}["oi"]["available"])
         self.assertTrue(payload["warnings"])
 
+    def test_public_cold_start_returns_empty_while_scheduling_background_warmup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            with (
+                patch("paopao_radar.market_cockpit.collect_binance_market_rows", side_effect=AssertionError("request path must not collect")),
+                patch("paopao_radar.web_services.public._schedule_market_warmup", return_value=True) as schedule,
+            ):
+                payload = public_market_overview_payload(window_sec=3_600, settings=settings)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["data_status"], "empty")
+        self.assertIn("后台预热", payload["data"]["warnings"][0])
+        schedule.assert_called_once_with(settings)
+
+    def test_public_market_warmup_is_single_flight_and_persists_result(self) -> None:
+        from paopao_radar.web_services import public as public_service
+
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            started = threading.Event()
+            release = threading.Event()
+            closed = threading.Event()
+            observed_at = int(time.time())
+
+            class FakeSource:
+                class Http:
+                    @staticmethod
+                    def close() -> None:
+                        closed.set()
+
+                http = Http()
+
+            def collect(*_args, **_kwargs):
+                started.set()
+                release.wait(timeout=2)
+                return [{
+                    "symbol": "BTCUSDT", "observed_at": observed_at, "source": "binance_futures_batch",
+                    "price": 100, "quote_volume": 100_000_000, "coverage": {"price": True, "volume": True},
+                }]
+
+            with (
+                patch.object(public_service, "BinanceDataSource", return_value=FakeSource()),
+                patch.object(public_service, "collect_binance_market_rows", side_effect=collect),
+            ):
+                self.assertTrue(public_service._schedule_market_warmup(settings))
+                self.assertTrue(started.wait(timeout=1))
+                self.assertFalse(public_service._schedule_market_warmup(settings))
+                release.set()
+                self.assertTrue(closed.wait(timeout=2))
+
+            saved_at = MarketSnapshotStore(settings.market_snapshots_db_path).latest_timestamp("binance_futures_batch")
+
+        self.assertEqual(saved_at, observed_at)
+
     def test_batch_collector_filters_excluded_assets_and_persists_on_interval(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings(tmp)
@@ -158,6 +215,31 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(saved["status"], "saved")
         self.assertEqual(saved["count"], 2)
         self.assertEqual(skipped["status"], "skipped")
+
+    def test_batch_collector_closes_internally_owned_source_on_success_and_failure(self) -> None:
+        class OwnedSource(FakeBinanceSource):
+            def __init__(self, *, fail: bool = False) -> None:
+                self.fail = fail
+                self.closed = False
+                self.http = type("Http", (), {"close": lambda owner: setattr(self, "closed", True)})()
+
+            def usdt_perp_symbols(self):
+                if self.fail:
+                    raise RuntimeError("upstream failed")
+                return super().usdt_perp_symbols()
+
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            successful = OwnedSource()
+            with patch("paopao_radar.market_cockpit.BinanceDataSource", return_value=successful):
+                self.assertTrue(collect_binance_market_rows(settings, now_ts=1_000))
+            failed = OwnedSource(fail=True)
+            with patch("paopao_radar.market_cockpit.BinanceDataSource", return_value=failed):
+                with self.assertRaisesRegex(RuntimeError, "upstream failed"):
+                    collect_binance_market_rows(settings, now_ts=1_000)
+
+        self.assertTrue(successful.closed)
+        self.assertTrue(failed.closed)
 
     def test_batch_collector_rotates_and_enriches_open_interest(self) -> None:
         with TemporaryDirectory() as tmp:

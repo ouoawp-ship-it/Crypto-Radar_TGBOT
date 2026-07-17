@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.coin_evidence import build_kline_chart, build_snapshot_series
 from paopao_radar.config import Settings
@@ -118,6 +120,76 @@ class CoinEvidenceTests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False).lower()
         for forbidden in ("api_key", "bot_token", "password", "coverage_json"):
             self.assertNotIn(forbidden, serialized)
+
+    def test_coin_context_loads_snapshot_and_chart_concurrently(self) -> None:
+        snapshot_started = threading.Event()
+        chart_started = threading.Event()
+
+        def snapshot(settings: Settings, symbol: str) -> dict[str, object]:
+            snapshot_started.set()
+            if not chart_started.wait(timeout=1):
+                raise RuntimeError("chart did not start concurrently")
+            return self.snapshot(settings, symbol)
+
+        def chart(settings: Settings, symbol: str, market: str, interval: str, bars: int) -> list[list[object]]:
+            chart_started.set()
+            if not snapshot_started.wait(timeout=1):
+                raise RuntimeError("snapshot did not start concurrently")
+            return self.chart(settings, symbol, market, interval, bars)
+
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            payload = public_coin_context_payload(
+                "BTC",
+                settings=settings,
+                snapshot_loader=snapshot,
+                chart_loader=chart,
+                bars=24,
+                now_ts=4_600,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertIsNotNone(payload["data"]["market"])
+        self.assertEqual(payload["data"]["chart"]["coverage"], {"requested": 24, "returned": 24})
+
+    def test_coin_context_overlaps_local_timeline_with_upstream_loads(self) -> None:
+        timeline_started = threading.Event()
+        snapshot_started = threading.Event()
+        chart_started = threading.Event()
+
+        class TimelineStore:
+            @staticmethod
+            def symbol_timeline(_symbol: str, *, limit: int, compact: bool) -> list[dict[str, object]]:
+                self.assertEqual(limit, 30)
+                self.assertTrue(compact)
+                timeline_started.set()
+                if not snapshot_started.wait(timeout=1) or not chart_started.wait(timeout=1):
+                    raise RuntimeError("upstream loads did not start concurrently")
+                return []
+
+        def snapshot(settings: Settings, symbol: str) -> dict[str, object]:
+            snapshot_started.set()
+            if not timeline_started.wait(timeout=1):
+                raise RuntimeError("timeline did not start concurrently")
+            return self.snapshot(settings, symbol)
+
+        def chart(settings: Settings, symbol: str, market: str, interval: str, bars: int) -> list[list[object]]:
+            chart_started.set()
+            if not timeline_started.wait(timeout=1):
+                raise RuntimeError("timeline did not start concurrently")
+            return self.chart(settings, symbol, market, interval, bars)
+
+        with TemporaryDirectory() as tmp, patch("paopao_radar.web_services.public._store", return_value=TimelineStore()):
+            payload = public_coin_context_payload(
+                "BTC",
+                settings=Settings(data_dir=Path(tmp)),
+                snapshot_loader=snapshot,
+                chart_loader=chart,
+                bars=24,
+                now_ts=4_600,
+            )
+
+        self.assertTrue(payload["ok"])
 
 
 if __name__ == "__main__":

@@ -28,7 +28,8 @@
 - `/public-api/radar/intelligence`：四类机会榜与情报层
 - `/public-api/coin/context?symbol=...`：单币聚合上下文
 - `/public-api/market/watchlist?symbols=...`：批量自选快照
-- `/public-api/health`：脱敏健康、P95、缓存和限流计数
+- `/public-api/data/sources`：数据源治理清单和脱敏运行状态
+- `/public-api/health`：脱敏健康、P95/SLO、上游、缓存和限流计数
 
 公开接口只返回脱敏后的结构化信号。配置、日志、任务、服务控制和审计接口均需后台认证。
 线上信号接口为 `https://paoxx.com/public-api/signals`。

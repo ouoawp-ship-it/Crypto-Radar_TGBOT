@@ -87,6 +87,7 @@ function InfoPageContent() {
   const [language, setLanguage] = useState("");
   const [importance, setImportance] = useState("");
   const [symbol, setSymbol] = useState("");
+  const [symbolDraft, setSymbolDraft] = useState("");
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -99,7 +100,9 @@ function InfoPageContent() {
     if (WINDOWS.some((item) => item.value === initialWindow)) setWindowSec(initialWindow);
     setLanguage(params.get("language") || "");
     setImportance(params.get("importance") || "");
-    setSymbol((params.get("symbol") || "").toUpperCase());
+    const initialSymbol = (params.get("symbol") || "").toUpperCase();
+    setSymbol(initialSymbol);
+    setSymbolDraft(initialSymbol);
     const initialQuery = params.get("q") || "";
     setQuery(initialQuery);
     setDraft(initialQuery);
@@ -122,6 +125,7 @@ function InfoPageContent() {
 
   async function load(refresh = false) {
     const request = ++requestRef.current;
+    if (!refresh) setPayload(null);
     setLoading(true);
     setError("");
     try {
@@ -139,12 +143,13 @@ function InfoPageContent() {
   function applySearch(event: FormEvent) {
     event.preventDefault();
     setPage(1);
+    setSymbol(symbolDraft.trim().toUpperCase());
     setQuery(draft.trim());
   }
 
   const pageCount = Math.max(1, Number(payload?.pagination?.page_count || 1));
   return (
-    <div className="space-y-3">
+    <div aria-busy={loading} className="space-y-3">
       <PageTitle title="信息中心" subtitle="把官方消息、关联资产与市场验证放在同一个版权合规的信息工作台中。" tags={["官方来源", "事件聚类", "事实 / 推断分离"]} />
 
       <section className="grid grid-cols-2 gap-2 lg:grid-cols-4">
@@ -162,16 +167,16 @@ function InfoPageContent() {
 
       <section className="cockpit-panel p-3">
         <form className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[auto_120px_130px_minmax(140px,0.7fr)_minmax(200px,1fr)_auto]" onSubmit={applySearch}>
-          <div className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1">{WINDOWS.map((item) => <button className={`h-8 rounded-md px-3 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => { setWindowSec(item.value); setPage(1); }} type="button">{item.label}</button>)}</div>
+          <div aria-label="资讯时间窗口" className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1" role="group">{WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-8 rounded-md px-3 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => { setWindowSec(item.value); setPage(1); }} type="button">{item.label}</button>)}</div>
           <select aria-label="语言筛选" className="input h-10 text-xs" value={language} onChange={(event) => { setLanguage(event.target.value); setPage(1); }}><option value="">全部语言</option><option value="zh">中文</option><option value="en">English</option></select>
           <select aria-label="重要度筛选" className="input h-10 text-xs" value={importance} onChange={(event) => { setImportance(event.target.value); setPage(1); }}><option value="">全部重要度</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
-          <input aria-label="币种筛选" className="input h-10 text-xs" placeholder="BTC 或 BTCUSDT" value={symbol} onChange={(event) => { setSymbol(event.target.value.toUpperCase()); setPage(1); }} />
+          <input aria-label="币种筛选" className="input h-10 text-xs" placeholder="BTC 或 BTCUSDT" value={symbolDraft} onChange={(event) => setSymbolDraft(event.target.value.toUpperCase())} />
           <input aria-label="搜索资讯" className="input h-10 text-xs" placeholder="搜索公告标题" value={draft} onChange={(event) => setDraft(event.target.value)} />
           <div className="flex gap-2"><button className="btn h-10 flex-1 px-4 text-xs" type="submit">应用</button><button className="btn-secondary h-10 px-3 text-xs" disabled={loading} onClick={() => void load(true)} type="button">刷新</button></div>
         </form>
       </section>
 
-      {error ? <ErrorState message={error} onRetry={() => void load(true)} /> : null}
+      {error ? <ErrorState message={error} onRetry={() => void load(true)} retainedData={Boolean(payload)} /> : null}
 
       <section className="grid gap-3 xl:grid-cols-2">
         {loading && !payload ? Array.from({ length: 4 }).map((_, index) => <div className="cockpit-panel h-64 animate-pulse bg-surface-container-low" key={index} />) : (payload?.items || []).map((item) => <NewsCard highlighted={highlight === item.event_id} item={item} key={item.event_id} />)}
@@ -180,7 +185,7 @@ function InfoPageContent() {
 
       <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-surface-panel px-3 py-2"><span className="text-[11px] text-text-muted">第 {payload?.pagination?.page || page} / {pageCount} 页 · {payload?.pagination?.total || 0} 个事件簇</span><div className="flex gap-2"><button className="btn-secondary h-8 px-3 text-xs" disabled={page <= 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} type="button">上一页</button><button className="btn-secondary h-8 px-3 text-xs" disabled={page >= pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} type="button">下一页</button></div></div>
 
-      {(payload?.warnings || []).length ? <section className="cockpit-panel border-amber-200 bg-amber-50/70 p-3"><h2 className="text-xs font-semibold text-amber-900">采集与授权说明</h2><ul className="mt-2 text-[11px] leading-5 text-amber-800">{payload?.warnings?.map((warning) => <li key={warning}>· {warning}</li>)}</ul></section> : null}
+      {(payload?.warnings || []).length ? <section aria-live="polite" className="cockpit-panel border-amber-200 bg-amber-50/70 p-3" role="status"><h2 className="text-xs font-semibold text-amber-900">采集与授权说明</h2><ul className="mt-2 text-[11px] leading-5 text-amber-800">{payload?.warnings?.map((warning) => <li key={warning}>· {warning}</li>)}</ul></section> : null}
     </div>
   );
 }

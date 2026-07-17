@@ -6,10 +6,109 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from paopao_radar.config import Settings
-from paopao_radar.data_sources import BinanceDataSource, DataQuality, HttpClient
+from paopao_radar.data_sources import BinanceDataSource, DataQuality, HttpClient, UpstreamSourceMetrics
 
 
 class MarketCapSourceTests(unittest.TestCase):
+    def test_upstream_metrics_bound_source_cardinality(self) -> None:
+        metrics = UpstreamSourceMetrics(source_limit=3)
+        for index in range(8):
+            metrics.record_network(f"source-{index}", success=True, duration_ms=index)
+
+        snapshot = metrics.snapshot()
+
+        self.assertLessEqual(len(snapshot["sources"]), 3)
+        self.assertIn("other", snapshot["sources"])
+        self.assertEqual(snapshot["collapsed_sources"], 6)
+
+    def test_upstream_metrics_report_latency_success_cache_and_data_age(self) -> None:
+        now = [1_000.0]
+        metrics = UpstreamSourceMetrics(sample_limit=20, clock=lambda: now[0])
+        metrics.record_cache("binance_spot_public", hit=False)
+        for duration in range(1, 21):
+            metrics.record_network(
+                "binance_spot_public",
+                success=duration < 20,
+                duration_ms=duration,
+                error="status=503" if duration == 20 else "",
+            )
+        now[0] = 1_005.0
+        metrics.record_cache("binance_spot_public", hit=True)
+
+        source = metrics.snapshot()["sources"]["binance_spot_public"]
+
+        self.assertEqual(source["attempts"], 20)
+        self.assertEqual(source["success_rate"], 0.95)
+        self.assertEqual(source["p50_ms"], 10.0)
+        self.assertEqual(source["p95_ms"], 19.0)
+        self.assertEqual(source["cache_hit_rate"], 0.5)
+        self.assertEqual(source["data_age_sec"], 5)
+        self.assertEqual(source["last_error"], "status=503")
+
+    def test_upstream_metrics_do_not_retain_arbitrary_error_details(self) -> None:
+        metrics = UpstreamSourceMetrics()
+
+        metrics.record_network(
+            "binance_spot_public",
+            success=False,
+            duration_ms=10,
+            error="Authorization=Bearer must-not-leak",
+        )
+
+        source = metrics.snapshot()["sources"]["binance_spot_public"]
+        self.assertEqual(source["last_error"], "upstream_error")
+
+    def test_http_cache_is_bounded_and_reports_source_metrics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp), http_cache_enable=True, http_cache_ttl_sec=60)
+            session = Mock()
+            response = session.get.return_value
+            response.status_code = 200
+            response.json.side_effect = [{"value": 1}, {"value": 2}, {"value": 3}]
+            metrics = UpstreamSourceMetrics()
+            client = HttpClient(
+                settings,
+                DataQuality(),
+                session=session,
+                metrics=metrics,
+                cache_max_entries=2,
+            )
+
+            first = client.get_json("https://example.test/one", cache_key="one", quality_key="spotKlines")
+            cached = client.get_json("https://example.test/one", cache_key="one", quality_key="spotKlines")
+            client.get_json("https://example.test/two", cache_key="two", quality_key="spotKlines")
+            client.get_json("https://example.test/three", cache_key="three", quality_key="spotKlines")
+
+        self.assertEqual(first, cached)
+        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual(client.diagnostics()["entries"], 2)
+        self.assertEqual(client.diagnostics()["evictions"], 1)
+        source = metrics.snapshot()["sources"]["binance_spot_public"]
+        self.assertEqual(source["successes"], 3)
+        self.assertEqual(source["cache_hits"], 1)
+        self.assertEqual(source["cache_misses"], 3)
+
+    def test_http_cache_prunes_expired_entries_before_reuse(self) -> None:
+        with TemporaryDirectory() as tmp:
+            now = [100.0]
+            settings = Settings(data_dir=Path(tmp), http_cache_enable=True, http_cache_ttl_sec=1)
+            session = Mock()
+            response = session.get.return_value
+            response.status_code = 200
+            response.json.side_effect = [{"value": 1}, {"value": 2}]
+            client = HttpClient(settings, DataQuality(), session=session, cache_max_entries=2)
+
+            with patch("paopao_radar.data_sources.time.time", side_effect=lambda: now[0]):
+                first = client.get_json("https://example.test/one", cache_key="one")
+                now[0] = 102.0
+                second = client.get_json("https://example.test/one", cache_key="one")
+                diagnostics = client.diagnostics()
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(diagnostics["entries"], 1)
+        self.assertEqual(diagnostics["expired_pruned"], 1)
+
     def test_http_client_reuses_owned_session(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp), http_cache_enable=False)

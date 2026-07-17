@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
-from paopao_radar.news_intelligence import NewsEventStore, normalize_binance_articles
+from paopao_radar.news_intelligence import NewsEventStore, ingest_binance_announcements, normalize_binance_articles
 from paopao_radar.web_services.public import public_info_feed_payload
 
 
@@ -81,6 +84,77 @@ class NewsIntelligenceTest(unittest.TestCase):
         serialized = json.dumps(response, ensure_ascii=False).lower()
         self.assertNotIn("password", serialized)
         self.assertNotIn("bot_token", serialized)
+
+    def test_public_cold_start_schedules_news_refresh_without_blocking_on_upstream(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            with (
+                patch("paopao_radar.web_services.public.ingest_binance_announcements", side_effect=AssertionError("request path must not ingest")),
+                patch("paopao_radar.web_services.public._schedule_news_refresh", return_value=True) as schedule,
+            ):
+                response = public_info_feed_payload(settings=settings)
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["data"]["data_status"], "degraded")
+        self.assertEqual(response["data"]["ingestion"]["status"], "refreshing")
+        self.assertIn("后台更新", response["data"]["warnings"][0])
+        schedule.assert_called_once_with(settings)
+
+    def test_news_background_refresh_is_single_flight_and_persists_events(self) -> None:
+        from paopao_radar.web_services import public as public_service
+
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            started = threading.Event()
+            release = threading.Event()
+            finished = threading.Event()
+
+            def ingest(*_args, **_kwargs):
+                started.set()
+                release.wait(timeout=2)
+                NewsEventStore(settings.news_events_db_path).upsert_many(
+                    normalize_binance_articles(self.articles(), collected_at=int(time.time()))
+                )
+                finished.set()
+                return {"written": 2}
+
+            with patch.object(public_service, "ingest_binance_announcements", side_effect=ingest):
+                self.assertTrue(public_service._schedule_news_refresh(settings))
+                self.assertTrue(started.wait(timeout=1))
+                self.assertFalse(public_service._schedule_news_refresh(settings))
+                release.set()
+                self.assertTrue(finished.wait(timeout=2))
+
+            feed = NewsEventStore(settings.news_events_db_path).list_feed(page=1, page_size=10)
+
+        self.assertEqual(feed["pagination"]["total"], 2)
+
+    def test_news_ingestion_closes_internally_owned_source(self) -> None:
+        class OwnedSource:
+            def __init__(self, *, fail: bool = False) -> None:
+                self.fail = fail
+                self.closed = False
+                self.http = type("Http", (), {"close": lambda owner: setattr(self, "closed", True)})()
+
+            def announcements(self, **_kwargs):
+                if self.fail:
+                    raise RuntimeError("announcement source failed")
+                return self_articles
+
+        self_articles = self.articles()
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            successful = OwnedSource()
+            with patch("paopao_radar.news_intelligence.BinanceDataSource", return_value=successful):
+                result = ingest_binance_announcements(settings, now_ts=int(time.time()))
+            failed = OwnedSource(fail=True)
+            with patch("paopao_radar.news_intelligence.BinanceDataSource", return_value=failed):
+                with self.assertRaisesRegex(RuntimeError, "announcement source failed"):
+                    ingest_binance_announcements(settings, now_ts=int(time.time()))
+
+        self.assertEqual(result["written"], 2)
+        self.assertTrue(successful.closed)
+        self.assertTrue(failed.closed)
 
     def test_retention_prunes_old_events_and_symbol_index(self) -> None:
         with TemporaryDirectory() as tmp:

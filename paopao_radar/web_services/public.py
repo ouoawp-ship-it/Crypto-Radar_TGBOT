@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import sys
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,12 +17,13 @@ from ..coin_evidence import (
 )
 from ..agent_intelligence import build_agent_overview
 from ..config import Settings
-from ..data_sources import BinanceDataSource
+from ..data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from ..data_source_registry import data_source_registry_payload
-from ..market_cockpit import MarketSnapshotStore, load_market_cockpit, normalize_window
+from ..market_cockpit import MarketSnapshotStore, collect_binance_market_rows, load_market_cockpit, normalize_window
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
 from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
 from ..runtime_cache import get_or_set as runtime_cache_get_or_set
+from ..runtime_cache import invalidate as invalidate_runtime_cache
 from ..runtime_cache import stats as runtime_cache_stats
 from ..signal_intelligence import build_radar_intelligence
 from ..signal_store import SignalEventStore
@@ -69,6 +72,13 @@ PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 PUBLIC_SIGNAL_REF_RE = re.compile(r"^(?:[0-9]{1,12}|sig_[a-f0-9]{20})$")
 SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
 ChartLoader = Callable[[Settings, str, str, str, int], list[list[Any]]]
+_MARKET_WARMUP_LOCK = threading.Lock()
+_MARKET_WARMUPS: set[str] = set()
+_MARKET_WARMUP_NEXT_ALLOWED: dict[str, float] = {}
+_NEWS_REFRESH_LOCK = threading.Lock()
+_NEWS_REFRESHES: set[str] = set()
+_NEWS_REFRESH_NEXT_ALLOWED: dict[str, float] = {}
+_NEWS_REFRESH_FAILURES: dict[str, str] = {}
 
 
 def _v2_disabled(settings: Settings) -> bool:
@@ -104,6 +114,8 @@ def _strip_forbidden(value: Any) -> Any:
         return [_strip_forbidden(item) for item in value]
     redacted = redact_api_payload(value)
     if isinstance(redacted, str):
+        if any(marker in redacted.lower() for marker in ("authorization", "cookie")):
+            return "<redacted:sensitive-line>"
         for marker in ("WEB_ADMIN_TOKEN", "BOT_TOKEN", "TELEGRAM", "Telegram", "Authorization", "Cookie"):
             redacted = redacted.replace(marker, "<redacted>")
     return redacted
@@ -350,17 +362,116 @@ def _market_cockpit_raw(
     safe_limit = max(3, min(20, int(board_limit or 8)))
 
     def load() -> dict[str, Any]:
-        return load_market_cockpit(
+        payload = load_market_cockpit(
             settings,
             window_sec=safe_window,
             board_limit=safe_limit,
             now_ts=now_ts,
+            live_rows=[],
         )
+        if now_ts is None and str(payload.get("data_status") or "") in {"empty", "warming_up", "partial", "stale"}:
+            _schedule_market_warmup(settings)
+            if not payload.get("assets"):
+                warnings = list(payload.get("warnings") or [])
+                warnings.insert(0, "市场快照正在后台预热，稍后刷新即可看到榜单。")
+                payload["warnings"] = list(dict.fromkeys(warnings))
+        return payload
 
     if now_ts is not None:
         return load()
     cache_key = f"public:market-cockpit:{settings.market_snapshots_db_path}:{safe_window}:{safe_limit}"
     return runtime_cache_get_or_set(cache_key, PUBLIC_MARKET_COCKPIT_TTL_SEC, load)
+
+
+def _schedule_market_warmup(settings: Settings) -> bool:
+    key = str(settings.market_snapshots_db_path)
+    interval = max(60, int(settings.market_snapshot_interval_sec))
+    now_wall = int(time.time())
+    now_mono = time.monotonic()
+    latest = MarketSnapshotStore(settings.market_snapshots_db_path).latest_timestamp("binance_futures_batch")
+
+    with _MARKET_WARMUP_LOCK:
+        if key in _MARKET_WARMUPS or now_mono < _MARKET_WARMUP_NEXT_ALLOWED.get(key, 0):
+            return False
+        if latest and now_wall - latest < interval:
+            _MARKET_WARMUP_NEXT_ALLOWED[key] = now_mono + (interval - (now_wall - latest))
+            return False
+        _MARKET_WARMUPS.add(key)
+
+    def worker() -> None:
+        cooldown = 60.0
+        source: BinanceDataSource | None = None
+        try:
+            source = BinanceDataSource(settings)
+            rows = collect_binance_market_rows(settings, source=source, oi_source=source)
+            count = MarketSnapshotStore(settings.market_snapshots_db_path).append_many(rows)
+            if count:
+                cooldown = float(interval)
+                invalidate_runtime_cache("public:")
+        except Exception as exc:
+            print(f"[public-market] background warmup failed {type(exc).__name__}: {exc}", file=sys.stderr)
+        finally:
+            try:
+                if source is not None:
+                    source.http.close()
+            except Exception:
+                pass
+            with _MARKET_WARMUP_LOCK:
+                _MARKET_WARMUPS.discard(key)
+                _MARKET_WARMUP_NEXT_ALLOWED[key] = time.monotonic() + cooldown
+
+    thread = threading.Thread(target=worker, name="public-market-warmup", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:
+        with _MARKET_WARMUP_LOCK:
+            _MARKET_WARMUPS.discard(key)
+            _MARKET_WARMUP_NEXT_ALLOWED[key] = time.monotonic() + 60
+        return False
+    return True
+
+
+def _schedule_news_refresh(settings: Settings) -> bool:
+    key = str(settings.news_events_db_path)
+    now_wall = int(time.time())
+    now_mono = time.monotonic()
+    latest = NewsEventStore(settings.news_events_db_path).latest_collected_at()
+
+    with _NEWS_REFRESH_LOCK:
+        if key in _NEWS_REFRESHES or now_mono < _NEWS_REFRESH_NEXT_ALLOWED.get(key, 0):
+            return False
+        if latest and now_wall - latest < PUBLIC_INFO_TTL_SEC:
+            _NEWS_REFRESH_NEXT_ALLOWED[key] = now_mono + (PUBLIC_INFO_TTL_SEC - (now_wall - latest))
+            return False
+        _NEWS_REFRESHES.add(key)
+
+    def worker() -> None:
+        failure = ""
+        try:
+            ingest_binance_announcements(settings, max_pages=1, now_ts=int(time.time()))
+            invalidate_runtime_cache("public:info")
+        except Exception as exc:
+            failure = type(exc).__name__
+            print(f"[public-info] background refresh failed {failure}: {exc}", file=sys.stderr)
+        finally:
+            with _NEWS_REFRESH_LOCK:
+                _NEWS_REFRESHES.discard(key)
+                _NEWS_REFRESH_NEXT_ALLOWED[key] = time.monotonic() + PUBLIC_INFO_TTL_SEC
+                if failure:
+                    _NEWS_REFRESH_FAILURES[key] = failure
+                else:
+                    _NEWS_REFRESH_FAILURES.pop(key, None)
+
+    thread = threading.Thread(target=worker, name="public-info-refresh", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError as exc:
+        with _NEWS_REFRESH_LOCK:
+            _NEWS_REFRESHES.discard(key)
+            _NEWS_REFRESH_NEXT_ALLOWED[key] = time.monotonic() + PUBLIC_INFO_TTL_SEC
+            _NEWS_REFRESH_FAILURES[key] = type(exc).__name__
+        return False
+    return True
 
 
 def public_market_overview_payload(
@@ -394,8 +505,28 @@ def public_market_overview_payload(
     return api_ok(_strip_forbidden(payload), message="已读取市场总览")
 
 
-def public_data_sources_payload() -> dict[str, Any]:
+def _public_data_sources_registry_base_payload() -> dict[str, Any]:
     return api_ok(data_source_registry_payload(), message="已读取数据源治理清单")
+
+
+def public_data_sources_payload() -> dict[str, Any]:
+    payload = data_source_registry_payload()
+    runtime = UPSTREAM_SOURCE_METRICS.snapshot()
+    observed = runtime.get("sources") if isinstance(runtime.get("sources"), dict) else {}
+    for source in payload["sources"]:
+        source["runtime"] = observed.get(source["id"], {
+            "status": "unobserved",
+            "attempts": 0,
+            "successes": 0,
+            "failures": 0,
+            "success_rate": None,
+            "cache_hit_rate": None,
+            "data_age_sec": None,
+        })
+    payload["runtime"] = {key: value for key, value in runtime.items() if key != "sources"}
+    response = _public_data_sources_registry_base_payload()
+    response["data"] = _strip_forbidden(payload)
+    return response
 
 
 def public_radar_boards_payload(
@@ -535,11 +666,13 @@ def public_info_feed_payload(
         latest = store.latest_collected_at()
         should_refresh = refresh and now_ts is None and (latest <= 0 or now - latest >= PUBLIC_INFO_TTL_SEC)
         if should_refresh:
-            try:
-                ingestion = ingest_binance_announcements(loaded, max_pages=1, now_ts=now)
-                ingestion["status"] = "ready"
-            except Exception as exc:
-                ingestion = {"status": "degraded", "error": type(exc).__name__}
+            scheduled = _schedule_news_refresh(loaded)
+            with _NEWS_REFRESH_LOCK:
+                last_failure = _NEWS_REFRESH_FAILURES.get(str(loaded.news_events_db_path), "")
+            if scheduled:
+                ingestion = {"status": "refreshing"}
+            elif last_failure:
+                ingestion = {"status": "degraded", "error": last_failure}
                 warnings.append("Binance 官方公告刷新失败，当前展示本地最近一次成功索引。")
         feed = store.list_feed(
             start_ts=now - safe_window,
@@ -555,7 +688,9 @@ def public_info_feed_payload(
         items = feed["items"]
         high = sum(1 for item in items if item.get("importance") == "high")
         rights_ok = sum(1 for item in items if item.get("rights_status") == "official_link_only")
-        data_status = "ready" if items and ingestion.get("status") != "degraded" else "degraded" if items else "unavailable" if ingestion.get("status") == "degraded" else "empty"
+        if not items and ingestion.get("status") == "refreshing":
+            warnings.append("Binance 官方公告正在后台更新，稍后刷新即可查看。")
+        data_status = "ready" if items and ingestion.get("status") != "degraded" else "degraded" if items or ingestion.get("status") in {"degraded", "refreshing"} else "empty"
         return {
             "schema_version": NEWS_SCHEMA_VERSION,
             "generated_at": _utc_time_text(now),
@@ -627,23 +762,32 @@ def public_agents_overview_payload(
     safe_window = normalize_window(window_sec)
 
     def build() -> dict[str, Any]:
-        cockpit = _market_cockpit_raw(
-            loaded,
-            window_sec=safe_window,
-            board_limit=8,
-            now_ts=now_ts,
-        )
-        signals = _store(loaded).intelligence_events(
-            start_ts=now - safe_window,
-            end_ts=now,
-            limit=500,
-        )
-        news_items = NewsEventStore(loaded.news_events_db_path).list_feed(
-            start_ts=now - 86_400,
-            end_ts=now,
-            page=1,
-            page_size=100,
-        )["items"]
+        signal_store = _store(loaded)
+        news_store = NewsEventStore(loaded.news_events_db_path)
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="public-agents") as executor:
+            cockpit_future = executor.submit(
+                _market_cockpit_raw,
+                loaded,
+                window_sec=safe_window,
+                board_limit=8,
+                now_ts=now_ts,
+            )
+            signals_future = executor.submit(
+                signal_store.intelligence_events,
+                start_ts=now - safe_window,
+                end_ts=now,
+                limit=500,
+            )
+            news_future = executor.submit(
+                news_store.list_feed,
+                start_ts=now - 86_400,
+                end_ts=now,
+                page=1,
+                page_size=100,
+            )
+            cockpit = cockpit_future.result()
+            signals = signals_future.result()
+            news_items = news_future.result()["items"]
         return build_agent_overview(
             loaded,
             now_ts=now,
@@ -887,36 +1031,32 @@ def public_coin_context_payload(
     safe_market = normalize_chart_market(market_type)
     safe_interval = normalize_chart_interval(interval)
     safe_bars = max(24, min(240, int(bars or 96)))
-    timeline = _store(loaded).symbol_timeline(target, limit=30, compact=False)
-    timeline_refs = {
-        str(item.get("public_ref") or item.get("id") or "")
-        for item in timeline
-        if str(item.get("public_ref") or item.get("id") or "")
-    }
-    intelligence_raw = _radar_intelligence_targets(
-        loaded,
-        timeline_refs,
-        now_ts=now,
-        window_sec=2_592_000,
-    )
-    intelligence_by_ref = {
-        str((entry.get("signal") or {}).get("public_ref") or ""): _compact_intelligence(entry.get("intelligence"))
-        for entry in intelligence_raw.get("items", [])
-        if isinstance(entry, dict)
-    }
-    public_timeline = []
-    for item in timeline:
-        reference = str(item.get("public_ref") or "")
-        public_item = public_signal_item(item)
-        public_item["intelligence"] = _strip_forbidden(intelligence_by_ref.get(reference, {}))
-        public_timeline.append(public_item)
-    snapshot_payload = public_market_snapshot_payload(
-        target,
-        settings=loaded,
-        snapshot_loader=snapshot_loader,
-        now_ts=now,
-    )
-    raw_klines: list[list[Any]] = []
+
+    def load_signal_context() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        timeline = _store(loaded).symbol_timeline(target, limit=30, compact=True)
+        timeline_refs = {
+            str(item.get("public_ref") or item.get("id") or "")
+            for item in timeline
+            if str(item.get("public_ref") or item.get("id") or "")
+        }
+        intelligence_raw = _radar_intelligence_targets(
+            loaded,
+            timeline_refs,
+            now_ts=now,
+            window_sec=2_592_000,
+        )
+        intelligence_by_ref = {
+            str((entry.get("signal") or {}).get("public_ref") or ""): _compact_intelligence(entry.get("intelligence"))
+            for entry in intelligence_raw.get("items", [])
+            if isinstance(entry, dict)
+        }
+        public_timeline: list[dict[str, Any]] = []
+        for item in timeline:
+            reference = str(item.get("public_ref") or "")
+            public_item = public_signal_item(item)
+            public_item["intelligence"] = _strip_forbidden(intelligence_by_ref.get(reference, {}))
+            public_timeline.append(public_item)
+        return timeline, public_timeline
 
     def load_chart() -> list[list[Any]]:
         if chart_loader is not None:
@@ -932,14 +1072,28 @@ def public_coin_context_payload(
             if http is not None and hasattr(http, "close"):
                 http.close()
 
-    try:
-        if chart_loader is not None or now_ts is not None:
-            raw_klines = load_chart()
-        else:
+    def load_chart_safe() -> list[list[Any]]:
+        try:
+            if chart_loader is not None or now_ts is not None:
+                return load_chart()
             chart_key = f"public:coin-chart:{target}:{safe_market}:{safe_interval}:{safe_bars}"
-            raw_klines = runtime_cache_get_or_set(chart_key, PUBLIC_SNAPSHOT_TTL_SEC, load_chart)
-    except Exception:
-        raw_klines = []
+            return runtime_cache_get_or_set(chart_key, PUBLIC_SNAPSHOT_TTL_SEC, load_chart)
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="public-coin-context") as executor:
+        signal_context_future = executor.submit(load_signal_context)
+        snapshot_future = executor.submit(
+            public_market_snapshot_payload,
+            target,
+            settings=loaded,
+            snapshot_loader=snapshot_loader,
+            now_ts=now,
+        )
+        chart_future = executor.submit(load_chart_safe)
+        timeline, public_timeline = signal_context_future.result()
+        snapshot_payload = snapshot_future.result()
+        raw_klines = chart_future.result()
     chart = build_kline_chart(
         raw_klines if isinstance(raw_klines, list) else [],
         market_type=safe_market,
@@ -1098,7 +1252,7 @@ def public_watchlist_market_payload(
 def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, Any]:
     loaded = settings or Settings.load()
     try:
-        signal_stats = _store(loaded).stats()
+        signal_stats = _store(loaded).health_summary()
         database = {
             "status": "ok",
             "signals": int(signal_stats.get("total") or 0),
@@ -1130,6 +1284,7 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
         "cache": runtime_cache_stats(),
         "rate_limit": PUBLIC_API_LIMITER.stats(),
         "requests": PUBLIC_API_METRICS.stats(),
+        "upstreams": UPSTREAM_SOURCE_METRICS.snapshot(),
         "frontend_telemetry": PUBLIC_TELEMETRY.stats(),
         "stream": PUBLIC_STREAM_METRICS.stats(),
         "cockpit_v2": {
@@ -1182,7 +1337,7 @@ def public_signal_context_payload(
     loaded = settings or Settings.load()
     store = _store(loaded)
     with store.connect() as conn:
-        item = store.signal_detail(signal_id, conn=conn)
+        item = store.signal_detail(signal_id, compact=True, conn=conn)
         if not item:
             return api_error("信号不存在", code="not_found")
         related = []
@@ -1332,7 +1487,7 @@ def public_signals_payload(
 def public_signal_detail_payload(signal_id: int | str, *, settings: Settings | None = None) -> dict[str, Any]:
     store = _store(settings)
     with store.connect() as conn:
-        item = store.signal_detail(signal_id, conn=conn)
+        item = store.signal_detail(signal_id, compact=True, conn=conn)
         if not item:
             return api_error("信号不存在", code="not_found")
         related = []
@@ -1380,11 +1535,8 @@ def public_signal_detail_payload(signal_id: int | str, *, settings: Settings | N
 def public_signal_stats_payload(*, window_sec: int = 86400, settings: Settings | None = None) -> dict[str, Any]:
     store = _store(settings)
     safe_window = max(1, min(int(window_sec or 86400), 2592000))
-    stats = store.stats_with_latest(window_sec=safe_window)
+    stats = store.stats_with_recent(window_sec=safe_window)
     latest = _public_items(stats.pop("latest", []))
-    stats.pop("latest_sent", None)
-    stats.pop("latest_failed", None)
-    stats.pop("latest_by_module", None)
     return _strip_forbidden({
         "ok": True,
         **stats,

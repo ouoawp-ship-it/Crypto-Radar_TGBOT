@@ -10,6 +10,13 @@ from paopao_radar.web_services.jobs import JOB_SPECS, LONG_ACTION_JOB_TYPES
 
 
 class WebSurfaceTests(unittest.TestCase):
+    def test_content_length_must_be_a_non_negative_integer(self) -> None:
+        self.assertEqual(web.parse_content_length(None), 0)
+        self.assertEqual(web.parse_content_length("2048"), 2048)
+        for value in ("-1", "invalid"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                web.parse_content_length(value)
+
     def test_public_surface_only_exposes_signals(self) -> None:
         self.assertIn("/public-api/signals", web.PUBLIC_INDEX_HTML)
         self.assertIn("/admin", web.PUBLIC_INDEX_HTML)
@@ -258,8 +265,42 @@ class PublicContextContractTests(unittest.TestCase):
 
         stats = metrics.stats()
         self.assertEqual(stats["routes"]["/public-api/example"]["count"], 20)
+        self.assertEqual(stats["routes"]["/public-api/example"]["p50_ms"], 10.0)
         self.assertEqual(stats["routes"]["/public-api/example"]["p95_ms"], 19.0)
+        self.assertEqual(stats["routes"]["/public-api/example"]["status_classes"], {"2xx": 19, "5xx": 1})
         self.assertEqual(stats["status_classes"], {"2xx": 19, "5xx": 1})
+
+    def test_critical_public_routes_report_performance_budget_status(self) -> None:
+        metrics = PublicApiMetrics(sample_limit=20)
+        route_durations = {
+            "/public-api/signals/context": 799,
+            "/public-api/coin/context": 800,
+            "/public-api/agents/overview": 801,
+        }
+        for path, duration in route_durations.items():
+            for _ in range(20):
+                metrics.record(path, 200, duration)
+
+        stats = metrics.stats()
+
+        self.assertEqual(stats["performance_budget"]["status"], "breaching")
+        self.assertEqual(stats["performance_budget"]["observed_routes"], 3)
+        self.assertEqual(stats["performance_budget"]["breaching_routes"], ["/public-api/agents/overview"])
+        self.assertTrue(stats["routes"]["/public-api/signals/context"]["within_p95_budget"])
+        self.assertTrue(stats["routes"]["/public-api/coin/context"]["within_p95_budget"])
+        self.assertFalse(stats["routes"]["/public-api/agents/overview"]["within_p95_budget"])
+        self.assertEqual(stats["routes"]["/public-api/agents/overview"]["p95_budget_ms"], 800)
+
+    def test_public_api_metrics_bound_unknown_route_cardinality(self) -> None:
+        metrics = PublicApiMetrics(sample_limit=20, route_limit=3)
+        for index in range(8):
+            metrics.record(f"/public-api/unknown-{index}", 404, index)
+
+        stats = metrics.stats()
+        self.assertLessEqual(len(stats["routes"]), 3)
+        self.assertIn("/public-api/_other", stats["routes"])
+        self.assertEqual(stats["collapsed_routes"], 6)
+        self.assertEqual(stats["route_limit"], 3)
 
     def test_stream_metrics_tracks_connections_and_events(self) -> None:
         metrics = PublicStreamMetrics()
@@ -272,10 +313,27 @@ class PublicContextContractTests(unittest.TestCase):
 
     def test_public_health_exposes_aggregates_without_secrets(self) -> None:
         with TemporaryDirectory() as tmp:
-            payload = public_api_health_payload(settings=self.settings_for(tmp))
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_FLOW_RADAR",
+                dedup_key="health:latest",
+                status="sent",
+                sent=True,
+                text="BTCUSDT health",
+                ts=int(time.time()),
+            )
+            payload = public_api_health_payload(settings=settings)
 
         self.assertTrue(payload["ok"])
         self.assertIn(payload["data"]["status"], {"ok", "degraded"})
+        self.assertEqual(payload["data"]["database"]["signals"], 1)
+        self.assertTrue(payload["data"]["database"]["latest_at"])
+        self.assertGreater(payload["data"]["cache"]["max_entries"], 0)
+        self.assertIn("evictions", payload["data"]["cache"])
+        self.assertGreater(payload["data"]["requests"]["route_limit"], 0)
+        self.assertEqual(payload["data"]["upstreams"]["scope"], "process")
+        self.assertIn(payload["data"]["upstreams"]["status"], {"ready", "degraded", "unobserved"})
         serialized = json.dumps(payload, ensure_ascii=False).lower()
         self.assertNotIn("bot_token", serialized)
         self.assertNotIn("password", serialized)
@@ -328,6 +386,24 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertIn("X-Content-Type-Options", source)
         self.assertIn("X-Frame-Options", source)
         self.assertIn("Permissions-Policy", source)
+
+    def test_public_json_exposes_the_same_request_id_in_header_and_meta(self) -> None:
+        handler = object.__new__(web.WebHandler)
+        handler.path = "/public-api/example"
+        handler.request_started_at = 0.0
+        handler.public_metrics_recorded = True
+        captured: dict[str, object] = {}
+
+        def capture(payload: bytes, status: int, content_type: str, *, extra_headers: dict[str, str] | None = None) -> None:
+            captured.update(payload=payload, status=status, content_type=content_type, headers=extra_headers or {})
+
+        handler.send_payload = capture  # type: ignore[method-assign]
+        handler.send_json({"ok": True})
+
+        body = json.loads(captured["payload"])
+        headers = captured["headers"]
+        self.assertEqual(headers["X-Request-ID"], body["_meta"]["request_id"])
+        self.assertEqual(handler.request_id(), body["_meta"]["request_id"])
 
     def test_coin_context_combines_snapshot_timeline_intelligence_and_actions(self) -> None:
         with TemporaryDirectory() as tmp:

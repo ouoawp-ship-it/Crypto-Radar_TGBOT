@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
 import { MetricCard } from "./MetricCard";
@@ -10,7 +10,6 @@ import { SignalCard } from "./SignalCard";
 import {
   getSignalStats,
   getSignals,
-  invalidatePublicApiCache,
   type HomeDashboardData
 } from "@/lib/api";
 import { compact } from "@/lib/format";
@@ -28,21 +27,22 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
   const [data, setData] = useState<HomeDashboardData>(initialData);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const requestRef = useRef(0);
 
   async function load() {
-    invalidatePublicApiCache();
+    const request = ++requestRef.current;
     setLoading(true);
     setError("");
     try {
       const [signalStats, signals] = await Promise.all([
-        getSignalStats(86400),
-        getSignals({ limit: 8, window_sec: 86400 })
+        getSignalStats(86400, { bypassCache: true }),
+        getSignals({ limit: 8, window_sec: 86400 }, { bypassCache: true })
       ]);
-      setData({ signalStats, signals: signals.items || [] });
+      if (request === requestRef.current) setData({ signalStats, signals: signals.items || [] });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "公开信号暂时不可用，请稍后重试。");
+      if (request === requestRef.current) setError(err instanceof Error ? err.message : "公开信号暂时不可用，请稍后重试。");
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }
 
@@ -64,8 +64,13 @@ export function HomeDashboard({ initialData = {} }: { initialData?: HomeDashboar
       />
 
       {loading ? <div className="panel p-4 text-sm text-text-secondary">正在刷新公开信号...</div> : null}
+      {error && (data.signalStats || data.signals?.length) ? (
+        <div className="panel border-warn/25 bg-warn/5 p-4 text-sm text-text-secondary" role="status">
+          刷新失败，正在继续显示上次成功数据：{error}
+        </div>
+      ) : null}
       {data.error ? (
-        <div className="panel border-warn/25 bg-warn/5 p-4 text-sm text-amber-700">{data.error}</div>
+        <div className="panel border-warn/25 bg-warn/5 p-4 text-sm text-text-secondary">{data.error}</div>
       ) : null}
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

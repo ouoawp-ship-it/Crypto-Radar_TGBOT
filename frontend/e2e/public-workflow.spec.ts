@@ -239,12 +239,17 @@ const coinSeriesPoints = Array.from({ length: 8 }, (_, index) => ({
   funding_pct: -0.02
 }));
 
-async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown } = {}) {
+async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; healthStatus?: "ok" | "degraded" } = {}) {
   let signalRequests = 0;
+  let infoRequests = 0;
+  let lastInfoSearch = "";
   let streamRequests = 0;
   let streamDelivered = false;
+  let signalsFail = false;
+  let agentsFail = false;
   await page.route("**/public-api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === "/public-api/health") return route.fulfill({ json: { ok: true, data: { status: options.healthStatus || "ok" } } });
     if (url.pathname === "/public-api/telemetry") return route.fulfill({ status: 202, json: { ok: true } });
     if (url.pathname === "/public-api/stream") {
       streamRequests += 1;
@@ -255,6 +260,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     }
     if (url.pathname === "/public-api/signals") {
       signalRequests += 1;
+      if (signalsFail) return route.fulfill({ status: 503, json: { ok: false, message: "信号接口暂时不可用" } });
       const items = options.streamSignal && streamDelivered ? [newSignal, signal] : [signal];
       return route.fulfill({ json: { ok: true, data: { items, count: items.length } } });
     }
@@ -262,9 +268,16 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: marketOverview } });
     if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: radarBoards } });
     if (url.pathname === "/public-api/funds/sectors") return route.fulfill({ json: { ok: true, data: fundsSectors } });
-    if (url.pathname === "/public-api/funds/assets") return route.fulfill({ json: { ok: true, data: fundsAssets } });
-    if (url.pathname === "/public-api/info/feed") return route.fulfill({ json: { ok: true, data: infoFeed } });
-    if (url.pathname === "/public-api/agents/overview") return route.fulfill({ json: { ok: true, data: options.agents || agentsOverview } });
+    if (url.pathname === "/public-api/funds/assets") return route.fulfill({ json: { ok: true, data: { ...fundsAssets, warnings: options.assetWarnings || fundsAssets.warnings } } });
+    if (url.pathname === "/public-api/info/feed") {
+      infoRequests += 1;
+      lastInfoSearch = url.search;
+      return route.fulfill({ json: { ok: true, data: infoFeed } });
+    }
+    if (url.pathname === "/public-api/agents/overview") {
+      if (agentsFail) return route.fulfill({ status: 503, json: { ok: false, message: "AI 决策暂时不可用" } });
+      return route.fulfill({ json: { ok: true, data: options.agents || agentsOverview } });
+    }
     if (url.pathname === "/public-api/radar/intelligence") return route.fulfill({ json: { ok: true, data: {
       data_status: "ready", summary: { signals: 1, symbols: 1, resonance_symbols: 1, enhancing_symbols: 1 },
       items: [{ signal, intelligence }],
@@ -295,7 +308,15 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     if (url.pathname === "/public-api/market/watchlist") return route.fulfill({ json: { ok: true, data: { items: [{ symbol: "BTCUSDT", ok: true, market, coin_url: "/coin/BTCUSDT" }], count: 1, invalid: [] } } });
     return route.fulfill({ status: 404, json: { ok: false, message: "not mocked" } });
   });
-  return { signalRequests: () => signalRequests, streamRequests: () => streamRequests, releaseSignal: () => { streamDelivered = true; } };
+  return {
+    signalRequests: () => signalRequests,
+    infoRequests: () => infoRequests,
+    lastInfoSearch: () => lastInfoSearch,
+    streamRequests: () => streamRequests,
+    releaseSignal: () => { streamDelivered = true; },
+    failSignals: () => { signalsFail = true; },
+    failAgents: () => { agentsFail = true; },
+  };
 }
 
 test("desktop radar supports opportunity-to-evidence workflow", async ({ page }) => {
@@ -315,18 +336,67 @@ test("desktop radar supports opportunity-to-evidence workflow", async ({ page })
   await expect(page.getByText("状态依据：规则分数较上次提高 8.0")).toBeVisible();
 });
 
-test("360px radar keeps filters, cards and full-width detail usable", async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 780 });
+test("home dashboard refreshes its own signal data", async ({ page }) => {
+  const state = await mockPublicApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
+  expect(state.signalRequests()).toBe(1);
+  state.failSignals();
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.getByText(/刷新失败，正在继续显示上次成功数据/)).toBeVisible();
+  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
+});
+
+test("agent refresh keeps labeled prior data but a failed window switch clears mismatched results", async ({ page }) => {
+  const state = await mockPublicApi(page);
+  await page.goto("/agents");
+
+  const priorSummary = page.getByText(/4h 市场广度/);
+  await expect(priorSummary).toBeVisible();
+  await expect(page.getByRole("button", { name: "4h" })).toHaveAttribute("aria-pressed", "true");
+
+  state.failAgents();
+  await page.getByRole("button", { name: "刷新结论" }).click();
+  const loadAlert = page.locator('[role="alert"]').filter({ hasText: "加载失败" });
+  await expect(loadAlert).toContainText("当前仍显示上次成功数据，内容可能已过期");
+  await expect(priorSummary).toBeVisible();
+
+  await page.getByRole("button", { name: "1h" }).click();
+  await expect(page.getByRole("button", { name: "1h" })).toHaveAttribute("aria-pressed", "true");
+  await expect(loadAlert).not.toContainText("当前仍显示上次成功数据");
+  await expect(priorSummary).not.toBeVisible();
+});
+
+test("320px radar keeps filters, cards and full-width detail usable", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 780 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
   await expect(page.getByPlaceholder("BTC 或 BTCUSDT")).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  for (const control of [
+    page.getByPlaceholder("BTC 或 BTCUSDT"),
+    page.getByRole("button", { name: "1h" }),
+    page.getByRole("button", { name: "暂停" }),
+    page.getByRole("button", { name: "刷新雷达" }),
+  ]) {
+    const controlBox = await control.boundingBox();
+    expect(controlBox?.height).toBeGreaterThanOrEqual(44);
+  }
+  const undersizedControls = await page.locator("a[href], button, input, select, summary").evaluateAll((elements) => elements
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { label: element.getAttribute("aria-label") || element.textContent?.trim() || element.tagName, width: rect.width, height: rect.height };
+    })
+    .filter((item) => item.label !== "Open Next.js Dev Tools" && item.width > 0 && item.height > 0 && (item.width < 44 || item.height < 44)));
+  expect(undersizedControls).toEqual([]);
   await page.getByRole("button", { name: /查看证据与上下文/ }).click();
   const dialog = page.getByRole("dialog", { name: "信号上下文详情" });
   await expect(dialog).toBeVisible();
   const box = await dialog.boundingBox();
-  expect(box?.width).toBeGreaterThanOrEqual(350);
+  expect(box?.width).toBeGreaterThanOrEqual(310);
   await expect(page.getByRole("button", { name: "关闭信号详情" })).toBeVisible();
 });
 
@@ -335,8 +405,17 @@ test("theme choice persists across radar reloads", async ({ page }) => {
   await page.goto("/radar");
   await page.getByRole("button", { name: "切换到深色主题" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("button", { name: "应用" })).toHaveCSS("color", "rgb(13, 17, 23)");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("header distinguishes degraded data from an offline API", async ({ page }) => {
+  await mockPublicApi(page, { healthStatus: "degraded" });
+  await page.goto("/radar");
+
+  await expect(page.getByText("DEGRADED", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("公开 API 可用，部分数据正在积累或降级")).toBeVisible();
 });
 
 test("768px radar keeps the compact drawer and primary actions usable", async ({ page }) => {
@@ -380,6 +459,13 @@ test("funds center links sector rotation to asset evidence", async ({ page }) =>
   await expect(page.getByRole("link", { name: "证据" }).first()).toHaveAttribute("href", "/coin/BTCUSDT");
 });
 
+test("funds center surfaces asset-only degradation warnings", async ({ page }) => {
+  await mockPublicApi(page, { assetWarnings: ["资产资金数据已降级"] });
+  await page.goto("/funds");
+
+  await expect(page.getByText("资产资金数据已降级")).toBeVisible();
+});
+
 test("390px funds center uses cards without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
@@ -400,6 +486,24 @@ test("information center keeps official facts, inferences and source rights trac
   await page.getByText("展开规则化解读与验证项").click();
   await expect(page.getByText("可能影响 · 规则推断")).toBeVisible();
   await expect(page.getByRole("link", { name: "Binance 原文 ↗" })).toHaveAttribute("rel", "noopener noreferrer");
+});
+
+test("information center applies text filters once instead of requesting on every keystroke", async ({ page }) => {
+  const state = await mockPublicApi(page);
+  await page.goto("/info");
+
+  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" })).toBeVisible();
+  const requestsBeforeTyping = state.infoRequests();
+  await page.getByLabel("币种筛选").fill("BTC");
+  await page.getByLabel("搜索资讯").fill("listing");
+  await page.waitForTimeout(200);
+  expect(state.infoRequests()).toBe(requestsBeforeTyping);
+
+  await page.getByRole("button", { name: "应用" }).click();
+  await expect.poll(state.infoRequests).toBe(requestsBeforeTyping + 1);
+  const search = new URLSearchParams(state.lastInfoSearch());
+  expect(search.get("symbol")).toBe("BTC");
+  expect(search.get("q")).toBe("listing");
 });
 
 test("390px information center has no horizontal overflow", async ({ page }) => {
@@ -472,9 +576,18 @@ test("radar SSE surfaces a new event, reconnects and can be paused", async ({ pa
   await expect(page.getByText("LIVE", { exact: true }).last()).toBeVisible();
   expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
   state.releaseSignal();
-  const listenerCount = await page.evaluate(() => (window as unknown as { __emitSseSignal: () => number }).__emitSseSignal());
+  const requestsBeforeBurst = state.signalRequests();
+  const listenerCount = await page.evaluate(() => {
+    const emit = (window as unknown as { __emitSseSignal: () => number }).__emitSseSignal;
+    const count = emit();
+    emit();
+    emit();
+    return count;
+  });
   expect(listenerCount).toBeGreaterThan(0);
-  await expect.poll(state.signalRequests).toBeGreaterThan(1);
+  await expect.poll(state.signalRequests).toBe(requestsBeforeBurst + 1);
+  await page.waitForTimeout(1000);
+  expect(state.signalRequests()).toBe(requestsBeforeBurst + 1);
   const incoming = page.getByRole("button", { name: "新增 1 条异动，点击更新" });
   await expect(incoming).toBeVisible({ timeout: 12_000 });
   await incoming.click();
