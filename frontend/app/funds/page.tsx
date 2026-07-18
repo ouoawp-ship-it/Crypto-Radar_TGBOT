@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CandlestickChart } from "@/components/CandlestickChart";
+import { CoinIcon } from "@/components/CoinIcon";
 import { MetricSeriesChart } from "@/components/MetricSeriesChart";
 import { getCoinContext, getFundsAssets, getFundsSectors, getWorkstationFundsOpenInterest } from "@/lib/api";
 import type { CoinContext, CoinSeriesPoint, CrossExchangeOpenInterest, FundsAsset, FundsAssetsPayload, FundsSectorsPayload } from "@/lib/types";
@@ -45,12 +46,6 @@ function percent(value: unknown, digits = 2) {
 function tone(value: unknown) {
   const parsed = finite(value);
   return parsed === null || parsed === 0 ? "text-text-secondary" : parsed > 0 ? "text-good" : "text-risk";
-}
-
-function CoinIcon({ coin, size = 18 }: { coin?: string; size?: number }) {
-  const label = String(coin || "?").slice(0, 2).toUpperCase();
-  const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
-  return <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-full text-[7px] font-bold text-white" style={{ width: size, height: size, background: `linear-gradient(145deg,hsl(${hue} 72% 58%),hsl(${(hue + 32) % 360} 68% 43%))` }}>{label}</span>;
 }
 
 function PanelTitle({ title, meta, action }: { title: string; meta?: string; action?: React.ReactNode }) {

@@ -423,7 +423,7 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   }
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
-  await expect(page.getByText(/96分/).first()).toBeVisible();
+  await expect(page.getByText(/96%/).first()).toBeVisible();
 });
 
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {

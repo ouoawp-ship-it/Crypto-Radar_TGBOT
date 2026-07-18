@@ -323,6 +323,7 @@ export type RealtimeAnomalyEvent = {
   window_sec?: number;
   event_type?: "price_up" | "price_down" | "volume_spike" | "perp_inflow" | "perp_outflow" | "long_liquidation" | "short_liquidation" | "oi_up" | "oi_down" | string;
   label?: string;
+  detail?: string;
   metric?: string;
   direction?: "long" | "short" | "neutral" | string;
   value?: number | null;

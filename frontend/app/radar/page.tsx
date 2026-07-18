@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CoinIcon } from "@/components/CoinIcon";
 import { SignalDetailDrawer } from "@/components/SignalDetailDrawer";
 import { getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentumWindows } from "@/lib/api";
 import type {
@@ -57,12 +58,6 @@ function tone(value: unknown): string {
   return number === null || number === 0 ? "text-text-secondary" : number > 0 ? "text-good" : "text-risk";
 }
 
-function CoinIcon({ coin, size = 18 }: { coin?: string; size?: number }) {
-  const label = String(coin || "?").slice(0, 2).toUpperCase();
-  const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
-  return <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-full text-[7px] font-bold text-white" style={{ width: size, height: size, background: `linear-gradient(145deg,hsl(${hue} 72% 58%),hsl(${(hue + 32) % 360} 68% 43%))` }}>{label}</span>;
-}
-
 function RankBlocks({ item }: { item?: RealtimeIntelligenceItem }) {
   const active = Math.max(0, Math.min(5, Number(item?.resonance?.active_count || 0)));
   const direction = item?.resonance?.direction;
@@ -89,12 +84,49 @@ function fallbackEvents(items: RealtimeIntelligenceItem[]): RealtimeAnomalyEvent
   }).slice(0, 80);
 }
 
+function lifecycleEvents(items: RealtimeIntelligenceItem[]): RealtimeAnomalyEvent[] {
+  return items.flatMap((item) => {
+    const events: RealtimeAnomalyEvent[] = [];
+    const active = Number(item.resonance?.active_count || 0);
+    const direction = String(item.resonance?.direction || "neutral");
+    if (active >= 2 && direction !== "neutral") events.push({
+      id: `${item.symbol}:resonance:${direction}`,
+      symbol: item.symbol,
+      coin: item.coin,
+      observed_at: item.lifecycle?.observed_at || item.observed_at,
+      window: "15m",
+      event_type: "resonance_state",
+      label: direction === "short" ? "空头共振" : "多头共振",
+      detail: `${active}/5 个窗口同向 · ${item.lifecycle?.basis || "状态持续"}`,
+      metric: "state",
+      direction,
+      value: null,
+      rankings: item.rankings,
+    });
+    if (item.ambush?.triggered) events.push({
+      id: `${item.symbol}:ambush:${item.ambush.direction || "neutral"}`,
+      symbol: item.symbol,
+      coin: item.coin,
+      observed_at: item.lifecycle?.observed_at || item.observed_at,
+      window: "15m",
+      event_type: "ambush_state",
+      label: item.ambush.direction === "short" ? "顶部派发" : "底部吸筹",
+      detail: item.lifecycle?.basis || "资金同向积累，价格仍处压缩区间",
+      metric: "state",
+      direction: item.ambush.direction,
+      value: null,
+      rankings: item.rankings,
+    });
+    return events;
+  }).slice(0, 12);
+}
+
 function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: string }) {
   const filtered = events.filter((event) => !query || String(event.symbol || "").includes(query));
   return <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">
     {filtered.map((event, index) => {
       const positive = event.direction === "long";
-      const primaryValue = event.value_usd !== null && event.value_usd !== undefined ? money(event.value_usd) : percent(event.value);
+      const primaryValue = event.metric === "state" ? "" : event.value_usd !== null && event.value_usd !== undefined ? money(event.value_usd) : percent(event.value);
       const self = event.rankings?.self;
       const strength = event.rankings?.market_strength;
       const absolute = event.rankings?.market_absolute;
@@ -104,7 +136,7 @@ function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: s
           <CoinIcon coin={event.coin}/><span className="min-w-0 flex-1 truncate text-[10px] font-bold text-text-primary">${event.coin || event.symbol}</span>
           <span className={`rounded-[3px] px-1.5 py-[2px] text-[9px] font-semibold ${positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{event.label || "异动"}</span>
         </div>
-        <div className="mt-1 flex items-baseline justify-between gap-2 pl-[57px] text-[9px]"><span className="text-text-muted">{event.window || "5m"} 内 · {event.metric === "volume" ? "成交量" : event.metric === "price" ? "价格" : event.metric === "liquidation" ? "爆仓额" : "主动资金"}</span><span className={`font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{primaryValue} {event.change_pct !== null && event.change_pct !== undefined && event.value_usd !== null && event.value_usd !== undefined ? `(${percent(event.change_pct, 1)})` : ""}</span></div>
+        <div className="mt-1 flex items-baseline justify-between gap-2 pl-[57px] text-[9px]"><span className="truncate text-text-muted">{event.detail || `${event.window || "5m"} 内 · ${event.metric === "volume" ? "成交量" : event.metric === "price" ? "价格" : event.metric === "liquidation" ? "爆仓额" : "主动资金"}`}</span>{primaryValue ? <span className={`shrink-0 font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{primaryValue} {event.change_pct !== null && event.change_pct !== undefined && event.value_usd !== null && event.value_usd !== undefined ? `(${percent(event.change_pct, 1)})` : ""}</span> : null}</div>
         <div className="mt-1 flex gap-1 pl-[57px]"><RankBadge label="自身" rank={self?.rank} title={self?.method}/><RankBadge label="全场强度" rank={strength?.rank} title={strength?.method}/><RankBadge label="全场量级" rank={absolute?.rank} title={absolute?.method}/></div>
       </Link>;
     })}
@@ -124,6 +156,19 @@ function MomentumList({ items, mode, positive, realtimeBySymbol, limit = 7 }: { 
   </Link>)}{!(items || []).length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
 }
 
+function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: CockpitBoardItem[]; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
+  return <div className="grid grid-cols-1 sm:grid-cols-4">{(items || []).slice(0, 8).map((item, index) => {
+    const realtime = realtimeBySymbol.get(String(item.symbol || ""));
+    const active = Math.max(0, Math.min(5, Number(realtime?.resonance?.active_count || 0)));
+    const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
+    return <Link className={`flex h-[44px] min-w-0 flex-col items-center justify-center border-b border-r border-border-subtle/70 px-0.5 hover:bg-primary-50/55 ${positive ? "bg-good/[.025]" : "bg-risk/[.025]"}`} href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+      <span className="flex items-center gap-0.5"><small className="font-mono text-[6px] text-text-muted">{index + 1}</small><CoinIcon coin={item.coin} size={13}/></span>
+      <span className="mt-0.5 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? positive ? "border-primary-500/55 bg-primary-500/70" : "border-risk/50 bg-risk/65" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
+      <span className={`mt-0.5 font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{score === null ? "—" : `${Math.round(score)}%`}</span>
+    </Link>;
+  })}{!(items || []).length ? <div className="grid h-[88px] place-items-center text-[8px] text-text-muted sm:col-span-4">⏳ 暂无</div> : null}</div>;
+}
+
 function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
   const labels = BOARD_LABELS[String(board?.key || "")] || { positive: board?.positive?.title || "上行", negative: board?.negative?.title || "下行" };
   const amountPositive = board?.amount_positive || board?.positive;
@@ -134,8 +179,39 @@ function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; real
     <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-low text-[8px] font-semibold"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div></div>
     <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
     <div className="grid h-[23px] grid-cols-2 border-y border-border-subtle bg-surface-low/80 text-[8px] font-semibold"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div></div>
-    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={strengthPositive?.items} limit={3} mode="strength" positive realtimeBySymbol={realtimeBySymbol}/><MomentumList items={strengthNegative?.items} limit={3} mode="strength" positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid items={strengthPositive?.items} positive realtimeBySymbol={realtimeBySymbol}/><MomentumStrengthGrid items={strengthNegative?.items} positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
   </section>;
+}
+
+type ConfluenceEntry = CockpitBoardItem & { boardCount: number; divergent: boolean; positive: boolean };
+
+function confluenceFromBoards(boards: CockpitBoard[], mode: RankMode): ConfluenceEntry[] {
+  const tallies = new Map<string, { item: CockpitBoardItem; positive: Set<string>; negative: Set<string> }>();
+  const add = (item: CockpitBoardItem, boardKey: string, direction: "positive" | "negative") => {
+    const symbol = String(item.symbol || "");
+    if (!symbol) return;
+    const current = tallies.get(symbol) || { item, positive: new Set<string>(), negative: new Set<string>() };
+    const currentMagnitude = Math.abs(Number(current.item.magnitude_usd ?? current.item.value ?? 0));
+    const nextMagnitude = Math.abs(Number(item.magnitude_usd ?? item.value ?? 0));
+    if (nextMagnitude >= currentMagnitude) current.item = item;
+    current[direction].add(boardKey);
+    tallies.set(symbol, current);
+  };
+  for (const board of boards) {
+    const boardKey = String(board.key || "board");
+    const positive = mode === "amount" ? board.amount_positive || board.positive : board.strength_positive || board.positive;
+    const negative = mode === "amount" ? board.amount_negative || board.negative : board.strength_negative || board.negative;
+    for (const item of (positive?.items || []).slice(0, 8)) add(item, boardKey, "positive");
+    for (const item of (negative?.items || []).slice(0, 8)) add(item, boardKey, "negative");
+  }
+  const entries = [...tallies.values()].map(({ item, positive, negative }) => ({
+    ...item,
+    boardCount: new Set([...positive, ...negative]).size,
+    divergent: positive.size > 0 && negative.size > 0,
+    positive: positive.size >= negative.size,
+  })).sort((a, b) => b.boardCount - a.boardCount || Number(b.strength_percentile || 0) - Number(a.strength_percentile || 0) || String(a.symbol || "").localeCompare(String(b.symbol || "")));
+  const confirmed = entries.filter((item) => item.boardCount >= 2);
+  return confirmed.length >= 5 ? confirmed : entries;
 }
 
 function RuleBoard({ title, subtitle, items, mode }: { title: string; subtitle: string; items: RealtimeIntelligenceItem[]; mode: "surge" | "ambush" | "total" }) {
@@ -191,19 +267,18 @@ export default function RadarPage() {
   }, []);
 
   const items = realtime.items || [];
-  const events = useMemo(() => realtime.anomaly_events?.length ? realtime.anomaly_events : fallbackEvents(items), [items, realtime.anomaly_events]);
+  const events = useMemo(() => {
+    const anomalies = realtime.anomaly_events?.length ? realtime.anomaly_events : fallbackEvents(items);
+    return [...lifecycleEvents(items), ...anomalies].slice(0, 80);
+  }, [items, realtime.anomaly_events]);
   const boards = momentum[windowKey]?.boards || [];
   const realtimeBySymbol = useMemo(() => new Map(items.map((item) => [String(item.symbol || ""), item])), [items]);
   const surge = useMemo(() => items.filter((item) => item.surge?.triggered).sort((a, b) => Number(b.surge?.score || 0) - Number(a.surge?.score || 0)).slice(0, 5), [items]);
   const ambush = useMemo(() => items.filter((item) => item.ambush?.triggered).sort((a, b) => Number(b.ambush?.score || 0) - Number(a.ambush?.score || 0)).slice(0, 8), [items]);
   const total = useMemo(() => items.filter((item) => Number(item.anomaly_24h?.count || 0) > 0).sort((a, b) => Number(b.anomaly_24h?.count || 0) - Number(a.anomaly_24h?.count || 0)).slice(0, 14), [items]);
   const market = overview.overview || {};
-  const flowBoard = boards.find((board) => board.key === "futures_flow");
-  const strengthFlow = flowBoard?.strength_positive?.items || flowBoard?.positive?.items || [];
-  const tendency = [
-    ...(flowBoard?.amount_negative?.items || flowBoard?.negative?.items || []).slice(0, 5).map((item) => ({ ...item, positive: false })),
-    ...(flowBoard?.amount_positive?.items || flowBoard?.positive?.items || []).slice(0, 3).map((item) => ({ ...item, positive: true }))
-  ];
+  const tendency = useMemo(() => confluenceFromBoards(boards, "amount").slice(0, 7), [boards]);
+  const strengthFlow = useMemo(() => confluenceFromBoards(boards, "strength").slice(0, 7), [boards]);
 
   return <><div aria-busy={loading} className="workstation-page mercu-radar-grid" data-testid="radar-workstation">
     <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
@@ -225,9 +300,9 @@ export default function RadarPage() {
     <aside className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-side-intelligence">
       <section className="workstation-panel"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="资金倾向性"/>
         <div className="border-b border-border-subtle px-2 py-1.5 text-[9px] font-bold text-text-primary">资金流</div>
-        {tendency.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className={`font-semibold ${item.positive ? "text-good" : "text-risk"}`}>{item.positive ? "流入" : "流出"}</span></Link>)}
+        {tendency.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`} title={item.divergent ? "多榜方向存在分歧" : "多榜方向一致"}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className="rounded-[2px] border border-border-subtle px-1 text-[7px] text-text-muted">{item.boardCount}榜{item.divergent ? "·分歧" : ""}</span><span className={`font-semibold ${item.positive ? "text-good" : "text-risk"}`}>{item.positive ? "流入" : "流出"}</span></Link>)}
         <div className="border-y border-border-subtle bg-surface-low px-2 py-1.5 text-[9px] font-bold text-text-primary">资金力度</div>
-        {strengthFlow.slice(0, 5).map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className={tone(item.value)}>{Number(item.value || 0) >= 0 ? "流入" : "流出"}</span></Link>)}
+        {strengthFlow.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`} title={item.divergent ? "强度榜方向存在分歧" : "强度榜方向一致"}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className="rounded-[2px] border border-border-subtle px-1 text-[7px] text-text-muted">{item.boardCount}榜{item.divergent ? "·分歧" : ""}</span><span className={item.positive ? "text-good" : "text-risk"}>{item.positive ? "流入" : "流出"}</span></Link>)}
       </section>
       <section className="workstation-panel mt-1.5 overflow-hidden"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="全场态势"/><div>{[["合约资金流入", money(market.futures_net_flow_usd), market.futures_net_flow_usd],["现货资金流入", money(market.spot_net_flow_usd), market.spot_net_flow_usd],["持仓量净增长", money(market.oi_net_change_usd), market.oi_net_change_usd],["全场涨跌", `涨 ${market.advancing || 0} · 跌 ${market.declining || 0}`, market.breadth_pct]].map(([label, value, raw]) => <div className="border-b border-border-subtle px-2 py-2 last:border-0" key={String(label)}><div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold text-text-secondary">{label}</span><span className={`font-mono text-[10px] font-semibold ${tone(raw)}`}>{String(value)}</span></div><div className="mt-1 text-[7px] text-text-muted">较上一周期 · 基于可用市场样本滚动统计</div></div>)}</div></section>
     </aside>
