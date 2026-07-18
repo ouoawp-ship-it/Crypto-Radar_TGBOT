@@ -785,15 +785,22 @@ def _rank_percentiles(items: list[dict[str, Any]], key: str) -> None:
         items[index].setdefault("strength", {})[key] = round(position / total * 100, 1)
 
 
-def _board_item(item: dict[str, Any], key: str, *, unit: str) -> dict[str, Any]:
+def _board_item(
+    item: dict[str, Any],
+    key: str,
+    *,
+    unit: str,
+    magnitude_key: str | None = None,
+) -> dict[str, Any]:
     value = _number(item.get(key))
+    magnitude = _number(item.get(magnitude_key)) if magnitude_key else (value if unit == "usd" else None)
     return {
         "symbol": item.get("symbol"),
         "coin": item.get("coin"),
         "price": item.get("price"),
         "value": value,
         "unit": unit,
-        "magnitude_usd": abs(value) if value is not None and unit == "usd" else item.get("quote_volume"),
+        "magnitude_usd": abs(magnitude) if magnitude is not None else None,
         "strength_percentile": (item.get("strength") or {}).get(key),
         "updated_at": item.get("updated_at"),
         "status": item.get("status"),
@@ -811,19 +818,50 @@ def _two_sided_board(
     negative_title: str,
     unit: str,
     limit: int,
+    amount_key: str | None = None,
+    amount_unit: str | None = None,
 ) -> dict[str, Any]:
     available = [item for item in assets if _number(item.get(key)) is not None]
     positive = sorted((item for item in available if float(item[key]) > 0), key=lambda row: float(row[key]), reverse=True)
     negative = sorted((item for item in available if float(item[key]) < 0), key=lambda row: float(row[key]))
+    amount_metric = amount_key or key
+    amount_available = [item for item in available if _number(item.get(amount_metric)) is not None]
+    amount_positive = sorted(
+        (item for item in amount_available if float(item[key]) > 0),
+        key=lambda row: abs(float(row[amount_metric])),
+        reverse=True,
+    )
+    amount_negative = sorted(
+        (item for item in amount_available if float(item[key]) < 0),
+        key=lambda row: abs(float(row[amount_metric])),
+        reverse=True,
+    )
+    strength_positive = sorted(
+        positive,
+        key=lambda row: float((row.get("strength") or {}).get(key) or 0),
+        reverse=True,
+    )
+    strength_negative = sorted(
+        negative,
+        key=lambda row: float((row.get("strength") or {}).get(key) or 0),
+        reverse=True,
+    )
+    item_kwargs = {"unit": unit, "magnitude_key": amount_key}
     return {
         "key": board_key,
         "title": title,
         "metric": key,
         "unit": unit,
+        "amount_metric": amount_metric,
+        "amount_unit": amount_unit or unit,
         "available": bool(available),
         "coverage": len(available),
-        "positive": {"title": positive_title, "items": [_board_item(item, key, unit=unit) for item in positive[:limit]]},
-        "negative": {"title": negative_title, "items": [_board_item(item, key, unit=unit) for item in negative[:limit]]},
+        "positive": {"title": positive_title, "items": [_board_item(item, key, **item_kwargs) for item in positive[:limit]]},
+        "negative": {"title": negative_title, "items": [_board_item(item, key, **item_kwargs) for item in negative[:limit]]},
+        "amount_positive": {"title": positive_title, "items": [_board_item(item, key, **item_kwargs) for item in amount_positive[:limit]]},
+        "amount_negative": {"title": negative_title, "items": [_board_item(item, key, **item_kwargs) for item in amount_negative[:limit]]},
+        "strength_positive": {"title": positive_title, "items": [_board_item(item, key, **item_kwargs) for item in strength_positive[:limit]]},
+        "strength_negative": {"title": negative_title, "items": [_board_item(item, key, **item_kwargs) for item in strength_negative[:limit]]},
         "reason": "" if available else "当前窗口尚未积累可验证数据",
     }
 
@@ -856,11 +894,22 @@ def build_market_cockpit(
             price_change = _number(row.get("price_change_pct"))
             price_window = int(_number(row.get("change_window_sec")) or 0)
             price_quality = "ticker_fallback" if price_change is not None else "missing"
-        oi_change = _pct(row.get("oi_usd"), baseline.get("oi_usd"))
+        oi_value = _positive(row.get("oi_usd"))
+        baseline_oi = _positive(baseline.get("oi_usd"))
+        oi_change = _pct(oi_value, baseline_oi)
         oi_quality = "derived_window"
         if oi_change is None:
             oi_change = _number(row.get("oi_change_pct"))
             oi_quality = "collector_window" if oi_change is not None else "missing"
+        oi_change_usd: float | None = None
+        oi_amount_quality = "missing"
+        if oi_value is not None and baseline_oi is not None:
+            oi_change_usd = oi_value - baseline_oi
+            oi_amount_quality = "derived_window"
+        elif oi_value is not None and oi_change is not None and oi_change > -100:
+            previous_oi = oi_value / (1 + oi_change / 100)
+            oi_change_usd = oi_value - previous_oi
+            oi_amount_quality = "derived_from_pct"
         observed_at = int(_number(row.get("observed_at")) or 0)
         age_sec = max(0, now - observed_at) if observed_at else 10**9
         status = str(row.get("data_status") or "fresh")
@@ -875,8 +924,9 @@ def build_market_cockpit(
             "quote_volume": _positive(row.get("quote_volume")),
             "volume_change_pct": _pct(row.get("quote_volume"), baseline.get("quote_volume")),
             "market_cap": _positive(row.get("market_cap")),
-            "oi_usd": _positive(row.get("oi_usd")),
+            "oi_usd": oi_value,
             "oi_change_pct": oi_change,
+            "oi_change_usd": round(oi_change_usd, 2) if oi_change_usd is not None else None,
             "spot_inflow_usd": _positive(row.get("spot_inflow_usd")),
             "spot_outflow_usd": _positive(row.get("spot_outflow_usd")),
             "spot_flow_usd": _number(row.get("spot_flow_usd")),
@@ -885,7 +935,7 @@ def build_market_cockpit(
             "futures_flow_usd": _number(row.get("futures_flow_usd")),
             "funding_pct": _number(row.get("funding_pct")),
             "coverage": _coverage(row.get("coverage")),
-            "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality},
+            "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality, "oi_change_usd": oi_amount_quality},
             "status": status,
             "updated_at": _iso(observed_at),
             "age_sec": age_sec,
@@ -895,7 +945,7 @@ def build_market_cockpit(
 
     boards = [
         _two_sided_board(assets, key="price_change_pct", board_key="price", title="价格动量", positive_title="涨幅榜", negative_title="跌幅榜", unit="percent", limit=safe_limit),
-        _two_sided_board(assets, key="oi_change_pct", board_key="oi", title="持仓变化", positive_title="OI 增长", negative_title="OI 下降", unit="percent", limit=safe_limit),
+        _two_sided_board(assets, key="oi_change_pct", board_key="oi", title="持仓变化", positive_title="OI 增长", negative_title="OI 下降", unit="percent", amount_key="oi_change_usd", amount_unit="usd", limit=safe_limit),
         _two_sided_board(assets, key="futures_flow_usd", board_key="futures_flow", title="合约主动资金", positive_title="合约流入", negative_title="合约流出", unit="usd", limit=safe_limit),
         _two_sided_board(assets, key="spot_flow_usd", board_key="spot_flow", title="现货主动资金", positive_title="现货流入", negative_title="现货流出", unit="usd", limit=safe_limit),
         _two_sided_board(assets, key="funding_pct", board_key="funding", title="资金费率", positive_title="正费率", negative_title="负费率", unit="percent_per_cycle", limit=safe_limit),
@@ -906,8 +956,10 @@ def build_market_cockpit(
     spot_assets = [item for item in assets if _number(item.get("spot_flow_usd")) is not None]
     futures_assets = [item for item in assets if _number(item.get("futures_flow_usd")) is not None]
     oi_assets = [item for item in assets if _number(item.get("oi_change_pct")) is not None]
+    oi_amount_assets = [item for item in assets if _number(item.get("oi_change_usd")) is not None]
     spot_net = sum(float(item["spot_flow_usd"]) for item in spot_assets)
     futures_net = sum(float(item["futures_flow_usd"]) for item in futures_assets)
+    oi_net_change = sum(float(item["oi_change_usd"]) for item in oi_amount_assets)
     breadth = ((advancing - declining) / len(price_assets) * 100) if price_assets else 0.0
     if spot_assets or futures_assets:
         net_flow = spot_net + futures_net
@@ -947,12 +999,13 @@ def build_market_cockpit(
             "total_quote_volume": round(sum(float(item.get("quote_volume") or 0) for item in assets), 2),
             "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
             "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
+            "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
         },
         "boards": boards,
         "assets": assets,
         "methodology": {
             "price": "优先使用同币窗口首尾快照计算；历史不足时回退交易所 24h 涨跌并标记质量。",
-            "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化。",
+            "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化率反推金额变化，并标记质量。",
             "flow": "现货与合约资金为 Binance K 线主动买卖成交差（CVD）估算，不代表交易所充提净流入。",
             "strength": "同一指标当前横截面的绝对变化经验分位数。",
         },

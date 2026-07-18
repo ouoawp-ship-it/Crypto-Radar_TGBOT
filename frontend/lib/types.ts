@@ -196,6 +196,12 @@ export type CockpitBoard = {
   coverage?: number;
   positive?: CockpitBoardSide;
   negative?: CockpitBoardSide;
+  amount_metric?: string;
+  amount_unit?: string;
+  amount_positive?: CockpitBoardSide;
+  amount_negative?: CockpitBoardSide;
+  strength_positive?: CockpitBoardSide;
+  strength_negative?: CockpitBoardSide;
   reason?: string;
 };
 
@@ -250,6 +256,7 @@ export type MarketOverview = {
     total_quote_volume?: number;
     spot_net_flow_usd?: number | null;
     futures_net_flow_usd?: number | null;
+    oi_net_change_usd?: number | null;
   };
 };
 
