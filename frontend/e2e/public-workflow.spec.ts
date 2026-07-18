@@ -77,6 +77,24 @@ const marketOverview = {
   }
 };
 
+const radarFixtureCoins = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "SUI", "LINK", "AVAX", "ARB", "OP", "AAVE", "UNI", "LTC", "HYPE", "BNB"];
+
+function radarFixtureItems(direction: "positive" | "negative", offset: number, unit: "percent" | "usd", magnitudeBase = 0) {
+  const sign = direction === "positive" ? 1 : -1;
+  return Array.from({ length: 8 }, (_, index) => {
+    const coin = radarFixtureCoins[(index + offset) % radarFixtureCoins.length];
+    const absoluteValue = unit === "usd" ? 14_000_000 - index * 1_150_000 : 5.8 - index * 0.47;
+    return {
+      symbol: `${coin}USDT`,
+      coin,
+      value: sign * absoluteValue,
+      unit,
+      magnitude_usd: magnitudeBase ? Math.max(250_000, magnitudeBase - index * magnitudeBase * 0.11) : undefined,
+      strength_percentile: 100 - index - offset % 3,
+    };
+  });
+}
+
 const radarBoards = {
   schema_version: "2026-07-17",
   generated_at: "2026-07-17T12:00:00Z",
@@ -88,38 +106,24 @@ const radarBoards = {
   boards: [
     {
       key: "price", title: "价格动量", available: true, coverage: 80,
-      positive: { title: "涨幅榜", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 3.2, unit: "percent", magnitude_usd: 0, strength_percentile: 96 }] },
-      negative: { title: "跌幅榜", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -2.1, unit: "percent", magnitude_usd: 0, strength_percentile: 88 }] }
+      positive: { title: "涨幅榜", items: radarFixtureItems("positive", 0, "percent") },
+      negative: { title: "跌幅榜", items: radarFixtureItems("negative", 8, "percent") }
     },
     {
       key: "oi", title: "持仓变化", available: true, coverage: 24,
       amount_metric: "oi_change_usd", amount_unit: "usd",
-      positive: { title: "OI 增长", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", strength_percentile: 94 }] },
-      negative: { title: "OI 下降", items: [{ symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", strength_percentile: 90 }] },
-      amount_positive: { title: "OI 增长", items: [
-        { symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", magnitude_usd: 1_000_000, strength_percentile: 94 },
-        { symbol: "ETHUSDT", coin: "ETH", value: 20, unit: "percent", magnitude_usd: 200_000, strength_percentile: 99 }
-      ] },
-      amount_negative: { title: "OI 下降", items: [
-        { symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", magnitude_usd: 350_000, strength_percentile: 90 }
-      ] },
-      strength_positive: { title: "OI 增长", items: [
-        { symbol: "ETHUSDT", coin: "ETH", value: 20, unit: "percent", magnitude_usd: 200_000, strength_percentile: 99 },
-        { symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", magnitude_usd: 1_000_000, strength_percentile: 94 }
-      ] },
-      strength_negative: { title: "OI 下降", items: [
-        { symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", magnitude_usd: 350_000, strength_percentile: 90 }
-      ] }
+      positive: { title: "OI 增长", items: radarFixtureItems("positive", 1, "percent", 20_000_000) },
+      negative: { title: "OI 下降", items: radarFixtureItems("negative", 9, "percent", 5_000_000) }
     },
     {
       key: "futures_flow", title: "合约主动资金", available: true, coverage: 12,
-      positive: { title: "合约流入", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 8_000_000, unit: "usd", strength_percentile: 98 }] },
-      negative: { title: "合约流出", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -5_000_000, unit: "usd", strength_percentile: 92 }] }
+      positive: { title: "合约流入", items: radarFixtureItems("positive", 2, "usd") },
+      negative: { title: "合约流出", items: radarFixtureItems("negative", 10, "usd") }
     },
     {
       key: "spot_flow", title: "现货主动资金", available: true, coverage: 12,
-      positive: { title: "现货流入", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 4_000_000, unit: "usd", strength_percentile: 97 }] },
-      negative: { title: "现货流出", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -3_000_000, unit: "usd", strength_percentile: 91 }] }
+      positive: { title: "现货流入", items: radarFixtureItems("positive", 3, "usd") },
+      negative: { title: "现货流出", items: radarFixtureItems("negative", 11, "usd") }
     },
     {
       key: "realtime_surge", title: "Surge 加速", available: true, coverage: 12,
@@ -180,12 +184,12 @@ const crossExchangeOi = {
 };
 
 const fundsSectorFixtures = [
-  ["rwa", "RWA", -4_985_900], ["layer1", "L1", -4_668_700], ["meme", "Meme", -1_932_700],
-  ["ai", "AI", -1_281_800], ["gaming", "GameFi", -1_064_200], ["social", "社交", -986_500],
-  ["defi", "DeFi", 582_300], ["privacy", "隐私", 421_600], ["exchange", "平台币", -812_400],
-  ["layer2", "L2", -744_800], ["depin", "DePIN", -698_200], ["desci", "DeSci", -612_500],
-  ["nft", "NFT", -577_300], ["btc", "BTC生态", -521_800], ["payments", "支付", -486_200],
-  ["dex", "去中心化交易所", 319_500], ["derivatives", "衍生品", -401_900], ["stablecoin", "稳定币", -366_400]
+  ["layer1", "L1", 1_474_700], ["privacy", "隐私", 328_500], ["exchange", "平台币", 302_800],
+  ["layer2", "L2", 294_700], ["gaming", "GameFi", 214_500], ["depin", "DePIN", 122_000],
+  ["ai", "AI", 110_400], ["metals", "贵金属", 99_600], ["modular", "模块化", 88_200],
+  ["rwa", "RWA", -498_500], ["meme", "Meme", -193_300], ["data", "数据", -147_000],
+  ["desci", "DeSci", -128_500], ["btc", "BTC生态", -116_200], ["social", "社交", -98_600],
+  ["nft", "NFT", -86_100], ["defi", "DeFi", -72_300], ["payments", "支付", -48_600]
 ] as const;
 
 const fundsSectors = {
@@ -197,15 +201,16 @@ const fundsSectors = {
   data_status: "ready",
   coverage: { assets: 698, flow: 698, gross_flow: 698, oi: 412, market_cap: 634 },
   warnings: [],
-  summary: { net_flow_usd: -17_869_700, inflow_usd: 17_400, outflow_usd: 17_887_100, asset_count: 698, covered_assets: 698, leading_inflow_sector: "DeFi", leading_outflow_sector: "RWA" },
+  summary: { net_flow_usd: 2_755_900, inflow_usd: 3_429_800, outflow_usd: 673_900, asset_count: 698, covered_assets: 698, leading_inflow_sector: "L1", leading_outflow_sector: "RWA" },
   catalog: fundsSectorFixtures.map(([id, label]) => ({ id, label, description: `${label} 板块` })),
   sectors: fundsSectorFixtures.map(([sector_id, label, net_flow_usd], index) => ({ sector_id, label, net_flow_usd, magnitude_usd: Math.abs(net_flow_usd), inflow_usd: net_flow_usd > 0 ? Math.abs(net_flow_usd) + 150_000 : 80_000 + index * 5_000, outflow_usd: net_flow_usd < 0 ? Math.abs(net_flow_usd) + 80_000 : 150_000, asset_count: 8 + index, covered_assets: 8 + index, coverage_ratio: 1, data_status: "ready", leaders: [{ symbol: "BTCUSDT", net_flow_usd }] }))
 };
 
-const fundsCoins = ["ALLO", "ENA", "UAI", "ADA", "BONK", "POL", "EVAA", "XPL", "LSETH", "LTC", "DEXE", "GLM", "GALA", "LINK", "TRUMP", "PURT", "SLX", "HNT", "ZRO", "BTC"];
+const fundsCoins = ["BTC", "SOL", "DATA", "XRP", "ETH", "ZEC", "ADA", "AAVE", "XAUT", "LINK", "MANTRA", "INJ", "HYPE", "ALLO", "ENA", "UAI", "BONK", "POL", "EVAA", "XPL"];
+const fundsNetFixtures = [4_720_900, 791_500, 562_900, 426_300, 424_100, 134_200, 112_300, 105_200, 85_100, 67_500, 60_300, 46_900, 45_100, 38_900, 34_700, 31_500, 28_600, 24_200, 21_800, 19_500];
 const fundsAssetFixtures = Array.from({ length: 698 }, (_, index) => {
   const coin = fundsCoins[index] || `T${String(index + 1).padStart(3, "0")}`;
-  const net = Math.max(100, (22 - Math.min(index, 21)) * 10_000 + (index % 3) * 700);
+  const net = fundsNetFixtures[index] ?? Math.max(100, (22 - Math.min(index, 21)) * 10_000 + (index % 3) * 700);
   const inflow = net * (2.1 + (index % 20) * 0.03);
   const outflow = inflow - net;
   return { symbol: `${coin}USDT`, coin, price: index === 0 ? 0.4356 : 0.08 + index * 0.127, price_change_pct: index % 3 === 0 ? 8.17 - index * 0.01 : -0.99 - index * 0.02, net_flow_usd: net, net_flow_change_pct: index % 4 === 0 ? null : -72 + (index % 20) * 3.7, inflow_usd: inflow, outflow_usd: outflow, volume_usd: Math.max(10_000, 745_000 - index * 800), volume_change_pct: index % 2 ? -14.03 - index * 0.01 : 38.19 - index * 0.01, oi_usd: Math.max(100_000, 820_000_000 - index * 1_000_000), oi_change_pct: 1.8 - index * 0.01, funding_pct: -0.02 + index * 0.0001, market_cap: Math.max(500_000, 102_000_000 - index * 100_000), updated_at: "2026-07-18T17:44:00Z", data_status: "ready", sector: { primary_sector_id: fundsSectorFixtures[index % fundsSectorFixtures.length][0], primary_sector_label: fundsSectorFixtures[index % fundsSectorFixtures.length][1], sector_ids: [fundsSectorFixtures[index % fundsSectorFixtures.length][0]] } };
@@ -224,13 +229,102 @@ const fundsAssets = {
   items: fundsAssetFixtures.slice(0, 20)
 };
 
+const extraInfoFixtures = [
+  ...Array.from({ length: 9 }, (_, index) => ({
+    event_id: `zh_news_${index}`,
+    published_at: `2030-07-18T${String(19 - Math.floor(index / 3)).padStart(2, "0")}:${String(58 - index * 4).padStart(2, "0")}:00Z`,
+    collected_at: "2030-07-18T20:31:00Z",
+    source: index % 2 ? "深潮 TechFlow" : "PANews",
+    source_type: "news",
+    title: ["市场消息：机构资金持续关注主流资产", "链上数据出现新的大额资金迁移", "交易平台公布最新市场风险提示"][index % 3],
+    summary: undefined,
+    url: `https://example.com/zh/${index}`,
+    symbols: [["BTCUSDT"], ["ETHUSDT"], ["SOLUSDT"]][index % 3],
+    importance: index % 4 === 0 ? "high" : "medium",
+    language: "zh",
+    cluster_id: `cluster_zh_${index}`,
+    cluster_size: 1,
+    event_kind: index % 5 === 0 ? "risk" : "opportunity",
+    rights_status: "public_rss_link",
+    timestamp_quality: "source",
+    data_status: "ready",
+    source_links: [],
+  })),
+  ...Array.from({ length: 9 }, (_, index) => ({
+    event_id: `en_news_${index}`,
+    published_at: `2030-07-18T19:${String(57 - index * 4).padStart(2, "0")}:00Z`,
+    collected_at: "2030-07-18T20:31:00Z",
+    source: index % 2 ? "marketfeed" : "Decrypt",
+    source_type: "news",
+    title: ["Market liquidity improves across major crypto assets", "Institutional flows return as volatility expands", "Traders monitor a fresh derivatives positioning shift"][index % 3],
+    summary: undefined,
+    url: `https://example.com/en/${index}`,
+    symbols: [["BTCUSDT"], ["ETHUSDT"], ["XRPUSDT"]][index % 3],
+    importance: index % 4 === 0 ? "high" : "medium",
+    language: "en",
+    cluster_id: `cluster_en_${index}`,
+    cluster_size: 1,
+    event_kind: index % 5 === 0 ? "risk" : "opportunity",
+    rights_status: "public_rss_link",
+    timestamp_quality: "source",
+    data_status: "ready",
+    source_links: [],
+  })),
+  ...Array.from({ length: 9 }, (_, index) => ({
+    event_id: `kol_${index}`,
+    published_at: `2030-07-18T19:${String(56 - index * 5).padStart(2, "0")}:00Z`,
+    collected_at: "2030-07-18T20:31:00Z",
+    source: index % 2 ? "@marketobserver.bsky.social" : "@analyst.bsky.social",
+    source_type: "kol",
+    title: ["主流币资金结构正在重新平衡，等待现货确认。", "短线波动扩大，但趋势仍需要成交量验证。", "衍生品仓位变化值得继续跟踪。"][index % 3],
+    summary: undefined,
+    url: `https://bsky.app/profile/example/post/${index}`,
+    symbols: [["SOLUSDT"], ["BTCUSDT"], ["ONDOUSDT"]][index % 3],
+    importance: index % 3 === 0 ? "high" : "medium",
+    language: "zh",
+    cluster_id: `cluster_kol_${index}`,
+    cluster_size: 1,
+    event_kind: index % 4 === 0 ? "risk" : "opportunity",
+    rights_status: "public_social_link",
+    timestamp_quality: "source",
+    data_status: "ready",
+    source_links: [],
+    ai_analysis: { status: "not_generated", engagement: { likes: 160 - index * 7, reposts: 32 - index, replies: 18 - index, score: 260 - index * 12 } },
+  })),
+  ...Array.from({ length: 14 }, (_, index) => {
+    const coins = ["BANK", "SPX", "SAKE", "BTC", "SNDK", "ETH", "CL", "XAU"];
+    const coin = coins[index % coins.length];
+    return {
+      event_id: `plaza_${index}`,
+      published_at: `2030-07-18T20:${String(29 - index).padStart(2, "0")}:00Z`,
+      collected_at: "2030-07-18T20:31:00Z",
+      source: "@market.bsky.social",
+      source_type: "plaza",
+      title: `$${coin} 公开讨论热度上升，资金与价格结构出现新的共振信号。`,
+      summary: `$${coin} 公开讨论热度、方向和互动强度的聚合摘要。`,
+      url: `https://bsky.app/profile/market.bsky.social/post/${index}`,
+      symbols: [`${coin}USDT`],
+      importance: index < 3 ? "high" : "medium",
+      language: "zh",
+      cluster_id: `cluster_plaza_${index}`,
+      cluster_size: 1,
+      event_kind: index % 4 === 1 ? "risk" : "opportunity",
+      rights_status: "public_social_link",
+      timestamp_quality: "source",
+      data_status: "ready",
+      source_links: [],
+      ai_analysis: { status: "not_generated", engagement: { likes: 180 - index * 5, reposts: 30 - index, replies: 16 - Math.floor(index / 2), score: 300 - index * 13 } },
+    };
+  }),
+];
+
 const infoFeed = {
   schema_version: "2026-07-18",
   generated_at: "2030-07-18T20:35:00Z",
   data_status: "ready",
-  coverage: { events: 4, clusters: 4, high_importance: 2, linked_symbols: 4, rights_verified: 4, sources: 4 },
+  coverage: { events: 45, clusters: 45, high_importance: 12, linked_symbols: 45, rights_verified: 45, sources: 8 },
   warnings: [],
-  pagination: { page: 1, page_size: 80, page_count: 1, total: 4 },
+  pagination: { page: 1, page_size: 80, page_count: 1, total: 45 },
   summary: { high_importance: 2, risk: 1, opportunity: 2, official: 0 },
   channels: [
     { key: "news_zh", label: "聚合资讯", status: "ready", count: 1, rights_status: "public_rss_link" },
@@ -242,7 +336,8 @@ const infoFeed = {
     { event_id: "panews_btc", published_at: "2030-07-18T20:30:00Z", collected_at: "2030-07-18T20:31:00Z", source: "PANews", source_type: "news", title: "比特币现货资金持续流入，市场关注度快速升温", summary: "BTC 交易量与主动买盘同步增强。", url: "https://www.panewslab.com/zh/articles/example", symbols: ["BTCUSDT"], importance: "high", language: "zh", cluster_id: "cluster_btc_zh", cluster_size: 1, event_kind: "opportunity", rights_status: "public_rss_link", timestamp_quality: "source", data_status: "ready", source_links: [] },
     { event_id: "decrypt_eth", published_at: "2030-07-18T20:25:00Z", collected_at: "2030-07-18T20:31:00Z", source: "Decrypt", source_type: "news", title: "Ethereum trading activity accelerates as ETF demand returns", summary: "Spot volume and institutional demand rose together.", url: "https://decrypt.co/example", symbols: ["ETHUSDT"], importance: "medium", language: "en", cluster_id: "cluster_eth_en", cluster_size: 1, event_kind: "opportunity", rights_status: "public_rss_link", timestamp_quality: "source", data_status: "ready", source_links: [] },
     { event_id: "bsky_kol_sol", published_at: "2030-07-18T20:20:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@analyst.bsky.social", source_type: "kol", title: "$SOL liquidity is improving, but confirmation still needs spot follow-through.", url: "https://bsky.app/profile/analyst.bsky.social/post/sol", symbols: ["SOLUSDT"], importance: "high", language: "en", cluster_id: "cluster_sol_kol", cluster_size: 1, event_kind: "neutral", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 188, reposts: 28, replies: 14, score: 258 } } },
-    { event_id: "bsky_plaza_doge", published_at: "2030-07-18T20:15:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@market.bsky.social", source_type: "plaza", title: "$DOGE breakout discussion is surging across the public feed.", url: "https://bsky.app/profile/market.bsky.social/post/doge", symbols: ["DOGEUSDT"], importance: "medium", language: "en", cluster_id: "cluster_doge_plaza", cluster_size: 1, event_kind: "opportunity", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 96, reposts: 12, replies: 8, score: 128 } } }
+    { event_id: "bsky_plaza_doge", published_at: "2030-07-18T20:15:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@market.bsky.social", source_type: "plaza", title: "$DOGE breakout discussion is surging across the public feed.", url: "https://bsky.app/profile/market.bsky.social/post/doge", symbols: ["DOGEUSDT"], importance: "medium", language: "en", cluster_id: "cluster_doge_plaza", cluster_size: 1, event_kind: "opportunity", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 96, reposts: 12, replies: 8, score: 128 } } },
+    ...extraInfoFixtures,
   ]
 };
 
@@ -423,20 +518,20 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
 });
 
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1152, height: 720 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
   const eventBox = await page.getByTestId("radar-event-feed").boundingBox();
   const matrixBox = await page.getByTestId("radar-hot-money").boundingBox();
   const sideBox = await page.getByTestId("radar-side-intelligence").boundingBox();
-  expect(eventBox?.x).toBeCloseTo(6, 0);
-  expect(eventBox?.y).toBeCloseTo(51, 0);
-  expect(eventBox?.width).toBeCloseTo(314, 0);
-  expect(matrixBox?.width).toBeCloseTo(788, 0);
-  expect(sideBox?.width).toBeCloseTo(314, 0);
-  expect(eventBox?.height).toBeCloseTo(843, 0);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
+  expect(eventBox?.x).toBeCloseTo(10, 0);
+  expect(eventBox?.y).toBeCloseTo(55, 0);
+  expect(eventBox?.width).toBeCloseTo(231, 0);
+  expect(matrixBox?.width).toBeCloseTo(650, 0);
+  expect(sideBox?.width).toBeCloseTo(231, 0);
+  expect(eventBox?.height).toBeCloseTo(655, 0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
 });
 
 test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page }) => {
@@ -460,7 +555,7 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
   expect(momentumBoards[0].x).toBeCloseTo(219.5, 1);
   expect(momentumBoards[0].y).toBeCloseTo(98, 0);
   expect(momentumBoards[0].width).toBeCloseTo(240, 0);
-  await expect(page.getByText("+3.20%", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("+5.80%", { exact: true }).first()).toBeVisible();
   const strengthColumns = await page.getByTestId("radar-strength-grid").first().evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
   expect(strengthColumns).toBe(2);
 
@@ -508,15 +603,18 @@ test("funds table sorting and browser-local favorites are functional", async ({ 
   await expect(page.getByTestId("funds-assets-overview").locator('[role="button"]').filter({ hasText: "T698" })).toBeVisible();
 });
 
-for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
-  test(`workstation visual fixtures remain stable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
-    await page.setViewportSize(viewport);
+for (const viewport of [
+  { css: { width: 1152, height: 720 }, pixels: { width: 1440, height: 900 } },
+  { css: { width: 1536, height: 864 }, pixels: { width: 1920, height: 1080 } },
+]) {
+  test(`workstation visual fixtures remain stable at ${viewport.pixels.width}x${viewport.pixels.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport.css);
     await mockPublicApi(page);
     for (const route of ["radar", "info", "funds"] as const) {
       await page.goto(`/${route}`);
       await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
       await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
-      await expect(page).toHaveScreenshot(`${route}-${viewport.width}x${viewport.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.015 });
+      await expect(page).toHaveScreenshot(`${route}-${viewport.pixels.width}x${viewport.pixels.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.015, scale: "device" });
     }
   });
 }
