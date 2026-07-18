@@ -1952,7 +1952,7 @@ def tail_file(path: Path, lines: int) -> str:
     return "\n".join(data[-max(1, lines):])
 
 
-def logs_payload(target: str, lines: int) -> dict[str, Any]:
+def logs_payload(target: str, lines: int, *, active_run_only: bool = False) -> dict[str, Any]:
     settings = Settings.load()
     lines = max(20, min(2000, int(lines)))
     if target == "web":
@@ -1965,9 +1965,20 @@ def logs_payload(target: str, lines: int) -> dict[str, Any]:
         service = MAIN_SERVICE
         fallback_path = settings.data_dir / "runtime.log"
     if command_exists("journalctl"):
-        result = run_subprocess(["journalctl", "-u", service, "-n", str(lines), "--no-pager"], timeout=15)
+        journal_command = ["journalctl", "-u", service, "-n", str(lines), "--no-pager"]
+        source = f"journalctl:{service}"
+        if active_run_only:
+            active_since = run_subprocess(
+                ["systemctl", "show", service, "--property=ActiveEnterTimestamp", "--value"],
+                timeout=5,
+            )
+            active_since_text = str(active_since.get("stdout") or "").strip()
+            if active_since.get("ok") and active_since_text and active_since_text != "n/a":
+                journal_command.extend(["--since", active_since_text])
+                source = f"{source}:active-run"
+        result = run_subprocess(journal_command, timeout=15)
         if result["stdout"].strip() or result["returncode"] == 0:
-            return {"target": target, "source": f"journalctl:{service}", "text": result["stdout"], "ok": result["ok"]}
+            return {"target": target, "source": source, "text": result["stdout"], "ok": result["ok"]}
     text = tail_file(fallback_path, lines)
     return {"target": target, "source": str(fallback_path), "text": text, "ok": bool(text)}
 
@@ -2046,7 +2057,7 @@ def is_web_client_disconnect_line(target: str, line: str) -> bool:
 
 
 def log_error_excerpt(target: str, *, lines: int = 300, limit: int = 20) -> dict[str, Any]:
-    payload = logs_payload(target, lines)
+    payload = logs_payload(target, lines, active_run_only=True)
     raw_lines = str(payload.get("text") or "").splitlines()
     transient_lines = [line for line in raw_lines if is_transient_log_line(line) or is_web_client_disconnect_line(target, line)]
     error_lines = [

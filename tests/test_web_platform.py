@@ -410,6 +410,26 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertEqual(payload["transient_count"], 0)
         self.assertIn("RuntimeError", payload["lines"][0])
 
+    def test_log_error_excerpt_only_reads_the_active_service_run(self) -> None:
+        active_since = "Sat 2026-07-18 07:02:14 UTC"
+
+        def fake_run(argv: list[str], **_kwargs: object) -> dict[str, object]:
+            if argv[0] == "systemctl":
+                return {"ok": True, "returncode": 0, "stdout": active_since, "stderr": ""}
+            self.assertEqual(argv[0], "journalctl")
+            self.assertIn("--since", argv)
+            self.assertEqual(argv[argv.index("--since") + 1], active_since)
+            return {"ok": True, "returncode": 0, "stdout": "service ready", "stderr": ""}
+
+        with (
+            patch("paopao_radar.web.command_exists", return_value=True),
+            patch("paopao_radar.web.run_subprocess", side_effect=fake_run),
+        ):
+            payload = web.log_error_excerpt("web")
+
+        self.assertEqual(payload["source"], "journalctl:paopao-web:active-run")
+        self.assertEqual(payload["error_count"], 0)
+
     def test_json_responses_add_browser_security_headers(self) -> None:
         source = __import__("inspect").getsource(web.WebHandler.send_payload)
         self.assertIn("X-Content-Type-Options", source)
