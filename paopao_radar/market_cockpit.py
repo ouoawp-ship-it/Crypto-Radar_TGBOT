@@ -57,6 +57,14 @@ def _pct(current: Any, previous: Any) -> float | None:
     return (current_number - previous_number) / previous_number * 100
 
 
+def _signed_pct(current: Any, previous: Any) -> float | None:
+    current_number = _number(current)
+    previous_number = _number(previous)
+    if current_number is None or previous_number in (None, 0):
+        return None
+    return (current_number - previous_number) / abs(previous_number) * 100
+
+
 def _iso(ts: int | float) -> str:
     if int(ts or 0) <= 0:
         return ""
@@ -1012,9 +1020,11 @@ def build_market_cockpit(
             "spot_inflow_usd": _positive(row.get("spot_inflow_usd")),
             "spot_outflow_usd": _positive(row.get("spot_outflow_usd")),
             "spot_flow_usd": _number(row.get("spot_flow_usd")),
+            "spot_flow_change_pct": _signed_pct(row.get("spot_flow_usd"), baseline.get("spot_flow_usd")),
             "futures_inflow_usd": _positive(row.get("futures_inflow_usd")),
             "futures_outflow_usd": _positive(row.get("futures_outflow_usd")),
             "futures_flow_usd": _number(row.get("futures_flow_usd")),
+            "futures_flow_change_pct": _signed_pct(row.get("futures_flow_usd"), baseline.get("futures_flow_usd")),
             "funding_pct": _number(row.get("funding_pct")),
             "coverage": _coverage(row.get("coverage")),
             "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality, "oi_change_usd": oi_amount_quality},

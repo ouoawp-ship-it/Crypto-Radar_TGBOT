@@ -13,13 +13,16 @@ from .config import Settings
 from .market_cockpit import MARKET_COCKPIT_SCHEMA_VERSION, load_market_cockpit, normalize_window
 
 
-FUNDS_SCHEMA_VERSION = "2026-07-17"
+FUNDS_SCHEMA_VERSION = "2026-07-18"
 MARKET_TYPES = ("spot", "futures")
 ASSET_SORT_KEYS = {
     "symbol",
     "price",
     "price_change_pct",
     "net_flow_usd",
+    "net_flow_change_pct",
+    "inflow_usd",
+    "outflow_usd",
     "volume_usd",
     "volume_change_pct",
     "oi_usd",
@@ -45,18 +48,19 @@ def normalize_market_type(value: Any) -> str:
     return requested if requested in MARKET_TYPES else "spot"
 
 
-def _flow_keys(market_type: str) -> tuple[str, str, str, str]:
+def _flow_keys(market_type: str) -> tuple[str, str, str, str, str]:
     normalized = normalize_market_type(market_type)
     return (
         f"{normalized}_flow_usd",
         f"{normalized}_inflow_usd",
         f"{normalized}_outflow_usd",
+        f"{normalized}_flow_change_pct",
         "binance_spot_klines" if normalized == "spot" else "binance_futures_klines",
     )
 
 
 def _asset_row(source: dict[str, Any], *, market_type: str) -> dict[str, Any]:
-    flow_key, inflow_key, outflow_key, flow_source = _flow_keys(market_type)
+    flow_key, inflow_key, outflow_key, flow_change_key, flow_source = _flow_keys(market_type)
     net_flow = _number(source.get(flow_key))
     inflow = _number(source.get(inflow_key))
     outflow = _number(source.get(outflow_key))
@@ -77,7 +81,7 @@ def _asset_row(source: dict[str, Any], *, market_type: str) -> dict[str, Any]:
         "price_change_pct": _number(source.get("price_change_pct")),
         "price_change_window_sec": int(_number(source.get("price_change_window_sec")) or 0),
         "net_flow_usd": net_flow,
-        "net_flow_change_pct": None,
+        "net_flow_change_pct": _number(source.get(flow_change_key)),
         "inflow_usd": inflow,
         "outflow_usd": outflow,
         "volume_usd": _number(source.get("quote_volume")),
@@ -203,8 +207,8 @@ def build_funds_sectors(
             "outflow_usd": round(total_outflow, 2) if total_outflow is not None else None,
             "asset_count": len(assets),
             "covered_assets": len(flow_assets),
-            "leading_inflow_sector": next((item["sector_id"] for item in sectors if _number(item.get("net_flow_usd")) is not None and float(item["net_flow_usd"]) > 0), ""),
-            "leading_outflow_sector": next((item["sector_id"] for item in sectors if _number(item.get("net_flow_usd")) is not None and float(item["net_flow_usd"]) < 0), ""),
+            "leading_inflow_sector": next((item["label"] for item in sectors if _number(item.get("net_flow_usd")) is not None and float(item["net_flow_usd"]) > 0), ""),
+            "leading_outflow_sector": next((item["label"] for item in sectors if _number(item.get("net_flow_usd")) is not None and float(item["net_flow_usd"]) < 0), ""),
         },
         "catalog": public_sector_catalog(),
         "sectors": sectors,

@@ -179,41 +179,49 @@ const crossExchangeOi = {
   ]
 };
 
+const fundsSectorFixtures = [
+  ["rwa", "RWA", -4_985_900], ["layer1", "L1", -4_668_700], ["meme", "Meme", -1_932_700],
+  ["ai", "AI", -1_281_800], ["gaming", "GameFi", -1_064_200], ["social", "社交", -986_500],
+  ["defi", "DeFi", 582_300], ["privacy", "隐私", 421_600], ["exchange", "平台币", -812_400],
+  ["layer2", "L2", -744_800], ["depin", "DePIN", -698_200], ["desci", "DeSci", -612_500],
+  ["nft", "NFT", -577_300], ["btc", "BTC生态", -521_800], ["payments", "支付", -486_200],
+  ["dex", "去中心化交易所", 319_500], ["derivatives", "衍生品", -401_900], ["stablecoin", "稳定币", -366_400]
+] as const;
+
 const fundsSectors = {
-  schema_version: "2026-07-17",
+  schema_version: "2026-07-18",
   catalog_version: "2026.07.1",
   generated_at: "2026-07-17T12:00:00Z",
   window_sec: 3600,
   market_type: "spot",
   data_status: "ready",
-  coverage: { assets: 2, flow: 2, gross_flow: 2, oi: 2, market_cap: 2 },
+  coverage: { assets: 698, flow: 698, gross_flow: 698, oi: 412, market_cap: 634 },
   warnings: [],
-  summary: { net_flow_usd: 3_000_000, inflow_usd: 12_000_000, outflow_usd: 9_000_000, asset_count: 2, covered_assets: 2, leading_inflow_sector: "layer1", leading_outflow_sector: "layer2" },
-  catalog: [
-    { id: "layer1", label: "L1", description: "一层公链" },
-    { id: "layer2", label: "L2", description: "二层扩容" }
-  ],
-  sectors: [
-    { sector_id: "layer1", label: "L1", net_flow_usd: 8_000_000, magnitude_usd: 8_000_000, inflow_usd: 10_000_000, outflow_usd: 2_000_000, asset_count: 1, covered_assets: 1, coverage_ratio: 1, data_status: "ready", leaders: [{ symbol: "BTCUSDT", net_flow_usd: 8_000_000 }] },
-    { sector_id: "layer2", label: "L2", net_flow_usd: -5_000_000, magnitude_usd: 5_000_000, inflow_usd: 2_000_000, outflow_usd: 7_000_000, asset_count: 1, covered_assets: 1, coverage_ratio: 1, data_status: "ready", leaders: [{ symbol: "ARBUSDT", net_flow_usd: -5_000_000 }] }
-  ]
+  summary: { net_flow_usd: -17_869_700, inflow_usd: 17_400, outflow_usd: 17_887_100, asset_count: 698, covered_assets: 698, leading_inflow_sector: "DeFi", leading_outflow_sector: "RWA" },
+  catalog: fundsSectorFixtures.map(([id, label]) => ({ id, label, description: `${label} 板块` })),
+  sectors: fundsSectorFixtures.map(([sector_id, label, net_flow_usd], index) => ({ sector_id, label, net_flow_usd, magnitude_usd: Math.abs(net_flow_usd), inflow_usd: net_flow_usd > 0 ? Math.abs(net_flow_usd) + 150_000 : 80_000 + index * 5_000, outflow_usd: net_flow_usd < 0 ? Math.abs(net_flow_usd) + 80_000 : 150_000, asset_count: 8 + index, covered_assets: 8 + index, coverage_ratio: 1, data_status: "ready", leaders: [{ symbol: "BTCUSDT", net_flow_usd }] }))
 };
 
+const fundsCoins = ["ALLO", "ENA", "UAI", "ADA", "BONK", "POL", "EVAA", "XPL", "LSETH", "LTC", "DEXE", "GLM", "GALA", "LINK", "TRUMP", "PURT", "SLX", "HNT", "ZRO", "BTC"];
+const fundsAssetFixtures = Array.from({ length: 698 }, (_, index) => {
+  const coin = fundsCoins[index] || `T${String(index + 1).padStart(3, "0")}`;
+  const net = Math.max(100, (22 - Math.min(index, 21)) * 10_000 + (index % 3) * 700);
+  const inflow = net * (2.1 + (index % 20) * 0.03);
+  const outflow = inflow - net;
+  return { symbol: `${coin}USDT`, coin, price: index === 0 ? 0.4356 : 0.08 + index * 0.127, price_change_pct: index % 3 === 0 ? 8.17 - index * 0.01 : -0.99 - index * 0.02, net_flow_usd: net, net_flow_change_pct: index % 4 === 0 ? null : -72 + (index % 20) * 3.7, inflow_usd: inflow, outflow_usd: outflow, volume_usd: Math.max(10_000, 745_000 - index * 800), volume_change_pct: index % 2 ? -14.03 - index * 0.01 : 38.19 - index * 0.01, oi_usd: Math.max(100_000, 820_000_000 - index * 1_000_000), oi_change_pct: 1.8 - index * 0.01, funding_pct: -0.02 + index * 0.0001, market_cap: Math.max(500_000, 102_000_000 - index * 100_000), updated_at: "2026-07-18T17:44:00Z", data_status: "ready", sector: { primary_sector_id: fundsSectorFixtures[index % fundsSectorFixtures.length][0], primary_sector_label: fundsSectorFixtures[index % fundsSectorFixtures.length][1], sector_ids: [fundsSectorFixtures[index % fundsSectorFixtures.length][0]] } };
+});
 const fundsAssets = {
-  schema_version: "2026-07-17",
+  schema_version: "2026-07-18",
   catalog_version: "2026.07.1",
   generated_at: "2026-07-17T12:00:00Z",
   window_sec: 3600,
   market_type: "spot",
   data_status: "ready",
-  coverage: { assets: 2, flow: 2 },
+  coverage: { assets: 698, flow: 698 },
   warnings: [],
   distribution: { oi_total_usd: 900_000_000, oi_covered_assets: 62, top_10_oi_share_pct: 74.5, top_50_oi_share_pct: 98.2 },
-  pagination: { page: 1, page_size: 20, page_count: 4, total: 62 },
-  items: [
-    { symbol: "BTCUSDT", coin: "BTC", price: 65000, price_change_pct: 2.4, net_flow_usd: 8_000_000, inflow_usd: 10_000_000, outflow_usd: 2_000_000, volume_usd: 1_200_000_000, oi_usd: 820_000_000, oi_change_pct: 1.8, funding_pct: -0.02, market_cap: 1_200_000_000_000, updated_at: "2026-07-17T12:00:00Z", data_status: "ready", sector: { primary_sector_id: "layer1", primary_sector_label: "L1", sector_ids: ["layer1"] } },
-    { symbol: "ARBUSDT", coin: "ARB", price: 1.1, price_change_pct: -1.2, net_flow_usd: -5_000_000, inflow_usd: 2_000_000, outflow_usd: 7_000_000, volume_usd: 120_000_000, oi_usd: 80_000_000, oi_change_pct: -2.4, funding_pct: 0.01, market_cap: 4_000_000_000, updated_at: "2026-07-17T12:00:00Z", data_status: "ready", sector: { primary_sector_id: "layer2", primary_sector_label: "L2", sector_ids: ["layer2"] } }
-  ]
+  pagination: { page: 1, page_size: 20, page_count: 35, total: 698 },
+  items: fundsAssetFixtures.slice(0, 20)
 };
 
 const infoFeed = {
@@ -339,9 +347,13 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       const page = Math.max(1, Number(url.searchParams.get("page") || 1));
       const pageSize = Math.max(1, Number(url.searchParams.get("page_size") || 20));
       const search = String(url.searchParams.get("search") || "").toUpperCase();
-      const items = fundsAssets.items.filter((item) => !search || `${item.symbol} ${item.coin}`.includes(search));
-      const total = search ? items.length : 62;
-      return route.fulfill({ json: { ok: true, data: { ...fundsAssets, market_type: url.searchParams.get("market_type") || "spot", window_sec: Number(url.searchParams.get("window_sec") || 900), warnings: options.assetWarnings || fundsAssets.warnings, pagination: { page, page_size: pageSize, page_count: Math.max(1, Math.ceil(total / pageSize)), total }, items } } });
+      const sort = String(url.searchParams.get("sort") || "net_flow_usd") as keyof (typeof fundsAssetFixtures)[number];
+      const direction = url.searchParams.get("direction") === "asc" ? 1 : -1;
+      const filtered = fundsAssetFixtures.filter((item) => !search || `${item.symbol} ${item.coin}`.includes(search));
+      filtered.sort((a, b) => (Number(a[sort] ?? Number.NEGATIVE_INFINITY) - Number(b[sort] ?? Number.NEGATIVE_INFINITY)) * direction);
+      const total = filtered.length;
+      const items = filtered.slice((page - 1) * pageSize, page * pageSize);
+      return route.fulfill({ json: { ok: true, data: { ...fundsAssets, market_type: url.searchParams.get("market_type") || "spot", window_sec: Number(url.searchParams.get("window_sec") || 900), warnings: options.assetWarnings || fundsAssets.warnings, sort: { key: sort, direction: direction === 1 ? "asc" : "desc" }, pagination: { page, page_size: pageSize, page_count: Math.max(1, Math.ceil(total / pageSize)), total }, items } } });
     }
     if (url.pathname === "/public-api/info/feed") {
       infoRequests += 1;
@@ -477,6 +489,23 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
   expect(assetSearch?.width).toBeCloseTo(255, 0);
   expect(assetFooter?.y).toBeCloseTo(697, 0);
   expect(assetFooter?.height).toBeCloseTo(28, 0);
+});
+
+test("funds table sorting and browser-local favorites are functional", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/funds");
+
+  await page.getByLabel("添加ALLO自选").click();
+  await expect(page.getByLabel("取消ALLO自选")).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("取消ALLO自选")).toBeVisible();
+
+  const volumeSort = page.getByLabel("按交易量($)排序");
+  await volumeSort.click();
+  await expect(volumeSort).toHaveText("交易量($)↓");
+  await volumeSort.click();
+  await expect(volumeSort).toHaveText("交易量($)↑");
+  await expect(page.getByTestId("funds-assets-overview").locator('[role="button"]').filter({ hasText: "T698" })).toBeVisible();
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
@@ -617,14 +646,14 @@ test("funds overview uses server-backed pagination and search semantics", async 
   await mockPublicApi(page);
   await page.goto("/funds");
 
-  await expect(page.getByText("共 62 个代币 · 每页 20 条 · 第 1/4 页")).toBeVisible();
+  await expect(page.getByText("共 698 个代币 · 每页 20 条 · 第 1/35 页")).toBeVisible();
   const secondPageRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
     return url.pathname === "/public-api/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("page") === "2";
   });
   await page.getByRole("button", { name: "下一页" }).click();
   await secondPageRequest;
-  await expect(page.getByText("共 62 个代币 · 每页 20 条 · 第 2/4 页")).toBeVisible();
+  await expect(page.getByText("共 698 个代币 · 每页 20 条 · 第 2/35 页")).toBeVisible();
   await expect(page.getByText("21", { exact: true }).first()).toBeVisible();
 
   const searchRequest = page.waitForRequest((request) => {
