@@ -48,8 +48,14 @@ class MarketFundsTests(unittest.TestCase):
     @staticmethod
     def baselines(ts: int) -> dict[str, dict[str, object]]:
         return {
-            "ETHUSDT": {"price": 200, "quote_volume": 100_000_000, "oi_usd": 2_500_000, "observed_at": ts},
-            "ARBUSDT": {"price": 1, "quote_volume": 75_000_000, "oi_usd": 2_100_000, "observed_at": ts},
+            "ETHUSDT": {
+                "price": 200, "quote_volume": 100_000_000, "oi_usd": 2_500_000,
+                "spot_flow_usd": 200_000, "futures_flow_usd": 500_000, "observed_at": ts,
+            },
+            "ARBUSDT": {
+                "price": 1, "quote_volume": 75_000_000, "oi_usd": 2_100_000,
+                "spot_flow_usd": -500_000, "futures_flow_usd": -100_000, "observed_at": ts,
+            },
             "PEPEUSDT": {"price": 0.000011, "quote_volume": 55_000_000, "observed_at": ts},
         }
 
@@ -91,6 +97,13 @@ class MarketFundsTests(unittest.TestCase):
         searched = build_funds_assets(self.cockpit(), market_type="futures", search="arb")
         self.assertEqual([item["symbol"] for item in searched["items"]], ["ARBUSDT"])
         self.assertEqual(searched["items"][0]["net_flow_usd"], -150_000)
+        self.assertEqual(searched["items"][0]["net_flow_change_pct"], -50)
+
+        sorted_by_flow_change = build_funds_assets(
+            self.cockpit(), market_type="spot", sort_key="net_flow_change_pct", direction="desc",
+        )
+        self.assertEqual([item["symbol"] for item in sorted_by_flow_change["items"][:2]], ["ETHUSDT", "ARBUSDT"])
+        self.assertEqual(sorted_by_flow_change["items"][0]["net_flow_change_pct"], 50)
 
     def test_oi_distribution_uses_complete_filtered_universe_not_current_page(self) -> None:
         cockpit = deepcopy(self.cockpit())

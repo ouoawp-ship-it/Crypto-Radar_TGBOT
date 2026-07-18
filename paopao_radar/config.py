@@ -172,7 +172,7 @@ class Settings:
     info_plaza_feed_uri: str = "at://did:plc:5cgr3vgieoz4dh5nkhofpn33/app.bsky.feed.generator/aaaekwiqyodf4"
     market_snapshot_interval_sec: int = 300
     market_snapshot_retention_days: int = 30
-    market_snapshot_limit: int = 160
+    market_snapshot_limit: int = 500
     market_snapshot_oi_limit: int = 80
     market_snapshot_workers: int = 8
     market_flow_fact_interval_sec: int = 900
@@ -391,7 +391,7 @@ class Settings:
             ).strip(),
             market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
             market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 30),
-            market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 160),
+            market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 500),
             market_snapshot_oi_limit=env_int("MARKET_SNAPSHOT_OI_LIMIT", 80),
             market_snapshot_workers=env_int("MARKET_SNAPSHOT_WORKERS", 8),
             market_flow_fact_interval_sec=env_int("MARKET_FLOW_FACT_INTERVAL_SEC", 900),

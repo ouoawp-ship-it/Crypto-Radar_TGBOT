@@ -16,8 +16,8 @@
 
 ### P1：30 天市场事实层
 
-- 行情快照默认每 5 分钟采集、保留 30 天，覆盖成交额排序前 160 个 USDT 永续资产。
-- OI 每轮轮转补齐 80 个资产，正常运行两个周期可覆盖全部 160 个资产。
+- 行情快照默认每 5 分钟采集、保留 30 天，覆盖成交额排序前 500 个 USDT 永续资产。
+- OI 每轮轮转补齐 80 个资产，按周期轮转覆盖完整资产池。
 - 现货与合约主动买卖差使用封闭 15 分钟 K 线计算，前 40 个资产独立采集，不依赖 Telegram 推送频率。
 - 所有事实保存 `source`、`observed_at`、`window_sec`、`coverage` 和 `data_status`。
 - 15m、30m、1h、4h、1d 榜单从同一事实层生成；历史不足时明确使用 ticker fallback 或返回空值。
@@ -62,7 +62,7 @@ Radar engines → structured signal facts → SignalEventStore
 |---|---:|---|
 | `MARKET_SNAPSHOT_INTERVAL_SEC` | 300 | 行情事实采集间隔 |
 | `MARKET_SNAPSHOT_RETENTION_DAYS` | 30 | SQLite 历史保留天数 |
-| `MARKET_SNAPSHOT_LIMIT` | 160 | 行情资产范围 |
+| `MARKET_SNAPSHOT_LIMIT` | 500 | 行情资产范围 |
 | `MARKET_SNAPSHOT_OI_LIMIT` | 80 | 单轮 OI 轮转数量 |
 | `MARKET_SNAPSHOT_WORKERS` | 8 | 有界并发数 |
 | `MARKET_FLOW_FACT_INTERVAL_SEC` | 900 | 主动资金封闭窗口 |
