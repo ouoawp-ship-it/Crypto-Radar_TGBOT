@@ -262,6 +262,45 @@ class MarketSnapshotStore:
                 row = conn.execute("SELECT MAX(observed_at) AS value FROM market_snapshots").fetchone()
         return int(row["value"] or 0) if row else 0
 
+    def recent_metric_rows(
+        self,
+        metric: str,
+        *,
+        now_ts: int,
+        window_sec: int = 90_000,
+        limit: int = 120_000,
+    ) -> list[dict[str, Any]]:
+        """Read one numeric snapshot metric across symbols for rolling anomaly ranks."""
+        key = str(metric or "").strip()
+        if key not in SNAPSHOT_COLUMNS:
+            raise ValueError("unsupported snapshot metric")
+        safe_limit = max(100, min(200_000, int(limit or 120_000)))
+        start_ts = int(now_ts) - max(3_600, int(window_sec or 90_000))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT symbol, observed_at, {key} AS metric_value
+                FROM market_snapshots
+                WHERE observed_at >= ? AND observed_at <= ? AND {key} IS NOT NULL
+                ORDER BY symbol ASC, observed_at ASC, id ASC
+                LIMIT ?
+                """,
+                (start_ts, int(now_ts), safe_limit),
+            ).fetchall()
+        merged: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in rows:
+            symbol = str(row["symbol"] or "").upper()
+            observed_at = int(row["observed_at"] or 0)
+            value = _number(row["metric_value"])
+            if not symbol.endswith("USDT") or observed_at <= 0 or value is None:
+                continue
+            merged[(symbol, observed_at)] = {
+                "symbol": symbol,
+                "observed_at": observed_at,
+                key: value,
+            }
+        return [merged[index] for index in sorted(merged)]
+
     def readiness_summaries(
         self,
         settings: Settings,

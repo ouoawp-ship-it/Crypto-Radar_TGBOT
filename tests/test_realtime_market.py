@@ -23,11 +23,32 @@ from paopao_radar.realtime_market import (
     select_bybit_realtime_symbols,
     select_okx_realtime_contracts,
     select_realtime_symbols,
+    run_realtime_market_service,
 )
 from paopao_radar.web_services.public import public_radar_boards_payload, public_realtime_market_payload
 
 
 class BinanceMarketEventTests(unittest.TestCase):
+    def test_service_runner_supports_a_bounded_local_verification_window(self) -> None:
+        class WaitingService:
+            service_name = "test_realtime_market"
+
+            @staticmethod
+            def run(stop: object) -> None:
+                stop.wait()
+
+            @staticmethod
+            def stats() -> dict[str, str]:
+                return {"service": "test_realtime_market"}
+
+        with patch(
+            "paopao_radar.realtime_market.build_realtime_market_services",
+            return_value=[WaitingService()],
+        ):
+            result = run_realtime_market_service(SimpleNamespace(), duration_sec=0.01)
+
+        self.assertEqual(result, 0)
+
     def test_default_websocket_url_uses_binance_market_route(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = SimpleNamespace(realtime_features_db_path=Path(tmp) / "realtime.db")

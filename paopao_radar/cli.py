@@ -142,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
+    parser.add_argument("--stream-duration-minutes", type=float, default=0, help="用于 market-stream 本地验收；0 表示常驻运行")
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数")
     parser.add_argument("--launch-interval", type=int, default=180, help="loop/daemon 的启动雷达间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
@@ -1496,7 +1497,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "market-stream":
         from .realtime_market import run_realtime_market_service
 
-        return run_realtime_market_service(settings)
+        return run_realtime_market_service(
+            settings,
+            duration_sec=max(0.0, float(args.stream_duration_minutes or 0)) * 60,
+        )
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

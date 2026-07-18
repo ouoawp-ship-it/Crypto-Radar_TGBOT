@@ -253,6 +253,17 @@ def build_funds_assets(
     missing = [item for item in filtered if item.get(normalized_sort) in (None, "")]
     available.sort(key=lambda item: _sort_value(item, normalized_sort), reverse=normalized_direction == "desc")
     filtered = available + missing
+    oi_values = sorted(
+        (float(item["oi_usd"]) for item in filtered if _number(item.get("oi_usd")) is not None and float(item["oi_usd"]) > 0),
+        reverse=True,
+    )
+    oi_total = sum(oi_values)
+    distribution = {
+        "oi_total_usd": oi_total if oi_values else None,
+        "oi_covered_assets": len(oi_values),
+        "top_10_oi_share_pct": (sum(oi_values[:10]) / oi_total * 100) if oi_total else None,
+        "top_50_oi_share_pct": (sum(oi_values[:50]) / oi_total * 100) if oi_total else None,
+    }
     safe_page_size = max(10, min(100, int(page_size or 50)))
     safe_page = max(1, int(page or 1))
     total = len(filtered)
@@ -271,6 +282,7 @@ def build_funds_assets(
         "warnings": _warnings(overall_status, coverage),
         "filters": {"search": safe_search, "sector": safe_sector, "data_status": safe_status},
         "sort": {"key": normalized_sort, "direction": normalized_direction},
+        "distribution": distribution,
         "pagination": {
             "page": safe_page,
             "page_size": safe_page_size,
@@ -280,6 +292,7 @@ def build_funds_assets(
         "items": items,
         "methodology": {
             "flow": "净流入是封闭 K 线窗口内主动买入额-主动卖出额的 CVD 估算。",
+            "distribution": "OI 集中度在筛选后的完整资产集合上计算，不受当前分页影响。",
             "missing": "无有效扫描、市值或历史快照时返回 null，不以 0 补齐。",
         },
     }

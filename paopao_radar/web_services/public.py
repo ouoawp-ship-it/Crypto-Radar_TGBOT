@@ -30,6 +30,7 @@ from ..market_funds import build_funds_assets, build_funds_sectors, normalize_ma
 from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
 from ..realtime_market import RealtimeFeatureStore, build_realtime_radar_boards
 from ..realtime_intelligence import (
+    build_open_interest_anomaly_events,
     build_realtime_intelligence,
     build_realtime_intelligence_radar_boards,
 )
@@ -822,18 +823,41 @@ def public_realtime_intelligence_payload(
             now_ts=now,
             window_sec=86_400,
         )
-        return build_realtime_intelligence(
+        payload = build_realtime_intelligence(
             rows,
             now_ts=now,
             limit=safe_limit,
             include_backtest=bool(include_backtest),
         )
+        snapshot_path = getattr(loaded, "market_snapshots_db_path", None)
+        if snapshot_path:
+            try:
+                oi_rows = MarketSnapshotStore(snapshot_path).recent_metric_rows(
+                    "oi_usd",
+                    now_ts=now,
+                    window_sec=90_000,
+                )
+                oi_events = build_open_interest_anomaly_events(
+                    oi_rows,
+                    now_ts=now,
+                    limit=max(40, safe_limit * 3),
+                )
+                if oi_events:
+                    payload["anomaly_events"] = sorted(
+                        [*list(payload.get("anomaly_events") or []), *oi_events],
+                        key=lambda item: (str(item.get("observed_at") or ""), str(item.get("id") or "")),
+                        reverse=True,
+                    )[:300]
+                    payload.setdefault("coverage", {})["oi_anomaly_events"] = len(oi_events)
+            except Exception:
+                payload.setdefault("coverage", {})["oi_anomaly_events"] = 0
+        return payload
 
     try:
         if now_ts is None:
             cache_key = (
                 f"public:realtime-intelligence:{loaded.realtime_features_db_path}:"
-                f"{safe_limit}:{int(bool(include_backtest))}"
+                f"{getattr(loaded, 'market_snapshots_db_path', '')}:{safe_limit}:{int(bool(include_backtest))}"
             )
             payload = runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, build)
         else:
