@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from paopao_radar.config import Settings
+from paopao_radar.info_sources import normalize_bluesky_feed, normalize_rss_feed
 from paopao_radar.news_intelligence import NewsEventStore, ingest_binance_announcements, normalize_binance_articles
 from paopao_radar.web_services.public import public_info_feed_payload
 
@@ -61,7 +62,7 @@ class NewsIntelligenceTest(unittest.TestCase):
         self.assertEqual(feed["items"][0]["symbols"], ["ABCUSDT"])
         self.assertEqual(len(feed["items"][0]["source_links"]), 2)
 
-    def test_public_contract_exposes_unavailable_channels_without_fabricating_content(self) -> None:
+    def test_public_contract_exposes_real_channel_status_without_fabricating_content(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))
             NewsEventStore(settings.news_events_db_path).upsert_many(
@@ -76,11 +77,13 @@ class NewsIntelligenceTest(unittest.TestCase):
 
         self.assertTrue(response["ok"])
         data = response["data"]
-        self.assertEqual(data["schema_version"], "2026-07-17")
+        self.assertEqual(data["schema_version"], "2026-07-18")
         self.assertEqual(len(data["items"]), 2)
         channels = {item["key"]: item for item in data["channels"]}
-        self.assertEqual(channels["authorized_zh"]["status"], "unavailable")
-        self.assertEqual(channels["sentiment"]["count"], 0)
+        self.assertEqual(channels["news_zh"]["status"], "empty")
+        self.assertEqual(channels["news_en"]["count"], 0)
+        self.assertEqual(channels["kol"]["count"], 0)
+        self.assertEqual(channels["plaza"]["count"], 0)
         serialized = json.dumps(response, ensure_ascii=False).lower()
         self.assertNotIn("password", serialized)
         self.assertNotIn("bot_token", serialized)
@@ -89,7 +92,7 @@ class NewsIntelligenceTest(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))
             with (
-                patch("paopao_radar.web_services.public.ingest_binance_announcements", side_effect=AssertionError("request path must not ingest")),
+                patch("paopao_radar.web_services.public.ingest_public_info_sources", side_effect=AssertionError("request path must not ingest")),
                 patch("paopao_radar.web_services.public._schedule_news_refresh", return_value=True) as schedule,
             ):
                 response = public_info_feed_payload(settings=settings)
@@ -118,7 +121,7 @@ class NewsIntelligenceTest(unittest.TestCase):
                 finished.set()
                 return {"written": 2}
 
-            with patch.object(public_service, "ingest_binance_announcements", side_effect=ingest):
+            with patch.object(public_service, "ingest_public_info_sources", side_effect=ingest):
                 self.assertTrue(public_service._schedule_news_refresh(settings))
                 self.assertTrue(started.wait(timeout=1))
                 self.assertFalse(public_service._schedule_news_refresh(settings))
@@ -155,6 +158,32 @@ class NewsIntelligenceTest(unittest.TestCase):
         self.assertEqual(result["written"], 2)
         self.assertTrue(successful.closed)
         self.assertTrue(failed.closed)
+
+    def test_public_rss_and_social_normalizers_produce_distinct_channels(self) -> None:
+        rss = """<?xml version="1.0"?><rss><channel><item><guid>zh-1</guid><title>比特币资金流入创出新高</title><description>BTC 市场活跃度上升</description><link>https://www.panewslab.com/zh/articles/1</link><pubDate>Sat, 18 Jul 2026 10:00:00 GMT</pubDate></item></channel></rss>"""
+        news = normalize_rss_feed(
+            rss,
+            source_id="panews_zh",
+            source_name="PANews",
+            language="zh",
+            collected_at=1_721_300_000,
+        )
+        social = normalize_bluesky_feed({"feed": [{"post": {
+            "uri": "at://did:plc:test/app.bsky.feed.post/abc",
+            "author": {"handle": "analyst.bsky.social", "displayName": "Analyst"},
+            "record": {"text": "$ETH breakout looks bullish", "createdAt": "2026-07-18T10:05:00Z"},
+            "likeCount": 120,
+            "repostCount": 10,
+            "replyCount": 5,
+        }}]}, source_type="kol", collected_at=1_721_300_000)
+
+        self.assertEqual(news[0]["source_type"], "news")
+        self.assertEqual(news[0]["language"], "zh")
+        self.assertIn("BTCUSDT", news[0]["symbols"])
+        self.assertEqual(social[0]["source_type"], "kol")
+        self.assertEqual(social[0]["event_kind"], "opportunity")
+        self.assertIn("ETHUSDT", social[0]["symbols"])
+        self.assertEqual(social[0]["ai_analysis"]["engagement"]["score"], 145)
 
     def test_retention_prunes_old_events_and_symbol_index(self) -> None:
         with TemporaryDirectory() as tmp:

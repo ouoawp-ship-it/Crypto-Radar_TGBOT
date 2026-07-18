@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-DATA_SOURCE_REGISTRY_VERSION = "2026-07-17"
+DATA_SOURCE_REGISTRY_VERSION = "2026-07-18"
 
 # Secret-free policy metadata. Provider terms must be reviewed before a source
 # or its usage is expanded; this registry makes that boundary testable.
@@ -57,6 +57,38 @@ DATA_SOURCES: tuple[dict[str, Any], ...] = (
         "metrics": ["title", "published_at", "canonical_url", "linked_symbols"],
         "product_roles": ["news_events", "announcement_signals"], "rights_status": "official_link_only",
         "retention_policy": "metadata_and_short_excerpt_90d", "content_policy": "do_not_republish_full_article",
+        "fallback": "serve_last_successful_index_with_stale_marker",
+    },
+    {
+        "id": "panews_zh_rss", "provider": "PANews", "surface": "Official Chinese RSS feed",
+        "official": True, "transport": "https_rss",
+        "metrics": ["title", "short_excerpt", "published_at", "canonical_url", "linked_symbols"],
+        "product_roles": ["news_events", "info_zh_stream"], "rights_status": "public_rss_link",
+        "retention_policy": "metadata_and_short_excerpt_90d", "content_policy": "do_not_republish_full_article",
+        "fallback": "serve_last_successful_index_with_stale_marker",
+    },
+    {
+        "id": "english_public_rss", "provider": "Decrypt / Kraken", "surface": "Publisher RSS feeds",
+        "official": True, "transport": "https_rss",
+        "metrics": ["title", "short_excerpt", "published_at", "canonical_url", "linked_symbols"],
+        "product_roles": ["news_events", "info_en_stream"], "rights_status": "public_rss_link",
+        "retention_policy": "metadata_and_short_excerpt_90d", "content_policy": "do_not_republish_full_article",
+        "fallback": "exclude_failed_publisher_and_expose_partial_health",
+    },
+    {
+        "id": "bluesky_kol_public", "provider": "Bluesky", "surface": "Official public author-feed API",
+        "official": True, "transport": "https_rest",
+        "metrics": ["post_excerpt", "author", "published_at", "engagement", "linked_symbols"],
+        "product_roles": ["info_kol_stream"], "rights_status": "public_social_link",
+        "retention_policy": "metadata_and_short_excerpt_90d", "content_policy": "public_metadata_with_canonical_link",
+        "fallback": "serve_last_successful_index_with_stale_marker",
+    },
+    {
+        "id": "bluesky_crypto_feed_public", "provider": "Bluesky", "surface": "Official public custom-feed API",
+        "official": True, "transport": "https_rest",
+        "metrics": ["post_excerpt", "author", "published_at", "engagement", "linked_symbols", "rule_sentiment"],
+        "product_roles": ["info_plaza_stream", "social_sentiment_rank"], "rights_status": "public_social_link",
+        "retention_policy": "metadata_and_short_excerpt_90d", "content_policy": "public_metadata_with_canonical_link",
         "fallback": "serve_last_successful_index_with_stale_marker",
     },
     {

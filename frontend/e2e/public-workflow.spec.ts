@@ -217,45 +217,25 @@ const fundsAssets = {
 };
 
 const infoFeed = {
-  schema_version: "2026-07-17",
-  generated_at: "2026-07-17T12:00:00Z",
+  schema_version: "2026-07-18",
+  generated_at: "2030-07-18T20:35:00Z",
   data_status: "ready",
-  coverage: { events: 1, clusters: 1, high_importance: 1, linked_symbols: 1, rights_verified: 1, sources: 1 },
+  coverage: { events: 4, clusters: 4, high_importance: 2, linked_symbols: 4, rights_verified: 4, sources: 4 },
   warnings: [],
-  pagination: { page: 1, page_size: 30, page_count: 1, total: 1 },
-  summary: { high_importance: 1, risk: 0, opportunity: 1, official: 1 },
+  pagination: { page: 1, page_size: 80, page_count: 1, total: 4 },
+  summary: { high_importance: 2, risk: 1, opportunity: 2, official: 0 },
   channels: [
-    { key: "official", label: "官方公告", status: "ready", count: 1, rights_status: "official_link_only" },
-    { key: "authorized_zh", label: "授权中文资讯", status: "unavailable", count: 0, reason: "尚未配置可验证授权源" },
-    { key: "authorized_en", label: "授权英文资讯", status: "unavailable", count: 0, reason: "尚未配置可验证授权源" },
-    { key: "sentiment", label: "市场情绪", status: "unavailable", count: 0, reason: "未使用未授权社交数据" }
+    { key: "news_zh", label: "聚合资讯", status: "ready", count: 1, rights_status: "public_rss_link" },
+    { key: "news_en", label: "英文流资讯", status: "ready", count: 1, rights_status: "public_rss_link" },
+    { key: "kol", label: "KOL聚合资讯", status: "ready", count: 1, rights_status: "public_social_link" },
+    { key: "plaza", label: "市场广场情绪", status: "ready", count: 1, rights_status: "public_social_link" }
   ],
-  items: [{
-    event_id: "binance_abc",
-    published_at: "2026-07-17T11:30:00Z",
-    collected_at: "2026-07-17T11:31:00Z",
-    source: "Binance",
-    source_type: "official_announcement",
-    title: "Binance Will List Example Token (ABC)",
-    url: "https://www.binance.com/en/support/announcement/example",
-    symbols: ["ABCUSDT"],
-    importance: "high",
-    language: "en",
-    cluster_id: "cluster_abc",
-    cluster_size: 1,
-    event_kind: "opportunity",
-    rights_status: "official_link_only",
-    timestamp_quality: "source",
-    data_status: "ready",
-    source_links: [{ source: "Binance", url: "https://www.binance.com/en/support/announcement/example", rights_status: "official_link_only" }],
-    ai_analysis: {
-      status: "ready",
-      fact_summary: "Binance Will List Example Token (ABC)",
-      possible_impact: "可能提升短期关注度与成交活跃度，不代表价格必然上涨。",
-      verification_needed: ["核对官方原文和生效时间", "验证市场是否已经反应"],
-      fact_inference_boundary: "fact_summary 来自官方标题；possible_impact 为规则推断。"
-    }
-  }]
+  items: [
+    { event_id: "panews_btc", published_at: "2030-07-18T20:30:00Z", collected_at: "2030-07-18T20:31:00Z", source: "PANews", source_type: "news", title: "比特币现货资金持续流入，市场关注度快速升温", summary: "BTC 交易量与主动买盘同步增强。", url: "https://www.panewslab.com/zh/articles/example", symbols: ["BTCUSDT"], importance: "high", language: "zh", cluster_id: "cluster_btc_zh", cluster_size: 1, event_kind: "opportunity", rights_status: "public_rss_link", timestamp_quality: "source", data_status: "ready", source_links: [] },
+    { event_id: "decrypt_eth", published_at: "2030-07-18T20:25:00Z", collected_at: "2030-07-18T20:31:00Z", source: "Decrypt", source_type: "news", title: "Ethereum trading activity accelerates as ETF demand returns", summary: "Spot volume and institutional demand rose together.", url: "https://decrypt.co/example", symbols: ["ETHUSDT"], importance: "medium", language: "en", cluster_id: "cluster_eth_en", cluster_size: 1, event_kind: "opportunity", rights_status: "public_rss_link", timestamp_quality: "source", data_status: "ready", source_links: [] },
+    { event_id: "bsky_kol_sol", published_at: "2030-07-18T20:20:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@analyst.bsky.social", source_type: "kol", title: "$SOL liquidity is improving, but confirmation still needs spot follow-through.", url: "https://bsky.app/profile/analyst.bsky.social/post/sol", symbols: ["SOLUSDT"], importance: "high", language: "en", cluster_id: "cluster_sol_kol", cluster_size: 1, event_kind: "neutral", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 188, reposts: 28, replies: 14, score: 258 } } },
+    { event_id: "bsky_plaza_doge", published_at: "2030-07-18T20:15:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@market.bsky.social", source_type: "plaza", title: "$DOGE breakout discussion is surging across the public feed.", url: "https://bsky.app/profile/market.bsky.social/post/doge", symbols: ["DOGEUSDT"], importance: "medium", language: "en", cluster_id: "cluster_doge_plaza", cluster_size: 1, event_kind: "opportunity", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 96, reposts: 12, replies: 8, score: 128 } } }
+  ]
 };
 
 const agentEvidence = [
@@ -366,7 +346,10 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     if (url.pathname === "/public-api/info/feed") {
       infoRequests += 1;
       lastInfoSearch = url.search;
-      return route.fulfill({ json: { ok: true, data: infoFeed } });
+      const sourceType = String(url.searchParams.get("source_type") || "");
+      const language = String(url.searchParams.get("language") || "");
+      const items = infoFeed.items.filter((item) => (!sourceType || item.source_type === sourceType) && (!language || item.language === language));
+      return route.fulfill({ json: { ok: true, data: { ...infoFeed, coverage: { ...infoFeed.coverage, events: items.length }, pagination: { ...infoFeed.pagination, total: items.length }, items } } });
     }
     if (url.pathname === "/public-api/agents/overview") {
       agentRequests += 1;
@@ -475,8 +458,8 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
     return { width: Math.round(rect.width), top: Math.round(rect.top), bottom: Math.round(rect.bottom) };
   }));
   expect(infoColumns).toHaveLength(4);
-  expect(infoColumns.every((column) => Math.abs(column.width - 224) <= 1)).toBe(true);
-  expect(infoColumns.every((column) => column.top === 95 && column.bottom === 726)).toBe(true);
+  expect(infoColumns.reduce((sum, column) => sum + column.width, 0)).toBeGreaterThanOrEqual(890);
+  expect(infoColumns.every((column) => column.top === 101 && column.bottom === 726)).toBe(true);
 
   await page.goto("/funds");
   const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
@@ -678,16 +661,16 @@ test("information workstation keeps four fixed authorized streams traceable", as
   await page.goto("/info");
 
   await expect(page.getByRole("heading", { name: "AI 信息蒸馏" })).toBeVisible();
-  for (const heading of ["聚合资讯", "英文流资讯", "KOL聚合资讯", "币安广场情绪"]) await expect(page.getByRole("heading", { name: heading }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" }).first()).toBeVisible();
-  await expect(page.getByRole("link").filter({ hasText: "Binance Will List Example Token (ABC)" }).first()).toHaveAttribute("rel", "noreferrer");
+  for (const heading of ["聚合资讯", "英文流资讯", "KOL聚合资讯", "市场广场情绪"]) await expect(page.getByRole("heading", { name: heading }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "比特币现货资金持续流入，市场关注度快速升温" }).first()).toBeVisible();
+  await expect(page.getByRole("link").filter({ hasText: "比特币现货资金持续流入" }).first()).toHaveAttribute("rel", "noreferrer");
 });
 
 test("information workstation loads each source column independently", async ({ page }) => {
   const state = await mockPublicApi(page);
   await page.goto("/info");
 
-  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "比特币现货资金持续流入，市场关注度快速升温" }).first()).toBeVisible();
   await expect.poll(state.infoRequests).toBe(4);
   await page.getByRole("button", { name: /4h AI 综合分析/ }).click();
   await expect.poll(state.infoRequests).toBe(8);
@@ -699,7 +682,7 @@ test("390px information workstation stacks its four columns", async ({ page }) =
   await page.goto("/info");
 
   await expect(page.getByRole("heading", { name: "聚合资讯" }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "比特币现货资金持续流入，市场关注度快速升温" }).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 

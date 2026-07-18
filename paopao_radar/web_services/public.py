@@ -29,7 +29,8 @@ from ..market_cockpit import (
     normalize_window,
 )
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
-from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
+from ..info_sources import ingest_public_info_sources
+from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore
 from ..realtime_market import RealtimeFeatureStore, build_realtime_radar_boards
 from ..realtime_intelligence import (
     REALTIME_INTELLIGENCE_SCHEMA_VERSION,
@@ -85,6 +86,7 @@ PUBLIC_INTELLIGENCE_BOARD_LIMIT = 14
 PUBLIC_MARKET_COCKPIT_TTL_SEC = 15
 PUBLIC_FUNDS_TTL_SEC = 30
 PUBLIC_INFO_TTL_SEC = 60
+PUBLIC_INFO_REFRESH_SEC = 180
 PUBLIC_AGENTS_TTL_SEC = 120
 PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 40
 PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
@@ -469,15 +471,15 @@ def _schedule_news_refresh(settings: Settings) -> bool:
     with _NEWS_REFRESH_LOCK:
         if key in _NEWS_REFRESHES or now_mono < _NEWS_REFRESH_NEXT_ALLOWED.get(key, 0):
             return False
-        if latest and now_wall - latest < PUBLIC_INFO_TTL_SEC:
-            _NEWS_REFRESH_NEXT_ALLOWED[key] = now_mono + (PUBLIC_INFO_TTL_SEC - (now_wall - latest))
+        if latest and now_wall - latest < PUBLIC_INFO_REFRESH_SEC:
+            _NEWS_REFRESH_NEXT_ALLOWED[key] = now_mono + (PUBLIC_INFO_REFRESH_SEC - (now_wall - latest))
             return False
         _NEWS_REFRESHES.add(key)
 
     def worker() -> None:
         failure = ""
         try:
-            ingest_binance_announcements(settings, max_pages=1, now_ts=int(time.time()))
+            ingest_public_info_sources(settings, now_ts=int(time.time()))
             invalidate_runtime_cache("public:info")
         except Exception as exc:
             failure = type(exc).__name__
@@ -485,7 +487,7 @@ def _schedule_news_refresh(settings: Settings) -> bool:
         finally:
             with _NEWS_REFRESH_LOCK:
                 _NEWS_REFRESHES.discard(key)
-                _NEWS_REFRESH_NEXT_ALLOWED[key] = time.monotonic() + PUBLIC_INFO_TTL_SEC
+                _NEWS_REFRESH_NEXT_ALLOWED[key] = time.monotonic() + PUBLIC_INFO_REFRESH_SEC
                 if failure:
                     _NEWS_REFRESH_FAILURES[key] = failure
                 else:
@@ -497,7 +499,7 @@ def _schedule_news_refresh(settings: Settings) -> bool:
     except RuntimeError as exc:
         with _NEWS_REFRESH_LOCK:
             _NEWS_REFRESHES.discard(key)
-            _NEWS_REFRESH_NEXT_ALLOWED[key] = time.monotonic() + PUBLIC_INFO_TTL_SEC
+            _NEWS_REFRESH_NEXT_ALLOWED[key] = time.monotonic() + PUBLIC_INFO_REFRESH_SEC
             _NEWS_REFRESH_FAILURES[key] = type(exc).__name__
         return False
     return True
@@ -1226,7 +1228,7 @@ def public_info_feed_payload(
         store = NewsEventStore(loaded.news_events_db_path)
         ingestion: dict[str, Any] = {"status": "cached"}
         latest = store.latest_collected_at()
-        should_refresh = refresh and now_ts is None and (latest <= 0 or now - latest >= PUBLIC_INFO_TTL_SEC)
+        should_refresh = refresh and now_ts is None and (latest <= 0 or now - latest >= PUBLIC_INFO_REFRESH_SEC)
         if should_refresh:
             scheduled = _schedule_news_refresh(loaded)
             with _NEWS_REFRESH_LOCK:
@@ -1235,7 +1237,7 @@ def public_info_feed_payload(
                 ingestion = {"status": "refreshing"}
             elif last_failure:
                 ingestion = {"status": "degraded", "error": last_failure}
-                warnings.append("Binance 官方公告刷新失败，当前展示本地最近一次成功索引。")
+                warnings.append("公开资讯源刷新失败，当前展示本地最近一次成功索引。")
         feed = store.list_feed(
             start_ts=now - safe_window,
             end_ts=now,
@@ -1249,7 +1251,8 @@ def public_info_feed_payload(
         )
         items = feed["items"]
         high = sum(1 for item in items if item.get("importance") == "high")
-        rights_ok = sum(1 for item in items if item.get("rights_status") == "official_link_only")
+        rights_ok = sum(1 for item in items if item.get("rights_status") in {"official_link_only", "public_rss_link", "public_social_link"})
+        channel_counts = store.channel_counts(start_ts=now - safe_window, end_ts=now)
         if not items and ingestion.get("status") == "refreshing":
             warnings.append("Binance 官方公告正在后台更新，稍后刷新即可查看。")
         data_status = "ready" if items and ingestion.get("status") != "degraded" else "degraded" if items or ingestion.get("status") in {"degraded", "refreshing"} else "empty"
@@ -1263,7 +1266,7 @@ def public_info_feed_payload(
                 "high_importance": high,
                 "linked_symbols": len({symbol for item in items for symbol in item.get("symbols") or []}),
                 "rights_verified": rights_ok,
-                "sources": 1 if items else 0,
+                "sources": len({str(item.get("source") or "") for item in items if item.get("source")}),
             },
             "warnings": list(dict.fromkeys(warnings)),
             "filters": {
@@ -1282,18 +1285,18 @@ def public_info_feed_payload(
                 "official": sum(1 for item in items if item.get("source_type") == "official_announcement"),
             },
             "channels": [
-                {"key": "official", "label": "官方公告", "status": "ready" if items else "empty", "count": len(items), "rights_status": "official_link_only"},
-                {"key": "authorized_zh", "label": "授权中文资讯", "status": "unavailable", "count": 0, "reason": "尚未配置可验证授权源"},
-                {"key": "authorized_en", "label": "授权英文资讯", "status": "unavailable", "count": 0, "reason": "尚未配置可验证授权源"},
-                {"key": "sentiment", "label": "市场情绪", "status": "unavailable", "count": 0, "reason": "未使用未授权社交数据"},
+                {"key": "news_zh", "label": "聚合资讯", "status": "ready" if channel_counts.get("news:zh") else "empty", "count": channel_counts.get("news:zh", 0), "rights_status": "public_rss_link"},
+                {"key": "news_en", "label": "英文流资讯", "status": "ready" if channel_counts.get("news:en") else "empty", "count": channel_counts.get("news:en", 0), "rights_status": "public_rss_link"},
+                {"key": "kol", "label": "KOL聚合资讯", "status": "ready" if channel_counts.get("kol") else "empty", "count": channel_counts.get("kol", 0), "rights_status": "public_social_link"},
+                {"key": "plaza", "label": "市场广场情绪", "status": "ready" if channel_counts.get("plaza") else "empty", "count": channel_counts.get("plaza", 0), "rights_status": "public_social_link"},
             ],
             "items": items,
             "ingestion": ingestion,
             "methodology": {
-                "source_policy": "当前仅索引 Binance 官方公开公告标题、时间和原文链接，不复制受限正文。",
+                "source_policy": "索引官方公告、公开 RSS 与 Bluesky 官方公开 API 的必要元数据和短摘要，全部保留原文回链。",
                 "dedup": "按规范化标题聚类；同簇保留全部合法来源链接。",
-                "ai_boundary": "仅高重要度事件生成规则化解读，并明确区分官方标题事实与可能影响推断。",
-                "rights": "official_link_only 表示只展示必要元数据并回链官方原文。",
+                "ai_boundary": "重要度、币种关联与情绪标签由规则生成；来源原文与系统推断保持可区分。",
+                "rights": "official_link_only、public_rss_link 与 public_social_link 均只展示必要元数据并回链原文。",
             },
         }
 
