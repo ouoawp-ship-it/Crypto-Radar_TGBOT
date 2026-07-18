@@ -88,8 +88,8 @@ const radarBoards = {
   boards: [
     {
       key: "price", title: "价格动量", available: true, coverage: 80,
-      positive: { title: "涨幅榜", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 3.2, unit: "percent", strength_percentile: 96 }] },
-      negative: { title: "跌幅榜", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -2.1, unit: "percent", strength_percentile: 88 }] }
+      positive: { title: "涨幅榜", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 3.2, unit: "percent", magnitude_usd: 0, strength_percentile: 96 }] },
+      negative: { title: "跌幅榜", items: [{ symbol: "ETHUSDT", coin: "ETH", value: -2.1, unit: "percent", magnitude_usd: 0, strength_percentile: 88 }] }
     },
     {
       key: "oi", title: "持仓变化", available: true, coverage: 24,
@@ -464,6 +464,9 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
   expect(momentumBoards[0].x).toBeCloseTo(219.5, 1);
   expect(momentumBoards[0].y).toBeCloseTo(98, 0);
   expect(momentumBoards[0].width).toBeCloseTo(240, 0);
+  await expect(page.getByText("+3.20%", { exact: true }).first()).toBeVisible();
+  const strengthColumns = await page.getByTestId("radar-strength-grid").first().evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
+  expect(strengthColumns).toBe(2);
 
   await page.goto("/info");
   const infoColumns = await page.locator('[data-testid="info-four-columns"] > section').evaluateAll((elements) => elements.map((element) => {
