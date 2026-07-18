@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "visual:mercu": "python ../scripts/mercu_visual_diff.py"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.8",
