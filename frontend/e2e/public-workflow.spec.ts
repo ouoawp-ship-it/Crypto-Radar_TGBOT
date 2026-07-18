@@ -326,6 +326,16 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     if (url.pathname === "/public-api/signals/stats") return route.fulfill({ json: { ok: true, data: { total: 1, sent: 1, blocked: 0, failed: 0, skipped: 0 } } });
     if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: marketOverview } });
     if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: radarBoards } });
+    if (url.pathname === "/public-api/workstation/radar/momentum-windows") {
+      return route.fulfill({
+        json: {
+          ok: true,
+          data: {
+            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...radarBoards, window }]))
+          }
+        }
+      });
+    }
     if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: radarBoards } });
     if (url.pathname === "/public-api/radar/realtime-intelligence") return route.fulfill({ json: { ok: true, data: realtimeIntelligence } });
     if (url.pathname === "/public-api/workstation/funds/open-interest") return route.fulfill({ json: { ok: true, data: { ...crossExchangeOi, symbol: url.searchParams.get("symbol") || "BTCUSDT" } } });

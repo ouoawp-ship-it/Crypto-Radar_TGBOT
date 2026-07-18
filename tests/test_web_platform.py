@@ -222,6 +222,7 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertIn("/public-api/radar/intelligence", source)
         self.assertIn("/public-api/radar/realtime-intelligence", source)
         self.assertIn("/public-api/workstation/radar/momentum", source)
+        self.assertIn("/public-api/workstation/radar/momentum-windows", source)
         self.assertIn("/public-api/workstation/funds/open-interest", source)
         self.assertIn("/public-api/coin/context", source)
         self.assertIn("/public-api/market/watchlist", source)

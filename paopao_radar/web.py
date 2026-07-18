@@ -76,6 +76,7 @@ from .web_services.public import (
     public_radar_boards_payload,
     public_radar_intelligence_payload,
     public_workstation_radar_momentum_payload,
+    public_workstation_radar_momentum_windows_payload,
     public_watchlist_market_payload,
     public_signal_context_payload,
     public_signal_detail_payload,
@@ -4320,6 +4321,11 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/public-api/workstation/radar/momentum":
             self.send_json(public_workstation_radar_momentum_payload(
                 window=query.get("window", ["1h"])[0],
+                board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/momentum-windows":
+            self.send_json(public_workstation_radar_momentum_windows_payload(
                 board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
             ))
             return

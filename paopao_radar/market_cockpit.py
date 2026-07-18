@@ -262,16 +262,17 @@ class MarketSnapshotStore:
                 row = conn.execute("SELECT MAX(observed_at) AS value FROM market_snapshots").fetchone()
         return int(row["value"] or 0) if row else 0
 
-    def readiness_summary(
+    def readiness_summaries(
         self,
         settings: Settings,
         *,
         now_ts: int | None = None,
-        requested_window_sec: int = 3600,
-    ) -> dict[str, Any]:
-        """Return honest warm-up, coverage and freshness/SLA state."""
+        requested_window_secs: tuple[int, ...] | list[int] = (3600,),
+    ) -> dict[int, dict[str, Any]]:
+        """Return window-specific readiness from one database snapshot."""
 
         now = int(now_ts or time.time())
+        windows = tuple(dict.fromkeys(normalize_window(value) for value in requested_window_secs)) or (3600,)
         snapshot_interval = max(60, int(settings.market_snapshot_interval_sec))
         flow_interval = max(300, int(getattr(settings, "market_flow_fact_interval_sec", 900) or 900))
         target_sec = max(86400, int(getattr(settings, "market_readiness_target_days", 30) or 30) * 86400)
@@ -317,60 +318,78 @@ class MarketSnapshotStore:
         def ratio(value: int, denominator: int) -> float:
             return round(value / denominator, 4) if denominator else 0.0
 
-        if total <= 0:
-            status = "empty"
-        elif age is None or age > freshness_budget:
-            status = "stale"
-        elif assets <= 0 or ratio(price, assets) < 0.8:
-            status = "partial"
-        elif span < max(300, int(requested_window_sec)):
-            status = "warming_up"
-        elif ratio(oi, oi_target) < 0.5 or min(ratio(spot_flow, flow_target), ratio(futures_flow, flow_target)) < 0.5:
-            status = "partial"
-        else:
-            status = "ready"
         remaining = max(0, target_sec - span)
-        return {
-            "status": status,
-            "rows": total,
-            "symbols_seen": int(bounds["symbols"] or 0) if bounds else 0,
-            "oldest_at": _iso(oldest),
-            "latest_at": _iso(latest),
-            "history_span_sec": span,
-            "history_target_sec": target_sec,
-            "requested_window_sec": int(requested_window_sec),
-            "warmup_progress_pct": round(min(100.0, span / target_sec * 100), 2),
-            "warmup_remaining_sec": remaining,
-            "estimated_full_history_at": _iso(now + remaining) if remaining else _iso(now),
-            "freshness": {
-                "status": "fresh" if age is not None and age <= freshness_budget else "stale" if age is not None else "empty",
-                "age_sec": age,
-                "budget_sec": freshness_budget,
-            },
-            "coverage": {
-                "assets": assets,
-                "price": price, "price_ratio": ratio(price, assets),
-                "funding": funding, "funding_ratio": ratio(funding, assets),
-                "oi": oi, "oi_target": oi_target, "oi_ratio": ratio(oi, oi_target),
-                "spot_flow": spot_flow, "futures_flow": futures_flow, "flow_target": flow_target,
-                "spot_flow_ratio": ratio(spot_flow, flow_target),
-                "futures_flow_ratio": ratio(futures_flow, flow_target),
-            },
-            "source_status": [
-                {"source": str(row["source"]), "rows": int(row["count"] or 0), "latest_at": _iso(int(row["latest"] or 0))}
-                for row in source_rows
-            ],
-        }
+        summaries: dict[int, dict[str, Any]] = {}
+        for requested_window_sec in windows:
+            if total <= 0:
+                status = "empty"
+            elif age is None or age > freshness_budget:
+                status = "stale"
+            elif assets <= 0 or ratio(price, assets) < 0.8:
+                status = "partial"
+            elif span < max(300, int(requested_window_sec)):
+                status = "warming_up"
+            elif ratio(oi, oi_target) < 0.5 or min(ratio(spot_flow, flow_target), ratio(futures_flow, flow_target)) < 0.5:
+                status = "partial"
+            else:
+                status = "ready"
+            summaries[requested_window_sec] = {
+                "status": status,
+                "rows": total,
+                "symbols_seen": int(bounds["symbols"] or 0) if bounds else 0,
+                "oldest_at": _iso(oldest),
+                "latest_at": _iso(latest),
+                "history_span_sec": span,
+                "history_target_sec": target_sec,
+                "requested_window_sec": int(requested_window_sec),
+                "warmup_progress_pct": round(min(100.0, span / target_sec * 100), 2),
+                "warmup_remaining_sec": remaining,
+                "estimated_full_history_at": _iso(now + remaining) if remaining else _iso(now),
+                "freshness": {
+                    "status": "fresh" if age is not None and age <= freshness_budget else "stale" if age is not None else "empty",
+                    "age_sec": age,
+                    "budget_sec": freshness_budget,
+                },
+                "coverage": {
+                    "assets": assets,
+                    "price": price, "price_ratio": ratio(price, assets),
+                    "funding": funding, "funding_ratio": ratio(funding, assets),
+                    "oi": oi, "oi_target": oi_target, "oi_ratio": ratio(oi, oi_target),
+                    "spot_flow": spot_flow, "futures_flow": futures_flow, "flow_target": flow_target,
+                    "spot_flow_ratio": ratio(spot_flow, flow_target),
+                    "futures_flow_ratio": ratio(futures_flow, flow_target),
+                },
+                "source_status": [
+                    {"source": str(row["source"]), "rows": int(row["count"] or 0), "latest_at": _iso(int(row["latest"] or 0))}
+                    for row in source_rows
+                ],
+            }
+        return summaries
 
-    def comparison(
+    def readiness_summary(
+        self,
+        settings: Settings,
+        *,
+        now_ts: int | None = None,
+        requested_window_sec: int = 3600,
+    ) -> dict[str, Any]:
+        safe_window = normalize_window(requested_window_sec)
+        return self.readiness_summaries(
+            settings,
+            now_ts=now_ts,
+            requested_window_secs=(safe_window,),
+        )[safe_window]
+
+    def comparisons(
         self,
         *,
         now_ts: int,
-        window_sec: int,
+        window_secs: tuple[int, ...] | list[int],
         max_symbols: int = 240,
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        safe_window = normalize_window(window_sec)
-        start_ts = int(now_ts) - max(2 * safe_window, 2 * 86400)
+    ) -> dict[int, tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]]:
+        """Build several closed-window comparisons from one history read."""
+        windows = tuple(dict.fromkeys(normalize_window(value) for value in window_secs)) or (3600,)
+        start_ts = int(now_ts) - max(2 * max(windows), 2 * 86400)
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -385,22 +404,46 @@ class MarketSnapshotStore:
         for row in rows:
             grouped[str(row["symbol"])].append(self._row(row))
 
-        latest_rows: list[dict[str, Any]] = []
-        baselines: dict[str, dict[str, Any]] = {}
-        for symbol, history in grouped.items():
-            latest = self._merge_latest(history, now_ts=int(now_ts), max_age_sec=max(2 * safe_window, 7200))
-            if not latest:
-                continue
-            target = int(latest["observed_at"]) - safe_window
-            candidates = [row for row in history if int(row.get("observed_at") or 0) <= target and _positive(row.get("price"))]
-            if candidates:
-                baselines[symbol] = candidates[-1]
-            latest_rows.append(latest)
+        results: dict[int, tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]] = {}
+        for safe_window in windows:
+            latest_rows: list[dict[str, Any]] = []
+            baselines: dict[str, dict[str, Any]] = {}
+            for symbol, history in grouped.items():
+                latest = self._merge_latest(history, now_ts=int(now_ts), max_age_sec=max(2 * safe_window, 7200))
+                if not latest:
+                    continue
+                target = int(latest["observed_at"]) - safe_window
+                candidates = [
+                    row
+                    for row in history
+                    if int(row.get("observed_at") or 0) <= target and _positive(row.get("price"))
+                ]
+                if candidates:
+                    baselines[symbol] = candidates[-1]
+                latest_rows.append(latest)
 
-        latest_rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
-        selected = latest_rows[: max(1, min(500, int(max_symbols or 240)))]
-        allowed = {str(row.get("symbol") or "") for row in selected}
-        return selected, {key: value for key, value in baselines.items() if key in allowed}
+            latest_rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
+            selected = latest_rows[: max(1, min(500, int(max_symbols or 240)))]
+            allowed = {str(row.get("symbol") or "") for row in selected}
+            results[safe_window] = (
+                selected,
+                {key: value for key, value in baselines.items() if key in allowed},
+            )
+        return results
+
+    def comparison(
+        self,
+        *,
+        now_ts: int,
+        window_sec: int,
+        max_symbols: int = 240,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        safe_window = normalize_window(window_sec)
+        return self.comparisons(
+            now_ts=now_ts,
+            window_secs=(safe_window,),
+            max_symbols=max_symbols,
+        )[safe_window]
 
     def symbol_series(
         self,
@@ -1012,6 +1055,56 @@ def build_market_cockpit(
     }
 
 
+def load_market_cockpit_windows(
+    settings: Settings,
+    *,
+    window_secs: tuple[int, ...] | list[int] = (3600,),
+    board_limit: int = 8,
+    now_ts: int | None = None,
+    store: MarketSnapshotStore | None = None,
+    live_rows: list[dict[str, Any]] | None = None,
+) -> dict[int, dict[str, Any]]:
+    now = int(now_ts or time.time())
+    windows = tuple(dict.fromkeys(normalize_window(value) for value in window_secs)) or (3600,)
+    target = store or MarketSnapshotStore(settings.market_snapshots_db_path)
+    comparisons = target.comparisons(
+        now_ts=now,
+        window_secs=windows,
+        max_symbols=max(20, int(settings.market_snapshot_limit)),
+    )
+    readiness_by_window = target.readiness_summaries(
+        settings,
+        now_ts=now,
+        requested_window_secs=windows,
+    )
+    fallback_rows: list[dict[str, Any]] | None = None
+    payloads: dict[int, dict[str, Any]] = {}
+    for window_sec in windows:
+        latest, baselines = comparisons[window_sec]
+        if not latest:
+            if fallback_rows is None:
+                fallback_rows = live_rows if live_rows is not None else collect_binance_market_rows(settings, now_ts=now)
+            latest = fallback_rows
+        payload = build_market_cockpit(
+            latest,
+            baselines,
+            now_ts=now,
+            window_sec=window_sec,
+            board_limit=board_limit,
+        )
+        readiness = readiness_by_window[window_sec]
+        payload["readiness"] = readiness
+        readiness_status = str(readiness.get("status") or "empty")
+        if readiness_status == "empty" and payload.get("assets"):
+            readiness_status = "warming_up"
+        if readiness_status in {"warming_up", "partial", "stale"}:
+            payload["data_status"] = readiness_status
+        elif readiness_status == "empty" and not payload.get("assets"):
+            payload["data_status"] = "empty"
+        payloads[window_sec] = payload
+    return payloads
+
+
 def load_market_cockpit(
     settings: Settings,
     *,
@@ -1021,32 +1114,15 @@ def load_market_cockpit(
     store: MarketSnapshotStore | None = None,
     live_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    now = int(now_ts or time.time())
-    target = store or MarketSnapshotStore(settings.market_snapshots_db_path)
-    latest, baselines = target.comparison(
-        now_ts=now,
-        window_sec=window_sec,
-        max_symbols=max(20, int(settings.market_snapshot_limit)),
-    )
-    readiness = target.readiness_summary(settings, now_ts=now, requested_window_sec=normalize_window(window_sec))
-    if not latest:
-        latest = live_rows if live_rows is not None else collect_binance_market_rows(settings, now_ts=now)
-    payload = build_market_cockpit(
-        latest,
-        baselines,
-        now_ts=now,
-        window_sec=window_sec,
+    safe_window = normalize_window(window_sec)
+    return load_market_cockpit_windows(
+        settings,
+        window_secs=(safe_window,),
         board_limit=board_limit,
-    )
-    payload["readiness"] = readiness
-    readiness_status = str(readiness.get("status") or "empty")
-    if readiness_status == "empty" and payload.get("assets"):
-        readiness_status = "warming_up"
-    if readiness_status in {"warming_up", "partial", "stale"}:
-        payload["data_status"] = readiness_status
-    elif readiness_status == "empty" and not payload.get("assets"):
-        payload["data_status"] = "empty"
-    return payload
+        now_ts=now_ts,
+        store=store,
+        live_rows=live_rows,
+    )[safe_window]
 
 
 __all__ = [
@@ -1057,6 +1133,7 @@ __all__ = [
     "collect_binance_market_rows",
     "collect_market_flow_facts",
     "load_market_cockpit",
+    "load_market_cockpit_windows",
     "normalize_window",
     "persist_flow_market_rows",
     "persist_market_flow_facts",
