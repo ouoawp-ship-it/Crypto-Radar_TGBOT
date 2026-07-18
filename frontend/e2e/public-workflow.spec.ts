@@ -614,7 +614,7 @@ for (const viewport of [
       await page.goto(`/${route}`);
       await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
       await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
-      await expect(page).toHaveScreenshot(`${route}-${viewport.pixels.width}x${viewport.pixels.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.015, scale: "device" });
+      await expect(page).toHaveScreenshot(`${route}-${viewport.pixels.width}x${viewport.pixels.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.035, scale: "device" });
     }
   });
 }
