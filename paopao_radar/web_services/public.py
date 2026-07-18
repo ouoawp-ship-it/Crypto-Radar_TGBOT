@@ -816,18 +816,108 @@ def public_realtime_market_payload(
     }, message="已读取实时市场特征")
 
 
+def _compact_realtime_fields(source: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    return {field: source[field] for field in fields if field in source}
+
+
+def _compact_realtime_rankings(source: Any) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    rank_fields = ("available", "value", "rank", "sample_size", "percentile", "reason", "method")
+    return {
+        key: _compact_realtime_fields(source.get(key), rank_fields)
+        for key in ("self", "market_strength", "market_absolute")
+        if isinstance(source.get(key), dict)
+    }
+
+
+def _compact_realtime_item(source: Any) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    item = _compact_realtime_fields(
+        source,
+        ("symbol", "coin", "observed_at", "data_status"),
+    )
+    windows = source.get("windows") if isinstance(source.get("windows"), dict) else {}
+    five_minute = windows.get("5m") if isinstance(windows.get("5m"), dict) else None
+    if five_minute is not None:
+        item["windows"] = {
+            "5m": _compact_realtime_fields(
+                five_minute,
+                (
+                    "available", "coverage_ratio", "gross_trade_usd", "cvd_usd",
+                    "cvd_ratio_pct", "price_change_pct", "long_liquidation_usd",
+                    "short_liquidation_usd",
+                ),
+            )
+        }
+    for key in ("surge", "ambush"):
+        analysis = _compact_realtime_fields(
+            source.get(key),
+            (
+                "available", "triggered", "direction", "score", "flow_acceleration_pp",
+                "volume_acceleration_pct", "price_change_pct", "liquidation_bias_pct",
+                "price_compression_pct", "cvd_ratio_5m_pct", "cvd_ratio_15m_pct",
+            ),
+        )
+        if analysis:
+            item[key] = analysis
+    anomaly = _compact_realtime_fields(
+        source.get("anomaly_24h"),
+        ("count", "long_count", "short_count", "latest_at", "window_sec"),
+    )
+    if anomaly:
+        item["anomaly_24h"] = anomaly
+    resonance = _compact_realtime_fields(
+        source.get("resonance"),
+        ("available", "direction", "active_count", "window_count", "windows"),
+    )
+    if resonance:
+        item["resonance"] = resonance
+    rankings = _compact_realtime_rankings(source.get("rankings"))
+    if rankings:
+        item["rankings"] = rankings
+    return item
+
+
+def _compact_realtime_event(source: Any) -> dict[str, Any]:
+    event = _compact_realtime_fields(
+        source,
+        (
+            "id", "symbol", "coin", "observed_at", "window", "window_sec",
+            "event_type", "label", "metric", "direction", "value", "value_usd",
+            "change_pct",
+        ),
+    )
+    rankings = _compact_realtime_rankings(source.get("rankings") if isinstance(source, dict) else None)
+    if rankings:
+        event["rankings"] = rankings
+    return event
+
+
 def _project_realtime_intelligence_payload(payload: dict[str, Any], *, limit: int) -> dict[str, Any]:
     """Bound the public payload without changing full-universe coverage metadata."""
 
     safe_limit = max(1, min(30, int(limit or 10)))
     projected = dict(payload)
-    projected["items"] = list(payload.get("items") or [])[:safe_limit]
-    projected["anomaly_events"] = list(payload.get("anomaly_events") or [])[:safe_limit]
+    projected["items"] = [
+        _compact_realtime_item(item)
+        for item in list(payload.get("items") or [])[:safe_limit]
+    ]
+    projected["anomaly_events"] = [
+        _compact_realtime_event(event)
+        for event in list(payload.get("anomaly_events") or [])[:safe_limit]
+    ]
     board_limit = min(PUBLIC_INTELLIGENCE_BOARD_LIMIT, safe_limit)
     projected["boards"] = [
         {
             **board,
-            "items": list(board.get("items") or [])[:board_limit],
+            "items": [
+                _compact_realtime_item(item)
+                for item in list(board.get("items") or [])[:board_limit]
+            ],
         }
         for board in list(payload.get("boards") or [])
         if isinstance(board, dict)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import unittest
 from pathlib import Path
@@ -235,7 +236,7 @@ class RealtimeIntelligenceTests(unittest.TestCase):
             path = Path(tmp) / "realtime.db"
             RealtimeFeatureStore(path).replace_many(rows)
             payload = public_realtime_intelligence_payload(
-                limit=7,
+                limit=30,
                 settings=SimpleNamespace(realtime_features_db_path=path),
                 now_ts=1_200,
             )
@@ -243,9 +244,13 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         data = payload["data"]
         self.assertEqual(data["coverage"]["symbols"], 45)
-        self.assertEqual(len(data["items"]), 7)
-        self.assertLessEqual(len(data["anomaly_events"]), 7)
-        self.assertTrue(all(len(board["items"]) <= 7 for board in data["boards"]))
+        self.assertEqual(len(data["items"]), 30)
+        self.assertLessEqual(len(data["anomaly_events"]), 30)
+        self.assertTrue(all(len(board["items"]) <= 14 for board in data["boards"]))
+        self.assertTrue(all(set(item.get("windows") or {}) <= {"5m"} for item in data["items"]))
+        self.assertTrue(all("lifecycle" not in item for item in data["items"]))
+        self.assertTrue(all("current" not in (item.get("surge") or {}) for item in data["items"]))
+        self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 200_000)
 
     def test_public_snapshot_survives_memory_cache_reset_and_is_reprojected(self) -> None:
         base_minute = int(time.time()) // 60 - 20
