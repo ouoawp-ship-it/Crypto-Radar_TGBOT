@@ -529,6 +529,18 @@ test("coin context and browser-local watchlist form a reusable loop", async ({ p
   expect(await page.evaluate(() => localStorage.getItem("paoxx.public.watchlist.v1"))).toContain("BTCUSDT");
 });
 
+test("radar signal deep link opens and closes the exact context drawer", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/radar?signal=sig_e2e_btc");
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("BTCUSDT", { exact: true })).toBeVisible();
+  await dialog.locator("button").first().click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).searchParams.has("signal")).toBe(false);
+});
+
 test("funds workstation links overview, time series and cross-exchange OI", async ({ page }) => {
   await mockPublicApi(page);
   await page.goto("/funds");

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SignalDetailDrawer } from "@/components/SignalDetailDrawer";
 import { getFundsAssets, getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentumWindows } from "@/lib/api";
 import type {
   CockpitBoard,
@@ -165,6 +166,7 @@ export default function RadarPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState("");
+  const [selectedSignal, setSelectedSignal] = useState("");
 
   const load = useCallback(async (bypassCache = false) => {
     setLoading(true);
@@ -191,6 +193,12 @@ export default function RadarPage() {
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
+    const syncFromLocation = () => setSelectedSignal(new URLSearchParams(window.location.search).get("signal") || "");
+    syncFromLocation();
+    window.addEventListener("popstate", syncFromLocation);
+    return () => window.removeEventListener("popstate", syncFromLocation);
+  }, []);
+  useEffect(() => {
     if (paused) return;
     const timer = window.setInterval(() => void load(true), 15_000);
     return () => window.clearInterval(timer);
@@ -204,8 +212,18 @@ export default function RadarPage() {
   const whales = useMemo(() => [...items].sort((a, b) => Number(b.windows?.["5m"]?.long_liquidation_usd || 0) + Number(b.windows?.["5m"]?.short_liquidation_usd || 0) - Number(a.windows?.["5m"]?.long_liquidation_usd || 0) - Number(a.windows?.["5m"]?.short_liquidation_usd || 0)).slice(0, 8), [items]);
   const market = overview.overview || {};
 
+  const selectSignal = useCallback((signalId: number | string) => {
+    const value = String(signalId || "");
+    const url = new URL(window.location.href);
+    if (value) url.searchParams.set("signal", value);
+    else url.searchParams.delete("signal");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedSignal(value);
+  }, []);
+
   return (
-    <div aria-busy={loading} className="workstation-page grid gap-[10px] p-[10px] min-[1160px]:grid-cols-[268px_minmax(0,1fr)_268px]" data-testid="radar-workstation">
+    <>
+      <div aria-busy={loading} className="workstation-page grid gap-[10px] p-[10px] min-[1160px]:grid-cols-[268px_minmax(0,1fr)_268px]" data-testid="radar-workstation">
       <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
         <PanelHeader action={<span className={`h-1.5 w-1.5 rounded-full ${error ? "bg-risk" : loading ? "animate-pulse bg-warn" : "bg-good"}`} />} detail={`${items.length} 币种 · ${paused ? "已暂停" : "15s 刷新"}`} title="异动流" />
         <div className="grid grid-cols-[1fr_auto] gap-1 border-b border-border-subtle p-2">
@@ -256,6 +274,8 @@ export default function RadarPage() {
           <FundingMonitor items={funding} />
         </section>
       </aside>
-    </div>
+      </div>
+      {selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal} /> : null}
+    </>
   );
 }
