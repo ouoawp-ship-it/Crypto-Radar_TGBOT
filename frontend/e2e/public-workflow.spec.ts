@@ -320,6 +320,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
   let signalsFail = false;
   let agentsFail = false;
   let agentRequests = 0;
+  await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort("failed"));
   await page.route("**/public-api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/public-api/health") return route.fulfill({ json: { ok: true, data: { status: options.healthStatus || "ok" } } });
