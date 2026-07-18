@@ -129,7 +129,28 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertTrue(boards["oi"]["available"])
         self.assertTrue(boards["futures_flow"]["available"])
         self.assertTrue(boards["spot_flow"]["available"])
+        self.assertEqual(boards["oi"]["amount_positive"]["items"][0]["magnitude_usd"], 100_000)
+        self.assertEqual(boards["oi"]["amount_negative"]["items"][0]["magnitude_usd"], 200_000)
+        self.assertEqual(payload["overview"]["oi_net_change_usd"], -100_000)
+        self.assertIsNone(boards["price"]["positive"]["items"][0]["magnitude_usd"])
         self.assertIn("CVD", payload["methodology"]["flow"])
+
+    def test_oi_amount_and_strength_rankings_use_distinct_metrics(self) -> None:
+        baselines = {
+            "BTCUSDT": {"symbol": "BTCUSDT", "price": 100, "oi_usd": 100_000_000},
+            "ETHUSDT": {"symbol": "ETHUSDT", "price": 100, "oi_usd": 1_000_000},
+        }
+        latest = [
+            {"symbol": "BTCUSDT", "price": 101, "oi_usd": 101_000_000, "observed_at": 4_600},
+            {"symbol": "ETHUSDT", "price": 101, "oi_usd": 1_200_000, "observed_at": 4_600},
+        ]
+
+        payload = build_market_cockpit(latest, baselines, now_ts=4_600, window_sec=3_600)
+        oi_board = {board["key"]: board for board in payload["boards"]}["oi"]
+
+        self.assertEqual(oi_board["amount_positive"]["items"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(oi_board["strength_positive"]["items"][0]["symbol"], "ETHUSDT")
+        self.assertEqual(oi_board["amount_unit"], "usd")
 
     def test_missing_history_is_explicitly_degraded_and_uses_ticker_fallback(self) -> None:
         latest = [{

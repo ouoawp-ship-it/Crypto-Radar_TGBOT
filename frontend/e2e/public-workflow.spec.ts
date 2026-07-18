@@ -72,7 +72,8 @@ const marketOverview = {
     breadth_pct: 20,
     total_quote_volume: 8_000_000_000,
     spot_net_flow_usd: 12_000_000,
-    futures_net_flow_usd: 18_000_000
+    futures_net_flow_usd: 18_000_000,
+    oi_net_change_usd: 800_000
   }
 };
 
@@ -92,8 +93,23 @@ const radarBoards = {
     },
     {
       key: "oi", title: "持仓变化", available: true, coverage: 24,
+      amount_metric: "oi_change_usd", amount_unit: "usd",
       positive: { title: "OI 增长", items: [{ symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", strength_percentile: 94 }] },
-      negative: { title: "OI 下降", items: [{ symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", strength_percentile: 90 }] }
+      negative: { title: "OI 下降", items: [{ symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", strength_percentile: 90 }] },
+      amount_positive: { title: "OI 增长", items: [
+        { symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", magnitude_usd: 1_000_000, strength_percentile: 94 },
+        { symbol: "ETHUSDT", coin: "ETH", value: 20, unit: "percent", magnitude_usd: 200_000, strength_percentile: 99 }
+      ] },
+      amount_negative: { title: "OI 下降", items: [
+        { symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", magnitude_usd: 350_000, strength_percentile: 90 }
+      ] },
+      strength_positive: { title: "OI 增长", items: [
+        { symbol: "ETHUSDT", coin: "ETH", value: 20, unit: "percent", magnitude_usd: 200_000, strength_percentile: 99 },
+        { symbol: "BTCUSDT", coin: "BTC", value: 4.5, unit: "percent", magnitude_usd: 1_000_000, strength_percentile: 94 }
+      ] },
+      strength_negative: { title: "OI 下降", items: [
+        { symbol: "SOLUSDT", coin: "SOL", value: -3.1, unit: "percent", magnitude_usd: 350_000, strength_percentile: 90 }
+      ] }
     },
     {
       key: "futures_flow", title: "合约主动资金", available: true, coverage: 12,
@@ -335,7 +351,18 @@ test("desktop radar supports opportunity-to-evidence workflow", async ({ page })
   await expect(page.getByRole("heading", { name: "热钱观察榜单" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "全场态势" })).toBeVisible();
   await expect(page.getByText("资金偏流入")).toBeVisible();
-  await expect(page.getByText("涨幅榜")).toBeVisible();
+  await expect(page.getByLabel("涨幅榜量级榜")).toBeVisible();
+  await expect(page.getByLabel("涨幅榜强度榜")).toBeVisible();
+  await expect(page.getByLabel("主力合约流入榜量级榜")).toBeVisible();
+  const oiAmount = page.getByLabel("持仓榜量级榜").first();
+  const oiStrength = page.getByLabel("持仓榜强度榜").first();
+  await expect(oiAmount.getByRole("button").first()).toContainText("BTC");
+  await expect(oiAmount.getByRole("button").first()).toContainText("+$1.0M");
+  await expect(page.getByLabel("持仓榜量级榜").last().getByRole("button").first()).toContainText("−$350.0K");
+  await expect(oiStrength.getByRole("button").first()).toContainText("ETH");
+  await expect(page.getByText("+$800.0K", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "资金合流" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "资金力度" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Surge 加速" })).toBeVisible();
   await expect(page.getByText("+82.0", { exact: true })).toBeVisible();
   await expect(page.getByText("启动候选", { exact: true })).toBeVisible();
@@ -344,6 +371,20 @@ test("desktop radar supports opportunity-to-evidence workflow", async ({ page })
   await expect(page.getByRole("dialog", { name: "信号上下文详情" })).toBeVisible();
   await expect(page.getByText("相对排名与生命周期")).toBeVisible();
   await expect(page.getByText("状态依据：规则分数较上次提高 8.0")).toBeVisible();
+});
+
+test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockPublicApi(page);
+  await page.goto("/radar");
+
+  const eventBox = await page.getByTestId("radar-event-feed").boundingBox();
+  const matrixBox = await page.getByTestId("radar-hot-money").boundingBox();
+  const sideBox = await page.getByTestId("radar-side-intelligence").boundingBox();
+  expect(eventBox).toMatchObject({ x: 10, y: 66, width: 268, height: 824 });
+  expect(matrixBox).toMatchObject({ x: 288, y: 66, width: 864, height: 824 });
+  expect(sideBox).toMatchObject({ x: 1162, y: 66, width: 268, height: 824 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
 });
 
 test("home dashboard refreshes its own signal data", async ({ page }) => {
@@ -406,6 +447,7 @@ test("public cockpit uses the fixed Mercu-style dark visual system", async ({ pa
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(7, 9, 13)");
+  await page.locator("summary").filter({ hasText: "高级筛选" }).click();
   await expect(page.getByRole("button", { name: "应用" })).toHaveCSS("color", "rgb(7, 9, 13)");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -591,7 +633,7 @@ test("radar SSE surfaces a new event, reconnects and can be paused", async ({ pa
   const incoming = page.getByRole("button", { name: "新增 1 条异动，点击更新" });
   await expect(incoming).toBeVisible({ timeout: 12_000 });
   await incoming.click();
-  await expect(page.getByText("ETHUSDT", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /ETHUSDT 查看证据与上下文/ })).toBeVisible();
   await page.evaluate(() => (window as unknown as { __dropSse: () => void }).__dropSse());
   await expect(page.getByText("RECONNECTING", { exact: true })).toBeVisible();
   await page.evaluate(() => (window as unknown as { __restoreSse: () => void }).__restoreSse());

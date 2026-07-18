@@ -72,7 +72,7 @@ export function Header() {
   return (
     <>
       <header className="sticky top-0 z-30 border-b border-border-subtle bg-surface-canvas/95 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-5 px-3 sm:px-5 lg:px-6">
+        <div className="mx-auto flex h-[55px] max-w-[1280px] items-center gap-5 px-3 sm:px-5 lg:px-6">
           <Link aria-label="Paoxx 市场总览" className="flex shrink-0 items-center gap-2.5" href="/">
             <BrandMark />
             <span className="text-[19px] font-bold tracking-[-0.025em] text-text-primary">Paoxx</span>
