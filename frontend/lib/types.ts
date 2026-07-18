@@ -272,6 +272,59 @@ export type RadarBoards = {
   methodology?: Record<string, string>;
 };
 
+export type RealtimeWindow = {
+  available?: boolean;
+  coverage_ratio?: number;
+  gross_trade_usd?: number;
+  cvd_usd?: number;
+  cvd_ratio_pct?: number;
+  price_change_pct?: number;
+  long_liquidation_usd?: number;
+  short_liquidation_usd?: number;
+};
+
+export type RealtimeRuleAnalysis = {
+  available?: boolean;
+  triggered?: boolean;
+  direction?: "long" | "short" | "neutral" | string;
+  score?: number;
+  flow_acceleration_pp?: number | null;
+  volume_acceleration_pct?: number | null;
+  liquidation_bias_pct?: number;
+  price_compression_pct?: number;
+};
+
+export type RealtimeIntelligenceItem = {
+  symbol?: string;
+  coin?: string;
+  observed_at?: string;
+  data_status?: string;
+  windows?: Record<string, RealtimeWindow>;
+  surge?: RealtimeRuleAnalysis;
+  ambush?: RealtimeRuleAnalysis;
+  anomaly_24h?: { count?: number; long_count?: number; short_count?: number; latest_at?: string; method?: string };
+  resonance?: {
+    available?: boolean;
+    direction?: string;
+    active_count?: number;
+    window_count?: number;
+    windows?: Array<{ key?: string; active?: boolean; direction?: string; coverage_ratio?: number }>;
+  };
+  lifecycle?: SignalLifecycle;
+  rankings?: { self?: SignalRank; market_strength?: SignalRank; market_absolute?: SignalRank };
+};
+
+export type RealtimeIntelligencePayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string>;
+  items?: RealtimeIntelligenceItem[];
+  boards?: Array<{ key?: string; title?: string; count?: number; description?: string; items?: RealtimeIntelligenceItem[] }>;
+};
+
 export type SectorDefinition = { id?: string; label?: string; description?: string };
 
 export type AssetSector = {
@@ -358,6 +411,25 @@ export type FundsAssetsPayload = {
   sort?: { key?: string; direction?: "asc" | "desc" | string };
   pagination?: { page?: number; page_size?: number; page_count?: number; total?: number };
   items?: FundsAsset[];
+  methodology?: Record<string, string>;
+};
+
+export type CrossExchangeOpenInterest = {
+  schema_version?: string;
+  symbol?: string;
+  data_status?: string;
+  coverage?: { exchanges?: number; target?: number };
+  mark_price?: number | null;
+  total_oi_usd?: number | null;
+  top_exchange_share_pct?: number | null;
+  exchanges?: Array<{
+    exchange?: string;
+    oi_usd?: number | null;
+    oi_native?: number | null;
+    share_pct?: number | null;
+    status?: string;
+    source?: string;
+  }>;
   methodology?: Record<string, string>;
 };
 

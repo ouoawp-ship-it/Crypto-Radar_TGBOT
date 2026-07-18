@@ -1,233 +1,208 @@
 "use client";
 
-import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { DataStatusBadge } from "@/components/DataStatusBadge";
-import { ErrorState } from "@/components/ErrorState";
-import { FeatureUnavailable } from "@/components/FeatureUnavailable";
-import { PageTitle } from "@/components/PageTitle";
-import { SectorBubbleChart } from "@/components/SectorBubbleChart";
-import { WatchlistButton } from "@/components/WatchlistButton";
-import { getFundsAssets, getFundsSectors } from "@/lib/api";
-import { formatDateTime, formatMetricValue, safeText } from "@/lib/format";
-import { cockpitV2Enabled } from "@/lib/features";
-import type { FundsAsset, FundsAssetsPayload, FundsSectorsPayload } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CandlestickChart } from "@/components/CandlestickChart";
+import { MetricSeriesChart } from "@/components/MetricSeriesChart";
+import { getCoinContext, getFundsAssets, getFundsSectors, getWorkstationFundsOpenInterest } from "@/lib/api";
+import type { CoinContext, CoinSeriesPoint, CrossExchangeOpenInterest, FundsAsset, FundsAssetsPayload, FundsSectorsPayload } from "@/lib/types";
 
-const WINDOWS = [
-  { value: 900, label: "15m" },
-  { value: 1800, label: "30m" },
-  { value: 3600, label: "1h" },
-  { value: 14400, label: "4h" },
-  { value: 86400, label: "1d" }
-];
+const SPANS = [
+  { key: "16h", interval: "15m", bars: 64 },
+  { key: "2d", interval: "1h", bars: 48 },
+  { key: "4d", interval: "1h", bars: 96 },
+  { key: "5d", interval: "1h", bars: 120 },
+  { key: "15d", interval: "4h", bars: 90 },
+  { key: "60d", interval: "1d", bars: 60 }
+] as const;
 
-const SORTS = [
-  { value: "net_flow_usd", label: "净流入" },
-  { value: "price_change_pct", label: "涨跌幅" },
-  { value: "volume_usd", label: "成交额" },
-  { value: "oi_usd", label: "OI" },
-  { value: "funding_pct", label: "资金费率" },
-  { value: "market_cap", label: "市值" }
-];
+type MarketType = "spot" | "futures";
+type SpanKey = (typeof SPANS)[number]["key"];
 
-function tone(value?: number | null) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number === 0) return "text-text-muted";
-  return number > 0 ? "text-emerald-700" : "text-red-700";
+function number(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function statusTone(status?: string): "good" | "warn" | "bad" | "neutral" {
-  if (status === "ready") return "good";
-  if (status === "degraded" || status === "stale") return "warn";
-  if (status === "unavailable") return "bad";
-  return "neutral";
+function money(value: unknown, signed = true) {
+  const parsed = number(value);
+  if (parsed === null) return "—";
+  const sign = signed ? (parsed > 0 ? "+" : parsed < 0 ? "−" : "") : "";
+  const absolute = Math.abs(parsed);
+  if (absolute >= 1e12) return `${sign}$${(absolute / 1e12).toFixed(2)}T`;
+  if (absolute >= 1e9) return `${sign}$${(absolute / 1e9).toFixed(2)}B`;
+  if (absolute >= 1e6) return `${sign}$${(absolute / 1e6).toFixed(1)}M`;
+  if (absolute >= 1e3) return `${sign}$${(absolute / 1e3).toFixed(1)}K`;
+  return `${sign}$${absolute.toFixed(2)}`;
 }
 
-function SummaryCard({ label, value, detail, toneClass = "text-text-primary" }: { label: string; value: string; detail?: string; toneClass?: string }) {
-  return <div className="cockpit-panel p-3"><div className="text-[11px] font-semibold text-text-muted">{label}</div><div className={`table-number mt-1 text-lg font-semibold ${toneClass}`}>{value}</div>{detail ? <div className="mt-1 text-[10px] text-text-muted">{detail}</div> : null}</div>;
+function percent(value: unknown, digits = 2) {
+  const parsed = number(value);
+  return parsed === null ? "—" : `${parsed > 0 ? "+" : ""}${parsed.toFixed(digits)}%`;
 }
 
-function AssetMobileCard({ item }: { item: FundsAsset }) {
+function tone(value: unknown) {
+  const parsed = number(value);
+  return parsed === null || parsed === 0 ? "text-text-secondary" : parsed > 0 ? "text-good" : "text-risk";
+}
+
+function PanelHeader({ title, detail, action }: { title: string; detail?: string; action?: React.ReactNode }) {
+  return <div className="workstation-panel-header"><div className="min-w-0"><h2 className="truncate text-[12px] font-semibold text-text-primary">{title}</h2>{detail ? <p className="truncate text-[9px] text-text-muted">{detail}</p> : null}</div>{action}</div>;
+}
+
+function FlowPriceChart({ points, marketType }: { points: CoinSeriesPoint[]; marketType: MarketType }) {
+  const metric = marketType === "spot" ? "spot_flow_usd" : "futures_flow_usd";
+  let running = 0;
+  const source = points.map((point, index) => {
+    const flow = number(point[metric]) || 0;
+    running += flow;
+    return { index, cumulative: running, price: number(point.price) };
+  }).filter((point) => point.price !== null);
+  if (source.length < 2) return <div className="grid h-[150px] place-items-center text-[10px] text-text-muted">累计资金样本不足</div>;
+  const flowMin = Math.min(...source.map((item) => item.cumulative));
+  const flowMax = Math.max(...source.map((item) => item.cumulative));
+  const priceMin = Math.min(...source.map((item) => Number(item.price)));
+  const priceMax = Math.max(...source.map((item) => Number(item.price)));
+  const x = (index: number) => 12 + index / Math.max(1, source.length - 1) * 576;
+  const y = (value: number, min: number, max: number) => 132 - (value - min) / Math.max(max - min, 1e-9) * 108;
+  const path = (key: "cumulative" | "price", min: number, max: number) => source.map((item, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(Number(item[key]), min, max).toFixed(1)}`).join(" ");
   return (
-    <article className="cockpit-panel p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div><div className="table-number text-base font-semibold text-text-primary">{safeText(item.symbol)}</div><div className="mt-0.5 text-[11px] text-text-muted">{safeText(item.sector?.primary_sector_label, "其他")} · {formatDateTime(item.updated_at)}</div></div>
-        <DataStatusBadge label={safeText(item.data_status, "unavailable").toUpperCase()} tone={statusTone(item.data_status)} />
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-subtle bg-border-subtle">
-        {[
-          ["价格", formatMetricValue(item.price)],
-          ["涨跌", formatMetricValue(item.price_change_pct, "percent")],
-          ["净流入", formatMetricValue(item.net_flow_usd, "usd")],
-          ["OI 变化", formatMetricValue(item.oi_change_pct, "percent")]
-        ].map(([label, value]) => <div className="bg-surface-panel p-2.5" key={label}><div className="text-[10px] text-text-muted">{label}</div><div className="table-number mt-1 text-sm font-semibold text-text-primary">{value}</div></div>)}
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-2"><WatchlistButton compact symbol={safeText(item.symbol)} /><Link className="btn-secondary px-2 text-xs" href={`/radar?symbol=${item.symbol}`}>信号</Link><Link className="btn px-2 text-xs" href={`/coin/${item.symbol}`}>证据</Link></div>
-    </article>
-  );
-}
-
-function FundsPageContent() {
-  const [marketType, setMarketType] = useState<"spot" | "futures">("spot");
-  const [windowSec, setWindowSec] = useState(3600);
-  const [sector, setSector] = useState("");
-  const [dataStatus, setDataStatus] = useState("");
-  const [sortKey, setSortKey] = useState("net_flow_usd");
-  const [direction, setDirection] = useState<"asc" | "desc">("desc");
-  const [page, setPage] = useState(1);
-  const [query, setQuery] = useState("");
-  const [draft, setDraft] = useState("");
-  const [sectors, setSectors] = useState<FundsSectorsPayload | null>(null);
-  const [assets, setAssets] = useState<FundsAssetsPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [ready, setReady] = useState(false);
-  const requestRef = useRef(0);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const market = params.get("market_type");
-    const windowValue = Number(params.get("window_sec"));
-    const initialQuery = params.get("q") || "";
-    if (market === "spot" || market === "futures") setMarketType(market);
-    if (WINDOWS.some((item) => item.value === windowValue)) setWindowSec(windowValue);
-    setSector(params.get("sector") || "");
-    setDataStatus(params.get("data_status") || "");
-    setSortKey(params.get("sort") || "net_flow_usd");
-    setDirection(params.get("direction") === "asc" ? "asc" : "desc");
-    setQuery(initialQuery);
-    setDraft(initialQuery);
-    setReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (!ready) return;
-    const params = new URLSearchParams();
-    params.set("market_type", marketType);
-    params.set("window_sec", String(windowSec));
-    if (query) params.set("q", query);
-    if (sector) params.set("sector", sector);
-    if (dataStatus) params.set("data_status", dataStatus);
-    params.set("sort", sortKey);
-    params.set("direction", direction);
-    if (page > 1) params.set("page", String(page));
-    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
-  }, [ready, marketType, windowSec, query, sector, dataStatus, sortKey, direction, page]);
-
-  async function load(refresh = false) {
-    const request = ++requestRef.current;
-    if (!refresh) {
-      setSectors(null);
-      setAssets(null);
-    }
-    setLoading(true);
-    setError("");
-    try {
-      const [sectorPayload, assetPayload] = await Promise.all([
-        getFundsSectors(windowSec, marketType, { bypassCache: refresh }),
-        getFundsAssets({ window_sec: windowSec, market_type: marketType, q: query, sector, data_status: dataStatus, sort: sortKey, direction, page, page_size: 50 }, { bypassCache: refresh })
-      ]);
-      if (request !== requestRef.current) return;
-      setSectors(sectorPayload);
-      setAssets(assetPayload);
-    } catch (loadError) {
-      if (request === requestRef.current) setError(loadError instanceof Error ? loadError.message : "资金中心加载失败");
-    } finally {
-      if (request === requestRef.current) setLoading(false);
-    }
-  }
-
-  useEffect(() => { if (ready) void load(); }, [ready, marketType, windowSec, query, sector, dataStatus, sortKey, direction, page]);
-
-  const sectorOptions = sectors?.catalog || [];
-  const sectorById = useMemo(() => new Map(sectorOptions.map((item) => [item.id, item.label])), [sectorOptions]);
-  const warnings = useMemo(
-    () => Array.from(new Set([...(sectors?.warnings || []), ...(assets?.warnings || [])])),
-    [sectors?.warnings, assets?.warnings]
-  );
-  const pageCount = Math.max(1, Number(assets?.pagination?.page_count || 1));
-  const summary = sectors?.summary;
-
-  function applySearch(event: FormEvent) {
-    event.preventDefault();
-    setPage(1);
-    setQuery(draft.trim().toUpperCase());
-  }
-
-  return (
-    <div aria-busy={loading} className="space-y-3">
-      <PageTitle title="资金中心" subtitle="把板块轮动、主动买卖成交差与资产级证据放在同一个可追溯工作台中。" tags={[`${marketType === "spot" ? "现货" : "合约"} CVD`, `${WINDOWS.find((item) => item.value === windowSec)?.label || "1h"} 窗口`, `分类 ${safeText(sectors?.catalog_version)}`]} />
-
-      <section className="cockpit-panel p-2.5">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <div aria-label="行情类型" className="flex flex-wrap gap-1 rounded-lg bg-surface-container-low p-1" role="group">
-            {(["spot", "futures"] as const).map((item) => <button aria-pressed={marketType === item} className={`h-8 rounded-md px-4 text-xs font-semibold ${marketType === item ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item} onClick={() => { setMarketType(item); setPage(1); }} type="button">{item === "spot" ? "现货" : "合约"}</button>)}
-          </div>
-          <div aria-label="资金时间窗口" className="flex flex-wrap items-center gap-1 rounded-lg bg-surface-container-low p-1" role="group">
-            {WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-8 rounded-md px-3 text-xs font-semibold ${windowSec === item.value ? "bg-surface-panel text-primary-700 shadow-soft" : "text-text-secondary"}`} key={item.value} onClick={() => { setWindowSec(item.value); setPage(1); }} type="button">{item.label}</button>)}
-          </div>
-          <button className="btn-secondary h-9 text-xs" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "刷新中" : "刷新数据"}</button>
-        </div>
-      </section>
-
-      {error ? <ErrorState message={error} onRetry={() => void load(true)} retainedData={Boolean(sectors || assets)} /> : null}
-
-      <section className="grid grid-cols-2 gap-2 lg:grid-cols-6">
-        <SummaryCard label="总净流入" value={formatMetricValue(summary?.net_flow_usd, "usd")} toneClass={tone(summary?.net_flow_usd)} />
-        <SummaryCard label="主动买入额" value={formatMetricValue(summary?.inflow_usd, "usd")} detail="已覆盖封闭窗口" />
-        <SummaryCard label="主动卖出额" value={formatMetricValue(summary?.outflow_usd, "usd")} detail="已覆盖封闭窗口" />
-        <SummaryCard label="资产覆盖" value={summary ? `${summary.covered_assets || 0} / ${summary.asset_count || 0}` : "—"} />
-        <SummaryCard label="流入领先" value={safeText(sectorById.get(summary?.leading_inflow_sector), "—")} />
-        <SummaryCard label="流出领先" value={safeText(sectorById.get(summary?.leading_outflow_sector), "—")} />
-      </section>
-
-      <div className="grid gap-3 xl:grid-cols-[minmax(360px,0.82fr)_minmax(680px,1.18fr)]">
-        <section className="cockpit-panel min-w-0">
-          <div className="cockpit-panel-header"><div><h2 className="text-sm font-semibold text-text-primary">板块资金</h2><p className="mt-0.5 text-[11px] text-text-muted">气泡面积=绝对净额 · 颜色=方向</p></div><DataStatusBadge label={safeText(sectors?.data_status, loading ? "loading" : "empty").toUpperCase()} tone={statusTone(sectors?.data_status)} /></div>
-          {loading && !sectors ? <div className="h-[340px] animate-pulse bg-surface-container-low" /> : <SectorBubbleChart sectors={sectors?.sectors || []} selected={sector} onSelect={(value) => { setSector(value); setPage(1); }} />}
-          {sector ? <div className="border-t border-border-subtle px-3 py-2 text-xs text-text-secondary">当前筛选：{safeText(sectorById.get(sector), sector)} <button className="ml-2 font-semibold text-primary-700" onClick={() => setSector("")} type="button">清除</button></div> : null}
-        </section>
-
-        <section className="cockpit-panel min-w-0">
-          <div className="cockpit-panel-header"><div><h2 className="text-sm font-semibold text-text-primary">资产资金表</h2><p className="mt-0.5 text-[11px] text-text-muted">{assets?.pagination?.total || 0} 个匹配资产 · 缺失值始终排在最后</p></div><span className="text-[11px] text-text-muted">{formatDateTime(assets?.generated_at)}</span></div>
-          <form className="grid gap-2 border-b border-border-subtle p-3 sm:grid-cols-2 xl:grid-cols-[minmax(160px,1fr)_140px_120px_120px_auto]" onSubmit={applySearch}>
-            <input aria-label="搜索资产" className="input h-9 w-full text-xs" placeholder="BTC 或 BTCUSDT" value={draft} onChange={(event) => setDraft(event.target.value.toUpperCase())} />
-            <select aria-label="板块筛选" className="input h-9 text-xs" value={sector} onChange={(event) => { setSector(event.target.value); setPage(1); }}><option value="">全部板块</option>{sectorOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
-            <select aria-label="数据状态" className="input h-9 text-xs" value={dataStatus} onChange={(event) => { setDataStatus(event.target.value); setPage(1); }}><option value="">全部状态</option><option value="ready">可用</option><option value="degraded">降级</option><option value="stale">过期</option><option value="unavailable">未覆盖</option></select>
-            <select aria-label="排序字段" className="input h-9 text-xs" value={sortKey} onChange={(event) => { setSortKey(event.target.value); setPage(1); }}>{SORTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
-            <div className="flex gap-1"><button className="btn h-9 flex-1 px-3 text-xs" type="submit">应用</button><button aria-label="切换排序方向" className="btn-secondary h-9 w-10 px-0" onClick={() => { setDirection((value) => value === "desc" ? "asc" : "desc"); setPage(1); }} type="button">{direction === "desc" ? "↓" : "↑"}</button></div>
-          </form>
-
-          <div className="hidden overflow-x-auto md:block">
-            <table className="w-full min-w-[1040px] border-collapse text-left text-xs">
-              <thead className="bg-surface-container-low text-[10px] uppercase tracking-wide text-text-muted"><tr>{["资产", "价格 / 涨跌", "净流入", "买入 / 卖出", "成交额", "OI / 变化", "费率", "市值", "状态", "操作"].map((label) => <th className="whitespace-nowrap border-b border-border-subtle px-3 py-2 font-semibold" key={label}>{label}</th>)}</tr></thead>
-              <tbody>
-                {loading && !assets ? Array.from({ length: 8 }).map((_, index) => <tr key={index}><td className="p-3" colSpan={10}><div className="h-8 animate-pulse rounded bg-surface-container-low" /></td></tr>) : (assets?.items || []).map((item) => <tr className="border-b border-border-subtle last:border-0 hover:bg-surface-container-low/60" key={item.symbol}>
-                  <td className="px-3 py-2.5"><div className="font-semibold text-text-primary">{safeText(item.symbol)}</div><div className="mt-0.5 text-[10px] text-text-muted">{safeText(item.sector?.primary_sector_label, "其他")}</div></td>
-                  <td className="px-3 py-2.5"><div className="table-number font-semibold text-text-primary">{formatMetricValue(item.price)}</div><div className={`table-number mt-0.5 ${tone(item.price_change_pct)}`}>{formatMetricValue(item.price_change_pct, "percent")}</div></td>
-                  <td className={`table-number px-3 py-2.5 font-semibold ${tone(item.net_flow_usd)}`}>{formatMetricValue(item.net_flow_usd, "usd")}</td>
-                  <td className="table-number px-3 py-2.5 text-text-secondary">{formatMetricValue(item.inflow_usd, "usd")}<span className="mx-1 text-text-muted">/</span>{formatMetricValue(item.outflow_usd, "usd")}</td>
-                  <td className="table-number px-3 py-2.5 text-text-secondary">{formatMetricValue(item.volume_usd, "usd")}</td>
-                  <td className="px-3 py-2.5"><div className="table-number text-text-secondary">{formatMetricValue(item.oi_usd, "usd")}</div><div className={`table-number mt-0.5 ${tone(item.oi_change_pct)}`}>{formatMetricValue(item.oi_change_pct, "percent")}</div></td>
-                  <td className={`table-number px-3 py-2.5 ${tone(item.funding_pct)}`}>{formatMetricValue(item.funding_pct, "percent_per_cycle")}</td>
-                  <td className="table-number px-3 py-2.5 text-text-secondary">{formatMetricValue(item.market_cap, "usd")}</td>
-                  <td className="px-3 py-2.5"><DataStatusBadge label={safeText(item.data_status).toUpperCase()} tone={statusTone(item.data_status)} /></td>
-                  <td className="px-3 py-2.5"><div className="flex gap-1"><WatchlistButton compact symbol={safeText(item.symbol)} /><Link className="btn-secondary h-10 px-3" href={`/coin/${item.symbol}`}>证据</Link></div></td>
-                </tr>)}
-              </tbody>
-            </table>
-          </div>
-          <div className="grid gap-2 p-2 md:hidden">{(assets?.items || []).map((item) => <AssetMobileCard item={item} key={item.symbol} />)}</div>
-          {!loading && !(assets?.items || []).length ? <div className="px-4 py-16 text-center text-sm text-text-muted">当前筛选没有匹配资产。</div> : null}
-          <div className="flex items-center justify-between border-t border-border-subtle px-3 py-2"><span className="text-[11px] text-text-muted">第 {assets?.pagination?.page || page} / {pageCount} 页</span><div className="flex gap-2"><button className="btn-secondary h-8 px-3 text-xs" disabled={page <= 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} type="button">上一页</button><button className="btn-secondary h-8 px-3 text-xs" disabled={page >= pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} type="button">下一页</button></div></div>
-        </section>
-      </div>
-
-      {warnings.length ? <section aria-live="polite" className="cockpit-panel border-amber-200 bg-amber-50/70 p-3" role="status"><h2 className="text-xs font-semibold text-amber-900">数据口径与降级说明</h2><ul className="mt-2 space-y-1 text-[11px] leading-5 text-amber-800">{warnings.map((item) => <li key={item}>· {item}</li>)}</ul></section> : null}
+    <div className="px-3 pb-2 pt-2">
+      <div className="flex items-center gap-4 text-[9px]"><span className="text-primary-700">● 累计资金 {money(source.at(-1)?.cumulative)}</span><span className="text-text-muted">● 价格 {money(source.at(-1)?.price, false)}</span><span className="ml-auto text-text-muted">双轴归一化，仅比较趋势</span></div>
+      <svg aria-label="累计资金与价格时序" className="mt-1 h-[150px] w-full" role="img" viewBox="0 0 600 150">
+        {[24, 78, 132].map((value) => <line className="stroke-border-subtle" strokeDasharray="3 5" x1="12" x2="588" y1={value} y2={value} key={value} />)}
+        <path className="fill-none stroke-primary-500" d={path("cumulative", flowMin, flowMax)} strokeWidth="2" />
+        <path className="fill-none stroke-text-muted" d={path("price", priceMin, priceMax)} strokeWidth="1.5" />
+      </svg>
     </div>
   );
 }
 
+function AssetList({ assets, selected, onSelect }: { assets: FundsAsset[]; selected: string; onSelect: (symbol: string) => void }) {
+  return <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">{assets.map((item, index) => <button className={`grid h-10 w-full grid-cols-[22px_minmax(0,1fr)_76px] items-center gap-2 border-b border-border-subtle px-2 text-left hover:bg-surface-container/55 ${item.symbol === selected ? "bg-primary-500/8" : ""}`} onClick={() => onSelect(item.symbol || "")} type="button" key={item.symbol}><span className="text-right font-mono text-[9px] text-text-muted">{index + 1}</span><span className="min-w-0"><span className="block truncate text-[10px] font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="block truncate text-[8px] text-text-muted">{item.sector?.primary_sector_label || "其他"}</span></span><span className="text-right"><span className={`block font-mono text-[10px] font-semibold ${tone(item.net_flow_usd)}`}>{money(item.net_flow_usd)}</span><span className={`block font-mono text-[8px] ${tone(item.price_change_pct)}`}>{percent(item.price_change_pct)}</span></span></button>)}{!assets.length ? <div className="grid h-48 place-items-center text-[10px] text-text-muted">资产资金数据积累中</div> : null}</div>;
+}
+
+function CrossOi({ payload }: { payload: CrossExchangeOpenInterest }) {
+  const rows = payload.exchanges || [];
+  return <div className="p-2.5"><div className="mb-2 flex items-baseline justify-between"><span className="text-[9px] text-text-muted">可用场所合计</span><span className="font-mono text-[12px] font-semibold text-text-primary">{money(payload.total_oi_usd, false)}</span></div>{rows.map((item) => <div className="mb-2" key={item.exchange}><div className="flex items-center justify-between text-[9px]"><span className="capitalize text-text-secondary">{item.exchange}</span><span className="font-mono text-text-primary">{item.status === "ready" ? `${money(item.oi_usd, false)} · ${percent(item.share_pct)}` : "不可用"}</span></div><div className="mt-1 h-1 overflow-hidden rounded-sm bg-surface-container"><div className="h-full bg-primary-500" style={{ width: `${Math.max(0, Math.min(100, Number(item.share_pct || 0)))}%` }} /></div></div>)}<p className="mt-2 text-[8px] leading-4 text-text-muted">缺失场所不按 0 参与分母；OKX 优先采用 oiUsd，其余按标记价格归一。</p></div>;
+}
+
 export default function FundsPage() {
-  return cockpitV2Enabled ? <FundsPageContent /> : <FeatureUnavailable title="资金中心" />;
+  const [marketType, setMarketType] = useState<MarketType>("futures");
+  const [span, setSpan] = useState<SpanKey>("4d");
+  const [selected, setSelected] = useState("BTCUSDT");
+  const [query, setQuery] = useState("");
+  const [spotSectors, setSpotSectors] = useState<FundsSectorsPayload>({});
+  const [futuresSectors, setFuturesSectors] = useState<FundsSectorsPayload>({});
+  const [spotAssets, setSpotAssets] = useState<FundsAssetsPayload>({});
+  const [futuresAssets, setFuturesAssets] = useState<FundsAssetsPayload>({});
+  const [coin, setCoin] = useState<CoinContext>({});
+  const [crossOi, setCrossOi] = useState<CrossExchangeOpenInterest>({});
+  const [loading, setLoading] = useState(true);
+  const [coinLoading, setCoinLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const symbol = new URLSearchParams(window.location.search).get("symbol")?.toUpperCase();
+    if (symbol && /^[A-Z0-9]{2,20}(?:USDT)?$/.test(symbol)) setSelected(symbol.endsWith("USDT") ? symbol : `${symbol}USDT`);
+  }, []);
+
+  const loadOverview = useCallback(async (bypassCache = false) => {
+    setLoading(true);
+    setError("");
+    try {
+      const options = { bypassCache };
+      const [spotSectorData, futuresSectorData, spotAssetData, futuresAssetData] = await Promise.all([
+        getFundsSectors(3600, "spot", options),
+        getFundsSectors(3600, "futures", options),
+        getFundsAssets({ window_sec: 3600, market_type: "spot", sort: "net_flow_usd", direction: "desc", page_size: 100 }, options),
+        getFundsAssets({ window_sec: 3600, market_type: "futures", sort: "net_flow_usd", direction: "desc", page_size: 100 }, options)
+      ]);
+      setSpotSectors(spotSectorData);
+      setFuturesSectors(futuresSectorData);
+      setSpotAssets(spotAssetData);
+      setFuturesAssets(futuresAssetData);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "资金总览加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadCoin = useCallback(async (bypassCache = false) => {
+    if (!selected) return;
+    setCoinLoading(true);
+    const config = SPANS.find((item) => item.key === span) || SPANS[2];
+    try {
+      const [context, oi] = await Promise.all([
+        getCoinContext(selected, { bypassCache }, { market_type: marketType, interval: config.interval, bars: config.bars }),
+        getWorkstationFundsOpenInterest(selected, { bypassCache })
+      ]);
+      setCoin(context);
+      setCrossOi(oi);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "单币资金视图加载失败");
+    } finally {
+      setCoinLoading(false);
+    }
+  }, [marketType, selected, span]);
+
+  useEffect(() => { void loadOverview(); }, [loadOverview]);
+  useEffect(() => { void loadCoin(); }, [loadCoin]);
+  useEffect(() => { window.history.replaceState({}, "", `${window.location.pathname}?symbol=${selected}`); }, [selected]);
+
+  const currentAssets = marketType === "spot" ? spotAssets.items || [] : futuresAssets.items || [];
+  const visibleAssets = currentAssets.filter((item) => !query || String(item.symbol || "").includes(query));
+  const selectedAsset = currentAssets.find((item) => item.symbol === selected) || futuresAssets.items?.find((item) => item.symbol === selected) || spotAssets.items?.find((item) => item.symbol === selected);
+  const series = coin.series?.points || [];
+  const oiValues = (futuresAssets.items || []).map((item) => Number(item.oi_usd)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => b - a);
+  const totalOi = oiValues.reduce((sum, value) => sum + value, 0);
+  const topShare = (count: number) => totalOi ? oiValues.slice(0, count).reduce((sum, value) => sum + value, 0) / totalOi * 100 : null;
+  const spotSummary = spotSectors.summary || {};
+  const futuresSummary = futuresSectors.summary || {};
+
+  return (
+    <div aria-busy={loading || coinLoading} className="workstation-page flex min-h-0 flex-col gap-2 p-[10px]" data-testid="funds-workstation">
+      <section className="workstation-panel flex h-10 shrink-0 items-center gap-2 overflow-x-auto px-2 workstation-scroll">
+        <div aria-label="市场类型" className="flex rounded-sm border border-border-subtle bg-surface-low p-0.5" role="group">{(["futures", "spot"] as const).map((value) => <button aria-pressed={marketType === value} className={`h-6 min-w-14 rounded-[2px] px-2 text-[9px] font-semibold ${marketType === value ? "bg-primary-500 text-on-primary" : "text-text-muted"}`} onClick={() => setMarketType(value)} type="button" key={value}>{value === "futures" ? "合约" : "现货"}</button>)}</div>
+        <div aria-label="单币时间跨度" className="flex gap-1" role="group">{SPANS.map((item) => <button aria-pressed={span === item.key} className={`h-6 rounded-sm px-2.5 font-mono text-[9px] font-semibold ${span === item.key ? "bg-surface-container text-text-primary" : "text-text-muted hover:text-text-primary"}`} onClick={() => setSpan(item.key)} type="button" key={item.key}>{item.key}</button>)}</div>
+        <div className="ml-auto flex items-center gap-2"><span className={`h-1.5 w-1.5 rounded-full ${error ? "bg-risk" : loading || coinLoading ? "animate-pulse bg-warn" : "bg-good"}`} /><span className="max-w-64 truncate text-[9px] text-text-muted">{error || `${selected} · ${coin.data_status || "loading"}`}</span><button className="h-7 rounded-sm border border-border-subtle bg-surface-low px-2.5 text-[9px] font-semibold text-text-secondary" disabled={loading || coinLoading} onClick={() => { void loadOverview(true); void loadCoin(true); }} type="button">刷新</button></div>
+      </section>
+
+      <section className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 min-[1160px]:h-[66px] min-[1160px]:grid-cols-6">
+        {[
+          ["现货净流", money(spotSummary.net_flow_usd), spotSummary.net_flow_usd, `${spotSummary.covered_assets || 0}/${spotSummary.asset_count || 0} 资产`],
+          ["合约净流", money(futuresSummary.net_flow_usd), futuresSummary.net_flow_usd, `${futuresSummary.covered_assets || 0}/${futuresSummary.asset_count || 0} 资产`],
+          ["当前价格", money(selectedAsset?.price, false), selectedAsset?.price_change_pct, percent(selectedAsset?.price_change_pct)],
+          ["单所 OI", money(selectedAsset?.oi_usd, false), selectedAsset?.oi_change_pct, percent(selectedAsset?.oi_change_pct)],
+          ["资金费率", percent(selectedAsset?.funding_pct, 4), selectedAsset?.funding_pct, "单周期"],
+          ["跨所集中", percent(crossOi.top_exchange_share_pct), null, `${crossOi.coverage?.exchanges || 0}/${crossOi.coverage?.target || 3} 场所`]
+        ].map(([label, value, raw, detail]) => <div className="workstation-panel px-2.5 py-2" key={String(label)}><div className="text-[9px] text-text-muted">{label}</div><div className={`table-number mt-0.5 truncate text-[13px] font-semibold ${tone(raw)}`}>{String(value)}</div><div className="truncate text-[8px] text-text-muted">{detail}</div></div>)}
+      </section>
+
+      <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 min-[1160px]:grid-cols-[300px_minmax(0,1fr)_300px]">
+        <section className="workstation-panel flex min-h-0 flex-col">
+          <PanelHeader action={<span className="font-mono text-[9px] text-text-muted">{visibleAssets.length}</span>} detail="净流入排序 · 封闭 1h 窗口" title={`${marketType === "spot" ? "现货" : "合约"}资产`} />
+          <div className="border-b border-border-subtle p-2"><input aria-label="筛选资金资产" className="h-7 w-full rounded-sm border border-border-subtle bg-surface-low px-2 text-[10px] uppercase text-text-primary outline-none focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="筛选 BTC" value={query} /></div>
+          <AssetList assets={visibleAssets} onSelect={setSelected} selected={selected} />
+        </section>
+
+        <section className="grid min-h-0 gap-2 grid-rows-[minmax(300px,1.35fr)_minmax(210px,0.65fr)]">
+          <div className="workstation-panel min-h-0 overflow-y-auto workstation-scroll">
+            <PanelHeader action={<span className="text-[9px] text-text-muted">{coin.chart?.coverage?.returned || 0} 根</span>} detail={`${coin.chart?.source || "行情源待连接"} · ${coin.chart?.interval || "—"}`} title={`${selected} ${marketType === "spot" ? "现货" : "合约"}时序`} />
+            <CandlestickChart points={coin.chart?.points || []} />
+          </div>
+          <div className="workstation-panel min-h-0 overflow-y-auto workstation-scroll">
+            <PanelHeader detail="累计主动成交差（CVD）与价格，不代表充提净流入" title={`${marketType === "spot" ? "现货" : "合约"}累计资金`} />
+            <FlowPriceChart marketType={marketType} points={series} />
+          </div>
+        </section>
+
+        <aside className="grid min-h-0 gap-2 grid-rows-[210px_minmax(190px,1fr)_170px]">
+          <section className="workstation-panel overflow-y-auto workstation-scroll"><PanelHeader action={<span className={`text-[8px] ${crossOi.data_status === "ready" ? "text-good" : "text-warn"}`}>{(crossOi.data_status || "loading").toUpperCase()}</span>} detail="Binance · Bybit · OKX" title="跨交易所 OI" /><CrossOi payload={crossOi} /></section>
+          <section className="workstation-panel overflow-y-auto workstation-scroll"><PanelHeader detail={`历史样本 ${series.length} · 聚合快照`} title="OI / 费率历史" /><div className="grid gap-3 p-3"><MetricSeriesChart label="OI" metric="oi_usd" points={series} unit="usd" /><MetricSeriesChart label="资金费率" metric="funding_pct" points={series} unit="percent_per_cycle" /></div></section>
+          <section className="workstation-panel"><PanelHeader detail="扫描资产横截面，不是持有人分布" title="资金集中度" /><div className="p-3">{[["Top 10 OI", topShare(10)], ["Top 50 OI", topShare(50)], ["单币最大场所", crossOi.top_exchange_share_pct]].map(([label, value]) => <div className="mb-3" key={String(label)}><div className="flex justify-between text-[9px]"><span className="text-text-muted">{label}</span><span className="font-mono text-text-primary">{percent(value)}</span></div><div className="mt-1 h-1 bg-surface-container"><div className="h-full bg-primary-500" style={{ width: `${Math.max(0, Math.min(100, Number(value || 0)))}%` }} /></div></div>)}</div></section>
+        </aside>
+      </main>
+    </div>
+  );
 }

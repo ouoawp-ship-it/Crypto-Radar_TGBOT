@@ -26,6 +26,8 @@ function BrandMark() {
 
 export function Header() {
   const pathname = usePathname();
+  const workstation = ["/radar", "/info", "/funds"].some((path) => pathname === path || pathname.startsWith(`${path}/`));
+  const visibleNavItems = workstation ? navItems.filter((item) => item.href !== "/watchlist") : navItems;
   const [health, setHealth] = useState<"checking" | "live" | "degraded" | "offline">("checking");
 
   useEffect(() => {
@@ -71,15 +73,15 @@ export function Header() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 border-b border-border-subtle bg-surface-canvas/95 backdrop-blur-md">
-        <div className="mx-auto flex h-[55px] max-w-[1280px] items-center gap-5 px-3 sm:px-5 lg:px-6">
+      <header className={`sticky top-0 z-30 border-b border-border-subtle bg-surface-canvas/95 backdrop-blur-md ${workstation ? "workstation-header" : ""}`}>
+        <div className={`mx-auto flex h-[55px] items-center gap-5 px-3 ${workstation ? "max-w-none lg:px-4" : "max-w-[1280px] sm:px-5 lg:px-6"}`}>
           <Link aria-label="Paoxx 市场总览" className="flex shrink-0 items-center gap-2.5" href="/">
             <BrandMark />
-            <span className="text-[19px] font-bold tracking-[-0.025em] text-text-primary">Paoxx</span>
+            <span className="text-[18px] font-bold tracking-[-0.025em] text-text-primary">Paoxx</span>
           </Link>
 
           <nav aria-label="主要导航" className="hidden h-full min-w-0 flex-1 items-center justify-center md:flex">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const active = isActive(item.href);
               return (
                 <Link aria-current={active ? "page" : undefined} className={`group relative flex h-full items-center gap-2 px-3.5 text-[13px] font-semibold transition-colors ${active ? "text-text-primary" : "text-text-muted hover:text-text-secondary"}`} href={item.href} key={item.href}>
@@ -100,8 +102,8 @@ export function Header() {
         </div>
       </header>
 
-      <nav aria-label="移动导航" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border-subtle bg-surface-canvas/95 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-md md:hidden">
-        {navItems.map((item) => {
+      <nav aria-label="移动导航" className={`fixed inset-x-0 bottom-0 z-30 grid border-t border-border-subtle bg-surface-canvas/95 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-md md:hidden ${workstation ? "grid-cols-4" : "grid-cols-5"}`}>
+        {visibleNavItems.map((item) => {
           const active = isActive(item.href);
           return (
             <Link aria-current={active ? "page" : undefined} className={`relative flex min-h-[58px] flex-col items-center justify-center gap-1 text-[10px] font-semibold transition-colors ${active ? "text-primary-500" : "text-text-muted"}`} href={item.href} key={item.href}>
