@@ -745,21 +745,21 @@ test("funds overview uses server-backed pagination and search semantics", async 
   await page.goto("/funds");
 
   await expect(page.getByText("共 698 个代币 · 每页 20 条 · 第 1/35 页")).toBeVisible();
-  const secondPageRequest = page.waitForRequest((request) => {
-    const url = new URL(request.url());
+  const secondPageResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
     return url.pathname === "/public-api/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("page") === "2";
   });
   await page.getByRole("button", { name: "下一页" }).click();
-  await secondPageRequest;
+  await secondPageResponse;
   await expect(page.getByText("共 698 个代币 · 每页 20 条 · 第 2/35 页")).toBeVisible();
   await expect(page.getByText("21", { exact: true }).first()).toBeVisible();
 
-  const searchRequest = page.waitForRequest((request) => {
-    const url = new URL(request.url());
+  const searchResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
     return url.pathname === "/public-api/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("search") === "BTC";
   });
   await page.getByLabel("搜索全体代币").fill("BTC");
-  await searchRequest;
+  await searchResponse;
   await expect(page.getByText("共 1 个代币 · 每页 20 条 · 第 1/1 页")).toBeVisible();
 });
 
