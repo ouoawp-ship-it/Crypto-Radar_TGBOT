@@ -66,13 +66,13 @@ export function Header() {
       activeController?.abort();
       const controller = new AbortController();
       activeController = controller;
-      const timer = window.setTimeout(() => controller.abort(), 5_000);
+      const timer = window.setTimeout(() => controller.abort(), 12_000);
       try {
         const response = await fetch("/public-api/health", { cache: "no-store", signal: controller.signal });
         const payload = await response.json() as { ok?: boolean; data?: { status?: string } };
         if (!disposed) setHealth(!response.ok || payload.ok === false ? "offline" : payload.data?.status === "ok" ? "live" : "degraded");
       } catch {
-        if (!disposed && activeController === controller) setHealth("offline");
+        if (!disposed && activeController === controller) setHealth(window.navigator.onLine ? "degraded" : "offline");
       } finally {
         window.clearTimeout(timer);
       }

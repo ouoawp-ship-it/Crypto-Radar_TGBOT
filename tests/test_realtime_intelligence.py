@@ -248,7 +248,13 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         self.assertLessEqual(len(data["anomaly_events"]), 30)
         self.assertTrue(all(len(board["items"]) <= 14 for board in data["boards"]))
         self.assertTrue(all(set(item.get("windows") or {}) <= {"5m"} for item in data["items"]))
-        self.assertTrue(all("lifecycle" not in item for item in data["items"]))
+        self.assertTrue(
+            all(
+                set(item.get("lifecycle") or {})
+                <= {"state", "label", "basis", "observed_at"}
+                for item in data["items"]
+            )
+        )
         self.assertTrue(all("current" not in (item.get("surge") or {}) for item in data["items"]))
         self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 200_000)
 

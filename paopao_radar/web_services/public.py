@@ -876,6 +876,12 @@ def _compact_realtime_item(source: Any) -> dict[str, Any]:
     )
     if resonance:
         item["resonance"] = resonance
+    lifecycle = _compact_realtime_fields(
+        source.get("lifecycle"),
+        ("state", "label", "basis", "observed_at"),
+    )
+    if lifecycle:
+        item["lifecycle"] = lifecycle
     rankings = _compact_realtime_rankings(source.get("rankings"))
     if rankings:
         item["rankings"] = rankings

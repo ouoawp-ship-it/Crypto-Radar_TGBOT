@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CoinIcon } from "@/components/CoinIcon";
 import { getInfoFeed } from "@/lib/api";
 import type { InfoFeedPayload, NewsEvent } from "@/lib/types";
 
@@ -39,12 +40,6 @@ function channelDigest(payload?: InfoFeedPayload) {
     four: summaryText(select(4)),
     one: summaryText(select(1))
   };
-}
-
-function CoinIcon({ coin, size = 17 }: { coin?: string; size?: number }) {
-  const label = String(coin || "?").replace("USDT", "").slice(0, 2).toUpperCase();
-  const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
-  return <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-full text-[6px] font-bold text-white" style={{ width: size, height: size, background: `linear-gradient(145deg,hsl(${hue} 72% 58%),hsl(${(hue + 32) % 360} 68% 43%))` }}>{label}</span>;
 }
 
 function FeedItem({ item, english = false }: { item: NewsEvent; english?: boolean }) {
