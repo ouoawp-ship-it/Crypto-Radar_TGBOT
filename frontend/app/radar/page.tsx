@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getFundsAssets, getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentum } from "@/lib/api";
+import { getFundsAssets, getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentumWindows } from "@/lib/api";
 import type {
   CockpitBoard,
   CockpitBoardItem,
@@ -171,13 +171,13 @@ export default function RadarPage() {
     setError("");
     try {
       const options = { bypassCache };
-      const [windows, intelligence, market, fundingAssets] = await Promise.all([
-        Promise.all(WINDOWS.map(async (key) => [key, await getWorkstationRadarMomentum(key, 8, options)] as const)),
+      const [windowPayload, intelligence, market, fundingAssets] = await Promise.all([
+        getWorkstationRadarMomentumWindows(8, options),
         getRealtimeIntelligence(30, options),
         getMarketOverview(3600, options),
         getFundsAssets({ window_sec: 3600, market_type: "futures", sort: "funding_pct", direction: "desc", page_size: 20 }, options)
       ]);
-      setMomentum(Object.fromEntries(windows) as Partial<Record<WindowKey, RadarBoards>>);
+      setMomentum(windowPayload.windows as Partial<Record<WindowKey, RadarBoards>>);
       setRealtime(intelligence);
       setOverview(market);
       setFunding(fundingAssets.items || []);

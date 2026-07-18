@@ -159,6 +159,14 @@ export function getWorkstationRadarMomentum(window: "15m" | "30m" | "1h" | "4h" 
   return publicFetch<RadarBoards & { window?: string }>("/public-api/workstation/radar/momentum", { window, limit }, { revalidateSec: 15, ...options });
 }
 
+export function getWorkstationRadarMomentumWindows(limit = 8, options: PublicFetchOptions = {}) {
+  return publicFetch<{ windows: Record<string, RadarBoards & { window?: string }> }>(
+    "/public-api/workstation/radar/momentum-windows",
+    { limit },
+    { revalidateSec: 15, ...options }
+  );
+}
+
 export function getRealtimeIntelligence(limit = 30, options: PublicFetchOptions = {}) {
   return publicFetch<RealtimeIntelligencePayload>("/public-api/radar/realtime-intelligence", { limit }, { revalidateSec: 15, ...options });
 }

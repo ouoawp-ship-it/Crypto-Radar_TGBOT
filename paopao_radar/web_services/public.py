@@ -19,7 +19,13 @@ from ..agent_intelligence import build_agent_overview
 from ..config import Settings
 from ..data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from ..data_source_registry import data_source_registry_payload
-from ..market_cockpit import MarketSnapshotStore, collect_binance_market_rows, load_market_cockpit, normalize_window
+from ..market_cockpit import (
+    MarketSnapshotStore,
+    collect_binance_market_rows,
+    load_market_cockpit,
+    load_market_cockpit_windows,
+    normalize_window,
+)
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
 from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
 from ..realtime_market import RealtimeFeatureStore, build_realtime_radar_boards
@@ -655,6 +661,69 @@ def public_workstation_radar_momentum_payload(
         },
     }
     return api_ok(_strip_forbidden(payload), message="Workstation momentum window loaded")
+
+
+def public_workstation_radar_momentum_windows_payload(
+    *,
+    board_limit: int = 8,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Return all workstation momentum windows from one history scan."""
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    safe_limit = max(3, min(20, int(board_limit or 8)))
+    window_items = tuple(WORKSTATION_RADAR_WINDOWS.items())
+
+    def load() -> dict[str, Any]:
+        try:
+            sources = load_market_cockpit_windows(
+                loaded,
+                window_secs=tuple(window_sec for _, window_sec in window_items),
+                board_limit=safe_limit,
+                now_ts=now_ts,
+                live_rows=[],
+            )
+        except Exception:
+            return api_error("Radar momentum windows unavailable", code="upstream_unavailable")
+        core_keys = {"price", "oi", "futures_flow", "spot_flow"}
+        windows: dict[str, Any] = {}
+        for window_key, window_sec in window_items:
+            source_data = dict(sources.get(window_sec) or {})
+            windows[window_key] = {
+                "schema_version": "workstation.radar.momentum.v1",
+                "generated_at": source_data.get("generated_at"),
+                "window": window_key,
+                "window_sec": window_sec,
+                "data_status": source_data.get("data_status"),
+                "warnings": source_data.get("warnings") or [],
+                "coverage": source_data.get("coverage") or {},
+                "readiness": source_data.get("readiness") or {},
+                "boards": [
+                    board
+                    for board in list(source_data.get("boards") or [])
+                    if str((board or {}).get("key") or "") in core_keys
+                ],
+                "methodology": {
+                    **dict(source_data.get("methodology") or {}),
+                    "amount_rank": "Ranks absolute values inside the selected closed window.",
+                    "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
+                    "closed_window": True,
+                },
+            }
+        return api_ok(
+            _strip_forbidden({
+                "schema_version": "workstation.radar.momentum-windows.v1",
+                "windows": windows,
+            }),
+            message="Workstation momentum windows loaded",
+        )
+
+    if now_ts is not None:
+        return load()
+    cache_key = f"public:workstation-radar-windows:{loaded.market_snapshots_db_path}:{safe_limit}"
+    return runtime_cache_get_or_set(cache_key, PUBLIC_MARKET_COCKPIT_TTL_SEC, load)
 
 
 def public_realtime_market_payload(
