@@ -33,6 +33,7 @@ from ..runtime_cache import stats as runtime_cache_stats
 from ..signal_intelligence import build_radar_intelligence
 from ..signal_store import SignalEventStore
 from ..symbol_dossier import current_market_snapshot
+from ..workstation_funds import collect_cross_exchange_open_interest
 from ..web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_STREAM_METRICS, PUBLIC_TELEMETRY
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
@@ -75,6 +76,13 @@ PUBLIC_AGENTS_TTL_SEC = 120
 PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 40
 PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 PUBLIC_SIGNAL_REF_RE = re.compile(r"^(?:[0-9]{1,12}|sig_[a-f0-9]{20})$")
+WORKSTATION_RADAR_WINDOWS = {
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
 ChartLoader = Callable[[Settings, str, str, str, int], list[list[Any]]]
 _MARKET_WARMUP_LOCK = threading.Lock()
@@ -565,7 +573,7 @@ def public_radar_boards_payload(
             max_age_sec=180,
         )
         if realtime_rows:
-            realtime_history = realtime_store.recent_rows(now_ts=current_ts, window_sec=3600)
+            realtime_history = realtime_store.recent_rows(now_ts=current_ts, window_sec=86_400)
     except Exception:
         realtime_rows = []
     coverage["realtime"] = len({str(row.get("symbol") or "") for row in realtime_rows})
@@ -585,7 +593,7 @@ def public_radar_boards_payload(
                 (realtime_intelligence.get("coverage") or {}).get("symbols") or 0
             )
             methodology["realtime_intelligence"] = (
-                "Surge、短周期潜伏和方向共振仅使用已封闭分钟特征；规则阈值不是收益预测。"
+                "Surge、短周期潜伏、24h 总榜和五窗口方向共振仅使用已封闭分钟特征；规则阈值不是收益预测。"
             )
     payload = {
         "schema_version": cockpit.get("schema_version"),
@@ -599,6 +607,54 @@ def public_radar_boards_payload(
         "methodology": methodology,
     }
     return api_ok(_strip_forbidden(payload), message="已读取雷达榜单")
+
+
+def public_workstation_radar_momentum_payload(
+    *,
+    window: str = "1h",
+    board_limit: int = 8,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Project one workstation momentum window from Paoxx-owned market facts."""
+    safe_window = str(window or "1h").strip().lower()
+    window_sec = WORKSTATION_RADAR_WINDOWS.get(safe_window)
+    if window_sec is None:
+        return api_error("Unsupported radar window", code="invalid_window")
+
+    source = public_radar_boards_payload(
+        window_sec=window_sec,
+        board_limit=board_limit,
+        settings=settings,
+        now_ts=now_ts,
+    )
+    if not source.get("ok"):
+        return source
+    source_data = dict(source.get("data") or {})
+    core_keys = {"price", "oi", "futures_flow", "spot_flow"}
+    boards = [
+        board
+        for board in list(source_data.get("boards") or [])
+        if str((board or {}).get("key") or "") in core_keys
+    ]
+    payload = {
+        "schema_version": "workstation.radar.momentum.v1",
+        "generated_at": source_data.get("generated_at"),
+        "window": safe_window,
+        "window_sec": window_sec,
+        "data_status": source_data.get("data_status"),
+        "warnings": source_data.get("warnings") or [],
+        "coverage": source_data.get("coverage") or {},
+        "readiness": source_data.get("readiness") or {},
+        "boards": boards,
+        "methodology": {
+            **dict(source_data.get("methodology") or {}),
+            "amount_rank": "Ranks absolute values inside the selected closed window.",
+            "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
+            "closed_window": True,
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation momentum window loaded")
 
 
 def public_realtime_market_payload(
@@ -789,6 +845,37 @@ def public_funds_assets_payload(
     except Exception:
         return api_error("资产资金表暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取资产资金表")
+
+
+def public_workstation_funds_open_interest_payload(
+    symbol: str,
+    *,
+    settings: Settings | None = None,
+    collector: Callable[[Settings, str], dict[str, Any]] | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    parsed = normalize_symbol_filter(symbol)
+    target = str(parsed.get("symbol") or "")
+    if not target:
+        return api_error(str(parsed.get("error") or "币种格式无效"), code="invalid_symbol")
+
+    def build() -> dict[str, Any]:
+        source = collector or collect_cross_exchange_open_interest
+        return source(loaded, target)
+
+    try:
+        if now_ts is not None or collector is not None:
+            payload = build()
+        else:
+            payload = runtime_cache_get_or_set(
+                f"public:workstation:funds:oi:{target}",
+                PUBLIC_FUNDS_TTL_SEC,
+                build,
+            )
+    except Exception:
+        return api_error("跨交易所 OI 暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取跨交易所 OI")
 
 
 def public_info_feed_payload(

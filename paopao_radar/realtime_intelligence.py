@@ -8,8 +8,9 @@ from statistics import mean, median
 from typing import Any
 
 
-REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-17.1"
-INTELLIGENCE_WINDOWS = (("5m", 300), ("15m", 900), ("1h", 3600))
+REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-18.1"
+MOMENTUM_WINDOWS = (("15m", 900), ("30m", 1_800), ("1h", 3_600), ("4h", 14_400), ("1d", 86_400))
+INTELLIGENCE_WINDOWS = (("5m", 300), *MOMENTUM_WINDOWS)
 BACKTEST_HORIZONS = (("5m", 300), ("15m", 900), ("1h", 3600))
 MIN_WINDOW_COVERAGE = 0.60
 MIN_BACKTEST_SAMPLES = 30
@@ -264,17 +265,48 @@ def _historical_strengths(
     return strengths
 
 
+def _anomaly_count_24h(
+    five_minute_windows: list[tuple[int, dict[str, Any]]],
+    anchor: int,
+) -> dict[str, Any]:
+    long_count = 0
+    short_count = 0
+    latest_at = ""
+    previous: dict[str, Any] | None = None
+    for window_anchor, current in five_minute_windows:
+        if window_anchor < anchor - 86_400 or window_anchor > anchor:
+            continue
+        if previous is not None:
+            surge = _surge_from_windows(current, previous)
+            if surge.get("triggered"):
+                direction = str(surge.get("direction") or "neutral")
+                if direction == "long":
+                    long_count += 1
+                elif direction == "short":
+                    short_count += 1
+                latest_at = _iso_seconds(window_anchor)
+        previous = current
+    return {
+        "count": long_count + short_count,
+        "long_count": long_count,
+        "short_count": short_count,
+        "latest_at": latest_at,
+        "window_sec": 86_400,
+        "method": "统计近 24 小时相邻封闭 5 分钟窗口中达到 Surge 规则阈值的次数。",
+    }
+
+
 def _resonance(windows: dict[str, dict[str, Any]]) -> dict[str, Any]:
     directions = {
-        key: _window_direction(window)
-        for key, window in windows.items()
+        key: _window_direction(windows.get(key, {}))
+        for key, _seconds in MOMENTUM_WINDOWS
     }
     active = [direction for direction in directions.values() if direction != "neutral"]
     counts = Counter(active)
     direction = counts.most_common(1)[0][0] if counts else "neutral"
     active_count = counts.get(direction, 0) if direction != "neutral" else 0
     return {
-        "available": any(window.get("available") for window in windows.values()),
+        "available": any(windows.get(key, {}).get("available") for key, _seconds in MOMENTUM_WINDOWS),
         "direction": direction if active_count >= 2 else "neutral",
         "active_count": active_count,
         "window_count": len(windows),
@@ -283,11 +315,11 @@ def _resonance(windows: dict[str, dict[str, Any]]) -> dict[str, Any]:
                 "key": key,
                 "active": directions[key] == direction and active_count >= 2,
                 "direction": directions[key],
-                "coverage_ratio": window.get("coverage_ratio"),
+                "coverage_ratio": windows.get(key, {}).get("coverage_ratio"),
             }
-            for key, window in windows.items()
+            for key, _seconds in MOMENTUM_WINDOWS
         ],
-        "method": "5m、15m、1h 封闭窗口的 CVD 方向需获得价格非反向确认；至少两个周期同向才算方向共振。",
+        "method": "15m、30m、1h、4h、1d 封闭窗口的 CVD 方向需获得价格非反向确认；至少两个周期同向才算方向共振。",
     }
 
 
@@ -446,6 +478,7 @@ def build_realtime_intelligence(
         surge = _surge_at(rows, ends, anchor)
         ambush = _ambush(windows, surge)
         resonance = _resonance(windows)
+        anomaly_24h = _anomaly_count_24h(five_minute_windows, anchor)
         current_strength = abs(_number(windows["5m"].get("cvd_ratio_pct")) or 0)
         items.append({
             "symbol": symbol,
@@ -456,6 +489,7 @@ def build_realtime_intelligence(
             "surge": surge,
             "ambush": ambush,
             "resonance": resonance,
+            "anomaly_24h": anomaly_24h,
             "lifecycle": _lifecycle(rows, ends, anchor=anchor, surge=surge, ambush=ambush),
             "rankings": {
                 "self": _rank(
@@ -491,6 +525,15 @@ def build_realtime_intelligence(
         key=lambda item: (float(item["ambush"].get("score") or 0), item["symbol"]),
         reverse=True,
     )
+    total_items = sorted(
+        (item for item in items if int((item.get("anomaly_24h") or {}).get("count") or 0) > 0),
+        key=lambda item: (
+            int((item.get("anomaly_24h") or {}).get("count") or 0),
+            float(item["surge"].get("score") or 0),
+            item["symbol"],
+        ),
+        reverse=True,
+    )
     boards = [
         {
             "key": "surge", "title": "Surge 加速", "count": len(surge_items),
@@ -502,17 +545,28 @@ def build_realtime_intelligence(
             "description": "5m/15m 资金同向但价格尚未充分移动的候选。",
             "items": ambush_items[:safe_limit],
         },
+        {
+            "key": "total", "title": "24h 异动总榜", "count": len(total_items),
+            "description": "近 24 小时相邻封闭 5m 窗口达到 Surge 规则阈值的累计次数。",
+            "items": total_items[:safe_limit],
+        },
     ]
     return {
         "schema_version": REALTIME_INTELLIGENCE_SCHEMA_VERSION,
         "generated_at": _iso_seconds(int(now_ts)),
         "observed_at": _iso_seconds(anchor),
         "data_status": "ready" if any(item["data_status"] == "ready" for item in items) else "partial",
-        "coverage": {"symbols": len(items), "surge": len(surge_items), "ambush": len(ambush_items)},
+        "coverage": {
+            "symbols": len(items),
+            "surge": len(surge_items),
+            "ambush": len(ambush_items),
+            "total": len(total_items),
+        },
         "methodology": {
             "surge": "封闭分钟特征计算，不使用当前未完成分钟。",
             "ambush": "规则候选，不等于价格预测或交易建议。",
-            "resonance": "只在 5m/15m/1h 同方向且价格未反向时确认。",
+            "resonance": "只在 15m/30m/1h/4h/1d 中至少两个封闭窗口同方向且价格未反向时确认。",
+            "total": "24h 总榜统计相邻封闭 5m 窗口达到 Surge 规则阈值的次数。",
             "ranking": "自身、横截面强度和绝对成交规模使用不同口径。",
         },
         "items": sorted(items, key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]), reverse=True),
@@ -575,15 +629,52 @@ def build_realtime_intelligence_radar_boards(
             "reason": "" if items else "当前没有达到规则阈值的候选",
         }
 
+    total_items = sorted(
+        (
+            item for item in payload.get("items", [])
+            if isinstance(item, dict) and int((item.get("anomaly_24h") or {}).get("count") or 0) > 0
+        ),
+        key=lambda item: int((item.get("anomaly_24h") or {}).get("count") or 0),
+        reverse=True,
+    )[:safe_limit]
+    total_board = {
+        "key": "realtime_total",
+        "title": "24h 异动总榜",
+        "metric": "anomaly_count_24h",
+        "unit": "count",
+        "available": bool(total_items),
+        "coverage": int((payload.get("coverage") or {}).get("symbols") or 0),
+        "positive": {
+            "title": "异动次数",
+            "items": [
+                {
+                    "symbol": str(item.get("symbol") or ""),
+                    "coin": str(item.get("coin") or ""),
+                    "value": int((item.get("anomaly_24h") or {}).get("count") or 0),
+                    "unit": "count",
+                    "updated_at": str((item.get("anomaly_24h") or {}).get("latest_at") or ""),
+                    "status": "fresh",
+                    "quality": "websocket_closed_bucket",
+                    "resonance": item.get("resonance"),
+                }
+                for item in total_items
+            ],
+        },
+        "negative": {"title": "", "items": []},
+        "reason": "" if total_items else "近 24 小时没有达到规则阈值的异动",
+    }
+
     return [
         build_board("surge", "realtime_surge", "Surge 加速", "多头加速", "空头加速"),
         build_board("ambush", "realtime_ambush", "短周期潜伏", "多头潜伏", "空头潜伏"),
+        total_board,
     ]
 
 
 __all__ = [
     "BACKTEST_HORIZONS",
     "INTELLIGENCE_WINDOWS",
+    "MOMENTUM_WINDOWS",
     "MIN_BACKTEST_SAMPLES",
     "REALTIME_INTELLIGENCE_SCHEMA_VERSION",
     "build_realtime_intelligence",

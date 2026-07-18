@@ -129,6 +129,43 @@ const radarBoards = {
   ]
 };
 
+const realtimeItems = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "SUI", "LINK", "AVAX", "ARB", "OP", "AAVE", "UNI", "LTC"].map((coin, index) => {
+  const direction = index % 2 === 0 ? "long" : "short";
+  const signed = direction === "long" ? 1 : -1;
+  return {
+    symbol: `${coin}USDT`, coin, observed_at: "2026-07-18T08:30:00Z", data_status: "ready",
+    windows: {
+      "5m": { available: true, coverage_ratio: 1, gross_trade_usd: 90_000_000 - index * 2_000_000, cvd_usd: signed * (12_000_000 - index * 300_000), cvd_ratio_pct: signed * (13 - index * 0.3), price_change_pct: signed * (1.2 - index * 0.03), long_liquidation_usd: direction === "short" ? 2_000_000 + index * 10_000 : 150_000, short_liquidation_usd: direction === "long" ? 2_500_000 + index * 10_000 : 120_000 },
+      "15m": { available: true, coverage_ratio: 1, cvd_ratio_pct: signed * 8, price_change_pct: signed * 1.4 },
+      "30m": { available: true, coverage_ratio: 1, cvd_ratio_pct: signed * 7, price_change_pct: signed * 1.1 },
+      "1h": { available: true, coverage_ratio: 1, cvd_ratio_pct: signed * 6, price_change_pct: signed * 1.8 },
+      "4h": { available: true, coverage_ratio: 1, cvd_ratio_pct: signed * 5, price_change_pct: signed * 2.1 },
+      "1d": { available: true, coverage_ratio: 1, cvd_ratio_pct: signed * 4, price_change_pct: signed * 3.2 }
+    },
+    surge: { available: true, triggered: index < 5, direction, score: 92 - index * 3, flow_acceleration_pp: signed * (18 - index), volume_acceleration_pct: 42 - index },
+    ambush: { available: true, triggered: index >= 5 && index < 9, direction, score: 78 - index, price_compression_pct: 0.6 + index * 0.04 },
+    anomaly_24h: { count: 24 - index, long_count: direction === "long" ? 16 - Math.floor(index / 2) : 6, short_count: direction === "short" ? 15 - Math.floor(index / 2) : 5, latest_at: "2026-07-18T08:30:00Z" },
+    resonance: { available: true, direction, active_count: 4, window_count: 5, windows: ["15m", "30m", "1h", "4h", "1d"].map((key, windowIndex) => ({ key, active: windowIndex < 4, direction, coverage_ratio: 1 })) },
+    lifecycle: { state: index < 2 ? "enhancing" : "continuing", label: index < 2 ? "增强" : "持续", basis: "封闭窗口规则状态" }
+  };
+});
+
+const realtimeIntelligence = {
+  schema_version: "2026-07-18.1", generated_at: "2026-07-18T08:30:00Z", observed_at: "2026-07-18T08:30:00Z", data_status: "ready",
+  coverage: { symbols: realtimeItems.length, surge: 5, ambush: 4, total: realtimeItems.length }, items: realtimeItems,
+  boards: []
+};
+
+const crossExchangeOi = {
+  schema_version: "workstation.funds.open-interest.v1", symbol: "BTCUSDT", data_status: "ready",
+  coverage: { exchanges: 3, target: 3 }, mark_price: 65000, total_oi_usd: 1_450_000_000, top_exchange_share_pct: 48.2759,
+  exchanges: [
+    { exchange: "binance", oi_usd: 700_000_000, share_pct: 48.2759, status: "ready" },
+    { exchange: "bybit", oi_usd: 450_000_000, share_pct: 31.0345, status: "ready" },
+    { exchange: "okx", oi_usd: 300_000_000, share_pct: 20.6897, status: "ready" }
+  ]
+};
+
 const fundsSectors = {
   schema_version: "2026-07-17",
   catalog_version: "2026.07.1",
@@ -289,6 +326,9 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     if (url.pathname === "/public-api/signals/stats") return route.fulfill({ json: { ok: true, data: { total: 1, sent: 1, blocked: 0, failed: 0, skipped: 0 } } });
     if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: marketOverview } });
     if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: radarBoards } });
+    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: radarBoards } });
+    if (url.pathname === "/public-api/radar/realtime-intelligence") return route.fulfill({ json: { ok: true, data: realtimeIntelligence } });
+    if (url.pathname === "/public-api/workstation/funds/open-interest") return route.fulfill({ json: { ok: true, data: { ...crossExchangeOi, symbol: url.searchParams.get("symbol") || "BTCUSDT" } } });
     if (url.pathname === "/public-api/funds/sectors") return route.fulfill({ json: { ok: true, data: fundsSectors } });
     if (url.pathname === "/public-api/funds/assets") return route.fulfill({ json: { ok: true, data: { ...fundsAssets, warnings: options.assetWarnings || fundsAssets.warnings } } });
     if (url.pathname === "/public-api/info/feed") {
@@ -343,34 +383,21 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
   };
 }
 
-test("desktop radar supports opportunity-to-evidence workflow", async ({ page }) => {
+test("desktop radar exposes the independent workstation modules", async ({ page }) => {
   await mockPublicApi(page);
   await page.goto("/radar");
 
-  await expect(page.getByRole("heading", { name: "机会看板" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "热钱观察榜单" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "异动流" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "热钱五窗口" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "全场态势" })).toBeVisible();
-  await expect(page.getByText("资金偏流入")).toBeVisible();
-  await expect(page.getByLabel("涨幅榜量级榜")).toBeVisible();
-  await expect(page.getByLabel("涨幅榜强度榜")).toBeVisible();
-  await expect(page.getByLabel("主力合约流入榜量级榜")).toBeVisible();
-  const oiAmount = page.getByLabel("持仓榜量级榜").first();
-  const oiStrength = page.getByLabel("持仓榜强度榜").first();
-  await expect(oiAmount.getByRole("button").first()).toContainText("BTC");
-  await expect(oiAmount.getByRole("button").first()).toContainText("+$1.0M");
-  await expect(page.getByLabel("持仓榜量级榜").last().getByRole("button").first()).toContainText("−$350.0K");
-  await expect(oiStrength.getByRole("button").first()).toContainText("ETH");
-  await expect(page.getByText("+$800.0K", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "资金合流" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "资金力度" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Surge 加速" })).toBeVisible();
-  await expect(page.getByText("+82.0", { exact: true })).toBeVisible();
-  await expect(page.getByText("启动候选", { exact: true })).toBeVisible();
-  await expect(page.getByText("P96 · #2/40")).toBeVisible();
-  await page.getByRole("button", { name: /查看证据与上下文/ }).click();
-  await expect(page.getByRole("dialog", { name: "信号上下文详情" })).toBeVisible();
-  await expect(page.getByText("相对排名与生命周期")).toBeVisible();
-  await expect(page.getByText("状态依据：规则分数较上次提高 8.0")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Surge · 1h 滚动" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "24h 异动总榜" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "埋伏池" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "鲸鱼监控" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "费率 / 基差监控" })).toBeVisible();
+  await expect(page.getByLabel("五窗口共振").first()).toBeVisible();
+  await page.getByRole("button", { name: "资金力度" }).click();
+  await expect(page.getByText("P96", { exact: true }).first()).toBeVisible();
 });
 
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
@@ -386,6 +413,19 @@ test("desktop radar mirrors the target three-column scan hierarchy", async ({ pa
   expect(sideBox).toMatchObject({ x: 1162, y: 66, width: 268, height: 824 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
 });
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+  test(`workstation visual fixtures remain stable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await mockPublicApi(page);
+    for (const route of ["radar", "info", "funds"] as const) {
+      await page.goto(`/${route}`);
+      await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
+      await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+      await expect(page).toHaveScreenshot(`${route}-${viewport.width}x${viewport.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.015 });
+    }
+  });
+}
 
 test("home dashboard refreshes its own signal data", async ({ page }) => {
   const state = await mockPublicApi(page);
@@ -410,18 +450,18 @@ test("Paoxx AI reservation page does not call the former agent endpoint", async 
   expect(state.agentRequests()).toBe(0);
 });
 
-test("320px radar keeps filters, cards and full-width detail usable", async ({ page }) => {
+test("320px radar keeps its primary workstation controls usable", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 780 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
-  await expect(page.getByPlaceholder("BTC 或 BTCUSDT")).toBeVisible();
+  await expect(page.getByPlaceholder("筛选 BTC")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   for (const control of [
-    page.getByPlaceholder("BTC 或 BTCUSDT"),
+    page.getByPlaceholder("筛选 BTC"),
     page.getByRole("button", { name: "1h" }),
     page.getByRole("button", { name: "暂停" }),
-    page.getByRole("button", { name: "刷新雷达" }),
+    page.getByRole("button", { name: "立即刷新" }),
   ]) {
     const controlBox = await control.boundingBox();
     expect(controlBox?.height).toBeGreaterThanOrEqual(44);
@@ -433,12 +473,7 @@ test("320px radar keeps filters, cards and full-width detail usable", async ({ p
     })
     .filter((item) => item.label !== "Open Next.js Dev Tools" && item.width > 0 && item.height > 0 && (item.width < 44 || item.height < 44)));
   expect(undersizedControls).toEqual([]);
-  await page.getByRole("button", { name: /查看证据与上下文/ }).click();
-  const dialog = page.getByRole("dialog", { name: "信号上下文详情" });
-  await expect(dialog).toBeVisible();
-  const box = await dialog.boundingBox();
-  expect(box?.width).toBeGreaterThanOrEqual(310);
-  await expect(page.getByRole("button", { name: "关闭信号详情" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "24h 异动总榜" })).toBeVisible();
 });
 
 test("public cockpit uses the fixed Mercu-style dark visual system", async ({ page }) => {
@@ -446,9 +481,8 @@ test("public cockpit uses the fixed Mercu-style dark visual system", async ({ pa
   await page.goto("/radar");
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(7, 9, 13)");
-  await page.locator("summary").filter({ hasText: "高级筛选" }).click();
-  await expect(page.getByRole("button", { name: "应用" })).toHaveCSS("color", "rgb(7, 9, 13)");
+  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(8, 9, 10)");
+  await expect(page.getByRole("button", { name: "资金合流" })).toHaveCSS("color", "rgb(233, 234, 236)");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
@@ -461,20 +495,15 @@ test("header distinguishes degraded data from an offline API", async ({ page }) 
   await expect(page.getByLabel("公开 API 可用，部分数据正在积累或降级")).toBeVisible();
 });
 
-test("768px radar keeps the compact drawer and primary actions usable", async ({ page }) => {
+test("768px radar keeps stacked workstation modules usable", async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 900 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
-  await expect(page.getByPlaceholder("BTC 或 BTCUSDT")).toBeVisible();
-  await page.getByRole("button", { name: /查看证据与上下文/ }).click();
-  const dialog = page.getByRole("dialog", { name: "信号上下文详情" });
-  await expect(dialog).toBeVisible();
-  const box = await dialog.boundingBox();
-  expect(box?.width).toBeGreaterThanOrEqual(520);
-  expect(box?.width).toBeLessThanOrEqual(540);
-  await expect(page.getByRole("link", { name: "单币上下文" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "自选", exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder("筛选 BTC")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "热钱五窗口" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "鲸鱼监控" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(768);
 });
 
 test("coin context and browser-local watchlist form a reusable loop", async ({ page }) => {
@@ -490,72 +519,66 @@ test("coin context and browser-local watchlist form a reusable loop", async ({ p
   expect(await page.evaluate(() => localStorage.getItem("paoxx.public.watchlist.v1"))).toContain("BTCUSDT");
 });
 
-test("funds center links sector rotation to asset evidence", async ({ page }) => {
+test("funds workstation links overview, time series and cross-exchange OI", async ({ page }) => {
   await mockPublicApi(page);
   await page.goto("/funds");
 
-  await expect(page.getByRole("heading", { name: "资金中心" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "板块资金" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "资产资金表" })).toBeVisible();
-  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("L1", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("link", { name: "证据" }).first()).toHaveAttribute("href", "/coin/BTCUSDT");
+  await expect(page.getByRole("heading", { name: "合约资产" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "BTCUSDT 合约时序" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "合约累计资金" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "跨交易所 OI" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "OI / 费率历史" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "资金集中度" })).toBeVisible();
+  await expect(page.getByText("$1.45B", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "现货" }).click();
+  await expect(page.getByRole("heading", { name: "BTCUSDT 现货时序" })).toBeVisible();
 });
 
-test("funds center surfaces asset-only degradation warnings", async ({ page }) => {
+test("funds workstation preserves explicit cross-venue coverage", async ({ page }) => {
   await mockPublicApi(page, { assetWarnings: ["资产资金数据已降级"] });
   await page.goto("/funds");
 
-  await expect(page.getByText("资产资金数据已降级")).toBeVisible();
+  await expect(page.getByText("3/3 场所")).toBeVisible();
+  await expect(page.getByText("缺失场所不按 0 参与分母", { exact: false })).toBeVisible();
 });
 
-test("390px funds center uses cards without horizontal overflow", async ({ page }) => {
+test("390px funds workstation stacks without page-level horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
   await page.goto("/funds");
 
-  await expect(page.getByLabel("搜索资产")).toBeVisible();
-  await expect(page.getByRole("link", { name: "证据" }).first()).toBeVisible();
+  await expect(page.getByLabel("筛选资金资产")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "跨交易所 OI" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
-test("information center keeps official facts, inferences and source rights traceable", async ({ page }) => {
+test("information workstation keeps four fixed authorized streams traceable", async ({ page }) => {
   await mockPublicApi(page);
   await page.goto("/info");
 
-  await expect(page.getByRole("heading", { name: "信息中心" })).toBeVisible();
-  await expect(page.getByText("授权中文资讯", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" })).toBeVisible();
-  await page.getByText("展开规则化解读与验证项").click();
-  await expect(page.getByText("可能影响 · 规则推断")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Binance 原文 ↗" })).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(page.getByText("信息蒸馏", { exact: true })).toBeVisible();
+  for (const heading of ["新闻", "English", "KOL", "Binance 广场"]) await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" }).first()).toBeVisible();
+  await expect(page.getByRole("link").filter({ hasText: "Binance Will List Example Token (ABC)" }).first()).toHaveAttribute("rel", "noreferrer");
 });
 
-test("information center applies text filters once instead of requesting on every keystroke", async ({ page }) => {
+test("information workstation loads each source column independently", async ({ page }) => {
   const state = await mockPublicApi(page);
   await page.goto("/info");
 
-  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" })).toBeVisible();
-  const requestsBeforeTyping = state.infoRequests();
-  await page.getByLabel("币种筛选").fill("BTC");
-  await page.getByLabel("搜索资讯").fill("listing");
-  await page.waitForTimeout(200);
-  expect(state.infoRequests()).toBe(requestsBeforeTyping);
-
-  await page.getByRole("button", { name: "应用" }).click();
-  await expect.poll(state.infoRequests).toBe(requestsBeforeTyping + 1);
-  const search = new URLSearchParams(state.lastInfoSearch());
-  expect(search.get("symbol")).toBe("BTC");
-  expect(search.get("q")).toBe("listing");
+  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" }).first()).toBeVisible();
+  await expect.poll(state.infoRequests).toBe(4);
+  await page.getByRole("button", { name: "刷新" }).click();
+  await expect.poll(state.infoRequests).toBe(8);
 });
 
-test("390px information center has no horizontal overflow", async ({ page }) => {
+test("390px information workstation stacks its four columns", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
   await page.goto("/info");
 
-  await expect(page.getByLabel("搜索资讯")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "新闻" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Binance Will List Example Token (ABC)" }).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
@@ -582,64 +605,17 @@ test("390px Paoxx AI reservation stays usable without horizontal overflow", asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
-test("radar SSE surfaces a new event, reconnects and can be paused", async ({ page }) => {
-  await page.addInitScript(() => {
-    type Listener = (event: MessageEvent) => void;
-    class FakeEventSource {
-      static current: FakeEventSource | null = null;
-      onopen: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      listeners = new Map<string, Listener[]>();
-      constructor() {
-        FakeEventSource.current = this;
-        setTimeout(() => this.onopen?.(), 10);
-      }
-      addEventListener(type: string, listener: Listener) {
-        this.listeners.set(type, [...(this.listeners.get(type) || []), listener]);
-      }
-      close() { if (FakeEventSource.current === this) FakeEventSource.current = null; }
-      emit(type: string, data: string) { for (const listener of this.listeners.get(type) || []) listener(new MessageEvent(type, { data })); }
-    }
-    Object.defineProperty(window, "EventSource", { configurable: true, value: FakeEventSource });
-    (window as unknown as { __emitSseSignal: () => number }).__emitSseSignal = () => {
-      const current = FakeEventSource.current;
-      if (!current) return -1;
-      const count = current.listeners.get("signal")?.length || 0;
-      current.emit("signal", "{\"ref\":\"sig_e2e_eth\"}");
-      return count;
-    };
-    (window as unknown as { __dropSse: () => void }).__dropSse = () => FakeEventSource.current?.onerror?.();
-    (window as unknown as { __restoreSse: () => void }).__restoreSse = () => FakeEventSource.current?.onopen?.();
-  });
-  const state = await mockPublicApi(page, { streamSignal: true });
+test("radar polling can be paused and manually refreshed", async ({ page }) => {
+  await mockPublicApi(page);
   await page.goto("/radar");
 
-  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("LIVE", { exact: true }).last()).toBeVisible();
-  expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
-  state.releaseSignal();
-  const requestsBeforeBurst = state.signalRequests();
-  const listenerCount = await page.evaluate(() => {
-    const emit = (window as unknown as { __emitSseSignal: () => number }).__emitSseSignal;
-    const count = emit();
-    emit();
-    emit();
-    return count;
-  });
-  expect(listenerCount).toBeGreaterThan(0);
-  await expect.poll(state.signalRequests).toBe(requestsBeforeBurst + 1);
-  await page.waitForTimeout(1000);
-  expect(state.signalRequests()).toBe(requestsBeforeBurst + 1);
-  const incoming = page.getByRole("button", { name: "新增 1 条异动，点击更新" });
-  await expect(incoming).toBeVisible({ timeout: 12_000 });
-  await incoming.click();
-  await expect(page.getByRole("button", { name: /ETHUSDT 查看证据与上下文/ })).toBeVisible();
-  await page.evaluate(() => (window as unknown as { __dropSse: () => void }).__dropSse());
-  await expect(page.getByText("RECONNECTING", { exact: true })).toBeVisible();
-  await page.evaluate(() => (window as unknown as { __restoreSse: () => void }).__restoreSse());
-  await expect(page.getByText("LIVE", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("15s 刷新", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "暂停" }).click();
-  await expect(page.getByText("PAUSED", { exact: true })).toBeVisible();
+  await expect(page.getByText("已暂停", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "立即刷新" }).click();
+  await expect(page.getByRole("heading", { name: "24h 异动总榜" })).toBeVisible();
+  await page.getByRole("button", { name: "继续" }).click();
+  await expect(page.getByText("15s 刷新", { exact: false })).toBeVisible();
 });
 
 test("reserved AI surface never exposes copied directional conclusions", async ({ page }) => {

@@ -13,6 +13,8 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 
+from .bot_market_context import enrich_telegram_with_market_context
+
 from .config import Settings
 from .storage import JsonStore
 from .time_windows import CST
@@ -209,6 +211,13 @@ class TelegramGateway:
         reply_to_message_id: int | None = None,
         signal_records: list[dict[str, Any]] | None = None,
     ) -> PushResult:
+        if str(parse_mode or "").upper() == "HTML" and signal_records:
+            text = enrich_telegram_with_market_context(
+                self.settings,
+                text,
+                template_id,
+                signal_records,
+            )
         now = utc_ts()
         cooldown = self.settings.tg_default_cooldown_sec if cooldown_sec is None else cooldown_sec
         history = self._load_history()

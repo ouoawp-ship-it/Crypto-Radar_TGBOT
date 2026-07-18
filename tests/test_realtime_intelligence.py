@@ -115,11 +115,20 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         self.assertEqual(by_symbol["SOLUSDT"]["ambush"]["direction"], "long")
         self.assertEqual(by_symbol["BTCUSDT"]["resonance"]["direction"], "long")
         self.assertGreaterEqual(by_symbol["BTCUSDT"]["resonance"]["active_count"], 2)
+        self.assertEqual(
+            [window["key"] for window in by_symbol["BTCUSDT"]["resonance"]["windows"]],
+            ["15m", "30m", "1h", "4h", "1d"],
+        )
+        self.assertGreaterEqual(by_symbol["BTCUSDT"]["anomaly_24h"]["count"], 1)
         self.assertTrue(by_symbol["BTCUSDT"]["rankings"]["market_strength"]["available"])
         self.assertTrue(payload["boards"][0]["items"])
         self.assertTrue(payload["boards"][1]["items"])
+        self.assertTrue(payload["boards"][2]["items"])
         radar_boards = build_realtime_intelligence_radar_boards(payload, limit=10)
-        self.assertEqual([board["key"] for board in radar_boards], ["realtime_surge", "realtime_ambush"])
+        self.assertEqual(
+            [board["key"] for board in radar_boards],
+            ["realtime_surge", "realtime_ambush", "realtime_total"],
+        )
         self.assertTrue(radar_boards[0]["positive"]["items"])
         self.assertTrue(radar_boards[0]["negative"]["items"])
 
@@ -197,6 +206,7 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         keys = [board["key"] for board in payload["data"]["boards"]]
         self.assertIn("realtime_surge", keys)
         self.assertIn("realtime_ambush", keys)
+        self.assertIn("realtime_total", keys)
         self.assertEqual(payload["data"]["coverage"]["realtime_intelligence"], 1)
 
 

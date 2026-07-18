@@ -71,9 +71,11 @@ from .web_services.public import (
     public_market_overview_payload,
     public_realtime_market_payload,
     public_realtime_intelligence_payload,
+    public_workstation_funds_open_interest_payload,
     public_market_snapshot_payload,
     public_radar_boards_payload,
     public_radar_intelligence_payload,
+    public_workstation_radar_momentum_payload,
     public_watchlist_market_payload,
     public_signal_context_payload,
     public_signal_detail_payload,
@@ -4125,6 +4127,8 @@ class WebHandler(BaseHTTPRequestHandler):
             "/public-api/market/overview",
             "/public-api/radar/boards",
             "/public-api/radar/realtime-intelligence",
+            "/public-api/workstation/radar/momentum",
+            "/public-api/workstation/funds/open-interest",
             "/public-api/funds/sectors",
             "/public-api/funds/assets",
             "/public-api/info/feed",
@@ -4311,6 +4315,17 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_json(public_radar_boards_payload(
                 window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
                 board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/momentum":
+            self.send_json(public_workstation_radar_momentum_payload(
+                window=query.get("window", ["1h"])[0],
+                board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/funds/open-interest":
+            self.send_json(public_workstation_funds_open_interest_payload(
+                query.get("symbol", [""])[0],
             ))
             return
         if path == "/public-api/funds/sectors":

@@ -1,4 +1,4 @@
-import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, FundsAssetsPayload, FundsSectorsPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, SignalContext, SignalItem, WatchlistMarketPayload } from "./types";
+import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsSectorsPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WatchlistMarketPayload } from "./types";
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number };
@@ -155,12 +155,24 @@ export function getRadarBoards(windowSec = 3600, limit = 8, options: PublicFetch
   return publicFetch<RadarBoards>("/public-api/radar/boards", { window_sec: windowSec, limit }, { revalidateSec: 15, ...options });
 }
 
+export function getWorkstationRadarMomentum(window: "15m" | "30m" | "1h" | "4h" | "1d", limit = 8, options: PublicFetchOptions = {}) {
+  return publicFetch<RadarBoards & { window?: string }>("/public-api/workstation/radar/momentum", { window, limit }, { revalidateSec: 15, ...options });
+}
+
+export function getRealtimeIntelligence(limit = 30, options: PublicFetchOptions = {}) {
+  return publicFetch<RealtimeIntelligencePayload>("/public-api/radar/realtime-intelligence", { limit }, { revalidateSec: 15, ...options });
+}
+
 export function getFundsSectors(windowSec = 3600, marketType: "spot" | "futures" = "spot", options: PublicFetchOptions = {}) {
   return publicFetch<FundsSectorsPayload>("/public-api/funds/sectors", { window_sec: windowSec, market_type: marketType }, { revalidateSec: 30, ...options });
 }
 
 export function getFundsAssets(query: Query = {}, options: PublicFetchOptions = {}) {
   return publicFetch<FundsAssetsPayload>("/public-api/funds/assets", query, { revalidateSec: 30, ...options });
+}
+
+export function getWorkstationFundsOpenInterest(symbol: string, options: PublicFetchOptions = {}) {
+  return publicFetch<CrossExchangeOpenInterest>("/public-api/workstation/funds/open-interest", { symbol }, { revalidateSec: 30, ...options });
 }
 
 export function getRadarIntelligence(
