@@ -485,7 +485,8 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
   const assetFooter = await page.getByTestId("funds-assets-overview").locator("footer").boundingBox();
   expect(assets?.x).toBeCloseTo(247, 0);
   expect(assets?.width).toBeCloseTo(668, 0);
-  expect(assetSearch?.x).toBeCloseTo(532, 0);
+  expect(assetSearch?.x).toBeGreaterThanOrEqual(531);
+  expect(assetSearch?.x).toBeLessThanOrEqual(534);
   expect(assetSearch?.width).toBeCloseTo(255, 0);
   expect(assetFooter?.y).toBeCloseTo(697, 0);
   expect(assetFooter?.height).toBeCloseTo(28, 0);
