@@ -852,12 +852,12 @@ def build_realtime_intelligence(
             method="同一封闭 5m 时点的合约成交额绝对规模排名",
         )
 
+    safe_limit = max(1, min(30, int(limit or 10)))
     anomaly_events = _build_anomaly_events(
         grouped,
         anchor=anchor,
-        limit=max(60, int(limit or 10) * 4),
+        limit=safe_limit,
     )
-    safe_limit = max(1, min(30, int(limit or 10)))
     surge_items = sorted(
         (item for item in items if item["surge"].get("triggered")),
         key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]),
@@ -913,7 +913,11 @@ def build_realtime_intelligence(
             "total": "24h 总榜统计相邻封闭 5m 窗口达到 Surge 规则阈值的次数。",
             "ranking": "自身、横截面强度和绝对成交规模使用不同口径。",
         },
-        "items": sorted(items, key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]), reverse=True),
+        "items": sorted(
+            items,
+            key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]),
+            reverse=True,
+        )[:safe_limit],
         "anomaly_events": anomaly_events,
         "boards": boards,
         "backtest": _backtest(grouped, five_minute_windows_by_symbol) if include_backtest else None,

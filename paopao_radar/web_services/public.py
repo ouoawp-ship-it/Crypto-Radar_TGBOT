@@ -7,8 +7,10 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from ..atomic_json import locked_read_json, locked_write_json
 from ..coin_evidence import (
     build_kline_chart,
     build_snapshot_series,
@@ -30,6 +32,7 @@ from ..market_funds import build_funds_assets, build_funds_sectors, normalize_ma
 from ..news_intelligence import NEWS_SCHEMA_VERSION, NewsEventStore, ingest_binance_announcements
 from ..realtime_market import RealtimeFeatureStore, build_realtime_radar_boards
 from ..realtime_intelligence import (
+    REALTIME_INTELLIGENCE_SCHEMA_VERSION,
     build_open_interest_anomaly_events,
     build_realtime_intelligence,
     build_realtime_intelligence_radar_boards,
@@ -76,6 +79,9 @@ PUBLIC_CONTEXT_SCHEMA_VERSION = "2026-07-17"
 PUBLIC_SNAPSHOT_TTL_SEC = 30
 PUBLIC_SNAPSHOT_MAX_STALE_SEC = 300
 PUBLIC_INTELLIGENCE_TTL_SEC = 15
+PUBLIC_INTELLIGENCE_REFRESH_SEC = 60
+PUBLIC_INTELLIGENCE_MAX_STALE_SEC = 900
+PUBLIC_INTELLIGENCE_BOARD_LIMIT = 14
 PUBLIC_MARKET_COCKPIT_TTL_SEC = 15
 PUBLIC_FUNDS_TTL_SEC = 30
 PUBLIC_INFO_TTL_SEC = 60
@@ -99,6 +105,9 @@ _NEWS_REFRESH_LOCK = threading.Lock()
 _NEWS_REFRESHES: set[str] = set()
 _NEWS_REFRESH_NEXT_ALLOWED: dict[str, float] = {}
 _NEWS_REFRESH_FAILURES: dict[str, str] = {}
+_INTELLIGENCE_SNAPSHOT_LOCK = threading.Lock()
+_INTELLIGENCE_SNAPSHOTS: dict[str, tuple[float, dict[str, Any]]] = {}
+_INTELLIGENCE_REFRESHES: set[str] = set()
 
 
 def _v2_disabled(settings: Settings) -> bool:
@@ -807,6 +816,103 @@ def public_realtime_market_payload(
     }, message="已读取实时市场特征")
 
 
+def _project_realtime_intelligence_payload(payload: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    """Bound the public payload without changing full-universe coverage metadata."""
+
+    safe_limit = max(1, min(30, int(limit or 10)))
+    projected = dict(payload)
+    projected["items"] = list(payload.get("items") or [])[:safe_limit]
+    projected["anomaly_events"] = list(payload.get("anomaly_events") or [])[:safe_limit]
+    board_limit = min(PUBLIC_INTELLIGENCE_BOARD_LIMIT, safe_limit)
+    projected["boards"] = [
+        {
+            **board,
+            "items": list(board.get("items") or [])[:board_limit],
+        }
+        for board in list(payload.get("boards") or [])
+        if isinstance(board, dict)
+    ]
+    return projected
+
+
+def _realtime_intelligence_snapshot_path(settings: Any) -> Path:
+    database_path = Path(settings.realtime_features_db_path)
+    return database_path.with_name(f"{database_path.stem}.intelligence.json")
+
+
+def _load_realtime_intelligence_snapshot(
+    cache_key: str,
+    snapshot_path: Path,
+) -> tuple[float, dict[str, Any]] | None:
+    with _INTELLIGENCE_SNAPSHOT_LOCK:
+        cached = _INTELLIGENCE_SNAPSHOTS.get(cache_key)
+    if cached is not None:
+        return cached
+
+    stored = locked_read_json(snapshot_path, {}, quarantine_corrupt=True)
+    if not isinstance(stored, dict):
+        return None
+    try:
+        stored_at = float(stored.get("stored_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    payload = stored.get("payload")
+    if (
+        stored_at <= 0
+        or not isinstance(payload, dict)
+        or payload.get("schema_version") != REALTIME_INTELLIGENCE_SCHEMA_VERSION
+    ):
+        return None
+    snapshot = (stored_at, payload)
+    with _INTELLIGENCE_SNAPSHOT_LOCK:
+        _INTELLIGENCE_SNAPSHOTS[cache_key] = snapshot
+    return snapshot
+
+
+def _store_realtime_intelligence_snapshot(
+    cache_key: str,
+    snapshot_path: Path,
+    payload: dict[str, Any],
+    *,
+    stored_at: float | None = None,
+) -> tuple[float, dict[str, Any]]:
+    snapshot = (float(stored_at or time.time()), payload)
+    with _INTELLIGENCE_SNAPSHOT_LOCK:
+        _INTELLIGENCE_SNAPSHOTS[cache_key] = snapshot
+    try:
+        locked_write_json(snapshot_path, {"stored_at": snapshot[0], "payload": payload})
+    except OSError:
+        pass
+    return snapshot
+
+
+def _refresh_realtime_intelligence_snapshot(
+    cache_key: str,
+    snapshot_path: Path,
+    builder: Callable[[], dict[str, Any]],
+) -> None:
+    with _INTELLIGENCE_SNAPSHOT_LOCK:
+        if cache_key in _INTELLIGENCE_REFRESHES:
+            return
+        _INTELLIGENCE_REFRESHES.add(cache_key)
+
+    def refresh() -> None:
+        try:
+            payload = builder()
+            _store_realtime_intelligence_snapshot(cache_key, snapshot_path, payload)
+        except Exception:
+            pass
+        finally:
+            with _INTELLIGENCE_SNAPSHOT_LOCK:
+                _INTELLIGENCE_REFRESHES.discard(cache_key)
+
+    threading.Thread(
+        target=refresh,
+        name="public-realtime-intelligence-refresh",
+        daemon=True,
+    ).start()
+
+
 def public_realtime_intelligence_payload(
     *,
     limit: int = 10,
@@ -815,53 +921,77 @@ def public_realtime_intelligence_payload(
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
-    now = int(now_ts or time.time())
     safe_limit = max(1, min(30, int(limit or 10)))
 
-    def build() -> dict[str, Any]:
+    def build(
+        build_limit: int,
+        *,
+        build_backtest: bool = False,
+        build_now: int | None = None,
+    ) -> dict[str, Any]:
+        observed_now = int(build_now if build_now is not None else time.time())
         rows = RealtimeFeatureStore(loaded.realtime_features_db_path).recent_rows(
-            now_ts=now,
+            now_ts=observed_now,
             window_sec=86_400,
         )
         payload = build_realtime_intelligence(
             rows,
-            now_ts=now,
-            limit=safe_limit,
-            include_backtest=bool(include_backtest),
+            now_ts=observed_now,
+            limit=build_limit,
+            include_backtest=build_backtest,
         )
-        snapshot_path = getattr(loaded, "market_snapshots_db_path", None)
-        if snapshot_path:
+        market_snapshot_path = getattr(loaded, "market_snapshots_db_path", None)
+        if market_snapshot_path:
             try:
-                oi_rows = MarketSnapshotStore(snapshot_path).recent_metric_rows(
+                oi_rows = MarketSnapshotStore(market_snapshot_path).recent_metric_rows(
                     "oi_usd",
-                    now_ts=now,
+                    now_ts=observed_now,
                     window_sec=90_000,
                 )
                 oi_events = build_open_interest_anomaly_events(
                     oi_rows,
-                    now_ts=now,
-                    limit=max(40, safe_limit * 3),
+                    now_ts=observed_now,
+                    limit=max(40, build_limit * 3),
                 )
                 if oi_events:
                     payload["anomaly_events"] = sorted(
                         [*list(payload.get("anomaly_events") or []), *oi_events],
                         key=lambda item: (str(item.get("observed_at") or ""), str(item.get("id") or "")),
                         reverse=True,
-                    )[:300]
+                    )[:build_limit]
                     payload.setdefault("coverage", {})["oi_anomaly_events"] = len(oi_events)
             except Exception:
                 payload.setdefault("coverage", {})["oi_anomaly_events"] = 0
-        return payload
+        return _project_realtime_intelligence_payload(_strip_forbidden(payload), limit=build_limit)
 
     try:
-        if now_ts is None:
+        if now_ts is not None or include_backtest:
+            payload = build(
+                safe_limit,
+                build_backtest=bool(include_backtest),
+                build_now=now_ts,
+            )
+        else:
             cache_key = (
                 f"public:realtime-intelligence:{loaded.realtime_features_db_path}:"
-                f"{getattr(loaded, 'market_snapshots_db_path', '')}:{safe_limit}:{int(bool(include_backtest))}"
+                f"{getattr(loaded, 'market_snapshots_db_path', '')}"
             )
-            payload = runtime_cache_get_or_set(cache_key, PUBLIC_INTELLIGENCE_TTL_SEC, build)
-        else:
-            payload = build()
+            snapshot_path = _realtime_intelligence_snapshot_path(loaded)
+            snapshot = _load_realtime_intelligence_snapshot(cache_key, snapshot_path)
+            snapshot_age = time.time() - snapshot[0] if snapshot is not None else float("inf")
+            if snapshot is None or snapshot_age > PUBLIC_INTELLIGENCE_MAX_STALE_SEC:
+                snapshot = _store_realtime_intelligence_snapshot(
+                    cache_key,
+                    snapshot_path,
+                    build(30),
+                )
+            elif snapshot_age >= PUBLIC_INTELLIGENCE_REFRESH_SEC:
+                _refresh_realtime_intelligence_snapshot(
+                    cache_key,
+                    snapshot_path,
+                    lambda: build(30),
+                )
+            payload = _project_realtime_intelligence_payload(snapshot[1], limit=safe_limit)
     except Exception:
         return api_error("实时异常情报暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取实时异常情报")
