@@ -314,6 +314,23 @@ export type RealtimeIntelligenceItem = {
   rankings?: { self?: SignalRank; market_strength?: SignalRank; market_absolute?: SignalRank };
 };
 
+export type RealtimeAnomalyEvent = {
+  id?: string;
+  symbol?: string;
+  coin?: string;
+  observed_at?: string;
+  window?: "5m" | "15m" | "1h" | string;
+  window_sec?: number;
+  event_type?: "price_up" | "price_down" | "volume_spike" | "perp_inflow" | "perp_outflow" | "long_liquidation" | "short_liquidation" | "oi_up" | "oi_down" | string;
+  label?: string;
+  metric?: string;
+  direction?: "long" | "short" | "neutral" | string;
+  value?: number | null;
+  value_usd?: number | null;
+  change_pct?: number | null;
+  rankings?: { self?: SignalRank; market_strength?: SignalRank; market_absolute?: SignalRank };
+};
+
 export type RealtimeIntelligencePayload = {
   schema_version?: string;
   generated_at?: string;
@@ -322,6 +339,7 @@ export type RealtimeIntelligencePayload = {
   coverage?: Record<string, number>;
   methodology?: Record<string, string>;
   items?: RealtimeIntelligenceItem[];
+  anomaly_events?: RealtimeAnomalyEvent[];
   boards?: Array<{ key?: string; title?: string; count?: number; description?: string; items?: RealtimeIntelligenceItem[] }>;
 };
 
@@ -409,6 +427,12 @@ export type FundsAssetsPayload = {
   warnings?: string[];
   filters?: Record<string, string>;
   sort?: { key?: string; direction?: "asc" | "desc" | string };
+  distribution?: {
+    oi_total_usd?: number | null;
+    oi_covered_assets?: number;
+    top_10_oi_share_pct?: number | null;
+    top_50_oi_share_pct?: number | null;
+  };
   pagination?: { page?: number; page_size?: number; page_count?: number; total?: number };
   items?: FundsAsset[];
   methodology?: Record<string, string>;

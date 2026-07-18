@@ -3,13 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SignalDetailDrawer } from "@/components/SignalDetailDrawer";
-import { getFundsAssets, getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentumWindows } from "@/lib/api";
+import { getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentumWindows } from "@/lib/api";
 import type {
   CockpitBoard,
   CockpitBoardItem,
-  FundsAsset,
   MarketOverview,
   RadarBoards,
+  RealtimeAnomalyEvent,
   RealtimeIntelligenceItem,
   RealtimeIntelligencePayload
 } from "@/lib/types";
@@ -17,6 +17,13 @@ import type {
 const WINDOWS = ["15m", "30m", "1h", "4h", "1d"] as const;
 type WindowKey = (typeof WINDOWS)[number];
 type RankMode = "amount" | "strength";
+
+const BOARD_LABELS: Record<string, { positive: string; negative: string }> = {
+  price: { positive: "涨幅榜", negative: "跌幅榜" },
+  oi: { positive: "持仓增加榜", negative: "持仓减少榜" },
+  futures_flow: { positive: "主力合约流入榜", negative: "主力合约流出榜" },
+  spot_flow: { positive: "主力现货流入榜", negative: "主力现货流出榜" }
+};
 
 function finite(value: unknown): number | null {
   const number = Number(value);
@@ -42,130 +49,113 @@ function percent(value: unknown, digits = 2): string {
 function clock(value?: string): string {
   if (!value) return "--:--";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "--:--" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return Number.isNaN(date.getTime()) ? "--:--" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
 }
 
 function tone(value: unknown): string {
   const number = finite(value);
-  if (number === null || number === 0) return "text-text-secondary";
-  return number > 0 ? "text-good" : "text-risk";
+  return number === null || number === 0 ? "text-text-secondary" : number > 0 ? "text-good" : "text-risk";
 }
 
-function DirectionPill({ direction }: { direction?: string }) {
-  const isLong = direction === "long";
-  const isShort = direction === "short";
-  return <span className={`rounded-sm border px-1.5 py-0.5 text-[9px] font-bold ${isLong ? "border-good/30 bg-good/10 text-good" : isShort ? "border-risk/30 bg-risk/10 text-risk" : "border-border-subtle text-text-muted"}`}>{isLong ? "多" : isShort ? "空" : "中"}</span>;
+function CoinIcon({ coin, size = 18 }: { coin?: string; size?: number }) {
+  const label = String(coin || "?").slice(0, 2).toUpperCase();
+  const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
+  return <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-full text-[7px] font-bold text-white" style={{ width: size, height: size, background: `linear-gradient(145deg,hsl(${hue} 72% 58%),hsl(${(hue + 32) % 360} 68% 43%))` }}>{label}</span>;
 }
 
-function ResonanceDots({ item }: { item: RealtimeIntelligenceItem }) {
-  const windows = item.resonance?.windows || [];
-  return (
-    <span aria-label="五窗口共振" className="inline-flex gap-0.5">
-      {WINDOWS.map((key) => {
-        const window = windows.find((candidate) => candidate.key === key);
-        const active = Boolean(window?.active);
-        const direction = window?.direction;
-        return <span className={`h-1.5 w-3 rounded-[1px] ${active ? direction === "long" ? "bg-good" : direction === "short" ? "bg-risk" : "bg-primary-500" : "bg-surface-container"}`} key={key} title={`${key} ${direction || "unavailable"}`} />;
-      })}
-    </span>
-  );
+function RankBlocks({ item }: { item?: RealtimeIntelligenceItem }) {
+  const active = Math.max(0, Math.min(5, Number(item?.resonance?.active_count || 0)));
+  const direction = item?.resonance?.direction;
+  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-[2px]">{WINDOWS.map((key, index) => <span className={`h-[7px] w-[9px] rounded-[1px] border ${index < active ? direction === "short" ? "border-risk/55 bg-risk/65" : "border-primary-500/60 bg-primary-500/70" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>;
 }
 
-function PanelHeader({ title, detail, action }: { title: string; detail?: string; action?: React.ReactNode }) {
-  return <div className="workstation-panel-header"><div className="min-w-0"><h2 className="truncate text-[12px] font-semibold text-text-primary">{title}</h2>{detail ? <p className="truncate text-[9px] text-text-muted">{detail}</p> : null}</div>{action}</div>;
+function PanelTitle({ title, meta, action }: { title: string; meta?: string; action?: React.ReactNode }) {
+  return <div className="workstation-panel-header"><div className="flex min-w-0 items-center gap-2"><h2 className="truncate text-[12px] font-bold text-text-primary">{title}</h2>{meta ? <span className="truncate font-mono text-[9px] text-text-muted">{meta}</span> : null}</div>{action}</div>;
 }
 
-function boardValue(item: CockpitBoardItem, boardKey?: string, mode?: RankMode): string {
-  const value = mode === "amount" && finite(item.magnitude_usd) !== null
-    ? Math.sign(finite(item.value) || 1) * Math.abs(finite(item.magnitude_usd) || 0)
-    : item.value;
-  if (mode === "strength") return finite(item.strength_percentile) === null ? "—" : `P${Math.round(Number(item.strength_percentile))}`;
-  if (item.unit === "usd" || (mode === "amount" && finite(item.magnitude_usd) !== null)) return money(value);
-  if (item.unit === "score") return finite(value) === null ? "—" : `${Number(value) > 0 ? "+" : ""}${Number(value).toFixed(1)}`;
-  return percent(value, item.unit === "percent_per_cycle" ? 3 : 2);
+function RankBadge({ label, rank, title }: { label: string; rank?: number; title?: string }) {
+  return <span className="rounded-[3px] border border-border-subtle bg-surface-low px-1 py-[1px] text-[8px] leading-3 text-text-muted" title={title}>{label} <b className="font-mono font-semibold text-text-secondary">#{rank || "—"}</b></span>;
 }
 
-function MomentumSide({ items, boardKey, mode }: { items?: CockpitBoardItem[]; boardKey?: string; mode: RankMode }) {
-  return (
-    <div className="min-w-0">
-      {(items || []).slice(0, 6).map((item, index) => (
-        <Link className="flex h-[27px] items-center gap-2 border-b border-border-subtle/70 px-2 text-[10px] last:border-0 hover:bg-surface-container/60" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
-          <span className="w-4 shrink-0 text-right font-mono text-[9px] text-text-muted">{index + 1}</span>
-          <span className="min-w-0 flex-1 truncate font-semibold text-text-primary">{item.coin || item.symbol || "—"}</span>
-          <span className={`table-number shrink-0 ${tone(item.value)}`}>{boardValue(item, boardKey, mode)}</span>
-        </Link>
-      ))}
-      {!(items || []).length ? <div className="grid h-[81px] place-items-center text-[10px] text-text-muted">窗口数据积累中</div> : null}
-    </div>
-  );
+function fallbackEvents(items: RealtimeIntelligenceItem[]): RealtimeAnomalyEvent[] {
+  return items.flatMap((item) => {
+    const window = item.windows?.["5m"];
+    const events: RealtimeAnomalyEvent[] = [];
+    const price = finite(window?.price_change_pct);
+    if (price !== null && Math.abs(price) >= 0.6) events.push({ id: `${item.symbol}:price`, symbol: item.symbol, coin: item.coin, observed_at: item.observed_at, window: "5m", event_type: price > 0 ? "price_up" : "price_down", label: price > 0 ? "价格暴涨" : "价格暴跌", direction: price > 0 ? "long" : "short", value: price, change_pct: price, rankings: item.rankings });
+    const cvd = finite(window?.cvd_usd);
+    if (cvd !== null && Math.abs(cvd) >= 1_000) events.push({ id: `${item.symbol}:flow`, symbol: item.symbol, coin: item.coin, observed_at: item.observed_at, window: "5m", event_type: cvd > 0 ? "perp_inflow" : "perp_outflow", label: cvd > 0 ? "合约净流入" : "合约净流出", direction: cvd > 0 ? "long" : "short", value: cvd, value_usd: cvd, change_pct: window?.cvd_ratio_pct, rankings: item.rankings });
+    return events;
+  }).slice(0, 80);
 }
 
-function MomentumBoard({ board, mode }: { board?: CockpitBoard; mode: RankMode }) {
-  const positive = mode === "amount" ? board?.amount_positive || board?.positive : board?.strength_positive || board?.positive;
-  const negative = mode === "amount" ? board?.amount_negative || board?.negative : board?.strength_negative || board?.negative;
-  return (
-    <section className="workstation-panel min-w-0">
-      <PanelHeader detail={`覆盖 ${board?.coverage || 0} · ${mode === "amount" ? "绝对量" : "横截面分位"}`} title={board?.title || "数据待加载"} />
-      <div className="grid grid-cols-2 divide-x divide-border-subtle">
-        <div><div className="h-6 border-b border-border-subtle px-2 pt-1 text-[9px] font-semibold text-good">{positive?.title || "上行"}</div><MomentumSide boardKey={board?.key} items={positive?.items} mode={mode} /></div>
-        <div><div className="h-6 border-b border-border-subtle px-2 pt-1 text-[9px] font-semibold text-risk">{negative?.title || "下行"}</div><MomentumSide boardKey={board?.key} items={negative?.items} mode={mode} /></div>
-      </div>
-    </section>
-  );
+function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: string }) {
+  const filtered = events.filter((event) => !query || String(event.symbol || "").includes(query));
+  return <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">
+    {filtered.map((event, index) => {
+      const positive = event.direction === "long";
+      const primaryValue = event.value_usd !== null && event.value_usd !== undefined ? money(event.value_usd) : percent(event.value);
+      const self = event.rankings?.self;
+      const strength = event.rankings?.market_strength;
+      const absolute = event.rankings?.market_absolute;
+      return <Link className="block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
+        <div className="flex items-center gap-1.5">
+          <span className="w-[33px] shrink-0 font-mono text-[8px] tabular-nums text-text-muted">{clock(event.observed_at)}</span>
+          <CoinIcon coin={event.coin}/><span className="min-w-0 flex-1 truncate text-[10px] font-bold text-text-primary">${event.coin || event.symbol}</span>
+          <span className={`rounded-[3px] px-1.5 py-[2px] text-[9px] font-semibold ${positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{event.label || "异动"}</span>
+        </div>
+        <div className="mt-1 flex items-baseline justify-between gap-2 pl-[57px] text-[9px]"><span className="text-text-muted">{event.window || "5m"} 内 · {event.metric === "volume" ? "成交量" : event.metric === "price" ? "价格" : event.metric === "liquidation" ? "爆仓额" : "主动资金"}</span><span className={`font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{primaryValue} {event.change_pct !== null && event.change_pct !== undefined && event.value_usd !== null && event.value_usd !== undefined ? `(${percent(event.change_pct, 1)})` : ""}</span></div>
+        <div className="mt-1 flex gap-1 pl-[57px]"><RankBadge label="自身" rank={self?.rank} title={self?.method}/><RankBadge label="全场强度" rank={strength?.rank} title={strength?.method}/><RankBadge label="全场量级" rank={absolute?.rank} title={absolute?.method}/></div>
+      </Link>;
+    })}
+    {!filtered.length ? <div className="grid h-28 place-items-center text-[10px] text-text-muted">{query ? `没有找到 ${query} 的异动` : "暂无异动事件 · 正在扫描"}</div> : null}
+  </div>;
 }
 
-function EventFeed({ items, query }: { items: RealtimeIntelligenceItem[]; query: string }) {
-  const filtered = items.filter((item) => !query || String(item.symbol || "").includes(query));
-  return (
-    <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">
-      {filtered.map((item) => {
-        const analysis = item.surge?.triggered ? item.surge : item.ambush?.triggered ? item.ambush : item.surge;
-        const label = item.surge?.triggered ? "异动" : item.ambush?.triggered ? "埋伏" : "观察";
-        return (
-          <Link className="block border-b border-border-subtle px-2.5 py-2 hover:bg-surface-container/55" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}>
-            <div className="flex items-center gap-2"><span className="font-mono text-[9px] text-text-muted">{clock(item.observed_at)}</span><span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-text-primary">{item.coin || item.symbol}</span><DirectionPill direction={analysis?.direction} /></div>
-            <div className="mt-1 flex items-center justify-between gap-2"><span className="text-[9px] text-text-muted">{label} · 分值 {finite(analysis?.score)?.toFixed(1) || "—"}</span><ResonanceDots item={item} /></div>
-            <div className="mt-1 flex gap-2 font-mono text-[9px]"><span className={tone(item.windows?.["5m"]?.cvd_usd)}>CVD {money(item.windows?.["5m"]?.cvd_usd)}</span><span className={tone(item.windows?.["5m"]?.price_change_pct)}>价 {percent(item.windows?.["5m"]?.price_change_pct)}</span></div>
-          </Link>
-        );
-      })}
-      {!filtered.length ? <div className="px-5 py-14 text-center text-[11px] leading-5 text-text-muted">没有匹配的实时异动。数据不足时保持空状态，不用模拟记录填充。</div> : null}
-    </div>
-  );
+function boardValue(item: CockpitBoardItem, mode: RankMode) {
+  if (mode === "strength") return finite(item.strength_percentile) === null ? "—" : `${Math.round(Number(item.strength_percentile))}分`;
+  const raw = finite(item.magnitude_usd) !== null ? Math.sign(finite(item.value) || 1) * Math.abs(Number(item.magnitude_usd)) : item.value;
+  return item.unit === "usd" || finite(item.magnitude_usd) !== null ? money(raw) : percent(raw, item.unit === "percent_per_cycle" ? 3 : 2);
 }
 
-function RuleBoard({ title, items, mode }: { title: string; items: RealtimeIntelligenceItem[]; mode: "surge" | "ambush" | "total" }) {
-  return (
-    <section className="workstation-panel min-w-0">
-      <PanelHeader detail={mode === "total" ? "近 24h 封闭窗口累计" : "规则候选 · 非收益预测"} title={title} />
-      <div className="workstation-scroll h-[194px] overflow-y-auto">
-        {items.map((item, index) => {
-          const analysis = mode === "surge" ? item.surge : item.ambush;
-          const value = mode === "total" ? `${item.anomaly_24h?.count || 0} 次` : `${finite(analysis?.score)?.toFixed(1) || "—"}`;
-          return <Link className="flex h-[28px] items-center gap-2 border-b border-border-subtle px-2 text-[10px] hover:bg-surface-container/55" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}><span className="w-4 text-right font-mono text-[9px] text-text-muted">{index + 1}</span><span className="min-w-0 flex-1 truncate font-semibold text-text-primary">{item.coin}</span>{mode !== "total" ? <DirectionPill direction={analysis?.direction} /> : null}<span className={`table-number ${mode === "total" ? "text-primary-700" : tone(analysis?.direction === "short" ? -Number(analysis?.score || 0) : analysis?.score)}`}>{value}</span></Link>;
-        })}
-        {!items.length ? <div className="grid h-24 place-items-center px-4 text-center text-[10px] text-text-muted">当前没有达到阈值的候选</div> : null}
-      </div>
-    </section>
-  );
+function MomentumList({ items, mode, positive, realtimeBySymbol, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; limit?: number }) {
+  return <div>{(items || []).slice(0, limit).map((item, index) => <Link className={`grid h-[23px] grid-cols-[14px_16px_minmax(42px,1fr)_46px_auto] items-center gap-1 border-b border-border-subtle/75 px-1.5 text-[8px] last:border-0 hover:bg-primary-50/50 ${positive ? "bg-good/[.025]" : "bg-risk/[.025]"}`} href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+    <span className="text-right font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><RankBlocks item={realtimeBySymbol.get(String(item.symbol || ""))}/><span className={`min-w-[56px] text-right font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
+  </Link>)}{!(items || []).length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
 }
 
-function FundingMonitor({ items }: { items: FundsAsset[] }) {
-  return <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">{items.slice(0, 9).map((item) => <Link className="flex h-8 items-center gap-2 border-b border-border-subtle px-2.5 text-[10px] hover:bg-surface-container/55" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}><span className="min-w-0 flex-1 truncate font-semibold text-text-primary">{item.coin}</span><span className={`table-number ${tone(item.funding_pct)}`}>{percent(item.funding_pct, 4)}</span><span className="w-14 truncate text-right text-[9px] text-text-muted">OI {money(item.oi_usd, false)}</span></Link>)}{!items.length ? <div className="grid h-24 place-items-center text-[10px] text-text-muted">费率事实暂不可用</div> : null}</div>;
+function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
+  const labels = BOARD_LABELS[String(board?.key || "")] || { positive: board?.positive?.title || "上行", negative: board?.negative?.title || "下行" };
+  const amountPositive = board?.amount_positive || board?.positive;
+  const amountNegative = board?.amount_negative || board?.negative;
+  const strengthPositive = board?.strength_positive || board?.positive;
+  const strengthNegative = board?.strength_negative || board?.negative;
+  return <section className="overflow-hidden rounded-[2px] border border-border-subtle bg-surface-panel">
+    <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-low text-[8px] font-semibold"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
+    <div className="grid h-[23px] grid-cols-2 border-y border-border-subtle bg-surface-low/80 text-[8px] font-semibold"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={strengthPositive?.items} limit={3} mode="strength" positive realtimeBySymbol={realtimeBySymbol}/><MomentumList items={strengthNegative?.items} limit={3} mode="strength" positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
+  </section>;
+}
+
+function RuleBoard({ title, subtitle, items, mode }: { title: string; subtitle: string; items: RealtimeIntelligenceItem[]; mode: "surge" | "ambush" | "total" }) {
+  return <section className="workstation-panel flex min-h-0 flex-col"><PanelTitle title={title}/><div className="border-b border-border-subtle px-2 py-1 text-[8px] text-text-muted">{subtitle}</div><div className="workstation-scroll min-h-0 flex-1 overflow-auto">{items.map((item, index) => {
+    const analysis = mode === "ambush" ? item.ambush : item.surge;
+    const value = mode === "total" ? `${item.anomaly_24h?.count || 0}次` : `${finite(analysis?.score)?.toFixed(1) || "—"}分`;
+    const positive = mode === "total" ? Number(item.anomaly_24h?.long_count || 0) >= Number(item.anomaly_24h?.short_count || 0) : analysis?.direction !== "short";
+    return <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(40px,1fr)_48px_auto] items-center gap-1 border-b border-border-subtle/75 px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold text-text-primary">{item.coin}</span><RankBlocks item={item}/><span className={`font-mono font-semibold ${positive ? "text-good" : "text-risk"}`}>{value}</span></Link>;
+  })}{!items.length ? <div className="grid h-20 place-items-center text-[9px] text-text-muted">暂无符合条件的币种</div> : null}</div></section>;
 }
 
 export default function RadarPage() {
   const [momentum, setMomentum] = useState<Partial<Record<WindowKey, RadarBoards>>>({});
   const [realtime, setRealtime] = useState<RealtimeIntelligencePayload>({});
   const [overview, setOverview] = useState<MarketOverview>({});
-  const [funding, setFunding] = useState<FundsAsset[]>([]);
-  const [windowKey, setWindowKey] = useState<WindowKey>("1h");
-  const [rankMode, setRankMode] = useState<RankMode>("amount");
+  const [windowKey, setWindowKey] = useState<WindowKey>("15m");
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [updatedAt, setUpdatedAt] = useState("");
   const [selectedSignal, setSelectedSignal] = useState("");
 
   const load = useCallback(async (bypassCache = false) => {
@@ -173,22 +163,14 @@ export default function RadarPage() {
     setError("");
     try {
       const options = { bypassCache };
-      const [windowPayload, intelligence, market, fundingAssets] = await Promise.all([
-        getWorkstationRadarMomentumWindows(8, options),
-        getRealtimeIntelligence(30, options),
-        getMarketOverview(3600, options),
-        getFundsAssets({ window_sec: 3600, market_type: "futures", sort: "funding_pct", direction: "desc", page_size: 20 }, options)
+      const [windowPayload, intelligence, market] = await Promise.all([
+        getWorkstationRadarMomentumWindows(10, options), getRealtimeIntelligence(30, options), getMarketOverview(900, options),
       ]);
       setMomentum(windowPayload.windows as Partial<Record<WindowKey, RadarBoards>>);
-      setRealtime(intelligence);
-      setOverview(market);
-      setFunding(fundingAssets.items || []);
-      setUpdatedAt(intelligence.observed_at || intelligence.generated_at || market.generated_at || "");
+      setRealtime(intelligence); setOverview(market);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "雷达工作站加载失败");
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -198,84 +180,56 @@ export default function RadarPage() {
     window.addEventListener("popstate", syncFromLocation);
     return () => window.removeEventListener("popstate", syncFromLocation);
   }, []);
-  useEffect(() => {
-    if (paused) return;
-    const timer = window.setInterval(() => void load(true), 15_000);
-    return () => window.clearInterval(timer);
-  }, [load, paused]);
-
-  const items = realtime.items || [];
-  const boards = momentum[windowKey]?.boards || [];
-  const surge = useMemo(() => items.filter((item) => item.surge?.triggered).sort((a, b) => Number(b.surge?.score || 0) - Number(a.surge?.score || 0)).slice(0, 5), [items]);
-  const ambush = useMemo(() => items.filter((item) => item.ambush?.triggered).sort((a, b) => Number(b.ambush?.score || 0) - Number(a.ambush?.score || 0)).slice(0, 8), [items]);
-  const total = useMemo(() => items.filter((item) => Number(item.anomaly_24h?.count || 0) > 0).sort((a, b) => Number(b.anomaly_24h?.count || 0) - Number(a.anomaly_24h?.count || 0)).slice(0, 14), [items]);
-  const whales = useMemo(() => [...items].sort((a, b) => Number(b.windows?.["5m"]?.long_liquidation_usd || 0) + Number(b.windows?.["5m"]?.short_liquidation_usd || 0) - Number(a.windows?.["5m"]?.long_liquidation_usd || 0) - Number(a.windows?.["5m"]?.short_liquidation_usd || 0)).slice(0, 8), [items]);
-  const market = overview.overview || {};
+  useEffect(() => { if (paused) return; const timer = window.setInterval(() => void load(true), 15_000); return () => window.clearInterval(timer); }, [load, paused]);
 
   const selectSignal = useCallback((signalId: number | string) => {
     const value = String(signalId || "");
     const url = new URL(window.location.href);
-    if (value) url.searchParams.set("signal", value);
-    else url.searchParams.delete("signal");
+    if (value) url.searchParams.set("signal", value); else url.searchParams.delete("signal");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     setSelectedSignal(value);
   }, []);
 
-  return (
-    <>
-      <div aria-busy={loading} className="workstation-page grid gap-[10px] p-[10px] min-[1160px]:grid-cols-[268px_minmax(0,1fr)_268px]" data-testid="radar-workstation">
-      <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
-        <PanelHeader action={<span className={`h-1.5 w-1.5 rounded-full ${error ? "bg-risk" : loading ? "animate-pulse bg-warn" : "bg-good"}`} />} detail={`${items.length} 币种 · ${paused ? "已暂停" : "15s 刷新"}`} title="异动流" />
-        <div className="grid grid-cols-[1fr_auto] gap-1 border-b border-border-subtle p-2">
-          <input aria-label="筛选异动币种" className="h-8 min-w-0 rounded-sm border border-border-subtle bg-surface-low px-2 text-[11px] uppercase text-text-primary outline-none focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="筛选 BTC" value={query} />
-          <button className="h-8 rounded-sm border border-border-subtle bg-surface-low px-2 text-[10px] font-semibold text-text-secondary hover:text-text-primary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button>
-        </div>
-        {error ? <div className="border-b border-risk/30 bg-risk/10 px-2 py-1.5 text-[9px] text-risk">{error} · 保留上次成功数据</div> : null}
-        <EventFeed items={items} query={query} />
-        <div className="flex h-8 shrink-0 items-center justify-between border-t border-border-subtle px-2 text-[9px] text-text-muted"><span>{clock(updatedAt)} UTC</span><button className="font-semibold text-primary-700" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "刷新中" : "立即刷新"}</button></div>
-      </aside>
+  const items = realtime.items || [];
+  const events = useMemo(() => realtime.anomaly_events?.length ? realtime.anomaly_events : fallbackEvents(items), [items, realtime.anomaly_events]);
+  const boards = momentum[windowKey]?.boards || [];
+  const realtimeBySymbol = useMemo(() => new Map(items.map((item) => [String(item.symbol || ""), item])), [items]);
+  const surge = useMemo(() => items.filter((item) => item.surge?.triggered).sort((a, b) => Number(b.surge?.score || 0) - Number(a.surge?.score || 0)).slice(0, 5), [items]);
+  const ambush = useMemo(() => items.filter((item) => item.ambush?.triggered).sort((a, b) => Number(b.ambush?.score || 0) - Number(a.ambush?.score || 0)).slice(0, 8), [items]);
+  const total = useMemo(() => items.filter((item) => Number(item.anomaly_24h?.count || 0) > 0).sort((a, b) => Number(b.anomaly_24h?.count || 0) - Number(a.anomaly_24h?.count || 0)).slice(0, 14), [items]);
+  const market = overview.overview || {};
+  const flowBoard = boards.find((board) => board.key === "futures_flow");
+  const strengthFlow = flowBoard?.strength_positive?.items || flowBoard?.positive?.items || [];
+  const tendency = [
+    ...(flowBoard?.amount_negative?.items || flowBoard?.negative?.items || []).slice(0, 5).map((item) => ({ ...item, positive: false })),
+    ...(flowBoard?.amount_positive?.items || flowBoard?.positive?.items || []).slice(0, 3).map((item) => ({ ...item, positive: true }))
+  ];
 
-      <main className="grid min-h-0 gap-[8px] grid-rows-[minmax(0,1fr)_232px]" data-testid="radar-hot-money">
-        <section className="workstation-panel flex min-h-0 flex-col">
-          <PanelHeader action={<div className="flex rounded-sm border border-border-subtle bg-surface-canvas p-0.5"><button aria-pressed={rankMode === "amount"} className={`h-6 rounded-[2px] px-2 text-[9px] font-semibold ${rankMode === "amount" ? "bg-surface-container text-text-primary" : "text-text-muted"}`} onClick={() => setRankMode("amount")} type="button">资金合流</button><button aria-pressed={rankMode === "strength"} className={`h-6 rounded-[2px] px-2 text-[9px] font-semibold ${rankMode === "strength" ? "bg-surface-container text-text-primary" : "text-text-muted"}`} onClick={() => setRankMode("strength")} type="button">资金力度</button></div>} detail="价格 · OI · 合约 CVD · 现货 CVD" title="热钱五窗口" />
-          <div aria-label="五窗口共振" className="flex h-9 shrink-0 items-center gap-1 border-b border-border-subtle px-2" role="group">
-            {WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-12 rounded-sm px-3 font-mono text-[10px] font-semibold ${windowKey === key ? "bg-primary-500 text-on-primary" : "bg-surface-low text-text-muted hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}
-            <span className="ml-auto text-[9px] text-text-muted">封闭窗口 · 独立口径</span>
-          </div>
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 p-2 sm:grid-cols-2">
-            {["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} mode={rankMode} />)}
-          </div>
-        </section>
-        <div className="grid min-h-0 grid-cols-1 gap-2 min-[700px]:grid-cols-[0.9fr_1.2fr_0.9fr]">
-          <RuleBoard items={surge} mode="surge" title="Surge · 1h 滚动" />
-          <RuleBoard items={total} mode="total" title="24h 异动总榜" />
-          <RuleBoard items={ambush} mode="ambush" title="埋伏池" />
-        </div>
-      </main>
+  return <><div aria-busy={loading} className="workstation-page mercu-radar-grid" data-testid="radar-workstation">
+    <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
+      <PanelTitle action={<span className="inline-flex items-center gap-1 text-[8px] font-semibold text-good"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good"/>LIVE</span>} meta={clock(realtime.observed_at || realtime.generated_at)} title="异动监控"/>
+      <div className="grid h-[34px] grid-cols-[1fr_86px] items-center gap-2 border-b border-border-subtle bg-primary-50 px-2.5"><span className="truncate text-[10px] font-semibold text-primary-700">✦ AI 全市场扫描</span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
+      {error ? <div className="border-b border-risk/20 bg-risk/5 px-2 py-1 text-[8px] text-risk">{error} · 保留上次数据</div> : null}
+      <EventFeed events={events} query={query}/>
+      <div className="flex h-7 shrink-0 items-center border-t border-border-subtle px-2 text-[8px] text-text-muted"><span>{events.length} 条异动 · {paused ? "已暂停" : "15s 增量"}</span><button className="ml-auto font-semibold text-text-secondary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button><button className="ml-2 font-semibold text-primary-600" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "更新中…" : "立即更新"}</button></div>
+    </aside>
 
-      <aside className="grid min-h-0 gap-2 grid-rows-[154px_minmax(0,1fr)_minmax(0,1fr)]" data-testid="radar-side-intelligence">
-        <section className="workstation-panel">
-          <PanelHeader detail={`覆盖 ${overview.coverage?.assets || 0} 资产`} title="全场态势" />
-          <div className="grid grid-cols-2 gap-px bg-border-subtle">
-            {[
-              ["市场广度", percent(market.breadth_pct), market.breadth_pct],
-              ["现货净流", money(market.spot_net_flow_usd), market.spot_net_flow_usd],
-              ["合约净流", money(market.futures_net_flow_usd), market.futures_net_flow_usd],
-              ["OI 变化", money(market.oi_net_change_usd), market.oi_net_change_usd]
-            ].map(([label, value, raw]) => <div className="bg-surface-panel px-2 py-2" key={String(label)}><div className="text-[9px] text-text-muted">{label}</div><div className={`table-number mt-0.5 truncate text-[11px] font-semibold ${tone(raw)}`}>{String(value)}</div></div>)}
-          </div>
-        </section>
-        <section className="workstation-panel flex min-h-0 flex-col">
-          <PanelHeader detail="封闭 5m 清算额与主动成交" title="鲸鱼监控" />
-          <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">{whales.map((item) => { const long = Number(item.windows?.["5m"]?.long_liquidation_usd || 0); const short = Number(item.windows?.["5m"]?.short_liquidation_usd || 0); return <Link className="block border-b border-border-subtle px-2.5 py-2 hover:bg-surface-container/55" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}><div className="flex items-center"><span className="flex-1 text-[10px] font-semibold text-text-primary">{item.coin}</span><span className="table-number text-[9px] text-primary-700">{money(long + short, false)}</span></div><div className="mt-1 flex justify-between text-[9px]"><span className="text-risk">多爆 {money(long, false)}</span><span className="text-good">空爆 {money(short, false)}</span></div></Link>; })}{!whales.length ? <div className="grid h-24 place-items-center text-[10px] text-text-muted">实时清算样本积累中</div> : null}</div>
-        </section>
-        <section className="workstation-panel flex min-h-0 flex-col">
-          <PanelHeader detail="费率与单所 OI 事实" title="费率 / 基差监控" />
-          <FundingMonitor items={funding} />
-        </section>
-      </aside>
-      </div>
-      {selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal} /> : null}
-    </>
-  );
+    <main className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-hot-money">
+      <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10">
+        <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} title="热钱观察榜单"/>
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
+      </section>
+      <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5"><RuleBoard items={surge} mode="surge" subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>
+    </main>
+
+    <aside className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-side-intelligence">
+      <section className="workstation-panel"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="资金倾向性"/>
+        <div className="border-b border-border-subtle px-2 py-1.5 text-[9px] font-bold text-text-primary">资金流</div>
+        {tendency.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className={`font-semibold ${item.positive ? "text-good" : "text-risk"}`}>{item.positive ? "流入" : "流出"}</span></Link>)}
+        <div className="border-y border-border-subtle bg-surface-low px-2 py-1.5 text-[9px] font-bold text-text-primary">资金力度</div>
+        {strengthFlow.slice(0, 5).map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className={tone(item.value)}>{Number(item.value || 0) >= 0 ? "流入" : "流出"}</span></Link>)}
+      </section>
+      <section className="workstation-panel mt-1.5 overflow-hidden"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="全场态势"/><div>{[["合约资金流入", money(market.futures_net_flow_usd), market.futures_net_flow_usd],["现货资金流入", money(market.spot_net_flow_usd), market.spot_net_flow_usd],["持仓量净增长", money(market.oi_net_change_usd), market.oi_net_change_usd],["全场涨跌", `涨 ${market.advancing || 0} · 跌 ${market.declining || 0}`, market.breadth_pct]].map(([label, value, raw]) => <div className="border-b border-border-subtle px-2 py-2 last:border-0" key={String(label)}><div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold text-text-secondary">{label}</span><span className={`font-mono text-[10px] font-semibold ${tone(raw)}`}>{String(value)}</span></div><div className="mt-1 text-[7px] text-text-muted">较上一周期 · 基于可用市场样本滚动统计</div></div>)}</div></section>
+    </aside>
+  </div>{selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal}/> : null}</>;
 }

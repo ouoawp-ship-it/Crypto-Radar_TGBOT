@@ -1334,10 +1334,11 @@ def build_realtime_market_services(settings: Any) -> list[BinanceRealtimeMarketS
     return services
 
 
-def run_realtime_market_service(settings: Any) -> int:
+def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> int:
     services = build_realtime_market_services(settings)
     stop = threading.Event()
     failures: list[str] = []
+    deadline = time.monotonic() + max(0.0, float(duration_sec or 0)) if duration_sec else 0.0
 
     def run_one(service: BinanceRealtimeMarketService) -> None:
         try:
@@ -1357,6 +1358,9 @@ def run_realtime_market_service(settings: Any) -> int:
         for thread in threads:
             thread.start()
         while not stop.wait(1):
+            if deadline and time.monotonic() >= deadline:
+                stop.set()
+                break
             if not any(thread.is_alive() for thread in threads):
                 break
     except KeyboardInterrupt:

@@ -5,63 +5,95 @@ import { getInfoFeed } from "@/lib/api";
 import type { InfoFeedPayload, NewsEvent } from "@/lib/types";
 
 const CHANNELS = [
-  { key: "news", title: "新闻", subtitle: "授权中文与官方事件", query: {} },
-  { key: "english", title: "English", subtitle: "Authorized English sources", query: { language: "en" } },
-  { key: "kol", title: "KOL", subtitle: "已授权观点源", query: { source_type: "kol" } },
-  { key: "plaza", title: "Binance 广场", subtitle: "已授权广场源", query: { source_type: "plaza" } }
+  { key: "news", title: "聚合资讯", source: "中文源", query: {} },
+  { key: "english", title: "英文流资讯", source: "English Sources", query: { language: "en" } },
+  { key: "kol", title: "KOL聚合资讯", source: "精选 KOL", query: { source_type: "kol" } },
+  { key: "plaza", title: "币安广场情绪", source: "公开广场", query: { source_type: "plaza" } }
 ] as const;
 
 function clock(value?: string) {
   if (!value) return "--:--";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--:--";
-  const sameDay = new Date().toDateString() === date.toDateString();
-  return sameDay
-    ? date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
-    : date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
 }
 
-function eventTone(item: NewsEvent) {
-  if (item.event_kind === "risk") return "border-risk/35 bg-risk/5";
-  if (item.event_kind === "opportunity") return "border-good/30 bg-good/5";
-  return "border-border-subtle";
+function isWithin(value: string | undefined, hours: number) {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= hours * 3_600_000;
 }
 
-function FeedItem({ item }: { item: NewsEvent }) {
-  const content = (
-    <article className={`border-b px-3 py-2.5 transition hover:bg-surface-container/45 ${eventTone(item)}`}>
-      <div className="flex items-center gap-2 text-[9px] text-text-muted">
-        <span className="font-mono">{clock(item.published_at)}</span>
-        <span className="min-w-0 flex-1 truncate">{item.source || "未知来源"}</span>
-        {item.importance === "high" ? <span className="rounded-sm bg-risk/12 px-1 py-0.5 font-bold text-risk">重要</span> : null}
-      </div>
-      <h3 className="mt-1.5 text-[11px] font-semibold leading-[1.45] text-text-primary">{item.title || "未命名事件"}</h3>
-      {item.ai_analysis?.fact_summary || item.summary ? <p className="mt-1 line-clamp-2 text-[10px] leading-[1.55] text-text-secondary">{item.ai_analysis?.fact_summary || item.summary}</p> : null}
-      <div className="mt-2 flex items-center gap-1.5">
-        {(item.symbols || []).slice(0, 3).map((symbol) => <span className="rounded-sm border border-border-subtle bg-surface-low px-1 py-0.5 font-mono text-[8px] text-primary-700" key={symbol}>{symbol.replace("USDT", "")}</span>)}
-        <span className="ml-auto text-[8px] text-text-muted">{item.rights_status === "official_link_only" ? "官方链接" : item.rights_status || "来源待核验"}</span>
-      </div>
-    </article>
-  );
+function summaryText(item?: NewsEvent) {
+  return item?.ai_analysis?.fact_summary || item?.summary || item?.title || "暂无新增关键信息";
+}
+
+function channelDigest(payload?: InfoFeedPayload) {
+  const items = payload?.items || [];
+  const select = (hours: number) => items.find((item) => isWithin(item.published_at, hours)) || items[0];
+  const high = items.find((item) => item.importance === "high") || items[0];
+  return {
+    total: Number(payload?.pagination?.total || items.length),
+    summary: summaryText(high),
+    eight: summaryText(select(8)),
+    four: summaryText(select(4)),
+    one: summaryText(select(1))
+  };
+}
+
+function CoinIcon({ coin, size = 17 }: { coin?: string; size?: number }) {
+  const label = String(coin || "?").replace("USDT", "").slice(0, 2).toUpperCase();
+  const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
+  return <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-full text-[6px] font-bold text-white" style={{ width: size, height: size, background: `linear-gradient(145deg,hsl(${hue} 72% 58%),hsl(${(hue + 32) % 360} 68% 43%))` }}>{label}</span>;
+}
+
+function FeedItem({ item, english = false }: { item: NewsEvent; english?: boolean }) {
+  const risk = item.event_kind === "risk";
+  const opportunity = item.event_kind === "opportunity";
+  const content = <article className={`border-b border-border-subtle px-2.5 py-2 transition-colors hover:bg-primary-50/45 ${risk ? "border-l-2 border-l-risk" : opportunity ? "border-l-2 border-l-good" : "border-l-2 border-l-transparent"}`}>
+    <div className="flex items-center gap-1.5 text-[8px] text-text-muted"><span className="font-mono tabular-nums">{clock(item.published_at)}</span><span className="min-w-0 flex-1 truncate">{item.source || "未知来源"}</span>{item.importance === "high" ? <span className="rounded-[3px] bg-risk/10 px-1 py-px font-semibold text-risk">高影响</span> : null}</div>
+    <h3 className={`mt-1 text-[10px] font-semibold leading-[1.45] text-text-primary ${english ? "line-clamp-3" : "line-clamp-2"}`}>{item.title || item.summary || "未命名资讯"}</h3>
+    {item.summary && item.summary !== item.title ? <p className="mt-1 line-clamp-2 text-[9px] leading-[1.5] text-text-secondary">{item.summary}</p> : null}
+    <div className="mt-1.5 flex items-center gap-1">{(item.symbols || []).slice(0, 4).map((symbol) => <span className="rounded-[3px] bg-primary-50 px-1 py-px font-mono text-[7px] font-semibold text-primary-700" key={symbol}>${symbol.replace("USDT", "")}</span>)}<span className="ml-auto text-[7px] text-text-muted">{item.source_type || item.language || "公开源"}</span></div>
+    {item.ai_analysis?.fact_summary ? <details className="mt-1.5 rounded-[3px] bg-surface-low px-2 py-1"><summary className="cursor-pointer text-[8px] font-semibold text-primary-600">✦ AI 解读</summary><p className="mt-1 text-[8px] leading-[1.5] text-text-secondary">{item.ai_analysis.fact_summary}</p>{item.ai_analysis.possible_impact ? <p className="mt-1 text-[8px] leading-[1.5] text-text-muted">可能影响：{item.ai_analysis.possible_impact}</p> : null}</details> : null}
+  </article>;
   return item.url ? <a href={item.url} rel="noreferrer" target="_blank">{content}</a> : content;
 }
 
-function InfoColumn({ title, subtitle, payload, loading }: { title: string; subtitle: string; payload?: InfoFeedPayload; loading: boolean }) {
+function InfoColumn({ title, payload, loading, showDigest, english = false, kol = false }: { title: string; payload?: InfoFeedPayload; loading: boolean; showDigest: boolean; english?: boolean; kol?: boolean }) {
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const items = (payload?.items || []).filter((item) => !query || `${item.title || ""} ${item.summary || ""} ${(item.symbols || []).join(" ")}`.toLowerCase().includes(query.toLowerCase()));
+  const digest = channelDigest(payload);
+  return <section className="workstation-panel flex min-h-0 min-w-0 flex-col">
+    <div className="grid h-[40px] shrink-0 grid-cols-[auto_minmax(70px,1fr)_auto] items-center gap-1.5 border-b border-border-subtle bg-surface-low px-2"><h2 className="whitespace-nowrap text-[10px] font-bold text-text-primary">{title}</h2><div className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label={`搜索${title}`} className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1.5 text-[8px] text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value)} placeholder="搜索…" value={query}/></div><span className="inline-flex items-center gap-1 rounded-full bg-good/10 px-1.5 py-0.5 text-[7px] font-semibold text-good"><span className="h-1 w-1 animate-pulse rounded-full bg-good"/>LIVE</span></div>
+    {showDigest ? <button aria-expanded={expanded} className={`${expanded ? "min-h-[72px]" : "h-[43px]"} grid shrink-0 grid-cols-[38px_1fr_auto] items-start gap-1 border-b border-border-subtle bg-[#faf8ff] px-2 py-1.5 text-left`} onClick={() => setExpanded((value) => !value)} type="button"><span className="rounded-[2px] bg-primary-50 px-1 py-0.5 text-center text-[7px] font-semibold text-primary-600">AI 解读</span><span className={`${expanded ? "" : "line-clamp-2"} text-[8px] leading-[1.45] text-text-secondary`}>{digest.summary}</span><span className="text-[7px] font-semibold text-primary-600">{expanded ? "收起" : "展开"}</span></button> : null}
+    <div className="workstation-scroll min-h-0 flex-1 overflow-auto">{items.map((item, index) => <FeedItem english={english} item={kol ? { ...item, source: item.source || "KOL" } : item} key={item.event_id || `${item.title}-${index}`}/>)}{loading && !items.length ? Array.from({ length: 7 }).map((_, index) => <div className="h-[76px] animate-pulse border-b border-border-subtle bg-surface-low/65" key={index}/>) : null}{!loading && !items.length ? <div className="grid h-36 place-items-center text-[9px] text-text-muted">{query ? "没有匹配的资讯" : "暂无公开来源资讯"}</div> : null}</div>
+  </section>;
+}
+
+type PlazaRank = { symbol: string; count: number; positive: number; negative: number; summary: string };
+
+function plazaRanks(items: NewsEvent[], hours: number): PlazaRank[] {
+  const ranks = new Map<string, PlazaRank>();
+  items.filter((item) => isWithin(item.published_at, hours)).forEach((item) => (item.symbols || []).forEach((raw) => {
+    const symbol = raw.replace(/USDT$/i, "").toUpperCase();
+    if (!symbol) return;
+    const current = ranks.get(symbol) || { symbol, count: 0, positive: 0, negative: 0, summary: summaryText(item) };
+    current.count += 1;
+    if (item.event_kind === "opportunity") current.positive += 1;
+    if (item.event_kind === "risk") current.negative += 1;
+    if (!current.summary) current.summary = summaryText(item);
+    ranks.set(symbol, current);
+  }));
+  return [...ranks.values()].sort((a, b) => b.count - a.count || b.positive - a.positive).slice(0, 12);
+}
+
+function PlazaColumn({ payload, loading, showDigest }: { payload?: InfoFeedPayload; loading: boolean; showDigest: boolean }) {
   const items = payload?.items || [];
-  return (
-    <section className="workstation-panel flex min-h-0 flex-col">
-      <div className="workstation-panel-header h-10">
-        <div><h2 className="text-[12px] font-semibold text-text-primary">{title}</h2><p className="text-[9px] text-text-muted">{subtitle}</p></div>
-        <div className="flex items-center gap-1.5"><span className={`h-1.5 w-1.5 rounded-full ${payload?.data_status === "ready" ? "bg-good" : payload?.data_status === "unavailable" ? "bg-risk" : "bg-warn"}`} /><span className="font-mono text-[9px] text-text-muted">{items.length}</span></div>
-      </div>
-      <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">
-        {items.map((item, index) => <FeedItem item={item} key={item.event_id || `${item.title}-${index}`} />)}
-        {loading && !items.length ? Array.from({ length: 8 }).map((_, index) => <div className="h-[88px] animate-pulse border-b border-border-subtle bg-surface-low/60" key={index} />) : null}
-        {!loading && !items.length ? <div className="grid h-full min-h-48 place-items-center px-6 text-center"><div><div className="text-[11px] font-semibold text-text-secondary">当前没有已授权内容</div><p className="mt-2 text-[9px] leading-5 text-text-muted">该信息源尚未接入或当前无事件；不会抓取受限全文填充。</p></div></div> : null}
-      </div>
-      {(payload?.warnings || []).length ? <div className="shrink-0 border-t border-warn/25 bg-warn/5 px-2 py-1 text-[8px] text-warn" title={(payload?.warnings || []).join("；")}>数据源有降级说明</div> : null}
-    </section>
-  );
+  const active = plazaRanks(items, 4);
+  const total = plazaRanks(items, 24);
+  return <section className="workstation-panel flex min-h-0 min-w-0 flex-col"><div className="flex h-[40px] shrink-0 items-center justify-between border-b border-border-subtle bg-surface-low px-2"><h2 className="text-[10px] font-bold text-text-primary">币安广场情绪</h2><span className="inline-flex items-center gap-1 rounded-full bg-good/10 px-1.5 py-0.5 text-[7px] font-semibold text-good"><span className="h-1 w-1 animate-pulse rounded-full bg-good"/>LIVE</span></div>{showDigest ? <div className="flex h-[43px] shrink-0 items-start gap-1 border-b border-border-subtle bg-[#fffaf0] px-2 py-1.5"><span className="rounded-[2px] bg-warn/10 px-1 py-0.5 text-[7px] font-semibold text-warn">AI 解读</span><p className="line-clamp-2 flex-1 text-[8px] leading-[1.45] text-text-secondary">散户情绪分化，多空高情绪币种实时归并；仅统计公开且可验证的广场信息。</p></div> : null}<div className="workstation-scroll min-h-0 flex-1 overflow-auto"><div className="flex h-7 items-center justify-between border-b border-border-subtle bg-surface-low px-2"><h3 className="text-[9px] font-bold">4h 活力榜</h3><span className="text-[7px] text-text-muted">Top 8</span></div>{active.slice(0, 8).map((item, index) => <div className="grid h-[34px] grid-cols-[18px_18px_minmax(0,1fr)_auto] items-center gap-1 border-b border-border-subtle px-2 text-[8px]" key={item.symbol}><span className="font-mono text-warn">{String(index + 1).padStart(2, "0")}</span><CoinIcon coin={item.symbol}/><span className="font-semibold">{item.symbol}<small className="ml-1 font-normal text-text-muted">{item.positive}多 · {item.negative}空</small></span><span className="font-mono font-semibold text-good">{item.count} 条</span></div>)}{!loading && !active.length ? <div className="grid h-20 place-items-center text-[8px] text-text-muted">真实广场源暂无 4h 样本</div> : null}<div className="flex h-7 items-center justify-between border-y border-border-subtle bg-surface-low px-2"><h3 className="text-[9px] font-bold">24h 总榜</h3><span className="text-[7px] text-text-muted">情绪分析</span></div>{total.slice(0, 8).map((item, index) => { const sentiment = item.positive >= item.negative ? "偏多" : "偏空"; return <article className="border-b border-border-subtle px-2 py-2" key={item.symbol}><div className="flex items-center gap-1.5"><span className="font-mono text-[8px] text-warn">{String(index + 1).padStart(2, "0")}</span><CoinIcon coin={item.symbol}/><b className="text-[9px]">${item.symbol}</b><span className={`rounded-[2px] px-1 text-[7px] ${sentiment === "偏多" ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{sentiment}</span><span className="ml-auto text-[7px] text-text-muted">{item.count} 条</span></div><p className="mt-1 line-clamp-2 text-[8px] leading-[1.45] text-text-secondary">{item.summary}</p></article>; })}</div></section>;
 }
 
 export default function InfoPage() {
@@ -69,51 +101,30 @@ export default function InfoPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState("");
+  const [disclaimer, setDisclaimer] = useState(false);
+  const [showDigest, setShowDigest] = useState(false);
 
   const load = useCallback(async (bypassCache = false) => {
-    setLoading(true);
-    setError("");
-    const results = await Promise.allSettled(CHANNELS.map(async (channel) => [
-      channel.key,
-      await getInfoFeed({ ...channel.query, page: 1, page_size: 50 }, { bypassCache })
-    ] as const));
+    setLoading(true); setError("");
+    const results = await Promise.allSettled(CHANNELS.map(async (channel) => [channel.key, await getInfoFeed({ ...channel.query, page: 1, page_size: 80 }, { bypassCache })] as const));
     const next: Record<string, InfoFeedPayload> = {};
     const failures: string[] = [];
-    results.forEach((result, index) => {
-      if (result.status === "fulfilled") next[result.value[0]] = result.value[1];
-      else failures.push(CHANNELS[index].title);
-    });
-    if (Object.keys(next).length) {
-      setFeeds((current) => ({ ...current, ...next }));
-      setUpdatedAt(Object.values(next).find((item) => item.generated_at)?.generated_at || "");
-    }
-    setError(failures.length ? `${failures.join("、")}加载失败，其他列仍可使用` : "");
+    results.forEach((result, index) => { if (result.status === "fulfilled") next[result.value[0]] = result.value[1]; else failures.push(CHANNELS[index].title); });
+    if (Object.keys(next).length) { setFeeds((current) => ({ ...current, ...next })); setUpdatedAt(Object.values(next).find((item) => item.generated_at)?.generated_at || ""); }
+    setError(failures.length ? `${failures.join("、")}加载失败，其余栏目仍可用` : "");
     setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { const timer = window.setInterval(() => void load(true), 60_000); return () => window.clearInterval(timer); }, [load]);
 
-  const totals = useMemo(() => {
-    const all = Object.values(feeds);
-    return {
-      events: all.reduce((sum, item) => sum + Number(item.pagination?.total || item.items?.length || 0), 0),
-      important: all.reduce((sum, item) => sum + Number(item.summary?.high_importance || 0), 0),
-      risk: all.reduce((sum, item) => sum + Number(item.summary?.risk || 0), 0),
-      opportunity: all.reduce((sum, item) => sum + Number(item.summary?.opportunity || 0), 0)
-    };
-  }, [feeds]);
+  const combined = useMemo(() => Object.values(feeds).flatMap((feed) => feed.items || []), [feeds]);
+  const high = combined.filter((item) => item.importance === "high").length;
 
-  return (
-    <div aria-busy={loading} className="workstation-page flex min-h-0 flex-col gap-[10px] p-3" data-testid="info-workstation">
-      <section className="workstation-panel flex h-11 shrink-0 items-center gap-5 overflow-x-auto px-3 workstation-scroll">
-        <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-primary-500" /><span className="text-[11px] font-semibold text-text-primary">信息蒸馏</span></div>
-        {[["事件", totals.events], ["重要", totals.important], ["风险", totals.risk], ["机会", totals.opportunity]].map(([label, value]) => <div className="flex items-baseline gap-1" key={String(label)}><span className="text-[9px] text-text-muted">{label}</span><span className="font-mono text-[11px] font-semibold text-text-secondary">{value}</span></div>)}
-        <div className="ml-auto flex items-center gap-3"><span className="text-[9px] text-text-muted">{error || (updatedAt ? `更新 ${clock(updatedAt)}` : "等待授权信息源")}</span><button className="h-7 rounded-sm border border-border-subtle bg-surface-low px-2.5 text-[9px] font-semibold text-text-secondary hover:text-text-primary" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "同步中" : "刷新"}</button></div>
-      </section>
-      <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-2 min-[1160px]:grid-cols-4" data-testid="info-four-columns">
-        {CHANNELS.map((channel) => <InfoColumn loading={loading} payload={feeds[channel.key]} subtitle={channel.subtitle} title={channel.title} key={channel.key} />)}
-      </main>
-    </div>
-  );
+  return <div aria-busy={loading} className="workstation-page mercu-info-grid" data-testid="info-workstation">
+    <section className="workstation-panel flex h-[38px] shrink-0 items-center gap-2.5 px-3"><div className="flex h-7 w-7 items-center justify-center rounded-[4px] bg-primary-50 text-primary-600">✦</div><div><div className="flex items-center gap-2"><h1 className="text-[12px] font-bold text-text-primary">AI 信息蒸馏</h1><span className="rounded-[3px] bg-warn/10 px-1.5 py-0.5 text-[7px] font-semibold text-warn">引擎 v2.4</span></div><p className="text-[7px] text-text-muted">全量聚合全网信息 · 实时增量更新</p></div><div className="ml-auto flex items-center gap-2"><span className="hidden text-[8px] text-text-muted lg:inline">高影响 {high} · 更新 {clock(updatedAt)}</span><button className="h-6 rounded-[3px] border border-border-subtle px-2 text-[8px] text-text-secondary" onClick={() => setDisclaimer(true)} type="button">免责声明</button><button aria-pressed={showDigest} className="h-6 rounded-full border border-warn/20 bg-warn/10 px-3 text-[8px] font-semibold text-warn" disabled={loading} onClick={() => { setShowDigest((value) => !value); void load(true); }} type="button">{loading ? "分析中…" : "4h AI 综合分析 ···"}</button></div></section>
+    {error ? <div className="border border-risk/20 bg-risk/5 px-3 py-1 text-[8px] text-risk">{error}</div> : null}
+    <main className="grid min-h-0 grid-cols-4 gap-1.5" data-testid="info-four-columns"><InfoColumn loading={loading} payload={feeds.news} showDigest={showDigest} title="聚合资讯"/><InfoColumn english loading={loading} payload={feeds.english} showDigest={showDigest} title="英文流资讯"/><InfoColumn kol loading={loading} payload={feeds.kol} showDigest={showDigest} title="KOL聚合资讯"/><PlazaColumn loading={loading} payload={feeds.plaza} showDigest={showDigest}/></main>
+    {disclaimer ? <div className="fixed inset-0 z-50 grid place-items-center bg-black/25 p-4" role="dialog"><div className="w-full max-w-lg rounded-lg border border-border-subtle bg-surface-panel p-5 shadow-xl"><div className="flex items-center justify-between"><h2 className="text-sm font-bold text-text-primary">免责声明</h2><button aria-label="关闭" className="text-lg text-text-muted" onClick={() => setDisclaimer(false)} type="button">×</button></div><div className="mt-4 space-y-3 text-[11px] leading-6 text-text-secondary"><p>本页面只聚合公开渠道信息，版权归原作者及发布平台所有，每条资讯保留原始来源链接。</p><p>AI 解读与规则摘要用于压缩信息和标注事实边界，不构成投资、交易、财务或法律建议。</p><p>如来源授权状态不可确认，系统仅展示标题、短摘要与官方链接，不抓取受限全文。</p></div></div></div> : null}
+  </div>;
 }

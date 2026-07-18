@@ -8,12 +8,17 @@ from statistics import mean, median
 from typing import Any
 
 
-REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-18.1"
+REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-18.2"
 MOMENTUM_WINDOWS = (("15m", 900), ("30m", 1_800), ("1h", 3_600), ("4h", 14_400), ("1d", 86_400))
 INTELLIGENCE_WINDOWS = (("5m", 300), *MOMENTUM_WINDOWS)
 BACKTEST_HORIZONS = (("5m", 300), ("15m", 900), ("1h", 3600))
 MIN_WINDOW_COVERAGE = 0.60
 MIN_BACKTEST_SAMPLES = 30
+
+ANOMALY_EVENT_WINDOWS = (("5m", 300), ("15m", 900), ("1h", 3_600))
+ANOMALY_PRICE_THRESHOLDS = {"5m": 0.6, "15m": 1.0, "1h": 2.0}
+ANOMALY_VOLUME_THRESHOLDS = {"5m": 80.0, "15m": 60.0, "1h": 40.0}
+ANOMALY_FLOW_THRESHOLDS = {"5m": 8.0, "15m": 6.0, "1h": 4.0}
 
 
 def _number(value: Any) -> float | None:
@@ -265,6 +270,338 @@ def _historical_strengths(
     return strengths
 
 
+def _event_history_samples(
+    rows: list[dict[str, Any]],
+    ends: list[int],
+    *,
+    anchor: int,
+    window_sec: int,
+    metric: str,
+) -> list[float]:
+    samples: list[float] = []
+    first_anchor = max(window_sec * 2, anchor - 86_400 + window_sec)
+    sample_anchor = first_anchor - (first_anchor % window_sec)
+    while sample_anchor <= anchor:
+        current = _aggregate_window(
+            rows,
+            ends,
+            start_ts=sample_anchor - window_sec,
+            end_ts=sample_anchor,
+        )
+        if current.get("available"):
+            value: float | None = None
+            if metric == "price":
+                value = abs(_number(current.get("price_change_pct")) or 0)
+            elif metric == "volume":
+                previous = _aggregate_window(
+                    rows,
+                    ends,
+                    start_ts=sample_anchor - window_sec * 2,
+                    end_ts=sample_anchor - window_sec,
+                )
+                current_gross = float(current.get("gross_trade_usd") or 0)
+                previous_gross = float(previous.get("gross_trade_usd") or 0)
+                if previous.get("available") and previous_gross > 0:
+                    value = abs((current_gross / previous_gross - 1) * 100)
+            elif metric == "perp_flow":
+                value = abs(_number(current.get("cvd_ratio_pct")) or 0)
+            elif metric == "liquidation":
+                gross = float(current.get("gross_trade_usd") or 0)
+                liquidations = (
+                    float(current.get("long_liquidation_usd") or 0)
+                    + float(current.get("short_liquidation_usd") or 0)
+                )
+                if gross > 0:
+                    value = liquidations / gross * 100
+            if value is not None and math.isfinite(value):
+                samples.append(value)
+        sample_anchor += window_sec
+    return samples
+
+
+def _build_anomaly_events(
+    grouped: dict[str, list[dict[str, Any]]],
+    *,
+    anchor: int,
+    limit: int = 120,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for symbol, rows in grouped.items():
+        ends = [_bucket_end(row) for row in rows]
+        for window_key, window_sec in ANOMALY_EVENT_WINDOWS:
+            current = _aggregate_window(
+                rows,
+                ends,
+                start_ts=anchor - window_sec,
+                end_ts=anchor,
+            )
+            previous = _aggregate_window(
+                rows,
+                ends,
+                start_ts=anchor - window_sec * 2,
+                end_ts=anchor - window_sec,
+            )
+            if not current.get("available"):
+                continue
+
+            price_change = _number(current.get("price_change_pct"))
+            if price_change is not None and abs(price_change) >= ANOMALY_PRICE_THRESHOLDS[window_key]:
+                candidates.append({
+                    "event_type": "price_up" if price_change > 0 else "price_down",
+                    "label": "价格暴涨" if price_change > 0 else "价格暴跌",
+                    "metric": "price",
+                    "direction": "long" if price_change > 0 else "short",
+                    "value": round(price_change, 6),
+                    "value_usd": None,
+                    "change_pct": round(price_change, 6),
+                    "strength": abs(price_change),
+                    "absolute_value": abs(price_change),
+                    "threshold": ANOMALY_PRICE_THRESHOLDS[window_key],
+                    "symbol": symbol,
+                    "coin": symbol[:-4],
+                    "window": window_key,
+                    "window_sec": window_sec,
+                    "observed_at": _iso_seconds(anchor),
+                })
+
+            current_gross = float(current.get("gross_trade_usd") or 0)
+            previous_gross = float(previous.get("gross_trade_usd") or 0)
+            volume_change = (
+                (current_gross / previous_gross - 1) * 100
+                if previous.get("available") and previous_gross > 0
+                else None
+            )
+            if volume_change is not None and volume_change >= ANOMALY_VOLUME_THRESHOLDS[window_key]:
+                price_direction = "long" if (price_change or 0) >= 0 else "short"
+                candidates.append({
+                    "event_type": "volume_spike",
+                    "label": "成交量爆发",
+                    "metric": "volume",
+                    "direction": price_direction,
+                    "value": round(current_gross, 2),
+                    "value_usd": round(current_gross, 2),
+                    "change_pct": round(volume_change, 4),
+                    "strength": abs(volume_change),
+                    "absolute_value": abs(current_gross),
+                    "threshold": ANOMALY_VOLUME_THRESHOLDS[window_key],
+                    "symbol": symbol,
+                    "coin": symbol[:-4],
+                    "window": window_key,
+                    "window_sec": window_sec,
+                    "observed_at": _iso_seconds(anchor),
+                })
+
+            cvd = float(current.get("cvd_usd") or 0)
+            cvd_ratio = _number(current.get("cvd_ratio_pct"))
+            if (
+                cvd_ratio is not None
+                and abs(cvd_ratio) >= ANOMALY_FLOW_THRESHOLDS[window_key]
+                and abs(cvd) >= 1_000
+            ):
+                candidates.append({
+                    "event_type": "perp_inflow" if cvd > 0 else "perp_outflow",
+                    "label": "合约净流入" if cvd > 0 else "合约净流出",
+                    "metric": "perp_flow",
+                    "direction": "long" if cvd > 0 else "short",
+                    "value": round(cvd, 2),
+                    "value_usd": round(cvd, 2),
+                    "change_pct": round(cvd_ratio, 4),
+                    "strength": abs(cvd_ratio),
+                    "absolute_value": abs(cvd),
+                    "threshold": ANOMALY_FLOW_THRESHOLDS[window_key],
+                    "symbol": symbol,
+                    "coin": symbol[:-4],
+                    "window": window_key,
+                    "window_sec": window_sec,
+                    "observed_at": _iso_seconds(anchor),
+                })
+
+            long_liquidation = float(current.get("long_liquidation_usd") or 0)
+            short_liquidation = float(current.get("short_liquidation_usd") or 0)
+            liquidation_total = long_liquidation + short_liquidation
+            liquidation_ratio = liquidation_total / current_gross * 100 if current_gross > 0 else 0
+            if liquidation_total >= 50_000 and liquidation_ratio >= 0.25:
+                long_dominant = long_liquidation >= short_liquidation
+                candidates.append({
+                    "event_type": "long_liquidation" if long_dominant else "short_liquidation",
+                    "label": "多头爆仓" if long_dominant else "空头爆仓",
+                    "metric": "liquidation",
+                    "direction": "short" if long_dominant else "long",
+                    "value": round(liquidation_total, 2),
+                    "value_usd": round(liquidation_total, 2),
+                    "change_pct": round(liquidation_ratio, 4),
+                    "strength": liquidation_ratio,
+                    "absolute_value": liquidation_total,
+                    "threshold": 0.25,
+                    "symbol": symbol,
+                    "coin": symbol[:-4],
+                    "window": window_key,
+                    "window_sec": window_sec,
+                    "observed_at": _iso_seconds(anchor),
+                })
+
+        symbol_events = [event for event in candidates if event["symbol"] == symbol]
+        for event in symbol_events:
+            samples = _event_history_samples(
+                rows,
+                ends,
+                anchor=anchor,
+                window_sec=int(event["window_sec"]),
+                metric=str(event["metric"]),
+            )
+            event["rankings"] = {
+                "self": _rank(
+                    float(event["strength"]),
+                    samples,
+                    method="当前同口径异常强度在该币种近 24h 封闭窗口样本中的经验排名",
+                )
+            }
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for event in candidates:
+        groups[(str(event["metric"]), str(event["window"]))].append(event)
+    for events in groups.values():
+        strength_samples = [
+            float((event.get("rankings", {}).get("self", {}) or {}).get("percentile") or event["strength"])
+            for event in events
+        ]
+        absolute_samples = [float(event["absolute_value"]) for event in events]
+        for event in events:
+            self_rank = event.get("rankings", {}).get("self", {}) or {}
+            market_strength = float(self_rank.get("percentile") or event["strength"])
+            event["rankings"]["market_strength"] = _rank(
+                market_strength,
+                strength_samples,
+                method="同时间窗、同事件类型按各币历史极端分位进行全场排名",
+            )
+            event["rankings"]["market_absolute"] = _rank(
+                float(event["absolute_value"]),
+                absolute_samples,
+                method="同时间窗、同事件类型按绝对金额或绝对变动进行全场排名",
+            )
+            event["id"] = f"{event['symbol']}:{event['window']}:{event['event_type']}:{anchor}"
+            event.pop("strength", None)
+            event.pop("absolute_value", None)
+            event.pop("threshold", None)
+
+    candidates.sort(
+        key=lambda event: (
+            int(((event.get("rankings") or {}).get("market_strength") or {}).get("rank") or 9_999),
+            -abs(float(event.get("change_pct") or 0)),
+            str(event.get("symbol") or ""),
+        )
+    )
+    return candidates[:max(1, min(300, int(limit or 120)))]
+
+
+def build_open_interest_anomaly_events(
+    snapshot_rows: list[dict[str, Any]],
+    *,
+    now_ts: int,
+    limit: int = 80,
+) -> list[dict[str, Any]]:
+    """Build truthful OI surge/dump events from persisted cross-window snapshots."""
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in snapshot_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        observed_at = int(row.get("observed_at") or 0)
+        oi_usd = _number(row.get("oi_usd"))
+        if symbol.endswith("USDT") and observed_at > 0 and oi_usd is not None and oi_usd > 0:
+            grouped[symbol].append({"observed_at": observed_at, "oi_usd": oi_usd})
+    for rows in grouped.values():
+        rows.sort(key=lambda item: int(item["observed_at"]))
+
+    window_specs = (("15m", 900, 1.0), ("1h", 3_600, 2.0))
+    candidates: list[dict[str, Any]] = []
+    for symbol, rows in grouped.items():
+        times = [int(row["observed_at"]) for row in rows]
+        latest = rows[-1]
+        latest_at = int(latest["observed_at"])
+        latest_oi = float(latest["oi_usd"])
+        if int(now_ts) - latest_at > 7_200:
+            continue
+        for window_key, window_sec, threshold in window_specs:
+            baseline_index = bisect_right(times, latest_at - window_sec) - 1
+            if baseline_index < 0:
+                continue
+            baseline_oi = float(rows[baseline_index]["oi_usd"])
+            if baseline_oi <= 0:
+                continue
+            change_usd = latest_oi - baseline_oi
+            change_pct = change_usd / baseline_oi * 100
+            if abs(change_pct) < threshold or abs(change_usd) < 1_000:
+                continue
+            samples: list[float] = []
+            for index, point in enumerate(rows):
+                point_at = int(point["observed_at"])
+                if point_at < latest_at - 86_400:
+                    continue
+                previous_index = bisect_right(times, point_at - window_sec, 0, index) - 1
+                if previous_index < 0:
+                    continue
+                previous_oi = float(rows[previous_index]["oi_usd"])
+                if previous_oi > 0:
+                    samples.append(abs((float(point["oi_usd"]) - previous_oi) / previous_oi * 100))
+            rising = change_usd > 0
+            candidates.append({
+                "id": f"{symbol}:{window_key}:oi_{'up' if rising else 'down'}:{latest_at}",
+                "symbol": symbol,
+                "coin": symbol[:-4],
+                "observed_at": _iso_seconds(latest_at),
+                "window": window_key,
+                "window_sec": window_sec,
+                "event_type": "oi_up" if rising else "oi_down",
+                "label": "OI 暴涨" if rising else "OI 暴跌",
+                "metric": "oi",
+                "direction": "long" if rising else "short",
+                "value": round(change_usd, 2),
+                "value_usd": round(change_usd, 2),
+                "change_pct": round(change_pct, 4),
+                "_strength": abs(change_pct),
+                "_absolute": abs(change_usd),
+                "rankings": {
+                    "self": _rank(
+                        abs(change_pct),
+                        samples,
+                        method="当前 OI 变动率在该币种近 24h 同窗口历史样本中的经验排名",
+                    )
+                },
+            })
+
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in candidates:
+        groups[str(event["window"])].append(event)
+    for events in groups.values():
+        strength_samples = [
+            float((event["rankings"]["self"] or {}).get("percentile") or event["_strength"])
+            for event in events
+        ]
+        absolute_samples = [float(event["_absolute"]) for event in events]
+        for event in events:
+            strength = float((event["rankings"]["self"] or {}).get("percentile") or event["_strength"])
+            event["rankings"]["market_strength"] = _rank(
+                strength,
+                strength_samples,
+                method="同一封闭窗口按各币 OI 历史极端分位进行全场排名",
+            )
+            event["rankings"]["market_absolute"] = _rank(
+                float(event["_absolute"]),
+                absolute_samples,
+                method="同一封闭窗口按 OI 绝对变化金额进行全场排名",
+            )
+            event.pop("_strength", None)
+            event.pop("_absolute", None)
+    candidates.sort(
+        key=lambda event: (
+            int(((event.get("rankings") or {}).get("market_strength") or {}).get("rank") or 9_999),
+            -abs(float(event.get("change_pct") or 0)),
+        )
+    )
+    return candidates[:max(1, min(200, int(limit or 80)))]
+
+
 def _anomaly_count_24h(
     five_minute_windows: list[tuple[int, dict[str, Any]]],
     anchor: int,
@@ -461,6 +798,7 @@ def build_realtime_intelligence(
             "observed_at": "",
             "data_status": "unavailable",
             "items": [],
+            "anomaly_events": [],
             "boards": [],
             "backtest": _backtest({}) if include_backtest else None,
         }
@@ -514,6 +852,11 @@ def build_realtime_intelligence(
             method="同一封闭 5m 时点的合约成交额绝对规模排名",
         )
 
+    anomaly_events = _build_anomaly_events(
+        grouped,
+        anchor=anchor,
+        limit=max(60, int(limit or 10) * 4),
+    )
     safe_limit = max(1, min(30, int(limit or 10)))
     surge_items = sorted(
         (item for item in items if item["surge"].get("triggered")),
@@ -561,6 +904,7 @@ def build_realtime_intelligence(
             "surge": len(surge_items),
             "ambush": len(ambush_items),
             "total": len(total_items),
+            "anomaly_events": len(anomaly_events),
         },
         "methodology": {
             "surge": "封闭分钟特征计算，不使用当前未完成分钟。",
@@ -570,6 +914,7 @@ def build_realtime_intelligence(
             "ranking": "自身、横截面强度和绝对成交规模使用不同口径。",
         },
         "items": sorted(items, key=lambda item: (float(item["surge"].get("score") or 0), item["symbol"]), reverse=True),
+        "anomaly_events": anomaly_events,
         "boards": boards,
         "backtest": _backtest(grouped, five_minute_windows_by_symbol) if include_backtest else None,
     }

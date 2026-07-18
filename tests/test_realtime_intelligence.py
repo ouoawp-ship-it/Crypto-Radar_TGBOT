@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from paopao_radar.realtime_intelligence import (
+    build_open_interest_anomaly_events,
     build_realtime_intelligence,
     build_realtime_intelligence_radar_boards,
 )
 from paopao_radar.realtime_market import RealtimeFeatureStore
+from paopao_radar.market_cockpit import MarketSnapshotStore
 from paopao_radar.web_services.public import (
     public_radar_boards_payload,
     public_realtime_intelligence_payload,
@@ -50,6 +52,30 @@ def feature_row(
 
 
 class RealtimeIntelligenceTests(unittest.TestCase):
+    def test_builds_ranked_open_interest_events_from_snapshot_history(self) -> None:
+        rows: list[dict[str, object]] = []
+        for index in range(9):
+            observed_at = (index + 1) * 900
+            rows.append({
+                "symbol": "BTCUSDT",
+                "observed_at": observed_at,
+                "oi_usd": 1_000_000 + index * 10_000 + (250_000 if index == 8 else 0),
+            })
+            rows.append({
+                "symbol": "ETHUSDT",
+                "observed_at": observed_at,
+                "oi_usd": 800_000 - index * 8_000 - (180_000 if index == 8 else 0),
+            })
+
+        events = build_open_interest_anomaly_events(rows, now_ts=8_100, limit=20)
+
+        self.assertTrue(events)
+        self.assertIn("oi_up", {event["event_type"] for event in events})
+        self.assertIn("oi_down", {event["event_type"] for event in events})
+        self.assertTrue(all(event["metric"] == "oi" for event in events))
+        self.assertTrue(any(event["rankings"]["self"].get("available") for event in events))
+        self.assertTrue(any(event["rankings"]["market_absolute"].get("available") for event in events))
+
     def test_multi_exchange_flow_uses_unique_time_coverage_and_one_price_source(self) -> None:
         rows: list[dict[str, object]] = []
         for minute in range(10):
@@ -121,6 +147,16 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         )
         self.assertGreaterEqual(by_symbol["BTCUSDT"]["anomaly_24h"]["count"], 1)
         self.assertTrue(by_symbol["BTCUSDT"]["rankings"]["market_strength"]["available"])
+        self.assertTrue(payload["anomaly_events"])
+        event_types = {event["event_type"] for event in payload["anomaly_events"]}
+        self.assertIn("perp_inflow", event_types)
+        self.assertIn("perp_outflow", event_types)
+        ranked_events = [
+            event for event in payload["anomaly_events"]
+            if event["rankings"]["market_strength"].get("available")
+        ]
+        self.assertTrue(ranked_events)
+        self.assertTrue(all("self" in event["rankings"] for event in payload["anomaly_events"]))
         self.assertTrue(payload["boards"][0]["items"])
         self.assertTrue(payload["boards"][1]["items"])
         self.assertTrue(payload["boards"][2]["items"])
@@ -179,6 +215,49 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         self.assertEqual(payload["data"]["data_status"], "ready")
         self.assertTrue(payload["data"]["items"][0]["surge"]["triggered"])
         self.assertEqual(payload["data"]["backtest"]["status"], "insufficient")
+
+    def test_public_endpoint_merges_persisted_oi_events_without_faking_missing_data(self) -> None:
+        feature_rows = [
+            feature_row(
+                "BTCUSDT", minute,
+                buy=2_000 if minute >= 15 else 700,
+                sell=500 if minute >= 15 else 800,
+                open_price=100,
+                close_price=100 + max(0, minute - 14) * 0.2,
+            )
+            for minute in range(20)
+        ]
+        with TemporaryDirectory() as tmp:
+            realtime_path = Path(tmp) / "realtime.db"
+            market_path = Path(tmp) / "market.db"
+            RealtimeFeatureStore(realtime_path).replace_many(feature_rows)
+            store = MarketSnapshotStore(market_path)
+            for index in range(9):
+                observed_at = (index + 1) * 900
+                store.append_many([
+                    {
+                        "symbol": "BTCUSDT", "observed_at": observed_at, "source": "test",
+                        "price": 100, "oi_usd": 1_000_000 + index * 10_000 + (250_000 if index == 8 else 0),
+                        "coverage": {"price": True, "oi": True},
+                    },
+                    {
+                        "symbol": "ETHUSDT", "observed_at": observed_at, "source": "test",
+                        "price": 50, "oi_usd": 800_000 - index * 8_000 - (180_000 if index == 8 else 0),
+                        "coverage": {"price": True, "oi": True},
+                    },
+                ])
+            settings = SimpleNamespace(
+                realtime_features_db_path=realtime_path,
+                market_snapshots_db_path=market_path,
+            )
+            payload = public_realtime_intelligence_payload(settings=settings, now_ts=8_100)
+
+        self.assertTrue(payload["ok"])
+        oi_events = [event for event in payload["data"]["anomaly_events"] if event["metric"] == "oi"]
+        self.assertTrue(oi_events)
+        self.assertEqual(payload["data"]["coverage"]["oi_anomaly_events"], len(oi_events))
+        self.assertIn("oi_up", {event["event_type"] for event in oi_events})
+        self.assertIn("oi_down", {event["event_type"] for event in oi_events})
 
     def test_radar_boards_append_realtime_intelligence_when_windows_are_ready(self) -> None:
         rows = [

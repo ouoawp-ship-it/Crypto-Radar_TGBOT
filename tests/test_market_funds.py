@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -90,6 +91,22 @@ class MarketFundsTests(unittest.TestCase):
         searched = build_funds_assets(self.cockpit(), market_type="futures", search="arb")
         self.assertEqual([item["symbol"] for item in searched["items"]], ["ARBUSDT"])
         self.assertEqual(searched["items"][0]["net_flow_usd"], -150_000)
+
+    def test_oi_distribution_uses_complete_filtered_universe_not_current_page(self) -> None:
+        cockpit = deepcopy(self.cockpit())
+        template = cockpit["assets"][0]
+        cockpit["assets"] = [
+            {**template, "symbol": f"T{i:02d}USDT", "coin": f"T{i:02d}", "oi_usd": float(i)}
+            for i in range(1, 26)
+        ]
+
+        payload = build_funds_assets(cockpit, market_type="futures", page=2, page_size=10)
+
+        self.assertEqual(len(payload["items"]), 10)
+        self.assertEqual(payload["distribution"]["oi_covered_assets"], 25)
+        self.assertEqual(payload["distribution"]["oi_total_usd"], 325.0)
+        self.assertAlmostEqual(payload["distribution"]["top_10_oi_share_pct"], sum(range(16, 26)) / 325 * 100)
+        self.assertEqual(payload["distribution"]["top_50_oi_share_pct"], 100.0)
 
     def test_snapshot_store_migrates_and_returns_traceable_gross_flow_series(self) -> None:
         with TemporaryDirectory() as tmp:
