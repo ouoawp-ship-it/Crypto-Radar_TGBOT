@@ -161,6 +161,15 @@ class Settings:
     agent_insights_db_path: Path = BASE_DIR / "data" / "agent_insights.db"
     news_events_retention_days: int = 90
     news_events_limit: int = 5000
+    info_public_sources_enable: bool = True
+    info_kol_handles: tuple[str, ...] = (
+        "vitalik.ca",
+        "brian-armstrong.bsky.social",
+        "cobie.bsky.social",
+        "saylor.bsky.social",
+        "aantonop.com",
+    )
+    info_plaza_feed_uri: str = "at://did:plc:5cgr3vgieoz4dh5nkhofpn33/app.bsky.feed.generator/aaaekwiqyodf4"
     market_snapshot_interval_sec: int = 300
     market_snapshot_retention_days: int = 30
     market_snapshot_limit: int = 160
@@ -368,6 +377,18 @@ class Settings:
             agent_insights_db_path=data_path(data_dir, "AGENT_INSIGHTS_DB_FILE", "agent_insights.db"),
             news_events_retention_days=env_int("NEWS_EVENTS_RETENTION_DAYS", 90),
             news_events_limit=env_int("NEWS_EVENTS_LIMIT", 5000),
+            info_public_sources_enable=env_bool("INFO_PUBLIC_SOURCES_ENABLE", True),
+            info_kol_handles=env_list("INFO_KOL_HANDLES", (
+                "vitalik.ca",
+                "brian-armstrong.bsky.social",
+                "cobie.bsky.social",
+                "saylor.bsky.social",
+                "aantonop.com",
+            )),
+            info_plaza_feed_uri=os.getenv(
+                "INFO_PLAZA_FEED_URI",
+                "at://did:plc:5cgr3vgieoz4dh5nkhofpn33/app.bsky.feed.generator/aaaekwiqyodf4",
+            ).strip(),
             market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
             market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 30),
             market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 160),

@@ -555,6 +555,9 @@ export type NewsAnalysis = {
   generated_by?: string;
   version?: string;
   reason?: string;
+  author_handle?: string;
+  author_display_name?: string;
+  engagement?: { likes?: number; reposts?: number; replies?: number; score?: number };
 };
 
 export type NewsEvent = {

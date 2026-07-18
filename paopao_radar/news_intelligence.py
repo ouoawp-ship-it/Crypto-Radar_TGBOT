@@ -17,10 +17,20 @@ from .config import Settings
 from .data_sources import BinanceDataSource
 
 
-NEWS_SCHEMA_VERSION = "2026-07-17"
+NEWS_SCHEMA_VERSION = "2026-07-18"
 NEWS_STORE_SCHEMA_VERSION = 1
 NEWS_MAX_QUERY_ROWS = 500
-SAFE_NEWS_HOSTS = {"binance.com", "www.binance.com"}
+SAFE_NEWS_HOSTS = {
+    "binance.com",
+    "www.binance.com",
+    "panewslab.com",
+    "www.panewslab.com",
+    "decrypt.co",
+    "www.decrypt.co",
+    "blog.kraken.com",
+    "bsky.app",
+    "www.bsky.app",
+}
 HIGH_IMPORTANCE_TERMS = (
     "will list", "将上线", "delist", "delisting", "will remove", "下架", "移除",
     "停止交易", "airdrop", "launchpool", "hodler", "megadrop", "alpha",
@@ -321,6 +331,29 @@ class NewsEventStore:
         with self.connect() as conn:
             row = conn.execute("SELECT MAX(collected_at) AS value FROM news_events").fetchone()
         return int(row["value"] or 0) if row else 0
+
+    def channel_counts(self, *, start_ts: int = 0, end_ts: int = 0) -> dict[str, int]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if start_ts > 0:
+            clauses.append("COALESCE(NULLIF(published_at, 0), collected_at) >= ?")
+            params.append(int(start_ts))
+        if end_ts > 0:
+            clauses.append("COALESCE(NULLIF(published_at, 0), collected_at) <= ?")
+            params.append(int(end_ts))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT source_type, language, COUNT(*) AS count FROM news_events WHERE {' AND '.join(clauses)} GROUP BY source_type, language",
+                params,
+            ).fetchall()
+        result: dict[str, int] = {}
+        for row in rows:
+            source_type = str(row["source_type"] or "")
+            language = str(row["language"] or "")
+            count = int(row["count"] or 0)
+            result[source_type] = result.get(source_type, 0) + count
+            result[f"{source_type}:{language}"] = result.get(f"{source_type}:{language}", 0) + count
+        return result
 
     def prune(self, *, now_ts: int | None = None, retention_days: int = 90, limit: int = 5000) -> dict[str, int]:
         now = int(now_ts or time.time())
