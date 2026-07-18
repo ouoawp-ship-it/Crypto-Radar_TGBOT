@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import paopao_radar.web_services.public as public_service
 from paopao_radar.realtime_intelligence import (
     build_open_interest_anomaly_events,
     build_realtime_intelligence,
@@ -215,6 +217,67 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         self.assertEqual(payload["data"]["data_status"], "ready")
         self.assertTrue(payload["data"]["items"][0]["surge"]["triggered"])
         self.assertEqual(payload["data"]["backtest"]["status"], "insufficient")
+
+    def test_requested_limit_bounds_items_events_and_embedded_boards(self) -> None:
+        rows = [
+            feature_row(
+                f"T{symbol_index:02d}USDT",
+                minute,
+                buy=2_000 + symbol_index * 10 if minute >= 15 else 700,
+                sell=500 if minute >= 15 else 800,
+                open_price=100,
+                close_price=100 + max(0, minute - 14) * 0.2,
+            )
+            for symbol_index in range(45)
+            for minute in range(20)
+        ]
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "realtime.db"
+            RealtimeFeatureStore(path).replace_many(rows)
+            payload = public_realtime_intelligence_payload(
+                limit=7,
+                settings=SimpleNamespace(realtime_features_db_path=path),
+                now_ts=1_200,
+            )
+
+        self.assertTrue(payload["ok"])
+        data = payload["data"]
+        self.assertEqual(data["coverage"]["symbols"], 45)
+        self.assertEqual(len(data["items"]), 7)
+        self.assertLessEqual(len(data["anomaly_events"]), 7)
+        self.assertTrue(all(len(board["items"]) <= 7 for board in data["boards"]))
+
+    def test_public_snapshot_survives_memory_cache_reset_and_is_reprojected(self) -> None:
+        base_minute = int(time.time()) // 60 - 20
+        rows = [
+            feature_row(
+                f"S{symbol_index:02d}USDT",
+                base_minute + minute,
+                buy=2_000 if minute >= 15 else 700,
+                sell=500 if minute >= 15 else 800,
+                open_price=100,
+                close_price=100 + max(0, minute - 14) * 0.2,
+            )
+            for symbol_index in range(12)
+            for minute in range(20)
+        ]
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "realtime.db"
+            RealtimeFeatureStore(path).replace_many(rows)
+            settings = SimpleNamespace(realtime_features_db_path=path)
+            first = public_realtime_intelligence_payload(limit=10, settings=settings)
+            self.assertTrue(path.with_name("realtime.intelligence.json").exists())
+            with public_service._INTELLIGENCE_SNAPSHOT_LOCK:
+                public_service._INTELLIGENCE_SNAPSHOTS.clear()
+            with patch(
+                "paopao_radar.web_services.public.build_realtime_intelligence",
+                side_effect=AssertionError("fresh persisted snapshot must avoid a rebuild"),
+            ):
+                second = public_realtime_intelligence_payload(limit=5, settings=settings)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(second["data"]["items"]), 5)
 
     def test_public_endpoint_merges_persisted_oi_events_without_faking_missing_data(self) -> None:
         feature_rows = [
