@@ -149,7 +149,7 @@ function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: s
       const self = event.rankings?.self;
       const strength = event.rankings?.market_strength;
       const absolute = event.rankings?.market_absolute;
-      return <Link className="block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
+      return <Link className="block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55 min-[1024px]:py-[2px]" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
         <div className="flex items-center gap-1.5">
           <span className="w-[33px] shrink-0 font-mono text-[8px] tabular-nums text-text-muted">{clock(event.observed_at)}</span>
           <CoinIcon coin={event.coin}/><span className="min-w-0 flex-1 truncate text-[10px] font-bold text-text-primary">${event.coin || event.symbol}</span>
@@ -172,7 +172,7 @@ function boardValue(item: CockpitBoardItem, mode: RankMode) {
 }
 
 function MomentumList({ items, mode, positive, realtimeBySymbol, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; limit?: number }) {
-  return <div>{(items || []).slice(0, limit).map((item, index) => <Link className={`grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_29px_38px] items-center gap-[2px] border-b border-border-subtle/75 px-1 text-[8px] last:border-0 hover:bg-primary-50/50 ${positive ? "bg-good/[.025]" : "bg-risk/[.025]"}`} href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+  return <div>{(items || []).slice(0, limit).map((item, index) => <Link className={`grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_29px_38px] items-center gap-[2px] border-b border-border-subtle/75 px-1 text-[8px] last:border-0 hover:bg-primary-50/50 min-[1024px]:h-[19px] ${positive ? "bg-good/[.025]" : "bg-risk/[.025]"}`} href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
     <span className="text-right font-mono text-[7px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={13}/><span className="truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))} positive={positive}/><span className={`truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
   </Link>)}{!(items || []).length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
 }
@@ -182,7 +182,7 @@ function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: C
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
     const active = Math.max(0, Math.min(5, Number(realtime?.resonance?.active_count || 0)));
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
-    return <Link className={`flex h-[34px] min-w-0 flex-col items-center justify-center border-b border-r border-border-subtle/70 px-0.5 hover:bg-primary-50/55 ${positive ? "bg-good/[.025]" : "bg-risk/[.025]"}`} href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+    return <Link className={`flex h-[34px] min-w-0 flex-col items-center justify-center border-b border-r border-border-subtle/70 px-0.5 hover:bg-primary-50/55 min-[1024px]:h-[32px] ${positive ? "bg-good/[.025]" : "bg-risk/[.025]"}`} href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
       <span className="flex items-center gap-0.5"><small className="font-mono text-[6px] text-text-muted">{index + 1}</small><CoinIcon coin={item.coin} size={13}/></span>
       <span className="mt-0.5 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? positive ? "border-primary-500/55 bg-primary-500/70" : "border-risk/50 bg-risk/65" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
       <span className={`mt-0.5 font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{score === null ? "—" : `${Math.round(score)}%`}</span>
@@ -197,7 +197,7 @@ function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; real
   const strengthPositive = board?.strength_positive || board?.positive;
   const strengthNegative = board?.strength_negative || board?.negative;
   return <section className="overflow-hidden rounded-[2px] border border-border-subtle bg-surface-panel">
-    <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-low text-[8px] font-semibold"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div></div>
+    <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-low text-[8px] font-semibold min-[1024px]:h-[23px]"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div></div>
     <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
     <div className="grid h-[23px] grid-cols-2 border-y border-border-subtle bg-surface-low/80 text-[8px] font-semibold"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div></div>
     <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid items={strengthPositive?.items} positive realtimeBySymbol={realtimeBySymbol}/><MomentumStrengthGrid items={strengthNegative?.items} positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
@@ -311,7 +311,7 @@ export default function RadarPage() {
     </aside>
 
     <main className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-hot-money">
-      <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10">
+      <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10 min-[1024px]:[&>.workstation-panel-header]:h-[38px]">
         <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} title="热钱观察榜单"/>
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
