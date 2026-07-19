@@ -219,31 +219,38 @@ function EventFeed({ events, onSelectSymbol, query }: { events: RealtimeAnomalyE
   </div>;
 }
 
-function boardValue(item: CockpitBoardItem, mode: RankMode) {
+function flowMoney(value: unknown): string {
+  const number = finite(value);
+  if (number === null) return "—";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}$${(Math.abs(number) / 1e6).toFixed(1)}M`;
+}
+
+function boardValue(item: CockpitBoardItem, mode: RankMode, compactMillions = false) {
   if (mode === "strength") return finite(item.strength_percentile) === null ? "—" : `${Math.round(Number(item.strength_percentile))}分`;
   const magnitude = finite(item.magnitude_usd);
   const hasMagnitude = magnitude !== null && Math.abs(magnitude) > 0;
   const raw = hasMagnitude ? Math.sign(finite(item.value) || magnitude || 1) * Math.abs(magnitude) : item.value;
-  return item.unit === "usd" || hasMagnitude ? money(raw) : percent(raw, item.unit === "percent_per_cycle" ? 3 : 2);
+  return item.unit === "usd" || hasMagnitude ? compactMillions ? flowMoney(raw) : marketMoney(raw) : percent(raw, item.unit === "percent_per_cycle" ? 3 : 2);
 }
 
 function rankMagnitude(item: CockpitBoardItem) {
   return Math.abs(finite(item.magnitude_usd) ?? finite(item.value) ?? 0);
 }
 
-function MomentumList({ items, mode, onSelectSymbol, positive, realtimeBySymbol, scaleMax, windowStates, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; onSelectSymbol: (symbol: string) => void; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; scaleMax?: number; windowStates: (item: CockpitBoardItem) => boolean[] | undefined; limit?: number }) {
+function MomentumList({ items, mode, onSelectSymbol, positive, realtimeBySymbol, scaleMax, windowStates, compactMillions = false, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; onSelectSymbol: (symbol: string) => void; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; scaleMax?: number; windowStates: (item: CockpitBoardItem) => boolean[] | undefined; compactMillions?: boolean; limit?: number }) {
   const visible = (items || []).slice(0, limit);
   const maxMagnitude = Math.max(1, scaleMax || 0, ...visible.map(rankMagnitude));
   return <div>{visible.map((item, index) => {
     const barWidth = Math.min(70, 18 + rankMagnitude(item) / maxMagnitude * 66);
     return <button className="relative grid h-[23px] w-full grid-cols-[10px_14px_minmax(0,1fr)_35px_38px] items-center gap-[2px] overflow-hidden px-1 text-left text-[8px] hover:bg-primary-50/50 min-[1024px]:h-[clamp(19px,calc(2.7778dvh-1px),23px)]" data-symbol={item.symbol || ""} key={`${item.symbol}-${index}`} onClick={() => onSelectSymbol(String(item.symbol || item.coin || ""))} type="button">
       <i aria-hidden="true" className={`absolute bottom-[2px] right-0 top-[5px] rounded-[2px] not-italic min-[1280px]:bottom-[5px] ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
-      <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-mono font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))} states={windowStates(item)}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
+      <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-mono font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))} states={windowStates(item)}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode, compactMillions)}</span>
     </button>;
   })}{!visible.length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
 }
 
-function MomentumStrengthGrid({ items, onSelectSymbol, positive, realtimeBySymbol, windowStates }: { items?: CockpitBoardItem[]; onSelectSymbol: (symbol: string) => void; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; windowStates: (item: CockpitBoardItem) => boolean[] | undefined }) {
+function MomentumStrengthGrid({ items, onSelectSymbol, positive, realtimeBySymbol, windowStates, compactMillions = false }: { items?: CockpitBoardItem[]; onSelectSymbol: (symbol: string) => void; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; windowStates: (item: CockpitBoardItem) => boolean[] | undefined; compactMillions?: boolean }) {
   return <div className="grid grid-cols-1 sm:grid-cols-2 [&>:nth-last-child(-n+2)]:border-b-0" data-testid="radar-strength-grid">{(items || []).slice(0, 8).map((item, index) => {
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
@@ -254,7 +261,7 @@ function MomentumStrengthGrid({ items, onSelectSymbol, positive, realtimeBySymbo
       <CoinIcon coin={item.coin} size={13}/><span className="truncate text-[7px] font-semibold text-text-primary">{item.coin || item.symbol}</span>
       <span className="text-right font-mono text-[6px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
       <span className="col-start-3 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{states.map((isActive, block) => <i className={`h-[4px] w-px shrink-0 rounded-[.5px] min-[1600px]:h-[5px] min-[1600px]:w-[5px] min-[1600px]:border ${isActive ? "bg-[#002fa7] min-[1600px]:border-[#002fa7]" : "bg-surface-container-low min-[1600px]:border-border-subtle"}`} key={WINDOWS[block]}/>)}</span>
-      <span className={`truncate text-right font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount")}</span>
+      <span className={`truncate text-right font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount", compactMillions)}</span>
     </button>;
   })}{!(items || []).length ? <div className="grid h-[136px] place-items-center text-[8px] text-text-muted sm:col-span-2">⏳ 暂无</div> : null}</div>;
 }
@@ -267,12 +274,13 @@ function MomentumBoard({ board, momentum, onSelectSymbol, realtimeBySymbol }: { 
   const strengthNegative = board?.strength_negative || board?.negative;
   const amountScaleMax = Math.max(1, ...[...(amountPositive?.items || []).slice(0, 7), ...(amountNegative?.items || []).slice(0, 7)].map(rankMagnitude));
   const amountUnit = board?.key === "price" ? "%" : "USDT";
+  const compactMillions = board?.key === "futures_flow" || board?.key === "spot_flow";
   const statesFor = (mode: RankMode, positive: boolean, item: CockpitBoardItem) => rankWindowStates(momentum, String(board?.key || ""), mode, positive, item);
   return <section className="overflow-hidden rounded-[2px] border border-border-subtle bg-surface-panel">
     <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-panel text-[8px] font-semibold min-[1024px]:h-[23px]"><div className="flex items-center justify-between border-r border-border-subtle px-2"><span className="flex items-center gap-1 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></span><small className="font-mono text-[6px] font-normal text-text-muted/60">{amountUnit}</small></div><div className="flex items-center justify-between px-2"><span className="flex items-center gap-1 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></span><small className="font-mono text-[6px] font-normal text-text-muted/60">{amountUnit}</small></div></div>
-    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" onSelectSymbol={onSelectSymbol} positive realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax} windowStates={(symbol) => statesFor("amount", true, symbol)}/><MomentumList items={amountNegative?.items} mode="amount" onSelectSymbol={onSelectSymbol} positive={false} realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax} windowStates={(symbol) => statesFor("amount", false, symbol)}/></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList compactMillions={compactMillions} items={amountPositive?.items} mode="amount" onSelectSymbol={onSelectSymbol} positive realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax} windowStates={(symbol) => statesFor("amount", true, symbol)}/><MomentumList compactMillions={compactMillions} items={amountNegative?.items} mode="amount" onSelectSymbol={onSelectSymbol} positive={false} realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax} windowStates={(symbol) => statesFor("amount", false, symbol)}/></div>
     <div className="grid h-[25px] grid-cols-2 border-y border-border-subtle bg-surface-panel text-[8px] font-semibold min-[1280px]:h-[23px]"><div className="flex items-center justify-between border-r border-border-subtle px-2"><span className="flex items-center gap-1 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></span><small className="text-[6px] font-normal text-text-muted/60">强度分</small></div><div className="flex items-center justify-between px-2"><span className="flex items-center gap-1 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></span><small className="text-[6px] font-normal text-text-muted/60">强度分</small></div></div>
-    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid items={strengthPositive?.items} onSelectSymbol={onSelectSymbol} positive realtimeBySymbol={realtimeBySymbol} windowStates={(symbol) => statesFor("strength", true, symbol)}/><MomentumStrengthGrid items={strengthNegative?.items} onSelectSymbol={onSelectSymbol} positive={false} realtimeBySymbol={realtimeBySymbol} windowStates={(symbol) => statesFor("strength", false, symbol)}/></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid compactMillions={compactMillions} items={strengthPositive?.items} onSelectSymbol={onSelectSymbol} positive realtimeBySymbol={realtimeBySymbol} windowStates={(symbol) => statesFor("strength", true, symbol)}/><MomentumStrengthGrid compactMillions={compactMillions} items={strengthNegative?.items} onSelectSymbol={onSelectSymbol} positive={false} realtimeBySymbol={realtimeBySymbol} windowStates={(symbol) => statesFor("strength", false, symbol)}/></div>
   </section>;
 }
 
@@ -342,7 +350,6 @@ export default function RadarPage() {
   const [error, setError] = useState("");
   const [selectedCoin, setSelectedCoin] = useState("");
   const [selectedSignal, setSelectedSignal] = useState("");
-  const [extendedRadar, setExtendedRadar] = useState(false);
 
   const load = useCallback(async (bypassCache = false) => {
     setLoading(true);
@@ -376,12 +383,6 @@ export default function RadarPage() {
     syncFromLocation();
     window.addEventListener("popstate", syncFromLocation);
     return () => window.removeEventListener("popstate", syncFromLocation);
-  }, []);
-  useEffect(() => {
-    const syncExtendedView = () => setExtendedRadar(new URLSearchParams(window.location.search).get("view") === "extended");
-    syncExtendedView();
-    window.addEventListener("popstate", syncExtendedView);
-    return () => window.removeEventListener("popstate", syncExtendedView);
   }, []);
   useEffect(() => { if (paused || query) return; const timer = window.setInterval(() => void load(true), 30_000); return () => window.clearInterval(timer); }, [load, paused, query]);
 
@@ -430,7 +431,7 @@ export default function RadarPage() {
         <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} icon="◎" meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} tip={RADAR_TIPS.hotMoney} title="热钱观察榜单"/>
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-1.5 min-[1024px]:pr-2.5 min-[1280px]:gap-[13px] min-[1280px]:px-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} momentum={momentum} onSelectSymbol={setSelectedCoin} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
-      {extendedRadar ? <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5" data-testid="radar-paoxx-extension"><RuleBoard items={surge} mode="surge" onSelectSymbol={setSelectedCoin} subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" onSelectSymbol={setSelectedCoin} subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" onSelectSymbol={setSelectedCoin} subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div> : null}
+      <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5" data-testid="radar-paoxx-extension"><RuleBoard items={surge} mode="surge" onSelectSymbol={setSelectedCoin} subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" onSelectSymbol={setSelectedCoin} subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" onSelectSymbol={setSelectedCoin} subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>
     </main>
 
     <aside className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-side-intelligence">

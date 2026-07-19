@@ -72,6 +72,15 @@ def _image_metrics(target: Image.Image, actual: Image.Image, pixel_threshold: in
     return changed_pixels, changed_ratio, mean_absolute_error, root_mean_square_error, max_error
 
 
+def _target_provenance_issue(image: Image.Image) -> str:
+    if str(image.format or "").upper() != "PNG":
+        return "Mercu target must be captured as a native PNG"
+    metadata = {str(key).lower() for key in image.info}
+    if metadata.intersection({"jfif", "jfif_version", "jfif_unit", "jfif_density"}):
+        return "Mercu target contains JFIF/JPEG metadata; recapture it as a lossless native PNG"
+    return ""
+
+
 def _write_heatmap(target: Image.Image, actual: Image.Image, destination: Path) -> None:
     difference = ImageChops.difference(target.convert("RGB"), actual.convert("RGB"))
     amplified = ImageEnhance.Contrast(difference).enhance(3.0)
@@ -107,6 +116,15 @@ def compare_pair(
         return DiffResult(**shared, status="missing", reason="Paoxx actual screenshot is missing")
 
     with Image.open(target_path) as target_image, Image.open(actual_path) as actual_image:
+        provenance_issue = _target_provenance_issue(target_image)
+        if provenance_issue:
+            return DiffResult(
+                **shared,
+                status="invalid_target",
+                width=target_image.width,
+                height=target_image.height,
+                reason=provenance_issue,
+            )
         target = target_image.convert("RGB")
         actual = actual_image.convert("RGB")
         if target.size != viewport:

@@ -4149,6 +4149,9 @@ class WebHandler(BaseHTTPRequestHandler):
             "/public-api/workstation/radar/surge",
             "/public-api/workstation/radar/briefs",
             "/public-api/workstation/funds/open-interest",
+            "/public-api/workstation/funds/sectors",
+            "/public-api/workstation/funds/assets",
+            "/public-api/workstation/info/feed",
             "/public-api/funds/sectors",
             "/public-api/funds/assets",
             "/public-api/info/feed",
@@ -4374,17 +4377,17 @@ class WebHandler(BaseHTTPRequestHandler):
                 query.get("symbol", [""])[0],
             ))
             return
-        if path == "/public-api/funds/sectors":
+        if path in {"/public-api/workstation/funds/sectors", "/public-api/funds/sectors"}:
             self.send_json(public_funds_sectors_payload(
                 window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
                 market_type=query.get("market_type", ["spot"])[0],
             ))
             return
-        if path == "/public-api/funds/assets":
+        if path in {"/public-api/workstation/funds/assets", "/public-api/funds/assets"}:
             self.send_json(public_funds_assets_payload(
                 window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
                 market_type=query.get("market_type", ["spot"])[0],
-                search=query.get("q", [""])[0],
+                search=query.get("search", query.get("q", [""]))[0],
                 sector=query.get("sector", [""])[0],
                 data_status=query.get("data_status", [""])[0],
                 sort_key=query.get("sort", ["net_flow_usd"])[0],
@@ -4393,13 +4396,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 page_size=clamp_query_int(query.get("page_size", ["50"])[0], 50, 100),
             ))
             return
-        if path == "/public-api/info/feed":
+        if path in {"/public-api/workstation/info/feed", "/public-api/info/feed"}:
             self.send_json(public_info_feed_payload(
                 source_type=query.get("source_type", [""])[0],
                 language=query.get("language", [""])[0],
                 importance=query.get("importance", [""])[0],
                 symbol=query.get("symbol", [""])[0],
-                search=query.get("q", [""])[0],
+                search=query.get("search", query.get("q", [""]))[0],
                 page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
                 page_size=clamp_query_int(query.get("page_size", ["30"])[0], 30, 100),
                 window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),

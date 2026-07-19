@@ -584,8 +584,8 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       return route.fulfill({ json: { ok: true, data: radarRealtime } });
     }
     if (url.pathname === "/public-api/workstation/funds/open-interest") return route.fulfill({ json: { ok: true, data: { ...crossExchangeOi, symbol: url.searchParams.get("symbol") || "BTCUSDT" } } });
-    if (url.pathname === "/public-api/funds/sectors") return route.fulfill({ json: { ok: true, data: visualFundsSectors } });
-    if (url.pathname === "/public-api/funds/assets") {
+    if (["/public-api/workstation/funds/sectors", "/public-api/funds/sectors"].includes(url.pathname)) return route.fulfill({ json: { ok: true, data: visualFundsSectors } });
+    if (["/public-api/workstation/funds/assets", "/public-api/funds/assets"].includes(url.pathname)) {
       const page = Math.max(1, Number(url.searchParams.get("page") || 1));
       const pageSize = Math.max(1, Number(url.searchParams.get("page_size") || 20));
       const search = String(url.searchParams.get("search") || "").toUpperCase();
@@ -597,7 +597,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       const items = filtered.slice((page - 1) * pageSize, page * pageSize);
       return route.fulfill({ json: { ok: true, data: { ...visualFundsAssets, market_type: url.searchParams.get("market_type") || "spot", window_sec: Number(url.searchParams.get("window_sec") || 900), warnings: options.assetWarnings || visualFundsAssets.warnings, sort: { key: sort, direction: direction === 1 ? "asc" : "desc" }, pagination: { page, page_size: pageSize, page_count: Math.max(1, Math.ceil(total / pageSize)), total }, items } } });
     }
-    if (url.pathname === "/public-api/info/feed") {
+    if (["/public-api/workstation/info/feed", "/public-api/info/feed"].includes(url.pathname)) {
       infoRequests += 1;
       lastInfoSearch = url.search;
       const sourceType = String(url.searchParams.get("source_type") || "");
@@ -662,7 +662,7 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
   for (const heading of ["Surge 飙升榜", "24h 异动总榜", "埋伏池"]) {
-    await expect(page.getByRole("heading", { name: heading })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: heading })).toBeAttached();
   }
   await expect(page.getByLabel("异动监控说明")).toHaveAttribute("title", /自身.*全场强度.*全场量级/s);
   await expect(page.getByLabel("热钱观察榜单说明")).toHaveAttribute("title", /15m \/ 30m \/ 1h \/ 4h \/ 1d/);
@@ -684,7 +684,7 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   expect(new Set(state.radarModuleRequests())).toEqual(new Set(["momentum-windows", "anomalies", "surge", "rank"]));
   expect(state.legacyRealtimeRequests()).toBe(0);
 
-  await page.goto("/radar?view=extended");
+  await page.goto("/radar");
   await expect(page.getByTestId("radar-paoxx-extension")).toBeVisible();
   await expect(page.getByText("+ 加速识别模型", { exact: true })).toHaveCount(1);
   await expect(page.getByText("+ 算法标注引擎", { exact: true })).toHaveCount(1);
@@ -882,7 +882,10 @@ for (const viewport of [
       await page.goto(`/${route}`);
       await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
       await expect(page.getByTestId(`${route}-workstation`)).toHaveAttribute("aria-busy", "false");
-      if (route === "radar") await expect(page.getByLabel("五窗口共振 2/5").first()).toBeVisible();
+      if (route === "radar") {
+        await expect(page.getByLabel("五窗口共振 2/5").first()).toBeVisible();
+        await expect(page.getByTestId("radar-hot-money").getByText(viewport.pixels.width === 1440 ? "+$0.8M" : "+$0.9M", { exact: true }).first()).toBeVisible();
+      }
       await page.locator("img").evaluateAll(async (images) => {
         await Promise.all(images.map((image) => (image as HTMLImageElement).decode().catch(() => undefined)));
       });
@@ -1020,7 +1023,7 @@ test("funds overview uses server-backed pagination and search semantics", async 
   await expect(page.getByText("共 688 个代币 · 每页 20 条 · 第 1/35 页")).toBeVisible();
   const secondPageResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === "/public-api/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("page") === "2";
+    return url.pathname === "/public-api/workstation/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("page") === "2";
   });
   await page.getByRole("button", { name: "下一页" }).click();
   await secondPageResponse;
@@ -1029,7 +1032,7 @@ test("funds overview uses server-backed pagination and search semantics", async 
 
   const searchResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === "/public-api/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("search") === "BTC";
+    return url.pathname === "/public-api/workstation/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("search") === "BTC";
   });
   await page.getByLabel("搜索全体代币").fill("BTC");
   await searchResponse;
