@@ -4345,7 +4345,7 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         if path == "/public-api/workstation/radar/anomalies":
             self.send_json(public_workstation_radar_anomalies_payload(
-                limit=clamp_query_int(query.get("limit", ["30"])[0], 30, 80),
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 100),
             ))
             return
         if path == "/public-api/workstation/radar/rank":

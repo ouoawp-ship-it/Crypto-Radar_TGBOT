@@ -690,6 +690,26 @@ test("radar preserves healthy modules when one independent request fails", async
   await expect(page.getByRole("heading", { name: "24h 异动总榜" })).toBeVisible();
 });
 
+test("radar rows open the Mercu-style coin drawer without leaving radar", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/radar");
+
+  const radarUrl = page.url();
+  await page.getByTestId("radar-event-feed").locator("button[data-symbol]").first().click();
+  const drawer = page.getByRole("dialog", { name: /单币详情/ });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("heading", { name: /异动时间轴/ })).toBeVisible();
+  await expect(drawer.getByRole("heading", { name: "资金流" })).toBeVisible();
+  await expect(drawer.getByRole("heading", { name: "跨所持仓对比" })).toBeVisible();
+  await expect(page).toHaveURL(radarUrl);
+
+  await drawer.getByRole("button", { name: "关闭" }).click();
+  await expect(drawer).toBeHidden();
+  await page.getByTestId("radar-momentum-matrix").locator("button[data-symbol]").first().click();
+  await expect(page.getByRole("dialog", { name: /单币详情/ })).toBeVisible();
+  await expect(page).toHaveURL(radarUrl);
+});
+
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
   await page.setViewportSize({ width: 1152, height: 720 });
   await mockPublicApi(page);
@@ -704,7 +724,7 @@ test("desktop radar mirrors the target three-column scan hierarchy", async ({ pa
   expect(matrixBox?.x).toBeCloseTo(251, 0);
   expect(matrixBox?.width).toBeCloseTo(650, 0);
   expect(sideBox?.width).toBeCloseTo(230, 0);
-  const sideRow = await page.getByTestId("radar-side-intelligence").locator("section").first().locator("a").first().boundingBox();
+  const sideRow = await page.getByTestId("radar-side-intelligence").locator("section").first().locator("button[data-symbol]").first().boundingBox();
   expect(sideRow?.height).toBeCloseTo(24, 0);
   expect(eventBox?.height).toBeCloseTo(656, 0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
@@ -724,7 +744,7 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   expect(center?.width).toBeCloseTo(1034, 0);
   expect(side?.x).toBeCloseTo(1296, 0);
   expect(side?.width).toBeCloseTo(230, 0);
-  const strengthRow = await page.getByTestId("radar-strength-grid").first().locator("a").first().boundingBox();
+  const strengthRow = await page.getByTestId("radar-strength-grid").first().locator("button[data-symbol]").first().boundingBox();
   expect(strengthRow?.height).toBeCloseTo(40, 0);
 
   await page.goto("/info");

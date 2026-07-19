@@ -1178,7 +1178,7 @@ def public_workstation_radar_anomalies_payload(
     settings: Settings | Any | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
-    safe_limit = max(10, min(80, int(limit or 30)))
+    safe_limit = max(10, min(100, int(limit or 100)))
     source, error = _workstation_realtime_intelligence_source(
         limit=min(30, safe_limit), settings=settings, now_ts=now_ts,
     )

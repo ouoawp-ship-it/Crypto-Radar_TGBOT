@@ -164,21 +164,26 @@ class WorkstationRadarApiTests(unittest.TestCase):
                 ],
             },
         }
+        source["data"]["anomaly_events"] = [
+            {"id": f"evt-{index}", "symbol": "BTCUSDT", "coin": "BTC", "label": "OI move", "window": "5m", "rankings": {"self": {"rank": 1}}}
+            for index in range(1, 106)
+        ]
         with patch(
             "paopao_radar.web_services.public.public_realtime_intelligence_payload",
             return_value=source,
         ):
-            anomalies = public_workstation_radar_anomalies_payload()
+            anomalies = public_workstation_radar_anomalies_payload(limit=100)
             surge = public_workstation_radar_surge_payload()
             rank = public_workstation_radar_rank_payload()
             briefs = public_workstation_radar_briefs_payload()
 
         self.assertEqual(anomalies["data"]["items"][0]["id"], "evt-1")
+        self.assertEqual(len(anomalies["data"]["items"]), 100)
         self.assertEqual([item["coin"] for item in surge["data"]["items"]], ["BTC"])
         self.assertEqual([item["coin"] for item in rank["data"]["total"]], ["BTC", "ETH"])
         self.assertEqual([item["coin"] for item in rank["data"]["ambush"]], ["ETH"])
         self.assertEqual(rank["data"]["universe"], source["data"]["items"])
-        self.assertEqual(briefs["data"]["items"][0]["title"], "BTC OI 暴涨")
+        self.assertEqual(briefs["data"]["items"][0]["title"], "BTC OI move")
 
     def test_cross_exchange_oi_normalizes_usd_and_excludes_missing_venues(self) -> None:
         payload = build_cross_exchange_open_interest(

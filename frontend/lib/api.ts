@@ -167,7 +167,7 @@ export function getWorkstationRadarMomentumWindows(limit = 8, options: PublicFet
   );
 }
 
-export function getWorkstationRadarAnomalies(limit = 30, options: PublicFetchOptions = {}) {
+export function getWorkstationRadarAnomalies(limit = 100, options: PublicFetchOptions = {}) {
   return publicFetch<WorkstationRadarAnomaliesPayload>(
     "/public-api/workstation/radar/anomalies",
     { limit },
