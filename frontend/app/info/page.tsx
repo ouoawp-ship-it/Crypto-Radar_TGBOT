@@ -201,7 +201,7 @@ function PlazaColumn({ payload, loading, showDigest }: { payload?: InfoFeedPaylo
         return <div className="grid h-[34px] grid-cols-[18px_18px_minmax(0,1fr)_auto] items-center gap-[7px] border-b border-border-subtle px-2.5 py-1 text-[8px]" key={item.symbol || coin}>
           <span className="font-mono text-warn">{String(index + 1).padStart(2, "0")}</span>
           <CoinIcon coin={coin}/>
-          <span className="min-w-0 font-semibold">${coin} {item.asset_type ? <small className="rounded-[2px] bg-warn/10 px-1 text-warn">{item.asset_type}</small> : null} <small className={`${item.is_new ? "bg-warn/10 text-warn" : "text-warn"} rounded-[2px] font-mono font-semibold`}>{badge}</small><small className="block truncate font-normal leading-[1.45] text-text-muted">近 1h 提到 {countText(item.recent_1h_posts)} 次 · 上轮 {countText(item.previous_1h_posts)}</small></span>
+          <span className="min-w-0 font-semibold">${coin} {item.asset_type ? <small className="rounded-[2px] bg-warn/10 px-1 text-warn">{item.asset_type}</small> : null} <small className={`${item.is_new ? "bg-warn/10 text-warn" : "text-warn"} rounded-[2px] font-mono font-semibold`}>{badge}</small><small className="block truncate font-normal leading-[1.45] text-text-muted">近 1h 提到 {countText(item.recent_1h_posts)} 次{item.is_new ? "" : ` · 上轮 ${countText(item.previous_1h_posts)}`}</small></span>
           <span className="flex flex-col items-end whitespace-nowrap font-mono"><small className="text-[6px] font-normal text-text-muted">4h 共</small><b className="text-[9px] text-good">{countText(item.posts)} 帖</b></span>
         </div>;
       })}

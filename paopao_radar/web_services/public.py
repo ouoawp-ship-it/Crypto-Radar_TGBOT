@@ -1514,21 +1514,17 @@ def public_info_feed_payload(
                     strength = market_item.get("strength") if isinstance(market_item.get("strength"), dict) else {}
                     flow_value = market_item.get("futures_flow_usd")
                     flow_strength = strength.get("futures_flow_usd")
-                    try:
-                        bounded_strength = max(0, min(100, round(float(flow_strength))))
-                        numeric_flow = float(flow_value)
-                    except (TypeError, ValueError):
-                        bounded_strength = None
-                        numeric_flow = None
+                    futures_inflow = _number(market_item.get("futures_inflow_usd"))
+                    futures_outflow = _number(market_item.get("futures_outflow_usd"))
                     futures_long_pct = None
                     futures_short_pct = None
-                    if bounded_strength is not None and numeric_flow is not None:
-                        if numeric_flow >= 0:
-                            futures_long_pct = bounded_strength
-                            futures_short_pct = 100 - bounded_strength
-                        else:
-                            futures_long_pct = 100 - bounded_strength
-                            futures_short_pct = bounded_strength
+                    if futures_inflow is not None and futures_outflow is not None:
+                        positive_inflow = max(0.0, futures_inflow)
+                        positive_outflow = max(0.0, futures_outflow)
+                        gross_flow = positive_inflow + positive_outflow
+                        if gross_flow > 0:
+                            futures_long_pct = round(positive_inflow / gross_flow * 100)
+                            futures_short_pct = 100 - futures_long_pct
                     item.update({
                         "price_change_pct": market_item.get("price_change_pct"),
                         "futures_flow_usd": flow_value,
@@ -1542,7 +1538,7 @@ def public_info_feed_payload(
                 return enriched
 
             plaza_rankings = {
-                "schema_version": "workstation.info.plaza.v2",
+                "schema_version": "workstation.info.plaza.v3",
                 "generated_at": _utc_time_text(now),
                 "data_status": "ready" if ranked.get(86_400) else "empty",
                 "provider": {
@@ -1563,7 +1559,7 @@ def public_info_feed_payload(
                     "activity": "4h 活力榜比较最近 1h 与此前 1h 的真实提及数；此前 1h 为 0 且本轮大于 0 时标记 NEW，否则返回本轮/上轮倍数。",
                     "sentiment": "opportunity/risk 规则标签分别计为多/空；中性事件不进入方向占比。",
                     "engagement": "公开互动分数为点赞 + 2×转发 + 回复；缺失互动时保持 0，不补造数据。",
-                    "market": "24h 涨跌与合约主动资金来自本地市场快照；资金强度按方向拆分为多/空互补占比，不可用时返回 null。",
+                    "market": "24h 涨跌与合约主动资金来自本地市场快照；合约多/空按主动买入额与主动卖出额占总成交额的比例计算，异常强度作为独立分位字段，不可用时返回 null。",
                 },
             }
         if not items and ingestion.get("status") == "refreshing":

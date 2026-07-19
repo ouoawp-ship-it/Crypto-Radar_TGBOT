@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.info_sources import normalize_bluesky_feed, normalize_rss_feed
+from paopao_radar.market_cockpit import MarketSnapshotStore
 from paopao_radar.news_intelligence import NewsEventStore, ingest_binance_announcements, normalize_binance_articles
 from paopao_radar.web_services.public import public_info_feed_payload
 
@@ -151,7 +152,7 @@ class NewsIntelligenceTest(unittest.TestCase):
 
         self.assertTrue(response["ok"])
         rankings = response["data"]["plaza_rankings"]
-        self.assertEqual(rankings["schema_version"], "workstation.info.plaza.v2")
+        self.assertEqual(rankings["schema_version"], "workstation.info.plaza.v3")
         self.assertEqual(rankings["provider"]["id"], "bluesky_crypto_plaza")
         self.assertEqual(rankings["provider"]["rights_status"], "public_social_link")
         self.assertEqual(rankings["active_4h"][0]["coin"], "BTC")
@@ -159,6 +160,52 @@ class NewsIntelligenceTest(unittest.TestCase):
         self.assertIsNone(rankings["total_24h"][0]["price_change_pct"])
         self.assertIsNone(rankings["total_24h"][0]["futures_long_pct"])
         self.assertIsNone(rankings["total_24h"][0]["futures_short_pct"])
+
+    def test_public_plaza_contract_uses_gross_futures_flow_for_long_short_share(self) -> None:
+        now = 1_720_000_300
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            NewsEventStore(settings.news_events_db_path).upsert_many([{
+                "event_id": "plaza_flow_share_btc",
+                "published_at": now - 300,
+                "collected_at": now - 290,
+                "source": "@market.bsky.social",
+                "source_type": "plaza",
+                "title": "$BTC public activity rises",
+                "summary": "BTC public activity rises.",
+                "url": "https://bsky.app/profile/market.bsky.social/post/btc-flow-share",
+                "symbols": ["BTCUSDT"],
+                "event_kind": "opportunity",
+                "ai_analysis": {"engagement": {"likes": 8, "reposts": 2, "replies": 1}},
+                "rights_status": "public_social_link",
+            }])
+            MarketSnapshotStore(settings.market_snapshots_db_path).append_many([{
+                "symbol": "BTCUSDT",
+                "observed_at": now,
+                "source": "test_flow_share",
+                "window_sec": 900,
+                "price": 100.0,
+                "price_change_pct": 1.0,
+                "change_window_sec": 86_400,
+                "quote_volume": 10_000_000.0,
+                "futures_inflow_usd": 600_000.0,
+                "futures_outflow_usd": 400_000.0,
+                "futures_flow_usd": 200_000.0,
+                "coverage": {"price": True, "futures_flow": True},
+            }])
+            response = public_info_feed_payload(
+                settings=settings,
+                now_ts=now,
+                refresh=False,
+                source_type="plaza",
+                page_size=10,
+            )
+
+        self.assertTrue(response["ok"])
+        ranking = response["data"]["plaza_rankings"]["total_24h"][0]
+        self.assertEqual(ranking["futures_long_pct"], 60)
+        self.assertEqual(ranking["futures_short_pct"], 40)
+        self.assertEqual(ranking["futures_flow_usd"], 200_000.0)
 
     def test_public_contract_exposes_real_channel_status_without_fabricating_content(self) -> None:
         with TemporaryDirectory() as tmp:
