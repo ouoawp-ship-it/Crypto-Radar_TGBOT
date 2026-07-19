@@ -842,6 +842,7 @@ for (const viewport of [
       await page.goto(`/${route}`);
       await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
       await expect(page.getByTestId(`${route}-workstation`)).toHaveAttribute("aria-busy", "false");
+      if (route === "radar") await expect(page.getByLabel("五窗口共振 2/5").first()).toBeVisible();
       await page.locator("img").evaluateAll(async (images) => {
         await Promise.all(images.map((image) => (image as HTMLImageElement).decode().catch(() => undefined)));
       });

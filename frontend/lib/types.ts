@@ -177,6 +177,7 @@ export type CockpitBoardItem = {
   unit?: "usd" | "percent" | "percent_per_cycle" | string;
   magnitude_usd?: number | null;
   strength_percentile?: number | null;
+  window_states?: Partial<Record<"15m" | "30m" | "1h" | "4h" | "1d", boolean>>;
   updated_at?: string;
   status?: MetricStatus | string;
   quality?: string;

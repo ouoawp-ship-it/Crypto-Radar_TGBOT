@@ -107,11 +107,45 @@ function MarketBreadthRow({ advancing = 0, declining = 0 }: { advancing?: number
   return <div className="px-2.5 pb-2 pt-[5px]"><div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold text-text-secondary">全场涨跌</span><span className={`font-mono text-[10px] font-semibold ${advancing >= declining ? "text-good" : "text-risk"}`}>涨 {advancing} · 跌 {declining}</span><span className="rounded-[2px] bg-primary-50 px-1 py-px text-[7px] font-semibold text-primary-700">{state}</span></div><div className="mt-1 flex h-[5px] overflow-hidden rounded-full bg-[#e33a46]"><span className="bg-[#14aa6d]" style={{ width: `${advancingRatio}%` }}/></div><div className="mt-1 text-[7px] text-text-muted">上涨占比 {advancingRatio}% · 基于可用市场样本</div></div>;
 }
 
-function RankBlocks({ item, fallbackPercentile }: { item?: RealtimeIntelligenceItem; fallbackPercentile?: number | null }) {
+function resonanceStates(item?: RealtimeIntelligenceItem, fallbackPercentile?: number | null): boolean[] {
+  const windows = item?.resonance?.windows || [];
+  if (windows.length) {
+    const activeByWindow = new Map(windows.map((window) => [String(window.key || ""), Boolean(window.active)]));
+    return WINDOWS.map((key) => activeByWindow.get(key) || false);
+  }
   const resonanceActive = Number(item?.resonance?.active_count || 0);
   const fallbackActive = fallbackPercentile === null || fallbackPercentile === undefined ? 0 : Math.ceil(fallbackPercentile / 20);
-  const active = Math.max(0, Math.min(5, resonanceActive || fallbackActive));
-  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{WINDOWS.map((key, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${index < active ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>;
+  const active = Math.max(0, Math.min(WINDOWS.length, resonanceActive || fallbackActive));
+  return WINDOWS.map((_key, index) => index < active);
+}
+
+function rankWindowStates(
+  momentum: Partial<Record<WindowKey, RadarBoards>>,
+  boardKey: string,
+  mode: RankMode,
+  positive: boolean,
+  item: CockpitBoardItem,
+): boolean[] | undefined {
+  const supplied = item.window_states;
+  if (supplied && Object.keys(supplied).length) return WINDOWS.map((window) => Boolean(supplied[window]));
+  const symbol = String(item.symbol || "");
+  let inspected = 0;
+  const states = WINDOWS.map((window) => {
+    const board = momentum[window]?.boards?.find((candidate) => candidate.key === boardKey);
+    if (!board) return false;
+    inspected += 1;
+    const side = mode === "amount"
+      ? (positive ? board.amount_positive || board.positive : board.amount_negative || board.negative)
+      : (positive ? board.strength_positive || board.positive : board.strength_negative || board.negative);
+    return Boolean(side?.items?.some((item) => String(item.symbol || "") === symbol));
+  });
+  return inspected ? states : undefined;
+}
+
+function RankBlocks({ item, fallbackPercentile, states: suppliedStates }: { item?: RealtimeIntelligenceItem; fallbackPercentile?: number | null; states?: boolean[] }) {
+  const states = suppliedStates || resonanceStates(item, fallbackPercentile);
+  const active = states.filter(Boolean).length;
+  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{states.map((isActive, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${isActive ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={WINDOWS[index]}/>)}</span>;
 }
 
 function PanelTitle({ title, meta, action, icon, iconClassName = "text-primary-600" }: { title: string; meta?: string; action?: React.ReactNode; icon?: React.ReactNode; iconClassName?: string }) {
@@ -174,45 +208,47 @@ function rankMagnitude(item: CockpitBoardItem) {
   return Math.abs(finite(item.magnitude_usd) ?? finite(item.value) ?? 0);
 }
 
-function MomentumList({ items, mode, positive, realtimeBySymbol, scaleMax, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; scaleMax?: number; limit?: number }) {
+function MomentumList({ items, mode, positive, realtimeBySymbol, scaleMax, windowStates, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; scaleMax?: number; windowStates: (item: CockpitBoardItem) => boolean[] | undefined; limit?: number }) {
   const visible = (items || []).slice(0, limit);
   const maxMagnitude = Math.max(1, scaleMax || 0, ...visible.map(rankMagnitude));
   return <div>{visible.map((item, index) => {
     const barWidth = Math.min(70, 18 + rankMagnitude(item) / maxMagnitude * 66);
     return <Link className="relative grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_35px_38px] items-center gap-[2px] overflow-hidden px-1 text-[8px] hover:bg-primary-50/50 min-[1024px]:h-[clamp(19px,calc(2.7778dvh-1px),23px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
-      <i aria-hidden="true" className={`absolute bottom-[2px] right-[1px] top-[5px] rounded-[2px] not-italic min-[1280px]:bottom-[5px] ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
-      <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
+      <i aria-hidden="true" className={`absolute bottom-[2px] right-0 top-[5px] rounded-[2px] not-italic min-[1280px]:bottom-[5px] ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
+      <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))} states={windowStates(item)}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
     </Link>;
   })}{!visible.length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
 }
 
-function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: CockpitBoardItem[]; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
-  return <div className="grid grid-cols-1 sm:grid-cols-2" data-testid="radar-strength-grid">{(items || []).slice(0, 8).map((item, index) => {
+function MomentumStrengthGrid({ items, positive, realtimeBySymbol, windowStates }: { items?: CockpitBoardItem[]; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; windowStates: (item: CockpitBoardItem) => boolean[] | undefined }) {
+  return <div className="grid grid-cols-1 sm:grid-cols-2 [&>:nth-last-child(-n+2)]:border-b-0" data-testid="radar-strength-grid">{(items || []).slice(0, 8).map((item, index) => {
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
-    const active = Math.max(0, Math.min(5, Number(realtime?.resonance?.active_count || 0)));
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
-    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-r border-border-subtle/70 px-1 hover:bg-primary-50/55 min-[1024px]:h-[clamp(33px,calc(4.8611dvh-2px),40px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+    const states = windowStates(item) || resonanceStates(realtime, finite(item.strength_percentile));
+    const active = states.filter(Boolean).length;
+    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-b border-r border-border-subtle/70 border-b-border-subtle/40 px-1 hover:bg-primary-50/55 min-[1024px]:h-[clamp(33px,calc(4.8611dvh-2px),40px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
       <small className="row-span-2 text-right font-mono text-[6px] text-text-muted">{index + 1}</small>
       <CoinIcon coin={item.coin} size={13}/><span className="truncate text-[7px] font-semibold text-text-primary">{item.coin || item.symbol}</span>
       <span className="text-right font-mono text-[6px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
-      <span className="col-span-2 col-start-2 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
+      <span className="col-start-3 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{states.map((isActive, block) => <i className={`h-[4px] w-px shrink-0 rounded-[.5px] min-[1600px]:h-[5px] min-[1600px]:w-[5px] min-[1600px]:border ${isActive ? "bg-[#002fa7] min-[1600px]:border-[#002fa7]" : "bg-surface-container-low min-[1600px]:border-border-subtle"}`} key={WINDOWS[block]}/>)}</span>
       <span className={`truncate text-right font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount")}</span>
     </Link>;
   })}{!(items || []).length ? <div className="grid h-[136px] place-items-center text-[8px] text-text-muted sm:col-span-2">⏳ 暂无</div> : null}</div>;
 }
 
-function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
+function MomentumBoard({ board, momentum, realtimeBySymbol }: { board?: CockpitBoard; momentum: Partial<Record<WindowKey, RadarBoards>>; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
   const labels = BOARD_LABELS[String(board?.key || "")] || { positive: board?.positive?.title || "上行", negative: board?.negative?.title || "下行" };
   const amountPositive = board?.amount_positive || board?.positive;
   const amountNegative = board?.amount_negative || board?.negative;
   const strengthPositive = board?.strength_positive || board?.positive;
   const strengthNegative = board?.strength_negative || board?.negative;
   const amountScaleMax = Math.max(1, ...[...(amountPositive?.items || []).slice(0, 7), ...(amountNegative?.items || []).slice(0, 7)].map(rankMagnitude));
+  const statesFor = (mode: RankMode, positive: boolean, item: CockpitBoardItem) => rankWindowStates(momentum, String(board?.key || ""), mode, positive, item);
   return <section className="overflow-hidden rounded-[2px] border border-border-subtle bg-surface-panel">
     <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-panel text-[8px] font-semibold min-[1024px]:h-[23px]"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div></div>
-    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax}/></div>
-    <div className="grid h-[23px] grid-cols-2 border-y border-border-subtle bg-surface-panel text-[8px] font-semibold min-[1280px]:h-[25px]"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div></div>
-    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid items={strengthPositive?.items} positive realtimeBySymbol={realtimeBySymbol}/><MomentumStrengthGrid items={strengthNegative?.items} positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax} windowStates={(symbol) => statesFor("amount", true, symbol)}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax} windowStates={(symbol) => statesFor("amount", false, symbol)}/></div>
+    <div className="grid h-[25px] grid-cols-2 border-y border-border-subtle bg-surface-panel text-[8px] font-semibold min-[1280px]:h-[23px]"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid items={strengthPositive?.items} positive realtimeBySymbol={realtimeBySymbol} windowStates={(symbol) => statesFor("strength", true, symbol)}/><MomentumStrengthGrid items={strengthNegative?.items} positive={false} realtimeBySymbol={realtimeBySymbol} windowStates={(symbol) => statesFor("strength", false, symbol)}/></div>
   </section>;
 }
 
@@ -356,7 +392,7 @@ export default function RadarPage() {
     <main className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-hot-money">
       <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10 min-[1024px]:[&>.workstation-panel-header]:h-[38px]">
         <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} icon="◎" meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} title="热钱观察榜单"/>
-        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-1.5 min-[1024px]:pr-2.5 min-[1280px]:gap-[13px] min-[1280px]:px-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-1.5 min-[1024px]:pr-2.5 min-[1280px]:gap-[13px] min-[1280px]:px-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} momentum={momentum} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
       <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5"><RuleBoard items={surge} mode="surge" subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>
     </main>
