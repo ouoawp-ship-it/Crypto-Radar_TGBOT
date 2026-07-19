@@ -296,7 +296,7 @@ const extraInfoFixtures = [
     const coin = coins[index % coins.length];
     return {
       event_id: `plaza_${index}`,
-      published_at: `2030-07-18T20:${String(29 - index).padStart(2, "0")}:00Z`,
+      published_at: index < 2 ? `2030-07-18T20:${String(29 - index).padStart(2, "0")}:00Z` : `2030-07-18T15:${String(57 - index).padStart(2, "0")}:00Z`,
       collected_at: "2030-07-18T20:31:00Z",
       source: "@market.bsky.social",
       source_type: "plaza",
@@ -336,7 +336,7 @@ const infoFeed = {
     { event_id: "panews_btc", published_at: "2030-07-18T20:30:00Z", collected_at: "2030-07-18T20:31:00Z", source: "PANews", source_type: "news", title: "比特币现货资金持续流入，市场关注度快速升温", summary: "BTC 交易量与主动买盘同步增强。", url: "https://www.panewslab.com/zh/articles/example", symbols: ["BTCUSDT"], importance: "high", language: "zh", cluster_id: "cluster_btc_zh", cluster_size: 1, event_kind: "opportunity", rights_status: "public_rss_link", timestamp_quality: "source", data_status: "ready", source_links: [] },
     { event_id: "decrypt_eth", published_at: "2030-07-18T20:25:00Z", collected_at: "2030-07-18T20:31:00Z", source: "Decrypt", source_type: "news", title: "Ethereum trading activity accelerates as ETF demand returns", summary: "Spot volume and institutional demand rose together.", url: "https://decrypt.co/example", symbols: ["ETHUSDT"], importance: "medium", language: "en", cluster_id: "cluster_eth_en", cluster_size: 1, event_kind: "opportunity", rights_status: "public_rss_link", timestamp_quality: "source", data_status: "ready", source_links: [] },
     { event_id: "bsky_kol_sol", published_at: "2030-07-18T20:20:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@analyst.bsky.social", source_type: "kol", title: "$SOL liquidity is improving, but confirmation still needs spot follow-through.", url: "https://bsky.app/profile/analyst.bsky.social/post/sol", symbols: ["SOLUSDT"], importance: "high", language: "en", cluster_id: "cluster_sol_kol", cluster_size: 1, event_kind: "neutral", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 188, reposts: 28, replies: 14, score: 258 } } },
-    { event_id: "bsky_plaza_doge", published_at: "2030-07-18T20:15:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@market.bsky.social", source_type: "plaza", title: "$DOGE breakout discussion is surging across the public feed.", url: "https://bsky.app/profile/market.bsky.social/post/doge", symbols: ["DOGEUSDT"], importance: "medium", language: "en", cluster_id: "cluster_doge_plaza", cluster_size: 1, event_kind: "opportunity", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 96, reposts: 12, replies: 8, score: 128 } } },
+    { event_id: "bsky_plaza_doge", published_at: "2030-07-18T15:30:00Z", collected_at: "2030-07-18T20:31:00Z", source: "@market.bsky.social", source_type: "plaza", title: "$DOGE breakout discussion is surging across the public feed.", url: "https://bsky.app/profile/market.bsky.social/post/doge", symbols: ["DOGEUSDT"], importance: "medium", language: "en", cluster_id: "cluster_doge_plaza", cluster_size: 1, event_kind: "opportunity", rights_status: "public_social_link", timestamp_quality: "source", data_status: "ready", source_links: [], ai_analysis: { status: "not_generated", engagement: { likes: 96, reposts: 12, replies: 8, score: 128 } } },
     ...extraInfoFixtures,
   ]
 };
@@ -526,12 +526,37 @@ test("desktop radar mirrors the target three-column scan hierarchy", async ({ pa
   const matrixBox = await page.getByTestId("radar-hot-money").boundingBox();
   const sideBox = await page.getByTestId("radar-side-intelligence").boundingBox();
   expect(eventBox?.x).toBeCloseTo(10, 0);
-  expect(eventBox?.y).toBeCloseTo(55, 0);
-  expect(eventBox?.width).toBeCloseTo(231, 0);
+  expect(eventBox?.y).toBeCloseTo(54, 0);
+  expect(eventBox?.width).toBeCloseTo(230, 0);
   expect(matrixBox?.width).toBeCloseTo(650, 0);
-  expect(sideBox?.width).toBeCloseTo(231, 0);
-  expect(eventBox?.height).toBeCloseTo(655, 0);
+  expect(sideBox?.width).toBeCloseTo(230, 0);
+  expect(eventBox?.height).toBeCloseTo(656, 0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
+});
+
+test("1920 reference geometry keeps Mercu-sized radar rails and funds overview", async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 864 });
+  await mockPublicApi(page);
+  await page.goto("/radar");
+
+  const event = await page.getByTestId("radar-event-feed").boundingBox();
+  const center = await page.getByTestId("radar-hot-money").boundingBox();
+  const side = await page.getByTestId("radar-side-intelligence").boundingBox();
+  expect(event?.x).toBeCloseTo(10, 0);
+  expect(event?.width).toBeCloseTo(230, 0);
+  expect(center?.x).toBeCloseTo(251, 0);
+  expect(center?.width).toBeCloseTo(1034, 0);
+  expect(side?.x).toBeCloseTo(1296, 0);
+  expect(side?.width).toBeCloseTo(230, 0);
+
+  await page.goto("/funds");
+  const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
+  const assets = await page.getByTestId("funds-assets-overview").boundingBox();
+  expect(sector?.x).toBeCloseTo(16, 0);
+  expect(sector?.y).toBeCloseTo(106, 0);
+  expect(sector?.width).toBeCloseTo(290, 0);
+  expect(assets?.x).toBeCloseTo(318, 0);
+  expect(assets?.width).toBeCloseTo(1202, 0);
 });
 
 test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page }) => {
@@ -565,7 +590,7 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
     return { width: Math.round(rect.width), top: Math.round(rect.top), bottom: Math.round(rect.bottom) };
   }));
   expect(infoColumns).toHaveLength(4);
-  expect(infoColumns.reduce((sum, column) => sum + column.width, 0)).toBeGreaterThanOrEqual(890);
+  expect(infoColumns.reduce((sum, column) => sum + column.width, 0)).toBeGreaterThanOrEqual(884);
   expect(infoColumns.every((column) => column.top === 101 && column.bottom === 726)).toBe(true);
 
   await page.goto("/funds");

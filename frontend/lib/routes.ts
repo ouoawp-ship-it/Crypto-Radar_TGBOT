@@ -7,7 +7,7 @@ const coreItems = [
 const workstationItems = [
   { href: "/info", label: "信息", icon: "info" as const },
   { href: "/funds", label: "资金", icon: "funds" as const },
-  { href: "/agents", label: "Paoxx AI", icon: "spark" as const, badge: "NEW" },
+  { href: "/agents", label: "AI 智选", icon: "spark" as const, badge: "NEW" },
 ];
 
 export const navItems = [

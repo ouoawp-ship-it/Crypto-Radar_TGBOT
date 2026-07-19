@@ -172,6 +172,16 @@ body::before {
 }
 
 .app-shell:has(.workstation-page) {
+  --surface-low: 252 252 252;
+  --surface-container: 238 241 246;
+  --surface-container-low: 250 251 253;
+  --text-primary: 42 46 51;
+  --text-secondary: 104 109 113;
+  --text-muted: 145 151 159;
+  --border-subtle: 233 234 236;
+  --good: 39 169 121;
+  --warn: 205 162 74;
+  --risk: 224 85 92;
   height: 100dvh;
   min-width: 900px;
   overflow: hidden;
@@ -192,7 +202,7 @@ body::before {
 }
 
 .workstation-page {
-  background: rgb(var(--surface-low));
+  background: rgb(238 241 248);
   height: 100%;
   min-height: 0;
 }
@@ -248,6 +258,7 @@ body::before {
 }
 
 .mercu-funds-grid {
+  background: rgb(var(--surface-panel));
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -256,25 +267,29 @@ body::before {
 
 @media (min-width: 1024px) {
   .mercu-radar-grid {
-    gap: 10px;
-    grid-template-columns: minmax(198px, 20.4%) minmax(500px, 1fr) minmax(198px, 20.4%);
-    padding: 10px;
+    gap: 11px;
+    grid-template-columns: 230px minmax(500px, 1fr) 230px;
+    padding: 9px 10px 10px;
   }
 
   .mercu-info-grid {
-    gap: 16px;
-    padding: 10px;
+    gap: 12px;
+    padding: 8px 10px 10px;
   }
 
-  .mercu-funds-grid > main:first-of-type {
-    grid-template-columns: minmax(225px, 23.6%) minmax(0, 1fr);
+  .mercu-funds-overview-grid {
+    grid-template-columns: clamp(264px, calc(6.6667vw + 187.2px), 290px) minmax(0, 1fr);
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  .mercu-funds-grid {
+    padding-top: clamp(0px, calc(2.2917vw - 26.4px), 9px);
   }
 }
 
 html[data-theme="light"] .workstation-panel {
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.035);
+  box-shadow: none;
 }
 
 html[data-theme="light"] .workstation-scroll::-webkit-scrollbar {
