@@ -627,6 +627,62 @@ def public_radar_boards_payload(
     return api_ok(_strip_forbidden(payload), message="已读取雷达榜单")
 
 
+def _workstation_radar_confluence(boards: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Build the right-rail cross-board consensus from the same closed-window facts."""
+
+    def build(mode: str) -> list[dict[str, Any]]:
+        tallies: dict[str, dict[str, Any]] = {}
+        for board in boards:
+            board_key = str(board.get("key") or "")
+            if board_key not in {"oi", "futures_flow", "spot_flow"}:
+                continue
+            for direction in ("positive", "negative"):
+                side = board.get(f"{mode}_{direction}") or board.get(direction) or {}
+                for source_item in list(side.get("items") or [])[:8]:
+                    item = dict(source_item or {})
+                    symbol = str(item.get("symbol") or "")
+                    if not symbol:
+                        continue
+                    current = tallies.setdefault(
+                        symbol,
+                        {"item": item, "positive": set(), "negative": set()},
+                    )
+                    current_value = _number(current["item"].get("magnitude_usd"))
+                    if current_value is None:
+                        current_value = _number(current["item"].get("value")) or 0
+                    next_value = _number(item.get("magnitude_usd"))
+                    if next_value is None:
+                        next_value = _number(item.get("value")) or 0
+                    if abs(next_value) >= abs(current_value):
+                        current["item"] = item
+                    current[direction].add(board_key)
+
+        result: list[dict[str, Any]] = []
+        for symbol, tally in tallies.items():
+            positive_count = len(tally["positive"])
+            negative_count = len(tally["negative"])
+            board_count = max(positive_count, negative_count)
+            if board_count < 2:
+                continue
+            item = dict(tally["item"])
+            item.update({
+                "symbol": symbol,
+                "board_count": board_count,
+                "direction": "positive" if positive_count >= negative_count else "negative",
+                "divergent": positive_count > 0 and negative_count > 0,
+            })
+            result.append(item)
+        result.sort(key=lambda item: (
+            -int(item.get("board_count") or 0),
+            -float(item.get("strength_percentile") or 0),
+            0 if item.get("direction") == "positive" else 1,
+            str(item.get("symbol") or ""),
+        ))
+        return result[:7]
+
+    return {"amount": build("amount"), "strength": build("strength")}
+
+
 def public_workstation_radar_momentum_payload(
     *,
     window: str = "1h",
@@ -665,10 +721,12 @@ def public_workstation_radar_momentum_payload(
         "coverage": source_data.get("coverage") or {},
         "readiness": source_data.get("readiness") or {},
         "boards": boards,
+        "confluence": _workstation_radar_confluence(boards),
         "methodology": {
             **dict(source_data.get("methodology") or {}),
             "amount_rank": "Ranks absolute values inside the selected closed window.",
             "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
+            "confluence": "Counts majority-aligned appearances across OI, futures-flow and spot-flow boards; price is excluded.",
             "closed_window": True,
         },
     }
@@ -703,6 +761,11 @@ def public_workstation_radar_momentum_windows_payload(
         windows: dict[str, Any] = {}
         for window_key, window_sec in window_items:
             source_data = dict(sources.get(window_sec) or {})
+            boards = [
+                board
+                for board in list(source_data.get("boards") or [])
+                if str((board or {}).get("key") or "") in core_keys
+            ]
             windows[window_key] = {
                 "schema_version": "workstation.radar.momentum.v1",
                 "generated_at": source_data.get("generated_at"),
@@ -712,15 +775,13 @@ def public_workstation_radar_momentum_windows_payload(
                 "warnings": source_data.get("warnings") or [],
                 "coverage": source_data.get("coverage") or {},
                 "readiness": source_data.get("readiness") or {},
-                "boards": [
-                    board
-                    for board in list(source_data.get("boards") or [])
-                    if str((board or {}).get("key") or "") in core_keys
-                ],
+                "boards": boards,
+                "confluence": _workstation_radar_confluence(boards),
                 "methodology": {
                     **dict(source_data.get("methodology") or {}),
                     "amount_rank": "Ranks absolute values inside the selected closed window.",
                     "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
+                    "confluence": "Counts majority-aligned appearances across OI, futures-flow and spot-flow boards; price is excluded.",
                     "closed_window": True,
                 },
             }
@@ -1095,6 +1156,176 @@ def public_realtime_intelligence_payload(
     return api_ok(_strip_forbidden(payload), message="已读取实时异常情报")
 
 
+def _workstation_realtime_intelligence_source(
+    *,
+    limit: int,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    source = public_realtime_intelligence_payload(
+        limit=max(1, min(30, int(limit or 30))),
+        settings=settings,
+        now_ts=now_ts,
+    )
+    if not source.get("ok"):
+        return None, source
+    return dict(source.get("data") or {}), None
+
+
+def public_workstation_radar_anomalies_payload(
+    *,
+    limit: int = 30,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(10, min(80, int(limit or 30)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=min(30, safe_limit), settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    items = list(source.get("anomaly_events") or [])[:safe_limit]
+    payload = {
+        "schema_version": "workstation.radar.anomalies.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "events": len(items)},
+        "items": items,
+        "methodology": {
+            "closed_window": True,
+            "rankings": "Each event keeps self-history, cross-market strength and cross-market absolute-size ranks.",
+            "refresh": "Independent anomaly feed; callers may pause polling while searching.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation anomaly feed loaded")
+
+
+def public_workstation_radar_surge_payload(
+    *,
+    limit: int = 5,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(20, int(limit or 5)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=30, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    items = sorted(
+        [item for item in list(source.get("items") or []) if (item.get("surge") or {}).get("triggered")],
+        key=lambda item: float((item.get("surge") or {}).get("score") or 0),
+        reverse=True,
+    )[:safe_limit]
+    payload = {
+        "schema_version": "workstation.radar.surge.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "surge": len(items)},
+        "items": items,
+        "methodology": {
+            "closed_window": True,
+            "order": "Descending closed-window acceleration score.",
+            "prediction": "Rule score describes acceleration evidence and is not a return forecast.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation surge board loaded")
+
+
+def public_workstation_radar_rank_payload(
+    *,
+    total_limit: int = 14,
+    ambush_limit: int = 8,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_total = max(1, min(30, int(total_limit or 14)))
+    safe_ambush = max(1, min(20, int(ambush_limit or 8)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=30, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    universe = list(source.get("items") or [])
+    total = sorted(
+        [item for item in universe if int((item.get("anomaly_24h") or {}).get("count") or 0) > 0],
+        key=lambda item: int((item.get("anomaly_24h") or {}).get("count") or 0),
+        reverse=True,
+    )[:safe_total]
+    ambush = sorted(
+        [item for item in universe if (item.get("ambush") or {}).get("triggered")],
+        key=lambda item: float((item.get("ambush") or {}).get("score") or 0),
+        reverse=True,
+    )[:safe_ambush]
+    payload = {
+        "schema_version": "workstation.radar.rank.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "total": len(total), "ambush": len(ambush)},
+        "universe": universe,
+        "total": total,
+        "ambush": ambush,
+        "methodology": {
+            "total": "Descending count of closed-window anomaly events over the trailing 24 hours.",
+            "ambush": "Positive OI or flow accumulation with compressed price and no active Surge trigger.",
+            "prediction": "Ranks describe observed evidence and are not return forecasts.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation cumulative and ambush boards loaded")
+
+
+def public_workstation_radar_briefs_payload(
+    *,
+    limit: int = 6,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(20, int(limit or 6)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=30, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    briefs = []
+    for event in list(source.get("anomaly_events") or [])[:safe_limit]:
+        coin = str(event.get("coin") or event.get("symbol") or "")
+        label = str(event.get("label") or "市场异动")
+        briefs.append({
+            "id": event.get("id"),
+            "symbol": event.get("symbol"),
+            "coin": coin,
+            "observed_at": event.get("observed_at"),
+            "direction": event.get("direction"),
+            "title": f"{coin} {label}".strip(),
+            "summary": event.get("detail") or f"{event.get('window') or 'closed'} window · {label}",
+            "rankings": event.get("rankings") or {},
+        })
+    payload = {
+        "schema_version": "workstation.radar.briefs.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "briefs": len(briefs)},
+        "items": briefs,
+        "methodology": {
+            "source": "Deterministic compression of ranked workstation anomaly facts.",
+            "ai": "No third-party AI recommendation or inferred trade instruction is added.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation radar briefs loaded")
+
+
 def public_funds_sectors_payload(
     *,
     window_sec: int = 3600,
@@ -1253,6 +1484,88 @@ def public_info_feed_payload(
         high = sum(1 for item in items if item.get("importance") == "high")
         rights_ok = sum(1 for item in items if item.get("rights_status") in {"official_link_only", "public_rss_link", "public_social_link"})
         channel_counts = store.channel_counts(start_ts=now - safe_window, end_ts=now)
+        plaza_rankings: dict[str, Any] | None = None
+        if safe_source_type == "plaza":
+            ranked = store.plaza_rankings(now_ts=now, windows=(14_400, 86_400), limit=12)
+            market_by_symbol: dict[str, dict[str, Any]] = {}
+            market_path = getattr(loaded, "market_snapshots_db_path", None)
+            if market_path and Path(market_path).exists():
+                try:
+                    market = load_market_cockpit(
+                        loaded,
+                        window_sec=86_400,
+                        board_limit=20,
+                        now_ts=now,
+                        live_rows=[],
+                    )
+                    market_by_symbol = {
+                        str(item.get("symbol") or ""): item
+                        for item in market.get("assets") or []
+                        if isinstance(item, dict) and item.get("symbol")
+                    }
+                except Exception:
+                    market_by_symbol = {}
+
+            def enrich(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                enriched: list[dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    market_item = market_by_symbol.get(str(item.get("symbol") or ""), {})
+                    strength = market_item.get("strength") if isinstance(market_item.get("strength"), dict) else {}
+                    flow_value = market_item.get("futures_flow_usd")
+                    flow_strength = strength.get("futures_flow_usd")
+                    try:
+                        bounded_strength = max(0, min(100, round(float(flow_strength))))
+                        numeric_flow = float(flow_value)
+                    except (TypeError, ValueError):
+                        bounded_strength = None
+                        numeric_flow = None
+                    futures_long_pct = None
+                    futures_short_pct = None
+                    if bounded_strength is not None and numeric_flow is not None:
+                        if numeric_flow >= 0:
+                            futures_long_pct = bounded_strength
+                            futures_short_pct = 100 - bounded_strength
+                        else:
+                            futures_long_pct = 100 - bounded_strength
+                            futures_short_pct = bounded_strength
+                    item.update({
+                        "price_change_pct": market_item.get("price_change_pct"),
+                        "futures_flow_usd": flow_value,
+                        "futures_flow_strength": flow_strength,
+                        "futures_long_pct": futures_long_pct,
+                        "futures_short_pct": futures_short_pct,
+                        "market_updated_at": market_item.get("updated_at"),
+                        "market_status": market_item.get("status") or "unavailable",
+                    })
+                    enriched.append(item)
+                return enriched
+
+            plaza_rankings = {
+                "schema_version": "workstation.info.plaza.v2",
+                "generated_at": _utc_time_text(now),
+                "data_status": "ready" if ranked.get(86_400) else "empty",
+                "provider": {
+                    "id": "bluesky_crypto_plaza",
+                    "label": "公开广场",
+                    "kind": "public_social_api",
+                    "rights_status": "public_social_link",
+                },
+                "active_4h": enrich(ranked.get(14_400, [])),
+                "total_24h": enrich(ranked.get(86_400, [])),
+                "coverage": {
+                    "active_4h": len(ranked.get(14_400, [])),
+                    "total_24h": len(ranked.get(86_400, [])),
+                    "market_linked": sum(1 for row in ranked.get(86_400, []) if row.get("symbol") in market_by_symbol),
+                },
+                "methodology": {
+                    "posts": "按公开广场事件的币种标签计数；一条事件同时关联多个币种时分别计入对应币种。",
+                    "activity": "4h 活力榜比较最近 1h 与此前 1h 的真实提及数；此前 1h 为 0 且本轮大于 0 时标记 NEW，否则返回本轮/上轮倍数。",
+                    "sentiment": "opportunity/risk 规则标签分别计为多/空；中性事件不进入方向占比。",
+                    "engagement": "公开互动分数为点赞 + 2×转发 + 回复；缺失互动时保持 0，不补造数据。",
+                    "market": "24h 涨跌与合约主动资金来自本地市场快照；资金强度按方向拆分为多/空互补占比，不可用时返回 null。",
+                },
+            }
         if not items and ingestion.get("status") == "refreshing":
             warnings.append("Binance 官方公告正在后台更新，稍后刷新即可查看。")
         data_status = "ready" if items and ingestion.get("status") != "degraded" else "degraded" if items or ingestion.get("status") in {"degraded", "refreshing"} else "empty"
@@ -1291,6 +1604,7 @@ def public_info_feed_payload(
                 {"key": "plaza", "label": "市场广场情绪", "status": "ready" if channel_counts.get("plaza") else "empty", "count": channel_counts.get("plaza", 0), "rights_status": "public_social_link"},
             ],
             "items": items,
+            "plaza_rankings": plaza_rankings,
             "ingestion": ingestion,
             "methodology": {
                 "source_policy": "索引官方公告、公开 RSS 与 Bluesky 官方公开 API 的必要元数据和短摘要，全部保留原文回链。",

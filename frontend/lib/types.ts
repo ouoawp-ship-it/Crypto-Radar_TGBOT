@@ -205,6 +205,17 @@ export type CockpitBoard = {
   reason?: string;
 };
 
+export type RadarConfluenceItem = CockpitBoardItem & {
+  board_count?: number;
+  divergent?: boolean;
+  direction?: "positive" | "negative" | "inflow" | "outflow" | string;
+};
+
+export type RadarConfluence = {
+  amount?: RadarConfluenceItem[];
+  strength?: RadarConfluenceItem[];
+};
+
 export type MarketCoverage = {
   assets?: number;
   price?: number;
@@ -285,6 +296,7 @@ export type RadarBoards = {
   coverage?: MarketCoverage;
   readiness?: MarketReadiness;
   boards?: CockpitBoard[];
+  confluence?: RadarConfluence;
   methodology?: Record<string, string>;
 };
 
@@ -313,6 +325,7 @@ export type RealtimeRuleAnalysis = {
 export type RealtimeIntelligenceItem = {
   symbol?: string;
   coin?: string;
+  asset_type?: string;
   observed_at?: string;
   data_status?: string;
   windows?: Record<string, RealtimeWindow>;
@@ -358,6 +371,63 @@ export type RealtimeIntelligencePayload = {
   items?: RealtimeIntelligenceItem[];
   anomaly_events?: RealtimeAnomalyEvent[];
   boards?: Array<{ key?: string; title?: string; count?: number; description?: string; items?: RealtimeIntelligenceItem[] }>;
+};
+
+export type WorkstationRadarAnomaliesPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  items?: RealtimeAnomalyEvent[];
+};
+
+export type WorkstationRadarSurgePayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  items?: RealtimeIntelligenceItem[];
+};
+
+export type WorkstationRadarRankPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  universe?: RealtimeIntelligenceItem[];
+  total?: RealtimeIntelligenceItem[];
+  ambush?: RealtimeIntelligenceItem[];
+};
+
+export type WorkstationRadarBrief = {
+  id?: string;
+  symbol?: string;
+  coin?: string;
+  observed_at?: string;
+  direction?: string;
+  title?: string;
+  summary?: string;
+  rankings?: { self?: SignalRank; market_strength?: SignalRank; market_absolute?: SignalRank };
+};
+
+export type WorkstationRadarBriefsPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  items?: WorkstationRadarBrief[];
 };
 
 export type SectorDefinition = { id?: string; label?: string; description?: string };
@@ -607,6 +677,49 @@ export type InfoChannel = {
   reason?: string;
 };
 
+export type InfoPlazaRank = {
+  symbol?: string;
+  coin?: string;
+  asset_type?: string;
+  posts?: number;
+  recent_1h_posts?: number;
+  previous_1h_posts?: number;
+  recent_ratio?: number | null;
+  is_new?: boolean;
+  positive?: number;
+  negative?: number;
+  neutral?: number;
+  positive_pct?: number;
+  negative_pct?: number;
+  sentiment?: "bullish" | "bearish" | "neutral" | string;
+  sentiment_confidence_pct?: number;
+  likes?: number;
+  reposts?: number;
+  replies?: number;
+  engagement?: number;
+  engagement_per_post?: number;
+  latest_at?: string;
+  summary?: string;
+  price_change_pct?: number | null;
+  futures_flow_usd?: number | null;
+  futures_flow_strength?: number | null;
+  futures_long_pct?: number | null;
+  futures_short_pct?: number | null;
+  market_updated_at?: string;
+  market_status?: string;
+};
+
+export type InfoPlazaRankings = {
+  schema_version?: string;
+  generated_at?: string;
+  data_status?: string;
+  provider?: { id?: string; label?: string; kind?: string; rights_status?: string };
+  active_4h?: InfoPlazaRank[];
+  total_24h?: InfoPlazaRank[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string>;
+};
+
 export type InfoFeedPayload = {
   schema_version?: string;
   generated_at?: string;
@@ -618,6 +731,7 @@ export type InfoFeedPayload = {
   summary?: { high_importance?: number; risk?: number; opportunity?: number; official?: number };
   channels?: InfoChannel[];
   items?: NewsEvent[];
+  plaza_rankings?: InfoPlazaRankings | null;
   methodology?: Record<string, string>;
 };
 

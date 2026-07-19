@@ -74,6 +74,17 @@
 
 返回价格、OI、合约主动资金、现货主动资金与资金费率榜单。实时分钟特征新鲜且窗口覆盖达标时，追加实时合约 CVD、多空强平、Surge 与短周期潜伏榜；实时链路不可用时仍保留原 REST 榜单。榜单只在对应字段覆盖足够时给出结果；不可用维度返回明确状态，不用其他指标代替。
 
+### Radar 工作站分模块接口
+
+- `GET /public-api/workstation/radar/anomalies?limit=30`：独立异动事件流，保留自身历史、全场强度与全场绝对量级三类排名。
+- `GET /public-api/workstation/radar/momentum?window=15m|30m|1h|4h|1d&limit=8`：单窗口价格、OI、合约流、现货流的量级榜和强度榜。
+- `GET /public-api/workstation/radar/momentum-windows?limit=8`：一次历史扫描返回五个封闭窗口；每个窗口附带服务端计算的资金流/资金力度共振榜。
+- `GET /public-api/workstation/radar/surge?limit=5`：按封闭窗口加速度得分降序返回 Surge 榜。
+- `GET /public-api/workstation/radar/rank?total_limit=14&ambush_limit=8`：返回 24h 累积异动总榜、埋伏池及同一时点的排名上下文。
+- `GET /public-api/workstation/radar/briefs?limit=6`：把已排名异动事实压缩成可供 Info 联动的确定性摘要，不添加第三方 AI 推荐。
+
+这些接口都返回独立的 `schema_version`、时间、状态、覆盖率、警告和 `methodology`。页面可分别轮询并保留上次成功数据；任一模块失败不应阻断其他模块。
+
 ### `GET /public-api/funds/sectors?window_sec=3600&market_type=spot`
 
 返回板块轮动、净流入/流出、覆盖率和板块领先资产。主动资金为交易所 K 线主动买卖成交差估算，不等同于链上资金流。
@@ -109,6 +120,17 @@
 ### `GET /public-api/info/feed`
 
 返回官方公告事件、聚类、币种关联、来源链接和授权状态。当前仅保存与展示官方链接允许范围内的结构化事实，不复制第三方受限正文。高重要度事件的规则解读强制区分“事实”和“推断”。
+
+当 `source_type=plaza` 时，响应额外包含服务端所有的 `plaza_rankings`：
+
+- `provider` 明确标注实际广场数据提供方、来源类型和权利状态；前端不得把公开聚合源伪装成另一家平台的数据。
+
+- `active_4h`：4 小时币种活力榜，返回真实帖子数、本轮/上轮 1 小时帖子数、环比倍数、`NEW` 状态、方向计数和公开互动；仅保留本轮出现过的币种，并按 `NEW → 环比倍数 → 本轮提及数 → 4h 帖数` 排序；
+- `total_24h`：24 小时总榜，返回广场多空占比、情绪状态、互动强度、24h 价格变化，以及由合约主动资金方向与强度拆分出的主力合约多/空占比；
+- 帖子数只统计已入库公开事件，不使用视觉夹具或估算值补量；
+- 情绪占比只使用 `opportunity/risk` 规则标签，中性事件不进入方向分母；
+- 互动分数为 `点赞 + 2×转发 + 回复`，行情字段缺失时保持 `null`，页面显示 `—`；
+- `methodology` 明确给出帖子、情绪、互动与行情的计算口径。
 
 ### `GET /public-api/agents/overview?window_sec=14400`
 

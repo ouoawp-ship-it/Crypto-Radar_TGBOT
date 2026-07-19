@@ -24,6 +24,7 @@ const SECTOR_WINDOWS = [{ value: 3600, label: "1 小时" }, { value: 14400, labe
 const ASSET_WINDOWS = [{ value: 900, label: "15 分钟" }, { value: 1800, label: "30 分钟" }, { value: 3600, label: "1 小时" }, { value: 14400, label: "4 小时" }, { value: 86400, label: "1 天" }] as const;
 
 function finite(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -45,6 +46,7 @@ function cnMoney(value: unknown, signed = true) {
   if (parsed === null) return "—";
   const sign = signed ? (parsed > 0 ? "+" : parsed < 0 ? "−" : "") : "";
   const absolute = Math.abs(parsed);
+  if (absolute >= 1e12) return `${sign}${(absolute / 1e12).toFixed(2)}万亿`;
   if (absolute >= 1e8) return `${sign}${(absolute / 1e8).toFixed(2)}亿`;
   if (absolute >= 1e4) return `${sign}${(absolute / 1e4).toFixed(2)}万`;
   return `${sign}${absolute.toFixed(2)}`;
@@ -96,13 +98,13 @@ function SectorBubbleChart({ payload }: { payload: FundsSectorsPayload }) {
   const max = Math.max(1, ...sectors.map((item) => Math.abs(Number(item.net_flow_usd || 0))));
   const positive = sectors.filter((item) => Number(item.net_flow_usd || 0) >= 0).slice(0, 12);
   const negative = sectors.filter((item) => Number(item.net_flow_usd || 0) < 0).slice(0, 10);
-  const compactPositivePositions = [[50, 10], [68, 22], [35, 22], [52, 22], [47, 29], [18, 29], [72, 38], [66, 29], [82, 33], [37, 38], [53, 38], [25, 38]];
+  const compactPositivePositions = [[50, 10], [73, 23], [36, 23], [56, 23], [48, 31], [18, 30], [68, 40], [65, 31], [82, 32], [38, 40], [53, 40], [26, 40]];
   const widePositivePositions = [[50, 13], [64, 24], [36, 24], [50, 33], [22, 33], [78, 34], [62, 33], [84, 43], [36, 43], [52, 43], [20, 43], [70, 43]];
-  const compactNegativePositions = [[65, 76], [50, 68], [44, 74], [40, 58], [56, 58], [69, 58], [38, 65], [70, 65], [26, 68], [22, 58]];
+  const compactNegativePositions = [[55, 73], [48, 65], [40, 72], [39, 56], [55, 56], [69, 56], [38, 63], [69, 63], [27, 65], [23, 56]];
   const wideNegativePositions = [[20, 58], [39, 58], [61, 58], [80, 58], [18, 67], [38, 67], [61, 67], [81, 67], [39, 77], [62, 77]];
   const bubble = (item: (typeof sectors)[number], index: number, top: boolean) => {
     const ratio = Math.abs(Number(item.net_flow_usd || 0)) / max;
-    const compactSize = 28 + Math.sqrt(ratio) * 38;
+    const compactSize = 32 + Math.sqrt(ratio) * 36;
     const wideSize = 30 + Math.pow(ratio, 0.34) * 52;
     const compactPositions = top ? compactPositivePositions : compactNegativePositions;
     const widePositions = top ? widePositivePositions : wideNegativePositions;
@@ -116,7 +118,7 @@ function SectorBubbleChart({ payload }: { payload: FundsSectorsPayload }) {
       background: positiveTone ? "radial-gradient(circle at 35% 28%, rgb(75 201 154), rgb(31 165 117) 72%)" : "radial-gradient(circle at 35% 28%, rgb(239 112 119), rgb(218 72 83) 72%)",
       boxShadow: positiveTone ? "0 3px 10px rgb(31 165 117 / .28)" : "0 3px 10px rgb(218 72 83 / .24)",
     } as CSSProperties;
-    return <div className={`funds-sector-bubble absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-center text-[7px] font-semibold leading-tight text-white ${positiveTone ? "border-good/20" : "border-risk/20"}`} key={item.sector_id || item.label} style={bubbleStyle} title={`${item.label}: ${cnMoney(item.net_flow_usd)}`}><span className="max-w-[90%] truncate">{item.label}{compactSize >= 41 ? <small className="mt-0.5 block font-mono text-[6px] font-medium opacity-90">{cnMoney(item.net_flow_usd)}</small> : null}</span></div>;
+    return <div className={`funds-sector-bubble absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-center text-[7px] font-semibold leading-tight text-white ${positiveTone ? "border-good/20" : "border-risk/20"}`} key={item.sector_id || item.label} style={bubbleStyle} title={`${item.label}: ${cnMoney(item.net_flow_usd)}`}><span className="max-w-[90%] truncate">{item.label}<small className="mt-0.5 block font-mono text-[6px] font-medium opacity-90">{cnMoney(item.net_flow_usd)}</small></span></div>;
   };
   return <div className="relative min-h-[320px] flex-1 overflow-hidden"><div className="absolute left-2 top-2 text-[7px] font-semibold text-good">流入 ↑</div><div className="absolute bottom-2 left-2 text-[7px] font-semibold text-risk">流出 ↓</div><span aria-hidden="true" className="absolute inset-x-2 top-1/2 border-t border-dashed border-border-subtle min-[1280px]:top-[52%]"/>{positive.map((item, index) => bubble(item, index, true))}{negative.map((item, index) => bubble(item, index, false))}{!sectors.length ? <div className="grid h-full place-items-center text-[9px] text-text-muted">板块资金真实样本正在积累</div> : null}<span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-surface-panel px-1 text-[7px] tracking-[.18em] text-text-muted/60 min-[1280px]:top-[52%]">PaoXX 数据</span></div>;
 }
@@ -167,7 +169,7 @@ function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow,
       <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5 text-[7px] text-text-muted min-[1024px]:ml-0 min-[1280px]:hidden"><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${error ? "bg-risk" : loading ? "animate-pulse bg-warn" : "bg-good"}`}/><span className="truncate">更新 {updatedAt}</span><button aria-label="刷新资金榜" className="grid h-5 w-5 shrink-0 place-items-center rounded-[2px] border border-border-subtle" disabled={loading} onClick={onRefresh} type="button">↻</button></div>
     </div>
     <div className="workstation-scroll min-h-0 flex-1 overflow-auto">
-      <div className={`sticky top-0 z-10 grid h-8 min-w-[666px] ${columns} items-center border-b border-border-subtle bg-surface-low text-[9px] font-semibold min-[1280px]:min-w-[833px] [&>*]:min-w-0 [&>*]:px-[9px]`}><span/><span className="text-text-muted">币种</span>{header("净流入($)", "net_flow_usd")}{header("净流入变动", "net_flow_change_pct")}{header("交易量($)", "volume_usd")}{header("交易量变动", "volume_change_pct")}{header("流入($)", "inflow_usd")}{header("流出($)", "outflow_usd")}{header("市值($)", "market_cap")}{header("当前币价", "price")}{header("价格(24h)", "price_change_pct")}</div>
+      <div className={`sticky top-0 z-10 grid h-8 min-w-[666px] ${columns} items-center border-b border-border-subtle bg-surface-low text-[9px] font-semibold min-[1280px]:min-w-[833px] [&>*]:min-w-0 [&>*]:px-[9px]`}><span/><span className="text-text-muted">币种</span>{header("净流入($)", "net_flow_usd")}{header("净流入变比", "net_flow_change_pct")}{header("交易量($)", "volume_usd")}{header("交易量变动", "volume_change_pct")}{header("流入($)", "inflow_usd")}{header("流出($)", "outflow_usd")}{header("市值($)", "market_cap")}{header("当前币价($)", "price")}{header("价格(24h)", "price_change_pct")}</div>
       {assets.map((item, index) => {
         const symbol = item.symbol || "";
         const favorite = favorites.has(symbol);
@@ -176,7 +178,7 @@ function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow,
         return <div className={`grid h-10 min-w-[666px] w-full cursor-pointer ${columns} items-center border-b border-border-subtle text-left font-mono text-[11px] font-semibold hover:bg-primary-50/45 min-[1280px]:h-11 min-[1280px]:min-w-[833px] [&>*]:min-w-0 [&>*]:px-[9px] [&>span]:truncate`} data-testid="funds-asset-row" key={symbol || index} onClick={() => onSelect(symbol)} onKeyDown={(event) => { if (event.key === "Enter") onSelect(symbol); }} role="button" tabIndex={0}>
           <button aria-label={`${favorite ? "取消" : "添加"}${item.coin || symbol}自选`} className={`h-full text-right text-[15px] font-normal ${favorite ? "text-warn" : "text-text-muted"}`} onClick={(event) => { event.stopPropagation(); onFavorite(symbol); }} type="button">{favorite ? "★" : "☆"}</button>
           <span className="flex items-center gap-2"><span className="w-5 shrink-0 text-right text-primary-600">{(page - 1) * pageSize + index + 1}</span><CoinIcon coin={item.coin} size={22}/><span className="truncate text-text-primary">{item.coin || symbol}</span></span>
-          <span className="flex h-full items-center !px-0"><span className={`relative flex h-7 w-full items-center justify-end overflow-hidden rounded-[2px] pr-[9px] ${positiveFlow ? "text-good" : "text-risk"}`}><span aria-hidden="true" className={`absolute inset-y-0 right-0 ${positiveFlow ? "bg-good/10" : "bg-risk/10"}`} style={{ width: `${netFlowBarWidth}%` }}/><span className="relative z-[1]">{cnMoney(item.net_flow_usd)}</span></span></span>
+          <span className="flex h-full items-center !px-0"><span className={`relative flex h-7 w-full items-center justify-end overflow-hidden rounded-[2px] pr-[9px] ${positiveFlow ? "text-good" : "text-risk"}`}><span aria-hidden="true" className={`absolute inset-y-0 right-0 ${positiveFlow ? "bg-good/10" : "bg-risk/10"}`} style={{ width: `${netFlowBarWidth}%` }}/><span className="relative z-[1]">{cnMoney(item.net_flow_usd, false)}</span></span></span>
           <span className={`justify-self-end font-mono ${tone(item.net_flow_change_pct)}`}>{percent(item.net_flow_change_pct)}</span>
           <span className="justify-self-end font-mono text-text-secondary">{cnMoney(item.volume_usd, false)}</span>
           <span className={`justify-self-end font-mono ${tone(item.volume_change_pct)}`}>{percent(item.volume_change_pct)}</span>

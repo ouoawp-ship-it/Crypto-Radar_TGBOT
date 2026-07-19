@@ -1,4 +1,4 @@
-import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsSectorsPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WatchlistMarketPayload } from "./types";
+import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsSectorsPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WatchlistMarketPayload, WorkstationRadarAnomaliesPayload, WorkstationRadarBriefsPayload, WorkstationRadarRankPayload, WorkstationRadarSurgePayload } from "./types";
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number };
@@ -164,6 +164,38 @@ export function getWorkstationRadarMomentumWindows(limit = 8, options: PublicFet
     "/public-api/workstation/radar/momentum-windows",
     { limit },
     { revalidateSec: 15, ...options }
+  );
+}
+
+export function getWorkstationRadarAnomalies(limit = 30, options: PublicFetchOptions = {}) {
+  return publicFetch<WorkstationRadarAnomaliesPayload>(
+    "/public-api/workstation/radar/anomalies",
+    { limit },
+    { revalidateSec: 15, ...options }
+  );
+}
+
+export function getWorkstationRadarSurge(limit = 5, options: PublicFetchOptions = {}) {
+  return publicFetch<WorkstationRadarSurgePayload>(
+    "/public-api/workstation/radar/surge",
+    { limit },
+    { revalidateSec: 15, ...options }
+  );
+}
+
+export function getWorkstationRadarRank(totalLimit = 14, ambushLimit = 8, options: PublicFetchOptions = {}) {
+  return publicFetch<WorkstationRadarRankPayload>(
+    "/public-api/workstation/radar/rank",
+    { total_limit: totalLimit, ambush_limit: ambushLimit },
+    { revalidateSec: 15, ...options }
+  );
+}
+
+export function getWorkstationRadarBriefs(limit = 6, options: PublicFetchOptions = {}) {
+  return publicFetch<WorkstationRadarBriefsPayload>(
+    "/public-api/workstation/radar/briefs",
+    { limit },
+    { revalidateSec: 30, ...options }
   );
 }
 

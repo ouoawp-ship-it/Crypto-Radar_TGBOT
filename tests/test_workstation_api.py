@@ -5,8 +5,12 @@ from unittest.mock import patch
 
 from paopao_radar.web_services.public import (
     public_workstation_funds_open_interest_payload,
+    public_workstation_radar_anomalies_payload,
+    public_workstation_radar_briefs_payload,
     public_workstation_radar_momentum_payload,
     public_workstation_radar_momentum_windows_payload,
+    public_workstation_radar_rank_payload,
+    public_workstation_radar_surge_payload,
 )
 from paopao_radar.workstation_funds import build_cross_exchange_open_interest
 
@@ -63,6 +67,39 @@ class WorkstationRadarApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], "invalid_window")
         source.assert_not_called()
 
+    def test_momentum_returns_server_owned_cross_board_confluence(self) -> None:
+        def side(*coins: str) -> dict:
+            return {
+                "items": [
+                    {"symbol": f"{coin}USDT", "coin": coin, "value": index + 1, "strength_percentile": 99 - index}
+                    for index, coin in enumerate(coins)
+                ]
+            }
+
+        source_payload = {
+            "ok": True,
+            "data": {
+                "boards": [
+                    {"key": "price", "amount_positive": side("QTUM")},
+                    {"key": "oi", "amount_positive": side("QTUM"), "amount_negative": side("PHA")},
+                    {"key": "futures_flow", "amount_positive": side("QTUM", "BANK"), "amount_negative": side("PHA")},
+                    {"key": "spot_flow", "amount_positive": side("QTUM"), "amount_negative": side("PHA", "BANK")},
+                ]
+            },
+        }
+        with patch(
+            "paopao_radar.web_services.public.public_radar_boards_payload",
+            return_value=source_payload,
+        ):
+            payload = public_workstation_radar_momentum_payload(window="15m")
+
+        amount = payload["data"]["confluence"]["amount"]
+        self.assertEqual([item["coin"] for item in amount], ["QTUM", "PHA"])
+        self.assertEqual(amount[0]["board_count"], 3)
+        self.assertEqual(amount[0]["direction"], "positive")
+        self.assertEqual(amount[1]["direction"], "negative")
+        self.assertFalse(any(item["coin"] == "BANK" for item in amount))
+
     def test_momentum_windows_loads_all_windows_from_one_history_scan(self) -> None:
         settings = type(
             "TestSettings",
@@ -108,6 +145,40 @@ class WorkstationRadarApiTests(unittest.TestCase):
             now_ts=1,
             live_rows=[],
         )
+
+    def test_workstation_realtime_endpoints_project_independent_contracts(self) -> None:
+        source = {
+            "ok": True,
+            "data": {
+                "schema_version": "source-v1",
+                "generated_at": "2026-07-18T00:00:00Z",
+                "observed_at": "2026-07-18T00:00:00Z",
+                "data_status": "ready",
+                "coverage": {"symbols": 2},
+                "anomaly_events": [
+                    {"id": "evt-1", "symbol": "BTCUSDT", "coin": "BTC", "label": "OI 暴涨", "window": "5m", "rankings": {"self": {"rank": 1}}}
+                ],
+                "items": [
+                    {"symbol": "BTCUSDT", "coin": "BTC", "surge": {"triggered": True, "score": 91}, "ambush": {"triggered": False}, "anomaly_24h": {"count": 12}},
+                    {"symbol": "ETHUSDT", "coin": "ETH", "surge": {"triggered": False}, "ambush": {"triggered": True, "score": 82}, "anomaly_24h": {"count": 8}},
+                ],
+            },
+        }
+        with patch(
+            "paopao_radar.web_services.public.public_realtime_intelligence_payload",
+            return_value=source,
+        ):
+            anomalies = public_workstation_radar_anomalies_payload()
+            surge = public_workstation_radar_surge_payload()
+            rank = public_workstation_radar_rank_payload()
+            briefs = public_workstation_radar_briefs_payload()
+
+        self.assertEqual(anomalies["data"]["items"][0]["id"], "evt-1")
+        self.assertEqual([item["coin"] for item in surge["data"]["items"]], ["BTC"])
+        self.assertEqual([item["coin"] for item in rank["data"]["total"]], ["BTC", "ETH"])
+        self.assertEqual([item["coin"] for item in rank["data"]["ambush"]], ["ETH"])
+        self.assertEqual(rank["data"]["universe"], source["data"]["items"])
+        self.assertEqual(briefs["data"]["items"][0]["title"], "BTC OI 暴涨")
 
     def test_cross_exchange_oi_normalizes_usd_and_excludes_missing_venues(self) -> None:
         payload = build_cross_exchange_open_interest(

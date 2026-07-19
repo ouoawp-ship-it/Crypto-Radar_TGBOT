@@ -75,8 +75,12 @@ from .web_services.public import (
     public_market_snapshot_payload,
     public_radar_boards_payload,
     public_radar_intelligence_payload,
+    public_workstation_radar_anomalies_payload,
+    public_workstation_radar_briefs_payload,
     public_workstation_radar_momentum_payload,
     public_workstation_radar_momentum_windows_payload,
+    public_workstation_radar_rank_payload,
+    public_workstation_radar_surge_payload,
     public_watchlist_market_payload,
     public_signal_context_payload,
     public_signal_detail_payload,
@@ -4140,6 +4144,10 @@ class WebHandler(BaseHTTPRequestHandler):
             "/public-api/radar/boards",
             "/public-api/radar/realtime-intelligence",
             "/public-api/workstation/radar/momentum",
+            "/public-api/workstation/radar/anomalies",
+            "/public-api/workstation/radar/rank",
+            "/public-api/workstation/radar/surge",
+            "/public-api/workstation/radar/briefs",
             "/public-api/workstation/funds/open-interest",
             "/public-api/funds/sectors",
             "/public-api/funds/assets",
@@ -4333,6 +4341,27 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_json(public_workstation_radar_momentum_payload(
                 window=query.get("window", ["1h"])[0],
                 board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/anomalies":
+            self.send_json(public_workstation_radar_anomalies_payload(
+                limit=clamp_query_int(query.get("limit", ["30"])[0], 30, 80),
+            ))
+            return
+        if path == "/public-api/workstation/radar/rank":
+            self.send_json(public_workstation_radar_rank_payload(
+                total_limit=clamp_query_int(query.get("total_limit", ["14"])[0], 14, 30),
+                ambush_limit=clamp_query_int(query.get("ambush_limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/surge":
+            self.send_json(public_workstation_radar_surge_payload(
+                limit=clamp_query_int(query.get("limit", ["5"])[0], 5, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/briefs":
+            self.send_json(public_workstation_radar_briefs_payload(
+                limit=clamp_query_int(query.get("limit", ["6"])[0], 6, 20),
             ))
             return
         if path == "/public-api/workstation/radar/momentum-windows":

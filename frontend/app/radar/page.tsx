@@ -4,15 +4,18 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CoinIcon } from "@/components/CoinIcon";
 import { SignalDetailDrawer } from "@/components/SignalDetailDrawer";
-import { getMarketOverview, getRealtimeIntelligence, getWorkstationRadarMomentumWindows } from "@/lib/api";
+import { getMarketOverview, getWorkstationRadarAnomalies, getWorkstationRadarMomentumWindows, getWorkstationRadarRank, getWorkstationRadarSurge } from "@/lib/api";
 import type {
   CockpitBoard,
   CockpitBoardItem,
   MarketOverview,
   RadarBoards,
+  RadarConfluenceItem,
   RealtimeAnomalyEvent,
   RealtimeIntelligenceItem,
-  RealtimeIntelligencePayload
+  WorkstationRadarAnomaliesPayload,
+  WorkstationRadarRankPayload,
+  WorkstationRadarSurgePayload
 } from "@/lib/types";
 
 const WINDOWS = ["15m", "30m", "1h", "4h", "1d"] as const;
@@ -100,11 +103,11 @@ function RankBlocks({ item, fallbackPercentile }: { item?: RealtimeIntelligenceI
   const resonanceActive = Number(item?.resonance?.active_count || 0);
   const fallbackActive = fallbackPercentile === null || fallbackPercentile === undefined ? 0 : Math.ceil(fallbackPercentile / 20);
   const active = Math.max(0, Math.min(5, resonanceActive || fallbackActive));
-  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{WINDOWS.map((key, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${index < active ? "border-primary-500/60 bg-primary-500/70" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>;
+  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{WINDOWS.map((key, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${index < active ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>;
 }
 
 function PanelTitle({ title, meta, action }: { title: string; meta?: string; action?: React.ReactNode }) {
-  return <div className="workstation-panel-header"><div className="flex min-w-0 items-center gap-2"><h2 className="truncate text-[10px] font-bold text-text-primary">{title}</h2>{meta ? <span className="truncate font-mono text-[8px] text-text-muted">{meta}</span> : null}</div>{action}</div>;
+  return <div className="workstation-panel-header"><div className="flex min-w-0 items-center gap-1.5"><h2 className="truncate text-[10px] font-bold text-text-primary">{title}</h2><span aria-hidden="true" className="text-[8px] font-normal text-text-muted">ⓘ</span></div><div className="ml-auto flex shrink-0 items-center gap-2">{meta ? <span className="truncate font-mono text-[8px] text-text-muted">{meta}</span> : null}{action}</div></div>;
 }
 
 function RankBadge({ label, rank, title }: { label: string; rank?: number; title?: string }) {
@@ -180,7 +183,7 @@ function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: C
       <small className="row-span-2 text-right font-mono text-[6px] text-text-muted">{index + 1}</small>
       <CoinIcon coin={item.coin} size={13}/><span className="truncate text-[7px] font-semibold text-text-primary">{item.coin || item.symbol}</span>
       <span className="text-right font-mono text-[6px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
-      <span className="col-span-2 col-start-2 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? "border-primary-500/55 bg-primary-500/70" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
+      <span className="col-span-2 col-start-2 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
       <span className={`truncate text-right font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount")}</span>
     </Link>;
   })}{!(items || []).length ? <div className="grid h-[136px] place-items-center text-[8px] text-text-muted sm:col-span-2">⏳ 暂无</div> : null}</div>;
@@ -202,6 +205,15 @@ function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; real
 }
 
 type ConfluenceEntry = CockpitBoardItem & { boardCount: number; divergent: boolean; positive: boolean };
+
+function confluenceFromPayload(items: RadarConfluenceItem[] | undefined): ConfluenceEntry[] {
+  return (items || []).map((item) => ({
+    ...item,
+    boardCount: Math.max(1, Number(item.board_count || 1)),
+    divergent: Boolean(item.divergent),
+    positive: item.direction !== "negative" && item.direction !== "outflow",
+  }));
+}
 
 function confluenceFromBoards(boards: CockpitBoard[], mode: RankMode): ConfluenceEntry[] {
   const tallies = new Map<string, { item: CockpitBoardItem; positive: Set<string>; negative: Set<string> }>();
@@ -227,9 +239,8 @@ function confluenceFromBoards(boards: CockpitBoard[], mode: RankMode): Confluenc
     boardCount: Math.max(positive.size, negative.size),
     divergent: positive.size > 0 && negative.size > 0,
     positive: positive.size >= negative.size,
-  })).sort((a, b) => b.boardCount - a.boardCount || Number(b.strength_percentile || 0) - Number(a.strength_percentile || 0) || String(a.symbol || "").localeCompare(String(b.symbol || "")));
-  const confirmed = entries.filter((item) => item.boardCount >= 2);
-  return confirmed.length >= 5 ? confirmed : entries;
+  })).sort((a, b) => b.boardCount - a.boardCount || Number(b.strength_percentile || 0) - Number(a.strength_percentile || 0) || Number(b.positive) - Number(a.positive) || String(a.symbol || "").localeCompare(String(b.symbol || "")));
+  return entries.filter((item) => item.boardCount >= 2);
 }
 
 function RuleBoard({ title, subtitle, items, mode }: { title: string; subtitle: string; items: RealtimeIntelligenceItem[]; mode: "surge" | "ambush" | "total" }) {
@@ -243,10 +254,13 @@ function RuleBoard({ title, subtitle, items, mode }: { title: string; subtitle: 
 
 export default function RadarPage() {
   const [momentum, setMomentum] = useState<Partial<Record<WindowKey, RadarBoards>>>({});
-  const [realtime, setRealtime] = useState<RealtimeIntelligencePayload>({});
+  const [anomalies, setAnomalies] = useState<WorkstationRadarAnomaliesPayload>({});
+  const [surgeBoard, setSurgeBoard] = useState<WorkstationRadarSurgePayload>({});
+  const [rankBoard, setRankBoard] = useState<WorkstationRadarRankPayload>({});
   const [overview, setOverview] = useState<MarketOverview>({});
   const [windowKey, setWindowKey] = useState<WindowKey>("15m");
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -255,26 +269,37 @@ export default function RadarPage() {
   const load = useCallback(async (bypassCache = false) => {
     setLoading(true);
     setError("");
-    try {
-      const options = { bypassCache };
-      const [windowPayload, intelligence, market] = await Promise.all([
-        getWorkstationRadarMomentumWindows(10, options), getRealtimeIntelligence(30, options), getMarketOverview(900, options),
-      ]);
-      setMomentum(windowPayload.windows as Partial<Record<WindowKey, RadarBoards>>);
-      setRealtime(intelligence); setOverview(market);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "雷达工作站加载失败");
-    } finally { setLoading(false); }
+    const options = { bypassCache };
+    const results = await Promise.allSettled([
+      getWorkstationRadarMomentumWindows(10, options),
+      getWorkstationRadarAnomalies(80, options),
+      getWorkstationRadarSurge(5, options),
+      getWorkstationRadarRank(14, 8, options),
+      getMarketOverview(900, options),
+    ] as const);
+    const [windowsResult, anomaliesResult, surgeResult, rankResult, marketResult] = results;
+    if (windowsResult.status === "fulfilled") setMomentum(windowsResult.value.windows as Partial<Record<WindowKey, RadarBoards>>);
+    if (anomaliesResult.status === "fulfilled") setAnomalies(anomaliesResult.value);
+    if (surgeResult.status === "fulfilled") setSurgeBoard(surgeResult.value);
+    if (rankResult.status === "fulfilled") setRankBoard(rankResult.value);
+    if (marketResult.status === "fulfilled") setOverview(marketResult.value);
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) setError(failures.length === results.length ? "雷达工作站加载失败" : `${failures.length} 个雷达模块暂时不可用`);
+    setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 100);
+    return () => window.clearTimeout(timer);
+  }, [query]);
   useEffect(() => {
     const syncFromLocation = () => setSelectedSignal(new URLSearchParams(window.location.search).get("signal") || "");
     syncFromLocation();
     window.addEventListener("popstate", syncFromLocation);
     return () => window.removeEventListener("popstate", syncFromLocation);
   }, []);
-  useEffect(() => { if (paused) return; const timer = window.setInterval(() => void load(true), 15_000); return () => window.clearInterval(timer); }, [load, paused]);
+  useEffect(() => { if (paused || query) return; const timer = window.setInterval(() => void load(true), 30_000); return () => window.clearInterval(timer); }, [load, paused, query]);
 
   const selectSignal = useCallback((signalId: number | string) => {
     const value = String(signalId || "");
@@ -284,47 +309,54 @@ export default function RadarPage() {
     setSelectedSignal(value);
   }, []);
 
-  const items = realtime.items || [];
+  const items = rankBoard.universe || [];
   const events = useMemo(() => {
-    const anomalies = realtime.anomaly_events?.length ? realtime.anomaly_events : fallbackEvents(items);
-    return anomalies.slice(0, 80);
-  }, [items, realtime.anomaly_events]);
+    const source = anomalies.items?.length ? anomalies.items : fallbackEvents(items);
+    return source.slice(0, 80);
+  }, [anomalies.items, items]);
   const boards = momentum[windowKey]?.boards || [];
+  const confluence = momentum[windowKey]?.confluence;
   const realtimeBySymbol = useMemo(() => new Map(items.map((item) => [String(item.symbol || ""), item])), [items]);
-  const surge = useMemo(() => items.filter((item) => item.surge?.triggered).sort((a, b) => Number(b.surge?.score || 0) - Number(a.surge?.score || 0)).slice(0, 5), [items]);
-  const ambush = useMemo(() => items.filter((item) => item.ambush?.triggered).sort((a, b) => Number(b.ambush?.score || 0) - Number(a.ambush?.score || 0)).slice(0, 8), [items]);
-  const total = useMemo(() => items.filter((item) => Number(item.anomaly_24h?.count || 0) > 0).sort((a, b) => Number(b.anomaly_24h?.count || 0) - Number(a.anomaly_24h?.count || 0)).slice(0, 14), [items]);
+  const surge = surgeBoard.items || [];
+  const ambush = rankBoard.ambush || [];
+  const total = rankBoard.total || [];
   const market = overview.overview || {};
   const previousMarket = market.comparison?.previous || {};
   const marketDelta = market.comparison?.delta || {};
-  const tendency = useMemo(() => confluenceFromBoards(boards, "amount").slice(0, 7), [boards]);
-  const strengthFlow = useMemo(() => confluenceFromBoards(boards, "strength").slice(0, 7), [boards]);
+  const tendency = useMemo(() => {
+    const supplied = confluenceFromPayload(confluence?.amount);
+    return (supplied.length ? supplied : confluenceFromBoards(boards, "amount")).slice(0, 7);
+  }, [boards, confluence?.amount]);
+  const strengthFlow = useMemo(() => {
+    const supplied = confluenceFromPayload(confluence?.strength);
+    return (supplied.length ? supplied : confluenceFromBoards(boards, "strength")).slice(0, 7);
+  }, [boards, confluence?.strength]);
 
   return <><div aria-busy={loading} className="workstation-page mercu-radar-grid" data-testid="radar-workstation">
     <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
-      <PanelTitle action={<span className="inline-flex items-center gap-1 text-[8px] font-semibold text-good"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good"/>LIVE</span>} meta={clock(realtime.observed_at || realtime.generated_at)} title="异动监控"/>
-      <div className="grid h-[39px] grid-cols-[minmax(0,1fr)_104px] items-center gap-1.5 border-b border-border-subtle bg-primary-50 px-2.5"><span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-primary-700"><i aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-good/10 bg-good/5 text-[9px] not-italic text-good">◔</i><span className="truncate">AI 全市场扫描</span></span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
+      <PanelTitle action={<span className="inline-flex items-center gap-1 text-[8px] font-semibold text-good"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good"/>LIVE</span>} meta={`更新 ${clock(anomalies.observed_at || anomalies.generated_at)}`} title="异动监控"/>
+      <div className="grid h-[39px] grid-cols-[minmax(0,1fr)_104px] items-center gap-1.5 border-b border-border-subtle bg-primary-50 px-2.5"><span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-primary-700"><i aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-good/10 bg-good/5 text-[9px] not-italic text-good">◔</i><span className="flex min-w-0 flex-col"><span className="truncate leading-3">AI 全市场扫描</span><small className="font-mono text-[6px] font-normal leading-2 text-text-muted">1000+ 币种</small></span></span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
       {error ? <div className="border-b border-risk/20 bg-risk/5 px-2 py-1 text-[8px] text-risk">{error} · 保留上次数据</div> : null}
-      <EventFeed events={events} query={query}/>
-      <div className="flex h-7 shrink-0 items-center border-t border-border-subtle px-2 text-[8px] text-text-muted md:hidden"><span>{events.length} 条异动 · {paused ? "已暂停" : "15s 增量"}</span><button className="ml-auto font-semibold text-text-secondary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button><button className="ml-2 font-semibold text-primary-600" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "更新中…" : "立即更新"}</button></div>
+      <EventFeed events={events} query={debouncedQuery}/>
+      <div className="flex h-7 shrink-0 items-center border-t border-border-subtle px-2 text-[8px] text-text-muted md:hidden"><span>{events.length} 条异动 · {paused ? "已暂停" : query ? "搜索中暂停刷新" : "30s 增量"}</span><button className="ml-auto font-semibold text-text-secondary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button><button className="ml-2 font-semibold text-primary-600" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "更新中…" : "立即更新"}</button></div>
     </aside>
 
     <main className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-hot-money">
       <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10 min-[1024px]:[&>.workstation-panel-header]:h-[38px]">
         <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} title="热钱观察榜单"/>
-        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[13px] min-[1024px]:px-1.5 min-[1024px]:py-2" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-1.5 min-[1024px]:pr-2.5 min-[1280px]:gap-[13px] min-[1280px]:px-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
       <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5"><RuleBoard items={surge} mode="surge" subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>
     </main>
 
     <aside className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-side-intelligence">
-      <section className="workstation-panel"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="资金倾向性"/>
+      <section className="workstation-panel min-[1024px]:h-[426px] min-[1280px]:h-[432px]"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="资金倾向性"/>
         <div className="border-b border-border-subtle px-2 py-1.5 text-[9px] font-bold text-text-primary">资金流</div>
         {tendency.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50 min-[1024px]:h-6 min-[1280px]:h-[25px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`} title={item.divergent ? "多榜方向存在分歧" : "多榜方向一致"}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className="rounded-[2px] border border-border-subtle px-1 text-[7px] text-text-muted">{item.boardCount}榜{item.divergent ? "·分歧" : ""}</span><span className={`font-semibold ${item.positive ? "text-good" : "text-risk"}`}>{item.positive ? "流入" : "流出"}</span></Link>)}
         <div className="border-y border-border-subtle bg-surface-low px-2 py-1.5 text-[9px] font-bold text-text-primary">资金力度</div>
         {strengthFlow.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50 min-[1024px]:h-6 min-[1280px]:h-[25px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`} title={item.divergent ? "强度榜方向存在分歧" : "强度榜方向一致"}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className="rounded-[2px] border border-border-subtle px-1 text-[7px] text-text-muted">{item.boardCount}榜{item.divergent ? "·分歧" : ""}</span><span className={item.positive ? "text-good" : "text-risk"}>{item.positive ? "流入" : "流出"}</span></Link>)}
       </section>
-      <section className="workstation-panel mt-3 overflow-hidden min-[1280px]:mt-1.5"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="全场态势"/><div><MarketTrendRow current={market.futures_net_flow_usd} delta={marketDelta.futures_net_flow_usd} kind="flow" label="合约资金净流入" previous={previousMarket.futures_net_flow_usd}/><MarketTrendRow current={market.spot_net_flow_usd} delta={marketDelta.spot_net_flow_usd} kind="flow" label="现货资金净流入" previous={previousMarket.spot_net_flow_usd}/><MarketTrendRow current={market.oi_net_change_usd} delta={marketDelta.oi_net_change_usd} kind="oi" label="持仓量净增长" previous={previousMarket.oi_net_change_usd}/><MarketBreadthRow advancing={market.advancing} declining={market.declining}/></div></section>
+      <section className="workstation-panel mt-2.5 overflow-hidden"><PanelTitle action={<span className="rounded-full bg-primary-50 px-2 py-0.5 text-[7px] font-semibold text-primary-700">典型 {windowKey}</span>} title="全场态势"/><div><MarketTrendRow current={market.futures_net_flow_usd} delta={marketDelta.futures_net_flow_usd} kind="flow" label="合约资金净流入" previous={previousMarket.futures_net_flow_usd}/><MarketTrendRow current={market.spot_net_flow_usd} delta={marketDelta.spot_net_flow_usd} kind="flow" label="现货资金净流入" previous={previousMarket.spot_net_flow_usd}/><MarketTrendRow current={market.oi_net_change_usd} delta={marketDelta.oi_net_change_usd} kind="oi" label="持仓量净增长" previous={previousMarket.oi_net_change_usd}/><MarketBreadthRow advancing={market.advancing} declining={market.declining}/></div></section>
     </aside>
   </div>{selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal}/> : null}</>;
 }

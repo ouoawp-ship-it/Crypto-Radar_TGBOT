@@ -94,7 +94,17 @@ const wideBoards = [
   ),
 ];
 
-function event(coin: string, label: string, direction: "long" | "short", observedAt: string, detail: string, index: number) {
+type EventRanks = readonly [self: number, marketStrength: number, marketAbsolute: number];
+
+function event(
+  coin: string,
+  label: string,
+  direction: "long" | "short",
+  observedAt: string,
+  detail: string,
+  index: number,
+  ranks: EventRanks,
+) {
   return {
     id: `${observedAt}:${coin}:${label}:${index}`,
     symbol: `${coin}USDT`,
@@ -108,43 +118,43 @@ function event(coin: string, label: string, direction: "long" | "short", observe
     direction,
     value: null,
     rankings: {
-      self: { available: true, rank: index % 4 === 0 ? 43 : 14, sample_size: 288, percentile: 96, method: "同币历史窗口" },
-      market_strength: { available: true, rank: (index % 18) + 4, sample_size: 100, percentile: 95, method: "全场强度" },
-      market_absolute: { available: true, rank: (index % 10) + 1, sample_size: 100, percentile: 94, method: "全场量级" },
+      self: { available: true, rank: ranks[0], sample_size: 288, percentile: 96, method: "同币历史窗口" },
+      market_strength: { available: true, rank: ranks[1], sample_size: 100, percentile: 95, method: "全场强度" },
+      market_absolute: { available: true, rank: ranks[2], sample_size: 100, percentile: 94, method: "全场量级" },
     },
   };
 }
 
 const compactEvents = [
-  event("DYDX", "OI 暴跌", "short", "2030-07-18T22:53:00Z", "5 分钟内 oi -142万 (-5.4%)", 0),
-  event("AKE", "OI 暴跌", "short", "2030-07-18T22:52:00Z", "5 分钟内 oi -262万 (-1.3%)", 1),
-  event("BANK", "OI 暴跌", "short", "2030-07-18T22:35:00Z", "5 分钟内 oi -102万 (-1.3%)", 2),
-  event("AKE", "OI 暴跌", "short", "2030-07-18T22:34:00Z", "5 分钟内 oi -294万 (-1.5%)", 3),
-  event("JUP", "OI 暴涨", "long", "2030-07-18T22:31:00Z", "5 分钟内 oi +70万 (+1.4%)", 4),
-  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 233万 (+11.2%)", 5),
-  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 233万 (+11.2%)", 6),
-  event("LIT", "Vol 爆发", "long", "2030-07-18T22:25:00Z", "5 分钟内 成交量 177万 (+2.4%)", 7),
-  event("AKE", "OI 暴跌", "short", "2030-07-18T22:17:00Z", "1 小时内 oi -1429万 (-7.1%)", 8),
-  event("SENT", "Vol 爆发", "long", "2030-07-18T22:12:00Z", "15 分钟内 成交量 165万 (+2.1%)", 9),
-  event("BANK", "OI 暴涨", "long", "2030-07-18T22:08:00Z", "5 分钟内 oi +58万 (+0.8%)", 10),
-  event("PHA", "价格暴跌", "short", "2030-07-18T22:03:00Z", "5 分钟内 价格 -3.58%", 11),
+  event("DYDX", "OI 暴跌", "short", "2030-07-18T22:53:00Z", "5 分钟内 oi -142万 (-5.4%)", 0, [43, 6, 6]),
+  event("AKE", "OI 暴跌", "short", "2030-07-18T22:52:00Z", "5 分钟内 oi -262万 (-1.3%)", 1, [43, 5, 5]),
+  event("BANK", "OI 暴跌", "short", "2030-07-18T22:35:00Z", "5 分钟内 oi -102万 (-1.3%)", 2, [43, 7, 11]),
+  event("AKE", "OI 暴跌", "short", "2030-07-18T22:34:00Z", "5 分钟内 oi -294万 (-1.5%)", 3, [43, 6, 5]),
+  event("JUP", "OI 暴涨", "long", "2030-07-18T22:31:00Z", "5 分钟内 oi +70万 (+1.4%)", 4, [43, 5, 8]),
+  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 233万 (+11.2%)", 5, [4, 17, 63]),
+  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 233万 (+11.2%)", 6, [4, 17, 63]),
+  event("LIT", "Vol 爆发", "long", "2030-07-18T22:25:00Z", "5 分钟内 成交量 177万 (+2.4%)", 7, [43, 3, 8]),
+  event("AKE", "OI 暴跌", "short", "2030-07-18T22:17:00Z", "1 小时内 oi -1429万 (-7.1%)", 8, [4, 4, 3]),
+  event("SENT", "Vol 爆发", "long", "2030-07-18T22:12:00Z", "15 分钟内 成交量 165万 (+2.1%)", 9, [14, 13, 10]),
+  event("BANK", "OI 暴涨", "long", "2030-07-18T22:08:00Z", "5 分钟内 oi +58万 (+0.8%)", 10, [43, 7, 8]),
+  event("PHA", "价格暴跌", "short", "2030-07-18T22:03:00Z", "5 分钟内 价格 -3.58%", 11, [14, 2, 4]),
 ];
 
 const wideEvents = [
-  event("BANK", "OI 暴涨", "long", "2030-07-18T23:03:00Z", "5 分钟内 oi +55万 (+0.7%)", 0),
-  event("BANK", "OI 暴涨", "long", "2030-07-18T23:03:00Z", "5 分钟内 oi +65万 (+0.7%)", 1),
-  event("AKE", "OI 暴涨", "long", "2030-07-18T23:02:00Z", "5 分钟内 oi +531万 (+2.6%)", 2),
-  event("AKE", "OI 暴涨", "long", "2030-07-18T23:02:00Z", "5 分钟内 oi +531万 (+2.6%)", 3),
-  event("DYDX", "OI 暴跌", "short", "2030-07-18T22:53:00Z", "15 分钟内 oi -146万 (-5.5%)", 4),
-  event("DYDX", "OI 暴跌", "short", "2030-07-18T22:53:00Z", "15 分钟内 oi -146万 (-5.5%)", 5),
-  event("AKE", "OI 暴跌", "short", "2030-07-18T22:52:00Z", "5 分钟内 oi -262万 (-1.3%)", 6),
-  event("BANK", "OI 暴跌", "short", "2030-07-18T22:35:00Z", "5 分钟内 oi -102万 (-1.3%)", 7),
-  event("AKE", "OI 暴跌", "short", "2030-07-18T22:34:00Z", "5 分钟内 oi -294万 (-1.5%)", 8),
-  event("JUP", "OI 暴涨", "long", "2030-07-18T22:31:00Z", "5 分钟内 oi +70万 (+1.4%)", 9),
-  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 213万 (+10.1%)", 10),
-  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 213万 (+10.1%)", 11),
-  event("LIT", "Vol 爆发", "long", "2030-07-18T22:25:00Z", "5 分钟内 成交量 177万 (+2.4%)", 12),
-  event("AKE", "OI 暴跌", "short", "2030-07-18T22:17:00Z", "1 小时内 oi -1429万 (-7.1%)", 13),
+  event("BANK", "OI 暴涨", "long", "2030-07-18T23:03:00Z", "5 分钟内 oi +55万 (+0.7%)", 0, [43, 7, 8]),
+  event("BANK", "OI 暴涨", "long", "2030-07-18T23:03:00Z", "5 分钟内 oi +65万 (+0.7%)", 1, [43, 7, 8]),
+  event("AKE", "OI 暴涨", "long", "2030-07-18T23:02:00Z", "5 分钟内 oi +531万 (+2.6%)", 2, [43, 4, 1]),
+  event("AKE", "OI 暴涨", "long", "2030-07-18T23:02:00Z", "5 分钟内 oi +531万 (+2.6%)", 3, [43, 4, 1]),
+  event("DYDX", "OI 暴跌", "short", "2030-07-18T22:53:00Z", "15 分钟内 oi -146万 (-5.5%)", 4, [14, 6, 9]),
+  event("DYDX", "OI 暴跌", "short", "2030-07-18T22:53:00Z", "15 分钟内 oi -146万 (-5.5%)", 5, [14, 6, 9]),
+  event("AKE", "OI 暴跌", "short", "2030-07-18T22:52:00Z", "5 分钟内 oi -262万 (-1.3%)", 6, [43, 5, 5]),
+  event("BANK", "OI 暴跌", "short", "2030-07-18T22:35:00Z", "5 分钟内 oi -102万 (-1.3%)", 7, [43, 7, 11]),
+  event("AKE", "OI 暴跌", "short", "2030-07-18T22:34:00Z", "5 分钟内 oi -294万 (-1.5%)", 8, [43, 5, 5]),
+  event("JUP", "OI 暴涨", "long", "2030-07-18T22:31:00Z", "5 分钟内 oi +70万 (+1.4%)", 9, [43, 5, 8]),
+  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 213万 (+10.1%)", 10, [4, 19, 65]),
+  event("STRK", "Vol 爆发", "long", "2030-07-18T22:28:00Z", "1 小时内 成交量 213万 (+10.1%)", 11, [4, 19, 65]),
+  event("LIT", "Vol 爆发", "long", "2030-07-18T22:25:00Z", "5 分钟内 成交量 177万 (+2.4%)", 12, [43, 3, 8]),
+  event("AKE", "OI 暴跌", "short", "2030-07-18T22:17:00Z", "1 小时内 oi -1429万 (-7.1%)", 13, [4, 4, 3]),
 ];
 
 function realtime(boards: ReturnType<typeof board>[], events: ReturnType<typeof event>[], observedAt: string) {
@@ -200,6 +210,55 @@ function overview(viewport: Viewport) {
   };
 }
 
+function confluenceItem(
+  coin: string,
+  boardCount: number,
+  direction: "positive" | "negative",
+  divergent = false,
+) {
+  return { symbol: `${coin}USDT`, coin, board_count: boardCount, direction, divergent };
+}
+
+const compactConfluence = {
+  amount: [
+    confluenceItem("ZEC", 3, "positive"),
+    confluenceItem("HYPE", 3, "positive"),
+    confluenceItem("SOL", 3, "positive"),
+    confluenceItem("BTC", 2, "positive", true),
+    confluenceItem("XRP", 2, "positive", true),
+    confluenceItem("ADA", 2, "positive", true),
+    confluenceItem("DOGE", 2, "negative", true),
+  ],
+  strength: [
+    confluenceItem("QTUM", 3, "positive"),
+    confluenceItem("PHA", 3, "negative"),
+    confluenceItem("SLP", 2, "positive"),
+    confluenceItem("AKE", 2, "negative", true),
+    confluenceItem("BONK", 2, "negative"),
+  ],
+};
+
+const wideConfluence = {
+  amount: [
+    confluenceItem("ZEC", 3, "positive"),
+    confluenceItem("HYPE", 3, "positive"),
+    confluenceItem("ADA", 3, "positive"),
+    confluenceItem("SOL", 3, "positive"),
+    confluenceItem("ETH", 3, "positive"),
+    confluenceItem("XRP", 2, "positive"),
+    confluenceItem("BTC", 2, "positive"),
+  ],
+  strength: [
+    confluenceItem("QTUM", 3, "positive"),
+    confluenceItem("POWR", 2, "positive"),
+    confluenceItem("PHA", 2, "negative"),
+    confluenceItem("BANANAS31", 2, "positive"),
+    confluenceItem("BANK", 2, "negative", true),
+    confluenceItem("ESPORTS", 2, "positive"),
+    confluenceItem("SENT", 2, "negative"),
+  ],
+};
+
 export function mercuRadarFixture(viewport: Viewport) {
   const wide = viewport === "1920x1080";
   const boards = wide ? wideBoards : compactBoards;
@@ -215,6 +274,7 @@ export function mercuRadarFixture(viewport: Viewport) {
       coverage: { assets: 100 },
       methodology: { flow: "固定视觉回归数据；生产环境使用实时数据" },
       boards,
+      confluence: wide ? wideConfluence : compactConfluence,
     },
     realtime: realtime(boards, wide ? wideEvents : compactEvents, observedAt),
   };
