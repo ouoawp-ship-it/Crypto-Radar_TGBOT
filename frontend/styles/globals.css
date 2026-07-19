@@ -230,6 +230,33 @@ body::before {
   scrollbar-width: thin;
 }
 
+.radar-event-coin {
+  display: inline-flex;
+}
+
+@media (min-width: 1280px) {
+  .radar-event-coin > span {
+    height: 16px !important;
+    width: 16px !important;
+  }
+}
+
+.funds-sector-bubble {
+  height: var(--bubble-size-compact);
+  left: var(--bubble-left-compact);
+  top: var(--bubble-top-compact);
+  width: var(--bubble-size-compact);
+}
+
+@media (min-width: 1280px) {
+  .funds-sector-bubble {
+    height: var(--bubble-size-wide);
+    left: var(--bubble-left-wide);
+    top: var(--bubble-top-wide);
+    width: var(--bubble-size-wide);
+  }
+}
+
 .mercu-radar-grid {
   display: grid;
   gap: 6px;

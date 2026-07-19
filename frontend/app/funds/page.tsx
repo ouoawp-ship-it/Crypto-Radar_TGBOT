@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CandlestickChart } from "@/components/CandlestickChart";
 import { CoinIcon } from "@/components/CoinIcon";
 import { MetricSeriesChart } from "@/components/MetricSeriesChart";
@@ -92,20 +92,33 @@ function AssetList({ assets, selected, onSelect }: { assets: FundsAsset[]; selec
 }
 
 function SectorBubbleChart({ payload }: { payload: FundsSectorsPayload }) {
-  const sectors = (payload.sectors || []).filter((item) => finite(item.net_flow_usd) !== null).sort((a, b) => Math.abs(Number(b.net_flow_usd || 0)) - Math.abs(Number(a.net_flow_usd || 0))).slice(0, 18);
+  const sectors = (payload.sectors || []).filter((item) => finite(item.net_flow_usd) !== null).sort((a, b) => Math.abs(Number(b.net_flow_usd || 0)) - Math.abs(Number(a.net_flow_usd || 0)));
   const max = Math.max(1, ...sectors.map((item) => Math.abs(Number(item.net_flow_usd || 0))));
-  const positive = sectors.filter((item) => Number(item.net_flow_usd || 0) >= 0);
-  const negative = sectors.filter((item) => Number(item.net_flow_usd || 0) < 0);
-  const positivePositions = [[50, 10], [36, 24], [64, 24], [47, 34], [25, 32], [75, 32], [18, 43], [83, 43], [34, 43]];
-  const negativePositions = [[50, 58], [35, 62], [64, 62], [47, 69], [25, 69], [74, 69], [17, 58], [83, 58], [38, 77], [59, 77]];
-  const bubble = (item: (typeof sectors)[number], index: number, count: number, top: boolean) => {
-    const size = 28 + Math.sqrt(Math.abs(Number(item.net_flow_usd || 0)) / max) * 38;
-    const positions = top ? positivePositions : negativePositions;
-    const [left, y] = positions[index % positions.length];
+  const positive = sectors.filter((item) => Number(item.net_flow_usd || 0) >= 0).slice(0, 12);
+  const negative = sectors.filter((item) => Number(item.net_flow_usd || 0) < 0).slice(0, 10);
+  const compactPositivePositions = [[50, 10], [68, 24], [35, 24], [51, 23], [18, 34], [72, 43], [63, 34], [83, 36], [39, 40], [56, 43], [23, 43], [47, 32]];
+  const widePositivePositions = [[50, 13], [64, 24], [36, 24], [50, 33], [22, 33], [78, 34], [62, 33], [84, 43], [36, 43], [52, 43], [20, 43], [70, 43]];
+  const compactNegativePositions = [[20, 58], [40, 58], [56, 58], [70, 58], [25, 67], [42, 67], [59, 67], [75, 67], [41, 74], [60, 77]];
+  const wideNegativePositions = [[20, 58], [39, 58], [61, 58], [80, 58], [18, 67], [38, 67], [61, 67], [81, 67], [39, 77], [62, 77]];
+  const bubble = (item: (typeof sectors)[number], index: number, top: boolean) => {
+    const ratio = Math.abs(Number(item.net_flow_usd || 0)) / max;
+    const compactSize = 28 + Math.sqrt(ratio) * 38;
+    const wideSize = 30 + Math.pow(ratio, 0.34) * 52;
+    const compactPositions = top ? compactPositivePositions : compactNegativePositions;
+    const widePositions = top ? widePositivePositions : wideNegativePositions;
+    const [compactLeft, compactTop] = compactPositions[index % compactPositions.length];
+    const [wideLeft, wideTop] = widePositions[index % widePositions.length];
     const positiveTone = Number(item.net_flow_usd || 0) >= 0;
-    return <div className={`absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-center text-[7px] font-semibold leading-tight text-white ${positiveTone ? "border-good/20" : "border-risk/20"}`} key={item.sector_id || item.label} style={{ width: size, height: size, left: `${Math.max(8, Math.min(92, left))}%`, top: `${Math.max(7, Math.min(92, y))}%`, background: positiveTone ? "radial-gradient(circle at 35% 28%, rgb(75 201 154), rgb(31 165 117) 72%)" : "radial-gradient(circle at 35% 28%, rgb(239 112 119), rgb(218 72 83) 72%)", boxShadow: positiveTone ? "0 3px 10px rgb(31 165 117 / .28)" : "0 3px 10px rgb(218 72 83 / .24)" }} title={`${item.label}: ${cnMoney(item.net_flow_usd)}`}><span className="max-w-[90%] truncate">{item.label}{size >= 41 ? <small className="mt-0.5 block font-mono text-[6px] font-medium opacity-90">{cnMoney(item.net_flow_usd)}</small> : null}</span></div>;
+    const bubbleStyle = {
+      "--bubble-size-compact": `${compactSize}px`, "--bubble-size-wide": `${wideSize}px`,
+      "--bubble-left-compact": `${compactLeft}%`, "--bubble-left-wide": `${wideLeft}%`,
+      "--bubble-top-compact": `${compactTop}%`, "--bubble-top-wide": `${wideTop}%`,
+      background: positiveTone ? "radial-gradient(circle at 35% 28%, rgb(75 201 154), rgb(31 165 117) 72%)" : "radial-gradient(circle at 35% 28%, rgb(239 112 119), rgb(218 72 83) 72%)",
+      boxShadow: positiveTone ? "0 3px 10px rgb(31 165 117 / .28)" : "0 3px 10px rgb(218 72 83 / .24)",
+    } as CSSProperties;
+    return <div className={`funds-sector-bubble absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-center text-[7px] font-semibold leading-tight text-white ${positiveTone ? "border-good/20" : "border-risk/20"}`} key={item.sector_id || item.label} style={bubbleStyle} title={`${item.label}: ${cnMoney(item.net_flow_usd)}`}><span className="max-w-[90%] truncate">{item.label}{compactSize >= 41 ? <small className="mt-0.5 block font-mono text-[6px] font-medium opacity-90">{cnMoney(item.net_flow_usd)}</small> : null}</span></div>;
   };
-  return <div className="relative min-h-[320px] flex-1 overflow-hidden bg-[linear-gradient(to_bottom,transparent_49.8%,rgb(var(--border-subtle))_50%,transparent_50.2%)]"><div className="absolute left-2 top-2 text-[7px] font-semibold text-good">流入 ↑</div><div className="absolute bottom-2 left-2 text-[7px] font-semibold text-risk">流出 ↓</div>{positive.map((item, index) => bubble(item, index, positive.length, true))}{negative.map((item, index) => bubble(item, index, negative.length, false))}{!sectors.length ? <div className="grid h-full place-items-center text-[9px] text-text-muted">板块资金真实样本正在积累</div> : null}<span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-[7px] tracking-[.18em] text-text-muted/60">PaoXX 数据</span></div>;
+  return <div className="relative min-h-[320px] flex-1 overflow-hidden bg-[linear-gradient(to_bottom,transparent_49.8%,rgb(var(--border-subtle))_50%,transparent_50.2%)]"><div className="absolute left-2 top-2 text-[7px] font-semibold text-good">流入 ↑</div><div className="absolute bottom-2 left-2 text-[7px] font-semibold text-risk">流出 ↓</div>{positive.map((item, index) => bubble(item, index, true))}{negative.map((item, index) => bubble(item, index, false))}{!sectors.length ? <div className="grid h-full place-items-center text-[9px] text-text-muted">板块资金真实样本正在积累</div> : null}<span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-[7px] tracking-[.18em] text-text-muted/60">PaoXX 数据</span></div>;
 }
 
 function SectorOverview({ payload, windowSec, onWindow }: { payload: FundsSectorsPayload; windowSec: number; onWindow: (value: number) => void }) {
@@ -113,7 +126,7 @@ function SectorOverview({ payload, windowSec, onWindow }: { payload: FundsSector
   const total = Math.max(1, Math.abs(Number(summary.inflow_usd || 0)) + Math.abs(Number(summary.outflow_usd || 0)));
   const inflowRatio = Math.abs(Number(summary.inflow_usd || 0)) / total * 100;
   const positive = Number(summary.net_flow_usd || 0) >= 0;
-  return <section className="workstation-panel flex min-h-0 flex-col min-[1024px]:[&>.workstation-panel-header]:h-[38px]"><PanelTitle action={<div className="flex gap-0.5 rounded-[3px] border border-border-subtle bg-surface-low p-0.5">{SECTOR_WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-5 rounded-[2px] px-2 text-[7px] font-semibold ${windowSec === item.value ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/25" : "text-text-muted"}`} key={item.value} onClick={() => onWindow(item.value)} type="button">{item.label}</button>)}</div>} title="板块资金流"/><div className="min-h-[102px] border-b border-border-subtle px-2.5 py-2"><div className="flex items-end justify-between"><span className={`rounded-[2px] px-1.5 py-0.5 text-[7px] font-semibold ${positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{payload.market_type === "spot" ? "现货" : "合约"} · {SECTOR_WINDOWS.find((item) => item.value === windowSec)?.label}</span><span className="text-[8px] text-text-muted">整体{positive ? "补血" : "失血"}</span><strong className={tone(summary.net_flow_usd)}>{cnMoney(summary.net_flow_usd)}</strong></div><div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-risk"><div className="bg-good" style={{ width: `${inflowRatio}%` }}/></div><div className="mt-1 flex justify-between text-[7px]"><span className="text-good">● 流入 {cnMoney(summary.inflow_usd, false)}</span><span className="text-risk">流出 {cnMoney(summary.outflow_usd, false)} ●</span></div><div className="mt-1 flex justify-between text-[7px] text-text-muted"><span>领先 {summary.leading_inflow_sector || "—"}</span><span>更新 {payload.generated_at ? new Date(payload.generated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }) : "—"}</span></div></div><SectorBubbleChart payload={payload}/></section>;
+  return <section className="workstation-panel flex min-h-0 flex-col min-[1024px]:[&>.workstation-panel-header]:h-[38px] min-[1280px]:[&>.workstation-panel-header]:h-[46px]"><PanelTitle action={<div className="flex gap-0.5 rounded-[3px] border border-border-subtle bg-surface-low p-0.5">{SECTOR_WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-5 rounded-[2px] px-2 text-[7px] font-semibold ${windowSec === item.value ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/25" : "text-text-muted"}`} key={item.value} onClick={() => onWindow(item.value)} type="button">{item.label}</button>)}</div>} title="板块资金流"/><div className="min-h-[102px] border-b border-border-subtle px-2.5 py-2"><div className="flex items-end justify-between"><span className={`rounded-[2px] px-1.5 py-0.5 text-[7px] font-semibold ${positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{payload.market_type === "spot" ? "现货" : "合约"} · {SECTOR_WINDOWS.find((item) => item.value === windowSec)?.label}</span><span className="text-[8px] text-text-muted">整体{positive ? "补血" : "失血"}</span><strong className={tone(summary.net_flow_usd)}>{cnMoney(summary.net_flow_usd)}</strong></div><div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-risk"><div className="bg-good" style={{ width: `${inflowRatio}%` }}/></div><div className="mt-1 flex justify-between text-[7px]"><span className="text-good">● 流入 {cnMoney(summary.inflow_usd, false)}</span><span className="text-risk">流出 {cnMoney(summary.outflow_usd, false)} ●</span></div><div className="mt-1 flex justify-between text-[7px] text-text-muted"><span>领先 {summary.leading_inflow_sector || "—"}</span><span>更新 {payload.generated_at ? new Date(payload.generated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }) : "—"}</span></div></div><SectorBubbleChart payload={payload}/></section>;
 }
 
 function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow, onSelect, onPage, onRefresh, loading, error, sortKey, direction, onSort, favorites, onFavorite }: {
@@ -145,7 +158,7 @@ function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow,
   const header = (label: string, key: FundsSort) => <button aria-label={`按${label}排序`} className={`min-w-0 truncate text-right ${sortKey === key ? "font-bold text-good" : "text-text-muted"}`} onClick={() => onSort(key)} type="button">{label}{sortKey === key ? direction === "desc" ? "↓" : "↑" : ""}</button>;
 
   return <section className="workstation-panel flex min-h-0 min-w-0 flex-col" data-testid="funds-assets-overview">
-    <div className="flex h-[38px] shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-low px-2 min-[1024px]:h-[42px]">
+    <div className="flex h-[38px] shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-low px-2 min-[1024px]:h-[42px] min-[1280px]:h-[46px]">
       <div className="flex gap-0.5">{ASSET_WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-6 rounded-[3px] px-3 text-[8px] font-semibold ${windowSec === item.value ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/25" : "text-text-muted"}`} key={item.value} onClick={() => onWindow(item.value)} type="button">{item.label}</button>)}</div>
       <div className="relative ml-[30px] w-[255px] shrink-0"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] text-text-muted">⌕</span><input aria-label="搜索全体代币" className="h-7 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-6 pr-2 text-[8px] uppercase outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索全体代币 · 代码 / 名称" value={query}/></div>
       <div className="ml-auto flex min-w-0 items-center gap-1.5 text-[7px] text-text-muted"><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${error ? "bg-risk" : loading ? "animate-pulse bg-warn" : "bg-good"}`}/><span className="truncate">更新 {updatedAt}</span><button aria-label="刷新资金榜" className="grid h-5 w-5 shrink-0 place-items-center rounded-[2px] border border-border-subtle" disabled={loading} onClick={onRefresh} type="button">↻</button></div>
@@ -156,7 +169,7 @@ function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow,
         const symbol = item.symbol || "";
         const favorite = favorites.has(symbol);
         const positiveFlow = Number(item.net_flow_usd || 0) >= 0;
-        return <div className={`grid h-10 min-w-[650px] w-full cursor-pointer ${columns} items-center border-b border-border-subtle px-2 text-left text-[8px] hover:bg-primary-50/45 [&>span]:min-w-0 [&>span]:truncate`} key={symbol || index} onClick={() => onSelect(symbol)} onKeyDown={(event) => { if (event.key === "Enter") onSelect(symbol); }} role="button" tabIndex={0}>
+        return <div className={`grid h-10 min-w-[650px] w-full cursor-pointer ${columns} items-center border-b border-border-subtle px-2 text-left text-[8px] hover:bg-primary-50/45 min-[1280px]:h-11 [&>span]:min-w-0 [&>span]:truncate`} key={symbol || index} onClick={() => onSelect(symbol)} onKeyDown={(event) => { if (event.key === "Enter") onSelect(symbol); }} role="button" tabIndex={0}>
           <button aria-label={`${favorite ? "取消" : "添加"}${item.coin || symbol}自选`} className={`text-center text-[13px] ${favorite ? "text-warn" : "text-text-muted"}`} onClick={(event) => { event.stopPropagation(); onFavorite(symbol); }} type="button">{favorite ? "★" : "☆"}</button>
           <span className="font-mono text-center text-primary-600">{(page - 1) * pageSize + index + 1}</span>
           <span className="flex items-center gap-1.5 font-semibold"><CoinIcon coin={item.coin}/>{item.coin || symbol}</span>
