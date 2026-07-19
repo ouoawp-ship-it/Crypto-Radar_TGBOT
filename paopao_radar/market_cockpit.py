@@ -50,6 +50,11 @@ def _positive(value: Any) -> float | None:
     return number if number is not None and number > 0 else None
 
 
+def _nonnegative(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and number >= 0 else None
+
+
 def _positive_ratio(values: list[float]) -> float | None:
     positive = sum(value for value in values if value > 0)
     negative = sum(abs(value) for value in values if value < 0)
@@ -224,11 +229,11 @@ class MarketSnapshotStore:
                 "market_cap": _positive(raw.get("market_cap")),
                 "oi_usd": _positive(raw.get("oi_usd")),
                 "oi_change_pct": _number(raw.get("oi_change_pct")),
-                "spot_inflow_usd": _positive(raw.get("spot_inflow_usd")),
-                "spot_outflow_usd": _positive(raw.get("spot_outflow_usd")),
+                "spot_inflow_usd": _nonnegative(raw.get("spot_inflow_usd")),
+                "spot_outflow_usd": _nonnegative(raw.get("spot_outflow_usd")),
                 "spot_flow_usd": _number(raw.get("spot_flow_usd")),
-                "futures_inflow_usd": _positive(raw.get("futures_inflow_usd")),
-                "futures_outflow_usd": _positive(raw.get("futures_outflow_usd")),
+                "futures_inflow_usd": _nonnegative(raw.get("futures_inflow_usd")),
+                "futures_outflow_usd": _nonnegative(raw.get("futures_outflow_usd")),
                 "futures_flow_usd": _number(raw.get("futures_flow_usd")),
                 "funding_pct": _number(raw.get("funding_pct")),
                 "coverage_json": json.dumps(_coverage(raw.get("coverage")), ensure_ascii=False, sort_keys=True),
@@ -1122,12 +1127,12 @@ def build_market_cockpit(
             "oi_usd": oi_value,
             "oi_change_pct": oi_change,
             "oi_change_usd": round(oi_change_usd, 2) if oi_change_usd is not None else None,
-            "spot_inflow_usd": _positive(row.get("spot_inflow_usd")),
-            "spot_outflow_usd": _positive(row.get("spot_outflow_usd")),
+            "spot_inflow_usd": _nonnegative(row.get("spot_inflow_usd")),
+            "spot_outflow_usd": _nonnegative(row.get("spot_outflow_usd")),
             "spot_flow_usd": _number(row.get("spot_flow_usd")),
             "spot_flow_change_pct": _signed_pct(row.get("spot_flow_usd"), baseline.get("spot_flow_usd")),
-            "futures_inflow_usd": _positive(row.get("futures_inflow_usd")),
-            "futures_outflow_usd": _positive(row.get("futures_outflow_usd")),
+            "futures_inflow_usd": _nonnegative(row.get("futures_inflow_usd")),
+            "futures_outflow_usd": _nonnegative(row.get("futures_outflow_usd")),
             "futures_flow_usd": _number(row.get("futures_flow_usd")),
             "futures_flow_change_pct": _signed_pct(row.get("futures_flow_usd"), baseline.get("futures_flow_usd")),
             "funding_pct": _number(row.get("funding_pct")),

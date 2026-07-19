@@ -145,6 +145,30 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertIsNone(boards["price"]["positive"]["items"][0]["magnitude_usd"])
         self.assertIn("CVD", payload["methodology"]["flow"])
 
+    def test_gross_flow_preserves_valid_zero_side(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MarketSnapshotStore(Path(tmp) / "market.db")
+            store.append_many([{
+                "symbol": "BTCUSDT",
+                "observed_at": 1_000,
+                "source": "zero_side",
+                "price": 100,
+                "spot_inflow_usd": 500,
+                "spot_outflow_usd": 0,
+                "spot_flow_usd": 500,
+                "futures_inflow_usd": 800,
+                "futures_outflow_usd": 0,
+                "futures_flow_usd": 800,
+            }])
+            series = store.symbol_series("BTCUSDT", start_ts=0, end_ts=1_000)
+            latest, baselines = store.comparison(now_ts=1_000, window_sec=900)
+            cockpit = build_market_cockpit(latest, baselines, now_ts=1_000, window_sec=900)
+
+        self.assertEqual(series[0]["spot_outflow_usd"], 0)
+        self.assertEqual(series[0]["futures_outflow_usd"], 0)
+        self.assertEqual(cockpit["assets"][0]["spot_outflow_usd"], 0)
+        self.assertEqual(cockpit["assets"][0]["futures_outflow_usd"], 0)
+
     def test_oi_amount_and_strength_rankings_use_distinct_metrics(self) -> None:
         baselines = {
             "BTCUSDT": {"symbol": "BTCUSDT", "price": 100, "oi_usd": 100_000_000},
