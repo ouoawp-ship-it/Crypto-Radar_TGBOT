@@ -123,60 +123,6 @@ function fallbackEvents(items: RealtimeIntelligenceItem[]): RealtimeAnomalyEvent
   }).slice(0, 80);
 }
 
-function lifecycleEvents(items: RealtimeIntelligenceItem[]): RealtimeAnomalyEvent[] {
-  return items.flatMap((item) => {
-    const events: RealtimeAnomalyEvent[] = [];
-    const active = Number(item.resonance?.active_count || 0);
-    const direction = String(item.resonance?.direction || "neutral");
-    if (active >= 2 && direction !== "neutral") events.push({
-      id: `${item.symbol}:resonance:${direction}`,
-      symbol: item.symbol,
-      coin: item.coin,
-      observed_at: item.lifecycle?.observed_at || item.observed_at,
-      window: "15m",
-      event_type: "resonance_state",
-      label: direction === "short" ? "空头共振" : "多头共振",
-      detail: `${active}/5 个窗口同向 · ${item.lifecycle?.basis || "状态持续"}`,
-      metric: "state",
-      direction,
-      value: null,
-      rankings: item.rankings,
-    });
-    if (item.ambush?.triggered) events.push({
-      id: `${item.symbol}:ambush:${item.ambush.direction || "neutral"}`,
-      symbol: item.symbol,
-      coin: item.coin,
-      observed_at: item.lifecycle?.observed_at || item.observed_at,
-      window: "15m",
-      event_type: "ambush_state",
-      label: item.ambush.direction === "short" ? "顶部派发" : "底部吸筹",
-      detail: item.lifecycle?.basis || "资金同向积累，价格仍处压缩区间",
-      metric: "state",
-      direction: item.ambush.direction,
-      value: null,
-      rankings: item.rankings,
-    });
-    return events;
-  }).slice(0, 12);
-}
-
-function mergeEventStreams(anomalies: RealtimeAnomalyEvent[], lifecycle: RealtimeAnomalyEvent[]): RealtimeAnomalyEvent[] {
-  const merged: RealtimeAnomalyEvent[] = [];
-  let lifecycleIndex = 0;
-  for (let index = 0; index < anomalies.length && merged.length < 80; index += 1) {
-    merged.push(anomalies[index]);
-    if ((index + 1) % 3 === 0 && lifecycleIndex < lifecycle.length) {
-      merged.push(lifecycle[lifecycleIndex]);
-      lifecycleIndex += 1;
-    }
-  }
-  while (lifecycleIndex < lifecycle.length && merged.length < 80) {
-    merged.push(lifecycle[lifecycleIndex]);
-    lifecycleIndex += 1;
-  }
-  return merged;
-}
-
 function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: string }) {
   const filtered = events.filter((event) => !query || String(event.symbol || "").includes(query));
   return <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">
@@ -186,7 +132,7 @@ function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: s
       const self = event.rankings?.self;
       const strength = event.rankings?.market_strength;
       const absolute = event.rankings?.market_absolute;
-      return <Link className="radar-event-item relative block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55 min-[1024px]:py-[3px]" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
+      return <Link className="radar-event-item relative block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55 min-[1024px]:py-[5px]" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
         <span className="absolute left-[5px] top-[6px] w-[28px] font-mono text-[8px] tabular-nums text-text-muted">{clock(event.observed_at)}</span>
         <span aria-hidden="true" className={`radar-event-dot ${positive ? "bg-good" : "bg-risk"}`}/>
         <div className="flex items-center gap-1.5 pl-6">
@@ -219,7 +165,7 @@ function MomentumList({ items, mode, positive, realtimeBySymbol, scaleMax, limit
   return <div>{visible.map((item, index) => {
     const barWidth = Math.min(70, 18 + rankMagnitude(item) / maxMagnitude * 66);
     return <Link className="relative grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_29px_38px] items-center gap-[2px] overflow-hidden border-b border-border-subtle/75 px-1 text-[8px] last:border-0 hover:bg-primary-50/50 min-[1024px]:h-[clamp(19px,calc(2.7778dvh-1px),23px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
-      <i aria-hidden="true" className={`absolute inset-y-[2px] right-1 rounded-[2px] not-italic ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
+      <i aria-hidden="true" className={`absolute bottom-[2px] right-[1px] top-[5px] rounded-[2px] not-italic min-[1280px]:bottom-[5px] ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
       <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
     </Link>;
   })}{!visible.length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
@@ -269,7 +215,7 @@ function confluenceFromBoards(boards: CockpitBoard[], mode: RankMode): Confluenc
     current[direction].add(boardKey);
     tallies.set(symbol, current);
   };
-  for (const board of boards) {
+  for (const board of boards.filter((board) => ["oi", "futures_flow", "spot_flow"].includes(String(board.key || "")))) {
     const boardKey = String(board.key || "board");
     const positive = mode === "amount" ? board.amount_positive || board.positive : board.strength_positive || board.positive;
     const negative = mode === "amount" ? board.amount_negative || board.negative : board.strength_negative || board.negative;
@@ -278,7 +224,7 @@ function confluenceFromBoards(boards: CockpitBoard[], mode: RankMode): Confluenc
   }
   const entries = [...tallies.values()].map(({ item, positive, negative }) => ({
     ...item,
-    boardCount: new Set([...positive, ...negative]).size,
+    boardCount: Math.max(positive.size, negative.size),
     divergent: positive.size > 0 && negative.size > 0,
     positive: positive.size >= negative.size,
   })).sort((a, b) => b.boardCount - a.boardCount || Number(b.strength_percentile || 0) - Number(a.strength_percentile || 0) || String(a.symbol || "").localeCompare(String(b.symbol || "")));
@@ -341,7 +287,7 @@ export default function RadarPage() {
   const items = realtime.items || [];
   const events = useMemo(() => {
     const anomalies = realtime.anomaly_events?.length ? realtime.anomaly_events : fallbackEvents(items);
-    return mergeEventStreams(anomalies, lifecycleEvents(items));
+    return anomalies.slice(0, 80);
   }, [items, realtime.anomaly_events]);
   const boards = momentum[windowKey]?.boards || [];
   const realtimeBySymbol = useMemo(() => new Map(items.map((item) => [String(item.symbol || ""), item])), [items]);
@@ -360,13 +306,13 @@ export default function RadarPage() {
       <div className="grid h-[39px] grid-cols-[minmax(0,1fr)_104px] items-center gap-1.5 border-b border-border-subtle bg-primary-50 px-2.5"><span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-primary-700"><i aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-good/10 bg-good/5 text-[9px] not-italic text-good">◔</i><span className="truncate">AI 全市场扫描</span></span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
       {error ? <div className="border-b border-risk/20 bg-risk/5 px-2 py-1 text-[8px] text-risk">{error} · 保留上次数据</div> : null}
       <EventFeed events={events} query={query}/>
-      <div className="flex h-7 shrink-0 items-center border-t border-border-subtle px-2 text-[8px] text-text-muted"><span>{events.length} 条异动 · {paused ? "已暂停" : "15s 增量"}</span><button className="ml-auto font-semibold text-text-secondary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button><button className="ml-2 font-semibold text-primary-600" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "更新中…" : "立即更新"}</button></div>
+      <div className="flex h-7 shrink-0 items-center border-t border-border-subtle px-2 text-[8px] text-text-muted md:hidden"><span>{events.length} 条异动 · {paused ? "已暂停" : "15s 增量"}</span><button className="ml-auto font-semibold text-text-secondary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button><button className="ml-2 font-semibold text-primary-600" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "更新中…" : "立即更新"}</button></div>
     </aside>
 
     <main className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-hot-money">
       <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10 min-[1024px]:[&>.workstation-panel-header]:h-[38px]">
         <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} title="热钱观察榜单"/>
-        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-2 min-[1024px]:pr-3" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[13px] min-[1024px]:px-1.5 min-[1024px]:py-2" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
       <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5"><RuleBoard items={surge} mode="surge" subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>
     </main>

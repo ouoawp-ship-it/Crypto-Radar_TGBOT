@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { mercuRadarFixture } from "./fixtures/mercu-radar";
 
 const signal = {
   id: 7,
@@ -410,7 +411,7 @@ const coinSeriesPoints = Array.from({ length: 8 }, (_, index) => ({
   funding_pct: -0.02
 }));
 
-async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; healthStatus?: "ok" | "degraded" } = {}) {
+async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; healthStatus?: "ok" | "degraded"; radarVisual?: "1440x900" | "1920x1080" } = {}) {
   let signalRequests = 0;
   let infoRequests = 0;
   let lastInfoSearch = "";
@@ -419,6 +420,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
   let signalsFail = false;
   let agentsFail = false;
   let agentRequests = 0;
+  const visualRadar = options.radarVisual ? mercuRadarFixture(options.radarVisual) : null;
   await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort("failed"));
   await page.route("**/public-api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -438,20 +440,20 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       return route.fulfill({ json: { ok: true, data: { items, count: items.length } } });
     }
     if (url.pathname === "/public-api/signals/stats") return route.fulfill({ json: { ok: true, data: { total: 1, sent: 1, blocked: 0, failed: 0, skipped: 0 } } });
-    if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: marketOverview } });
-    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: radarBoards } });
+    if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: visualRadar?.overview || marketOverview } });
+    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: visualRadar?.boards || radarBoards } });
     if (url.pathname === "/public-api/workstation/radar/momentum-windows") {
       return route.fulfill({
         json: {
           ok: true,
           data: {
-            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...radarBoards, window }]))
+            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...(visualRadar?.boards || radarBoards), window }]))
           }
         }
       });
     }
-    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: radarBoards } });
-    if (url.pathname === "/public-api/radar/realtime-intelligence") return route.fulfill({ json: { ok: true, data: realtimeIntelligence } });
+    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: visualRadar?.boards || radarBoards } });
+    if (url.pathname === "/public-api/radar/realtime-intelligence") return route.fulfill({ json: { ok: true, data: visualRadar?.realtime || realtimeIntelligence } });
     if (url.pathname === "/public-api/workstation/funds/open-interest") return route.fulfill({ json: { ok: true, data: { ...crossExchangeOi, symbol: url.searchParams.get("symbol") || "BTCUSDT" } } });
     if (url.pathname === "/public-api/funds/sectors") return route.fulfill({ json: { ok: true, data: fundsSectors } });
     if (url.pathname === "/public-api/funds/assets") {
@@ -533,6 +535,9 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   await expect(page.getByText(/96%/).first()).toBeVisible();
   await expect(page.getByText(/较上一周期 \+\$23\.0M → \+\$18\.0M/)).toBeVisible();
   await expect(page.getByText(/环比转正 \$12\.8M/)).toBeVisible();
+  await expect(page.getByTestId("radar-side-intelligence").getByText(/3榜/).first()).toBeVisible();
+  await expect(page.getByTestId("radar-side-intelligence").getByText(/4榜|5榜/)).toHaveCount(0);
+  await expect(page.getByTestId("radar-event-feed").getByText(/多头共振|空头共振/)).toHaveCount(0);
 });
 
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
@@ -676,7 +681,8 @@ for (const viewport of [
 ]) {
   test(`workstation visual fixtures remain stable at ${viewport.pixels.width}x${viewport.pixels.height}`, async ({ page }) => {
     await page.setViewportSize(viewport.css);
-    await mockPublicApi(page);
+    await page.clock.setFixedTime(new Date(viewport.pixels.width === 1440 ? "2030-07-18T23:00:07Z" : "2030-07-18T23:04:13Z"));
+    await mockPublicApi(page, { radarVisual: viewport.pixels.width === 1440 ? "1440x900" : "1920x1080" });
     for (const route of ["radar", "info", "funds"] as const) {
       await page.goto(`/${route}`);
       await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
@@ -906,6 +912,7 @@ test("390px Paoxx AI reservation stays usable without horizontal overflow", asyn
 });
 
 test("radar polling can be paused and manually refreshed", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
