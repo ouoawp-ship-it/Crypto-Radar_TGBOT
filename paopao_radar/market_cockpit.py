@@ -454,15 +454,33 @@ class MarketSnapshotStore:
         """Build several closed-window comparisons from one history read."""
         windows = tuple(dict.fromkeys(normalize_window(value) for value in window_secs)) or (3600,)
         start_ts = int(now_ts) - max(2 * max(windows), 2 * 86400)
+        safe_symbols = max(1, min(500, int(max_symbols or 240)))
         with self.connect() as conn:
-            rows = conn.execute(
+            symbol_rows = conn.execute(
                 """
+                SELECT symbol, MAX(COALESCE(quote_volume, 0)) AS volume
+                FROM market_snapshots
+                WHERE observed_at >= ? AND observed_at <= ?
+                GROUP BY symbol
+                ORDER BY volume DESC, symbol ASC
+                LIMIT ?
+                """,
+                (int(now_ts) - max(7_200, max(windows)), int(now_ts), safe_symbols),
+            ).fetchall()
+            selected_symbols = [str(row["symbol"] or "") for row in symbol_rows if str(row["symbol"] or "")]
+            if not selected_symbols:
+                return {window: ([], {}) for window in windows}
+            placeholders = ",".join("?" for _ in selected_symbols)
+            row_limit = max(120_000, min(600_000, safe_symbols * 1_200))
+            rows = conn.execute(
+                f"""
                 SELECT * FROM market_snapshots
                 WHERE observed_at >= ? AND observed_at <= ?
+                  AND symbol IN ({placeholders})
                 ORDER BY symbol ASC, observed_at ASC, id ASC
-                LIMIT 120000
+                LIMIT ?
                 """,
-                (start_ts, int(now_ts)),
+                (start_ts, int(now_ts), *selected_symbols, row_limit),
             ).fetchall()
         grouped_by_time: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
         for row in rows:
@@ -509,7 +527,7 @@ class MarketSnapshotStore:
                 latest_rows.append(latest)
 
             latest_rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
-            selected = latest_rows[: max(1, min(500, int(max_symbols or 240)))]
+            selected = latest_rows[:safe_symbols]
             allowed = {str(row.get("symbol") or "") for row in selected}
             results[safe_window] = (
                 selected,

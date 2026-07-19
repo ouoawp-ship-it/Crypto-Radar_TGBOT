@@ -202,6 +202,29 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertLess(btc_strength["strength_percentile"], 50)
         self.assertIn("同币", payload["methodology"]["strength"])
 
+    def test_comparisons_select_recent_liquid_symbols_before_history_scan(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MarketSnapshotStore(Path(tmp) / "market.db")
+            rows: list[dict[str, object]] = []
+            for index, coin in enumerate(("AAA", "BBB", "CCC")):
+                for observed_at in (900, 1_800):
+                    rows.append({
+                        "symbol": f"{coin}USDT",
+                        "observed_at": observed_at,
+                        "source": "test",
+                        "price": 10 + index,
+                        "quote_volume": (index + 1) * 1_000_000,
+                    })
+            store.append_many(rows)
+
+            latest, _baselines = store.comparison(
+                now_ts=1_800,
+                window_sec=900,
+                max_symbols=2,
+            )
+
+        self.assertEqual({row["symbol"] for row in latest}, {"BBBUSDT", "CCCUSDT"})
+
     def test_missing_history_is_explicitly_degraded_and_uses_ticker_fallback(self) -> None:
         latest = [{
             "symbol": "BTCUSDT", "observed_at": 2_000, "source": "binance_futures_batch",
