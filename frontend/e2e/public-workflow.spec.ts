@@ -213,7 +213,7 @@ const fundsAssetFixtures = Array.from({ length: 698 }, (_, index) => {
   const net = fundsNetFixtures[index] ?? Math.max(100, (22 - Math.min(index, 21)) * 10_000 + (index % 3) * 700);
   const inflow = net * (2.1 + (index % 20) * 0.03);
   const outflow = inflow - net;
-  return { symbol: `${coin}USDT`, coin, price: index === 0 ? 0.4356 : 0.08 + index * 0.127, price_change_pct: index % 3 === 0 ? 8.17 - index * 0.01 : -0.99 - index * 0.02, net_flow_usd: net, net_flow_change_pct: index % 4 === 0 ? null : -72 + (index % 20) * 3.7, inflow_usd: inflow, outflow_usd: outflow, volume_usd: Math.max(10_000, 745_000 - index * 800), volume_change_pct: index % 2 ? -14.03 - index * 0.01 : 38.19 - index * 0.01, oi_usd: Math.max(100_000, 820_000_000 - index * 1_000_000), oi_change_pct: 1.8 - index * 0.01, funding_pct: -0.02 + index * 0.0001, market_cap: Math.max(500_000, 102_000_000 - index * 100_000), updated_at: "2026-07-18T17:44:00Z", data_status: "ready", sector: { primary_sector_id: fundsSectorFixtures[index % fundsSectorFixtures.length][0], primary_sector_label: fundsSectorFixtures[index % fundsSectorFixtures.length][1], sector_ids: [fundsSectorFixtures[index % fundsSectorFixtures.length][0]] } };
+  return { symbol: `${coin}USDT`, coin, price: index === 0 ? 0.4356 : 0.08 + index * 0.127, price_change_pct: index % 3 === 0 ? 8.17 - index * 0.01 : -0.99 - index * 0.02, net_flow_usd: net, net_flow_change_pct: null, inflow_usd: inflow, outflow_usd: outflow, volume_usd: Math.max(10_000, 745_000 - index * 800), volume_change_pct: index % 2 ? -14.03 - index * 0.01 : 38.19 - index * 0.01, oi_usd: Math.max(100_000, 820_000_000 - index * 1_000_000), oi_change_pct: 1.8 - index * 0.01, funding_pct: -0.02 + index * 0.0001, market_cap: Math.max(500_000, 102_000_000 - index * 100_000), updated_at: "2026-07-18T17:44:00Z", data_status: "ready", sector: { primary_sector_id: fundsSectorFixtures[index % fundsSectorFixtures.length][0], primary_sector_label: fundsSectorFixtures[index % fundsSectorFixtures.length][1], sector_ids: [fundsSectorFixtures[index % fundsSectorFixtures.length][0]] } };
 });
 const fundsAssets = {
   schema_version: "2026-07-18",
@@ -569,6 +569,8 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   expect(assets?.width).toBeCloseTo(1202, 0);
   expect(assetSearch?.x).toBeCloseTo(1259, 0);
   expect(assetSearch?.width).toBeCloseTo(276, 0);
+  const wideFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
+  expect(wideFundColumns).toEqual([50, 158, 132]);
 });
 
 test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page }) => {
@@ -621,6 +623,8 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
   expect(assetSearch?.width).toBeCloseTo(255, 0);
   expect(assetFooter?.y).toBeCloseTo(697, 0);
   expect(assetFooter?.height).toBeCloseTo(28, 0);
+  const compactFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
+  expect(compactFundColumns).toEqual([40, 150, 120]);
 });
 
 test("funds table sorting and browser-local favorites are functional", async ({ page }) => {
