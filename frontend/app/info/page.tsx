@@ -14,6 +14,14 @@ const CHANNELS = [
 
 type FeedMode = "news" | "english" | "kol";
 
+function ChannelIcon({ mode }: { mode: FeedMode | "plaza" }) {
+  const testId = `info-channel-icon-${mode}`;
+  if (mode === "english") return <span aria-hidden="true" className="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[2px] bg-[#f1edfb] text-[#7664bc]" data-testid={testId}><svg className="h-[9px] w-[9px]" viewBox="0 0 12 12"><path d="M3 1.8 10 6 3 10.2Z" fill="currentColor"/></svg></span>;
+  if (mode === "kol") return <span aria-hidden="true" className="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[2px] bg-[#f4f1e9] text-[#34302a]" data-testid={testId}><svg className="h-[10px] w-[10px]" fill="none" viewBox="0 0 14 14"><circle cx="5" cy="4.2" r="2" fill="currentColor"/><circle cx="9.5" cy="5" r="1.6" fill="currentColor" opacity=".72"/><path d="M1.8 11c.2-2.3 1.5-3.5 3.3-3.5S8.2 8.7 8.4 11H1.8Zm6.3 0c-.1-1.1-.5-2-1.1-2.7.6-.5 1.3-.7 2.1-.7 1.7 0 2.8 1.1 3 3.4h-4Z" fill="currentColor"/></svg></span>;
+  if (mode === "plaza") return <span aria-hidden="true" className="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[2px] bg-[#fbf5df] text-[#c89325]" data-testid={testId}><svg className="h-[9px] w-[9px]" fill="none" viewBox="0 0 12 12"><path d="M2 2h8v8H2z" stroke="currentColor"/><path d="M4 4h4v4H4z" fill="currentColor" opacity=".48"/></svg></span>;
+  return <span aria-hidden="true" className="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[2px] bg-[#eaf7f6] text-[#4b9c97]" data-testid={testId}><svg className="h-[9px] w-[9px]" fill="none" viewBox="0 0 12 12"><path d="M3 1.5h6v9H3z" stroke="currentColor"/><path d="M4.5 4h3M4.5 6h3M4.5 8h2" stroke="currentColor" strokeLinecap="round"/></svg></span>;
+}
+
 function dateOf(value?: string) {
   if (!value) return undefined;
   const date = new Date(value);
@@ -69,14 +77,14 @@ function SymbolTags({ symbols }: { symbols?: string[] }) {
 
 function FeedItem({ item, mode }: { item: NewsEvent; mode: FeedMode }) {
   const title = item.title || item.summary || "未命名资讯";
-  const content = mode === "news" ? <article className="border-b border-border-subtle px-2 py-1.5 transition-colors hover:bg-primary-50/45 min-[1024px]:px-2.5">
+  const content = mode === "news" ? <article className="border-b border-border-subtle px-2 py-2 transition-colors hover:bg-primary-50/45 min-[1024px]:px-2.5" data-info-row="news">
     <div className="flex items-start gap-1"><h3 className="line-clamp-3 min-w-0 flex-1 text-[10px] font-medium leading-[1.55] text-text-primary"><span className="mr-1 text-[7px] font-normal text-text-muted">{item.source || "公开来源"}</span>{title}</h3>{item.importance === "high" ? <span className="shrink-0 rounded-[2px] bg-risk/10 px-1 py-px text-[7px] font-semibold text-risk">高影响</span> : null}</div>
     <SymbolTags symbols={item.symbols}/>
   </article> : <article className="min-w-0 border-border-subtle px-2 py-1.5 transition-colors hover:bg-primary-50/45 min-[1024px]:px-2.5">
     <div className="mb-0.5 flex items-center gap-1 text-[7px] text-text-muted"><span className={`min-w-0 flex-1 truncate ${mode === "english" ? "font-semibold text-primary-600" : "font-semibold text-warn"}`}>{item.source || (mode === "kol" ? "@KOL" : "公开来源")}</span>{mode !== "kol" && item.importance === "high" ? <span className="rounded-[2px] bg-risk/10 px-1 py-px font-semibold text-risk">高影响</span> : null}</div>
     <h3 className={`${mode === "kol" ? "line-clamp-6" : "line-clamp-3"} text-[9px] font-medium leading-[1.5] text-text-primary`}>{title}</h3>
   </article>;
-  const body = mode === "news" ? content : <div className={`grid grid-cols-[42px_minmax(0,1fr)] border-b border-border-subtle ${mode === "kol" ? "min-h-[58px]" : "min-h-[52px]"}`}><span className="border-border-subtle py-1.5 text-center font-mono text-[7px] text-text-muted">{mode === "kol" ? relativeClock(item.published_at) : clock(item.published_at)}</span>{content}</div>;
+  const body = mode === "news" ? content : <div className={`grid grid-cols-[42px_minmax(0,1fr)] border-b border-border-subtle ${mode === "kol" ? "min-h-[40px]" : "min-h-[55px]"}`} data-info-row={mode}><span className="border-border-subtle py-1.5 text-center font-mono text-[7px] text-text-muted">{mode === "kol" ? relativeClock(item.published_at) : clock(item.published_at)}</span>{content}</div>;
   return item.url ? <a className="block" href={item.url} rel="noreferrer" target="_blank">{body}</a> : body;
 }
 
@@ -93,11 +101,10 @@ function InfoColumn({ title, payload, loading, showDigest, mode }: { title: stri
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState(false);
   const items = (payload?.items || []).filter((item) => !query || `${item.title || ""} ${item.summary || ""} ${(item.symbols || []).join(" ")} ${item.source || ""}`.toLowerCase().includes(query.toLowerCase()));
-  const icon = mode === "news" ? "▤" : mode === "english" ? "▶" : "♟";
   const digestSurface = mode === "news" ? "bg-[#f3f9f9]" : mode === "english" ? "bg-[#f7f6fc]" : "bg-[#fcf7f1]";
   const digestBadge = mode === "news" ? "bg-[#e9f5f4] text-[#4a9994]" : mode === "english" ? "bg-[#efecfa] text-[#7565b4]" : "bg-warn/10 text-warn";
   return <section className="workstation-panel flex min-h-0 min-w-0 flex-col">
-    <div className={`${mode === "kol" ? "flex justify-between" : "grid grid-cols-[auto_minmax(72px,1fr)_auto]"} h-[40px] shrink-0 items-center gap-1.5 border-b border-border-subtle bg-surface-low px-2 min-[1024px]:h-[31px]`}><h2 className="flex whitespace-nowrap text-[10px] font-bold text-text-primary"><span className="mr-1 text-primary-600">{icon}</span>{title}</h2>{mode !== "kol" ? <div className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label={`搜索${title}`} className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1.5 text-[8px] text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value)} placeholder="搜索…" value={query}/></div> : null}<LiveBadge payload={payload}/></div>
+    <div className="flex h-[40px] shrink-0 items-center gap-1.5 border-b border-border-subtle bg-surface-low px-2 min-[1024px]:h-[31px]"><h2 className="flex items-center gap-1 whitespace-nowrap text-[10px] font-bold text-text-primary"><ChannelIcon mode={mode}/>{title}</h2>{mode !== "kol" ? <div className="relative ml-auto w-[92px] shrink-0"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label={`搜索${title}`} className="h-[18px] w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1.5 text-[8px] text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value)} placeholder="搜索…" value={query}/></div> : <span className="ml-auto"/>}<LiveBadge payload={payload}/></div>
     {showDigest ? <button aria-expanded={expanded} className={`${expanded ? "min-h-[72px]" : "h-[43px] min-[1024px]:h-6"} ${digestSurface} grid shrink-0 grid-cols-[38px_minmax(0,1fr)_auto] items-start gap-1 border-b border-border-subtle px-2 py-1 text-left`} onClick={() => setExpanded((value) => !value)} type="button"><span className={`${digestBadge} rounded-[2px] px-1 py-0.5 text-center text-[7px] font-semibold`}>AI 解读</span><span className={`${expanded ? "" : "line-clamp-2"} text-[8px] leading-[1.45] text-text-secondary`}>{channelDigest(payload)}</span><span className="text-[7px] font-semibold text-warn">{expanded ? "收起" : "展开⌄"}</span></button> : null}
     <div className="workstation-scroll min-h-0 flex-1 overflow-auto">{mode === "news" ? <GroupedNews items={items}/> : items.map((item, index) => <FeedItem item={item} key={item.event_id || `${item.title}-${index}`} mode={mode}/>)}{loading && !items.length ? Array.from({ length: 7 }).map((_, index) => <div className="h-[76px] animate-pulse border-b border-border-subtle bg-surface-low/65" key={index}/>) : null}{!loading && !items.length ? <div className="grid h-36 place-items-center px-6 text-center text-[9px] text-text-muted">{query ? "没有匹配的资讯" : "公开来源正在同步"}</div> : null}</div>
   </section>;
@@ -174,7 +181,7 @@ function PlazaColumn({ payload, loading, showDigest }: { payload?: InfoFeedPaylo
   const providerLabel = payload?.plaza_rankings?.provider?.label || "市场广场";
   return <section className="workstation-panel flex min-h-0 min-w-0 flex-col">
     <div className="flex h-[40px] shrink-0 items-center justify-between border-b border-border-subtle bg-surface-low px-2 min-[1024px]:h-[31px]">
-      <h2 className="flex items-center text-[10px] font-bold text-text-primary"><span className="mr-1 text-warn">▣</span>{providerLabel}情绪</h2>
+      <h2 className="flex items-center gap-1 text-[10px] font-bold text-text-primary"><ChannelIcon mode="plaza"/>{providerLabel}情绪</h2>
       <LiveBadge payload={payload}/>
     </div>
     {showDigest ? <div className="flex h-[43px] shrink-0 items-start gap-1 border-b border-border-subtle bg-[#fbf8f1] px-2 py-1 min-[1024px]:h-6">

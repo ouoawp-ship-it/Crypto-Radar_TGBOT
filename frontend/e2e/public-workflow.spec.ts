@@ -1047,6 +1047,19 @@ test("information workstation keeps four fixed authorized streams traceable", as
 
   await expect(page.getByRole("heading", { name: "AI 信息蒸馏" })).toBeVisible();
   for (const heading of ["聚合资讯", "英文流资讯", "KOL聚合资讯", "币安广场情绪"]) await expect(page.getByRole("heading", { name: heading }).first()).toBeVisible();
+  for (const mode of ["news", "english", "kol", "plaza"]) await expect(page.getByTestId(`info-channel-icon-${mode}`)).toBeVisible();
+  for (const label of ["搜索聚合资讯", "搜索英文流资讯"]) {
+    const searchBox = await page.getByLabel(label).boundingBox();
+    expect(searchBox?.width).toBeCloseTo(92, 0);
+    expect(searchBox?.height).toBeCloseTo(18, 0);
+  }
+  const englishRowHeights = await page.locator('[data-info-row="english"]').evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+  expect(englishRowHeights.length).toBeGreaterThan(1);
+  expect(Math.min(...englishRowHeights)).toBeGreaterThanOrEqual(55);
+  const kolRowHeights = await page.locator('[data-info-row="kol"]').evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+  expect(kolRowHeights.length).toBeGreaterThan(1);
+  expect(Math.min(...kolRowHeights)).toBeGreaterThanOrEqual(40);
+  expect(Math.max(...kolRowHeights)).toBeGreaterThan(Math.min(...kolRowHeights));
   await expect(page.getByLabel("搜索KOL聚合资讯")).toHaveCount(0);
   await expect(page.getByText(/广场 多/).first()).toBeVisible();
   await expect(page.getByText("466 帖", { exact: true })).toBeVisible();
