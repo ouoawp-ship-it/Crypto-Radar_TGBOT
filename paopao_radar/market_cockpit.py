@@ -49,6 +49,13 @@ def _positive(value: Any) -> float | None:
     return number if number is not None and number > 0 else None
 
 
+def _positive_ratio(values: list[float]) -> float | None:
+    positive = sum(value for value in values if value > 0)
+    negative = sum(abs(value) for value in values if value < 0)
+    total = positive + negative
+    return round(positive / total, 6) if total > 0 else None
+
+
 def _pct(current: Any, previous: Any) -> float | None:
     current_number = _number(current)
     previous_number = _number(previous)
@@ -1095,6 +1102,11 @@ def build_market_cockpit(
         "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
         "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
     }
+    directional_ratios = {
+        "spot_positive_ratio": _positive_ratio([float(item["spot_flow_usd"]) for item in spot_assets]),
+        "futures_positive_ratio": _positive_ratio([float(item["futures_flow_usd"]) for item in futures_assets]),
+        "oi_positive_ratio": _positive_ratio([float(item["oi_change_usd"]) for item in oi_amount_assets]),
+    }
     comparison_delta = {
         key: round(float(current_overview[key]) - float(previous_overview[key]), 2)
         if current_overview.get(key) is not None and previous_overview.get(key) is not None else None
@@ -1139,6 +1151,7 @@ def build_market_cockpit(
             "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
             "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
             "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
+            **directional_ratios,
             "comparison": {
                 "previous": previous_overview,
                 "delta": comparison_delta,
@@ -1150,6 +1163,7 @@ def build_market_cockpit(
             "price": "优先使用同币窗口首尾快照计算；历史不足时回退交易所 24h 涨跌并标记质量。",
             "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化率反推金额变化，并标记质量。",
             "flow": "现货与合约资金为 Binance K 线主动买卖成交差（CVD）估算，不代表交易所充提净流入。",
+            "directional_balance": "全场态势红绿比例为各指标正向贡献金额 / 正负绝对贡献金额之和。",
             "strength": "同一指标当前横截面的绝对变化经验分位数。",
         },
     }

@@ -182,8 +182,8 @@ function realtime(boards: ReturnType<typeof board>[], events: ReturnType<typeof 
 function overview(viewport: Viewport) {
   const wide = viewport === "1920x1080";
   const current = wide
-    ? { advancing: 276, declining: 113, breadth_pct: 42, futures_net_flow_usd: 26_000_000, spot_net_flow_usd: 8_000_000, oi_net_change_usd: 98_000_000 }
-    : { advancing: 258, declining: 124, breadth_pct: 35, futures_net_flow_usd: 17_000_000, spot_net_flow_usd: 7_000_000, oi_net_change_usd: 64_000_000 };
+    ? { advancing: 276, declining: 113, breadth_pct: 42, futures_net_flow_usd: 26_000_000, spot_net_flow_usd: 8_000_000, oi_net_change_usd: 98_000_000, futures_positive_ratio: .86, spot_positive_ratio: .89, oi_positive_ratio: .92 }
+    : { advancing: 258, declining: 124, breadth_pct: 35, futures_net_flow_usd: 17_000_000, spot_net_flow_usd: 7_000_000, oi_net_change_usd: 64_000_000, futures_positive_ratio: .76, spot_positive_ratio: .86, oi_positive_ratio: .85 };
   const previous = wide
     ? { advancing: 265, declining: 126, breadth_pct: 36, futures_net_flow_usd: 36_000_000, spot_net_flow_usd: 1_000_000, oi_net_change_usd: 93_000_000 }
     : { advancing: 244, declining: 139, breadth_pct: 27, futures_net_flow_usd: 23_000_000, spot_net_flow_usd: -229_000, oi_net_change_usd: 80_000_000 };

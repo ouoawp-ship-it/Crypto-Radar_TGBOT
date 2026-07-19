@@ -268,6 +268,9 @@ export type MarketOverview = {
     spot_net_flow_usd?: number | null;
     futures_net_flow_usd?: number | null;
     oi_net_change_usd?: number | null;
+    spot_positive_ratio?: number | null;
+    futures_positive_ratio?: number | null;
+    oi_positive_ratio?: number | null;
     comparison?: {
       previous?: {
         advancing?: number | null;

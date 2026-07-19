@@ -81,18 +81,22 @@ function trendState(currentValue: unknown, previousValue: unknown, kind: "flow" 
   if (current === null) return "数据积累中";
   const positive = current >= 0;
   const noun = kind === "oi" ? (positive ? "增仓" : "减仓") : (positive ? "流入" : "流出");
-  if (previous === null || previous * current <= 0) return noun;
-  return `${noun}${Math.abs(current) >= Math.abs(previous) ? "加速" : "放缓"}`;
+  if (previous === null) return noun;
+  if (previous < 0 && current >= 0) return kind === "oi" ? "由减仓转增仓" : "由流出转流入";
+  if (previous > 0 && current <= 0) return kind === "oi" ? "由增仓转减仓" : "由流入转流出";
+  return `${noun}${Math.abs(current) >= Math.abs(previous) ? "扩大" : "放缓"}`;
 }
 
-function MarketTrendRow({ label, current, previous, delta, kind }: { label: string; current?: number | null; previous?: number | null; delta?: number | null; kind: "flow" | "oi" }) {
+function MarketTrendRow({ label, current, previous, delta, positiveRatio, kind }: { label: string; current?: number | null; previous?: number | null; delta?: number | null; positiveRatio?: number | null; kind: "flow" | "oi" }) {
   const currentNumber = finite(current);
   const positive = currentNumber === null ? null : currentNumber >= 0;
   const status = positive === null ? "积累中" : kind === "oi" ? (positive ? "增仓" : "减仓") : (positive ? "净流入" : "净流出");
-  return <div className="border-b border-border-subtle px-2 pb-1 pt-1.5" data-testid={`market-trend-${kind}-${label}`}>
+  const suppliedRatio = finite(positiveRatio);
+  const barRatio = suppliedRatio === null ? (positive === null ? 0 : 50) : Math.max(0, Math.min(100, suppliedRatio * 100));
+  return <div className="border-b border-border-subtle px-2.5 pb-1 pt-1.5" data-testid={`market-trend-${kind}-${label}`}>
     <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold text-text-secondary">{label}</span><span className={`ml-auto font-mono text-[10px] font-semibold ${tone(current)}`}>{marketMoney(current)}</span><span className={`rounded-[2px] px-1 py-px text-[7px] font-semibold ${positive === null ? "bg-surface-container text-text-muted" : positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{status}</span></div>
-    <div className="mt-1 flex h-[5px] overflow-hidden rounded-full bg-[#e33a46]"><span className="h-full bg-[#14aa6d]" style={{ width: positive === null ? "0" : positive ? "97%" : "3%" }}/></div>
-    <div className="mt-1 truncate text-[7px] text-text-muted">较上一周期 {marketMoney(previous)} → {marketMoney(current)}，{cycleDelta(current, previous, delta)}，{trendState(current, previous, kind)}</div>
+    <div className="mt-1 flex h-[5px] overflow-hidden rounded-full bg-[#e33a46]"><span className="h-full bg-[#14aa6d]" style={{ width: `${barRatio}%` }}/></div>
+    <div className="mt-1 text-[8px] text-text-muted min-[1280px]:text-[7px]">较上一周期 {marketMoney(previous)} → {marketMoney(current)}，{cycleDelta(current, previous, delta)}，{trendState(current, previous, kind)}</div>
   </div>;
 }
 
@@ -100,7 +104,7 @@ function MarketBreadthRow({ advancing = 0, declining = 0 }: { advancing?: number
   const total = Math.max(1, advancing + declining);
   const advancingRatio = Math.round(advancing / total * 100);
   const state = advancingRatio >= 58 ? "涨多跌少" : advancingRatio <= 42 ? "跌多涨少" : "涨跌均衡";
-  return <div className="px-2 pb-2 pt-[5px]"><div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold text-text-secondary">全场涨跌</span><span className={`font-mono text-[10px] font-semibold ${advancing >= declining ? "text-good" : "text-risk"}`}>涨 {advancing} · 跌 {declining}</span><span className="rounded-[2px] bg-primary-50 px-1 py-px text-[7px] font-semibold text-primary-700">{state}</span></div><div className="mt-1 flex h-[5px] overflow-hidden rounded-full bg-[#e33a46]"><span className="bg-[#14aa6d]" style={{ width: `${advancingRatio}%` }}/></div><div className="mt-1 text-[7px] text-text-muted">上涨占比 {advancingRatio}% · 基于可用市场样本</div></div>;
+  return <div className="px-2.5 pb-2 pt-[5px]"><div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold text-text-secondary">全场涨跌</span><span className={`font-mono text-[10px] font-semibold ${advancing >= declining ? "text-good" : "text-risk"}`}>涨 {advancing} · 跌 {declining}</span><span className="rounded-[2px] bg-primary-50 px-1 py-px text-[7px] font-semibold text-primary-700">{state}</span></div><div className="mt-1 flex h-[5px] overflow-hidden rounded-full bg-[#e33a46]"><span className="bg-[#14aa6d]" style={{ width: `${advancingRatio}%` }}/></div><div className="mt-1 text-[7px] text-text-muted">上涨占比 {advancingRatio}% · 基于可用市场样本</div></div>;
 }
 
 function RankBlocks({ item, fallbackPercentile }: { item?: RealtimeIntelligenceItem; fallbackPercentile?: number | null }) {
@@ -364,7 +368,7 @@ export default function RadarPage() {
         <div className="border-y border-border-subtle bg-surface-low px-2 py-1.5 text-[9px] font-bold text-text-primary">资金力度</div>
         {strengthFlow.map((item, index) => <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(0,1fr)_auto_auto] items-center gap-1 border-b border-border-subtle px-2 text-[9px] hover:bg-primary-50/50 min-[1024px]:h-6 min-[1280px]:h-[25px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`} title={item.divergent ? "强度榜方向存在分歧" : "强度榜方向一致"}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold">{item.coin || item.symbol}</span><span className="flex items-center gap-0.5"><span className="rounded-[2px] border border-border-subtle px-1 text-[7px] text-text-muted">{item.boardCount}榜</span>{item.divergent ? <span className="rounded-[2px] bg-surface-container px-1 text-[6px] text-text-muted">分歧</span> : null}</span><span className={item.positive ? "text-good" : "text-risk"}>{item.positive ? "流入" : "流出"}</span></Link>)}
       </section>
-      <section className="workstation-panel mt-2.5 overflow-hidden"><PanelTitle action={<FollowWindowBadge windowKey={windowKey}/>} icon="◆" iconClassName="text-warn" title="全场态势"/><div><MarketTrendRow current={market.futures_net_flow_usd} delta={marketDelta.futures_net_flow_usd} kind="flow" label="合约资金净流入" previous={previousMarket.futures_net_flow_usd}/><MarketTrendRow current={market.spot_net_flow_usd} delta={marketDelta.spot_net_flow_usd} kind="flow" label="现货资金净流入" previous={previousMarket.spot_net_flow_usd}/><MarketTrendRow current={market.oi_net_change_usd} delta={marketDelta.oi_net_change_usd} kind="oi" label="持仓量净增长" previous={previousMarket.oi_net_change_usd}/><MarketBreadthRow advancing={market.advancing} declining={market.declining}/></div></section>
+      <section className="workstation-panel mt-2.5 overflow-hidden"><PanelTitle action={<FollowWindowBadge windowKey={windowKey}/>} icon="◆" iconClassName="text-warn" title="全场态势"/><div><MarketTrendRow current={market.futures_net_flow_usd} delta={marketDelta.futures_net_flow_usd} kind="flow" label="合约资金净流入" positiveRatio={market.futures_positive_ratio} previous={previousMarket.futures_net_flow_usd}/><MarketTrendRow current={market.spot_net_flow_usd} delta={marketDelta.spot_net_flow_usd} kind="flow" label="现货资金净流入" positiveRatio={market.spot_positive_ratio} previous={previousMarket.spot_net_flow_usd}/><MarketTrendRow current={market.oi_net_change_usd} delta={marketDelta.oi_net_change_usd} kind="oi" label="持仓量净增长" positiveRatio={market.oi_positive_ratio} previous={previousMarket.oi_net_change_usd}/><MarketBreadthRow advancing={market.advancing} declining={market.declining}/></div></section>
     </aside>
   </div>{selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal}/> : null}</>;
 }
