@@ -45,6 +45,10 @@ function money(value: unknown, signed = true): string {
   return `${sign}$${absolute.toFixed(0)}`;
 }
 
+function marketMoney(value: unknown, signed = true): string {
+  return money(value, signed).replace(/\.0([BMK])$/, "$1");
+}
+
 function percent(value: unknown, digits = 2): string {
   const number = finite(value);
   return number === null ? "—" : `${number > 0 ? "+" : ""}${number.toFixed(digits)}%`;
@@ -66,9 +70,9 @@ function cycleDelta(currentValue: unknown, previousValue: unknown, deltaValue: u
   const previous = finite(previousValue);
   const delta = finite(deltaValue);
   if (current === null || previous === null || delta === null) return "上一周期数据积累中";
-  if (previous < 0 && current >= 0) return `环比转正 ${money(delta, false)}`;
-  if (previous > 0 && current <= 0) return `环比转负 ${money(delta, false)}`;
-  return `环比${delta >= 0 ? "增加" : "减少"} ${money(Math.abs(delta), false)}`;
+  if (previous < 0 && current >= 0) return `环比转正 ${marketMoney(delta, false)}`;
+  if (previous > 0 && current <= 0) return `环比转负 ${marketMoney(delta, false)}`;
+  return `环比${delta >= 0 ? "增加" : "减少"} ${marketMoney(Math.abs(delta), false)}`;
 }
 
 function trendState(currentValue: unknown, previousValue: unknown, kind: "flow" | "oi"): string {
@@ -86,9 +90,9 @@ function MarketTrendRow({ label, current, previous, delta, kind }: { label: stri
   const positive = currentNumber === null ? null : currentNumber >= 0;
   const status = positive === null ? "积累中" : kind === "oi" ? (positive ? "增仓" : "减仓") : (positive ? "净流入" : "净流出");
   return <div className="border-b border-border-subtle px-2 pb-1 pt-1.5" data-testid={`market-trend-${kind}-${label}`}>
-    <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold text-text-secondary">{label}</span><span className={`ml-auto font-mono text-[10px] font-semibold ${tone(current)}`}>{money(current)}</span><span className={`rounded-[2px] px-1 py-px text-[7px] font-semibold ${positive === null ? "bg-surface-container text-text-muted" : positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{status}</span></div>
+    <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold text-text-secondary">{label}</span><span className={`ml-auto font-mono text-[10px] font-semibold ${tone(current)}`}>{marketMoney(current)}</span><span className={`rounded-[2px] px-1 py-px text-[7px] font-semibold ${positive === null ? "bg-surface-container text-text-muted" : positive ? "bg-good/10 text-good" : "bg-risk/10 text-risk"}`}>{status}</span></div>
     <div className="mt-1 flex h-[5px] overflow-hidden rounded-full bg-[#e33a46]"><span className="h-full bg-[#14aa6d]" style={{ width: positive === null ? "0" : positive ? "97%" : "3%" }}/></div>
-    <div className="mt-1 truncate text-[7px] text-text-muted">较上一周期 {money(previous)} → {money(current)}，{cycleDelta(current, previous, delta)}，{trendState(current, previous, kind)}</div>
+    <div className="mt-1 truncate text-[7px] text-text-muted">较上一周期 {marketMoney(previous)} → {marketMoney(current)}，{cycleDelta(current, previous, delta)}，{trendState(current, previous, kind)}</div>
   </div>;
 }
 

@@ -122,6 +122,7 @@ export function Header() {
             <button aria-label={`切换到${theme === "light" ? "深色" : "浅色"}主题`} className="grid h-7 w-7 place-items-center rounded-[4px] border border-border-subtle text-text-secondary hover:bg-surface-low" onClick={toggleTheme} type="button"><Icon className="h-[14px] w-[14px]" name={theme === "light" ? "moon" : "sun"}/></button>
             {workstation ? <Link aria-label="打开自选" className="hidden h-7 items-center gap-1 rounded-[4px] border border-border-subtle bg-surface-container px-2 text-[9px] font-medium text-text-secondary hover:bg-surface-low lg:flex" href="/watchlist"><Icon className="h-3.5 w-3.5" name="watchlist"/><span>自选</span></Link> : null}
             <button aria-label="当前语言：中文" className="hidden h-7 items-center gap-1 rounded-[4px] px-2 text-[9px] font-medium text-text-secondary hover:bg-surface-low sm:flex" type="button"><Icon className="h-3.5 w-3.5" name="globe"/><span>中文</span></button>
+            {workstation ? <span aria-hidden="true" className="hidden w-[37px] shrink-0 md:block"/> : null}
           </div>
         </div>
       </header>

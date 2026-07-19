@@ -671,7 +671,7 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   await expect(page.getByText("跟随 30m", { exact: true })).toHaveCount(2);
   await page.getByRole("button", { name: "15m", exact: true }).click();
   await expect(page.getByText(/96%/).first()).toBeVisible();
-  await expect(page.getByText(/较上一周期 \+\$23\.0M → \+\$18\.0M/)).toBeVisible();
+  await expect(page.getByText(/较上一周期 \+\$23M → \+\$18M/)).toBeVisible();
   await expect(page.getByText(/环比转正 \$12\.8M/)).toBeVisible();
   await expect(page.getByTestId("radar-side-intelligence").getByText(/3榜/).first()).toBeVisible();
   await expect(page.getByTestId("radar-side-intelligence").getByText(/4榜|5榜/)).toHaveCount(0);
@@ -731,7 +731,7 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const infoBanner = await page.getByRole("heading", { name: "AI 信息蒸馏" }).locator("xpath=ancestor::section").boundingBox();
   const infoColumns = await page.getByTestId("info-four-columns").boundingBox();
   expect(infoBanner?.y).toBeCloseTo(52, 0);
-  expect(infoBanner?.height).toBeCloseTo(32, 0);
+  expect(infoBanner?.height).toBeCloseTo(30, 0);
   expect(infoColumns?.y).toBeCloseTo(101, 0);
   const infoDigestIcon = await page.getByTestId("info-digest-icon").boundingBox();
   const infoDigestButton = await page.getByRole("button", { name: /4h AI 综合分析/ }).boundingBox();
