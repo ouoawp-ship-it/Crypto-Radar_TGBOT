@@ -663,6 +663,13 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   }
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
+  await expect(page.getByTestId("radar-scan-orbit")).toBeVisible();
+  await expect(page.getByText(/持仓榜/)).toHaveCount(4);
+  await expect(page.getByText("跟随 15m", { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "30m", exact: true }).click();
+  await expect(page.getByRole("button", { name: "30m", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("跟随 30m", { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "15m", exact: true }).click();
   await expect(page.getByText(/96%/).first()).toBeVisible();
   await expect(page.getByText(/较上一周期 \+\$23\.0M → \+\$18\.0M/)).toBeVisible();
   await expect(page.getByText(/环比转正 \$12\.8M/)).toBeVisible();

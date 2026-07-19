@@ -256,6 +256,37 @@ body::before {
   z-index: 1;
 }
 
+.radar-scan-orbit {
+  background:
+    radial-gradient(circle at center, rgb(92 205 173) 0 7%, transparent 8% 31%, rgb(92 205 173 / 18%) 32% 36%, transparent 37%),
+    conic-gradient(from 18deg, rgb(92 205 173 / 48%) 0 7%, transparent 7% 22%, rgb(92 205 173 / 24%) 22% 36%, transparent 36% 59%, rgb(92 205 173 / 38%) 59% 67%, transparent 67% 100%);
+  border-radius: 999px;
+  display: grid;
+  height: 24px;
+  place-items: center;
+  position: relative;
+  width: 24px;
+}
+
+.radar-scan-orbit::after {
+  background: linear-gradient(90deg, transparent 0 42%, rgb(92 205 173 / 42%) 43% 100%);
+  content: "";
+  height: 1px;
+  position: absolute;
+  right: 3px;
+  top: 11px;
+  transform: rotate(-24deg);
+  transform-origin: left center;
+  width: 9px;
+}
+
+.radar-scan-orbit > span {
+  border: 1px solid rgb(92 205 173 / 30%);
+  border-radius: 999px;
+  height: 12px;
+  width: 12px;
+}
+
 @media (min-width: 1280px) {
   .radar-event-coin > span {
     height: 16px !important;
@@ -280,7 +311,7 @@ body::before {
 }
 
 .mercu-radar-grid {
-  --border-subtle: 238 239 240;
+  --border-subtle: 240 240 240;
   --surface-low: 252 252 252;
   background: linear-gradient(to bottom, rgb(238 241 248) 0 9px, rgb(238 241 246) 9px);
   display: grid;
