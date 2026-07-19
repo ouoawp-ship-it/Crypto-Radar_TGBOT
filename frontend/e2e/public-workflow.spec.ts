@@ -551,14 +551,24 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const strengthRow = await page.getByTestId("radar-strength-grid").first().locator("a").first().boundingBox();
   expect(strengthRow?.height).toBeCloseTo(40, 0);
 
+  await page.goto("/info");
+  const infoBanner = await page.getByRole("heading", { name: "AI 信息蒸馏" }).locator("xpath=ancestor::section").boundingBox();
+  const infoColumns = await page.getByTestId("info-four-columns").boundingBox();
+  expect(infoBanner?.y).toBeCloseTo(50, 0);
+  expect(infoBanner?.height).toBeCloseTo(32, 0);
+  expect(infoColumns?.y).toBeCloseTo(100, 0);
+
   await page.goto("/funds");
   const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
   const assets = await page.getByTestId("funds-assets-overview").boundingBox();
+  const assetSearch = await page.getByLabel("搜索全体代币").boundingBox();
   expect(sector?.x).toBeCloseTo(16, 0);
   expect(sector?.y).toBeCloseTo(106, 0);
   expect(sector?.width).toBeCloseTo(290, 0);
   expect(assets?.x).toBeCloseTo(318, 0);
   expect(assets?.width).toBeCloseTo(1202, 0);
+  expect(assetSearch?.x).toBeCloseTo(1231, 0);
+  expect(assetSearch?.width).toBeCloseTo(280, 0);
 });
 
 test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page }) => {
@@ -816,6 +826,8 @@ test("information workstation keeps four fixed authorized streams traceable", as
 
   await expect(page.getByRole("heading", { name: "AI 信息蒸馏" })).toBeVisible();
   for (const heading of ["聚合资讯", "英文流资讯", "KOL聚合资讯", "市场广场情绪"]) await expect(page.getByRole("heading", { name: heading }).first()).toBeVisible();
+  await expect(page.getByLabel("搜索KOL聚合资讯")).toHaveCount(0);
+  await expect(page.getByText(/广场 多/).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "比特币现货资金持续流入，市场关注度快速升温" }).first()).toBeVisible();
   await expect(page.getByRole("link").filter({ hasText: "比特币现货资金持续流入" }).first()).toHaveAttribute("rel", "noreferrer");
 });

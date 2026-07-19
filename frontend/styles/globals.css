@@ -300,8 +300,8 @@ body::before {
   }
 
   .mercu-info-grid {
-    gap: 12px;
-    padding: 8px 10px 10px;
+    gap: 18px;
+    padding: 5px 10px 10px;
   }
 
   .mercu-funds-overview-grid {
