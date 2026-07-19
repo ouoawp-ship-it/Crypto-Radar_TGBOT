@@ -68,12 +68,13 @@ function SymbolTags({ symbols }: { symbols?: string[] }) {
 }
 
 function FeedItem({ item, mode }: { item: NewsEvent; mode: FeedMode }) {
-  const body = <article className="border-b border-border-subtle px-2 py-1.5 transition-colors hover:bg-primary-50/45">
-    {mode === "kol" ? <div className="mb-0.5 flex items-center gap-1 text-[7px] text-text-muted"><span className="font-mono">{relativeClock(item.published_at)}</span><b className="min-w-0 flex-1 truncate text-warn">{item.source || "@KOL"}</b></div> : <div className="mb-0.5 flex items-center gap-1 text-[7px] text-text-muted"><span className={`min-w-0 flex-1 truncate ${mode === "english" ? "font-semibold text-primary-600" : ""}`}>{item.source || "公开来源"}</span>{item.importance === "high" ? <span className="rounded-[2px] bg-risk/10 px-1 py-px font-semibold text-risk">高影响</span> : null}</div>}
-    <h3 className={`${mode === "kol" ? "line-clamp-5" : "line-clamp-3"} text-[9px] font-medium leading-[1.48] text-text-primary`}>{item.title || item.summary || "未命名资讯"}</h3>
+  const content = <article className={`${mode === "news" ? "border-b" : "min-w-0"} border-border-subtle px-2 py-1.5 transition-colors hover:bg-primary-50/45 min-[1024px]:px-2.5`}>
+    <div className="mb-0.5 flex items-center gap-1 text-[7px] text-text-muted"><span className={`min-w-0 flex-1 truncate ${mode === "english" ? "font-semibold text-primary-600" : mode === "kol" ? "font-semibold text-warn" : ""}`}>{item.source || (mode === "kol" ? "@KOL" : "公开来源")}</span>{mode !== "kol" && item.importance === "high" ? <span className="rounded-[2px] bg-risk/10 px-1 py-px font-semibold text-risk">高影响</span> : null}</div>
+    <h3 className={`${mode === "kol" ? "line-clamp-6" : "line-clamp-3"} text-[9px] font-medium leading-[1.5] text-text-primary`}>{item.title || item.summary || "未命名资讯"}</h3>
     {mode === "english" && item.summary && item.summary !== item.title ? <p className="line-clamp-1 text-[7px] leading-[1.45] text-text-secondary">{item.summary}</p> : null}
     {mode !== "kol" ? <div className="flex items-end justify-between gap-1"><SymbolTags symbols={item.symbols}/></div> : null}
   </article>;
+  const body = mode === "news" ? content : <div className={`grid grid-cols-[42px_minmax(0,1fr)] border-b border-border-subtle ${mode === "kol" ? "min-h-[58px]" : "min-h-[52px]"}`}><span className="border-border-subtle py-1.5 text-center font-mono text-[7px] text-text-muted">{mode === "kol" ? relativeClock(item.published_at) : clock(item.published_at)}</span>{content}</div>;
   return item.url ? <a className="block" href={item.url} rel="noreferrer" target="_blank">{body}</a> : body;
 }
 

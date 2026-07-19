@@ -58,12 +58,11 @@ function tone(value: unknown): string {
   return number === null || number === 0 ? "text-text-secondary" : number > 0 ? "text-good" : "text-risk";
 }
 
-function RankBlocks({ item, fallbackPercentile, positive }: { item?: RealtimeIntelligenceItem; fallbackPercentile?: number | null; positive: boolean }) {
+function RankBlocks({ item, fallbackPercentile }: { item?: RealtimeIntelligenceItem; fallbackPercentile?: number | null }) {
   const resonanceActive = Number(item?.resonance?.active_count || 0);
   const fallbackActive = fallbackPercentile === null || fallbackPercentile === undefined ? 0 : Math.ceil(fallbackPercentile / 20);
   const active = Math.max(0, Math.min(5, resonanceActive || fallbackActive));
-  const short = item?.resonance?.direction ? item.resonance.direction === "short" : !positive;
-  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{WINDOWS.map((key, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${index < active ? short ? "border-risk/55 bg-risk/65" : "border-primary-500/60 bg-primary-500/70" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>;
+  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{WINDOWS.map((key, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${index < active ? "border-primary-500/60 bg-primary-500/70" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>;
 }
 
 function PanelTitle({ title, meta, action }: { title: string; meta?: string; action?: React.ReactNode }) {
@@ -172,10 +171,20 @@ function boardValue(item: CockpitBoardItem, mode: RankMode) {
   return item.unit === "usd" || hasMagnitude ? money(raw) : percent(raw, item.unit === "percent_per_cycle" ? 3 : 2);
 }
 
-function MomentumList({ items, mode, positive, realtimeBySymbol, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; limit?: number }) {
-  return <div>{(items || []).slice(0, limit).map((item, index) => <Link className="grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_29px_38px] items-center gap-[2px] border-b border-border-subtle/75 px-1 text-[8px] last:border-0 hover:bg-primary-50/50 min-[1024px]:h-[22px] min-[1280px]:h-[23px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
-    <span className="text-right font-mono text-[7px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={13}/><span className="truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))} positive={positive}/><span className={`truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
-  </Link>)}{!(items || []).length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
+function rankMagnitude(item: CockpitBoardItem) {
+  return Math.abs(finite(item.magnitude_usd) ?? finite(item.value) ?? 0);
+}
+
+function MomentumList({ items, mode, positive, realtimeBySymbol, scaleMax, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; scaleMax?: number; limit?: number }) {
+  const visible = (items || []).slice(0, limit);
+  const maxMagnitude = Math.max(1, scaleMax || 0, ...visible.map(rankMagnitude));
+  return <div>{visible.map((item, index) => {
+    const barWidth = Math.min(70, 18 + rankMagnitude(item) / maxMagnitude * 66);
+    return <Link className="relative grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_29px_38px] items-center gap-[2px] overflow-hidden border-b border-border-subtle/75 px-1 text-[8px] last:border-0 hover:bg-primary-50/50 min-[1024px]:h-[clamp(19px,calc(2.7778dvh-1px),23px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+      <i aria-hidden="true" className={`absolute inset-y-[2px] right-1 rounded-[2px] not-italic ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
+      <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
+    </Link>;
+  })}{!visible.length ? <div className="grid h-[74px] place-items-center text-[9px] text-text-muted">⏳ 暂无</div> : null}</div>;
 }
 
 function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: CockpitBoardItem[]; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem> }) {
@@ -183,11 +192,11 @@ function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: C
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
     const active = Math.max(0, Math.min(5, Number(realtime?.resonance?.active_count || 0)));
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
-    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-b border-r border-border-subtle/70 px-1 hover:bg-primary-50/55 min-[1024px]:h-[42px] min-[1280px]:h-[40px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-b border-r border-border-subtle/70 px-1 hover:bg-primary-50/55 min-[1024px]:h-[clamp(33px,calc(4.8611dvh-2px),40px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
       <small className="row-span-2 text-right font-mono text-[6px] text-text-muted">{index + 1}</small>
       <CoinIcon coin={item.coin} size={13}/><span className="truncate text-[7px] font-semibold text-text-primary">{item.coin || item.symbol}</span>
       <span className="text-right font-mono text-[6px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
-      <span className="col-span-2 col-start-2 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? positive ? "border-primary-500/55 bg-primary-500/70" : "border-risk/50 bg-risk/65" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
+      <span className="col-span-2 col-start-2 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? "border-primary-500/55 bg-primary-500/70" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
       <span className={`truncate text-right font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount")}</span>
     </Link>;
   })}{!(items || []).length ? <div className="grid h-[136px] place-items-center text-[8px] text-text-muted sm:col-span-2">⏳ 暂无</div> : null}</div>;
@@ -199,9 +208,10 @@ function MomentumBoard({ board, realtimeBySymbol }: { board?: CockpitBoard; real
   const amountNegative = board?.amount_negative || board?.negative;
   const strengthPositive = board?.strength_positive || board?.positive;
   const strengthNegative = board?.strength_negative || board?.negative;
+  const amountScaleMax = Math.max(1, ...[...(amountPositive?.items || []).slice(0, 7), ...(amountNegative?.items || []).slice(0, 7)].map(rankMagnitude));
   return <section className="overflow-hidden rounded-[2px] border border-border-subtle bg-surface-panel">
     <div className="grid h-[25px] grid-cols-2 border-b border-border-subtle bg-surface-low text-[8px] font-semibold min-[1024px]:h-[23px]"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-surface-container px-1 text-[7px] text-text-muted">量级榜</span></div></div>
-    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
+    <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumList items={amountPositive?.items} mode="amount" positive realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax}/><MomentumList items={amountNegative?.items} mode="amount" positive={false} realtimeBySymbol={realtimeBySymbol} scaleMax={amountScaleMax}/></div>
     <div className="grid h-[23px] grid-cols-2 border-y border-border-subtle bg-surface-low/80 text-[8px] font-semibold min-[1280px]:h-[25px]"><div className="flex items-center justify-between border-r border-border-subtle px-2 text-good"><span>▲ {labels.positive}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div><div className="flex items-center justify-between px-2 text-risk"><span>▼ {labels.negative}</span><span className="rounded-[2px] bg-warn/10 px-1 text-[7px] text-warn">强度榜</span></div></div>
     <div className="grid grid-cols-2 divide-x divide-border-subtle"><MomentumStrengthGrid items={strengthPositive?.items} positive realtimeBySymbol={realtimeBySymbol}/><MomentumStrengthGrid items={strengthNegative?.items} positive={false} realtimeBySymbol={realtimeBySymbol}/></div>
   </section>;
@@ -243,7 +253,7 @@ function RuleBoard({ title, subtitle, items, mode }: { title: string; subtitle: 
     const analysis = mode === "ambush" ? item.ambush : item.surge;
     const value = mode === "total" ? `${item.anomaly_24h?.count || 0}次` : `${finite(analysis?.score)?.toFixed(1) || "—"}分`;
     const positive = mode === "total" ? Number(item.anomaly_24h?.long_count || 0) >= Number(item.anomaly_24h?.short_count || 0) : analysis?.direction !== "short";
-    return <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(40px,1fr)_48px_auto] items-center gap-1 border-b border-border-subtle/75 px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold text-text-primary">{item.coin}</span><RankBlocks item={item} positive={positive}/><span className={`font-mono font-semibold ${positive ? "text-good" : "text-risk"}`}>{value}</span></Link>;
+    return <Link className="grid h-[28px] grid-cols-[16px_18px_minmax(40px,1fr)_48px_auto] items-center gap-1 border-b border-border-subtle/75 px-2 text-[9px] hover:bg-primary-50/50" href={`/funds?symbol=${item.symbol || ""}`} key={item.symbol}><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold text-text-primary">{item.coin}</span><RankBlocks item={item}/><span className={`font-mono font-semibold ${positive ? "text-good" : "text-risk"}`}>{value}</span></Link>;
   })}{!items.length ? <div className="grid h-20 place-items-center text-[9px] text-text-muted">暂无符合条件的币种</div> : null}</div></section>;
 }
 
