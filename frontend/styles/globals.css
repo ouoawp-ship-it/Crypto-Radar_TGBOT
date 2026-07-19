@@ -280,6 +280,9 @@ body::before {
 }
 
 .mercu-radar-grid {
+  --border-subtle: 238 239 240;
+  --surface-low: 255 255 255;
+  background: linear-gradient(to bottom, rgb(238 241 248) 0 9px, rgb(238 241 246) 9px);
   display: grid;
   gap: 6px;
   grid-template-columns: minmax(198px, 22%) minmax(500px, 1fr) minmax(198px, 22%);
@@ -442,6 +445,10 @@ html[data-theme="light"] .workstation-scroll::-webkit-scrollbar-thumb {
 }
 
 @media (min-width: 1280px) {
+  .mercu-radar-grid {
+    background: rgb(238 241 248);
+  }
+
   .radar-shell-wide {
     margin-left: calc((100% - min(1440px, calc(100vw - 20px))) / 2);
     margin-top: -14px;
