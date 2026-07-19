@@ -142,6 +142,10 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         self.assertEqual(by_symbol["ETHUSDT"]["surge"]["direction"], "short")
         self.assertTrue(by_symbol["SOLUSDT"]["ambush"]["triggered"])
         self.assertEqual(by_symbol["SOLUSDT"]["ambush"]["direction"], "long")
+        self.assertEqual(by_symbol["SOLUSDT"]["lifecycle"]["state"], "continuing")
+        self.assertEqual(by_symbol["SOLUSDT"]["lifecycle"]["rule"], "ambush")
+        self.assertEqual(by_symbol["SOLUSDT"]["lifecycle"]["direction"], "long")
+        self.assertGreaterEqual(by_symbol["SOLUSDT"]["lifecycle"]["age_sec"], 600)
         self.assertEqual(by_symbol["BTCUSDT"]["resonance"]["direction"], "long")
         self.assertGreaterEqual(by_symbol["BTCUSDT"]["resonance"]["active_count"], 2)
         self.assertEqual(

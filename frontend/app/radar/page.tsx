@@ -319,7 +319,9 @@ function RuleBoard({ title, subtitle, items, mode, onSelectSymbol }: { title: st
   const model = mode === "surge" ? "+ 加速识别模型" : mode === "total" ? "+ 算法标注引擎" : "持仓蓄积 · 价格静默";
   return <section className="workstation-panel flex min-h-0 flex-col"><PanelTitle tip={tip} title={title}/><div className="flex items-center border-b border-border-subtle px-2 py-1 text-[8px] text-text-muted"><span className="truncate">{subtitle}</span><span className="ml-auto shrink-0 text-[7px] text-primary-600">{model}</span></div><div className="workstation-scroll min-h-0 flex-1 overflow-auto">{items.map((item, index) => {
     const analysis = mode === "ambush" ? item.ambush : item.surge;
-    const value = mode === "total" ? `${item.anomaly_24h?.count || 0}次` : `${finite(analysis?.score)?.toFixed(1) || "—"}分`;
+    const ageSec = finite(item.lifecycle?.age_sec);
+    const elapsed = ageSec && ageSec >= 3_600 ? `已 ${Math.floor(ageSec / 3_600)}h` : ageSec ? `已 ${Math.max(1, Math.floor(ageSec / 60))}m` : "";
+    const value = mode === "total" ? `${item.anomaly_24h?.count || 0}次` : mode === "ambush" && elapsed ? elapsed : `${finite(analysis?.score)?.toFixed(1) || "—"}分`;
     const positive = mode === "total" ? Number(item.anomaly_24h?.long_count || 0) >= Number(item.anomaly_24h?.short_count || 0) : analysis?.direction !== "short";
     return <button className="grid h-[28px] w-full grid-cols-[16px_18px_minmax(40px,1fr)_48px_auto] items-center gap-1 border-b border-border-subtle/75 px-2 text-left text-[9px] hover:bg-primary-50/50" data-symbol={item.symbol || ""} key={item.symbol} onClick={() => onSelectSymbol(String(item.symbol || item.coin || ""))} type="button"><span className="font-mono text-[8px] text-text-muted">{index + 1}</span><CoinIcon coin={item.coin} size={15}/><span className="truncate font-semibold text-text-primary">{item.coin}</span><RankBlocks item={item}/><span className={`font-mono font-semibold ${positive ? "text-good" : "text-risk"}`}>{value}</span></button>;
   })}{!items.length ? <div className="grid h-20 place-items-center text-[9px] text-text-muted">暂无符合条件的币种</div> : null}</div></section>;

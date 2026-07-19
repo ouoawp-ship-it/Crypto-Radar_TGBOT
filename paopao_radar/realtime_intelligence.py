@@ -668,17 +668,43 @@ def _lifecycle(
     surge: dict[str, Any],
     ambush: dict[str, Any],
 ) -> dict[str, Any]:
-    current_active = bool(surge.get("triggered") or ambush.get("triggered"))
-    current_score = max(float(surge.get("score") or 0), float(ambush.get("score") or 0))
+    current_kind = "surge" if surge.get("triggered") else "ambush" if ambush.get("triggered") else ""
+    current_analysis = surge if current_kind == "surge" else ambush if current_kind == "ambush" else {}
+    current_active = bool(current_kind)
+    current_direction = str(current_analysis.get("direction") or "neutral")
+    current_score = float(current_analysis.get("score") or 0)
     previous: tuple[int, float] | None = None
+    continuous_age_sec = 300 if current_active else 0
+    continuous = current_active
     for offset in range(300, 3_601, 300):
         candidate_anchor = anchor - offset
-        candidate = _surge_at(rows, ends, candidate_anchor)
-        if candidate.get("triggered"):
-            previous = (candidate_anchor, float(candidate.get("score") or 0))
+        candidate_surge = _surge_at(rows, ends, candidate_anchor)
+        candidate_windows = {
+            "5m": _aggregate_window(rows, ends, start_ts=candidate_anchor - 300, end_ts=candidate_anchor),
+            "15m": _aggregate_window(rows, ends, start_ts=candidate_anchor - 900, end_ts=candidate_anchor),
+        }
+        candidate_ambush = _ambush(candidate_windows, candidate_surge)
+        if current_active:
+            candidate = candidate_surge if current_kind == "surge" else candidate_ambush
+            matched = bool(
+                candidate.get("triggered")
+                and str(candidate.get("direction") or "neutral") == current_direction
+            )
+            if matched and previous is None:
+                previous = (candidate_anchor, float(candidate.get("score") or 0))
+            if continuous and matched:
+                continuous_age_sec += 300
+            else:
+                continuous = False
+        else:
+            candidate = candidate_surge if candidate_surge.get("triggered") else candidate_ambush
+            if candidate.get("triggered"):
+                previous = (candidate_anchor, float(candidate.get("score") or 0))
+        if previous is not None and (not current_active or not continuous):
             break
     if current_active and previous is None:
-        state, basis = "new", "过去 1 小时没有同方向 Surge，当前为新异常"
+        rule_label = "Surge" if current_kind == "surge" else "埋伏"
+        state, basis = "new", f"过去 1 小时没有同方向 {rule_label}，当前为新异常"
     elif current_active and previous is not None:
         gap = anchor - previous[0]
         if gap > 1_800:
@@ -697,7 +723,15 @@ def _lifecycle(
         "new": "NEW", "enhancing": "增强", "continuing": "持续",
         "cooling": "降温", "restarted": "重启", "expired": "失效", "inactive": "未触发",
     }
-    return {"state": state, "label": labels[state], "basis": basis, "observed_at": _iso_seconds(anchor)}
+    return {
+        "state": state,
+        "label": labels[state],
+        "basis": basis,
+        "observed_at": _iso_seconds(anchor),
+        "age_sec": continuous_age_sec if current_active else 0,
+        "rule": current_kind or None,
+        "direction": current_direction if current_active else None,
+    }
 
 
 def _close_at(

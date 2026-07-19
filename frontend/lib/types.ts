@@ -57,6 +57,8 @@ export type SignalLifecycle = {
   derived?: boolean;
   observed_at?: string;
   age_sec?: number;
+  rule?: "surge" | "ambush" | string | null;
+  direction?: "long" | "short" | "neutral" | string | null;
   basis?: string;
   previous_signal_id?: number | null;
 };

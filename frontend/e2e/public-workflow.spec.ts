@@ -167,7 +167,7 @@ const realtimeItems = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "SUI", "LINK",
     ambush: { available: true, triggered: index >= 5 && index < 9, direction, score: 78 - index, price_compression_pct: 0.6 + index * 0.04 },
     anomaly_24h: { count: 24 - index, long_count: direction === "long" ? 16 - Math.floor(index / 2) : 6, short_count: direction === "short" ? 15 - Math.floor(index / 2) : 5, latest_at: "2026-07-18T08:30:00Z" },
     resonance: { available: true, direction, active_count: 4, window_count: 5, windows: ["15m", "30m", "1h", "4h", "1d"].map((key, windowIndex) => ({ key, active: windowIndex < 4, direction, coverage_ratio: 1 })) },
-    lifecycle: { state: index < 2 ? "enhancing" : "continuing", label: index < 2 ? "增强" : "持续", basis: "封闭窗口规则状态" }
+    lifecycle: { state: index < 2 ? "enhancing" : "continuing", label: index < 2 ? "增强" : "持续", basis: "封闭窗口规则状态", age_sec: (index + 1) * 300, rule: index < 5 ? "surge" : "ambush", direction }
   };
 });
 
@@ -665,6 +665,7 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   await expect(page.getByLabel("热钱观察榜单说明")).toHaveAttribute("title", /15m \/ 30m \/ 1h \/ 4h \/ 1d/);
   await expect(page.getByText("+ 加速识别模型", { exact: true })).toHaveCount(1);
   await expect(page.getByText("+ 算法标注引擎", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("已 30m", { exact: true })).toHaveCount(1);
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
   await expect(page.getByTestId("radar-scan-orbit")).toBeVisible();
