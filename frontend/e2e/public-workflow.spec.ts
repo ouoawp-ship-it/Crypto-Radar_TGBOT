@@ -1060,6 +1060,8 @@ test("information workstation keeps four fixed authorized streams traceable", as
   expect(kolRowHeights.length).toBeGreaterThan(1);
   expect(Math.min(...kolRowHeights)).toBeGreaterThanOrEqual(40);
   expect(Math.max(...kolRowHeights)).toBeGreaterThan(Math.min(...kolRowHeights));
+  const bodyWeights = await page.locator("[data-info-row] h3").evaluateAll((rows) => [...new Set(rows.map((row) => getComputedStyle(row).fontWeight))]);
+  expect(bodyWeights).toEqual(["400"]);
   await expect(page.getByLabel("搜索KOL聚合资讯")).toHaveCount(0);
   await expect(page.getByText(/广场 多/).first()).toBeVisible();
   await expect(page.getByText("466 帖", { exact: true })).toBeVisible();

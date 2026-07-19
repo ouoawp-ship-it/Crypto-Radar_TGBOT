@@ -78,11 +78,11 @@ function SymbolTags({ symbols }: { symbols?: string[] }) {
 function FeedItem({ item, mode }: { item: NewsEvent; mode: FeedMode }) {
   const title = item.title || item.summary || "未命名资讯";
   const content = mode === "news" ? <article className="border-b border-border-subtle px-2 py-2 transition-colors hover:bg-primary-50/45 min-[1024px]:px-2.5" data-info-row="news">
-    <div className="flex items-start gap-1"><h3 className="line-clamp-3 min-w-0 flex-1 text-[10px] font-medium leading-[1.55] text-text-primary"><span className="mr-1 text-[7px] font-normal text-text-muted">{item.source || "公开来源"}</span>{title}</h3>{item.importance === "high" ? <span className="shrink-0 rounded-[2px] bg-risk/10 px-1 py-px text-[7px] font-semibold text-risk">高影响</span> : null}</div>
+    <div className="flex items-start gap-1"><h3 className="line-clamp-3 min-w-0 flex-1 text-[10px] font-normal leading-[1.55] text-text-primary"><span className="mr-1 text-[7px] text-text-muted">{item.source || "公开来源"}</span>{title}</h3>{item.importance === "high" ? <span className="shrink-0 rounded-[2px] bg-risk/10 px-1 py-px text-[7px] font-semibold text-risk">高影响</span> : null}</div>
     <SymbolTags symbols={item.symbols}/>
   </article> : <article className="min-w-0 border-border-subtle px-2 py-1.5 transition-colors hover:bg-primary-50/45 min-[1024px]:px-2.5">
     <div className="mb-0.5 flex items-center gap-1 text-[7px] text-text-muted"><span className={`min-w-0 flex-1 truncate ${mode === "english" ? "font-semibold text-primary-600" : "font-semibold text-warn"}`}>{item.source || (mode === "kol" ? "@KOL" : "公开来源")}</span>{mode !== "kol" && item.importance === "high" ? <span className="rounded-[2px] bg-risk/10 px-1 py-px font-semibold text-risk">高影响</span> : null}</div>
-    <h3 className={`${mode === "kol" ? "line-clamp-6" : "line-clamp-3"} text-[9px] font-medium leading-[1.5] text-text-primary`}>{title}</h3>
+    <h3 className={`${mode === "kol" ? "line-clamp-6" : "line-clamp-3"} text-[9px] font-normal leading-[1.5] text-text-primary`}>{title}</h3>
   </article>;
   const body = mode === "news" ? content : <div className={`grid grid-cols-[42px_minmax(0,1fr)] border-b border-border-subtle ${mode === "kol" ? "min-h-[40px]" : "min-h-[55px]"}`} data-info-row={mode}><span className="border-border-subtle py-1.5 text-center font-mono text-[7px] text-text-muted">{mode === "kol" ? relativeClock(item.published_at) : clock(item.published_at)}</span>{content}</div>;
   return item.url ? <a className="block" href={item.url} rel="noreferrer" target="_blank">{body}</a> : body;
