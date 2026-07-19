@@ -106,13 +106,13 @@ export function Header() {
       <header className={`sticky top-0 z-30 border-b border-border-subtle bg-surface-canvas/95 backdrop-blur ${workstation ? "workstation-header" : ""}`}>
         <div className={`mx-auto flex h-[44px] items-center gap-3 px-3.5 ${workstation ? "max-w-none" : "max-w-[1280px]"}`}>
           <Link aria-label="Paoxx 雷达" className={`flex shrink-0 items-center gap-2 ${workstation ? "w-[92px]" : ""}`} href="/radar"><BrandMark/><span className="text-[13px] font-bold tracking-[.12em] text-text-primary">PAOXX</span></Link>
-          <nav aria-label="主导航" className="hidden h-full min-w-0 flex-1 items-stretch md:flex">
+          <nav aria-label="主导航" className={`hidden min-w-0 items-stretch md:flex ${workstation ? "h-7 flex-none rounded-[3px] border border-border-subtle bg-surface-container p-px" : "h-full flex-1"}`}>
             {visibleNavItems.map((item) => {
               const active = isActive(item.href);
-              return <Link aria-current={active ? "page" : undefined} className={`group relative flex min-w-[58px] items-center justify-center gap-1 px-2 text-[10px] font-semibold transition-colors ${active ? "bg-[#edf7f3] text-good" : "text-text-secondary hover:bg-surface-low hover:text-text-primary"}`} href={item.href} key={item.href}>
+              return <Link aria-current={active ? "page" : undefined} className={`group relative flex min-w-[58px] items-center justify-center gap-1 px-2 text-[10px] font-semibold transition-colors ${workstation ? active ? "rounded-[2px] bg-surface-panel text-good ring-1 ring-good/25" : "text-text-secondary hover:bg-surface-panel hover:text-text-primary" : active ? "bg-[#edf7f3] text-good" : "text-text-secondary hover:bg-surface-low hover:text-text-primary"}`} href={item.href} key={item.href}>
                 {!workstation ? <Icon className="h-[15px] w-[15px]" name={item.icon}/> : null}<span>{item.label}</span>
                 {"badge" in item ? <span className="absolute right-0.5 top-1 rounded-full bg-[#ef4444] px-1 py-px text-[6px] font-bold leading-none text-white">{item.badge}</span> : null}
-                {active ? <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-good"/> : null}
+                {active && !workstation ? <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-good"/> : null}
               </Link>;
             })}
           </nav>
@@ -120,6 +120,7 @@ export function Header() {
             <span className="hidden items-center gap-1 rounded-full bg-good/10 px-2 py-1 font-mono text-[8px] font-bold tracking-wide text-good sm:inline-flex"><span className={`h-1.5 w-1.5 rounded-full ${health === "live" ? "animate-pulse bg-good" : health === "offline" ? "bg-risk" : "bg-warn"}`}/>{healthLabel}</span>
             <span className="hidden min-w-[94px] text-center font-mono text-[8px] tabular-nums text-text-muted lg:inline">{clock || "--:--:--"}&nbsp; UTC+8</span>
             <button aria-label={`切换到${theme === "light" ? "深色" : "浅色"}主题`} className="grid h-7 w-7 place-items-center rounded-[4px] border border-border-subtle text-text-secondary hover:bg-surface-low" onClick={toggleTheme} type="button"><Icon className="h-[14px] w-[14px]" name={theme === "light" ? "moon" : "sun"}/></button>
+            {workstation ? <Link aria-label="打开自选" className="hidden h-7 items-center gap-1 rounded-[4px] border border-border-subtle bg-surface-container px-2 text-[9px] font-medium text-text-secondary hover:bg-surface-low lg:flex" href="/watchlist"><Icon className="h-3.5 w-3.5" name="watchlist"/><span>自选</span></Link> : null}
             <button aria-label="当前语言：中文" className="hidden h-7 items-center gap-1 rounded-[4px] px-2 text-[9px] font-medium text-text-secondary hover:bg-surface-low sm:flex" type="button"><Icon className="h-3.5 w-3.5" name="globe"/><span>中文</span></button>
           </div>
         </div>
