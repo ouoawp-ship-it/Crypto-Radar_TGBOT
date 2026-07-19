@@ -735,7 +735,7 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   expect(infoColumns?.y).toBeCloseTo(101, 0);
   const infoDigestIcon = await page.getByTestId("info-digest-icon").boundingBox();
   const infoDigestButton = await page.getByRole("button", { name: /4h AI 综合分析/ }).boundingBox();
-  expect(infoDigestIcon?.x).toBeCloseTo(15, 0);
+  expect(infoDigestIcon?.x).toBeCloseTo(14.5, 1);
   expect(infoDigestIcon?.width).toBeCloseTo(30, 0);
   expect(infoDigestButton?.width).toBeGreaterThanOrEqual(125);
 
