@@ -17,7 +17,7 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-17"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
 SNAPSHOT_COLUMNS = (
     "price",
@@ -63,6 +63,15 @@ def _signed_pct(current: Any, previous: Any) -> float | None:
     if current_number is None or previous_number in (None, 0):
         return None
     return (current_number - previous_number) / abs(previous_number) * 100
+
+
+def _change_amount(current: Any, change_pct: Any) -> float | None:
+    current_number = _positive(current)
+    percent_number = _number(change_pct)
+    if current_number is None or percent_number is None or percent_number <= -100:
+        return None
+    previous = current_number / (1 + percent_number / 100)
+    return current_number - previous
 
 
 def _iso(ts: int | float) -> str:
@@ -1053,6 +1062,44 @@ def build_market_cockpit(
     futures_net = sum(float(item["futures_flow_usd"]) for item in futures_assets)
     oi_net_change = sum(float(item["oi_change_usd"]) for item in oi_amount_assets)
     breadth = ((advancing - declining) / len(price_assets) * 100) if price_assets else 0.0
+    selected_symbols = {str(item.get("symbol") or "") for item in assets}
+    previous_rows = [
+        row for symbol, row in baseline_map.items()
+        if symbol in selected_symbols and isinstance(row, dict)
+    ]
+    previous_spot = [_number(row.get("spot_flow_usd")) for row in previous_rows]
+    previous_futures = [_number(row.get("futures_flow_usd")) for row in previous_rows]
+    previous_oi = [_change_amount(row.get("oi_usd"), row.get("oi_change_pct")) for row in previous_rows]
+    previous_prices = [_number(row.get("price_change_pct")) for row in previous_rows]
+    previous_spot_values = [value for value in previous_spot if value is not None]
+    previous_futures_values = [value for value in previous_futures if value is not None]
+    previous_oi_values = [value for value in previous_oi if value is not None]
+    previous_price_values = [value for value in previous_prices if value is not None]
+    previous_advancing = sum(1 for value in previous_price_values if value > 0)
+    previous_declining = sum(1 for value in previous_price_values if value < 0)
+    previous_breadth = (
+        (previous_advancing - previous_declining) / len(previous_price_values) * 100
+        if previous_price_values else None
+    )
+    previous_overview = {
+        "advancing": previous_advancing if previous_price_values else None,
+        "declining": previous_declining if previous_price_values else None,
+        "breadth_pct": round(previous_breadth, 2) if previous_breadth is not None else None,
+        "spot_net_flow_usd": round(sum(previous_spot_values), 2) if previous_spot_values else None,
+        "futures_net_flow_usd": round(sum(previous_futures_values), 2) if previous_futures_values else None,
+        "oi_net_change_usd": round(sum(previous_oi_values), 2) if previous_oi_values else None,
+    }
+    current_overview = {
+        "breadth_pct": round(breadth, 2),
+        "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
+        "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
+        "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
+    }
+    comparison_delta = {
+        key: round(float(current_overview[key]) - float(previous_overview[key]), 2)
+        if current_overview.get(key) is not None and previous_overview.get(key) is not None else None
+        for key in current_overview
+    }
     if spot_assets or futures_assets:
         net_flow = spot_net + futures_net
         bias = "inflow" if net_flow > 0 and breadth >= 0 else "outflow" if net_flow < 0 and breadth <= 0 else "mixed"
@@ -1092,6 +1139,10 @@ def build_market_cockpit(
             "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
             "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
             "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
+            "comparison": {
+                "previous": previous_overview,
+                "delta": comparison_delta,
+            },
         },
         "boards": boards,
         "assets": assets,
