@@ -775,6 +775,10 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   expect(assets?.width).toBeCloseTo(1202, 0);
   expect(assetSearch?.x).toBeCloseTo(1259, 0);
   expect(assetSearch?.width).toBeCloseTo(276, 0);
+  const wideTableViewport = await page.getByTestId("funds-assets-overview").locator(".workstation-scroll").evaluate((element) => ({ clientWidth: element.clientWidth, scrollLeft: element.scrollLeft, scrollWidth: element.scrollWidth }));
+  expect(wideTableViewport.clientWidth).toBeCloseTo(1200, 0);
+  expect(wideTableViewport.scrollWidth).toBe(1320);
+  expect(wideTableViewport.scrollLeft).toBe(0);
   const wideFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
   expect(wideFundColumns).toEqual([50, 158, 132]);
 });
