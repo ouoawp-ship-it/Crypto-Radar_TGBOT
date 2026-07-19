@@ -29,6 +29,27 @@ const BOARD_LABELS: Record<string, { positive: string; negative: string }> = {
   spot_flow: { positive: "主力现货流入榜", negative: "主力现货流出榜" }
 };
 
+const RADAR_TIPS = {
+  anomaly: [
+    "异动指标说明",
+    "AI 秒级捕捉市场异常并分析",
+    "“自身”标签：与该币种历史数据对比排名",
+    "“全场强度”：按相对历史强度进行全市场排名",
+    "“全场量级”：按绝对数值进行全市场排名",
+    "数值越小，排名越靠前"
+  ].join("\n"),
+  hotMoney: [
+    "数据共振说明",
+    "5 个时间维度：15m / 30m / 1h / 4h / 1d",
+    "方块顺序与顶部时间维度一致，实心越多共振越强",
+    "■ 实心：该时间维度上榜",
+    "□ 空心：该时间维度未上榜"
+  ].join("\n"),
+  surge: "短期内快速异动速率排行——短线机会高发地",
+  total: "全天累积异动最多的币——一整天都在波动，短线炒作机会与危险信号兼具",
+  ambush: "还没启动但已经安静潜伏的币——持仓量在累积、价格相对平静，等待下一个突破点"
+} as const;
+
 function finite(value: unknown): number | null {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
@@ -145,11 +166,12 @@ function rankWindowStates(
 function RankBlocks({ item, fallbackPercentile, states: suppliedStates }: { item?: RealtimeIntelligenceItem; fallbackPercentile?: number | null; states?: boolean[] }) {
   const states = suppliedStates || resonanceStates(item, fallbackPercentile);
   const active = states.filter(Boolean).length;
-  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px">{states.map((isActive, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${isActive ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={WINDOWS[index]}/>)}</span>;
+  const activeWindows = WINDOWS.filter((_, index) => states[index]);
+  return <span aria-label={`五窗口共振 ${active}/5`} className="inline-flex gap-px" title={activeWindows.length ? `${activeWindows.join("、")} 共振` : "五窗口暂未形成共振"}>{states.map((isActive, index) => <span className={`h-[5px] w-[5px] rounded-[1px] border ${isActive ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={WINDOWS[index]}/>)}</span>;
 }
 
-function PanelTitle({ title, meta, action, icon, iconClassName = "text-primary-600" }: { title: string; meta?: string; action?: React.ReactNode; icon?: React.ReactNode; iconClassName?: string }) {
-  return <div className="workstation-panel-header"><div className="flex min-w-0 items-center gap-1.5">{icon ? <span aria-hidden="true" className={`shrink-0 text-[10px] ${iconClassName}`}>{icon}</span> : null}<h2 className="truncate text-[10px] font-bold text-text-primary">{title}</h2><span aria-hidden="true" className="text-[8px] font-normal text-text-muted">ⓘ</span></div><div className="ml-auto flex shrink-0 items-center gap-2">{meta ? <span className="truncate font-mono text-[8px] text-text-muted">{meta}</span> : null}{action}</div></div>;
+function PanelTitle({ title, meta, action, icon, iconClassName = "text-primary-600", tip }: { title: string; meta?: string; action?: React.ReactNode; icon?: React.ReactNode; iconClassName?: string; tip?: string }) {
+  return <div className="workstation-panel-header"><div className="flex min-w-0 items-center gap-1.5">{icon ? <span aria-hidden="true" className={`shrink-0 text-[10px] ${iconClassName}`}>{icon}</span> : null}<h2 className="truncate text-[10px] font-bold text-text-primary">{title}</h2><span aria-label={tip ? `${title}说明` : undefined} className="cursor-help text-[8px] font-normal text-text-muted" role={tip ? "img" : undefined} title={tip}>ⓘ</span></div><div className="ml-auto flex shrink-0 items-center gap-2">{meta ? <span className="truncate font-mono text-[8px] text-text-muted">{meta}</span> : null}{action}</div></div>;
 }
 
 function FollowWindowBadge({ windowKey }: { windowKey: WindowKey }) {
@@ -189,7 +211,7 @@ function EventFeed({ events, onSelectSymbol, query }: { events: RealtimeAnomalyE
           <span className={`min-w-0 flex-1 truncate text-[9px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{event.label || "异动"}</span>
         </div>
         <div className="mt-1 flex items-baseline justify-between gap-2 pl-6 text-[9px]"><span className="truncate text-text-muted">{event.detail || `${event.window || "5m"} 内 · ${event.metric === "volume" ? "成交量" : event.metric === "price" ? "价格" : event.metric === "liquidation" ? "爆仓额" : "主动资金"}`}</span>{primaryValue ? <span className={`shrink-0 font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{primaryValue} {event.change_pct !== null && event.change_pct !== undefined && event.value_usd !== null && event.value_usd !== undefined ? `(${percent(event.change_pct, 1)})` : ""}</span> : null}</div>
-        <div className="mt-1 flex gap-1 pl-6"><RankBadge label="自身" rank={self?.rank} title={self?.method}/><RankBadge label="全场强度" rank={strength?.rank} title={strength?.method}/><RankBadge label="全场量级" rank={absolute?.rank} title={absolute?.method}/></div>
+        <div className="mt-1 flex gap-1 pl-6"><RankBadge label="自身" rank={self?.rank} title={`该币历史样本中第 ${self?.rank || "—"} 极端${self?.method ? ` · ${self.method}` : ""}`}/><RankBadge label="全场强度" rank={strength?.rank} title={`按相对历史强度排 · 自身极端度全场对比${strength?.method ? ` · ${strength.method}` : ""}`}/><RankBadge label="全场量级" rank={absolute?.rank} title={`按绝对额排 · 大币靠前 · 小币突发不上榜${absolute?.method ? ` · ${absolute.method}` : ""}`}/></div>
       </button>;
     })}
     {!filtered.length ? <div className="grid h-28 place-items-center text-[10px] text-text-muted">{query ? `没有找到 ${query} 的异动` : "暂无异动事件 · 正在扫描"}</div> : null}
@@ -293,7 +315,9 @@ function confluenceFromBoards(boards: CockpitBoard[], mode: RankMode): Confluenc
 }
 
 function RuleBoard({ title, subtitle, items, mode, onSelectSymbol }: { title: string; subtitle: string; items: RealtimeIntelligenceItem[]; mode: "surge" | "ambush" | "total"; onSelectSymbol: (symbol: string) => void }) {
-  return <section className="workstation-panel flex min-h-0 flex-col"><PanelTitle title={title}/><div className="border-b border-border-subtle px-2 py-1 text-[8px] text-text-muted">{subtitle}</div><div className="workstation-scroll min-h-0 flex-1 overflow-auto">{items.map((item, index) => {
+  const tip = mode === "surge" ? RADAR_TIPS.surge : mode === "total" ? RADAR_TIPS.total : RADAR_TIPS.ambush;
+  const model = mode === "surge" ? "+ 加速识别模型" : mode === "total" ? "+ 算法标注引擎" : "持仓蓄积 · 价格静默";
+  return <section className="workstation-panel flex min-h-0 flex-col"><PanelTitle tip={tip} title={title}/><div className="flex items-center border-b border-border-subtle px-2 py-1 text-[8px] text-text-muted"><span className="truncate">{subtitle}</span><span className="ml-auto shrink-0 text-[7px] text-primary-600">{model}</span></div><div className="workstation-scroll min-h-0 flex-1 overflow-auto">{items.map((item, index) => {
     const analysis = mode === "ambush" ? item.ambush : item.surge;
     const value = mode === "total" ? `${item.anomaly_24h?.count || 0}次` : `${finite(analysis?.score)?.toFixed(1) || "—"}分`;
     const positive = mode === "total" ? Number(item.anomaly_24h?.long_count || 0) >= Number(item.anomaly_24h?.short_count || 0) : analysis?.direction !== "short";
@@ -384,7 +408,7 @@ export default function RadarPage() {
 
   return <><div aria-busy={loading} className="workstation-page mercu-radar-grid" data-testid="radar-workstation">
     <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
-      <PanelTitle action={<span className="inline-flex items-center gap-1 text-[8px] font-semibold text-good"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good"/>LIVE</span>} meta={`更新 ${clock(anomalies.observed_at || anomalies.generated_at)}`} title="异动监控"/>
+      <PanelTitle action={<span className="inline-flex items-center gap-1 text-[8px] font-semibold text-good"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good"/>LIVE</span>} meta={`更新 ${clock(anomalies.observed_at || anomalies.generated_at)}`} tip={RADAR_TIPS.anomaly} title="异动监控"/>
       <div className="grid h-[39px] grid-cols-[minmax(0,1fr)_104px] items-center gap-1.5 border-b border-border-subtle bg-[#f1f4f9] px-2.5"><span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-primary-700"><i aria-hidden="true" className="radar-scan-orbit" data-testid="radar-scan-orbit"><span/></i><span className="flex min-w-0 flex-col"><span className="truncate leading-3">AI 全市场扫描</span><small className="font-mono text-[6px] font-normal leading-2 text-text-muted">1000+ 币种</small></span></span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
       {error ? <div className="border-b border-risk/20 bg-risk/5 px-2 py-1 text-[8px] text-risk">{error} · 保留上次数据</div> : null}
       <EventFeed events={events} onSelectSymbol={setSelectedCoin} query={debouncedQuery}/>
@@ -393,7 +417,7 @@ export default function RadarPage() {
 
     <main className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-hot-money">
       <section className="workstation-panel flex min-h-[610px] flex-col [&>.workstation-panel-header]:h-10 min-[1024px]:[&>.workstation-panel-header]:h-[38px]">
-        <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} icon="◎" meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} title="热钱观察榜单"/>
+        <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} icon="◎" meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} tip={RADAR_TIPS.hotMoney} title="热钱观察榜单"/>
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-1.5 min-[1024px]:pr-2.5 min-[1280px]:gap-[13px] min-[1280px]:px-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} momentum={momentum} onSelectSymbol={setSelectedCoin} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
       <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5"><RuleBoard items={surge} mode="surge" onSelectSymbol={setSelectedCoin} subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" onSelectSymbol={setSelectedCoin} subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" onSelectSymbol={setSelectedCoin} subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>

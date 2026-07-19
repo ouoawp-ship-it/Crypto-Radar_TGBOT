@@ -6,22 +6,20 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans: [
-          '"DM Sans Variable"',
+          "var(--font-dm-sans)",
           '"DM Sans"',
-          '"PingFang SC"',
-          '"Hiragino Sans GB"',
-          '"Microsoft YaHei UI"',
-          '"Noto Sans SC"',
-          "ui-sans-serif",
           "system-ui",
+          "-apple-system",
+          '"PingFang SC"',
+          '"Microsoft YaHei"',
           "sans-serif"
         ],
-        mono: ['"JetBrains Mono Variable"', '"JetBrains Mono"', "ui-monospace", "monospace"]
+        mono: ["var(--font-jetbrains-mono)", '"JetBrains Mono"', "ui-monospace", "Menlo", "monospace"]
       },
       fontWeight: {
         medium: "500",
-        semibold: "560",
-        bold: "650"
+        semibold: "600",
+        bold: "700"
       },
       colors: {
         surface: {

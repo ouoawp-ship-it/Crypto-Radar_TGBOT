@@ -661,6 +661,10 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   for (const heading of ["异动监控", "热钱观察榜单", "全场态势", "Surge 飙升榜", "24h 异动总榜", "埋伏池"]) {
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
+  await expect(page.getByLabel("异动监控说明")).toHaveAttribute("title", /自身.*全场强度.*全场量级/s);
+  await expect(page.getByLabel("热钱观察榜单说明")).toHaveAttribute("title", /15m \/ 30m \/ 1h \/ 4h \/ 1d/);
+  await expect(page.getByText("+ 加速识别模型", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("+ 算法标注引擎", { exact: true })).toHaveCount(1);
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
   await expect(page.getByTestId("radar-scan-orbit")).toBeVisible();
