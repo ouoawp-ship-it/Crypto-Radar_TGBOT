@@ -18,7 +18,7 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.1"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.2"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
 SNAPSHOT_COLUMNS = (
     "price",
@@ -53,6 +53,12 @@ def _positive(value: Any) -> float | None:
 def _nonnegative(value: Any) -> float | None:
     number = _number(value)
     return number if number is not None and number >= 0 else None
+
+
+def _gross_flow(inflow: Any, outflow: Any) -> float | None:
+    buy = _nonnegative(inflow)
+    sell = _nonnegative(outflow)
+    return buy + sell if buy is not None and sell is not None else None
 
 
 def _positive_ratio(values: list[float]) -> float | None:
@@ -1110,6 +1116,14 @@ def build_market_cockpit(
             previous_oi = oi_value / (1 + oi_change / 100)
             oi_change_usd = oi_value - previous_oi
             oi_amount_quality = "derived_from_pct"
+        spot_inflow = _nonnegative(row.get("spot_inflow_usd"))
+        spot_outflow = _nonnegative(row.get("spot_outflow_usd"))
+        spot_volume = _gross_flow(spot_inflow, spot_outflow)
+        baseline_spot_volume = _gross_flow(baseline.get("spot_inflow_usd"), baseline.get("spot_outflow_usd"))
+        futures_inflow = _nonnegative(row.get("futures_inflow_usd"))
+        futures_outflow = _nonnegative(row.get("futures_outflow_usd"))
+        futures_volume = _gross_flow(futures_inflow, futures_outflow)
+        baseline_futures_volume = _gross_flow(baseline.get("futures_inflow_usd"), baseline.get("futures_outflow_usd"))
         observed_at = int(_number(row.get("observed_at")) or 0)
         age_sec = max(0, now - observed_at) if observed_at else 10**9
         status = str(row.get("data_status") or "fresh")
@@ -1127,14 +1141,18 @@ def build_market_cockpit(
             "oi_usd": oi_value,
             "oi_change_pct": oi_change,
             "oi_change_usd": round(oi_change_usd, 2) if oi_change_usd is not None else None,
-            "spot_inflow_usd": _nonnegative(row.get("spot_inflow_usd")),
-            "spot_outflow_usd": _nonnegative(row.get("spot_outflow_usd")),
+            "spot_inflow_usd": spot_inflow,
+            "spot_outflow_usd": spot_outflow,
             "spot_flow_usd": _number(row.get("spot_flow_usd")),
             "spot_flow_change_pct": _signed_pct(row.get("spot_flow_usd"), baseline.get("spot_flow_usd")),
-            "futures_inflow_usd": _nonnegative(row.get("futures_inflow_usd")),
-            "futures_outflow_usd": _nonnegative(row.get("futures_outflow_usd")),
+            "spot_volume_usd": spot_volume,
+            "spot_volume_change_pct": _pct(spot_volume, baseline_spot_volume),
+            "futures_inflow_usd": futures_inflow,
+            "futures_outflow_usd": futures_outflow,
             "futures_flow_usd": _number(row.get("futures_flow_usd")),
             "futures_flow_change_pct": _signed_pct(row.get("futures_flow_usd"), baseline.get("futures_flow_usd")),
+            "futures_volume_usd": futures_volume,
+            "futures_volume_change_pct": _pct(futures_volume, baseline_futures_volume),
             "funding_pct": _number(row.get("funding_pct")),
             "coverage": _coverage(row.get("coverage")),
             "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality, "oi_change_usd": oi_amount_quality},

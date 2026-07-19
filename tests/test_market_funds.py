@@ -50,10 +50,14 @@ class MarketFundsTests(unittest.TestCase):
         return {
             "ETHUSDT": {
                 "price": 200, "quote_volume": 100_000_000, "oi_usd": 2_500_000,
+                "spot_inflow_usd": 600_000, "spot_outflow_usd": 400_000,
+                "futures_inflow_usd": 1_000_000, "futures_outflow_usd": 1_000_000,
                 "spot_flow_usd": 200_000, "futures_flow_usd": 500_000, "observed_at": ts,
             },
             "ARBUSDT": {
                 "price": 1, "quote_volume": 75_000_000, "oi_usd": 2_100_000,
+                "spot_inflow_usd": 500_000, "spot_outflow_usd": 500_000,
+                "futures_inflow_usd": 800_000, "futures_outflow_usd": 400_000,
                 "spot_flow_usd": -500_000, "futures_flow_usd": -100_000, "observed_at": ts,
             },
             "PEPEUSDT": {"price": 0.000011, "quote_volume": 55_000_000, "observed_at": ts},
@@ -98,6 +102,15 @@ class MarketFundsTests(unittest.TestCase):
         self.assertEqual([item["symbol"] for item in searched["items"]], ["ARBUSDT"])
         self.assertEqual(searched["items"][0]["net_flow_usd"], -150_000)
         self.assertEqual(searched["items"][0]["net_flow_change_pct"], -50)
+
+        eth_spot = build_funds_assets(self.cockpit(), market_type="spot", search="eth")["items"][0]
+        eth_futures = build_funds_assets(self.cockpit(), market_type="futures", search="eth")["items"][0]
+        self.assertEqual(eth_spot["volume_usd"], 1_500_000)
+        self.assertEqual(eth_spot["volume_change_pct"], 50)
+        self.assertEqual(eth_spot["sources"]["volume"], "binance_spot_klines")
+        self.assertEqual(eth_futures["volume_usd"], 2_400_000)
+        self.assertEqual(eth_futures["volume_change_pct"], 20)
+        self.assertEqual(eth_futures["sources"]["volume"], "binance_futures_klines")
 
         sorted_by_flow_change = build_funds_assets(
             self.cockpit(), market_type="spot", sort_key="net_flow_change_pct", direction="desc",
