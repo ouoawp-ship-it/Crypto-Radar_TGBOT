@@ -12,10 +12,12 @@ from typing import Any
 
 from ..atomic_json import locked_read_json, locked_write_json
 from ..coin_evidence import (
+    CHART_INTERVALS,
     build_kline_chart,
     build_snapshot_series,
     normalize_chart_interval,
     normalize_chart_market,
+    resample_snapshot_series,
 )
 from ..agent_intelligence import build_agent_overview
 from ..config import Settings
@@ -1976,17 +1978,33 @@ def public_coin_context_payload(
         requested=safe_bars,
     )
     history_points: list[dict[str, Any]] = []
+    series_interval_sec = CHART_INTERVALS[safe_interval]
+    series_window_sec = series_interval_sec * safe_bars
     try:
         if loaded.market_snapshots_db_path.exists():
+            raw_point_limit = min(
+                25_000,
+                max(safe_bars * 2, series_window_sec // 300 + 1),
+            )
             history_points = MarketSnapshotStore(loaded.market_snapshots_db_path).symbol_series(
                 target,
-                start_ts=now - max(86400, int(loaded.market_snapshot_retention_days) * 86400),
+                start_ts=now - series_window_sec,
                 end_ts=now,
-                limit=240,
+                limit=raw_point_limit,
             )
     except Exception:
         history_points = []
-    series = build_snapshot_series(history_points)
+    series = build_snapshot_series(resample_snapshot_series(
+        history_points,
+        interval_sec=series_interval_sec,
+        limit=safe_bars,
+    ))
+    series["interval"] = safe_interval
+    series["interval_sec"] = series_interval_sec
+    series["requested_buckets"] = safe_bars
+    series.setdefault("methodology", {})["aggregation"] = (
+        "价格、OI 与费率采用每个所选周期桶内最新快照；现货/合约主动买卖额与 CVD 在桶内求和。"
+    )
     module_counts: dict[str, int] = {}
     for item in timeline:
         module = str(item.get("module") or "other")

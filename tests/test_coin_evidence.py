@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from paopao_radar.coin_evidence import build_kline_chart, build_snapshot_series
+from paopao_radar.coin_evidence import build_kline_chart, build_snapshot_series, resample_snapshot_series
 from paopao_radar.config import Settings
 from paopao_radar.market_cockpit import MarketSnapshotStore
 from paopao_radar.web_services.public import public_coin_context_payload
@@ -74,6 +74,49 @@ class CoinEvidenceTests(unittest.TestCase):
         self.assertEqual(series["coverage"]["spot_flow"], 0)
         self.assertTrue(series["warnings"])
 
+    def test_snapshot_series_resampling_sums_flow_and_keeps_latest_levels(self) -> None:
+        points = [
+            {
+                "observed_at": 900,
+                "updated_at": "a",
+                "price": 100,
+                "oi_usd": 1_000,
+                "spot_inflow_usd": 60,
+                "spot_outflow_usd": 40,
+                "spot_flow_usd": 20,
+                "sources": ["flow-a"],
+            },
+            {
+                "observed_at": 1_200,
+                "updated_at": "b",
+                "price": 102,
+                "oi_usd": 1_100,
+                "spot_inflow_usd": 30,
+                "spot_outflow_usd": 20,
+                "spot_flow_usd": 10,
+                "sources": ["flow-b"],
+            },
+            {
+                "observed_at": 1_800,
+                "updated_at": "c",
+                "price": 104,
+                "spot_flow_usd": -5,
+                "sources": ["flow-a"],
+            },
+        ]
+
+        buckets = resample_snapshot_series(points, interval_sec=900, limit=10)
+
+        self.assertEqual(len(buckets), 2)
+        self.assertEqual(buckets[0]["observed_at"], 900)
+        self.assertEqual(buckets[0]["price"], 102)
+        self.assertEqual(buckets[0]["oi_usd"], 1_100)
+        self.assertEqual(buckets[0]["spot_inflow_usd"], 90)
+        self.assertEqual(buckets[0]["spot_outflow_usd"], 60)
+        self.assertEqual(buckets[0]["spot_flow_usd"], 30)
+        self.assertEqual(buckets[0]["sources"], ["flow-a", "flow-b"])
+        self.assertEqual(buckets[1]["spot_flow_usd"], -5)
+
     def test_coin_context_combines_chart_snapshot_series_and_provenance(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
@@ -115,6 +158,8 @@ class CoinEvidenceTests(unittest.TestCase):
         self.assertEqual(data["chart"]["coverage"], {"requested": 48, "returned": 48})
         self.assertEqual(data["series"]["coverage"]["points"], 2)
         self.assertEqual(data["series"]["points"][-1]["spot_flow_usd"], 180_000)
+        self.assertEqual(data["series"]["interval"], "15m")
+        self.assertEqual(data["series"]["requested_buckets"], 48)
         self.assertEqual(data["evidence_coverage"]["chart_points"], 48)
         self.assertIn("share_url", data["actions"])
         serialized = json.dumps(payload, ensure_ascii=False).lower()

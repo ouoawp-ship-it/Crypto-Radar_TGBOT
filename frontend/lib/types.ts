@@ -594,6 +594,9 @@ export type CoinSeriesPoint = {
 
 export type CoinSeries = {
   data_status?: string;
+  interval?: string;
+  interval_sec?: number;
+  requested_buckets?: number;
   coverage?: Record<string, number>;
   points?: CoinSeriesPoint[];
   warnings?: string[];

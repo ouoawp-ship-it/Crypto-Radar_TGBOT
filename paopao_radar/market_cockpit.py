@@ -606,7 +606,7 @@ class MarketSnapshotStore:
         limit: int = 600,
     ) -> list[dict[str, Any]]:
         target = str(symbol or "").strip().upper()
-        safe_limit = max(2, min(2000, int(limit or 600)))
+        safe_limit = max(2, min(25_000, int(limit or 600)))
         with self.connect() as conn:
             rows = conn.execute(
                 """
