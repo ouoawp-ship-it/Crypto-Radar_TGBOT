@@ -431,7 +431,7 @@ const infoFeed = {
     { key: "plaza", label: "市场广场情绪", status: "ready", count: 1, rights_status: "public_social_link" }
   ],
   plaza_rankings: {
-    schema_version: "workstation.info.plaza.v2",
+    schema_version: "workstation.info.plaza.v3",
     generated_at: "2030-07-18T20:35:00Z",
     data_status: "ready",
     provider: { id: "binance_square", label: "币安广场", kind: "target_visual_fixture", rights_status: "fixture_only" },

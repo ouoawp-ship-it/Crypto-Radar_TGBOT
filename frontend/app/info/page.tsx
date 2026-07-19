@@ -215,10 +215,8 @@ function PlazaColumn({ payload, loading, showDigest }: { payload?: InfoFeedPaylo
         const bullish = item.sentiment === "bullish" || Number(item.positive_pct || 0) > Number(item.negative_pct || 0);
         const neutral = item.sentiment === "neutral";
         const sentiment = sentimentLabel(item);
-        const flow = finite(item.futures_flow_usd);
-        const flowStrength = finite(item.futures_flow_strength);
-        const flowLong = finite(item.futures_long_pct) ?? (flow !== null && flowStrength !== null ? Math.round(flow >= 0 ? flowStrength : 100 - flowStrength) : null);
-        const flowShort = finite(item.futures_short_pct) ?? (flowLong === null ? null : 100 - flowLong);
+        const flowLong = finite(item.futures_long_pct);
+        const flowShort = finite(item.futures_short_pct);
         const change = finite(item.price_change_pct);
         return <article className="min-h-[82px] border-b border-border-subtle px-2 py-1.5" key={item.symbol || coin}>
           <div className="flex items-center gap-1">
