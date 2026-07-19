@@ -327,8 +327,8 @@ body::before {
   }
 
   .mercu-radar-grid > main {
-    margin-left: 6px;
-    margin-right: -3px;
+    margin-left: 0;
+    margin-right: 0;
   }
 
   .mercu-info-grid {

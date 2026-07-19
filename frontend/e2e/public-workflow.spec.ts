@@ -528,8 +528,11 @@ test("desktop radar mirrors the target three-column scan hierarchy", async ({ pa
   expect(eventBox?.x).toBeCloseTo(10, 0);
   expect(eventBox?.y).toBeCloseTo(54, 0);
   expect(eventBox?.width).toBeCloseTo(230, 0);
-  expect(matrixBox?.width).toBeCloseTo(647, 0);
+  expect(matrixBox?.x).toBeCloseTo(251, 0);
+  expect(matrixBox?.width).toBeCloseTo(650, 0);
   expect(sideBox?.width).toBeCloseTo(230, 0);
+  const sideRow = await page.getByTestId("radar-side-intelligence").locator("section").first().locator("a").first().boundingBox();
+  expect(sideRow?.height).toBeCloseTo(24, 0);
   expect(eventBox?.height).toBeCloseTo(656, 0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
 });
@@ -544,8 +547,8 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const side = await page.getByTestId("radar-side-intelligence").boundingBox();
   expect(event?.x).toBeCloseTo(10, 0);
   expect(event?.width).toBeCloseTo(230, 0);
-  expect(center?.x).toBeCloseTo(257, 0);
-  expect(center?.width).toBeCloseTo(1031, 0);
+  expect(center?.x).toBeCloseTo(251, 0);
+  expect(center?.width).toBeCloseTo(1034, 0);
   expect(side?.x).toBeCloseTo(1296, 0);
   expect(side?.width).toBeCloseTo(230, 0);
   const strengthRow = await page.getByTestId("radar-strength-grid").first().locator("a").first().boundingBox();
