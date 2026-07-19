@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CandlestickChart } from "@/components/CandlestickChart";
 import { CoinIcon } from "@/components/CoinIcon";
 import { MetricSeriesChart } from "@/components/MetricSeriesChart";
-import { getCoinContext, getFundsAssets, getFundsSectors, getWorkstationFundsOpenInterest } from "@/lib/api";
-import type { CoinContext, CoinSeriesPoint, CrossExchangeOpenInterest, FundsAsset, FundsAssetsPayload, FundsSectorsPayload } from "@/lib/types";
+import { getCoinContext, getWorkstationFundsOpenInterest, getWorkstationFundsOverview, getWorkstationFundsSeries } from "@/lib/api";
+import type { CoinContext, CoinSeriesPoint, CrossExchangeOpenInterest, FundsAsset, FundsAssetsPayload, FundsOverviewPayload, FundsSectorsPayload } from "@/lib/types";
 
 const SPANS = [
   { key: "16h", label: "16 小时", interval: "15m", bars: 64 },
@@ -72,6 +72,14 @@ function tone(value: unknown) {
 
 function PanelTitle({ title, meta, action }: { title: string; meta?: string; action?: React.ReactNode }) {
   return <div className="workstation-panel-header"><div className="flex min-w-0 items-center gap-2"><h2 className="truncate text-[11px] font-bold text-text-primary">{title}</h2>{meta ? <span className="truncate text-[8px] text-text-muted">{meta}</span> : null}</div>{action}</div>;
+}
+
+function sectorsFromOverview(payload: FundsOverviewPayload): FundsSectorsPayload {
+  return { schema_version: payload.schema_version, generated_at: payload.generated_at, window_sec: payload.sector_window_sec, market_type: payload.market_type, data_status: payload.data_status, coverage: payload.coverage, warnings: payload.warnings, summary: payload.summary, catalog: payload.catalog, sectors: payload.sectors, methodology: payload.methodology };
+}
+
+function assetsFromOverview(payload: FundsOverviewPayload): FundsAssetsPayload {
+  return { schema_version: payload.schema_version, generated_at: payload.generated_at, window_sec: payload.asset_window_sec, market_type: payload.market_type, data_status: payload.data_status, coverage: payload.coverage, warnings: payload.warnings, filters: payload.filters, sort: payload.sort, distribution: payload.distribution, pagination: payload.pagination, items: payload.assets, methodology: payload.methodology };
 }
 
 function FlowPriceChart({ points, marketType }: { points: CoinSeriesPoint[]; marketType: MarketType }) {
@@ -232,12 +240,13 @@ export default function FundsPage() {
     setLoading(true); setError("");
     try {
       const options = { bypassCache };
-      const [spotSectorData, futuresSectorData, spotAssetData, futuresAssetData] = await Promise.all([
-        getFundsSectors(sectorWindow, "spot", options), getFundsSectors(sectorWindow, "futures", options),
-        getFundsAssets({ window_sec: assetWindow, market_type: "spot", sort: assetSort, direction: sortDirection, page: assetPage, page_size: 20, search: assetSearch || undefined }, options),
-        getFundsAssets({ window_sec: assetWindow, market_type: "futures", sort: assetSort, direction: sortDirection, page: assetPage, page_size: 20, search: assetSearch || undefined }, options)
+      const query = { sector_window_sec: sectorWindow, asset_window_sec: assetWindow, sort: assetSort, direction: sortDirection, page: assetPage, page_size: 20, search: assetSearch || undefined };
+      const [spotOverview, futuresOverview] = await Promise.all([
+        getWorkstationFundsOverview({ ...query, market_type: "spot" }, options),
+        getWorkstationFundsOverview({ ...query, market_type: "futures" }, options)
       ]);
-      setSpotSectors(spotSectorData); setFuturesSectors(futuresSectorData); setSpotAssets(spotAssetData); setFuturesAssets(futuresAssetData);
+      setSpotSectors(sectorsFromOverview(spotOverview)); setFuturesSectors(sectorsFromOverview(futuresOverview));
+      setSpotAssets(assetsFromOverview(spotOverview)); setFuturesAssets(assetsFromOverview(futuresOverview));
     } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "资金总览加载失败"); }
     finally { setLoading(false); }
   }, [assetPage, assetSearch, assetSort, assetWindow, sectorWindow, sortDirection]);
@@ -247,8 +256,13 @@ export default function FundsPage() {
     setCoinLoading(true);
     const config = SPANS.find((item) => item.key === span) || SPANS[2];
     try {
-      const [context, oi] = await Promise.all([getCoinContext(selected, { bypassCache }, { market_type: marketType, interval: config.interval, bars: config.bars }), getWorkstationFundsOpenInterest(selected, { bypassCache })]);
-      setCoin(context); setCrossOi(oi);
+      const kind = marketType === "spot" ? "spot_flow" : "futures_flow";
+      const [context, workstationSeries, oi] = await Promise.all([
+        getCoinContext(selected, { bypassCache }, { market_type: marketType, interval: config.interval, bars: config.bars, include_series: 0 }),
+        getWorkstationFundsSeries(selected, kind, config.interval, config.bars, { bypassCache }),
+        getWorkstationFundsOpenInterest(selected, { bypassCache })
+      ]);
+      setCoin({ ...context, series: workstationSeries }); setCrossOi(oi);
     } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "单币资金视图加载失败"); }
     finally { setCoinLoading(false); }
   }, [marketType, selected, span]);

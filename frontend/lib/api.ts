@@ -1,4 +1,4 @@
-import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsSectorsPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WatchlistMarketPayload, WorkstationRadarAnomaliesPayload, WorkstationRadarBriefsPayload, WorkstationRadarRankPayload, WorkstationRadarSurgePayload } from "./types";
+import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsOverviewPayload, FundsSectorsPayload, FundsSeriesPayload, InfoBriefsPayload, InfoDashboardPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WatchlistMarketPayload, WorkstationRadarAnomaliesPayload, WorkstationRadarBriefsPayload, WorkstationRadarRankPayload, WorkstationRadarSurgePayload } from "./types";
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number };
@@ -211,6 +211,14 @@ export function getFundsAssets(query: Query = {}, options: PublicFetchOptions = 
   return publicFetch<FundsAssetsPayload>("/public-api/workstation/funds/assets", query, { revalidateSec: 30, ...options });
 }
 
+export function getWorkstationFundsOverview(query: Query = {}, options: PublicFetchOptions = {}) {
+  return publicFetch<FundsOverviewPayload>("/public-api/workstation/funds/overview", query, { revalidateSec: 30, ...options });
+}
+
+export function getWorkstationFundsSeries(symbol: string, kind: "spot_flow" | "futures_flow" | "oi" | "funding", interval: string, bars: number, options: PublicFetchOptions = {}) {
+  return publicFetch<FundsSeriesPayload>("/public-api/workstation/funds/series", { symbol, kind, interval, bars }, { revalidateSec: 30, ...options });
+}
+
 export function getWorkstationFundsOpenInterest(symbol: string, options: PublicFetchOptions = {}) {
   return publicFetch<CrossExchangeOpenInterest>("/public-api/workstation/funds/open-interest", { symbol }, { revalidateSec: 30, ...options });
 }
@@ -235,6 +243,14 @@ export function getWatchlistMarket(symbols: string[], options: PublicFetchOption
 
 export function getInfoFeed(query: Query = {}, options: PublicFetchOptions = {}) {
   return publicFetch<InfoFeedPayload>("/public-api/workstation/info/feed", query, { revalidateSec: 60, ...options });
+}
+
+export function getWorkstationInfoDashboard(windowSec = 604_800, options: PublicFetchOptions = {}) {
+  return publicFetch<InfoDashboardPayload>("/public-api/workstation/info/dashboard", { window_sec: windowSec }, { revalidateSec: 60, ...options });
+}
+
+export function getWorkstationInfoBriefs(windowSec = 14_400, options: PublicFetchOptions = {}) {
+  return publicFetch<InfoBriefsPayload>("/public-api/workstation/info/briefs", { window_sec: windowSec }, { revalidateSec: 60, ...options });
 }
 
 export function getAgentsOverview(windowSec = 14_400, options: PublicFetchOptions = {}) {

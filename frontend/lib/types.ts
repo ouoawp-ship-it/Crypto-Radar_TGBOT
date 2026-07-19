@@ -498,6 +498,7 @@ export type FundsAsset = {
   volume_usd?: number | null;
   volume_change_pct?: number | null;
   oi_usd?: number | null;
+  oi_change_usd?: number | null;
   oi_change_pct?: number | null;
   funding_pct?: number | null;
   market_cap?: number | null;
@@ -550,6 +551,27 @@ export type CrossExchangeOpenInterest = {
   methodology?: Record<string, string>;
 };
 
+export type FundsOverviewPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  window_sec?: number;
+  sector_window_sec?: number;
+  asset_window_sec?: number;
+  market_type?: "spot" | "futures" | string;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  warnings?: string[];
+  summary?: FundsSectorsPayload["summary"];
+  distribution?: FundsAssetsPayload["distribution"];
+  catalog?: SectorDefinition[];
+  sectors?: SectorFlow[];
+  assets?: FundsAsset[];
+  filters?: Record<string, string>;
+  sort?: FundsAssetsPayload["sort"];
+  pagination?: FundsAssetsPayload["pagination"];
+  methodology?: Record<string, string>;
+};
+
 export type KlinePoint = {
   open_time?: string;
   open_time_ms?: number;
@@ -581,6 +603,7 @@ export type CoinSeriesPoint = {
   quote_volume?: number | null;
   market_cap?: number | null;
   oi_usd?: number | null;
+  oi_change_usd?: number | null;
   oi_change_pct?: number | null;
   spot_inflow_usd?: number | null;
   spot_outflow_usd?: number | null;
@@ -729,6 +752,14 @@ export type InfoPlazaRankings = {
   methodology?: Record<string, string>;
 };
 
+export type FundsSeriesPayload = CoinSeries & {
+  schema_version?: string;
+  generated_at?: string;
+  symbol?: string;
+  kind?: "spot_flow" | "futures_flow" | "oi" | "funding" | string;
+  metric?: string;
+};
+
 export type InfoFeedPayload = {
   schema_version?: string;
   generated_at?: string;
@@ -741,6 +772,43 @@ export type InfoFeedPayload = {
   channels?: InfoChannel[];
   items?: NewsEvent[];
   plaza_rankings?: InfoPlazaRankings | null;
+  methodology?: Record<string, string>;
+};
+
+export type InfoDashboardPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  warnings?: string[];
+  summary?: InfoFeedPayload["summary"];
+  channels?: InfoChannel[];
+  ingestion?: { status?: string; error?: string };
+  methodology?: Record<string, string>;
+};
+
+export type InfoBrief = {
+  channel?: "news" | "en" | "kol" | "plaza" | string;
+  data_status?: string;
+  title?: string;
+  summary?: string;
+  event_id?: string;
+  published_at?: string;
+  symbols?: string[];
+  source?: string;
+  source_url?: string;
+  generated_by?: string;
+  model_generated?: boolean;
+};
+
+export type InfoBriefsPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  window_sec?: number;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  warnings?: string[];
+  items?: InfoBrief[];
   methodology?: Record<string, string>;
 };
 

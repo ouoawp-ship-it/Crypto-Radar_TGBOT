@@ -583,7 +583,29 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       legacyRealtimeRequests += 1;
       return route.fulfill({ json: { ok: true, data: radarRealtime } });
     }
+    if (url.pathname === "/public-api/workstation/funds/overview") {
+      const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+      const pageSize = Math.max(1, Number(url.searchParams.get("page_size") || 20));
+      const search = String(url.searchParams.get("search") || "").toUpperCase();
+      const sort = String(url.searchParams.get("sort") || "net_flow_usd") as keyof (typeof fundsAssetFixtures)[number];
+      const direction = url.searchParams.get("direction") === "asc" ? 1 : -1;
+      const filtered = visualFundRows.filter((item) => !search || `${item.symbol} ${item.coin}`.includes(search));
+      filtered.sort((a, b) => (Number(a[sort] ?? Number.NEGATIVE_INFINITY) - Number(b[sort] ?? Number.NEGATIVE_INFINITY)) * direction);
+      const total = filtered.length;
+      const assets = filtered.slice((page - 1) * pageSize, page * pageSize);
+      return route.fulfill({ json: { ok: true, data: {
+        schema_version: "workstation.funds.overview.v1", generated_at: visualFundsAssets.generated_at,
+        market_type: url.searchParams.get("market_type") || "spot",
+        sector_window_sec: Number(url.searchParams.get("sector_window_sec") || 3600),
+        asset_window_sec: Number(url.searchParams.get("asset_window_sec") || 900),
+        data_status: "ready", coverage: visualFundsAssets.coverage, warnings: options.assetWarnings || visualFundsAssets.warnings,
+        summary: visualFundsSectors.summary, distribution: visualFundsAssets.distribution, catalog: visualFundsSectors.catalog,
+        sectors: visualFundsSectors.sectors, assets, filters: { search }, sort: { key: sort, direction: direction === 1 ? "asc" : "desc" },
+        pagination: { page, page_size: pageSize, page_count: Math.max(1, Math.ceil(total / pageSize)), total }, methodology: {}
+      } } });
+    }
     if (url.pathname === "/public-api/workstation/funds/open-interest") return route.fulfill({ json: { ok: true, data: { ...crossExchangeOi, symbol: url.searchParams.get("symbol") || "BTCUSDT" } } });
+    if (url.pathname === "/public-api/workstation/funds/series") return route.fulfill({ json: { ok: true, data: { schema_version: "workstation.funds.series.v1", generated_at: "2030-07-18T20:35:00Z", symbol: url.searchParams.get("symbol") || "BTCUSDT", kind: url.searchParams.get("kind") || "spot_flow", metric: "spot_flow_usd", interval: url.searchParams.get("interval") || "15m", data_status: "ready", coverage: { points: 8, price: 8, oi: 8, spot_flow: 8, futures_flow: 8, funding: 8 }, points: coinSeriesPoints, warnings: [], methodology: {} } } });
     if (["/public-api/workstation/funds/sectors", "/public-api/funds/sectors"].includes(url.pathname)) return route.fulfill({ json: { ok: true, data: visualFundsSectors } });
     if (["/public-api/workstation/funds/assets", "/public-api/funds/assets"].includes(url.pathname)) {
       const page = Math.max(1, Number(url.searchParams.get("page") || 1));
@@ -597,11 +619,19 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       const items = filtered.slice((page - 1) * pageSize, page * pageSize);
       return route.fulfill({ json: { ok: true, data: { ...visualFundsAssets, market_type: url.searchParams.get("market_type") || "spot", window_sec: Number(url.searchParams.get("window_sec") || 900), warnings: options.assetWarnings || visualFundsAssets.warnings, sort: { key: sort, direction: direction === 1 ? "asc" : "desc" }, pagination: { page, page_size: pageSize, page_count: Math.max(1, Math.ceil(total / pageSize)), total }, items } } });
     }
+    if (url.pathname === "/public-api/workstation/info/dashboard") return route.fulfill({ json: { ok: true, data: { schema_version: "workstation.info.dashboard.v1", generated_at: infoFeed.generated_at, data_status: "ready", coverage: infoFeed.coverage, warnings: [], summary: infoFeed.summary, channels: infoFeed.channels, ingestion: { status: "cached" }, methodology: {} } } });
+    if (url.pathname === "/public-api/workstation/info/briefs") return route.fulfill({ json: { ok: true, data: { schema_version: "workstation.info.briefs.v1", generated_at: infoFeed.generated_at, window_sec: 14400, data_status: "ready", coverage: { channels: 4, ready_channels: 4, events: infoFeed.items.length }, warnings: [], items: [
+      { channel: "news", data_status: "ready", summary: infoFeed.items.find((item) => item.source_type === "news" && item.language === "zh")?.title, generated_by: "source_event", model_generated: false },
+      { channel: "en", data_status: "ready", summary: infoFeed.items.find((item) => item.source_type === "news" && item.language === "en")?.title, generated_by: "source_event", model_generated: false },
+      { channel: "kol", data_status: "ready", summary: infoFeed.items.find((item) => item.source_type === "kol")?.title, generated_by: "source_event", model_generated: false },
+      { channel: "plaza", data_status: "ready", summary: infoFeed.items.find((item) => item.source_type === "plaza")?.title, generated_by: "source_event", model_generated: false }
+    ], methodology: {} } } });
     if (["/public-api/workstation/info/feed", "/public-api/info/feed"].includes(url.pathname)) {
       infoRequests += 1;
       lastInfoSearch = url.search;
-      const sourceType = String(url.searchParams.get("source_type") || "");
-      const language = String(url.searchParams.get("language") || "");
+      const channel = String(url.searchParams.get("channel") || "");
+      const sourceType = String(url.searchParams.get("source_type") || (channel === "news" || channel === "en" ? "news" : channel));
+      const language = String(url.searchParams.get("language") || (channel === "news" ? "zh" : channel === "en" ? "en" : ""));
       const items = infoFeed.items.filter((item) => (!sourceType || item.source_type === sourceType) && (!language || item.language === language));
       return route.fulfill({ json: { ok: true, data: { ...infoFeed, coverage: { ...infoFeed.coverage, events: items.length }, pagination: { ...infoFeed.pagination, total: items.length }, items } } });
     }
@@ -1023,7 +1053,7 @@ test("funds overview uses server-backed pagination and search semantics", async 
   await expect(page.getByText("共 688 个代币 · 每页 20 条 · 第 1/35 页")).toBeVisible();
   const secondPageResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === "/public-api/workstation/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("page") === "2";
+    return url.pathname === "/public-api/workstation/funds/overview" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("page") === "2";
   });
   await page.getByRole("button", { name: "下一页" }).click();
   await secondPageResponse;
@@ -1032,7 +1062,7 @@ test("funds overview uses server-backed pagination and search semantics", async 
 
   const searchResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === "/public-api/workstation/funds/assets" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("search") === "BTC";
+    return url.pathname === "/public-api/workstation/funds/overview" && url.searchParams.get("market_type") === "spot" && url.searchParams.get("search") === "BTC";
   });
   await page.getByLabel("搜索全体代币").fill("BTC");
   await searchResponse;

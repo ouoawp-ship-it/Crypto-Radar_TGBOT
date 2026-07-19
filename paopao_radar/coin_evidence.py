@@ -100,6 +100,7 @@ def build_snapshot_series(points: list[dict[str, Any]]) -> dict[str, Any]:
         "quote_volume",
         "market_cap",
         "oi_usd",
+        "oi_change_usd",
         "oi_change_pct",
         "spot_inflow_usd",
         "spot_outflow_usd",

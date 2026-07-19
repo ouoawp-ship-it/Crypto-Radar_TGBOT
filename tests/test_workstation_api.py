@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from paopao_radar.config import Settings
+from paopao_radar.market_cockpit import MarketSnapshotStore
 from paopao_radar.web_services.public import (
     public_workstation_funds_open_interest_payload,
+    public_workstation_funds_overview_payload,
+    public_workstation_funds_series_payload,
+    public_workstation_info_briefs_payload,
+    public_workstation_info_dashboard_payload,
+    public_workstation_info_feed_payload,
     public_workstation_radar_anomalies_payload,
     public_workstation_radar_briefs_payload,
     public_workstation_radar_momentum_payload,
@@ -185,6 +194,138 @@ class WorkstationRadarApiTests(unittest.TestCase):
         self.assertEqual([item["coin"] for item in rank["data"]["ambush"]], ["ETH"])
         self.assertEqual(rank["data"]["universe"], source["data"]["items"])
         self.assertEqual(briefs["data"]["items"][0]["title"], "BTC OI move")
+
+    def test_funds_overview_uses_one_multi_window_scan_for_sectors_and_assets(self) -> None:
+        settings = type(
+            "TestSettings",
+            (),
+            {"cockpit_v2_mode": "enabled", "market_snapshots_db_path": Path("test-market.sqlite3")},
+        )()
+        sector_source = {"generated_at": "2026-07-19T00:00:00Z", "window_sec": 3600}
+        asset_source = {"generated_at": "2026-07-19T00:00:00Z", "window_sec": 900}
+        sector_payload = {
+            "data_status": "ready", "coverage": {"assets": 2}, "warnings": [],
+            "summary": {"net_flow_usd": 10}, "catalog": [],
+            "sectors": [{"sector_id": "defi", "label": "DeFi"}],
+            "methodology": {"flow": "sector-flow"},
+        }
+        asset_payload = {
+            "data_status": "ready", "coverage": {"assets": 2}, "warnings": [],
+            "distribution": {"oi_total_usd": 100}, "filters": {},
+            "sort": {"key": "net_flow_usd", "direction": "desc"},
+            "pagination": {"page": 1, "page_size": 20, "page_count": 1, "total": 1},
+            "items": [{"symbol": "BTCUSDT", "net_flow_usd": 10}],
+            "methodology": {"flow": "asset-flow"},
+        }
+        with patch(
+            "paopao_radar.web_services.public.load_market_cockpit_windows",
+            return_value={3600: sector_source, 900: asset_source},
+        ) as loader, patch(
+            "paopao_radar.web_services.public.build_funds_sectors",
+            return_value=sector_payload,
+        ) as sectors, patch(
+            "paopao_radar.web_services.public.build_funds_assets",
+            return_value=asset_payload,
+        ) as assets:
+            response = public_workstation_funds_overview_payload(
+                sector_window_sec=3600,
+                asset_window_sec=900,
+                market_type="spot",
+                settings=settings,
+                now_ts=1,
+            )
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["schema_version"], "workstation.funds.overview.v1")
+        self.assertEqual(data["sector_window_sec"], 3600)
+        self.assertEqual(data["asset_window_sec"], 900)
+        self.assertEqual(data["assets"][0]["symbol"], "BTCUSDT")
+        loader.assert_called_once_with(
+            settings,
+            window_secs=(3600, 900),
+            board_limit=8,
+            now_ts=1,
+            live_rows=[],
+        )
+        sectors.assert_called_once_with(sector_source, market_type="spot")
+        self.assertIs(assets.call_args.args[0], asset_source)
+
+    def test_funds_series_returns_selected_bucket_oi_amount_and_percent_change(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp), cockpit_v2_mode="enabled")
+            store = MarketSnapshotStore(settings.market_snapshots_db_path)
+            store.append_many([
+                {"symbol": "BTCUSDT", "observed_at": 900, "source": "test", "oi_usd": 1_000, "price": 100},
+                {"symbol": "BTCUSDT", "observed_at": 1_800, "source": "test", "oi_usd": 1_250, "price": 101},
+            ])
+            response = public_workstation_funds_series_payload(
+                "BTC",
+                kind="oi",
+                interval="15m",
+                bars=24,
+                settings=settings,
+                now_ts=1_800,
+            )
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["schema_version"], "workstation.funds.series.v1")
+        self.assertEqual(data["metric"], "oi_usd")
+        self.assertEqual(data["points"][-1]["oi_change_usd"], 250)
+        self.assertEqual(data["points"][-1]["oi_change_pct"], 25)
+        invalid = public_workstation_funds_series_payload("BTC", kind="prediction")
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["code"], "invalid_kind")
+
+    def test_info_workstation_contracts_map_channels_and_keep_rule_ai_boundary(self) -> None:
+        source = {
+            "ok": True,
+            "data": {
+                "schema_version": "source-v1",
+                "generated_at": "2026-07-19T00:00:00Z",
+                "data_status": "ready",
+                "coverage": {"events": 1},
+                "warnings": [],
+                "pagination": {"total": 9},
+                "summary": {"high_importance": 1},
+                "channels": [{"key": "news_en", "count": 9}],
+                "items": [{
+                    "event_id": "evt-1", "title": "Market update", "summary": "Observed facts",
+                    "importance": "high", "source": "Public source", "url": "https://example.com/event",
+                    "ai_analysis": {"generated_by": "rules", "fact_summary": "Rule summary"},
+                }],
+                "methodology": {"rights": "linked"},
+            },
+        }
+        with patch(
+            "paopao_radar.web_services.public.public_info_feed_payload",
+            return_value=source,
+        ) as base_feed:
+            feed = public_workstation_info_feed_payload(channel="en", now_ts=1)
+            dashboard = public_workstation_info_dashboard_payload(now_ts=1)
+
+        self.assertTrue(feed["ok"])
+        self.assertEqual(feed["data"]["channel"], "en")
+        self.assertEqual(feed["data"]["schema_version"], "workstation.info.feed.v1")
+        self.assertEqual(base_feed.call_args_list[0].kwargs["source_type"], "news")
+        self.assertEqual(base_feed.call_args_list[0].kwargs["language"], "en")
+        self.assertEqual(dashboard["data"]["coverage"]["events"], 9)
+
+        def channel_feed(**kwargs):
+            channel = kwargs["channel"]
+            return {"ok": True, "data": {**source["data"], "channel": channel}}
+
+        with patch(
+            "paopao_radar.web_services.public.public_workstation_info_feed_payload",
+            side_effect=channel_feed,
+        ):
+            briefs = public_workstation_info_briefs_payload(now_ts=1)
+
+        self.assertTrue(briefs["ok"])
+        self.assertEqual(briefs["data"]["coverage"]["ready_channels"], 4)
+        self.assertEqual(briefs["data"]["items"][0]["summary"], "Rule summary")
+        self.assertFalse(briefs["data"]["items"][0]["model_generated"])
 
     def test_cross_exchange_oi_normalizes_usd_and_excludes_missing_venues(self) -> None:
         payload = build_cross_exchange_open_interest(

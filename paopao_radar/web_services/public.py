@@ -100,6 +100,18 @@ WORKSTATION_RADAR_WINDOWS = {
     "4h": 14400,
     "1d": 86400,
 }
+WORKSTATION_INFO_CHANNELS = {
+    "news": ("news", "zh"),
+    "en": ("news", "en"),
+    "kol": ("kol", ""),
+    "plaza": ("plaza", ""),
+}
+WORKSTATION_FUNDS_SERIES_KINDS = {
+    "spot_flow": "spot_flow_usd",
+    "futures_flow": "futures_flow_usd",
+    "oi": "oi_usd",
+    "funding": "funding_pct",
+}
 SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
 ChartLoader = Callable[[Settings, str, str, str, int], list[list[Any]]]
 _MARKET_WARMUP_LOCK = threading.Lock()
@@ -1401,6 +1413,122 @@ def public_funds_assets_payload(
     return api_ok(_strip_forbidden(payload), message="已读取资产资金表")
 
 
+def public_workstation_funds_overview_payload(
+    *,
+    window_sec: int = 3600,
+    sector_window_sec: int | None = None,
+    asset_window_sec: int | None = None,
+    market_type: str = "spot",
+    search: str = "",
+    sector: str = "",
+    data_status: str = "",
+    sort_key: str = "net_flow_usd",
+    direction: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Build the Funds root view from one market-cockpit scan."""
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    safe_sector_window = normalize_window(sector_window_sec if sector_window_sec is not None else window_sec)
+    safe_asset_window = normalize_window(asset_window_sec if asset_window_sec is not None else window_sec)
+    safe_market = normalize_market_type(market_type)
+
+    def build() -> dict[str, Any]:
+        cockpits = load_market_cockpit_windows(
+            loaded,
+            window_secs=tuple(dict.fromkeys((safe_sector_window, safe_asset_window))),
+            board_limit=8,
+            now_ts=now_ts,
+            live_rows=[],
+        )
+        if now_ts is None and any(
+            str(payload.get("data_status") or "") in {"empty", "warming_up", "partial", "stale"}
+            for payload in cockpits.values()
+        ):
+            _schedule_market_warmup(loaded)
+            for cockpit in cockpits.values():
+                if cockpit.get("assets"):
+                    continue
+                cockpit["warnings"] = list(dict.fromkeys([
+                    "市场快照正在后台预热，稍后刷新即可看到榜单。",
+                    *[str(item) for item in cockpit.get("warnings") or [] if str(item)],
+                ]))
+        sector_cockpit = cockpits[safe_sector_window]
+        asset_cockpit = cockpits[safe_asset_window]
+        sectors = build_funds_sectors(sector_cockpit, market_type=safe_market)
+        assets = build_funds_assets(
+            asset_cockpit,
+            market_type=safe_market,
+            search=search,
+            sector=sector,
+            data_status=data_status,
+            sort_key=sort_key,
+            direction=direction,
+            page=page,
+            page_size=page_size,
+        )
+        statuses = {str(sectors.get("data_status") or ""), str(assets.get("data_status") or "")}
+        status = (
+            "unavailable" if "unavailable" in statuses
+            else "degraded" if "degraded" in statuses
+            else "empty" if statuses <= {"", "empty"}
+            else "ready"
+        )
+        warnings = list(dict.fromkeys([
+            *[str(item) for item in sectors.get("warnings") or [] if str(item)],
+            *[str(item) for item in assets.get("warnings") or [] if str(item)],
+        ]))
+        sector_rows = list(sectors.get("sectors") or [])
+        asset_rows = list(assets.get("items") or [])
+        return {
+            "schema_version": "workstation.funds.overview.v1",
+            "generated_at": asset_cockpit.get("generated_at") or sector_cockpit.get("generated_at"),
+            "window_sec": safe_asset_window,
+            "sector_window_sec": safe_sector_window,
+            "asset_window_sec": safe_asset_window,
+            "market_type": safe_market,
+            "data_status": status,
+            "coverage": {
+                **dict(assets.get("coverage") or {}),
+                "sectors": len(sector_rows),
+                "page_assets": len(asset_rows),
+            },
+            "warnings": warnings,
+            "summary": sectors.get("summary") or {},
+            "distribution": assets.get("distribution") or {},
+            "catalog": sectors.get("catalog") or [],
+            "sectors": sector_rows,
+            "assets": asset_rows,
+            "filters": assets.get("filters") or {},
+            "sort": assets.get("sort") or {},
+            "pagination": assets.get("pagination") or {},
+            "methodology": {
+                **{f"sector_{key}": value for key, value in dict(sectors.get("methodology") or {}).items()},
+                **{f"asset_{key}": value for key, value in dict(assets.get("methodology") or {}).items()},
+                "snapshot": "板块与资产表由同一次封闭窗口市场快照计算，避免跨请求时间漂移。",
+            },
+        }
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = ":".join((
+                "public:workstation:funds:overview",
+                str(loaded.market_snapshots_db_path), str(safe_sector_window), str(safe_asset_window), safe_market,
+                str(search or "")[:24], str(sector or "")[:40], str(data_status or "")[:24],
+                str(sort_key or ""), str(direction or ""), str(page), str(page_size),
+            ))
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_FUNDS_TTL_SEC, build)
+    except Exception:
+        return api_error("资金总览暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取工作站资金总览")
+
+
 def public_workstation_funds_open_interest_payload(
     symbol: str,
     *,
@@ -1430,6 +1558,100 @@ def public_workstation_funds_open_interest_payload(
     except Exception:
         return api_error("跨交易所 OI 暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取跨交易所 OI")
+
+
+def public_workstation_funds_series_payload(
+    symbol: str,
+    *,
+    kind: str = "spot_flow",
+    interval: str = "15m",
+    bars: int = 96,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    parsed = normalize_symbol_filter(symbol)
+    target = str(parsed.get("symbol") or "")
+    if not target:
+        return api_error(str(parsed.get("error") or "币种格式无效"), code="invalid_symbol")
+    safe_kind = str(kind or "spot_flow").strip().lower()
+    metric = WORKSTATION_FUNDS_SERIES_KINDS.get(safe_kind)
+    if metric is None:
+        return api_error("Unsupported funds series kind", code="invalid_kind")
+    safe_interval = normalize_chart_interval(interval)
+    safe_bars = max(24, min(240, int(bars or 96)))
+    interval_sec = CHART_INTERVALS[safe_interval]
+    now = int(now_ts or time.time())
+
+    def build() -> dict[str, Any]:
+        raw_points: list[dict[str, Any]] = []
+        try:
+            if loaded.market_snapshots_db_path.exists():
+                raw_limit = min(25_000, max(safe_bars * 2, interval_sec * safe_bars // 300 + 1))
+                raw_points = MarketSnapshotStore(loaded.market_snapshots_db_path).symbol_series(
+                    target,
+                    start_ts=now - interval_sec * safe_bars,
+                    end_ts=now,
+                    limit=raw_limit,
+                )
+        except Exception:
+            raw_points = []
+        bucket_points = resample_snapshot_series(
+            raw_points,
+            interval_sec=interval_sec,
+            limit=safe_bars,
+        )
+        previous_oi: float | None = None
+        for point in bucket_points:
+            current_oi = _number(point.get("oi_usd"))
+            if current_oi is not None and previous_oi is not None:
+                change = current_oi - previous_oi
+                point["oi_change_usd"] = round(change, 2)
+                point["oi_change_pct"] = round(change / previous_oi * 100, 6) if previous_oi > 0 else None
+            if current_oi is not None:
+                previous_oi = current_oi
+        series = build_snapshot_series(bucket_points)
+        series["interval"] = safe_interval
+        series["interval_sec"] = interval_sec
+        series["requested_buckets"] = safe_bars
+        metric_points = sum(1 for point in series.get("points") or [] if point.get(metric) is not None)
+        coverage = {**dict(series.get("coverage") or {}), "metric_points": metric_points}
+        data_status = "ready" if metric_points >= 2 else "degraded" if series.get("points") else "unavailable"
+        warnings = [str(item) for item in series.get("warnings") or [] if str(item)]
+        if metric_points < 2:
+            warnings.append(f"{safe_kind} 当前不足两个可比较封闭桶。")
+        return {
+            "schema_version": "workstation.funds.series.v1",
+            "generated_at": _utc_time_text(now),
+            "symbol": target,
+            "kind": safe_kind,
+            "metric": metric,
+            "interval": safe_interval,
+            "interval_sec": interval_sec,
+            "requested_buckets": safe_bars,
+            "data_status": data_status,
+            "coverage": coverage,
+            "warnings": list(dict.fromkeys(warnings)),
+            "points": series.get("points") or [],
+            "methodology": {
+                **dict(series.get("methodology") or {}),
+                "closed_bucket": "点位按所选周期对齐到封闭桶；价格、OI、费率取桶内最新值，现货/合约主动资金在桶内求和。",
+                "oi_change": "OI 美元变化与百分比由相邻所选周期桶的 OI 水平计算，不沿用其他窗口的变化率。",
+                "null_policy": "缺失指标保持 null，不以前值或 0 填充。",
+            },
+        }
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = f"public:workstation:funds:series:{target}:{safe_kind}:{safe_interval}:{safe_bars}"
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_FUNDS_TTL_SEC, build)
+    except Exception:
+        return api_error("单币资金时序暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取工作站单币资金时序")
 
 
 def public_info_feed_payload(
@@ -1624,6 +1846,171 @@ def public_info_feed_payload(
     except Exception:
         return api_error("信息中心暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取授权信息事件")
+
+
+def public_workstation_info_feed_payload(
+    *,
+    channel: str = "",
+    source_type: str = "",
+    language: str = "",
+    importance: str = "",
+    symbol: str = "",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 30,
+    window_sec: int = 7 * 86_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    safe_channel = str(channel or "").strip().lower()
+    if safe_channel:
+        mapped = WORKSTATION_INFO_CHANNELS.get(safe_channel)
+        if mapped is None:
+            return api_error("Unsupported info channel", code="invalid_channel")
+        source_type, language = mapped
+    source = public_info_feed_payload(
+        source_type=source_type,
+        language=language,
+        importance=importance,
+        symbol=symbol,
+        search=search,
+        page=page,
+        page_size=page_size,
+        window_sec=window_sec,
+        settings=settings,
+        now_ts=now_ts,
+        refresh=refresh,
+    )
+    if not source.get("ok"):
+        return source
+    source_data = dict(source.get("data") or {})
+    payload = {
+        **source_data,
+        "schema_version": "workstation.info.feed.v1",
+        "source_schema_version": source_data.get("schema_version"),
+        "channel": safe_channel,
+        "filters": {**dict(source_data.get("filters") or {}), "channel": safe_channel},
+        "methodology": {
+            **dict(source_data.get("methodology") or {}),
+            "channel_contract": "news=中文公开资讯，en=英文公开资讯，kol=公开 KOL 源，plaza=公开社交广场。",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取工作站信息流")
+
+
+def public_workstation_info_dashboard_payload(
+    *,
+    window_sec: int = 7 * 86_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    source = public_info_feed_payload(
+        page=1,
+        page_size=100,
+        window_sec=window_sec,
+        settings=settings,
+        now_ts=now_ts,
+        refresh=refresh,
+    )
+    if not source.get("ok"):
+        return source
+    source_data = dict(source.get("data") or {})
+    channels = list(source_data.get("channels") or [])
+    pagination = dict(source_data.get("pagination") or {})
+    coverage = dict(source_data.get("coverage") or {})
+    coverage.update({
+        "events": int(pagination.get("total") or coverage.get("events") or 0),
+        "channels": len(channels),
+        "active_channels": sum(1 for item in channels if int((item or {}).get("count") or 0) > 0),
+    })
+    payload = {
+        "schema_version": "workstation.info.dashboard.v1",
+        "generated_at": source_data.get("generated_at"),
+        "data_status": source_data.get("data_status"),
+        "coverage": coverage,
+        "warnings": source_data.get("warnings") or [],
+        "summary": source_data.get("summary") or {},
+        "channels": channels,
+        "ingestion": source_data.get("ingestion") or {},
+        "methodology": {
+            **dict(source_data.get("methodology") or {}),
+            "dashboard": "总览只汇总独立信息流索引，不将资讯数量或规则标签解释为交易信号。",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取工作站信息总览")
+
+
+def public_workstation_info_briefs_payload(
+    *,
+    window_sec: int = 14_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    briefs: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    generated_at = ""
+    event_count = 0
+    for channel in WORKSTATION_INFO_CHANNELS:
+        source = public_workstation_info_feed_payload(
+            channel=channel,
+            page=1,
+            page_size=20,
+            window_sec=window_sec,
+            settings=settings,
+            now_ts=now_ts,
+            refresh=False,
+        )
+        if not source.get("ok"):
+            warnings.append(f"{channel} 信息流暂时不可用。")
+            continue
+        source_data = dict(source.get("data") or {})
+        generated_at = generated_at or str(source_data.get("generated_at") or "")
+        items = list(source_data.get("items") or [])
+        event_count += len(items)
+        candidate = next((item for item in items if item.get("importance") == "high"), items[0] if items else None)
+        if candidate is None:
+            briefs.append({
+                "channel": channel,
+                "data_status": "empty",
+                "title": "暂无新增关键信息",
+                "summary": "当前窗口未索引到可展示的新事件。",
+                "generated_by": "empty_state",
+            })
+            continue
+        analysis = candidate.get("ai_analysis") if isinstance(candidate.get("ai_analysis"), dict) else {}
+        summary = analysis.get("fact_summary") or candidate.get("summary") or candidate.get("title") or "暂无新增关键信息"
+        generated_by = str(analysis.get("generated_by") or "source_event")
+        briefs.append({
+            "channel": channel,
+            "data_status": "ready",
+            "title": _short(candidate.get("title") or summary, 180),
+            "summary": _short(summary, 500),
+            "event_id": candidate.get("event_id"),
+            "published_at": candidate.get("published_at"),
+            "symbols": list(candidate.get("symbols") or [])[:8],
+            "source": candidate.get("source"),
+            "source_url": candidate.get("url"),
+            "generated_by": generated_by,
+            "model_generated": generated_by not in {"", "rules", "rule", "source_event"},
+        })
+    ready_count = sum(1 for item in briefs if item.get("data_status") == "ready")
+    payload = {
+        "schema_version": "workstation.info.briefs.v1",
+        "generated_at": generated_at or _utc_time_text(int(now_ts or time.time())),
+        "window_sec": max(3600, min(30 * 86_400, int(window_sec or 14_400))),
+        "data_status": "ready" if ready_count == len(WORKSTATION_INFO_CHANNELS) else "degraded" if ready_count else "empty",
+        "coverage": {"channels": len(WORKSTATION_INFO_CHANNELS), "ready_channels": ready_count, "events": event_count},
+        "warnings": warnings,
+        "items": briefs,
+        "methodology": {
+            "selection": "每栏优先选择窗口内最高重要度的真实事件，否则选择最新事件；空栏返回明确空态。",
+            "ai_boundary": "只有来源分析明确标记模型生成时 model_generated 才为 true；规则或原事件摘要不冒充 AI 结论。",
+            "rights": "摘要保留来源名称与原文链接，不复制受限全文。",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取工作站信息摘要")
 
 
 def public_agents_overview_payload(
@@ -1897,6 +2284,7 @@ def public_coin_context_payload(
     market_type: str = "futures",
     interval: str = "15m",
     bars: int = 96,
+    include_series: bool = True,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
@@ -1981,7 +2369,7 @@ def public_coin_context_payload(
     series_interval_sec = CHART_INTERVALS[safe_interval]
     series_window_sec = series_interval_sec * safe_bars
     try:
-        if loaded.market_snapshots_db_path.exists():
+        if include_series and loaded.market_snapshots_db_path.exists():
             raw_point_limit = min(
                 25_000,
                 max(safe_bars * 2, series_window_sec // 300 + 1),
@@ -2002,6 +2390,17 @@ def public_coin_context_payload(
     series["interval"] = safe_interval
     series["interval_sec"] = series_interval_sec
     series["requested_buckets"] = safe_bars
+    if not include_series:
+        series = {
+            "data_status": "skipped",
+            "interval": safe_interval,
+            "interval_sec": series_interval_sec,
+            "requested_buckets": safe_bars,
+            "coverage": {"points": 0, "price": 0, "oi": 0, "spot_flow": 0, "futures_flow": 0, "funding": 0},
+            "points": [],
+            "warnings": [],
+            "methodology": {"source": "Series omitted because the workstation series endpoint owns this response."},
+        }
     series.setdefault("methodology", {})["aggregation"] = (
         "价格、OI 与费率采用每个所选周期桶内最新快照；现货/合约主动买卖额与 CVD 在桶内求和。"
     )
