@@ -132,6 +132,12 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(boards["oi"]["amount_positive"]["items"][0]["magnitude_usd"], 100_000)
         self.assertEqual(boards["oi"]["amount_negative"]["items"][0]["magnitude_usd"], 200_000)
         self.assertEqual(payload["overview"]["oi_net_change_usd"], -100_000)
+        comparison = payload["overview"]["comparison"]
+        self.assertEqual(comparison["previous"]["spot_net_flow_usd"], 5_000)
+        self.assertEqual(comparison["previous"]["futures_net_flow_usd"], 20_000)
+        self.assertEqual(comparison["delta"]["spot_net_flow_usd"], 5_000)
+        self.assertEqual(comparison["delta"]["futures_net_flow_usd"], 10_000)
+        self.assertIsNone(comparison["previous"]["oi_net_change_usd"])
         self.assertIsNone(boards["price"]["positive"]["items"][0]["magnitude_usd"])
         self.assertIn("CVD", payload["methodology"]["flow"])
 

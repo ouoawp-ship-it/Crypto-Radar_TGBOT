@@ -73,7 +73,23 @@ const marketOverview = {
     total_quote_volume: 8_000_000_000,
     spot_net_flow_usd: 12_000_000,
     futures_net_flow_usd: 18_000_000,
-    oi_net_change_usd: 800_000
+    oi_net_change_usd: 800_000,
+    comparison: {
+      previous: {
+        advancing: 42,
+        declining: 38,
+        breadth_pct: 5,
+        spot_net_flow_usd: -800_000,
+        futures_net_flow_usd: 23_000_000,
+        oi_net_change_usd: 1_600_000
+      },
+      delta: {
+        breadth_pct: 15,
+        spot_net_flow_usd: 12_800_000,
+        futures_net_flow_usd: -5_000_000,
+        oi_net_change_usd: -800_000
+      }
+    }
   }
 };
 
@@ -515,6 +531,8 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
   await expect(page.getByText(/96%/).first()).toBeVisible();
+  await expect(page.getByText(/较上一周期 \+\$23\.0M → \+\$18\.0M/)).toBeVisible();
+  await expect(page.getByText(/环比转正 \$12\.8M/)).toBeVisible();
 });
 
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
