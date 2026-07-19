@@ -15,6 +15,7 @@ from paopao_radar.market_cockpit import (
     build_market_cockpit,
     collect_binance_market_rows,
     collect_market_flow_facts,
+    load_market_cockpit_windows,
     persist_flow_market_rows,
     persist_market_batch,
 )
@@ -160,6 +161,46 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(oi_board["amount_positive"]["items"][0]["symbol"], "BTCUSDT")
         self.assertEqual(oi_board["strength_positive"]["items"][0]["symbol"], "ETHUSDT")
         self.assertEqual(oi_board["amount_unit"], "usd")
+
+    def test_window_strength_uses_each_symbols_own_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            store = MarketSnapshotStore(settings.market_snapshots_db_path)
+            btc_oi = 100_000_000.0
+            eth_oi = 1_000_000.0
+            rows: list[dict[str, object]] = []
+            for index in range(10):
+                if index:
+                    btc_oi *= 1.01 if index == 9 else 1.10
+                    eth_oi *= 1.05 if index == 9 else 1.001
+                observed_at = (index + 1) * 900
+                rows.extend([
+                    {
+                        "symbol": "BTCUSDT", "observed_at": observed_at, "source": "test",
+                        "price": 100 + index, "quote_volume": 100_000_000, "oi_usd": btc_oi,
+                        "spot_flow_usd": 20_000, "futures_flow_usd": 30_000,
+                    },
+                    {
+                        "symbol": "ETHUSDT", "observed_at": observed_at, "source": "test",
+                        "price": 50 + index, "quote_volume": 80_000_000, "oi_usd": eth_oi,
+                        "spot_flow_usd": -15_000, "futures_flow_usd": -10_000,
+                    },
+                ])
+            store.append_many(rows)
+
+            payload = load_market_cockpit_windows(
+                settings,
+                window_secs=(900,),
+                now_ts=9_000,
+                store=store,
+            )[900]
+
+        oi_board = {board["key"]: board for board in payload["boards"]}["oi"]
+        self.assertEqual(oi_board["amount_positive"]["items"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(oi_board["strength_positive"]["items"][0]["symbol"], "ETHUSDT")
+        btc_strength = next(item for item in oi_board["strength_positive"]["items"] if item["symbol"] == "BTCUSDT")
+        self.assertLess(btc_strength["strength_percentile"], 50)
+        self.assertIn("同币", payload["methodology"]["strength"])
 
     def test_missing_history_is_explicitly_degraded_and_uses_ticker_fallback(self) -> None:
         latest = [{

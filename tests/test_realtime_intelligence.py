@@ -73,11 +73,57 @@ class RealtimeIntelligenceTests(unittest.TestCase):
         events = build_open_interest_anomaly_events(rows, now_ts=8_100, limit=20)
 
         self.assertTrue(events)
+        self.assertNotIn("5m", {event["window"] for event in events})
         self.assertIn("oi_up", {event["event_type"] for event in events})
         self.assertIn("oi_down", {event["event_type"] for event in events})
         self.assertTrue(all(event["metric"] == "oi" for event in events))
         self.assertTrue(any(event["rankings"]["self"].get("available") for event in events))
         self.assertTrue(any(event["rankings"]["market_absolute"].get("available") for event in events))
+
+    def test_builds_five_minute_oi_events_with_mercu_display_contract(self) -> None:
+        rows: list[dict[str, object]] = []
+        for index in range(12):
+            observed_at = (index + 1) * 300
+            rows.extend([
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": observed_at,
+                    "oi_usd": 10_000_000 + index * 10_000 + (800_000 if index == 11 else 0),
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "observed_at": observed_at,
+                    "oi_usd": 8_000_000 - index * 8_000 - (640_000 if index == 11 else 0),
+                },
+            ])
+
+        events = build_open_interest_anomaly_events(rows, now_ts=3_600, limit=30)
+        five_minute = [event for event in events if event["window"] == "5m"]
+
+        self.assertEqual({event["label"] for event in five_minute}, {"OI 暴涨", "OI 暴跌"})
+        self.assertTrue(all(event["detail"].startswith("5 分钟内 oi ") for event in five_minute))
+        self.assertTrue(any("万 (+" in event["detail"] for event in five_minute))
+        self.assertTrue(any("万 (-" in event["detail"] for event in five_minute))
+
+    def test_volume_event_uses_mercu_label_and_displays_price_change(self) -> None:
+        rows = [
+            feature_row(
+                "BTCUSDT",
+                minute,
+                buy=2_000 if minute >= 5 else 500,
+                sell=1_000 if minute >= 5 else 500,
+                open_price=100 if minute < 5 else 100 + (minute - 5) * 0.5,
+                close_price=100 if minute < 5 else 100 + (minute - 4) * 0.5,
+            )
+            for minute in range(10)
+        ]
+
+        payload = build_realtime_intelligence(rows, now_ts=600, limit=10)
+        event = next(item for item in payload["anomaly_events"] if item["event_type"] == "volume_spike")
+
+        self.assertEqual(event["label"], "Vol 爆发")
+        self.assertAlmostEqual(event["change_pct"], 2.5)
+        self.assertEqual(event["detail"], "5 分钟内 成交量 2万 (+2.5%)")
 
     def test_multi_exchange_flow_uses_unique_time_coverage_and_one_price_source(self) -> None:
         rows: list[dict[str, object]] = []

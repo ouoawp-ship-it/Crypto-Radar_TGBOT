@@ -8,7 +8,7 @@ from statistics import mean, median
 from typing import Any
 
 
-REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-18.2"
+REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-19.1"
 MOMENTUM_WINDOWS = (("15m", 900), ("30m", 1_800), ("1h", 3_600), ("4h", 14_400), ("1d", 86_400))
 INTELLIGENCE_WINDOWS = (("5m", 300), *MOMENTUM_WINDOWS)
 BACKTEST_HORIZONS = (("5m", 300), ("15m", 900), ("1h", 3600))
@@ -31,6 +31,55 @@ def _number(value: Any) -> float | None:
 
 def _iso_seconds(value: int) -> str:
     return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z") if value > 0 else ""
+
+
+def _event_window_label(window: Any) -> str:
+    return {
+        "5m": "5 分钟",
+        "15m": "15 分钟",
+        "30m": "30 分钟",
+        "1h": "1 小时",
+        "4h": "4 小时",
+        "1d": "1 天",
+    }.get(str(window or ""), str(window or "5m"))
+
+
+def _event_amount(value: Any, *, signed: bool) -> str:
+    number = _number(value)
+    if number is None:
+        return "--"
+    prefix = "+" if signed and number > 0 else "-" if number < 0 else ""
+    absolute = abs(number)
+    if absolute >= 100_000_000:
+        return f"{prefix}{absolute / 100_000_000:.1f}".rstrip("0").rstrip(".") + "亿"
+    if absolute >= 10_000:
+        return f"{prefix}{absolute / 10_000:.0f}万"
+    return f"{prefix}{absolute:.0f}"
+
+
+def _event_percent(value: Any, *, digits: int) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    return f"{number:+.{digits}f}%"
+
+
+def _event_detail(event: dict[str, Any]) -> str:
+    window = _event_window_label(event.get("window"))
+    metric = str(event.get("metric") or "")
+    value = event.get("value_usd") if event.get("value_usd") is not None else event.get("value")
+    change = event.get("change_pct")
+    if metric == "oi":
+        return f"{window}内 oi {_event_amount(value, signed=True)} ({_event_percent(change, digits=1)})"
+    if metric == "volume":
+        return f"{window}内 成交量 {_event_amount(value, signed=False)} ({_event_percent(change, digits=1)})"
+    if metric == "price":
+        return f"{window}内 价格 {_event_percent(value, digits=2)}"
+    if metric == "perp_flow":
+        return f"{window}内 主动资金 {_event_amount(value, signed=True)} ({_event_percent(change, digits=1)})"
+    if metric == "liquidation":
+        return f"{window}内 爆仓额 {_event_amount(value, signed=False)}"
+    return ""
 
 
 def _bucket_end(row: dict[str, Any]) -> int:
@@ -375,12 +424,12 @@ def _build_anomaly_events(
                 price_direction = "long" if (price_change or 0) >= 0 else "short"
                 candidates.append({
                     "event_type": "volume_spike",
-                    "label": "成交量爆发",
+                    "label": "Vol 爆发",
                     "metric": "volume",
                     "direction": price_direction,
                     "value": round(current_gross, 2),
                     "value_usd": round(current_gross, 2),
-                    "change_pct": round(volume_change, 4),
+                    "change_pct": round(price_change, 4) if price_change is not None else None,
                     "strength": abs(volume_change),
                     "absolute_value": abs(current_gross),
                     "threshold": ANOMALY_VOLUME_THRESHOLDS[window_key],
@@ -480,6 +529,7 @@ def _build_anomaly_events(
                 method="同时间窗、同事件类型按绝对金额或绝对变动进行全场排名",
             )
             event["id"] = f"{event['symbol']}:{event['window']}:{event['event_type']}:{anchor}"
+            event["detail"] = _event_detail(event)
             event.pop("strength", None)
             event.pop("absolute_value", None)
             event.pop("threshold", None)
@@ -513,7 +563,7 @@ def build_open_interest_anomaly_events(
     for rows in grouped.values():
         rows.sort(key=lambda item: int(item["observed_at"]))
 
-    window_specs = (("15m", 900, 1.0), ("1h", 3_600, 2.0))
+    window_specs = (("5m", 300, 0.7), ("15m", 900, 1.0), ("1h", 3_600, 2.0))
     candidates: list[dict[str, Any]] = []
     for symbol, rows in grouped.items():
         times = [int(row["observed_at"]) for row in rows]
@@ -525,6 +575,10 @@ def build_open_interest_anomaly_events(
         for window_key, window_sec, threshold in window_specs:
             baseline_index = bisect_right(times, latest_at - window_sec) - 1
             if baseline_index < 0:
+                continue
+            baseline_at = int(rows[baseline_index]["observed_at"])
+            baseline_tolerance = max(60, min(300, window_sec // 3))
+            if baseline_at < latest_at - window_sec - baseline_tolerance:
                 continue
             baseline_oi = float(rows[baseline_index]["oi_usd"])
             if baseline_oi <= 0:
@@ -540,6 +594,9 @@ def build_open_interest_anomaly_events(
                     continue
                 previous_index = bisect_right(times, point_at - window_sec, 0, index) - 1
                 if previous_index < 0:
+                    continue
+                previous_at = int(rows[previous_index]["observed_at"])
+                if previous_at < point_at - window_sec - baseline_tolerance:
                     continue
                 previous_oi = float(rows[previous_index]["oi_usd"])
                 if previous_oi > 0:
@@ -559,6 +616,7 @@ def build_open_interest_anomaly_events(
                 "value": round(change_usd, 2),
                 "value_usd": round(change_usd, 2),
                 "change_pct": round(change_pct, 4),
+                "detail": "",
                 "_strength": abs(change_pct),
                 "_absolute": abs(change_usd),
                 "rankings": {
@@ -591,6 +649,7 @@ def build_open_interest_anomaly_events(
                 absolute_samples,
                 method="同一封闭窗口按 OI 绝对变化金额进行全场排名",
             )
+            event["detail"] = _event_detail(event)
             event.pop("_strength", None)
             event.pop("_absolute", None)
     candidates.sort(

@@ -165,7 +165,7 @@ class WorkstationRadarApiTests(unittest.TestCase):
             },
         }
         source["data"]["anomaly_events"] = [
-            {"id": f"evt-{index}", "symbol": "BTCUSDT", "coin": "BTC", "label": "OI move", "window": "5m", "rankings": {"self": {"rank": 1}}}
+            {"id": f"evt-{index}", "symbol": "BTCUSDT", "coin": "BTC", "label": "OI move", "window": "5m", "detail": "5 分钟内 oi +55万 (+0.7%)", "rankings": {"self": {"rank": 1}}}
             for index in range(1, 106)
         ]
         with patch(
@@ -178,6 +178,7 @@ class WorkstationRadarApiTests(unittest.TestCase):
             briefs = public_workstation_radar_briefs_payload()
 
         self.assertEqual(anomalies["data"]["items"][0]["id"], "evt-1")
+        self.assertEqual(anomalies["data"]["items"][0]["detail"], "5 分钟内 oi +55万 (+0.7%)")
         self.assertEqual(len(anomalies["data"]["items"]), 100)
         self.assertEqual([item["coin"] for item in surge["data"]["items"]], ["BTC"])
         self.assertEqual([item["coin"] for item in rank["data"]["total"]], ["BTC", "ETH"])

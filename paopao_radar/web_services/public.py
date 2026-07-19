@@ -957,7 +957,7 @@ def _compact_realtime_event(source: Any) -> dict[str, Any]:
         (
             "id", "symbol", "coin", "observed_at", "window", "window_sec",
             "event_type", "label", "metric", "direction", "value", "value_usd",
-            "change_pct",
+            "change_pct", "detail",
         ),
     )
     rankings = _compact_realtime_rankings(source.get("rankings") if isinstance(source, dict) else None)

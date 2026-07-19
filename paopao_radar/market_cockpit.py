@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 import time
+from bisect import bisect_right
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -17,7 +18,7 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.1"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
 SNAPSHOT_COLUMNS = (
     "price",
@@ -463,9 +464,25 @@ class MarketSnapshotStore:
                 """,
                 (start_ts, int(now_ts)),
             ).fetchall()
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        grouped_by_time: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
         for row in rows:
-            grouped[str(row["symbol"])].append(self._row(row))
+            source = self._row(row)
+            symbol = str(source.get("symbol") or "")
+            observed_at = int(source.get("observed_at") or 0)
+            if not symbol or observed_at <= 0:
+                continue
+            point = grouped_by_time[symbol].setdefault(
+                observed_at,
+                {"symbol": symbol, "observed_at": observed_at, "coverage": {}},
+            )
+            point["coverage"].update(_coverage(source.get("coverage")))
+            for key, value in source.items():
+                if key not in {"id", "coverage", "created_at"} and value is not None:
+                    point[key] = value
+        grouped = {
+            symbol: [points[index] for index in sorted(points)]
+            for symbol, points in grouped_by_time.items()
+        }
 
         results: dict[int, tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]] = {}
         for safe_window in windows:
@@ -483,6 +500,12 @@ class MarketSnapshotStore:
                 ]
                 if candidates:
                     baselines[symbol] = candidates[-1]
+                    latest["_historical_strength"] = self._historical_strength(
+                        history,
+                        latest=latest,
+                        baseline=candidates[-1],
+                        window_sec=safe_window,
+                    )
                 latest_rows.append(latest)
 
             latest_rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
@@ -493,6 +516,54 @@ class MarketSnapshotStore:
                 {key: value for key, value in baselines.items() if key in allowed},
             )
         return results
+
+    @staticmethod
+    def _historical_strength(
+        history: list[dict[str, Any]],
+        *,
+        latest: dict[str, Any],
+        baseline: dict[str, Any],
+        window_sec: int,
+    ) -> dict[str, float]:
+        """Rank current movement against the same symbol's trailing history."""
+
+        if len(history) < 6:
+            return {}
+        times = [int(point.get("observed_at") or 0) for point in history]
+        samples: dict[str, list[float]] = defaultdict(list)
+        tolerance = max(300, min(900, int(window_sec) // 3))
+        for index, point in enumerate(history):
+            point_at = times[index]
+            previous_index = bisect_right(times, point_at - int(window_sec), 0, index) - 1
+            if previous_index >= 0 and times[previous_index] >= point_at - int(window_sec) - tolerance:
+                previous = history[previous_index]
+                for key, source_key in (("price_change_pct", "price"), ("oi_change_pct", "oi_usd")):
+                    change = _pct(point.get(source_key), previous.get(source_key))
+                    if change is not None:
+                        samples[key].append(abs(change))
+            for key in ("spot_flow_usd", "futures_flow_usd", "funding_pct"):
+                value = _number(point.get(key))
+                if value is not None:
+                    samples[key].append(abs(value))
+
+        current_values = {
+            "price_change_pct": _pct(latest.get("price"), baseline.get("price")),
+            "oi_change_pct": _pct(latest.get("oi_usd"), baseline.get("oi_usd")),
+            "spot_flow_usd": _number(latest.get("spot_flow_usd")),
+            "futures_flow_usd": _number(latest.get("futures_flow_usd")),
+            "funding_pct": _number(latest.get("funding_pct")),
+        }
+        result: dict[str, float] = {}
+        for key, current in current_values.items():
+            history_values = samples.get(key) or []
+            if current is None or len(history_values) < 5:
+                continue
+            magnitude = abs(current)
+            result[key] = round(
+                sum(1 for value in history_values if value <= magnitude) / len(history_values) * 100,
+                1,
+            )
+        return result
 
     def comparison(
         self,
@@ -1044,12 +1115,18 @@ def build_market_cockpit(
             "funding_pct": _number(row.get("funding_pct")),
             "coverage": _coverage(row.get("coverage")),
             "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality, "oi_change_usd": oi_amount_quality},
+            "_historical_strength": dict(row.get("_historical_strength") or {}),
             "status": status,
             "updated_at": _iso(observed_at),
             "age_sec": age_sec,
         })
     for key in ("price_change_pct", "volume_change_pct", "oi_change_pct", "spot_flow_usd", "futures_flow_usd", "funding_pct"):
         _rank_percentiles(assets, key)
+    for item in assets:
+        historical = item.pop("_historical_strength", {})
+        for key, value in historical.items():
+            if _number(value) is not None:
+                item.setdefault("strength", {})[key] = float(value)
 
     boards = [
         _two_sided_board(assets, key="price_change_pct", board_key="price", title="价格动量", positive_title="涨幅榜", negative_title="跌幅榜", unit="percent", limit=safe_limit),
@@ -1164,7 +1241,7 @@ def build_market_cockpit(
             "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化率反推金额变化，并标记质量。",
             "flow": "现货与合约资金为 Binance K 线主动买卖成交差（CVD）估算，不代表交易所充提净流入。",
             "directional_balance": "全场态势红绿比例为各指标正向贡献金额 / 正负绝对贡献金额之和。",
-            "strength": "同一指标当前横截面的绝对变化经验分位数。",
+            "strength": "优先按同币近 48h 同窗口历史样本计算异常强度分位；历史不足时回退当前横截面分位。",
         },
     }
 

@@ -199,11 +199,11 @@ function EventFeed({ events, onSelectSymbol, query }: { events: RealtimeAnomalyE
   return <div className="workstation-scroll min-h-0 flex-1 overflow-y-auto">
     {filtered.map((event, index) => {
       const positive = event.direction === "long";
-      const primaryValue = event.metric === "state" ? "" : event.value_usd !== null && event.value_usd !== undefined ? money(event.value_usd) : percent(event.value);
+      const primaryValue = event.detail || event.metric === "state" ? "" : event.value_usd !== null && event.value_usd !== undefined ? money(event.value_usd) : percent(event.value);
       const self = event.rankings?.self;
       const strength = event.rankings?.market_strength;
       const absolute = event.rankings?.market_absolute;
-      return <button className="radar-event-item relative block w-full border-b border-border-subtle px-2.5 py-[7px] text-left transition-colors hover:bg-primary-50/55 min-[1024px]:py-[5px]" data-symbol={event.symbol || ""} key={event.id || `${event.symbol}-${event.event_type}-${index}`} onClick={() => onSelectSymbol(String(event.symbol || event.coin || ""))} type="button">
+      return <button className="radar-event-item relative block w-full border-b border-border-subtle px-2.5 py-[7px] text-left transition-colors hover:bg-primary-50/55 min-[1024px]:py-[4px]" data-symbol={event.symbol || ""} key={event.id || `${event.symbol}-${event.event_type}-${index}`} onClick={() => onSelectSymbol(String(event.symbol || event.coin || ""))} type="button">
         <span className="absolute left-[5px] top-[6px] w-[28px] font-mono text-[8px] tabular-nums text-text-muted">{clock(event.observed_at)}</span>
         <span aria-hidden="true" className={`radar-event-dot ${positive ? "bg-good" : "bg-risk"}`}/>
         <div className="flex items-center gap-1.5 pl-6">
@@ -341,6 +341,7 @@ export default function RadarPage() {
   const [error, setError] = useState("");
   const [selectedCoin, setSelectedCoin] = useState("");
   const [selectedSignal, setSelectedSignal] = useState("");
+  const [extendedRadar, setExtendedRadar] = useState(false);
 
   const load = useCallback(async (bypassCache = false) => {
     setLoading(true);
@@ -374,6 +375,12 @@ export default function RadarPage() {
     syncFromLocation();
     window.addEventListener("popstate", syncFromLocation);
     return () => window.removeEventListener("popstate", syncFromLocation);
+  }, []);
+  useEffect(() => {
+    const syncExtendedView = () => setExtendedRadar(new URLSearchParams(window.location.search).get("view") === "extended");
+    syncExtendedView();
+    window.addEventListener("popstate", syncExtendedView);
+    return () => window.removeEventListener("popstate", syncExtendedView);
   }, []);
   useEffect(() => { if (paused || query) return; const timer = window.setInterval(() => void load(true), 30_000); return () => window.clearInterval(timer); }, [load, paused, query]);
 
@@ -422,7 +429,7 @@ export default function RadarPage() {
         <PanelTitle action={<div className="flex items-center gap-0.5">{WINDOWS.map((key) => <button aria-pressed={windowKey === key} className={`h-6 min-w-9 rounded-[3px] px-2 font-mono text-[8px] font-semibold max-[640px]:min-w-11 ${windowKey === key ? "bg-primary-50 text-primary-700 ring-1 ring-primary-500/30" : "text-text-muted hover:bg-surface-low hover:text-text-primary"}`} key={key} onClick={() => setWindowKey(key)} type="button">{key}</button>)}</div>} icon="◎" meta={`更新 ${clock(momentum[windowKey]?.generated_at)}`} tip={RADAR_TIPS.hotMoney} title="热钱观察榜单"/>
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-1.5 overflow-hidden p-1.5 min-[1024px]:gap-[11px] min-[1024px]:py-2 min-[1024px]:pl-1.5 min-[1024px]:pr-2.5 min-[1280px]:gap-[13px] min-[1280px]:px-1.5" data-testid="radar-momentum-matrix">{["price", "oi", "futures_flow", "spot_flow"].map((key) => <MomentumBoard board={boards.find((board) => board.key === key)} key={key} momentum={momentum} onSelectSymbol={setSelectedCoin} realtimeBySymbol={realtimeBySymbol}/>)}</div>
       </section>
-      <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5"><RuleBoard items={surge} mode="surge" onSelectSymbol={setSelectedCoin} subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" onSelectSymbol={setSelectedCoin} subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" onSelectSymbol={setSelectedCoin} subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div>
+      {extendedRadar ? <div className="mt-1.5 grid h-[220px] min-h-0 grid-cols-[.9fr_1.15fr_.95fr] gap-1.5" data-testid="radar-paoxx-extension"><RuleBoard items={surge} mode="surge" onSelectSymbol={setSelectedCoin} subtitle="1h 滚动 · 加速度排序 · TOP 5" title="Surge 飙升榜"/><RuleBoard items={total} mode="total" onSelectSymbol={setSelectedCoin} subtitle="24h 累计异动 · TOP 14" title="24h 异动总榜"/><RuleBoard items={ambush} mode="ambush" onSelectSymbol={setSelectedCoin} subtitle="持仓蓄积 / 价格平静 / 等待突破" title="埋伏池"/></div> : null}
     </main>
 
     <aside className="workstation-scroll min-h-0 overflow-y-auto" data-testid="radar-side-intelligence">

@@ -658,14 +658,14 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   const state = await mockPublicApi(page);
   await page.goto("/radar");
 
-  for (const heading of ["异动监控", "热钱观察榜单", "全场态势", "Surge 飙升榜", "24h 异动总榜", "埋伏池"]) {
+  for (const heading of ["异动监控", "热钱观察榜单", "全场态势"]) {
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+  }
+  for (const heading of ["Surge 飙升榜", "24h 异动总榜", "埋伏池"]) {
+    await expect(page.getByRole("heading", { name: heading })).toHaveCount(0);
   }
   await expect(page.getByLabel("异动监控说明")).toHaveAttribute("title", /自身.*全场强度.*全场量级/s);
   await expect(page.getByLabel("热钱观察榜单说明")).toHaveAttribute("title", /15m \/ 30m \/ 1h \/ 4h \/ 1d/);
-  await expect(page.getByText("+ 加速识别模型", { exact: true })).toHaveCount(1);
-  await expect(page.getByText("+ 算法标注引擎", { exact: true })).toHaveCount(1);
-  await expect(page.getByText("已 30m", { exact: true })).toHaveCount(1);
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
   await expect(page.getByTestId("radar-scan-orbit")).toBeVisible();
@@ -683,11 +683,20 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   await expect(page.getByTestId("radar-event-feed").getByText(/多头共振|空头共振/)).toHaveCount(0);
   expect(new Set(state.radarModuleRequests())).toEqual(new Set(["momentum-windows", "anomalies", "surge", "rank"]));
   expect(state.legacyRealtimeRequests()).toBe(0);
+
+  await page.goto("/radar?view=extended");
+  await expect(page.getByTestId("radar-paoxx-extension")).toBeVisible();
+  await expect(page.getByText("+ 加速识别模型", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("+ 算法标注引擎", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("已 30m", { exact: true })).toHaveCount(1);
+  for (const heading of ["Surge 飙升榜", "24h 异动总榜", "埋伏池"]) {
+    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+  }
 });
 
 test("radar preserves healthy modules when one independent request fails", async ({ page }) => {
   await mockPublicApi(page, { radarFailure: "surge" });
-  await page.goto("/radar");
+  await page.goto("/radar?view=extended");
 
   await expect(page.getByText(/1 个雷达模块暂时不可用/)).toBeVisible();
   await expect(page.getByText("+5.80%", { exact: true }).first()).toBeVisible();
@@ -731,6 +740,8 @@ test("desktop radar mirrors the target three-column scan hierarchy", async ({ pa
   expect(sideBox?.width).toBeCloseTo(230, 0);
   const sideRow = await page.getByTestId("radar-side-intelligence").locator("section").first().locator("button[data-symbol]").first().boundingBox();
   expect(sideRow?.height).toBeCloseTo(24, 0);
+  const eventRow = await page.getByTestId("radar-event-feed").locator("button[data-symbol]").first().boundingBox();
+  expect(eventRow?.height).toBeCloseTo(60, 0);
   expect(eventBox?.height).toBeCloseTo(656, 0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
 });
@@ -907,7 +918,7 @@ test("Paoxx AI reservation page does not call the former agent endpoint", async 
 test("320px radar keeps its primary workstation controls usable", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 780 });
   await mockPublicApi(page);
-  await page.goto("/radar");
+  await page.goto("/radar?view=extended");
 
   await expect(page.getByPlaceholder("搜索币种...")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
@@ -1119,7 +1130,7 @@ test("390px Paoxx AI reservation stays usable without horizontal overflow", asyn
 test("radar polling can be paused and manually refreshed", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
-  await page.goto("/radar");
+  await page.goto("/radar?view=extended");
 
   await expect(page.getByText("30s 增量", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "暂停" }).click();
