@@ -175,7 +175,7 @@ function MomentumList({ items, mode, positive, realtimeBySymbol, scaleMax, limit
   const maxMagnitude = Math.max(1, scaleMax || 0, ...visible.map(rankMagnitude));
   return <div>{visible.map((item, index) => {
     const barWidth = Math.min(70, 18 + rankMagnitude(item) / maxMagnitude * 66);
-    return <Link className="relative grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_29px_38px] items-center gap-[2px] overflow-hidden border-b border-border-subtle/75 px-1 text-[8px] last:border-0 hover:bg-primary-50/50 min-[1024px]:h-[clamp(19px,calc(2.7778dvh-1px),23px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+    return <Link className="relative grid h-[23px] grid-cols-[10px_14px_minmax(0,1fr)_35px_38px] items-center gap-[2px] overflow-hidden px-1 text-[8px] hover:bg-primary-50/50 min-[1024px]:h-[clamp(19px,calc(2.7778dvh-1px),23px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
       <i aria-hidden="true" className={`absolute bottom-[2px] right-[1px] top-[5px] rounded-[2px] not-italic min-[1280px]:bottom-[5px] ${positive ? "bg-[#daf1e7]" : "bg-[#fbe3e3]"}`} style={{ width: `${barWidth}%` }}/>
       <span className="relative z-[1] text-right font-mono text-[7px] text-text-muted">{index + 1}</span><span className="relative z-[1]"><CoinIcon coin={item.coin} size={13}/></span><span className="relative z-[1] truncate font-semibold text-text-primary">{item.coin || item.symbol}</span><span className="relative z-[1]"><RankBlocks fallbackPercentile={finite(item.strength_percentile)} item={realtimeBySymbol.get(String(item.symbol || ""))}/></span><span className={`relative z-[1] truncate text-right font-mono text-[7px] font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, mode)}</span>
     </Link>;
@@ -187,7 +187,7 @@ function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: C
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
     const active = Math.max(0, Math.min(5, Number(realtime?.resonance?.active_count || 0)));
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
-    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-b border-r border-border-subtle/70 px-1 hover:bg-primary-50/55 min-[1024px]:h-[clamp(33px,calc(4.8611dvh-2px),40px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-r border-border-subtle/70 px-1 hover:bg-primary-50/55 min-[1024px]:h-[clamp(33px,calc(4.8611dvh-2px),40px)]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
       <small className="row-span-2 text-right font-mono text-[6px] text-text-muted">{index + 1}</small>
       <CoinIcon coin={item.coin} size={13}/><span className="truncate text-[7px] font-semibold text-text-primary">{item.coin || item.symbol}</span>
       <span className="text-right font-mono text-[6px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
