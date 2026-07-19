@@ -234,6 +234,28 @@ body::before {
   display: inline-flex;
 }
 
+.radar-event-item::before {
+  background: rgb(var(--border-subtle));
+  bottom: 0;
+  content: "";
+  left: 16px;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.radar-event-dot {
+  border: 2px solid rgb(var(--surface-panel));
+  border-radius: 999px;
+  box-sizing: content-box;
+  height: 4px;
+  left: 13px;
+  position: absolute;
+  top: 22px;
+  width: 4px;
+  z-index: 1;
+}
+
 @media (min-width: 1280px) {
   .radar-event-coin > span {
     height: 16px !important;
@@ -258,6 +280,9 @@ body::before {
 }
 
 .mercu-radar-grid {
+  --border-subtle: 238 239 240;
+  --surface-low: 255 255 255;
+  background: linear-gradient(to bottom, rgb(238 241 248) 0 9px, rgb(238 241 246) 9px);
   display: grid;
   gap: 6px;
   grid-template-columns: minmax(198px, 22%) minmax(500px, 1fr) minmax(198px, 22%);
@@ -274,6 +299,7 @@ body::before {
 }
 
 .mercu-info-grid {
+  background: linear-gradient(to bottom, rgb(var(--surface-panel)) 0 59px, rgb(238 241 246) 59px);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -292,6 +318,10 @@ body::before {
   padding: 0;
 }
 
+.mercu-radar-grid > aside:last-child {
+  background: rgb(238 241 246);
+}
+
 @media (min-width: 1024px) {
   .mercu-radar-grid {
     gap: 11px;
@@ -299,9 +329,14 @@ body::before {
     padding: 9px 10px 10px;
   }
 
+  .mercu-radar-grid > main {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
   .mercu-info-grid {
-    gap: 18px;
-    padding: 5px 10px 10px;
+    gap: 19px;
+    padding: 7px 10px 10px;
   }
 
   .mercu-funds-overview-grid {
@@ -410,6 +445,10 @@ html[data-theme="light"] .workstation-scroll::-webkit-scrollbar-thumb {
 }
 
 @media (min-width: 1280px) {
+  .mercu-radar-grid {
+    background: rgb(238 241 248);
+  }
+
   .radar-shell-wide {
     margin-left: calc((100% - min(1440px, calc(100vw - 20px))) / 2);
     margin-top: -14px;

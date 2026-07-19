@@ -257,6 +257,22 @@ export type MarketOverview = {
     spot_net_flow_usd?: number | null;
     futures_net_flow_usd?: number | null;
     oi_net_change_usd?: number | null;
+    comparison?: {
+      previous?: {
+        advancing?: number | null;
+        declining?: number | null;
+        breadth_pct?: number | null;
+        spot_net_flow_usd?: number | null;
+        futures_net_flow_usd?: number | null;
+        oi_net_change_usd?: number | null;
+      };
+      delta?: {
+        breadth_pct?: number | null;
+        spot_net_flow_usd?: number | null;
+        futures_net_flow_usd?: number | null;
+        oi_net_change_usd?: number | null;
+      };
+    };
   };
 };
 

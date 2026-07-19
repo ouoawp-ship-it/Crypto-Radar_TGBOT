@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { mercuRadarFixture } from "./fixtures/mercu-radar";
 
 const signal = {
   id: 7,
@@ -73,7 +74,23 @@ const marketOverview = {
     total_quote_volume: 8_000_000_000,
     spot_net_flow_usd: 12_000_000,
     futures_net_flow_usd: 18_000_000,
-    oi_net_change_usd: 800_000
+    oi_net_change_usd: 800_000,
+    comparison: {
+      previous: {
+        advancing: 42,
+        declining: 38,
+        breadth_pct: 5,
+        spot_net_flow_usd: -800_000,
+        futures_net_flow_usd: 23_000_000,
+        oi_net_change_usd: 1_600_000
+      },
+      delta: {
+        breadth_pct: 15,
+        spot_net_flow_usd: 12_800_000,
+        futures_net_flow_usd: -5_000_000,
+        oi_net_change_usd: -800_000
+      }
+    }
   }
 };
 
@@ -213,7 +230,7 @@ const fundsAssetFixtures = Array.from({ length: 698 }, (_, index) => {
   const net = fundsNetFixtures[index] ?? Math.max(100, (22 - Math.min(index, 21)) * 10_000 + (index % 3) * 700);
   const inflow = net * (2.1 + (index % 20) * 0.03);
   const outflow = inflow - net;
-  return { symbol: `${coin}USDT`, coin, price: index === 0 ? 0.4356 : 0.08 + index * 0.127, price_change_pct: index % 3 === 0 ? 8.17 - index * 0.01 : -0.99 - index * 0.02, net_flow_usd: net, net_flow_change_pct: index % 4 === 0 ? null : -72 + (index % 20) * 3.7, inflow_usd: inflow, outflow_usd: outflow, volume_usd: Math.max(10_000, 745_000 - index * 800), volume_change_pct: index % 2 ? -14.03 - index * 0.01 : 38.19 - index * 0.01, oi_usd: Math.max(100_000, 820_000_000 - index * 1_000_000), oi_change_pct: 1.8 - index * 0.01, funding_pct: -0.02 + index * 0.0001, market_cap: Math.max(500_000, 102_000_000 - index * 100_000), updated_at: "2026-07-18T17:44:00Z", data_status: "ready", sector: { primary_sector_id: fundsSectorFixtures[index % fundsSectorFixtures.length][0], primary_sector_label: fundsSectorFixtures[index % fundsSectorFixtures.length][1], sector_ids: [fundsSectorFixtures[index % fundsSectorFixtures.length][0]] } };
+  return { symbol: `${coin}USDT`, coin, price: index === 0 ? 0.4356 : 0.08 + index * 0.127, price_change_pct: index % 3 === 0 ? 8.17 - index * 0.01 : -0.99 - index * 0.02, net_flow_usd: net, net_flow_change_pct: null, inflow_usd: inflow, outflow_usd: outflow, volume_usd: Math.max(10_000, 745_000 - index * 800), volume_change_pct: index % 2 ? -14.03 - index * 0.01 : 38.19 - index * 0.01, oi_usd: Math.max(100_000, 820_000_000 - index * 1_000_000), oi_change_pct: 1.8 - index * 0.01, funding_pct: -0.02 + index * 0.0001, market_cap: Math.max(500_000, 102_000_000 - index * 100_000), updated_at: "2026-07-18T17:44:00Z", data_status: "ready", sector: { primary_sector_id: fundsSectorFixtures[index % fundsSectorFixtures.length][0], primary_sector_label: fundsSectorFixtures[index % fundsSectorFixtures.length][1], sector_ids: [fundsSectorFixtures[index % fundsSectorFixtures.length][0]] } };
 });
 const fundsAssets = {
   schema_version: "2026-07-18",
@@ -394,7 +411,7 @@ const coinSeriesPoints = Array.from({ length: 8 }, (_, index) => ({
   funding_pct: -0.02
 }));
 
-async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; healthStatus?: "ok" | "degraded" } = {}) {
+async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; healthStatus?: "ok" | "degraded"; radarVisual?: "1440x900" | "1920x1080" } = {}) {
   let signalRequests = 0;
   let infoRequests = 0;
   let lastInfoSearch = "";
@@ -403,6 +420,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
   let signalsFail = false;
   let agentsFail = false;
   let agentRequests = 0;
+  const visualRadar = options.radarVisual ? mercuRadarFixture(options.radarVisual) : null;
   await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort("failed"));
   await page.route("**/public-api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -422,20 +440,20 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
       return route.fulfill({ json: { ok: true, data: { items, count: items.length } } });
     }
     if (url.pathname === "/public-api/signals/stats") return route.fulfill({ json: { ok: true, data: { total: 1, sent: 1, blocked: 0, failed: 0, skipped: 0 } } });
-    if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: marketOverview } });
-    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: radarBoards } });
+    if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: visualRadar?.overview || marketOverview } });
+    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: visualRadar?.boards || radarBoards } });
     if (url.pathname === "/public-api/workstation/radar/momentum-windows") {
       return route.fulfill({
         json: {
           ok: true,
           data: {
-            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...radarBoards, window }]))
+            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...(visualRadar?.boards || radarBoards), window }]))
           }
         }
       });
     }
-    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: radarBoards } });
-    if (url.pathname === "/public-api/radar/realtime-intelligence") return route.fulfill({ json: { ok: true, data: realtimeIntelligence } });
+    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: visualRadar?.boards || radarBoards } });
+    if (url.pathname === "/public-api/radar/realtime-intelligence") return route.fulfill({ json: { ok: true, data: visualRadar?.realtime || realtimeIntelligence } });
     if (url.pathname === "/public-api/workstation/funds/open-interest") return route.fulfill({ json: { ok: true, data: { ...crossExchangeOi, symbol: url.searchParams.get("symbol") || "BTCUSDT" } } });
     if (url.pathname === "/public-api/funds/sectors") return route.fulfill({ json: { ok: true, data: fundsSectors } });
     if (url.pathname === "/public-api/funds/assets") {
@@ -515,6 +533,11 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   await expect(page.getByLabel(/五窗口共振/).first()).toBeVisible();
   await expect(page.getByText("强度榜").first()).toBeVisible();
   await expect(page.getByText(/96%/).first()).toBeVisible();
+  await expect(page.getByText(/较上一周期 \+\$23\.0M → \+\$18\.0M/)).toBeVisible();
+  await expect(page.getByText(/环比转正 \$12\.8M/)).toBeVisible();
+  await expect(page.getByTestId("radar-side-intelligence").getByText(/3榜/).first()).toBeVisible();
+  await expect(page.getByTestId("radar-side-intelligence").getByText(/4榜|5榜/)).toHaveCount(0);
+  await expect(page.getByTestId("radar-event-feed").getByText(/多头共振|空头共振/)).toHaveCount(0);
 });
 
 test("desktop radar mirrors the target three-column scan hierarchy", async ({ page }) => {
@@ -528,8 +551,11 @@ test("desktop radar mirrors the target three-column scan hierarchy", async ({ pa
   expect(eventBox?.x).toBeCloseTo(10, 0);
   expect(eventBox?.y).toBeCloseTo(54, 0);
   expect(eventBox?.width).toBeCloseTo(230, 0);
+  expect(matrixBox?.x).toBeCloseTo(251, 0);
   expect(matrixBox?.width).toBeCloseTo(650, 0);
   expect(sideBox?.width).toBeCloseTo(230, 0);
+  const sideRow = await page.getByTestId("radar-side-intelligence").locator("section").first().locator("a").first().boundingBox();
+  expect(sideRow?.height).toBeCloseTo(24, 0);
   expect(eventBox?.height).toBeCloseTo(656, 0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
 });
@@ -554,9 +580,14 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   await page.goto("/info");
   const infoBanner = await page.getByRole("heading", { name: "AI 信息蒸馏" }).locator("xpath=ancestor::section").boundingBox();
   const infoColumns = await page.getByTestId("info-four-columns").boundingBox();
-  expect(infoBanner?.y).toBeCloseTo(50, 0);
-  expect(infoBanner?.height).toBeCloseTo(32, 0);
-  expect(infoColumns?.y).toBeCloseTo(100, 0);
+  expect(infoBanner?.y).toBeCloseTo(52, 0);
+  expect(infoBanner?.height).toBeCloseTo(30, 0);
+  expect(infoColumns?.y).toBeCloseTo(101, 0);
+  const infoDigestIcon = await page.getByTestId("info-digest-icon").boundingBox();
+  const infoDigestButton = await page.getByRole("button", { name: /4h AI 综合分析/ }).boundingBox();
+  expect(infoDigestIcon?.x).toBeCloseTo(15, 0);
+  expect(infoDigestIcon?.width).toBeCloseTo(30, 0);
+  expect(infoDigestButton?.width).toBeGreaterThanOrEqual(125);
 
   await page.goto("/funds");
   const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
@@ -567,8 +598,10 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   expect(sector?.width).toBeCloseTo(290, 0);
   expect(assets?.x).toBeCloseTo(318, 0);
   expect(assets?.width).toBeCloseTo(1202, 0);
-  expect(assetSearch?.x).toBeCloseTo(1231, 0);
-  expect(assetSearch?.width).toBeCloseTo(280, 0);
+  expect(assetSearch?.x).toBeCloseTo(1259, 0);
+  expect(assetSearch?.width).toBeCloseTo(276, 0);
+  const wideFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
+  expect(wideFundColumns).toEqual([50, 158, 132]);
 });
 
 test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page }) => {
@@ -621,6 +654,8 @@ test("925x732 logged-in Mercu reference geometry remains aligned", async ({ page
   expect(assetSearch?.width).toBeCloseTo(255, 0);
   expect(assetFooter?.y).toBeCloseTo(697, 0);
   expect(assetFooter?.height).toBeCloseTo(28, 0);
+  const compactFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
+  expect(compactFundColumns).toEqual([40, 150, 120]);
 });
 
 test("funds table sorting and browser-local favorites are functional", async ({ page }) => {
@@ -646,7 +681,8 @@ for (const viewport of [
 ]) {
   test(`workstation visual fixtures remain stable at ${viewport.pixels.width}x${viewport.pixels.height}`, async ({ page }) => {
     await page.setViewportSize(viewport.css);
-    await mockPublicApi(page);
+    await page.clock.setFixedTime(new Date(viewport.pixels.width === 1440 ? "2030-07-18T23:00:07Z" : "2030-07-18T23:04:13Z"));
+    await mockPublicApi(page, { radarVisual: viewport.pixels.width === 1440 ? "1440x900" : "1920x1080" });
     for (const route of ["radar", "info", "funds"] as const) {
       await page.goto(`/${route}`);
       await expect(page.getByTestId(`${route}-workstation`)).toBeVisible();
@@ -876,6 +912,7 @@ test("390px Paoxx AI reservation stays usable without horizontal overflow", asyn
 });
 
 test("radar polling can be paused and manually refreshed", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
