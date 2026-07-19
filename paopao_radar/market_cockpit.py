@@ -18,7 +18,7 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.2"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.3"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
 SNAPSHOT_COLUMNS = (
     "price",
@@ -32,6 +32,14 @@ SNAPSHOT_COLUMNS = (
     "futures_outflow_usd",
     "futures_flow_usd",
     "funding_pct",
+)
+FLOW_COLUMNS = (
+    "spot_inflow_usd",
+    "spot_outflow_usd",
+    "spot_flow_usd",
+    "futures_inflow_usd",
+    "futures_outflow_usd",
+    "futures_flow_usd",
 )
 
 
@@ -298,6 +306,53 @@ class MarketSnapshotStore:
                 row = conn.execute("SELECT MAX(observed_at) AS value FROM market_snapshots").fetchone()
         return int(row["value"] or 0) if row else 0
 
+    @staticmethod
+    def _window_flow(
+        rows: list[dict[str, Any]],
+        *,
+        end_ts: int,
+        window_sec: int,
+    ) -> tuple[dict[str, float | None], str]:
+        """Return one non-overlapping flow fact for the requested closed window."""
+
+        start_ts = int(end_ts) - int(window_sec)
+        expected = max(1, int(window_sec) // 900)
+        canonical = [
+            row for row in rows
+            if str(row.get("source") or "") == "market_flow_15m"
+            and int(row.get("window_sec") or 0) == 900
+            and start_ts < int(row.get("observed_at") or 0) <= int(end_ts)
+        ]
+        canonical.sort(key=lambda row: int(row.get("observed_at") or 0))
+        if len(canonical) >= expected:
+            selected = canonical[-expected:]
+            values: dict[str, float | None] = {}
+            for key in FLOW_COLUMNS:
+                samples = [_number(row.get(key)) for row in selected]
+                values[key] = sum(float(value) for value in samples if value is not None) if all(value is not None for value in samples) else None
+            return values, "aggregated_15m"
+
+        exact = [
+            row for row in rows
+            if int(row.get("observed_at") or 0) <= int(end_ts)
+            and int(row.get("window_sec") or 0) == int(window_sec)
+            and any(_number(row.get(key)) is not None for key in FLOW_COLUMNS)
+        ]
+        if exact:
+            row = max(exact, key=lambda item: int(item.get("observed_at") or 0))
+            return {key: _number(row.get(key)) for key in FLOW_COLUMNS}, "exact_window"
+
+        legacy = [
+            row for row in rows
+            if int(row.get("observed_at") or 0) <= int(end_ts)
+            and int(row.get("window_sec") or 0) == 0
+            and any(_number(row.get(key)) is not None for key in FLOW_COLUMNS)
+        ]
+        if legacy:
+            row = max(legacy, key=lambda item: int(item.get("observed_at") or 0))
+            return {key: _number(row.get(key)) for key in FLOW_COLUMNS}, "legacy_unscoped"
+        return {key: None for key in FLOW_COLUMNS}, "insufficient"
+
     def recent_metric_rows(
         self,
         metric: str,
@@ -494,12 +549,14 @@ class MarketSnapshotStore:
                 (start_ts, int(now_ts), *selected_symbols, row_limit),
             ).fetchall()
         grouped_by_time: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+        source_rows_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             source = self._row(row)
             symbol = str(source.get("symbol") or "")
             observed_at = int(source.get("observed_at") or 0)
             if not symbol or observed_at <= 0:
                 continue
+            source_rows_by_symbol[symbol].append(source)
             point = grouped_by_time[symbol].setdefault(
                 observed_at,
                 {"symbol": symbol, "observed_at": observed_at, "coverage": {}},
@@ -521,6 +578,13 @@ class MarketSnapshotStore:
                 latest = self._merge_latest(history, now_ts=int(now_ts), max_age_sec=max(2 * safe_window, 7200))
                 if not latest:
                     continue
+                current_flow, current_flow_quality = self._window_flow(
+                    source_rows_by_symbol.get(symbol, []),
+                    end_ts=int(latest["observed_at"]),
+                    window_sec=safe_window,
+                )
+                latest.update(current_flow)
+                latest["_flow_window_quality"] = current_flow_quality
                 target = int(latest["observed_at"]) - safe_window
                 candidates = [
                     row
@@ -529,6 +593,13 @@ class MarketSnapshotStore:
                 ]
                 if candidates:
                     baselines[symbol] = candidates[-1]
+                    previous_flow, previous_flow_quality = self._window_flow(
+                        source_rows_by_symbol.get(symbol, []),
+                        end_ts=target,
+                        window_sec=safe_window,
+                    )
+                    baselines[symbol].update(previous_flow)
+                    baselines[symbol]["_flow_window_quality"] = previous_flow_quality
                     latest["_historical_strength"] = self._historical_strength(
                         history,
                         latest=latest,
@@ -1155,7 +1226,12 @@ def build_market_cockpit(
             "futures_volume_change_pct": _pct(futures_volume, baseline_futures_volume),
             "funding_pct": _number(row.get("funding_pct")),
             "coverage": _coverage(row.get("coverage")),
-            "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality, "oi_change_usd": oi_amount_quality},
+            "quality": {
+                "price_change_pct": price_quality,
+                "oi_change_pct": oi_quality,
+                "oi_change_usd": oi_amount_quality,
+                "flow_window": str(row.get("_flow_window_quality") or "direct"),
+            },
             "_historical_strength": dict(row.get("_historical_strength") or {}),
             "status": status,
             "updated_at": _iso(observed_at),
@@ -1280,7 +1356,7 @@ def build_market_cockpit(
         "methodology": {
             "price": "优先使用同币窗口首尾快照计算；历史不足时回退交易所 24h 涨跌并标记质量。",
             "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化率反推金额变化，并标记质量。",
-            "flow": "现货与合约资金为 Binance K 线主动买卖成交差（CVD）估算，不代表交易所充提净流入。",
+            "flow": "现货与合约资金优先由封闭 15m Binance K 线主动买卖事实按所选窗口求和；历史库只有同窗口事实时使用同窗口值，不拿短窗口冒充长窗口。CVD 不代表交易所充提净流入。",
             "directional_balance": "全场态势红绿比例为各指标正向贡献金额 / 正负绝对贡献金额之和。",
             "strength": "优先按同币近 48h 同窗口历史样本计算异常强度分位；历史不足时回退当前横截面分位。",
         },

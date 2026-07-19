@@ -13,7 +13,7 @@ from .config import Settings
 from .market_cockpit import MARKET_COCKPIT_SCHEMA_VERSION, load_market_cockpit, normalize_window
 
 
-FUNDS_SCHEMA_VERSION = "2026-07-19.2"
+FUNDS_SCHEMA_VERSION = "2026-07-19.3"
 MARKET_TYPES = ("spot", "futures")
 ASSET_SORT_KEYS = {
     "symbol",

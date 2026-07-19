@@ -183,7 +183,7 @@ class NewsIntelligenceTest(unittest.TestCase):
                 "symbol": "BTCUSDT",
                 "observed_at": now,
                 "source": "test_flow_share",
-                "window_sec": 900,
+                "window_sec": 86_400,
                 "price": 100.0,
                 "price_change_pct": 1.0,
                 "change_window_sec": 86_400,

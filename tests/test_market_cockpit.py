@@ -169,6 +169,35 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(cockpit["assets"][0]["spot_outflow_usd"], 0)
         self.assertEqual(cockpit["assets"][0]["futures_outflow_usd"], 0)
 
+    def test_comparison_aggregates_canonical_flow_facts_per_requested_window(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = MarketSnapshotStore(Path(tmp) / "market.db")
+            store.append_many([{
+                "symbol": "BTCUSDT",
+                "observed_at": observed_at,
+                "source": "market_flow_15m",
+                "window_sec": 900,
+                "price": 100 + index,
+                "quote_volume": 1_000_000,
+                "spot_inflow_usd": 60,
+                "spot_outflow_usd": 50,
+                "spot_flow_usd": 10,
+                "futures_inflow_usd": 100,
+                "futures_outflow_usd": 80,
+                "futures_flow_usd": 20,
+            } for index, observed_at in enumerate(range(900, 7_201, 900))])
+
+            windows = store.comparisons(now_ts=7_200, window_secs=(900, 1_800, 3_600))
+
+        for window_sec, multiplier in ((900, 1), (1_800, 2), (3_600, 4)):
+            latest, baselines = windows[window_sec]
+            self.assertEqual(latest[0]["spot_flow_usd"], 10 * multiplier)
+            self.assertEqual(latest[0]["spot_inflow_usd"], 60 * multiplier)
+            self.assertEqual(latest[0]["futures_flow_usd"], 20 * multiplier)
+            self.assertEqual(latest[0]["_flow_window_quality"], "aggregated_15m")
+            self.assertEqual(baselines["BTCUSDT"]["spot_flow_usd"], 10 * multiplier)
+            self.assertEqual(baselines["BTCUSDT"]["_flow_window_quality"], "aggregated_15m")
+
     def test_oi_amount_and_strength_rankings_use_distinct_metrics(self) -> None:
         baselines = {
             "BTCUSDT": {"symbol": "BTCUSDT", "price": 100, "oi_usd": 100_000_000},
