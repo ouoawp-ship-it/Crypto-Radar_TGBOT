@@ -95,17 +95,18 @@ function AssetList({ assets, selected, onSelect }: { assets: FundsAsset[]; selec
 
 function SectorBubbleChart({ payload }: { payload: FundsSectorsPayload }) {
   const sectors = (payload.sectors || []).filter((item) => finite(item.net_flow_usd) !== null).sort((a, b) => Math.abs(Number(b.net_flow_usd || 0)) - Math.abs(Number(a.net_flow_usd || 0)));
-  const max = Math.max(1, ...sectors.map((item) => Math.abs(Number(item.net_flow_usd || 0))));
-  const positive = sectors.filter((item) => Number(item.net_flow_usd || 0) >= 0).slice(0, 12);
-  const negative = sectors.filter((item) => Number(item.net_flow_usd || 0) < 0).slice(0, 10);
-  const compactPositivePositions = [[50, 10], [73, 23], [36, 23], [56, 23], [48, 31], [18, 30], [68, 40], [65, 31], [82, 32], [38, 40], [53, 40], [26, 40]];
-  const widePositivePositions = [[50, 13], [64, 24], [36, 24], [50, 33], [22, 33], [78, 34], [62, 33], [84, 43], [36, 43], [52, 43], [20, 43], [70, 43]];
-  const compactNegativePositions = [[55, 73], [48, 65], [40, 72], [39, 56], [55, 56], [69, 56], [38, 63], [69, 63], [27, 65], [23, 56]];
-  const wideNegativePositions = [[20, 58], [39, 58], [61, 58], [80, 58], [18, 67], [38, 67], [61, 67], [81, 67], [39, 77], [62, 77]];
+  const positive = sectors.filter((item) => Number(item.net_flow_usd || 0) >= 0).slice(0, 13);
+  const negative = sectors.filter((item) => Number(item.net_flow_usd || 0) < 0).slice(0, 11);
+  const positiveMax = Math.max(1, ...positive.map((item) => Math.abs(Number(item.net_flow_usd || 0))));
+  const negativeMax = Math.max(1, ...negative.map((item) => Math.abs(Number(item.net_flow_usd || 0))));
+  const compactPositivePositions = [[50, 10], [72, 23], [36, 23], [50, 23], [18, 31], [70, 40], [64, 31], [82, 32], [38, 40], [52, 40], [26, 40], [48, 31], [41, 46]];
+  const widePositivePositions = [[50, 13], [64, 24], [36, 24], [84, 34], [20, 34], [64, 34], [50, 33], [38, 37], [52, 43], [20, 43], [36, 43], [70, 43], [84, 43]];
+  const compactNegativePositions = [[62, 77], [40, 77], [23, 65], [55, 65], [38, 63], [69, 63], [23, 56], [69, 56], [40, 56], [55, 56], [82, 56]];
+  const wideNegativePositions = [[61, 58], [55, 77], [81, 67], [39, 77], [18, 67], [50, 63], [61, 67], [39, 58], [20, 58], [38, 67], [81, 58]];
   const bubble = (item: (typeof sectors)[number], index: number, top: boolean) => {
-    const ratio = Math.abs(Number(item.net_flow_usd || 0)) / max;
-    const compactSize = 32 + Math.sqrt(ratio) * 36;
-    const wideSize = 30 + Math.pow(ratio, 0.34) * 52;
+    const ratio = Math.abs(Number(item.net_flow_usd || 0)) / (top ? positiveMax : negativeMax);
+    const compactSize = 32 + Math.sqrt(ratio) * (top ? 36 : 24);
+    const wideSize = 30 + Math.pow(ratio, 0.34) * (top ? 52 : 40);
     const compactPositions = top ? compactPositivePositions : compactNegativePositions;
     const widePositions = top ? widePositivePositions : wideNegativePositions;
     const [compactLeft, compactTop] = compactPositions[index % compactPositions.length];

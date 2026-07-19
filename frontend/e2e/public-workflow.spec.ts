@@ -201,12 +201,12 @@ const crossExchangeOi = {
 };
 
 const fundsSectorFixtures = [
-  ["layer1", "L1", 1_474_700], ["privacy", "隐私", 328_500], ["staking", "质押", 325_700], ["exchange", "平台币", 302_800],
-  ["layer2", "L2", 294_700], ["gaming", "GameFi", 214_500], ["depin", "DePIN", 122_000],
-  ["identity", "身份", 122_400], ["ai", "AI", 110_400], ["metals", "贵金属", 99_600], ["modular", "模块化", 88_200], ["payments", "支付", 48_800],
-  ["rwa", "RWA", -498_500], ["meme", "Meme", -193_300], ["oracle", "预言机", -187_300], ["data", "数据", -147_000],
-  ["desci", "DeSci", -128_500], ["btc", "BTC生态", -116_200], ["social", "社交", -98_600],
-  ["nft", "NFT", -86_100], ["defi", "DeFi", -72_300], ["stocks", "股票", -14_700]
+  ["layer1", "L1", 1_474_700], ["privacy", "隐私", 462_400], ["staking", "质押", 325_700], ["exchange", "平台币", 302_800],
+  ["gaming", "GameFi", 214_500], ["identity", "身份", 122_400], ["depin", "DePIN", 122_000], ["ai", "AI", 110_400],
+  ["metals", "贵金属", 99_600], ["modular", "模块化", 88_200], ["payments", "支付", 48_800], ["layer2", "L2", 44_900], ["cross_chain", "跨链", 13_200],
+  ["rwa", "RWA", -221_700], ["oracle", "预言机", -187_300], ["defi", "DeFi", -92_700], ["meme", "Meme", -72_300],
+  ["social", "社交", -62_800], ["nft", "NFT", -15_200], ["stocks", "股票", -14_700], ["btc", "BTC生态", -3_826.2],
+  ["data", "数据", -1_300], ["desci", "DeSci", -1_273.8]
 ] as const;
 
 const fundsSectors = {
@@ -301,7 +301,7 @@ const wideSectorRows = [
   ["payments", "支付", 29_900], ["metals", "贵金属", 26_500], ["defi_inflow", "DeFi", 4_721.6],
   ["data", "数据", -324_200], ["rwa", "RWA", -298_600], ["oracle", "预言机", -207_500],
   ["meme", "Meme", -193_300], ["ai", "AI", -86_900], ["desci", "DeSci", -86_510],
-  ["social", "社交", -63_300], ["btc", "BTC生态", -61_000], ["stocks", "股票", -23_400], ["nft", "NFT", -19_500],
+  ["social", "社交", -63_300], ["btc", "BTC生态", -61_000], ["stocks", "股票", -23_400], ["nft", "NFT", -19_500], ["cross_chain", "跨链", -577.08],
 ] as const;
 
 const wideFundsSectors = {
