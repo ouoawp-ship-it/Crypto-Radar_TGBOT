@@ -234,6 +234,28 @@ body::before {
   display: inline-flex;
 }
 
+.radar-event-item::before {
+  background: rgb(var(--border-subtle));
+  bottom: 0;
+  content: "";
+  left: 16px;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.radar-event-dot {
+  border: 2px solid rgb(var(--surface-panel));
+  border-radius: 999px;
+  box-sizing: content-box;
+  height: 4px;
+  left: 13px;
+  position: absolute;
+  top: 22px;
+  width: 4px;
+  z-index: 1;
+}
+
 @media (min-width: 1280px) {
   .radar-event-coin > span {
     height: 16px !important;
@@ -274,6 +296,7 @@ body::before {
 }
 
 .mercu-info-grid {
+  background: linear-gradient(to bottom, rgb(var(--surface-panel)) 0 59px, rgb(238 241 246) 59px);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -292,11 +315,20 @@ body::before {
   padding: 0;
 }
 
+.mercu-radar-grid > aside:last-child {
+  background: rgb(238 241 246);
+}
+
 @media (min-width: 1024px) {
   .mercu-radar-grid {
     gap: 11px;
     grid-template-columns: 230px minmax(500px, 1fr) 230px;
     padding: 9px 10px 10px;
+  }
+
+  .mercu-radar-grid > main {
+    margin-left: 6px;
+    margin-right: -3px;
   }
 
   .mercu-info-grid {

@@ -149,14 +149,15 @@ function EventFeed({ events, query }: { events: RealtimeAnomalyEvent[]; query: s
       const self = event.rankings?.self;
       const strength = event.rankings?.market_strength;
       const absolute = event.rankings?.market_absolute;
-      return <Link className="block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55 min-[1024px]:py-[2px] min-[1280px]:py-[1px]" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
-        <div className="flex items-center gap-1.5">
-          <span className="w-[33px] shrink-0 font-mono text-[8px] tabular-nums text-text-muted">{clock(event.observed_at)}</span>
+      return <Link className="radar-event-item relative block border-b border-border-subtle px-2.5 py-[7px] transition-colors hover:bg-primary-50/55 min-[1024px]:py-[3px]" href={`/funds?symbol=${event.symbol || ""}`} key={event.id || `${event.symbol}-${event.event_type}-${index}`}>
+        <span className="absolute left-[5px] top-[6px] w-[28px] font-mono text-[8px] tabular-nums text-text-muted">{clock(event.observed_at)}</span>
+        <span aria-hidden="true" className={`radar-event-dot ${positive ? "bg-good" : "bg-risk"}`}/>
+        <div className="flex items-center gap-1.5 pl-6">
           <span className="radar-event-coin"><CoinIcon coin={event.coin}/></span><span className="min-w-0 truncate text-[10px] font-bold text-text-primary">${event.coin || event.symbol}</span>
           <span className={`min-w-0 flex-1 truncate text-[9px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{event.label || "异动"}</span>
         </div>
-        <div className="mt-1 flex items-baseline justify-between gap-2 pl-[57px] text-[9px] min-[1280px]:mt-0.5"><span className="truncate text-text-muted">{event.detail || `${event.window || "5m"} 内 · ${event.metric === "volume" ? "成交量" : event.metric === "price" ? "价格" : event.metric === "liquidation" ? "爆仓额" : "主动资金"}`}</span>{primaryValue ? <span className={`shrink-0 font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{primaryValue} {event.change_pct !== null && event.change_pct !== undefined && event.value_usd !== null && event.value_usd !== undefined ? `(${percent(event.change_pct, 1)})` : ""}</span> : null}</div>
-        <div className="mt-1 flex gap-1 pl-[57px] min-[1280px]:mt-0.5"><RankBadge label="自身" rank={self?.rank} title={self?.method}/><RankBadge label="全场强度" rank={strength?.rank} title={strength?.method}/><RankBadge label="全场量级" rank={absolute?.rank} title={absolute?.method}/></div>
+        <div className="mt-1 flex items-baseline justify-between gap-2 pl-6 text-[9px]"><span className="truncate text-text-muted">{event.detail || `${event.window || "5m"} 内 · ${event.metric === "volume" ? "成交量" : event.metric === "price" ? "价格" : event.metric === "liquidation" ? "爆仓额" : "主动资金"}`}</span>{primaryValue ? <span className={`shrink-0 font-mono font-semibold tabular-nums ${positive ? "text-good" : "text-risk"}`}>{primaryValue} {event.change_pct !== null && event.change_pct !== undefined && event.value_usd !== null && event.value_usd !== undefined ? `(${percent(event.change_pct, 1)})` : ""}</span> : null}</div>
+        <div className="mt-1 flex gap-1 pl-6"><RankBadge label="自身" rank={self?.rank} title={self?.method}/><RankBadge label="全场强度" rank={strength?.rank} title={strength?.method}/><RankBadge label="全场量级" rank={absolute?.rank} title={absolute?.method}/></div>
       </Link>;
     })}
     {!filtered.length ? <div className="grid h-28 place-items-center text-[10px] text-text-muted">{query ? `没有找到 ${query} 的异动` : "暂无异动事件 · 正在扫描"}</div> : null}
@@ -182,10 +183,12 @@ function MomentumStrengthGrid({ items, positive, realtimeBySymbol }: { items?: C
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
     const active = Math.max(0, Math.min(5, Number(realtime?.resonance?.active_count || 0)));
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
-    return <Link className="flex h-[34px] min-w-0 flex-col items-center justify-center border-b border-r border-border-subtle/70 px-0.5 hover:bg-primary-50/55 min-[1024px]:h-[42px] min-[1280px]:h-[40px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
-      <span className="flex items-center gap-0.5"><small className="font-mono text-[6px] text-text-muted">{index + 1}</small><CoinIcon coin={item.coin} size={13}/></span>
-      <span className="mt-0.5 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? positive ? "border-primary-500/55 bg-primary-500/70" : "border-risk/50 bg-risk/65" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
-      <span className={`mt-0.5 font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{score === null ? "—" : `${Math.round(score)}%`}</span>
+    return <Link className="grid h-[34px] min-w-0 grid-cols-[10px_14px_minmax(0,1fr)_34px] grid-rows-2 items-center gap-x-0.5 border-b border-r border-border-subtle/70 px-1 hover:bg-primary-50/55 min-[1024px]:h-[42px] min-[1280px]:h-[40px]" href={`/funds?symbol=${item.symbol || ""}`} key={`${item.symbol}-${index}`}>
+      <small className="row-span-2 text-right font-mono text-[6px] text-text-muted">{index + 1}</small>
+      <CoinIcon coin={item.coin} size={13}/><span className="truncate text-[7px] font-semibold text-text-primary">{item.coin || item.symbol}</span>
+      <span className="text-right font-mono text-[6px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
+      <span className="col-span-2 col-start-2 inline-flex gap-px" aria-label={`五窗口共振 ${active}/5`}>{WINDOWS.map((key, block) => <i className={`h-[4px] w-[4px] rounded-[.5px] border ${block < active ? positive ? "border-primary-500/55 bg-primary-500/70" : "border-risk/50 bg-risk/65" : "border-border-subtle bg-surface-container-low"}`} key={key}/>)}</span>
+      <span className={`truncate text-right font-mono text-[6px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount")}</span>
     </Link>;
   })}{!(items || []).length ? <div className="grid h-[136px] place-items-center text-[8px] text-text-muted sm:col-span-2">⏳ 暂无</div> : null}</div>;
 }
@@ -304,7 +307,7 @@ export default function RadarPage() {
   return <><div aria-busy={loading} className="workstation-page mercu-radar-grid" data-testid="radar-workstation">
     <aside className="workstation-panel flex min-h-0 flex-col" data-testid="radar-event-feed">
       <PanelTitle action={<span className="inline-flex items-center gap-1 text-[8px] font-semibold text-good"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-good"/>LIVE</span>} meta={clock(realtime.observed_at || realtime.generated_at)} title="异动监控"/>
-      <div className="grid h-[34px] grid-cols-[1fr_86px] items-center gap-2 border-b border-border-subtle bg-primary-50 px-2.5 min-[1280px]:h-[39px]"><span className="truncate text-[10px] font-semibold text-primary-700">✦ AI 全市场扫描</span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
+      <div className="grid h-[39px] grid-cols-[minmax(0,1fr)_104px] items-center gap-1.5 border-b border-border-subtle bg-primary-50 px-2.5"><span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-primary-700"><i aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-good/10 bg-good/5 text-[9px] not-italic text-good">◔</i><span className="truncate">AI 全市场扫描</span></span><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-text-muted">⌕</span><input aria-label="搜索币种" className="h-6 w-full rounded-[3px] border border-border-subtle bg-surface-panel pl-5 pr-1 text-[8px] uppercase text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500" onChange={(event) => setQuery(event.target.value.trim().toUpperCase())} placeholder="搜索币种..." value={query}/></div></div>
       {error ? <div className="border-b border-risk/20 bg-risk/5 px-2 py-1 text-[8px] text-risk">{error} · 保留上次数据</div> : null}
       <EventFeed events={events} query={query}/>
       <div className="flex h-7 shrink-0 items-center border-t border-border-subtle px-2 text-[8px] text-text-muted"><span>{events.length} 条异动 · {paused ? "已暂停" : "15s 增量"}</span><button className="ml-auto font-semibold text-text-secondary" onClick={() => setPaused((value) => !value)} type="button">{paused ? "继续" : "暂停"}</button><button className="ml-2 font-semibold text-primary-600" disabled={loading} onClick={() => void load(true)} type="button">{loading ? "更新中…" : "立即更新"}</button></div>
