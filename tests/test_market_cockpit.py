@@ -198,6 +198,57 @@ class MarketCockpitTests(unittest.TestCase):
             self.assertEqual(baselines["BTCUSDT"]["spot_flow_usd"], 10 * multiplier)
             self.assertEqual(baselines["BTCUSDT"]["_flow_window_quality"], "aggregated_15m")
 
+    def test_flow_strength_uses_same_window_history(self) -> None:
+        values = (10, 10, 10, 100, 10, 10, 10, 100, 10, 10, 10, 50)
+        flow_rows = [{
+            "observed_at": (index + 1) * 900,
+            "source": "market_flow_15m",
+            "window_sec": 900,
+            "spot_flow_usd": value,
+            "futures_flow_usd": value * 2,
+        } for index, value in enumerate(values)]
+        history = [{
+            "observed_at": (index + 1) * 900,
+            "price": 100 + index,
+            "oi_usd": 1_000_000 + index * 1_000,
+            "funding_pct": 0.01,
+        } for index in range(len(values))]
+        baseline = history[0]
+
+        strengths: dict[int, dict[str, float]] = {}
+        for window_sec in (900, 3_600):
+            flow, quality = MarketSnapshotStore._window_flow(
+                flow_rows,
+                end_ts=10_800,
+                window_sec=window_sec,
+            )
+            latest = {**history[-1], **flow, "_flow_window_quality": quality}
+            strengths[window_sec] = MarketSnapshotStore._historical_strength(
+                history,
+                flow_rows=flow_rows,
+                latest=latest,
+                baseline=baseline,
+                window_sec=window_sec,
+            )
+
+        self.assertEqual(strengths[900]["spot_flow_usd"], 83.3)
+        self.assertEqual(strengths[3_600]["spot_flow_usd"], 11.1)
+
+    def test_window_flow_rejects_stale_exact_fact(self) -> None:
+        flow, quality = MarketSnapshotStore._window_flow(
+            [{
+                "observed_at": 1_000,
+                "source": "legacy_exact",
+                "window_sec": 900,
+                "spot_flow_usd": 50,
+            }],
+            end_ts=5_000,
+            window_sec=900,
+        )
+
+        self.assertEqual(quality, "insufficient")
+        self.assertIsNone(flow["spot_flow_usd"])
+
     def test_oi_amount_and_strength_rankings_use_distinct_metrics(self) -> None:
         baselines = {
             "BTCUSDT": {"symbol": "BTCUSDT", "price": 100, "oi_usd": 100_000_000},

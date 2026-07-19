@@ -18,7 +18,7 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.3"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.4"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
 SNAPSHOT_COLUMNS = (
     "price",
@@ -326,15 +326,18 @@ class MarketSnapshotStore:
         canonical.sort(key=lambda row: int(row.get("observed_at") or 0))
         if len(canonical) >= expected:
             selected = canonical[-expected:]
-            values: dict[str, float | None] = {}
-            for key in FLOW_COLUMNS:
-                samples = [_number(row.get(key)) for row in selected]
-                values[key] = sum(float(value) for value in samples if value is not None) if all(value is not None for value in samples) else None
-            return values, "aggregated_15m"
+            timestamps = [int(row.get("observed_at") or 0) for row in selected]
+            if all(current - previous == 900 for previous, current in zip(timestamps, timestamps[1:])):
+                values: dict[str, float | None] = {}
+                for key in FLOW_COLUMNS:
+                    samples = [_number(row.get(key)) for row in selected]
+                    values[key] = sum(float(value) for value in samples if value is not None) if all(value is not None for value in samples) else None
+                return values, "aggregated_15m"
 
+        freshness_sec = max(int(window_sec), 1_800)
         exact = [
             row for row in rows
-            if int(row.get("observed_at") or 0) <= int(end_ts)
+            if 0 <= int(end_ts) - int(row.get("observed_at") or 0) <= freshness_sec
             and int(row.get("window_sec") or 0) == int(window_sec)
             and any(_number(row.get(key)) is not None for key in FLOW_COLUMNS)
         ]
@@ -344,7 +347,7 @@ class MarketSnapshotStore:
 
         legacy = [
             row for row in rows
-            if int(row.get("observed_at") or 0) <= int(end_ts)
+            if 0 <= int(end_ts) - int(row.get("observed_at") or 0) <= freshness_sec
             and int(row.get("window_sec") or 0) == 0
             and any(_number(row.get(key)) is not None for key in FLOW_COLUMNS)
         ]
@@ -352,6 +355,66 @@ class MarketSnapshotStore:
             row = max(legacy, key=lambda item: int(item.get("observed_at") or 0))
             return {key: _number(row.get(key)) for key in FLOW_COLUMNS}, "legacy_unscoped"
         return {key: None for key in FLOW_COLUMNS}, "insufficient"
+
+    @staticmethod
+    def _flow_history_samples(
+        rows: list[dict[str, Any]],
+        *,
+        window_sec: int,
+        quality: str,
+    ) -> dict[str, list[float]]:
+        """Return historical flow magnitudes using the current window's exact semantics."""
+
+        samples: dict[str, list[float]] = defaultdict(list)
+        safe_window = int(window_sec)
+        if quality == "aggregated_15m":
+            expected = max(1, safe_window // 900)
+            canonical = sorted(
+                (
+                    row for row in rows
+                    if str(row.get("source") or "") == "market_flow_15m"
+                    and int(row.get("window_sec") or 0) == 900
+                ),
+                key=lambda row: int(row.get("observed_at") or 0),
+            )
+            if len(canonical) < expected:
+                return samples
+            timestamps = [int(row.get("observed_at") or 0) for row in canonical]
+            gap_prefix = [0]
+            for index in range(1, len(timestamps)):
+                gap_prefix.append(gap_prefix[-1] + int(timestamps[index] - timestamps[index - 1] != 900))
+            value_prefix: dict[str, list[float]] = {}
+            missing_prefix: dict[str, list[int]] = {}
+            for key in ("spot_flow_usd", "futures_flow_usd"):
+                totals = [0.0]
+                missing = [0]
+                for row in canonical:
+                    value = _number(row.get(key))
+                    totals.append(totals[-1] + (float(value) if value is not None else 0.0))
+                    missing.append(missing[-1] + int(value is None))
+                value_prefix[key] = totals
+                missing_prefix[key] = missing
+            for end_index in range(expected - 1, len(canonical)):
+                start_index = end_index - expected + 1
+                if gap_prefix[end_index] - gap_prefix[start_index] != 0:
+                    continue
+                for key in ("spot_flow_usd", "futures_flow_usd"):
+                    if missing_prefix[key][end_index + 1] - missing_prefix[key][start_index] == 0:
+                        total = value_prefix[key][end_index + 1] - value_prefix[key][start_index]
+                        samples[key].append(abs(total))
+            return samples
+
+        requested_window = safe_window if quality == "exact_window" else 0 if quality == "legacy_unscoped" else None
+        if requested_window is None:
+            return samples
+        for row in rows:
+            if int(row.get("window_sec") or 0) != requested_window:
+                continue
+            for key in ("spot_flow_usd", "futures_flow_usd"):
+                value = _number(row.get(key))
+                if value is not None:
+                    samples[key].append(abs(value))
+        return samples
 
     def recent_metric_rows(
         self,
@@ -602,6 +665,7 @@ class MarketSnapshotStore:
                     baselines[symbol]["_flow_window_quality"] = previous_flow_quality
                     latest["_historical_strength"] = self._historical_strength(
                         history,
+                        flow_rows=source_rows_by_symbol.get(symbol, []),
                         latest=latest,
                         baseline=candidates[-1],
                         window_sec=safe_window,
@@ -621,6 +685,7 @@ class MarketSnapshotStore:
     def _historical_strength(
         history: list[dict[str, Any]],
         *,
+        flow_rows: list[dict[str, Any]],
         latest: dict[str, Any],
         baseline: dict[str, Any],
         window_sec: int,
@@ -641,10 +706,16 @@ class MarketSnapshotStore:
                     change = _pct(point.get(source_key), previous.get(source_key))
                     if change is not None:
                         samples[key].append(abs(change))
-            for key in ("spot_flow_usd", "futures_flow_usd", "funding_pct"):
-                value = _number(point.get(key))
-                if value is not None:
-                    samples[key].append(abs(value))
+            funding = _number(point.get("funding_pct"))
+            if funding is not None:
+                samples["funding_pct"].append(abs(funding))
+
+        flow_samples = MarketSnapshotStore._flow_history_samples(
+            flow_rows,
+            window_sec=window_sec,
+            quality=str(latest.get("_flow_window_quality") or "insufficient"),
+        )
+        samples.update(flow_samples)
 
         current_values = {
             "price_change_pct": _pct(latest.get("price"), baseline.get("price")),
