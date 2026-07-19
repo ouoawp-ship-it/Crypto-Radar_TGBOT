@@ -724,7 +724,7 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const infoBanner = await page.getByRole("heading", { name: "AI 信息蒸馏" }).locator("xpath=ancestor::section").boundingBox();
   const infoColumns = await page.getByTestId("info-four-columns").boundingBox();
   expect(infoBanner?.y).toBeCloseTo(52, 0);
-  expect(infoBanner?.height).toBeCloseTo(36, 0);
+  expect(infoBanner?.height).toBeCloseTo(32, 0);
   expect(infoColumns?.y).toBeCloseTo(101, 0);
   const infoDigestIcon = await page.getByTestId("info-digest-icon").boundingBox();
   const infoDigestButton = await page.getByRole("button", { name: /4h AI 综合分析/ }).boundingBox();

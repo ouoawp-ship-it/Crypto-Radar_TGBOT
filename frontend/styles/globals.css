@@ -281,7 +281,7 @@ body::before {
 
 .mercu-radar-grid {
   --border-subtle: 238 239 240;
-  --surface-low: 255 255 255;
+  --surface-low: 252 252 252;
   background: linear-gradient(to bottom, rgb(238 241 248) 0 9px, rgb(238 241 246) 9px);
   display: grid;
   gap: 6px;
@@ -311,6 +311,7 @@ body::before {
 }
 
 .mercu-funds-grid {
+  --border-subtle: 236 236 236;
   background: rgb(var(--surface-panel));
   display: flex;
   flex-direction: column;
@@ -335,7 +336,7 @@ body::before {
   }
 
   .mercu-info-grid {
-    gap: 13px;
+    gap: 17px;
     padding: 7px 10px 10px;
   }
 
