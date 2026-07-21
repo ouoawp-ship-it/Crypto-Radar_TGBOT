@@ -247,7 +247,8 @@ function rankMagnitude(item: CockpitBoardItem) {
 
 function MomentumList({ items, mode, onSelectSymbol, positive, realtimeBySymbol, scaleMax, windowStates, compactMillions = false, limit = 7 }: { items?: CockpitBoardItem[]; mode: RankMode; onSelectSymbol: (symbol: string) => void; positive: boolean; realtimeBySymbol: Map<string, RealtimeIntelligenceItem>; scaleMax?: number; windowStates: (item: CockpitBoardItem) => boolean[] | undefined; compactMillions?: boolean; limit?: number }) {
   const visible = (items || []).slice(0, limit);
-  const maxMagnitude = Math.max(1, scaleMax || 0, ...visible.map(rankMagnitude));
+  const observedMax = Math.max(0, scaleMax || 0, ...visible.map(rankMagnitude));
+  const maxMagnitude = observedMax || 1;
   return <div>{visible.map((item, index) => {
     const realtime = realtimeBySymbol.get(String(item.symbol || ""));
     const barWidth = Math.min(70, 18 + rankMagnitude(item) / maxMagnitude * 66);
@@ -281,7 +282,7 @@ function MomentumBoard({ board, momentum, onSelectSymbol, realtimeBySymbol }: { 
   const amountNegative = board?.amount_negative || board?.negative;
   const strengthPositive = board?.strength_positive || board?.positive;
   const strengthNegative = board?.strength_negative || board?.negative;
-  const amountScaleMax = Math.max(1, ...[...(amountPositive?.items || []).slice(0, 7), ...(amountNegative?.items || []).slice(0, 7)].map(rankMagnitude));
+  const amountScaleMax = Math.max(0, ...[...(amountPositive?.items || []).slice(0, 7), ...(amountNegative?.items || []).slice(0, 7)].map(rankMagnitude));
   const amountUnit = board?.key === "price" ? "%" : "USDT";
   const compactMillions = board?.key === "futures_flow" || board?.key === "spot_flow";
   const statesFor = (mode: RankMode, positive: boolean, item: CockpitBoardItem) => rankWindowStates(momentum, String(board?.key || ""), mode, positive, item);
