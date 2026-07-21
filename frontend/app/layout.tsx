@@ -1,11 +1,23 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { GeistSans } from "geist/font/sans";
-import "@fontsource-variable/dm-sans";
-import "@fontsource-variable/jetbrains-mono";
+import { DM_Sans, JetBrains_Mono } from "next/font/google";
 import "@/styles/globals.css";
 import { AppShell } from "@/components/AppShell";
 import { FrontendTelemetry } from "@/components/FrontendTelemetry";
+
+const dmSans = DM_Sans({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-dm-sans",
+  weight: ["400", "500", "600", "700"]
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-jetbrains-mono",
+  weight: ["400", "500", "600", "700"]
+});
 
 export const metadata: Metadata = {
   title: "Paoxx 市场雷达",
@@ -15,7 +27,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html data-theme="light" lang="zh-CN" className={GeistSans.variable} style={{ colorScheme: "light" }}>
+    <html data-theme="light" lang="zh-CN" className={`${dmSans.variable} ${jetbrainsMono.variable}`} style={{ colorScheme: "light" }}>
       <body data-paoxx-frontend="nextjs-dashboard">
         <FrontendTelemetry />
         <AppShell>{children}</AppShell>

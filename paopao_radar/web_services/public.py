@@ -12,10 +12,12 @@ from typing import Any
 
 from ..atomic_json import locked_read_json, locked_write_json
 from ..coin_evidence import (
+    CHART_INTERVALS,
     build_kline_chart,
     build_snapshot_series,
     normalize_chart_interval,
     normalize_chart_market,
+    resample_snapshot_series,
 )
 from ..agent_intelligence import build_agent_overview
 from ..config import Settings
@@ -23,10 +25,10 @@ from ..data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from ..data_source_registry import data_source_registry_payload
 from ..market_cockpit import (
     MarketSnapshotStore,
-    collect_binance_market_rows,
     load_market_cockpit,
     load_market_cockpit_windows,
     normalize_window,
+    persist_market_batch,
 )
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
 from ..info_sources import ingest_public_info_sources
@@ -44,7 +46,12 @@ from ..runtime_cache import stats as runtime_cache_stats
 from ..signal_intelligence import build_radar_intelligence
 from ..signal_store import SignalEventStore
 from ..symbol_dossier import current_market_snapshot
-from ..workstation_funds import collect_cross_exchange_open_interest
+from ..workstation_funds import (
+    FUNDS_PROFILE_SCHEMA_VERSION,
+    build_funds_series_analytics,
+    build_volume_profile,
+    collect_cross_exchange_open_interest,
+)
 from ..web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_STREAM_METRICS, PUBLIC_TELEMETRY
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
@@ -97,6 +104,18 @@ WORKSTATION_RADAR_WINDOWS = {
     "1h": 3600,
     "4h": 14400,
     "1d": 86400,
+}
+WORKSTATION_INFO_CHANNELS = {
+    "news": ("news", "zh"),
+    "en": ("news", "en"),
+    "kol": ("kol", ""),
+    "plaza": ("plaza", ""),
+}
+WORKSTATION_FUNDS_SERIES_KINDS = {
+    "spot_flow": "spot_flow_usd",
+    "futures_flow": "futures_flow_usd",
+    "oi": "oi_usd",
+    "funding": "funding_pct",
 }
 SnapshotLoader = Callable[[Settings, str], dict[str, Any]]
 ChartLoader = Callable[[Settings, str, str, str, int], list[list[Any]]]
@@ -434,9 +453,14 @@ def _schedule_market_warmup(settings: Settings) -> bool:
         source: BinanceDataSource | None = None
         try:
             source = BinanceDataSource(settings)
-            rows = collect_binance_market_rows(settings, source=source, oi_source=source)
-            count = MarketSnapshotStore(settings.market_snapshots_db_path).append_many(rows)
-            if count:
+            result = persist_market_batch(
+                settings,
+                source=source,
+                store=MarketSnapshotStore(settings.market_snapshots_db_path),
+                force=True,
+            )
+            flow_count = int((result.get("flow_facts") or {}).get("count") or 0)
+            if int(result.get("count") or 0) or flow_count:
                 cooldown = float(interval)
                 invalidate_runtime_cache("public:")
         except Exception as exc:
@@ -627,6 +651,62 @@ def public_radar_boards_payload(
     return api_ok(_strip_forbidden(payload), message="已读取雷达榜单")
 
 
+def _workstation_radar_confluence(boards: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Build the right-rail cross-board consensus from the same closed-window facts."""
+
+    def build(mode: str) -> list[dict[str, Any]]:
+        tallies: dict[str, dict[str, Any]] = {}
+        for board in boards:
+            board_key = str(board.get("key") or "")
+            if board_key not in {"oi", "futures_flow", "spot_flow"}:
+                continue
+            for direction in ("positive", "negative"):
+                side = board.get(f"{mode}_{direction}") or board.get(direction) or {}
+                for source_item in list(side.get("items") or [])[:8]:
+                    item = dict(source_item or {})
+                    symbol = str(item.get("symbol") or "")
+                    if not symbol:
+                        continue
+                    current = tallies.setdefault(
+                        symbol,
+                        {"item": item, "positive": set(), "negative": set()},
+                    )
+                    current_value = _number(current["item"].get("magnitude_usd"))
+                    if current_value is None:
+                        current_value = _number(current["item"].get("value")) or 0
+                    next_value = _number(item.get("magnitude_usd"))
+                    if next_value is None:
+                        next_value = _number(item.get("value")) or 0
+                    if abs(next_value) >= abs(current_value):
+                        current["item"] = item
+                    current[direction].add(board_key)
+
+        result: list[dict[str, Any]] = []
+        for symbol, tally in tallies.items():
+            positive_count = len(tally["positive"])
+            negative_count = len(tally["negative"])
+            board_count = max(positive_count, negative_count)
+            if board_count < 2:
+                continue
+            item = dict(tally["item"])
+            item.update({
+                "symbol": symbol,
+                "board_count": board_count,
+                "direction": "positive" if positive_count >= negative_count else "negative",
+                "divergent": positive_count > 0 and negative_count > 0,
+            })
+            result.append(item)
+        result.sort(key=lambda item: (
+            -int(item.get("board_count") or 0),
+            -float(item.get("strength_percentile") or 0),
+            0 if item.get("direction") == "positive" else 1,
+            str(item.get("symbol") or ""),
+        ))
+        return result[:7]
+
+    return {"amount": build("amount"), "strength": build("strength")}
+
+
 def public_workstation_radar_momentum_payload(
     *,
     window: str = "1h",
@@ -665,10 +745,12 @@ def public_workstation_radar_momentum_payload(
         "coverage": source_data.get("coverage") or {},
         "readiness": source_data.get("readiness") or {},
         "boards": boards,
+        "confluence": _workstation_radar_confluence(boards),
         "methodology": {
             **dict(source_data.get("methodology") or {}),
             "amount_rank": "Ranks absolute values inside the selected closed window.",
             "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
+            "confluence": "Counts majority-aligned appearances across OI, futures-flow and spot-flow boards; price is excluded.",
             "closed_window": True,
         },
     }
@@ -699,10 +781,27 @@ def public_workstation_radar_momentum_windows_payload(
             )
         except Exception:
             return api_error("Radar momentum windows unavailable", code="upstream_unavailable")
+        if now_ts is None and any(
+            str(payload.get("data_status") or "") in {"empty", "warming_up", "partial", "stale", "degraded", "unavailable"}
+            for payload in sources.values()
+        ):
+            _schedule_market_warmup(loaded)
+            for payload in sources.values():
+                if payload.get("boards"):
+                    continue
+                payload["warnings"] = list(dict.fromkeys([
+                    "市场快照正在后台预热，稍后刷新即可看到 Radar 榜单。",
+                    *[str(item) for item in payload.get("warnings") or [] if str(item)],
+                ]))
         core_keys = {"price", "oi", "futures_flow", "spot_flow"}
         windows: dict[str, Any] = {}
         for window_key, window_sec in window_items:
             source_data = dict(sources.get(window_sec) or {})
+            boards = [
+                board
+                for board in list(source_data.get("boards") or [])
+                if str((board or {}).get("key") or "") in core_keys
+            ]
             windows[window_key] = {
                 "schema_version": "workstation.radar.momentum.v1",
                 "generated_at": source_data.get("generated_at"),
@@ -712,15 +811,13 @@ def public_workstation_radar_momentum_windows_payload(
                 "warnings": source_data.get("warnings") or [],
                 "coverage": source_data.get("coverage") or {},
                 "readiness": source_data.get("readiness") or {},
-                "boards": [
-                    board
-                    for board in list(source_data.get("boards") or [])
-                    if str((board or {}).get("key") or "") in core_keys
-                ],
+                "boards": boards,
+                "confluence": _workstation_radar_confluence(boards),
                 "methodology": {
                     **dict(source_data.get("methodology") or {}),
                     "amount_rank": "Ranks absolute values inside the selected closed window.",
                     "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
+                    "confluence": "Counts majority-aligned appearances across OI, futures-flow and spot-flow boards; price is excluded.",
                     "closed_window": True,
                 },
             }
@@ -896,7 +993,7 @@ def _compact_realtime_event(source: Any) -> dict[str, Any]:
         (
             "id", "symbol", "coin", "observed_at", "window", "window_sec",
             "event_type", "label", "metric", "direction", "value", "value_usd",
-            "change_pct",
+            "change_pct", "detail",
         ),
     )
     rankings = _compact_realtime_rankings(source.get("rankings") if isinstance(source, dict) else None)
@@ -905,10 +1002,16 @@ def _compact_realtime_event(source: Any) -> dict[str, Any]:
     return event
 
 
-def _project_realtime_intelligence_payload(payload: dict[str, Any], *, limit: int) -> dict[str, Any]:
+def _project_realtime_intelligence_payload(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+    event_limit: int | None = None,
+) -> dict[str, Any]:
     """Bound the public payload without changing full-universe coverage metadata."""
 
     safe_limit = max(1, min(30, int(limit or 10)))
+    safe_event_limit = max(1, min(100, int(event_limit or safe_limit)))
     projected = dict(payload)
     projected["items"] = [
         _compact_realtime_item(item)
@@ -916,7 +1019,7 @@ def _project_realtime_intelligence_payload(payload: dict[str, Any], *, limit: in
     ]
     projected["anomaly_events"] = [
         _compact_realtime_event(event)
-        for event in list(payload.get("anomaly_events") or [])[:safe_limit]
+        for event in list(payload.get("anomaly_events") or [])[:safe_event_limit]
     ]
     board_limit = min(PUBLIC_INTELLIGENCE_BOARD_LIMIT, safe_limit)
     projected["boards"] = [
@@ -1014,20 +1117,24 @@ def _refresh_realtime_intelligence_snapshot(
 def public_realtime_intelligence_payload(
     *,
     limit: int = 10,
+    event_limit: int | None = None,
     include_backtest: bool = False,
     settings: Settings | Any | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
     safe_limit = max(1, min(30, int(limit or 10)))
+    safe_event_limit = max(1, min(100, int(event_limit or safe_limit)))
 
     def build(
         build_limit: int,
         *,
+        build_event_limit: int | None = None,
         build_backtest: bool = False,
         build_now: int | None = None,
     ) -> dict[str, Any]:
         observed_now = int(build_now if build_now is not None else time.time())
+        source_event_limit = max(1, min(100, int(build_event_limit or build_limit)))
         rows = RealtimeFeatureStore(loaded.realtime_features_db_path).recent_rows(
             now_ts=observed_now,
             window_sec=86_400,
@@ -1036,6 +1143,7 @@ def public_realtime_intelligence_payload(
             rows,
             now_ts=observed_now,
             limit=build_limit,
+            event_limit=source_event_limit,
             include_backtest=build_backtest,
         )
         market_snapshot_path = getattr(loaded, "market_snapshots_db_path", None)
@@ -1056,16 +1164,21 @@ def public_realtime_intelligence_payload(
                         [*list(payload.get("anomaly_events") or []), *oi_events],
                         key=lambda item: (str(item.get("observed_at") or ""), str(item.get("id") or "")),
                         reverse=True,
-                    )[:build_limit]
+                    )[:source_event_limit]
                     payload.setdefault("coverage", {})["oi_anomaly_events"] = len(oi_events)
             except Exception:
                 payload.setdefault("coverage", {})["oi_anomaly_events"] = 0
-        return _project_realtime_intelligence_payload(_strip_forbidden(payload), limit=build_limit)
+        return _project_realtime_intelligence_payload(
+            _strip_forbidden(payload),
+            limit=build_limit,
+            event_limit=source_event_limit,
+        )
 
     try:
         if now_ts is not None or include_backtest:
             payload = build(
                 safe_limit,
+                build_event_limit=safe_event_limit,
                 build_backtest=bool(include_backtest),
                 build_now=now_ts,
             )
@@ -1081,18 +1194,194 @@ def public_realtime_intelligence_payload(
                 snapshot = _store_realtime_intelligence_snapshot(
                     cache_key,
                     snapshot_path,
-                    build(30),
+                    build(30, build_event_limit=100),
                 )
             elif snapshot_age >= PUBLIC_INTELLIGENCE_REFRESH_SEC:
                 _refresh_realtime_intelligence_snapshot(
                     cache_key,
                     snapshot_path,
-                    lambda: build(30),
+                    lambda: build(30, build_event_limit=100),
                 )
-            payload = _project_realtime_intelligence_payload(snapshot[1], limit=safe_limit)
+            payload = _project_realtime_intelligence_payload(
+                snapshot[1],
+                limit=safe_limit,
+                event_limit=safe_event_limit,
+            )
     except Exception:
         return api_error("实时异常情报暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取实时异常情报")
+
+
+def _workstation_realtime_intelligence_source(
+    *,
+    limit: int,
+    event_limit: int | None = None,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    source = public_realtime_intelligence_payload(
+        limit=max(1, min(30, int(limit or 30))),
+        event_limit=event_limit,
+        settings=settings,
+        now_ts=now_ts,
+    )
+    if not source.get("ok"):
+        return None, source
+    return dict(source.get("data") or {}), None
+
+
+def public_workstation_radar_anomalies_payload(
+    *,
+    limit: int = 30,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(10, min(100, int(limit or 100)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=min(30, safe_limit), event_limit=safe_limit, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    items = list(source.get("anomaly_events") or [])[:safe_limit]
+    payload = {
+        "schema_version": "workstation.radar.anomalies.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "events": len(items)},
+        "items": items,
+        "methodology": {
+            "closed_window": True,
+            "rankings": "Each event keeps self-history, cross-market strength and cross-market absolute-size ranks.",
+            "refresh": "Independent anomaly feed; callers may pause polling while searching.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation anomaly feed loaded")
+
+
+def public_workstation_radar_surge_payload(
+    *,
+    limit: int = 5,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(20, int(limit or 5)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=30, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    items = sorted(
+        [item for item in list(source.get("items") or []) if (item.get("surge") or {}).get("triggered")],
+        key=lambda item: float((item.get("surge") or {}).get("score") or 0),
+        reverse=True,
+    )[:safe_limit]
+    payload = {
+        "schema_version": "workstation.radar.surge.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "surge": len(items)},
+        "items": items,
+        "methodology": {
+            "closed_window": True,
+            "order": "Descending closed-window acceleration score.",
+            "prediction": "Rule score describes acceleration evidence and is not a return forecast.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation surge board loaded")
+
+
+def public_workstation_radar_rank_payload(
+    *,
+    total_limit: int = 14,
+    ambush_limit: int = 8,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_total = max(1, min(30, int(total_limit or 14)))
+    safe_ambush = max(1, min(20, int(ambush_limit or 8)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=30, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    universe = list(source.get("items") or [])
+    total = sorted(
+        [item for item in universe if int((item.get("anomaly_24h") or {}).get("count") or 0) > 0],
+        key=lambda item: int((item.get("anomaly_24h") or {}).get("count") or 0),
+        reverse=True,
+    )[:safe_total]
+    ambush = sorted(
+        [item for item in universe if (item.get("ambush") or {}).get("triggered")],
+        key=lambda item: float((item.get("ambush") or {}).get("score") or 0),
+        reverse=True,
+    )[:safe_ambush]
+    payload = {
+        "schema_version": "workstation.radar.rank.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "total": len(total), "ambush": len(ambush)},
+        "universe": universe,
+        "total": total,
+        "ambush": ambush,
+        "methodology": {
+            "total": "Descending count of closed-window anomaly events over the trailing 24 hours.",
+            "ambush": "Positive OI or flow accumulation with compressed price and no active Surge trigger.",
+            "prediction": "Ranks describe observed evidence and are not return forecasts.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation cumulative and ambush boards loaded")
+
+
+def public_workstation_radar_briefs_payload(
+    *,
+    limit: int = 6,
+    settings: Settings | Any | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(20, int(limit or 6)))
+    source, error = _workstation_realtime_intelligence_source(
+        limit=30, settings=settings, now_ts=now_ts,
+    )
+    if error is not None:
+        return error
+    assert source is not None
+    briefs = []
+    for event in list(source.get("anomaly_events") or [])[:safe_limit]:
+        coin = str(event.get("coin") or event.get("symbol") or "")
+        label = str(event.get("label") or "市场异动")
+        briefs.append({
+            "id": event.get("id"),
+            "symbol": event.get("symbol"),
+            "coin": coin,
+            "observed_at": event.get("observed_at"),
+            "direction": event.get("direction"),
+            "title": f"{coin} {label}".strip(),
+            "summary": event.get("detail") or f"{event.get('window') or 'closed'} window · {label}",
+            "rankings": event.get("rankings") or {},
+        })
+    payload = {
+        "schema_version": "workstation.radar.briefs.v1",
+        "generated_at": source.get("generated_at"),
+        "observed_at": source.get("observed_at"),
+        "data_status": source.get("data_status"),
+        "warnings": source.get("warnings") or [],
+        "coverage": {**dict(source.get("coverage") or {}), "briefs": len(briefs)},
+        "items": briefs,
+        "methodology": {
+            "source": "Deterministic compression of ranked workstation anomaly facts.",
+            "ai": "No third-party AI recommendation or inferred trade instruction is added.",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="Workstation radar briefs loaded")
 
 
 def public_funds_sectors_payload(
@@ -1168,6 +1457,122 @@ def public_funds_assets_payload(
     return api_ok(_strip_forbidden(payload), message="已读取资产资金表")
 
 
+def public_workstation_funds_overview_payload(
+    *,
+    window_sec: int = 3600,
+    sector_window_sec: int | None = None,
+    asset_window_sec: int | None = None,
+    market_type: str = "spot",
+    search: str = "",
+    sector: str = "",
+    data_status: str = "",
+    sort_key: str = "net_flow_usd",
+    direction: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Build the Funds root view from one market-cockpit scan."""
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    safe_sector_window = normalize_window(sector_window_sec if sector_window_sec is not None else window_sec)
+    safe_asset_window = normalize_window(asset_window_sec if asset_window_sec is not None else window_sec)
+    safe_market = normalize_market_type(market_type)
+
+    def build() -> dict[str, Any]:
+        cockpits = load_market_cockpit_windows(
+            loaded,
+            window_secs=tuple(dict.fromkeys((safe_sector_window, safe_asset_window))),
+            board_limit=8,
+            now_ts=now_ts,
+            live_rows=[],
+        )
+        if now_ts is None and any(
+            str(payload.get("data_status") or "") in {"empty", "warming_up", "partial", "stale"}
+            for payload in cockpits.values()
+        ):
+            _schedule_market_warmup(loaded)
+            for cockpit in cockpits.values():
+                if cockpit.get("assets"):
+                    continue
+                cockpit["warnings"] = list(dict.fromkeys([
+                    "市场快照正在后台预热，稍后刷新即可看到榜单。",
+                    *[str(item) for item in cockpit.get("warnings") or [] if str(item)],
+                ]))
+        sector_cockpit = cockpits[safe_sector_window]
+        asset_cockpit = cockpits[safe_asset_window]
+        sectors = build_funds_sectors(sector_cockpit, market_type=safe_market)
+        assets = build_funds_assets(
+            asset_cockpit,
+            market_type=safe_market,
+            search=search,
+            sector=sector,
+            data_status=data_status,
+            sort_key=sort_key,
+            direction=direction,
+            page=page,
+            page_size=page_size,
+        )
+        statuses = {str(sectors.get("data_status") or ""), str(assets.get("data_status") or "")}
+        status = (
+            "unavailable" if "unavailable" in statuses
+            else "degraded" if "degraded" in statuses
+            else "empty" if statuses <= {"", "empty"}
+            else "ready"
+        )
+        warnings = list(dict.fromkeys([
+            *[str(item) for item in sectors.get("warnings") or [] if str(item)],
+            *[str(item) for item in assets.get("warnings") or [] if str(item)],
+        ]))
+        sector_rows = list(sectors.get("sectors") or [])
+        asset_rows = list(assets.get("items") or [])
+        return {
+            "schema_version": "workstation.funds.overview.v1",
+            "generated_at": asset_cockpit.get("generated_at") or sector_cockpit.get("generated_at"),
+            "window_sec": safe_asset_window,
+            "sector_window_sec": safe_sector_window,
+            "asset_window_sec": safe_asset_window,
+            "market_type": safe_market,
+            "data_status": status,
+            "coverage": {
+                **dict(assets.get("coverage") or {}),
+                "sectors": len(sector_rows),
+                "page_assets": len(asset_rows),
+            },
+            "warnings": warnings,
+            "summary": sectors.get("summary") or {},
+            "distribution": assets.get("distribution") or {},
+            "catalog": sectors.get("catalog") or [],
+            "sectors": sector_rows,
+            "assets": asset_rows,
+            "filters": assets.get("filters") or {},
+            "sort": assets.get("sort") or {},
+            "pagination": assets.get("pagination") or {},
+            "methodology": {
+                **{f"sector_{key}": value for key, value in dict(sectors.get("methodology") or {}).items()},
+                **{f"asset_{key}": value for key, value in dict(assets.get("methodology") or {}).items()},
+                "snapshot": "板块与资产表由同一次封闭窗口市场快照计算，避免跨请求时间漂移。",
+            },
+        }
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = ":".join((
+                "public:workstation:funds:overview",
+                str(loaded.market_snapshots_db_path), str(safe_sector_window), str(safe_asset_window), safe_market,
+                str(search or "")[:24], str(sector or "")[:40], str(data_status or "")[:24],
+                str(sort_key or ""), str(direction or ""), str(page), str(page_size),
+            ))
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_FUNDS_TTL_SEC, build)
+    except Exception:
+        return api_error("资金总览暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取工作站资金总览")
+
+
 def public_workstation_funds_open_interest_payload(
     symbol: str,
     *,
@@ -1197,6 +1602,110 @@ def public_workstation_funds_open_interest_payload(
     except Exception:
         return api_error("跨交易所 OI 暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取跨交易所 OI")
+
+
+def public_workstation_funds_series_payload(
+    symbol: str,
+    *,
+    kind: str = "spot_flow",
+    interval: str = "15m",
+    bars: int = 96,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    loaded = settings or Settings.load()
+    if _v2_disabled(loaded):
+        return _v2_disabled_payload()
+    parsed = normalize_symbol_filter(symbol)
+    target = str(parsed.get("symbol") or "")
+    if not target:
+        return api_error(str(parsed.get("error") or "币种格式无效"), code="invalid_symbol")
+    safe_kind = str(kind or "spot_flow").strip().lower()
+    metric = WORKSTATION_FUNDS_SERIES_KINDS.get(safe_kind)
+    if metric is None:
+        return api_error("Unsupported funds series kind", code="invalid_kind")
+    safe_interval = normalize_chart_interval(interval)
+    safe_bars = max(24, min(240, int(bars or 96)))
+    interval_sec = CHART_INTERVALS[safe_interval]
+    now = int(now_ts or time.time())
+
+    def build() -> dict[str, Any]:
+        raw_points: list[dict[str, Any]] = []
+        try:
+            if loaded.market_snapshots_db_path.exists():
+                raw_limit = min(25_000, max(safe_bars * 2, interval_sec * safe_bars // 300 + 1))
+                raw_points = MarketSnapshotStore(loaded.market_snapshots_db_path).symbol_series(
+                    target,
+                    start_ts=now - interval_sec * safe_bars,
+                    end_ts=now,
+                    limit=raw_limit,
+                )
+        except Exception:
+            raw_points = []
+        bucket_points = resample_snapshot_series(
+            raw_points,
+            interval_sec=interval_sec,
+            limit=safe_bars,
+        )
+        previous_oi: float | None = None
+        for point in bucket_points:
+            current_oi = _number(point.get("oi_usd"))
+            if current_oi is not None and previous_oi is not None:
+                change = current_oi - previous_oi
+                point["oi_change_usd"] = round(change, 2)
+                point["oi_change_pct"] = round(change / previous_oi * 100, 6) if previous_oi > 0 else None
+            if current_oi is not None:
+                previous_oi = current_oi
+        series = build_snapshot_series(bucket_points)
+        series["interval"] = safe_interval
+        series["interval_sec"] = interval_sec
+        series["requested_buckets"] = safe_bars
+        analytics = (
+            build_funds_series_analytics(
+                list(series.get("points") or []),
+                metric=metric,
+                interval_sec=interval_sec,
+            )
+            if safe_kind in {"spot_flow", "futures_flow"}
+            else None
+        )
+        metric_points = sum(1 for point in series.get("points") or [] if point.get(metric) is not None)
+        coverage = {**dict(series.get("coverage") or {}), "metric_points": metric_points}
+        data_status = "ready" if metric_points >= 2 else "degraded" if series.get("points") else "unavailable"
+        warnings = [str(item) for item in series.get("warnings") or [] if str(item)]
+        if metric_points < 2:
+            warnings.append(f"{safe_kind} 当前不足两个可比较封闭桶。")
+        return {
+            "schema_version": "workstation.funds.series.v1",
+            "generated_at": _utc_time_text(now),
+            "symbol": target,
+            "kind": safe_kind,
+            "metric": metric,
+            "interval": safe_interval,
+            "interval_sec": interval_sec,
+            "requested_buckets": safe_bars,
+            "data_status": data_status,
+            "coverage": coverage,
+            "warnings": list(dict.fromkeys(warnings)),
+            "points": series.get("points") or [],
+            **({"analytics": analytics} if analytics is not None else {}),
+            "methodology": {
+                **dict(series.get("methodology") or {}),
+                "closed_bucket": "点位按所选周期对齐到封闭桶；价格、OI、费率取桶内最新值，现货/合约主动资金在桶内求和。",
+                "oi_change": "OI 美元变化与百分比由相邻所选周期桶的 OI 水平计算，不沿用其他窗口的变化率。",
+                "null_policy": "缺失指标保持 null，不以前值或 0 填充。",
+            },
+        }
+
+    try:
+        if now_ts is not None:
+            payload = build()
+        else:
+            cache_key = f"public:workstation:funds:series:{target}:{safe_kind}:{safe_interval}:{safe_bars}"
+            payload = runtime_cache_get_or_set(cache_key, PUBLIC_FUNDS_TTL_SEC, build)
+    except Exception:
+        return api_error("单币资金时序暂时不可用", code="upstream_unavailable")
+    return api_ok(_strip_forbidden(payload), message="已读取工作站单币资金时序")
 
 
 def public_info_feed_payload(
@@ -1253,6 +1762,84 @@ def public_info_feed_payload(
         high = sum(1 for item in items if item.get("importance") == "high")
         rights_ok = sum(1 for item in items if item.get("rights_status") in {"official_link_only", "public_rss_link", "public_social_link"})
         channel_counts = store.channel_counts(start_ts=now - safe_window, end_ts=now)
+        plaza_rankings: dict[str, Any] | None = None
+        if safe_source_type == "plaza":
+            ranked = store.plaza_rankings(now_ts=now, windows=(14_400, 86_400), limit=12)
+            market_by_symbol: dict[str, dict[str, Any]] = {}
+            market_path = getattr(loaded, "market_snapshots_db_path", None)
+            if market_path and Path(market_path).exists():
+                try:
+                    market = load_market_cockpit(
+                        loaded,
+                        window_sec=86_400,
+                        board_limit=20,
+                        now_ts=now,
+                        live_rows=[],
+                    )
+                    market_by_symbol = {
+                        str(item.get("symbol") or ""): item
+                        for item in market.get("assets") or []
+                        if isinstance(item, dict) and item.get("symbol")
+                    }
+                except Exception:
+                    market_by_symbol = {}
+
+            def enrich(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                enriched: list[dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    market_item = market_by_symbol.get(str(item.get("symbol") or ""), {})
+                    strength = market_item.get("strength") if isinstance(market_item.get("strength"), dict) else {}
+                    flow_value = market_item.get("futures_flow_usd")
+                    flow_strength = strength.get("futures_flow_usd")
+                    futures_inflow = _number(market_item.get("futures_inflow_usd"))
+                    futures_outflow = _number(market_item.get("futures_outflow_usd"))
+                    futures_long_pct = None
+                    futures_short_pct = None
+                    if futures_inflow is not None and futures_outflow is not None:
+                        positive_inflow = max(0.0, futures_inflow)
+                        positive_outflow = max(0.0, futures_outflow)
+                        gross_flow = positive_inflow + positive_outflow
+                        if gross_flow > 0:
+                            futures_long_pct = round(positive_inflow / gross_flow * 100)
+                            futures_short_pct = 100 - futures_long_pct
+                    item.update({
+                        "price_change_pct": market_item.get("price_change_pct"),
+                        "futures_flow_usd": flow_value,
+                        "futures_flow_strength": flow_strength,
+                        "futures_long_pct": futures_long_pct,
+                        "futures_short_pct": futures_short_pct,
+                        "market_updated_at": market_item.get("updated_at"),
+                        "market_status": market_item.get("status") or "unavailable",
+                    })
+                    enriched.append(item)
+                return enriched
+
+            plaza_rankings = {
+                "schema_version": "workstation.info.plaza.v3",
+                "generated_at": _utc_time_text(now),
+                "data_status": "ready" if ranked.get(86_400) else "empty",
+                "provider": {
+                    "id": "bluesky_crypto_plaza",
+                    "label": "公开广场",
+                    "kind": "public_social_api",
+                    "rights_status": "public_social_link",
+                },
+                "active_4h": enrich(ranked.get(14_400, [])),
+                "total_24h": enrich(ranked.get(86_400, [])),
+                "coverage": {
+                    "active_4h": len(ranked.get(14_400, [])),
+                    "total_24h": len(ranked.get(86_400, [])),
+                    "market_linked": sum(1 for row in ranked.get(86_400, []) if row.get("symbol") in market_by_symbol),
+                },
+                "methodology": {
+                    "posts": "按公开广场事件的币种标签计数；一条事件同时关联多个币种时分别计入对应币种。",
+                    "activity": "4h 活力榜比较最近 1h 与此前 1h 的真实提及数；此前 1h 为 0 且本轮大于 0 时标记 NEW，否则返回本轮/上轮倍数。",
+                    "sentiment": "opportunity/risk 规则标签分别计为多/空；中性事件不进入方向占比。",
+                    "engagement": "公开互动分数为点赞 + 2×转发 + 回复；缺失互动时保持 0，不补造数据。",
+                    "market": "24h 涨跌与合约主动资金来自本地市场快照；合约多/空按主动买入额与主动卖出额占总成交额的比例计算，异常强度作为独立分位字段，不可用时返回 null。",
+                },
+            }
         if not items and ingestion.get("status") == "refreshing":
             warnings.append("Binance 官方公告正在后台更新，稍后刷新即可查看。")
         data_status = "ready" if items and ingestion.get("status") != "degraded" else "degraded" if items or ingestion.get("status") in {"degraded", "refreshing"} else "empty"
@@ -1291,6 +1878,7 @@ def public_info_feed_payload(
                 {"key": "plaza", "label": "市场广场情绪", "status": "ready" if channel_counts.get("plaza") else "empty", "count": channel_counts.get("plaza", 0), "rights_status": "public_social_link"},
             ],
             "items": items,
+            "plaza_rankings": plaza_rankings,
             "ingestion": ingestion,
             "methodology": {
                 "source_policy": "索引官方公告、公开 RSS 与 Bluesky 官方公开 API 的必要元数据和短摘要，全部保留原文回链。",
@@ -1312,6 +1900,171 @@ def public_info_feed_payload(
     except Exception:
         return api_error("信息中心暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取授权信息事件")
+
+
+def public_workstation_info_feed_payload(
+    *,
+    channel: str = "",
+    source_type: str = "",
+    language: str = "",
+    importance: str = "",
+    symbol: str = "",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 30,
+    window_sec: int = 7 * 86_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    safe_channel = str(channel or "").strip().lower()
+    if safe_channel:
+        mapped = WORKSTATION_INFO_CHANNELS.get(safe_channel)
+        if mapped is None:
+            return api_error("Unsupported info channel", code="invalid_channel")
+        source_type, language = mapped
+    source = public_info_feed_payload(
+        source_type=source_type,
+        language=language,
+        importance=importance,
+        symbol=symbol,
+        search=search,
+        page=page,
+        page_size=page_size,
+        window_sec=window_sec,
+        settings=settings,
+        now_ts=now_ts,
+        refresh=refresh,
+    )
+    if not source.get("ok"):
+        return source
+    source_data = dict(source.get("data") or {})
+    payload = {
+        **source_data,
+        "schema_version": "workstation.info.feed.v1",
+        "source_schema_version": source_data.get("schema_version"),
+        "channel": safe_channel,
+        "filters": {**dict(source_data.get("filters") or {}), "channel": safe_channel},
+        "methodology": {
+            **dict(source_data.get("methodology") or {}),
+            "channel_contract": "news=中文公开资讯，en=英文公开资讯，kol=公开 KOL 源，plaza=公开社交广场。",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取工作站信息流")
+
+
+def public_workstation_info_dashboard_payload(
+    *,
+    window_sec: int = 7 * 86_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    source = public_info_feed_payload(
+        page=1,
+        page_size=100,
+        window_sec=window_sec,
+        settings=settings,
+        now_ts=now_ts,
+        refresh=refresh,
+    )
+    if not source.get("ok"):
+        return source
+    source_data = dict(source.get("data") or {})
+    channels = list(source_data.get("channels") or [])
+    pagination = dict(source_data.get("pagination") or {})
+    coverage = dict(source_data.get("coverage") or {})
+    coverage.update({
+        "events": int(pagination.get("total") or coverage.get("events") or 0),
+        "channels": len(channels),
+        "active_channels": sum(1 for item in channels if int((item or {}).get("count") or 0) > 0),
+    })
+    payload = {
+        "schema_version": "workstation.info.dashboard.v1",
+        "generated_at": source_data.get("generated_at"),
+        "data_status": source_data.get("data_status"),
+        "coverage": coverage,
+        "warnings": source_data.get("warnings") or [],
+        "summary": source_data.get("summary") or {},
+        "channels": channels,
+        "ingestion": source_data.get("ingestion") or {},
+        "methodology": {
+            **dict(source_data.get("methodology") or {}),
+            "dashboard": "总览只汇总独立信息流索引，不将资讯数量或规则标签解释为交易信号。",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取工作站信息总览")
+
+
+def public_workstation_info_briefs_payload(
+    *,
+    window_sec: int = 14_400,
+    settings: Settings | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    briefs: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    generated_at = ""
+    event_count = 0
+    for channel in WORKSTATION_INFO_CHANNELS:
+        source = public_workstation_info_feed_payload(
+            channel=channel,
+            page=1,
+            page_size=20,
+            window_sec=window_sec,
+            settings=settings,
+            now_ts=now_ts,
+            refresh=False,
+        )
+        if not source.get("ok"):
+            warnings.append(f"{channel} 信息流暂时不可用。")
+            continue
+        source_data = dict(source.get("data") or {})
+        generated_at = generated_at or str(source_data.get("generated_at") or "")
+        items = list(source_data.get("items") or [])
+        event_count += len(items)
+        candidate = next((item for item in items if item.get("importance") == "high"), items[0] if items else None)
+        if candidate is None:
+            briefs.append({
+                "channel": channel,
+                "data_status": "empty",
+                "title": "暂无新增关键信息",
+                "summary": "当前窗口未索引到可展示的新事件。",
+                "generated_by": "empty_state",
+            })
+            continue
+        analysis = candidate.get("ai_analysis") if isinstance(candidate.get("ai_analysis"), dict) else {}
+        summary = analysis.get("fact_summary") or candidate.get("summary") or candidate.get("title") or "暂无新增关键信息"
+        generated_by = str(analysis.get("generated_by") or "source_event")
+        briefs.append({
+            "channel": channel,
+            "data_status": "ready",
+            "title": _short(candidate.get("title") or summary, 180),
+            "summary": _short(summary, 500),
+            "event_id": candidate.get("event_id"),
+            "published_at": candidate.get("published_at"),
+            "symbols": list(candidate.get("symbols") or [])[:8],
+            "source": candidate.get("source"),
+            "source_url": candidate.get("url"),
+            "generated_by": generated_by,
+            "model_generated": generated_by not in {"", "rules", "rule", "source_event"},
+        })
+    ready_count = sum(1 for item in briefs if item.get("data_status") == "ready")
+    payload = {
+        "schema_version": "workstation.info.briefs.v1",
+        "generated_at": generated_at or _utc_time_text(int(now_ts or time.time())),
+        "window_sec": max(3600, min(30 * 86_400, int(window_sec or 14_400))),
+        "data_status": "ready" if ready_count == len(WORKSTATION_INFO_CHANNELS) else "degraded" if ready_count else "empty",
+        "coverage": {"channels": len(WORKSTATION_INFO_CHANNELS), "ready_channels": ready_count, "events": event_count},
+        "warnings": warnings,
+        "items": briefs,
+        "methodology": {
+            "selection": "每栏优先选择窗口内最高重要度的真实事件，否则选择最新事件；空栏返回明确空态。",
+            "ai_boundary": "只有来源分析明确标记模型生成时 model_generated 才为 true；规则或原事件摘要不冒充 AI 结论。",
+            "rights": "摘要保留来源名称与原文链接，不复制受限全文。",
+        },
+    }
+    return api_ok(_strip_forbidden(payload), message="已读取工作站信息摘要")
 
 
 def public_agents_overview_payload(
@@ -1585,6 +2338,7 @@ def public_coin_context_payload(
     market_type: str = "futures",
     interval: str = "15m",
     bars: int = 96,
+    include_series: bool = True,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
@@ -1666,30 +2420,93 @@ def public_coin_context_payload(
         requested=safe_bars,
     )
     history_points: list[dict[str, Any]] = []
+    series_interval_sec = CHART_INTERVALS[safe_interval]
+    series_window_sec = series_interval_sec * safe_bars
     try:
-        if loaded.market_snapshots_db_path.exists():
+        if include_series and loaded.market_snapshots_db_path.exists():
+            raw_point_limit = min(
+                25_000,
+                max(safe_bars * 2, series_window_sec // 300 + 1),
+            )
             history_points = MarketSnapshotStore(loaded.market_snapshots_db_path).symbol_series(
                 target,
-                start_ts=now - max(86400, int(loaded.market_snapshot_retention_days) * 86400),
+                start_ts=now - series_window_sec,
                 end_ts=now,
-                limit=240,
+                limit=raw_point_limit,
             )
     except Exception:
         history_points = []
-    series = build_snapshot_series(history_points)
+    series = build_snapshot_series(resample_snapshot_series(
+        history_points,
+        interval_sec=series_interval_sec,
+        limit=safe_bars,
+    ))
+    series["interval"] = safe_interval
+    series["interval_sec"] = series_interval_sec
+    series["requested_buckets"] = safe_bars
+    if not include_series:
+        series = {
+            "data_status": "skipped",
+            "interval": safe_interval,
+            "interval_sec": series_interval_sec,
+            "requested_buckets": safe_bars,
+            "coverage": {"points": 0, "price": 0, "oi": 0, "spot_flow": 0, "futures_flow": 0, "funding": 0},
+            "points": [],
+            "warnings": [],
+            "methodology": {"source": "Series omitted because the workstation series endpoint owns this response."},
+        }
+    series.setdefault("methodology", {})["aggregation"] = (
+        "价格、OI 与费率采用每个所选周期桶内最新快照；现货/合约主动买卖额与 CVD 在桶内求和。"
+    )
     module_counts: dict[str, int] = {}
     for item in timeline:
         module = str(item.get("module") or "other")
         module_counts[module] = module_counts.get(module, 0) + 1
     latest_signal_ref = str(timeline[0].get("public_ref") or "") if timeline else ""
-    related_info = [
-        public_signal_item(item)
-        for item in timeline
-        if str(item.get("module") or "") == "announcement"
-    ][:12]
+    related_info: list[dict[str, Any]] = []
+    related_warnings: list[str] = []
+    if loaded.news_events_db_path.exists():
+        try:
+            related_info = list(NewsEventStore(loaded.news_events_db_path).list_feed(
+                start_ts=now - 30 * 86_400,
+                end_ts=now,
+                symbol=target,
+                page=1,
+                page_size=12,
+            ).get("items") or [])
+        except Exception:
+            related_warnings.append("关联资讯索引暂时不可用，已回退到统一信号库公告。")
+    if not related_info:
+        for item in timeline:
+            if str(item.get("module") or "") != "announcement":
+                continue
+            public = public_signal_item(item)
+            display = dict(public.get("display") or {})
+            related_info.append({
+                "event_id": str(public.get("public_ref") or f"signal-{public.get('id') or len(related_info) + 1}"),
+                "published_at": str(public.get("time") or ""),
+                "source": "Paoxx 统一信号库",
+                "source_type": "official_announcement",
+                "title": str(display.get("title") or public.get("excerpt") or "公告更新"),
+                "summary": str(display.get("summary") or public.get("excerpt") or ""),
+                "url": "",
+                "symbols": [target],
+                "importance": "high" if _number(public.get("score")) and float(public["score"]) >= 80 else "medium",
+                "language": "zh",
+                "cluster_id": str(public.get("public_ref") or ""),
+                "cluster_size": 1,
+                "event_kind": "neutral",
+                "rights_status": "internal_signal",
+                "source_links": [],
+                "timestamp_quality": "signal_observed_at",
+                "data_status": "ready" if public.get("time") else "degraded",
+            })
+            if len(related_info) >= 12:
+                break
     warnings = [
         *[str(item) for item in chart.get("warnings", []) if str(item)],
         *[str(item) for item in series.get("warnings", []) if str(item)],
+        *related_warnings,
     ]
     market_ready = bool(snapshot_payload.get("ok"))
     data_status = "ready" if market_ready and chart.get("data_status") == "ready" else "degraded" if market_ready or raw_klines or history_points else "unavailable"
@@ -1709,17 +2526,25 @@ def public_coin_context_payload(
         "warnings": warnings,
         "chart": chart,
         "series": series,
+        "funds_profile": {
+            "schema_version": FUNDS_PROFILE_SCHEMA_VERSION,
+            "market_type": safe_market,
+            "interval": safe_interval,
+            "volume_profile": build_volume_profile(list(chart.get("points") or [])),
+            "source": chart.get("source"),
+        },
         "related_info": {
             "data_status": "ready" if related_info else "empty",
             "items": related_info,
-            "methodology": "仅展示已进入统一信号库的官方公告事件，不抓取受限全文。",
+            "methodology": "优先展示近 30 天公开资讯索引中明确关联该币种的事件；无索引结果时回退到统一信号库公告。仅保留必要元数据、短摘要和合法原文链接，不抓取受限全文。",
         },
         "evidence_coverage": {
             "market": 1 if market_ready else 0,
             "chart_points": int((chart.get("coverage") or {}).get("returned") or 0),
             "snapshot_points": int((series.get("coverage") or {}).get("points") or 0),
             "signals": len(public_timeline),
-            "announcements": len(related_info),
+            "related_info": len(related_info),
+            "announcements": sum(1 for item in related_info if item.get("source_type") == "official_announcement"),
         },
         "timeline": public_timeline,
         "actions": _public_bot_actions(loaded, target, latest_signal_ref),

@@ -72,11 +72,20 @@ from .web_services.public import (
     public_realtime_market_payload,
     public_realtime_intelligence_payload,
     public_workstation_funds_open_interest_payload,
+    public_workstation_funds_overview_payload,
+    public_workstation_funds_series_payload,
+    public_workstation_info_briefs_payload,
+    public_workstation_info_dashboard_payload,
+    public_workstation_info_feed_payload,
     public_market_snapshot_payload,
     public_radar_boards_payload,
     public_radar_intelligence_payload,
+    public_workstation_radar_anomalies_payload,
+    public_workstation_radar_briefs_payload,
     public_workstation_radar_momentum_payload,
     public_workstation_radar_momentum_windows_payload,
+    public_workstation_radar_rank_payload,
+    public_workstation_radar_surge_payload,
     public_watchlist_market_payload,
     public_signal_context_payload,
     public_signal_detail_payload,
@@ -4140,7 +4149,18 @@ class WebHandler(BaseHTTPRequestHandler):
             "/public-api/radar/boards",
             "/public-api/radar/realtime-intelligence",
             "/public-api/workstation/radar/momentum",
+            "/public-api/workstation/radar/anomalies",
+            "/public-api/workstation/radar/rank",
+            "/public-api/workstation/radar/surge",
+            "/public-api/workstation/radar/briefs",
             "/public-api/workstation/funds/open-interest",
+            "/public-api/workstation/funds/overview",
+            "/public-api/workstation/funds/sectors",
+            "/public-api/workstation/funds/assets",
+            "/public-api/workstation/funds/series",
+            "/public-api/workstation/info/dashboard",
+            "/public-api/workstation/info/feed",
+            "/public-api/workstation/info/briefs",
             "/public-api/funds/sectors",
             "/public-api/funds/assets",
             "/public-api/info/feed",
@@ -4311,6 +4331,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 market_type=query.get("market_type", ["futures"])[0],
                 interval=query.get("interval", ["15m"])[0],
                 bars=clamp_query_int(query.get("bars", ["96"])[0], 96, 240),
+                include_series=str(query.get("include_series", ["1"])[0]).strip().lower()
+                not in {"0", "false", "no"},
             ))
             return
         if path == "/public-api/market/watchlist":
@@ -4335,9 +4357,45 @@ class WebHandler(BaseHTTPRequestHandler):
                 board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
             ))
             return
+        if path == "/public-api/workstation/radar/anomalies":
+            self.send_json(public_workstation_radar_anomalies_payload(
+                limit=clamp_query_int(query.get("limit", ["100"])[0], 100, 100),
+            ))
+            return
+        if path == "/public-api/workstation/radar/rank":
+            self.send_json(public_workstation_radar_rank_payload(
+                total_limit=clamp_query_int(query.get("total_limit", ["14"])[0], 14, 30),
+                ambush_limit=clamp_query_int(query.get("ambush_limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/surge":
+            self.send_json(public_workstation_radar_surge_payload(
+                limit=clamp_query_int(query.get("limit", ["5"])[0], 5, 20),
+            ))
+            return
+        if path == "/public-api/workstation/radar/briefs":
+            self.send_json(public_workstation_radar_briefs_payload(
+                limit=clamp_query_int(query.get("limit", ["6"])[0], 6, 20),
+            ))
+            return
         if path == "/public-api/workstation/radar/momentum-windows":
             self.send_json(public_workstation_radar_momentum_windows_payload(
                 board_limit=clamp_query_int(query.get("limit", ["8"])[0], 8, 20),
+            ))
+            return
+        if path == "/public-api/workstation/funds/overview":
+            self.send_json(public_workstation_funds_overview_payload(
+                window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
+                sector_window_sec=query_int_or(query.get("sector_window_sec", query.get("window_sec", ["3600"]))[0], 3600),
+                asset_window_sec=query_int_or(query.get("asset_window_sec", query.get("window_sec", ["3600"]))[0], 3600),
+                market_type=query.get("market_type", ["spot"])[0],
+                search=query.get("search", query.get("q", [""]))[0],
+                sector=query.get("sector", [""])[0],
+                data_status=query.get("data_status", [""])[0],
+                sort_key=query.get("sort", ["net_flow_usd"])[0],
+                direction=query.get("direction", ["desc"])[0],
+                page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
+                page_size=clamp_query_int(query.get("page_size", ["20"])[0], 20, 100),
             ))
             return
         if path == "/public-api/workstation/funds/open-interest":
@@ -4345,17 +4403,25 @@ class WebHandler(BaseHTTPRequestHandler):
                 query.get("symbol", [""])[0],
             ))
             return
-        if path == "/public-api/funds/sectors":
+        if path == "/public-api/workstation/funds/series":
+            self.send_json(public_workstation_funds_series_payload(
+                query.get("symbol", [""])[0],
+                kind=query.get("kind", ["spot_flow"])[0],
+                interval=query.get("interval", ["15m"])[0],
+                bars=clamp_query_int(query.get("bars", ["96"])[0], 96, 240),
+            ))
+            return
+        if path in {"/public-api/workstation/funds/sectors", "/public-api/funds/sectors"}:
             self.send_json(public_funds_sectors_payload(
                 window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
                 market_type=query.get("market_type", ["spot"])[0],
             ))
             return
-        if path == "/public-api/funds/assets":
+        if path in {"/public-api/workstation/funds/assets", "/public-api/funds/assets"}:
             self.send_json(public_funds_assets_payload(
                 window_sec=query_int_or(query.get("window_sec", ["3600"])[0], 3600),
                 market_type=query.get("market_type", ["spot"])[0],
-                search=query.get("q", [""])[0],
+                search=query.get("search", query.get("q", [""]))[0],
                 sector=query.get("sector", [""])[0],
                 data_status=query.get("data_status", [""])[0],
                 sort_key=query.get("sort", ["net_flow_usd"])[0],
@@ -4364,13 +4430,36 @@ class WebHandler(BaseHTTPRequestHandler):
                 page_size=clamp_query_int(query.get("page_size", ["50"])[0], 50, 100),
             ))
             return
+        if path == "/public-api/workstation/info/dashboard":
+            self.send_json(public_workstation_info_dashboard_payload(
+                window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+            ))
+            return
+        if path == "/public-api/workstation/info/briefs":
+            self.send_json(public_workstation_info_briefs_payload(
+                window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["14400"])[0], 14400))),
+            ))
+            return
+        if path == "/public-api/workstation/info/feed":
+            self.send_json(public_workstation_info_feed_payload(
+                channel=query.get("channel", [""])[0],
+                source_type=query.get("source_type", [""])[0],
+                language=query.get("language", [""])[0],
+                importance=query.get("importance", [""])[0],
+                symbol=query.get("symbol", [""])[0],
+                search=query.get("search", query.get("q", [""]))[0],
+                page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
+                page_size=clamp_query_int(query.get("page_size", ["30"])[0], 30, 100),
+                window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
+            ))
+            return
         if path == "/public-api/info/feed":
             self.send_json(public_info_feed_payload(
                 source_type=query.get("source_type", [""])[0],
                 language=query.get("language", [""])[0],
                 importance=query.get("importance", [""])[0],
                 symbol=query.get("symbol", [""])[0],
-                search=query.get("q", [""])[0],
+                search=query.get("search", query.get("q", [""]))[0],
                 page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
                 page_size=clamp_query_int(query.get("page_size", ["30"])[0], 30, 100),
                 window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),

@@ -8,7 +8,7 @@ from statistics import mean, median
 from typing import Any
 
 
-REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-18.2"
+REALTIME_INTELLIGENCE_SCHEMA_VERSION = "2026-07-19.1"
 MOMENTUM_WINDOWS = (("15m", 900), ("30m", 1_800), ("1h", 3_600), ("4h", 14_400), ("1d", 86_400))
 INTELLIGENCE_WINDOWS = (("5m", 300), *MOMENTUM_WINDOWS)
 BACKTEST_HORIZONS = (("5m", 300), ("15m", 900), ("1h", 3600))
@@ -31,6 +31,55 @@ def _number(value: Any) -> float | None:
 
 def _iso_seconds(value: int) -> str:
     return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z") if value > 0 else ""
+
+
+def _event_window_label(window: Any) -> str:
+    return {
+        "5m": "5 分钟",
+        "15m": "15 分钟",
+        "30m": "30 分钟",
+        "1h": "1 小时",
+        "4h": "4 小时",
+        "1d": "1 天",
+    }.get(str(window or ""), str(window or "5m"))
+
+
+def _event_amount(value: Any, *, signed: bool) -> str:
+    number = _number(value)
+    if number is None:
+        return "--"
+    prefix = "+" if signed and number > 0 else "-" if number < 0 else ""
+    absolute = abs(number)
+    if absolute >= 100_000_000:
+        return f"{prefix}{absolute / 100_000_000:.1f}".rstrip("0").rstrip(".") + "亿"
+    if absolute >= 10_000:
+        return f"{prefix}{absolute / 10_000:.0f}万"
+    return f"{prefix}{absolute:.0f}"
+
+
+def _event_percent(value: Any, *, digits: int) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    return f"{number:+.{digits}f}%"
+
+
+def _event_detail(event: dict[str, Any]) -> str:
+    window = _event_window_label(event.get("window"))
+    metric = str(event.get("metric") or "")
+    value = event.get("value_usd") if event.get("value_usd") is not None else event.get("value")
+    change = event.get("change_pct")
+    if metric == "oi":
+        return f"{window}内 oi {_event_amount(value, signed=True)} ({_event_percent(change, digits=1)})"
+    if metric == "volume":
+        return f"{window}内 成交量 {_event_amount(value, signed=False)} ({_event_percent(change, digits=1)})"
+    if metric == "price":
+        return f"{window}内 价格 {_event_percent(value, digits=2)}"
+    if metric == "perp_flow":
+        return f"{window}内 主动资金 {_event_amount(value, signed=True)} ({_event_percent(change, digits=1)})"
+    if metric == "liquidation":
+        return f"{window}内 爆仓额 {_event_amount(value, signed=False)}"
+    return ""
 
 
 def _bucket_end(row: dict[str, Any]) -> int:
@@ -375,12 +424,12 @@ def _build_anomaly_events(
                 price_direction = "long" if (price_change or 0) >= 0 else "short"
                 candidates.append({
                     "event_type": "volume_spike",
-                    "label": "成交量爆发",
+                    "label": "Vol 爆发",
                     "metric": "volume",
                     "direction": price_direction,
                     "value": round(current_gross, 2),
                     "value_usd": round(current_gross, 2),
-                    "change_pct": round(volume_change, 4),
+                    "change_pct": round(price_change, 4) if price_change is not None else None,
                     "strength": abs(volume_change),
                     "absolute_value": abs(current_gross),
                     "threshold": ANOMALY_VOLUME_THRESHOLDS[window_key],
@@ -480,6 +529,7 @@ def _build_anomaly_events(
                 method="同时间窗、同事件类型按绝对金额或绝对变动进行全场排名",
             )
             event["id"] = f"{event['symbol']}:{event['window']}:{event['event_type']}:{anchor}"
+            event["detail"] = _event_detail(event)
             event.pop("strength", None)
             event.pop("absolute_value", None)
             event.pop("threshold", None)
@@ -513,7 +563,7 @@ def build_open_interest_anomaly_events(
     for rows in grouped.values():
         rows.sort(key=lambda item: int(item["observed_at"]))
 
-    window_specs = (("15m", 900, 1.0), ("1h", 3_600, 2.0))
+    window_specs = (("5m", 300, 0.7), ("15m", 900, 1.0), ("1h", 3_600, 2.0))
     candidates: list[dict[str, Any]] = []
     for symbol, rows in grouped.items():
         times = [int(row["observed_at"]) for row in rows]
@@ -525,6 +575,10 @@ def build_open_interest_anomaly_events(
         for window_key, window_sec, threshold in window_specs:
             baseline_index = bisect_right(times, latest_at - window_sec) - 1
             if baseline_index < 0:
+                continue
+            baseline_at = int(rows[baseline_index]["observed_at"])
+            baseline_tolerance = max(60, min(300, window_sec // 3))
+            if baseline_at < latest_at - window_sec - baseline_tolerance:
                 continue
             baseline_oi = float(rows[baseline_index]["oi_usd"])
             if baseline_oi <= 0:
@@ -540,6 +594,9 @@ def build_open_interest_anomaly_events(
                     continue
                 previous_index = bisect_right(times, point_at - window_sec, 0, index) - 1
                 if previous_index < 0:
+                    continue
+                previous_at = int(rows[previous_index]["observed_at"])
+                if previous_at < point_at - window_sec - baseline_tolerance:
                     continue
                 previous_oi = float(rows[previous_index]["oi_usd"])
                 if previous_oi > 0:
@@ -559,6 +616,7 @@ def build_open_interest_anomaly_events(
                 "value": round(change_usd, 2),
                 "value_usd": round(change_usd, 2),
                 "change_pct": round(change_pct, 4),
+                "detail": "",
                 "_strength": abs(change_pct),
                 "_absolute": abs(change_usd),
                 "rankings": {
@@ -591,6 +649,7 @@ def build_open_interest_anomaly_events(
                 absolute_samples,
                 method="同一封闭窗口按 OI 绝对变化金额进行全场排名",
             )
+            event["detail"] = _event_detail(event)
             event.pop("_strength", None)
             event.pop("_absolute", None)
     candidates.sort(
@@ -668,17 +727,43 @@ def _lifecycle(
     surge: dict[str, Any],
     ambush: dict[str, Any],
 ) -> dict[str, Any]:
-    current_active = bool(surge.get("triggered") or ambush.get("triggered"))
-    current_score = max(float(surge.get("score") or 0), float(ambush.get("score") or 0))
+    current_kind = "surge" if surge.get("triggered") else "ambush" if ambush.get("triggered") else ""
+    current_analysis = surge if current_kind == "surge" else ambush if current_kind == "ambush" else {}
+    current_active = bool(current_kind)
+    current_direction = str(current_analysis.get("direction") or "neutral")
+    current_score = float(current_analysis.get("score") or 0)
     previous: tuple[int, float] | None = None
+    continuous_age_sec = 300 if current_active else 0
+    continuous = current_active
     for offset in range(300, 3_601, 300):
         candidate_anchor = anchor - offset
-        candidate = _surge_at(rows, ends, candidate_anchor)
-        if candidate.get("triggered"):
-            previous = (candidate_anchor, float(candidate.get("score") or 0))
+        candidate_surge = _surge_at(rows, ends, candidate_anchor)
+        candidate_windows = {
+            "5m": _aggregate_window(rows, ends, start_ts=candidate_anchor - 300, end_ts=candidate_anchor),
+            "15m": _aggregate_window(rows, ends, start_ts=candidate_anchor - 900, end_ts=candidate_anchor),
+        }
+        candidate_ambush = _ambush(candidate_windows, candidate_surge)
+        if current_active:
+            candidate = candidate_surge if current_kind == "surge" else candidate_ambush
+            matched = bool(
+                candidate.get("triggered")
+                and str(candidate.get("direction") or "neutral") == current_direction
+            )
+            if matched and previous is None:
+                previous = (candidate_anchor, float(candidate.get("score") or 0))
+            if continuous and matched:
+                continuous_age_sec += 300
+            else:
+                continuous = False
+        else:
+            candidate = candidate_surge if candidate_surge.get("triggered") else candidate_ambush
+            if candidate.get("triggered"):
+                previous = (candidate_anchor, float(candidate.get("score") or 0))
+        if previous is not None and (not current_active or not continuous):
             break
     if current_active and previous is None:
-        state, basis = "new", "过去 1 小时没有同方向 Surge，当前为新异常"
+        rule_label = "Surge" if current_kind == "surge" else "埋伏"
+        state, basis = "new", f"过去 1 小时没有同方向 {rule_label}，当前为新异常"
     elif current_active and previous is not None:
         gap = anchor - previous[0]
         if gap > 1_800:
@@ -697,7 +782,15 @@ def _lifecycle(
         "new": "NEW", "enhancing": "增强", "continuing": "持续",
         "cooling": "降温", "restarted": "重启", "expired": "失效", "inactive": "未触发",
     }
-    return {"state": state, "label": labels[state], "basis": basis, "observed_at": _iso_seconds(anchor)}
+    return {
+        "state": state,
+        "label": labels[state],
+        "basis": basis,
+        "observed_at": _iso_seconds(anchor),
+        "age_sec": continuous_age_sec if current_active else 0,
+        "rule": current_kind or None,
+        "direction": current_direction if current_active else None,
+    }
 
 
 def _close_at(
@@ -778,6 +871,7 @@ def build_realtime_intelligence(
     *,
     now_ts: int,
     limit: int = 10,
+    event_limit: int | None = None,
     include_backtest: bool = False,
 ) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -853,10 +947,11 @@ def build_realtime_intelligence(
         )
 
     safe_limit = max(1, min(30, int(limit or 10)))
+    safe_event_limit = max(1, min(100, int(event_limit or safe_limit)))
     anomaly_events = _build_anomaly_events(
         grouped,
         anchor=anchor,
-        limit=safe_limit,
+        limit=safe_event_limit,
     )
     surge_items = sorted(
         (item for item in items if item["surge"].get("triggered")),

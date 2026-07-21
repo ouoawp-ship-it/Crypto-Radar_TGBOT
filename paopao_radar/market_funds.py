@@ -13,7 +13,7 @@ from .config import Settings
 from .market_cockpit import MARKET_COCKPIT_SCHEMA_VERSION, load_market_cockpit, normalize_window
 
 
-FUNDS_SCHEMA_VERSION = "2026-07-18"
+FUNDS_SCHEMA_VERSION = "2026-07-19.3"
 MARKET_TYPES = ("spot", "futures")
 ASSET_SORT_KEYS = {
     "symbol",
@@ -48,19 +48,21 @@ def normalize_market_type(value: Any) -> str:
     return requested if requested in MARKET_TYPES else "spot"
 
 
-def _flow_keys(market_type: str) -> tuple[str, str, str, str, str]:
+def _flow_keys(market_type: str) -> tuple[str, str, str, str, str, str, str]:
     normalized = normalize_market_type(market_type)
     return (
         f"{normalized}_flow_usd",
         f"{normalized}_inflow_usd",
         f"{normalized}_outflow_usd",
         f"{normalized}_flow_change_pct",
+        f"{normalized}_volume_usd",
+        f"{normalized}_volume_change_pct",
         "binance_spot_klines" if normalized == "spot" else "binance_futures_klines",
     )
 
 
 def _asset_row(source: dict[str, Any], *, market_type: str) -> dict[str, Any]:
-    flow_key, inflow_key, outflow_key, flow_change_key, flow_source = _flow_keys(market_type)
+    flow_key, inflow_key, outflow_key, flow_change_key, volume_key, volume_change_key, flow_source = _flow_keys(market_type)
     net_flow = _number(source.get(flow_key))
     inflow = _number(source.get(inflow_key))
     outflow = _number(source.get(outflow_key))
@@ -84,8 +86,8 @@ def _asset_row(source: dict[str, Any], *, market_type: str) -> dict[str, Any]:
         "net_flow_change_pct": _number(source.get(flow_change_key)),
         "inflow_usd": inflow,
         "outflow_usd": outflow,
-        "volume_usd": _number(source.get("quote_volume")),
-        "volume_change_pct": _number(source.get("volume_change_pct")),
+        "volume_usd": _number(source.get(volume_key)),
+        "volume_change_pct": _number(source.get(volume_change_key)),
         "oi_usd": _number(source.get("oi_usd")),
         "oi_change_pct": _number(source.get("oi_change_pct")),
         "funding_pct": _number(source.get("funding_pct")),
@@ -101,7 +103,7 @@ def _asset_row(source: dict[str, Any], *, market_type: str) -> dict[str, Any]:
         },
         "sources": {
             "price": "binance_futures_ticker",
-            "volume": "binance_futures_ticker",
+            "volume": flow_source,
             "flow": flow_source,
             "oi": "binance_futures_open_interest",
             "funding": "binance_futures_premium_index",
@@ -214,7 +216,7 @@ def build_funds_sectors(
         "sectors": sectors,
         "methodology": {
             "classification": "每个资产只按版本化分类的第一个主板块计入总额，附加标签不重复聚合。",
-            "flow": "基于 Binance 封闭 K 线窗口的主动买入与主动卖出成交额；净额是 CVD 估算，不代表交易所充提净流入。",
+            "flow": "基于 Binance 封闭 K 线窗口的主动买入与主动卖出成交额；交易量为两者之和，净额是 CVD 估算，不代表交易所充提净流入。",
             "coverage": "板块覆盖率=有效资金流资产数/当前扫描资产数；低于 60% 标记降级。",
         },
     }
@@ -295,7 +297,7 @@ def build_funds_assets(
         },
         "items": items,
         "methodology": {
-            "flow": "净流入是封闭 K 线窗口内主动买入额-主动卖出额的 CVD 估算。",
+            "flow": "净流入是封闭 K 线窗口内主动买入额-主动卖出额的 CVD 估算；交易量是同一窗口主动买入额+主动卖出额。",
             "distribution": "OI 集中度在筛选后的完整资产集合上计算，不受当前分页影响。",
             "missing": "无有效扫描、市值或历史快照时返回 null，不以 0 补齐。",
         },

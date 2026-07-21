@@ -57,6 +57,8 @@ export type SignalLifecycle = {
   derived?: boolean;
   observed_at?: string;
   age_sec?: number;
+  rule?: "surge" | "ambush" | string | null;
+  direction?: "long" | "short" | "neutral" | string | null;
   basis?: string;
   previous_signal_id?: number | null;
 };
@@ -172,11 +174,13 @@ export type RadarIntelligence = {
 export type CockpitBoardItem = {
   symbol?: string;
   coin?: string;
+  asset_type?: string;
   price?: number | null;
   value?: number | null;
   unit?: "usd" | "percent" | "percent_per_cycle" | string;
   magnitude_usd?: number | null;
   strength_percentile?: number | null;
+  window_states?: Partial<Record<"15m" | "30m" | "1h" | "4h" | "1d", boolean>>;
   updated_at?: string;
   status?: MetricStatus | string;
   quality?: string;
@@ -203,6 +207,17 @@ export type CockpitBoard = {
   strength_positive?: CockpitBoardSide;
   strength_negative?: CockpitBoardSide;
   reason?: string;
+};
+
+export type RadarConfluenceItem = CockpitBoardItem & {
+  board_count?: number;
+  divergent?: boolean;
+  direction?: "positive" | "negative" | "inflow" | "outflow" | string;
+};
+
+export type RadarConfluence = {
+  amount?: RadarConfluenceItem[];
+  strength?: RadarConfluenceItem[];
 };
 
 export type MarketCoverage = {
@@ -257,6 +272,25 @@ export type MarketOverview = {
     spot_net_flow_usd?: number | null;
     futures_net_flow_usd?: number | null;
     oi_net_change_usd?: number | null;
+    spot_positive_ratio?: number | null;
+    futures_positive_ratio?: number | null;
+    oi_positive_ratio?: number | null;
+    comparison?: {
+      previous?: {
+        advancing?: number | null;
+        declining?: number | null;
+        breadth_pct?: number | null;
+        spot_net_flow_usd?: number | null;
+        futures_net_flow_usd?: number | null;
+        oi_net_change_usd?: number | null;
+      };
+      delta?: {
+        breadth_pct?: number | null;
+        spot_net_flow_usd?: number | null;
+        futures_net_flow_usd?: number | null;
+        oi_net_change_usd?: number | null;
+      };
+    };
   };
 };
 
@@ -269,6 +303,7 @@ export type RadarBoards = {
   coverage?: MarketCoverage;
   readiness?: MarketReadiness;
   boards?: CockpitBoard[];
+  confluence?: RadarConfluence;
   methodology?: Record<string, string>;
 };
 
@@ -297,6 +332,7 @@ export type RealtimeRuleAnalysis = {
 export type RealtimeIntelligenceItem = {
   symbol?: string;
   coin?: string;
+  asset_type?: string;
   observed_at?: string;
   data_status?: string;
   windows?: Record<string, RealtimeWindow>;
@@ -342,6 +378,63 @@ export type RealtimeIntelligencePayload = {
   items?: RealtimeIntelligenceItem[];
   anomaly_events?: RealtimeAnomalyEvent[];
   boards?: Array<{ key?: string; title?: string; count?: number; description?: string; items?: RealtimeIntelligenceItem[] }>;
+};
+
+export type WorkstationRadarAnomaliesPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  items?: RealtimeAnomalyEvent[];
+};
+
+export type WorkstationRadarSurgePayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  items?: RealtimeIntelligenceItem[];
+};
+
+export type WorkstationRadarRankPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  universe?: RealtimeIntelligenceItem[];
+  total?: RealtimeIntelligenceItem[];
+  ambush?: RealtimeIntelligenceItem[];
+};
+
+export type WorkstationRadarBrief = {
+  id?: string;
+  symbol?: string;
+  coin?: string;
+  observed_at?: string;
+  direction?: string;
+  title?: string;
+  summary?: string;
+  rankings?: { self?: SignalRank; market_strength?: SignalRank; market_absolute?: SignalRank };
+};
+
+export type WorkstationRadarBriefsPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  observed_at?: string;
+  data_status?: string;
+  warnings?: string[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string | boolean>;
+  items?: WorkstationRadarBrief[];
 };
 
 export type SectorDefinition = { id?: string; label?: string; description?: string };
@@ -406,6 +499,7 @@ export type FundsAsset = {
   volume_usd?: number | null;
   volume_change_pct?: number | null;
   oi_usd?: number | null;
+  oi_change_usd?: number | null;
   oi_change_pct?: number | null;
   funding_pct?: number | null;
   market_cap?: number | null;
@@ -458,6 +552,27 @@ export type CrossExchangeOpenInterest = {
   methodology?: Record<string, string>;
 };
 
+export type FundsOverviewPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  window_sec?: number;
+  sector_window_sec?: number;
+  asset_window_sec?: number;
+  market_type?: "spot" | "futures" | string;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  warnings?: string[];
+  summary?: FundsSectorsPayload["summary"];
+  distribution?: FundsAssetsPayload["distribution"];
+  catalog?: SectorDefinition[];
+  sectors?: SectorFlow[];
+  assets?: FundsAsset[];
+  filters?: Record<string, string>;
+  sort?: FundsAssetsPayload["sort"];
+  pagination?: FundsAssetsPayload["pagination"];
+  methodology?: Record<string, string>;
+};
+
 export type KlinePoint = {
   open_time?: string;
   open_time_ms?: number;
@@ -489,6 +604,7 @@ export type CoinSeriesPoint = {
   quote_volume?: number | null;
   market_cap?: number | null;
   oi_usd?: number | null;
+  oi_change_usd?: number | null;
   oi_change_pct?: number | null;
   spot_inflow_usd?: number | null;
   spot_outflow_usd?: number | null;
@@ -502,8 +618,12 @@ export type CoinSeriesPoint = {
 
 export type CoinSeries = {
   data_status?: string;
+  interval?: string;
+  interval_sec?: number;
+  requested_buckets?: number;
   coverage?: Record<string, number>;
   points?: CoinSeriesPoint[];
+  analytics?: FundsSeriesAnalytics;
   warnings?: string[];
   methodology?: Record<string, string>;
 };
@@ -519,8 +639,9 @@ export type CoinContext = {
   summary?: { signal_count?: number; sent_count?: number; module_counts?: Record<string, number>; latest_at?: string };
   chart?: CoinChart;
   series?: CoinSeries;
-  related_info?: { data_status?: string; items?: SignalItem[]; methodology?: string };
-  evidence_coverage?: { market?: number; chart_points?: number; snapshot_points?: number; signals?: number; announcements?: number };
+  funds_profile?: FundsProfile;
+  related_info?: { data_status?: string; items?: CoinRelatedInfoItem[]; methodology?: string };
+  evidence_coverage?: { market?: number; chart_points?: number; snapshot_points?: number; signals?: number; related_info?: number; announcements?: number };
   timeline?: SignalItem[];
   actions?: { radar_url?: string; share_url?: string; ai_url?: string; alert_url?: string };
 };
@@ -582,6 +703,8 @@ export type NewsEvent = {
   data_status?: string;
 };
 
+export type CoinRelatedInfoItem = SignalItem & NewsEvent;
+
 export type InfoChannel = {
   key?: string;
   label?: string;
@@ -589,6 +712,92 @@ export type InfoChannel = {
   count?: number;
   rights_status?: string;
   reason?: string;
+};
+
+export type InfoPlazaRank = {
+  symbol?: string;
+  coin?: string;
+  asset_type?: string;
+  posts?: number;
+  recent_1h_posts?: number;
+  previous_1h_posts?: number;
+  recent_ratio?: number | null;
+  is_new?: boolean;
+  positive?: number;
+  negative?: number;
+  neutral?: number;
+  positive_pct?: number;
+  negative_pct?: number;
+  sentiment?: "bullish" | "bearish" | "neutral" | string;
+  sentiment_confidence_pct?: number;
+  likes?: number;
+  reposts?: number;
+  replies?: number;
+  engagement?: number;
+  engagement_per_post?: number;
+  latest_at?: string;
+  summary?: string;
+  price_change_pct?: number | null;
+  futures_flow_usd?: number | null;
+  futures_flow_strength?: number | null;
+  futures_long_pct?: number | null;
+  futures_short_pct?: number | null;
+  market_updated_at?: string;
+  market_status?: string;
+};
+
+export type InfoPlazaRankings = {
+  schema_version?: string;
+  generated_at?: string;
+  data_status?: string;
+  provider?: { id?: string; label?: string; kind?: string; rights_status?: string };
+  active_4h?: InfoPlazaRank[];
+  total_24h?: InfoPlazaRank[];
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string>;
+};
+
+export type FundsSeriesPayload = CoinSeries & {
+  schema_version?: string;
+  generated_at?: string;
+  symbol?: string;
+  kind?: "spot_flow" | "futures_flow" | "oi" | "funding" | string;
+  metric?: string;
+  analytics?: FundsSeriesAnalytics;
+};
+
+export type FundsSeriesAnalytics = {
+  data_status?: string;
+  metric?: string;
+  net_flow_usd?: number | null;
+  direction?: "inflow" | "outflow" | "neutral" | string;
+  latest_direction?: "inflow" | "outflow" | "neutral" | string;
+  duration_sec?: number;
+  hit_rate_pct?: number | null;
+  hit_samples?: number;
+  price?: { first?: number | null; current?: number | null; change_pct?: number | null; high?: number | null; low?: number | null };
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string>;
+};
+
+export type FundsVolumeProfile = {
+  data_status?: string;
+  poc?: number | null;
+  vah?: number | null;
+  val?: number | null;
+  range_high?: number | null;
+  range_low?: number | null;
+  value_area_ratio?: number;
+  coverage?: Record<string, number>;
+  methodology?: string;
+};
+
+export type FundsProfile = {
+  schema_version?: string;
+  market_type?: string;
+  interval?: string;
+  source?: string;
+  volume_profile?: FundsVolumeProfile;
 };
 
 export type InfoFeedPayload = {
@@ -602,6 +811,44 @@ export type InfoFeedPayload = {
   summary?: { high_importance?: number; risk?: number; opportunity?: number; official?: number };
   channels?: InfoChannel[];
   items?: NewsEvent[];
+  plaza_rankings?: InfoPlazaRankings | null;
+  methodology?: Record<string, string>;
+};
+
+export type InfoDashboardPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  warnings?: string[];
+  summary?: InfoFeedPayload["summary"];
+  channels?: InfoChannel[];
+  ingestion?: { status?: string; error?: string };
+  methodology?: Record<string, string>;
+};
+
+export type InfoBrief = {
+  channel?: "news" | "en" | "kol" | "plaza" | string;
+  data_status?: string;
+  title?: string;
+  summary?: string;
+  event_id?: string;
+  published_at?: string;
+  symbols?: string[];
+  source?: string;
+  source_url?: string;
+  generated_by?: string;
+  model_generated?: boolean;
+};
+
+export type InfoBriefsPayload = {
+  schema_version?: string;
+  generated_at?: string;
+  window_sec?: number;
+  data_status?: string;
+  coverage?: Record<string, number>;
+  warnings?: string[];
+  items?: InfoBrief[];
   methodology?: Record<string, string>;
 };
 

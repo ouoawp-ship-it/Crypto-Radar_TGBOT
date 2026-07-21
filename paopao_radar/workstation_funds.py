@@ -4,10 +4,11 @@ import math
 from typing import Any
 
 from .config import Settings
-from .data_sources import HttpClient
+from .data_sources import DataQuality, HttpClient
 
 
 CROSS_EXCHANGE_OI_SCHEMA_VERSION = "workstation.funds.open-interest.v1"
+FUNDS_PROFILE_SCHEMA_VERSION = "workstation.funds.profile.v1"
 
 
 def _number(value: Any) -> float | None:
@@ -30,6 +31,162 @@ def _first(value: Any, *path: str) -> dict[str, Any]:
     if isinstance(current, list) and current and isinstance(current[0], dict):
         return current[0]
     return current if isinstance(current, dict) else {}
+
+
+def _rounded(value: float | None, digits: int = 6) -> float | None:
+    return round(value, digits) if value is not None and math.isfinite(value) else None
+
+
+def build_funds_series_analytics(
+    points: list[dict[str, Any]],
+    *,
+    metric: str,
+    interval_sec: int,
+) -> dict[str, Any]:
+    safe_interval = max(1, int(interval_sec or 1))
+    ordered = [point for point in points if isinstance(point, dict)]
+    flows = [_number(point.get(metric)) for point in ordered]
+    prices = [_positive(point.get("price")) for point in ordered]
+    valid_flows = [value for value in flows if value is not None]
+    valid_prices = [value for value in prices if value is not None]
+    net_flow = sum(valid_flows) if valid_flows else None
+    direction = "neutral"
+    if net_flow is not None and net_flow > 0:
+        direction = "inflow"
+    elif net_flow is not None and net_flow < 0:
+        direction = "outflow"
+
+    latest_direction = 0
+    duration_buckets = 0
+    for value in reversed(flows):
+        if value is None or value == 0:
+            break
+        sign = 1 if value > 0 else -1
+        if latest_direction == 0:
+            latest_direction = sign
+        if sign != latest_direction:
+            break
+        duration_buckets += 1
+
+    backtest_samples = 0
+    backtest_hits = 0
+    for index in range(max(0, len(ordered) - 1)):
+        flow = flows[index]
+        current_price = prices[index]
+        next_price = prices[index + 1]
+        if flow in {None, 0} or current_price is None or next_price is None or current_price == next_price:
+            continue
+        backtest_samples += 1
+        if (flow > 0) == (next_price > current_price):
+            backtest_hits += 1
+
+    first_price = valid_prices[0] if valid_prices else None
+    last_price = valid_prices[-1] if valid_prices else None
+    price_change_pct = (
+        (last_price / first_price - 1) * 100
+        if first_price is not None and last_price is not None and first_price > 0
+        else None
+    )
+    return {
+        "data_status": "ready" if len(valid_flows) >= 2 and len(valid_prices) >= 2 else "degraded" if valid_flows or valid_prices else "unavailable",
+        "metric": metric,
+        "net_flow_usd": _rounded(net_flow, 2),
+        "direction": direction,
+        "latest_direction": "inflow" if latest_direction > 0 else "outflow" if latest_direction < 0 else "neutral",
+        "duration_sec": duration_buckets * safe_interval,
+        "hit_rate_pct": _rounded(backtest_hits / backtest_samples * 100, 4) if backtest_samples else None,
+        "hit_samples": backtest_samples,
+        "price": {
+            "first": _rounded(first_price),
+            "current": _rounded(last_price),
+            "change_pct": _rounded(price_change_pct, 4),
+            "high": _rounded(max(valid_prices)) if valid_prices else None,
+            "low": _rounded(min(valid_prices)) if valid_prices else None,
+        },
+        "coverage": {"points": len(ordered), "flow": len(valid_flows), "price": len(valid_prices)},
+        "methodology": {
+            "direction": "所选闭合桶内主动买入额减主动卖出额求和；正值为流入，负值为流出。",
+            "duration": "从最新闭合桶向前统计同方向且非零的连续桶数，再乘所选桶周期。",
+            "hit_rate": "每个可用桶用当期资金方向预测下一桶价格方向；价格不变、资金为零或缺失的样本不计入分母。",
+        },
+    }
+
+
+def build_volume_profile(
+    points: list[dict[str, Any]],
+    *,
+    bin_count: int = 24,
+    value_area_ratio: float = 0.7,
+) -> dict[str, Any]:
+    rows = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        high = _positive(point.get("high"))
+        low = _positive(point.get("low"))
+        close = _positive(point.get("close"))
+        volume = _positive(point.get("quote_volume"))
+        if high is None or low is None or close is None or volume is None or high < low:
+            continue
+        rows.append((high, low, close, volume))
+    if not rows:
+        return {
+            "data_status": "unavailable",
+            "poc": None,
+            "vah": None,
+            "val": None,
+            "coverage": {"points": 0, "bins": 0},
+            "methodology": "仅使用带高低收与美元成交额的闭合 K 线；样本不足时不生成关键价位。",
+        }
+
+    safe_bins = max(8, min(80, int(bin_count or 24)))
+    ratio = max(0.5, min(0.95, float(value_area_ratio or 0.7)))
+    range_low = min(row[1] for row in rows)
+    range_high = max(row[0] for row in rows)
+    if range_high <= range_low:
+        return {
+            "data_status": "degraded",
+            "poc": _rounded(range_low),
+            "vah": _rounded(range_high),
+            "val": _rounded(range_low),
+            "coverage": {"points": len(rows), "bins": 1},
+            "methodology": "所有闭合 K 线价格相同，POC、VAH 与 VAL 退化为同一价格。",
+        }
+
+    width = (range_high - range_low) / safe_bins
+    volumes = [0.0] * safe_bins
+    for high, low, close, volume in rows:
+        typical = (high + low + close) / 3
+        index = min(safe_bins - 1, max(0, int((typical - range_low) / width)))
+        volumes[index] += volume
+    poc_index = max(range(safe_bins), key=lambda index: volumes[index])
+    selected = {poc_index}
+    accumulated = volumes[poc_index]
+    target = sum(volumes) * ratio
+    left = poc_index - 1
+    right = poc_index + 1
+    while accumulated < target and (left >= 0 or right < safe_bins):
+        left_volume = volumes[left] if left >= 0 else -1
+        right_volume = volumes[right] if right < safe_bins else -1
+        if right_volume > left_volume:
+            selected.add(right)
+            accumulated += max(0, right_volume)
+            right += 1
+        else:
+            selected.add(left)
+            accumulated += max(0, left_volume)
+            left -= 1
+    return {
+        "data_status": "ready" if len(rows) >= 24 else "degraded",
+        "poc": _rounded(range_low + (poc_index + 0.5) * width),
+        "vah": _rounded(range_low + (max(selected) + 1) * width),
+        "val": _rounded(range_low + min(selected) * width),
+        "range_high": _rounded(range_high),
+        "range_low": _rounded(range_low),
+        "value_area_ratio": ratio,
+        "coverage": {"points": len(rows), "bins": safe_bins},
+        "methodology": "按典型价 (H+L+C)/3 将每根闭合 K 线的美元成交额分配到价格桶；POC 为最大成交量桶中心，VAH/VAL 为从 POC 向两侧扩展得到的 70% 成交量价值区边界。",
+    }
 
 
 def build_cross_exchange_open_interest(
@@ -98,7 +255,7 @@ def collect_cross_exchange_open_interest(
 ) -> dict[str, Any]:
     target = str(symbol or "").upper()
     own_http = http is None
-    client = http or HttpClient(settings)
+    client = http or HttpClient(settings, DataQuality())
     try:
         mark = client.get_json(
             f"{settings.binance_fapi_base_url.rstrip('/')}/fapi/v1/premiumIndex",
@@ -142,6 +299,9 @@ def collect_cross_exchange_open_interest(
 
 __all__ = [
     "CROSS_EXCHANGE_OI_SCHEMA_VERSION",
+    "FUNDS_PROFILE_SCHEMA_VERSION",
     "build_cross_exchange_open_interest",
+    "build_funds_series_analytics",
+    "build_volume_profile",
     "collect_cross_exchange_open_interest",
 ]

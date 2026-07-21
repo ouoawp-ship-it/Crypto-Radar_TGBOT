@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 import time
+from bisect import bisect_right
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -17,8 +18,15 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-17"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.4"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
+RADAR_ASSET_TYPES = {
+    "AAPL": "美股", "AMD": "美股", "AMZN": "美股", "BABA": "美股",
+    "COIN": "美股", "META": "美股", "MSTR": "美股", "MSFT": "美股",
+    "MU": "美股", "NVDA": "美股", "SNDK": "美股", "SKHY": "美股",
+    "SKHYNIX": "美股", "SPCX": "美股", "TSLA": "美股",
+    "PAXG": "黄金", "XAU": "黄金", "XAUT": "黄金", "XAG": "白银",
+}
 SNAPSHOT_COLUMNS = (
     "price",
     "quote_volume",
@@ -31,6 +39,14 @@ SNAPSHOT_COLUMNS = (
     "futures_outflow_usd",
     "futures_flow_usd",
     "funding_pct",
+)
+FLOW_COLUMNS = (
+    "spot_inflow_usd",
+    "spot_outflow_usd",
+    "spot_flow_usd",
+    "futures_inflow_usd",
+    "futures_outflow_usd",
+    "futures_flow_usd",
 )
 
 
@@ -49,6 +65,32 @@ def _positive(value: Any) -> float | None:
     return number if number is not None and number > 0 else None
 
 
+def _nonnegative(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and number >= 0 else None
+
+
+def _radar_asset_type(row: dict[str, Any], symbol: str) -> str | None:
+    explicit = str(row.get("asset_type") or "").strip()
+    if explicit:
+        return explicit
+    coin = symbol[:-4] if symbol.endswith("USDT") else symbol
+    return RADAR_ASSET_TYPES.get(coin)
+
+
+def _gross_flow(inflow: Any, outflow: Any) -> float | None:
+    buy = _nonnegative(inflow)
+    sell = _nonnegative(outflow)
+    return buy + sell if buy is not None and sell is not None else None
+
+
+def _positive_ratio(values: list[float]) -> float | None:
+    positive = sum(value for value in values if value > 0)
+    negative = sum(abs(value) for value in values if value < 0)
+    total = positive + negative
+    return round(positive / total, 6) if total > 0 else None
+
+
 def _pct(current: Any, previous: Any) -> float | None:
     current_number = _number(current)
     previous_number = _number(previous)
@@ -63,6 +105,15 @@ def _signed_pct(current: Any, previous: Any) -> float | None:
     if current_number is None or previous_number in (None, 0):
         return None
     return (current_number - previous_number) / abs(previous_number) * 100
+
+
+def _change_amount(current: Any, change_pct: Any) -> float | None:
+    current_number = _positive(current)
+    percent_number = _number(change_pct)
+    if current_number is None or percent_number is None or percent_number <= -100:
+        return None
+    previous = current_number / (1 + percent_number / 100)
+    return current_number - previous
 
 
 def _iso(ts: int | float) -> str:
@@ -207,11 +258,11 @@ class MarketSnapshotStore:
                 "market_cap": _positive(raw.get("market_cap")),
                 "oi_usd": _positive(raw.get("oi_usd")),
                 "oi_change_pct": _number(raw.get("oi_change_pct")),
-                "spot_inflow_usd": _positive(raw.get("spot_inflow_usd")),
-                "spot_outflow_usd": _positive(raw.get("spot_outflow_usd")),
+                "spot_inflow_usd": _nonnegative(raw.get("spot_inflow_usd")),
+                "spot_outflow_usd": _nonnegative(raw.get("spot_outflow_usd")),
                 "spot_flow_usd": _number(raw.get("spot_flow_usd")),
-                "futures_inflow_usd": _positive(raw.get("futures_inflow_usd")),
-                "futures_outflow_usd": _positive(raw.get("futures_outflow_usd")),
+                "futures_inflow_usd": _nonnegative(raw.get("futures_inflow_usd")),
+                "futures_outflow_usd": _nonnegative(raw.get("futures_outflow_usd")),
                 "futures_flow_usd": _number(raw.get("futures_flow_usd")),
                 "funding_pct": _number(raw.get("funding_pct")),
                 "coverage_json": json.dumps(_coverage(raw.get("coverage")), ensure_ascii=False, sort_keys=True),
@@ -269,6 +320,116 @@ class MarketSnapshotStore:
             else:
                 row = conn.execute("SELECT MAX(observed_at) AS value FROM market_snapshots").fetchone()
         return int(row["value"] or 0) if row else 0
+
+    @staticmethod
+    def _window_flow(
+        rows: list[dict[str, Any]],
+        *,
+        end_ts: int,
+        window_sec: int,
+    ) -> tuple[dict[str, float | None], str]:
+        """Return one non-overlapping flow fact for the requested closed window."""
+
+        start_ts = int(end_ts) - int(window_sec)
+        expected = max(1, int(window_sec) // 900)
+        canonical = [
+            row for row in rows
+            if str(row.get("source") or "") == "market_flow_15m"
+            and int(row.get("window_sec") or 0) == 900
+            and start_ts < int(row.get("observed_at") or 0) <= int(end_ts)
+        ]
+        canonical.sort(key=lambda row: int(row.get("observed_at") or 0))
+        if len(canonical) >= expected:
+            selected = canonical[-expected:]
+            timestamps = [int(row.get("observed_at") or 0) for row in selected]
+            if all(current - previous == 900 for previous, current in zip(timestamps, timestamps[1:])):
+                values: dict[str, float | None] = {}
+                for key in FLOW_COLUMNS:
+                    samples = [_number(row.get(key)) for row in selected]
+                    values[key] = sum(float(value) for value in samples if value is not None) if all(value is not None for value in samples) else None
+                return values, "aggregated_15m"
+
+        freshness_sec = max(int(window_sec), 1_800)
+        exact = [
+            row for row in rows
+            if 0 <= int(end_ts) - int(row.get("observed_at") or 0) <= freshness_sec
+            and int(row.get("window_sec") or 0) == int(window_sec)
+            and any(_number(row.get(key)) is not None for key in FLOW_COLUMNS)
+        ]
+        if exact:
+            row = max(exact, key=lambda item: int(item.get("observed_at") or 0))
+            return {key: _number(row.get(key)) for key in FLOW_COLUMNS}, "exact_window"
+
+        legacy = [
+            row for row in rows
+            if 0 <= int(end_ts) - int(row.get("observed_at") or 0) <= freshness_sec
+            and int(row.get("window_sec") or 0) == 0
+            and any(_number(row.get(key)) is not None for key in FLOW_COLUMNS)
+        ]
+        if legacy:
+            row = max(legacy, key=lambda item: int(item.get("observed_at") or 0))
+            return {key: _number(row.get(key)) for key in FLOW_COLUMNS}, "legacy_unscoped"
+        return {key: None for key in FLOW_COLUMNS}, "insufficient"
+
+    @staticmethod
+    def _flow_history_samples(
+        rows: list[dict[str, Any]],
+        *,
+        window_sec: int,
+        quality: str,
+    ) -> dict[str, list[float]]:
+        """Return historical flow magnitudes using the current window's exact semantics."""
+
+        samples: dict[str, list[float]] = defaultdict(list)
+        safe_window = int(window_sec)
+        if quality == "aggregated_15m":
+            expected = max(1, safe_window // 900)
+            canonical = sorted(
+                (
+                    row for row in rows
+                    if str(row.get("source") or "") == "market_flow_15m"
+                    and int(row.get("window_sec") or 0) == 900
+                ),
+                key=lambda row: int(row.get("observed_at") or 0),
+            )
+            if len(canonical) < expected:
+                return samples
+            timestamps = [int(row.get("observed_at") or 0) for row in canonical]
+            gap_prefix = [0]
+            for index in range(1, len(timestamps)):
+                gap_prefix.append(gap_prefix[-1] + int(timestamps[index] - timestamps[index - 1] != 900))
+            value_prefix: dict[str, list[float]] = {}
+            missing_prefix: dict[str, list[int]] = {}
+            for key in ("spot_flow_usd", "futures_flow_usd"):
+                totals = [0.0]
+                missing = [0]
+                for row in canonical:
+                    value = _number(row.get(key))
+                    totals.append(totals[-1] + (float(value) if value is not None else 0.0))
+                    missing.append(missing[-1] + int(value is None))
+                value_prefix[key] = totals
+                missing_prefix[key] = missing
+            for end_index in range(expected - 1, len(canonical)):
+                start_index = end_index - expected + 1
+                if gap_prefix[end_index] - gap_prefix[start_index] != 0:
+                    continue
+                for key in ("spot_flow_usd", "futures_flow_usd"):
+                    if missing_prefix[key][end_index + 1] - missing_prefix[key][start_index] == 0:
+                        total = value_prefix[key][end_index + 1] - value_prefix[key][start_index]
+                        samples[key].append(abs(total))
+            return samples
+
+        requested_window = safe_window if quality == "exact_window" else 0 if quality == "legacy_unscoped" else None
+        if requested_window is None:
+            return samples
+        for row in rows:
+            if int(row.get("window_sec") or 0) != requested_window:
+                continue
+            for key in ("spot_flow_usd", "futures_flow_usd"):
+                value = _number(row.get(key))
+                if value is not None:
+                    samples[key].append(abs(value))
+        return samples
 
     def recent_metric_rows(
         self,
@@ -437,19 +598,55 @@ class MarketSnapshotStore:
         """Build several closed-window comparisons from one history read."""
         windows = tuple(dict.fromkeys(normalize_window(value) for value in window_secs)) or (3600,)
         start_ts = int(now_ts) - max(2 * max(windows), 2 * 86400)
+        safe_symbols = max(1, min(500, int(max_symbols or 240)))
         with self.connect() as conn:
-            rows = conn.execute(
+            symbol_rows = conn.execute(
                 """
+                SELECT symbol, MAX(COALESCE(quote_volume, 0)) AS volume
+                FROM market_snapshots
+                WHERE observed_at >= ? AND observed_at <= ?
+                GROUP BY symbol
+                ORDER BY volume DESC, symbol ASC
+                LIMIT ?
+                """,
+                (int(now_ts) - max(7_200, max(windows)), int(now_ts), safe_symbols),
+            ).fetchall()
+            selected_symbols = [str(row["symbol"] or "") for row in symbol_rows if str(row["symbol"] or "")]
+            if not selected_symbols:
+                return {window: ([], {}) for window in windows}
+            placeholders = ",".join("?" for _ in selected_symbols)
+            row_limit = max(120_000, min(600_000, safe_symbols * 1_200))
+            rows = conn.execute(
+                f"""
                 SELECT * FROM market_snapshots
                 WHERE observed_at >= ? AND observed_at <= ?
+                  AND symbol IN ({placeholders})
                 ORDER BY symbol ASC, observed_at ASC, id ASC
-                LIMIT 120000
+                LIMIT ?
                 """,
-                (start_ts, int(now_ts)),
+                (start_ts, int(now_ts), *selected_symbols, row_limit),
             ).fetchall()
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        grouped_by_time: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+        source_rows_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
-            grouped[str(row["symbol"])].append(self._row(row))
+            source = self._row(row)
+            symbol = str(source.get("symbol") or "")
+            observed_at = int(source.get("observed_at") or 0)
+            if not symbol or observed_at <= 0:
+                continue
+            source_rows_by_symbol[symbol].append(source)
+            point = grouped_by_time[symbol].setdefault(
+                observed_at,
+                {"symbol": symbol, "observed_at": observed_at, "coverage": {}},
+            )
+            point["coverage"].update(_coverage(source.get("coverage")))
+            for key, value in source.items():
+                if key not in {"id", "coverage", "created_at"} and value is not None:
+                    point[key] = value
+        grouped = {
+            symbol: [points[index] for index in sorted(points)]
+            for symbol, points in grouped_by_time.items()
+        }
 
         results: dict[int, tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]] = {}
         for safe_window in windows:
@@ -459,6 +656,13 @@ class MarketSnapshotStore:
                 latest = self._merge_latest(history, now_ts=int(now_ts), max_age_sec=max(2 * safe_window, 7200))
                 if not latest:
                     continue
+                current_flow, current_flow_quality = self._window_flow(
+                    source_rows_by_symbol.get(symbol, []),
+                    end_ts=int(latest["observed_at"]),
+                    window_sec=safe_window,
+                )
+                latest.update(current_flow)
+                latest["_flow_window_quality"] = current_flow_quality
                 target = int(latest["observed_at"]) - safe_window
                 candidates = [
                     row
@@ -467,16 +671,85 @@ class MarketSnapshotStore:
                 ]
                 if candidates:
                     baselines[symbol] = candidates[-1]
+                    previous_flow, previous_flow_quality = self._window_flow(
+                        source_rows_by_symbol.get(symbol, []),
+                        end_ts=target,
+                        window_sec=safe_window,
+                    )
+                    baselines[symbol].update(previous_flow)
+                    baselines[symbol]["_flow_window_quality"] = previous_flow_quality
+                    latest["_historical_strength"] = self._historical_strength(
+                        history,
+                        flow_rows=source_rows_by_symbol.get(symbol, []),
+                        latest=latest,
+                        baseline=candidates[-1],
+                        window_sec=safe_window,
+                    )
                 latest_rows.append(latest)
 
             latest_rows.sort(key=lambda row: float(row.get("quote_volume") or 0), reverse=True)
-            selected = latest_rows[: max(1, min(500, int(max_symbols or 240)))]
+            selected = latest_rows[:safe_symbols]
             allowed = {str(row.get("symbol") or "") for row in selected}
             results[safe_window] = (
                 selected,
                 {key: value for key, value in baselines.items() if key in allowed},
             )
         return results
+
+    @staticmethod
+    def _historical_strength(
+        history: list[dict[str, Any]],
+        *,
+        flow_rows: list[dict[str, Any]],
+        latest: dict[str, Any],
+        baseline: dict[str, Any],
+        window_sec: int,
+    ) -> dict[str, float]:
+        """Rank current movement against the same symbol's trailing history."""
+
+        if len(history) < 6:
+            return {}
+        times = [int(point.get("observed_at") or 0) for point in history]
+        samples: dict[str, list[float]] = defaultdict(list)
+        tolerance = max(300, min(900, int(window_sec) // 3))
+        for index, point in enumerate(history):
+            point_at = times[index]
+            previous_index = bisect_right(times, point_at - int(window_sec), 0, index) - 1
+            if previous_index >= 0 and times[previous_index] >= point_at - int(window_sec) - tolerance:
+                previous = history[previous_index]
+                for key, source_key in (("price_change_pct", "price"), ("oi_change_pct", "oi_usd")):
+                    change = _pct(point.get(source_key), previous.get(source_key))
+                    if change is not None:
+                        samples[key].append(abs(change))
+            funding = _number(point.get("funding_pct"))
+            if funding is not None:
+                samples["funding_pct"].append(abs(funding))
+
+        flow_samples = MarketSnapshotStore._flow_history_samples(
+            flow_rows,
+            window_sec=window_sec,
+            quality=str(latest.get("_flow_window_quality") or "insufficient"),
+        )
+        samples.update(flow_samples)
+
+        current_values = {
+            "price_change_pct": _pct(latest.get("price"), baseline.get("price")),
+            "oi_change_pct": _pct(latest.get("oi_usd"), baseline.get("oi_usd")),
+            "spot_flow_usd": _number(latest.get("spot_flow_usd")),
+            "futures_flow_usd": _number(latest.get("futures_flow_usd")),
+            "funding_pct": _number(latest.get("funding_pct")),
+        }
+        result: dict[str, float] = {}
+        for key, current in current_values.items():
+            history_values = samples.get(key) or []
+            if current is None or len(history_values) < 5:
+                continue
+            magnitude = abs(current)
+            result[key] = round(
+                sum(1 for value in history_values if value <= magnitude) / len(history_values) * 100,
+                1,
+            )
+        return result
 
     def comparison(
         self,
@@ -501,7 +774,7 @@ class MarketSnapshotStore:
         limit: int = 600,
     ) -> list[dict[str, Any]]:
         target = str(symbol or "").strip().upper()
-        safe_limit = max(2, min(2000, int(limit or 600)))
+        safe_limit = max(2, min(25_000, int(limit or 600)))
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -887,6 +1160,7 @@ def _board_item(
     return {
         "symbol": item.get("symbol"),
         "coin": item.get("coin"),
+        "asset_type": item.get("asset_type"),
         "price": item.get("price"),
         "value": value,
         "unit": unit,
@@ -1000,6 +1274,14 @@ def build_market_cockpit(
             previous_oi = oi_value / (1 + oi_change / 100)
             oi_change_usd = oi_value - previous_oi
             oi_amount_quality = "derived_from_pct"
+        spot_inflow = _nonnegative(row.get("spot_inflow_usd"))
+        spot_outflow = _nonnegative(row.get("spot_outflow_usd"))
+        spot_volume = _gross_flow(spot_inflow, spot_outflow)
+        baseline_spot_volume = _gross_flow(baseline.get("spot_inflow_usd"), baseline.get("spot_outflow_usd"))
+        futures_inflow = _nonnegative(row.get("futures_inflow_usd"))
+        futures_outflow = _nonnegative(row.get("futures_outflow_usd"))
+        futures_volume = _gross_flow(futures_inflow, futures_outflow)
+        baseline_futures_volume = _gross_flow(baseline.get("futures_inflow_usd"), baseline.get("futures_outflow_usd"))
         observed_at = int(_number(row.get("observed_at")) or 0)
         age_sec = max(0, now - observed_at) if observed_at else 10**9
         status = str(row.get("data_status") or "fresh")
@@ -1008,6 +1290,7 @@ def build_market_cockpit(
         assets.append({
             "symbol": symbol,
             "coin": symbol[:-4],
+            "asset_type": _radar_asset_type(row, symbol),
             "price": price,
             "price_change_pct": price_change,
             "price_change_window_sec": price_window,
@@ -1017,23 +1300,38 @@ def build_market_cockpit(
             "oi_usd": oi_value,
             "oi_change_pct": oi_change,
             "oi_change_usd": round(oi_change_usd, 2) if oi_change_usd is not None else None,
-            "spot_inflow_usd": _positive(row.get("spot_inflow_usd")),
-            "spot_outflow_usd": _positive(row.get("spot_outflow_usd")),
+            "spot_inflow_usd": spot_inflow,
+            "spot_outflow_usd": spot_outflow,
             "spot_flow_usd": _number(row.get("spot_flow_usd")),
             "spot_flow_change_pct": _signed_pct(row.get("spot_flow_usd"), baseline.get("spot_flow_usd")),
-            "futures_inflow_usd": _positive(row.get("futures_inflow_usd")),
-            "futures_outflow_usd": _positive(row.get("futures_outflow_usd")),
+            "spot_volume_usd": spot_volume,
+            "spot_volume_change_pct": _pct(spot_volume, baseline_spot_volume),
+            "futures_inflow_usd": futures_inflow,
+            "futures_outflow_usd": futures_outflow,
             "futures_flow_usd": _number(row.get("futures_flow_usd")),
             "futures_flow_change_pct": _signed_pct(row.get("futures_flow_usd"), baseline.get("futures_flow_usd")),
+            "futures_volume_usd": futures_volume,
+            "futures_volume_change_pct": _pct(futures_volume, baseline_futures_volume),
             "funding_pct": _number(row.get("funding_pct")),
             "coverage": _coverage(row.get("coverage")),
-            "quality": {"price_change_pct": price_quality, "oi_change_pct": oi_quality, "oi_change_usd": oi_amount_quality},
+            "quality": {
+                "price_change_pct": price_quality,
+                "oi_change_pct": oi_quality,
+                "oi_change_usd": oi_amount_quality,
+                "flow_window": str(row.get("_flow_window_quality") or "direct"),
+            },
+            "_historical_strength": dict(row.get("_historical_strength") or {}),
             "status": status,
             "updated_at": _iso(observed_at),
             "age_sec": age_sec,
         })
     for key in ("price_change_pct", "volume_change_pct", "oi_change_pct", "spot_flow_usd", "futures_flow_usd", "funding_pct"):
         _rank_percentiles(assets, key)
+    for item in assets:
+        historical = item.pop("_historical_strength", {})
+        for key, value in historical.items():
+            if _number(value) is not None:
+                item.setdefault("strength", {})[key] = float(value)
 
     boards = [
         _two_sided_board(assets, key="price_change_pct", board_key="price", title="价格动量", positive_title="涨幅榜", negative_title="跌幅榜", unit="percent", limit=safe_limit),
@@ -1053,6 +1351,49 @@ def build_market_cockpit(
     futures_net = sum(float(item["futures_flow_usd"]) for item in futures_assets)
     oi_net_change = sum(float(item["oi_change_usd"]) for item in oi_amount_assets)
     breadth = ((advancing - declining) / len(price_assets) * 100) if price_assets else 0.0
+    selected_symbols = {str(item.get("symbol") or "") for item in assets}
+    previous_rows = [
+        row for symbol, row in baseline_map.items()
+        if symbol in selected_symbols and isinstance(row, dict)
+    ]
+    previous_spot = [_number(row.get("spot_flow_usd")) for row in previous_rows]
+    previous_futures = [_number(row.get("futures_flow_usd")) for row in previous_rows]
+    previous_oi = [_change_amount(row.get("oi_usd"), row.get("oi_change_pct")) for row in previous_rows]
+    previous_prices = [_number(row.get("price_change_pct")) for row in previous_rows]
+    previous_spot_values = [value for value in previous_spot if value is not None]
+    previous_futures_values = [value for value in previous_futures if value is not None]
+    previous_oi_values = [value for value in previous_oi if value is not None]
+    previous_price_values = [value for value in previous_prices if value is not None]
+    previous_advancing = sum(1 for value in previous_price_values if value > 0)
+    previous_declining = sum(1 for value in previous_price_values if value < 0)
+    previous_breadth = (
+        (previous_advancing - previous_declining) / len(previous_price_values) * 100
+        if previous_price_values else None
+    )
+    previous_overview = {
+        "advancing": previous_advancing if previous_price_values else None,
+        "declining": previous_declining if previous_price_values else None,
+        "breadth_pct": round(previous_breadth, 2) if previous_breadth is not None else None,
+        "spot_net_flow_usd": round(sum(previous_spot_values), 2) if previous_spot_values else None,
+        "futures_net_flow_usd": round(sum(previous_futures_values), 2) if previous_futures_values else None,
+        "oi_net_change_usd": round(sum(previous_oi_values), 2) if previous_oi_values else None,
+    }
+    current_overview = {
+        "breadth_pct": round(breadth, 2),
+        "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
+        "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
+        "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
+    }
+    directional_ratios = {
+        "spot_positive_ratio": _positive_ratio([float(item["spot_flow_usd"]) for item in spot_assets]),
+        "futures_positive_ratio": _positive_ratio([float(item["futures_flow_usd"]) for item in futures_assets]),
+        "oi_positive_ratio": _positive_ratio([float(item["oi_change_usd"]) for item in oi_amount_assets]),
+    }
+    comparison_delta = {
+        key: round(float(current_overview[key]) - float(previous_overview[key]), 2)
+        if current_overview.get(key) is not None and previous_overview.get(key) is not None else None
+        for key in current_overview
+    }
     if spot_assets or futures_assets:
         net_flow = spot_net + futures_net
         bias = "inflow" if net_flow > 0 and breadth >= 0 else "outflow" if net_flow < 0 and breadth <= 0 else "mixed"
@@ -1092,14 +1433,20 @@ def build_market_cockpit(
             "spot_net_flow_usd": round(spot_net, 2) if spot_assets else None,
             "futures_net_flow_usd": round(futures_net, 2) if futures_assets else None,
             "oi_net_change_usd": round(oi_net_change, 2) if oi_amount_assets else None,
+            **directional_ratios,
+            "comparison": {
+                "previous": previous_overview,
+                "delta": comparison_delta,
+            },
         },
         "boards": boards,
         "assets": assets,
         "methodology": {
             "price": "优先使用同币窗口首尾快照计算；历史不足时回退交易所 24h 涨跌并标记质量。",
             "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化率反推金额变化，并标记质量。",
-            "flow": "现货与合约资金为 Binance K 线主动买卖成交差（CVD）估算，不代表交易所充提净流入。",
-            "strength": "同一指标当前横截面的绝对变化经验分位数。",
+            "flow": "现货与合约资金优先由封闭 15m Binance K 线主动买卖事实按所选窗口求和；历史库只有同窗口事实时使用同窗口值，不拿短窗口冒充长窗口。CVD 不代表交易所充提净流入。",
+            "directional_balance": "全场态势红绿比例为各指标正向贡献金额 / 正负绝对贡献金额之和。",
+            "strength": "优先按同币近 48h 同窗口历史样本计算异常强度分位；历史不足时回退当前横截面分位。",
         },
     }
 

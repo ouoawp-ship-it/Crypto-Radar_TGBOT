@@ -22,10 +22,10 @@ function Icon({ name, className = "" }: { name: NavIcon | "sun" | "moon" | "glob
   return <svg aria-hidden="true" className={className} viewBox="0 0 24 24">{paths[name]}</svg>;
 }
 
-function BrandMark() {
+function BrandMark({ workstation = false }: { workstation?: boolean }) {
   return (
-    <span className="grid h-[26px] w-[26px] shrink-0 place-items-center overflow-hidden rounded-[5px] bg-[#111318] text-white">
-      <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 28 28">
+    <span className={`grid shrink-0 place-items-center overflow-hidden bg-[#111318] text-white ${workstation ? "h-[38px] w-[38px] rounded-[7px]" : "h-[26px] w-[26px] rounded-[5px]"}`}>
+      <svg aria-hidden="true" className={workstation ? "h-7 w-7" : "h-5 w-5"} viewBox="0 0 28 28">
         <path d="M5.5 18.8c3.3 0 4-8.1 7.7-8.1 3 0 3.8 5.5 6.4 5.5 1.2 0 2.1-.8 3-2.3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.2"/>
         <circle cx="6" cy="18.7" fill="currentColor" r="2"/><circle cx="13.2" cy="10.7" fill="currentColor" r="2"/><circle cx="20" cy="16.1" fill="currentColor" r="2"/>
       </svg>
@@ -104,24 +104,26 @@ export function Header() {
   return (
     <>
       <header className={`sticky top-0 z-30 border-b border-border-subtle bg-surface-canvas/95 backdrop-blur ${workstation ? "workstation-header" : ""}`}>
-        <div className={`mx-auto flex h-[44px] items-center gap-3 px-3.5 ${workstation ? "max-w-none" : "max-w-[1280px]"}`}>
-          <Link aria-label="Paoxx 雷达" className={`flex shrink-0 items-center gap-2 ${workstation ? "w-[92px]" : ""}`} href="/radar"><BrandMark/><span className="text-[13px] font-bold tracking-[.12em] text-text-primary">PAOXX</span></Link>
-          <nav aria-label="主导航" className={`hidden min-w-0 items-stretch md:flex ${workstation ? "h-7 flex-none rounded-[3px] border border-border-subtle bg-surface-container p-px" : "h-full flex-1"}`}>
+        <div className={`mx-auto flex items-center ${workstation ? "h-[69px] max-w-none gap-[21px] px-[22px] min-[1600px]:gap-6" : "h-[44px] gap-3 px-3.5 max-w-[1280px]"}`}>
+          <Link aria-label="Paoxx 雷达" className={`flex shrink-0 items-center ${workstation ? "h-full w-[143px] gap-3 border-r border-border-subtle min-[1600px]:w-[146px]" : "gap-2"}`} href="/radar"><BrandMark workstation={workstation}/><span className={`${workstation ? "text-[16px]" : "text-[13px]"} font-bold tracking-[.12em] text-text-primary`}>PAOXX</span></Link>
+          <nav aria-label="主导航" className={`hidden min-w-0 items-stretch md:flex ${workstation ? "h-[44px] flex-none rounded-[4px] border border-border-subtle bg-[#e9edf3] p-px" : "h-full flex-1"}`}>
             {visibleNavItems.map((item) => {
               const active = isActive(item.href);
-              return <Link aria-current={active ? "page" : undefined} className={`group relative flex min-w-[58px] items-center justify-center gap-1 px-2 text-[10px] font-semibold transition-colors ${workstation ? active ? "rounded-[2px] bg-surface-panel text-good ring-1 ring-good/25" : "text-text-secondary hover:bg-surface-panel hover:text-text-primary" : active ? "bg-[#edf7f3] text-good" : "text-text-secondary hover:bg-surface-low hover:text-text-primary"}`} href={item.href} key={item.href}>
+              const workstationWidth = item.href === "/radar" ? "w-[70px] min-[1600px]:w-[72px]" : item.href === "/agents" ? "w-[130px] min-[1600px]:w-[132px]" : "w-[78px] min-[1600px]:w-[80px]";
+              return <Link aria-current={active ? "page" : undefined} className={`group relative flex items-center justify-center gap-1 px-2 font-semibold transition-colors ${workstation ? `${workstationWidth} text-[13px] ${active ? "rounded-[3px] bg-surface-panel text-good ring-1 ring-good/25" : "text-text-secondary hover:bg-surface-panel hover:text-text-primary"}` : `min-w-[58px] text-[10px] ${active ? "bg-[#edf7f3] text-good" : "text-text-secondary hover:bg-surface-low hover:text-text-primary"}`}`} href={item.href} key={item.href}>
                 {!workstation ? <Icon className="h-[15px] w-[15px]" name={item.icon}/> : null}<span>{item.label}</span>
                 {"badge" in item ? <span className="absolute right-0.5 top-1 rounded-full bg-[#ef4444] px-1 py-px text-[6px] font-bold leading-none text-white">{item.badge}</span> : null}
                 {active && !workstation ? <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-good"/> : null}
               </Link>;
             })}
           </nav>
-          <div className="ml-auto flex h-full items-center gap-1.5">
-            <span className="hidden items-center gap-1 rounded-full bg-good/10 px-2 py-1 font-mono text-[8px] font-bold tracking-wide text-good sm:inline-flex"><span className={`h-1.5 w-1.5 rounded-full ${health === "live" ? "animate-pulse bg-good" : health === "offline" ? "bg-risk" : "bg-warn"}`}/>{healthLabel}</span>
-            <span className="hidden min-w-[94px] text-center font-mono text-[8px] tabular-nums text-text-muted lg:inline">{clock || "--:--:--"}&nbsp; UTC+8</span>
-            <button aria-label={`切换到${theme === "light" ? "深色" : "浅色"}主题`} className="grid h-7 w-7 place-items-center rounded-[4px] border border-border-subtle text-text-secondary hover:bg-surface-low" onClick={toggleTheme} type="button"><Icon className="h-[14px] w-[14px]" name={theme === "light" ? "moon" : "sun"}/></button>
-            {workstation ? <Link aria-label="打开自选" className="hidden h-7 items-center gap-1 rounded-[4px] border border-border-subtle bg-surface-container px-2 text-[9px] font-medium text-text-secondary hover:bg-surface-low lg:flex" href="/watchlist"><Icon className="h-3.5 w-3.5" name="watchlist"/><span>自选</span></Link> : null}
-            <button aria-label="当前语言：中文" className="hidden h-7 items-center gap-1 rounded-[4px] px-2 text-[9px] font-medium text-text-secondary hover:bg-surface-low sm:flex" type="button"><Icon className="h-3.5 w-3.5" name="globe"/><span>中文</span></button>
+          <div className={`ml-auto flex h-full items-center ${workstation ? "gap-[17px] min-[1600px]:mr-[5px]" : "gap-1.5"}`}>
+            <span className={`hidden items-center gap-1 rounded-full bg-good/10 font-mono font-bold tracking-wide text-good sm:inline-flex ${workstation ? "h-[30px] px-4 text-[12px]" : "px-2 py-1 text-[8px]"}`}><span className={`${workstation ? "h-2 w-2" : "h-1.5 w-1.5"} rounded-full ${health === "live" ? "animate-pulse bg-good" : health === "offline" ? "bg-risk" : "bg-warn"}`}/>{healthLabel}</span>
+            <span className={`hidden text-center font-mono tabular-nums text-text-muted lg:inline ${workstation ? "min-w-[143px] text-[12px]" : "min-w-[94px] text-[8px]"}`}>{clock || "--:--:--"}&nbsp; UTC+8</span>
+            <button aria-label={`切换到${theme === "light" ? "深色" : "浅色"}主题`} className={`grid place-items-center rounded-[4px] border border-border-subtle text-text-secondary hover:bg-surface-low ${workstation ? "h-[38px] w-[38px] bg-[#eef1f5]" : "h-7 w-7"}`} onClick={toggleTheme} type="button"><Icon className={workstation ? "h-[18px] w-[18px]" : "h-[14px] w-[14px]"} name={theme === "light" ? "moon" : "sun"}/></button>
+            {workstation ? <Link aria-label="打开自选" className="hidden h-[38px] items-center gap-1.5 rounded-[4px] border border-border-subtle bg-[#eef1f5] px-4 text-[13px] font-medium text-text-secondary hover:bg-surface-low lg:flex" href="/watchlist"><Icon className="h-[18px] w-[18px]" name="watchlist"/><span>自选</span></Link> : null}
+            <button aria-label="当前语言：中文" className={`hidden items-center gap-1.5 rounded-[4px] font-medium text-text-secondary hover:bg-surface-low sm:flex ${workstation ? "h-[38px] px-3 text-[12px]" : "h-7 px-2 text-[9px]"}`} type="button"><Icon className={workstation ? "h-[18px] w-[18px]" : "h-3.5 w-3.5"} name="globe"/><span>中文</span></button>
+            {workstation ? <span aria-hidden="true" className="hidden w-[38px] shrink-0 md:block min-[1600px]:w-[48px]"><span className="fixed right-[26px] top-[17px] grid h-[36px] w-[36px] place-items-center rounded-full bg-[#f59e0b] text-[15px] font-semibold text-white min-[1600px]:right-[28px]">P</span></span> : null}
           </div>
         </div>
       </header>

@@ -4,7 +4,7 @@ Radar、Info、Funds 的视觉验收必须比较 Mercu 登录态目标截图与 
 
 ## 必需目标图
 
-将同一浏览器、同一缩放比例下采集的 Mercu 登录态截图放入 `frontend/e2e/mercu-targets/`：
+将同一浏览器、同一缩放比例下采集的 Mercu 登录态原生无损 PNG 截图放入 `frontend/e2e/mercu-targets/`。不得先保存为 JPEG/JFIF 再转成 PNG，也不得缩放或二次压缩：
 
 - `mercu-radar-1440x900.png`
 - `mercu-radar-1920x1080.png`
@@ -34,7 +34,7 @@ cd frontend
 npm.cmd run visual:mercu
 ```
 
-默认验收门禁为严格模式：像素容差、允许变化比例和平均误差全部为零。任一目标图缺失、尺寸不等或存在像素差异，命令都会失败。差分热力图和机器可读报告输出到 `frontend/e2e/mercu-diffs/`。
+默认验收门禁为严格模式：像素容差、允许变化比例和平均误差全部为零。任一目标图缺失、尺寸不等、带有 JPEG/JFIF 有损来源元数据或存在像素差异，命令都会失败。差分热力图和机器可读报告输出到 `frontend/e2e/mercu-diffs/`。
 
 调试时可以临时放宽阈值定位主要结构差异，但放宽结果不能作为 1:1 完成证据：
 

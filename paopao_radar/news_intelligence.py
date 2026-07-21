@@ -355,6 +355,152 @@ class NewsEventStore:
             result[f"{source_type}:{language}"] = result.get(f"{source_type}:{language}", 0) + count
         return result
 
+    def plaza_rankings(
+        self,
+        *,
+        now_ts: int,
+        windows: tuple[int, ...] | list[int] = (14_400, 86_400),
+        limit: int = 12,
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Aggregate public plaza events into deterministic per-symbol rankings.
+
+        Counts and sentiment come only from stored source events. Engagement is the
+        normalized public interaction score recorded with each event; no synthetic
+        post volume or sentiment is introduced here.
+        """
+
+        safe_now = max(1, int(now_ts or time.time()))
+        safe_windows = tuple(
+            dict.fromkeys(max(3_600, min(7 * 86_400, int(value))) for value in windows)
+        ) or (14_400, 86_400)
+        safe_limit = max(1, min(50, int(limit or 12)))
+        start_ts = safe_now - max(safe_windows)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    n.event_id, n.published_at, n.collected_at, n.title, n.summary,
+                    n.event_kind, n.ai_analysis_json, ns.symbol
+                FROM news_events n
+                JOIN news_event_symbols ns ON ns.event_id = n.event_id
+                WHERE n.source_type = 'plaza'
+                  AND COALESCE(NULLIF(n.published_at, 0), n.collected_at) >= ?
+                  AND COALESCE(NULLIF(n.published_at, 0), n.collected_at) <= ?
+                ORDER BY COALESCE(NULLIF(n.published_at, 0), n.collected_at) DESC,
+                         n.event_id DESC, ns.symbol ASC
+                LIMIT ?
+                """,
+                (start_ts, safe_now, NEWS_MAX_QUERY_ROWS * 4),
+            ).fetchall()
+
+        def interaction(raw: Any) -> dict[str, int]:
+            try:
+                analysis = json.loads(str(raw or "{}"))
+            except (json.JSONDecodeError, TypeError):
+                analysis = {}
+            engagement = analysis.get("engagement") if isinstance(analysis, dict) else {}
+            engagement = engagement if isinstance(engagement, dict) else {}
+
+            def integer(key: str) -> int:
+                try:
+                    return max(0, int(float(engagement.get(key) or 0)))
+                except (TypeError, ValueError):
+                    return 0
+
+            likes = integer("likes")
+            reposts = integer("reposts")
+            replies = integer("replies")
+            score = integer("score") or likes + 2 * reposts + replies
+            return {"likes": likes, "reposts": reposts, "replies": replies, "score": score}
+
+        result: dict[int, list[dict[str, Any]]] = {}
+        for window_sec in safe_windows:
+            cutoff = safe_now - window_sec
+            ranked: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                observed_at = int(row["published_at"] or row["collected_at"] or 0)
+                if observed_at < cutoff:
+                    continue
+                symbol = normalize_event_symbol(row["symbol"])
+                if not symbol:
+                    continue
+                current = ranked.setdefault(symbol, {
+                    "symbol": symbol,
+                    "coin": symbol[:-4],
+                    "posts": 0,
+                    "recent_1h_posts": 0,
+                    "previous_1h_posts": 0,
+                    "positive": 0,
+                    "negative": 0,
+                    "neutral": 0,
+                    "likes": 0,
+                    "reposts": 0,
+                    "replies": 0,
+                    "engagement": 0,
+                    "latest_at": "",
+                    "summary": "",
+                })
+                current["posts"] += 1
+                if observed_at >= safe_now - 3_600:
+                    current["recent_1h_posts"] += 1
+                elif observed_at >= safe_now - 7_200:
+                    current["previous_1h_posts"] += 1
+                kind = str(row["event_kind"] or "neutral")
+                direction = "positive" if kind == "opportunity" else "negative" if kind == "risk" else "neutral"
+                current[direction] += 1
+                values = interaction(row["ai_analysis_json"])
+                for key in ("likes", "reposts", "replies"):
+                    current[key] += values[key]
+                current["engagement"] += values["score"]
+                if not current["latest_at"]:
+                    current["latest_at"] = _iso(observed_at)
+                    current["summary"] = _clean_text(row["summary"] or row["title"], 240)
+
+            items: list[dict[str, Any]] = []
+            for item in ranked.values():
+                recent_posts = int(item["recent_1h_posts"])
+                previous_posts = int(item["previous_1h_posts"])
+                directional = int(item["positive"]) + int(item["negative"])
+                positive_pct = round(int(item["positive"]) / directional * 100) if directional else 50
+                negative_pct = 100 - positive_pct
+                if directional == 0 or abs(positive_pct - negative_pct) < 10:
+                    sentiment = "neutral"
+                else:
+                    sentiment = "bullish" if positive_pct > negative_pct else "bearish"
+                item.update({
+                    "recent_ratio": round(recent_posts / previous_posts, 1) if previous_posts else None,
+                    "is_new": recent_posts > 0 and previous_posts == 0,
+                    "positive_pct": positive_pct,
+                    "negative_pct": negative_pct,
+                    "sentiment": sentiment,
+                    "sentiment_confidence_pct": max(positive_pct, negative_pct) if directional else 0,
+                    "engagement_per_post": round(int(item["engagement"]) / max(1, int(item["posts"]))),
+                })
+                items.append(item)
+            if window_sec == 14_400:
+                items = [item for item in items if int(item["recent_1h_posts"]) > 0]
+                items.sort(
+                    key=lambda item: (
+                        bool(item["is_new"]),
+                        float(item["recent_ratio"] or 0),
+                        int(item["recent_1h_posts"]),
+                        int(item["posts"]),
+                        int(item["engagement"]),
+                        str(item["latest_at"]),
+                        str(item["symbol"]),
+                    ),
+                    reverse=True,
+                )
+            else:
+                items.sort(
+                    key=lambda item: (
+                        int(item["posts"]), int(item["engagement"]), str(item["latest_at"]), str(item["symbol"])
+                    ),
+                    reverse=True,
+                )
+            result[window_sec] = items[:safe_limit]
+        return result
+
     def prune(self, *, now_ts: int | None = None, retention_days: int = 90, limit: int = 5000) -> dict[str, int]:
         now = int(now_ts or time.time())
         cutoff = now - max(1, int(retention_days or 90)) * 86_400

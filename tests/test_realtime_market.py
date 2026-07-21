@@ -38,8 +38,8 @@ class BinanceMarketEventTests(unittest.TestCase):
                 stop.wait()
 
             @staticmethod
-            def stats() -> dict[str, str]:
-                return {"service": "test_realtime_market"}
+            def stats() -> dict[str, object]:
+                return {"service": "test_realtime_market", "accepted_events": 1}
 
         with patch(
             "paopao_radar.realtime_market.build_realtime_market_services",
@@ -48,6 +48,26 @@ class BinanceMarketEventTests(unittest.TestCase):
             result = run_realtime_market_service(SimpleNamespace(), duration_sec=0.01)
 
         self.assertEqual(result, 0)
+
+    def test_bounded_service_fails_when_no_exchange_receives_an_event(self) -> None:
+        class EmptyService:
+            service_name = "empty_realtime_market"
+
+            @staticmethod
+            def run(stop: object) -> None:
+                stop.wait()
+
+            @staticmethod
+            def stats() -> dict[str, object]:
+                return {"service": "empty_realtime_market", "accepted_events": 0}
+
+        with patch(
+            "paopao_radar.realtime_market.build_realtime_market_services",
+            return_value=[EmptyService()],
+        ):
+            result = run_realtime_market_service(SimpleNamespace(), duration_sec=0.01)
+
+        self.assertEqual(result, 1)
 
     def test_default_websocket_url_uses_binance_market_route(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -100,6 +100,7 @@ def build_snapshot_series(points: list[dict[str, Any]]) -> dict[str, Any]:
         "quote_volume",
         "market_cap",
         "oi_usd",
+        "oi_change_usd",
         "oi_change_pct",
         "spot_inflow_usd",
         "spot_outflow_usd",
@@ -142,12 +143,74 @@ def build_snapshot_series(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def resample_snapshot_series(
+    points: list[dict[str, Any]],
+    *,
+    interval_sec: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Aggregate raw snapshots into the same closed buckets as the selected chart span.
+
+    Point-in-time metrics keep the newest value in each bucket. Flow metrics are
+    closed-window amounts, so they are summed instead of being carried forward.
+    """
+
+    safe_interval = max(60, int(interval_sec or 900))
+    safe_limit = max(2, min(600, int(limit or 96)))
+    flow_keys = (
+        "spot_inflow_usd",
+        "spot_outflow_usd",
+        "spot_flow_usd",
+        "futures_inflow_usd",
+        "futures_outflow_usd",
+        "futures_flow_usd",
+    )
+    point_keys = (
+        "price",
+        "quote_volume",
+        "market_cap",
+        "oi_usd",
+        "oi_change_pct",
+        "funding_pct",
+    )
+    buckets: dict[int, dict[str, Any]] = {}
+    for raw in sorted(
+        (item for item in points if isinstance(item, dict)),
+        key=lambda item: int(_number(item.get("observed_at")) or 0),
+    ):
+        observed_at = int(_number(raw.get("observed_at")) or 0)
+        if observed_at <= 0:
+            continue
+        bucket_at = observed_at - observed_at % safe_interval
+        bucket = buckets.setdefault(bucket_at, {
+            "observed_at": bucket_at,
+            "updated_at": raw.get("updated_at") or "",
+            "sources": [],
+        })
+        if raw.get("updated_at"):
+            bucket["updated_at"] = raw["updated_at"]
+        for source in raw.get("sources") or []:
+            normalized = str(source or "")
+            if normalized and normalized not in bucket["sources"]:
+                bucket["sources"].append(normalized)
+        for key in point_keys:
+            value = _number(raw.get(key))
+            if value is not None:
+                bucket[key] = value
+        for key in flow_keys:
+            value = _number(raw.get(key))
+            if value is not None:
+                bucket[key] = float(bucket.get(key) or 0.0) + value
+    return [buckets[key] for key in sorted(buckets)][-safe_limit:]
+
+
 __all__ = [
     "CHART_INTERVALS",
     "CHART_MARKETS",
     "COIN_EVIDENCE_SCHEMA_VERSION",
     "build_kline_chart",
     "build_snapshot_series",
+    "resample_snapshot_series",
     "normalize_chart_interval",
     "normalize_chart_market",
 ]
