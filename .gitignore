@@ -44,7 +44,13 @@ frontend/tsconfig.tsbuildinfo
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
-frontend/e2e/mercu-targets/
+frontend/e2e/mercu-targets/*
+!frontend/e2e/mercu-targets/mercu-radar-1440x900.png
+!frontend/e2e/mercu-targets/mercu-radar-1920x1080.png
+!frontend/e2e/mercu-targets/mercu-info-1440x900.png
+!frontend/e2e/mercu-targets/mercu-info-1920x1080.png
+!frontend/e2e/mercu-targets/mercu-funds-1440x900.png
+!frontend/e2e/mercu-targets/mercu-funds-1920x1080.png
 frontend/e2e/mercu-diffs/
 /test-results/
 node_modules/
