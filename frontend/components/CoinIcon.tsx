@@ -126,8 +126,7 @@ const LOCAL_ICONS: Record<string, { background: string; color?: string; glyph: s
   UNI: { background: "#ff5db1", glyph: "U" },
 };
 
-const LOCAL_ONLY = new Set(["1000XEC", "BABA", "SPCX", "SAKE", "SNDK", "SKHY", "SKHYNIX", "MU", "CL", "XAU"]);
-const AUDITED_ATOMICLABS_ICONS = new Set(["CRV", "LTC", "SKL", "TRX"]);
+const AUDITED_ATOMICLABS_ICONS = new Set(["CRV", "LINK", "LTC", "SKL", "TRX", "USDT"]);
 
 const SVG_FALLBACKS: Record<string, string> = {
   ACE: `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><path fill="#d5d7d8" d="M14 238 111 18h28l103 220h-63l-51-119-24 56h31l23 53H79l-13 30H14Z"/><path fill="#ff9d18" d="m96 238 32-72 32 72H96Z"/></svg>')}`,
@@ -145,7 +144,7 @@ export function CoinIcon({ coin, iconUrl, size = 18 }: { coin?: string; iconUrl?
   const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
   const local = LOCAL_ICONS[raw];
   const fallbackSource = SVG_FALLBACKS[raw];
-  const auditedCdnSource = ((local && !LOCAL_ONLY.has(raw)) || AUDITED_ATOMICLABS_ICONS.has(raw))
+  const auditedCdnSource = AUDITED_ATOMICLABS_ICONS.has(raw)
     ? `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@${ICON_RELEASE}/128/color/${slug}.png`
     : "";
   const source = iconUrl || fallbackSource || COINGECKO_ICONS[raw] || auditedCdnSource;
