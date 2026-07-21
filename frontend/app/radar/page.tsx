@@ -264,12 +264,13 @@ function MomentumStrengthGrid({ items, onSelectSymbol, positive, realtimeBySymbo
     const score = finite(item.strength_percentile) ?? finite(realtime?.rankings?.market_strength?.percentile);
     const states = windowStates(item) || resonanceStates(realtime, finite(item.strength_percentile));
     const active = states.filter(Boolean).length;
-    return <button className="grid h-[52px] min-w-0 grid-cols-[12px_18px_minmax(0,1fr)_38px] grid-rows-2 items-center gap-x-1 border-b border-r border-border-subtle/70 border-b-border-subtle/40 px-3 text-left hover:bg-primary-50/55" data-symbol={item.symbol || ""} key={`${item.symbol}-${index}`} onClick={() => onSelectSymbol(String(item.symbol || item.coin || ""))} type="button">
+    return <button className="grid h-[52px] min-w-0 grid-cols-[12px_18px_minmax(0,1fr)_38px] grid-rows-[14px_14px] content-center items-center gap-x-1 border-b border-r border-border-subtle/70 border-b-border-subtle/40 px-3 text-left hover:bg-primary-50/55 min-[1600px]:pt-[6px]" data-symbol={item.symbol || ""} key={`${item.symbol}-${index}`} onClick={() => onSelectSymbol(String(item.symbol || item.coin || ""))} type="button">
       <small className="row-span-2 text-right font-mono text-[9px] text-text-muted">{index + 1}</small>
       <span className="row-span-2"><CoinIcon coin={item.coin} size={16}/></span><span className="sr-only">{item.coin || item.symbol}</span>
-      <span aria-label={`五窗口共振 ${active}/5`} className="col-start-3 row-span-2 inline-flex h-[7px] self-center items-stretch gap-px">{states.map((isActive, block) => <i className={`block h-[6px] w-[2px] shrink-0 rounded-[.5px] border ${isActive ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={WINDOWS[block]}/>)}</span>
-      <span className="col-start-4 self-end text-right font-mono text-[9px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
-      <span className={`col-start-4 self-start truncate text-right font-mono text-[9px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount", compactMillions)}</span>
+      <span className="col-start-3 row-start-1 truncate font-mono text-[9px] font-semibold text-text-primary" data-testid="radar-strength-symbol">{item.coin || item.symbol}</span>
+      <span aria-label={`五窗口共振 ${active}/5`} className="col-start-3 row-start-2 inline-flex h-[7px] items-stretch gap-px">{states.map((isActive, block) => <i className={`block h-[6px] w-[2px] shrink-0 rounded-[.5px] border ${isActive ? "border-[#002fa7] bg-[#002fa7]" : "border-border-subtle bg-surface-container-low"}`} key={WINDOWS[block]}/>)}</span>
+      <span className="col-start-4 row-start-1 text-right font-mono text-[9px] text-text-muted">{score === null ? "—" : `${Math.round(score)}分`}</span>
+      <span className={`col-start-4 row-start-2 truncate text-right font-mono text-[9px] font-semibold ${positive ? "text-good" : "text-risk"}`}>{boardValue(item, "amount", compactMillions)}</span>
     </button>;
   })}{!(items || []).length ? <div className="grid h-[136px] place-items-center text-[8px] text-text-muted sm:col-span-2">⏳ 暂无</div> : null}</div>;
 }

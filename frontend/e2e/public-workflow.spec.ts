@@ -792,6 +792,7 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   const strengthResonance = page.getByTestId("radar-strength-grid").getByLabel(/五窗口共振/).first();
   await expect(strengthResonance).toBeAttached();
   await expect(strengthResonance.locator("i").first()).toBeVisible();
+  await expect(page.getByTestId("radar-strength-grid").first().getByTestId("radar-strength-symbol").first()).toHaveText("BTC");
   await expect(page.getByText("强度榜").first()).toBeVisible();
   await expect(page.getByTestId("radar-scan-orbit")).toBeVisible();
   await expect(page.getByText(/持仓榜/)).toHaveCount(4);
