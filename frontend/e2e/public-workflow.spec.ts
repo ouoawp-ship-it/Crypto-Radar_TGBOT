@@ -1079,6 +1079,7 @@ test("unknown tickers do not probe unverified CDN icon paths", async ({ page }) 
 
   await expect(page.locator('[role="img"][aria-label^="H "]').first()).toBeVisible();
   expect(iconRequests.some((url) => url.endsWith("/h.png"))).toBe(false);
+  expect(iconRequests.some((url) => url.endsWith("/op.png"))).toBe(false);
   expect(iconRequests.some((url) => url.endsWith("/crv.png"))).toBe(true);
 });
 
