@@ -387,12 +387,24 @@ export default function RadarPage() {
     return () => window.clearTimeout(timer);
   }, [query]);
   useEffect(() => {
-    const syncFromLocation = () => setSelectedSignal(new URLSearchParams(window.location.search).get("signal") || "");
+    const syncFromLocation = () => {
+      const params = new URLSearchParams(window.location.search);
+      const signal = params.get("signal") || "";
+      setSelectedSignal(signal);
+      setSelectedCoin(signal ? "" : params.get("symbol") || "");
+    };
     syncFromLocation();
     window.addEventListener("popstate", syncFromLocation);
     return () => window.removeEventListener("popstate", syncFromLocation);
   }, []);
   useEffect(() => { if (paused || query) return; const timer = window.setInterval(() => void load(true), 30_000); return () => window.clearInterval(timer); }, [load, paused, query]);
+
+  const closeCoin = useCallback(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("symbol");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedCoin("");
+  }, []);
 
   const selectSignal = useCallback((signalId: number | string) => {
     const value = String(signalId || "");
@@ -450,5 +462,5 @@ export default function RadarPage() {
       </section>
       <section className="workstation-panel mt-2.5 overflow-hidden"><PanelTitle action={<FollowWindowBadge windowKey={windowKey}/>} icon="◆" iconClassName="text-warn" title="全场态势"/><div><MarketTrendRow current={market.futures_net_flow_usd} delta={marketDelta.futures_net_flow_usd} kind="flow" label="合约资金净流入" positiveRatio={market.futures_positive_ratio} previous={previousMarket.futures_net_flow_usd}/><MarketTrendRow current={market.spot_net_flow_usd} delta={marketDelta.spot_net_flow_usd} kind="flow" label="现货资金净流入" positiveRatio={market.spot_positive_ratio} previous={previousMarket.spot_net_flow_usd}/><MarketTrendRow current={market.oi_net_change_usd} delta={marketDelta.oi_net_change_usd} kind="oi" label="持仓量净增长" positiveRatio={market.oi_positive_ratio} previous={previousMarket.oi_net_change_usd}/><MarketBreadthRow advancing={market.advancing} declining={market.declining}/></div></section>
     </aside>
-  </div>{selectedCoin ? <MercuCoinDrawer events={events} onClose={() => setSelectedCoin("")} symbol={selectedCoin}/> : null}{selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal}/> : null}</>;
+  </div>{selectedCoin ? <MercuCoinDrawer events={events} onClose={closeCoin} symbol={selectedCoin}/> : null}{selectedSignal ? <SignalDetailDrawer onClose={() => selectSignal("")} onSelectSignal={selectSignal} signalId={selectedSignal}/> : null}</>;
 }
