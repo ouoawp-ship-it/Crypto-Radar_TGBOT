@@ -87,8 +87,18 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-visual.txt
+
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Install visual comparison dependencies
+        run: python -m pip install -r ../requirements-visual.txt
 
       - name: Install Chromium for visual checks
         run: npx playwright install chromium

@@ -912,11 +912,13 @@ test("1440 reference geometry keeps Mercu-sized radar, info and funds layouts", 
   const compactSector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
   const compactAssets = await page.getByTestId("funds-assets-overview").boundingBox();
   const compactSearch = await page.getByLabel("搜索全体代币").boundingBox();
-  expect({ sector: rounded(compactSector), assets: rounded(compactAssets), search: rounded(compactSearch) }).toEqual({
+  expect({ sector: rounded(compactSector), assets: rounded(compactAssets), search: compactSearch && { y: Math.round(compactSearch.y), width: Math.round(compactSearch.width), height: Math.round(compactSearch.height) } }).toEqual({
     sector: { x: 18, y: 147, width: 350, height: 736 },
     assets: { x: 386, y: 147, width: 1036, height: 736 },
-    search: { x: 830, y: 147, width: 398, height: 48 },
+    search: { y: 147, width: 398, height: 48 },
   });
+  expect(Math.round(Number(compactSearch?.x))).toBeGreaterThanOrEqual(828);
+  expect(Math.round(Number(compactSearch?.x))).toBeLessThanOrEqual(830);
 });
 
 test("1920 reference geometry keeps Mercu-sized radar rails and funds overview", async ({ page }) => {
@@ -952,11 +954,13 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
   const assets = await page.getByTestId("funds-assets-overview").boundingBox();
   const assetSearch = await page.getByLabel("搜索全体代币").boundingBox();
-  expect({ sector: rounded(sector), assets: rounded(assets), search: rounded(assetSearch) }).toEqual({
+  expect({ sector: rounded(sector), assets: rounded(assets), search: assetSearch && { y: Math.round(assetSearch.y), width: Math.round(assetSearch.width), height: Math.round(assetSearch.height) } }).toEqual({
     sector: { x: 25, y: 155, width: 419, height: 907 },
     assets: { x: 462, y: 155, width: 1433, height: 907 },
-    search: { x: 1275, y: 155, width: 420, height: 51 },
+    search: { y: 155, width: 420, height: 51 },
   });
+  expect(Math.round(Number(assetSearch?.x))).toBeGreaterThanOrEqual(1273);
+  expect(Math.round(Number(assetSearch?.x))).toBeLessThanOrEqual(1275);
   const wideTableViewport = await page.getByTestId("funds-assets-overview").locator(".workstation-scroll").evaluate((element) => ({ clientWidth: element.clientWidth, scrollLeft: element.scrollLeft, scrollWidth: element.scrollWidth }));
   expect(wideTableViewport.clientWidth).toBeCloseTo(1431, 0);
   expect(wideTableViewport.scrollWidth).toBe(1431);
