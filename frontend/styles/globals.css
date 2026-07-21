@@ -408,11 +408,12 @@ body::before {
   }
 
   .mercu-info-grid {
-    gap: 10px;
+    gap: 9px;
     padding: 0 8px 10px;
   }
 
   .mercu-info-grid > section:first-child {
+    height: 68px;
     margin-left: -8px;
     margin-right: -8px;
   }

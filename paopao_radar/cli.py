@@ -929,6 +929,7 @@ def run_once(args: argparse.Namespace) -> int:
         cooldown_sec=settings.radar_summary_min_interval_sec,
         daily_limit=settings.radar_summary_max_daily_push,
         parse_mode="HTML",
+        signal_records=list(summary.get("context_records") or []),
     )
     print(f"summary_push: {push.status} ({push.reason})")
     summary_push_status = push.status

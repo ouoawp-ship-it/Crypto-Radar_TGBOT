@@ -366,6 +366,7 @@ class RadarEngine:
                     "暂无有效数据，可能是接口失败或候选不足。",
                 ]),
                 "quality": source.diagnostics(),
+                "context_records": [],
             }
 
         top_n = self.settings.radar_top_n
@@ -423,12 +424,27 @@ class RadarEngine:
             reverse=True,
         )[:5]
 
+        context_records: list[dict[str, Any]] = []
+        context_symbols: set[str] = set()
+        for group in (combined, ambush, momentum, new_pool, negative, divergence):
+            for item in group:
+                symbol = str(item.get("symbol") or "").upper()
+                if not symbol or symbol in context_symbols:
+                    continue
+                context_records.append(item)
+                context_symbols.add(symbol)
+                if len(context_records) >= 3:
+                    break
+            if len(context_records) >= 3:
+                break
+
         text = self._format_summary(now, negative, combined, ambush, momentum, new_pool, divergence, items, source, divergence_stats, window)
         return {
             "template_id": "TG_RADAR_SUMMARY",
             "dedup_key": f"radar-summary:{window.end.strftime('%Y%m%d%H%M')}",
             "text": text,
             "quality": source.diagnostics(),
+            "context_records": context_records,
         }
 
     def _load_market_items(self, source: BinanceDataSource, window: ClosedWindow) -> list[dict[str, Any]]:
