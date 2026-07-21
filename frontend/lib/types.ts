@@ -174,6 +174,7 @@ export type RadarIntelligence = {
 export type CockpitBoardItem = {
   symbol?: string;
   coin?: string;
+  asset_type?: string;
   price?: number | null;
   value?: number | null;
   unit?: "usd" | "percent" | "percent_per_cycle" | string;
@@ -622,6 +623,7 @@ export type CoinSeries = {
   requested_buckets?: number;
   coverage?: Record<string, number>;
   points?: CoinSeriesPoint[];
+  analytics?: FundsSeriesAnalytics;
   warnings?: string[];
   methodology?: Record<string, string>;
 };
@@ -637,8 +639,9 @@ export type CoinContext = {
   summary?: { signal_count?: number; sent_count?: number; module_counts?: Record<string, number>; latest_at?: string };
   chart?: CoinChart;
   series?: CoinSeries;
-  related_info?: { data_status?: string; items?: SignalItem[]; methodology?: string };
-  evidence_coverage?: { market?: number; chart_points?: number; snapshot_points?: number; signals?: number; announcements?: number };
+  funds_profile?: FundsProfile;
+  related_info?: { data_status?: string; items?: CoinRelatedInfoItem[]; methodology?: string };
+  evidence_coverage?: { market?: number; chart_points?: number; snapshot_points?: number; signals?: number; related_info?: number; announcements?: number };
   timeline?: SignalItem[];
   actions?: { radar_url?: string; share_url?: string; ai_url?: string; alert_url?: string };
 };
@@ -700,6 +703,8 @@ export type NewsEvent = {
   data_status?: string;
 };
 
+export type CoinRelatedInfoItem = SignalItem & NewsEvent;
+
 export type InfoChannel = {
   key?: string;
   label?: string;
@@ -758,6 +763,41 @@ export type FundsSeriesPayload = CoinSeries & {
   symbol?: string;
   kind?: "spot_flow" | "futures_flow" | "oi" | "funding" | string;
   metric?: string;
+  analytics?: FundsSeriesAnalytics;
+};
+
+export type FundsSeriesAnalytics = {
+  data_status?: string;
+  metric?: string;
+  net_flow_usd?: number | null;
+  direction?: "inflow" | "outflow" | "neutral" | string;
+  latest_direction?: "inflow" | "outflow" | "neutral" | string;
+  duration_sec?: number;
+  hit_rate_pct?: number | null;
+  hit_samples?: number;
+  price?: { first?: number | null; current?: number | null; change_pct?: number | null; high?: number | null; low?: number | null };
+  coverage?: Record<string, number>;
+  methodology?: Record<string, string>;
+};
+
+export type FundsVolumeProfile = {
+  data_status?: string;
+  poc?: number | null;
+  vah?: number | null;
+  val?: number | null;
+  range_high?: number | null;
+  range_low?: number | null;
+  value_area_ratio?: number;
+  coverage?: Record<string, number>;
+  methodology?: string;
+};
+
+export type FundsProfile = {
+  schema_version?: string;
+  market_type?: string;
+  interval?: string;
+  source?: string;
+  volume_profile?: FundsVolumeProfile;
 };
 
 export type InfoFeedPayload = {

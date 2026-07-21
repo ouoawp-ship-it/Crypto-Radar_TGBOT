@@ -871,6 +871,7 @@ def build_realtime_intelligence(
     *,
     now_ts: int,
     limit: int = 10,
+    event_limit: int | None = None,
     include_backtest: bool = False,
 ) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -946,10 +947,11 @@ def build_realtime_intelligence(
         )
 
     safe_limit = max(1, min(30, int(limit or 10)))
+    safe_event_limit = max(1, min(100, int(event_limit or safe_limit)))
     anomaly_events = _build_anomaly_events(
         grouped,
         anchor=anchor,
-        limit=safe_limit,
+        limit=safe_event_limit,
     )
     surge_items = sorted(
         (item for item in items if item["surge"].get("triggered")),

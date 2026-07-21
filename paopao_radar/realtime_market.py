@@ -1354,6 +1354,7 @@ def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> in
         threading.Thread(target=run_one, args=(service,), name=service.service_name, daemon=True)
         for service in services
     ]
+    exchange_stats: list[dict[str, Any]] = []
     try:
         for thread in threads:
             thread.start()
@@ -1369,10 +1370,16 @@ def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> in
         stop.set()
         for thread in threads:
             thread.join(timeout=10)
+        exchange_stats = [service.stats() for service in services]
+        if duration_sec and not any(
+            int(stats.get("accepted_events") or 0) > 0
+            for stats in exchange_stats
+        ):
+            failures.append("bounded_verification:no_exchange_received_events")
         print(json.dumps({
             "service": "multi_exchange_realtime_market",
             "failures": failures,
-            "exchanges": [service.stats() for service in services],
+            "exchanges": exchange_stats,
         }, ensure_ascii=False))
     return 1 if failures else 0
 

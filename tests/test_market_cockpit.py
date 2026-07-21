@@ -145,6 +145,20 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertIsNone(boards["price"]["positive"]["items"][0]["magnitude_usd"])
         self.assertIn("CVD", payload["methodology"]["flow"])
 
+    def test_board_items_preserve_or_infer_non_crypto_asset_type(self) -> None:
+        latest = [
+            {"symbol": "BABAUSDT", "price": 101, "price_change_pct": 1.0, "observed_at": 1_000},
+            {"symbol": "XAUTUSDT", "price": 2_400, "price_change_pct": 0.5, "observed_at": 1_000},
+            {"symbol": "BTCUSDT", "asset_type": "主流币", "price": 100, "price_change_pct": 0.2, "observed_at": 1_000},
+        ]
+
+        payload = build_market_cockpit(latest, {}, now_ts=1_000, window_sec=900)
+        items = {item["symbol"]: item for item in payload["boards"][0]["positive"]["items"]}
+
+        self.assertEqual(items["BABAUSDT"]["asset_type"], "美股")
+        self.assertEqual(items["XAUTUSDT"]["asset_type"], "黄金")
+        self.assertEqual(items["BTCUSDT"]["asset_type"], "主流币")
+
     def test_gross_flow_preserves_valid_zero_side(self) -> None:
         with TemporaryDirectory() as tmp:
             store = MarketSnapshotStore(Path(tmp) / "market.db")
@@ -376,23 +390,25 @@ class MarketCockpitTests(unittest.TestCase):
 
                 http = Http()
 
-            def collect(*_args, **_kwargs):
+            def persist(*_args, **kwargs):
                 started.set()
                 release.wait(timeout=2)
-                return [{
+                kwargs["store"].append_many([{
                     "symbol": "BTCUSDT", "observed_at": observed_at, "source": "binance_futures_batch",
                     "price": 100, "quote_volume": 100_000_000, "coverage": {"price": True, "volume": True},
-                }]
+                }])
+                return {"status": "saved", "count": 1, "flow_facts": {"status": "saved", "count": 1}}
 
             with (
                 patch.object(public_service, "BinanceDataSource", return_value=FakeSource()),
-                patch.object(public_service, "collect_binance_market_rows", side_effect=collect),
+                patch.object(public_service, "persist_market_batch", side_effect=persist) as persist_batch,
             ):
                 self.assertTrue(public_service._schedule_market_warmup(settings))
                 self.assertTrue(started.wait(timeout=1))
                 self.assertFalse(public_service._schedule_market_warmup(settings))
                 release.set()
                 self.assertTrue(closed.wait(timeout=2))
+                self.assertTrue(persist_batch.call_args.kwargs["force"])
 
             saved_at = MarketSnapshotStore(settings.market_snapshots_db_path).latest_timestamp("binance_futures_batch")
 

@@ -20,6 +20,13 @@ from .time_windows import closed_window
 
 MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.4"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
+RADAR_ASSET_TYPES = {
+    "AAPL": "美股", "AMD": "美股", "AMZN": "美股", "BABA": "美股",
+    "COIN": "美股", "META": "美股", "MSTR": "美股", "MSFT": "美股",
+    "MU": "美股", "NVDA": "美股", "SNDK": "美股", "SKHY": "美股",
+    "SKHYNIX": "美股", "SPCX": "美股", "TSLA": "美股",
+    "PAXG": "黄金", "XAU": "黄金", "XAUT": "黄金", "XAG": "白银",
+}
 SNAPSHOT_COLUMNS = (
     "price",
     "quote_volume",
@@ -61,6 +68,14 @@ def _positive(value: Any) -> float | None:
 def _nonnegative(value: Any) -> float | None:
     number = _number(value)
     return number if number is not None and number >= 0 else None
+
+
+def _radar_asset_type(row: dict[str, Any], symbol: str) -> str | None:
+    explicit = str(row.get("asset_type") or "").strip()
+    if explicit:
+        return explicit
+    coin = symbol[:-4] if symbol.endswith("USDT") else symbol
+    return RADAR_ASSET_TYPES.get(coin)
 
 
 def _gross_flow(inflow: Any, outflow: Any) -> float | None:
@@ -1145,6 +1160,7 @@ def _board_item(
     return {
         "symbol": item.get("symbol"),
         "coin": item.get("coin"),
+        "asset_type": item.get("asset_type"),
         "price": item.get("price"),
         "value": value,
         "unit": unit,
@@ -1274,6 +1290,7 @@ def build_market_cockpit(
         assets.append({
             "symbol": symbol,
             "coin": symbol[:-4],
+            "asset_type": _radar_asset_type(row, symbol),
             "price": price,
             "price_change_pct": price_change,
             "price_change_window_sec": price_window,

@@ -25,10 +25,10 @@ from ..data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from ..data_source_registry import data_source_registry_payload
 from ..market_cockpit import (
     MarketSnapshotStore,
-    collect_binance_market_rows,
     load_market_cockpit,
     load_market_cockpit_windows,
     normalize_window,
+    persist_market_batch,
 )
 from ..market_funds import build_funds_assets, build_funds_sectors, normalize_market_type
 from ..info_sources import ingest_public_info_sources
@@ -46,7 +46,12 @@ from ..runtime_cache import stats as runtime_cache_stats
 from ..signal_intelligence import build_radar_intelligence
 from ..signal_store import SignalEventStore
 from ..symbol_dossier import current_market_snapshot
-from ..workstation_funds import collect_cross_exchange_open_interest
+from ..workstation_funds import (
+    FUNDS_PROFILE_SCHEMA_VERSION,
+    build_funds_series_analytics,
+    build_volume_profile,
+    collect_cross_exchange_open_interest,
+)
 from ..web_observability import PUBLIC_API_LIMITER, PUBLIC_API_METRICS, PUBLIC_STREAM_METRICS, PUBLIC_TELEMETRY
 from .api_core import api_error, api_ok, normalize_symbol_filter, redact_api_payload
 from .signals import enhance_signal_item, signal_display, signal_detail_view, signal_stats_display
@@ -448,9 +453,14 @@ def _schedule_market_warmup(settings: Settings) -> bool:
         source: BinanceDataSource | None = None
         try:
             source = BinanceDataSource(settings)
-            rows = collect_binance_market_rows(settings, source=source, oi_source=source)
-            count = MarketSnapshotStore(settings.market_snapshots_db_path).append_many(rows)
-            if count:
+            result = persist_market_batch(
+                settings,
+                source=source,
+                store=MarketSnapshotStore(settings.market_snapshots_db_path),
+                force=True,
+            )
+            flow_count = int((result.get("flow_facts") or {}).get("count") or 0)
+            if int(result.get("count") or 0) or flow_count:
                 cooldown = float(interval)
                 invalidate_runtime_cache("public:")
         except Exception as exc:
@@ -771,6 +781,18 @@ def public_workstation_radar_momentum_windows_payload(
             )
         except Exception:
             return api_error("Radar momentum windows unavailable", code="upstream_unavailable")
+        if now_ts is None and any(
+            str(payload.get("data_status") or "") in {"empty", "warming_up", "partial", "stale", "degraded", "unavailable"}
+            for payload in sources.values()
+        ):
+            _schedule_market_warmup(loaded)
+            for payload in sources.values():
+                if payload.get("boards"):
+                    continue
+                payload["warnings"] = list(dict.fromkeys([
+                    "市场快照正在后台预热，稍后刷新即可看到 Radar 榜单。",
+                    *[str(item) for item in payload.get("warnings") or [] if str(item)],
+                ]))
         core_keys = {"price", "oi", "futures_flow", "spot_flow"}
         windows: dict[str, Any] = {}
         for window_key, window_sec in window_items:
@@ -980,10 +1002,16 @@ def _compact_realtime_event(source: Any) -> dict[str, Any]:
     return event
 
 
-def _project_realtime_intelligence_payload(payload: dict[str, Any], *, limit: int) -> dict[str, Any]:
+def _project_realtime_intelligence_payload(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+    event_limit: int | None = None,
+) -> dict[str, Any]:
     """Bound the public payload without changing full-universe coverage metadata."""
 
     safe_limit = max(1, min(30, int(limit or 10)))
+    safe_event_limit = max(1, min(100, int(event_limit or safe_limit)))
     projected = dict(payload)
     projected["items"] = [
         _compact_realtime_item(item)
@@ -991,7 +1019,7 @@ def _project_realtime_intelligence_payload(payload: dict[str, Any], *, limit: in
     ]
     projected["anomaly_events"] = [
         _compact_realtime_event(event)
-        for event in list(payload.get("anomaly_events") or [])[:safe_limit]
+        for event in list(payload.get("anomaly_events") or [])[:safe_event_limit]
     ]
     board_limit = min(PUBLIC_INTELLIGENCE_BOARD_LIMIT, safe_limit)
     projected["boards"] = [
@@ -1089,20 +1117,24 @@ def _refresh_realtime_intelligence_snapshot(
 def public_realtime_intelligence_payload(
     *,
     limit: int = 10,
+    event_limit: int | None = None,
     include_backtest: bool = False,
     settings: Settings | Any | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     loaded = settings or Settings.load()
     safe_limit = max(1, min(30, int(limit or 10)))
+    safe_event_limit = max(1, min(100, int(event_limit or safe_limit)))
 
     def build(
         build_limit: int,
         *,
+        build_event_limit: int | None = None,
         build_backtest: bool = False,
         build_now: int | None = None,
     ) -> dict[str, Any]:
         observed_now = int(build_now if build_now is not None else time.time())
+        source_event_limit = max(1, min(100, int(build_event_limit or build_limit)))
         rows = RealtimeFeatureStore(loaded.realtime_features_db_path).recent_rows(
             now_ts=observed_now,
             window_sec=86_400,
@@ -1111,6 +1143,7 @@ def public_realtime_intelligence_payload(
             rows,
             now_ts=observed_now,
             limit=build_limit,
+            event_limit=source_event_limit,
             include_backtest=build_backtest,
         )
         market_snapshot_path = getattr(loaded, "market_snapshots_db_path", None)
@@ -1131,16 +1164,21 @@ def public_realtime_intelligence_payload(
                         [*list(payload.get("anomaly_events") or []), *oi_events],
                         key=lambda item: (str(item.get("observed_at") or ""), str(item.get("id") or "")),
                         reverse=True,
-                    )[:build_limit]
+                    )[:source_event_limit]
                     payload.setdefault("coverage", {})["oi_anomaly_events"] = len(oi_events)
             except Exception:
                 payload.setdefault("coverage", {})["oi_anomaly_events"] = 0
-        return _project_realtime_intelligence_payload(_strip_forbidden(payload), limit=build_limit)
+        return _project_realtime_intelligence_payload(
+            _strip_forbidden(payload),
+            limit=build_limit,
+            event_limit=source_event_limit,
+        )
 
     try:
         if now_ts is not None or include_backtest:
             payload = build(
                 safe_limit,
+                build_event_limit=safe_event_limit,
                 build_backtest=bool(include_backtest),
                 build_now=now_ts,
             )
@@ -1156,15 +1194,19 @@ def public_realtime_intelligence_payload(
                 snapshot = _store_realtime_intelligence_snapshot(
                     cache_key,
                     snapshot_path,
-                    build(30),
+                    build(30, build_event_limit=100),
                 )
             elif snapshot_age >= PUBLIC_INTELLIGENCE_REFRESH_SEC:
                 _refresh_realtime_intelligence_snapshot(
                     cache_key,
                     snapshot_path,
-                    lambda: build(30),
+                    lambda: build(30, build_event_limit=100),
                 )
-            payload = _project_realtime_intelligence_payload(snapshot[1], limit=safe_limit)
+            payload = _project_realtime_intelligence_payload(
+                snapshot[1],
+                limit=safe_limit,
+                event_limit=safe_event_limit,
+            )
     except Exception:
         return api_error("实时异常情报暂时不可用", code="upstream_unavailable")
     return api_ok(_strip_forbidden(payload), message="已读取实时异常情报")
@@ -1173,11 +1215,13 @@ def public_realtime_intelligence_payload(
 def _workstation_realtime_intelligence_source(
     *,
     limit: int,
+    event_limit: int | None = None,
     settings: Settings | Any | None = None,
     now_ts: int | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     source = public_realtime_intelligence_payload(
         limit=max(1, min(30, int(limit or 30))),
+        event_limit=event_limit,
         settings=settings,
         now_ts=now_ts,
     )
@@ -1194,7 +1238,7 @@ def public_workstation_radar_anomalies_payload(
 ) -> dict[str, Any]:
     safe_limit = max(10, min(100, int(limit or 100)))
     source, error = _workstation_realtime_intelligence_source(
-        limit=min(30, safe_limit), settings=settings, now_ts=now_ts,
+        limit=min(30, safe_limit), event_limit=safe_limit, settings=settings, now_ts=now_ts,
     )
     if error is not None:
         return error
@@ -1616,6 +1660,15 @@ def public_workstation_funds_series_payload(
         series["interval"] = safe_interval
         series["interval_sec"] = interval_sec
         series["requested_buckets"] = safe_bars
+        analytics = (
+            build_funds_series_analytics(
+                list(series.get("points") or []),
+                metric=metric,
+                interval_sec=interval_sec,
+            )
+            if safe_kind in {"spot_flow", "futures_flow"}
+            else None
+        )
         metric_points = sum(1 for point in series.get("points") or [] if point.get(metric) is not None)
         coverage = {**dict(series.get("coverage") or {}), "metric_points": metric_points}
         data_status = "ready" if metric_points >= 2 else "degraded" if series.get("points") else "unavailable"
@@ -1635,6 +1688,7 @@ def public_workstation_funds_series_payload(
             "coverage": coverage,
             "warnings": list(dict.fromkeys(warnings)),
             "points": series.get("points") or [],
+            **({"analytics": analytics} if analytics is not None else {}),
             "methodology": {
                 **dict(series.get("methodology") or {}),
                 "closed_bucket": "点位按所选周期对齐到封闭桶；价格、OI、费率取桶内最新值，现货/合约主动资金在桶内求和。",
@@ -2409,14 +2463,50 @@ def public_coin_context_payload(
         module = str(item.get("module") or "other")
         module_counts[module] = module_counts.get(module, 0) + 1
     latest_signal_ref = str(timeline[0].get("public_ref") or "") if timeline else ""
-    related_info = [
-        public_signal_item(item)
-        for item in timeline
-        if str(item.get("module") or "") == "announcement"
-    ][:12]
+    related_info: list[dict[str, Any]] = []
+    related_warnings: list[str] = []
+    if loaded.news_events_db_path.exists():
+        try:
+            related_info = list(NewsEventStore(loaded.news_events_db_path).list_feed(
+                start_ts=now - 30 * 86_400,
+                end_ts=now,
+                symbol=target,
+                page=1,
+                page_size=12,
+            ).get("items") or [])
+        except Exception:
+            related_warnings.append("关联资讯索引暂时不可用，已回退到统一信号库公告。")
+    if not related_info:
+        for item in timeline:
+            if str(item.get("module") or "") != "announcement":
+                continue
+            public = public_signal_item(item)
+            display = dict(public.get("display") or {})
+            related_info.append({
+                "event_id": str(public.get("public_ref") or f"signal-{public.get('id') or len(related_info) + 1}"),
+                "published_at": str(public.get("time") or ""),
+                "source": "Paoxx 统一信号库",
+                "source_type": "official_announcement",
+                "title": str(display.get("title") or public.get("excerpt") or "公告更新"),
+                "summary": str(display.get("summary") or public.get("excerpt") or ""),
+                "url": "",
+                "symbols": [target],
+                "importance": "high" if _number(public.get("score")) and float(public["score"]) >= 80 else "medium",
+                "language": "zh",
+                "cluster_id": str(public.get("public_ref") or ""),
+                "cluster_size": 1,
+                "event_kind": "neutral",
+                "rights_status": "internal_signal",
+                "source_links": [],
+                "timestamp_quality": "signal_observed_at",
+                "data_status": "ready" if public.get("time") else "degraded",
+            })
+            if len(related_info) >= 12:
+                break
     warnings = [
         *[str(item) for item in chart.get("warnings", []) if str(item)],
         *[str(item) for item in series.get("warnings", []) if str(item)],
+        *related_warnings,
     ]
     market_ready = bool(snapshot_payload.get("ok"))
     data_status = "ready" if market_ready and chart.get("data_status") == "ready" else "degraded" if market_ready or raw_klines or history_points else "unavailable"
@@ -2436,17 +2526,25 @@ def public_coin_context_payload(
         "warnings": warnings,
         "chart": chart,
         "series": series,
+        "funds_profile": {
+            "schema_version": FUNDS_PROFILE_SCHEMA_VERSION,
+            "market_type": safe_market,
+            "interval": safe_interval,
+            "volume_profile": build_volume_profile(list(chart.get("points") or [])),
+            "source": chart.get("source"),
+        },
         "related_info": {
             "data_status": "ready" if related_info else "empty",
             "items": related_info,
-            "methodology": "仅展示已进入统一信号库的官方公告事件，不抓取受限全文。",
+            "methodology": "优先展示近 30 天公开资讯索引中明确关联该币种的事件；无索引结果时回退到统一信号库公告。仅保留必要元数据、短摘要和合法原文链接，不抓取受限全文。",
         },
         "evidence_coverage": {
             "market": 1 if market_ready else 0,
             "chart_points": int((chart.get("coverage") or {}).get("returned") or 0),
             "snapshot_points": int((series.get("coverage") or {}).get("points") or 0),
             "signals": len(public_timeline),
-            "announcements": len(related_info),
+            "related_info": len(related_info),
+            "announcements": sum(1 for item in related_info if item.get("source_type") == "official_announcement"),
         },
         "timeline": public_timeline,
         "actions": _public_bot_actions(loaded, target, latest_signal_ref),

@@ -169,23 +169,24 @@ body::before {
 }
 
 .app-shell:has(.workstation-page) {
-  --surface-low: 252 252 252;
-  --surface-container: 238 241 246;
-  --surface-container-low: 250 251 253;
-  --text-primary: 42 46 51;
-  --text-secondary: 104 109 113;
+  --surface-low: 252 252 253;
+  --surface-container: 241 244 248;
+  --surface-container-low: 248 248 249;
+  --text-primary: 30 35 41;
+  --text-secondary: 94 102 115;
   --text-muted: 145 151 159;
-  --border-subtle: 233 234 236;
-  --good: 39 169 121;
-  --warn: 205 162 74;
-  --risk: 224 85 92;
+  --border-subtle: 233 237 243;
+  --good: 22 169 110;
+  --warn: 194 130 15;
+  --risk: 226 59 70;
   height: 100dvh;
   min-width: 900px;
   overflow: hidden;
 }
 
 .app-shell:has(.workstation-page) .site-content {
-  height: calc(100dvh - 45px);
+  height: calc(100dvh - 70px);
+  margin-top: 0;
   max-width: none;
   padding: 0;
 }
@@ -199,9 +200,14 @@ body::before {
 }
 
 .workstation-page {
-  background: rgb(238 241 248);
+  background: rgb(238 241 245);
   height: 100%;
   min-height: 0;
+}
+
+.workstation-header {
+  border-bottom-color: rgb(237 239 242);
+  box-shadow: inset 0 -1px 0 rgb(243 244 245);
 }
 
 .workstation-panel {
@@ -233,23 +239,23 @@ body::before {
 
 .radar-event-item::before {
   background: rgb(var(--border-subtle));
-  bottom: 0;
+  bottom: 16px;
   content: "";
-  left: 16px;
+  left: 27px;
   position: absolute;
-  top: 0;
+  top: 31px;
   width: 1px;
 }
 
 .radar-event-dot {
-  border: 2px solid rgb(var(--surface-panel));
+  background: rgb(160 169 182) !important;
+  border: 0;
   border-radius: 999px;
-  box-sizing: content-box;
-  height: 4px;
-  left: 13px;
+  height: 8px;
+  left: 23px;
   position: absolute;
-  top: 22px;
-  width: 4px;
+  top: 27px;
+  width: 8px;
   z-index: 1;
 }
 
@@ -259,10 +265,10 @@ body::before {
     conic-gradient(from 18deg, rgb(92 205 173 / 48%) 0 7%, transparent 7% 22%, rgb(92 205 173 / 24%) 22% 36%, transparent 36% 59%, rgb(92 205 173 / 38%) 59% 67%, transparent 67% 100%);
   border-radius: 999px;
   display: grid;
-  height: 24px;
+  height: 32px;
   place-items: center;
   position: relative;
-  width: 24px;
+  width: 32px;
 }
 
 .radar-scan-orbit::after {
@@ -270,47 +276,68 @@ body::before {
   content: "";
   height: 1px;
   position: absolute;
-  right: 3px;
-  top: 11px;
+  right: 4px;
+  top: 15px;
   transform: rotate(-24deg);
   transform-origin: left center;
-  width: 9px;
+  width: 12px;
 }
 
 .radar-scan-orbit > span {
   border: 1px solid rgb(92 205 173 / 30%);
   border-radius: 999px;
-  height: 12px;
-  width: 12px;
-}
-
-@media (min-width: 1280px) {
-  .radar-event-coin > span {
-    height: 16px !important;
-    width: 16px !important;
-  }
+  height: 16px;
+  width: 16px;
 }
 
 .funds-sector-bubble {
+  font-size: var(--bubble-font-compact);
   height: var(--bubble-size-compact);
   left: var(--bubble-left-compact);
   top: var(--bubble-top-compact);
   width: var(--bubble-size-compact);
 }
 
-@media (min-width: 1280px) {
+.funds-sector-bubble-positive {
+  background: radial-gradient(circle at 36% 30%, rgb(81 193 148), rgb(22 169 110) 78%);
+  box-shadow: 0 0 12px -3px rgb(22 169 110 / 55%), inset 0 0 0 1px rgb(115 203 168);
+}
+
+.funds-sector-bubble-negative {
+  background: radial-gradient(circle at 36% 30%, rgb(235 112 120), rgb(226 59 70) 78%);
+  box-shadow: 0 0 12px -3px rgb(226 59 70 / 55%), inset 0 0 0 1px rgb(238 137 144);
+}
+
+.funds-sector-stage {
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgb(63 178 127 / 5%), transparent 60%),
+    radial-gradient(120% 80% at 50% 100%, rgb(224 85 92 / 5%), transparent 60%);
+}
+
+@media (min-width: 1600px) {
   .funds-sector-bubble {
+    font-size: var(--bubble-font-wide);
     height: var(--bubble-size-wide);
     left: var(--bubble-left-wide);
     top: var(--bubble-top-wide);
     width: var(--bubble-size-wide);
   }
+
+  .funds-sector-bubble-positive {
+    background: radial-gradient(circle at 36% 30%, rgb(95 193 150), rgb(22 169 110) 78%);
+    box-shadow: 0 0 18px -2px rgb(22 169 110 / 55%), inset 0 0 0 1px rgb(115 203 168);
+  }
+
+  .funds-sector-bubble-negative {
+    background: radial-gradient(circle at 36% 30%, rgb(235 148 155), rgb(226 59 70) 78%);
+    box-shadow: 0 0 18px -2px rgb(226 59 70 / 55%), inset 0 0 0 1px rgb(238 137 144);
+  }
 }
 
 .mercu-radar-grid {
-  --border-subtle: 240 240 240;
-  --surface-low: 252 252 252;
-  background: linear-gradient(to bottom, rgb(238 241 248) 0 9px, rgb(238 241 246) 9px);
+  --border-subtle: 233 237 243;
+  --surface-low: 252 252 253;
+  background: linear-gradient(to bottom, rgb(238 241 245) 0 9px, rgb(238 241 245) 9px);
   display: grid;
   gap: 6px;
   grid-template-columns: minmax(198px, 22%) minmax(500px, 1fr) minmax(198px, 22%);
@@ -327,9 +354,12 @@ body::before {
 }
 
 .mercu-info-grid {
-  background: linear-gradient(to bottom, rgb(var(--surface-panel)) 0 44px, rgb(238 241 246) 44px);
+  --border-subtle: 233 236 239;
+  --text-muted: 150 152 155;
+  background: linear-gradient(to bottom, rgb(var(--surface-panel)) 0 44px, rgb(238 241 245) 44px);
   display: flex;
   flex-direction: column;
+  font-family: var(--font-dm-sans), "DM Sans", "Microsoft YaHei UI", "Noto Sans SC", system-ui, sans-serif;
   gap: 6px;
   padding: 6px;
 }
@@ -339,7 +369,7 @@ body::before {
 }
 
 .mercu-funds-grid {
-  --border-subtle: 236 236 236;
+  --border-subtle: 233 237 243;
   background: rgb(var(--surface-panel));
   display: flex;
   flex-direction: column;
@@ -348,14 +378,14 @@ body::before {
 }
 
 .mercu-radar-grid > aside:last-child {
-  background: rgb(238 241 246);
+  background: rgb(238 241 245);
 }
 
 @media (min-width: 1024px) {
   .mercu-radar-grid {
-    gap: 11px;
-    grid-template-columns: 230px minmax(500px, 1fr) 230px;
-    padding: 9px 10px 10px;
+    gap: clamp(10px, calc(1.25vw - 8px), 16px);
+    grid-template-columns: clamp(308px, calc(11.6667vw + 140px), 364px) minmax(500px, 1fr) clamp(308px, calc(11.6667vw + 140px), 364px);
+    padding: clamp(10px, calc(1.4583vw - 11px), 17px) clamp(10px, calc(1.25vw - 8px), 16px) 10px;
   }
 
   .mercu-radar-grid > main {
@@ -363,19 +393,155 @@ body::before {
     margin-right: 0;
   }
 
-  .mercu-info-grid {
-    gap: 19px;
-    padding: 7px 9.5px 10px;
-  }
-
-  .mercu-funds-overview-grid {
-    grid-template-columns: clamp(264px, calc(6.6667vw + 187.2px), 290px) minmax(0, 1fr);
+  .mercu-radar-grid .workstation-panel-header {
+    height: 50px;
     padding-left: 16px;
     padding-right: 16px;
   }
 
+  .mercu-radar-grid > main > section:first-child > .workstation-panel-header {
+    height: 60px;
+  }
+
+  .mercu-radar-grid > aside:last-child > section + section {
+    margin-top: 16px;
+  }
+
+  .mercu-info-grid {
+    gap: 10px;
+    padding: 0 8px 10px;
+  }
+
+  .mercu-info-grid > section:first-child {
+    margin-left: -8px;
+    margin-right: -8px;
+  }
+
+  .mercu-info-grid > main {
+    gap: 8px;
+  }
+
+  .mercu-funds-overview-grid {
+    grid-template-columns: clamp(350px, calc(14.375vw + 143px), 419px) minmax(0, 1fr);
+    padding-left: clamp(18px, calc(1.4583vw - 3px), 25px);
+    padding-right: clamp(18px, calc(1.4583vw - 3px), 25px);
+  }
+
   .mercu-funds-grid {
     padding-top: clamp(0px, calc(2.2917vw - 26.4px), 9px);
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1599px) {
+  .app-shell:has(.workstation-page) {
+    overflow: scroll;
+    scrollbar-width: auto;
+  }
+
+  .app-shell:has(.workstation-page)::-webkit-scrollbar {
+    height: 15px;
+    width: 15px;
+  }
+
+  .app-shell:has(.workstation-page)::-webkit-scrollbar-track,
+  .app-shell:has(.workstation-page)::-webkit-scrollbar-corner {
+    background: rgb(44 44 44);
+  }
+
+  .app-shell:has(.workstation-page)::-webkit-scrollbar-thumb {
+    background: rgb(159 159 159);
+    border: 3px solid rgb(44 44 44);
+    border-radius: 999px;
+  }
+
+  .app-shell:has(.workstation-page) > .workstation-header,
+  .app-shell:has(.workstation-page) > .site-content {
+    min-width: 1440px;
+  }
+
+  .app-shell:has(.workstation-page)::before {
+    background:
+      linear-gradient(rgb(159 159 159), rgb(159 159 159)) 3px 19px / 9px calc(100% - 86px) no-repeat,
+      rgb(44 44 44);
+    bottom: 0;
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 15px;
+    z-index: 100;
+  }
+
+  .app-shell:has(.workstation-page)::after {
+    background:
+      linear-gradient(90deg, rgb(159 159 159), rgb(159 159 159)) 19px 3px / calc(100% - 67px) 9px no-repeat,
+      rgb(44 44 44);
+    bottom: 0;
+    content: "";
+    height: 15px;
+    left: 0;
+    pointer-events: none;
+    position: fixed;
+    right: 0;
+    z-index: 101;
+  }
+
+}
+
+@media (min-width: 1600px) {
+  .workstation-header {
+    border-bottom-color: rgb(250 250 250);
+    box-shadow:
+      0 1px 0 rgb(242 243 245),
+      0 2px 0 rgb(237 240 243);
+  }
+
+  .mercu-funds-grid {
+    padding-top: 20px;
+  }
+
+  .mercu-funds-grid > section:first-child {
+    height: 52px;
+  }
+
+  .mercu-funds-overview-grid {
+    grid-template-columns: clamp(350px, calc(14.375vw + 143px), 419px) minmax(0, 1fr);
+    padding-left: clamp(18px, calc(1.4583vw - 3px), 25px);
+    padding-right: clamp(18px, calc(1.4583vw - 3px), 25px);
+  }
+
+  .mercu-info-grid {
+    --border-subtle: 233 237 243;
+    gap: 19px;
+    padding: 0 16px 16px;
+  }
+
+  .mercu-info-grid > section:first-child {
+    margin-left: -16px;
+    margin-right: -16px;
+  }
+
+  .mercu-info-grid > main {
+    gap: 16px;
+  }
+}
+
+@media (min-width: 1600px) {
+  .mercu-radar-grid .workstation-panel-header {
+    height: 51px;
+  }
+
+  .mercu-radar-grid > main > section:first-child > .workstation-panel-header {
+    height: 62px;
+  }
+
+  .mercu-radar-grid .radar-scan-bar {
+    height: 60px;
+  }
+
+  .mercu-radar-grid .radar-event-dot {
+    top: 30px;
   }
 }
 
@@ -404,6 +570,7 @@ html[data-theme="light"] .workstation-scroll::-webkit-scrollbar-thumb {
   .app-shell:has(.workstation-page) .site-content > main,
   .workstation-page {
     height: auto;
+    margin-top: 0;
     min-height: calc(100dvh - 56px);
   }
 
@@ -475,7 +642,7 @@ html[data-theme="light"] .workstation-scroll::-webkit-scrollbar-thumb {
 
 @media (min-width: 1280px) {
   .mercu-radar-grid {
-    background: rgb(238 241 248);
+    background: rgb(238 241 245);
   }
 
   .radar-shell-wide {
