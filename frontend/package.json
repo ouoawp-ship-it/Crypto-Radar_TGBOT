@@ -1,6 +1,6 @@
 {
   "name": "paoxx-public-dashboard",
-  "version": "1.90.1",
+  "version": "1.90.2",
   "private": true,
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3000",
@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test",
     "e2e:functional": "playwright test --grep-invert \"workstation visual fixtures remain stable\"",
-    "e2e:visual": "playwright test --grep \"workstation visual fixtures remain stable\"",
+    "e2e:visual": "node ./scripts/run-visual.mjs",
     "visual:mercu": "python ../scripts/mercu_visual_diff.py",
     "visual:mercu:acceptance": "python ../scripts/mercu_visual_diff.py --pixel-threshold 15 --max-changed-ratio 0.172 --max-mean-error 0.052"
   },
