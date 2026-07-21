@@ -597,7 +597,7 @@ const coinSeriesPoints = Array.from({ length: 8 }, (_, index) => ({
   funding_pct: -0.02
 }));
 
-async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; excludeFundsSymbol?: string; healthStatus?: "ok" | "degraded"; radarVisual?: "1440x900" | "1920x1080"; radarFailure?: "momentum-windows" | "anomalies" | "surge" | "rank" } = {}) {
+async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agents?: unknown; assetWarnings?: string[]; excludeFundsSymbol?: string; healthStatus?: "ok" | "degraded"; radarVisual?: "1440x900" | "1920x1080"; radarFailure?: "momentum-windows" | "anomalies" | "surge" | "rank"; radarSubPercent?: boolean } = {}) {
   let signalRequests = 0;
   let infoRequests = 0;
   let lastInfoSearch = "";
@@ -609,6 +609,14 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
   let legacyRealtimeRequests = 0;
   const radarModuleRequests = new Set<string>();
   const visualRadar = options.radarVisual ? mercuRadarFixture(options.radarVisual) : null;
+  const selectedRadarBoards = options.radarSubPercent ? {
+    ...radarBoards,
+    boards: radarBoards.boards.map((board) => board.key !== "price" ? board : {
+      ...board,
+      positive: { ...board.positive, items: board.positive.items.map((item, index) => ({ ...item, value: 0.5 - index * 0.05 })) },
+      negative: { ...board.negative, items: board.negative.items.map((item, index) => ({ ...item, value: -(0.45 - index * 0.04) })) },
+    }),
+  } : visualRadar?.boards || radarBoards;
   const visualFundsSectors = options.radarVisual === "1920x1080" ? wideFundsSectors : fundsSectors;
   const visualFundsAssets = options.radarVisual === "1920x1080" ? wideFundsAssets : fundsAssets;
   const visualFundRows = options.radarVisual === "1920x1080" ? wideFundsAssetFixtures : fundsAssetFixtures;
@@ -640,7 +648,7 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
     }
     if (url.pathname === "/public-api/signals/stats") return route.fulfill({ json: { ok: true, data: { total: 1, sent: 1, blocked: 0, failed: 0, skipped: 0 } } });
     if (url.pathname === "/public-api/market/overview") return route.fulfill({ json: { ok: true, data: visualRadar?.overview || marketOverview } });
-    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: visualRadar?.boards || radarBoards } });
+    if (url.pathname === "/public-api/radar/boards") return route.fulfill({ json: { ok: true, data: selectedRadarBoards } });
     if (url.pathname === "/public-api/workstation/radar/momentum-windows") {
       radarModuleRequests.add("momentum-windows");
       if (options.radarFailure === "momentum-windows") return route.fulfill({ status: 503, json: { ok: false, message: "momentum unavailable" } });
@@ -648,12 +656,12 @@ async function mockPublicApi(page: Page, options: { streamSignal?: boolean; agen
         json: {
           ok: true,
           data: {
-            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...(visualRadar?.boards || radarBoards), window }]))
+            windows: Object.fromEntries(["15m", "30m", "1h", "4h", "1d"].map((window) => [window, { ...selectedRadarBoards, window }]))
           }
         }
       });
     }
-    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: visualRadar?.boards || radarBoards } });
+    if (url.pathname === "/public-api/workstation/radar/momentum") return route.fulfill({ json: { ok: true, data: selectedRadarBoards } });
     if (url.pathname === "/public-api/workstation/radar/anomalies") {
       radarModuleRequests.add("anomalies");
       if (options.radarFailure === "anomalies") return route.fulfill({ status: 503, json: { ok: false, message: "anomalies unavailable" } });
@@ -818,6 +826,16 @@ test("desktop radar exposes the independent workstation modules", async ({ page 
   for (const heading of ["Surge 飙升榜", "24h 异动总榜", "埋伏池"]) {
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
+});
+
+test("radar amount bars keep relative scale when every price move is below one percent", async ({ page }) => {
+  await mockPublicApi(page, { radarSubPercent: true });
+  await page.goto("/radar");
+
+  const priceBoard = page.getByTestId("radar-momentum-matrix").locator(":scope > section").first();
+  const leadingBar = priceBoard.locator('button[data-symbol] > i[aria-hidden="true"]').first();
+  await expect(leadingBar).toBeVisible();
+  expect(await leadingBar.evaluate((element) => (element as HTMLElement).style.width)).toBe("70%");
 });
 
 test("radar preserves healthy modules when one independent request fails", async ({ page }) => {
