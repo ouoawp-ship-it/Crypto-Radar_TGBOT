@@ -5,13 +5,17 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .market_cockpit import MarketSnapshotStore, build_market_cockpit
+from .news_intelligence import NewsEventStore
 from .realtime_intelligence import build_realtime_intelligence
 from .realtime_market import RealtimeFeatureStore
 from .runtime_cache import get_or_set as runtime_cache_get_or_set
 
 
-BOT_MARKET_CONTEXT_SCHEMA_VERSION = "bot.market-context.v1"
+BOT_MARKET_CONTEXT_SCHEMA_VERSION = "bot.market-context.v2"
 BOT_MARKET_CONTEXT_TTL_SEC = 15
+BOT_NEWS_CONTEXT_TTL_SEC = 60
+BOT_MARKET_WINDOW_SEC = 900
 
 
 def _number(value: Any) -> float | None:
@@ -68,7 +72,7 @@ def build_bot_market_context(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _load_payload(settings: Any, *, now_ts: int | None = None) -> dict[str, Any]:
+def _load_realtime_payload(settings: Any, *, now_ts: int | None = None) -> dict[str, Any]:
     raw_path = getattr(settings, "realtime_features_db_path", None)
     if raw_path in (None, ""):
         return {}
@@ -85,6 +89,120 @@ def _load_payload(settings: Any, *, now_ts: int | None = None) -> dict[str, Any]
         return build()
     try:
         return runtime_cache_get_or_set(f"bot:market-context:{path}", BOT_MARKET_CONTEXT_TTL_SEC, build)
+    except Exception:
+        return {}
+
+
+def _load_market_contexts(
+    settings: Any,
+    symbols: list[str],
+    *,
+    now_ts: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    raw_path = getattr(settings, "market_snapshots_db_path", None)
+    if raw_path in (None, ""):
+        return {}
+    path = Path(raw_path)
+    if not path.exists():
+        return {}
+    now = int(now_ts or time.time())
+
+    def build() -> dict[str, dict[str, Any]]:
+        comparisons = MarketSnapshotStore(path).comparisons(
+            now_ts=now,
+            window_secs=(BOT_MARKET_WINDOW_SEC,),
+            max_symbols=len(symbols),
+            symbols=symbols,
+        )
+        latest, baselines = comparisons.get(BOT_MARKET_WINDOW_SEC, ([], {}))
+        payload = build_market_cockpit(
+            latest,
+            baselines,
+            now_ts=now,
+            window_sec=BOT_MARKET_WINDOW_SEC,
+            board_limit=3,
+        )
+        return {
+            _symbol(item.get("symbol") or item.get("coin")): {
+                "window_sec": BOT_MARKET_WINDOW_SEC,
+                "price_change_pct": _number(item.get("price_change_pct")),
+                "oi_change_pct": _number(item.get("oi_change_pct")),
+                "spot_flow_usd": _number(item.get("spot_flow_usd")),
+                "futures_flow_usd": _number(item.get("futures_flow_usd")),
+                "funding_pct": _number(item.get("funding_pct")),
+                "age_sec": int(_number(item.get("age_sec")) or 0),
+                "status": str(item.get("status") or "unavailable"),
+            }
+            for item in payload.get("assets", [])
+            if isinstance(item, dict) and str(item.get("status") or "") != "stale"
+        }
+
+    try:
+        if now_ts is not None:
+            all_contexts = build()
+        else:
+            symbol_key = ",".join(sorted(symbols))
+            all_contexts = runtime_cache_get_or_set(
+                f"bot:funds-context:{path}:{symbol_key}",
+                BOT_MARKET_CONTEXT_TTL_SEC,
+                build,
+            )
+        return {symbol: all_contexts[symbol] for symbol in symbols if symbol in all_contexts}
+    except Exception:
+        return {}
+
+
+def _load_news_contexts(
+    settings: Any,
+    symbols: list[str],
+    *,
+    now_ts: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    raw_path = getattr(settings, "news_events_db_path", None)
+    if raw_path in (None, ""):
+        return {}
+    path = Path(raw_path)
+    if not path.exists():
+        return {}
+    now = int(now_ts or time.time())
+
+    def build() -> dict[str, dict[str, Any]]:
+        store = NewsEventStore(path)
+        result: dict[str, dict[str, Any]] = {}
+        for symbol in symbols:
+            payload = store.list_feed(
+                start_ts=now - 86_400,
+                end_ts=now,
+                symbol=symbol,
+                page_size=100,
+            )
+            items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+            if not items:
+                continue
+            pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
+            highlight = (
+                next((item for item in items if item.get("event_kind") == "risk"), None)
+                or next((item for item in items if item.get("importance") == "high"), None)
+                or items[0]
+            )
+            result[symbol] = {
+                "total_24h": int(_number(pagination.get("total")) or len(items)),
+                "risk_24h": sum(1 for item in items if item.get("event_kind") == "risk"),
+                "high_importance_24h": sum(1 for item in items if item.get("importance") == "high"),
+                "highlight_title": str(highlight.get("title") or ""),
+                "highlight_source": str(highlight.get("source") or ""),
+            }
+        return result
+
+    try:
+        if now_ts is not None:
+            return build()
+        symbol_key = ",".join(symbols)
+        return runtime_cache_get_or_set(
+            f"bot:info-context:{path}:{symbol_key}",
+            BOT_NEWS_CONTEXT_TTL_SEC,
+            build,
+        )
     except Exception:
         return {}
 
@@ -106,20 +224,51 @@ def bot_market_contexts_for_records(
             break
     if not symbols:
         return []
-    payload = _load_payload(settings, now_ts=now_ts)
+    payload = _load_realtime_payload(settings, now_ts=now_ts)
     by_symbol = {
         _symbol(item.get("symbol") or item.get("coin")): item
         for item in payload.get("items", [])
         if isinstance(item, dict)
     }
-    return [build_bot_market_context(by_symbol[symbol]) for symbol in symbols if symbol in by_symbol]
+    markets = _load_market_contexts(settings, symbols, now_ts=now_ts)
+    news = _load_news_contexts(settings, symbols, now_ts=now_ts)
+    contexts: list[dict[str, Any]] = []
+    for symbol in symbols:
+        realtime = by_symbol.get(symbol)
+        market = markets.get(symbol)
+        info = news.get(symbol)
+        if realtime is None and market is None and info is None:
+            continue
+        context = build_bot_market_context(realtime or {"symbol": symbol})
+        if market is not None:
+            context["market"] = market
+        if info is not None:
+            context["news"] = info
+        contexts.append(context)
+    return contexts
 
 
 def _direction_label(value: Any) -> str:
     return {"long": "偏多", "short": "偏空", "neutral": "中性"}.get(str(value or "neutral"), "中性")
 
 
-def _context_line(context: dict[str, Any]) -> str:
+def _money(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    absolute = abs(number)
+    if absolute >= 1_000_000_000:
+        rendered = f"${absolute / 1_000_000_000:.2f}B"
+    elif absolute >= 1_000_000:
+        rendered = f"${absolute / 1_000_000:.2f}M"
+    elif absolute >= 1_000:
+        rendered = f"${absolute / 1_000:.1f}K"
+    else:
+        rendered = f"${absolute:.0f}"
+    return f"{'+' if number >= 0 else '-'}{rendered}"
+
+
+def _context_lines(context: dict[str, Any]) -> list[str]:
     symbol = html.escape(str(context.get("symbol") or ""))
     coin = symbol[:-4] if symbol.endswith("USDT") else symbol
     cvd = _number(context.get("cvd_ratio_5m_pct"))
@@ -140,7 +289,38 @@ def _context_line(context: dict[str, Any]) -> str:
     count = int(_number(context.get("anomaly_count_24h")) or 0)
     if count:
         parts.append(f"24h 异动 {count}次")
-    return "｜".join(parts)
+    lines = ["｜".join(parts)]
+    market = context.get("market") if isinstance(context.get("market"), dict) else {}
+    market_parts: list[str] = []
+    spot_flow = _money(market.get("spot_flow_usd"))
+    futures_flow = _money(market.get("futures_flow_usd"))
+    oi_change = _number(market.get("oi_change_pct"))
+    funding = _number(market.get("funding_pct"))
+    if spot_flow:
+        market_parts.append(f"现货 {spot_flow}")
+    if futures_flow:
+        market_parts.append(f"合约 {futures_flow}")
+    if oi_change is not None:
+        market_parts.append(f"OI {oi_change:+.2f}%")
+    if funding is not None:
+        market_parts.append(f"费率 {funding:+.4f}%")
+    if market_parts:
+        lines.append("↳ 15m " + " · ".join(market_parts))
+
+    news = context.get("news") if isinstance(context.get("news"), dict) else {}
+    total = int(_number(news.get("total_24h")) or 0)
+    if total:
+        high = int(_number(news.get("high_importance_24h")) or 0)
+        risk = int(_number(news.get("risk_24h")) or 0)
+        news_parts = [f"情报 {total}", f"高影响 {high}", f"风险 {risk}"]
+        title = str(news.get("highlight_title") or "").strip()
+        if title:
+            source = str(news.get("highlight_source") or "").strip()
+            label = f"{source}: {title}" if source else title
+            shortened = label if len(label) <= 44 else f"{label[:43]}…"
+            news_parts.append(f"「{html.escape(shortened)}」")
+        lines.append("↳ 24h " + " · ".join(news_parts))
+    return lines
 
 
 def enrich_telegram_with_market_context(
@@ -151,7 +331,13 @@ def enrich_telegram_with_market_context(
     *,
     now_ts: int | None = None,
 ) -> str:
-    if template_id not in {"TG_LAUNCH_ALERT", "TG_FLOW_RADAR", "TG_FUNDING_ALERT", "TG_ANNOUNCEMENT_ALERT"}:
+    if template_id not in {
+        "TG_RADAR_SUMMARY",
+        "TG_LAUNCH_ALERT",
+        "TG_FLOW_RADAR",
+        "TG_FUNDING_ALERT",
+        "TG_ANNOUNCEMENT_ALERT",
+    }:
         return text
     contexts = bot_market_contexts_for_records(settings, list(signal_records or []), now_ts=now_ts)
     if not contexts:
@@ -159,7 +345,7 @@ def enrich_telegram_with_market_context(
     block = [
         "",
         "<blockquote><b>Web 市场事实增强</b></blockquote>",
-        *[_context_line(context) for context in contexts],
+        *[line for context in contexts for line in _context_lines(context)],
         "<i>封闭窗口参考，不改变本模块原触发阈值；不构成投资建议。</i>",
     ]
     return f"{text.rstrip()}\n" + "\n".join(block)

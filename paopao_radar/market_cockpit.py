@@ -594,24 +594,33 @@ class MarketSnapshotStore:
         now_ts: int,
         window_secs: tuple[int, ...] | list[int],
         max_symbols: int = 240,
+        symbols: tuple[str, ...] | list[str] | None = None,
     ) -> dict[int, tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]]:
         """Build several closed-window comparisons from one history read."""
         windows = tuple(dict.fromkeys(normalize_window(value) for value in window_secs)) or (3600,)
         start_ts = int(now_ts) - max(2 * max(windows), 2 * 86400)
         safe_symbols = max(1, min(500, int(max_symbols or 240)))
         with self.connect() as conn:
-            symbol_rows = conn.execute(
-                """
-                SELECT symbol, MAX(COALESCE(quote_volume, 0)) AS volume
-                FROM market_snapshots
-                WHERE observed_at >= ? AND observed_at <= ?
-                GROUP BY symbol
-                ORDER BY volume DESC, symbol ASC
-                LIMIT ?
-                """,
-                (int(now_ts) - max(7_200, max(windows)), int(now_ts), safe_symbols),
-            ).fetchall()
-            selected_symbols = [str(row["symbol"] or "") for row in symbol_rows if str(row["symbol"] or "")]
+            requested_symbols = list(dict.fromkeys(
+                str(symbol or "").strip().upper()
+                for symbol in (symbols or [])
+                if str(symbol or "").strip().upper().endswith("USDT")
+            ))[:safe_symbols]
+            if requested_symbols:
+                selected_symbols = requested_symbols
+            else:
+                symbol_rows = conn.execute(
+                    """
+                    SELECT symbol, MAX(COALESCE(quote_volume, 0)) AS volume
+                    FROM market_snapshots
+                    WHERE observed_at >= ? AND observed_at <= ?
+                    GROUP BY symbol
+                    ORDER BY volume DESC, symbol ASC
+                    LIMIT ?
+                    """,
+                    (int(now_ts) - max(7_200, max(windows)), int(now_ts), safe_symbols),
+                ).fetchall()
+                selected_symbols = [str(row["symbol"] or "") for row in symbol_rows if str(row["symbol"] or "")]
             if not selected_symbols:
                 return {window: ([], {}) for window in windows}
             placeholders = ",".join("?" for _ in selected_symbols)
