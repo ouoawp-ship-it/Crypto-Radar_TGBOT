@@ -519,6 +519,7 @@ body::before {
   }
 
   .mercu-info-grid > section:first-child {
+    height: 71px;
     margin-left: -16px;
     margin-right: -16px;
   }
