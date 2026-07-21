@@ -1251,6 +1251,20 @@ test("radar signal deep link opens and closes the exact context drawer", async (
   await expect.poll(() => new URL(page.url()).searchParams.has("signal")).toBe(false);
 });
 
+test("radar symbol deep link opens and closes the Mercu coin drawer", async ({ page }) => {
+  await mockPublicApi(page);
+  await page.goto("/radar?symbol=BTCUSDT");
+
+  const dialog = page.getByRole("dialog", { name: "BTC 单币详情" });
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get("symbol")).toBe("BTCUSDT");
+  const closeButton = dialog.getByRole("button", { name: "关闭" });
+  await expect(closeButton).toHaveCount(1);
+  await closeButton.click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).searchParams.has("symbol")).toBe(false);
+});
+
 test("funds workstation links overview, time series and cross-exchange OI", async ({ page }) => {
   await mockPublicApi(page);
   await page.goto("/funds");
