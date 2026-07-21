@@ -1067,6 +1067,21 @@ test("funds deep link keeps core asset metrics when the symbol is outside the cu
   await expect(fundingCard).toContainText("-0.0200%");
 });
 
+test("unknown tickers do not probe unverified CDN icon paths", async ({ page }) => {
+  const iconRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons")) {
+      iconRequests.push(request.url());
+    }
+  });
+  await mockPublicApi(page, { radarVisual: "1440x900" });
+  await page.goto("/radar");
+
+  await expect(page.locator('[role="img"][aria-label^="H "]').first()).toBeVisible();
+  expect(iconRequests.some((url) => url.endsWith("/h.png"))).toBe(false);
+  expect(iconRequests.some((url) => url.endsWith("/crv.png"))).toBe(true);
+});
+
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 1920, height: 1080 },

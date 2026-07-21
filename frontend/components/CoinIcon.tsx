@@ -127,6 +127,7 @@ const LOCAL_ICONS: Record<string, { background: string; color?: string; glyph: s
 };
 
 const LOCAL_ONLY = new Set(["1000XEC", "BABA", "SPCX", "SAKE", "SNDK", "SKHY", "SKHYNIX", "MU", "CL", "XAU"]);
+const AUDITED_ATOMICLABS_ICONS = new Set(["CRV", "LTC", "SKL", "TRX"]);
 
 const SVG_FALLBACKS: Record<string, string> = {
   ACE: `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><path fill="#d5d7d8" d="M14 238 111 18h28l103 220h-63l-51-119-24 56h31l23 53H79l-13 30H14Z"/><path fill="#ff9d18" d="m96 238 32-72 32 72H96Z"/></svg>')}`,
@@ -144,7 +145,10 @@ export function CoinIcon({ coin, iconUrl, size = 18 }: { coin?: string; iconUrl?
   const hue = [...label].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
   const local = LOCAL_ICONS[raw];
   const fallbackSource = SVG_FALLBACKS[raw];
-  const source = iconUrl || fallbackSource || COINGECKO_ICONS[raw] || (LOCAL_ONLY.has(raw) ? "" : `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@${ICON_RELEASE}/128/color/${slug}.png`);
+  const auditedCdnSource = ((local && !LOCAL_ONLY.has(raw)) || AUDITED_ATOMICLABS_ICONS.has(raw))
+    ? `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@${ICON_RELEASE}/128/color/${slug}.png`
+    : "";
+  const source = iconUrl || fallbackSource || COINGECKO_ICONS[raw] || auditedCdnSource;
   return <span aria-label={`${raw} 图标`} className="relative grid shrink-0 place-items-center overflow-hidden rounded-full text-[7px] font-bold text-white" role="img" style={{ width: size, height: size, color: local?.color, background: local?.background || `linear-gradient(145deg,hsl(${hue} 72% 58%),hsl(${(hue + 32) % 360} 68% 43%))`, filter: raw === "APT" ? "grayscale(1)" : undefined }}>
     <span aria-hidden="true">{local?.glyph || label}</span>
     {source ? <img alt="" aria-hidden="true" className="absolute inset-0 h-full w-full object-cover" decoding="async" loading="eager" onError={(event) => { const image = event.currentTarget; if (fallbackSource && image.dataset.fallbackApplied !== "true") { image.dataset.fallbackApplied = "true"; image.src = fallbackSource; return; } image.style.display = "none"; }} src={source}/> : null}
