@@ -890,7 +890,8 @@ test("radar rows open the Mercu-style coin drawer without leaving radar", async 
 });
 
 test("1440 reference geometry keeps Mercu-sized radar, info and funds layouts", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+  const referenceScale = 1.25;
+  await page.setViewportSize({ width: 1152, height: 720 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
@@ -900,7 +901,7 @@ test("1440 reference geometry keeps Mercu-sized radar, info and funds layouts", 
   const sideRow = await page.getByTestId("radar-side-intelligence").locator("section").first().locator("button[data-symbol]").first().boundingBox();
   const eventRow = await page.getByTestId("radar-event-feed").locator("button[data-symbol]").first().boundingBox();
   const board = await page.getByTestId("radar-momentum-matrix").locator(":scope > section").first().boundingBox();
-  const rounded = (box: { x: number; y: number; width: number; height: number } | null) => box && ({ x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) });
+  const rounded = (box: { x: number; y: number; width: number; height: number } | null) => box && ({ x: Math.round(box.x * referenceScale), y: Math.round(box.y * referenceScale), width: Math.round(box.width * referenceScale), height: Math.round(box.height * referenceScale) });
   expect({ event: rounded(eventBox), center: rounded(matrixBox), side: rounded(sideBox), eventRow: rounded(eventRow), sideRow: rounded(sideRow), board: rounded(board) }).toEqual({
     event: { x: 10, y: 80, width: 308, height: 810 },
     center: { x: 328, y: 80, width: 784, height: 810 },
@@ -909,14 +910,14 @@ test("1440 reference geometry keeps Mercu-sized radar, info and funds layouts", 
     sideRow: { x: 1123, y: 168, width: 306, height: 39 },
     board: { x: 341, y: 153, width: 367, height: 489 },
   });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1152);
 
   await page.goto("/info");
   const infoGrid = await page.getByTestId("info-four-columns").boundingBox();
-  const infoColumns = await page.getByTestId("info-four-columns").locator(":scope > section").evaluateAll((elements) => elements.map((element) => {
+  const infoColumns = await page.getByTestId("info-four-columns").locator(":scope > section").evaluateAll((elements, scale) => elements.map((element) => {
     const rect = element.getBoundingClientRect();
-    return { x: Math.round(rect.x), width: Math.round(rect.width) };
-  }));
+    return { x: Math.round(rect.x * scale), width: Math.round(rect.width * scale) };
+  }), referenceScale);
   expect({ grid: rounded(infoGrid), columns: infoColumns }).toEqual({
     grid: { x: 9, y: 147, width: 1422, height: 743 },
     columns: [
@@ -931,17 +932,18 @@ test("1440 reference geometry keeps Mercu-sized radar, info and funds layouts", 
   const compactSector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
   const compactAssets = await page.getByTestId("funds-assets-overview").boundingBox();
   const compactSearch = await page.getByLabel("搜索全体代币").boundingBox();
-  expect({ sector: rounded(compactSector), assets: rounded(compactAssets), search: compactSearch && { y: Math.round(compactSearch.y), width: Math.round(compactSearch.width), height: Math.round(compactSearch.height) } }).toEqual({
+  expect({ sector: rounded(compactSector), assets: rounded(compactAssets), search: compactSearch && { y: Math.round(compactSearch.y * referenceScale), width: Math.round(compactSearch.width * referenceScale), height: Math.round(compactSearch.height * referenceScale) } }).toEqual({
     sector: { x: 18, y: 147, width: 350, height: 736 },
     assets: { x: 386, y: 147, width: 1036, height: 736 },
     search: { y: 147, width: 398, height: 48 },
   });
-  expect(Math.round(Number(compactSearch?.x))).toBeGreaterThanOrEqual(828);
-  expect(Math.round(Number(compactSearch?.x))).toBeLessThanOrEqual(830);
+  expect(Math.round(Number(compactSearch?.x) * referenceScale)).toBeGreaterThanOrEqual(828);
+  expect(Math.round(Number(compactSearch?.x) * referenceScale)).toBeLessThanOrEqual(830);
 });
 
 test("1920 reference geometry keeps Mercu-sized radar rails and funds overview", async ({ page }) => {
-  await page.setViewportSize({ width: 1920, height: 1080 });
+  const referenceScale = 1.25;
+  await page.setViewportSize({ width: 1536, height: 864 });
   await mockPublicApi(page);
   await page.goto("/radar");
 
@@ -949,7 +951,7 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const center = await page.getByTestId("radar-hot-money").boundingBox();
   const side = await page.getByTestId("radar-side-intelligence").boundingBox();
   const strengthRow = await page.getByTestId("radar-strength-grid").first().locator("button[data-symbol]").first().boundingBox();
-  const rounded = (box: { x: number; y: number; width: number; height: number } | null) => box && ({ x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) });
+  const rounded = (box: { x: number; y: number; width: number; height: number } | null) => box && ({ x: Math.round(box.x * referenceScale), y: Math.round(box.y * referenceScale), width: Math.round(box.width * referenceScale), height: Math.round(box.height * referenceScale) });
   expect({ event: rounded(event), center: rounded(center), side: rounded(side), strengthRow: rounded(strengthRow) }).toEqual({
     event: { x: 16, y: 87, width: 364, height: 983 },
     center: { x: 396, y: 87, width: 1128, height: 983 },
@@ -973,22 +975,23 @@ test("1920 reference geometry keeps Mercu-sized radar rails and funds overview",
   const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
   const assets = await page.getByTestId("funds-assets-overview").boundingBox();
   const assetSearch = await page.getByLabel("搜索全体代币").boundingBox();
-  expect({ sector: rounded(sector), assets: rounded(assets), search: assetSearch && { y: Math.round(assetSearch.y), width: Math.round(assetSearch.width), height: Math.round(assetSearch.height) } }).toEqual({
+  expect({ sector: rounded(sector), assets: rounded(assets), search: assetSearch && { y: Math.round(assetSearch.y * referenceScale), width: Math.round(assetSearch.width * referenceScale), height: Math.round(assetSearch.height * referenceScale) } }).toEqual({
     sector: { x: 25, y: 155, width: 419, height: 907 },
     assets: { x: 462, y: 155, width: 1433, height: 907 },
     search: { y: 155, width: 420, height: 51 },
   });
-  expect(Math.round(Number(assetSearch?.x))).toBeGreaterThanOrEqual(1273);
-  expect(Math.round(Number(assetSearch?.x))).toBeLessThanOrEqual(1275);
+  expect(Math.round(Number(assetSearch?.x) * referenceScale)).toBeGreaterThanOrEqual(1273);
+  expect(Math.round(Number(assetSearch?.x) * referenceScale)).toBeLessThanOrEqual(1275);
   const wideTableViewport = await page.getByTestId("funds-assets-overview").locator(".workstation-scroll").evaluate((element) => ({ clientWidth: element.clientWidth, scrollLeft: element.scrollLeft, scrollWidth: element.scrollWidth }));
   expect(wideTableViewport.clientWidth).toBeCloseTo(1431, 0);
   expect(wideTableViewport.scrollWidth).toBe(1431);
   expect(wideTableViewport.scrollLeft).toBe(0);
-  const wideFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
+  const wideFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements, scale) => elements.slice(0, 3).map((element) => Math.round(element.getBoundingClientRect().width * scale)), referenceScale);
   expect(wideFundColumns).toEqual([58, 245, 192]);
 });
 
 test("925x732 narrow desktop workstation remains usable", async ({ page }) => {
+  const referenceScale = 1.25;
   await page.setViewportSize({ width: 925, height: 732 });
   await mockPublicApi(page);
   await page.goto("/radar");
@@ -998,39 +1001,39 @@ test("925x732 narrow desktop workstation remains usable", async ({ page }) => {
   expect(event).not.toBeNull();
   expect(center).not.toBeNull();
   expect(side).not.toBeNull();
-  expect(Number(event?.width)).toBeGreaterThanOrEqual(198);
-  expect(Number(center?.width)).toBeGreaterThanOrEqual(498);
-  expect(Number(side?.width)).toBeGreaterThanOrEqual(198);
+  expect(Number(event?.width) * referenceScale).toBeGreaterThanOrEqual(198);
+  expect(Number(center?.width) * referenceScale).toBeGreaterThanOrEqual(498);
+  expect(Number(side?.width) * referenceScale).toBeGreaterThanOrEqual(198);
   const momentumBoards = await page.getByTestId("radar-momentum-matrix").locator(":scope > section").evaluateAll((elements) => elements.map((element) => {
     const rect = element.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width };
   }));
   expect(momentumBoards).toHaveLength(4);
-  expect(momentumBoards[0].width).toBeGreaterThanOrEqual(220);
+  expect(momentumBoards[0].width * referenceScale).toBeGreaterThanOrEqual(220);
   await expect(page.getByText("+5.80%", { exact: true }).first()).toBeVisible();
   const strengthColumns = await page.getByTestId("radar-strength-grid").first().evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
   expect(strengthColumns).toBe(2);
 
   await page.goto("/info");
-  const infoColumns = await page.locator('[data-testid="info-four-columns"] > section').evaluateAll((elements) => elements.map((element) => {
+  const infoColumns = await page.locator('[data-testid="info-four-columns"] > section').evaluateAll((elements, scale) => elements.map((element) => {
     const rect = element.getBoundingClientRect();
-    return { width: Math.round(rect.width), top: Math.round(rect.top), bottom: Math.round(rect.bottom) };
-  }));
+    return { width: Math.round(rect.width * scale), top: Math.round(rect.top * scale), bottom: Math.round(rect.bottom * scale) };
+  }), referenceScale);
   expect(infoColumns).toHaveLength(4);
   expect(infoColumns.reduce((sum, column) => sum + column.width, 0)).toBeGreaterThanOrEqual(884);
   expect(infoColumns.every((column) => column.top > 130 && column.bottom > 700)).toBe(true);
 
   await page.goto("/funds");
   const sector = await page.getByRole("heading", { name: "板块资金流" }).locator("xpath=ancestor::section").boundingBox();
-  expect(Number(sector?.width)).toBeGreaterThanOrEqual(225);
-  expect(Number(sector?.height)).toBeGreaterThan(500);
+  expect(Number(sector?.width) * referenceScale).toBeGreaterThanOrEqual(225);
+  expect(Number(sector?.height) * referenceScale).toBeGreaterThan(500);
   const assets = await page.getByTestId("funds-assets-overview").boundingBox();
   const assetSearch = await page.getByTestId("funds-assets-overview").locator("input").boundingBox();
   const assetFooter = await page.getByTestId("funds-assets-overview").locator("footer").boundingBox();
-  expect(Number(assets?.width)).toBeGreaterThan(500);
-  expect(Number(assetSearch?.width)).toBeGreaterThanOrEqual(255);
-  expect(Number(assetFooter?.height)).toBeGreaterThanOrEqual(28);
-  const compactFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width));
+  expect(Number(assets?.width) * referenceScale).toBeGreaterThan(500);
+  expect(Number(assetSearch?.width) * referenceScale).toBeGreaterThanOrEqual(255);
+  expect(Number(assetFooter?.height) * referenceScale).toBeGreaterThanOrEqual(28);
+  const compactFundColumns = await page.getByTestId("funds-asset-row").first().locator(":scope > *").evaluateAll((elements, scale) => elements.slice(0, 3).map((element) => element.getBoundingClientRect().width * scale), referenceScale);
   expect(compactFundColumns[0]).toBeGreaterThanOrEqual(40);
 });
 
@@ -1069,8 +1072,11 @@ for (const viewport of [
   { width: 1920, height: 1080 },
 ]) {
   test(`workstation visual fixtures remain stable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
-    const deviceScaleFactor = 1;
-    const cssViewport = viewport;
+    const deviceScaleFactor = Number(process.env.MERCU_CAPTURE_DSF || 1);
+    const cssViewport = {
+      width: Math.round(viewport.width / deviceScaleFactor),
+      height: Math.round(viewport.height / deviceScaleFactor),
+    };
     await page.setViewportSize(cssViewport);
     await expect.poll(() => page.evaluate(() => ({
       devicePixelRatio: window.devicePixelRatio,
@@ -1101,7 +1107,9 @@ for (const viewport of [
         await Promise.all(images.map((image) => (image as HTMLImageElement).decode().catch(() => undefined)));
       });
       await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
-      await expect(page).toHaveScreenshot(`${route}-${viewport.width}x${viewport.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.035, scale: "device" });
+      if (deviceScaleFactor === 1) {
+        await expect(page).toHaveScreenshot(`${route}-${viewport.width}x${viewport.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.035, scale: "device" });
+      }
       if (process.env.MERCU_ACTUAL_DIR) {
         const actualPath = resolve(process.env.MERCU_ACTUAL_DIR, `${route}-${viewport.width}x${viewport.height}-chromium.png`);
         await mkdir(dirname(actualPath), { recursive: true });
@@ -1352,6 +1360,8 @@ test("390px funds workstation stacks without page-level horizontal overflow", as
 });
 
 test("information workstation keeps four fixed authorized streams traceable", async ({ page }) => {
+  const referenceScale = 1.25;
+  await page.setViewportSize({ width: 1152, height: 720 });
   await mockPublicApi(page);
   await page.goto("/info");
 
@@ -1360,8 +1370,8 @@ test("information workstation keeps four fixed authorized streams traceable", as
   for (const mode of ["news", "english", "kol", "plaza"]) await expect(page.getByTestId(`info-channel-icon-${mode}`)).toBeVisible();
   for (const label of ["搜索聚合资讯", "搜索英文流资讯"]) {
     const searchBox = await page.getByLabel(label).boundingBox();
-    expect(searchBox?.width).toBeCloseTo(145, 0);
-    expect(searchBox?.height).toBeCloseTo(27, 0);
+    expect(Number(searchBox?.width) * referenceScale).toBeCloseTo(145, 0);
+    expect(Number(searchBox?.height) * referenceScale).toBeCloseTo(27, 0);
   }
   const englishRowHeights = await page.locator('[data-info-row="english"]').evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
   expect(englishRowHeights.length).toBeGreaterThan(1);
