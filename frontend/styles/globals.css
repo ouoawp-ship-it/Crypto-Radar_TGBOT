@@ -354,7 +354,7 @@ body::before {
 }
 
 .mercu-info-grid {
-  --border-subtle: 233 236 239;
+  --border-subtle: 233 237 243;
   --text-muted: 150 152 155;
   background: linear-gradient(to bottom, rgb(var(--surface-panel)) 0 44px, rgb(238 241 245) 44px);
   display: flex;
@@ -409,17 +409,17 @@ body::before {
 
   .mercu-info-grid {
     gap: 9px;
-    padding: 0 8px 10px;
+    padding: 0 9px 10px;
   }
 
   .mercu-info-grid > section:first-child {
     height: 68px;
-    margin-left: -8px;
-    margin-right: -8px;
+    margin-left: -9px;
+    margin-right: -9px;
   }
 
   .mercu-info-grid > main {
-    gap: 8px;
+    gap: 10px;
   }
 
   .mercu-funds-overview-grid {

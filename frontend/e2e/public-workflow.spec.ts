@@ -899,12 +899,12 @@ test("1440 reference geometry keeps Mercu-sized radar, info and funds layouts", 
     return { x: Math.round(rect.x), width: Math.round(rect.width) };
   }));
   expect({ grid: rounded(infoGrid), columns: infoColumns }).toEqual({
-    grid: { x: 8, y: 147, width: 1424, height: 743 },
+    grid: { x: 9, y: 147, width: 1422, height: 743 },
     columns: [
-      { x: 8, width: 350 },
-      { x: 366, width: 350 },
-      { x: 724, width: 350 },
-      { x: 1082, width: 350 },
+      { x: 9, width: 348 },
+      { x: 367, width: 348 },
+      { x: 725, width: 348 },
+      { x: 1083, width: 348 },
     ],
   });
 
