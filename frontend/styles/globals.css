@@ -299,6 +299,7 @@ body::before {
 
 .funds-sector-bubble {
   font-size: var(--bubble-font-compact);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   height: var(--bubble-size-compact);
   left: var(--bubble-left-compact);
   top: var(--bubble-top-compact);
@@ -306,7 +307,7 @@ body::before {
 }
 
 .funds-sector-bubble-positive {
-  background: radial-gradient(circle at 36% 30%, rgb(81 193 148), rgb(22 169 110) 78%);
+  background: radial-gradient(circle at 36% 30%, rgb(95 193 150), rgb(22 169 110) 78%);
   box-shadow: 0 0 12px -3px rgb(22 169 110 / 55%), inset 0 0 0 1px rgb(115 203 168);
 }
 
