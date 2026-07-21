@@ -104,7 +104,7 @@ export function Header() {
   return (
     <>
       <header className={`sticky top-0 z-30 border-b border-border-subtle bg-surface-canvas/95 backdrop-blur ${workstation ? "workstation-header" : ""}`}>
-        <div className={`mx-auto flex items-center ${workstation ? "h-[69px] max-w-none gap-[21px] px-[22px] min-[1600px]:gap-6" : "h-[44px] gap-3 px-3.5 max-w-[1280px]"}`}>
+        <div className={`mx-auto flex items-center ${workstation ? "h-[69px] max-w-none gap-[21px] px-[22px]" : "h-[44px] gap-3 px-3.5 max-w-[1280px]"}`}>
           <Link aria-label="Paoxx 雷达" className={`flex shrink-0 items-center ${workstation ? "h-full w-[143px] gap-3 border-r border-border-subtle min-[1600px]:w-[146px]" : "gap-2"}`} href="/radar"><BrandMark workstation={workstation}/><span className={`${workstation ? "text-[16px]" : "text-[13px]"} font-bold tracking-[.12em] text-text-primary`}>PAOXX</span></Link>
           <nav aria-label="主导航" className={`hidden min-w-0 items-stretch md:flex ${workstation ? "h-[44px] flex-none rounded-[4px] border border-border-subtle bg-[#e9edf3] p-px" : "h-full flex-1"}`}>
             {visibleNavItems.map((item) => {
