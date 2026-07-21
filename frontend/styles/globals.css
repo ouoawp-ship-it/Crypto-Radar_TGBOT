@@ -210,6 +210,13 @@ body::before {
   box-shadow: inset 0 -1px 0 rgb(243 244 245);
 }
 
+.workstation-header nav,
+.workstation-header a:first-child > span:last-child,
+.mercu-radar-grid :where(h1, h2, h3, h4),
+.mercu-funds-grid :where(h1, h2, h3, h4) {
+  font-family: var(--font-outfit), "Outfit", var(--font-dm-sans), "DM Sans", sans-serif;
+}
+
 .workstation-panel {
   background: rgb(var(--surface-panel));
   border: 1px solid rgb(var(--border-subtle));
