@@ -105,6 +105,7 @@ jobs:
 
       - name: Run Windows visual regression checks
         env:
+          MERCU_CAPTURE_DSF: "1.25"
           MERCU_ACTUAL_DIR: e2e/mercu-current-ci
         run: npm run e2e:visual
 
