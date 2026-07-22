@@ -1234,7 +1234,16 @@ test("320px radar keeps its primary workstation controls usable", async ({ page 
     })
     .filter((item) => item.label !== "Open Next.js Dev Tools" && item.width > 0 && item.height > 0 && (item.width < 44 || item.height < 44)));
   expect(undersizedControls).toEqual([]);
+  const momentumBoards = await page.getByTestId("radar-momentum-matrix").locator(":scope > section").evaluateAll((elements) => elements.slice(0, 2).map((element) => {
+    const rect = element.getBoundingClientRect();
+    return { width: Math.round(rect.width), y: Math.round(rect.y) };
+  }));
+  expect(momentumBoards[0].width).toBeGreaterThanOrEqual(290);
+  expect(momentumBoards[1].y).toBeGreaterThan(momentumBoards[0].y + 450);
   await expect(page.getByRole("heading", { name: "24h 异动总榜" })).toBeVisible();
+  await page.setViewportSize({ width: 740, height: 360 });
+  await expect(page.getByPlaceholder("搜索币种...")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(740);
 });
 
 test("public cockpit defaults to the Mercu-style light system and persists theme choice", async ({ page }) => {
@@ -1370,6 +1379,10 @@ test("390px funds workstation stacks without page-level horizontal overflow", as
   await page.goto("/funds");
 
   await expect(page.getByLabel("搜索全体代币")).toBeVisible();
+  const sectorStage = await page.locator(".funds-sector-stage").boundingBox();
+  const assetSearch = await page.locator(".funds-asset-search").boundingBox();
+  expect(sectorStage?.height).toBeLessThanOrEqual(260);
+  expect(assetSearch?.width).toBeLessThanOrEqual(366);
   await page.getByRole("button", { name: /BTC/ }).first().click();
   await expect(page.getByRole("heading", { name: "跨所持仓对比" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
@@ -1425,6 +1438,10 @@ test("390px information workstation stacks its four columns", async ({ page }) =
   await mockPublicApi(page);
   await page.goto("/info");
 
+  const commandBar = await page.locator(".info-command-bar").boundingBox();
+  const digestToggle = await page.getByRole("button", { name: /4h AI 综合分析/ }).boundingBox();
+  expect(commandBar?.height).toBeGreaterThanOrEqual(136);
+  expect(digestToggle?.width).toBeGreaterThanOrEqual(350);
   await expect(page.getByRole("heading", { name: "聚合资讯" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: /据伊朗学生通讯社/ }).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
