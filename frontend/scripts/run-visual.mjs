@@ -4,12 +4,12 @@ import { fileURLToPath } from "node:url";
 const playwrightCli = fileURLToPath(new URL("../node_modules/@playwright/test/cli.js", import.meta.url));
 const env = {
   ...process.env,
-  MERCU_CAPTURE_DSF: process.env.MERCU_CAPTURE_DSF || "1.25",
-  MERCU_ACTUAL_DIR: process.env.MERCU_ACTUAL_DIR || "e2e/mercu-current-local",
+  PAOXX_CAPTURE_DSF: process.env.PAOXX_CAPTURE_DSF || "1.25",
+  PAOXX_ACTUAL_DIR: process.env.PAOXX_ACTUAL_DIR || "e2e/paoxx-current-local",
 };
 
 const exitCode = await new Promise((resolve, reject) => {
-  const child = spawn(process.execPath, [playwrightCli, "test", "--grep", "workstation visual fixtures remain stable"], {
+  const child = spawn(process.execPath, [playwrightCli, "test", "--grep", "paoxx workstation visual fixtures remain stable"], {
     env,
     stdio: "inherit",
   });

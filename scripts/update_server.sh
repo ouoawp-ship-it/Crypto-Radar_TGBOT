@@ -789,7 +789,7 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
     retire_removed_feature_artifacts
     ensure_web_public_config
     if [ "$AFTER_PULL_REEXEC" = "1" ]; then
-      "${APP_DIR}/.venv/bin/pip" install -r requirements.txt
+      "${APP_DIR}/.venv/bin/pip" install -r requirements.lock
       "$PYTHON_BIN" -m compileall paopao_radar main.py
       "$PYTHON_BIN" -m unittest discover -s tests -v
     fi
@@ -849,7 +849,7 @@ fi
 sync_env_file
 retire_removed_feature_artifacts
 ensure_web_public_config
-"${APP_DIR}/.venv/bin/pip" install -r requirements.txt
+"${APP_DIR}/.venv/bin/pip" install -r requirements.lock
 "$PYTHON_BIN" -m compileall paopao_radar main.py
 "$PYTHON_BIN" -m unittest discover -s tests -v
 run_signal_store_migrations

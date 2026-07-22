@@ -26,7 +26,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.lock
 
       - name: Compile Python sources
         run: python -m compileall -q paopao_radar tests scripts
@@ -55,6 +55,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Type-check frontend
         run: npm run typecheck
@@ -87,37 +90,24 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-visual.txt
-
       - name: Install frontend dependencies
         run: npm ci
-
-      - name: Install visual comparison dependencies
-        run: python -m pip install -r ../requirements-visual.txt
 
       - name: Install Chromium for visual checks
         run: npx playwright install chromium
 
-      - name: Run Windows visual regression checks
+      - name: Run Paoxx visual regression checks
         env:
-          MERCU_CAPTURE_DSF: "1.25"
-          MERCU_ACTUAL_DIR: e2e/mercu-current-ci
+          PAOXX_CAPTURE_DSF: "1.25"
+          PAOXX_ACTUAL_DIR: e2e/paoxx-current-ci
         run: npm run e2e:visual
 
-      - name: Compare live render with Mercu login-state targets
-        run: npm run visual:mercu:acceptance -- --actual-dir e2e/mercu-current-ci --output-dir e2e/mercu-diffs-ci
-
-      - name: Upload Mercu visual evidence
+      - name: Upload Paoxx visual evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mercu-visual-evidence-windows
+          name: paoxx-visual-evidence-windows
           path: |
-            frontend/e2e/mercu-current-ci
-            frontend/e2e/mercu-diffs-ci
+            frontend/e2e/paoxx-current-ci
+            frontend/test-results
           if-no-files-found: warn

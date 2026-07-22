@@ -528,7 +528,7 @@ install_python_deps() {
 
   log "安装 Python 依赖"
   "${APP_DIR}/.venv/bin/python" -m pip install --upgrade pip
-  "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
+  "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.lock"
 }
 
 run_checks() {

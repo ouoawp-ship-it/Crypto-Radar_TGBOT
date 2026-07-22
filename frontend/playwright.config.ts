@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-const mercuCaptureScale = Number(process.env.MERCU_CAPTURE_DSF || 1);
+const paoxxCaptureScale = Number(process.env.PAOXX_CAPTURE_DSF || 1);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -22,5 +22,5 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120_000
   },
-  projects: [{ name: process.platform === "linux" ? "chromium-linux" : "chromium", use: { browserName: "chromium", deviceScaleFactor: mercuCaptureScale, viewport: { width: 1440, height: 900 } } }]
+  projects: [{ name: process.platform === "linux" ? "chromium-linux" : "chromium", use: { browserName: "chromium", deviceScaleFactor: paoxxCaptureScale, viewport: { width: 1440, height: 900 } } }]
 });
