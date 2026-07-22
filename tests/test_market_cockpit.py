@@ -279,6 +279,31 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(oi_board["amount_positive"]["items"][0]["symbol"], "BTCUSDT")
         self.assertEqual(oi_board["strength_positive"]["items"][0]["symbol"], "ETHUSDT")
         self.assertEqual(oi_board["amount_unit"], "usd")
+        amount_items = {item["symbol"]: item for item in oi_board["amount_positive"]["items"]}
+        self.assertEqual(amount_items["BTCUSDT"]["score"], 0.02)
+        self.assertEqual(amount_items["ETHUSDT"]["score"], 0.004)
+        self.assertEqual(oi_board["amount_score_cap"], 50_000_000.0)
+
+    def test_radar_amount_scores_use_fixed_dimension_caps(self) -> None:
+        baselines = {
+            "BTCUSDT": {"symbol": "BTCUSDT", "price": 100, "oi_usd": 100_000_000},
+        }
+        latest = [{
+            "symbol": "BTCUSDT",
+            "price": 120,
+            "oi_usd": 160_000_000,
+            "spot_flow_usd": 5_000_000,
+            "futures_flow_usd": -25_000_000,
+            "observed_at": 4_600,
+        }]
+
+        payload = build_market_cockpit(latest, baselines, now_ts=4_600, window_sec=3_600)
+        boards = {board["key"]: board for board in payload["boards"]}
+
+        self.assertEqual(boards["price"]["amount_positive"]["items"][0]["score"], 1.0)
+        self.assertEqual(boards["oi"]["amount_positive"]["items"][0]["score"], 1.0)
+        self.assertEqual(boards["spot_flow"]["amount_positive"]["items"][0]["score"], 0.25)
+        self.assertEqual(boards["futures_flow"]["amount_negative"]["items"][0]["score"], 1.0)
 
     def test_window_strength_uses_each_symbols_own_history(self) -> None:
         with TemporaryDirectory() as tmp:

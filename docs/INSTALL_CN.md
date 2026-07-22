@@ -86,6 +86,8 @@ bash scripts/check_https_deploy.sh --with-stable-check --with-certbot-dry-run
 
 Nginx 对外监听 80/443。云安全组应关闭公网 3000/8080，只开放 SSH、HTTP 和 HTTPS。
 
+后台“配置中心”用于填写、替换或清空 Telegram Token、AI API Key 和 CoinGlass API Key。密钥字段只显示掩码，接口不会向浏览器回传明文；保存前自动备份 `.env.oi`，Linux 上密钥文件和备份会限制为当前用户读写。CoinGlass Key 保存后先点击“测试 CoinGlass”，验证套餐和有效期，再开启 `COINGLASS_ENABLE`。配置变更只允许预先登记的字段，不提供任意环境变量编辑器。
+
 ## V2 灰度与紧急回滚
 
 驾驶舱开关支持 `enabled`、`preview`、`disabled`。`preview` 用于带预览标识的观察期；`disabled` 会隐藏 V2 资金、信息、Agent 页面，并让雷达退回旧信号列表。Telegram Bot、AI 助手、后台和旧信号 API 不受影响。

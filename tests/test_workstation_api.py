@@ -108,11 +108,14 @@ class WorkstationRadarApiTests(unittest.TestCase):
             payload = public_workstation_radar_momentum_payload(window="15m")
 
         amount = payload["data"]["confluence"]["amount"]
-        self.assertEqual([item["coin"] for item in amount], ["QTUM", "PHA"])
+        self.assertEqual([item["coin"] for item in amount], ["QTUM", "PHA", "BANK"])
         self.assertEqual(amount[0]["board_count"], 3)
+        self.assertEqual(amount[0]["N"], 3)
+        self.assertEqual(amount[0]["side"], "in")
         self.assertEqual(amount[0]["direction"], "positive")
         self.assertEqual(amount[1]["direction"], "negative")
-        self.assertFalse(any(item["coin"] == "BANK" for item in amount))
+        self.assertEqual(amount[2]["board_count"], 2)
+        self.assertTrue(amount[2]["divergent"])
 
     def test_momentum_windows_loads_all_windows_from_one_history_scan(self) -> None:
         settings = type(
@@ -158,6 +161,52 @@ class WorkstationRadarApiTests(unittest.TestCase):
             board_limit=6,
             now_ts=1,
             live_rows=[],
+        )
+
+    def test_momentum_windows_marks_same_board_rank_and_direction_membership(self) -> None:
+        settings = type(
+            "TestSettings",
+            (),
+            {"cockpit_v2_mode": "enabled", "market_snapshots_db_path": "test-market.sqlite3"},
+        )()
+
+        def side(*symbols: str) -> dict:
+            return {"items": [{"symbol": symbol, "coin": symbol.removesuffix("USDT")} for symbol in symbols]}
+
+        sources = {}
+        for window_sec in (900, 1800, 3600, 14400, 86400):
+            amount_symbols = ("BTCUSDT",) if window_sec in {900, 3600, 86400} else ("ETHUSDT",)
+            strength_symbols = ("BTCUSDT",) if window_sec in {900, 1800} else ("SOLUSDT",)
+            sources[window_sec] = {
+                "data_status": "ready",
+                "boards": [{
+                    "key": "price",
+                    "amount_positive": side(*amount_symbols),
+                    "amount_negative": side(),
+                    "strength_positive": side(*strength_symbols),
+                    "strength_negative": side(),
+                }],
+            }
+
+        with patch(
+            "paopao_radar.web_services.public.load_market_cockpit_windows",
+            return_value=sources,
+        ):
+            payload = public_workstation_radar_momentum_windows_payload(
+                settings=settings,
+                now_ts=1,
+            )
+
+        board = payload["data"]["windows"]["15m"]["boards"][0]
+        amount_btc = board["amount_positive"]["items"][0]
+        strength_btc = board["strength_positive"]["items"][0]
+        self.assertEqual(
+            amount_btc["window_states"],
+            {"15m": True, "30m": False, "1h": True, "4h": False, "1d": True},
+        )
+        self.assertEqual(
+            strength_btc["window_states"],
+            {"15m": True, "30m": True, "1h": False, "4h": False, "1d": False},
         )
 
     def test_momentum_windows_schedules_market_warmup_when_live_data_is_unavailable(self) -> None:

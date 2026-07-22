@@ -29,6 +29,84 @@ class WebSurfaceTests(unittest.TestCase):
         keys = {field.key for field in web.EDITABLE_CONFIG_FIELDS}
         self.assertIn("SIGNAL_EVENTS_DB_FILE", keys)
 
+    def test_config_surface_manages_coinglass_without_returning_secret_plaintext(self) -> None:
+        keys = {field.key for field in web.EDITABLE_CONFIG_FIELDS}
+        self.assertTrue({
+            "COINGLASS_ENABLE",
+            "COINGLASS_API_KEY",
+            "COINGLASS_API_BASE_URL",
+            "COINGLASS_RATE_LIMIT_PER_MINUTE",
+        }.issubset(keys))
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text(
+                "COINGLASS_API_KEY=cg-secret-value\nCOINGLASS_ENABLE=true\n",
+                encoding="utf-8",
+            )
+            payload = web.config_payload(path=env_path)
+
+        fields = {
+            item["key"]: item
+            for items in payload["sections"].values()
+            for item in items
+        }
+        secret = fields["COINGLASS_API_KEY"]
+        self.assertTrue(secret["configured"])
+        self.assertEqual(secret["value"], "")
+        self.assertEqual(secret["display_value"], "")
+        self.assertNotIn("cg-secret-value", str(payload))
+        self.assertIn("config/coinglass-test", web.INDEX_HTML)
+
+    def test_coinglass_config_replaces_clears_and_restarts_main_service(self) -> None:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("COINGLASS_API_KEY=old-key\n", encoding="utf-8")
+
+            unchanged = web.write_env_updates({"COINGLASS_API_KEY": ""}, path=env_path)
+            replaced = web.write_env_updates({"COINGLASS_API_KEY": "new-key"}, path=env_path)
+            cleared = web.write_env_updates({}, clear=["COINGLASS_API_KEY"], path=env_path)
+
+        self.assertEqual(unchanged["changed"], [])
+        self.assertEqual(replaced["changed"], ["COINGLASS_API_KEY"])
+        self.assertEqual(cleared["changed"], ["COINGLASS_API_KEY"])
+        impact = web.config_change_impact(["COINGLASS_API_KEY"])
+        self.assertEqual([item["name"] for item in impact["service_actions"]], ["restart-main"])
+        self.assertIn("CoinGlass API Key", impact["warnings"][0])
+
+    def test_coinglass_connection_test_returns_plan_without_leaking_key(self) -> None:
+        class Response:
+            closed = False
+
+            @staticmethod
+            def getcode() -> int:
+                return 200
+
+            @staticmethod
+            def read(_limit: int) -> bytes:
+                return b'{"code":"0","data":{"level":"STARTUP","expire_time":1800000000000,"expired":false}}'
+
+            def close(self) -> None:
+                self.closed = True
+
+        captured: dict[str, object] = {}
+        response = Response()
+
+        def opener(request: object, *, timeout: int) -> Response:
+            captured["url"] = getattr(request, "full_url", "")
+            captured["timeout"] = timeout
+            return response
+
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.oi"
+            env_path.write_text("COINGLASS_API_KEY=cg-secret-value\n", encoding="utf-8")
+            result = web.coinglass_connection_test_payload(path=env_path, opener=opener)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["plan"], "STARTUP")
+        self.assertNotIn("cg-secret-value", str(result))
+        self.assertNotIn("cg-secret-value", str(captured))
+        self.assertTrue(response.closed)
+
     def test_job_surface_is_operational_only(self) -> None:
         self.assertEqual(set(JOB_SPECS), {"stable-check", "doctor", "readiness", "cleanup", "update-check", "api-self-test"})
         self.assertEqual(LONG_ACTION_JOB_TYPES, {"stable-check", "doctor", "readiness", "cleanup"})
