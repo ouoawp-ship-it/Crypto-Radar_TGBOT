@@ -1087,8 +1087,8 @@ for (const viewport of [
   { width: 1440, height: 900 },
   { width: 1920, height: 1080 },
 ]) {
-  test(`workstation visual fixtures remain stable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
-    const deviceScaleFactor = Number(process.env.MERCU_CAPTURE_DSF || 1);
+  test(`paoxx workstation visual fixtures remain stable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    const deviceScaleFactor = Number(process.env.PAOXX_CAPTURE_DSF || 1);
     const cssViewport = {
       width: Math.round(viewport.width / deviceScaleFactor),
       height: Math.round(viewport.height / deviceScaleFactor),
@@ -1123,11 +1123,9 @@ for (const viewport of [
         await Promise.all(images.map((image) => (image as HTMLImageElement).decode().catch(() => undefined)));
       });
       await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
-      if (deviceScaleFactor === 1) {
-        await expect(page).toHaveScreenshot(`${route}-${viewport.width}x${viewport.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.035, scale: "device" });
-      }
-      if (process.env.MERCU_ACTUAL_DIR) {
-        const actualPath = resolve(process.env.MERCU_ACTUAL_DIR, `${route}-${viewport.width}x${viewport.height}-chromium.png`);
+      await expect(page).toHaveScreenshot(`${route}-${viewport.width}x${viewport.height}.png`, { animations: "disabled", maxDiffPixelRatio: 0.035, scale: "device" });
+      if (process.env.PAOXX_ACTUAL_DIR) {
+        const actualPath = resolve(process.env.PAOXX_ACTUAL_DIR, `${route}-${viewport.width}x${viewport.height}-chromium.png`);
         await mkdir(dirname(actualPath), { recursive: true });
         await page.screenshot({ animations: "disabled", path: actualPath, scale: "device" });
       }
@@ -1136,11 +1134,11 @@ for (const viewport of [
 }
 
 test("exports deterministic workstation API corpus for native-browser visual audit", async ({ page }) => {
-  const outputValue = process.env.MERCU_FIXTURE_EXPORT_PATH;
-  test.skip(!outputValue, "Set MERCU_FIXTURE_EXPORT_PATH to export the native-browser fixture corpus.");
+  const outputValue = process.env.PAOXX_FIXTURE_EXPORT_PATH;
+  test.skip(!outputValue, "Set PAOXX_FIXTURE_EXPORT_PATH to export the native-browser fixture corpus.");
   if (!outputValue) return;
 
-  const viewportValue = process.env.MERCU_FIXTURE_VIEWPORT === "1920x1080" ? "1920x1080" : "1440x900";
+  const viewportValue = process.env.PAOXX_FIXTURE_VIEWPORT === "1920x1080" ? "1920x1080" : "1440x900";
   const [width, height] = viewportValue.split("x").map(Number);
   const responseTasks: Promise<void>[] = [];
   const responses: Record<string, { body: string; contentType: string; status: number }> = {};

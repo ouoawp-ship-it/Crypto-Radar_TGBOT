@@ -52,6 +52,8 @@ frontend/e2e/mercu-targets/*
 !frontend/e2e/mercu-targets/mercu-funds-1440x900.png
 !frontend/e2e/mercu-targets/mercu-funds-1920x1080.png
 frontend/e2e/mercu-diffs/
+frontend/e2e/paoxx-current*/
+frontend/e2e/paoxx-diffs*/
 /test-results/
 node_modules/
 .next/

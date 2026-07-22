@@ -55,7 +55,7 @@ python main.py web
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 cp .env.oi.example .env.oi
 python main.py doctor
 ```
