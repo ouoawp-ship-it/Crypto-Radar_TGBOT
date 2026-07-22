@@ -622,6 +622,50 @@ html[data-theme="light"] .workstation-scroll::-webkit-scrollbar-thumb {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .funds-assets-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    height: auto;
+    padding: 12px;
+  }
+
+  .funds-window-picker,
+  .funds-asset-search {
+    height: 48px;
+    margin: 0;
+    width: 100%;
+  }
+
+  .funds-window-picker {
+    overflow-x: auto;
+    padding: 3px;
+  }
+
+  .funds-window-picker > button {
+    flex: 0 0 72px;
+  }
+
+  .funds-assets-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    height: auto;
+    min-height: 112px;
+    padding: 10px 12px;
+  }
+
+  .funds-assets-footer > span {
+    padding-bottom: 0;
+  }
+
+  .funds-assets-footer > div {
+    margin-left: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
   .mercu-radar-grid :where(a, button, input),
   .mercu-info-grid :where(a, button, input, summary),
   .mercu-funds-grid :where(a, button, input) {
@@ -634,7 +678,48 @@ html[data-theme="light"] .workstation-scroll::-webkit-scrollbar-thumb {
 
   .mercu-radar-grid > aside,
   .mercu-radar-grid > main {
-    min-height: 540px;
+    min-height: 0;
+  }
+
+  .mobile-radar-event-feed {
+    height: min(360px, calc(100dvh - 136px));
+    min-height: 320px;
+  }
+
+  .radar-paoxx-extension > section {
+    height: 360px;
+  }
+
+  .info-command-bar {
+    display: grid;
+    gap: 8px 10px;
+    grid-template-columns: 40px minmax(0, 1fr);
+    height: auto;
+    min-height: 136px;
+    padding: 12px;
+  }
+
+  .info-command-icon {
+    height: 40px;
+    width: 40px;
+  }
+
+  .info-command-actions {
+    grid-column: 1 / -1;
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .info-digest-toggle {
+    border-radius: 6px;
+    width: 100%;
+  }
+
+  .info-disclaimer-link {
+    align-items: center;
+    display: inline-flex;
+    justify-content: center;
+    margin-left: auto;
   }
 }
 
