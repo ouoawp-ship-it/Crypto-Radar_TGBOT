@@ -18,8 +18,14 @@ from .flow_radar import kline_cvd_flow_info
 from .time_windows import closed_window
 
 
-MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-19.4"
+MARKET_COCKPIT_SCHEMA_VERSION = "2026-07-22.1"
 SUPPORTED_WINDOWS = (900, 1800, 3600, 14400, 86400)
+RADAR_AMOUNT_SCORE_CAPS = {
+    "price": 10.0,
+    "oi": 50_000_000.0,
+    "futures_flow": 20_000_000.0,
+    "spot_flow": 20_000_000.0,
+}
 RADAR_ASSET_TYPES = {
     "AAPL": "美股", "AMD": "美股", "AMZN": "美股", "BABA": "美股",
     "COIN": "美股", "META": "美股", "MSTR": "美股", "MSFT": "美股",
@@ -1163,9 +1169,16 @@ def _board_item(
     *,
     unit: str,
     magnitude_key: str | None = None,
+    score_cap: float | None = None,
 ) -> dict[str, Any]:
     value = _number(item.get(key))
     magnitude = _number(item.get(magnitude_key)) if magnitude_key else (value if unit == "usd" else None)
+    score_value = magnitude if magnitude_key else value
+    score = (
+        round(min(1.0, abs(score_value) / score_cap), 6)
+        if score_value is not None and score_cap is not None and score_cap > 0
+        else None
+    )
     return {
         "symbol": item.get("symbol"),
         "coin": item.get("coin"),
@@ -1174,6 +1187,7 @@ def _board_item(
         "value": value,
         "unit": unit,
         "magnitude_usd": abs(magnitude) if magnitude is not None else None,
+        "score": score,
         "strength_percentile": (item.get("strength") or {}).get(key),
         "updated_at": item.get("updated_at"),
         "status": item.get("status"),
@@ -1193,6 +1207,7 @@ def _two_sided_board(
     limit: int,
     amount_key: str | None = None,
     amount_unit: str | None = None,
+    amount_score_cap: float | None = None,
 ) -> dict[str, Any]:
     available = [item for item in assets if _number(item.get(key)) is not None]
     positive = sorted((item for item in available if float(item[key]) > 0), key=lambda row: float(row[key]), reverse=True)
@@ -1219,7 +1234,9 @@ def _two_sided_board(
         key=lambda row: float((row.get("strength") or {}).get(key) or 0),
         reverse=True,
     )
-    item_kwargs = {"unit": unit, "magnitude_key": amount_key}
+    if amount_score_cap is None:
+        amount_score_cap = RADAR_AMOUNT_SCORE_CAPS.get(board_key)
+    item_kwargs = {"unit": unit, "magnitude_key": amount_key, "score_cap": amount_score_cap}
     return {
         "key": board_key,
         "title": title,
@@ -1227,6 +1244,7 @@ def _two_sided_board(
         "unit": unit,
         "amount_metric": amount_metric,
         "amount_unit": amount_unit or unit,
+        "amount_score_cap": amount_score_cap,
         "available": bool(available),
         "coverage": len(available),
         "positive": {"title": positive_title, "items": [_board_item(item, key, **item_kwargs) for item in positive[:limit]]},

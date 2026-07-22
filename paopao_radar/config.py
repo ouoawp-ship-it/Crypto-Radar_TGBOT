@@ -190,6 +190,10 @@ class Settings:
     realtime_market_symbol_refresh_sec: int = 300
     realtime_bybit_enable: bool = True
     realtime_okx_enable: bool = True
+    coinglass_enable: bool = False
+    coinglass_api_key: str = ""
+    coinglass_api_base_url: str = "https://open-api-v4.coinglass.com"
+    coinglass_rate_limit_per_minute: int = 80
     web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
     web_jobs_retention_days: int = 30
     web_jobs_limit: int = 500
@@ -409,6 +413,12 @@ class Settings:
             realtime_market_symbol_refresh_sec=env_int("REALTIME_MARKET_SYMBOL_REFRESH_SEC", 300),
             realtime_bybit_enable=env_bool("REALTIME_BYBIT_ENABLE", True),
             realtime_okx_enable=env_bool("REALTIME_OKX_ENABLE", True),
+            coinglass_enable=env_bool("COINGLASS_ENABLE", False),
+            coinglass_api_key=os.getenv("COINGLASS_API_KEY", "").strip(),
+            coinglass_api_base_url=os.getenv(
+                "COINGLASS_API_BASE_URL", "https://open-api-v4.coinglass.com"
+            ).rstrip("/"),
+            coinglass_rate_limit_per_minute=env_int("COINGLASS_RATE_LIMIT_PER_MINUTE", 80),
             web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
             web_jobs_retention_days=env_int("WEB_JOBS_RETENTION_DAYS", 30),
             web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),

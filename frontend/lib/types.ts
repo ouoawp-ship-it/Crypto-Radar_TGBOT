@@ -179,6 +179,7 @@ export type CockpitBoardItem = {
   value?: number | null;
   unit?: "usd" | "percent" | "percent_per_cycle" | string;
   magnitude_usd?: number | null;
+  score?: number | null;
   strength_percentile?: number | null;
   window_states?: Partial<Record<"15m" | "30m" | "1h" | "4h" | "1d", boolean>>;
   updated_at?: string;
@@ -202,6 +203,7 @@ export type CockpitBoard = {
   negative?: CockpitBoardSide;
   amount_metric?: string;
   amount_unit?: string;
+  amount_score_cap?: number | null;
   amount_positive?: CockpitBoardSide;
   amount_negative?: CockpitBoardSide;
   strength_positive?: CockpitBoardSide;
@@ -211,8 +213,10 @@ export type CockpitBoard = {
 
 export type RadarConfluenceItem = CockpitBoardItem & {
   board_count?: number;
+  N?: number;
   divergent?: boolean;
   direction?: "positive" | "negative" | "inflow" | "outflow" | string;
+  side?: "in" | "out" | string;
 };
 
 export type RadarConfluence = {

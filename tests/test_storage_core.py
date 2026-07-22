@@ -462,6 +462,20 @@ from paopao_radar.config import load_env_file
 
 
 class ConfigLoadTests(unittest.TestCase):
+    def test_settings_loads_coinglass_provider_configuration(self) -> None:
+        with patch.dict(os.environ, {
+            "COINGLASS_ENABLE": "true",
+            "COINGLASS_API_KEY": "cg-test-key",
+            "COINGLASS_API_BASE_URL": "https://open-api-v4.coinglass.com/",
+            "COINGLASS_RATE_LIMIT_PER_MINUTE": "80",
+        }):
+            settings = Settings.load()
+
+        self.assertTrue(settings.coinglass_enable)
+        self.assertEqual(settings.coinglass_api_key, "cg-test-key")
+        self.assertEqual(settings.coinglass_api_base_url, "https://open-api-v4.coinglass.com")
+        self.assertEqual(settings.coinglass_rate_limit_per_minute, 80)
+
     def test_load_env_file_overrides_empty_process_value_with_file_value(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"

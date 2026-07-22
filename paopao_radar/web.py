@@ -17,7 +17,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 from .ai_prompts import load_ai_prompts, reset_ai_prompts, save_ai_prompts
 from .auth import (
@@ -131,6 +133,12 @@ SIGNAL_EVENT_CONFIG_KEYS = {
     "SIGNAL_EVENTS_LIMIT",
     "SIGNAL_EVENTS_RETENTION_DAYS",
 }
+COINGLASS_CONFIG_KEYS = {
+    "COINGLASS_ENABLE",
+    "COINGLASS_API_KEY",
+    "COINGLASS_API_BASE_URL",
+    "COINGLASS_RATE_LIMIT_PER_MINUTE",
+}
 AI_CONFIG_KEYS = {
     "AI_ASSISTANT_ENABLE",
     "AI_BOT_TOKEN",
@@ -213,6 +221,10 @@ EDITABLE_CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("TG_TOPIC_INTRO_ENABLE", "发送话题说明", "模块开关", kind="bool"),
     ConfigField("TG_TOPIC_INTRO_PIN", "置顶话题说明", "模块开关", kind="bool"),
     ConfigField("CLEANUP_ENABLE", "自动清理", "模块开关", kind="bool"),
+    ConfigField("COINGLASS_ENABLE", "启用 CoinGlass 数据补充", "CoinGlass", kind="bool", help="有有效订阅和 API Key 后再开启；关闭时 Paoxx 继续使用交易所自采数据。"),
+    ConfigField("COINGLASS_API_KEY", "CoinGlass API Key", "CoinGlass", secret=True, help="通过 CG-API-KEY 请求头使用；后台只允许替换或清空，不回显明文。"),
+    ConfigField("COINGLASS_API_BASE_URL", "CoinGlass API 地址", "CoinGlass", help="固定使用 CoinGlass V4 官方接口 https://open-api-v4.coinglass.com。"),
+    ConfigField("COINGLASS_RATE_LIMIT_PER_MINUTE", "CoinGlass 每分钟调用预算", "CoinGlass", kind="int", minimum=1, maximum=1200, help="Startup 建议 60-80；Standard 建议不超过 280，为重试保留额度。"),
     ConfigField("WEB_HOST", "Web 监听地址", "Web 控制台"),
     ConfigField("WEB_PORT", "Web 端口", "Web 控制台", kind="int", minimum=1, maximum=65535),
     ConfigField("PAOXX_PUBLIC_BASE_URL", "公开前台地址", "Web 控制台", help="例如 https://paoxx.com，用于 Telegram 与 Web 的信号深链。"),
@@ -392,6 +404,8 @@ def config_field_explain(field: ConfigField) -> dict[str, str]:
         purpose = field.help or f"调整启动预警推送里的“{field.label}”。"
     elif key.startswith("AI_"):
         purpose = field.help or f"调整 AI 助手 Bot 里的“{field.label}”。"
+    elif key in COINGLASS_CONFIG_KEYS:
+        purpose = field.help or f"配置 CoinGlass 数据补充里的“{field.label}”。"
     else:
         purpose = field.help or f"配置“{field.label}”。"
 
@@ -403,6 +417,8 @@ def config_field_explain(field: ConfigField) -> dict[str, str]:
         affects = "AI 助手 Bot 的个人价格提醒、监控频率和 Web 创建提醒默认接收人。"
     elif key in AI_CONFIG_KEYS:
         affects = "AI 助手 Bot、AI 行情分析、允许用户/群组和币种档案读取。"
+    elif key in COINGLASS_CONFIG_KEYS:
+        affects = "Radar、Funds 和 BOT 共用的 CoinGlass 补充数据；交易所自采仍是降级兜底。"
     elif key.startswith("FUNDING_ALERT_"):
         affects = "独立资金费率警报扫描、异常阈值、冷却、回复链和资金费率话题推送。"
     elif key.startswith("LAUNCH_FUNDING_") or key == "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE":
@@ -420,6 +436,8 @@ def config_field_explain(field: ConfigField) -> dict[str, str]:
         apply = "保存后自动延迟重启 Web 控制台；页面可能短暂断开。"
     elif key in AI_CONFIG_KEYS:
         apply = "保存后自动重启 AI 助手服务。"
+    elif key in COINGLASS_CONFIG_KEYS:
+        apply = "保存后自动重启主服务；可先执行 CoinGlass 连接测试。"
     else:
         apply = "保存后自动重启主服务。"
     return {"purpose": purpose, "affects": affects, "apply": apply}
@@ -451,8 +469,8 @@ def config_payload(path: Path | None = None, topic_routes_path: Path | None = No
             "kind": field.kind,
             "secret": field.secret,
             "configured": bool(raw_value or display_value),
-            "value": raw_value,
-            "display_value": display_value,
+            "value": "" if field.secret else raw_value,
+            "display_value": "" if field.secret else display_value,
             "masked": mask_secret(raw_value) if field.secret else "",
             "source": source,
             "route_name": route_name,
@@ -523,7 +541,90 @@ def validate_config_value(field: ConfigField, value: Any) -> str:
         return ",".join(parts)
     if field.key == "AI_MODEL":
         return normalize_ai_model(text)
+    if field.key == "COINGLASS_API_BASE_URL":
+        parsed = urlparse(text)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "open-api-v4.coinglass.com"
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("必须使用 CoinGlass V4 官方 HTTPS 地址")
+        return "https://open-api-v4.coinglass.com"
     return text
+
+
+def coinglass_connection_test_payload(
+    *,
+    path: Path | None = None,
+    opener: Any | None = None,
+    timeout_sec: int = 10,
+) -> dict[str, Any]:
+    values = read_env_values(path or ENV_FILE)
+    api_key = str(values.get("COINGLASS_API_KEY") or os.getenv("COINGLASS_API_KEY", "")).strip()
+    if not api_key:
+        return {"ok": False, "provider": "coinglass", "code": "missing_key", "message": "请先保存 CoinGlass API Key"}
+    base_field = EDITABLE_CONFIG["COINGLASS_API_BASE_URL"]
+    try:
+        base_url = validate_config_value(
+            base_field,
+            values.get("COINGLASS_API_BASE_URL") or "https://open-api-v4.coinglass.com",
+        )
+    except ValueError as exc:
+        return {"ok": False, "provider": "coinglass", "code": "invalid_base_url", "message": str(exc)}
+
+    request = Request(
+        f"{base_url}/api/user/account/subscription",
+        headers={"accept": "application/json", "CG-API-KEY": api_key, "User-Agent": "Paoxx/1.0"},
+        method="GET",
+    )
+    started_at = time.perf_counter()
+    response: Any | None = None
+    try:
+        response = (opener or urlopen)(request, timeout=max(3, min(30, int(timeout_sec))))
+        status = int(response.getcode() or 200)
+        body = response.read(65_536)
+        payload = json.loads(body.decode("utf-8"))
+        data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else {}
+        if status != 200 or str(payload.get("code") or "0") != "0":
+            return {"ok": False, "provider": "coinglass", "code": "provider_rejected", "message": "CoinGlass 拒绝了连接测试"}
+        expired = bool(data.get("expired"))
+        return {
+            "ok": not expired,
+            "provider": "coinglass",
+            "code": "subscription_expired" if expired else "ok",
+            "plan": str(data.get("level") or "unknown"),
+            "expired": expired,
+            "expire_time": int(data.get("expire_time") or 0),
+            "latency_ms": round((time.perf_counter() - started_at) * 1000, 1),
+            "message": "CoinGlass 订阅已过期" if expired else "CoinGlass API Key 验证成功",
+        }
+    except HTTPError as exc:
+        if exc.code in {401, 403}:
+            code, message = "invalid_key", "CoinGlass API Key 无效或无权访问"
+        elif exc.code == 429:
+            code, message = "rate_limited", "CoinGlass 调用额度暂时受限"
+        else:
+            code, message = "provider_error", f"CoinGlass 返回 HTTP {exc.code}"
+        return {"ok": False, "provider": "coinglass", "code": code, "message": message}
+    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return {"ok": False, "provider": "coinglass", "code": "unreachable", "message": "暂时无法验证 CoinGlass，请稍后重试"}
+    finally:
+        if response is not None:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+
+def restrict_secret_file_permissions(path: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def backup_env_file(path: Path) -> Path | None:
@@ -535,6 +636,7 @@ def backup_env_file(path: Path) -> Path | None:
         backup = path.with_name(f"{path.name}.bak.web.{time.strftime('%Y%m%d_%H%M%S')}.{index}")
         index += 1
     shutil.copy2(path, backup)
+    restrict_secret_file_permissions(backup)
     return backup
 
 
@@ -576,6 +678,7 @@ def restore_env_backup(name: str, *, path: Path | None = None) -> dict[str, Any]
     before = read_env_values(env_path)
     current_backup = backup_env_file(env_path)
     shutil.copy2(backup, env_path)
+    restrict_secret_file_permissions(env_path)
     load_env_file(env_path)
     after = read_env_values(env_path)
     changed = sorted(key for key in set(before) | set(after) if before.get(key, "") != after.get(key, ""))
@@ -643,6 +746,8 @@ def audit_request_summary(path: str, data: dict[str, Any]) -> dict[str, Any]:
         update_keys = sorted(str(key) for key in updates) if isinstance(updates, dict) else []
         clear_keys = sorted(str(item) for item in clear) if isinstance(clear, list) else []
         return {"action": "保存配置", "target": ",".join(update_keys + clear_keys), "details": {"keys": update_keys, "clear": clear_keys}}
+    if path == "/api/config/coinglass-test":
+        return {"action": "测试 CoinGlass 配置", "target": "coinglass", "details": {"provider": "coinglass"}}
     if path == "/api/config-restore":
         name = str(data.get("name", ""))
         return {"action": "恢复配置备份", "target": name, "details": {"backup": name}}
@@ -1070,6 +1175,7 @@ def write_env_updates(
     for key in missing:
         output.append(f"{key}={normalized[key]}")
     env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    restrict_secret_file_permissions(env_path)
     for key, value in normalized.items():
         if value:
             os.environ[key] = value
@@ -1242,6 +1348,8 @@ def config_change_impact(changed: list[str]) -> dict[str, Any]:
         warnings.append("AI 助手配置会影响私聊、行情分析和价格提醒；保存后建议到 AI 助手页确认服务状态。")
     if any(key.startswith("FUNDING_ALERT_") for key in changed_set):
         warnings.append("资金费率警报参数会改变扫描频率、阈值或冷却；保存后建议手动扫描一次资金费率警报。")
+    if changed_set & COINGLASS_CONFIG_KEYS:
+        warnings.append("CoinGlass 配置会影响 Radar、Funds 与 BOT 的补充数据；保存后建议执行连接测试，失败时继续使用交易所自采数据。")
 
     if not changed_keys:
         message = "没有检测到配置变更，不会重启服务。"
@@ -4627,6 +4735,16 @@ class WebHandler(BaseHTTPRequestHandler):
                     result["impact"] = apply_result.get("impact", result["impact"])
                     result["message"] = apply_result.get("message", result.get("message"))
                 self.send_audited_json(path, data, result, started_at=started_at)
+                return
+            if path == "/api/config/coinglass-test":
+                result = coinglass_connection_test_payload()
+                self.send_audited_json(
+                    path,
+                    data,
+                    result,
+                    status=200 if result.get("ok") else HTTPStatus.BAD_REQUEST,
+                    started_at=started_at,
+                )
                 return
             if path == "/api/config-restore":
                 result = restore_env_backup(str(data.get("name", "")))

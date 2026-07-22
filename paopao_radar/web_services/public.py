@@ -669,7 +669,7 @@ def _workstation_radar_confluence(boards: list[dict[str, Any]]) -> dict[str, lis
                         continue
                     current = tallies.setdefault(
                         symbol,
-                        {"item": item, "positive": set(), "negative": set()},
+                        {"item": item, "items": {}, "positive": set(), "negative": set()},
                     )
                     current_value = _number(current["item"].get("magnitude_usd"))
                     if current_value is None:
@@ -679,20 +679,29 @@ def _workstation_radar_confluence(boards: list[dict[str, Any]]) -> dict[str, lis
                         next_value = _number(item.get("value")) or 0
                     if abs(next_value) >= abs(current_value):
                         current["item"] = item
+                    direction_item = current["items"].get(direction)
+                    direction_value = _number((direction_item or {}).get("magnitude_usd"))
+                    if direction_value is None:
+                        direction_value = _number((direction_item or {}).get("value")) or 0
+                    if direction_item is None or abs(next_value) >= abs(direction_value):
+                        current["items"][direction] = item
                     current[direction].add(board_key)
 
         result: list[dict[str, Any]] = []
         for symbol, tally in tallies.items():
             positive_count = len(tally["positive"])
             negative_count = len(tally["negative"])
-            board_count = max(positive_count, negative_count)
+            board_count = len(tally["positive"] | tally["negative"])
             if board_count < 2:
                 continue
-            item = dict(tally["item"])
+            direction = "positive" if positive_count >= negative_count else "negative"
+            item = dict(tally["items"].get(direction) or tally["item"])
             item.update({
                 "symbol": symbol,
                 "board_count": board_count,
-                "direction": "positive" if positive_count >= negative_count else "negative",
+                "N": board_count,
+                "direction": direction,
+                "side": "in" if direction == "positive" else "out",
                 "divergent": positive_count > 0 and negative_count > 0,
             })
             result.append(item)
@@ -705,6 +714,43 @@ def _workstation_radar_confluence(boards: list[dict[str, Any]]) -> dict[str, lis
         return result[:7]
 
     return {"amount": build("amount"), "strength": build("strength")}
+
+
+def _annotate_workstation_window_states(windows: dict[str, dict[str, Any]]) -> None:
+    """Mark membership in the same board, rank mode and direction across all five windows."""
+
+    memberships: dict[tuple[str, str, str, str], set[str]] = {}
+    for window_key in WORKSTATION_RADAR_WINDOWS:
+        for board in list((windows.get(window_key) or {}).get("boards") or []):
+            board_key = str(board.get("key") or "")
+            if not board_key:
+                continue
+            for mode in ("amount", "strength"):
+                for direction in ("positive", "negative"):
+                    side = board.get(f"{mode}_{direction}") or board.get(direction) or {}
+                    memberships[(window_key, board_key, mode, direction)] = {
+                        str(item.get("symbol") or "")
+                        for item in list(side.get("items") or [])
+                        if str(item.get("symbol") or "")
+                    }
+
+    for window_key in WORKSTATION_RADAR_WINDOWS:
+        for board in list((windows.get(window_key) or {}).get("boards") or []):
+            board_key = str(board.get("key") or "")
+            for mode in ("amount", "strength"):
+                for direction in ("positive", "negative"):
+                    side = board.get(f"{mode}_{direction}") or board.get(direction) or {}
+                    for item in list(side.get("items") or []):
+                        symbol = str(item.get("symbol") or "")
+                        if not symbol:
+                            continue
+                        item["window_states"] = {
+                            candidate_window: symbol in memberships.get(
+                                (candidate_window, board_key, mode, direction),
+                                set(),
+                            )
+                            for candidate_window in WORKSTATION_RADAR_WINDOWS
+                        }
 
 
 def public_workstation_radar_momentum_payload(
@@ -749,6 +795,7 @@ def public_workstation_radar_momentum_payload(
         "methodology": {
             **dict(source_data.get("methodology") or {}),
             "amount_rank": "Ranks absolute values inside the selected closed window.",
+            "amount_score": "Normalized magnitude score: price abs(change)/10%; OI abs(delta USD)/50m; spot/perp abs(net CVD)/20m, capped at 1.",
             "strength_rank": "Ranks cross-sectional empirical strength separately from absolute amount.",
             "confluence": "Counts majority-aligned appearances across OI, futures-flow and spot-flow boards; price is excluded.",
             "closed_window": True,
@@ -821,6 +868,17 @@ def public_workstation_radar_momentum_windows_payload(
                     "closed_window": True,
                 },
             }
+        _annotate_workstation_window_states(windows)
+        for window_payload in windows.values():
+            window_payload["confluence"] = _workstation_radar_confluence(
+                list(window_payload.get("boards") or [])
+            )
+            window_payload["methodology"]["window_states"] = (
+                "Each active state means the same symbol appears on the same board, rank mode and direction in that closed window."
+            )
+            window_payload["methodology"]["amount_score"] = (
+                "Normalized magnitude score: price abs(change)/10%; OI abs(delta USD)/50m; spot/perp abs(net CVD)/20m, capped at 1."
+            )
         return api_ok(
             _strip_forbidden({
                 "schema_version": "workstation.radar.momentum-windows.v1",
