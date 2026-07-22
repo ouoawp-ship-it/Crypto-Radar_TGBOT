@@ -6,8 +6,8 @@ import { CoinIcon } from "@/components/CoinIcon";
 import { MetricSeriesChart } from "@/components/MetricSeriesChart";
 import { getCoinContext, getWorkstationFundsOpenInterest, getWorkstationFundsSeries } from "@/lib/api";
 import { formatDateTime, formatMetricValue, safeText } from "@/lib/format";
+import { normalizeMarketSymbol } from "@/lib/symbol";
 import type { CoinContext, CoinRelatedInfoItem, CrossExchangeOpenInterest, FundsSeriesPayload, RealtimeAnomalyEvent } from "@/lib/types";
-import { loadWatchlist, normalizeWatchSymbol, toggleWatchSymbol, WATCHLIST_CHANGE_EVENT } from "@/lib/watchlist";
 
 const CHART_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
 const FLOW_WINDOWS = [
@@ -102,7 +102,7 @@ function RelatedInfo({ data }: { data: CoinContext | null }) {
 }
 
 export function MercuCoinDrawer({ events, onClose, symbol }: { events: RealtimeAnomalyEvent[]; onClose: () => void; symbol: string }) {
-  const normalized = normalizeWatchSymbol(symbol);
+  const normalized = normalizeMarketSymbol(symbol);
   const coin = normalized.replace(/USDT$/i, "");
   const closeRef = useRef<HTMLButtonElement>(null);
   const [data, setData] = useState<CoinContext | null>(null);
@@ -115,7 +115,6 @@ export function MercuCoinDrawer({ events, onClose, symbol }: { events: RealtimeA
   const [flowLoading, setFlowLoading] = useState(true);
   const [error, setError] = useState("");
   const [flowError, setFlowError] = useState("");
-  const [watched, setWatched] = useState(false);
 
   const load = useCallback(async (bypassCache = false) => {
     if (!normalized) return;
@@ -147,12 +146,6 @@ export function MercuCoinDrawer({ events, onClose, symbol }: { events: RealtimeA
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void loadFlowSeries(); }, [loadFlowSeries]);
   useEffect(() => {
-    const sync = () => setWatched(Boolean(normalized && loadWatchlist().includes(normalized)));
-    sync();
-    window.addEventListener(WATCHLIST_CHANGE_EVENT, sync);
-    return () => window.removeEventListener(WATCHLIST_CHANGE_EVENT, sync);
-  }, [normalized]);
-  useEffect(() => {
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     closeRef.current?.focus();
@@ -164,7 +157,7 @@ export function MercuCoinDrawer({ events, onClose, symbol }: { events: RealtimeA
   const metrics = data?.market?.metrics || {};
   const price = metrics.price?.value;
   const change = number(metrics.price_24h_pct?.value);
-  const symbolEvents = useMemo(() => events.filter((event) => normalizeWatchSymbol(event.symbol || event.coin || "") === normalized), [events, normalized]);
+  const symbolEvents = useMemo(() => events.filter((event) => normalizeMarketSymbol(event.symbol || event.coin || "") === normalized), [events, normalized]);
   const activeFlowWindow = FLOW_WINDOWS.find((item) => item.key === flowWindow) || FLOW_WINDOWS[2];
   const series = flowSeries?.points || [];
 
@@ -172,8 +165,7 @@ export function MercuCoinDrawer({ events, onClose, symbol }: { events: RealtimeA
     <section aria-label={`${coin} 单币详情`} aria-modal="true" className="fixed bottom-0 right-0 top-0 z-[101] flex w-full flex-col overflow-hidden bg-surface-panel shadow-[-16px_0_48px_rgba(24,33,48,.18)] min-[700px]:w-[82vw] min-[1160px]:w-[min(100vw,1160px)]" data-testid="mercu-coin-drawer" role="dialog">
       <header className="sticky top-0 z-10 shrink-0 border-b border-border-subtle bg-surface-panel px-3.5 py-2.5">
         <div className="flex items-center gap-2"><CoinIcon coin={coin} size={19}/><h1 className="text-[14px] font-bold text-text-primary">${coin}</h1><span className="font-mono text-[11px] font-semibold text-text-secondary">{price == null ? "--" : `$${Number(price).toLocaleString("en-US", { maximumFractionDigits: Number(price) < 1 ? 6 : 2 })}`}</span><span className={`rounded-[2px] px-1.5 py-0.5 font-mono text-[9px] font-semibold ${change !== null && change >= 0 ? "bg-good/12 text-good" : "bg-risk/12 text-risk"}`}>{change === null ? "--" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span>
-          <button aria-label={watched ? "移出自选" : "加入自选"} aria-pressed={watched} className="ml-auto grid h-7 w-7 place-items-center border border-border-subtle text-[15px] text-text-muted hover:bg-surface-low" onClick={() => setWatched(toggleWatchSymbol(normalized).includes(normalized))} type="button">{watched ? "★" : "☆"}</button>
-          <button aria-label="关闭" className="grid h-7 w-7 place-items-center border border-border-subtle text-base text-text-muted hover:bg-surface-low" onClick={onClose} ref={closeRef} type="button">×</button>
+          <button aria-label="关闭" className="ml-auto grid h-7 w-7 place-items-center border border-border-subtle text-base text-text-muted hover:bg-surface-low" onClick={onClose} ref={closeRef} type="button">×</button>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-7 text-[8px] text-text-muted"><span>流通市值 <b className="font-mono font-medium text-text-secondary">{formatMetricValue(metrics.market_cap?.value, "usd")}</b></span><span>·</span><span>全网持仓 <b className="font-mono font-medium text-text-secondary">{formatMetricValue(crossOi?.total_oi_usd ?? metrics.oi_value?.value, "usd")}</b></span><span>·</span><span>24h 成交 <b className="font-mono font-medium text-text-secondary">{formatMetricValue(metrics.quote_volume?.value, "usd")}</b></span>{loading ? <span className="ml-1 text-primary-600">更新中…</span> : null}</div>
       </header>

@@ -183,7 +183,7 @@ function SectorOverview({ payload, windowSec, onWindow }: { payload: FundsSector
   const leadingInflow = sectors.find((item) => item.label === summary.leading_inflow_sector || item.sector_id === summary.leading_inflow_sector);
   const leadingOutflow = sectors.find((item) => item.label === summary.leading_outflow_sector || item.sector_id === summary.leading_outflow_sector);
   const updatedAt = payload.generated_at ? new Date(payload.generated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
-  return <section className="workstation-panel flex min-h-0 flex-col [&>.workstation-panel-header]:h-[59px] [&>.workstation-panel-header]:bg-[#fbfcfc] [&>.workstation-panel-header]:px-4 min-[1280px]:[&>.workstation-panel-header]:h-[60px]">
+  return <section className="workstation-panel flex min-h-0 flex-col [&>.workstation-panel-header]:h-[59px] [&>.workstation-panel-header]:bg-surface-low [&>.workstation-panel-header]:px-4 min-[1280px]:[&>.workstation-panel-header]:h-[60px]">
     <PanelTitle action={<div className="flex h-[34px] w-[188px] translate-y-px gap-0 rounded-[4px] border border-border-subtle bg-[#f1f4f8] p-1 min-[1280px]:w-[190px] min-[1280px]:-translate-x-0.5 min-[1280px]:translate-y-0.5 min-[1280px]:gap-1">{SECTOR_WINDOWS.map((item) => <button aria-pressed={windowSec === item.value} className={`h-full flex-1 rounded-[3px] px-0 text-[12px] font-semibold ${windowSec === item.value ? "bg-[#d9e7ed] text-[#1696a7] ring-1 ring-[#8ac8d2]" : "text-text-muted"}`} key={item.value} onClick={() => onWindow(item.value)} type="button">{item.label}</button>)}</div>} title="板块资金流"/>
     <div className="h-[123px] shrink-0 border-b border-border-subtle bg-[#fcfcfd] px-4 py-1.5 min-[1280px]:h-[127px] min-[1280px]:px-[17px]">
       <div className="flex items-end"><span className="flex h-[22px] items-center rounded-[3px] border border-[#8ac8d2] bg-transparent px-[18px] text-[11px] font-semibold text-[#1696a7]">{payload.market_type === "spot" ? "现货" : "合约"} · {SECTOR_WINDOWS.find((item) => item.value === windowSec)?.label}</span><span className="ml-2 text-[12px] text-text-muted">整体{positive ? "流入" : "失血"}</span><strong className={`ml-auto font-mono text-[21px] ${tone(summary.net_flow_usd)}`}>{cnMoney(summary.net_flow_usd)}</strong></div>
@@ -196,7 +196,7 @@ function SectorOverview({ payload, windowSec, onWindow }: { payload: FundsSector
   </section>;
 }
 
-function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow, onSelect, onPage, loading, error, sortKey, direction, onSort, favorites, onFavorite }: {
+function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow, onSelect, onPage, loading, error, sortKey, direction, onSort }: {
   assets: FundsAsset[];
   payload: FundsAssetsPayload;
   query: string;
@@ -210,10 +210,8 @@ function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow,
   sortKey: FundsSort;
   direction: SortDirection;
   onSort: (key: FundsSort) => void;
-  favorites: Set<string>;
-  onFavorite: (symbol: string) => void;
 }) {
-  const columns = "grid-cols-[54px_240px_188px_64px_105px_61px_65px_68px_78px_48px_63px] min-[1280px]:grid-cols-[58px_245px_192px_repeat(8,minmax(0,1fr))]";
+  const columns = "grid-cols-[240px_188px_64px_105px_61px_65px_68px_78px_48px_63px] min-[1280px]:grid-cols-[245px_192px_repeat(8,minmax(0,1fr))]";
   const pagination = payload.pagination;
   const page = Math.max(1, Number(pagination?.page || 1));
   const pageSize = Math.max(1, Number(pagination?.page_size || 20));
@@ -231,15 +229,13 @@ function AssetsOverview({ assets, payload, query, setQuery, windowSec, onWindow,
       <div className="mr-1.5 flex w-[176px] min-w-0 shrink-0 items-center gap-2 text-[11px] text-text-muted min-[1280px]:mr-3 max-[1023px]:hidden"><span className={`h-2 w-2 shrink-0 rounded-full ${error ? "bg-risk" : loading ? "animate-pulse bg-warn" : "bg-good"}`}/><span className="truncate">更新 {updatedAt}</span><span aria-hidden="true" className="h-8 w-8 shrink-0"/></div>
     </div>
     <div className="workstation-scroll min-h-0 flex-1 overflow-auto">
-      <div className={`sticky top-0 z-10 grid h-[47px] min-w-[1028px] ${columns} items-center border-b border-border-subtle bg-[#f1f4f8] text-[14px] font-semibold min-[1280px]:h-[48px] min-[1280px]:min-w-0 [&>*]:min-w-0 [&>*]:px-3 [&>*]:!pr-4 min-[1280px]:[&>*]:!pr-7`}><span/><span className="text-right text-[#98a1ad]">币种</span>{header("净流入($)", "net_flow_usd")}{header("净流入变化", "net_flow_change_pct")}{header("交易量($)", "volume_usd")}{header("交易量变化", "volume_change_pct")}{header("流入($)", "inflow_usd")}{header("流出($)", "outflow_usd")}{header("市值($)", "market_cap")}{header("当前币价($)", "price")}{header("价格(24小时%)", "price_change_pct")}</div>
+      <div className={`sticky top-0 z-10 grid h-[47px] min-w-[974px] ${columns} items-center border-b border-border-subtle bg-[#f1f4f8] text-[14px] font-semibold min-[1280px]:h-[48px] min-[1280px]:min-w-0 [&>*]:min-w-0 [&>*]:px-3 [&>*]:!pr-4 min-[1280px]:[&>*]:!pr-7`}><span className="text-right text-[#98a1ad]">币种</span>{header("净流入($)", "net_flow_usd")}{header("净流入变化", "net_flow_change_pct")}{header("交易量($)", "volume_usd")}{header("交易量变化", "volume_change_pct")}{header("流入($)", "inflow_usd")}{header("流出($)", "outflow_usd")}{header("市值($)", "market_cap")}{header("当前币价($)", "price")}{header("价格(24小时%)", "price_change_pct")}</div>
       {assets.map((item, index) => {
         const symbol = item.symbol || "";
-        const favorite = favorites.has(symbol);
         const positiveFlow = Number(item.net_flow_usd || 0) >= 0;
         const netFlowBarWidth = Math.max(2, Math.abs(Number(item.net_flow_usd || 0)) / maxAbsNetFlow * 100);
         const rankTone = index === 0 ? "text-[#c79200]" : index === 1 ? "text-[#c2700a]" : index === 2 ? "text-[#1f86c4]" : "text-[#3f72c4]";
-        return <div className={`grid h-[62px] min-w-[1028px] w-full cursor-pointer ${columns} items-center border-b border-[#fafafb] text-left font-mono text-[15px] font-semibold hover:bg-primary-50/45 min-[1280px]:h-[63.5px] min-[1280px]:min-w-0 [&>*]:min-w-0 [&>*]:px-3 [&>span]:truncate`} data-testid="funds-asset-row" key={symbol || index} onClick={() => onSelect(symbol)} onKeyDown={(event) => { if (event.key === "Enter") onSelect(symbol); }} role="button" tabIndex={0}>
-          <button aria-label={`${favorite ? "取消" : "添加"}${item.coin || symbol}自选`} className={`h-full !pl-0 !pr-[9px] text-right text-[22px] font-normal min-[1280px]:!pr-[6px] ${favorite ? "text-warn" : "text-text-muted"}`} onClick={(event) => { event.stopPropagation(); onFavorite(symbol); }} type="button">{favorite ? "★" : "☆"}</button>
+        return <div className={`grid h-[62px] min-w-[974px] w-full cursor-pointer ${columns} items-center border-b border-[#fafafb] text-left font-mono text-[15px] font-semibold hover:bg-primary-50/45 min-[1280px]:h-[63.5px] min-[1280px]:min-w-0 [&>*]:min-w-0 [&>*]:px-3 [&>span]:truncate`} data-testid="funds-asset-row" key={symbol || index} onClick={() => onSelect(symbol)} onKeyDown={(event) => { if (event.key === "Enter") onSelect(symbol); }} role="button" tabIndex={0}>
           <span className="flex items-center gap-3 !pl-6 min-[1280px]:!pl-7"><span className={`w-6 shrink-0 text-right font-bold ${rankTone}`}>{(page - 1) * pageSize + index + 1}</span><CoinIcon coin={item.coin} size={34}/><span className="ml-1 truncate text-text-primary">{item.coin || symbol}</span></span>
           <span className="flex h-full items-center !px-0"><span className={`relative ml-0.5 mr-px flex h-[29px] w-full -translate-y-px items-center justify-end overflow-hidden rounded-[2px] pr-[9px] min-[1280px]:-ml-1 min-[1280px]:mr-[6px] min-[1280px]:-translate-y-0.5 ${positiveFlow ? "text-good" : "text-risk"}`}><span aria-hidden="true" className={`absolute inset-y-0 right-0 ${positiveFlow ? "bg-[#daf1e8]" : "bg-[#fae4e6]"}`} style={{ width: `${netFlowBarWidth}%` }}/><span className="relative z-[1]">{cnMoney(item.net_flow_usd, false)}</span></span></span>
           <span className={`justify-self-end font-mono ${tone(item.net_flow_change_pct)}`}>{percent(item.net_flow_change_pct)}</span>
@@ -274,7 +270,6 @@ export default function FundsPage() {
   const [assetWindow, setAssetWindow] = useState(900);
   const [assetSort, setAssetSort] = useState<FundsSort>("net_flow_usd");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [spotSectors, setSpotSectors] = useState<FundsSectorsPayload>({});
   const [futuresSectors, setFuturesSectors] = useState<FundsSectorsPayload>({});
   const [spotAssets, setSpotAssets] = useState<FundsAssetsPayload>({});
@@ -324,12 +319,6 @@ export default function FundsPage() {
   useEffect(() => { void loadOverview(); }, [loadOverview]);
   useEffect(() => { void loadCoin(); }, [loadCoin]);
   useEffect(() => {
-    try {
-      const stored = JSON.parse(window.localStorage.getItem("paoxx-funds-favorites") || "[]");
-      if (Array.isArray(stored)) setFavorites(new Set(stored.filter((item) => typeof item === "string")));
-    } catch { setFavorites(new Set()); }
-  }, []);
-  useEffect(() => {
     const timer = window.setTimeout(() => { setAssetPage(1); setAssetSearch(query); }, 250);
     return () => window.clearTimeout(timer);
   }, [query]);
@@ -351,16 +340,6 @@ export default function FundsPage() {
     if (assetSort === key) setSortDirection((value) => value === "desc" ? "asc" : "desc");
     else { setAssetSort(key); setSortDirection("desc"); }
   };
-  const toggleFavorite = (symbol: string) => {
-    if (!symbol) return;
-    setFavorites((current) => {
-      const next = new Set(current);
-      if (next.has(symbol)) next.delete(symbol); else next.add(symbol);
-      window.localStorage.setItem("paoxx-funds-favorites", JSON.stringify([...next]));
-      return next;
-    });
-  };
-
   return <div aria-busy={loading || Boolean(selected && coinLoading)} className="workstation-page mercu-funds-grid" data-testid="funds-workstation">
     <section className="workstation-scroll flex h-[63px] max-w-full shrink-0 items-center gap-3 overflow-x-auto border-b border-border-subtle bg-surface-panel px-[18px] min-[1280px]:px-[25px]">
       <div className="flex h-12 rounded-[6px] border border-border-subtle bg-[#f1f4f8] p-[3px] min-[1280px]:h-[51px] min-[1280px]:w-[188px] min-[1280px]:translate-y-px" role="group">{(["spot", "futures"] as const).map((value) => <button aria-pressed={marketType === value} className={`h-10 min-w-[72px] flex-1 rounded-[4px] px-4 text-[14px] font-semibold min-[1280px]:h-[43px] ${marketType === value ? "bg-surface-panel text-text-primary shadow-sm ring-1 ring-border-subtle" : "text-text-muted"}`} onClick={() => { setAssetPage(1); setMarketType(value); }} type="button" key={value}>{value === "futures" ? "合约" : "现货"}</button>)}</div>
@@ -368,7 +347,7 @@ export default function FundsPage() {
       {selected ? <div className="ml-auto flex items-center gap-2"><span className={`h-1.5 w-1.5 rounded-full ${error ? "bg-risk" : loading || coinLoading ? "animate-pulse bg-warn" : "bg-good"}`}/><span className="max-w-64 truncate text-[8px] text-text-muted">{error || `${selected} · ${coin.data_status || "loading"}`}</span><button className="h-6 rounded-[3px] border border-border-subtle px-2 text-[8px] font-semibold text-text-secondary hover:bg-surface-low" disabled={loading || coinLoading} onClick={() => { void loadOverview(true); void loadCoin(true); }} type="button">刷新</button></div> : null}
     </section>
 
-    {!selected ? <main className="mercu-funds-overview-grid grid min-h-0 flex-1 grid-cols-[350px_minmax(0,1fr)] gap-[18px] px-[18px] pb-[17px] pt-[7px] min-[1280px]:px-[25px] min-[1280px]:pb-[18px] min-[1280px]:pt-[13px]"><SectorOverview onWindow={setSectorWindow} payload={currentSectors} windowSec={sectorWindow}/><AssetsOverview assets={currentAssets} direction={sortDirection} error={error} favorites={favorites} loading={loading} onFavorite={toggleFavorite} onPage={setAssetPage} onSelect={setSelected} onSort={toggleSort} onWindow={(value) => { setAssetPage(1); setAssetWindow(value); }} payload={marketType === "spot" ? spotAssets : futuresAssets} query={query} setQuery={setQuery} sortKey={assetSort} windowSec={assetWindow}/></main> : <>
+    {!selected ? <main className="mercu-funds-overview-grid grid min-h-0 flex-1 grid-cols-[350px_minmax(0,1fr)] gap-[18px] px-[18px] pb-[17px] pt-[7px] min-[1280px]:px-[25px] min-[1280px]:pb-[18px] min-[1280px]:pt-[13px]"><SectorOverview onWindow={setSectorWindow} payload={currentSectors} windowSec={sectorWindow}/><AssetsOverview assets={currentAssets} direction={sortDirection} error={error} loading={loading} onPage={setAssetPage} onSelect={setSelected} onSort={toggleSort} onWindow={(value) => { setAssetPage(1); setAssetWindow(value); }} payload={marketType === "spot" ? spotAssets : futuresAssets} query={query} setQuery={setQuery} sortKey={assetSort} windowSec={assetWindow}/></main> : <>
       <section className="grid h-[62px] shrink-0 grid-cols-6 gap-1.5 px-1.5">{[
         ["现货净流", money(spotSummary.net_flow_usd), spotSummary.net_flow_usd, `${spotSummary.covered_assets || 0}/${spotSummary.asset_count || 0} 资产`],
         ["合约净流", money(futuresSummary.net_flow_usd), futuresSummary.net_flow_usd, `${futuresSummary.covered_assets || 0}/${futuresSummary.asset_count || 0} 资产`],

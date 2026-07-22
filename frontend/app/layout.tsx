@@ -34,7 +34,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html data-theme="light" lang="zh-CN" className={`${dmSans.variable} ${jetbrainsMono.variable} ${outfit.variable}`} style={{ colorScheme: "light" }}>
+    <html data-theme="dark" lang="zh-CN" className={`${dmSans.variable} ${jetbrainsMono.variable} ${outfit.variable}`} style={{ colorScheme: "dark" }}>
       <body data-paoxx-frontend="nextjs-dashboard">
         <FrontendTelemetry />
         <AppShell>{children}</AppShell>

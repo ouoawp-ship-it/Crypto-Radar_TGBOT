@@ -313,8 +313,7 @@ check_v2_cockpit_contracts() {
     "实时分钟特征|/public-api/market/realtime?limit=3" \
     "实时异常情报|/public-api/radar/realtime-intelligence?limit=3" \
     "资金中心|/public-api/funds/sectors?window_sec=3600&market_type=spot" \
-    "信息中心|/public-api/info/feed?page_size=5&window_sec=604800" \
-    "Agent 决策|/public-api/agents/overview?window_sec=14400"; do
+    "信息中心|/public-api/info/feed?page_size=5&window_sec=604800"; do
     local label="${spec%%|*}"
     local path="${spec#*|}"
     local body
@@ -369,7 +368,7 @@ check_public_signal_context_actions() {
     -H 'Cache-Control: no-cache' \
     -o "${signals_file}" \
     "${BASE_URL}/public-api/signals?limit=3"; then
-    record_block "无法读取最新信号，不能验证 Web/AI/提醒闭环"
+    record_block "无法读取最新信号，不能验证 Web/提醒闭环"
     rm -f "${signals_file}" "${context_file}"
     return
   fi
@@ -417,11 +416,10 @@ check_public_signal_context_actions() {
     record_pass "公开信号详情深链可用：${public_ref}"
   fi
 
-  if grep -aEq '"ai_url"[[:space:]]*:[[:space:]]*"https://t[.]me/[A-Za-z0-9_]+\?start=analyze_[A-Za-z0-9_-]+"' "${context_file}" \
-    && grep -aEq '"alert_url"[[:space:]]*:[[:space:]]*"https://t[.]me/[A-Za-z0-9_]+\?start=alert_[A-Za-z0-9_-]+"' "${context_file}"; then
-    record_pass "Web -> AI 分析/提醒深链闭环可用"
+  if grep -aEq '"alert_url"[[:space:]]*:[[:space:]]*"https://t[.]me/[A-Za-z0-9_]+\?start=alert_[A-Za-z0-9_-]+"' "${context_file}"; then
+    record_pass "Web -> Telegram 提醒深链闭环可用"
   else
-    record_warn "Web -> AI 分析/提醒深链为空；请配置 AI_BOT_USERNAME（不含 @）"
+    record_warn "Web -> Telegram 提醒深链为空；请配置 AI_BOT_USERNAME（不含 @）"
   fi
 
   if awk -v elapsed="${median_elapsed}" -v limit_ms="${PUBLIC_SLO_MS}" 'BEGIN { exit !((elapsed * 1000) <= limit_ms) }'; then

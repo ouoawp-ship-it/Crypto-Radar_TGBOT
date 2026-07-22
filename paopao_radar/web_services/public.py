@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,7 +19,6 @@ from ..coin_evidence import (
     normalize_chart_market,
     resample_snapshot_series,
 )
-from ..agent_intelligence import build_agent_overview
 from ..config import Settings
 from ..data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from ..data_source_registry import data_source_registry_payload
@@ -94,7 +93,6 @@ PUBLIC_MARKET_COCKPIT_TTL_SEC = 15
 PUBLIC_FUNDS_TTL_SEC = 30
 PUBLIC_INFO_TTL_SEC = 60
 PUBLIC_INFO_REFRESH_SEC = 180
-PUBLIC_AGENTS_TTL_SEC = 120
 PUBLIC_INTELLIGENCE_RESPONSE_LIMIT = 40
 PUBLIC_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 PUBLIC_SIGNAL_REF_RE = re.compile(r"^(?:[0-9]{1,12}|sig_[a-f0-9]{20})$")
@@ -2125,65 +2123,6 @@ def public_workstation_info_briefs_payload(
     return api_ok(_strip_forbidden(payload), message="已读取工作站信息摘要")
 
 
-def public_agents_overview_payload(
-    *,
-    window_sec: int = 14_400,
-    settings: Settings | None = None,
-    now_ts: int | None = None,
-) -> dict[str, Any]:
-    loaded = settings or Settings.load()
-    if _v2_disabled(loaded):
-        return _v2_disabled_payload()
-    now = int(now_ts or time.time())
-    safe_window = normalize_window(window_sec)
-
-    def build() -> dict[str, Any]:
-        signal_store = _store(loaded)
-        news_store = NewsEventStore(loaded.news_events_db_path)
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="public-agents") as executor:
-            cockpit_future = executor.submit(
-                _market_cockpit_raw,
-                loaded,
-                window_sec=safe_window,
-                board_limit=8,
-                now_ts=now_ts,
-            )
-            signals_future = executor.submit(
-                signal_store.intelligence_events,
-                start_ts=now - safe_window,
-                end_ts=now,
-                limit=500,
-            )
-            news_future = executor.submit(
-                news_store.list_feed,
-                start_ts=now - 86_400,
-                end_ts=now,
-                page=1,
-                page_size=100,
-            )
-            cockpit = cockpit_future.result()
-            signals = signals_future.result()
-            news_items = news_future.result()["items"]
-        return build_agent_overview(
-            loaded,
-            now_ts=now,
-            window_sec=safe_window,
-            cockpit=cockpit,
-            signals=signals,
-            news_items=news_items,
-        )
-
-    try:
-        if now_ts is not None:
-            payload = build()
-        else:
-            cache_key = f"public:agents:{loaded.market_snapshots_db_path}:{loaded.signal_events_db_path}:{loaded.news_events_db_path}:{safe_window}"
-            payload = runtime_cache_get_or_set(cache_key, PUBLIC_AGENTS_TTL_SEC, build)
-    except Exception:
-        return api_error("Agent 决策暂时不可用", code="upstream_unavailable")
-    return api_ok(_strip_forbidden(payload), message="已读取证据化 Agent 结论")
-
-
 def _radar_intelligence_raw(
     settings: Settings,
     *,
@@ -2382,7 +2321,6 @@ def _public_bot_actions(settings: Settings, symbol: str, signal_ref: str = "") -
     return {
         "radar_url": f"/radar?symbol={symbol}{'&signal=' + safe_ref if safe_ref else ''}",
         "share_url": f"/coin/{symbol}{'?signal=' + safe_ref if safe_ref else ''}",
-        "ai_url": f"https://t.me/{bot_username}?start=analyze_{coin}{start_context}" if bot_username and coin else "",
         "alert_url": f"https://t.me/{bot_username}?start=alert_{coin}{start_context}" if bot_username and coin else "",
     }
 
@@ -2610,93 +2548,6 @@ def public_coin_context_payload(
     return api_ok(_strip_forbidden(payload), message="已读取单币上下文")
 
 
-def public_watchlist_market_payload(
-    symbols: str,
-    *,
-    settings: Settings | None = None,
-    snapshot_loader: SnapshotLoader | None = None,
-    now_ts: int | None = None,
-) -> dict[str, Any]:
-    loaded = settings or Settings.load()
-    normalized_symbols: list[str] = []
-    invalid: list[str] = []
-    for raw in str(symbols or "").split(",")[:20]:
-        value = raw.strip()
-        if not value:
-            continue
-        parsed = _safe_symbol(value)
-        if parsed["symbol"]:
-            if parsed["symbol"] not in normalized_symbols:
-                normalized_symbols.append(parsed["symbol"])
-        else:
-            invalid.append(value[:24])
-    normalized_symbols = normalized_symbols[:12]
-    if not normalized_symbols:
-        return api_error("请提供 1–12 个有效币种", code="invalid_symbols")
-
-    def load_one(target: str) -> tuple[str, dict[str, Any]]:
-        return target, public_market_snapshot_payload(
-            target,
-            settings=loaded,
-            snapshot_loader=snapshot_loader,
-            now_ts=now_ts,
-        )
-
-    results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=min(4, len(normalized_symbols)), thread_name_prefix="public-watchlist") as executor:
-        futures = {executor.submit(load_one, target): target for target in normalized_symbols}
-        for future in as_completed(futures):
-            target = futures[future]
-            try:
-                _, result = future.result()
-            except Exception:
-                result = api_error("市场数据暂时不可用", code="upstream_unavailable")
-            results[target] = result
-    cockpit_by_symbol: dict[str, dict[str, Any]] = {}
-    try:
-        if loaded.market_snapshots_db_path.exists():
-            cockpit = _market_cockpit_raw(
-                loaded,
-                window_sec=3600,
-                board_limit=8,
-                now_ts=now_ts,
-            )
-            cockpit_by_symbol = {
-                str(item.get("symbol") or ""): item
-                for item in cockpit.get("assets", [])
-                if isinstance(item, dict) and item.get("symbol")
-            }
-    except Exception:
-        cockpit_by_symbol = {}
-
-    def compact_flow(target: str) -> dict[str, Any] | None:
-        source = cockpit_by_symbol.get(target)
-        if not isinstance(source, dict):
-            return None
-        return {
-            "window_sec": 3600,
-            "spot_net_flow_usd": _number(source.get("spot_flow_usd")),
-            "futures_net_flow_usd": _number(source.get("futures_flow_usd")),
-            "oi_change_pct": _number(source.get("oi_change_pct")),
-            "funding_pct": _number(source.get("funding_pct")),
-            "updated_at": _short(source.get("updated_at") or "", 40),
-            "data_status": _short(source.get("status") or "degraded", 24),
-            "source": "market_snapshot_store",
-        }
-    items = [
-        {
-            "symbol": target,
-            "ok": bool(results.get(target, {}).get("ok")),
-            "market": results.get(target, {}).get("data"),
-            "error": "" if results.get(target, {}).get("ok") else str(results.get(target, {}).get("message") or "暂时不可用"),
-            "coin_url": f"/coin/{target}",
-            "flow": compact_flow(target),
-        }
-        for target in normalized_symbols
-    ]
-    return api_ok(_strip_forbidden({"items": items, "count": len(items), "invalid": invalid}), message="已读取自选行情")
-
-
 def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, Any]:
     loaded = settings or Settings.load()
     try:
@@ -2793,7 +2644,6 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
             "signal_context": True,
             "intelligence": True,
             "coin_context": True,
-            "watchlist": True,
             "market_overview": True,
             "radar_boards": True,
             "realtime_market": True,
@@ -2802,7 +2652,6 @@ def public_api_health_payload(*, settings: Settings | None = None) -> dict[str, 
             "funds_sectors": True,
             "funds_assets": True,
             "info_feed": True,
-            "agents_overview": True,
             "stream": True,
         },
     }
@@ -2931,7 +2780,6 @@ def public_signal_context_payload(
         "actions": {
             "signal_url": f"/radar?signal={item.get('public_ref') or int(item.get('id') or 0)}",
             "symbol_url": f"/radar?symbol={symbol}" if symbol else "/radar",
-            "ai_url": f"https://t.me/{bot_username}?start=analyze_{coin}" if bot_username and coin else "",
             "alert_url": f"https://t.me/{bot_username}?start=alert_{coin}" if bot_username and coin else "",
         },
     }

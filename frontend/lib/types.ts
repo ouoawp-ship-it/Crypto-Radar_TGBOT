@@ -146,7 +146,7 @@ export type SignalContext = {
   rankings?: { self?: SignalRank; market_strength?: SignalRank; market_absolute?: SignalRank };
   resonance?: SignalResonance;
   related?: { same_symbol?: SignalItem[] };
-  actions?: { signal_url?: string; symbol_url?: string; ai_url?: string; alert_url?: string };
+  actions?: { signal_url?: string; symbol_url?: string; alert_url?: string };
 };
 
 export type IntelligenceEntry = { signal?: SignalItem; intelligence?: SignalIntelligence };
@@ -210,7 +210,6 @@ export type CockpitBoard = {
   strength_negative?: CockpitBoardSide;
   reason?: string;
 };
-
 export type RadarConfluenceItem = CockpitBoardItem & {
   board_count?: number;
   N?: number;
@@ -647,28 +646,8 @@ export type CoinContext = {
   related_info?: { data_status?: string; items?: CoinRelatedInfoItem[]; methodology?: string };
   evidence_coverage?: { market?: number; chart_points?: number; snapshot_points?: number; signals?: number; related_info?: number; announcements?: number };
   timeline?: SignalItem[];
-  actions?: { radar_url?: string; share_url?: string; ai_url?: string; alert_url?: string };
+  actions?: { radar_url?: string; share_url?: string; alert_url?: string };
 };
-
-export type WatchlistMarketItem = {
-  symbol?: string;
-  ok?: boolean;
-  market?: MarketSnapshot | null;
-  error?: string;
-  coin_url?: string;
-  flow?: {
-    window_sec?: number;
-    spot_net_flow_usd?: number | null;
-    futures_net_flow_usd?: number | null;
-    oi_change_pct?: number | null;
-    funding_pct?: number | null;
-    updated_at?: string;
-    data_status?: string;
-    source?: string;
-  } | null;
-};
-
-export type WatchlistMarketPayload = { items?: WatchlistMarketItem[]; count?: number; invalid?: string[] };
 
 export type NewsAnalysis = {
   status?: "ready" | "not_generated" | string;
@@ -869,53 +848,4 @@ export type EvidenceFact = {
   data_status?: string;
   url?: string;
   note?: string;
-};
-
-export type AgentInsight = {
-  insight_id?: string;
-  agent_type?: "global" | "major" | "anomaly" | "message" | string;
-  scope?: string;
-  generated_at?: string;
-  expires_at?: string;
-  state?: string;
-  confidence?: number | null;
-  summary?: string;
-  evidence_refs?: string[];
-  counter_evidence_refs?: string[];
-  model_info?: Record<string, string | boolean>;
-  data_status?: string;
-  disclaimer?: string;
-  label?: string;
-  state_label?: string;
-  bucket?: "strong" | "weak" | "risk" | string;
-  missing_facts?: string[];
-  event_id?: string;
-  symbols?: string[];
-  actions?: { coin_url?: string; radar_url?: string; signal_ref?: string; info_url?: string; source_url?: string; ai_url?: string };
-};
-
-export type AgentsOverviewPayload = {
-  schema_version?: string;
-  engine_version?: string;
-  generated_at?: string;
-  expires_at?: string;
-  window_sec?: number;
-  data_status?: string;
-  coverage?: Record<string, number>;
-  warnings?: string[];
-  agents?: {
-    global?: AgentInsight;
-    majors?: AgentInsight[];
-    anomalies?: AgentInsight[];
-    messages?: AgentInsight[];
-  };
-  evidence?: EvidenceFact[];
-  model_info?: Record<string, string | boolean>;
-  safety?: {
-    rule_first?: boolean;
-    ready_only_for_direction?: boolean;
-    numbers_formatted_by_code?: boolean;
-    evidence_required?: boolean;
-    disclaimer?: string;
-  };
 };

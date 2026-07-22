@@ -1,4 +1,4 @@
-import type { AgentsOverviewPayload, ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsOverviewPayload, FundsSectorsPayload, FundsSeriesPayload, InfoBriefsPayload, InfoDashboardPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WatchlistMarketPayload, WorkstationRadarAnomaliesPayload, WorkstationRadarBriefsPayload, WorkstationRadarRankPayload, WorkstationRadarSurgePayload } from "./types";
+import type { ApiEnvelope, ApiResult, CoinContext, CrossExchangeOpenInterest, FundsAssetsPayload, FundsOverviewPayload, FundsSectorsPayload, FundsSeriesPayload, InfoBriefsPayload, InfoDashboardPayload, InfoFeedPayload, ListPayload, MarketOverview, MarketSnapshot, RadarBoards, RadarIntelligence, RealtimeIntelligencePayload, SignalContext, SignalItem, WorkstationRadarAnomaliesPayload, WorkstationRadarBriefsPayload, WorkstationRadarRankPayload, WorkstationRadarSurgePayload } from "./types";
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
 export type PublicFetchOptions = { bypassCache?: boolean; revalidateSec?: number };
@@ -237,10 +237,6 @@ export function getCoinContext(symbol: string, options: PublicFetchOptions = {},
   return publicFetch<CoinContext>("/public-api/coin/context", { symbol, ...chart }, { revalidateSec: 30, ...options });
 }
 
-export function getWatchlistMarket(symbols: string[], options: PublicFetchOptions = {}) {
-  return publicFetch<WatchlistMarketPayload>("/public-api/market/watchlist", { symbols: symbols.join(",") }, { revalidateSec: 30, ...options });
-}
-
 export function getInfoFeed(query: Query = {}, options: PublicFetchOptions = {}) {
   return publicFetch<InfoFeedPayload>("/public-api/workstation/info/feed", query, { revalidateSec: 60, ...options });
 }
@@ -251,10 +247,6 @@ export function getWorkstationInfoDashboard(windowSec = 604_800, options: Public
 
 export function getWorkstationInfoBriefs(windowSec = 14_400, options: PublicFetchOptions = {}) {
   return publicFetch<InfoBriefsPayload>("/public-api/workstation/info/briefs", { window_sec: windowSec }, { revalidateSec: 60, ...options });
-}
-
-export function getAgentsOverview(windowSec = 14_400, options: PublicFetchOptions = {}) {
-  return publicFetch<AgentsOverviewPayload>("/public-api/agents/overview", { window_sec: windowSec }, { revalidateSec: 120, ...options });
 }
 
 export type HomeDashboardData = {

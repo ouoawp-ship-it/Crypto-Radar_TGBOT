@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
 
 from paopao_radar.agent_intelligence import AgentInsightStore, build_agent_overview
 from paopao_radar.config import Settings
-from paopao_radar.web_services.public import public_agents_overview_payload
 
 
 class AgentIntelligenceTest(unittest.TestCase):
@@ -104,7 +101,7 @@ class AgentIntelligenceTest(unittest.TestCase):
         self.assertEqual(result["agents"]["majors"][0]["data_status"], "degraded")
         self.assertIn("未生成方向结论", result["agents"]["majors"][0]["summary"])
 
-    def test_store_expires_and_public_contract_is_versioned(self) -> None:
+    def test_store_expires_and_internal_contract_is_versioned(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))
             built = build_agent_overview(
@@ -113,45 +110,8 @@ class AgentIntelligenceTest(unittest.TestCase):
             store = AgentInsightStore(settings.agent_insights_db_path)
             self.assertGreater(len(store.list_latest(now_ts=self.now)), 0)
             self.assertEqual(store.list_latest(now_ts=self.now + 1000), [])
-            with patch("paopao_radar.web_services.public._market_cockpit_raw", return_value=self.cockpit()):
-                response = public_agents_overview_payload(settings=settings, now_ts=self.now)
-
-        self.assertTrue(response["ok"])
-        self.assertEqual(response["data"]["schema_version"], "2026-07-17")
-        self.assertGreater(response["data"]["coverage"]["evidence"], 0)
-        self.assertEqual(built["engine_version"], response["data"]["engine_version"])
-
-    def test_public_agent_sources_are_loaded_concurrently(self) -> None:
-        barrier = threading.Barrier(3)
-
-        def cockpit(*_args: object, **_kwargs: object) -> dict[str, object]:
-            barrier.wait(timeout=1)
-            return self.cockpit()
-
-        class SignalStore:
-            @staticmethod
-            def intelligence_events(**_kwargs: object) -> list[dict[str, object]]:
-                barrier.wait(timeout=1)
-                return self.signals()
-
-        class NewsStore:
-            def __init__(self, _path: Path) -> None:
-                pass
-
-            @staticmethod
-            def list_feed(**_kwargs: object) -> dict[str, object]:
-                barrier.wait(timeout=1)
-                return {"items": self.news()}
-
-        with (
-            TemporaryDirectory() as tmp,
-            patch("paopao_radar.web_services.public._market_cockpit_raw", side_effect=cockpit),
-            patch("paopao_radar.web_services.public._store", return_value=SignalStore()),
-            patch("paopao_radar.web_services.public.NewsEventStore", NewsStore),
-        ):
-            response = public_agents_overview_payload(settings=Settings(data_dir=Path(tmp)), now_ts=self.now)
-
-        self.assertTrue(response["ok"])
+        self.assertEqual(built["schema_version"], "2026-07-17")
+        self.assertGreater(built["coverage"]["evidence"], 0)
 
 
 if __name__ == "__main__":

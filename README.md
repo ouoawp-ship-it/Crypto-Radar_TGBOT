@@ -11,24 +11,21 @@
 - Binance 公告监听：跟踪上新、下架、Launchpool、HODLer、空投等公告。
 - 多交易所实时流：归一化 Binance、Bybit 与 OKX 公开成交，接入 Binance/Bybit 公开强平，生成封闭分钟 CVD、Surge、短周期潜伏和方向共振。
 - Telegram 推送：支持话题路由、冷却、去重、限流、推送历史与精确信号深链。
-- AI 助手：独立 Bot，承接 Web 币种分析深链、目标价/涨跌/OI/费率提醒和可选 AI 问答。
 - 信号情报：自身历史极端度、市场相对强度、同口径绝对规模、跨模块共振和生命周期。
-- Web 前台：公开总览、四类机会榜、证据抽屉、轻量单币上下文和浏览器本地自选。
-- Web 后台：服务、配置、任务、日志、审计、价格提醒和提示词管理。
+- Web 前台：固定黑色主题的雷达、资金、信息、证据抽屉和轻量单币上下文。
+- Web 后台：服务、数据源、配置、任务、日志和审计管理。
 
 ## Web 路由
 
 - `/`：公开总览
 - `/radar`：公开信号雷达
 - `/coin/<symbol>`：轻量单币验证上下文
-- `/watchlist`：当前浏览器的本地自选
 - `/admin`：需登录的运维控制台
 - `/public-api/signals`：公开信号列表
 - `/public-api/signals/stats`：公开信号统计
 - `/public-api/signals/context?id=...`：证据、排名、共振和生命周期
 - `/public-api/radar/intelligence`：四类机会榜与情报层
 - `/public-api/coin/context?symbol=...`：单币聚合上下文
-- `/public-api/market/watchlist?symbols=...`：批量自选快照
 - `/public-api/data/sources`：数据源治理清单和脱敏运行状态
 - `/public-api/health`：脱敏健康、P95/SLO、上游、缓存和限流计数
 
@@ -44,7 +41,6 @@ python main.py readiness
 python main.py stable-check
 python main.py once
 python main.py live --send --confirm-real-send
-python main.py ai-assistant
 python main.py web
 ```
 

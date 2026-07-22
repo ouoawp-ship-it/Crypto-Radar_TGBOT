@@ -63,7 +63,6 @@ from .web_services.jobs import (
 )
 from .web_services.ops import update_check_status_payload
 from .web_services.public import (
-    public_agents_overview_payload,
     public_coin_context_payload,
     public_data_sources_payload,
     public_api_health_payload,
@@ -88,7 +87,6 @@ from .web_services.public import (
     public_workstation_radar_momentum_windows_payload,
     public_workstation_radar_rank_payload,
     public_workstation_radar_surge_payload,
-    public_watchlist_market_payload,
     public_signal_context_payload,
     public_signal_detail_payload,
     public_signal_stats_payload,
@@ -3313,7 +3311,7 @@ def build_deployment_acceptance(snapshot: dict[str, Any]) -> dict[str, Any]:
         elif cockpit_mode == "enabled":
             cockpit_status = "warn"
             cockpit_detail = "V2 驾驶舱已启用，但资讯或 Agent 持久化库尚未初始化。"
-            cockpit_action = "访问 /info 与 /agents 或执行本地 API 自检后重新 stable-check。"
+            cockpit_action = "执行本地 API 自检与数据采集后重新 stable-check。"
         elif cockpit_mode == "preview":
             cockpit_status = "warn"
             cockpit_detail = "V2 驾驶舱处于 preview 灰度模式。"
@@ -4272,9 +4270,7 @@ class WebHandler(BaseHTTPRequestHandler):
             "/public-api/funds/sectors",
             "/public-api/funds/assets",
             "/public-api/info/feed",
-            "/public-api/agents/overview",
             "/public-api/stream",
-            "/public-api/market/watchlist",
             "/public-api/coin/context",
             "/public-api/signals/context",
         }
@@ -4443,9 +4439,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 not in {"0", "false", "no"},
             ))
             return
-        if path == "/public-api/market/watchlist":
-            self.send_json(public_watchlist_market_payload(query.get("symbols", [""])[0]))
-            return
         if path == "/public-api/radar/intelligence":
             self.send_json(public_radar_intelligence_payload(
                 window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["86400"])[0], 86400))),
@@ -4571,11 +4564,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 page=clamp_query_int(query.get("page", ["1"])[0], 1, 10000),
                 page_size=clamp_query_int(query.get("page_size", ["30"])[0], 30, 100),
                 window_sec=min(2_592_000, max(3600, query_int_or(query.get("window_sec", ["604800"])[0], 604800))),
-            ))
-            return
-        if path == "/public-api/agents/overview":
-            self.send_json(public_agents_overview_payload(
-                window_sec=query_int_or(query.get("window_sec", ["14400"])[0], 14400),
             ))
             return
         if path.startswith("/public-api/"):

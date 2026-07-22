@@ -79,7 +79,6 @@ bash scripts/check_https_deploy.sh --with-stable-check --with-certbot-dry-run
 - `https://paoxx.com/radar`：信号雷达
 - `https://paoxx.com/funds`：资金中心
 - `https://paoxx.com/info`：信息中心
-- `https://paoxx.com/agents`：AI 决策
 - `https://paoxx.com/admin`：后台控制台
 - `127.0.0.1:3000`：Next.js 本机入口
 - `127.0.0.1:8080` 或 Nginx 可达的后端入口
@@ -90,7 +89,7 @@ Nginx 对外监听 80/443。云安全组应关闭公网 3000/8080，只开放 SS
 
 ## V2 灰度与紧急回滚
 
-驾驶舱开关支持 `enabled`、`preview`、`disabled`。`preview` 用于带预览标识的观察期；`disabled` 会隐藏 V2 资金、信息、Agent 页面，并让雷达退回旧信号列表。Telegram Bot、AI 助手、后台和旧信号 API 不受影响。
+驾驶舱开关支持 `enabled`、`preview`、`disabled`。`preview` 用于带预览标识的观察期；`disabled` 会隐藏 V2 资金、信息页面，并让雷达退回旧信号列表。Telegram Bot、内部 AI 服务、后台和旧信号 API 不受影响。
 
 紧急回滚：
 

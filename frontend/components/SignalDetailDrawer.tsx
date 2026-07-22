@@ -5,7 +5,6 @@ import { getSignalContext } from "@/lib/api";
 import { formatDateTime, formatMetricValue, freshnessLabel, safeText } from "@/lib/format";
 import type { MarketMetric, SignalContext, Tone } from "@/lib/types";
 import { DataStatusBadge } from "./DataStatusBadge";
-import { WatchlistButton } from "./WatchlistButton";
 
 function statusTone(status?: string): Tone {
   if (status === "fresh") return "good";
@@ -274,9 +273,7 @@ export function SignalDetailDrawer({
             <section className="grid grid-cols-2 gap-3 border-t border-border-subtle pt-5">
               <a className="btn-secondary" href={context.actions?.symbol_url || "/radar"}>只看该币</a>
               {signal?.symbol ? <a className="btn-secondary" href={`/coin/${signal.symbol}`}>单币上下文</a> : null}
-              {signal?.symbol ? <WatchlistButton compact symbol={signal.symbol} /> : null}
               <button className="btn" onClick={() => void load(true)}>刷新上下文</button>
-              {context.actions?.ai_url ? <a className="btn-secondary" href={context.actions.ai_url} rel="noreferrer" target="_blank">交给 AI 分析</a> : null}
               {context.actions?.alert_url ? <a className="btn" href={context.actions.alert_url} rel="noreferrer" target="_blank">设置个性化提醒</a> : null}
             </section>
           </div>

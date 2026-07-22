@@ -117,11 +117,7 @@ Radar 量级与共振口径：
 
 ### `GET /public-api/coin/context?symbol=<symbol>`
 
-返回轻量单币验证上下文：市场快照、最近 30 条信号、排名/共振/生命周期，以及雷达、AI 和提醒动作。该接口不包含回测、模型或交易执行能力。
-
-### `GET /public-api/market/watchlist?symbols=BTC,ETH`
-
-一次读取 1–12 个自选币种的服务端聚合快照。每个币独立返回成功或降级状态，单一上游失败不会使整批失败。
+返回轻量单币验证上下文：市场快照、最近 30 条信号、排名/共振/生命周期，以及雷达和 Telegram 提醒动作。该接口不包含回测、模型或交易执行能力。
 
 ### `GET /public-api/info/feed`
 
@@ -137,10 +133,6 @@ Radar 量级与共振口径：
 - 情绪占比只使用 `opportunity/risk` 规则标签，中性事件不进入方向分母；
 - 互动分数为 `点赞 + 2×转发 + 回复`，行情字段缺失时保持 `null`，页面显示 `—`；
 - `methodology` 明确给出帖子、情绪、互动与行情的计算口径。
-
-### `GET /public-api/agents/overview?window_sec=14400`
-
-返回全局、BTC/ETH、异常候选和消息 Agent 的结构化结论。方向性结论只有在核心证据 `ready` 时才生成；降级或证据不足时必须返回 `insufficient_data`，并提供证据引用、反证、过期时间、规则版本和免责声明。
 
 ### `GET /public-api/stream`
 

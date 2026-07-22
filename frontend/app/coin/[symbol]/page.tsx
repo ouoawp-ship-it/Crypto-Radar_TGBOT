@@ -10,11 +10,10 @@ import { ErrorState } from "@/components/ErrorState";
 import { MetricSeriesChart } from "@/components/MetricSeriesChart";
 import { PageTitle } from "@/components/PageTitle";
 import { SignalCard } from "@/components/SignalCard";
-import { WatchlistButton } from "@/components/WatchlistButton";
 import { getCoinContext } from "@/lib/api";
 import { formatDateTime, formatMetricValue, freshnessLabel, safeText } from "@/lib/format";
+import { normalizeMarketSymbol } from "@/lib/symbol";
 import type { CoinContext, MarketMetric, SignalIntelligence } from "@/lib/types";
-import { normalizeWatchSymbol } from "@/lib/watchlist";
 
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
@@ -41,7 +40,7 @@ function RankItem({ label, value }: { label: string; value?: { available?: boole
 
 export default function CoinContextPage() {
   const params = useParams<{ symbol: string }>();
-  const symbol = useMemo(() => normalizeWatchSymbol(decodeURIComponent(String(params?.symbol || ""))), [params]);
+  const symbol = useMemo(() => normalizeMarketSymbol(decodeURIComponent(String(params?.symbol || ""))), [params]);
   const [data, setData] = useState<CoinContext | null>(null);
   const [marketType, setMarketType] = useState<"spot" | "futures">("futures");
   const [interval, setInterval] = useState("15m");
@@ -108,9 +107,7 @@ export default function CoinContextPage() {
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <PageTitle title={`${data?.coin || symbol.replace("USDT", "")} 单币上下文`} subtitle="用行情、资金、OI、费率、排名与事件证据验证雷达信号，所有缺失值保持不可用。" tags={[safeText(data?.data_status, loading ? "LOADING" : "EMPTY").toUpperCase(), data ? `${data.evidence_coverage?.chart_points || 0} 根 K 线` : "K 线 —", data ? `${data.summary?.signal_count || 0} 条事件` : "事件 —"]} />
         <div className="mb-5 flex flex-wrap gap-2">
-          <WatchlistButton symbol={symbol} />
           <Link className="btn-secondary" href={data?.actions?.radar_url || `/radar?symbol=${symbol}`}>只看该币信号</Link>
-          {data?.actions?.ai_url ? <a className="btn-secondary" href={data.actions.ai_url} rel="noreferrer" target="_blank">交给 AI 分析</a> : null}
           {data?.actions?.alert_url ? <a className="btn" href={data.actions.alert_url} rel="noreferrer" target="_blank">设置提醒</a> : null}
           <button className="btn-secondary" onClick={() => void copyShareLink()} type="button">{copied ? "已复制" : "复制链接"}</button>
         </div>

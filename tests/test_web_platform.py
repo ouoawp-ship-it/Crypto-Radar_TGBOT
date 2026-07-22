@@ -127,7 +127,6 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from paopao_radar.config import Settings
-from paopao_radar.market_cockpit import MarketSnapshotStore
 from paopao_radar.realtime_market import RealtimeFeatureStore
 from paopao_radar.signal_store import SignalEventStore, append_from_push
 from paopao_radar.signal_intelligence import absolute_metric, build_radar_intelligence
@@ -140,7 +139,6 @@ from paopao_radar.web_services.public import (
     public_radar_intelligence_payload,
     public_signal_item,
     public_signals_payload,
-    public_watchlist_market_payload,
     public_signal_context_payload,
 )
 
@@ -249,7 +247,7 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertEqual(context["signal"]["public_ref"], public_ref)
         self.assertEqual(context["actions"]["signal_url"], f"/radar?signal={public_ref}")
         self.assertEqual(context["actions"]["symbol_url"], "/radar?symbol=BTCUSDT")
-        self.assertEqual(context["actions"]["ai_url"], "https://t.me/paopao_ai_bot?start=analyze_BTC")
+        self.assertNotIn("ai_url", context["actions"])
         self.assertEqual(context["actions"]["alert_url"], "https://t.me/paopao_ai_bot?start=alert_BTC")
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertNotIn("private-topic", serialized)
@@ -314,11 +312,11 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertIn("/public-api/workstation/info/feed", source)
         self.assertIn("/public-api/workstation/info/briefs", source)
         self.assertIn("/public-api/coin/context", source)
-        self.assertIn("/public-api/market/watchlist", source)
+        self.assertNotIn("/public-api/market/watchlist", source)
         self.assertIn("/public-api/funds/sectors", source)
         self.assertIn("/public-api/funds/assets", source)
         self.assertIn("/public-api/info/feed", source)
-        self.assertIn("/public-api/agents/overview", source)
+        self.assertNotIn("/public-api/agents/overview", source)
         self.assertIn("/public-api/stream", source)
         self.assertIn("/public-api/health", source)
         self.assertIn("require_public_rate_limit", source)
@@ -369,8 +367,7 @@ class PublicContextContractTests(unittest.TestCase):
         metrics = PublicApiMetrics(sample_limit=20)
         route_durations = {
             "/public-api/signals/context": 799,
-            "/public-api/coin/context": 800,
-            "/public-api/agents/overview": 801,
+            "/public-api/coin/context": 801,
         }
         for path, duration in route_durations.items():
             for _ in range(20):
@@ -379,12 +376,11 @@ class PublicContextContractTests(unittest.TestCase):
         stats = metrics.stats()
 
         self.assertEqual(stats["performance_budget"]["status"], "breaching")
-        self.assertEqual(stats["performance_budget"]["observed_routes"], 3)
-        self.assertEqual(stats["performance_budget"]["breaching_routes"], ["/public-api/agents/overview"])
+        self.assertEqual(stats["performance_budget"]["observed_routes"], 2)
+        self.assertEqual(stats["performance_budget"]["breaching_routes"], ["/public-api/coin/context"])
         self.assertTrue(stats["routes"]["/public-api/signals/context"]["within_p95_budget"])
-        self.assertTrue(stats["routes"]["/public-api/coin/context"]["within_p95_budget"])
-        self.assertFalse(stats["routes"]["/public-api/agents/overview"]["within_p95_budget"])
-        self.assertEqual(stats["routes"]["/public-api/agents/overview"]["p95_budget_ms"], 800)
+        self.assertFalse(stats["routes"]["/public-api/coin/context"]["within_p95_budget"])
+        self.assertEqual(stats["routes"]["/public-api/coin/context"]["p95_budget_ms"], 800)
 
     def test_public_api_metrics_bound_unknown_route_cardinality(self) -> None:
         metrics = PublicApiMetrics(sample_limit=20, route_limit=3)
@@ -569,42 +565,8 @@ class PublicContextContractTests(unittest.TestCase):
         self.assertEqual(data["summary"]["signal_count"], 1)
         self.assertEqual(data["timeline"][0]["intelligence"]["lifecycle"]["state"], "new")
         reference = data["timeline"][0]["public_ref"]
-        self.assertEqual(data["actions"]["ai_url"], f"https://t.me/paopao_ai_bot?start=analyze_BTC_{reference}")
+        self.assertNotIn("ai_url", data["actions"])
         self.assertIn(f"signal={reference}", data["actions"]["share_url"])
-
-    def test_watchlist_market_normalizes_deduplicates_and_isolates_invalid_symbols(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = self.settings_for(tmp)
-            payload = public_watchlist_market_payload(
-                "btc,ETHUSDT,BTC,-",
-                settings=settings,
-                snapshot_loader=self.snapshot,
-                now_ts=100_000,
-            )
-
-        self.assertTrue(payload["ok"])
-        self.assertEqual([item["symbol"] for item in payload["data"]["items"]], ["BTCUSDT", "ETHUSDT"])
-        self.assertEqual(payload["data"]["invalid"], ["-"])
-
-    def test_watchlist_reuses_market_snapshot_flow_without_fabricating_missing_assets(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = self.settings_for(tmp)
-            MarketSnapshotStore(settings.market_snapshots_db_path).append_many([{
-                "symbol": "BTCUSDT", "observed_at": 100_000, "source": "flow_radar",
-                "price": 60_000, "spot_flow_usd": 2_000_000,
-                "futures_flow_usd": -1_000_000, "oi_change_pct": 3.5, "funding_pct": 0.01,
-            }])
-            payload = public_watchlist_market_payload(
-                "BTC,ETH",
-                settings=settings,
-                snapshot_loader=self.snapshot,
-                now_ts=100_000,
-            )
-
-        by_symbol = {item["symbol"]: item for item in payload["data"]["items"]}
-        self.assertEqual(by_symbol["BTCUSDT"]["flow"]["spot_net_flow_usd"], 2_000_000)
-        self.assertEqual(by_symbol["BTCUSDT"]["flow"]["futures_net_flow_usd"], -1_000_000)
-        self.assertIsNone(by_symbol["ETHUSDT"]["flow"])
 
     def test_intelligence_ranks_resonance_lifecycle_and_opportunity_boards(self) -> None:
         now = 100_000

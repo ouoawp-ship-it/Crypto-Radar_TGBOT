@@ -17,7 +17,6 @@ ALLOWED_TELEMETRY_EVENTS = {
 PUBLIC_API_P95_BUDGET_MS = {
     "/public-api/signals/context": 800,
     "/public-api/coin/context": 800,
-    "/public-api/agents/overview": 800,
 }
 
 
