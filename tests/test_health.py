@@ -122,6 +122,38 @@ class RuntimeHealthTests(unittest.TestCase):
         self.assertEqual(partial_check["status"], "warn")
         self.assertEqual(invalid_check["status"], "fail")
 
+    def test_signal_effectiveness_warns_when_due_outcomes_are_not_evaluated(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = self.make_settings(root)
+            store = JsonStore(root)
+            store.save(settings.runtime_status_path, {"status": "running"})
+            os.utime(settings.runtime_status_path, (now - 30, now - 30))
+            self.seed_databases(settings, now)
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE signal_outcomes (
+                        id INTEGER PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        due_at INTEGER NOT NULL,
+                        evaluated_at INTEGER
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO signal_outcomes(status, due_at) VALUES('pending', ?)",
+                    (now - 3_600,),
+                )
+                conn.commit()
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        effectiveness = next(item for item in checks if item["name"] == "signal_effectiveness")
+        self.assertEqual(effectiveness["status"], "warn")
+        self.assertEqual(effectiveness["metrics"]["overdue_pending"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

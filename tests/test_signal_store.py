@@ -141,6 +141,7 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(by_symbol["BTCUSDT"]["ingest_mode"], "structured")
         self.assertEqual(by_symbol["BTCUSDT"]["quality_status"], "ready")
         self.assertEqual(by_symbol["BTCUSDT"]["payload"]["facts"]["price"], 100.5)
+        self.assertTrue(by_symbol["BTCUSDT"]["payload"]["facts"]["evaluation_eligible"])
 
     def test_repair_legacy_signals_is_auditable_and_backed_up(self) -> None:
         with TemporaryDirectory() as tmp:

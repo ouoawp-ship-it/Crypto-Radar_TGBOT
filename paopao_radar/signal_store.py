@@ -17,7 +17,7 @@ from .symbol_dossier import clean_signal_text, extract_symbols_from_text, signal
 
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
-SIGNAL_STORE_SCHEMA_VERSION = 5
+SIGNAL_STORE_SCHEMA_VERSION = 6
 ACTIVE_SIGNAL_MODULES = (
     "funding",
     "flow",
@@ -29,6 +29,7 @@ ACTIVE_SIGNAL_MODULES = (
 )
 SIGNAL_STORE_REQUIRED_OBJECTS = {
     "signals": "table",
+    "signal_outcomes": "table",
     "idx_signals_ts": "index",
     "idx_signals_symbol_ts": "index",
     "idx_signals_symbol_id": "index",
@@ -36,6 +37,8 @@ SIGNAL_STORE_REQUIRED_OBJECTS = {
     "idx_signals_template_ts": "index",
     "idx_signals_public_ref": "index",
     "ux_signals_dedup_symbol": "index",
+    "idx_signal_outcomes_due": "index",
+    "idx_signal_outcomes_signal": "index",
 }
 SIGNAL_DECISION_COLUMNS = (
     "id",
@@ -137,6 +140,8 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "data_quality_status", "data_quality_score", "quality_gate",
     "primary_data_source", "oi_source_agreement_score", "oi_binance_1h",
     "predicted_funding_pct", "funding_acceleration_pct",
+    "last_price", "price_24h_pct", "primary_kind", "signal_direction",
+    "evaluation_eligible",
 })
 
 
@@ -328,6 +333,7 @@ class SignalEventStore:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA busy_timeout=15000")
             self._ensure_schema(conn)
             yield conn
@@ -392,6 +398,7 @@ class SignalEventStore:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_signals_dedup_symbol ON signals(dedup_key, symbol)"
         )
+        self._ensure_outcome_schema(conn)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS signal_store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
@@ -399,6 +406,46 @@ class SignalEventStore:
         conn.execute(
             "INSERT OR REPLACE INTO signal_store_meta(key, value) VALUES('schema_version', ?)",
             (str(SIGNAL_STORE_SCHEMA_VERSION),),
+        )
+
+    @staticmethod
+    def _ensure_outcome_schema(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                horizon TEXT NOT NULL,
+                horizon_sec INTEGER NOT NULL,
+                due_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                direction TEXT NOT NULL,
+                signal_score REAL,
+                signal_stage TEXT NOT NULL DEFAULT '',
+                signal_category TEXT NOT NULL DEFAULT '',
+                quality_gate TEXT NOT NULL DEFAULT 'unknown',
+                data_quality_score REAL,
+                entry_price REAL,
+                entry_observed_at INTEGER,
+                entry_source TEXT NOT NULL DEFAULT '',
+                exit_price REAL,
+                exit_observed_at INTEGER,
+                exit_source TEXT NOT NULL DEFAULT '',
+                raw_return_pct REAL,
+                directional_return_pct REAL,
+                is_hit INTEGER,
+                evaluated_at INTEGER,
+                error TEXT NOT NULL DEFAULT '',
+                UNIQUE(signal_id, horizon),
+                FOREIGN KEY(signal_id) REFERENCES signals(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_outcomes_due ON signal_outcomes(status, due_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal ON signal_outcomes(signal_id)"
         )
 
     @staticmethod
@@ -548,7 +595,10 @@ class SignalEventStore:
                 "reason": str(status or ""),
             }
             if structured_mode:
-                payload["facts"] = _structured_payload(record)
+                facts = _structured_payload(record)
+                if module in {"flow", "launch", "funding"}:
+                    facts["evaluation_eligible"] = True
+                payload["facts"] = facts
             quality_status = "ready" if structured_mode and normalized_symbol else "degraded"
             rows.append(
                 {

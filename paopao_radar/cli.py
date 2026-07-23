@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ from .market_cockpit import persist_flow_market_rows, persist_market_batch
 from .funding_alert import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
+from .signal_effectiveness import SignalOutcomeTracker
 from .signal_store import SignalEventStore
 from .storage import JsonStore
 from .telegram import TelegramGateway
@@ -128,8 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "signal-effectiveness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；signal-effectiveness 回填信号结果；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
@@ -276,6 +278,25 @@ def print_runtime_status(settings: Settings, store: JsonStore) -> None:
 def print_cleanup(settings: Settings, store: JsonStore, force: bool) -> None:
     result = cleanup_runtime_artifacts(settings, store, force=force)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def refresh_signal_effectiveness(
+    settings: Settings,
+    *,
+    signal_limit: int = 1_000,
+) -> dict[str, object]:
+    return SignalOutcomeTracker(
+        settings.signal_events_db_path,
+        settings.market_snapshots_db_path,
+    ).refresh(signal_limit=signal_limit)
+
+
+def print_signal_effectiveness(settings: Settings) -> None:
+    print(json.dumps(
+        refresh_signal_effectiveness(settings, signal_limit=5_000),
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 def print_doctor(settings: Settings, store: JsonStore) -> None:
@@ -444,7 +465,7 @@ def run_flow_radar(args: argparse.Namespace) -> int:
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=max(60, settings.flow_interval_sec),
         parse_mode="HTML",
-        signal_records=list(flow.get("items") or flow.get("snapshots") or []),
+        signal_records=list(flow.get("items") or []),
     )
     print(f"flow_push: {push.status} ({push.reason})")
     print(json.dumps(flow["diagnostics"], ensure_ascii=False, indent=2))
@@ -467,7 +488,7 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=max(60, settings.flow_interval_sec),
         parse_mode="HTML",
-        signal_records=list(flow.get("items") or flow.get("snapshots") or []),
+        signal_records=list(flow.get("items") or []),
     )
     print(f"flow_push: {push.status} ({push.reason})")
     return push.status, flow["diagnostics"]
@@ -861,6 +882,10 @@ def run_once(args: argparse.Namespace) -> int:
     if not getattr(args, "no_funding_alert", False):
         funding_alert_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
         diagnostics["funding_alert"] = funding_diag
+    try:
+        diagnostics["signal_effectiveness"] = refresh_signal_effectiveness(settings)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        diagnostics["signal_effectiveness"] = {"status": "failed", "error": type(exc).__name__}
 
     print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
     write_runtime_status(
@@ -1032,6 +1057,10 @@ def run_loop(args: argparse.Namespace) -> int:
                     launch_diag["market_snapshot"] = persist_market_batch(settings, source=source)
                 except Exception as exc:
                     launch_diag["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
+                try:
+                    launch_diag["signal_effectiveness"] = refresh_signal_effectiveness(settings)
+                except (OSError, sqlite3.Error, ValueError) as exc:
+                    launch_diag["signal_effectiveness"] = {"status": "failed", "error": type(exc).__name__}
                 sent_launch_alerts = []
                 for idx, message in enumerate(launch["messages"], start=1):
                     alert = launch["alerts"][idx - 1]
@@ -1109,6 +1138,10 @@ def run_trial(args: argparse.Namespace) -> int:
             market_snapshot = persist_market_batch(settings, source=source)
         except Exception as exc:
             market_snapshot = {"status": "failed", "error": type(exc).__name__}
+        try:
+            signal_effectiveness = refresh_signal_effectiveness(settings)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            signal_effectiveness = {"status": "failed", "error": type(exc).__name__}
         sent_launch_alerts = []
         launch_pushes: list[dict[str, str]] = []
         for idx, message in enumerate(launch["messages"], start=1):
@@ -1136,7 +1169,11 @@ def run_trial(args: argparse.Namespace) -> int:
                 alert["message_ids"] = push.message_ids or []
                 sent_launch_alerts.append(alert)
         engine.mark_launch_pushed(sent_launch_alerts)
-        diagnostics = {"binance": source.diagnostics(), "market_snapshot": market_snapshot}
+        diagnostics = {
+            "binance": source.diagnostics(),
+            "market_snapshot": market_snapshot,
+            "signal_effectiveness": signal_effectiveness,
+        }
         source.close()
         print(json.dumps({
             "watchlist_count": launch.get("watchlist_count", 0),
@@ -1377,6 +1414,9 @@ def main(argv: list[str] | None = None) -> int:
         report = SignalEventStore(settings.signal_events_db_path).repair_legacy_signals(apply=args.apply)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("status") == "ok" or args.apply else 1
+    if args.command == "signal-effectiveness":
+        print_signal_effectiveness(settings)
+        return 0
     if args.command == "once":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)
