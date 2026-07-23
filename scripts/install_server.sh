@@ -148,7 +148,7 @@ User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=-${ENV_FILE}
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py stable-check --json --no-save
+ExecStart=/bin/bash ${APP_DIR}/scripts/systemd_health_check.sh ${APP_DIR}
 Nice=10
 NoNewPrivileges=true
 PrivateTmp=true

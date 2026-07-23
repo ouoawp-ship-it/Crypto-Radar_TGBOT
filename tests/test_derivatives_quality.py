@@ -85,6 +85,22 @@ class DerivativesQualityTests(unittest.TestCase):
 
         self.assertEqual(result["BTCUSDT"]["funding_pct"], -0.0123)
 
+    def test_coinglass_requests_validate_provider_business_code(self) -> None:
+        settings = Settings(coinglass_enable=True, coinglass_api_key="secret")
+        http = FakeHttp({
+            "/api/futures/open-interest/exchange-list": {
+                "code": "401",
+                "msg": "Upgrade plan",
+            }
+        })
+
+        result = CoinGlassClient(settings, http).oi_snapshot("BTCUSDT", now_ts=1000)  # type: ignore[arg-type]
+
+        self.assertIsNone(result)
+        validator = http.calls[0][1].get("payload_error")
+        self.assertTrue(callable(validator))
+        self.assertEqual(validator({"code": "401", "msg": "Upgrade plan"}), "api_code_401")
+
     def test_coinalyze_maps_binance_perpetual_and_normalizes_oi(self) -> None:
         settings = Settings(
             coinalyze_enable=True,
@@ -131,6 +147,37 @@ class DerivativesQualityTests(unittest.TestCase):
         history_call = next(call for call in http.calls if call[0].endswith("/open-interest-history"))
         self.assertEqual(history_call[1]["params"]["convert_to_usd"], "true")
         self.assertEqual(history_call[1]["headers"], {"api_key": "secret"})
+
+    def test_coinalyze_supports_exact_six_hour_oi_validation_window(self) -> None:
+        settings = Settings(coinalyze_enable=True, coinalyze_api_key="secret")
+        http = FakeHttp({
+            "/future-markets": [{
+                "symbol": "BTCUSDT_PERP.A",
+                "exchange": "A",
+                "symbol_on_exchange": "BTCUSDT",
+                "base_asset": "BTC",
+                "quote_asset": "USDT",
+                "is_perpetual": True,
+                "margined": "STABLE",
+            }],
+            "/open-interest-history": [{
+                "symbol": "BTCUSDT_PERP.A",
+                "history": [
+                    {"t": 900, "c": 100},
+                    {"t": 1000, "c": 112},
+                ],
+            }],
+        })
+
+        result = CoinalyzeClient(settings, http).oi_snapshots(
+            ["BTCUSDT"],
+            timeframe="6h",
+            now_ts=1100,
+        )
+
+        self.assertEqual(result["BTCUSDT"]["change_pct"], 12.0)
+        history_call = next(call for call in http.calls if call[0].endswith("/open-interest-history"))
+        self.assertEqual(history_call[1]["params"]["interval"], "6hour")
 
     def test_coinalyze_normalizes_current_and_predicted_funding_to_percent(self) -> None:
         settings = Settings(coinalyze_enable=True, coinalyze_api_key="secret")

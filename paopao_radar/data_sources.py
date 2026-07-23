@@ -314,6 +314,7 @@ class HttpClient:
         retries: Optional[int] = None,
         cache: bool = True,
         headers: Optional[dict[str, str]] = None,
+        payload_error: Optional[Callable[[Any], str]] = None,
     ) -> Any:
         now = time.time()
         fuse_key = quality_key
@@ -349,6 +350,15 @@ class HttpClient:
                 response = self.session.get(url, params=params, headers=request_headers, timeout=timeout_sec)
                 if response.status_code == 200:
                     data = response.json()
+                    business_error = ""
+                    if payload_error is not None:
+                        try:
+                            business_error = str(payload_error(data) or "").strip()
+                        except Exception:
+                            business_error = "payload_validation_error"
+                    if business_error:
+                        last_reason = business_error
+                        break
                     with self._state_lock:
                         if use_cache:
                             self._prune_cache_locked(time.time())

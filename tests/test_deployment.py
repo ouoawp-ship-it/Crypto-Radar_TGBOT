@@ -116,7 +116,7 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("MemoryHigh=", combined)
         self.assertIn("MemoryMax=", combined)
         self.assertIn("LimitNOFILE=65536", combined)
-        self.assertIn("main.py stable-check --json --no-save", combined)
+        self.assertIn("systemd_health_check.sh", combined)
         self.assertIn("OnUnitActiveSec=5min", combined)
         self.assertNotIn("paopao-frontend", install)
         self.assertNotIn("paopao-web", install)
@@ -126,6 +126,14 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("paopao-ai", update)
         self.assertNotIn("npm ", combined)
         self.assertNotIn("proxy_pass", combined)
+
+    def test_systemd_health_wrapper_only_fails_for_blocking_or_unexpected_exit(self) -> None:
+        script = (ROOT / "scripts" / "systemd_health_check.sh").read_text(encoding="utf-8")
+
+        self.assertIn("stable-check --json --no-save", script)
+        self.assertIn("0|1)", script)
+        self.assertIn("2)", script)
+        self.assertIn('exit "$code"', script)
 
     def test_update_script_keeps_safe_fast_forward_and_validation_gates(self) -> None:
         script = (ROOT / "scripts" / "update_server.sh").read_text(encoding="utf-8")

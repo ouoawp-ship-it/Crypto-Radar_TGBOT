@@ -160,6 +160,40 @@ class MarketCapSourceTests(unittest.TestCase):
         self.assertEqual(headers["api_key"], "secret")
         self.assertNotIn("secret", str(client.diagnostics()))
 
+    def test_http_client_rejects_http_200_provider_business_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            session = Mock()
+            session.get.return_value.status_code = 200
+            session.get.return_value.json.return_value = {
+                "code": "401",
+                "msg": "Upgrade plan",
+            }
+            metrics = UpstreamSourceMetrics()
+            quality = DataQuality()
+            client = HttpClient(
+                Settings(data_dir=Path(tmp)),
+                quality,
+                session=session,
+                metrics=metrics,
+            )
+
+            result = client.get_json(
+                "https://example.test/provider",
+                quality_key="coinglass:open_interest",
+                payload_error=lambda payload: (
+                    f"api_code_{payload.get('code')}"
+                    if isinstance(payload, dict) and str(payload.get("code")) != "0"
+                    else ""
+                ),
+            )
+
+        self.assertIsNone(result)
+        source = metrics.snapshot()["sources"]["coinglass_derivatives"]
+        self.assertEqual(source["successes"], 0)
+        self.assertEqual(source["failures"], 1)
+        self.assertEqual(source["last_error"], "api_code_401")
+        self.assertEqual(quality.failures["coinglass:open_interest"], 1)
+
     def test_http_client_does_not_close_injected_session(self) -> None:
         with TemporaryDirectory() as tmp:
             session = Mock()

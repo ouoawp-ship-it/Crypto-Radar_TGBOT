@@ -23,6 +23,7 @@ COINALYZE_INTERVALS = {
     "30m": "30min",
     "1h": "1hour",
     "4h": "4hour",
+    "6h": "6hour",
     "24h": "daily",
 }
 
@@ -143,6 +144,16 @@ class CoinGlassClient:
             return None
         return payload.get("data")
 
+    @staticmethod
+    def _payload_error(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return "invalid_payload"
+        code = str(payload.get("code") or "").strip()
+        if code == "0":
+            return ""
+        safe_code = "".join(character for character in code if character.isalnum())[:32]
+        return f"api_code_{safe_code or 'unknown'}"
+
     def oi_snapshot(self, symbol: str, *, now_ts: int | None = None) -> dict[str, Any] | None:
         if not self.available:
             return None
@@ -159,6 +170,7 @@ class CoinGlassClient:
             quality_key="coinglass:open_interest",
             retries=1,
             headers=self.headers,
+            payload_error=self._payload_error,
         )
         rows = self._data(payload)
         if not isinstance(rows, list):
@@ -205,6 +217,7 @@ class CoinGlassClient:
             quality_key="coinglass:funding_rate",
             retries=1,
             headers=self.headers,
+            payload_error=self._payload_error,
         )
         rows = self._data(payload)
         if not isinstance(rows, list):
@@ -329,7 +342,15 @@ class CoinalyzeClient:
         ):
             return {}
         now = int(now_ts or time.time())
-        seconds = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "24h": 86400}[timeframe]
+        seconds = {
+            "5m": 300,
+            "15m": 900,
+            "30m": 1800,
+            "1h": 3600,
+            "4h": 14400,
+            "6h": 21600,
+            "24h": 86400,
+        }[timeframe]
         payload = self.http.get_json(
             f"{self.settings.coinalyze_base_url}/open-interest-history",
             params={
@@ -498,11 +519,13 @@ class DerivativesQualityService:
         if not symbols:
             return {}
         now = int(now_ts or time.time())
-        coinglass = {
-            symbol: snapshot
-            for symbol in symbols
-            if (snapshot := self.coinglass.oi_snapshot(symbol, now_ts=now)) is not None
-        }
+        coinglass = {}
+        if timeframe in COINGLASS_OI_CHANGE_FIELDS:
+            coinglass = {
+                symbol: snapshot
+                for symbol in symbols
+                if (snapshot := self.coinglass.oi_snapshot(symbol, now_ts=now)) is not None
+            }
         coinalyze = self.coinalyze.oi_snapshots(symbols, timeframe=timeframe, now_ts=now)
         by_symbol = {str(row.get("symbol") or "").upper(): row for row in materialized}
         result: dict[str, dict[str, Any]] = {}
@@ -522,6 +545,7 @@ class DerivativesQualityService:
                 "30m": 1800,
                 "1h": 3600,
                 "4h": 14400,
+                "6h": 21600,
                 "24h": 86400,
             }[timeframe]
             max_age = max(300, timeframe_sec * 3)
