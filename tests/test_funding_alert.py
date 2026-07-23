@@ -53,9 +53,24 @@ class FundingHttp:
         if "bybit.com" in url:
             return {"result": {"list": [{"fundingRateTimestamp": str(ms_at(16)), "fundingRate": "0.0001"}]}}
         if "current-fund-rate" in url:
-            return {"data": [{"fundingRate": self.bitget_rate, "fundingRateInterval": "1", "nextUpdate": str(ms_at(17))}]}
+            return {
+                "code": "00000",
+                "data": [{
+                    "symbol": "TESTUSDT",
+                    "fundingRate": self.bitget_rate,
+                    "fundingRateInterval": "1",
+                    "nextUpdate": str(ms_at(17)),
+                }],
+            }
         if "history-fund-rate" in url:
             return {"data": [{"fundingTime": str(ms_at(16)), "fundingRate": self.bitget_rate}]}
+        if url.endswith("/futures/usdt/contracts"):
+            return [{
+                "name": "TEST_USDT",
+                "funding_rate": "0.0001",
+                "funding_interval": 3600,
+                "funding_next_apply": int(ms_at(17) / 1000),
+            }]
         if "contracts/TEST_USDT" in url:
             return {"funding_rate": "0.0001", "funding_interval": 3600, "funding_next_apply": int(ms_at(17) / 1000)}
         if "funding_rate" in url:

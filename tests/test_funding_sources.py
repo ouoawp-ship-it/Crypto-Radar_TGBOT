@@ -24,10 +24,12 @@ def ms_at(hour: int) -> int:
 class FakeHttp:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.kwargs: list[dict[str, object]] = []
 
     def get_json(self, url: str, params=None, **_kwargs):  # type: ignore[no-untyped-def]
         params = dict(params or {})
         self.calls.append((url, params))
+        self.kwargs.append(dict(_kwargs))
         if "premiumIndex" in url:
             return {"symbol": "BTCUSDT", "lastFundingRate": "-0.0200", "nextFundingTime": ms_at(17)}
         if "fapi/v1/fundingRate" in url:
@@ -79,6 +81,13 @@ class FakeHttp:
             }
         if "history-fund-rate" in url:
             return {"data": [{"fundingTime": str(ms_at(16)), "fundingRate": "-0.004"}]}
+        if url.endswith("/futures/usdt/contracts"):
+            return [{
+                "name": "BTC_USDT",
+                "funding_rate": "-0.003",
+                "funding_interval": 3600,
+                "funding_next_apply": int(ms_at(17) / 1000),
+            }]
         if "contracts/BTC_USDT" in url:
             return {
                 "name": "BTC_USDT",
@@ -100,6 +109,7 @@ class BatchHttp:
         self.peak_active = 0
         self.calls = 0
         self.timeouts: list[float] = []
+        self.urls: list[str] = []
 
     @staticmethod
     def _exchange(url: str) -> str:
@@ -121,6 +131,7 @@ class BatchHttp:
             self.active += 1
             self.peak_active = max(self.peak_active, self.active)
             self.timeouts.append(float(kwargs.get("timeout", 0)))
+            self.urls.append(url)
         try:
             time.sleep(self.delay_sec)
             if exchange == self.fail_exchange:
@@ -135,7 +146,32 @@ class BatchHttp:
             if exchange == "BYBIT":
                 return {"result": {"list": [{"fundingRate": "0.0001", "nextFundingTime": str(ms_at(17))}]}}
             if exchange == "BITGET":
-                return {"data": [{"fundingRate": "0.0001", "nextUpdate": str(ms_at(17))}]}
+                symbols = (
+                    [str(params.get("symbol"))]
+                    if params.get("symbol")
+                    else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT"]
+                )
+                return {
+                    "code": "00000",
+                    "data": [
+                        {
+                            "symbol": symbol,
+                            "fundingRate": "0.0001",
+                            "nextUpdate": str(ms_at(17)),
+                        }
+                        for symbol in symbols
+                    ],
+                }
+            if url.endswith("/futures/usdt/contracts"):
+                return [
+                    {
+                        "name": f"{symbol}_USDT",
+                        "funding_rate": "0.0001",
+                        "funding_interval": 3600,
+                        "funding_next_apply": int(ms_at(17) / 1000),
+                    }
+                    for symbol in ("BTC", "ETH", "SOL", "DOGE")
+                ]
             return {"funding_rate": "0.0001", "funding_interval": 3600, "funding_next_apply": int(ms_at(17) / 1000)}
         finally:
             with self.lock:
@@ -223,13 +259,15 @@ class FundingSourceTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result), 4)
-        self.assertEqual(http.calls, 20)
+        self.assertEqual(http.calls, 14)
         self.assertGreater(http.peak_active, 1)
         self.assertLessEqual(http.peak_active, 6)
         self.assertGreaterEqual(client.last_batch_metrics["peak_concurrency"], http.peak_active)
         self.assertLessEqual(client.last_batch_metrics["peak_concurrency"], 6)
         self.assertEqual(client.last_batch_metrics["exchange_requests"], 20)
         self.assertEqual(client.last_batch_metrics["succeeded"], 20)
+        self.assertEqual(sum("current-fund-rate" in url for url in http.urls), 1)
+        self.assertEqual(sum(url.endswith("/futures/usdt/contracts") for url in http.urls), 1)
 
     def test_snapshot_many_caps_symbol_batch(self) -> None:
         http = BatchHttp(delay_sec=0)
@@ -244,6 +282,56 @@ class FundingSourceTests(unittest.TestCase):
 
         self.assertEqual(list(result), ["BTCUSDT", "ETHUSDT"])
         self.assertEqual(http.calls, 2)
+
+    def test_bitget_bulk_snapshot_skips_unsupported_symbol_without_per_symbol_request(self) -> None:
+        http = FakeHttp()
+        settings = Settings(
+            data_dir=Path("."),
+            launch_funding_exchanges=("BITGET",),
+        )
+        client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
+
+        result = client.snapshot_many(["BTCUSDT", "NOTLISTEDUSDT"], include_history=False)
+
+        self.assertEqual(len(result["BTCUSDT"]), 1)
+        self.assertEqual(result["NOTLISTEDUSDT"], [])
+        current_calls = [
+            (url, params)
+            for url, params in http.calls
+            if "current-fund-rate" in url
+        ]
+        self.assertEqual(len(current_calls), 1)
+        self.assertNotIn("symbol", current_calls[0][1])
+        self.assertEqual(client.last_batch_metrics["failed"], 0)
+        self.assertEqual(client.last_batch_metrics["skipped_unsupported"], 1)
+        self.assertEqual(
+            client.last_batch_metrics["skipped_unsupported_by_exchange"],
+            {"BITGET": 1},
+        )
+
+    def test_gate_bulk_snapshot_uses_official_primary_api_host(self) -> None:
+        http = FakeHttp()
+        settings = Settings(
+            data_dir=Path("."),
+            launch_funding_exchanges=("GATE",),
+        )
+        client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
+
+        result = client.snapshot_many(["BTCUSDT"], include_history=False)
+
+        self.assertEqual(len(result["BTCUSDT"]), 1)
+        self.assertTrue(any(
+            url == "https://api.gateio.ws/api/v4/futures/usdt/contracts"
+            for url, _params in http.calls
+        ))
+        gate_call_index = next(
+            index for index, (url, _params) in enumerate(http.calls)
+            if url == "https://api.gateio.ws/api/v4/futures/usdt/contracts"
+        )
+        self.assertEqual(
+            http.kwargs[gate_call_index]["headers"],
+            {"User-Agent": "paopao-radar/2.0", "Accept": "application/json"},
+        )
 
     def test_timeout_fallback_keeps_other_exchange_result(self) -> None:
         http = BatchHttp(delay_sec=0, fail_exchange="OKX")

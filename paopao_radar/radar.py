@@ -408,19 +408,47 @@ class RadarEngine:
             )
             item["divergence"] = item["oi_6h"] - item["price_window"]
 
-        combined = sorted([item for item in items if item["combined_score"] >= 25], key=lambda item: item["combined_score"], reverse=True)[:top_n]
+        quality_service: DerivativesQualityService | None = None
+        oi_validations: dict[str, dict[str, Any]] = {}
+        http = getattr(source, "http", None)
+        if http is not None:
+            quality_service = DerivativesQualityService(self.settings, http)
+            validation_candidates = sorted(
+                items,
+                key=lambda item: max(
+                    item["combined_score"],
+                    item["ambush_score"],
+                    item["momentum_score"],
+                    item["new_score"],
+                ),
+                reverse=True,
+            )
+            oi_validations = quality_service.validate_oi_rows(
+                validation_candidates,
+                timeframe="6h",
+                local_field="oi_6h",
+                now_ts=int(window.end.timestamp()),
+            )
+        for item in items:
+            self._apply_summary_oi_validation(
+                item,
+                oi_validations.get(str(item.get("symbol") or "").upper()),
+            )
+
+        oi_items = [item for item in items if self._summary_oi_allowed(item)]
+        combined = sorted([item for item in oi_items if item["combined_score"] >= 25], key=lambda item: item["combined_score"], reverse=True)[:top_n]
         ambush = sorted(
             [
-                item for item in items
+                item for item in oi_items
                 if item["ambush_score"] >= 35 and (item["sideways_days"] >= 45 or self._is_dark_flow(item))
             ],
             key=lambda item: item["ambush_score"],
             reverse=True,
         )[:top_n]
-        momentum = sorted([item for item in items if item["momentum_score"] >= 35], key=lambda item: item["momentum_score"], reverse=True)[:top_n]
-        new_pool = sorted([item for item in items if item["history_days"] < 30], key=lambda item: item["new_score"], reverse=True)[:top_n]
+        momentum = sorted([item for item in oi_items if item["momentum_score"] >= 35], key=lambda item: item["momentum_score"], reverse=True)[:top_n]
+        new_pool = sorted([item for item in oi_items if item["history_days"] < 30], key=lambda item: item["new_score"], reverse=True)[:top_n]
         divergence_raw = [
-            classified for classified in (self._classify_divergence_item(item) for item in items)
+            classified for classified in (self._classify_divergence_item(item) for item in oi_items)
             if classified is not None
         ]
         divergence, divergence_stats = self._update_divergence_states(divergence_raw)
@@ -444,12 +472,32 @@ class RadarEngine:
             if len(context_records) >= 3:
                 break
 
-        text = self._format_summary(now, negative, combined, ambush, momentum, new_pool, divergence, items, source, divergence_stats, window)
+        derivatives_quality = (
+            quality_service.summary(oi_validations)
+            if quality_service is not None
+            else {"checked": 0, "status_counts": {}, "blocked_symbols": []}
+        )
+        quality = source.diagnostics()
+        quality["derivatives_quality"] = derivatives_quality
+        text = self._format_summary(
+            now,
+            negative,
+            combined,
+            ambush,
+            momentum,
+            new_pool,
+            divergence,
+            items,
+            source,
+            divergence_stats,
+            window,
+            derivatives_quality=derivatives_quality,
+        )
         return {
             "template_id": "TG_RADAR_SUMMARY",
             "dedup_key": f"radar-summary:{window.end.strftime('%Y%m%d%H%M')}",
             "text": text,
-            "quality": source.diagnostics(),
+            "quality": quality,
             "context_records": context_records,
         }
 
@@ -512,13 +560,14 @@ class RadarEngine:
             oi_usd = 0.0
             circulating_supply = 0.0
             oi_ready = False
-            if len(oi_hist) >= 2:
-                first = to_float(oi_hist[0].get("sumOpenInterestValue"))
-                last = to_float(oi_hist[-1].get("sumOpenInterestValue"))
-                oi_6h = pct(last, first)
-                oi_usd = last
-                circulating_supply = to_float(oi_hist[-1].get("CMCCirculatingSupply"))
-                oi_ready = first > 0 and last > 0
+            oi_6h, latest_oi_row, oi_ready = self._oi_window_change(
+                oi_hist,
+                start_ms=window.start_ms,
+                end_ms=window.end_ms,
+            )
+            if latest_oi_row:
+                oi_usd = to_float(latest_oi_row.get("sumOpenInterestValue"))
+                circulating_supply = to_float(latest_oi_row.get("CMCCirculatingSupply"))
 
             hourly = source.klines(
                 symbol,
@@ -567,6 +616,34 @@ class RadarEngine:
 
         self.store.save(self.settings.funding_snapshot_path, current_funding)
         return result
+
+    @staticmethod
+    def _oi_window_change(
+        rows: list[dict[str, Any]],
+        *,
+        start_ms: int,
+        end_ms: int,
+    ) -> tuple[float, dict[str, Any], bool]:
+        points = [
+            row for row in rows
+            if isinstance(row, dict)
+            and 0 < int(to_float(row.get("timestamp"))) <= end_ms
+            and to_float(row.get("sumOpenInterestValue")) > 0
+        ]
+        if len(points) < 2:
+            return 0.0, {}, False
+        baseline = min(
+            points,
+            key=lambda row: abs(int(to_float(row.get("timestamp"))) - start_ms),
+        )
+        latest = max(points, key=lambda row: int(to_float(row.get("timestamp"))))
+        baseline_time = int(to_float(baseline.get("timestamp")))
+        latest_time = int(to_float(latest.get("timestamp")))
+        first = to_float(baseline.get("sumOpenInterestValue"))
+        last = to_float(latest.get("sumOpenInterestValue"))
+        if baseline_time >= latest_time or first <= 0 or last <= 0:
+            return 0.0, latest, False
+        return pct(last, first), latest, True
 
     def build_announcement_alerts(self, source: BinanceDataSource, include_seen: bool = False) -> dict[str, Any]:
         articles = source.announcements(page_size=self.settings.announcement_page_size)
@@ -996,7 +1073,13 @@ class RadarEngine:
         source: BinanceDataSource,
         divergence_stats: dict[str, int],
         window: ClosedWindow,
+        derivatives_quality: dict[str, Any] | None = None,
     ) -> str:
+        derivatives_quality = derivatives_quality or {
+            "checked": 0,
+            "status_counts": {},
+            "blocked_symbols": [],
+        }
         lines = [
             "🏦 <b>资金雷达摘要</b>",
             f"⏰ {now}",
@@ -1008,6 +1091,10 @@ class RadarEngine:
             f"OI请求: {source.budget.used.get('open_interest_hist', 0)} / {source.budget.limits.get('open_interest_hist', 0)}",
             f"K线请求: {source.budget.used.get('klines', 0)} / {source.budget.limits.get('klines', 0)}",
             f"接口异常: {sum(source.quality.failures.values())}",
+            (
+                f"6h OI校验: {derivatives_quality.get('checked', 0)} | "
+                f"冲突阻止: {len(derivatives_quality.get('blocked_symbols', []))}"
+            ),
             (
                 f"背离状态  : 首次{divergence_stats.get('first', 0)} | "
                 f"持续{divergence_stats.get('continued', 0)} | "
@@ -1033,6 +1120,7 @@ class RadarEngine:
             "暗流 = OI增加但价格没动",
             "窗口 = 本次统计窗口内的完整收线数据",
             "背离 = OI窗口变化% - 价格窗口变化%",
+            "OI校验 = 高/中为通过，低/单源/未校为降级；方向冲突会阻止入榜",
             "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
         ])
         return "\n".join(lines)
@@ -1061,7 +1149,7 @@ class RadarEngine:
                 f"费率 {pct_cell(item['funding_pct'], 7, 2)} | "
                 f"市值 {fmt_money(item['mcap']).rjust(7)} | "
                 f"横盘 {str(item['sideways_days']).rjust(3)}天 | "
-                f"OI {pct_cell(item['oi_6h'])} | "
+                f"OI {pct_cell(item['oi_6h'])}·{self._summary_oi_quality_badge(item)} | "
                 f"{fmt_price(item['price']).rjust(10)}"
             )
             append_metric_row(lines, item, metrics)
@@ -1076,7 +1164,7 @@ class RadarEngine:
             metrics = (
                 f"{score_cell(item['ambush_score'])} | "
                 f"市值 {fmt_money(item['mcap']).rjust(7)} | "
-                f"OI {pct_cell(item['oi_6h'])} | "
+                f"OI {pct_cell(item['oi_6h'])}·{self._summary_oi_quality_badge(item)} | "
                 f"横盘 {str(item['sideways_days']).rjust(3)}天 | "
                 f"费率 {pct_cell(item['funding_pct'], 7, 2)} | "
                 f"{tag}"
@@ -1091,7 +1179,7 @@ class RadarEngine:
         for item in items:
             metrics = (
                 f"{score_cell(item['momentum_score'])} | "
-                f"OI {pct_cell(item['oi_6h'])} | "
+                f"OI {pct_cell(item['oi_6h'])}·{self._summary_oi_quality_badge(item)} | "
                 f"窗口 {pct_cell(item['price_window'])} | "
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)} | "
                 f"历史 {str(item['history_days']).rjust(3)}天"
@@ -1107,7 +1195,7 @@ class RadarEngine:
             metrics = (
                 f"{score_cell(item['new_score'])} | "
                 f"历史 {str(item['history_days']).rjust(3)}天 | "
-                f"OI {pct_cell(item['oi_6h'])} | "
+                f"OI {pct_cell(item['oi_6h'])}·{self._summary_oi_quality_badge(item)} | "
                 f"窗口 {pct_cell(item['price_window'])} | "
                 f"Vol {fmt_money(item['quote_volume']).rjust(7)}"
             )
@@ -1120,7 +1208,7 @@ class RadarEngine:
         lines.append(tg_quote("⚖️ 背离雷达（背离=OI窗口变化% - 价格窗口变化%）"))
         for item in items:
             metrics = (
-                f"OI {pct_cell(item['oi_6h'])} | "
+                f"OI {pct_cell(item['oi_6h'])}·{self._summary_oi_quality_badge(item)} | "
                 f"价格 {pct_cell(item['price_window'])} | "
                 f"背离 {item['divergence']:+6.1f} | "
                 f"{item['level']} | {item['status_text']}"
@@ -1182,6 +1270,43 @@ class RadarEngine:
     @staticmethod
     def _is_dark_flow(item: dict[str, Any]) -> bool:
         return item.get("oi_6h", 0) > 2 and abs(item.get("price_window", item.get("price_24h", 0))) < 5
+
+    @staticmethod
+    def _apply_summary_oi_validation(
+        item: dict[str, Any],
+        validation: dict[str, Any] | None,
+    ) -> None:
+        if validation is None:
+            item.update({
+                "data_quality_status": "not_checked_budget",
+                "data_quality_score": 0,
+                "quality_gate": "degraded",
+                "primary_data_source": "binance",
+            })
+            return
+        item["oi_validation"] = validation
+        item["data_quality_status"] = validation.get("status", "missing")
+        item["data_quality_score"] = validation.get("score", 0)
+        item["oi_source_agreement_score"] = validation.get("score", 0)
+        item["quality_gate"] = validation.get("gate", "degraded")
+        item["primary_data_source"] = validation.get("primary_source", "binance")
+
+    @staticmethod
+    def _summary_oi_allowed(item: dict[str, Any]) -> bool:
+        return item.get("quality_gate") != "block"
+
+    @staticmethod
+    def _summary_oi_quality_badge(item: dict[str, Any]) -> str:
+        return {
+            "high": "高",
+            "medium": "中",
+            "low": "低",
+            "conflict": "冲突",
+            "single_source": "单源",
+            "not_configured": "未配",
+            "missing": "缺失",
+            "not_checked_budget": "未校",
+        }.get(str(item.get("data_quality_status") or ""), "未校")
 
     def _classify_divergence_item(self, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         oi = item["oi_6h"]

@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from threading import local
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 from .config import Settings
 from .data_sources import HttpClient
@@ -12,6 +12,10 @@ from .data_sources import HttpClient
 
 CST = timezone(timedelta(hours=8))
 DEFAULT_FUNDING_EXCHANGES = ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")
+GATE_HTTP_HEADERS = {
+    "User-Agent": "paopao-radar/2.0",
+    "Accept": "application/json",
+}
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
@@ -156,6 +160,8 @@ class MultiExchangeFundingClient:
         self.http = http
         self.last_batch_metrics: dict[str, Any] = {}
         self._request_context = local()
+        self._bulk_current: dict[str, dict[str, dict[str, Any]]] = {}
+        self._bulk_ready: set[str] = set()
 
     def snapshot(self, symbol: str, include_history: bool = True) -> list[dict[str, Any]]:
         normalized = str(symbol or "").upper().strip()
@@ -203,6 +209,13 @@ class MultiExchangeFundingClient:
             self.last_batch_metrics = self._batch_metrics(0, 0, 0, 0.0, 0.0, {}, {})
             return {symbol: [] for symbol in normalized_symbols}
 
+        bulk_exchanges = [exchange for exchange in exchanges if exchange in {"BITGET", "GATE"}]
+        if bulk_exchanges:
+            await asyncio.gather(*(
+                asyncio.to_thread(self._load_bulk_current, exchange)
+                for exchange in bulk_exchanges
+            ))
+
         rows_by_symbol: dict[str, dict[str, dict[str, Any]]] = {
             symbol: {} for symbol in normalized_symbols
         }
@@ -218,6 +231,7 @@ class MultiExchangeFundingClient:
         duration_total = 0.0
         succeeded: dict[str, int] = {}
         failed: dict[str, int] = {}
+        skipped_unsupported: dict[str, int] = {}
 
         async def worker() -> None:
             nonlocal active, peak_active, duration_total
@@ -226,6 +240,12 @@ class MultiExchangeFundingClient:
                     symbol, exchange = next(jobs)
                 except StopIteration:
                     return
+                if (
+                    exchange in self._bulk_ready
+                    and exchange_symbol(symbol, exchange) not in self._bulk_current.get(exchange, {})
+                ):
+                    skipped_unsupported[exchange] = skipped_unsupported.get(exchange, 0) + 1
+                    continue
                 request_started = perf_counter()
                 active += 1
                 peak_active = max(peak_active, active)
@@ -262,6 +282,17 @@ class MultiExchangeFundingClient:
             failed,
             peak_concurrency=peak_active,
         )
+        skipped_count = sum(skipped_unsupported.values())
+        self.last_batch_metrics.update({
+            "attempted": success_count + failure_count,
+            "skipped_unsupported": skipped_count,
+            "skipped_unsupported_by_exchange": dict(skipped_unsupported),
+            "coverage_rate": (
+                round(success_count / total_jobs, 4)
+                if total_jobs
+                else 0.0
+            ),
+        })
         return {
             symbol: [
                 rows_by_symbol[symbol][exchange]
@@ -297,15 +328,17 @@ class MultiExchangeFundingClient:
         failures_by_exchange: dict[str, int],
         peak_concurrency: int = 0,
     ) -> dict[str, Any]:
+        attempted = succeeded + failed
         return {
             "symbols": requests // max(1, len(self._enabled_exchanges())),
             "exchange_requests": requests,
+            "attempted": attempted,
             "succeeded": succeeded,
             "failed": failed,
-            "success_rate": round(succeeded / requests, 4) if requests else 0.0,
-            "failure_rate": round(failed / requests, 4) if requests else 0.0,
+            "success_rate": round(succeeded / attempted, 4) if attempted else 0.0,
+            "failure_rate": round(failed / attempted, 4) if attempted else 0.0,
             "elapsed_sec": round(elapsed, 4),
-            "average_response_ms": round(duration_total * 1000 / requests, 3) if requests else 0.0,
+            "average_response_ms": round(duration_total * 1000 / attempted, 3) if attempted else 0.0,
             "concurrency": self._scan_concurrency(),
             "peak_concurrency": peak_concurrency,
             "request_timeout_sec": self._request_timeout(),
@@ -348,7 +381,16 @@ class MultiExchangeFundingClient:
             else:
                 self._request_context.deadline = previous_deadline
 
-    def _get_json(self, exchange: str, url: str, params: dict[str, Any], cache_key: str) -> Any:
+    def _get_json(
+        self,
+        exchange: str,
+        url: str,
+        params: dict[str, Any],
+        cache_key: str,
+        *,
+        payload_error: Callable[[Any], str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
         timeout = self._remaining_request_timeout()
         if timeout <= 0:
             return None
@@ -359,7 +401,57 @@ class MultiExchangeFundingClient:
             quality_key=f"funding:{exchange}",
             retries=1,
             timeout=timeout,
+            payload_error=payload_error,
+            headers=headers,
         )
+
+    @staticmethod
+    def _bitget_payload_error(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return "invalid_payload"
+        code = str(payload.get("code") or "").strip()
+        if code == "00000":
+            return ""
+        safe_code = "".join(character for character in code if character.isalnum())[:32]
+        return f"api_code_{safe_code or 'unknown'}"
+
+    def _load_bulk_current(self, exchange: str) -> dict[str, dict[str, Any]]:
+        if exchange in self._bulk_current:
+            return self._bulk_current[exchange]
+
+        rows: Any = None
+        if exchange == "BITGET":
+            rows = self._get_json(
+                "Bitget",
+                "https://api.bitget.com/api/v3/market/current-fund-rate",
+                {"category": "USDT-FUTURES"},
+                "funding:bitget:current:all",
+                payload_error=self._bitget_payload_error,
+            )
+            rows = rows.get("data", []) if isinstance(rows, dict) else []
+            key = "symbol"
+        elif exchange == "GATE":
+            rows = self._get_json(
+                "Gate",
+                "https://api.gateio.ws/api/v4/futures/usdt/contracts",
+                {},
+                "funding:gate:current:all",
+                headers=GATE_HTTP_HEADERS,
+            )
+            key = "name"
+        else:
+            return {}
+
+        loaded = isinstance(rows, list)
+        result = {
+            str(item.get(key) or "").upper(): item
+            for item in rows
+            if isinstance(item, dict) and str(item.get(key) or "").strip()
+        } if loaded else {}
+        self._bulk_current[exchange] = result
+        if loaded:
+            self._bulk_ready.add(exchange)
+        return result
 
     def _request_timeout(self) -> float:
         configured = float(getattr(self.settings, "funding_request_timeout_sec", 8) or 8)
@@ -520,13 +612,7 @@ class MultiExchangeFundingClient:
 
     def _bitget_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "BITGET")
-        current = self._get_json(
-            "Bitget",
-            "https://api.bitget.com/api/v2/mix/market/current-fund-rate",
-            {"symbol": display_symbol, "productType": "usdt-futures"},
-            f"funding:bitget:current:{display_symbol}",
-        )
-        item = self._first_data_item(current)
+        item = self._load_bulk_current("BITGET").get(display_symbol, {})
         if not item:
             return {}
         history = self._bitget_history(display_symbol) if include_history else []
@@ -556,12 +642,7 @@ class MultiExchangeFundingClient:
 
     def _gate_snapshot(self, symbol: str, include_history: bool = True) -> dict[str, Any]:
         display_symbol = exchange_symbol(symbol, "GATE")
-        current = self._get_json(
-            "Gate",
-            f"https://fx-api.gateio.ws/api/v4/futures/usdt/contracts/{display_symbol}",
-            {},
-            f"funding:gate:current:{display_symbol}",
-        )
+        current = self._load_bulk_current("GATE").get(display_symbol, {})
         if not isinstance(current, dict) or not current:
             return {}
         history = self._gate_history(display_symbol) if include_history else []
@@ -578,9 +659,10 @@ class MultiExchangeFundingClient:
         limit = max(3, int(self.settings.launch_funding_history_limit))
         data = self._get_json(
             "Gate",
-            "https://fx-api.gateio.ws/api/v4/futures/usdt/funding_rate",
+            "https://api.gateio.ws/api/v4/futures/usdt/funding_rate",
             {"contract": display_symbol, "limit": limit},
             f"funding:gate:history:{display_symbol}:{limit}",
+            headers=GATE_HTTP_HEADERS,
         )
         return [
             {"time_ms": to_int(item.get("t")) * 1000, "rate_pct": to_float(item.get("r")) * 100}

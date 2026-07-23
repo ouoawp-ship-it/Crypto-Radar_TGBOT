@@ -352,6 +352,40 @@ class RadarScoringTests(unittest.TestCase):
         self.assertEqual(item["quality_gate"], "block")
         self.assertIn("已阻止启动推送", item["reasons"][0])
 
+    def test_summary_oi_conflict_is_marked_and_blocked_from_oi_rankings(self) -> None:
+        item = {"symbol": "BTCUSDT", "oi_6h": 8.0}
+
+        RadarEngine._apply_summary_oi_validation(item, {
+            "status": "conflict",
+            "score": 10,
+            "gate": "block",
+            "primary_source": "binance",
+        })
+
+        self.assertEqual(item["data_quality_status"], "conflict")
+        self.assertEqual(item["quality_gate"], "block")
+        self.assertFalse(RadarEngine._summary_oi_allowed(item))
+        self.assertEqual(RadarEngine._summary_oi_quality_badge(item), "冲突")
+
+    def test_summary_oi_change_uses_window_start_not_prefetch_baseline(self) -> None:
+        start_ms = 1_000_000
+        end_ms = start_ms + 6 * 3_600_000
+        rows = [
+            {"timestamp": start_ms - 3_600_000, "sumOpenInterestValue": "100"},
+            {"timestamp": start_ms, "sumOpenInterestValue": "110"},
+            {"timestamp": end_ms, "sumOpenInterestValue": "132"},
+        ]
+
+        change, latest, ready = RadarEngine._oi_window_change(
+            rows,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
+        self.assertTrue(ready)
+        self.assertEqual(latest["sumOpenInterestValue"], "132")
+        self.assertAlmostEqual(change, 20.0)
+
     def test_launch_alert_formats_multi_exchange_funding(self) -> None:
         with TemporaryDirectory() as tmp:
             engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
