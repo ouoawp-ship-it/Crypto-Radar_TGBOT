@@ -271,6 +271,26 @@ def _flow_from_row(row: sqlite3.Row) -> ClassifiedFlow:
     )
 
 
+def _transfer_from_row(row: sqlite3.Row) -> NormalizedTransfer:
+    return NormalizedTransfer(
+        event_id=str(row["event_id"]),
+        chain_id=int(row["chain_id"]),
+        chain_name=str(row["chain_name"]),
+        block_number=int(row["block_number"]),
+        block_hash=str(row["block_hash"]),
+        block_time=int(row["block_time"]),
+        tx_hash=str(row["tx_hash"]),
+        log_index=int(row["log_index"]),
+        token_address=str(row["token_address"]),
+        from_address=str(row["from_address"]),
+        to_address=str(row["to_address"]),
+        amount_raw=int(row["amount_raw"]),
+        removed=bool(row["removed"]),
+        confirmation_status=str(row["confirmation_status"]),
+        source=str(row["source"]),
+    )
+
+
 class OnchainStore:
     def __init__(self, settings: OnchainSettings):
         settings.assert_safe_paths()
@@ -625,6 +645,34 @@ class OnchainStore:
             )
             for row in rows
         ]
+
+    def durable_evaluation_boundary(
+        self, chain_id: int
+    ) -> ProcessedBlock | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT p.chain_id, p.block_number, p.block_hash,
+                       p.block_time, p.status, p.processed_at
+                FROM chain_cursors c
+                JOIN processed_blocks p
+                  ON p.chain_id=c.chain_id
+                 AND p.block_number=c.last_finalized_block
+                WHERE c.chain_id=?
+                  AND p.status='finalized'
+                """,
+                (chain_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProcessedBlock(
+            chain_id=int(row["chain_id"]),
+            block_number=int(row["block_number"]),
+            block_hash=str(row["block_hash"]),
+            block_time=int(row["block_time"]),
+            status=str(row["status"]),
+            processed_at=int(row["processed_at"]),
+        )
 
     def commit_finalized_range(
         self,
@@ -1067,15 +1115,59 @@ class OnchainStore:
                   AND f.status='active'
                   AND t.removed=0
                   AND t.confirmation_status='finalized'
+                  AND f.amount IS NOT NULL
                   AND (
                       d.event_id IS NULL
                       OR d.decision_status='pending_price'
+                      OR d.decision_status='pending_metadata'
                   )
                 ORDER BY f.block_time, f.event_id
                 """,
                 (chain_id,),
             ).fetchall()
         return [_flow_from_row(row) for row in rows]
+
+    def pending_metadata_flows(
+        self, chain_id: int
+    ) -> list[ClassifiedFlow]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT f.*
+                FROM flow_events f
+                JOIN transfer_events t ON t.event_id=f.event_id
+                LEFT JOIN single_event_decisions d ON d.event_id=f.event_id
+                WHERE f.chain_id=?
+                  AND f.flow_type IN ('inflow', 'outflow')
+                  AND f.status='active'
+                  AND f.amount IS NULL
+                  AND t.removed=0
+                  AND t.confirmation_status='finalized'
+                  AND (
+                      d.event_id IS NULL
+                      OR d.decision_status='pending_metadata'
+                  )
+                ORDER BY f.block_time, f.event_id
+                """,
+                (chain_id,),
+            ).fetchall()
+        return [_flow_from_row(row) for row in rows]
+
+    def finalized_transfer(
+        self, event_id: str
+    ) -> NormalizedTransfer | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM transfer_events
+                WHERE event_id=?
+                  AND removed=0
+                  AND confirmation_status='finalized'
+                """,
+                (event_id,),
+            ).fetchone()
+        return _transfer_from_row(row) if row is not None else None
 
     def update_flow_valuation(self, flow: ClassifiedFlow) -> None:
         with closing(self._connect()) as conn, conn:
@@ -1222,7 +1314,7 @@ class OnchainStore:
         status: str,
         sent: bool,
         reason: str,
-        created_at: int,
+        attempted_at: int,
     ) -> None:
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -1254,9 +1346,9 @@ class OnchainStore:
                     status,
                     int(sent),
                     reason,
-                    created_at,
+                    attempted_at,
                     notification_key,
-                    created_at,
+                    attempted_at,
                 ),
             )
 

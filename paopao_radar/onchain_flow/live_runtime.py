@@ -170,6 +170,15 @@ class BaseOnchainRuntime:
             }
         )
         self._reconcile_reorg(store, client)
+        attempted_deliveries: set[str] = set()
+        self._drain_durable_evaluation(
+            store,
+            client,
+            registry,
+            send=send,
+            confirm_real_send=confirm_real_send,
+            attempted_deliveries=attempted_deliveries,
+        )
         cursor = store.cursor(BASE_CHAIN_ID)
         if cursor is None:
             start = max(
@@ -193,6 +202,14 @@ class BaseOnchainRuntime:
                     end_block=range_end,
                     last_seen_head=head,
                 )
+                self._drain_durable_evaluation(
+                    store,
+                    client,
+                    registry,
+                    send=send,
+                    confirm_real_send=confirm_real_send,
+                    attempted_deliveries=attempted_deliveries,
+                )
                 range_start = range_end + 1
         cursor = store.cursor(BASE_CHAIN_ID)
         if cursor is None:
@@ -206,12 +223,13 @@ class BaseOnchainRuntime:
         cursor = store.cursor(BASE_CHAIN_ID)
         if cursor is None:
             raise RuntimeError("finalized cursor disappeared")
-        self._evaluate_and_notify(
+        self._drain_durable_evaluation(
             store,
             client,
-            target,
+            registry,
             send=send,
             confirm_real_send=confirm_real_send,
+            attempted_deliveries=attempted_deliveries,
         )
         now = int(self.clock())
         self.metrics.update(
@@ -419,22 +437,23 @@ class BaseOnchainRuntime:
             "no common ancestor within configured reorg lookback"
         )
 
-    def _evaluate_and_notify(
+    def _drain_durable_evaluation(
         self,
         store: OnchainStore,
         client: JsonRpcClient,
-        target_block: int,
+        registry: LabelRegistry,
         *,
         send: bool,
         confirm_real_send: bool,
+        attempted_deliveries: set[str] | None = None,
     ) -> None:
-        target = client.get_block(target_block)
-        target_time = parse_hex_quantity(
-            target.get("timestamp"), "target block timestamp"
-        )
+        boundary = store.durable_evaluation_boundary(BASE_CHAIN_ID)
+        if boundary is None:
+            return
+        target_block = boundary.block_number
+        target_time = boundary.block_time
         bucket = self.settings.rolling_evaluation_bucket_sec
         evaluation_time = target_time - (target_time % bucket)
-        metadata = store.metadata_map()
         provider = (
             self._price_provider
             if self._price_provider is not None
@@ -446,6 +465,12 @@ class BaseOnchainRuntime:
             provider,
             clock=self.clock,
         )
+        self._repair_pending_metadata(
+            store,
+            client,
+            registry,
+        )
+        metadata = store.metadata_map()
         single_alerts = self._evaluate_pending_single_events(
             store,
             price_service,
@@ -505,10 +530,62 @@ class BaseOnchainRuntime:
             store,
             send=send,
             confirm_real_send=confirm_real_send,
+            attempted_deliveries=attempted_deliveries,
         )
         self.metrics["alerts_generated"] = int(
             self.metrics["alerts_generated"]
         ) + len(single_alerts) + len(rolling_alerts)
+
+    def _repair_pending_metadata(
+        self,
+        store: OnchainStore,
+        client: JsonRpcClient,
+        registry: LabelRegistry,
+    ) -> None:
+        pending = store.pending_metadata_flows(BASE_CHAIN_ID)
+        if not pending:
+            return
+        now = int(self.clock())
+        resolver = TokenMetadataResolver(client, store, clock=self.clock)
+        for flow in pending:
+            transfer = store.finalized_transfer(flow.event_id)
+            if transfer is None:
+                continue
+            token = resolver.resolve(flow.chain_id, flow.token_address)
+            if token.metadata_status in {"rpc_failed", "incomplete"}:
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="pending_metadata",
+                    attempted_at=now,
+                    decision_reason=(
+                        f"metadata_{token.metadata_status}"
+                    ),
+                )
+                continue
+            if token.metadata_status not in {
+                "verified",
+                "verified_erc20",
+            }:
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="suppressed",
+                    attempted_at=now,
+                    decision_reason=(
+                        f"metadata_{token.metadata_status}"
+                    ),
+                )
+                continue
+            repaired = classify_transfer(transfer, token, registry)
+            store.update_flow_valuation(repaired)
+            if repaired.flow_type not in {"inflow", "outflow"}:
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="suppressed",
+                    attempted_at=now,
+                    decision_reason=(
+                        f"classification_{repaired.flow_type}"
+                    ),
+                )
 
     def _evaluate_pending_single_events(
         self,
@@ -607,9 +684,17 @@ class BaseOnchainRuntime:
         *,
         send: bool,
         confirm_real_send: bool,
+        attempted_deliveries: set[str] | None = None,
     ) -> None:
         notifier = OnchainNotifier(self.settings, store)
         for alert in store.pending_delivery_alerts():
+            if (
+                attempted_deliveries is not None
+                and alert.alert_key in attempted_deliveries
+            ):
+                continue
+            if attempted_deliveries is not None:
+                attempted_deliveries.add(alert.alert_key)
             now = int(self.clock())
             if store.delivery_in_cooldown(
                 alert.notification_key or alert.alert_key,
@@ -622,17 +707,28 @@ class BaseOnchainRuntime:
                     status="cooldown_suppressed",
                     sent=False,
                     reason="onchain_notification_cooldown",
-                    created_at=now,
+                    attempted_at=now,
                 )
                 continue
-            result = notifier.notify(
-                alert,
-                send=send,
-                confirm_real_send=confirm_real_send,
-            )
+            try:
+                result = notifier.notify(
+                    alert,
+                    send=send,
+                    confirm_real_send=confirm_real_send,
+                    attempted_at=now,
+                )
+            except Exception:
+                self.metrics["telegram_delivery_failure_count"] = int(
+                    self.metrics["telegram_delivery_failure_count"]
+                ) + 1
+                continue
             if result.status == "dry_run":
                 self.metrics["telegram_dry_run_count"] = int(
                     self.metrics["telegram_dry_run_count"]
+                ) + 1
+            elif result.status == "failed":
+                self.metrics["telegram_delivery_failure_count"] = int(
+                    self.metrics["telegram_delivery_failure_count"]
                 ) + 1
 
     def run_live(

@@ -8,6 +8,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.onchain_flow.db import OnchainStore
 from paopao_radar.onchain_flow.live_runtime import BaseOnchainRuntime
@@ -20,6 +21,7 @@ from paopao_radar.onchain_flow.runtime import (
     isolated_replay_settings,
     replay_fixture,
 )
+from paopao_radar.telegram import PushResult
 
 from .support import FIXTURE_PATH, make_settings
 
@@ -222,6 +224,143 @@ class NotificationLifecycleTests(unittest.TestCase):
         self.assertEqual(statuses["fact-2"], "cooldown_suppressed")
         self.assertEqual(statuses["fact-3"], "dry_run")
         self.assertEqual(statuses["fact-4"], "dry_run")
+
+    def test_cooldown_uses_successful_retry_attempt_time(self) -> None:
+        with TemporaryDirectory() as tmp:
+            now = [1000]
+            settings = make_settings(Path(tmp))
+            store = OnchainStore(settings)
+            store.migrate()
+            runtime = BaseOnchainRuntime(
+                settings, clock=lambda: now[0]
+            )
+            notification_key = (
+                f"8453:{TOKEN}:inflow:3600:continuous_flow:medium"
+            )
+            store.persist_alert_for_delivery(
+                alert("fact-1", notification_key), created_at=1000
+            )
+            with patch(
+                "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
+                side_effect=RuntimeError("first attempt failed"),
+            ):
+                runtime._deliver_pending(
+                    store, send=False, confirm_real_send=False
+                )
+            now[0] = 5000
+            with patch(
+                "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
+                return_value=PushResult("dry_run", "acceptance"),
+            ):
+                runtime._deliver_pending(
+                    store, send=False, confirm_real_send=False
+                )
+            now[0] = 5001
+            store.persist_alert_for_delivery(
+                alert(
+                    "fact-2",
+                    notification_key,
+                    created_at=5001,
+                ),
+                created_at=5001,
+            )
+            runtime._deliver_pending(
+                store, send=False, confirm_real_send=False
+            )
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                fact_time = conn.execute(
+                    "SELECT created_at FROM alerts WHERE alert_key='fact-1'"
+                ).fetchone()[0]
+                first_delivery = conn.execute(
+                    """
+                    SELECT created_at, updated_at, attempt_count, status
+                    FROM alert_deliveries WHERE alert_key='fact-1'
+                    """
+                ).fetchone()
+                second_status = conn.execute(
+                    """
+                    SELECT status FROM alert_deliveries
+                    WHERE alert_key='fact-2'
+                    """
+                ).fetchone()[0]
+        self.assertEqual(fact_time, 1000)
+        self.assertEqual(first_delivery, (1000, 5000, 2, "dry_run"))
+        self.assertEqual(second_status, "cooldown_suppressed")
+
+    def test_one_failed_delivery_does_not_abort_queue_or_cursor(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(Path(tmp))
+            store = OnchainStore(settings)
+            store.migrate()
+            store.commit_finalized_range(
+                blocks=[
+                    ProcessedBlock(
+                        8453,
+                        10,
+                        "0x" + ("10" * 32),
+                        1000,
+                        processed_at=1000,
+                    )
+                ],
+                transfers=[],
+                flows=[],
+                last_seen_head=10,
+                provider_status="ok",
+                updated_at=1000,
+            )
+            store.persist_alert_for_delivery(
+                alert("fact-a", "notification-a"),
+                created_at=1000,
+            )
+            store.persist_alert_for_delivery(
+                alert("fact-b", "notification-b"),
+                created_at=1000,
+            )
+            runtime = BaseOnchainRuntime(
+                settings, clock=lambda: 1001
+            )
+
+            def fail_a_only(_text, _template, dedup_key, **_kwargs):
+                if dedup_key == "fact-a":
+                    raise RuntimeError("alert A failed")
+                return PushResult("dry_run", "acceptance")
+
+            with patch(
+                "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
+                side_effect=fail_a_only,
+            ):
+                runtime._deliver_pending(
+                    store, send=False, confirm_real_send=False
+                )
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                statuses = dict(
+                    conn.execute(
+                        "SELECT alert_key, status FROM alert_deliveries"
+                    ).fetchall()
+                )
+            self.assertEqual(statuses["fact-a"], "failed")
+            self.assertEqual(statuses["fact-b"], "dry_run")
+            self.assertEqual(
+                store.cursor(8453).last_finalized_block, 10
+            )
+            self.assertEqual(
+                runtime.metrics["telegram_delivery_failure_count"], 1
+            )
+            with patch(
+                "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
+                return_value=PushResult("dry_run", "retry"),
+            ):
+                runtime._deliver_pending(
+                    store, send=False, confirm_real_send=False
+                )
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                retried = conn.execute(
+                    """
+                    SELECT status, attempt_count FROM alert_deliveries
+                    WHERE alert_key='fact-a'
+                    """
+                ).fetchone()
+        self.assertEqual(retried, ("dry_run", 2))
 
 
 class MigrationRecoveryTests(unittest.TestCase):

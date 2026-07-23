@@ -27,6 +27,7 @@ DEFAULT_RUNTIME_STATUS: dict[str, object] = {
     "unpriced_count": 0,
     "alerts_generated": 0,
     "telegram_dry_run_count": 0,
+    "telegram_delivery_failure_count": 0,
 }
 
 

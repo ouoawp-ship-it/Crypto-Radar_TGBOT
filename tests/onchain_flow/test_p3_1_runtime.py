@@ -16,6 +16,7 @@ from paopao_radar.onchain_flow.cli import main
 from paopao_radar.onchain_flow.collectors.evm_http import (
     AdaptiveRangeError,
     FinalizedRangeConsistencyError,
+    RpcTransportError,
     pad_topic_address,
 )
 from paopao_radar.onchain_flow.collectors.evm_ws import WssError
@@ -82,6 +83,7 @@ class FakeRpc:
         self.head = head
         self.hash_variants = {}
         self.error_count = 0
+        self.timestamp_base = 1_700_000_000
 
     def chain_id(self):
         return 8453
@@ -93,7 +95,7 @@ class FakeRpc:
         return {
             "number": hex(number),
             "hash": block_hash(number, self.hash_variants.get(number, 0)),
-            "timestamp": hex(1_700_000_000 + number),
+            "timestamp": hex(self.timestamp_base + number),
         }
 
     def get_code(self, _address):
@@ -106,6 +108,20 @@ class FakeRpc:
             SYMBOL_SELECTOR: abi_string("ABC"),
             NAME_SELECTOR: abi_string("ABC Token"),
         }[selector]
+
+
+class RecoveringMetadataRpc(FakeRpc):
+    def __init__(self, head=2, *, failures=1):
+        super().__init__(head=head)
+        self.metadata_failures = failures
+        self.get_code_calls = 0
+
+    def get_code(self, address):
+        self.get_code_calls += 1
+        if self.metadata_failures:
+            self.metadata_failures -= 1
+            raise RpcTransportError("metadata transport failed")
+        return super().get_code(address)
 
 
 class FakeCollector:
@@ -149,7 +165,7 @@ def live_settings(root: Path):
     )
 
 
-def static_prices():
+def static_prices(observed_at=1_700_000_002):
     return StaticPriceProvider(
         {
             (8453, TOKEN): PriceQuote(
@@ -158,7 +174,7 @@ def static_prices():
                 price_usd=Decimal("2"),
                 volume_24h_usd=Decimal("1000000"),
                 source="static",
-                observed_at=1_700_000_002,
+                observed_at=observed_at,
             )
         }
     )
@@ -232,14 +248,17 @@ class RuntimeTests(unittest.TestCase):
                 )
 
     def test_restart_recovers_committed_range_and_decides_single_event_once(self) -> None:
-        class FailSecondRangeOnce(FakeCollector):
+        class FailSecondRangeTwice(FakeCollector):
             def __init__(self, logs):
                 super().__init__(logs)
-                self.failed = False
+                self.failures_remaining = 2
 
             def fetch_cex_logs(self, start, end, addresses):
-                if (start, end) == (2, 2) and not self.failed:
-                    self.failed = True
+                if (
+                    (start, end) == (2, 2)
+                    and self.failures_remaining
+                ):
+                    self.failures_remaining -= 1
                     raise AdaptiveRangeError("range B failed")
                 return super().fetch_cex_logs(start, end, addresses)
 
@@ -251,13 +270,14 @@ class RuntimeTests(unittest.TestCase):
                 single_volume_ratio=Decimal("0"),
             )
             rpc = FakeRpc(head=2)
-            collector = FailSecondRangeOnce([transfer_log(1, 1)])
+            rpc.timestamp_base = 1_700_000_099
+            collector = FailSecondRangeTwice([transfer_log(1, 1)])
             runtime = BaseOnchainRuntime(
                 settings,
                 rpc=rpc,
                 http_collector=collector,
-                price_provider=static_prices(),
-                clock=lambda: 1_700_000_002,
+                price_provider=static_prices(1_700_000_100),
+                clock=lambda: 1_700_000_100,
             )
             with self.assertRaises(AdaptiveRangeError):
                 runtime.process_once()
@@ -265,12 +285,34 @@ class RuntimeTests(unittest.TestCase):
                 OnchainStore(settings).cursor(8453).last_finalized_block,
                 1,
             )
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                first_decisions = conn.execute(
+                    "SELECT decision_status FROM single_event_decisions"
+                ).fetchall()
+                first_alerts = conn.execute(
+                    "SELECT COUNT(*) FROM alerts"
+                ).fetchone()[0]
+                rolling_at_a = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM flow_window_snapshots
+                    WHERE evaluation_block=1
+                    """
+                ).fetchone()[0]
+            self.assertEqual(first_decisions, [("evaluated",)])
+            self.assertEqual(first_alerts, 1)
+            self.assertGreaterEqual(rolling_at_a, 1)
             restarted = BaseOnchainRuntime(
                 settings,
                 rpc=rpc,
                 http_collector=collector,
-                price_provider=static_prices(),
-                clock=lambda: 1_700_000_002,
+                price_provider=static_prices(1_700_000_100),
+                clock=lambda: 1_700_000_100,
+            )
+            with self.assertRaises(AdaptiveRangeError):
+                restarted.process_once()
+            self.assertEqual(
+                OnchainStore(settings).cursor(8453).last_finalized_block,
+                1,
             )
             restarted.process_once()
             restarted.process_once()
@@ -281,8 +323,15 @@ class RuntimeTests(unittest.TestCase):
                 alerts = conn.execute(
                     "SELECT COUNT(*) FROM alerts"
                 ).fetchone()[0]
+                suppressed = conn.execute(
+                    """
+                    SELECT catchup_suppression_reason
+                    FROM single_event_decisions
+                    """
+                ).fetchone()[0]
         self.assertEqual(decisions, [("evaluated",)])
         self.assertEqual(alerts, 1)
+        self.assertEqual(suppressed, "")
 
     def test_restart_after_ingestion_before_evaluation_recovers(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -300,11 +349,17 @@ class RuntimeTests(unittest.TestCase):
                 price_provider=static_prices(),
                 clock=lambda: 1_700_000_002,
             )
+            def crash_after_commit(
+                store, _client, _registry, **_kwargs
+            ):
+                if store.cursor(8453) is not None:
+                    raise SystemExit("crash point")
+
             with (
                 patch.object(
                     interrupted,
-                    "_evaluate_and_notify",
-                    side_effect=SystemExit("crash point"),
+                    "_drain_durable_evaluation",
+                    side_effect=crash_after_commit,
                 ),
                 self.assertRaises(SystemExit),
             ):
@@ -347,12 +402,9 @@ class RuntimeTests(unittest.TestCase):
                 price_provider=static_prices(),
                 clock=lambda: 1_700_000_002,
             )
-            with (
-                patch(
-                    "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
-                    side_effect=RuntimeError("notifier failed"),
-                ),
-                self.assertRaises(RuntimeError),
+            with patch(
+                "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
+                side_effect=RuntimeError("notifier failed"),
             ):
                 first.process_once()
             with closing(sqlite3.connect(settings.db_path)) as conn:
@@ -368,6 +420,9 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(alert_count, 1)
             self.assertEqual(decision, "evaluated")
             self.assertEqual(failed, "failed")
+            self.assertEqual(
+                first.metrics["telegram_delivery_failure_count"], 1
+            )
             BaseOnchainRuntime(
                 settings,
                 rpc=rpc,
@@ -411,6 +466,178 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(flow_count, 1)
         self.assertEqual(decision, ("suppressed", "event_too_old"))
         self.assertEqual(alert_count, 0)
+
+    def test_retryable_metadata_recovers_without_a_new_transfer(self) -> None:
+        with TemporaryDirectory() as tmp:
+            now = [1_700_000_100]
+            settings = replace(
+                live_settings(Path(tmp)),
+                single_large_floor_usd=Decimal("1"),
+                single_volume_ratio=Decimal("0"),
+            )
+            rpc = RecoveringMetadataRpc()
+            rpc.timestamp_base = 1_700_000_098
+            collector = FakeCollector([transfer_log(2, 1)])
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(1_700_000_100),
+                clock=lambda: now[0],
+            )
+            runtime.process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                initial = conn.execute(
+                    """
+                    SELECT f.amount, d.decision_status, m.metadata_status
+                    FROM flow_events f
+                    JOIN single_event_decisions d
+                      ON d.event_id=f.event_id
+                    JOIN token_metadata m
+                      ON m.chain_id=f.chain_id
+                     AND m.token_address=f.token_address
+                    """
+                ).fetchone()
+            self.assertEqual(
+                initial, (None, "pending_metadata", "rpc_failed")
+            )
+            self.assertEqual(rpc.get_code_calls, 1)
+            now[0] += 30
+            runtime.process_once()
+            self.assertEqual(rpc.get_code_calls, 1)
+            now[0] += 31
+            BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(1_700_000_100),
+                clock=lambda: now[0],
+            ).process_once()
+            BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(1_700_000_100),
+                clock=lambda: now[0],
+            ).process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                repaired = conn.execute(
+                    """
+                    SELECT f.amount, f.symbol, d.decision_status,
+                           m.metadata_status
+                    FROM flow_events f
+                    JOIN single_event_decisions d
+                      ON d.event_id=f.event_id
+                    JOIN token_metadata m
+                      ON m.chain_id=f.chain_id
+                     AND m.token_address=f.token_address
+                    """
+                ).fetchone()
+                alert_count = conn.execute(
+                    "SELECT COUNT(*) FROM alerts"
+                ).fetchone()[0]
+                sixty_minute = conn.execute(
+                    """
+                    SELECT gross_inflow_usd, inflow_tx_count
+                    FROM flow_window_snapshots
+                    WHERE duration_sec=3600 AND evaluation_block=2
+                    """
+                ).fetchone()
+            self.assertEqual(repaired, ("1", "ABC", "evaluated", "verified_erc20"))
+            self.assertEqual(alert_count, 1)
+            self.assertEqual(sixty_minute, ("2", 1))
+            self.assertEqual(collector.ranges, [(1, 2)])
+
+    def test_rejected_metadata_is_terminally_suppressed(self) -> None:
+        class NonErc20Rpc(FakeRpc):
+            def __init__(self):
+                super().__init__()
+                self.get_code_calls = 0
+
+            def get_code(self, _address):
+                self.get_code_calls += 1
+                return "0x"
+
+        with TemporaryDirectory() as tmp:
+            settings = live_settings(Path(tmp))
+            rpc = NonErc20Rpc()
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=FakeCollector([transfer_log(2, 1)]),
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            runtime.process_once()
+            runtime.process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                decision = conn.execute(
+                    """
+                    SELECT decision_status, decision_reason
+                    FROM single_event_decisions
+                    """
+                ).fetchone()
+            self.assertEqual(
+                decision,
+                ("suppressed", "metadata_rejected_non_erc20"),
+            )
+            self.assertEqual(rpc.get_code_calls, 1)
+
+    def test_late_metadata_repair_still_enters_sixty_minute_rollup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            now = [1_700_000_100]
+            settings = replace(
+                live_settings(Path(tmp)),
+                alert_max_event_age_sec=60,
+                single_large_floor_usd=Decimal("1"),
+                single_volume_ratio=Decimal("0"),
+            )
+            rpc = RecoveringMetadataRpc()
+            rpc.timestamp_base = 1_700_000_098
+            provider = StaticPriceProvider(
+                {
+                    (8453, TOKEN): PriceQuote(
+                        chain_id=8453,
+                        token_address=TOKEN,
+                        price_usd=Decimal("2"),
+                        volume_24h_usd=Decimal("1000000"),
+                        source="static",
+                        observed_at=1_700_002_100,
+                    )
+                }
+            )
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=FakeCollector([transfer_log(2, 1)]),
+                price_provider=provider,
+                clock=lambda: now[0],
+            )
+            runtime.process_once()
+            now[0] = 1_700_002_100
+            runtime.process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                decision = conn.execute(
+                    """
+                    SELECT decision_status, catchup_suppression_reason
+                    FROM single_event_decisions
+                    """
+                ).fetchone()
+                repaired = conn.execute(
+                    "SELECT amount, symbol FROM flow_events"
+                ).fetchone()
+                sixty_minute = conn.execute(
+                    """
+                    SELECT gross_inflow_usd, inflow_tx_count
+                    FROM flow_window_snapshots
+                    WHERE duration_sec=3600 AND evaluation_block=2
+                    """
+                ).fetchone()
+            self.assertEqual(
+                decision, ("suppressed", "event_too_old")
+            )
+            self.assertEqual(repaired, ("1", "ABC"))
+            self.assertEqual(sixty_minute, ("2", 1))
 
     def test_startup_uses_bounded_lookback_and_advances_atomic_cursor(self) -> None:
         with TemporaryDirectory() as tmp:
