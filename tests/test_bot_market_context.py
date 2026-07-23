@@ -11,9 +11,16 @@ from paopao_radar.news_intelligence import NewsEventStore
 from paopao_radar.realtime_market import RealtimeFeatureStore
 
 
-def feature_row(symbol: str, minute: int, *, buy: float, sell: float) -> dict[str, object]:
+def feature_row(
+    symbol: str,
+    minute: int,
+    *,
+    buy: float,
+    sell: float,
+    exchange: str = "binance",
+) -> dict[str, object]:
     return {
-        "exchange": "binance",
+        "exchange": exchange,
         "market": "futures",
         "symbol": symbol,
         "bucket_start": minute * 60,
@@ -52,13 +59,37 @@ class BotMarketContextTests(unittest.TestCase):
                 now_ts=1_200,
             )
         self.assertTrue(text.startswith("🚀 原启动预警"))
-        self.assertIn("BOT 实时市场数据确认", text)
-        self.assertIn("5m CVD", text)
+        self.assertIn("BOT Binance 原生数据确认", text)
+        self.assertIn("5m合约主动净占比", text)
         self.assertIn("Surge 偏多", text)
         self.assertIn("五窗", text)
         self.assertIn("24h 异动", text)
-        self.assertIn("不采用新闻或社交情报", text)
+        self.assertIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", text)
+        self.assertIn("主动成交净额=taker主动买入报价额-taker主动卖出报价额", text)
+        self.assertIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", text)
         self.assertIn("不改变本模块原触发阈值", text)
+
+    def test_realtime_confirmation_ignores_non_binance_rows(self) -> None:
+        rows = [
+            feature_row("BTCUSDT", minute, buy=2_000, sell=500)
+            for minute in range(15, 20)
+        ]
+        rows.extend(
+            feature_row("BTCUSDT", minute, buy=0, sell=50_000, exchange="bybit")
+            for minute in range(15, 20)
+        )
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "realtime.db"
+            RealtimeFeatureStore(path).replace_many(rows)
+            text = enrich_telegram_with_market_context(
+                SimpleNamespace(realtime_features_db_path=path),
+                "启动预警",
+                "TG_LAUNCH_ALERT",
+                [{"symbol": "BTCUSDT"}],
+                now_ts=1_200,
+            )
+
+        self.assertIn("5m合约主动净占比 +60.00%", text)
 
     def test_missing_realtime_facts_leave_bot_message_unchanged(self) -> None:
         original = "资金费率警报"
@@ -186,8 +217,8 @@ class BotMarketContextTests(unittest.TestCase):
         self.assertNotIn("BTC 合约参数调整公告", text)
         self.assertNotIn("liquidation social post", text)
         self.assertNotIn("other exchange announcement", text)
-        self.assertIn("BOT 实时市场数据确认", summary_text)
-        self.assertIn("不采用新闻或社交情报", summary_text)
+        self.assertIn("BOT Binance 原生数据确认", summary_text)
+        self.assertIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", summary_text)
 
     def test_untrusted_snapshot_source_cannot_enrich_message(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -224,6 +255,43 @@ class BotMarketContextTests(unittest.TestCase):
                 [{"symbol": "BTCUSDT"}],
                 now_ts=1_200,
             )
+        self.assertEqual(text, original)
+
+    def test_one_hour_flow_snapshot_is_not_relabelled_as_fifteen_minutes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            market_path = Path(tmp) / "market.db"
+            MarketSnapshotStore(market_path).append_many([
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": 300,
+                    "source": "flow_radar",
+                    "window_sec": 3600,
+                    "price": 100,
+                    "oi_usd": 1_000_000,
+                    "oi_change_pct": 5,
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": 1_200,
+                    "source": "flow_radar",
+                    "window_sec": 3600,
+                    "price": 110,
+                    "oi_usd": 1_100_000,
+                    "oi_change_pct": 10,
+                },
+            ])
+            original = "资金流雷达"
+            text = enrich_telegram_with_market_context(
+                SimpleNamespace(
+                    realtime_features_db_path=Path(tmp) / "missing-realtime.db",
+                    market_snapshots_db_path=market_path,
+                ),
+                original,
+                "TG_FLOW_RADAR",
+                [{"symbol": "BTCUSDT"}],
+                now_ts=1_200,
+            )
+
         self.assertEqual(text, original)
 
     def test_missing_summary_facts_and_test_messages_are_never_enriched(self) -> None:

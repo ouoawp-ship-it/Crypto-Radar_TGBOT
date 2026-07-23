@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
+from paopao_radar.binance_confirmation import apply_binance_confirmation
 from paopao_radar.config import Settings
 from paopao_radar.flow_radar import (
     coinglass_tv_url,
@@ -13,7 +15,7 @@ from paopao_radar.flow_radar import (
     kline_cvd_flow_info,
     series_delta_info,
 )
-from paopao_radar.time_windows import closed_window
+from paopao_radar.time_windows import ClosedWindow, closed_window
 
 
 class FlowRadarTests(unittest.TestCase):
@@ -54,6 +56,41 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(last, 115.0)
         self.assertTrue(ready)
         self.assertEqual(points, 2)
+
+    def test_binance_oi_stats_uses_exact_closed_window(self) -> None:
+        start_ms = 1_771_965_600_000
+        end_ms = start_ms + 3_600_000
+
+        class Source:
+            def open_interest_hist(
+                self,
+                symbol: str,
+                period: str = "1h",
+                limit: int = 25,
+                start_time: int | None = None,
+                end_time: int | None = None,
+            ):
+                self.args = (symbol, period, limit, start_time, end_time)
+                return [
+                    {"timestamp": start_ms - 3_600_000, "sumOpenInterestValue": "100"},
+                    {"timestamp": start_ms, "sumOpenInterestValue": "110"},
+                    {"timestamp": end_ms, "sumOpenInterestValue": "132"},
+                ]
+
+        window = ClosedWindow(
+            start=datetime.fromtimestamp(start_ms / 1000, timezone.utc),
+            end=datetime.fromtimestamp(end_ms / 1000, timezone.utc),
+            interval_sec=3600,
+            delay_sec=300,
+        )
+        source = Source()
+        change, last, ready, points = binance_oi_stats(source, "BTCUSDT", window=window)
+
+        self.assertEqual(source.args[3:], (start_ms, end_ms))
+        self.assertTrue(ready)
+        self.assertEqual(points, 2)
+        self.assertEqual(last, 132.0)
+        self.assertAlmostEqual(change, 20.0)
 
     def test_series_delta_filters_to_closed_window_timestamps(self) -> None:
         data = {
@@ -179,7 +216,38 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertEqual(category, "数据不足")
         self.assertEqual(score, 0)
-        self.assertIn("Binance CVD 数据缺失", reason)
+        self.assertIn("Binance 主动成交数据缺失", reason)
+
+    def test_missing_funding_is_not_treated_as_zero(self) -> None:
+        category, score, reason = flow_category({
+            "price_24h": 6.0,
+            "oi_24h": 8.0,
+            "spot_cvd_delta": 1_000_000,
+            "futures_cvd_delta": 800_000,
+            "funding_pct": 0.0,
+            "funding_ready": False,
+            "quote_volume": 80_000_000,
+        })
+
+        self.assertEqual(category, "数据不足")
+        self.assertEqual(score, 0)
+        self.assertIn("资金费率缺失", reason)
+
+    def test_binance_confirmation_requires_every_declared_input(self) -> None:
+        item: dict[str, object] = {}
+
+        confirmation = apply_binance_confirmation(
+            item,
+            {"价格": True, "OI": True, "费率": False},
+            scope="Binance USDⓈ-M Futures",
+            window="1h闭合窗口",
+            observed_at=1000,
+        )
+
+        self.assertEqual(confirmation["status"], "incomplete")
+        self.assertEqual(confirmation["missing"], ["费率"])
+        self.assertEqual(item["quality_gate"], "block")
+        self.assertEqual(item["primary_data_source"], "binance_native")
 
 
 if __name__ == "__main__":

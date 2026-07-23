@@ -4,9 +4,13 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any
 
+from .binance_confirmation import (
+    apply_binance_confirmation,
+    confirmation_summary,
+    confirmation_text,
+)
 from .config import Settings
 from .data_sources import BinanceDataSource
-from .derivatives_quality import DerivativesQualityService
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .radar import fmt_money, pct_cell, to_float
@@ -208,7 +212,7 @@ def binance_oi_stats(
     start_time = None
     end_time = None
     if window is not None:
-        start_time = max(0, window.start_ms - window.interval_ms)
+        start_time = window.start_ms
         end_time = window.end_ms
         limit = max(limit, 3)
     history = source.open_interest_hist(
@@ -219,7 +223,10 @@ def binance_oi_stats(
         end_time=end_time,
     )
     if window is not None:
-        history = filter_points_by_time(history, start_time, end_time)
+        history = sorted(
+            filter_points_by_time(history, start_time, end_time),
+            key=point_timestamp_ms,
+        )
     if len(history) < 2:
         return 0.0, 0.0, False, len(history)
     first = to_float(history[0].get("sumOpenInterestValue") or history[0].get("sumOpenInterest"))
@@ -329,6 +336,8 @@ def binance_futures_flow_stats(
 def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     if not item.get("price_ready", True) or not item.get("oi_ready", True):
         return ("数据不足", 0, "价格或 OI 未覆盖完整统计窗口，暂不评分")
+    if not item.get("funding_ready", True):
+        return ("数据不足", 0, "Binance 资金费率缺失，暂不评分")
     price = item["price_24h"]
     oi = to_float(item.get("oi_1h", item.get("oi_24h", 0.0)))
     spot = item["spot_cvd_delta"]
@@ -337,7 +346,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     spot_ready = bool(item.get("spot_cvd_ready", True))
     futures_ready = bool(item.get("futures_cvd_ready", True))
     if not spot_ready and not futures_ready:
-        return ("数据不足", 0, "Binance CVD 数据缺失，不能判断资金流")
+        return ("数据不足", 0, "Binance 主动成交数据缺失，不能判断资金流")
     spot_positive = cvd_positive(spot, spot_ready)
     spot_negative = cvd_negative(spot, spot_ready)
     futures_positive = cvd_positive(futures, futures_ready)
@@ -349,7 +358,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     true_launch += 20 if oi >= 5 else 0
     true_launch += 25 if spot_positive else 0
     true_launch += 15 if futures_positive else 0
-    true_launch += 10 if funding <= 0.08 else 0
+    true_launch += 10 if item.get("funding_ready", True) and funding <= 0.08 else 0
     true_launch += 10 if item["quote_volume"] >= 50_000_000 else 0
     candidates.append(("真启动候选", true_launch, "现货主动买入跟随，OI同步增加，费率未过热"))
 
@@ -357,12 +366,12 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     accumulation += 25 if abs(price) <= 5 else 0
     accumulation += 25 if oi >= 5 else 0
     accumulation += 25 if spot_positive else 0
-    accumulation += 15 if funding <= 0.03 else 0
+    accumulation += 15 if item.get("funding_ready", True) and funding <= 0.03 else 0
     accumulation += 10 if futures_positive else 0
     candidates.append(("吸筹观察", accumulation, "价格未大幅启动但资金提前进入，适合提前盯盘"))
 
     short_fuel = 0
-    short_fuel += 25 if funding <= -0.03 else 0
+    short_fuel += 25 if item.get("funding_ready", True) and funding <= -0.03 else 0
     short_fuel += 25 if oi >= 5 else 0
     short_fuel += 20 if futures_negative else 0
     short_fuel += 15 if price > -5 else 0
@@ -374,7 +383,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     perp_pump += 20 if oi >= 5 else 0
     perp_pump += 25 if futures_positive else 0
     perp_pump += 20 if price >= 5 and spot_negative else 0
-    perp_pump += 10 if funding >= 0 else 0
+    perp_pump += 10 if item.get("funding_ready", True) and funding >= 0 else 0
     candidates.append(("合约拉盘", perp_pump, "合约主动买入强于现货，追高风险更高"))
 
     short_squeeze = 0
@@ -382,14 +391,14 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     short_squeeze += 30 if oi <= -3 else 0
     short_squeeze += 20 if futures_positive else 0
     short_squeeze += 10 if price >= 5 and spot_negative else 0
-    short_squeeze += 10 if funding <= 0.05 else 0
+    short_squeeze += 10 if item.get("funding_ready", True) and funding <= 0.05 else 0
     candidates.append(("挤空/止损", short_squeeze, "上涨伴随OI下降，可能是空头止损推动"))
 
     distribution = 0
     distribution += 25 if price >= 5 else 0
     distribution += 30 if price >= 5 and spot_negative else 0
     distribution += 20 if price >= 5 and futures_positive else 0
-    distribution += 15 if price >= 5 and funding >= 0.05 else 0
+    distribution += 15 if price >= 5 and item.get("funding_ready", True) and funding >= 0.05 else 0
     distribution += 10 if price >= 5 and oi <= 0 else 0
     candidates.append(("诱多/派发", distribution, "价格上涨但现货主动买入不足，持续性存疑"))
 
@@ -398,8 +407,8 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     panic += 25 if oi >= 5 else 0
     panic += 25 if spot_negative else 0
     panic += 15 if futures_negative else 0
-    panic += 10 if funding < 0 else 0
-    candidates.append(("恐慌下跌", panic, "下跌增仓且CVD走弱，空头压制或多头被套"))
+    panic += 10 if item.get("funding_ready", True) and funding < 0 else 0
+    candidates.append(("恐慌下跌", panic, "下跌增仓且主动卖出增强，空头压制或多头被套"))
 
     return max(candidates, key=lambda row: row[1])
 
@@ -455,6 +464,7 @@ class FlowRadarEngine:
                 "spot_cvd_points": spot_cvd_points,
                 "futures_cvd_points": futures_cvd_points,
                 "funding_pct": funding_pct,
+                "funding_ready": bool(candidate.get("funding_ready")),
                 "quote_volume": abs(quote_volume),
                 "oi_usd": oi_usd,
             }
@@ -462,55 +472,23 @@ class FlowRadarEngine:
             item.update({"category": category, "score": score, "reason": reason})
             scanned_items.append(item)
 
-        quality_service = DerivativesQualityService(self.settings, binance.http)
-        validation_candidates = sorted(
-            scanned_items,
-            key=lambda item: to_float(item.get("score")),
-            reverse=True,
-        )
-        oi_validations = quality_service.validate_oi_rows(
-            validation_candidates,
-            timeframe="1h",
-            local_field="oi_1h",
-            now_ts=int(window.end.timestamp()),
-        )
         for item in scanned_items:
-            symbol = str(item.get("symbol") or "").upper()
-            validation = oi_validations.get(symbol)
-            if validation is None:
-                item.update({
-                    "data_quality_status": "not_checked_budget",
-                    "data_quality_score": 0,
-                    "quality_gate": "degraded",
-                    "primary_data_source": "binance",
-                })
-            else:
-                item["oi_validation"] = validation
-                item["data_quality_status"] = validation["status"]
-                item["data_quality_score"] = validation["score"]
-                item["quality_gate"] = validation["gate"]
-                item["primary_data_source"] = validation["primary_source"]
-                item["oi_source_agreement_score"] = validation["score"]
-                selected = validation.get("selected_change_pct")
-                if selected is not None and validation.get("primary_source") == "coinglass":
-                    item["oi_binance_1h"] = item["oi_1h"]
-                    item["oi_1h"] = to_float(selected)
-                    item["oi_24h"] = to_float(selected)
-                    item["oi_change_pct"] = to_float(selected)
-                    item["oi_ready"] = True
-                    category, score, reason = flow_category(item)
-                    item.update({"category": category, "score": score, "reason": reason})
-                if validation.get("gate") == "block":
-                    item.update({
-                        "category": "数据源冲突",
-                        "score": 0,
-                        "reason": "OI 多数据源方向冲突，已阻止进入高级信号",
-                    })
-            externally_checked = validation is not None or not quality_service.configured
+            apply_binance_confirmation(
+                item,
+                {
+                    "价格K线": bool(item.get("price_ready")),
+                    "OI": bool(item.get("oi_ready")) and int(item.get("oi_points") or 0) >= 2,
+                    "现货主动成交": bool(item.get("spot_cvd_ready")),
+                    "合约主动成交": bool(item.get("futures_cvd_ready")),
+                    "资金费率": bool(item.get("funding_ready")),
+                },
+                scope="Binance Spot + USDⓈ-M Futures",
+                window="1h闭合窗口",
+                observed_at=int(window.end.timestamp()),
+            )
             if (
                 item["score"] >= self.settings.flow_min_score
-                and item.get("quality_gate") != "block"
-                and externally_checked
+                and item.get("quality_gate") == "allow"
             ):
                 rows.append(item)
 
@@ -526,7 +504,7 @@ class FlowRadarEngine:
             "window_sec": int(window.interval_sec),
             "diagnostics": {
                 "binance": binance.diagnostics(),
-                "derivatives_quality": quality_service.summary(oi_validations),
+                "binance_confirmation": confirmation_summary(scanned_items),
             },
         }
 
@@ -556,6 +534,7 @@ class FlowRadarEngine:
                 "price_24h": price_24h,
                 "quote_volume": quote_volume,
                 "funding_pct": premium_map.get(symbol, 0.0),
+                "funding_ready": symbol in premium_map,
             })
         candidates.sort(key=lambda item: (item["quote_volume"], abs(item["price_24h"])), reverse=True)
         return candidates[: max(1, self.settings.flow_candidate_pool)]
@@ -571,6 +550,10 @@ class FlowRadarEngine:
         futures_ready_count = sum(1 for item in scanned_items if item.get("futures_cvd_ready"))
         price_ready_count = sum(1 for item in scanned_items if item.get("price_ready"))
         oi_ready_count = sum(1 for item in scanned_items if item.get("oi_ready"))
+        confirmed_count = sum(
+            1 for item in scanned_items
+            if item.get("data_quality_status") == "confirmed"
+        )
         spot_active_count = sum(
             1 for item in scanned_items
             if item.get("spot_cvd_ready") and abs(float(item.get("spot_cvd_delta") or 0.0)) > CVD_NEUTRAL_ABS
@@ -589,9 +572,11 @@ class FlowRadarEngine:
             tg_quote("📊 本轮统计"),
             f"候选币: {len(candidates)}",
             f"入选信号: {len(rows)}",
-            "数据源: Binance 原生行情 + CoinGlass/Coinalyze 衍生品校验（按配置降级）",
+            "数据源: Binance Spot + Binance USDⓈ-M Futures 原生公开行情",
+            "市场边界: 仅代表 Binance，不使用 CoinGlass/Coinalyze，不代表全市场",
+            f"数据确认: 完整 {confirmed_count}/{scanned_count} | 缺项 {scanned_count - confirmed_count}/{scanned_count}",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
-            f"CVD数据(Binance估算): 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
+            f"主动净额: 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
             "",
         ]
         if scanned_count and (price_ready_count < scanned_count or oi_ready_count < scanned_count):
@@ -601,12 +586,12 @@ class FlowRadarEngine:
             ])
         if scanned_count and (spot_ready_count < scanned_count or futures_ready_count < scanned_count):
             lines.extend([
-                "⚠️ 部分 CVD 数据缺失；缺失项不会按 0 参与资金流评分。",
+                "⚠️ 部分主动成交数据缺失；缺失项不会按 0 参与资金流评分。",
                 "",
             ])
         if scanned_count and (spot_active_count < spot_ready_count or futures_active_count < futures_ready_count):
             lines.extend([
-                "ℹ️ 部分 CVD 近0；近0只作为中性状态，不按主动买入或主动卖出评分。",
+                "ℹ️ 部分主动成交净额近0；近0只作为中性状态，不按主动买入或主动卖出评分。",
                 "",
             ])
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -622,32 +607,35 @@ class FlowRadarEngine:
                 lines.append(
                     f"{item['score']}分 | 价{pct_cell(item['price_24h'])} | "
                     f"OI 1h{pct_cell(item['oi_1h'])} | "
-                    f"现货CVD {fmt_cvd(item['spot_cvd_delta'], bool(item.get('spot_cvd_ready')))} | "
-                    f"合约CVD {fmt_cvd(item['futures_cvd_delta'], bool(item.get('futures_cvd_ready')))} | "
+                    f"现货主动净额 {fmt_cvd(item['spot_cvd_delta'], bool(item.get('spot_cvd_ready')))} | "
+                    f"合约主动净额 {fmt_cvd(item['futures_cvd_delta'], bool(item.get('futures_cvd_ready')))} | "
                     f"费率 {item['funding_pct']:+.3f}%"
                 )
                 lines.append(f"判断: {tg_escape(item['reason'])}")
-                lines.append(
-                    f"数据校验: {tg_escape(item.get('data_quality_status', 'not_checked'))}"
-                    f" / {to_float(item.get('data_quality_score')):.0f}分"
-                )
+                lines.append(f"数据确认: ✅ {tg_escape(confirmation_text(item))}")
             lines.append("")
         if not rows:
             lines.extend([
                 "暂无达标信号",
-                "如果 CVD 长期缺失，通常是币种没有对应 Binance 现货交易对、接口限频或窗口数据尚未完整。",
+                "如果主动成交数据长期缺失，通常是币种没有对应 Binance 现货交易对、接口限频或窗口数据尚未完整。",
                 "",
             ])
         lines.extend([
             tg_quote("📖 图例"),
             "显示分类 = 真启动候选 / 吸筹观察 / 空头燃料 / 合约拉盘 / 挤空/止损 / 诱多/派发 / 恐慌下跌；本轮只显示达标分类",
-            "真启动 = 价格、OI、现货CVD、合约CVD共振且费率未过热",
-            "吸筹 = 价格未明显启动，但OI和现货CVD提前增强",
+            "真启动 = 价格、OI、现货主动净额、合约主动净额共振且费率未过热",
+            "吸筹 = 价格未明显启动，但OI和现货主动净额提前增强",
             "空头燃料 = 负费率叠加增仓，偏挤空候选",
-            "合约拉盘 = 合约CVD强、现货CVD弱，追高风险更高",
+            "合约拉盘 = 合约主动买入强、现货主动买入弱，追高风险更高",
             "挤空/止损 = 上涨伴随OI下降，可能是空头止损推动",
             "诱多/派发 = 价格上涨但现货主动买入不足",
-            "恐慌下跌 = 下跌增仓且CVD走弱，先按风险处理",
-            "CVD = 主动买入量 - 主动卖出量，正值代表主动买盘更强",
+            "恐慌下跌 = 下跌增仓且主动卖出增强，先按风险处理",
+            "",
+            tg_quote("📐 数据与计算口径"),
+            "价格变化 = (窗口收盘价 - 窗口开盘价) / 窗口开盘价",
+            "OI变化 = (窗口末持仓价值 - 窗口初持仓价值) / 窗口初持仓价值",
+            "主动成交净额 = taker主动买入报价额 - taker主动卖出报价额",
+            "资金费率 = Binance USDⓈ-M 最新资金费率快照；缺失不会按0参与评分",
+            "只有价格、OI、现货主动成交、合约主动成交、费率五项全部就绪才允许推送",
         ])
         return "\n".join(lines)
