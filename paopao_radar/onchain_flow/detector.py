@@ -161,6 +161,7 @@ def detect_rolling_flows(
         if (
             token is None
             or token.metadata_status not in {"verified", "verified_erc20"}
+            or snapshot.valuation_price_usd is None
             or snapshot.direction == "balanced"
             or snapshot.min_label_confidence < settings.min_label_confidence
             or snapshot.net_dominance < settings.net_dominance_min
@@ -196,7 +197,7 @@ def detect_rolling_flows(
             detection_types.append("continuous_flow")
         if (
             snapshot.duration_sec == WINDOW_60M_SEC
-            and len(snapshot.exchanges) >= 2
+            and len(snapshot.directional_exchanges) >= 2
             and abs(snapshot.net_flow_usd) >= threshold
         ):
             detection_types.append("multi_exchange")

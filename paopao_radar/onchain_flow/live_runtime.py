@@ -9,6 +9,7 @@ from .aggregator import build_rolling_snapshots
 from .classifier import classify_transfer
 from .collectors.evm_http import (
     BaseHttpCollector,
+    FinalizedRangeConsistencyError,
     HASH_RE,
     JsonRpcClient,
     LogValidationError,
@@ -177,7 +178,6 @@ class BaseOnchainRuntime:
             )
         else:
             start = cursor.last_finalized_block + 1
-        new_flows: list[ClassifiedFlow] = []
         if start <= target:
             range_start = start
             while range_start <= target:
@@ -185,15 +185,13 @@ class BaseOnchainRuntime:
                     target,
                     range_start + self.settings.rpc_max_block_range - 1,
                 )
-                new_flows.extend(
-                    self._process_range(
-                        store=store,
-                        registry=registry,
-                        cex_addresses=cex_addresses,
-                        start_block=range_start,
-                        end_block=range_end,
-                        last_seen_head=head,
-                    )
+                self._process_range(
+                    store=store,
+                    registry=registry,
+                    cex_addresses=cex_addresses,
+                    start_block=range_start,
+                    end_block=range_end,
+                    last_seen_head=head,
                 )
                 range_start = range_end + 1
         cursor = store.cursor(BASE_CHAIN_ID)
@@ -211,7 +209,6 @@ class BaseOnchainRuntime:
         self._evaluate_and_notify(
             store,
             client,
-            new_flows,
             target,
             send=send,
             confirm_real_send=confirm_real_send,
@@ -266,21 +263,39 @@ class BaseOnchainRuntime:
                     processed_at=int(self.clock()),
                 )
             )
-        transfers = []
-        malformed = 0
+        transfers_by_id = {}
         for log in logs:
             try:
                 block_number = parse_hex_quantity(
                     log.get("blockNumber"), "log block number"
                 )
-                transfers.append(
-                    normalize_transfer_log(
-                        log,
-                        block_time=block_times[block_number],
+                if not start_block <= block_number <= end_block:
+                    raise FinalizedRangeConsistencyError(
+                        "log block number is outside requested range"
                     )
+                header = blocks[block_number - start_block]
+                log_block_hash = str(log.get("blockHash") or "")
+                if log_block_hash.lower() != header.block_hash.lower():
+                    raise FinalizedRangeConsistencyError(
+                        "log block hash does not match canonical header"
+                    )
+                transfer = normalize_transfer_log(
+                    log,
+                    block_time=block_times[block_number],
                 )
-            except (KeyError, LogValidationError, RpcError):
-                malformed += 1
+            except FinalizedRangeConsistencyError:
+                raise
+            except (KeyError, IndexError, LogValidationError, RpcError) as exc:
+                raise FinalizedRangeConsistencyError(
+                    "finalized log failed canonical validation"
+                ) from exc
+            existing = transfers_by_id.get(transfer.event_id)
+            if existing is not None and existing != transfer:
+                raise FinalizedRangeConsistencyError(
+                    "duplicate event key has conflicting canonical contents"
+                )
+            transfers_by_id[transfer.event_id] = transfer
+        transfers = list(transfers_by_id.values())
         resolver = TokenMetadataResolver(
             client, store, clock=self.clock
         )
@@ -328,7 +343,7 @@ class BaseOnchainRuntime:
                     price_usd=quote.price_usd,
                     volume_24h_usd=quote.volume_24h_usd,
                     price_source=quote.source,
-                    price_observed_at=quote.observed_at,
+                    price_observed_at=quote.freshness_timestamp,
                 )
                 store.upsert_token_metadata(token)
                 priced += 1
@@ -362,9 +377,6 @@ class BaseOnchainRuntime:
         self.metrics["unpriced_count"] = int(
             self.metrics["unpriced_count"]
         ) + unpriced
-        self.metrics["malformed_log_count"] = int(
-            self.metrics.get("malformed_log_count", 0)
-        ) + malformed
         self.metrics["unique_inserted_count"] = int(
             self.metrics.get("unique_inserted_count", 0)
         ) + inserted
@@ -411,7 +423,6 @@ class BaseOnchainRuntime:
         self,
         store: OnchainStore,
         client: JsonRpcClient,
-        new_flows: Sequence[ClassifiedFlow],
         target_block: int,
         *,
         send: bool,
@@ -424,41 +435,196 @@ class BaseOnchainRuntime:
         bucket = self.settings.rolling_evaluation_bucket_sec
         evaluation_time = target_time - (target_time % bucket)
         metadata = store.metadata_map()
-        notifier = OnchainNotifier(self.settings, store)
-        flow_by_event = {flow.event_id: flow for flow in new_flows}
-        alerts = []
-        for detected in detect_flows(
-            new_flows, [], metadata, self.settings
-        ):
-            source = (
-                flow_by_event.get(detected.source_event_ids[0])
-                if detected.source_event_ids
-                else None
-            )
-            if source is not None:
-                alerts.append(
-                    score_live_single_detection(detected, source)
-                )
+        provider = (
+            self._price_provider
+            if self._price_provider is not None
+            else build_price_provider(self.settings)
+        )
+        price_service = CachedPriceService(
+            self.settings,
+            store,
+            provider,
+            clock=self.clock,
+        )
+        single_alerts = self._evaluate_pending_single_events(
+            store,
+            price_service,
+            metadata,
+        )
         rolling_flows = store.finalized_flows_since(
             BASE_CHAIN_ID, evaluation_time - 3600
         )
+        active_tokens = sorted(
+            {
+                flow.token_address
+                for flow in rolling_flows
+                if flow.amount is not None
+            }
+        )
+        rolling_quotes = price_service.quotes(
+            BASE_CHAIN_ID,
+            active_tokens,
+            force_refresh=True,
+        )
+        for address, quote in rolling_quotes.items():
+            token = metadata.get((BASE_CHAIN_ID, address))
+            if token is None:
+                continue
+            token = replace(
+                token,
+                price_usd=quote.price_usd,
+                volume_24h_usd=quote.volume_24h_usd,
+                price_source=quote.source,
+                price_observed_at=quote.freshness_timestamp,
+            )
+            store.upsert_token_metadata(token)
+            metadata[(BASE_CHAIN_ID, address)] = token
         snapshots = build_rolling_snapshots(
             rolling_flows,
             evaluation_time=evaluation_time,
             evaluation_block=target_block,
             min_label_confidence=self.settings.min_label_confidence,
             price_max_age_sec=self.settings.price_max_age_sec,
+            quotes={
+                (BASE_CHAIN_ID, address): quote
+                for address, quote in rolling_quotes.items()
+            },
         )
         for snapshot in snapshots:
             store.upsert_snapshot(snapshot)
-        alerts.extend(
+        rolling_alerts = [
             score_rolling_detection(item)
             for item in detect_rolling_flows(
                 snapshots, metadata, self.settings
             )
+        ]
+        now = int(self.clock())
+        for alert in rolling_alerts:
+            store.persist_alert_for_delivery(alert, created_at=now)
+        self._deliver_pending(
+            store,
+            send=send,
+            confirm_real_send=confirm_real_send,
         )
-        for alert in alerts:
-            store.upsert_alert(alert)
+        self.metrics["alerts_generated"] = int(
+            self.metrics["alerts_generated"]
+        ) + len(single_alerts) + len(rolling_alerts)
+
+    def _evaluate_pending_single_events(
+        self,
+        store: OnchainStore,
+        price_service: CachedPriceService,
+        metadata: dict[tuple[int, str], TokenMetadata],
+    ) -> list[object]:
+        pending = store.pending_single_flows(BASE_CHAIN_ID)
+        if not pending:
+            return []
+        now = int(self.clock())
+        addresses = sorted({flow.token_address for flow in pending})
+        quotes = price_service.quotes(
+            BASE_CHAIN_ID,
+            addresses,
+            force_refresh=True,
+        )
+        alerts = []
+        for flow in pending:
+            if now - flow.block_time > self.settings.alert_max_event_age_sec:
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="suppressed",
+                    attempted_at=now,
+                    decision_reason="catchup_suppressed",
+                    catchup_suppression_reason="event_too_old",
+                )
+                continue
+            token = metadata.get((flow.chain_id, flow.token_address))
+            if (
+                token is None
+                or token.metadata_status
+                not in {"verified", "verified_erc20"}
+                or flow.amount is None
+                or flow.label_confidence
+                < self.settings.min_label_confidence
+            ):
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="suppressed",
+                    attempted_at=now,
+                    decision_reason="ineligible",
+                )
+                continue
+            quote = quotes.get(flow.token_address)
+            if quote is None:
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="pending_price",
+                    attempted_at=now,
+                    decision_reason="fresh_price_unavailable",
+                )
+                continue
+            valued = replace(
+                flow,
+                amount_usd=flow.amount * quote.price_usd,
+                price_status="available",
+                price_source=quote.source,
+                price_observed_at=quote.freshness_timestamp,
+            )
+            store.update_flow_valuation(valued)
+            token = replace(
+                token,
+                price_usd=quote.price_usd,
+                volume_24h_usd=quote.volume_24h_usd,
+                price_source=quote.source,
+                price_observed_at=quote.freshness_timestamp,
+            )
+            store.upsert_token_metadata(token)
+            metadata[(flow.chain_id, flow.token_address)] = token
+            detections = detect_flows(
+                [valued], [], metadata, self.settings
+            )
+            if not detections:
+                store.persist_single_decision(
+                    event_id=flow.event_id,
+                    decision_status="suppressed",
+                    attempted_at=now,
+                    decision_reason="below_threshold",
+                )
+                continue
+            alert = score_live_single_detection(detections[0], valued)
+            store.persist_single_decision(
+                event_id=flow.event_id,
+                decision_status="evaluated",
+                attempted_at=now,
+                decision_reason="alert_created",
+                alert=alert,
+            )
+            alerts.append(alert)
+        return alerts
+
+    def _deliver_pending(
+        self,
+        store: OnchainStore,
+        *,
+        send: bool,
+        confirm_real_send: bool,
+    ) -> None:
+        notifier = OnchainNotifier(self.settings, store)
+        for alert in store.pending_delivery_alerts():
+            now = int(self.clock())
+            if store.delivery_in_cooldown(
+                alert.notification_key or alert.alert_key,
+                now=now,
+                cooldown_sec=self.settings.alert_cooldown_sec,
+                excluding_alert_key=alert.alert_key,
+            ):
+                store.record_delivery(
+                    alert.alert_key,
+                    status="cooldown_suppressed",
+                    sent=False,
+                    reason="onchain_notification_cooldown",
+                    created_at=now,
+                )
+                continue
             result = notifier.notify(
                 alert,
                 send=send,
@@ -468,9 +634,6 @@ class BaseOnchainRuntime:
                 self.metrics["telegram_dry_run_count"] = int(
                     self.metrics["telegram_dry_run_count"]
                 ) + 1
-        self.metrics["alerts_generated"] = int(
-            self.metrics["alerts_generated"]
-        ) + len(alerts)
 
     def run_live(
         self,

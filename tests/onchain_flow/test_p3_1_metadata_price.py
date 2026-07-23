@@ -7,12 +7,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.onchain_flow.collectors.evm_http import RpcTransportError
+from paopao_radar.onchain_flow.config import SettingsValidationError
 from paopao_radar.onchain_flow.db import OnchainStore
 from paopao_radar.onchain_flow.models import PriceQuote
 from paopao_radar.onchain_flow.price_oracle import (
     CachedPriceService,
     CoinGeckoOnchainPriceProvider,
+    PriceConfigurationError,
     StaticPriceProvider,
+    build_price_provider,
 )
 from paopao_radar.onchain_flow.token_metadata import (
     DECIMALS_SELECTOR,
@@ -157,6 +160,7 @@ class FakePriceResponse:
                         "address": address,
                         "price_usd": "2.5",
                         "volume_usd": {"h24": "1000000"},
+                        "last_trade_timestamp": "1970-01-01T00:16:40Z",
                     }
                 }
                 for address in self.addresses
@@ -175,6 +179,27 @@ class FakePriceSession:
 
 
 class PriceTests(unittest.TestCase):
+    def test_static_environment_selection_without_injection_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                make_settings(Path(tmp)),
+                price_enable=True,
+                price_provider="static",
+            )
+            with self.assertRaises(PriceConfigurationError):
+                build_price_provider(settings)
+
+    def test_pro_header_cannot_be_paired_with_public_api_host(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                make_settings(Path(tmp)),
+                coingecko_api_base_url=(
+                    "https://api.coingecko.com/api/v3"
+                ),
+            )
+            with self.assertRaises(SettingsValidationError):
+                settings.validate()
+
     def test_static_provider_is_contract_address_keyed(self) -> None:
         quote = PriceQuote(
             chain_id=8453,
@@ -250,7 +275,62 @@ class PriceTests(unittest.TestCase):
         self.assertEqual(first[TOKEN].price_usd, Decimal("2.5"))
         self.assertEqual(second, {})
         self.assertEqual(provider.last_status, "rate_limited")
-        self.assertNotIn("private-key", session.calls[0][0])
+        url, headers, timeout = session.calls[0]
+        self.assertEqual(
+            url,
+            "https://pro-api.coingecko.com/api/v3/onchain/networks/"
+            f"base/tokens/multi/{TOKEN}",
+        )
+        self.assertEqual(headers, {"x-cg-pro-api-key": "private-key"})
+        self.assertEqual(timeout, 10.0)
+        self.assertEqual(first[TOKEN].market_observed_at, 1000)
+        self.assertEqual(first[TOKEN].fetched_at, 1000)
+
+    def test_malformed_or_unrequested_coingecko_records_remain_unpriced(self) -> None:
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "data": [
+                        {
+                            "attributes": {
+                                "address": TOKEN_2,
+                                "price_usd": "2",
+                                "volume_usd": {"h24": "10"},
+                                "last_trade_timestamp": (
+                                    "1970-01-01T00:16:40Z"
+                                ),
+                            }
+                        },
+                        {
+                            "attributes": {
+                                "address": TOKEN,
+                                "price_usd": "NaN",
+                                "volume_usd": {"h24": "-1"},
+                                "last_trade_timestamp": "malformed",
+                            }
+                        },
+                    ]
+                }
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response()
+
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                make_settings(Path(tmp)),
+                price_enable=True,
+                price_provider="coingecko_onchain",
+                coingecko_api_key="private",
+            )
+            result = CoinGeckoOnchainPriceProvider(
+                settings,
+                session=Session(),
+                clock=lambda: 1000,
+            ).quote_many(8453, [TOKEN])
+        self.assertEqual(result, {})
 
 
 if __name__ == "__main__":

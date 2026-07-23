@@ -129,6 +129,148 @@ def _upsert_flow_row(
     )
 
 
+def _insert_alert_row(
+    conn: sqlite3.Connection, alert: OnchainAlert
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO alerts(
+            alert_key, chain_id, token_address, symbol, direction,
+            score, horizon, confidence, reasons_json,
+            detection_types_json, window_start, window_end, total_usd,
+            tx_count, exchanges_json, label_confidence, price_status,
+            created_at, severity_version, status,
+            gross_inflow_usd, gross_outflow_usd, net_flow_usd,
+            duration_sec, inflow_tx_count, outflow_tx_count,
+            distinct_inbound_counterparties,
+            distinct_outbound_counterparties, evaluation_block,
+            price_source, price_observed_at, chain_name, notification_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(alert_key) DO NOTHING
+        """,
+        (
+            alert.alert_key,
+            alert.chain_id,
+            alert.token_address,
+            alert.symbol,
+            alert.direction,
+            alert.score,
+            alert.horizon,
+            alert.confidence,
+            json.dumps(alert.reasons, ensure_ascii=False),
+            json.dumps(alert.detection_types, ensure_ascii=False),
+            alert.window_start,
+            alert.window_end,
+            str(alert.total_usd),
+            alert.tx_count,
+            json.dumps(alert.exchanges, ensure_ascii=False),
+            alert.label_confidence,
+            alert.price_status,
+            alert.created_at,
+            alert.severity_version,
+            (
+                str(alert.gross_inflow_usd)
+                if alert.gross_inflow_usd is not None
+                else None
+            ),
+            (
+                str(alert.gross_outflow_usd)
+                if alert.gross_outflow_usd is not None
+                else None
+            ),
+            (
+                str(alert.net_flow_usd)
+                if alert.net_flow_usd is not None
+                else None
+            ),
+            alert.duration_sec,
+            alert.inflow_tx_count,
+            alert.outflow_tx_count,
+            alert.distinct_inbound_counterparties,
+            alert.distinct_outbound_counterparties,
+            alert.evaluation_block,
+            alert.price_source,
+            alert.price_observed_at,
+            alert.chain_name,
+            alert.notification_key or alert.alert_key,
+        ),
+    )
+
+
+def _alert_from_row(row: sqlite3.Row) -> OnchainAlert:
+    return OnchainAlert(
+        alert_key=str(row["alert_key"]),
+        chain_id=int(row["chain_id"]),
+        token_address=str(row["token_address"]),
+        symbol=str(row["symbol"]),
+        direction=str(row["direction"]),
+        score=int(row["score"]),
+        horizon=str(row["horizon"]),
+        confidence=str(row["confidence"]),
+        reasons=tuple(json.loads(str(row["reasons_json"]))),
+        detection_types=tuple(
+            json.loads(str(row["detection_types_json"]))
+        ),
+        window_start=int(row["window_start"]),
+        window_end=int(row["window_end"]),
+        total_usd=Decimal(str(row["total_usd"])),
+        tx_count=int(row["tx_count"]),
+        exchanges=tuple(json.loads(str(row["exchanges_json"]))),
+        label_confidence=float(row["label_confidence"]),
+        price_status=str(row["price_status"]),
+        created_at=int(row["created_at"]),
+        severity_version=str(row["severity_version"]),
+        gross_inflow_usd=_decimal_or_none(row["gross_inflow_usd"]),
+        gross_outflow_usd=_decimal_or_none(row["gross_outflow_usd"]),
+        net_flow_usd=_decimal_or_none(row["net_flow_usd"]),
+        duration_sec=int(row["duration_sec"]),
+        inflow_tx_count=int(row["inflow_tx_count"]),
+        outflow_tx_count=int(row["outflow_tx_count"]),
+        distinct_inbound_counterparties=int(
+            row["distinct_inbound_counterparties"]
+        ),
+        distinct_outbound_counterparties=int(
+            row["distinct_outbound_counterparties"]
+        ),
+        evaluation_block=int(row["evaluation_block"]),
+        price_source=str(row["price_source"]),
+        price_observed_at=int(row["price_observed_at"]),
+        chain_name=str(row["chain_name"]),
+        notification_key=str(row["notification_key"]),
+    )
+
+
+def _flow_from_row(row: sqlite3.Row) -> ClassifiedFlow:
+    return ClassifiedFlow(
+        event_id=str(row["event_id"]),
+        chain_id=int(row["chain_id"]),
+        token_address=str(row["token_address"]),
+        symbol=str(row["symbol"]),
+        block_time=int(row["block_time"]),
+        flow_type=str(row["flow_type"]),
+        exchange_from=(
+            str(row["exchange_from"])
+            if row["exchange_from"] is not None
+            else None
+        ),
+        exchange_to=(
+            str(row["exchange_to"])
+            if row["exchange_to"] is not None
+            else None
+        ),
+        counterparty_address=str(row["counterparty_address"]),
+        amount=_decimal_or_none(row["amount"]),
+        amount_usd=_decimal_or_none(row["amount_usd"]),
+        label_confidence=float(row["label_confidence"]),
+        price_status=str(row["price_status"]),
+        block_number=int(row["block_number"]),
+        block_hash=str(row["block_hash"]),
+        price_source=str(row["price_source"]),
+        price_observed_at=int(row["price_observed_at"]),
+    )
+
+
 class OnchainStore:
     def __init__(self, settings: OnchainSettings):
         settings.assert_safe_paths()
@@ -661,6 +803,17 @@ class OnchainStore:
             )
             conn.execute(
                 """
+                DELETE FROM single_event_decisions
+                WHERE event_id IN (
+                    SELECT event_id
+                    FROM transfer_events
+                    WHERE chain_id=? AND block_number>?
+                )
+                """,
+                (chain_id, ancestor_block),
+            )
+            conn.execute(
+                """
                 UPDATE chain_cursors
                 SET last_finalized_block=?, block_hash=?, updated_at=?,
                     provider_status='reorg_recovered'
@@ -687,8 +840,11 @@ class OnchainStore:
                     distinct_outbound_counterparties, exchanges_json,
                     active_15m_buckets, min_label_confidence, price_source,
                     price_observed_at, evaluation_block, algorithm_version,
-                    status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                    status, inflow_exchanges_json, outflow_exchanges_json,
+                    valuation_price_usd, price_market_observed_at,
+                    price_fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
+                          ?, ?, ?, ?, ?)
                 ON CONFLICT(snapshot_key) DO UPDATE SET
                     gross_inflow_usd=excluded.gross_inflow_usd,
                     gross_outflow_usd=excluded.gross_outflow_usd,
@@ -703,6 +859,11 @@ class OnchainStore:
                     price_source=excluded.price_source,
                     price_observed_at=excluded.price_observed_at,
                     evaluation_block=excluded.evaluation_block,
+                    inflow_exchanges_json=excluded.inflow_exchanges_json,
+                    outflow_exchanges_json=excluded.outflow_exchanges_json,
+                    valuation_price_usd=excluded.valuation_price_usd,
+                    price_market_observed_at=excluded.price_market_observed_at,
+                    price_fetched_at=excluded.price_fetched_at,
                     status='active'
                 """,
                 (
@@ -726,6 +887,19 @@ class OnchainStore:
                     snapshot.price_observed_at,
                     snapshot.evaluation_block,
                     snapshot.algorithm_version,
+                    json.dumps(
+                        snapshot.inflow_exchanges, ensure_ascii=False
+                    ),
+                    json.dumps(
+                        snapshot.outflow_exchanges, ensure_ascii=False
+                    ),
+                    (
+                        str(snapshot.valuation_price_usd)
+                        if snapshot.valuation_price_usd is not None
+                        else None
+                    ),
+                    snapshot.price_market_observed_at,
+                    snapshot.price_fetched_at,
                 ),
             )
 
@@ -735,12 +909,14 @@ class OnchainStore:
                 """
                 INSERT INTO price_cache(
                     chain_id, token_address, price_usd, volume_24h_usd,
-                    source, observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    source, observed_at, market_observed_at, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chain_id, token_address, source) DO UPDATE SET
                     price_usd=excluded.price_usd,
                     volume_24h_usd=excluded.volume_24h_usd,
-                    observed_at=excluded.observed_at
+                    observed_at=excluded.observed_at,
+                    market_observed_at=excluded.market_observed_at,
+                    fetched_at=excluded.fetched_at
                 """,
                 (
                     quote.chain_id,
@@ -753,6 +929,8 @@ class OnchainStore:
                     ),
                     quote.source,
                     quote.observed_at,
+                    quote.freshness_timestamp,
+                    quote.fetched_at,
                 ),
             )
 
@@ -778,6 +956,8 @@ class OnchainStore:
             volume_24h_usd=_decimal_or_none(row["volume_24h_usd"]),
             source=str(row["source"]),
             observed_at=int(row["observed_at"]),
+            market_observed_at=int(row["market_observed_at"]),
+            fetched_at=int(row["fetched_at"]),
         )
 
     def replace_windows(self, windows: Iterable[FlowWindow]) -> int:
@@ -829,8 +1009,8 @@ class OnchainStore:
                         score, horizon, confidence, reasons_json,
                         detection_types_json, window_start, window_end, total_usd,
                         tx_count, exchanges_json, label_confidence, price_status,
-                        created_at, severity_version, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                        created_at, severity_version, status, notification_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
                     ON CONFLICT(alert_key) DO UPDATE SET
                         score=excluded.score,
                         horizon=excluded.horizon,
@@ -842,6 +1022,7 @@ class OnchainStore:
                         exchanges_json=excluded.exchanges_json,
                         label_confidence=excluded.label_confidence,
                         price_status=excluded.price_status,
+                        notification_key=excluded.notification_key,
                         status='active'
                     """,
                     (
@@ -864,123 +1045,161 @@ class OnchainStore:
                         alert.price_status,
                         alert.created_at,
                         alert.severity_version,
+                        alert.notification_key or alert.alert_key,
                     ),
                 )
         return len(rows)
 
     def upsert_alert(self, alert: OnchainAlert) -> None:
         with closing(self._connect()) as conn, conn:
+            _insert_alert_row(conn, alert)
+
+    def pending_single_flows(self, chain_id: int) -> list[ClassifiedFlow]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT f.*
+                FROM flow_events f
+                JOIN transfer_events t ON t.event_id=f.event_id
+                LEFT JOIN single_event_decisions d ON d.event_id=f.event_id
+                WHERE f.chain_id=?
+                  AND f.flow_type IN ('inflow', 'outflow')
+                  AND f.status='active'
+                  AND t.removed=0
+                  AND t.confirmation_status='finalized'
+                  AND (
+                      d.event_id IS NULL
+                      OR d.decision_status='pending_price'
+                  )
+                ORDER BY f.block_time, f.event_id
+                """,
+                (chain_id,),
+            ).fetchall()
+        return [_flow_from_row(row) for row in rows]
+
+    def update_flow_valuation(self, flow: ClassifiedFlow) -> None:
+        with closing(self._connect()) as conn, conn:
+            _upsert_flow_row(conn, flow)
+
+    def persist_single_decision(
+        self,
+        *,
+        event_id: str,
+        decision_status: str,
+        attempted_at: int,
+        decision_reason: str,
+        catchup_suppression_reason: str = "",
+        alert: OnchainAlert | None = None,
+    ) -> None:
+        with closing(self._connect()) as conn, conn:
+            if alert is not None:
+                _insert_alert_row(conn, alert)
+                self._queue_delivery_row(conn, alert, attempted_at)
             conn.execute(
                 """
-                INSERT INTO alerts(
-                    alert_key, chain_id, token_address, symbol, direction,
-                    score, horizon, confidence, reasons_json,
-                    detection_types_json, window_start, window_end, total_usd,
-                    tx_count, exchanges_json, label_confidence, price_status,
-                    created_at, severity_version, status,
-                    gross_inflow_usd, gross_outflow_usd, net_flow_usd,
-                    duration_sec, inflow_tx_count, outflow_tx_count,
-                    distinct_inbound_counterparties,
-                    distinct_outbound_counterparties, evaluation_block,
-                    price_source, price_observed_at, chain_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
-                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(alert_key) DO NOTHING
+                INSERT INTO single_event_decisions(
+                    event_id, decision_status, alert_key,
+                    last_evaluation_attempt, catchup_suppression_reason,
+                    decision_reason, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    decision_status=excluded.decision_status,
+                    alert_key=excluded.alert_key,
+                    last_evaluation_attempt=excluded.last_evaluation_attempt,
+                    catchup_suppression_reason=excluded.catchup_suppression_reason,
+                    decision_reason=excluded.decision_reason,
+                    updated_at=excluded.updated_at
                 """,
                 (
-                    alert.alert_key,
-                    alert.chain_id,
-                    alert.token_address,
-                    alert.symbol,
-                    alert.direction,
-                    alert.score,
-                    alert.horizon,
-                    alert.confidence,
-                    json.dumps(alert.reasons, ensure_ascii=False),
-                    json.dumps(alert.detection_types, ensure_ascii=False),
-                    alert.window_start,
-                    alert.window_end,
-                    str(alert.total_usd),
-                    alert.tx_count,
-                    json.dumps(alert.exchanges, ensure_ascii=False),
-                    alert.label_confidence,
-                    alert.price_status,
-                    alert.created_at,
-                    alert.severity_version,
-                    (
-                        str(alert.gross_inflow_usd)
-                        if alert.gross_inflow_usd is not None
-                        else None
-                    ),
-                    (
-                        str(alert.gross_outflow_usd)
-                        if alert.gross_outflow_usd is not None
-                        else None
-                    ),
-                    (
-                        str(alert.net_flow_usd)
-                        if alert.net_flow_usd is not None
-                        else None
-                    ),
-                    alert.duration_sec,
-                    alert.inflow_tx_count,
-                    alert.outflow_tx_count,
-                    alert.distinct_inbound_counterparties,
-                    alert.distinct_outbound_counterparties,
-                    alert.evaluation_block,
-                    alert.price_source,
-                    alert.price_observed_at,
-                    alert.chain_name,
+                    event_id,
+                    decision_status,
+                    alert.alert_key if alert is not None else None,
+                    attempted_at,
+                    catchup_suppression_reason,
+                    decision_reason,
+                    attempted_at,
                 ),
             )
+
+    @staticmethod
+    def _queue_delivery_row(
+        conn: sqlite3.Connection,
+        alert: OnchainAlert,
+        created_at: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO alert_deliveries(
+                delivery_key, alert_key, status, sent, reason, created_at,
+                notification_key, attempt_count, updated_at
+            ) VALUES (?, ?, 'pending', 0, '', ?, ?, 0, ?)
+            ON CONFLICT(delivery_key) DO NOTHING
+            """,
+            (
+                alert.alert_key,
+                alert.alert_key,
+                created_at,
+                alert.notification_key or alert.alert_key,
+                created_at,
+            ),
+        )
+
+    def persist_alert_for_delivery(
+        self, alert: OnchainAlert, *, created_at: int
+    ) -> None:
+        with closing(self._connect()) as conn, conn:
+            _insert_alert_row(conn, alert)
+            self._queue_delivery_row(conn, alert, created_at)
+
+    def pending_delivery_alerts(self) -> list[OnchainAlert]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT a.*
+                FROM alert_deliveries d
+                JOIN alerts a ON a.alert_key=d.alert_key
+                WHERE d.status IN ('pending', 'failed')
+                  AND a.status='active'
+                ORDER BY d.created_at, d.delivery_key
+                """
+            ).fetchall()
+        return [_alert_from_row(row) for row in rows]
+
+    def delivery_in_cooldown(
+        self,
+        notification_key: str,
+        *,
+        now: int,
+        cooldown_sec: int,
+        excluding_alert_key: str,
+    ) -> bool:
+        if cooldown_sec <= 0:
+            return False
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM alert_deliveries
+                WHERE notification_key=?
+                  AND alert_key<>?
+                  AND status IN ('dry_run', 'sent', 'succeeded')
+                  AND updated_at>=?
+                LIMIT 1
+                """,
+                (
+                    notification_key,
+                    excluding_alert_key,
+                    now - cooldown_sec,
+                ),
+            ).fetchone()
+        return row is not None
 
     def active_alerts(self) -> list[OnchainAlert]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT * FROM alerts WHERE status='active' ORDER BY alert_key"
             ).fetchall()
-        return [
-            OnchainAlert(
-                alert_key=str(row["alert_key"]),
-                chain_id=int(row["chain_id"]),
-                token_address=str(row["token_address"]),
-                symbol=str(row["symbol"]),
-                direction=str(row["direction"]),
-                score=int(row["score"]),
-                horizon=str(row["horizon"]),
-                confidence=str(row["confidence"]),
-                reasons=tuple(json.loads(str(row["reasons_json"]))),
-                detection_types=tuple(
-                    json.loads(str(row["detection_types_json"]))
-                ),
-                window_start=int(row["window_start"]),
-                window_end=int(row["window_end"]),
-                total_usd=Decimal(str(row["total_usd"])),
-                tx_count=int(row["tx_count"]),
-                exchanges=tuple(json.loads(str(row["exchanges_json"]))),
-                label_confidence=float(row["label_confidence"]),
-                price_status=str(row["price_status"]),
-                created_at=int(row["created_at"]),
-                severity_version=str(row["severity_version"]),
-                gross_inflow_usd=_decimal_or_none(row["gross_inflow_usd"]),
-                gross_outflow_usd=_decimal_or_none(row["gross_outflow_usd"]),
-                net_flow_usd=_decimal_or_none(row["net_flow_usd"]),
-                duration_sec=int(row["duration_sec"]),
-                inflow_tx_count=int(row["inflow_tx_count"]),
-                outflow_tx_count=int(row["outflow_tx_count"]),
-                distinct_inbound_counterparties=int(
-                    row["distinct_inbound_counterparties"]
-                ),
-                distinct_outbound_counterparties=int(
-                    row["distinct_outbound_counterparties"]
-                ),
-                evaluation_block=int(row["evaluation_block"]),
-                price_source=str(row["price_source"]),
-                price_observed_at=int(row["price_observed_at"]),
-                chain_name=str(row["chain_name"]),
-            )
-            for row in rows
-        ]
+        return [_alert_from_row(row) for row in rows]
 
     def record_delivery(
         self,
@@ -991,23 +1210,38 @@ class OnchainStore:
         reason: str,
         created_at: int,
     ) -> None:
-        delivery_key = f"{alert_key}:{status}"
         with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "SELECT notification_key FROM alerts WHERE alert_key=?",
+                (alert_key,),
+            ).fetchone()
+            notification_key = (
+                str(row["notification_key"])
+                if row is not None
+                else alert_key
+            )
             conn.execute(
                 """
                 INSERT INTO alert_deliveries(
-                    delivery_key, alert_key, status, sent, reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    delivery_key, alert_key, status, sent, reason, created_at,
+                    notification_key, attempt_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(delivery_key) DO UPDATE SET
+                    status=excluded.status,
                     sent=excluded.sent,
-                    reason=excluded.reason
+                    reason=excluded.reason,
+                    notification_key=excluded.notification_key,
+                    attempt_count=alert_deliveries.attempt_count + 1,
+                    updated_at=excluded.updated_at
                 """,
                 (
-                    delivery_key,
+                    alert_key,
                     alert_key,
                     status,
                     int(sent),
                     reason,
+                    created_at,
+                    notification_key,
                     created_at,
                 ),
             )
@@ -1025,6 +1259,7 @@ class OnchainStore:
             "price_cache",
             "flow_window_snapshots",
             "orphaned_transfer_audit",
+            "single_event_decisions",
         )
         with closing(self._connect()) as conn:
             return {

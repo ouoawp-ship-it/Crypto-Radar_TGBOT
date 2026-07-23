@@ -16,6 +16,7 @@ from paopao_radar.onchain_flow.models import (
     ClassifiedFlow,
     DetectedRollingFlow,
     NormalizedTransfer,
+    PriceQuote,
     RollingFlowSnapshot,
     TokenMetadata,
 )
@@ -124,6 +125,91 @@ class RollingFlowTests(unittest.TestCase):
         self.assertEqual(snapshot.net_flow_usd, Decimal("-80"))
         self.assertEqual(snapshot.direction, "outflow")
 
+    def test_sixty_minutes_keeps_eight_events_across_three_buckets_at_one_quote(self) -> None:
+        records = [
+            flow(
+                f"in-{index}",
+                "inflow",
+                "10",
+                block_time,
+                counterparty=f"outside-{index}",
+            )
+            for index, block_time in enumerate(
+                (100, 200, 950, 1000, 1850, 1900, 2600, 2650)
+            )
+        ]
+        quote = PriceQuote(
+            chain_id=8453,
+            token_address=TOKEN,
+            price_usd=Decimal("3"),
+            volume_24h_usd=Decimal("1000"),
+            source="current-contract-quote",
+            observed_at=2700,
+            market_observed_at=2700,
+            fetched_at=2701,
+        )
+        snapshots = build_rolling_snapshots(
+            records,
+            evaluation_time=2700,
+            evaluation_block=456,
+            min_label_confidence=0.8,
+            price_max_age_sec=300,
+            quotes={(8453, TOKEN): quote},
+        )
+        sixty = next(item for item in snapshots if item.duration_sec == 3600)
+        self.assertEqual(sixty.inflow_tx_count, 8)
+        self.assertGreaterEqual(sixty.active_15m_buckets, 3)
+        self.assertEqual(sixty.gross_inflow_usd, Decimal("240"))
+        self.assertEqual(sixty.valuation_price_usd, Decimal("3"))
+        self.assertEqual(sixty.price_market_observed_at, 2700)
+        self.assertEqual(sixty.price_fetched_at, 2701)
+
+    def test_stale_current_quote_suppresses_but_later_fresh_quote_recovers(self) -> None:
+        records = [flow("in", "inflow", "10", 1900)]
+        stale = PriceQuote(
+            8453,
+            TOKEN,
+            Decimal("2"),
+            None,
+            "test",
+            1000,
+            market_observed_at=1000,
+            fetched_at=2000,
+        )
+        fresh = replace(
+            stale,
+            observed_at=2000,
+            market_observed_at=2000,
+            fetched_at=2001,
+        )
+        common = {
+            "evaluation_time": 2000,
+            "evaluation_block": 123,
+            "min_label_confidence": 0.8,
+            "price_max_age_sec": 300,
+        }
+        self.assertEqual(
+            build_rolling_snapshots(
+                records,
+                quotes={(8453, TOKEN): stale},
+                **common,
+            ),
+            [],
+        )
+        recovered = build_rolling_snapshots(
+            records,
+            quotes={(8453, TOKEN): fresh},
+            **common,
+        )
+        self.assertEqual(
+            next(
+                item
+                for item in recovered
+                if item.duration_sec == 3600
+            ).gross_inflow_usd,
+            Decimal("20"),
+        )
+
     def test_balanced_opposite_flow_suppresses_directional_alert(self) -> None:
         flows = [
             flow(f"in-{index}", "inflow", "20", 1950 + index)
@@ -144,7 +230,7 @@ class RollingFlowTests(unittest.TestCase):
         )
         self.assertEqual(detected, [])
 
-    def test_rolling_boundary_is_inclusive_and_stale_price_is_excluded(self) -> None:
+    def test_rolling_boundary_is_inclusive_and_historical_quote_age_does_not_exclude_flow(self) -> None:
         boundary = flow("boundary", "inflow", "100", 1100)
         stale = replace(
             flow("stale", "inflow", "100", 1999),
@@ -158,7 +244,7 @@ class RollingFlowTests(unittest.TestCase):
             price_max_age_sec=300,
         )
         fifteen = next(item for item in snapshots if item.duration_sec == 900)
-        self.assertEqual(fifteen.gross_inflow_usd, Decimal("100"))
+        self.assertEqual(fifteen.gross_inflow_usd, Decimal("200"))
 
     def test_multi_exchange_rolling_detection_and_copy(self) -> None:
         flows = []
@@ -198,13 +284,56 @@ class RollingFlowTests(unittest.TestCase):
         self.assertIn("评分不是概率", rendered)
         self.assertIn("不保证价格必然上涨或下跌", rendered)
 
-    def test_unpriced_flow_never_enters_rolling_snapshot(self) -> None:
+    def test_opposite_direction_exchange_does_not_create_multi_exchange(self) -> None:
+        records = [
+            flow(
+                f"in-{index}",
+                "inflow",
+                "20",
+                2000 - (index * 400),
+                exchange="Binance",
+                counterparty=f"in-{index}",
+            )
+            for index in range(8)
+        ]
+        records.append(
+            flow(
+                "okx-out",
+                "outflow",
+                "10",
+                1900,
+                exchange="OKX",
+            )
+        )
+        detections = detect_rolling_flows(
+            build_rolling_snapshots(
+                records,
+                evaluation_time=2000,
+                evaluation_block=123,
+                min_label_confidence=0.8,
+                price_max_age_sec=300,
+            ),
+            {(8453, TOKEN): metadata()},
+            self.settings(),
+        )
+        sixty = next(
+            item
+            for item in detections
+            if item.snapshot.duration_sec == 3600
+        )
+        self.assertIn("continuous_flow", sixty.detection_types)
+        self.assertNotIn("multi_exchange", sixty.detection_types)
+        self.assertEqual(sixty.snapshot.inflow_exchanges, ("Binance",))
+        self.assertEqual(sixty.snapshot.outflow_exchanges, ("OKX",))
+
+    def test_missing_current_quote_never_enters_rolling_snapshot(self) -> None:
         snapshots = build_rolling_snapshots(
             [flow("missing", "inflow", "100", 1999, price_status="missing")],
             evaluation_time=2000,
             evaluation_block=123,
             min_label_confidence=0.8,
             price_max_age_sec=300,
+            quotes={},
         )
         self.assertEqual(snapshots, [])
 
@@ -230,6 +359,8 @@ class RollingFlowTests(unittest.TestCase):
             price_observed_at=2000,
             evaluation_block=123,
             algorithm_version="p3.1-test",
+            inflow_exchanges=("Binance",),
+            valuation_price_usd=Decimal("1"),
         )
         medium = score_rolling_detection(
             DetectedRollingFlow(
@@ -240,7 +371,11 @@ class RollingFlowTests(unittest.TestCase):
         )
         high = score_rolling_detection(
             DetectedRollingFlow(
-                snapshot=replace(base, exchanges=("Binance", "OKX")),
+                snapshot=replace(
+                    base,
+                    exchanges=("Binance", "OKX"),
+                    inflow_exchanges=("Binance", "OKX"),
+                ),
                 detection_types=("continuous_flow", "multi_exchange"),
                 threshold_usd=Decimal("100"),
             )

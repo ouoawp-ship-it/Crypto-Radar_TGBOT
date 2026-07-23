@@ -12,10 +12,15 @@ from paopao_radar.onchain_flow.collectors.base import BlockRange
 from paopao_radar.onchain_flow.collectors.evm_http import (
     AdaptiveRangeError,
     BaseHttpCollector,
+    FinalizedRangeConsistencyError,
     JsonRpcClient,
     LogValidationError,
+    RpcAuthError,
+    RpcRateLimitError,
     RpcRangeError,
     RpcResponseError,
+    RpcServiceError,
+    RpcTimeoutError,
     build_transfer_filters,
     normalize_transfer_log,
     pad_topic_address,
@@ -35,10 +40,9 @@ TOKEN = "0x9999999999999999999999999999999999999999"
 
 
 class FakeResponse:
-    status_code = 200
-
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self.payload = payload
+        self.status_code = status_code
 
     def json(self):
         return self.payload
@@ -191,6 +195,41 @@ class JsonRpcTests(unittest.TestCase):
         self.assertEqual(result["block_lookup"], "ok")
         self.assertNotIn("secret", str(result))
 
+    def test_auth_and_rate_limit_are_structured_without_split_semantics(self) -> None:
+        class StatusSession:
+            def __init__(self, status):
+                self.status = status
+                self.calls = 0
+
+            def post(self, *_args, **_kwargs):
+                self.calls += 1
+                return FakeResponse({}, self.status)
+
+        auth_session = StatusSession(401)
+        auth = JsonRpcClient(
+            "https://example.invalid",
+            timeout_sec=1,
+            retry=3,
+            backoff_sec=0,
+            session=auth_session,
+        )
+        with self.assertRaises(RpcAuthError):
+            auth.block_number()
+        self.assertEqual(auth_session.calls, 1)
+
+        rate_session = StatusSession(429)
+        rate = JsonRpcClient(
+            "https://example.invalid",
+            timeout_sec=1,
+            retry=3,
+            backoff_sec=0,
+            session=rate_session,
+            sleep=lambda _seconds: None,
+        )
+        with self.assertRaises(RpcRateLimitError):
+            rate.block_number()
+        self.assertEqual(rate_session.calls, 3)
+
 
 class TransferCollectionTests(unittest.TestCase):
     def test_filters_batch_addresses_and_never_set_token_address(self) -> None:
@@ -265,6 +304,64 @@ class TransferCollectionTests(unittest.TestCase):
                 BaseHttpCollector(Client(), settings).fetch_cex_logs(
                     1, 2, [CEX]
                 )
+
+    def test_generic_outage_and_timeout_budget_have_bounded_call_counts(self) -> None:
+        class ServiceClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_logs(self, _payload):
+                self.calls += 1
+                raise RpcServiceError("provider unavailable")
+
+        class TimeoutClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_logs(self, _payload):
+                self.calls += 1
+                raise RpcTimeoutError("timeout")
+
+        with TemporaryDirectory() as tmp:
+            base = replace(
+                make_settings(Path(tmp)),
+                rpc_max_block_range=64,
+                rpc_min_block_range=1,
+                rpc_adaptive_max_requests=5,
+                rpc_adaptive_max_depth=12,
+            )
+            service = ServiceClient()
+            with self.assertRaises(RpcServiceError):
+                BaseHttpCollector(service, base).fetch_cex_logs(
+                    1, 64, [CEX]
+                )
+            self.assertEqual(service.calls, 1)
+
+            timeout = TimeoutClient()
+            with self.assertRaises(AdaptiveRangeError):
+                BaseHttpCollector(timeout, base).fetch_cex_logs(
+                    1, 64, [CEX]
+                )
+            self.assertEqual(timeout.calls, 5)
+
+    def test_conflicting_duplicate_event_key_fails_closed(self) -> None:
+        first = transfer_log()
+        second = dict(first)
+        second["data"] = "0x" + f"{456:064x}"
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def get_logs(self, _payload):
+                self.calls += 1
+                return [first] if self.calls == 1 else [second]
+
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(FinalizedRangeConsistencyError):
+                BaseHttpCollector(
+                    Client(), make_settings(Path(tmp))
+                ).fetch_cex_logs(100, 100, [CEX])
 
     def test_transfer_log_is_strictly_decoded(self) -> None:
         transfer = normalize_transfer_log(

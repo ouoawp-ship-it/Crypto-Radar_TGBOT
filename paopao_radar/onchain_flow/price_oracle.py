@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -19,6 +20,30 @@ class PriceProvider(Protocol):
         self, chain_id: int, token_addresses: Sequence[str]
     ) -> dict[str, PriceQuote]:
         ...
+
+
+class PriceConfigurationError(ValueError):
+    pass
+
+
+def _market_timestamp(value: object) -> int:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        timestamp = int(value)
+        if timestamp > 0:
+            return timestamp
+        raise ValueError("market timestamp must be positive")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("market timestamp is missing")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    timestamp = int(parsed.timestamp())
+    if timestamp <= 0:
+        raise ValueError("market timestamp must be positive")
+    return timestamp
 
 
 class StaticPriceProvider:
@@ -78,7 +103,8 @@ class CoinGeckoOnchainPriceProvider:
             return {}
         self.calls.append(now)
         endpoint = (
-            "https://api.coingecko.com/api/v3/onchain/networks/base/tokens/multi/"
+            self.settings.coingecko_api_base_url
+            + "/onchain/networks/base/tokens/multi/"
             + ",".join(normalized)
         )
         try:
@@ -119,9 +145,22 @@ class CoinGeckoOnchainPriceProvider:
                     if volume_raw not in {None, ""}
                     else None
                 )
-            except (KeyError, InvalidOperation, TypeError, ValueError):
+                market_observed_at = _market_timestamp(
+                    attributes["last_trade_timestamp"]
+                )
+            except (
+                KeyError,
+                InvalidOperation,
+                TypeError,
+                ValueError,
+                OverflowError,
+            ):
                 continue
             if not price.is_finite() or price <= 0:
+                continue
+            if volume is not None and (
+                not volume.is_finite() or volume < 0
+            ):
                 continue
             quotes[address] = PriceQuote(
                 chain_id=chain_id,
@@ -129,7 +168,9 @@ class CoinGeckoOnchainPriceProvider:
                 price_usd=price,
                 volume_24h_usd=volume,
                 source="coingecko_onchain",
-                observed_at=int(now),
+                observed_at=market_observed_at,
+                market_observed_at=market_observed_at,
+                fetched_at=int(now),
             )
         self.last_status = "ok" if quotes else "unpriced"
         return quotes
@@ -150,7 +191,11 @@ class CachedPriceService:
         self.clock = clock
 
     def quotes(
-        self, chain_id: int, token_addresses: Sequence[str]
+        self,
+        chain_id: int,
+        token_addresses: Sequence[str],
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, PriceQuote]:
         now = int(self.clock())
         result: dict[str, PriceQuote] = {}
@@ -159,8 +204,9 @@ class CachedPriceService:
             address = normalize_evm_address(raw_address)
             cached = self.store.cached_price(chain_id, address)
             if (
-                cached is not None
-                and now - cached.observed_at
+                not force_refresh
+                and cached is not None
+                and now - cached.freshness_timestamp
                 <= self.settings.price_max_age_sec
             ):
                 result[address] = cached
@@ -172,8 +218,22 @@ class CachedPriceService:
                 fresh = self.provider.quote_many(chain_id, batch)
                 for address, quote in fresh.items():
                     self.store.cache_price(quote)
-                    if now - quote.observed_at <= self.settings.price_max_age_sec:
+                    if (
+                        now - quote.freshness_timestamp
+                        <= self.settings.price_max_age_sec
+                    ):
                         result[address] = quote
+        if force_refresh:
+            for address in missing:
+                if address in result:
+                    continue
+                cached = self.store.cached_price(chain_id, address)
+                if (
+                    cached is not None
+                    and now - cached.freshness_timestamp
+                    <= self.settings.price_max_age_sec
+                ):
+                    result[address] = cached
         return result
 
 
@@ -184,4 +244,8 @@ def build_price_provider(
         return None
     if settings.price_provider == "coingecko_onchain":
         return CoinGeckoOnchainPriceProvider(settings)
+    if settings.price_provider == "static":
+        raise PriceConfigurationError(
+            "static price provider requires an injected fixture provider"
+        )
     return None

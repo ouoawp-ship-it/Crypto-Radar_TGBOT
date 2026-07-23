@@ -82,6 +82,11 @@ def score_detection(detected: DetectedFlow) -> OnchainAlert:
         price_status="available",
         created_at=window.window_end,
         severity_version=SEVERITY_VERSION,
+        notification_key=(
+            f"{window.chain_id}:{window.token_address}:{window.direction}:"
+            f"{window.duration_sec}:{'+'.join(detected.detection_types)}:"
+            f"{confidence}"
+        ),
     )
 
 
@@ -135,7 +140,7 @@ def score_rolling_detection(detected: DetectedRollingFlow) -> OnchainAlert:
         window_end=snapshot.evaluation_time,
         total_usd=abs(snapshot.net_flow_usd),
         tx_count=snapshot.inflow_tx_count + snapshot.outflow_tx_count,
-        exchanges=snapshot.exchanges,
+        exchanges=snapshot.directional_exchanges,
         label_confidence=snapshot.min_label_confidence,
         price_status="available",
         created_at=snapshot.evaluation_time,
@@ -156,6 +161,11 @@ def score_rolling_detection(detected: DetectedRollingFlow) -> OnchainAlert:
         price_source=snapshot.price_source,
         price_observed_at=snapshot.price_observed_at,
         chain_name="Base",
+        notification_key=(
+            f"{snapshot.chain_id}:{snapshot.token_address}:"
+            f"{snapshot.direction}:{snapshot.duration_sec}:"
+            f"{'+'.join(detected.detection_types)}:{confidence}"
+        ),
     )
 
 
@@ -185,4 +195,8 @@ def score_live_single_detection(
         price_source=flow.price_source,
         price_observed_at=flow.price_observed_at,
         chain_name="Base",
+        notification_key=(
+            f"{flow.chain_id}:{flow.token_address}:{flow.flow_type}:0:"
+            f"single_large:{alert.confidence}"
+        ),
     )

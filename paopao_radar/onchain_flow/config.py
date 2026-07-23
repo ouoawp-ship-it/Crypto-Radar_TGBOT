@@ -144,6 +144,8 @@ class OnchainSettings:
     rpc_topic_address_batch: int = 50
     rpc_poll_sec: Decimal = Decimal("5")
     rpc_rate_limit_per_second: int = 20
+    rpc_adaptive_max_requests: int = 64
+    rpc_adaptive_max_depth: int = 12
     wss_reconnect_sec: Decimal = Decimal("5")
     wss_idle_timeout_sec: Decimal = Decimal("30")
     wss_queue_max: int = 100
@@ -153,8 +155,10 @@ class OnchainSettings:
     price_batch_size: int = 50
     price_rate_limit_per_minute: int = 30
     coingecko_api_key: str = ""
+    coingecko_api_base_url: str = "https://pro-api.coingecko.com/api/v3"
     net_dominance_min: Decimal = Decimal("0.60")
     rolling_evaluation_bucket_sec: int = 300
+    alert_max_event_age_sec: int = 1800
 
     @classmethod
     def load(
@@ -298,6 +302,12 @@ class OnchainSettings:
             rpc_rate_limit_per_second=_int(
                 values, "ONCHAIN_RPC_RATE_LIMIT_PER_SECOND", 20
             ),
+            rpc_adaptive_max_requests=_int(
+                values, "ONCHAIN_RPC_ADAPTIVE_MAX_REQUESTS", 64
+            ),
+            rpc_adaptive_max_depth=_int(
+                values, "ONCHAIN_RPC_ADAPTIVE_MAX_DEPTH", 12
+            ),
             wss_reconnect_sec=_decimal(
                 values, "ONCHAIN_WSS_RECONNECT_SEC", "5"
             ),
@@ -321,11 +331,18 @@ class OnchainSettings:
             coingecko_api_key=values.get(
                 "ONCHAIN_COINGECKO_API_KEY", ""
             ).strip(),
+            coingecko_api_base_url=values.get(
+                "ONCHAIN_COINGECKO_API_BASE_URL",
+                "https://pro-api.coingecko.com/api/v3",
+            ).strip().rstrip("/"),
             net_dominance_min=_decimal(
                 values, "ONCHAIN_NET_DOMINANCE_MIN", "0.60"
             ),
             rolling_evaluation_bucket_sec=_int(
                 values, "ONCHAIN_ROLLING_EVALUATION_BUCKET_SEC", 300
+            ),
+            alert_max_event_age_sec=_int(
+                values, "ONCHAIN_ALERT_MAX_EVENT_AGE_SEC", 1800
             ),
         )
 
@@ -409,6 +426,8 @@ class OnchainSettings:
             "price_batch_size",
             "price_rate_limit_per_minute",
             "rolling_evaluation_bucket_sec",
+            "rpc_adaptive_max_requests",
+            "rpc_adaptive_max_depth",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
@@ -419,6 +438,7 @@ class OnchainSettings:
             "base_bootstrap_lookback_blocks",
             "base_reorg_lookback_blocks",
             "rpc_retry",
+            "alert_max_event_age_sec",
         )
         for field_name in non_negative_ints:
             value = getattr(self, field_name)
@@ -445,6 +465,20 @@ class OnchainSettings:
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
                 "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
+            )
+        price_api = urlsplit(self.coingecko_api_base_url)
+        if (
+            price_api.scheme.lower() != "https"
+            or not price_api.hostname
+            or price_api.username is not None
+            or price_api.password is not None
+        ):
+            raise SettingsValidationError(
+                "ONCHAIN_COINGECKO_API_BASE_URL must be a credential-free HTTPS URL"
+            )
+        if price_api.hostname.lower() == "api.coingecko.com":
+            raise SettingsValidationError(
+                "CoinGecko Pro credentials cannot use api.coingecko.com"
             )
         for name, value, schemes in (
             (
@@ -486,6 +520,7 @@ class OnchainSettings:
                 "enabled": self.price_enable,
                 "provider": self.price_provider,
                 "api_key_configured": bool(self.coingecko_api_key),
+                "api": _endpoint_diagnostic(self.coingecko_api_base_url),
                 "max_age_sec": self.price_max_age_sec,
             },
             "telegram": {

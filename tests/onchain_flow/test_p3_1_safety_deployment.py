@@ -121,7 +121,7 @@ class P31SafetyTests(unittest.TestCase):
             with self.assertRaises(UnsafeOnchainPath):
                 settings.validate()
 
-    def test_migration_two_adds_cursor_price_and_rolling_tables(self) -> None:
+    def test_migration_three_adds_durable_evaluation_tables(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OnchainStore(make_settings(Path(tmp)))
             store.migrate()
@@ -138,13 +138,14 @@ class P31SafetyTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
-        self.assertEqual(versions, [1, 2])
+        self.assertEqual(versions, [1, 2, 3])
         self.assertTrue(
             {
                 "processed_blocks",
                 "price_cache",
                 "flow_window_snapshots",
                 "orphaned_transfer_audit",
+                "single_event_decisions",
             }.issubset(tables)
         )
 
@@ -249,6 +250,9 @@ class P31DeploymentTests(unittest.TestCase):
         self.assertIn("ONCHAIN_BASE_ENABLE=true is required", script)
         self.assertIn("provider-check --chain base", script)
         self.assertIn("MemoryMax=384M", script)
+        self.assertIn("User=${SERVICE_USER}", script)
+        self.assertIn("Group=${SERVICE_GROUP}", script)
+        self.assertIn("Refusing to enable the service as root", script)
         self.assertNotIn("paopao-radar.service", script)
         self.assertNotIn("paopao-market-stream.service", script)
 

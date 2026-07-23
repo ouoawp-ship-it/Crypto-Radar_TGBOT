@@ -200,6 +200,7 @@ class OnchainAlert:
     price_source: str = ""
     price_observed_at: int = 0
     chain_name: str = ""
+    notification_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -229,6 +230,12 @@ class PriceQuote:
     volume_24h_usd: Decimal | None
     source: str
     observed_at: int
+    market_observed_at: int = 0
+    fetched_at: int = 0
+
+    @property
+    def freshness_timestamp(self) -> int:
+        return self.market_observed_at or self.observed_at
 
 
 @dataclass(frozen=True)
@@ -253,6 +260,11 @@ class RollingFlowSnapshot:
     price_observed_at: int
     evaluation_block: int
     algorithm_version: str
+    inflow_exchanges: tuple[str, ...] = ()
+    outflow_exchanges: tuple[str, ...] = ()
+    valuation_price_usd: Decimal | None = None
+    price_market_observed_at: int = 0
+    price_fetched_at: int = 0
 
     @property
     def max_gross_usd(self) -> Decimal:
@@ -273,6 +285,14 @@ class RollingFlowSnapshot:
             return "outflow"
         return "balanced"
 
+    @property
+    def directional_exchanges(self) -> tuple[str, ...]:
+        if self.direction == "inflow":
+            return self.inflow_exchanges
+        if self.direction == "outflow":
+            return self.outflow_exchanges
+        return ()
+
 
 @dataclass(frozen=True)
 class ReplaySummary:
@@ -285,6 +305,7 @@ class ReplaySummary:
     windows: int
     alerts: int
     alert_keys: tuple[str, ...] = field(default_factory=tuple)
+    replay_directory: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -297,4 +318,5 @@ class ReplaySummary:
             "windows": self.windows,
             "alerts": self.alerts,
             "alert_keys": list(self.alert_keys),
+            "replay_directory": self.replay_directory,
         }

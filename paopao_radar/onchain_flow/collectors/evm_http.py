@@ -27,9 +27,9 @@ RANGE_ERROR_MARKERS = (
     "block range",
     "query returned more than",
     "limit exceeded",
-    "timeout",
-    "timed out",
 )
+TIMEOUT_ERROR_MARKERS = ("timeout", "timed out", "deadline exceeded")
+RATE_LIMIT_MARKERS = ("rate limit", "too many requests", "429")
 
 
 class RpcError(RuntimeError):
@@ -48,7 +48,31 @@ class RpcRangeError(RpcResponseError):
     pass
 
 
+class RpcTimeoutError(RpcTransportError):
+    pass
+
+
+class RpcRateLimitError(RpcTransportError):
+    pass
+
+
+class RpcAuthError(RpcTransportError):
+    pass
+
+
+class RpcServiceError(RpcTransportError):
+    pass
+
+
+class RpcConnectionError(RpcTransportError):
+    pass
+
+
 class AdaptiveRangeError(RpcError):
+    pass
+
+
+class FinalizedRangeConsistencyError(RpcError):
     pass
 
 
@@ -165,7 +189,7 @@ class JsonRpcClient:
             "params": list(params),
         }
         attempts = max(1, self.retry)
-        last_error: Exception | None = None
+        last_error: RpcError | None = None
         for attempt in range(attempts):
             self._apply_rate_limit()
             self.request_count += 1
@@ -177,8 +201,14 @@ class JsonRpcClient:
                     headers={"Content-Type": "application/json"},
                 )
                 status_code = int(getattr(response, "status_code", 200))
+                if status_code in {401, 403}:
+                    raise RpcAuthError(f"{method} provider authentication failed")
+                if status_code == 429:
+                    raise RpcRateLimitError(f"{method} provider rate limited")
+                if status_code >= 500:
+                    raise RpcServiceError(f"{method} provider unavailable")
                 if status_code >= 400:
-                    raise requests.HTTPError(f"HTTP {status_code}")
+                    raise RpcResponseError(f"{method} provider HTTP error")
                 data = response.json()
                 if not isinstance(data, dict):
                     raise RpcResponseError(
@@ -196,32 +226,71 @@ class JsonRpcClient:
                         else str(error)
                     )
                     safe_message = message.lower()
-                    error_type = (
-                        RpcRangeError
-                        if any(
-                            marker in safe_message
-                            for marker in RANGE_ERROR_MARKERS
-                        )
-                        else RpcResponseError
-                    )
+                    if any(
+                        marker in safe_message
+                        for marker in RATE_LIMIT_MARKERS
+                    ):
+                        error_type = RpcRateLimitError
+                    elif any(
+                        marker in safe_message
+                        for marker in TIMEOUT_ERROR_MARKERS
+                    ):
+                        error_type = RpcTimeoutError
+                    elif any(
+                        marker in safe_message
+                        for marker in RANGE_ERROR_MARKERS
+                    ):
+                        error_type = RpcRangeError
+                    else:
+                        error_type = RpcResponseError
                     raise error_type(f"{method} RPC error")
                 if "result" not in data:
                     raise RpcResponseError(f"{method} response lacks result")
                 return data["result"]
-            except RpcRangeError:
+            except (RpcRangeError, RpcAuthError, RpcResponseError):
                 self.error_count += 1
                 raise
-            except RpcResponseError:
-                self.error_count += 1
-                raise
-            except (requests.RequestException, ValueError) as exc:
+            except RpcRateLimitError as exc:
                 self.error_count += 1
                 last_error = exc
                 if attempt + 1 < attempts:
                     self.sleep(self.backoff_sec * (2**attempt))
-        raise RpcTransportError(
+                    continue
+                raise
+            except (RpcTimeoutError, RpcServiceError) as exc:
+                self.error_count += 1
+                last_error = exc
+                if attempt + 1 < attempts:
+                    self.sleep(self.backoff_sec * (2**attempt))
+                    continue
+                raise
+            except requests.Timeout as exc:
+                self.error_count += 1
+                last_error = RpcTimeoutError(
+                    f"{method} timed out after bounded attempts"
+                )
+                if attempt + 1 < attempts:
+                    self.sleep(self.backoff_sec * (2**attempt))
+                    continue
+                raise last_error from exc
+            except requests.ConnectionError as exc:
+                self.error_count += 1
+                raise RpcConnectionError(
+                    f"{method} provider connection failed"
+                ) from exc
+            except requests.RequestException as exc:
+                self.error_count += 1
+                raise RpcConnectionError(
+                    f"{method} provider transport failed"
+                ) from exc
+            except ValueError as exc:
+                self.error_count += 1
+                raise RpcResponseError(
+                    f"{method} returned malformed JSON"
+                ) from exc
+        raise last_error or RpcTransportError(
             f"{method} failed after {attempts} bounded attempts"
-        ) from last_error
+        )
 
     def _apply_rate_limit(self) -> None:
         now = self.clock()
@@ -379,6 +448,13 @@ class BaseHttpCollector:
             log_index = log.get("logIndex")
             if isinstance(tx_hash, str) and isinstance(log_index, str):
                 key = f"{BASE_CHAIN_ID}:{tx_hash.lower()}:{log_index.lower()}"
+                existing = deduplicated.get(key)
+                if existing is not None and self._canonical_log(
+                    existing
+                ) != self._canonical_log(log):
+                    raise FinalizedRangeConsistencyError(
+                        "duplicate event key has conflicting canonical contents"
+                    )
                 deduplicated[key] = log
             else:
                 malformed.append(log)
@@ -388,10 +464,20 @@ class BaseHttpCollector:
         self,
         block_range: BlockRange,
         transfer_filter: TransferLogFilter,
+        *,
+        budget: dict[str, int] | None = None,
+        depth: int = 0,
     ) -> list[dict[str, object]]:
+        if budget is None:
+            budget = {"requests": 0}
+        if depth > self.settings.rpc_adaptive_max_depth:
+            raise AdaptiveRangeError("adaptive range maximum depth exceeded")
+        budget["requests"] += 1
+        if budget["requests"] > self.settings.rpc_adaptive_max_requests:
+            raise AdaptiveRangeError("adaptive range request budget exhausted")
         try:
             return self.client.get_logs(transfer_filter.as_rpc(block_range))
-        except (RpcRangeError, RpcTransportError) as exc:
+        except (RpcRangeError, RpcTimeoutError) as exc:
             size = block_range.end_block - block_range.start_block + 1
             if size <= self.settings.rpc_min_block_range:
                 raise AdaptiveRangeError(
@@ -401,5 +487,29 @@ class BaseHttpCollector:
             left = BlockRange(block_range.start_block, midpoint)
             right = BlockRange(midpoint + 1, block_range.end_block)
             return self._fetch_adaptive(
-                left, transfer_filter
-            ) + self._fetch_adaptive(right, transfer_filter)
+                left,
+                transfer_filter,
+                budget=budget,
+                depth=depth + 1,
+            ) + self._fetch_adaptive(
+                right,
+                transfer_filter,
+                budget=budget,
+                depth=depth + 1,
+            )
+
+    @staticmethod
+    def _canonical_log(log: dict[str, object]) -> tuple[object, ...]:
+        topics = log.get("topics")
+        return (
+            str(log.get("address") or "").lower(),
+            tuple(str(item).lower() for item in topics)
+            if isinstance(topics, list)
+            else (),
+            str(log.get("data") or "").lower(),
+            str(log.get("blockNumber") or "").lower(),
+            str(log.get("blockHash") or "").lower(),
+            str(log.get("transactionHash") or "").lower(),
+            str(log.get("logIndex") or "").lower(),
+            bool(log.get("removed", False)),
+        )

@@ -15,6 +15,7 @@ from unittest.mock import patch
 from paopao_radar.onchain_flow.cli import main
 from paopao_radar.onchain_flow.collectors.evm_http import (
     AdaptiveRangeError,
+    FinalizedRangeConsistencyError,
     pad_topic_address,
 )
 from paopao_radar.onchain_flow.collectors.evm_ws import WssError
@@ -164,6 +165,253 @@ def static_prices():
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_finalized_log_consistency_failure_keeps_cursor_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                base_bootstrap_lookback_blocks=0,
+            )
+            rpc = FakeRpc(head=1)
+            collector = FakeCollector()
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            runtime.process_once()
+            self.assertEqual(
+                OnchainStore(settings).cursor(8453).last_finalized_block,
+                1,
+            )
+            rpc.head = 2
+            old_fork = transfer_log(2, 1)
+            old_fork["blockHash"] = block_hash(2, 1)
+            collector.logs = [old_fork]
+            with self.assertRaises(FinalizedRangeConsistencyError):
+                runtime.process_once()
+            store = OnchainStore(settings)
+            self.assertEqual(store.cursor(8453).last_finalized_block, 1)
+            self.assertEqual(store.table_counts()["transfer_events"], 0)
+
+    def test_out_of_range_and_conflicting_event_contents_fail_complete_range(self) -> None:
+        class RawCollector:
+            def __init__(self, logs):
+                self.logs = logs
+
+            def fetch_cex_logs(self, *_args):
+                return self.logs
+
+        cases = []
+        outside = transfer_log(3, 1)
+        cases.append([outside])
+        first = transfer_log(2, 1)
+        conflict = dict(first)
+        conflict["data"] = uint256(2_000_000)
+        cases.append([first, conflict])
+        for logs in cases:
+            with self.subTest(logs=logs), TemporaryDirectory() as tmp:
+                settings = replace(
+                    live_settings(Path(tmp)),
+                    base_bootstrap_lookback_blocks=0,
+                )
+                runtime = BaseOnchainRuntime(
+                    settings,
+                    rpc=FakeRpc(head=2),
+                    http_collector=RawCollector(logs),
+                    price_provider=static_prices(),
+                    clock=lambda: 1_700_000_002,
+                )
+                with self.assertRaises(FinalizedRangeConsistencyError):
+                    runtime.process_once()
+                store = OnchainStore(settings)
+                self.assertIsNone(store.cursor(8453))
+                self.assertEqual(
+                    store.table_counts()["transfer_events"], 0
+                )
+
+    def test_restart_recovers_committed_range_and_decides_single_event_once(self) -> None:
+        class FailSecondRangeOnce(FakeCollector):
+            def __init__(self, logs):
+                super().__init__(logs)
+                self.failed = False
+
+            def fetch_cex_logs(self, start, end, addresses):
+                if (start, end) == (2, 2) and not self.failed:
+                    self.failed = True
+                    raise AdaptiveRangeError("range B failed")
+                return super().fetch_cex_logs(start, end, addresses)
+
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                rpc_max_block_range=1,
+                single_large_floor_usd=Decimal("1"),
+                single_volume_ratio=Decimal("0"),
+            )
+            rpc = FakeRpc(head=2)
+            collector = FailSecondRangeOnce([transfer_log(1, 1)])
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            with self.assertRaises(AdaptiveRangeError):
+                runtime.process_once()
+            self.assertEqual(
+                OnchainStore(settings).cursor(8453).last_finalized_block,
+                1,
+            )
+            restarted = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            restarted.process_once()
+            restarted.process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                decisions = conn.execute(
+                    "SELECT decision_status FROM single_event_decisions"
+                ).fetchall()
+                alerts = conn.execute(
+                    "SELECT COUNT(*) FROM alerts"
+                ).fetchone()[0]
+        self.assertEqual(decisions, [("evaluated",)])
+        self.assertEqual(alerts, 1)
+
+    def test_restart_after_ingestion_before_evaluation_recovers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                single_large_floor_usd=Decimal("1"),
+                single_volume_ratio=Decimal("0"),
+            )
+            rpc = FakeRpc(head=2)
+            collector = FakeCollector([transfer_log(2, 1)])
+            interrupted = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            with (
+                patch.object(
+                    interrupted,
+                    "_evaluate_and_notify",
+                    side_effect=SystemExit("crash point"),
+                ),
+                self.assertRaises(SystemExit),
+            ):
+                interrupted.process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM single_event_decisions"
+                    ).fetchone()[0],
+                    0,
+                )
+            BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            ).process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT decision_status FROM single_event_decisions"
+                    ).fetchone()[0],
+                    "evaluated",
+                )
+
+    def test_alert_persists_before_failure_and_delivery_retries(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                single_large_floor_usd=Decimal("1"),
+                single_volume_ratio=Decimal("0"),
+            )
+            rpc = FakeRpc(head=2)
+            collector = FakeCollector([transfer_log(2, 1)])
+            first = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            with (
+                patch(
+                    "paopao_radar.onchain_flow.notifier.TelegramGateway.send",
+                    side_effect=RuntimeError("notifier failed"),
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                first.process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                alert_count = conn.execute(
+                    "SELECT COUNT(*) FROM alerts"
+                ).fetchone()[0]
+                decision = conn.execute(
+                    "SELECT decision_status FROM single_event_decisions"
+                ).fetchone()[0]
+                failed = conn.execute(
+                    "SELECT status FROM alert_deliveries"
+                ).fetchone()[0]
+            self.assertEqual(alert_count, 1)
+            self.assertEqual(decision, "evaluated")
+            self.assertEqual(failed, "failed")
+            BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_003,
+            ).process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                delivery = conn.execute(
+                    "SELECT status, attempt_count FROM alert_deliveries"
+                ).fetchone()
+        self.assertEqual(delivery, ("dry_run", 2))
+
+    def test_old_catchup_event_is_stored_but_notification_is_suppressed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                single_large_floor_usd=Decimal("1"),
+                alert_max_event_age_sec=60,
+            )
+            BaseOnchainRuntime(
+                settings,
+                rpc=FakeRpc(head=2),
+                http_collector=FakeCollector([transfer_log(2, 1)]),
+                price_provider=static_prices(),
+                clock=lambda: 1_700_001_000,
+            ).process_once()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                flow_count = conn.execute(
+                    "SELECT COUNT(*) FROM flow_events"
+                ).fetchone()[0]
+                decision = conn.execute(
+                    """
+                    SELECT decision_status, catchup_suppression_reason
+                    FROM single_event_decisions
+                    """
+                ).fetchone()
+                alert_count = conn.execute(
+                    "SELECT COUNT(*) FROM alerts"
+                ).fetchone()[0]
+        self.assertEqual(flow_count, 1)
+        self.assertEqual(decision, ("suppressed", "event_too_old"))
+        self.assertEqual(alert_count, 0)
+
     def test_startup_uses_bounded_lookback_and_advances_atomic_cursor(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = live_settings(Path(tmp))

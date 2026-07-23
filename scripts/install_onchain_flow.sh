@@ -25,6 +25,12 @@ systemd_dir="${ONCHAIN_SYSTEMD_DIR:-/etc/systemd/system}"
 unit_name="paopao-onchain-flow.service"
 unit_path="${systemd_dir}/${unit_name}"
 env_file="${repo_dir}/.env.onchain"
+SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
+if [[ -z "${SERVICE_USER}" ]]; then
+  echo "SERVICE_USER cannot be empty" >&2
+  exit 1
+fi
+SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
 
 mkdir -p "${systemd_dir}"
 temporary="$(mktemp)"
@@ -38,6 +44,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
 WorkingDirectory=${repo_dir}
 EnvironmentFile=-${repo_dir}/.env.oi
 EnvironmentFile=-${repo_dir}/.env.onchain
@@ -64,6 +72,11 @@ if [[ "${enable_service}" != "true" ]]; then
   exit 0
 fi
 
+if [[ "${SERVICE_USER}" == "root" && "${ONCHAIN_ALLOW_ROOT_SERVICE:-false}" != "true" ]]; then
+  echo "Refusing to enable the service as root without ONCHAIN_ALLOW_ROOT_SERVICE=true" >&2
+  exit 1
+fi
+
 if [[ ! -f "${env_file}" ]]; then
   echo "${env_file} is required for --enable" >&2
   exit 1
@@ -87,5 +100,11 @@ fi
   "${python_bin}" onchain_main.py labels-check
   "${python_bin}" onchain_main.py provider-check --chain base
 )
+install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${repo_dir}/data/onchain"
+if ! runuser -u "${SERVICE_USER}" -- test -w "${repo_dir}/data/onchain"; then
+  echo "${repo_dir}/data/onchain is not writable by ${SERVICE_USER}" >&2
+  exit 1
+fi
 systemctl daemon-reload
 systemctl enable --now "${unit_name}"

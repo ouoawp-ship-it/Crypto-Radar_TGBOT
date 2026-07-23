@@ -46,14 +46,24 @@ class OnchainNotifier:
         send: bool,
         confirm_real_send: bool,
     ) -> PushResult:
-        result = self.gateway.send(
-            format_alert(alert),
-            TEMPLATE_ID,
-            alert.alert_key,
-            send=bool(send and self.onchain_settings.real_send),
-            confirm_real_send=bool(confirm_real_send),
-            cooldown_sec=self.onchain_settings.alert_cooldown_sec,
-        )
+        try:
+            result = self.gateway.send(
+                format_alert(alert),
+                TEMPLATE_ID,
+                alert.alert_key,
+                send=bool(send and self.onchain_settings.real_send),
+                confirm_real_send=bool(confirm_real_send),
+                cooldown_sec=self.onchain_settings.alert_cooldown_sec,
+            )
+        except Exception as exc:
+            self.store.record_delivery(
+                alert.alert_key,
+                status="failed",
+                sent=False,
+                reason=type(exc).__name__,
+                created_at=alert.created_at,
+            )
+            raise
         self.store.record_delivery(
             alert.alert_key,
             status=result.status,

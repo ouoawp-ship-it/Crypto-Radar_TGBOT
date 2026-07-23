@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sqlite3
+from collections.abc import Callable
 
 
 MIGRATIONS = (
@@ -263,10 +265,98 @@ MIGRATIONS = (
             ON orphaned_transfer_audit(event_id, orphaned_at);
         """,
     ),
+    (
+        3,
+        """
+        ALTER TABLE alerts
+            ADD COLUMN notification_key TEXT NOT NULL DEFAULT '';
+
+        ALTER TABLE alert_deliveries
+            ADD COLUMN notification_key TEXT NOT NULL DEFAULT '';
+        ALTER TABLE alert_deliveries
+            ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alert_deliveries
+            ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE price_cache
+            ADD COLUMN market_observed_at INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE price_cache
+            ADD COLUMN fetched_at INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN inflow_exchanges_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN outflow_exchanges_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN valuation_price_usd TEXT;
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN price_market_observed_at INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN price_fetched_at INTEGER NOT NULL DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS single_event_decisions (
+            event_id TEXT PRIMARY KEY
+                REFERENCES flow_events(event_id) ON DELETE CASCADE,
+            decision_status TEXT NOT NULL,
+            alert_key TEXT REFERENCES alerts(alert_key),
+            last_evaluation_attempt INTEGER NOT NULL,
+            catchup_suppression_reason TEXT NOT NULL DEFAULT '',
+            decision_reason TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_single_event_decisions_status
+            ON single_event_decisions(decision_status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_alert_deliveries_notification
+            ON alert_deliveries(notification_key, updated_at);
+        """,
+    ),
 )
 
 
-def apply_migrations(conn: sqlite3.Connection) -> None:
+_ALTER_ADD_COLUMN = re.compile(
+    r"^\s*ALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+"
+    r"ADD\s+COLUMN\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _statements(script: str) -> list[str]:
+    statements: list[str] = []
+    pending = ""
+    for line in script.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statement = pending.strip()
+            if statement:
+                statements.append(statement)
+            pending = ""
+    if pending.strip():
+        raise sqlite3.OperationalError("incomplete migration statement")
+    return statements
+
+
+def _column_exists(
+    conn: sqlite3.Connection, table: str, column: str
+) -> bool:
+    return any(
+        str(row[1]).lower() == column.lower()
+        for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    )
+
+
+def _execute_statement(conn: sqlite3.Connection, statement: str) -> None:
+    match = _ALTER_ADD_COLUMN.match(statement)
+    if match and _column_exists(conn, match.group(1), match.group(2)):
+        return
+    conn.execute(statement)
+
+
+def apply_migrations(
+    conn: sqlite3.Connection,
+    *,
+    after_statement: Callable[[int, int], None] | None = None,
+) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -282,9 +372,19 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     for version, script in MIGRATIONS:
         if version in applied:
             continue
-        with conn:
-            conn.executescript(script)
+        statements = _statements(script)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for index, statement in enumerate(statements, start=1):
+                _execute_statement(conn, statement)
+                if after_statement is not None:
+                    after_statement(version, index)
             conn.execute(
                 "INSERT INTO schema_migrations(version) VALUES (?)",
                 (version,),
             )
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()

@@ -14,7 +14,12 @@ claimed by the implementation PR.
    live mode.
 4. Set Base HTTP and WSS endpoints. Never paste endpoints or keys into issues,
    logs, screenshots, or committed files.
-5. Set `ONCHAIN_ENABLE=true` and `ONCHAIN_BASE_ENABLE=true` only when ready for
+5. If CoinGecko Onchain pricing is used, keep
+   `ONCHAIN_COINGECKO_API_BASE_URL=https://pro-api.coingecko.com/api/v3` and
+   provide the Pro key only through the untracked environment file.
+6. Keep the adaptive request budget and depth bounded. The defaults are 64
+   logical requests and 12 split levels per original range/filter request.
+7. Set `ONCHAIN_ENABLE=true` and `ONCHAIN_BASE_ENABLE=true` only when ready for
    an isolated dry-run.
 
 ## Preflight
@@ -30,6 +35,16 @@ python onchain_main.py once
 `provider-check` performs bounded read-only RPC calls. `once` reconciles every
 missing finalized block and emits only Telegram dry-run output while
 `ONCHAIN_REAL_SEND=false`.
+
+Fixture replay never opens the live on-chain database. Its deterministic
+storage is below
+`data/onchain/replay/<fixture-stem>-<fixture-hash>/` and always uses the
+committed synthetic label registry:
+
+```bash
+python onchain_main.py replay \
+  --fixture tests/fixtures/onchain/p3_0_flow.jsonl
+```
 
 ## Bounded observation
 
@@ -53,6 +68,12 @@ reconciliation, RPC errors, duplicates, orphans, priced/unpriced counts and
 dry-run alerts. Do not report the observation complete until seven real days
 have elapsed with reviewed evidence.
 
+Finalized ingestion and signal evaluation have separate durable state. A
+restart re-evaluates committed directional flows whose single-event decision
+is incomplete, retries pending/failed notification delivery, and records old
+startup catch-up events as `catchup_suppressed` instead of presenting them as
+current signals.
+
 ## Dedicated service
 
 The installer writes only `paopao-onchain-flow.service`. Its default invocation
@@ -69,7 +90,11 @@ sudo scripts/install_onchain_flow.sh --enable
 ```
 
 The enable path re-runs doctor, live-label validation and provider-check before
-calling systemd.
+calling systemd. The rendered unit includes `User=` and `Group=` for
+`SERVICE_USER` (or `SUDO_USER`/the invoking user). Enabling as root is rejected
+unless the reviewed `ONCHAIN_ALLOW_ROOT_SERVICE=true` override is supplied.
+The default invocation remains disabled and never starts, stops, or restarts
+the production BOT services.
 
 ## Rollback
 
