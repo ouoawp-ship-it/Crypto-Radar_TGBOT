@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import time
 import re
+import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Optional
@@ -15,6 +16,7 @@ from .config import Settings
 from .data_sources import BinanceDataSource
 from .funding_alert import funding_table
 from .funding_sources import funding_last_settlement_text, funding_settlement_period_text
+from .launch_lifecycle import LaunchLifecycleStore
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .storage import JsonStore
@@ -1418,6 +1420,56 @@ class RadarEngine:
                 "messages": [],
                 "alerts": [],
             }
+        state = self.store.load(self.settings.launch_state_path, {})
+        if not isinstance(state, dict):
+            state = {}
+        now_ts = int(time.time())
+        self._prune_launch_state(state, now_ts)
+
+        lifecycle_store: LaunchLifecycleStore | None = None
+        lifecycle_diagnostics: dict[str, Any] = {
+            "enabled": bool(self.settings.launch_lifecycle_v2_enable),
+            "status": "disabled",
+            "active_symbols": 0,
+            "forced_symbols": 0,
+            "recorded": 0,
+            "opened": 0,
+            "failed": 0,
+            "frozen": 0,
+            "errors": 0,
+        }
+        lifecycle_active_symbols: list[str] = []
+        if self.settings.launch_lifecycle_v2_enable:
+            try:
+                lifecycle_store = LaunchLifecycleStore(
+                    self.settings.signal_events_db_path,
+                    watch_score=self.settings.launch_watch_score,
+                    start_score=self.settings.launch_min_score_push,
+                    invalid_windows_required=self.settings.launch_lifecycle_invalid_windows,
+                )
+                lifecycle_active_symbols = lifecycle_store.list_active_symbols()
+                lifecycle_diagnostics["status"] = "shadow"
+                lifecycle_diagnostics["active_symbols"] = len(lifecycle_active_symbols)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                lifecycle_diagnostics["status"] = "degraded"
+                lifecycle_diagnostics["errors"] = 1
+                lifecycle_diagnostics["error"] = type(exc).__name__
+
+        forced_symbols: list[str] = []
+        if lifecycle_store is not None:
+            forced_symbols.extend(lifecycle_active_symbols)
+            forced_symbols.extend(
+                str(symbol)
+                for symbol, record in state.items()
+                if isinstance(record, dict)
+                and str(record.get("stage") or "") in {"watching", "primed", "breakout", "launched", "cooling"}
+            )
+        forced_symbol_order = {
+            symbol: position
+            for position, symbol in enumerate(dict.fromkeys(forced_symbols))
+        }
+        lifecycle_diagnostics["forced_symbols"] = len(forced_symbol_order)
+
         ticker_map = {
             item.get("symbol"): item
             for item in source.ticker_24h()
@@ -1438,7 +1490,9 @@ class RadarEngine:
         missing_mcap_coins: set[str] = set()
         for symbol, ticker in ticker_map.items():
             quote_volume = to_float(ticker.get("quoteVolume"))
-            if quote_volume < self.settings.radar_min_quote_volume or self._is_excluded_symbol(str(symbol or "")):
+            if self._is_excluded_symbol(str(symbol or "")):
+                continue
+            if quote_volume < self.settings.radar_min_quote_volume and symbol not in forced_symbol_order:
                 continue
             coin = str(symbol).replace("USDT", "")
             mcap = to_float(binance_market_caps.get(coin))
@@ -1469,17 +1523,17 @@ class RadarEngine:
                     item["mcap"] = mcap
                     item["mcap_source"] = "CoinPaprika"
                     item["market_cap_tier"] = market_cap_tier(mcap)
-        candidates.sort(key=lambda item: item["quote_volume"], reverse=True)
-        candidates = candidates[: self.settings.launch_scan_limit]
-        candidates = candidates[:budget_cap]
+        candidates.sort(
+            key=lambda item: (
+                0 if item["symbol"] in forced_symbol_order else 1,
+                forced_symbol_order.get(item["symbol"], 0),
+                -item["quote_volume"],
+            )
+        )
+        candidates = candidates[: min(self.settings.launch_scan_limit, budget_cap)]
 
-        state = self.store.load(self.settings.launch_state_path, {})
-        if not isinstance(state, dict):
-            state = {}
         alerts: list[dict[str, Any]] = []
         watchlist: list[dict[str, Any]] = []
-        now_ts = int(time.time())
-        self._prune_launch_state(state, now_ts)
 
         analyzed_items: list[dict[str, Any]] = []
         for item in candidates:
@@ -1488,9 +1542,7 @@ class RadarEngine:
                 continue
             analyzed_items.append(analyzed)
 
-        observed_symbols: set[str] = set()
         for analyzed in analyzed_items:
-            observed_symbols.add(str(analyzed["symbol"]))
             apply_binance_confirmation(
                 analyzed,
                 {
@@ -1504,9 +1556,39 @@ class RadarEngine:
                 window="15m闭合窗口（1h=4根）",
                 observed_at=int(analyzed.get("window_end_ts") or now_ts),
             )
+
+        if lifecycle_store is not None and analyzed_items:
+            try:
+                lifecycle_results = lifecycle_store.record_observations([
+                    (
+                        analyzed,
+                        self._launch_stage(int(analyzed["score"])),
+                        now_ts,
+                    )
+                    for analyzed in analyzed_items
+                ])
+                for analyzed, lifecycle in zip(analyzed_items, lifecycle_results):
+                    analyzed["launch_lifecycle"] = lifecycle
+                    lifecycle_status = str(lifecycle.get("status") or "")
+                    if lifecycle_status in {"opened", "active", "failed"}:
+                        lifecycle_diagnostics["recorded"] += 1
+                    if lifecycle_status == "opened":
+                        lifecycle_diagnostics["opened"] += 1
+                    if lifecycle_status == "failed":
+                        lifecycle_diagnostics["failed"] += 1
+                    if lifecycle_status == "frozen":
+                        lifecycle_diagnostics["frozen"] += 1
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                lifecycle_diagnostics["status"] = "degraded"
+                lifecycle_diagnostics["errors"] += 1
+                lifecycle_diagnostics["error"] = type(exc).__name__
+
+        observed_symbols: set[str] = set()
+        for analyzed in analyzed_items:
+            observed_symbols.add(str(analyzed["symbol"]))
+            next_stage = self._launch_stage(analyzed["score"])
             watchlist.append(self._launch_watch_record(analyzed, now_ts))
             previous = state.get(analyzed["symbol"], {})
-            next_stage = self._launch_stage(analyzed["score"])
             if next_stage == "idle":
                 inactive = self._inactive_launch_record(
                     previous,
@@ -1550,7 +1632,7 @@ class RadarEngine:
                 alerts.append(record)
             state[analyzed["symbol"]] = record
 
-        if analyzed_items:
+        if analyzed_items and lifecycle_store is None:
             for symbol, previous in list(state.items()):
                 if symbol in observed_symbols or not isinstance(previous, dict):
                     continue
@@ -1582,6 +1664,7 @@ class RadarEngine:
             "watchlist_count": len(watchlist),
             "diagnostics": {
                 "binance_confirmation": confirmation_summary(analyzed_items),
+                "lifecycle_v2": lifecycle_diagnostics,
             },
         }
 
@@ -1854,12 +1937,16 @@ class RadarEngine:
         return {
             **item,
             "score": score,
+            "closed_price": closes[-1],
+            "closed_oi_usd": oi_values[-1],
+            "closed_quote_volume": quote_volumes[-1],
             "price_15m": price_15m,
             "price_1h": price_1h,
             "oi_15m": oi_15m,
             "oi_1h": oi_1h,
             "volume_ratio": volume_ratio,
             "breakout": breakout,
+            "breakout_price": previous_high,
             "reasons": reasons[:5],
             "kline_points": len(klines),
             "oi_points": len(oi_hist),
@@ -2141,6 +2228,9 @@ class RadarEngine:
             "symbol": item["symbol"],
             "coin": item["coin"],
             "score": item["score"],
+            "closed_price": round(to_float(item.get("closed_price")), 12),
+            "closed_oi_usd": round(to_float(item.get("closed_oi_usd")), 2),
+            "closed_quote_volume": round(to_float(item.get("closed_quote_volume")), 2),
             "price_15m": round(item["price_15m"], 4),
             "price_1h": round(item["price_1h"], 4),
             "oi_15m": round(item["oi_15m"], 4),
@@ -2160,6 +2250,7 @@ class RadarEngine:
             "funding_pct": round(to_float(item.get("funding_pct")), 6),
             "funding_interval_hours": int(to_float(item.get("funding_interval_hours"))),
             "funding_interval_transition": str(item.get("funding_interval_transition") or ""),
+            "launch_lifecycle": item.get("launch_lifecycle", {}),
             "reasons": item.get("reasons", []),
         }
 

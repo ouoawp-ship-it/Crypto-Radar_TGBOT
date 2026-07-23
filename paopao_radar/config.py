@@ -242,6 +242,8 @@ class Settings:
     launch_close_delay_sec: int = 60
     launch_stage_cooldown_sec: int = 6 * 3600
     launch_invalidation_grace_sec: int = 30 * 60
+    launch_lifecycle_v2_enable: bool = False
+    launch_lifecycle_invalid_windows: int = 2
     launch_message_cleanup_enable: bool = True
     launch_message_cleanup_max_age_sec: int = 47 * 3600
     launch_message_cleanup_limit: int = 20
@@ -441,6 +443,8 @@ class Settings:
             launch_close_delay_sec=env_int("LAUNCH_CLOSE_DELAY_SEC", 60),
             launch_stage_cooldown_sec=env_int("LAUNCH_STAGE_COOLDOWN_SEC", 6 * 3600),
             launch_invalidation_grace_sec=env_int("LAUNCH_INVALIDATION_GRACE_SEC", 30 * 60),
+            launch_lifecycle_v2_enable=env_bool("LAUNCH_LIFECYCLE_V2_ENABLE", False),
+            launch_lifecycle_invalid_windows=env_int("LAUNCH_LIFECYCLE_INVALID_WINDOWS", 2),
             launch_message_cleanup_enable=env_bool("LAUNCH_MESSAGE_CLEANUP_ENABLE", True),
             launch_message_cleanup_max_age_sec=env_int("LAUNCH_MESSAGE_CLEANUP_MAX_AGE_SEC", 47 * 3600),
             launch_message_cleanup_limit=env_int("LAUNCH_MESSAGE_CLEANUP_LIMIT", 20),
@@ -595,6 +599,8 @@ class Settings:
                 },
                 "stage_cooldown_sec": self.launch_stage_cooldown_sec,
                 "invalidation_grace_sec": self.launch_invalidation_grace_sec,
+                "lifecycle_v2_enable": self.launch_lifecycle_v2_enable,
+                "lifecycle_invalid_windows": self.launch_lifecycle_invalid_windows,
                 "message_cleanup_enable": self.launch_message_cleanup_enable,
                 "message_cleanup_max_age_sec": self.launch_message_cleanup_max_age_sec,
                 "message_cleanup_limit": self.launch_message_cleanup_limit,
