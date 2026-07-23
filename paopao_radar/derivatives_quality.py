@@ -6,7 +6,7 @@ from threading import Lock
 from typing import Any, Iterable
 
 from .config import Settings
-from .data_sources import HttpClient
+from .data_sources import DataQuality, HttpClient, UpstreamSourceMetrics
 
 
 COINGLASS_OI_CHANGE_FIELDS = {
@@ -673,10 +673,114 @@ class DerivativesQualityService:
         }
 
 
+def _probe_status(
+    *,
+    enabled: bool,
+    configured: bool,
+    oi_ready: bool,
+    funding_ready: bool,
+    errors: list[str],
+) -> str:
+    if not enabled:
+        return "disabled"
+    if not configured:
+        return "missing_key"
+    if oi_ready and funding_ready:
+        return "ready"
+    if oi_ready or funding_ready:
+        return "partial"
+    normalized_errors = " ".join(errors).lower()
+    if any(marker in normalized_errors for marker in ("api_code_401", "status=401", "status=403")):
+        return "plan_or_permission_required"
+    return "unavailable" if errors else "empty"
+
+
+def probe_derivatives_providers(
+    settings: Settings,
+    *,
+    symbol: str = "BTCUSDT",
+) -> dict[str, Any]:
+    """Run an explicit, secret-safe provider probe without changing production state."""
+
+    normalized_symbol = str(symbol or "BTCUSDT").upper()
+    quality = DataQuality()
+    metrics = UpstreamSourceMetrics()
+    with HttpClient(settings, quality, metrics=metrics) as http:
+        coinglass = CoinGlassClient(settings, http)
+        coinalyze = CoinalyzeClient(settings, http)
+        cg_oi = coinglass.oi_snapshot(normalized_symbol) if coinglass.available else None
+        cg_funding = (
+            coinglass.funding_snapshots([normalized_symbol])
+            if coinglass.available
+            else {}
+        )
+        ca_oi = (
+            coinalyze.oi_snapshots([normalized_symbol], timeframe="1h")
+            if coinalyze.available
+            else {}
+        )
+        ca_funding = (
+            coinalyze.funding_snapshots([normalized_symbol])
+            if coinalyze.available
+            else {}
+        )
+
+    warnings = list(quality.warnings)
+    providers: dict[str, dict[str, Any]] = {}
+    for name, enabled, configured, oi_ready, funding_ready in (
+        (
+            "coinglass",
+            bool(settings.coinglass_enable),
+            bool(settings.coinglass_api_key),
+            cg_oi is not None,
+            normalized_symbol in cg_funding,
+        ),
+        (
+            "coinalyze",
+            bool(settings.coinalyze_enable),
+            bool(settings.coinalyze_api_key),
+            normalized_symbol in ca_oi,
+            normalized_symbol in ca_funding,
+        ),
+    ):
+        errors = [warning for warning in warnings if warning.lower().startswith(f"{name}:")]
+        providers[name] = {
+            "enabled": enabled,
+            "configured": configured,
+            "status": _probe_status(
+                enabled=enabled,
+                configured=configured,
+                oi_ready=oi_ready,
+                funding_ready=funding_ready,
+                errors=errors,
+            ),
+            "oi_ready": oi_ready,
+            "funding_ready": funding_ready,
+            "errors": errors,
+        }
+
+    ready = [provider for provider in providers.values() if provider["status"] == "ready"]
+    if len(ready) == len(providers):
+        overall_status = "ready"
+    elif ready:
+        overall_status = "degraded"
+    else:
+        overall_status = "attention"
+    return {
+        "status": overall_status,
+        "symbol": normalized_symbol,
+        "providers": providers,
+        "required_providers": sorted(providers),
+        "upstream": metrics.snapshot(),
+        "secrets_exposed": False,
+    }
+
+
 __all__ = [
     "CoinGlassClient",
     "CoinalyzeClient",
     "DerivativesQualityService",
     "base_asset",
+    "probe_derivatives_providers",
     "source_agreement",
 ]

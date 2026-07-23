@@ -30,6 +30,7 @@ data/*.lock
 data/*.tmp
 data/*.txt
 data/charts/
+data/backups/
 *.corrupt.*
 bn_signal_history.json
 fr_snapshot.json

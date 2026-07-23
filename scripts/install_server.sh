@@ -9,6 +9,7 @@ SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-paopao-cleanup}"
 HEALTH_SERVICE_NAME="${HEALTH_SERVICE_NAME:-paopao-health}"
+BACKUP_SERVICE_NAME="${BACKUP_SERVICE_NAME:-paopao-backup}"
 RADAR_MEMORY_HIGH="${RADAR_MEMORY_HIGH:-450M}"
 RADAR_MEMORY_MAX="${RADAR_MEMORY_MAX:-650M}"
 MARKET_STREAM_MEMORY_HIGH="${MARKET_STREAM_MEMORY_HIGH:-128M}"
@@ -48,7 +49,7 @@ install_python_runtime() {
     "$PYTHON_BIN" -m venv "${APP_DIR}/.venv"
   fi
   "${APP_DIR}/.venv/bin/python" -m pip install --upgrade pip
-  "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
+  "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.lock"
 }
 
 run_checks() {
@@ -168,11 +169,43 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+  run_root tee "/etc/systemd/system/${BACKUP_SERVICE_NAME}.service" >/dev/null <<EOF
+[Unit]
+Description=Paopao SQLite Database Backup
+After=${SERVICE_NAME}.service ${MARKET_STREAM_SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+User=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=-${ENV_FILE}
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py database-backup
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+EOF
+
+  run_root tee "/etc/systemd/system/${BACKUP_SERVICE_NAME}.timer" >/dev/null <<EOF
+[Unit]
+Description=Back Up Paopao SQLite Databases Daily
+
+[Timer]
+OnBootSec=15min
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
   run_root systemctl daemon-reload
-  run_root systemctl enable "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "${CLEANUP_SERVICE_NAME}.timer" "${HEALTH_SERVICE_NAME}.timer"
+  run_root systemctl enable "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "${CLEANUP_SERVICE_NAME}.timer" "${HEALTH_SERVICE_NAME}.timer" "${BACKUP_SERVICE_NAME}.timer"
   if [ "$AUTO_START" = "1" ]; then
     run_root systemctl restart "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME"
-    run_root systemctl restart "${CLEANUP_SERVICE_NAME}.timer" "${HEALTH_SERVICE_NAME}.timer"
+    run_root systemctl restart "${CLEANUP_SERVICE_NAME}.timer" "${HEALTH_SERVICE_NAME}.timer" "${BACKUP_SERVICE_NAME}.timer"
   fi
 }
 

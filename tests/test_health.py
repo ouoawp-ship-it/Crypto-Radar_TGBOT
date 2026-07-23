@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import unittest
@@ -22,8 +23,10 @@ class RuntimeHealthTests(unittest.TestCase):
             market_snapshots_db_path=root / "market_snapshots.db",
             realtime_features_db_path=root / "realtime_features.db",
             news_events_db_path=root / "news_events.db",
+            database_backup_dir=root / "backups",
             health_runtime_max_age_sec=600,
             health_realtime_fresh_sec=180,
+            health_database_backup_max_age_sec=3600,
             health_disk_warn_mb=1,
             health_disk_fail_mb=1,
         )
@@ -153,6 +156,31 @@ class RuntimeHealthTests(unittest.TestCase):
         effectiveness = next(item for item in checks if item["name"] == "signal_effectiveness")
         self.assertEqual(effectiveness["status"], "warn")
         self.assertEqual(effectiveness["metrics"]["overdue_pending"], 1)
+
+    def test_database_backup_is_ready_after_restore_verified_manifest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = self.make_settings(root)
+            backup_set = settings.database_backup_dir / "20260101T000000Z"
+            backup_set.mkdir(parents=True)
+            (backup_set / "manifest.json").write_text(
+                json.dumps({
+                    "created_at": now - 60,
+                    "databases": [{
+                        "backup": "signals.db",
+                        "integrity": "ok",
+                        "restore_verification": "ok",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            checks = runtime_health_checks(settings, JsonStore(root), now_ts=now)
+
+        backup = next(item for item in checks if item["name"] == "database_backup")
+        self.assertEqual(backup["status"], "ok")
+        self.assertEqual(backup["metrics"]["age_sec"], 60)
 
 
 if __name__ == "__main__":

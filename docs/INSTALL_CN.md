@@ -28,11 +28,13 @@ COINALYZE_API_KEY=...
 
 只启用其中一套不会阻止服务启动，但健康检查会报告降级；启用某数据源却未填写对应 Key 会被健康检查判定为配置失败。
 
-安装脚本会创建 `.venv`、安装锁定依赖、执行编译和单元测试，并安装三个 systemd 单元：
+安装脚本会创建 `.venv`、安装锁定依赖、执行编译和单元测试，并安装以下 systemd 单元：
 
 - `paopao-radar`：主 BOT 信号推送服务。
 - `paopao-market-stream`：实时行情上下文服务。
 - `paopao-cleanup.timer`：运行数据定时清理。
+- `paopao-health.timer`：定时运行稳定性与数据新鲜度检查。
+- `paopao-backup.timer`：每天在线备份活动 SQLite 数据库并执行恢复验证。
 
 ## 日常维护
 
@@ -43,8 +45,12 @@ paopao restart
 paopao doctor
 paopao readiness
 paopao stable-check
+paopao providers
+paopao backup
 paopao telegram-test
 ```
+
+`paopao providers` 是只读验收，不发送 Telegram 消息，也不会在输出中泄露 API Key。`paopao backup` 会立即创建一次备份；也可用 `systemctl status paopao-backup.timer` 和 `journalctl -u paopao-backup` 检查自动备份。
 
 `telegram-test` 默认 dry-run。真实测试需手动执行：
 
@@ -66,9 +72,10 @@ bash scripts/update_server.sh --yes
 ## 排障
 
 ```bash
-systemctl status paopao-radar paopao-market-stream
+systemctl status paopao-radar paopao-market-stream paopao-health.timer paopao-backup.timer
 journalctl -u paopao-radar -n 200 --no-pager
 journalctl -u paopao-market-stream -n 200 --no-pager
+journalctl -u paopao-backup -n 100 --no-pager
 .venv/bin/python main.py doctor
 .venv/bin/python main.py runtime-status
 ```
