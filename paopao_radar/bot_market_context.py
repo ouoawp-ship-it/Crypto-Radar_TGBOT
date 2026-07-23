@@ -6,16 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from .market_cockpit import MarketSnapshotStore, build_market_cockpit
-from .news_intelligence import NewsEventStore
 from .realtime_intelligence import build_realtime_intelligence
 from .realtime_market import RealtimeFeatureStore
 from .runtime_cache import get_or_set as runtime_cache_get_or_set
 
 
-BOT_MARKET_CONTEXT_SCHEMA_VERSION = "bot.market-context.v2"
+BOT_MARKET_CONTEXT_SCHEMA_VERSION = "bot.market-context.v3"
 BOT_MARKET_CONTEXT_TTL_SEC = 15
-BOT_NEWS_CONTEXT_TTL_SEC = 60
 BOT_MARKET_WINDOW_SEC = 900
+BOT_MARKET_SOURCES = {
+    "binance_futures_batch",
+    "market_flow_15m",
+    "flow_radar",
+}
 
 
 def _number(value: Any) -> float | None:
@@ -115,6 +118,21 @@ def _load_market_contexts(
             symbols=symbols,
         )
         latest, baselines = comparisons.get(BOT_MARKET_WINDOW_SEC, ([], {}))
+        latest = [
+            item
+            for item in latest
+            if str(item.get("source") or "") in BOT_MARKET_SOURCES
+        ]
+        allowed_symbols = {
+            str(item.get("symbol") or "")
+            for item in latest
+        }
+        baselines = {
+            symbol: item
+            for symbol, item in baselines.items()
+            if symbol in allowed_symbols
+            and str(item.get("source") or "") in BOT_MARKET_SOURCES
+        }
         payload = build_market_cockpit(
             latest,
             baselines,
@@ -152,63 +170,6 @@ def _load_market_contexts(
         return {}
 
 
-def _load_news_contexts(
-    settings: Any,
-    symbols: list[str],
-    *,
-    now_ts: int | None = None,
-) -> dict[str, dict[str, Any]]:
-    raw_path = getattr(settings, "news_events_db_path", None)
-    if raw_path in (None, ""):
-        return {}
-    path = Path(raw_path)
-    if not path.exists():
-        return {}
-    now = int(now_ts or time.time())
-
-    def build() -> dict[str, dict[str, Any]]:
-        store = NewsEventStore(path)
-        result: dict[str, dict[str, Any]] = {}
-        for symbol in symbols:
-            payload = store.list_feed(
-                start_ts=now - 86_400,
-                end_ts=now,
-                source="Binance",
-                source_type="official_announcement",
-                symbol=symbol,
-                page_size=100,
-            )
-            items = [item for item in payload.get("items", []) if isinstance(item, dict)]
-            if not items:
-                continue
-            pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
-            highlight = (
-                next((item for item in items if item.get("event_kind") == "risk"), None)
-                or next((item for item in items if item.get("importance") == "high"), None)
-                or items[0]
-            )
-            result[symbol] = {
-                "total_24h": int(_number(pagination.get("total")) or len(items)),
-                "risk_24h": sum(1 for item in items if item.get("event_kind") == "risk"),
-                "high_importance_24h": sum(1 for item in items if item.get("importance") == "high"),
-                "highlight_title": str(highlight.get("title") or ""),
-                "highlight_source": str(highlight.get("source") or ""),
-            }
-        return result
-
-    try:
-        if now_ts is not None:
-            return build()
-        symbol_key = ",".join(symbols)
-        return runtime_cache_get_or_set(
-            f"bot:info-context:{path}:{symbol_key}",
-            BOT_NEWS_CONTEXT_TTL_SEC,
-            build,
-        )
-    except Exception:
-        return {}
-
-
 def bot_market_contexts_for_records(
     settings: Any,
     records: list[dict[str, Any]],
@@ -233,19 +194,15 @@ def bot_market_contexts_for_records(
         if isinstance(item, dict)
     }
     markets = _load_market_contexts(settings, symbols, now_ts=now_ts)
-    news = _load_news_contexts(settings, symbols, now_ts=now_ts)
     contexts: list[dict[str, Any]] = []
     for symbol in symbols:
         realtime = by_symbol.get(symbol)
         market = markets.get(symbol)
-        info = news.get(symbol)
-        if realtime is None and market is None and info is None:
+        if realtime is None and market is None:
             continue
         context = build_bot_market_context(realtime or {"symbol": symbol})
         if market is not None:
             context["market"] = market
-        if info is not None:
-            context["news"] = info
         contexts.append(context)
     return contexts
 
@@ -308,20 +265,6 @@ def _context_lines(context: dict[str, Any]) -> list[str]:
         market_parts.append(f"费率 {funding:+.4f}%")
     if market_parts:
         lines.append("↳ 15m " + " · ".join(market_parts))
-
-    news = context.get("news") if isinstance(context.get("news"), dict) else {}
-    total = int(_number(news.get("total_24h")) or 0)
-    if total:
-        high = int(_number(news.get("high_importance_24h")) or 0)
-        risk = int(_number(news.get("risk_24h")) or 0)
-        news_parts = [f"情报 {total}", f"高影响 {high}", f"风险 {risk}"]
-        title = str(news.get("highlight_title") or "").strip()
-        if title:
-            source = str(news.get("highlight_source") or "").strip()
-            label = f"{source}: {title}" if source else title
-            shortened = label if len(label) <= 44 else f"{label[:43]}…"
-            news_parts.append(f"「{html.escape(shortened)}」")
-        lines.append("↳ 24h " + " · ".join(news_parts))
     return lines
 
 
@@ -346,9 +289,9 @@ def enrich_telegram_with_market_context(
         return text
     block = [
         "",
-        "<blockquote><b>BOT 市场事实增强</b></blockquote>",
+        "<blockquote><b>BOT 实时市场数据确认</b></blockquote>",
         *[line for context in contexts for line in _context_lines(context)],
-        "<i>封闭窗口参考，不改变本模块原触发阈值；不构成投资建议。</i>",
+        "<i>仅采用交易所实时/封闭窗口行情，不采用新闻或社交情报；不改变本模块原触发阈值；不构成投资建议。</i>",
     ]
     return f"{text.rstrip()}\n" + "\n".join(block)
 
