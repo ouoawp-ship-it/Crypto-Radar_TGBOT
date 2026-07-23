@@ -63,6 +63,7 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
+    "TG_ONCHAIN_FLOW_ALERT": "链上交易所资金流",
 }
 
 TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
@@ -179,6 +180,18 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "5. 阶段会从首次异动、拥挤加剧、高危活跃、风险释放到热度衰减逐步跟踪。",
         "6. 交易所偏离 = 最高资金费率 - 最低资金费率，用来判断是否存在单所盘口异常、局部清算压力或套利资金迁移。",
         "7. 资金费率只代表合约拥挤程度，不等于直接买卖方向。",
+        ])
+    if template_id == "TG_ONCHAIN_FLOW_ALERT":
+        return "\n".join([
+        "📌 <b>链上交易所资金流话题说明</b>",
+        "",
+        "这里专门推送已确认的链上代币与中心化交易所之间的异常资金流。",
+        "链上资金流使用独立历史、outbox、冷却和小时配额，不占用主 BOT 推送额度。",
+        "",
+        "阅读方式：",
+        "1. 流入交易所代表潜在可售供应，流出代表潜在提币或积累。",
+        "2. 内部调拨、跨交易所、充值归集、低置信标签和缺失价格不会生成方向性警报。",
+        "3. 方向评分不是概率，资金流只代表倾向，不保证价格必然上涨或下跌。",
         ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([
@@ -467,6 +480,7 @@ class TelegramGateway:
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
+            "TG_ONCHAIN_FLOW_ALERT": self.settings.tg_onchain_flow_topic_id,
         }
         return topic_routes.get(template_id, "")
 

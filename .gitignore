@@ -6,6 +6,7 @@ __pycache__/
 .env.*
 !.env.example
 !.env.oi.example
+!.env.onchain.example
 
 *.bak
 *.bak.*
@@ -31,6 +32,7 @@ data/*.tmp
 data/*.txt
 data/charts/
 data/backups/
+/data/onchain/
 *.corrupt.*
 bn_signal_history.json
 fr_snapshot.json

@@ -27,6 +27,7 @@ TEMPLATE_LABELS = {
     "TG_LAUNCH_ALERT": "启动雷达",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
+    "TG_ONCHAIN_FLOW_ALERT": "链上交易所资金流",
     "TG_RADAR_SUMMARY": "资金摘要",
     "TG_ANNOUNCEMENT_ALERT": "公告风险",
 }

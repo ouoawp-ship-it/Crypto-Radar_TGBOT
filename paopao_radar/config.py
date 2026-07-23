@@ -101,6 +101,7 @@ class Settings:
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
     tg_funding_alert_topic_id: str = ""
+    tg_onchain_flow_topic_id: str = ""
     tg_auto_create_topics: bool = True
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_topic_intro_enable: bool = True
@@ -293,6 +294,7 @@ class Settings:
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_funding_alert_topic_id=env_first("TG_FUNDING_ALERT_TOPIC_ID", "TELEGRAM_FUNDING_ALERT_TOPIC_ID"),
+            tg_onchain_flow_topic_id=env_first("TG_ONCHAIN_FLOW_TOPIC_ID"),
             tg_auto_create_topics=env_bool("TG_AUTO_CREATE_TOPICS", True),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_topic_intro_enable=env_bool("TG_TOPIC_INTRO_ENABLE", True),
@@ -469,6 +471,7 @@ class Settings:
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
                     "funding_alert": bool(self.tg_funding_alert_topic_id),
+                    "onchain_flow": bool(self.tg_onchain_flow_topic_id),
                 },
                 "auto_create_topics": self.tg_auto_create_topics,
                 "topic_routes_file": str(self.tg_topic_routes_path),
