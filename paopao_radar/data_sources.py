@@ -236,6 +236,10 @@ UPSTREAM_SOURCE_METRICS = UpstreamSourceMetrics()
 
 def _source_id_from_quality_key(quality_key: str) -> str:
     key = str(quality_key or "http").strip()
+    if key.startswith("coinglass"):
+        return "coinglass_derivatives"
+    if key.startswith("coinalyze"):
+        return "coinalyze_derivatives"
     if key.startswith("funding:"):
         exchange = key.split(":", 1)[1].strip().lower()
         return "binance_futures_public" if exchange == "binance" else f"{exchange}_funding_public"
@@ -260,7 +264,7 @@ class HttpClient:
         session: requests.Session | None = None,
         *,
         metrics: UpstreamSourceMetrics | None = None,
-        cache_max_entries: int = 1024,
+        cache_max_entries: int | None = None,
     ):
         self.settings = settings
         self.quality = quality
@@ -268,7 +272,12 @@ class HttpClient:
         self._closed = False
         self.session = session if session is not None else requests.Session()
         self.metrics = metrics or UPSTREAM_SOURCE_METRICS
-        self.cache_max_entries = max(1, int(cache_max_entries))
+        configured_cache_limit = (
+            getattr(settings, "http_cache_max_entries", 128)
+            if cache_max_entries is None
+            else cache_max_entries
+        )
+        self.cache_max_entries = max(1, int(configured_cache_limit))
         self.cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
         self._cache_evictions = 0
         self._cache_expired_pruned = 0
@@ -276,6 +285,9 @@ class HttpClient:
         self._state_lock = RLock()
 
     def close(self) -> None:
+        with self._state_lock:
+            self.cache.clear()
+            self.fuse_until.clear()
         if self._owns_session and not self._closed:
             self.session.close()
             self._closed = True
@@ -300,6 +312,8 @@ class HttpClient:
         quality_key: str = "http",
         timeout: Optional[int] = None,
         retries: Optional[int] = None,
+        cache: bool = True,
+        headers: Optional[dict[str, str]] = None,
     ) -> Any:
         now = time.time()
         fuse_key = quality_key
@@ -312,7 +326,8 @@ class HttpClient:
                 return None
 
         key = cache_key or self._cache_key(url, params)
-        if self.settings.http_cache_enable:
+        use_cache = bool(self.settings.http_cache_enable and cache)
+        if use_cache:
             with self._state_lock:
                 self._prune_cache_locked(now)
                 cached = self.cache.get(key)
@@ -328,11 +343,14 @@ class HttpClient:
         started_at = time.perf_counter()
         for attempt in range(1, retry_count + 1):
             try:
-                response = self.session.get(url, params=params, headers=HTTP_HEADERS, timeout=timeout_sec)
+                request_headers = dict(HTTP_HEADERS)
+                if headers:
+                    request_headers.update(headers)
+                response = self.session.get(url, params=params, headers=request_headers, timeout=timeout_sec)
                 if response.status_code == 200:
                     data = response.json()
                     with self._state_lock:
-                        if self.settings.http_cache_enable:
+                        if use_cache:
                             self._prune_cache_locked(time.time())
                             self.cache.pop(key, None)
                             while len(self.cache) >= self.cache_max_entries:
@@ -403,6 +421,15 @@ class BinanceDataSource:
         })
         self.http = HttpClient(settings, self.quality)
 
+    def close(self) -> None:
+        self.http.close()
+
+    def __enter__(self) -> BinanceDataSource:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
     def endpoint(self, path: str) -> str:
         return f"{self.settings.binance_fapi_base_url}{path}"
 
@@ -465,6 +492,7 @@ class BinanceDataSource:
             cache_key=f"oi:{symbol}:{period}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="openInterestHist",
             retries=1,
+            cache=False,
         )
         return data if isinstance(data, list) else []
 
@@ -490,6 +518,7 @@ class BinanceDataSource:
             cache_key=f"klines:{symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="klines",
             retries=1,
+            cache=False,
         )
         return data if isinstance(data, list) else []
 
@@ -515,6 +544,7 @@ class BinanceDataSource:
             cache_key=f"spot:klines:{symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="spotKlines",
             retries=1,
+            cache=False,
         )
         return data if isinstance(data, list) else []
 
@@ -528,6 +558,7 @@ class BinanceDataSource:
             cache_key=f"funding:{symbol}:{limit}",
             quality_key="fundingRate",
             retries=1,
+            cache=False,
         )
         return data if isinstance(data, list) else []
 
@@ -539,6 +570,7 @@ class BinanceDataSource:
             cache_key=f"depth:{symbol.upper()}:{safe_limit}",
             quality_key="depth",
             retries=1,
+            cache=False,
         )
         return data if isinstance(data, dict) else {}
 
@@ -572,6 +604,7 @@ class BinanceDataSource:
             quality_key="coinpaprikaMarketCaps",
             timeout=15,
             retries=1,
+            cache=False,
         )
         result: dict[str, tuple[float, int]] = {}
         if not isinstance(data, list):

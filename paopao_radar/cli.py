@@ -29,8 +29,9 @@ from dataclasses import replace
 from datetime import datetime
 
 from .config import Settings
-from .data_sources import BinanceDataSource
+from .data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from .flow_radar import FlowRadarEngine
+from .health import runtime_health_checks
 from .market_cockpit import persist_flow_market_rows, persist_market_batch
 from .funding_alert import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
@@ -246,6 +247,7 @@ def write_runtime_status(
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": mode,
         "status": status,
+        "upstream_sources": UPSTREAM_SOURCE_METRICS.snapshot(),
     }
     payload.update(details)
     try:
@@ -300,23 +302,10 @@ def _stable_check_status_label(status: str) -> str:
 
 def print_stable_check(as_json: bool = False, save: bool = True) -> int:
     settings, store, _engine, _gateway = make_runtime()
-    checks: list[dict[str, str]] = []
+    checks: list[dict[str, object]] = []
     for name, ok, detail in telegram_config_checks(settings):
         checks.append({"name": name, "status": "ok" if ok else "fail", "detail": detail})
-
-    runtime_checks = [
-        ("runtime_status", settings.runtime_status_path, "主进程运行状态"),
-        ("signal_store", settings.signal_events_db_path, "信号事件数据库"),
-        ("market_snapshots", settings.market_snapshots_db_path, "市场快照数据库"),
-        ("realtime_features", settings.realtime_features_db_path, "实时行情数据库"),
-    ]
-    for name, path, label in runtime_checks:
-        exists = path.exists()
-        checks.append({
-            "name": name,
-            "status": "ok" if exists else "warn",
-            "detail": f"{label}{'已就绪' if exists else '尚未生成；首次运行后自动创建'}",
-        })
+    checks.extend(runtime_health_checks(settings, store))
 
     fail_count = sum(item["status"] == "fail" for item in checks)
     warn_count = sum(item["status"] == "warn" for item in checks)
@@ -409,8 +398,9 @@ def run_telegram_test(args: argparse.Namespace) -> int:
 
 def run_announcements_test(args: argparse.Namespace) -> int:
     settings, store, engine, _gateway = make_runtime_for_args(args)
-    source = BinanceDataSource(settings)
-    result = engine.build_announcement_alerts(source, include_seen=True)
+    with BinanceDataSource(settings) as source:
+        result = engine.build_announcement_alerts(source, include_seen=True)
+        diagnostics = source.diagnostics()
     alert_summaries = []
     for alert in result.get("alerts", []):
         if not isinstance(alert, dict):
@@ -432,16 +422,15 @@ def run_announcements_test(args: argparse.Namespace) -> int:
         "alerts_classified": result.get("alerts_classified", 0),
         "messages_ready": len(result.get("messages", [])),
         "alerts": alert_summaries,
-        "diagnostics": source.diagnostics(),
+        "diagnostics": diagnostics,
     }, ensure_ascii=False, indent=2))
     return 0
 
 
 def run_flow_radar(args: argparse.Namespace) -> int:
     settings, _store, _engine, gateway = make_runtime_for_args(args)
-    flow = FlowRadarEngine(settings).build(
-        BinanceDataSource(settings),
-    )
+    with BinanceDataSource(settings) as source:
+        flow = FlowRadarEngine(settings).build(source)
     try:
         saved = persist_flow_market_rows(settings, flow)
         flow["diagnostics"]["market_snapshot"] = {"status": "saved" if saved else "empty", "count": saved}
@@ -463,9 +452,8 @@ def run_flow_radar(args: argparse.Namespace) -> int:
 
 
 def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse.Namespace) -> tuple[str, dict[str, object]]:
-    flow = FlowRadarEngine(settings).build(
-        BinanceDataSource(settings),
-    )
+    with BinanceDataSource(settings) as source:
+        flow = FlowRadarEngine(settings).build(source)
     try:
         saved = persist_flow_market_rows(settings, flow)
         flow["diagnostics"]["market_snapshot"] = {"status": "saved" if saved else "empty", "count": saved}
@@ -499,7 +487,8 @@ def push_funding_alert(
     args: argparse.Namespace,
 ) -> tuple[str, dict[str, object]]:
     funding_engine = FundingAlertEngine(settings, store)
-    result = funding_engine.build(BinanceDataSource(settings))
+    with BinanceDataSource(settings) as source:
+        result = funding_engine.build(source)
     push_status = "skipped"
     sent_alerts: list[dict[str, object]] = []
     for idx, message in enumerate(result["messages"], start=1):
@@ -528,8 +517,20 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
     records = store.load(settings.launch_watch_history_path, [])
     record_count = len(records) if isinstance(records, list) else 0
     report = build_launch_report(records[-100:] if isinstance(records, list) else [], settings)
+    runtime_health = [
+        item for item in runtime_health_checks(settings, store)
+        if item.get("name") != "runtime_status"
+    ]
+    health_failures = [item for item in runtime_health if item.get("status") == "fail"]
     checks = [
         *telegram_config_checks(settings),
+        (
+            "runtime_health",
+            not health_failures,
+            "BOT 核心数据健康"
+            if not health_failures
+            else "；".join(str(item.get("detail") or "") for item in health_failures),
+        ),
         ("observe_history", record_count >= 5, f"启动观察历史 {record_count} 轮"),
         ("launch_alert_pressure", int(report.get("total_alerts", 0) or 0) <= max(1, int(report.get("records", 0) or 0)), f"最近推送候选 {report.get('total_alerts', 0)} / {report.get('records', 0)} 轮"),
         ("history_file", settings.launch_watch_history_path.exists(), "启动观察历史文件存在" if settings.launch_watch_history_path.exists() else "启动观察历史文件不存在"),
@@ -1022,6 +1023,7 @@ def run_loop(args: argparse.Namespace) -> int:
             launch_error = ""
             launch_pushes: list[dict[str, str]] = []
             launch_diag: dict[str, object] = {}
+            source: BinanceDataSource | None = None
             try:
                 settings, _store, engine, gateway = make_runtime_for_args(args)
                 source = BinanceDataSource(settings)
@@ -1062,6 +1064,9 @@ def run_loop(args: argparse.Namespace) -> int:
                 launch_ok = False
                 launch_error = f"{type(exc).__name__}: {exc}"
                 print(f"[loop] launch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            finally:
+                if source is not None:
+                    source.close()
             next_launch = time.time() + max(60, args.launch_interval)
             write_runtime_status(
                 settings,
@@ -1132,6 +1137,7 @@ def run_trial(args: argparse.Namespace) -> int:
                 sent_launch_alerts.append(alert)
         engine.mark_launch_pushed(sent_launch_alerts)
         diagnostics = {"binance": source.diagnostics(), "market_snapshot": market_snapshot}
+        source.close()
         print(json.dumps({
             "watchlist_count": launch.get("watchlist_count", 0),
             "diagnostics": diagnostics,

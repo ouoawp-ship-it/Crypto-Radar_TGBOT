@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -237,7 +238,23 @@ def cleanup_runtime_artifacts(
             max(1, int(settings.launch_watch_history_limit)),
             None,
         ),
+        _prune_json_list_by_ts(
+            store,
+            settings.tg_outbox_path,
+            1000,
+            max(1, int(settings.tg_outbox_retention_days)),
+        ),
     ]
+    from .signal_store import SignalEventStore
+
+    try:
+        signal_database = SignalEventStore(settings.signal_events_db_path).prune(
+            before_ts=now - max(1, int(settings.signal_events_retention_days)) * 86400,
+            max_rows=max(100, int(settings.signal_events_limit)),
+        )
+        signal_database["status"] = "ok"
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        signal_database = {"status": "failed", "error": type(exc).__name__}
     generated_root_artifacts = cleanup_generated_root_artifacts(settings.base_dir)
 
     result = {
@@ -247,6 +264,7 @@ def cleanup_runtime_artifacts(
         "removed_files": removed_files,
         "removed_dirs": removed_dirs,
         "pruned": pruned,
+        "signal_database": signal_database,
         "generated_root_artifacts": generated_root_artifacts,
     }
     store.save(settings.cleanup_state_path, {

@@ -310,6 +310,72 @@ class TelegramGatewayTests(unittest.TestCase):
 
             self.assertTrue(result.sent)
             self.assertEqual(send_mock.call_args.kwargs["reply_to_message_id"], 111)
+            outbox = JsonStore(Path(tmp)).load(settings.tg_outbox_path, [])
+            self.assertEqual(outbox[-1]["status"], "sent")
+            self.assertEqual(outbox[-1]["message_ids"], [222])
+            self.assertEqual(outbox[-1]["delivery_id"], result.delivery_id)
+
+    def test_pending_outbox_delivery_blocks_duplicate_real_send(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_default_cooldown_sec=0,
+                tg_topic_intro_enable=False,
+            )
+            store.save(settings.tg_outbox_path, [{
+                "delivery_id": "pending-one",
+                "ts": utc_ts(),
+                "updated_at": utc_ts(),
+                "template_id": "TG_TEST_MESSAGE",
+                "dedup_key": "outbox:duplicate",
+                "status": "pending",
+            }])
+            gateway = TelegramGateway(settings, store)
+
+            with patch.object(gateway, "_send_real_message_ids") as send_mock:
+                result = gateway.send(
+                    "test",
+                    "TG_TEST_MESSAGE",
+                    "outbox:duplicate",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+
+            self.assertEqual(result.status, "skipped")
+            self.assertEqual(result.reason, "delivery_quarantine")
+            send_mock.assert_not_called()
+
+    def test_partial_real_send_is_persisted_for_quarantine(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_default_cooldown_sec=0,
+                tg_topic_intro_enable=False,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with patch.object(gateway, "_send_real_message_ids", return_value=(False, [301])):
+                result = gateway.send(
+                    "partial",
+                    "TG_TEST_MESSAGE",
+                    "outbox:partial",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+
+            outbox = store.load(settings.tg_outbox_path, [])
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(outbox[-1]["status"], "partial")
+            self.assertEqual(outbox[-1]["completed_chunks"], 1)
+            self.assertEqual(outbox[-1]["message_ids"], [301])
 
     def test_real_sender_adds_reply_payload_on_first_chunk(self) -> None:
         with TemporaryDirectory() as tmp:

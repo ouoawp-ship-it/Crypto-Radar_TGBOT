@@ -109,6 +109,26 @@ class MarketCapSourceTests(unittest.TestCase):
         self.assertEqual(diagnostics["entries"], 1)
         self.assertEqual(diagnostics["expired_pruned"], 1)
 
+    def test_http_cache_uses_configured_limit_and_can_be_bypassed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                http_cache_enable=True,
+                http_cache_ttl_sec=60,
+                http_cache_max_entries=7,
+            )
+            session = Mock()
+            session.get.return_value.status_code = 200
+            session.get.return_value.json.side_effect = [{"value": 1}, {"value": 2}]
+            client = HttpClient(settings, DataQuality(), session=session)
+
+            client.get_json("https://example.test/live", cache_key="live", cache=False)
+            client.get_json("https://example.test/live", cache_key="live", cache=False)
+
+        self.assertEqual(client.cache_max_entries, 7)
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(client.diagnostics()["entries"], 0)
+
     def test_http_client_reuses_owned_session(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp), http_cache_enable=False)
@@ -120,11 +140,25 @@ class MarketCapSourceTests(unittest.TestCase):
                 client = HttpClient(settings, DataQuality())
                 client.get_json("https://example.test/one")
                 client.get_json("https://example.test/two")
+                self.assertEqual(client.diagnostics()["entries"], 0)
                 client.close()
 
         session_factory.assert_called_once_with()
         self.assertEqual(session.get.call_count, 2)
         session.close.assert_called_once_with()
+
+    def test_http_client_merges_provider_auth_headers_without_logging_them(self) -> None:
+        with TemporaryDirectory() as tmp:
+            session = Mock()
+            session.get.return_value.status_code = 200
+            session.get.return_value.json.return_value = {"ok": True}
+            client = HttpClient(Settings(data_dir=Path(tmp)), DataQuality(), session=session)
+
+            client.get_json("https://example.test/private", headers={"api_key": "secret"})
+
+        headers = session.get.call_args.kwargs["headers"]
+        self.assertEqual(headers["api_key"], "secret")
+        self.assertNotIn("secret", str(client.diagnostics()))
 
     def test_http_client_does_not_close_injected_session(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -133,6 +167,14 @@ class MarketCapSourceTests(unittest.TestCase):
             client.close()
 
         session.close.assert_not_called()
+
+    def test_binance_source_context_closes_owned_http_client(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with patch("requests.Session") as session_factory:
+                with BinanceDataSource(Settings(data_dir=Path(tmp))):
+                    pass
+
+        session_factory.return_value.close.assert_called_once_with()
 
     def test_coinpaprika_market_caps_parse_usd_quotes_and_prefer_better_rank(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -145,6 +187,7 @@ class MarketCapSourceTests(unittest.TestCase):
 
             with patch.object(source.http, "get_json", return_value=payload) as get_json:
                 result = source.coinpaprika_market_caps()
+            source.close()
 
         self.assertEqual(result, {"TEST": 123_000_000})
         get_json.assert_called_once()

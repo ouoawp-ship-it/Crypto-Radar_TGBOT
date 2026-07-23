@@ -5,6 +5,7 @@
 | 模块 | 作用 |
 | --- | --- |
 | `data_sources.py` / `funding_sources.py` | 交易所 REST 数据、缓存、限流与降级 |
+| `derivatives_quality.py` | CoinGlass/Coinalyze 标准化、时间新鲜度、一致性评分和信号门控 |
 | `realtime_market.py` / `realtime_intelligence.py` | 多交易所成交、清算、CVD 与实时异动 |
 | `radar.py` | 资金摘要、启动预警和公告分类 |
 | `flow_radar.py` | 多因子资金流信号 |
@@ -34,7 +35,28 @@ paopao-market-stream
 
 paopao-radar
     ├─ 扫描 REST / 公告 / 资金费率
+    ├─ 用 CoinGlass 主校验、Coinalyze 交叉验证 OI 与费率
     ├─ 读取实时与历史上下文
     ├─ 生成、去重并记录信号
     └─ 推送 Telegram
 ```
+
+## P1 数据质量边界
+
+```text
+Binance / OKX / Bybit / Bitget / Gate 原生数据
+                         ↓
+交易对、百分比单位、时间戳标准化
+                         ↓
+CoinGlass 聚合口径 + Coinalyze 独立口径
+                         ↓
+新鲜度检查 → 一致性评分 → allow / degraded / block
+                         ↓
+资金流、启动预警、资金费率警报
+```
+
+- OI 多源变化方向相反时，资金流和启动高级信号会被阻止。
+- 单源缺失或超过额度时降级运行并保留诊断，不把缺失值当作 0。
+- 资金费率已有多家原生交易所同步确认时，外部聚合源冲突只作质量标记，不覆盖原生共振事实。
+- 外部 API 使用非阻塞滚动分钟预算；预算不足时跳过校验，不阻塞 BOT 主循环。
+- Arkham 属于链上实体事件层，后续独立开发，本层不包含 Arkham 依赖。

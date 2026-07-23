@@ -11,7 +11,9 @@
 - 公告风险：解析 Binance 官方上新、下架、Launchpool、Airdrop 等公告。
 - 推送安全：默认 dry-run，真实发送必须同时提供 `--send --confirm-real-send`，并经过 readiness 门禁、去重、冷却、限流和重试。
 
-实时行情进程会采集 Binance、Bybit、OKX 的成交和清算数据，为 Telegram 信号补充 CVD、清算和市场上下文。CoinGlass 是可选增强源，不配置 Key 时自动降级。
+实时行情进程会采集 Binance、Bybit、OKX 的成交和清算数据，为 Telegram 信号补充 CVD、清算和市场上下文。P1 数据质量层以 CoinGlass 作为聚合衍生品主校验源、Coinalyze 作为独立交叉验证源：统一交易对、百分比单位和时间戳，计算 OI/费率一致性分，并在数据方向冲突时阻止单源高级信号。任一 Key 缺失时会明确标记为降级运行，不会让 BOT 停摆。
+
+Arkham 不属于本阶段：它是链上实体事件层，后续作为独立模块开发，不与当前高频衍生品采集耦合。
 
 ## 本地运行
 
@@ -29,6 +31,18 @@ python -m venv .venv
 TG_BOT_TOKEN=123456:...
 TG_CHAT_ID=-1001234567890
 ```
+
+P1 多源校验建议填写：
+
+```dotenv
+COINGLASS_ENABLE=true
+COINGLASS_API_KEY=...
+COINALYZE_ENABLE=true
+COINALYZE_API_KEY=...
+DERIVATIVES_VALIDATION_SYMBOL_LIMIT=8
+```
+
+只配置一套外部源也可以运行，但 `stable-check` 会提示多源校验处于降级状态。API Key 仅通过请求头发送，状态和诊断输出只报告“是否已配置”，不会输出 Key 内容。
 
 常用命令：
 

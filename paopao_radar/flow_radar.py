@@ -6,6 +6,7 @@ from typing import Any
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .derivatives_quality import DerivativesQualityService
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .radar import fmt_money, pct_cell, to_float
@@ -329,7 +330,7 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     if not item.get("price_ready", True) or not item.get("oi_ready", True):
         return ("数据不足", 0, "价格或 OI 未覆盖完整统计窗口，暂不评分")
     price = item["price_24h"]
-    oi = item["oi_24h"]
+    oi = to_float(item.get("oi_1h", item.get("oi_24h", 0.0)))
     spot = item["spot_cvd_delta"]
     futures = item["futures_cvd_delta"]
     funding = item["funding_pct"]
@@ -421,7 +422,7 @@ class FlowRadarEngine:
             spot_cvd, spot_inflow, spot_outflow, spot_cvd_ready, spot_cvd_points = binance_spot_flow_stats(binance, symbol, window)
             futures_cvd, futures_inflow, futures_outflow, futures_cvd_ready, futures_cvd_points = binance_futures_flow_stats(binance, symbol, window)
             price_pct, price_ready = binance_window_price_pct(binance, symbol, window)
-            oi_24h, oi_fallback_usd, oi_ready, oi_points = binance_oi_stats(
+            oi_1h, oi_fallback_usd, oi_ready, oi_points = binance_oi_stats(
                 binance,
                 symbol,
                 window=window,
@@ -437,8 +438,10 @@ class FlowRadarEngine:
                 "price": candidate.get("price"),
                 "price_24h": price_pct,
                 "price_ready": price_ready,
-                "oi_24h": oi_24h,
-                "oi_change_pct": oi_24h,
+                "oi_1h": oi_1h,
+                # Compatibility alias for persisted snapshots created before P1.
+                "oi_24h": oi_1h,
+                "oi_change_pct": oi_1h,
                 "oi_ready": oi_ready,
                 "oi_points": oi_points,
                 "spot_cvd_delta": spot_cvd,
@@ -458,7 +461,57 @@ class FlowRadarEngine:
             category, score, reason = flow_category(item)
             item.update({"category": category, "score": score, "reason": reason})
             scanned_items.append(item)
-            if score >= self.settings.flow_min_score:
+
+        quality_service = DerivativesQualityService(self.settings, binance.http)
+        validation_candidates = sorted(
+            scanned_items,
+            key=lambda item: to_float(item.get("score")),
+            reverse=True,
+        )
+        oi_validations = quality_service.validate_oi_rows(
+            validation_candidates,
+            timeframe="1h",
+            local_field="oi_1h",
+            now_ts=int(window.end.timestamp()),
+        )
+        for item in scanned_items:
+            symbol = str(item.get("symbol") or "").upper()
+            validation = oi_validations.get(symbol)
+            if validation is None:
+                item.update({
+                    "data_quality_status": "not_checked_budget",
+                    "data_quality_score": 0,
+                    "quality_gate": "degraded",
+                    "primary_data_source": "binance",
+                })
+            else:
+                item["oi_validation"] = validation
+                item["data_quality_status"] = validation["status"]
+                item["data_quality_score"] = validation["score"]
+                item["quality_gate"] = validation["gate"]
+                item["primary_data_source"] = validation["primary_source"]
+                item["oi_source_agreement_score"] = validation["score"]
+                selected = validation.get("selected_change_pct")
+                if selected is not None and validation.get("primary_source") == "coinglass":
+                    item["oi_binance_1h"] = item["oi_1h"]
+                    item["oi_1h"] = to_float(selected)
+                    item["oi_24h"] = to_float(selected)
+                    item["oi_change_pct"] = to_float(selected)
+                    item["oi_ready"] = True
+                    category, score, reason = flow_category(item)
+                    item.update({"category": category, "score": score, "reason": reason})
+                if validation.get("gate") == "block":
+                    item.update({
+                        "category": "数据源冲突",
+                        "score": 0,
+                        "reason": "OI 多数据源方向冲突，已阻止进入高级信号",
+                    })
+            externally_checked = validation is not None or not quality_service.configured
+            if (
+                item["score"] >= self.settings.flow_min_score
+                and item.get("quality_gate") != "block"
+                and externally_checked
+            ):
                 rows.append(item)
 
         rows.sort(key=lambda item: item["score"], reverse=True)
@@ -471,7 +524,10 @@ class FlowRadarEngine:
             "snapshots": scanned_items,
             "observed_at": int(window.end.timestamp()),
             "window_sec": int(window.interval_sec),
-            "diagnostics": {"binance": binance.diagnostics()},
+            "diagnostics": {
+                "binance": binance.diagnostics(),
+                "derivatives_quality": quality_service.summary(oi_validations),
+            },
         }
 
     def _candidate_symbols(self, source: BinanceDataSource) -> list[dict[str, Any]]:
@@ -533,7 +589,7 @@ class FlowRadarEngine:
             tg_quote("📊 本轮统计"),
             f"候选币: {len(candidates)}",
             f"入选信号: {len(rows)}",
-            "数据源: Binance 免费公开接口（现货K线、合约K线、合约OI、资金费率）",
+            "数据源: Binance 原生行情 + CoinGlass/Coinalyze 衍生品校验（按配置降级）",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
             f"CVD数据(Binance估算): 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
             "",
@@ -565,12 +621,16 @@ class FlowRadarEngine:
                 lines.append(coin_link(item["coin"]))
                 lines.append(
                     f"{item['score']}分 | 价{pct_cell(item['price_24h'])} | "
-                    f"OI{pct_cell(item['oi_24h'])} | "
+                    f"OI 1h{pct_cell(item['oi_1h'])} | "
                     f"现货CVD {fmt_cvd(item['spot_cvd_delta'], bool(item.get('spot_cvd_ready')))} | "
                     f"合约CVD {fmt_cvd(item['futures_cvd_delta'], bool(item.get('futures_cvd_ready')))} | "
                     f"费率 {item['funding_pct']:+.3f}%"
                 )
                 lines.append(f"判断: {tg_escape(item['reason'])}")
+                lines.append(
+                    f"数据校验: {tg_escape(item.get('data_quality_status', 'not_checked'))}"
+                    f" / {to_float(item.get('data_quality_score')):.0f}分"
+                )
             lines.append("")
         if not rows:
             lines.extend([

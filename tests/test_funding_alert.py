@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.funding_alert import (
@@ -183,6 +184,75 @@ class FundingAlertTests(unittest.TestCase):
             self.assertIn("-2.000%/1H 超极负", result["messages"][0])
             self.assertIn("交易所偏离", result["messages"][0])
             self.assertIn("最高资金费率和最低资金费率之间的差值", result["messages"][0])
+
+    def test_native_multi_exchange_confirmation_overrides_external_conflict(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                funding_alert_state_path=Path(tmp) / "funding_alert_state.json",
+                funding_alert_scan_limit=1,
+                funding_alert_exchanges=("BINANCE", "OKX", "BYBIT"),
+                funding_alert_min_exchange_count=2,
+            )
+
+            class QualityService:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                @staticmethod
+                def validate_funding_rows(_alerts, now_ts: int):
+                    return {"TESTUSDT": {
+                        "status": "conflict",
+                        "score": 10,
+                        "gate": "block",
+                        "primary_source": "coinglass",
+                    }}
+
+                @staticmethod
+                def summary(_validations):
+                    return {"checked": 1, "status_counts": {"conflict": 1}, "blocked_symbols": ["TESTUSDT"]}
+
+            with patch("paopao_radar.funding_alert.DerivativesQualityService", QualityService):
+                result = FundingAlertEngine(settings, JsonStore(Path(tmp))).build(  # type: ignore[arg-type]
+                    FundingSource(FundingHttp())
+                )
+
+        self.assertEqual(len(result["alerts"]), 1)
+        self.assertEqual(result["alerts"][0]["quality_gate"], "native_multi_exchange_override")
+
+    def test_single_exchange_alert_is_blocked_on_external_conflict(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                funding_alert_state_path=Path(tmp) / "funding_alert_state.json",
+                funding_alert_scan_limit=1,
+                funding_alert_exchanges=("BINANCE", "BYBIT"),
+                funding_alert_min_exchange_count=2,
+            )
+
+            class QualityService:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                @staticmethod
+                def validate_funding_rows(_alerts, now_ts: int):
+                    return {"TESTUSDT": {
+                        "status": "conflict",
+                        "score": 10,
+                        "gate": "block",
+                        "primary_source": "coinglass",
+                    }}
+
+                @staticmethod
+                def summary(_validations):
+                    return {"checked": 1, "status_counts": {"conflict": 1}, "blocked_symbols": ["TESTUSDT"]}
+
+            with patch("paopao_radar.funding_alert.DerivativesQualityService", QualityService):
+                result = FundingAlertEngine(settings, JsonStore(Path(tmp))).build(  # type: ignore[arg-type]
+                    FundingSource(FundingHttp())
+                )
+
+        self.assertEqual(result["alerts"], [])
 
     def test_reply_chain_uses_previous_message_id_for_same_symbol(self) -> None:
         with TemporaryDirectory() as tmp:
