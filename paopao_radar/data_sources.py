@@ -243,7 +243,7 @@ def _source_id_from_quality_key(quality_key: str) -> str:
     if key.startswith("funding:"):
         exchange = key.split(":", 1)[1].strip().lower()
         return "binance_futures_public" if exchange == "binance" else f"{exchange}_funding_public"
-    if key == "spotKlines":
+    if key in {"spotExchangeInfo", "spotKlines"}:
         return "binance_spot_public"
     if key == "announcements":
         return "binance_announcements"
@@ -430,6 +430,9 @@ class BinanceDataSource:
             "funding_history": settings.funding_history_budget,
         })
         self.http = HttpClient(settings, self.quality)
+        self._spot_symbols: frozenset[str] | None = None
+        self._spot_symbols_loaded = False
+        self._spot_symbols_lock = RLock()
 
     def close(self) -> None:
         self.http.close()
@@ -445,6 +448,35 @@ class BinanceDataSource:
 
     def spot_endpoint(self, path: str) -> str:
         return f"{self.settings.binance_spot_base_url}{path}"
+
+    def spot_symbols(self) -> frozenset[str] | None:
+        """Return active Binance USDT spot symbols, or None when the catalogue is unavailable."""
+
+        with self._spot_symbols_lock:
+            if self._spot_symbols_loaded:
+                return self._spot_symbols
+            data = self.http.get_json(
+                self.spot_endpoint("/api/v3/exchangeInfo"),
+                cache_key="spot:exchangeInfo",
+                quality_key="spotExchangeInfo",
+                retries=1,
+            )
+            self._spot_symbols_loaded = True
+            if not isinstance(data, dict):
+                return None
+            symbols = data.get("symbols")
+            if not isinstance(symbols, list):
+                return None
+            self._spot_symbols = frozenset(
+                str(item.get("symbol") or "").upper()
+                for item in symbols
+                if isinstance(item, dict)
+                and item.get("status") == "TRADING"
+                and item.get("quoteAsset") == "USDT"
+                and item.get("isSpotTradingAllowed") is not False
+                and item.get("symbol")
+            )
+            return self._spot_symbols
 
     def exchange_info(self) -> dict[str, Any] | None:
         return self.http.get_json(
@@ -540,10 +572,14 @@ class BinanceDataSource:
         start_time: int | None = None,
         end_time: int | None = None,
     ) -> list[list[Any]]:
+        normalized_symbol = str(symbol or "").upper()
+        available_symbols = self.spot_symbols()
+        if available_symbols is not None and normalized_symbol not in available_symbols:
+            return []
         if not self.budget.consume("spot_klines"):
             self.quality.fail("spotKlines", "budget_exhausted")
             return []
-        params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        params: dict[str, Any] = {"symbol": normalized_symbol, "interval": interval, "limit": limit}
         if start_time is not None:
             params["startTime"] = int(start_time)
         if end_time is not None:
@@ -551,7 +587,7 @@ class BinanceDataSource:
         data = self.http.get_json(
             self.spot_endpoint("/api/v3/klines"),
             params,
-            cache_key=f"spot:klines:{symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
+            cache_key=f"spot:klines:{normalized_symbol}:{interval}:{limit}:{params.get('startTime', '')}:{params.get('endTime', '')}",
             quality_key="spotKlines",
             retries=1,
             cache=False,

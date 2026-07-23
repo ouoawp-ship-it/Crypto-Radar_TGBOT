@@ -37,6 +37,7 @@ class GitIgnoreHardeningTests(unittest.TestCase):
         self.assertTrue(is_ignored(".env.oi.bak.20260710_000000"))
         self.assertTrue(is_ignored("runtime-config.bak"))
         self.assertTrue(is_ignored("data/tg_push_history.json.lock"))
+        self.assertTrue(is_ignored("data/backups/20260723T033000Z/manifest.json"))
 
     def test_example_env_files_remain_trackable(self) -> None:
         self.assertFalse(is_ignored(".env.oi.example"))
@@ -100,6 +101,35 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("BINANCE_FUTURES_WS_URL=wss://fstream.binance.com/market/ws", text)
         self.assertIn("BYBIT_LINEAR_WS_URL=wss://custom.example/ws", text)
 
+    def test_sync_extends_default_signal_history_for_p2_calibration(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "SIGNAL_EVENTS_LIMIT=5000\n"
+                "SIGNAL_EVENTS_RETENTION_DAYS=60\n"
+                "DATABASE_BACKUP_DIR=custom-backups\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "SIGNAL_EVENTS_LIMIT=20000\n"
+                "SIGNAL_EVENTS_RETENTION_DAYS=365\n"
+                "DATABASE_BACKUP_DIR=backups\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("SIGNAL_EVENTS_LIMIT=20000", text)
+        self.assertIn("SIGNAL_EVENTS_RETENTION_DAYS=365", text)
+        self.assertIn("DATABASE_BACKUP_DIR=custom-backups", text)
+        self.assertEqual(
+            sorted(result["updated"]),
+            ["SIGNAL_EVENTS_LIMIT", "SIGNAL_EVENTS_RETENTION_DAYS"],
+        )
+
 
 class BotOnlyDeploymentTests(unittest.TestCase):
     def test_server_scripts_install_only_bot_runtime_services(self) -> None:
@@ -113,11 +143,14 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("paopao-radar", combined)
         self.assertIn("paopao-market-stream", combined)
         self.assertIn("paopao-health", combined)
+        self.assertIn("paopao-backup", combined)
+        self.assertIn("database-backup", combined)
         self.assertIn("MemoryHigh=", combined)
         self.assertIn("MemoryMax=", combined)
         self.assertIn("LimitNOFILE=65536", combined)
         self.assertIn("systemd_health_check.sh", combined)
         self.assertIn("OnUnitActiveSec=5min", combined)
+        self.assertIn("OnCalendar=*-*-* 03:30:00 UTC", combined)
         self.assertNotIn("paopao-frontend", install)
         self.assertNotIn("paopao-web", install)
         self.assertNotIn("paopao-ai", install)
@@ -159,6 +192,8 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertNotIn("admin-password", command_action.choices)
         self.assertNotIn("ai-assistant", command_action.choices)
         self.assertNotIn("price-alerts", command_action.choices)
+        self.assertIn("provider-check", command_action.choices)
+        self.assertIn("database-backup", command_action.choices)
 
 
 class LaunchReportTests(unittest.TestCase):

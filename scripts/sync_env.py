@@ -20,8 +20,7 @@ PRESERVE_KEYS = {
     "COINALYZE_API_KEY",
     "SIGNAL_EVENTS_FILE",
     "SIGNAL_EVENTS_DB_FILE",
-    "SIGNAL_EVENTS_LIMIT",
-    "SIGNAL_EVENTS_RETENTION_DAYS",
+    "DATABASE_BACKUP_DIR",
     "TG_OUTBOX_FILE",
 }
 
@@ -114,6 +113,16 @@ RETIRED_KEYS = {
 }
 
 MANAGED_MIGRATIONS = {
+    "SIGNAL_EVENTS_LIMIT": {
+        "old": {"", "5000"},
+        "new": "20000",
+        "note": "P2 calibration retains enough structured signals for regime analysis",
+    },
+    "SIGNAL_EVENTS_RETENTION_DAYS": {
+        "old": {"", "60"},
+        "new": "365",
+        "note": "P2 outcomes retain one year of calibration history",
+    },
     "MARKET_SNAPSHOT_RETENTION_DAYS": {
         "old": {"", "30"},
         "new": "7",

@@ -153,8 +153,10 @@ class Settings:
     coinalyze_base_url: str = "https://api.coinalyze.net/v1"
     coinalyze_rate_limit_per_minute: int = 40
     derivatives_validation_symbol_limit: int = 8
-    signal_events_limit: int = 5000
-    signal_events_retention_days: int = 60
+    signal_events_limit: int = 20_000
+    signal_events_retention_days: int = 365
+    database_backup_dir: Path = BASE_DIR / "data" / "backups"
+    database_backup_retention_days: int = 7
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
     cleanup_enable: bool = True
     cleanup_interval_sec: int = 3600
@@ -163,6 +165,7 @@ class Settings:
     cleanup_log_retention_days: int = 14
     health_runtime_max_age_sec: int = 10 * 60
     health_realtime_fresh_sec: int = 3 * 60
+    health_database_backup_max_age_sec: int = 36 * 60 * 60
     health_disk_warn_mb: int = 1024
     health_disk_fail_mb: int = 256
 
@@ -255,6 +258,7 @@ class Settings:
         default_market_snapshots_db_path = BASE_DIR / "data" / "market_snapshots.db"
         default_realtime_features_db_path = BASE_DIR / "data" / "realtime_features.db"
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
+        default_database_backup_dir = BASE_DIR / "data" / "backups"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.tg_outbox_path == default_outbox_path:
@@ -267,6 +271,8 @@ class Settings:
             object.__setattr__(self, "realtime_features_db_path", self.data_dir / "realtime_features.db")
         if self.data_dir != BASE_DIR / "data" and self.news_events_db_path == default_news_events_db_path:
             object.__setattr__(self, "news_events_db_path", self.data_dir / "news_events.db")
+        if self.data_dir != BASE_DIR / "data" and self.database_backup_dir == default_database_backup_dir:
+            object.__setattr__(self, "database_backup_dir", self.data_dir / "backups")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -342,8 +348,10 @@ class Settings:
                 env_int("COINALYZE_REQUEST_BUDGET", 40),
             ),
             derivatives_validation_symbol_limit=env_int("DERIVATIVES_VALIDATION_SYMBOL_LIMIT", 8),
-            signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
-            signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
+            signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 20_000),
+            signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 365),
+            database_backup_dir=data_path(data_dir, "DATABASE_BACKUP_DIR", "backups"),
+            database_backup_retention_days=env_int("DATABASE_BACKUP_RETENTION_DAYS", 7),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
             cleanup_enable=env_bool("CLEANUP_ENABLE", True),
             cleanup_interval_sec=env_int("CLEANUP_INTERVAL_SEC", 3600),
@@ -352,6 +360,10 @@ class Settings:
             cleanup_log_retention_days=env_int("CLEANUP_LOG_RETENTION_DAYS", 14),
             health_runtime_max_age_sec=env_int("HEALTH_RUNTIME_MAX_AGE_SEC", 10 * 60),
             health_realtime_fresh_sec=env_int("HEALTH_REALTIME_FRESH_SEC", 3 * 60),
+            health_database_backup_max_age_sec=env_int(
+                "HEALTH_DATABASE_BACKUP_MAX_AGE_SEC",
+                36 * 60 * 60,
+            ),
             health_disk_warn_mb=env_int("HEALTH_DISK_WARN_MB", 1024),
             health_disk_fail_mb=env_int("HEALTH_DISK_FAIL_MB", 256),
             http_timeout_sec=env_int("BINANCE_API_TIMEOUT_SEC", env_int("HTTP_TIMEOUT_SEC", 10)),
@@ -489,12 +501,15 @@ class Settings:
                 "news_events_limit": self.news_events_limit,
                 "signal_events_limit": self.signal_events_limit,
                 "signal_events_retention_days": self.signal_events_retention_days,
+                "database_backup_dir": str(self.database_backup_dir),
+                "database_backup_retention_days": self.database_backup_retention_days,
             },
             "runtime": {
                 "status_file": str(self.runtime_status_path),
                 "cleanup_enable": self.cleanup_enable,
                 "cleanup_interval_sec": self.cleanup_interval_sec,
                 "cleanup_state_file": str(self.cleanup_state_path),
+                "health_database_backup_max_age_sec": self.health_database_backup_max_age_sec,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

@@ -210,6 +210,28 @@ class MarketCapSourceTests(unittest.TestCase):
 
         session_factory.return_value.close.assert_called_once_with()
 
+    def test_spot_klines_skip_futures_only_symbol_without_invalid_request(self) -> None:
+        with TemporaryDirectory() as tmp:
+            source = BinanceDataSource(Settings(data_dir=Path(tmp)))
+            spot_catalogue = {
+                "symbols": [{
+                    "symbol": "BTCUSDT",
+                    "status": "TRADING",
+                    "quoteAsset": "USDT",
+                    "isSpotTradingAllowed": True,
+                }]
+            }
+            with patch.object(source.http, "get_json", return_value=spot_catalogue) as get_json:
+                first = source.spot_klines("FUTURESONLYUSDT", interval="1h", limit=3)
+                second = source.spot_klines("FUTURESONLYUSDT", interval="1h", limit=3)
+            source.close()
+
+        self.assertEqual(first, [])
+        self.assertEqual(second, [])
+        get_json.assert_called_once()
+        self.assertTrue(get_json.call_args.args[0].endswith("/api/v3/exchangeInfo"))
+        self.assertEqual(source.budget.used.get("spot_klines", 0), 0)
+
     def test_coinpaprika_market_caps_parse_usd_quotes_and_prefer_better_rank(self) -> None:
         with TemporaryDirectory() as tmp:
             source = BinanceDataSource(Settings(data_dir=Path(tmp)))

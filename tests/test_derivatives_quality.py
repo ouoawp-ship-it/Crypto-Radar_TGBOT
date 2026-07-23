@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from json import dumps
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.derivatives_quality import (
     CoinGlassClient,
     CoinalyzeClient,
     DerivativesQualityService,
+    _probe_status,
+    probe_derivatives_providers,
     source_agreement,
 )
 
@@ -27,6 +31,71 @@ class FakeHttp:
 
 
 class DerivativesQualityTests(unittest.TestCase):
+    def test_provider_probe_classifies_plan_permission_error(self) -> None:
+        status = _probe_status(
+            enabled=True,
+            configured=True,
+            oi_ready=False,
+            funding_ready=False,
+            errors=["coinglass:open_interest: api_code_401"],
+        )
+
+        self.assertEqual(status, "plan_or_permission_required")
+
+    def test_provider_probe_requires_both_sources_for_ready_status(self) -> None:
+        settings = Settings(
+            coinglass_enable=False,
+            coinglass_api_key="",
+            coinalyze_enable=True,
+            coinalyze_api_key="ca-secret",
+        )
+        with (
+            patch(
+                "paopao_radar.derivatives_quality.CoinalyzeClient.oi_snapshots",
+                return_value={"BTCUSDT": {"oi_usd": 1}},
+            ),
+            patch(
+                "paopao_radar.derivatives_quality.CoinalyzeClient.funding_snapshots",
+                return_value={"BTCUSDT": {"funding_pct": 0.01}},
+            ),
+        ):
+            report = probe_derivatives_providers(settings)
+
+        self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["providers"]["coinglass"]["status"], "disabled")
+        self.assertEqual(report["providers"]["coinalyze"]["status"], "ready")
+
+    def test_provider_probe_reports_readiness_without_exposing_keys(self) -> None:
+        settings = Settings(
+            coinglass_enable=True,
+            coinglass_api_key="cg-secret",
+            coinalyze_enable=True,
+            coinalyze_api_key="ca-secret",
+        )
+        with (
+            patch("paopao_radar.derivatives_quality.HttpClient") as http_client,
+            patch("paopao_radar.derivatives_quality.CoinGlassClient") as coinglass_client,
+            patch("paopao_radar.derivatives_quality.CoinalyzeClient") as coinalyze_client,
+        ):
+            http_client.return_value.__enter__.return_value = object()
+            coinglass = coinglass_client.return_value
+            coinglass.available = True
+            coinglass.oi_snapshot.return_value = {"symbol": "BTCUSDT"}
+            coinglass.funding_snapshots.return_value = {"BTCUSDT": {"funding_pct": 0.01}}
+            coinalyze = coinalyze_client.return_value
+            coinalyze.available = True
+            coinalyze.oi_snapshots.return_value = {"BTCUSDT": {"change_pct": 1.0}}
+            coinalyze.funding_snapshots.return_value = {"BTCUSDT": {"funding_pct": 0.01}}
+
+            report = probe_derivatives_providers(settings)
+
+        serialized = dumps(report)
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["providers"]["coinglass"]["status"], "ready")
+        self.assertEqual(report["providers"]["coinalyze"]["status"], "ready")
+        self.assertNotIn("cg-secret", serialized)
+        self.assertNotIn("ca-secret", serialized)
+
     def test_source_agreement_distinguishes_high_low_and_conflict(self) -> None:
         self.assertEqual(source_agreement(10.0, 9.5, neutral_abs=0.1)["status"], "high")
         self.assertEqual(source_agreement(10.0, 6.0, neutral_abs=0.1)["status"], "low")

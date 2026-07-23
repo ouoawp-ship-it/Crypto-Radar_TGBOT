@@ -30,7 +30,9 @@ from dataclasses import replace
 from datetime import datetime
 
 from .config import Settings
+from .database_backup import backup_databases
 from .data_sources import BinanceDataSource, UPSTREAM_SOURCE_METRICS
+from .derivatives_quality import probe_derivatives_providers
 from .flow_radar import FlowRadarEngine
 from .health import runtime_health_checks
 from .market_cockpit import persist_flow_market_rows, persist_market_batch
@@ -130,13 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "signal-effectiveness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
-        help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；signal-effectiveness 回填信号结果；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
+        choices=["about", "status", "doctor", "readiness", "stable-check", "provider-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        help="默认 status；doctor 检查环境；provider-check 验证 CoinGlass/Coinalyze；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
     parser.add_argument("--apply", action="store_true", help="用于 migrate-state：真正复制旧状态文件")
     parser.add_argument("--force-cleanup", action="store_true", help="用于 cleanup：忽略清理间隔，立即执行")
+    parser.add_argument("--provider-symbol", default="BTCUSDT", help="用于 provider-check：只读验收交易对")
     parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
     parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
@@ -297,6 +300,18 @@ def print_signal_effectiveness(settings: Settings) -> None:
         ensure_ascii=False,
         indent=2,
     ))
+
+
+def print_provider_check(settings: Settings, symbol: str) -> int:
+    report = probe_derivatives_providers(settings, symbol=symbol)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("status") == "ready" else 1
+
+
+def print_database_backup(settings: Settings) -> int:
+    report = backup_databases(settings)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("status") == "ok" else 1
 
 
 def print_doctor(settings: Settings, store: JsonStore) -> None:
@@ -1372,6 +1387,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "readiness":
         return print_readiness(settings, store)
+    if args.command == "provider-check":
+        return print_provider_check(settings, args.provider_symbol)
+    if args.command == "database-backup":
+        return print_database_backup(settings)
     if args.command == "telegram-test":
         return run_telegram_test(args)
     if args.command == "announcements-test":

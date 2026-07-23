@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import time
@@ -178,6 +179,58 @@ def _disk_check(settings: Settings) -> dict[str, Any]:
     )
 
 
+def _database_backup_check(settings: Settings, now: int) -> dict[str, Any]:
+    backup_root = settings.database_backup_dir
+    if not backup_root.exists():
+        return _check("database_backup", "warn", "数据库备份尚未生成")
+    manifests = sorted(backup_root.glob("*/manifest.json"), reverse=True)
+    if not manifests:
+        return _check("database_backup", "warn", "数据库备份清单尚未生成")
+    manifest_path = manifests[0]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return _check("database_backup", "warn", f"最新数据库备份清单无法读取：{type(exc).__name__}")
+    databases = manifest.get("databases") if isinstance(manifest, dict) else None
+    created_at = int(manifest.get("created_at") or 0) if isinstance(manifest, dict) else 0
+    age_sec = max(0, now - created_at) if created_at else None
+    if not isinstance(databases, list) or not databases:
+        return _check("database_backup", "warn", "最新数据库备份不包含可恢复数据库")
+    invalid = [
+        str(item.get("backup") or "")
+        for item in databases
+        if not isinstance(item, dict)
+        or str(item.get("integrity") or "").lower() != "ok"
+        or str(item.get("restore_verification") or "").lower() != "ok"
+    ]
+    if invalid:
+        return _check(
+            "database_backup",
+            "warn",
+            "最新数据库备份未通过恢复验证",
+            invalid=invalid,
+            age_sec=age_sec,
+        )
+    max_age_sec = max(3600, int(settings.health_database_backup_max_age_sec))
+    if age_sec is None or age_sec > max_age_sec:
+        return _check(
+            "database_backup",
+            "warn",
+            "最新数据库备份已超过新鲜度上限",
+            age_sec=age_sec,
+            max_age_sec=max_age_sec,
+            databases=len(databases),
+        )
+    return _check(
+        "database_backup",
+        "ok",
+        "最新数据库备份及恢复验证正常",
+        age_sec=age_sec,
+        max_age_sec=max_age_sec,
+        databases=len(databases),
+    )
+
+
 def _derivatives_provider_check(settings: Settings) -> dict[str, Any]:
     missing_keys: list[str] = []
     if settings.coinglass_enable and not settings.coinglass_api_key:
@@ -285,6 +338,7 @@ def runtime_health_checks(
         _realtime_check(settings, now),
         _derivatives_provider_check(settings),
         _signal_effectiveness_check(settings, now),
+        _database_backup_check(settings, now),
         _disk_check(settings),
     ]
     runtime = store.load(settings.runtime_status_path, {})

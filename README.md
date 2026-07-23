@@ -45,6 +45,12 @@ DERIVATIVES_VALIDATION_SYMBOL_LIMIT=8
 
 只配置一套外部源也可以运行，但 `stable-check` 会提示多源校验处于降级状态。API Key 仅通过请求头发送，状态和诊断输出只报告“是否已配置”，不会输出 Key 内容。
 
+P1.2 增加了只读数据源验收命令，可区分 Key 缺失、套餐/权限不足、接口不可用和正常返回，并保证诊断结果不包含 Key：
+
+```text
+python main.py provider-check --provider-symbol BTCUSDT
+```
+
 常用命令：
 
 ```text
@@ -52,6 +58,8 @@ python main.py status
 python main.py doctor
 python main.py readiness
 python main.py stable-check
+python main.py provider-check
+python main.py database-backup
 python main.py telegram-test
 python main.py once
 python main.py flow-radar
@@ -81,5 +89,8 @@ bash scripts/update_server.sh --yes
 - `paopao-radar.service`：扫描、评分与 Telegram 推送。
 - `paopao-market-stream.service`：实时成交和清算采集。
 - `paopao-health.timer`：定时执行 BOT、数据库、行情新鲜度和信号结果追踪健康检查。
+- `paopao-backup.timer`：每天创建活动 SQLite 数据库的一致性备份，并实际恢复到内存验证可用性。
+
+默认保留 365 天信号效果样本（最多 20,000 条）和 7 天本机数据库备份。备份目录、保留天数与健康检查最大时效可通过 `.env.oi` 调整；本机备份不能替代后续需要单独配置的异机/对象存储灾备。
 
 更完整的模块边界见 [docs/BOT_ONLY_ARCHITECTURE.md](docs/BOT_ONLY_ARCHITECTURE.md)，安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
