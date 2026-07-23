@@ -10,6 +10,7 @@
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
 - 公告风险：解析 Binance 官方上新、下架、Launchpool、Airdrop 等公告。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
+- 启动信号生命周期：启动预警从观察、预警、确认、启动进入降温期；连续降温 30 分钟后才确认失效，并自动删除该币本轮可安全删除的 Telegram 历史消息，数据库样本继续保留。
 - 推送安全：默认 dry-run，真实发送必须同时提供 `--send --confirm-real-send`，并经过 readiness 门禁、去重、冷却、限流和重试。
 
 实时行情进程会采集 Binance、Bybit、OKX 的成交和清算数据，为 Telegram 信号补充 CVD、清算和市场上下文。P1 数据质量层以 CoinGlass 作为聚合衍生品主校验源、Coinalyze 作为独立交叉验证源：统一交易对、百分比单位和时间戳，计算 OI/费率一致性分，并在数据方向冲突时阻止单源高级信号。任一 Key 缺失时会明确标记为降级运行，不会让 BOT 停摆。
@@ -44,6 +45,17 @@ DERIVATIVES_VALIDATION_SYMBOL_LIMIT=8
 ```
 
 只配置一套外部源也可以运行，但 `stable-check` 会提示多源校验处于降级状态。API Key 仅通过请求头发送，状态和诊断输出只报告“是否已配置”，不会输出 Key 内容。
+
+启动预警消息清理默认只作用于“一条消息对应一个币”的启动话题，不会删除资金摘要或资金流雷达中的多币聚合消息。可按需调整：
+
+```dotenv
+LAUNCH_INVALIDATION_GRACE_SEC=1800
+LAUNCH_MESSAGE_CLEANUP_ENABLE=true
+LAUNCH_MESSAGE_CLEANUP_MAX_AGE_SEC=169200
+LAUNCH_MESSAGE_CLEANUP_LIMIT=20
+```
+
+dry-run/观察模式不会调用 Telegram 删除接口；真实运行每轮最多尝试 20 条，并避开超过 47 小时的消息。删除结果会同时写入推送历史和信号数据库审计字段，但不改变信号效果统计所需的原始发送状态。
 
 P1.2 增加了只读数据源验收命令，可区分 Key 缺失、套餐/权限不足、接口不可用和正常返回，并保证诊断结果不包含 Key：
 

@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
 from paopao_radar.radar import CST, RadarEngine, funding_interval_transition, score_funding
+from paopao_radar.signal_store import SignalEventStore
 from paopao_radar.storage import JsonStore
 from paopao_radar.time_windows import closed_window
 
@@ -564,6 +565,122 @@ class RadarScoringTests(unittest.TestCase):
             state = store.load(settings.launch_state_path, {})
             self.assertEqual(state["TESTUSDT"]["last_message_id"], 456)
             self.assertEqual(state["TESTUSDT"]["last_message_ids"], [456])
+
+    def test_launch_signal_requires_cooling_period_before_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_invalidation_grace_sec=1800,
+            )
+            engine = RadarEngine(settings, JsonStore(Path(tmp)))
+            active = {
+                "stage": "breakout",
+                "first_seen": 100,
+                "last_seen": 100,
+                "last_active_at": 100,
+            }
+
+            cooling = engine._inactive_launch_record(
+                active,
+                1000,
+                fail_reason="launch_score_fell",
+            )
+            failed = engine._inactive_launch_record(
+                cooling,
+                2799,
+                fail_reason="launch_score_fell",
+            )
+            expired = engine._inactive_launch_record(
+                failed,
+                2800,
+                fail_reason="launch_score_fell",
+            )
+
+            self.assertEqual(cooling["stage"], "cooling")
+            self.assertEqual(failed["stage"], "cooling")
+            self.assertEqual(expired["stage"], "failed")
+            self.assertTrue(expired["delete_pending"])
+
+    def test_mark_launch_pushed_accumulates_cycle_message_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_state_path=Path(tmp) / "launch_state.json",
+            )
+            store = JsonStore(Path(tmp))
+            store.save(settings.launch_state_path, {
+                "TESTUSDT": {
+                    "stage": "breakout",
+                    "message_ids": [100],
+                    "last_message_ids": [100],
+                },
+            })
+            engine = RadarEngine(settings, store)
+
+            engine.mark_launch_pushed([{
+                "symbol": "TESTUSDT",
+                "stage": "launched",
+                "message_ids": [101, 102],
+            }])
+
+            state = store.load(settings.launch_state_path, {})
+            self.assertEqual(state["TESTUSDT"]["message_ids"], [100, 101, 102])
+            self.assertEqual(state["TESTUSDT"]["last_message_ids"], [101, 102])
+
+    def test_failed_launch_cleanup_deletes_telegram_messages_but_keeps_signal_sample(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_state_path=Path(tmp) / "launch_state.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                launch_message_cleanup_max_age_sec=10_000,
+            )
+            store = JsonStore(Path(tmp))
+            SignalEventStore(settings.signal_events_db_path).append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:TESTUSDT:breakout",
+                status="sent",
+                sent=True,
+                text="TESTUSDT",
+                ts=1000,
+                message_ids=[101, 102],
+                structured_records=[{"symbol": "TESTUSDT", "stage": "breakout", "score": 80}],
+            )
+            store.save(settings.launch_state_path, {
+                "TESTUSDT": {
+                    "stage": "failed",
+                    "first_seen": 900,
+                    "failed_at": 1500,
+                    "last_seen": 1500,
+                    "last_pushed": 1000,
+                    "message_ids": [101, 102],
+                    "delete_pending": True,
+                },
+            })
+            engine = RadarEngine(settings, store)
+            attempted: list[int] = []
+
+            cleanup = engine.cleanup_failed_launch_messages(
+                lambda ids: (
+                    attempted.extend(ids)
+                    or {"deleted_ids": list(ids), "failed_ids": []}
+                ),
+                now_ts=2000,
+            )
+
+            self.assertEqual(attempted, [101, 102])
+            self.assertEqual(cleanup["deleted_messages"], 2)
+            self.assertEqual(cleanup["pending_signals"], 0)
+            state = store.load(settings.launch_state_path, {})
+            self.assertTrue(state["TESTUSDT"]["message_cleanup_complete"])
+            self.assertEqual(state["TESTUSDT"]["message_ids"], [])
+            sample = SignalEventStore(settings.signal_events_db_path).list_signals(limit=1)["items"][0]
+            self.assertEqual(sample["status"], "sent")
+            self.assertTrue(sample["sent"])
+            self.assertEqual(
+                sample["payload"]["telegram_cleanup"]["deleted_message_ids"],
+                [101, 102],
+            )
 
     def test_risk_announcement_uses_chinese_state(self) -> None:
         with TemporaryDirectory() as tmp:
