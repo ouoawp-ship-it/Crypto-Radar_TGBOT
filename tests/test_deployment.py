@@ -43,6 +43,25 @@ class GitIgnoreHardeningTests(unittest.TestCase):
         self.assertFalse(is_ignored(".env.oi.example"))
 
 
+class LaunchRuntimeDiagnosticsTests(unittest.TestCase):
+    def test_lifecycle_diagnostics_are_preserved_for_runtime_status(self) -> None:
+        launch = {
+            "diagnostics": {
+                "binance_confirmation": {"confirmed": 80},
+                "lifecycle_v2": {"status": "shadow", "recorded": 1},
+            }
+        }
+
+        diagnostics = main.launch_runtime_diagnostics(launch)
+
+        self.assertEqual(diagnostics["lifecycle_v2"]["status"], "shadow")
+        self.assertEqual(diagnostics["lifecycle_v2"]["recorded"], 1)
+        self.assertIsNot(diagnostics, launch["diagnostics"])
+
+    def test_missing_launch_diagnostics_returns_empty_mapping(self) -> None:
+        self.assertEqual(main.launch_runtime_diagnostics({}), {})
+
+
 def load_sync_module():
     path = ROOT / "scripts" / "sync_env.py"
     spec = importlib.util.spec_from_file_location("sync_env", path)

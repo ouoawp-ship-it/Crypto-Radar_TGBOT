@@ -77,6 +77,11 @@ PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 PLACEHOLDER_WORDS = ("your", "token", "chat_id", "bot_token", "填写", "填入", "请输入", "xxx", "example")
 
 
+def launch_runtime_diagnostics(launch: dict[str, object]) -> dict[str, object]:
+    diagnostics = launch.get("diagnostics")
+    return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
 def _clean_config_value(value: str) -> str:
     return (value or "").strip().strip('"').strip("'")
 
@@ -1077,6 +1082,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 settings, _store, engine, gateway = make_runtime_for_args(args)
                 source = BinanceDataSource(settings)
                 launch = engine.build_launch_alerts(source)
+                launch_diag.update(launch_runtime_diagnostics(launch))
                 launch_delete_callback = (
                     gateway.delete_messages_detailed
                     if args.send and args.confirm_real_send
@@ -1208,6 +1214,7 @@ def run_trial(args: argparse.Namespace) -> int:
                 sent_launch_alerts.append(alert)
         engine.mark_launch_pushed(sent_launch_alerts)
         diagnostics = {
+            **launch_runtime_diagnostics(launch),
             "binance": source.diagnostics(),
             "lifecycle_cleanup": launch_cleanup,
             "market_snapshot": market_snapshot,
