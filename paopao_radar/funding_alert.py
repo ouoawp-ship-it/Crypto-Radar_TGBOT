@@ -172,7 +172,7 @@ FUNDING_TABLE_COLUMNS = (
     ("交易所", 8),
     ("费率/周期", 18),
     ("上次结算", 12),
-    ("本次周期", 10),
+    ("本次周期", 16),
     ("下次结算", 12),
 )
 
@@ -352,6 +352,13 @@ class FundingAlertEngine:
             if self._cooldown_ok(alert["dedup_key"], state, now_ts):
                 alerts.append(alert)
 
+        alerts = self._backfill_outbound_binance_history(
+            alerts,
+            funding_settings,
+            http,
+            state,
+            now_ts,
+        )
         confirmation_candidates = len(alerts)
         validated_alerts: list[dict[str, Any]] = []
         for alert in alerts:
@@ -541,9 +548,6 @@ class FundingAlertEngine:
                     current_interval = inferred_interval
                     row["interval_hours"] = current_interval
                     row["current_interval_hours"] = current_interval
-            if previous_next > 0 and not row.get("last_funding_time_ms"):
-                row["last_funding_time_ms"] = previous_next
-                row["last_funding_time"] = str(previous.get("next_funding_time") or funding_time_text(previous_next))
             if (
                 not row.get("funding_interval_transition")
                 and previous_interval in VALID_FUNDING_INTERVAL_HOURS
@@ -560,6 +564,79 @@ class FundingAlertEngine:
                 )
             result.append(row)
         return result
+
+    @staticmethod
+    def _binance_history_required(row: dict[str, Any]) -> bool:
+        if str(row.get("exchange") or "").strip().upper() != "BINANCE":
+            return False
+        if to_int(row.get("interval_hours")) <= 0:
+            return True
+        last_ms = to_int(row.get("last_funding_time_ms"))
+        next_ms = to_int(row.get("next_funding_time_ms"))
+        if last_ms > 0 and next_ms > 0 and last_ms == next_ms:
+            return True
+        last_time = str(row.get("last_funding_time") or "").strip()
+        next_time = str(row.get("next_funding_time") or "").strip()
+        return bool(last_time and next_time and last_time == next_time)
+
+    def _backfill_outbound_binance_history(
+        self,
+        alerts: list[dict[str, Any]],
+        funding_settings: Settings,
+        http: Any,
+        state: dict[str, Any],
+        now_ts: int,
+    ) -> list[dict[str, Any]]:
+        symbols = list(dict.fromkeys(
+            str(alert.get("symbol") or "")
+            for alert in alerts
+            if any(
+                isinstance(row, dict) and self._binance_history_required(row)
+                for row in (alert.get("rows") or [])
+            )
+        ))
+        symbols = [symbol for symbol in symbols if symbol]
+        if not symbols:
+            return alerts
+
+        history_client = MultiExchangeFundingClient(
+            replace(funding_settings, launch_funding_exchanges=("BINANCE",)),
+            http,
+        )
+        history_rows = history_client.snapshot_many(symbols, include_history=True)
+        for alert in alerts:
+            symbol = str(alert.get("symbol") or "")
+            fetched_binance = next(
+                (
+                    row for row in history_rows.get(symbol, [])
+                    if isinstance(row, dict)
+                    and str(row.get("exchange") or "").strip().upper() == "BINANCE"
+                ),
+                None,
+            )
+            rows: list[dict[str, Any]] = []
+            for raw in alert.get("rows") or []:
+                if not isinstance(raw, dict) or not self._binance_history_required(raw):
+                    if isinstance(raw, dict):
+                        rows.append(raw)
+                    continue
+                if fetched_binance and not self._binance_history_required(fetched_binance):
+                    rows.append(dict(fetched_binance))
+                    continue
+                unavailable = dict(raw)
+                unavailable.update({
+                    "interval_hours": 0,
+                    "current_interval_hours": 0,
+                    "previous_interval_hours": 0,
+                    "last_funding_time_ms": 0,
+                    "last_funding_time": "",
+                    "funding_interval_transition": "",
+                    "funding_period_status": "unavailable",
+                })
+                rows.append(unavailable)
+            alert["rows"] = rows
+            self._update_symbol_state(symbol, rows, state, now_ts)
+        return alerts
 
     def _maybe_decay_alert(
         self,
@@ -589,7 +666,6 @@ class FundingAlertEngine:
             }
             self._update_symbol_state(symbol, rows, state, now_ts, candidate, classification, tracking)
             if self._cooldown_ok(alert["dedup_key"], state, now_ts):
-                alert["text"] = self._format_alert(alert)
                 return alert
             return None
         self._update_symbol_state(symbol, rows, state, now_ts, candidate, None, {"stage": stage, "quiet_count": quiet_count})

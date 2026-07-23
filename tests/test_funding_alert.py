@@ -77,6 +77,13 @@ class FundingHttp:
         return {}
 
 
+class MissingBinanceHistoryHttp(FundingHttp):
+    def get_json(self, url: str, params=None, **kwargs):  # type: ignore[no-untyped-def]
+        if "fapi/v1/fundingRate" in url:
+            return []
+        return super().get_json(url, params=params, **kwargs)
+
+
 class FundingSource:
     def __init__(self, http: FundingHttp) -> None:
         self.http = http
@@ -311,7 +318,7 @@ class FundingAlertTests(unittest.TestCase):
                         "quiet_count": 1,
                         "last_message_id": 777,
                         "exchanges": {
-                            "Binance": {"interval_hours": 1, "next_funding_time_ms": ms_at(16)},
+                            "Binance": {"interval_hours": 0, "next_funding_time_ms": ms_at(17)},
                             "OKX": {"interval_hours": 1, "next_funding_time_ms": ms_at(16)},
                             "Bybit": {"interval_hours": 1, "next_funding_time_ms": ms_at(16)},
                         },
@@ -327,6 +334,59 @@ class FundingAlertTests(unittest.TestCase):
             self.assertEqual(result["alerts"][0]["reply_to_message_id"], 777)
             self.assertIn("热度衰减", result["messages"][0])
             self.assertIn("极端资金费率已经连续回落", result["messages"][0])
+            binance = next(row for row in result["alerts"][0]["rows"] if row["exchange"] == "Binance")
+            self.assertEqual(binance["interval_hours"], 1)
+            self.assertEqual(binance["last_funding_time_ms"], ms_at(16))
+            self.assertEqual(binance["next_funding_time_ms"], ms_at(17))
+            self.assertNotIn("周期数据暂不可用", result["messages"][0])
+
+    def test_failed_history_backfill_never_uses_next_time_as_last_settlement(self) -> None:
+        with TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "funding_alert_state.json"
+            settings = Settings(
+                data_dir=Path(tmp),
+                funding_alert_state_path=state_path,
+                funding_alert_scan_limit=1,
+                funding_alert_exchanges=("BINANCE",),
+                funding_alert_extreme_negative_pct=-5.0,
+                funding_alert_extreme_positive_pct=5.0,
+                funding_alert_divergence_pct=99.0,
+                funding_alert_decay_quiet_scans=2,
+                funding_alert_end_quiet_scans=5,
+            )
+            store = JsonStore(Path(tmp))
+            store.save(state_path, {
+                "symbols": {
+                    "TESTUSDT": {
+                        "alert_count": 1,
+                        "stage": "high_risk_active",
+                        "quiet_count": 1,
+                        "last_message_id": 777,
+                        "exchanges": {
+                            "Binance": {
+                                "interval_hours": 0,
+                                "next_funding_time_ms": ms_at(17),
+                                "next_funding_time": "2026-07-01 17:00:00",
+                            },
+                        },
+                    },
+                },
+                "last_alerts": {},
+            })
+
+            result = FundingAlertEngine(settings, store).build(  # type: ignore[arg-type]
+                FundingSource(MissingBinanceHistoryHttp())
+            )
+
+            self.assertEqual(len(result["alerts"]), 1)
+            row = result["alerts"][0]["rows"][0]
+            self.assertEqual(row["interval_hours"], 0)
+            self.assertEqual(row["last_funding_time_ms"], 0)
+            self.assertEqual(row["last_funding_time"], "")
+            self.assertEqual(row["next_funding_time_ms"], ms_at(17))
+            self.assertEqual(row["funding_period_status"], "unavailable")
+            self.assertIn("周期数据暂不可用", result["messages"][0])
+            self.assertNotIn("07-01 17:00  未知周期  07-01 17:00", result["messages"][0])
 
     def test_previous_state_detects_interval_shortening(self) -> None:
         with TemporaryDirectory() as tmp:

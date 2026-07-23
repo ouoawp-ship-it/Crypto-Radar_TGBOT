@@ -55,6 +55,8 @@ def funding_latest_time_ms(points: list[dict[str, Any]]) -> int:
 
 
 def funding_settlement_period_text(row: dict[str, Any]) -> str:
+    if str(row.get("funding_period_status") or "").strip() == "unavailable":
+        return "周期数据暂不可用"
     previous_interval = to_int(row.get("previous_interval_hours"))
     current_interval = to_int(row.get("current_interval_hours")) or to_int(row.get("interval_hours"))
     if previous_interval > 0 and current_interval > 0 and previous_interval != current_interval:
@@ -67,11 +69,6 @@ def funding_last_settlement_text(row: dict[str, Any]) -> str:
     if explicit:
         return explicit
     last_ms = to_int(row.get("last_funding_time_ms") or row.get("previous_funding_time_ms"))
-    if last_ms <= 0:
-        next_ms = to_int(row.get("next_funding_time_ms"))
-        interval_hours = to_int(row.get("current_interval_hours")) or to_int(row.get("interval_hours"))
-        if next_ms > 0 and interval_hours > 0:
-            last_ms = next_ms - interval_hours * 3_600_000
     return funding_time_text(last_ms) if last_ms > 0 else ""
 
 
