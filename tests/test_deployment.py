@@ -143,6 +143,14 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("main.py stable-check", script)
         self.assertIn("retire_legacy_services", script)
 
+    def test_update_script_reexecutes_after_pull_to_load_new_deployment_logic(self) -> None:
+        script = (ROOT / "scripts" / "update_server.sh").read_text(encoding="utf-8")
+
+        pull_index = script.index('git pull --ff-only "$REMOTE" "$BRANCH"')
+        reexec_index = script.index("export PAOPAO_UPDATE_REEXEC=1")
+        self.assertGreater(reexec_index, pull_index)
+        self.assertIn('exec bash "${APP_DIR}/scripts/update_server.sh" --yes', script)
+
     def test_cli_no_longer_exposes_web_or_ai_commands(self) -> None:
         parser = main.build_parser()
         command_action = next(action for action in parser._actions if action.dest == "command")
