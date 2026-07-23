@@ -429,13 +429,21 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
                         "PRAGMA table_info(launch_lifecycle_observations)"
                     )
                 }
+                outcome_table = conn.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'launch_lifecycle_outcomes'
+                    """
+                ).fetchone()
             finally:
                 conn.close()
             self.assertIn("latest_message_ids_json", cycle_columns)
             self.assertIn("cleanup_pending_message_ids_json", cycle_columns)
             self.assertIn("last_published_observation_id", cycle_columns)
+            self.assertIn("outcome_rule_key", cycle_columns)
             self.assertIn("checkpoint_no", observation_columns)
             self.assertIn("funds_direction", observation_columns)
+            self.assertIsNotNone(outcome_table)
 
 
 class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):

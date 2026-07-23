@@ -1454,6 +1454,10 @@ class RadarEngine:
             "publish_candidates": 0,
             "silent_observations": 0,
             "errors": 0,
+            "outcome_v2": {
+                "enabled": bool(self.settings.launch_outcome_v2_enable),
+                "status": "disabled",
+            },
         }
         lifecycle_active_symbols: list[str] = []
         if self.settings.launch_lifecycle_v2_enable:
@@ -1467,8 +1471,16 @@ class RadarEngine:
                     package_score_delta=self.settings.launch_package_score_delta,
                     package_price_delta_pct=self.settings.launch_package_price_delta_pct,
                     package_oi_delta_pct=self.settings.launch_package_oi_delta_pct,
+                    outcome_enabled=self.settings.launch_outcome_v2_enable,
+                    outcome_follow_through_pct=self.settings.launch_outcome_follow_through_pct,
+                    outcome_min_samples=self.settings.launch_outcome_min_samples,
+                    breakout_score=self.settings.launch_breakout_score,
+                    launched_score=self.settings.launch_launched_score,
                 )
                 lifecycle_active_symbols = lifecycle_store.list_active_symbols()
+                lifecycle_diagnostics["outcome_v2"] = lifecycle_store.refresh_outcomes(
+                    evaluated_at=now_ts
+                )
                 lifecycle_diagnostics["status"] = (
                     "package_active"
                     if self.settings.launch_message_package_v2_enable
@@ -1887,6 +1899,11 @@ class RadarEngine:
             package_score_delta=self.settings.launch_package_score_delta,
             package_price_delta_pct=self.settings.launch_package_price_delta_pct,
             package_oi_delta_pct=self.settings.launch_package_oi_delta_pct,
+            outcome_enabled=self.settings.launch_outcome_v2_enable,
+            outcome_follow_through_pct=self.settings.launch_outcome_follow_through_pct,
+            outcome_min_samples=self.settings.launch_outcome_min_samples,
+            breakout_score=self.settings.launch_breakout_score,
+            launched_score=self.settings.launch_launched_score,
         )
 
     def cleanup_failed_launch_messages(
@@ -2481,11 +2498,120 @@ class RadarEngine:
         first_funding = self._launch_package_funding(first)
         current_funding = self._launch_package_funding(current)
         direction_text = self._launch_package_direction(current.get("funds_direction"))
+        outcome_evaluation = (
+            lifecycle.get("outcome_evaluation")
+            if isinstance(lifecycle.get("outcome_evaluation"), dict)
+            else {}
+        )
+        progress = (
+            outcome_evaluation.get("progress")
+            if isinstance(outcome_evaluation.get("progress"), dict)
+            else {}
+        )
+        outcome = (
+            outcome_evaluation.get("outcome")
+            if isinstance(outcome_evaluation.get("outcome"), dict)
+            else {}
+        )
+        reliability = (
+            outcome_evaluation.get("reliability")
+            if isinstance(outcome_evaluation.get("reliability"), dict)
+            else {}
+        )
+        outcome_lines: list[str] = []
+        if outcome_evaluation.get("enabled") and progress:
+            follow_threshold = to_float(
+                reliability.get("follow_through_threshold_pct")
+                or self.settings.launch_outcome_follow_through_pct
+            )
+            if outcome:
+                outcome_label = {
+                    "launched_follow_through": "达到启动瞬间且价格完成跟随",
+                    "confirmed_follow_through": "达到启动确认且价格完成跟随",
+                    "price_follow_through_only": "价格完成跟随但未达到启动确认",
+                    "confirmed_no_follow_through": "达到启动确认但价格未完成跟随",
+                    "false_start": "未达到启动确认且价格未完成跟随",
+                }.get(str(outcome.get("label") or ""), "本轮已完成评估")
+                outcome_lines.extend([
+                    "",
+                    tg_quote("本轮结果"),
+                    f"状态: 已结束｜{outcome_label}",
+                    f"结束收益: {to_float(progress.get('end_return_pct')):+.2f}%｜"
+                    f"有效观察: {int(progress.get('observation_count') or 0)}根15m",
+                ])
+            else:
+                outcome_lines.extend([
+                    "",
+                    tg_quote("本轮进展"),
+                    "状态: 监控中｜本轮结束后才计入历史样本",
+                ])
+            outcome_lines.extend([
+                f"最高/最低收盘变动: "
+                f"{to_float(progress.get('max_favorable_return_pct')):+.2f}% / "
+                f"{to_float(progress.get('max_adverse_return_pct')):+.2f}%",
+                f"OI最高/最低变动: "
+                f"{to_float(progress.get('max_oi_increase_pct')):+.2f}% / "
+                f"{to_float(progress.get('max_oi_decrease_pct')):+.2f}%",
+                "达到启动确认: "
+                + (
+                    self._launch_package_duration(progress.get("time_to_confirm_sec"))
+                    if progress.get("confirmed")
+                    else "尚未达到"
+                ),
+                "达到启动瞬间: "
+                + (
+                    self._launch_package_duration(progress.get("time_to_launch_sec"))
+                    if progress.get("launched")
+                    else "尚未达到"
+                ),
+                "",
+                tg_quote("历史可靠度"),
+            ])
+            completed_samples = int(reliability.get("completed_samples") or 0)
+            minimum_samples = int(
+                reliability.get("minimum_samples")
+                or self.settings.launch_outcome_min_samples
+            )
+            if reliability.get("rates_available"):
+                outcome_lines.extend([
+                    f"状态: 已达到复盘门槛｜同口径 {completed_samples} 轮",
+                    f"启动确认率 {to_float(reliability.get('confirmed_rate_pct')):.1f}%｜"
+                    f"启动瞬间率 {to_float(reliability.get('launched_rate_pct')):.1f}%｜"
+                    f"收盘跟随率 {to_float(reliability.get('followed_through_rate_pct')):.1f}%",
+                    f"中位最高/最低收盘变动 "
+                    f"{to_float(reliability.get('median_max_favorable_return_pct')):+.2f}% / "
+                    f"{to_float(reliability.get('median_max_adverse_return_pct')):+.2f}%",
+                ])
+            else:
+                outcome_lines.extend([
+                    f"状态: 样本积累中｜同口径已完成 {completed_samples}/{minimum_samples} 轮",
+                    f"原始计数: 启动确认 {int(reliability.get('confirmed_count') or 0)}｜"
+                    f"启动瞬间 {int(reliability.get('launched_count') or 0)}｜"
+                    f"收盘涨幅达到 +{follow_threshold:g}% "
+                    f"{int(reliability.get('followed_through_count') or 0)}",
+                    "样本未达门槛，不展示比例，也不自动调整信号参数。",
+                ])
+            symbol_samples = int(
+                reliability.get("symbol_completed_samples") or 0
+            )
+            if symbol_samples:
+                outcome_lines.append(
+                    f"该币历史完整周期: {symbol_samples}轮；样本不足时不单列比率。"
+                )
         status = str(lifecycle.get("cycle_status") or "active")
         invalidation = (
             f"本轮已结束：{str(lifecycle.get('end_reason') or '失效条件成立')}"
             if status == "failed"
             else "连续两根已闭合15m低于观察阈值，或连续两根收盘跌破本轮有效突破位"
+        )
+        calculation_text = (
+            "计算: 价格/OI变化均以本轮首次或上次已成功发布的检查点为基准；"
+            "结果评估按每轮已记录15m收盘价计算，不使用盘中高低点；"
+            "未达到替换阈值的扫描只记录、不推送。"
+            if outcome_evaluation.get("enabled")
+            else
+            "计算: 价格/OI变化均以本轮首次或上次已成功发布的检查点为基准；"
+            "未达到替换阈值的扫描只记录、不推送。"
         )
         return "\n".join([
             f"🚀 {coin_link(item)}｜第{int(lifecycle.get('cycle_no') or 1)}轮启动跟踪｜事件{checkpoint_no:02d}",
@@ -2510,6 +2636,7 @@ class RadarEngine:
             "",
             tg_quote("事件轴"),
             *timeline_lines,
+            *outcome_lines,
             *(
                 [
                     "",
@@ -2522,7 +2649,7 @@ class RadarEngine:
             "",
             f"{tg_bold('数据确认')}: {tg_escape(confirmation_text(item))}",
             "来源: Binance USDⓈ-M Futures 原生已闭合15m行情；主动成交方向补充自 Binance Spot + Futures 已闭合窗口。",
-            "计算: 价格/OI变化均以本轮首次或上次已成功发布的检查点为基准；未达到替换阈值的扫描只记录、不推送。",
+            calculation_text,
             "",
             f"{tg_bold('失效条件')}: {tg_escape(invalidation)}",
             "每次新消息确认发送并持久化成功后，才删除上一条；删除失败会自动重试。",
