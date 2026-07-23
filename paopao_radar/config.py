@@ -107,6 +107,9 @@ class Settings:
     tg_topic_intro_pin: bool = True
     tg_use_topic: bool = False
     tg_push_history_path: Path = BASE_DIR / "data" / "tg_push_history.json"
+    tg_outbox_path: Path = BASE_DIR / "data" / "tg_outbox.json"
+    tg_outbox_quarantine_sec: int = 15 * 60
+    tg_outbox_retention_days: int = 7
     tg_push_split_limit: int = 3800
     tg_push_timeout_sec: int = 10
     tg_push_retry: int = 2
@@ -122,20 +125,20 @@ class Settings:
     news_events_retention_days: int = 90
     news_events_limit: int = 5000
     market_snapshot_interval_sec: int = 300
-    market_snapshot_retention_days: int = 30
+    market_snapshot_retention_days: int = 7
     market_snapshot_limit: int = 500
     market_snapshot_oi_limit: int = 80
     market_snapshot_workers: int = 8
     market_flow_fact_interval_sec: int = 900
     market_flow_fact_limit: int = 40
-    market_readiness_target_days: int = 30
+    market_readiness_target_days: int = 7
     realtime_market_bucket_sec: int = 60
     realtime_market_grace_ms: int = 2000
     realtime_market_flush_interval_sec: int = 1
     realtime_market_reconnect_sec: int = 5
     realtime_market_connect_timeout_sec: int = 15
     realtime_market_idle_timeout_sec: int = 30
-    realtime_market_retention_days: int = 7
+    realtime_market_retention_days: int = 3
     realtime_market_symbol_limit: int = 80
     realtime_market_min_quote_volume: float = 5_000_000
     realtime_market_symbol_refresh_sec: int = 300
@@ -153,12 +156,17 @@ class Settings:
     cleanup_state_path: Path = BASE_DIR / "data" / "cleanup_state.json"
     cleanup_corrupt_retention_days: int = 7
     cleanup_log_retention_days: int = 14
+    health_runtime_max_age_sec: int = 10 * 60
+    health_realtime_fresh_sec: int = 3 * 60
+    health_disk_warn_mb: int = 1024
+    health_disk_fail_mb: int = 256
 
     http_timeout_sec: int = 10
     http_retry: int = 2
     http_backoff_sec: float = 0.8
     http_cache_enable: bool = True
     http_cache_ttl_sec: int = 10
+    http_cache_max_entries: int = 128
     binance_fapi_base_url: str = "https://fapi.binance.com"
     binance_spot_base_url: str = "https://api.binance.com"
     binance_futures_ws_url: str = "wss://fstream.binance.com/market/ws"
@@ -237,12 +245,15 @@ class Settings:
 
     def __post_init__(self) -> None:
         default_signal_path = BASE_DIR / "data" / "signal_events.json"
+        default_outbox_path = BASE_DIR / "data" / "tg_outbox.json"
         default_signal_db_path = BASE_DIR / "data" / "signals.db"
         default_market_snapshots_db_path = BASE_DIR / "data" / "market_snapshots.db"
         default_realtime_features_db_path = BASE_DIR / "data" / "realtime_features.db"
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
+        if self.data_dir != BASE_DIR / "data" and self.tg_outbox_path == default_outbox_path:
+            object.__setattr__(self, "tg_outbox_path", self.data_dir / "tg_outbox.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
             object.__setattr__(self, "signal_events_db_path", self.data_dir / "signals.db")
         if self.data_dir != BASE_DIR / "data" and self.market_snapshots_db_path == default_market_snapshots_db_path:
@@ -273,6 +284,9 @@ class Settings:
             tg_topic_intro_pin=env_bool("TG_TOPIC_INTRO_PIN", True),
             tg_use_topic=env_bool("TELEGRAM_USE_TOPIC", False),
             tg_push_history_path=data_path(data_dir, "TG_PUSH_HISTORY_FILE", "tg_push_history.json"),
+            tg_outbox_path=data_path(data_dir, "TG_OUTBOX_FILE", "tg_outbox.json"),
+            tg_outbox_quarantine_sec=env_int("TG_OUTBOX_QUARANTINE_SEC", 15 * 60),
+            tg_outbox_retention_days=env_int("TG_OUTBOX_RETENTION_DAYS", 7),
             tg_push_split_limit=env_int("TG_PUSH_SPLIT_LIMIT", 3800),
             tg_push_timeout_sec=env_int("TG_PUSH_TIMEOUT_SEC", 10),
             tg_push_retry=env_int("TG_PUSH_RETRY", 2),
@@ -288,20 +302,20 @@ class Settings:
             news_events_retention_days=env_int("NEWS_EVENTS_RETENTION_DAYS", 90),
             news_events_limit=env_int("NEWS_EVENTS_LIMIT", 5000),
             market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
-            market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 30),
+            market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 7),
             market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 500),
             market_snapshot_oi_limit=env_int("MARKET_SNAPSHOT_OI_LIMIT", 80),
             market_snapshot_workers=env_int("MARKET_SNAPSHOT_WORKERS", 8),
             market_flow_fact_interval_sec=env_int("MARKET_FLOW_FACT_INTERVAL_SEC", 900),
             market_flow_fact_limit=env_int("MARKET_FLOW_FACT_LIMIT", 40),
-            market_readiness_target_days=env_int("MARKET_READINESS_TARGET_DAYS", 30),
+            market_readiness_target_days=env_int("MARKET_READINESS_TARGET_DAYS", 7),
             realtime_market_bucket_sec=env_int("REALTIME_MARKET_BUCKET_SEC", 60),
             realtime_market_grace_ms=env_int("REALTIME_MARKET_GRACE_MS", 2000),
             realtime_market_flush_interval_sec=env_int("REALTIME_MARKET_FLUSH_INTERVAL_SEC", 1),
             realtime_market_reconnect_sec=env_int("REALTIME_MARKET_RECONNECT_SEC", 5),
             realtime_market_connect_timeout_sec=env_int("REALTIME_MARKET_CONNECT_TIMEOUT_SEC", 15),
             realtime_market_idle_timeout_sec=env_int("REALTIME_MARKET_IDLE_TIMEOUT_SEC", 30),
-            realtime_market_retention_days=env_int("REALTIME_MARKET_RETENTION_DAYS", 7),
+            realtime_market_retention_days=env_int("REALTIME_MARKET_RETENTION_DAYS", 3),
             realtime_market_symbol_limit=env_int("REALTIME_MARKET_SYMBOL_LIMIT", 80),
             realtime_market_min_quote_volume=env_float("REALTIME_MARKET_MIN_QUOTE_VOLUME", 5_000_000),
             realtime_market_symbol_refresh_sec=env_int("REALTIME_MARKET_SYMBOL_REFRESH_SEC", 300),
@@ -321,11 +335,16 @@ class Settings:
             cleanup_state_path=data_path(data_dir, "CLEANUP_STATE_FILE", "cleanup_state.json"),
             cleanup_corrupt_retention_days=env_int("CLEANUP_CORRUPT_RETENTION_DAYS", 7),
             cleanup_log_retention_days=env_int("CLEANUP_LOG_RETENTION_DAYS", 14),
+            health_runtime_max_age_sec=env_int("HEALTH_RUNTIME_MAX_AGE_SEC", 10 * 60),
+            health_realtime_fresh_sec=env_int("HEALTH_REALTIME_FRESH_SEC", 3 * 60),
+            health_disk_warn_mb=env_int("HEALTH_DISK_WARN_MB", 1024),
+            health_disk_fail_mb=env_int("HEALTH_DISK_FAIL_MB", 256),
             http_timeout_sec=env_int("BINANCE_API_TIMEOUT_SEC", env_int("HTTP_TIMEOUT_SEC", 10)),
             http_retry=env_int("BINANCE_API_RETRY", env_int("HTTP_RETRY", 2)),
             http_backoff_sec=env_float("BINANCE_API_BACKOFF_SEC", env_float("HTTP_BACKOFF_SEC", 0.8)),
             http_cache_enable=env_bool("DATA_SOURCE_CACHE_ENABLE", True),
             http_cache_ttl_sec=env_int("DATA_SOURCE_CACHE_TTL_SEC", 10),
+            http_cache_max_entries=env_int("DATA_SOURCE_CACHE_MAX_ENTRIES", 128),
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
             binance_futures_ws_url=os.getenv(
@@ -421,6 +440,8 @@ class Settings:
                 "topic_intro_enable": self.tg_topic_intro_enable,
                 "topic_intro_pin": self.tg_topic_intro_pin,
                 "use_topic": self.tg_use_topic,
+                "outbox_file": str(self.tg_outbox_path),
+                "outbox_quarantine_sec": self.tg_outbox_quarantine_sec,
             },
             "bot_data": {
                 "signal_events_file": str(self.signal_events_path),

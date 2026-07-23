@@ -616,6 +616,44 @@ class SignalEventStore:
                 )
         return len(rows)
 
+    def prune(self, *, before_ts: int, max_rows: int) -> dict[str, int]:
+        """Bound persistent signal history without blocking the live writer for long."""
+
+        cutoff = max(0, int(before_ts))
+        row_limit = max(1, int(max_rows))
+        with self.connect() as conn:
+            before = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
+            expired_cursor = conn.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
+            expired = max(0, int(expired_cursor.rowcount))
+            overflow_cursor = conn.execute(
+                """
+                DELETE FROM signals
+                WHERE id NOT IN (
+                    SELECT id FROM signals ORDER BY ts DESC, id DESC LIMIT ?
+                )
+                """,
+                (row_limit,),
+            )
+            overflow = max(0, int(overflow_cursor.rowcount))
+            after = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
+            conn.execute("PRAGMA optimize")
+
+        checkpointed = 0
+        try:
+            with closing(sqlite3.connect(str(self.db_path), timeout=15)) as conn:
+                checkpoint = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+                checkpointed = int(checkpoint[1] or 0) if checkpoint else 0
+        except sqlite3.Error:
+            # Retention succeeded; a busy checkpoint can safely wait for the next run.
+            checkpointed = 0
+        return {
+            "before": before,
+            "after": after,
+            "expired": expired,
+            "overflow": overflow,
+            "checkpoint_pages": checkpointed,
+        }
+
     def list_signals(
         self,
         *,

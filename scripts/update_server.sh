@@ -6,6 +6,11 @@ REMOTE="${REMOTE:-origin}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
+HEALTH_SERVICE_NAME="${HEALTH_SERVICE_NAME:-paopao-health}"
+RADAR_MEMORY_HIGH="${RADAR_MEMORY_HIGH:-450M}"
+RADAR_MEMORY_MAX="${RADAR_MEMORY_MAX:-650M}"
+MARKET_STREAM_MEMORY_HIGH="${MARKET_STREAM_MEMORY_HIGH:-128M}"
+MARKET_STREAM_MEMORY_MAX="${MARKET_STREAM_MEMORY_MAX:-256M}"
 AUTO_CONFIRM="${AUTO_CONFIRM:-0}"
 CHECK_ONLY=0
 
@@ -47,12 +52,16 @@ write_service() {
   local name="$1"
   local description="$2"
   local command="$3"
+  local memory_high="$4"
+  local memory_max="$5"
   local service_user="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
   run_root tee "/etc/systemd/system/${name}.service" >/dev/null <<EOF
 [Unit]
 Description=${description}
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -64,6 +73,15 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py ${command}
 Restart=always
 RestartSec=10
+MemoryHigh=${memory_high}
+MemoryMax=${memory_max}
+LimitNOFILE=65536
+TasksMax=256
+TimeoutStopSec=30
+OOMPolicy=stop
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -86,11 +104,41 @@ retire_legacy_services() {
 
 install_runtime_services() {
   command -v systemctl >/dev/null 2>&1 || return 0
-  write_service "$SERVICE_NAME" "Paopao Telegram Signal Radar" "live --send --confirm-real-send"
-  write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream"
+  local service_user="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
+  write_service "$SERVICE_NAME" "Paopao Telegram Signal Radar" "live --send --confirm-real-send" "$RADAR_MEMORY_HIGH" "$RADAR_MEMORY_MAX"
+  write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
+  run_root tee "/etc/systemd/system/${HEALTH_SERVICE_NAME}.service" >/dev/null <<EOF
+[Unit]
+Description=Paopao Runtime Health Check
+After=${SERVICE_NAME}.service ${MARKET_STREAM_SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+User=${service_user}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=-${APP_DIR}/.env.oi
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py stable-check --json --no-save
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+EOF
+  run_root tee "/etc/systemd/system/${HEALTH_SERVICE_NAME}.timer" >/dev/null <<EOF
+[Unit]
+Description=Check Paopao Runtime Health Every Five Minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
   run_root systemctl daemon-reload
-  run_root systemctl enable "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME"
-  run_root systemctl restart "$MARKET_STREAM_SERVICE_NAME" "$SERVICE_NAME"
+  run_root systemctl enable "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "${HEALTH_SERVICE_NAME}.timer"
+  run_root systemctl restart "$MARKET_STREAM_SERVICE_NAME" "$SERVICE_NAME" "${HEALTH_SERVICE_NAME}.timer"
 }
 
 validate_runtime() {

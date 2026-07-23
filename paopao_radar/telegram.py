@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
@@ -28,6 +29,7 @@ class PushResult:
     reason: str
     sent: bool = False
     message_ids: list[int] | None = None
+    delivery_id: str = ""
 
 
 def utc_ts() -> int:
@@ -264,6 +266,17 @@ class TelegramGateway:
 
         topic_id = self._ensure_topic_id_for_template(template_id)
         self._ensure_topic_intro(template_id, topic_id)
+        delivery_id = self._begin_delivery(
+            template_id=template_id,
+            dedup_key=dedup_key,
+            topic_id=topic_id,
+            total_chunks=len(chunk_text(text, self.settings.tg_push_split_limit)),
+            now=now,
+        )
+        if not delivery_id:
+            result = PushResult("skipped", "delivery_quarantine", False)
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+            return result
         ok, message_ids = self._send_real_message_ids(
             text,
             parse_mode=parse_mode,
@@ -275,9 +288,76 @@ class TelegramGateway:
             "telegram_api" if ok else "telegram_api_failed",
             ok,
             message_ids,
+            delivery_id,
+        )
+        self._finish_delivery(
+            delivery_id,
+            status="sent" if ok else "partial" if message_ids else "failed",
+            message_ids=message_ids,
         )
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
         return result
+
+    def _begin_delivery(
+        self,
+        *,
+        template_id: str,
+        dedup_key: str,
+        topic_id: str,
+        total_chunks: int,
+        now: int,
+    ) -> str:
+        delivery_id = uuid.uuid4().hex
+        reserved = {"ok": True}
+        retention_cutoff = now - max(1, int(self.settings.tg_outbox_retention_days)) * 86400
+        quarantine_cutoff = now - max(60, int(self.settings.tg_outbox_quarantine_sec))
+
+        def reserve(value: Any) -> list[dict[str, Any]]:
+            records = [
+                item for item in (value if isinstance(value, list) else [])
+                if isinstance(item, dict) and int(item.get("ts", now)) >= retention_cutoff
+            ]
+            for item in reversed(records):
+                if item.get("dedup_key") != dedup_key:
+                    continue
+                updated_at = int(item.get("updated_at", item.get("ts", 0)) or 0)
+                if updated_at < quarantine_cutoff:
+                    break
+                if item.get("status") in {"pending", "partial", "sent"}:
+                    reserved["ok"] = False
+                    return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
+            records.append({
+                "delivery_id": delivery_id,
+                "ts": now,
+                "updated_at": now,
+                "template_id": template_id,
+                "dedup_key": dedup_key,
+                "topic_id": topic_id,
+                "status": "pending",
+                "total_chunks": max(1, int(total_chunks)),
+                "completed_chunks": 0,
+                "message_ids": [],
+            })
+            return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
+
+        self.store.update(self.settings.tg_outbox_path, reserve, [])
+        return delivery_id if reserved["ok"] else ""
+
+    def _finish_delivery(self, delivery_id: str, *, status: str, message_ids: list[int]) -> None:
+        now = utc_ts()
+
+        def finish(value: Any) -> list[dict[str, Any]]:
+            records = list(value) if isinstance(value, list) else []
+            for item in reversed(records):
+                if isinstance(item, dict) and item.get("delivery_id") == delivery_id:
+                    item["status"] = status
+                    item["updated_at"] = now
+                    item["completed_chunks"] = len(message_ids)
+                    item["message_ids"] = list(message_ids)
+                    break
+            return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
+
+        self.store.update(self.settings.tg_outbox_path, finish, [])
 
     def _send_real(
         self,
@@ -651,6 +731,7 @@ class TelegramGateway:
             "reason": result.reason,
             "sent": result.sent,
             "message_ids": result.message_ids or [],
+            "delivery_id": result.delivery_id,
             "reply_to_message_id": int(reply_to_message_id or 0),
             "preview": text[:240],
         }

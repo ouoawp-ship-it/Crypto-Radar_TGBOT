@@ -109,6 +109,12 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("main.py ${command}", combined)
         self.assertIn("paopao-radar", combined)
         self.assertIn("paopao-market-stream", combined)
+        self.assertIn("paopao-health", combined)
+        self.assertIn("MemoryHigh=", combined)
+        self.assertIn("MemoryMax=", combined)
+        self.assertIn("LimitNOFILE=65536", combined)
+        self.assertIn("main.py stable-check --json --no-save", combined)
+        self.assertIn("OnUnitActiveSec=5min", combined)
         self.assertNotIn("paopao-frontend", install)
         self.assertNotIn("paopao-web", install)
         self.assertNotIn("paopao-ai", install)
@@ -256,7 +262,8 @@ class MainCommandTests(unittest.TestCase):
                 settings.realtime_features_db_path,
             ):
                 path.touch()
-            with patch.object(main, "make_runtime", return_value=(settings, store, None, gateway)):
+            with patch.object(main, "make_runtime", return_value=(settings, store, None, gateway)), \
+                    patch.object(main, "runtime_health_checks", return_value=[]):
                 with redirect_stdout(StringIO()) as output:
                     code = main.main(["stable-check", "--no-save"])
 

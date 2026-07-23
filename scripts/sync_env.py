@@ -21,6 +21,7 @@ PRESERVE_KEYS = {
     "SIGNAL_EVENTS_DB_FILE",
     "SIGNAL_EVENTS_LIMIT",
     "SIGNAL_EVENTS_RETENTION_DAYS",
+    "TG_OUTBOX_FILE",
 }
 
 RETIRED_KEYS = {
@@ -119,6 +120,21 @@ RETIRED_KEYS = {
 }
 
 MANAGED_MIGRATIONS = {
+    "MARKET_SNAPSHOT_RETENTION_DAYS": {
+        "old": {"", "30"},
+        "new": "7",
+        "note": "BOT-only snapshots retain seven days",
+    },
+    "MARKET_READINESS_TARGET_DAYS": {
+        "old": {"", "30"},
+        "new": "7",
+        "note": "BOT-only readiness matches the seven-day snapshot horizon",
+    },
+    "REALTIME_MARKET_RETENTION_DAYS": {
+        "old": {"", "7"},
+        "new": "3",
+        "note": "Realtime BOT intelligence uses a 24-hour window with a three-day safety buffer",
+    },
     "BINANCE_FUTURES_WS_URL": {
         "old": {"", "wss://fstream.binance.com/ws", "wss://fstream.binance.com/stream"},
         "new": "wss://fstream.binance.com/market/ws",

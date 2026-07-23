@@ -73,6 +73,30 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertTrue(all(item["module"] == "launch" for item in items))
         self.assertTrue(all(item["message_ids"] == [101, 102] for item in items))
 
+    def test_prune_applies_age_and_row_limits(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            for index, ts in enumerate((100, 200, 300, 400, 500), 1):
+                append_from_push(
+                    settings,
+                    template_id="TG_TEST_MESSAGE",
+                    dedup_key=f"prune:{index}",
+                    status="sent",
+                    sent=True,
+                    text=f"BTCUSDT prune {index}",
+                    ts=ts,
+                )
+            store = SignalEventStore(settings.signal_events_db_path)
+
+            result = store.prune(before_ts=200, max_rows=2)
+            items = store.list_signals(limit=10)["items"]
+
+        self.assertEqual(result["before"], 5)
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(result["overflow"], 2)
+        self.assertEqual(result["after"], 2)
+        self.assertEqual([item["ts"] for item in items], [500, 400])
+
     def test_symbol_extraction_ignores_encoded_tradingview_url(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

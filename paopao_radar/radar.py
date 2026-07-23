@@ -323,29 +323,34 @@ class RadarEngine:
 
     def run_once(self, include_launch: bool = True, include_announcements: bool = True) -> dict[str, Any]:
         summary_source = BinanceDataSource(self.settings)
-        summary = self.build_money_radar_summary(summary_source)
         launch_source = BinanceDataSource(self.settings)
-        launch = self.build_launch_alerts(launch_source) if include_launch else {
-            "template_id": "TG_LAUNCH_ALERT",
-            "messages": [],
-            "alerts": [],
-        }
         announcement_source = BinanceDataSource(self.settings)
-        announcements = self.build_announcement_alerts(announcement_source) if include_announcements else {
-            "template_id": "TG_ANNOUNCEMENT_ALERT",
-            "messages": [],
-            "alerts": [],
-        }
-        return {
-            "summary": summary,
-            "launch": launch,
-            "announcements": announcements,
-            "diagnostics": {
-                "summary": summary_source.diagnostics(),
-                "launch": launch_source.diagnostics() if include_launch else {},
-                "announcements": announcement_source.diagnostics() if include_announcements else {},
-            },
-        }
+        try:
+            summary = self.build_money_radar_summary(summary_source)
+            launch = self.build_launch_alerts(launch_source) if include_launch else {
+                "template_id": "TG_LAUNCH_ALERT",
+                "messages": [],
+                "alerts": [],
+            }
+            announcements = self.build_announcement_alerts(announcement_source) if include_announcements else {
+                "template_id": "TG_ANNOUNCEMENT_ALERT",
+                "messages": [],
+                "alerts": [],
+            }
+            return {
+                "summary": summary,
+                "launch": launch,
+                "announcements": announcements,
+                "diagnostics": {
+                    "summary": summary_source.diagnostics(),
+                    "launch": launch_source.diagnostics() if include_launch else {},
+                    "announcements": announcement_source.diagnostics() if include_announcements else {},
+                },
+            }
+        finally:
+            summary_source.close()
+            launch_source.close()
+            announcement_source.close()
 
     def build_money_radar_summary(self, source: BinanceDataSource) -> dict[str, Any]:
         window = closed_window(

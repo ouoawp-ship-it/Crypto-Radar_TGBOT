@@ -83,6 +83,7 @@ class MaintenanceTests(unittest.TestCase):
             self.assertFalse(old_tmp.exists())
             self.assertFalse(result["skipped"])
             self.assertEqual(len(store.load(settings.launch_watch_history_path, [])), 2)
+            self.assertEqual(result["signal_database"]["status"], "ok")
             self.assertTrue(settings.cleanup_state_path.exists())
 
     def test_cleanup_generated_root_artifacts_removes_reports_only(self) -> None:
