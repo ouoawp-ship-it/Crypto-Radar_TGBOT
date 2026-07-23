@@ -5,11 +5,13 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterator, Mapping
 
 
 ACTIVE_STATUS = "active"
 FAILED_STATUS = "failed"
+OUTCOME_EVALUATION_VERSION = 1
 STAGE_RANK = {
     "idle": 0,
     "watching": 1,
@@ -55,6 +57,11 @@ class LaunchLifecycleStore:
     package_score_delta: int = 15
     package_price_delta_pct: float = 3.0
     package_oi_delta_pct: float = 5.0
+    outcome_enabled: bool = False
+    outcome_follow_through_pct: float = 3.0
+    outcome_min_samples: int = 20
+    breakout_score: int = 75
+    launched_score: int = 90
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -63,6 +70,12 @@ class LaunchLifecycleStore:
         object.__setattr__(self, "package_score_delta", max(1, int(self.package_score_delta)))
         object.__setattr__(self, "package_price_delta_pct", max(0.0, float(self.package_price_delta_pct)))
         object.__setattr__(self, "package_oi_delta_pct", max(0.0, float(self.package_oi_delta_pct)))
+        object.__setattr__(
+            self,
+            "outcome_follow_through_pct",
+            max(0.0, float(self.outcome_follow_through_pct)),
+        )
+        object.__setattr__(self, "outcome_min_samples", max(1, int(self.outcome_min_samples)))
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -103,6 +116,7 @@ class LaunchLifecycleStore:
                 cleanup_pending_message_ids_json TEXT NOT NULL DEFAULT '[]',
                 package_version INTEGER NOT NULL DEFAULT 0,
                 package_updated_at INTEGER,
+                outcome_rule_key TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(symbol, cycle_no)
@@ -165,12 +179,51 @@ class LaunchLifecycleStore:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS launch_lifecycle_outcomes (
+                cycle_id INTEGER PRIMARY KEY,
+                evaluation_version INTEGER NOT NULL,
+                rule_key TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                cycle_no INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER NOT NULL,
+                duration_sec INTEGER NOT NULL,
+                observation_count INTEGER NOT NULL,
+                first_stage TEXT NOT NULL,
+                peak_stage TEXT NOT NULL,
+                failure_reason TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                exit_price REAL NOT NULL,
+                max_close_price REAL NOT NULL,
+                min_close_price REAL NOT NULL,
+                max_favorable_return_pct REAL NOT NULL,
+                max_adverse_return_pct REAL NOT NULL,
+                end_return_pct REAL NOT NULL,
+                max_oi_increase_pct REAL NOT NULL,
+                max_oi_decrease_pct REAL NOT NULL,
+                peak_score INTEGER NOT NULL,
+                confirmed INTEGER NOT NULL,
+                launched INTEGER NOT NULL,
+                followed_through INTEGER NOT NULL,
+                confirmed_at INTEGER,
+                launched_at INTEGER,
+                time_to_confirm_sec INTEGER,
+                time_to_launch_sec INTEGER,
+                evaluated_at INTEGER NOT NULL,
+                FOREIGN KEY(cycle_id) REFERENCES launch_lifecycle_cycles(id) ON DELETE CASCADE
+            )
+            """
+        )
         cycle_columns = {
             "last_published_observation_id": "INTEGER",
             "latest_message_ids_json": "TEXT NOT NULL DEFAULT '[]'",
             "cleanup_pending_message_ids_json": "TEXT NOT NULL DEFAULT '[]'",
             "package_version": "INTEGER NOT NULL DEFAULT 0",
             "package_updated_at": "INTEGER",
+            "outcome_rule_key": "TEXT NOT NULL DEFAULT ''",
         }
         observation_columns = {
             "spot_active_net_usd": "REAL",
@@ -213,6 +266,18 @@ class LaunchLifecycleStore:
             """
             CREATE INDEX IF NOT EXISTS idx_launch_lifecycle_observations_checkpoint
             ON launch_lifecycle_observations(cycle_id, checkpoint_no)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_launch_lifecycle_outcomes_rule
+            ON launch_lifecycle_outcomes(rule_key, evaluated_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_launch_lifecycle_outcomes_symbol
+            ON launch_lifecycle_outcomes(symbol, evaluated_at)
             """
         )
 
@@ -280,6 +345,501 @@ class LaunchLifecycleStore:
                 )
                 items.append(item)
             return items
+
+    @property
+    def outcome_rule_key(self) -> str:
+        follow_through = f"{self.outcome_follow_through_pct:.6f}".rstrip("0").rstrip(".")
+        return (
+            f"launch-v{OUTCOME_EVALUATION_VERSION}"
+            f":start={self.start_score}"
+            f":watch={self.watch_score}"
+            f":breakout={self.breakout_score}"
+            f":launched={self.launched_score}"
+            f":invalid={self.invalid_windows_required}"
+            f":follow={follow_through}"
+        )
+
+    @staticmethod
+    def _rule_number(rule_key: str, name: str, fallback: float) -> float:
+        for part in str(rule_key).split(":"):
+            if not part.startswith(f"{name}="):
+                continue
+            try:
+                return max(0.0, float(part.split("=", 1)[1]))
+            except (TypeError, ValueError):
+                break
+        return max(0.0, float(fallback))
+
+    def _stage_for_rule(self, score: int, rule_key: str) -> str:
+        watch = int(self._rule_number(rule_key, "watch", self.watch_score))
+        start = int(self._rule_number(rule_key, "start", self.start_score))
+        breakout = int(self._rule_number(rule_key, "breakout", self.breakout_score))
+        launched = int(self._rule_number(rule_key, "launched", self.launched_score))
+        if score < watch:
+            return "idle"
+        if score < start:
+            return "watching"
+        if score < breakout:
+            return "primed"
+        if score < launched:
+            return "breakout"
+        return "launched"
+
+    def refresh_outcomes(self, *, evaluated_at: int) -> dict[str, Any]:
+        """Backfill completed lifecycle outcomes without counting message replacements."""
+
+        if not self.outcome_enabled:
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "evaluated": 0,
+            }
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                UPDATE launch_lifecycle_cycles
+                SET outcome_rule_key = ?
+                WHERE outcome_rule_key = ''
+                """,
+                (self.outcome_rule_key,),
+            )
+            rows = conn.execute(
+                """
+                SELECT cycle.id
+                FROM launch_lifecycle_cycles AS cycle
+                LEFT JOIN launch_lifecycle_outcomes AS outcome
+                  ON outcome.cycle_id = cycle.id
+                WHERE cycle.status = ?
+                  AND (
+                    outcome.cycle_id IS NULL
+                    OR outcome.evaluation_version != ?
+                    OR outcome.rule_key != cycle.outcome_rule_key
+                  )
+                ORDER BY cycle.id
+                """,
+                (
+                    FAILED_STATUS,
+                    OUTCOME_EVALUATION_VERSION,
+                ),
+            ).fetchall()
+            evaluated = 0
+            for row in rows:
+                if self._evaluate_cycle(
+                    conn,
+                    cycle_id=int(row["id"]),
+                    evaluated_at=int(evaluated_at),
+                ) is not None:
+                    evaluated += 1
+            counts = conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM launch_lifecycle_cycles WHERE status = ?) AS completed,
+                    (SELECT COUNT(*) FROM launch_lifecycle_cycles WHERE status = ?) AS active,
+                    (SELECT COUNT(*) FROM launch_lifecycle_outcomes WHERE rule_key = ?) AS same_rule
+                """,
+                (FAILED_STATUS, ACTIVE_STATUS, self.outcome_rule_key),
+            ).fetchone()
+            return {
+                "enabled": True,
+                "status": "active",
+                "evaluated": evaluated,
+                "completed_cycles": int(counts["completed"] or 0),
+                "active_cycles": int(counts["active"] or 0),
+                "same_rule_samples": int(counts["same_rule"] or 0),
+                "minimum_samples": self.outcome_min_samples,
+                "rates_available": int(counts["same_rule"] or 0) >= self.outcome_min_samples,
+                "rule_key": self.outcome_rule_key,
+            }
+
+    def _cycle_metrics(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        cycle_id: int,
+    ) -> dict[str, Any] | None:
+        cycle = conn.execute(
+            "SELECT * FROM launch_lifecycle_cycles WHERE id = ?",
+            (int(cycle_id),),
+        ).fetchone()
+        observations = conn.execute(
+            """
+            SELECT * FROM launch_lifecycle_observations
+            WHERE cycle_id = ?
+            ORDER BY observation_no
+            """,
+            (int(cycle_id),),
+        ).fetchall()
+        if cycle is None or not observations:
+            return None
+
+        first = observations[0]
+        last = observations[-1]
+        entry_price = _number(first["closed_price"])
+        entry_oi = _number(first["closed_oi_usd"])
+        if entry_price <= 0 or entry_oi <= 0:
+            return None
+        prices = [_number(row["closed_price"]) for row in observations]
+        oi_values = [_number(row["closed_oi_usd"]) for row in observations]
+        max_price = max(prices)
+        min_price = min(prices)
+        max_oi = max(oi_values)
+        min_oi = min(oi_values)
+        first_window_end = int(first["window_end_ts"])
+        rule_key = str(cycle["outcome_rule_key"] or self.outcome_rule_key)
+        follow_through_pct = self._rule_number(
+            rule_key,
+            "follow",
+            self.outcome_follow_through_pct,
+        )
+
+        confirmed_at = next(
+            (
+                int(row["window_end_ts"])
+                for row in observations
+                if STAGE_RANK.get(str(row["observed_stage"]), 0)
+                >= STAGE_RANK["breakout"]
+            ),
+            None,
+        )
+        launched_at = next(
+            (
+                int(row["window_end_ts"])
+                for row in observations
+                if STAGE_RANK.get(str(row["observed_stage"]), 0)
+                >= STAGE_RANK["launched"]
+            ),
+            None,
+        )
+        max_favorable = _percent_change(max_price, entry_price) or 0.0
+        max_adverse = _percent_change(min_price, entry_price) or 0.0
+        end_return = _percent_change(_number(last["closed_price"]), entry_price) or 0.0
+        max_oi_increase = _percent_change(max_oi, entry_oi) or 0.0
+        max_oi_decrease = _percent_change(min_oi, entry_oi) or 0.0
+        return {
+            "cycle_id": int(cycle["id"]),
+            "symbol": str(cycle["symbol"]),
+            "cycle_no": int(cycle["cycle_no"]),
+            "rule_key": rule_key,
+            "cycle_status": str(cycle["status"]),
+            "started_at": int(cycle["first_window_end"]),
+            "ended_at": int(cycle["ended_at"] or cycle["last_window_end"]),
+            "duration_sec": max(
+                0,
+                int(cycle["last_window_end"]) - int(cycle["first_window_end"]),
+            ),
+            "observation_count": len(observations),
+            "first_stage": str(first["observed_stage"]),
+            "peak_stage": str(cycle["peak_stage"]),
+            "failure_reason": str(cycle["end_reason"] or ""),
+            "entry_price": entry_price,
+            "exit_price": _number(last["closed_price"]),
+            "max_close_price": max_price,
+            "min_close_price": min_price,
+            "max_favorable_return_pct": round(max_favorable, 8),
+            "max_adverse_return_pct": round(max_adverse, 8),
+            "end_return_pct": round(end_return, 8),
+            "max_oi_increase_pct": round(max_oi_increase, 8),
+            "max_oi_decrease_pct": round(max_oi_decrease, 8),
+            "peak_score": max(int(row["score"]) for row in observations),
+            "confirmed": confirmed_at is not None,
+            "launched": launched_at is not None,
+            "followed_through": max_favorable >= follow_through_pct,
+            "confirmed_at": confirmed_at,
+            "launched_at": launched_at,
+            "time_to_confirm_sec": (
+                max(0, confirmed_at - first_window_end)
+                if confirmed_at is not None
+                else None
+            ),
+            "time_to_launch_sec": (
+                max(0, launched_at - first_window_end)
+                if launched_at is not None
+                else None
+            ),
+        }
+
+    def _evaluate_cycle(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        cycle_id: int,
+        evaluated_at: int,
+    ) -> dict[str, Any] | None:
+        metrics = self._cycle_metrics(conn, cycle_id=int(cycle_id))
+        if metrics is None or metrics["cycle_status"] != FAILED_STATUS:
+            return None
+        conn.execute(
+            """
+            INSERT INTO launch_lifecycle_outcomes (
+                cycle_id, evaluation_version, rule_key, symbol, cycle_no, status,
+                started_at, ended_at, duration_sec, observation_count,
+                first_stage, peak_stage, failure_reason,
+                entry_price, exit_price, max_close_price, min_close_price,
+                max_favorable_return_pct, max_adverse_return_pct, end_return_pct,
+                max_oi_increase_pct, max_oi_decrease_pct, peak_score,
+                confirmed, launched, followed_through,
+                confirmed_at, launched_at, time_to_confirm_sec, time_to_launch_sec,
+                evaluated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, 'evaluated',
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?
+            )
+            ON CONFLICT(cycle_id) DO UPDATE SET
+                evaluation_version = excluded.evaluation_version,
+                rule_key = excluded.rule_key,
+                symbol = excluded.symbol,
+                cycle_no = excluded.cycle_no,
+                status = excluded.status,
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                duration_sec = excluded.duration_sec,
+                observation_count = excluded.observation_count,
+                first_stage = excluded.first_stage,
+                peak_stage = excluded.peak_stage,
+                failure_reason = excluded.failure_reason,
+                entry_price = excluded.entry_price,
+                exit_price = excluded.exit_price,
+                max_close_price = excluded.max_close_price,
+                min_close_price = excluded.min_close_price,
+                max_favorable_return_pct = excluded.max_favorable_return_pct,
+                max_adverse_return_pct = excluded.max_adverse_return_pct,
+                end_return_pct = excluded.end_return_pct,
+                max_oi_increase_pct = excluded.max_oi_increase_pct,
+                max_oi_decrease_pct = excluded.max_oi_decrease_pct,
+                peak_score = excluded.peak_score,
+                confirmed = excluded.confirmed,
+                launched = excluded.launched,
+                followed_through = excluded.followed_through,
+                confirmed_at = excluded.confirmed_at,
+                launched_at = excluded.launched_at,
+                time_to_confirm_sec = excluded.time_to_confirm_sec,
+                time_to_launch_sec = excluded.time_to_launch_sec,
+                evaluated_at = excluded.evaluated_at
+            """,
+            (
+                metrics["cycle_id"],
+                OUTCOME_EVALUATION_VERSION,
+                metrics["rule_key"],
+                metrics["symbol"],
+                metrics["cycle_no"],
+                metrics["started_at"],
+                metrics["ended_at"],
+                metrics["duration_sec"],
+                metrics["observation_count"],
+                metrics["first_stage"],
+                metrics["peak_stage"],
+                metrics["failure_reason"],
+                metrics["entry_price"],
+                metrics["exit_price"],
+                metrics["max_close_price"],
+                metrics["min_close_price"],
+                metrics["max_favorable_return_pct"],
+                metrics["max_adverse_return_pct"],
+                metrics["end_return_pct"],
+                metrics["max_oi_increase_pct"],
+                metrics["max_oi_decrease_pct"],
+                metrics["peak_score"],
+                int(metrics["confirmed"]),
+                int(metrics["launched"]),
+                int(metrics["followed_through"]),
+                metrics["confirmed_at"],
+                metrics["launched_at"],
+                metrics["time_to_confirm_sec"],
+                metrics["time_to_launch_sec"],
+                int(evaluated_at),
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM launch_lifecycle_outcomes WHERE cycle_id = ?",
+            (int(cycle_id),),
+        ).fetchone()
+        return self._outcome_summary(row)
+
+    @staticmethod
+    def _outcome_summary(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        followed = bool(row["followed_through"])
+        confirmed = bool(row["confirmed"])
+        launched = bool(row["launched"])
+        if followed and launched:
+            label = "launched_follow_through"
+        elif followed and confirmed:
+            label = "confirmed_follow_through"
+        elif followed:
+            label = "price_follow_through_only"
+        elif launched or confirmed:
+            label = "confirmed_no_follow_through"
+        else:
+            label = "false_start"
+        return {
+            "status": str(row["status"]),
+            "label": label,
+            "evaluation_version": int(row["evaluation_version"]),
+            "rule_key": str(row["rule_key"]),
+            "observation_count": int(row["observation_count"]),
+            "duration_sec": int(row["duration_sec"]),
+            "first_stage": str(row["first_stage"]),
+            "peak_stage": str(row["peak_stage"]),
+            "failure_reason": str(row["failure_reason"]),
+            "entry_price": _number(row["entry_price"]),
+            "exit_price": _number(row["exit_price"]),
+            "max_favorable_return_pct": _number(row["max_favorable_return_pct"]),
+            "max_adverse_return_pct": _number(row["max_adverse_return_pct"]),
+            "end_return_pct": _number(row["end_return_pct"]),
+            "max_oi_increase_pct": _number(row["max_oi_increase_pct"]),
+            "max_oi_decrease_pct": _number(row["max_oi_decrease_pct"]),
+            "peak_score": int(row["peak_score"]),
+            "confirmed": confirmed,
+            "launched": launched,
+            "followed_through": followed,
+            "confirmed_at": (
+                int(row["confirmed_at"])
+                if row["confirmed_at"] is not None
+                else None
+            ),
+            "launched_at": (
+                int(row["launched_at"])
+                if row["launched_at"] is not None
+                else None
+            ),
+            "time_to_confirm_sec": (
+                int(row["time_to_confirm_sec"])
+                if row["time_to_confirm_sec"] is not None
+                else None
+            ),
+            "time_to_launch_sec": (
+                int(row["time_to_launch_sec"])
+                if row["time_to_launch_sec"] is not None
+                else None
+            ),
+        }
+
+    def _reliability_summary(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        cycle_id: int,
+        symbol: str,
+        rule_key: str,
+    ) -> dict[str, Any]:
+        rows = conn.execute(
+            """
+            SELECT confirmed, launched, followed_through,
+                   max_favorable_return_pct, max_adverse_return_pct
+            FROM launch_lifecycle_outcomes
+            WHERE rule_key = ? AND cycle_id != ?
+            ORDER BY evaluated_at, cycle_id
+            """,
+            (str(rule_key), int(cycle_id)),
+        ).fetchall()
+        samples = len(rows)
+        confirmed_count = sum(int(row["confirmed"]) for row in rows)
+        launched_count = sum(int(row["launched"]) for row in rows)
+        followed_count = sum(int(row["followed_through"]) for row in rows)
+        rates_available = samples >= self.outcome_min_samples
+        symbol_samples = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM launch_lifecycle_outcomes
+                WHERE rule_key = ? AND cycle_id != ? AND symbol = ?
+                """,
+                (str(rule_key), int(cycle_id), str(symbol)),
+            ).fetchone()[0]
+        )
+        result: dict[str, Any] = {
+            "status": "review_ready" if rates_available else "accumulating",
+            "completed_samples": samples,
+            "minimum_samples": self.outcome_min_samples,
+            "rates_available": rates_available,
+            "confirmed_count": confirmed_count,
+            "launched_count": launched_count,
+            "followed_through_count": followed_count,
+            "symbol_completed_samples": symbol_samples,
+            "follow_through_threshold_pct": self._rule_number(
+                rule_key,
+                "follow",
+                self.outcome_follow_through_pct,
+            ),
+            "rule_key": str(rule_key),
+        }
+        if rates_available:
+            result.update({
+                "confirmed_rate_pct": round(confirmed_count / samples * 100.0, 2),
+                "launched_rate_pct": round(launched_count / samples * 100.0, 2),
+                "followed_through_rate_pct": round(followed_count / samples * 100.0, 2),
+                "median_max_favorable_return_pct": round(
+                    median(float(row["max_favorable_return_pct"]) for row in rows),
+                    4,
+                ),
+                "median_max_adverse_return_pct": round(
+                    median(float(row["max_adverse_return_pct"]) for row in rows),
+                    4,
+                ),
+            })
+        return result
+
+    def _outcome_context(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        cycle: sqlite3.Row,
+        evaluated_at: int,
+    ) -> dict[str, Any]:
+        if not self.outcome_enabled:
+            return {"enabled": False, "status": "disabled"}
+        metrics = self._cycle_metrics(conn, cycle_id=int(cycle["id"]))
+        outcome = None
+        if str(cycle["status"]) == FAILED_STATUS:
+            outcome = self._evaluate_cycle(
+                conn,
+                cycle_id=int(cycle["id"]),
+                evaluated_at=int(evaluated_at),
+            )
+        progress = None
+        if metrics is not None:
+            progress = {
+                key: metrics[key]
+                for key in (
+                    "cycle_status",
+                    "observation_count",
+                    "duration_sec",
+                    "max_favorable_return_pct",
+                    "max_adverse_return_pct",
+                    "end_return_pct",
+                    "max_oi_increase_pct",
+                    "max_oi_decrease_pct",
+                    "peak_score",
+                    "confirmed",
+                    "launched",
+                    "followed_through",
+                    "confirmed_at",
+                    "launched_at",
+                    "time_to_confirm_sec",
+                    "time_to_launch_sec",
+                )
+            }
+        return {
+            "enabled": True,
+            "status": "evaluated" if outcome is not None else "tracking",
+            "progress": progress,
+            "outcome": outcome,
+            "reliability": self._reliability_summary(
+                conn,
+                cycle_id=int(cycle["id"]),
+                symbol=str(cycle["symbol"]),
+                rule_key=str(cycle["outcome_rule_key"] or self.outcome_rule_key),
+            ),
+        }
 
     def list_pending_cleanups(self, *, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -567,7 +1127,10 @@ class LaunchLifecycleStore:
             cycle = self._open_cycle(
                 conn,
                 symbol=symbol,
-                stage=stage,
+                stage=self._stage_for_rule(
+                    score,
+                    self.outcome_rule_key,
+                ),
                 window_end_ts=window_end_ts,
                 observed_at=int(observed_at),
                 breakout_price=(
@@ -579,6 +1142,10 @@ class LaunchLifecycleStore:
             opened = True
         else:
             opened = False
+        stage = self._stage_for_rule(
+            score,
+            str(cycle["outcome_rule_key"] or self.outcome_rule_key),
+        )
 
         duplicate = conn.execute(
             """
@@ -688,8 +1255,8 @@ class LaunchLifecycleStore:
             status="opened" if opened else lifecycle_status,
         )
 
-    @staticmethod
     def _open_cycle(
+        self,
         conn: sqlite3.Connection,
         *,
         symbol: str,
@@ -710,8 +1277,8 @@ class LaunchLifecycleStore:
                 symbol, cycle_no, status, current_stage, peak_stage,
                 started_at, first_window_end, last_window_end,
                 invalid_window_count, breakout_below_count, breakout_price,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+                outcome_rule_key, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -723,6 +1290,7 @@ class LaunchLifecycleStore:
                 window_end_ts,
                 window_end_ts,
                 breakout_price if breakout_price and breakout_price > 0 else None,
+                self.outcome_rule_key,
                 observed_at,
                 observed_at,
             ),
@@ -749,13 +1317,24 @@ class LaunchLifecycleStore:
         funding_pct = _number(snapshot.get("funding_pct"))
         funding_interval_hours = int(_number(snapshot.get("funding_interval_hours")))
         funding_8h_pct = _funding_8h(funding_pct, funding_interval_hours)
+        rule_key = str(cycle["outcome_rule_key"] or self.outcome_rule_key)
+        watch_score = int(
+            self._rule_number(rule_key, "watch", self.watch_score)
+        )
+        invalid_windows_required = int(
+            self._rule_number(
+                rule_key,
+                "invalid",
+                self.invalid_windows_required,
+            )
+        )
         is_consecutive = (
             previous is None
             or window_end_ts - int(previous["window_end_ts"]) == self.window_sec
         )
 
         invalid_count = int(cycle["invalid_window_count"] or 0)
-        if score < self.watch_score:
+        if score < watch_score:
             invalid_count = invalid_count + 1 if is_consecutive else 1
         else:
             invalid_count = 0
@@ -771,8 +1350,8 @@ class LaunchLifecycleStore:
         else:
             breakout_below_count = 0
 
-        failed_by_score = invalid_count >= self.invalid_windows_required
-        failed_by_breakout = breakout_below_count >= self.invalid_windows_required
+        failed_by_score = invalid_count >= invalid_windows_required
+        failed_by_breakout = breakout_below_count >= invalid_windows_required
         if failed_by_breakout:
             lifecycle_status = FAILED_STATUS
             lifecycle_stage = FAILED_STATUS
@@ -783,7 +1362,7 @@ class LaunchLifecycleStore:
             end_reason = "two_windows_below_watch_score"
         else:
             lifecycle_status = ACTIVE_STATUS
-            lifecycle_stage = "cooling" if score < self.watch_score else str(stage or "idle")
+            lifecycle_stage = "cooling" if score < watch_score else str(stage or "idle")
             end_reason = ""
 
         first_row: Mapping[str, Any] = first if first is not None else {
@@ -904,6 +1483,11 @@ class LaunchLifecycleStore:
             cycle=cycle,
             observation=observation,
         )
+        outcome_evaluation = self._outcome_context(
+            conn,
+            cycle=cycle,
+            evaluated_at=int(observation["observed_at"]),
+        )
         return {
             "status": status,
             "cycle_id": int(cycle_id),
@@ -940,6 +1524,7 @@ class LaunchLifecycleStore:
                 "score": int(observation["score_vs_previous"]),
             },
             "publication": publication,
+            "outcome_evaluation": outcome_evaluation,
         }
 
     def _publication_context(
@@ -1090,4 +1675,4 @@ class LaunchLifecycleStore:
         }
 
 
-__all__ = ["LaunchLifecycleStore"]
+__all__ = ["LaunchLifecycleStore", "OUTCOME_EVALUATION_VERSION"]

@@ -165,6 +165,14 @@ def push_launch_messages(
             for key, value in alert.items()
             if key != "chart_png_bytes"
         }
+        if is_package:
+            signal_record.update({
+                "evaluation_eligible": False,
+                "launch_message_package_v2": True,
+                "launch_cycle_id": int(lifecycle.get("cycle_id") or 0),
+                "launch_cycle_no": int(lifecycle.get("cycle_no") or 0),
+                "launch_observation_id": int(lifecycle.get("observation_id") or 0),
+            })
         push = gateway.send(
             str(message),
             "TG_LAUNCH_ALERT",

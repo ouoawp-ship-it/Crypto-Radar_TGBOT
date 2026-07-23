@@ -141,7 +141,8 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "primary_data_source", "oi_source_agreement_score", "oi_binance_1h",
     "predicted_funding_pct", "funding_acceleration_pct",
     "last_price", "price_24h_pct", "primary_kind", "signal_direction",
-    "evaluation_eligible",
+    "evaluation_eligible", "launch_message_package_v2", "launch_cycle_id",
+    "launch_cycle_no", "launch_observation_id",
 })
 
 
@@ -597,7 +598,7 @@ class SignalEventStore:
             if structured_mode:
                 facts = _structured_payload(record)
                 if module in {"flow", "launch", "funding"}:
-                    facts["evaluation_eligible"] = True
+                    facts.setdefault("evaluation_eligible", True)
                 payload["facts"] = facts
             quality_status = "ready" if structured_mode and normalized_symbol else "degraded"
             rows.append(
@@ -799,6 +800,7 @@ class SignalEventStore:
 
         cutoff = max(0, int(before_ts))
         row_limit = max(1, int(max_rows))
+        launch_cycles_expired = 0
         with self.connect() as conn:
             before = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
             expired_cursor = conn.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
@@ -814,6 +816,22 @@ class SignalEventStore:
             )
             overflow = max(0, int(overflow_cursor.rowcount))
             after = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
+            lifecycle_table = conn.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'launch_lifecycle_cycles'
+                """
+            ).fetchone()
+            if lifecycle_table is not None:
+                lifecycle_cursor = conn.execute(
+                    """
+                    DELETE FROM launch_lifecycle_cycles
+                    WHERE status != 'active'
+                      AND COALESCE(ended_at, last_window_end) < ?
+                    """,
+                    (cutoff,),
+                )
+                launch_cycles_expired = max(0, int(lifecycle_cursor.rowcount))
             conn.execute("PRAGMA optimize")
 
         checkpointed = 0
@@ -829,6 +847,7 @@ class SignalEventStore:
             "after": after,
             "expired": expired,
             "overflow": overflow,
+            "launch_cycles_expired": launch_cycles_expired,
             "checkpoint_pages": checkpointed,
         }
 
