@@ -107,6 +107,8 @@ def replay_fixture(
     if notify:
         notifier = OnchainNotifier(settings, store)
         for alert in active_alerts:
+            if store.delivery_completed(alert.alert_key):
+                continue
             notifier.notify(
                 alert,
                 send=send,

@@ -120,7 +120,7 @@ class ReplayIsolationTests(unittest.TestCase):
             before_counts = store.table_counts()
 
             first = replay_fixture(
-                settings, FIXTURE_PATH, notify=False
+                settings, FIXTURE_PATH, notify=True
             )
             replay_settings = isolated_replay_settings(
                 settings, FIXTURE_PATH
@@ -130,7 +130,7 @@ class ReplayIsolationTests(unittest.TestCase):
             ) as conn:
                 first_dump = "\n".join(conn.iterdump())
             second = replay_fixture(
-                settings, FIXTURE_PATH, notify=False
+                settings, FIXTURE_PATH, notify=True
             )
             with closing(
                 sqlite3.connect(replay_settings.db_path)

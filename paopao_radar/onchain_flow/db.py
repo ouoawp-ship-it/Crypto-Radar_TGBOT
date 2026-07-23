@@ -1194,6 +1194,20 @@ class OnchainStore:
             ).fetchone()
         return row is not None
 
+    def delivery_completed(self, alert_key: str) -> bool:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM alert_deliveries
+                WHERE alert_key=?
+                  AND status IN ('dry_run', 'sent', 'succeeded')
+                LIMIT 1
+                """,
+                (alert_key,),
+            ).fetchone()
+        return row is not None
+
     def active_alerts(self) -> list[OnchainAlert]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
