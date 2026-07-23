@@ -1,0 +1,6 @@
+chain_id,address,entity_name,entity_type,address_type,source,confidence,valid_from,valid_to
+8453,0x1111111111111111111111111111111111111111,Binance,cex,hot,synthetic_fixture,0.98,,
+8453,0x2222222222222222222222222222222222222222,Binance,cex,cold,synthetic_fixture,0.97,,
+8453,0x3333333333333333333333333333333333333333,OKX,cex,hot,synthetic_fixture,0.96,,
+8453,0x4444444444444444444444444444444444444444,Binance,cex,deposit,synthetic_fixture,0.92,,
+8453,0x5555555555555555555555555555555555555555,ExampleLowConfidence,cex,hot,synthetic_fixture,0.50,,
