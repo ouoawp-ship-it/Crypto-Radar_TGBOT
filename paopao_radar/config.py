@@ -246,6 +246,9 @@ class Settings:
     launch_lifecycle_invalid_windows: int = 2
     launch_message_package_v2_enable: bool = False
     launch_chart_v2_enable: bool = False
+    launch_outcome_v2_enable: bool = False
+    launch_outcome_follow_through_pct: float = 3.0
+    launch_outcome_min_samples: int = 20
     launch_package_score_delta: int = 15
     launch_package_price_delta_pct: float = 3.0
     launch_package_oi_delta_pct: float = 5.0
@@ -452,6 +455,9 @@ class Settings:
             launch_lifecycle_invalid_windows=env_int("LAUNCH_LIFECYCLE_INVALID_WINDOWS", 2),
             launch_message_package_v2_enable=env_bool("LAUNCH_MESSAGE_PACKAGE_V2_ENABLE", False),
             launch_chart_v2_enable=env_bool("LAUNCH_CHART_V2_ENABLE", False),
+            launch_outcome_v2_enable=env_bool("LAUNCH_OUTCOME_V2_ENABLE", False),
+            launch_outcome_follow_through_pct=env_float("LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT", 3.0),
+            launch_outcome_min_samples=env_int("LAUNCH_OUTCOME_MIN_SAMPLES", 20),
             launch_package_score_delta=env_int("LAUNCH_PACKAGE_SCORE_DELTA", 15),
             launch_package_price_delta_pct=env_float("LAUNCH_PACKAGE_PRICE_DELTA_PCT", 3.0),
             launch_package_oi_delta_pct=env_float("LAUNCH_PACKAGE_OI_DELTA_PCT", 5.0),
@@ -613,6 +619,9 @@ class Settings:
                 "lifecycle_invalid_windows": self.launch_lifecycle_invalid_windows,
                 "message_package_v2_enable": self.launch_message_package_v2_enable,
                 "chart_v2_enable": self.launch_chart_v2_enable,
+                "outcome_v2_enable": self.launch_outcome_v2_enable,
+                "outcome_follow_through_pct": self.launch_outcome_follow_through_pct,
+                "outcome_min_samples": self.launch_outcome_min_samples,
                 "package_score_delta": self.launch_package_score_delta,
                 "package_price_delta_pct": self.launch_package_price_delta_pct,
                 "package_oi_delta_pct": self.launch_package_oi_delta_pct,

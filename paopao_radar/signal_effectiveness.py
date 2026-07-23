@@ -152,6 +152,7 @@ class SignalOutcomeTracker:
         created = 0
         matured = 0
         unavailable = 0
+        lifecycle_package_outcomes_removed = 0
         tracked_signal_ids: set[int] = set()
         market_conn = self._market_connection()
         market_ready = market_conn is not None
@@ -171,6 +172,20 @@ class SignalOutcomeTracker:
         try:
             store = SignalEventStore(self.signal_db_path)
             with store.connect() as conn:
+                removed = conn.execute(
+                    """
+                    DELETE FROM signal_outcomes
+                    WHERE signal_id IN (
+                        SELECT id FROM signals
+                        WHERE module = 'launch'
+                          AND dedup_key LIKE 'launch-package:%'
+                    )
+                    """
+                )
+                lifecycle_package_outcomes_removed = max(
+                    0,
+                    int(removed.rowcount),
+                )
                 signals = conn.execute(
                     """
                     SELECT id, ts, module, symbol, score, stage, payload_json
@@ -180,6 +195,10 @@ class SignalOutcomeTracker:
                       AND ingest_mode = 'structured'
                       AND symbol <> ''
                       AND module IN (?, ?, ?)
+                      AND NOT (
+                        module = 'launch'
+                        AND dedup_key LIKE 'launch-package:%'
+                      )
                     ORDER BY id DESC
                     LIMIT ?
                     """,
@@ -331,6 +350,7 @@ class SignalOutcomeTracker:
             "outcomes_created": created,
             "outcomes_matured": matured,
             "outcomes_unavailable": unavailable,
+            "lifecycle_package_outcomes_removed": lifecycle_package_outcomes_removed,
             "market_database_ready": market_ready,
         }
         result["summary"] = self.summary()

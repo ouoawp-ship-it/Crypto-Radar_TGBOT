@@ -55,6 +55,44 @@ Enable it first in production shadow mode by setting
 - active and forced-monitor symbol counts;
 - newly opened, recorded, failed, frozen, and error counts.
 
-P2.2 will consume this stored contract to build and atomically replace the
-latest Telegram image/text package. P2.3 will add the in-memory K-line image,
-and P2.4 will evaluate completed cycles and historical reliability.
+P2.2 consumes this stored contract to build and atomically replace the latest
+Telegram image/text package. P2.3 adds the in-memory K-line image. P2.4 stores
+one outcome per completed lifecycle, reports close-based favorable/adverse
+movement and stage timing, and keeps historical rates hidden until enough
+completed cycles exist under the same rule key.
+
+## P2.4 outcome contract
+
+Enable the evaluator only together with lifecycle V2:
+
+```dotenv
+LAUNCH_OUTCOME_V2_ENABLE=true
+LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT=3.0
+LAUNCH_OUTCOME_MIN_SAMPLES=20
+```
+
+One lifecycle is one sample, regardless of how many Telegram replacement
+packages it publishes. Old `launch-package:*` deliveries are removed from the
+generic event-level outcome table so one cycle cannot be counted multiple
+times.
+
+The evaluator persists:
+
+- first and last price;
+- highest and lowest observed 15-minute close relative to the first close;
+- highest and lowest observed OI relative to the first OI;
+- final return at lifecycle invalidation;
+- peak score and peak stage;
+- time to `breakout` and `launched`;
+- whether the highest observed close reached the configured follow-through
+  threshold.
+
+These are descriptive lifecycle measurements, not a trade PnL or a promise of
+profit. Intrabar highs and lows are deliberately excluded because the lifecycle
+contract only admits closed 15-minute observations.
+
+Each cycle freezes its rule key when it opens. A later threshold change starts
+a new cohort and does not relabel historical cycles. Before the current cohort
+has `LAUNCH_OUTCOME_MIN_SAMPLES` completed cycles, messages show raw counts only;
+rates and medians remain hidden. No result automatically changes production
+thresholds.
