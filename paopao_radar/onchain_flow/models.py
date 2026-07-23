@@ -98,6 +98,9 @@ class TokenMetadata:
     historical_60m_p99_usd: Decimal | None = None
     historical_window_median_usd: Decimal | None = None
     historical_window_mad_usd: Decimal | None = None
+    price_source: str = ""
+    price_observed_at: int = 0
+    retry_after: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,10 @@ class ClassifiedFlow:
     amount_usd: Decimal | None
     label_confidence: float
     price_status: str
+    block_number: int = 0
+    block_hash: str = ""
+    price_source: str = ""
+    price_observed_at: int = 0
 
     @property
     def exchange(self) -> str | None:
@@ -154,6 +161,13 @@ class DetectedFlow:
 
 
 @dataclass(frozen=True)
+class DetectedRollingFlow:
+    snapshot: RollingFlowSnapshot
+    detection_types: tuple[str, ...]
+    threshold_usd: Decimal
+
+
+@dataclass(frozen=True)
 class OnchainAlert:
     alert_key: str
     chain_id: int
@@ -174,6 +188,90 @@ class OnchainAlert:
     price_status: str
     created_at: int
     severity_version: str
+    gross_inflow_usd: Decimal | None = None
+    gross_outflow_usd: Decimal | None = None
+    net_flow_usd: Decimal | None = None
+    duration_sec: int = 0
+    inflow_tx_count: int = 0
+    outflow_tx_count: int = 0
+    distinct_inbound_counterparties: int = 0
+    distinct_outbound_counterparties: int = 0
+    evaluation_block: int = 0
+    price_source: str = ""
+    price_observed_at: int = 0
+    chain_name: str = ""
+
+
+@dataclass(frozen=True)
+class ChainCursor:
+    chain_id: int
+    last_seen_head: int
+    last_finalized_block: int
+    finalized_block_hash: str
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class ProcessedBlock:
+    chain_id: int
+    block_number: int
+    block_hash: str
+    block_time: int
+    status: str = "finalized"
+    processed_at: int = 0
+
+
+@dataclass(frozen=True)
+class PriceQuote:
+    chain_id: int
+    token_address: str
+    price_usd: Decimal
+    volume_24h_usd: Decimal | None
+    source: str
+    observed_at: int
+
+
+@dataclass(frozen=True)
+class RollingFlowSnapshot:
+    snapshot_key: str
+    chain_id: int
+    token_address: str
+    symbol: str
+    evaluation_time: int
+    duration_sec: int
+    gross_inflow_usd: Decimal
+    gross_outflow_usd: Decimal
+    net_flow_usd: Decimal
+    inflow_tx_count: int
+    outflow_tx_count: int
+    distinct_inbound_counterparties: int
+    distinct_outbound_counterparties: int
+    exchanges: tuple[str, ...]
+    active_15m_buckets: int
+    min_label_confidence: float
+    price_source: str
+    price_observed_at: int
+    evaluation_block: int
+    algorithm_version: str
+
+    @property
+    def max_gross_usd(self) -> Decimal:
+        return max(self.gross_inflow_usd, self.gross_outflow_usd)
+
+    @property
+    def net_dominance(self) -> Decimal:
+        denominator = self.max_gross_usd
+        if denominator == 0:
+            return Decimal("0")
+        return abs(self.net_flow_usd) / denominator
+
+    @property
+    def direction(self) -> str:
+        if self.net_flow_usd > 0:
+            return "inflow"
+        if self.net_flow_usd < 0:
+            return "outflow"
+        return "balanced"
 
 
 @dataclass(frozen=True)

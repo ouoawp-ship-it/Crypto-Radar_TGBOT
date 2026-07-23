@@ -143,6 +143,126 @@ MIGRATIONS = (
             ON flow_windows(chain_id, token_address, window_start);
         """,
     ),
+    (
+        2,
+        """
+        ALTER TABLE chain_cursors
+            ADD COLUMN provider_status TEXT NOT NULL DEFAULT 'unknown';
+
+        ALTER TABLE token_metadata
+            ADD COLUMN price_source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE token_metadata
+            ADD COLUMN price_observed_at INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE token_metadata
+            ADD COLUMN retry_after INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE flow_events
+            ADD COLUMN block_number INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE flow_events
+            ADD COLUMN price_source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE flow_events
+            ADD COLUMN price_observed_at INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE flow_events
+            ADD COLUMN block_hash TEXT NOT NULL DEFAULT '';
+        ALTER TABLE flow_events
+            ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+
+        ALTER TABLE alerts
+            ADD COLUMN gross_inflow_usd TEXT;
+        ALTER TABLE alerts
+            ADD COLUMN gross_outflow_usd TEXT;
+        ALTER TABLE alerts
+            ADD COLUMN net_flow_usd TEXT;
+        ALTER TABLE alerts
+            ADD COLUMN duration_sec INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN inflow_tx_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN outflow_tx_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN distinct_inbound_counterparties INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN distinct_outbound_counterparties INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN evaluation_block INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN price_source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE alerts
+            ADD COLUMN price_observed_at INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE alerts
+            ADD COLUMN chain_name TEXT NOT NULL DEFAULT '';
+
+        CREATE TABLE IF NOT EXISTS processed_blocks (
+            chain_id INTEGER NOT NULL,
+            block_number INTEGER NOT NULL,
+            block_hash TEXT NOT NULL,
+            block_time INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            processed_at INTEGER NOT NULL,
+            PRIMARY KEY (chain_id, block_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS price_cache (
+            chain_id INTEGER NOT NULL,
+            token_address TEXT NOT NULL,
+            price_usd TEXT NOT NULL,
+            volume_24h_usd TEXT,
+            source TEXT NOT NULL,
+            observed_at INTEGER NOT NULL,
+            PRIMARY KEY (chain_id, token_address, source)
+        );
+
+        CREATE TABLE IF NOT EXISTS flow_window_snapshots (
+            snapshot_key TEXT PRIMARY KEY,
+            chain_id INTEGER NOT NULL,
+            token_address TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            evaluation_time INTEGER NOT NULL,
+            duration_sec INTEGER NOT NULL,
+            gross_inflow_usd TEXT NOT NULL,
+            gross_outflow_usd TEXT NOT NULL,
+            net_flow_usd TEXT NOT NULL,
+            inflow_tx_count INTEGER NOT NULL,
+            outflow_tx_count INTEGER NOT NULL,
+            distinct_inbound_counterparties INTEGER NOT NULL,
+            distinct_outbound_counterparties INTEGER NOT NULL,
+            exchanges_json TEXT NOT NULL,
+            active_15m_buckets INTEGER NOT NULL,
+            min_label_confidence REAL NOT NULL,
+            price_source TEXT NOT NULL,
+            price_observed_at INTEGER NOT NULL,
+            evaluation_block INTEGER NOT NULL,
+            algorithm_version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+
+        CREATE TABLE IF NOT EXISTS orphaned_transfer_audit (
+            audit_key TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            chain_id INTEGER NOT NULL,
+            chain_name TEXT NOT NULL,
+            block_number INTEGER NOT NULL,
+            block_hash TEXT NOT NULL,
+            block_time INTEGER NOT NULL,
+            tx_hash TEXT NOT NULL,
+            log_index INTEGER NOT NULL,
+            token_address TEXT NOT NULL,
+            from_address TEXT NOT NULL,
+            to_address TEXT NOT NULL,
+            amount_raw TEXT NOT NULL,
+            original_confirmation_status TEXT NOT NULL,
+            source TEXT NOT NULL,
+            orphaned_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_processed_blocks_chain_number
+            ON processed_blocks(chain_id, block_number);
+        CREATE INDEX IF NOT EXISTS idx_flow_snapshots_token_time
+            ON flow_window_snapshots(chain_id, token_address, evaluation_time);
+        CREATE INDEX IF NOT EXISTS idx_orphaned_transfer_event
+            ON orphaned_transfer_audit(event_id, orphaned_at);
+        """,
+    ),
 )
 
 
