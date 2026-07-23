@@ -23,6 +23,7 @@ def build_windows(
     *,
     min_label_confidence: float,
 ) -> list[FlowWindow]:
+    # P3.0 aggregates gross directions independently. Net flow belongs to P3.1.
     eligible = [
         flow
         for flow in flows

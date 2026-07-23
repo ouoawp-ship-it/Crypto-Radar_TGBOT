@@ -26,7 +26,7 @@ def format_alert(alert: OnchainAlert) -> str:
     bearish = alert.direction == "inflow"
     marker = "[流入]" if bearish else "[流出]"
     direction_text = "偏空" if bearish else "偏多"
-    flow_text = "净流入交易所" if bearish else "净流出交易所"
+    flow_text = "流入交易所" if bearish else "从交易所流出"
     confidence = {
         "high": "高",
         "medium": "中",
@@ -39,7 +39,7 @@ def format_alert(alert: OnchainAlert) -> str:
     reason_lines = "\n".join(f"- {reason}" for reason in alert.reasons)
     return "\n".join(
         [
-            f"{marker} ${alert.symbol} 异常{flow_text}",
+            f"{marker} ${alert.symbol} 异常资金{flow_text}",
             "",
             f"判断：未来 {alert.horizon} {direction_text}",
             f"方向评分：{alert.score:+d} / 100（不是概率）",

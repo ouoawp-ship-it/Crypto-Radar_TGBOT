@@ -28,9 +28,9 @@ def score_detection(detected: DetectedFlow) -> OnchainAlert:
 
     reasons: list[str] = []
     if window.direction == "inflow":
-        reasons.append("交易所净流入增加潜在可售供应")
+        reasons.append("流入交易所增加潜在可售供应")
     else:
-        reasons.append("交易所净流出代表潜在提币或积累")
+        reasons.append("从交易所流出代表潜在提币或积累")
     if "single_large" in detected.detection_types:
         reasons.append("单笔金额超过保守动态阈值")
     if "batch_flow" in detected.detection_types:

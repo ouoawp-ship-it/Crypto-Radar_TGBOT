@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from math import isfinite
 from pathlib import Path
 from typing import Mapping
 
@@ -13,6 +14,10 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 
 
 class UnsafeOnchainPath(ValueError):
+    pass
+
+
+class SettingsValidationError(ValueError):
     pass
 
 
@@ -44,10 +49,13 @@ def _int(values: Mapping[str, str], name: str, default: int) -> int:
 
 
 def _decimal(values: Mapping[str, str], name: str, default: str) -> Decimal:
-    try:
-        return Decimal(values.get(name, default))
-    except (InvalidOperation, TypeError):
+    value = values.get(name)
+    if value is None or value.strip() == "":
         return Decimal(default)
+    try:
+        return Decimal(value)
+    except (InvalidOperation, TypeError) as exc:
+        raise SettingsValidationError(f"{name} must be a decimal") from exc
 
 
 def _resolve_data_dir(base_dir: Path, raw: str) -> Path:
@@ -242,8 +250,42 @@ class OnchainSettings:
                     f"on-chain write path escapes ONCHAIN_DATA_DIR: {resolved}"
                 )
 
-    def diagnostic(self) -> dict[str, object]:
+    def validate(self) -> None:
+        try:
+            confidence = float(self.min_label_confidence)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SettingsValidationError(
+                "min_label_confidence must be finite and in [0, 1]"
+            ) from exc
+        if not isfinite(confidence) or not 0 <= confidence <= 1:
+            raise SettingsValidationError(
+                "min_label_confidence must be finite and in [0, 1]"
+            )
+        non_negative_decimals = (
+            "single_large_floor_usd",
+            "batch_15m_floor_usd",
+            "continuous_60m_floor_usd",
+            "single_volume_ratio",
+            "batch_volume_ratio",
+            "continuous_volume_ratio",
+            "baseline_mad_multiplier",
+        )
+        for field_name in non_negative_decimals:
+            value = getattr(self, field_name)
+            try:
+                numeric_value = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise SettingsValidationError(
+                    f"{field_name} must be finite and non-negative"
+                ) from exc
+            if not numeric_value.is_finite() or numeric_value < 0:
+                raise SettingsValidationError(
+                    f"{field_name} must be finite and non-negative"
+                )
         self.assert_safe_paths()
+
+    def diagnostic(self) -> dict[str, object]:
+        self.validate()
         return {
             "enabled": self.enable,
             "real_send_enabled": self.real_send,

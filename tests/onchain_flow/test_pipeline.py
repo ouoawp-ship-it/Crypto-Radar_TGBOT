@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import unittest
 from contextlib import closing
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,7 +13,10 @@ from paopao_radar.onchain_flow.collectors.base import (
     EvmLogBackfillCollector,
 )
 from paopao_radar.onchain_flow.db import OnchainStore
+from paopao_radar.onchain_flow.formatter import format_alert
+from paopao_radar.onchain_flow.models import ClassifiedFlow, DetectedFlow
 from paopao_radar.onchain_flow.runtime import replay_fixture
+from paopao_radar.onchain_flow.scorer import score_detection
 
 from .support import FIXTURE_PATH, make_settings
 
@@ -68,6 +72,69 @@ class OnchainPipelineTests(unittest.TestCase):
             self.assertEqual(journal_mode, "wal")
             self.assertEqual(foreign_keys, 1)
             self.assertEqual(store.integrity_check(), "ok")
+
+    def test_opposite_directions_remain_separate_gross_flows(self) -> None:
+        flows = [
+            ClassifiedFlow(
+                event_id="inflow",
+                chain_id=8453,
+                token_address="0x9999999999999999999999999999999999999999",
+                symbol="ABC",
+                block_time=1700000100,
+                flow_type="inflow",
+                exchange_from=None,
+                exchange_to="Binance",
+                counterparty_address="outside-a",
+                amount=Decimal("100"),
+                amount_usd=Decimal("100"),
+                label_confidence=0.95,
+                price_status="available",
+            ),
+            ClassifiedFlow(
+                event_id="outflow",
+                chain_id=8453,
+                token_address="0x9999999999999999999999999999999999999999",
+                symbol="ABC",
+                block_time=1700000110,
+                flow_type="outflow",
+                exchange_from="Binance",
+                exchange_to=None,
+                counterparty_address="outside-b",
+                amount=Decimal("40"),
+                amount_usd=Decimal("40"),
+                label_confidence=0.95,
+                price_status="available",
+            ),
+        ]
+        windows = [
+            window
+            for window in build_windows(flows, min_label_confidence=0.80)
+            if window.duration_sec == 900
+        ]
+        totals = {window.direction: window.total_usd for window in windows}
+
+        self.assertEqual(
+            totals,
+            {"inflow": Decimal("100"), "outflow": Decimal("40")},
+        )
+        rendered = {
+            window.direction: format_alert(
+                score_detection(
+                    DetectedFlow(
+                        window=window,
+                        detection_types=("single_large",),
+                        threshold_usd=Decimal("1"),
+                    )
+                )
+            )
+            for window in windows
+        }
+        self.assertIn("流入交易所", rendered["inflow"])
+        self.assertIn("$100.00", rendered["inflow"])
+        self.assertIn("从交易所流出", rendered["outflow"])
+        self.assertIn("$40.00", rendered["outflow"])
+        self.assertNotIn("净流入", rendered["inflow"])
+        self.assertNotIn("净流出", rendered["outflow"])
 
     def test_replay_is_idempotent_and_detects_all_required_rules(self) -> None:
         with TemporaryDirectory() as tmp:

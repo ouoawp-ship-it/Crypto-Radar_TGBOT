@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .collectors.replay import FixtureValidationError
-from .config import OnchainSettings, UnsafeOnchainPath
+from .config import OnchainSettings, SettingsValidationError, UnsafeOnchainPath
 from .db import OnchainStore
 from .labels import LabelValidationError, load_labels_csv
 from .runtime import replay_fixture
@@ -49,6 +49,7 @@ def _load_chains(path: Path) -> list[dict[str, object]]:
 
 
 def _doctor(settings: OnchainSettings) -> tuple[int, dict[str, object]]:
+    settings.validate()
     checks: dict[str, object] = {}
     ok = True
     try:
@@ -89,7 +90,7 @@ def _doctor(settings: OnchainSettings) -> tuple[int, dict[str, object]]:
     }
     return (0 if ok else 1), {"status": "ok" if ok else "failed", "checks": checks}
 def _disabled_command(settings: OnchainSettings, command: str) -> int:
-    settings.assert_safe_paths()
+    settings.validate()
     if not settings.enable:
         print(
             json.dumps(
@@ -127,8 +128,8 @@ def main(
     settings: OnchainSettings | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    settings = settings or OnchainSettings.load()
     try:
+        settings = settings or OnchainSettings.load()
         if args.command == "status":
             payload = settings.diagnostic()
             payload["db_exists"] = settings.db_path.exists()
@@ -139,7 +140,7 @@ def main(
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return code
         if args.command == "labels-check":
-            settings.assert_safe_paths()
+            settings.validate()
             labels = load_labels_csv(settings.labels_path)
             print(
                 json.dumps(
@@ -150,7 +151,7 @@ def main(
             )
             return 0
         if args.command == "db-check":
-            settings.assert_safe_paths()
+            settings.validate()
             result = OnchainStore.integrity_check_existing(settings.db_path)
             print(json.dumps({"integrity_check": result}, sort_keys=True))
             return 0 if result in {"ok", "not_initialized"} else 1
@@ -174,7 +175,9 @@ def main(
     except (
         FixtureValidationError,
         LabelValidationError,
+        SettingsValidationError,
         UnsafeOnchainPath,
+        sqlite3.Error,
         OSError,
         ValueError,
     ) as exc:

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import threading
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
+from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -10,6 +15,7 @@ from unittest.mock import patch
 from paopao_radar.onchain_flow.cli import main
 from paopao_radar.onchain_flow.config import (
     OnchainSettings,
+    SettingsValidationError,
     UnsafeOnchainPath,
 )
 from paopao_radar.onchain_flow.labels import (
@@ -17,7 +23,7 @@ from paopao_radar.onchain_flow.labels import (
     load_labels_csv,
 )
 
-from .support import make_settings
+from .support import FIXTURE_PATH, make_settings
 
 
 class OnchainConfigTests(unittest.TestCase):
@@ -78,6 +84,86 @@ class OnchainConfigTests(unittest.TestCase):
                     signal_events_path=root / "elsewhere" / "events.json",
                 ).assert_safe_paths()
 
+    def test_validate_rejects_invalid_label_confidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(Path(tmp))
+            for value in (-0.01, 1.01, float("nan"), float("inf")):
+                with self.subTest(value=value):
+                    with self.assertRaises(SettingsValidationError):
+                        replace(
+                            settings,
+                            min_label_confidence=value,
+                        ).validate()
+
+    def test_validate_rejects_invalid_threshold_inputs(self) -> None:
+        fields = (
+            "single_large_floor_usd",
+            "batch_15m_floor_usd",
+            "continuous_60m_floor_usd",
+            "single_volume_ratio",
+            "batch_volume_ratio",
+            "continuous_volume_ratio",
+            "baseline_mad_multiplier",
+        )
+        invalid_values = (
+            Decimal("-0.01"),
+            Decimal("NaN"),
+            Decimal("Infinity"),
+            float("-inf"),
+        )
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(Path(tmp))
+            for field_name in fields:
+                for value in invalid_values:
+                    with self.subTest(field=field_name, value=value):
+                        with self.assertRaises(SettingsValidationError):
+                            replace(
+                                settings,
+                                **{field_name: value},
+                            ).validate()
+
+    def test_all_commands_fail_structurally_on_invalid_settings(self) -> None:
+        commands = (
+            ["status"],
+            ["doctor"],
+            ["labels-check"],
+            ["db-check"],
+            ["replay", "--fixture", str(FIXTURE_PATH)],
+            ["once"],
+            ["live"],
+        )
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(
+                Path(tmp),
+                min_label_confidence=float("nan"),
+            )
+            for command in commands:
+                with self.subTest(command=command):
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        code = main(command, settings=settings)
+                    payload = json.loads(output.getvalue())
+                    self.assertNotEqual(code, 0)
+                    self.assertEqual(payload["status"], "failed")
+                    self.assertEqual(
+                        payload["error"],
+                        "SettingsValidationError",
+                    )
+
+    def test_invalid_decimal_env_fails_closed(self) -> None:
+        output = StringIO()
+        with (
+            patch.dict(
+                os.environ,
+                {"ONCHAIN_SINGLE_LARGE_FLOOR_USD": "not-a-number"},
+            ),
+            redirect_stdout(output),
+        ):
+            code = main(["status"])
+        payload = json.loads(output.getvalue())
+        self.assertNotEqual(code, 0)
+        self.assertEqual(payload["error"], "SettingsValidationError")
+
     def test_disabled_once_and_live_have_zero_side_effects(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -108,6 +194,22 @@ class OnchainConfigTests(unittest.TestCase):
             self.assertEqual(main(["doctor"], settings=settings), 0)
             self.assertEqual(main(["labels-check"], settings=settings), 0)
             self.assertFalse(settings.db_path.exists())
+
+    def test_invalid_sqlite_database_returns_structured_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(Path(tmp))
+            settings.db_path.parent.mkdir(parents=True)
+            settings.db_path.write_bytes(b"not a sqlite database")
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(["db-check"], settings=settings)
+            payload = json.loads(output.getvalue())
+            self.assertNotEqual(code, 0)
+            self.assertEqual(payload["status"], "failed")
+            self.assertIn(
+                payload["error"],
+                {"DatabaseError", "OperationalError"},
+            )
 
 
 class OnchainLabelTests(unittest.TestCase):

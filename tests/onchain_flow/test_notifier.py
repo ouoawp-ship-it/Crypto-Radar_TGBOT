@@ -31,7 +31,7 @@ def sample_alert() -> OnchainAlert:
         score=-60,
         horizon="1h-4h",
         confidence="high",
-        reasons=("交易所净流入增加潜在可售供应",),
+        reasons=("流入交易所增加潜在可售供应",),
         detection_types=("batch_flow",),
         window_start=1700000000,
         window_end=1700000900,

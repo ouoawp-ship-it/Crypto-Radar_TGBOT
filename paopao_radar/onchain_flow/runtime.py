@@ -22,7 +22,7 @@ def replay_fixture(
     confirm_real_send: bool = False,
     notify: bool = True,
 ) -> ReplaySummary:
-    settings.assert_safe_paths()
+    settings.validate()
     collector = ReplayCollector(fixture_path)
     labels = load_labels_csv(settings.labels_path)
     registry = LabelRegistry(labels)
