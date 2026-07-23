@@ -113,6 +113,38 @@ class BotMarketContextTests(unittest.TestCase):
                 "event_kind": "risk",
                 "rights_status": "link_only",
                 "timestamp_quality": "source_time",
+            }, {
+                "event_id": "btc-plaza-risk",
+                "published_at": 1_195,
+                "collected_at": 1_195,
+                "source": "@liquidation-lol.bsky.social",
+                "source_type": "plaza",
+                "title": "BTC liquidation social post",
+                "summary": "",
+                "url": "https://bsky.app/profile/liquidation-lol.bsky.social/post/test",
+                "symbols": ["BTCUSDT"],
+                "importance": "high",
+                "language": "en",
+                "cluster_id": "btc-plaza-risk",
+                "event_kind": "risk",
+                "rights_status": "link_only",
+                "timestamp_quality": "source_time",
+            }, {
+                "event_id": "btc-other-official",
+                "published_at": 1_198,
+                "collected_at": 1_198,
+                "source": "OtherExchange",
+                "source_type": "official_announcement",
+                "title": "BTC other exchange announcement",
+                "summary": "",
+                "url": "https://www.binance.com/en/support/announcement/other",
+                "symbols": ["BTCUSDT"],
+                "importance": "high",
+                "language": "en",
+                "cluster_id": "btc-other-official",
+                "event_kind": "risk",
+                "rights_status": "link_only",
+                "timestamp_quality": "source_time",
             }])
             text = enrich_telegram_with_market_context(
                 SimpleNamespace(
@@ -139,12 +171,14 @@ class BotMarketContextTests(unittest.TestCase):
 
         self.assertTrue(text.startswith("资金流雷达"))
         self.assertIn("↳ 15m", text)
-        self.assertIn("现货 +$250.0K", text)
-        self.assertIn("合约 -$125.0K", text)
+        self.assertIn("现货主动成交净额 +$250.0K", text)
+        self.assertIn("合约主动成交净额 -$125.0K", text)
         self.assertIn("OI +10.00%", text)
         self.assertIn("费率 +0.0123%", text)
         self.assertIn("↳ 24h 情报 1 · 高影响 1 · 风险 1", text)
         self.assertIn("BTC 合约参数调整公告", text)
+        self.assertNotIn("liquidation social post", text)
+        self.assertNotIn("other exchange announcement", text)
         self.assertIn("BOT 市场事实增强", summary_text)
 
     def test_missing_summary_facts_and_test_messages_are_never_enriched(self) -> None:

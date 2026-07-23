@@ -531,6 +531,7 @@ class NewsEventStore:
         *,
         start_ts: int = 0,
         end_ts: int = 0,
+        source: str = "",
         source_type: str = "",
         language: str = "",
         importance: str = "",
@@ -547,6 +548,9 @@ class NewsEventStore:
         if end_ts > 0:
             clauses.append("COALESCE(NULLIF(n.published_at, 0), n.collected_at) <= ?")
             params.append(int(end_ts))
+        if source:
+            clauses.append("n.source = ?")
+            params.append(_clean_text(source, 80))
         if source_type:
             clauses.append("n.source_type = ?")
             params.append(str(source_type)[:60])
