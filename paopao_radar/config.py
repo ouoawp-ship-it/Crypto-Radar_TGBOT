@@ -143,8 +143,8 @@ class Settings:
     realtime_market_symbol_limit: int = 80
     realtime_market_min_quote_volume: float = 5_000_000
     realtime_market_symbol_refresh_sec: int = 300
-    realtime_bybit_enable: bool = True
-    realtime_okx_enable: bool = True
+    realtime_bybit_enable: bool = False
+    realtime_okx_enable: bool = False
     coinglass_enable: bool = False
     coinglass_api_key: str = ""
     coinglass_api_base_url: str = "https://open-api-v4.coinglass.com"
@@ -208,13 +208,13 @@ class Settings:
     funding_request_timeout_sec: int = 8
     funding_max_symbols_per_batch: int = 120
     funding_alert_min_quote_volume: float = 5_000_000
-    funding_alert_exchanges: tuple[str, ...] = ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")
+    funding_alert_exchanges: tuple[str, ...] = ("BINANCE",)
     funding_alert_history_limit: int = 4
     funding_alert_cooldown_sec: int = 3600
     funding_alert_extreme_negative_pct: float = -0.5
     funding_alert_super_negative_pct: float = -1.0
     funding_alert_extreme_positive_pct: float = 0.5
-    funding_alert_min_exchange_count: int = 2
+    funding_alert_min_exchange_count: int = 1
     funding_alert_divergence_pct: float = 0.75
     funding_alert_reply_chain_enable: bool = True
     funding_alert_decay_quiet_scans: int = 2
@@ -227,8 +227,8 @@ class Settings:
     fuse_seconds: int = 15 * 60
 
     launch_scan_limit: int = 80
-    launch_multi_exchange_funding_enable: bool = True
-    launch_funding_exchanges: tuple[str, ...] = ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")
+    launch_multi_exchange_funding_enable: bool = False
+    launch_funding_exchanges: tuple[str, ...] = ("BINANCE",)
     launch_funding_history_limit: int = 4
     launch_state_path: Path = BASE_DIR / "data" / "launch_state.json"
     launch_watchlist_path: Path = BASE_DIR / "data" / "launch_watchlist.json"
@@ -336,8 +336,8 @@ class Settings:
             realtime_market_symbol_limit=env_int("REALTIME_MARKET_SYMBOL_LIMIT", 80),
             realtime_market_min_quote_volume=env_float("REALTIME_MARKET_MIN_QUOTE_VOLUME", 5_000_000),
             realtime_market_symbol_refresh_sec=env_int("REALTIME_MARKET_SYMBOL_REFRESH_SEC", 300),
-            realtime_bybit_enable=env_bool("REALTIME_BYBIT_ENABLE", True),
-            realtime_okx_enable=env_bool("REALTIME_OKX_ENABLE", True),
+            realtime_bybit_enable=env_bool("REALTIME_BYBIT_ENABLE", False),
+            realtime_okx_enable=env_bool("REALTIME_OKX_ENABLE", False),
             coinglass_enable=env_bool("COINGLASS_ENABLE", False),
             coinglass_api_key=os.getenv("COINGLASS_API_KEY", "").strip(),
             coinglass_api_base_url=os.getenv(
@@ -409,13 +409,13 @@ class Settings:
             funding_request_timeout_sec=env_int("FUNDING_REQUEST_TIMEOUT_SEC", 8),
             funding_max_symbols_per_batch=env_int("FUNDING_MAX_SYMBOLS_PER_BATCH", 120),
             funding_alert_min_quote_volume=env_float("FUNDING_ALERT_MIN_QUOTE_VOLUME", 5_000_000),
-            funding_alert_exchanges=env_csv("FUNDING_ALERT_EXCHANGES", ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")),
+            funding_alert_exchanges=env_csv("FUNDING_ALERT_EXCHANGES", ("BINANCE",)),
             funding_alert_history_limit=env_int("FUNDING_ALERT_HISTORY_LIMIT", 4),
             funding_alert_cooldown_sec=env_int("FUNDING_ALERT_COOLDOWN_SEC", 3600),
             funding_alert_extreme_negative_pct=env_float("FUNDING_ALERT_EXTREME_NEGATIVE_PCT", -0.5),
             funding_alert_super_negative_pct=env_float("FUNDING_ALERT_SUPER_NEGATIVE_PCT", -1.0),
             funding_alert_extreme_positive_pct=env_float("FUNDING_ALERT_EXTREME_POSITIVE_PCT", 0.5),
-            funding_alert_min_exchange_count=env_int("FUNDING_ALERT_MIN_EXCHANGE_COUNT", 2),
+            funding_alert_min_exchange_count=env_int("FUNDING_ALERT_MIN_EXCHANGE_COUNT", 1),
             funding_alert_divergence_pct=env_float("FUNDING_ALERT_DIVERGENCE_PCT", 0.75),
             funding_alert_reply_chain_enable=env_bool("FUNDING_ALERT_REPLY_CHAIN_ENABLE", True),
             funding_alert_decay_quiet_scans=env_int("FUNDING_ALERT_DECAY_QUIET_SCANS", 2),
@@ -426,8 +426,8 @@ class Settings:
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
             fuse_seconds=env_int("DATA_SOURCE_FUSE_SECONDS", 15 * 60),
             launch_scan_limit=env_int("LAUNCH_SCAN_LIMIT", 80),
-            launch_multi_exchange_funding_enable=env_bool("LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE", True),
-            launch_funding_exchanges=env_csv("LAUNCH_FUNDING_EXCHANGES", ("BINANCE", "OKX", "BYBIT", "BITGET", "GATE")),
+            launch_multi_exchange_funding_enable=env_bool("LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE", False),
+            launch_funding_exchanges=env_csv("LAUNCH_FUNDING_EXCHANGES", ("BINANCE",)),
             launch_funding_history_limit=env_int("LAUNCH_FUNDING_HISTORY_LIMIT", 4),
             launch_state_path=data_path(data_dir, "LAUNCH_STATE_FILE", "launch_state.json"),
             launch_watchlist_path=data_path(data_dir, "LAUNCH_WATCHLIST_FILE", "launch_watchlist.json"),

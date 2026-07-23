@@ -10,7 +10,6 @@ from typing import Any
 
 from .config import Settings
 from .data_sources import BinanceDataSource
-from .derivatives_quality import DerivativesQualityService
 from .funding_sources import (
     MultiExchangeFundingClient,
     funding_cycle_text,
@@ -30,6 +29,7 @@ from .storage import JsonStore
 
 CST = timezone(timedelta(hours=8))
 TEMPLATE_ID = "TG_FUNDING_ALERT"
+VALID_FUNDING_INTERVAL_HOURS = frozenset({1, 2, 4, 8, 12, 24})
 
 STAGE_LABELS = {
     "first_seen": "首次异动",
@@ -172,7 +172,7 @@ FUNDING_TABLE_COLUMNS = (
     ("交易所", 8),
     ("费率/周期", 18),
     ("上次结算", 12),
-    ("本次周期", 10),
+    ("本次周期", 16),
     ("下次结算", 12),
 )
 
@@ -352,39 +352,35 @@ class FundingAlertEngine:
             if self._cooldown_ok(alert["dedup_key"], state, now_ts):
                 alerts.append(alert)
 
-        quality_service = DerivativesQualityService(self.settings, http)
-        funding_validations = quality_service.validate_funding_rows(alerts, now_ts=now_ts)
+        alerts = self._backfill_outbound_binance_history(
+            alerts,
+            funding_settings,
+            http,
+            state,
+            now_ts,
+        )
+        confirmation_candidates = len(alerts)
         validated_alerts: list[dict[str, Any]] = []
         for alert in alerts:
-            symbol = str(alert.get("symbol") or "").upper()
-            validation = funding_validations.get(symbol)
-            if validation is None:
-                alert.update({
-                    "data_quality_status": "not_checked_budget",
-                    "data_quality_score": 0,
-                    "quality_gate": "degraded",
-                    "primary_data_source": "native_multi_exchange",
-                })
-            else:
-                alert["funding_validation"] = validation
-                alert["data_quality_status"] = validation.get("status", "missing")
-                alert["data_quality_score"] = validation.get("score", 0)
-                alert["quality_gate"] = validation.get("gate", "degraded")
-                alert["primary_data_source"] = validation.get("primary_source", "binance")
-                alert["predicted_funding_pct"] = validation.get("predicted_funding_pct")
-                alert["funding_acceleration_pct"] = validation.get("funding_acceleration_pct")
-
-            classification = alert.get("classification")
-            extreme_count = to_int(classification.get("extreme_count")) if isinstance(classification, dict) else 0
-            native_confirmed = extreme_count >= self.settings.funding_alert_min_exchange_count
-            if validation is None and quality_service.configured:
-                if native_confirmed:
-                    alert["quality_gate"] = "native_multi_exchange_only"
-                else:
-                    continue
-            if alert.get("quality_gate") == "block" and native_confirmed:
-                alert["quality_gate"] = "native_multi_exchange_override"
-            elif alert.get("quality_gate") == "block":
+            rows = [row for row in (alert.get("rows") or []) if isinstance(row, dict)]
+            exchanges = [
+                str(row.get("exchange") or "").strip()
+                for row in rows
+                if str(row.get("exchange") or "").strip()
+            ]
+            alert.update({
+                "data_quality_status": "confirmed" if exchanges else "incomplete",
+                "data_quality_score": 100 if exchanges else 0,
+                "quality_gate": "allow" if exchanges else "block",
+                "primary_data_source": "native_exchange_apis",
+                "data_confirmation": {
+                    "provider": "native_exchange_apis",
+                    "exchanges": exchanges,
+                    "count": len(exchanges),
+                    "status": "confirmed" if exchanges else "incomplete",
+                },
+            })
+            if not exchanges:
                 continue
             alert["text"] = self._format_alert(alert)
             validated_alerts.append(alert)
@@ -408,7 +404,11 @@ class FundingAlertEngine:
                 "exchanges": list(self.settings.funding_alert_exchanges),
                 "scan_metrics": scan_metrics,
                 "history_metrics": history_metrics,
-                "derivatives_quality": quality_service.summary(funding_validations),
+                "native_funding_confirmation": {
+                    "checked": confirmation_candidates,
+                    "confirmed": len(validated_alerts),
+                    "incomplete": max(0, confirmation_candidates - len(validated_alerts)),
+                },
             },
         }
 
@@ -543,16 +543,15 @@ class FundingAlertEngine:
             current_next = to_int(row.get("next_funding_time_ms"))
             current_interval = to_int(row.get("interval_hours"))
             if current_interval <= 0 and previous_next > 0 and current_next > previous_next:
-                current_interval = funding_interval_hours(current_next - previous_next)
-                row["interval_hours"] = current_interval
-                row["current_interval_hours"] = current_interval
-            if previous_next > 0 and not row.get("last_funding_time_ms"):
-                row["last_funding_time_ms"] = previous_next
-                row["last_funding_time"] = str(previous.get("next_funding_time") or funding_time_text(previous_next))
+                inferred_interval = funding_interval_hours(current_next - previous_next)
+                if inferred_interval in VALID_FUNDING_INTERVAL_HOURS:
+                    current_interval = inferred_interval
+                    row["interval_hours"] = current_interval
+                    row["current_interval_hours"] = current_interval
             if (
                 not row.get("funding_interval_transition")
-                and previous_interval > 0
-                and current_interval > 0
+                and previous_interval in VALID_FUNDING_INTERVAL_HOURS
+                and current_interval in VALID_FUNDING_INTERVAL_HOURS
                 and current_interval < previous_interval
             ):
                 row["previous_interval_hours"] = previous_interval
@@ -565,6 +564,79 @@ class FundingAlertEngine:
                 )
             result.append(row)
         return result
+
+    @staticmethod
+    def _binance_history_required(row: dict[str, Any]) -> bool:
+        if str(row.get("exchange") or "").strip().upper() != "BINANCE":
+            return False
+        if to_int(row.get("interval_hours")) <= 0:
+            return True
+        last_ms = to_int(row.get("last_funding_time_ms"))
+        next_ms = to_int(row.get("next_funding_time_ms"))
+        if last_ms > 0 and next_ms > 0 and last_ms == next_ms:
+            return True
+        last_time = str(row.get("last_funding_time") or "").strip()
+        next_time = str(row.get("next_funding_time") or "").strip()
+        return bool(last_time and next_time and last_time == next_time)
+
+    def _backfill_outbound_binance_history(
+        self,
+        alerts: list[dict[str, Any]],
+        funding_settings: Settings,
+        http: Any,
+        state: dict[str, Any],
+        now_ts: int,
+    ) -> list[dict[str, Any]]:
+        symbols = list(dict.fromkeys(
+            str(alert.get("symbol") or "")
+            for alert in alerts
+            if any(
+                isinstance(row, dict) and self._binance_history_required(row)
+                for row in (alert.get("rows") or [])
+            )
+        ))
+        symbols = [symbol for symbol in symbols if symbol]
+        if not symbols:
+            return alerts
+
+        history_client = MultiExchangeFundingClient(
+            replace(funding_settings, launch_funding_exchanges=("BINANCE",)),
+            http,
+        )
+        history_rows = history_client.snapshot_many(symbols, include_history=True)
+        for alert in alerts:
+            symbol = str(alert.get("symbol") or "")
+            fetched_binance = next(
+                (
+                    row for row in history_rows.get(symbol, [])
+                    if isinstance(row, dict)
+                    and str(row.get("exchange") or "").strip().upper() == "BINANCE"
+                ),
+                None,
+            )
+            rows: list[dict[str, Any]] = []
+            for raw in alert.get("rows") or []:
+                if not isinstance(raw, dict) or not self._binance_history_required(raw):
+                    if isinstance(raw, dict):
+                        rows.append(raw)
+                    continue
+                if fetched_binance and not self._binance_history_required(fetched_binance):
+                    rows.append(dict(fetched_binance))
+                    continue
+                unavailable = dict(raw)
+                unavailable.update({
+                    "interval_hours": 0,
+                    "current_interval_hours": 0,
+                    "previous_interval_hours": 0,
+                    "last_funding_time_ms": 0,
+                    "last_funding_time": "",
+                    "funding_interval_transition": "",
+                    "funding_period_status": "unavailable",
+                })
+                rows.append(unavailable)
+            alert["rows"] = rows
+            self._update_symbol_state(symbol, rows, state, now_ts)
+        return alerts
 
     def _maybe_decay_alert(
         self,
@@ -594,7 +666,6 @@ class FundingAlertEngine:
             }
             self._update_symbol_state(symbol, rows, state, now_ts, candidate, classification, tracking)
             if self._cooldown_ok(alert["dedup_key"], state, now_ts):
-                alert["text"] = self._format_alert(alert)
                 return alert
             return None
         self._update_symbol_state(symbol, rows, state, now_ts, candidate, None, {"stage": stage, "quiet_count": quiet_count})
@@ -788,11 +859,17 @@ class FundingAlertEngine:
             else "暂无数据（未知流动性）"
         )
         judgment = self._judgment_text(classification, stage)
-        quality_status = str(alert.get("data_quality_status") or "not_checked")
-        quality_score = to_float(alert.get("data_quality_score"))
-        quality_gate = str(alert.get("quality_gate") or "degraded")
-        predicted = alert.get("predicted_funding_pct")
-        acceleration = alert.get("funding_acceleration_pct")
+        data_confirmation = alert.get("data_confirmation")
+        data_confirmation = data_confirmation if isinstance(data_confirmation, dict) else {}
+        confirmed_exchanges = [
+            str(exchange) for exchange in (data_confirmation.get("exchanges") or []) if exchange
+        ]
+        confirmation_text = (
+            f"原生交易所接口 {len(confirmed_exchanges)}所（{' / '.join(confirmed_exchanges)}）"
+            if confirmed_exchanges
+            else "原生交易所接口缺失"
+        )
+        multi_exchange = len(confirmed_exchanges) > 1
         lines = [
             f"⚠️ {tg_bold('资金费率警报')} {coin_link(symbol)}",
             f"⏰ {cst_now_text()}",
@@ -805,22 +882,19 @@ class FundingAlertEngine:
             tg_quote("市场概况"),
             f"市值: {tg_escape(market_cap_text)}",
             f"24h成交额: {tg_escape(liquidity_text)}",
-            f"数据校验: {tg_escape(quality_status)} / {quality_score:.0f}分 / {tg_escape(quality_gate)}",
-            *(
-                [
-                    f"Coinalyze预测费率: {to_float(predicted):+.3f}%",
-                    f"预测变化: {to_float(acceleration):+.3f}%",
-                ]
-                if predicted is not None and acceleration is not None
-                else []
-            ),
+            f"数据确认: {tg_escape(confirmation_text)}",
             "",
-            f"{tg_bold('交易所偏离')}: {divergence:.3f}%",
-            "说明: 最高资金费率和最低资金费率之间的差值；偏离越大，越说明不同交易所合约拥挤程度不一致，可能是单所盘口异常、局部清算压力或套利资金迁移。",
-            "",
-            tg_quote("多交易所资金费率"),
-            funding_table([row for row in rows if isinstance(row, dict)], self.settings),
         ]
+        if multi_exchange:
+            lines.extend([
+                f"{tg_bold('交易所偏离')}: {divergence:.3f}%",
+                "说明: 最高资金费率和最低资金费率之间的差值；偏离越大，越说明不同交易所合约拥挤程度不一致，可能是单所盘口异常、局部清算压力或套利资金迁移。",
+                "",
+            ])
+        lines.extend([
+            tg_quote("交易所资金费率"),
+            funding_table([row for row in rows if isinstance(row, dict)], self.settings),
+        ])
         if transition_lines:
             lines.extend(["", tg_quote("周期变化"), *[tg_escape(line) for line in transition_lines]])
         lines.extend([

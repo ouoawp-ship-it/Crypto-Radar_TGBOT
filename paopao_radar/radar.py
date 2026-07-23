@@ -6,11 +6,15 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Optional
 
+from .binance_confirmation import (
+    apply_binance_confirmation,
+    confirmation_summary,
+    confirmation_text,
+)
 from .config import Settings
 from .data_sources import BinanceDataSource
-from .derivatives_quality import DerivativesQualityService
 from .funding_alert import funding_table
-from .funding_sources import MultiExchangeFundingClient, funding_last_settlement_text, funding_settlement_period_text
+from .funding_sources import funding_last_settlement_text, funding_settlement_period_text
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .storage import JsonStore
@@ -273,6 +277,8 @@ def score_funding(funding_pct: float) -> int:
 
 
 def score_mcap(mcap: float, max_score: int = 25) -> int:
+    if mcap <= 0:
+        return 0
     if 0 < mcap < 50_000_000:
         return max_score
     if mcap < 100_000_000:
@@ -376,7 +382,6 @@ class RadarEngine:
             }
 
         top_n = self.settings.radar_top_n
-        negative = sorted([item for item in items if item["funding_pct"] < 0], key=lambda item: item["funding_pct"])[:top_n]
 
         for item in items:
             item["combined_score"] = (
@@ -408,34 +413,26 @@ class RadarEngine:
             )
             item["divergence"] = item["oi_6h"] - item["price_window"]
 
-        quality_service: DerivativesQualityService | None = None
-        oi_validations: dict[str, dict[str, Any]] = {}
-        http = getattr(source, "http", None)
-        if http is not None:
-            quality_service = DerivativesQualityService(self.settings, http)
-            validation_candidates = sorted(
-                items,
-                key=lambda item: max(
-                    item["combined_score"],
-                    item["ambush_score"],
-                    item["momentum_score"],
-                    item["new_score"],
-                ),
-                reverse=True,
-            )
-            oi_validations = quality_service.validate_oi_rows(
-                validation_candidates,
-                timeframe="6h",
-                local_field="oi_6h",
-                now_ts=int(window.end.timestamp()),
-            )
         for item in items:
-            self._apply_summary_oi_validation(
+            apply_binance_confirmation(
                 item,
-                oi_validations.get(str(item.get("symbol") or "").upper()),
+                {
+                    "价格窗口": True,
+                    "OI窗口": True,
+                    "24h成交额": to_float(item.get("quote_volume")) > 0,
+                    "资金费率": bool(item.get("funding_ready")),
+                    "日K历史": int(item.get("history_days") or 0) > 0,
+                },
+                scope="Binance USDⓈ-M Futures",
+                window=f"{max(1, int(window.interval_sec / 3600))}h闭合窗口",
+                observed_at=int(window.end.timestamp()),
             )
 
         oi_items = [item for item in items if self._summary_oi_allowed(item)]
+        negative = sorted(
+            [item for item in oi_items if item["funding_pct"] < 0],
+            key=lambda item: item["funding_pct"],
+        )[:top_n]
         combined = sorted([item for item in oi_items if item["combined_score"] >= 25], key=lambda item: item["combined_score"], reverse=True)[:top_n]
         ambush = sorted(
             [
@@ -472,11 +469,7 @@ class RadarEngine:
             if len(context_records) >= 3:
                 break
 
-        derivatives_quality = (
-            quality_service.summary(oi_validations)
-            if quality_service is not None
-            else {"checked": 0, "status_counts": {}, "blocked_symbols": []}
-        )
+        derivatives_quality = confirmation_summary(items)
         quality = source.diagnostics()
         quality["derivatives_quality"] = derivatives_quality
         text = self._format_summary(
@@ -536,6 +529,7 @@ class RadarEngine:
                 "price": to_float(ticker.get("lastPrice")),
                 "price_24h": to_float(ticker.get("priceChangePercent")),
                 "funding": premium_map.get(symbol, 0.0),
+                "funding_ready": symbol in premium_map,
             })
         candidates.sort(key=lambda item: item["quote_volume"], reverse=True)
         candidates = candidates[: self.settings.radar_scan_limit]
@@ -596,10 +590,10 @@ class RadarEngine:
             sideways_days = estimate_sideways_days(daily)
 
             mcap = mcap_map.get(coin, 0.0)
+            mcap_source = "Binance市场资料" if mcap > 0 else ""
             if not mcap and circulating_supply > 0 and item["price"] > 0:
                 mcap = circulating_supply * item["price"]
-            if not mcap:
-                mcap = max(item["quote_volume"] * 0.3, oi_usd * 2 if oi_usd > 0 else 0)
+                mcap_source = "Binance流通量×现价"
 
             result.append({
                 **item,
@@ -609,6 +603,7 @@ class RadarEngine:
                 "price_window": price_window,
                 "oi_usd": oi_usd,
                 "mcap": mcap,
+                "mcap_source": mcap_source,
                 "sideways_days": sideways_days,
                 "history_days": history_days,
                 "dark_flow": oi_6h > 2 and abs(price_window) < 5,
@@ -1092,8 +1087,9 @@ class RadarEngine:
             f"K线请求: {source.budget.used.get('klines', 0)} / {source.budget.limits.get('klines', 0)}",
             f"接口异常: {sum(source.quality.failures.values())}",
             (
-                f"6h OI校验: {derivatives_quality.get('checked', 0)} | "
-                f"冲突阻止: {len(derivatives_quality.get('blocked_symbols', []))}"
+                f"Binance数据确认: 完整 {derivatives_quality.get('confirmed', 0)} / "
+                f"{derivatives_quality.get('checked', 0)} | "
+                f"缺项 {derivatives_quality.get('incomplete', 0)}"
             ),
             (
                 f"背离状态  : 首次{divergence_stats.get('first', 0)} | "
@@ -1120,7 +1116,8 @@ class RadarEngine:
             "暗流 = OI增加但价格没动",
             "窗口 = 本次统计窗口内的完整收线数据",
             "背离 = OI窗口变化% - 价格窗口变化%",
-            "OI校验 = 高/中为通过，低/单源/未校为降级；方向冲突会阻止入榜",
+            "OI·币安 = OI来自 Binance USDⓈ-M 已闭合窗口，不再使用外部聚合源改写",
+            "市值 = Binance市场资料；缺失时为0分，不再使用成交额/OI倍数猜测市值",
             "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
         ])
         return "\n".join(lines)
@@ -1272,41 +1269,15 @@ class RadarEngine:
         return item.get("oi_6h", 0) > 2 and abs(item.get("price_window", item.get("price_24h", 0))) < 5
 
     @staticmethod
-    def _apply_summary_oi_validation(
-        item: dict[str, Any],
-        validation: dict[str, Any] | None,
-    ) -> None:
-        if validation is None:
-            item.update({
-                "data_quality_status": "not_checked_budget",
-                "data_quality_score": 0,
-                "quality_gate": "degraded",
-                "primary_data_source": "binance",
-            })
-            return
-        item["oi_validation"] = validation
-        item["data_quality_status"] = validation.get("status", "missing")
-        item["data_quality_score"] = validation.get("score", 0)
-        item["oi_source_agreement_score"] = validation.get("score", 0)
-        item["quality_gate"] = validation.get("gate", "degraded")
-        item["primary_data_source"] = validation.get("primary_source", "binance")
-
-    @staticmethod
     def _summary_oi_allowed(item: dict[str, Any]) -> bool:
         return item.get("quality_gate") != "block"
 
     @staticmethod
     def _summary_oi_quality_badge(item: dict[str, Any]) -> str:
         return {
-            "high": "高",
-            "medium": "中",
-            "low": "低",
-            "conflict": "冲突",
-            "single_source": "单源",
-            "not_configured": "未配",
-            "missing": "缺失",
-            "not_checked_budget": "未校",
-        }.get(str(item.get("data_quality_status") or ""), "未校")
+            "confirmed": "币安",
+            "incomplete": "缺项",
+        }.get(str(item.get("data_quality_status") or ""), "未确认")
 
     def _classify_divergence_item(self, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         oi = item["oi_6h"]
@@ -1517,26 +1488,22 @@ class RadarEngine:
                 continue
             analyzed_items.append(analyzed)
 
-        quality_service: DerivativesQualityService | None = None
-        oi_validations: dict[str, dict[str, Any]] = {}
-        http = getattr(source, "http", None)
-        if http is not None:
-            quality_service = DerivativesQualityService(self.settings, http)
-            oi_validations = quality_service.validate_oi_rows(
-                sorted(analyzed_items, key=lambda item: to_float(item.get("score")), reverse=True),
-                timeframe="1h",
-                local_field="oi_1h",
-                now_ts=now_ts,
-            )
-
         observed_symbols: set[str] = set()
         for analyzed in analyzed_items:
             observed_symbols.add(str(analyzed["symbol"]))
-            validation = oi_validations.get(str(analyzed.get("symbol") or "").upper())
-            self._apply_launch_oi_validation(analyzed, validation)
-            if validation is None and quality_service is not None and quality_service.configured:
-                analyzed["score"] = 0
-                analyzed["reasons"] = ["本轮外部校验预算未覆盖，暂不推送"]
+            apply_binance_confirmation(
+                analyzed,
+                {
+                    "15m价格": True,
+                    "1h价格": True,
+                    "15m/1h OI": True,
+                    "成交量": True,
+                    "突破结构": True,
+                },
+                scope="Binance USDⓈ-M Futures",
+                window="15m闭合窗口（1h=4根）",
+                observed_at=int(analyzed.get("window_end_ts") or now_ts),
+            )
             watchlist.append(self._launch_watch_record(analyzed, now_ts))
             previous = state.get(analyzed["symbol"], {})
             next_stage = self._launch_stage(analyzed["score"])
@@ -1607,7 +1574,6 @@ class RadarEngine:
             limit=self.settings.launch_watch_history_limit,
         )
         alerts = alerts[:5]
-        self._enrich_launch_funding(source, alerts)
         messages = [self._format_launch_alert(alert) for alert in alerts]
         return {
             "template_id": "TG_LAUNCH_ALERT",
@@ -1615,85 +1581,9 @@ class RadarEngine:
             "alerts": alerts,
             "watchlist_count": len(watchlist),
             "diagnostics": {
-                "derivatives_quality": (
-                    quality_service.summary(oi_validations)
-                    if quality_service is not None
-                    else {"checked": 0, "status_counts": {"not_configured": len(analyzed_items)}, "blocked_symbols": []}
-                ),
+                "binance_confirmation": confirmation_summary(analyzed_items),
             },
         }
-
-    @staticmethod
-    def _apply_launch_oi_validation(
-        item: dict[str, Any],
-        validation: dict[str, Any] | None,
-    ) -> None:
-        if validation is None:
-            item.update({
-                "data_quality_status": "not_checked_budget",
-                "data_quality_score": 0,
-                "quality_gate": "degraded",
-                "primary_data_source": "binance",
-            })
-            return
-
-        item["oi_validation"] = validation
-        item["data_quality_status"] = validation.get("status", "missing")
-        item["data_quality_score"] = validation.get("score", 0)
-        item["oi_source_agreement_score"] = validation.get("score", 0)
-        item["quality_gate"] = validation.get("gate", "degraded")
-        item["primary_data_source"] = validation.get("primary_source", "binance")
-        selected = validation.get("selected_change_pct")
-        if selected is not None and validation.get("primary_source") == "coinglass":
-            previous_oi = to_float(item.get("oi_1h"))
-            price_1h = to_float(item.get("price_1h"))
-            new_oi = to_float(selected)
-            previous_points = (15 if previous_oi >= 6 else 0) + (
-                15 if previous_oi >= 3 and abs(price_1h) <= 2 else 0
-            )
-            new_points = (15 if new_oi >= 6 else 0) + (
-                15 if new_oi >= 3 and abs(price_1h) <= 2 else 0
-            )
-            item["oi_binance_1h"] = previous_oi
-            item["oi_1h"] = new_oi
-            item["score"] = max(0, int(to_float(item.get("score"))) - previous_points + new_points)
-            reasons = [
-                str(reason) for reason in (item.get("reasons") or [])
-                if not str(reason).startswith("1h OI") and str(reason) != "资金暗流但价格未大动"
-            ]
-            if new_oi >= 6:
-                reasons.append(f"多所1h OI {new_oi:+.1f}%")
-            if new_oi >= 3 and abs(price_1h) <= 2:
-                reasons.append("多所资金暗流但价格未大动")
-            item["reasons"] = reasons[:5]
-
-        if validation.get("gate") == "block":
-            item["score"] = 0
-            item["reasons"] = ["OI 多数据源方向冲突，已阻止启动推送"]
-
-    def _enrich_launch_funding(self, source: BinanceDataSource, alerts: list[dict[str, Any]]) -> None:
-        if not alerts or not self.settings.launch_multi_exchange_funding_enable:
-            return
-        http = getattr(source, "http", None)
-        if http is None:
-            return
-        client = MultiExchangeFundingClient(self.settings, http)
-        for alert in alerts:
-            symbol = str(alert.get("symbol") or "")
-            if not symbol:
-                continue
-            rows = client.snapshot(symbol)
-            if not rows:
-                continue
-            alert["funding_exchanges"] = rows
-            if any(row.get("extreme_label") for row in rows):
-                reasons = list(alert.get("reasons") or [])
-                reasons.append("多交易所资金费率极负")
-                alert["reasons"] = reasons[:6]
-            if any(row.get("funding_interval_transition") for row in rows):
-                reasons = list(alert.get("reasons") or [])
-                reasons.append("多交易所资金费率结算周期缩短")
-                alert["reasons"] = reasons[:6]
 
     def mark_launch_pushed(self, alerts: list[dict[str, Any]]) -> None:
         if not alerts:
@@ -1971,6 +1861,9 @@ class RadarEngine:
             "volume_ratio": volume_ratio,
             "breakout": breakout,
             "reasons": reasons[:5],
+            "kline_points": len(klines),
+            "oi_points": len(oi_hist),
+            "window_end_ts": int(window.end.timestamp()),
             **funding_context,
         }
 
@@ -2191,7 +2084,7 @@ class RadarEngine:
             f"15m OI: {item['oi_15m']:+.1f}%",
             f"1h OI: {item['oi_1h']:+.1f}%",
             f"成交量: {item['volume_ratio']:.1f}x 均值",
-            f"数据校验: {tg_escape(item.get('data_quality_status', 'not_checked'))} / {to_float(item.get('data_quality_score')):.0f}分",
+            f"数据确认: ✅ {tg_escape(confirmation_text(item))}",
             *([f"资金费率: {funding_text}"] if single_funding_available else []),
             *([f"结算周期: {funding_transition}"] if funding_transition and single_funding_available else []),
             *(
@@ -2206,6 +2099,12 @@ class RadarEngine:
             tg_quote("分数说明"),
             "构成(最高130): 15m价25 + 1h价15 + 突破25 + 成交20 + 15m OI15 + 1h OI15 + 暗流15",
             tg_escape(score_legend),
+            "",
+            tg_quote("数据与计算口径"),
+            "来源: Binance USDⓈ-M Futures 原生公开行情",
+            "价格/OI: 只使用已收线15m数据；1h变化由连续4个15m窗口计算",
+            "成交倍数: 最新完整15m成交额 / 前序完整15m平均成交额",
+            "突破: 最新15m收盘价高于前序窗口最高价",
             "",
             tg_quote("风险"),
             "跌回突破位则启动失败；同币同阶段会进入冷却",

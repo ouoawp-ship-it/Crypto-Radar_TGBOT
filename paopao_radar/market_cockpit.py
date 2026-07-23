@@ -1432,7 +1432,7 @@ def build_market_cockpit(
     if len(oi_assets) < max(1, len(assets) // 5):
         warnings.append("OI 覆盖不足，OI 榜单可能为空或仅覆盖资金流扫描候选。")
     if len(spot_assets) < max(1, len(assets) // 5) or len(futures_assets) < max(1, len(assets) // 5):
-        warnings.append("现货/合约主动资金来自 CVD 估算，仅覆盖完成资金流扫描的资产。")
+        warnings.append("现货/合约主动成交净额由 taker 主动买卖报价额计算，仅覆盖完成资金流扫描的资产。")
     ready_boards = sum(1 for board in boards[:4] if board["available"])
     data_status = "ready" if assets and ready_boards == 4 else "degraded" if assets else "empty"
     assets.sort(key=lambda item: float(item.get("quote_volume") or 0), reverse=True)
@@ -1471,7 +1471,7 @@ def build_market_cockpit(
         "methodology": {
             "price": "优先使用同币窗口首尾快照计算；历史不足时回退交易所 24h 涨跌并标记质量。",
             "oi": "优先使用同币窗口首尾 OI 金额计算；否则使用资金流采集器的封闭窗口变化率反推金额变化，并标记质量。",
-            "flow": "现货与合约资金优先由封闭 15m Binance K 线主动买卖事实按所选窗口求和；历史库只有同窗口事实时使用同窗口值，不拿短窗口冒充长窗口。CVD 不代表交易所充提净流入。",
+            "flow": "现货与合约主动成交净额优先由封闭 15m Binance K 线 taker 主动买卖报价额按所选窗口求和；历史库只有同窗口事实时使用同窗口值，不拿短窗口冒充长窗口。主动成交净额不代表交易所充提净流入。",
             "directional_balance": "全场态势红绿比例为各指标正向贡献金额 / 正负绝对贡献金额之和。",
             "strength": "优先按同币近 48h 同窗口历史样本计算异常强度分位；历史不足时回退当前横截面分位。",
         },
