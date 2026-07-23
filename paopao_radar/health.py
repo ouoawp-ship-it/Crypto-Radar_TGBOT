@@ -220,6 +220,54 @@ def _derivatives_provider_check(settings: Settings) -> dict[str, Any]:
     )
 
 
+def _signal_effectiveness_check(settings: Settings, now: int) -> dict[str, Any]:
+    path = settings.signal_events_db_path
+    if not path.exists():
+        return _check("signal_effectiveness", "warn", "信号结果库尚未生成")
+    try:
+        uri = f"file:{path.resolve().as_posix()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'signal_outcomes'"
+            ).fetchone()
+            if table is None:
+                return _check("signal_effectiveness", "warn", "P2 信号结果表尚未初始化")
+            total, matured, pending, unavailable, latest, overdue = conn.execute(
+                """
+                SELECT COUNT(*),
+                       SUM(CASE WHEN status = 'matured' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END),
+                       MAX(evaluated_at),
+                       SUM(CASE WHEN status = 'pending' AND due_at < ? THEN 1 ELSE 0 END)
+                FROM signal_outcomes
+                """,
+                (now - 30 * 60,),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        return _check("signal_effectiveness", "warn", f"信号结果统计无法读取：{type(exc).__name__}")
+
+    total_count = int(total or 0)
+    metrics = {
+        "total": total_count,
+        "matured": int(matured or 0),
+        "pending": int(pending or 0),
+        "unavailable": int(unavailable or 0),
+        "overdue_pending": int(overdue or 0),
+        "last_evaluated_age_sec": max(0, now - int(latest)) if latest else None,
+    }
+    if total_count <= 0:
+        return _check("signal_effectiveness", "warn", "P2 结果追踪已初始化，正在等待可评估信号", **metrics)
+    if metrics["overdue_pending"]:
+        return _check(
+            "signal_effectiveness",
+            "warn",
+            f"存在 {metrics['overdue_pending']} 条到期结果超过 30 分钟仍未回填",
+            **metrics,
+        )
+    return _check("signal_effectiveness", "ok", "P2 信号结果追踪运行正常", **metrics)
+
+
 def runtime_health_checks(
     settings: Settings,
     store: JsonStore,
@@ -236,6 +284,7 @@ def runtime_health_checks(
         _market_snapshot_check(settings, now),
         _realtime_check(settings, now),
         _derivatives_provider_check(settings),
+        _signal_effectiveness_check(settings, now),
         _disk_check(settings),
     ]
     runtime = store.load(settings.runtime_status_path, {})

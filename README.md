@@ -9,6 +9,7 @@
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
 - 公告风险：解析 Binance 官方上新、下架、Launchpool、Airdrop 等公告。
+- 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
 - 推送安全：默认 dry-run，真实发送必须同时提供 `--send --confirm-real-send`，并经过 readiness 门禁、去重、冷却、限流和重试。
 
 实时行情进程会采集 Binance、Bybit、OKX 的成交和清算数据，为 Telegram 信号补充 CVD、清算和市场上下文。P1 数据质量层以 CoinGlass 作为聚合衍生品主校验源、Coinalyze 作为独立交叉验证源：统一交易对、百分比单位和时间戳，计算 OI/费率一致性分，并在数据方向冲突时阻止单源高级信号。任一 Key 缺失时会明确标记为降级运行，不会让 BOT 停摆。
@@ -55,6 +56,7 @@ python main.py telegram-test
 python main.py once
 python main.py flow-radar
 python main.py funding-alert
+python main.py signal-effectiveness
 python main.py market-stream
 python main.py live --send --confirm-real-send
 ```
@@ -78,6 +80,6 @@ bash scripts/update_server.sh --yes
 
 - `paopao-radar.service`：扫描、评分与 Telegram 推送。
 - `paopao-market-stream.service`：实时成交和清算采集。
-- `paopao-cleanup.timer`：运行期缓存与过期状态清理。
+- `paopao-health.timer`：定时执行 BOT、数据库、行情新鲜度和信号结果追踪健康检查。
 
 更完整的模块边界见 [docs/BOT_ONLY_ARCHITECTURE.md](docs/BOT_ONLY_ARCHITECTURE.md)，安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
