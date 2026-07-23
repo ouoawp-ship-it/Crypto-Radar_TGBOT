@@ -5,13 +5,13 @@
 | 模块 | 作用 |
 | --- | --- |
 | `data_sources.py` / `funding_sources.py` | 交易所 REST 数据、缓存、限流与降级 |
-| `derivatives_quality.py` | CoinGlass/Coinalyze 标准化、时间新鲜度、一致性评分和信号门控 |
-| `realtime_market.py` / `realtime_intelligence.py` | 多交易所成交、清算、CVD 与实时异动 |
+| `derivatives_quality.py` | CoinGlass/Coinalyze 可选只读诊断，不参与方向信号值或门控 |
+| `realtime_market.py` / `realtime_intelligence.py` | Binance 成交、清算、CVD 与实时异动；其他交易所采集默认关闭 |
 | `radar.py` | 资金摘要、启动预警和公告分类 |
 | `flow_radar.py` | 多因子资金流信号 |
-| `funding_alert.py` | 极端资金费率与跨所分歧 |
+| `funding_alert.py` | Binance 极端资金费率；可显式配置其他原生交易所用于独立观察 |
 | `market_cockpit.py` | BOT 需要的市场快照与窗口比较；不再对外提供网页 API |
-| `bot_market_context.py` | 给 Telegram 推送补充实时行情、新闻与市场证据 |
+| `bot_market_context.py` | 给 Telegram 推送补充 Binance 实时/闭合窗口市场证据，不读取新闻或社交情报 |
 | `signal_store.py` / `symbol_dossier.py` | 信号事实、生命周期和币种上下文 |
 | `signal_effectiveness.py` | 已发送信号的方向语义、四窗口结果回填与只读效果统计 |
 | `database_backup.py` | 活动 SQLite 在线备份、完整性检查、恢复验证与保留期清理 |
@@ -37,7 +37,7 @@ paopao-market-stream
 
 paopao-radar
     ├─ 扫描 REST / 公告 / 资金费率
-    ├─ 用 CoinGlass 主校验、Coinalyze 交叉验证 OI 与费率
+    ├─ 用 Binance 原生窗口完整性确认价格、OI、成交与费率
     ├─ 读取实时与历史上下文
     ├─ 生成、去重并记录信号
     └─ 推送 Telegram
@@ -46,23 +46,20 @@ paopao-radar
 ## P1 数据质量边界
 
 ```text
-Binance / OKX / Bybit / Bitget / Gate 原生数据
+Binance Spot + Binance USDⓈ-M Futures 原生口径
                          ↓
-交易对、百分比单位、时间戳标准化
-                         ↓
-CoinGlass 聚合口径 + Coinalyze 独立口径
-                         ↓
-新鲜度检查 → 一致性评分 → allow / degraded / block
+窗口对齐 → 完整性检查 → allow / block
                          ↓
 资金流、启动预警、资金费率警报
 ```
 
-- OI 多源变化方向相反时，资金流和启动高级信号会被阻止。
-- 单源缺失或超过额度时降级运行并保留诊断，不把缺失值当作 0。
-- 资金费率已有多家原生交易所同步确认时，外部聚合源冲突只作质量标记，不覆盖原生共振事实。
-- 外部 API 使用非阻塞滚动分钟预算；预算不足时跳过校验，不阻塞 BOT 主循环。
+- 方向信号只使用 Binance 原生数据，不允许外部聚合源改写 OI、费率或评分。
+- 价格、OI、现货主动成交、合约主动成交和费率必须覆盖声明的完整窗口；缺项直接阻止该条资金流信号。
+- `数据质量分` 作为历史兼容字段保留，但 Telegram 改为展示“Binance 原生、完整窗口、覆盖项数”，不再展示难解释的跨源一致性分。
+- Binance 数据缺失或超过额度时保留诊断并阻止依赖缺失字段的信号，不把缺失值当作 0。
+- 资金费率警报默认只读取 Binance；如人工开启其他交易所，消息会逐所列明原生来源，且不会改写启动或资金流信号。
 - Binance 合约观察池会先与现货市场目录核对；不存在的现货交易对不再发送必然失败的 K 线请求，也不消耗现货 K 线预算。
-- `provider-check` 使用隔离的只读客户端验证 CoinGlass/Coinalyze，明确报告 Key、套餐权限、空数据或可用状态，且不输出密钥。
+- `provider-check` 使用隔离的只读客户端验证 CoinGlass/Coinalyze，明确报告 Key、套餐权限、空数据或可用状态，且不输出密钥；诊断结果不会影响生产方向信号。
 - Arkham 属于链上实体事件层，后续独立开发，本层不包含 Arkham 依赖。
 
 ## P1.2 数据运维闭环

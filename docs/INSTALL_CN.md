@@ -17,7 +17,7 @@ TG_BOT_TOKEN=123456:...
 TG_CHAT_ID=-1001234567890
 ```
 
-如需启用 P1 衍生品多源校验，再填写：
+如需使用 CoinGlass/Coinalyze 只读诊断，再填写（方向信号不需要）：
 
 ```dotenv
 COINGLASS_ENABLE=true
