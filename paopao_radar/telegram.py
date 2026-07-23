@@ -646,14 +646,63 @@ class TelegramGateway:
         return True
 
     def delete_messages(self, message_ids: list[int]) -> int:
+        return len(self.delete_messages_detailed(message_ids)["deleted_ids"])
+
+    def delete_messages_detailed(self, message_ids: list[int]) -> dict[str, list[int]]:
+        normalized_ids = list(dict.fromkeys(
+            int(message_id)
+            for message_id in message_ids
+            if isinstance(message_id, int) or str(message_id).isdigit()
+        ))
         if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
-            return 0
-        deleted = 0
-        for message_id in message_ids:
+            return {"deleted_ids": [], "failed_ids": normalized_ids}
+        deleted_ids: list[int] = []
+        failed_ids: list[int] = []
+        for message_id in normalized_ids:
             if self._delete_message(message_id):
-                deleted += 1
+                deleted_ids.append(message_id)
+            else:
+                failed_ids.append(message_id)
             time.sleep(0.15)
-        return deleted
+        if deleted_ids:
+            self._mark_history_messages_deleted(deleted_ids)
+        return {"deleted_ids": deleted_ids, "failed_ids": failed_ids}
+
+    def _mark_history_messages_deleted(self, message_ids: list[int]) -> None:
+        deleted = {int(message_id) for message_id in message_ids}
+        now_ts = utc_ts()
+
+        def update_history(history: Any) -> list[dict[str, Any]]:
+            records = history if isinstance(history, list) else []
+            updated: list[dict[str, Any]] = []
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                record_message_ids = {
+                    int(message_id)
+                    for message_id in (record.get("message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                }
+                matched = record_message_ids & deleted
+                if not matched:
+                    updated.append(record)
+                    continue
+                existing = {
+                    int(message_id)
+                    for message_id in (record.get("deleted_message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                }
+                deleted_for_record = sorted(existing | matched)
+                updated.append({
+                    **record,
+                    "deleted_message_ids": deleted_for_record,
+                    "lifecycle_deleted": bool(record_message_ids) and record_message_ids <= set(deleted_for_record),
+                    "lifecycle_deleted_at": now_ts,
+                    "lifecycle_delete_reason": "launch_signal_expired",
+                })
+            return updated
+
+        self.store.update(self.settings.tg_push_history_path, update_history, [])
 
     def _delete_message(self, message_id: int) -> bool:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/deleteMessage"
@@ -784,7 +833,7 @@ class TelegramGateway:
                 continue
             if int(record.get("ts", 0)) < cutoff:
                 return False
-            if record.get("status") == "sent":
+            if record.get("status") == "sent" and not record.get("lifecycle_deleted"):
                 return True
         return False
 

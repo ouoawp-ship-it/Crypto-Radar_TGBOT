@@ -815,6 +815,15 @@ def run_once(args: argparse.Namespace) -> int:
         include_launch=not args.no_launch,
         include_announcements=not args.no_announcements,
     )
+    if not args.no_launch:
+        launch_delete_callback = (
+            gateway.delete_messages_detailed
+            if args.send and args.confirm_real_send
+            else None
+        )
+        result["diagnostics"]["launch_lifecycle_cleanup"] = (
+            engine.cleanup_failed_launch_messages(launch_delete_callback)
+        )
 
     summary = result["summary"]
     push = gateway.send(
@@ -1068,6 +1077,14 @@ def run_loop(args: argparse.Namespace) -> int:
                 settings, _store, engine, gateway = make_runtime_for_args(args)
                 source = BinanceDataSource(settings)
                 launch = engine.build_launch_alerts(source)
+                launch_delete_callback = (
+                    gateway.delete_messages_detailed
+                    if args.send and args.confirm_real_send
+                    else None
+                )
+                launch_diag["lifecycle_cleanup"] = engine.cleanup_failed_launch_messages(
+                    launch_delete_callback
+                )
                 try:
                     launch_diag["market_snapshot"] = persist_market_batch(settings, source=source)
                 except Exception as exc:
@@ -1149,6 +1166,12 @@ def run_trial(args: argparse.Namespace) -> int:
         settings, store, engine, gateway = make_runtime_for_args(args)
         source = BinanceDataSource(settings)
         launch = engine.build_launch_alerts(source)
+        launch_delete_callback = (
+            gateway.delete_messages_detailed
+            if args.send and args.confirm_real_send
+            else None
+        )
+        launch_cleanup = engine.cleanup_failed_launch_messages(launch_delete_callback)
         try:
             market_snapshot = persist_market_batch(settings, source=source)
         except Exception as exc:
@@ -1186,6 +1209,7 @@ def run_trial(args: argparse.Namespace) -> int:
         engine.mark_launch_pushed(sent_launch_alerts)
         diagnostics = {
             "binance": source.diagnostics(),
+            "lifecycle_cleanup": launch_cleanup,
             "market_snapshot": market_snapshot,
             "signal_effectiveness": signal_effectiveness,
         }

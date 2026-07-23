@@ -18,6 +18,53 @@ CST = timezone(timedelta(hours=8))
 
 
 class TelegramGatewayTests(unittest.TestCase):
+    def test_detailed_delete_audits_history_and_releases_dedup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            store = JsonStore(Path(tmp))
+            store.save(history_path, [
+                {
+                    "ts": utc_ts(),
+                    "template_id": "TG_LAUNCH_ALERT",
+                    "dedup_key": "launch:BTCUSDT:breakout",
+                    "status": "sent",
+                    "sent": True,
+                    "message_ids": [101],
+                },
+                {
+                    "ts": utc_ts(),
+                    "template_id": "TG_LAUNCH_ALERT",
+                    "dedup_key": "launch:ETHUSDT:breakout",
+                    "status": "sent",
+                    "sent": True,
+                    "message_ids": [102],
+                },
+            ])
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(gateway, "_delete_message", side_effect=[True, False]),
+                patch("paopao_radar.telegram.time.sleep"),
+            ):
+                result = gateway.delete_messages_detailed([101, 102])
+
+            history = store.load(history_path, [])
+            self.assertEqual(result, {"deleted_ids": [101], "failed_ids": [102]})
+            self.assertTrue(history[0]["lifecycle_deleted"])
+            self.assertFalse(history[1].get("lifecycle_deleted", False))
+            self.assertFalse(
+                gateway._recent_match(history, "launch:BTCUSDT:breakout", 3600)
+            )
+            self.assertTrue(
+                gateway._recent_match(history, "launch:ETHUSDT:breakout", 3600)
+            )
+
     def test_dry_run_records_without_real_send(self) -> None:
         with TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "push_history.json"
