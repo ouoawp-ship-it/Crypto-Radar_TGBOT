@@ -106,6 +106,54 @@ def decode_topic_address(topic: object) -> str:
     return "0x" + topic[-40:].lower()
 
 
+def transfer_log_shape(log: dict[str, object]) -> str:
+    topics = log.get("topics")
+    if not isinstance(topics, list):
+        raise LogValidationError("Transfer log topics are malformed")
+    if len(topics) not in {3, 4}:
+        raise LogValidationError("Transfer log topic count is unsupported")
+    if (
+        not isinstance(topics[0], str)
+        or topics[0].lower() != TRANSFER_TOPIC
+    ):
+        raise LogValidationError("log is not the canonical Transfer event")
+    decode_topic_address(topics[1])
+    decode_topic_address(topics[2])
+    data = log.get("data")
+    if (
+        len(topics) == 3
+        and isinstance(data, str)
+        and UINT256_RE.fullmatch(data)
+    ):
+        return "erc20"
+    if (
+        len(topics) == 4
+        and isinstance(topics[3], str)
+        and HASH_RE.fullmatch(topics[3])
+        and data == "0x"
+    ):
+        return "indexed_value"
+    raise LogValidationError("Transfer log ABI shape is unsupported")
+
+
+def canonical_log_contents(
+    log: dict[str, object],
+) -> tuple[object, ...]:
+    topics = log.get("topics")
+    return (
+        str(log.get("address") or "").lower(),
+        tuple(str(item).lower() for item in topics)
+        if isinstance(topics, list)
+        else (),
+        str(log.get("data") or "").lower(),
+        str(log.get("blockNumber") or "").lower(),
+        str(log.get("blockHash") or "").lower(),
+        str(log.get("transactionHash") or "").lower(),
+        str(log.get("logIndex") or "").lower(),
+        bool(log.get("removed", False)),
+    )
+
+
 def address_batches(
     addresses: Iterable[str], batch_size: int
 ) -> list[tuple[str, ...]]:
@@ -352,16 +400,14 @@ def normalize_transfer_log(
     block_time: int,
     chain_id: int = BASE_CHAIN_ID,
 ) -> NormalizedTransfer:
+    if transfer_log_shape(log) != "erc20":
+        raise LogValidationError("Transfer log is not an ERC-20 shape")
     topics = log.get("topics")
-    if not isinstance(topics, list) or len(topics) < 3:
-        raise LogValidationError("Transfer log topics are malformed")
-    if str(topics[0]).lower() != TRANSFER_TOPIC:
-        raise LogValidationError("log is not the canonical Transfer event")
+    assert isinstance(topics, list)
     from_address = decode_topic_address(topics[1])
     to_address = decode_topic_address(topics[2])
     data = log.get("data")
-    if not isinstance(data, str) or not UINT256_RE.fullmatch(data):
-        raise LogValidationError("Transfer amount is not a uint256")
+    assert isinstance(data, str)
     token_address = normalize_evm_address(str(log.get("address") or ""))
     tx_hash = str(log.get("transactionHash") or "")
     block_hash = str(log.get("blockHash") or "")
@@ -449,9 +495,11 @@ class BaseHttpCollector:
             if isinstance(tx_hash, str) and isinstance(log_index, str):
                 key = f"{BASE_CHAIN_ID}:{tx_hash.lower()}:{log_index.lower()}"
                 existing = deduplicated.get(key)
-                if existing is not None and self._canonical_log(
-                    existing
-                ) != self._canonical_log(log):
+                if (
+                    existing is not None
+                    and canonical_log_contents(existing)
+                    != canonical_log_contents(log)
+                ):
                     raise FinalizedRangeConsistencyError(
                         "duplicate event key has conflicting canonical contents"
                     )
@@ -497,19 +545,3 @@ class BaseHttpCollector:
                 budget=budget,
                 depth=depth + 1,
             )
-
-    @staticmethod
-    def _canonical_log(log: dict[str, object]) -> tuple[object, ...]:
-        topics = log.get("topics")
-        return (
-            str(log.get("address") or "").lower(),
-            tuple(str(item).lower() for item in topics)
-            if isinstance(topics, list)
-            else (),
-            str(log.get("data") or "").lower(),
-            str(log.get("blockNumber") or "").lower(),
-            str(log.get("blockHash") or "").lower(),
-            str(log.get("transactionHash") or "").lower(),
-            str(log.get("logIndex") or "").lower(),
-            bool(log.get("removed", False)),
-        )

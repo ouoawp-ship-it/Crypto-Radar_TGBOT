@@ -41,6 +41,7 @@ from .support import make_settings
 CEX = "0x1111111111111111111111111111111111111111"
 OUTSIDE = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TOKEN = "0x9999999999999999999999999999999999999999"
+NFT_TOKEN = "0x8888888888888888888888888888888888888888"
 
 
 def uint256(value: int) -> str:
@@ -78,12 +79,38 @@ def transfer_log(block_number: int, tx_number: int):
     }
 
 
+def indexed_transfer_log(
+    block_number: int,
+    tx_number: int,
+    *,
+    from_address: str = OUTSIDE,
+    to_address: str = CEX,
+    log_index: int = 0,
+):
+    log = transfer_log(block_number, tx_number)
+    log.update(
+        {
+            "address": NFT_TOKEN,
+            "topics": [
+                TRANSFER_TOPIC,
+                pad_topic_address(from_address),
+                pad_topic_address(to_address),
+                uint256(123),
+            ],
+            "data": "0x",
+            "logIndex": hex(log_index),
+        }
+    )
+    return log
+
+
 class FakeRpc:
     def __init__(self, head=2):
         self.head = head
         self.hash_variants = {}
         self.error_count = 0
         self.timestamp_base = 1_700_000_000
+        self.metadata_calls = []
 
     def chain_id(self):
         return 8453
@@ -98,10 +125,12 @@ class FakeRpc:
             "timestamp": hex(self.timestamp_base + number),
         }
 
-    def get_code(self, _address):
+    def get_code(self, address):
+        self.metadata_calls.append(("code", address))
         return "0x6000"
 
-    def eth_call(self, _address, selector):
+    def eth_call(self, address, selector):
+        self.metadata_calls.append((selector, address))
         return {
             DECIMALS_SELECTOR: uint256(6),
             TOTAL_SUPPLY_SELECTOR: uint256(1_000_000_000),
@@ -181,6 +210,193 @@ def static_prices(observed_at=1_700_000_002):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_indexed_transfer_only_commits_and_restart_skips_refetch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                base_bootstrap_lookback_blocks=0,
+            )
+            rpc = FakeRpc(head=2)
+            collector = FakeCollector([indexed_transfer_log(2, 1)])
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            result = runtime.process_once()
+            store = OnchainStore(settings)
+            counts = store.table_counts()
+            self.assertEqual(
+                store.cursor(8453).last_finalized_block, 2
+            )
+            self.assertEqual(counts["processed_blocks"], 1)
+            self.assertEqual(counts["transfer_events"], 0)
+            self.assertEqual(counts["flow_events"], 0)
+            self.assertEqual(counts["alerts"], 0)
+            self.assertEqual(rpc.metadata_calls, [])
+            self.assertEqual(
+                result["skipped_indexed_transfer_count"], 1
+            )
+            BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=collector,
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            ).process_once()
+            self.assertEqual(collector.ranges, [(2, 2)])
+
+    def test_mixed_erc20_and_indexed_transfer_commits_only_erc20(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = replace(
+                live_settings(Path(tmp)),
+                base_bootstrap_lookback_blocks=0,
+                single_large_floor_usd=Decimal("1"),
+                single_volume_ratio=Decimal("0"),
+            )
+            erc20 = transfer_log(2, 1)
+            indexed = indexed_transfer_log(2, 2, log_index=1)
+            rpc = FakeRpc(head=2)
+            runtime = BaseOnchainRuntime(
+                settings,
+                rpc=rpc,
+                http_collector=FakeCollector([erc20, indexed]),
+                price_provider=static_prices(),
+                clock=lambda: 1_700_000_002,
+            )
+            result = runtime.process_once()
+            store = OnchainStore(settings)
+            counts = store.table_counts()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                persisted_tokens = conn.execute(
+                    "SELECT token_address FROM transfer_events"
+                ).fetchall()
+                alert_tokens = conn.execute(
+                    "SELECT token_address FROM alerts"
+                ).fetchall()
+            self.assertEqual(
+                store.cursor(8453).last_finalized_block, 2
+            )
+            self.assertEqual(counts["processed_blocks"], 1)
+            self.assertEqual(counts["transfer_events"], 1)
+            self.assertEqual(counts["flow_events"], 1)
+            self.assertEqual(counts["alerts"], 1)
+            self.assertEqual(persisted_tokens, [(TOKEN,)])
+            self.assertEqual(alert_tokens, [(TOKEN,)])
+            self.assertTrue(rpc.metadata_calls)
+            self.assertNotIn(
+                NFT_TOKEN,
+                {address for _method, address in rpc.metadata_calls},
+            )
+            self.assertEqual(
+                result["skipped_indexed_transfer_count"], 1
+            )
+
+    def test_indexed_transfer_inbound_and_outbound_both_advance_cursor(self) -> None:
+        cases = (
+            ("inbound", OUTSIDE, CEX),
+            ("outbound", CEX, OUTSIDE),
+        )
+        for name, from_address, to_address in cases:
+            with self.subTest(direction=name), TemporaryDirectory() as tmp:
+                settings = replace(
+                    live_settings(Path(tmp)),
+                    base_bootstrap_lookback_blocks=0,
+                )
+                rpc = FakeRpc(head=2)
+                result = BaseOnchainRuntime(
+                    settings,
+                    rpc=rpc,
+                    http_collector=FakeCollector(
+                        [
+                            indexed_transfer_log(
+                                2,
+                                1,
+                                from_address=from_address,
+                                to_address=to_address,
+                            )
+                        ]
+                    ),
+                    price_provider=static_prices(),
+                    clock=lambda: 1_700_000_002,
+                ).process_once()
+                store = OnchainStore(settings)
+                self.assertEqual(
+                    store.cursor(8453).last_finalized_block, 2
+                )
+                self.assertEqual(
+                    store.table_counts()["transfer_events"], 0
+                )
+                self.assertEqual(rpc.metadata_calls, [])
+                self.assertEqual(
+                    result["skipped_indexed_transfer_count"], 1
+                )
+
+    def test_malformed_transaction_identity_remains_fail_closed(self) -> None:
+        cases = (
+            ("transactionHash", "0x1234"),
+            ("logIndex", "not-a-quantity"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field), TemporaryDirectory() as tmp:
+                settings = replace(
+                    live_settings(Path(tmp)),
+                    base_bootstrap_lookback_blocks=0,
+                )
+                rpc = FakeRpc(head=1)
+                collector = FakeCollector()
+                runtime = BaseOnchainRuntime(
+                    settings,
+                    rpc=rpc,
+                    http_collector=collector,
+                    price_provider=static_prices(),
+                    clock=lambda: 1_700_000_002,
+                )
+                runtime.process_once()
+                malformed = transfer_log(2, 1)
+                malformed[field] = value
+                rpc.head = 2
+                collector.logs = [malformed]
+                with self.assertRaises(
+                    FinalizedRangeConsistencyError
+                ):
+                    runtime.process_once()
+                store = OnchainStore(settings)
+                self.assertEqual(
+                    store.cursor(8453).last_finalized_block, 1
+                )
+                self.assertEqual(
+                    store.table_counts()["transfer_events"], 0
+                )
+
+    def test_other_transfer_shapes_remain_fail_closed(self) -> None:
+        four_topics_with_data = indexed_transfer_log(2, 1)
+        four_topics_with_data["data"] = uint256(1)
+        three_topics_empty = transfer_log(2, 1)
+        three_topics_empty["data"] = "0x"
+        for malformed in (four_topics_with_data, three_topics_empty):
+            with self.subTest(log=malformed), TemporaryDirectory() as tmp:
+                settings = replace(
+                    live_settings(Path(tmp)),
+                    base_bootstrap_lookback_blocks=0,
+                )
+                runtime = BaseOnchainRuntime(
+                    settings,
+                    rpc=FakeRpc(head=2),
+                    http_collector=FakeCollector([malformed]),
+                    price_provider=static_prices(),
+                    clock=lambda: 1_700_000_002,
+                )
+                with self.assertRaises(
+                    FinalizedRangeConsistencyError
+                ):
+                    runtime.process_once()
+                self.assertIsNone(
+                    OnchainStore(settings).cursor(8453)
+                )
+
     def test_finalized_log_consistency_failure_keeps_cursor_unchanged(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = replace(

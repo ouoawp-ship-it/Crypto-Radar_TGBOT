@@ -15,8 +15,10 @@ from .collectors.evm_http import (
     LogValidationError,
     RpcError,
     RpcResponseError,
+    canonical_log_contents,
     normalize_transfer_log,
     parse_hex_quantity,
+    transfer_log_shape,
 )
 from .collectors.evm_ws import WssError, WssHeadTrigger
 from .config import OnchainSettings
@@ -282,6 +284,8 @@ class BaseOnchainRuntime:
                 )
             )
         transfers_by_id = {}
+        canonical_logs_by_id: dict[str, tuple[object, ...]] = {}
+        skipped_indexed_transfers = 0
         for log in logs:
             try:
                 block_number = parse_hex_quantity(
@@ -293,19 +297,53 @@ class BaseOnchainRuntime:
                     )
                 header = blocks[block_number - start_block]
                 log_block_hash = str(log.get("blockHash") or "")
+                if not HASH_RE.fullmatch(log_block_hash):
+                    raise FinalizedRangeConsistencyError(
+                        "log block hash is malformed"
+                    )
                 if log_block_hash.lower() != header.block_hash.lower():
                     raise FinalizedRangeConsistencyError(
                         "log block hash does not match canonical header"
                     )
+                tx_hash = str(log.get("transactionHash") or "")
+                if not HASH_RE.fullmatch(tx_hash):
+                    raise FinalizedRangeConsistencyError(
+                        "log transaction hash is malformed"
+                    )
+                log_index = parse_hex_quantity(
+                    log.get("logIndex"), "log index"
+                )
+                event_id = (
+                    f"{BASE_CHAIN_ID}:{tx_hash.lower()}:{log_index}"
+                )
+                canonical_contents = canonical_log_contents(log)
+                existing_contents = canonical_logs_by_id.get(event_id)
+                if (
+                    existing_contents is not None
+                    and existing_contents != canonical_contents
+                ):
+                    raise FinalizedRangeConsistencyError(
+                        "duplicate event key has conflicting canonical contents"
+                    )
+                if existing_contents is not None:
+                    continue
+                canonical_logs_by_id[event_id] = canonical_contents
+                if transfer_log_shape(log) == "indexed_value":
+                    skipped_indexed_transfers += 1
+                    continue
                 transfer = normalize_transfer_log(
                     log,
                     block_time=block_times[block_number],
                 )
             except FinalizedRangeConsistencyError:
                 raise
-            except (KeyError, IndexError, LogValidationError, RpcError) as exc:
+            except LogValidationError as exc:
                 raise FinalizedRangeConsistencyError(
-                    "finalized log failed canonical validation"
+                    "finalized log failed Transfer ABI validation"
+                ) from exc
+            except (KeyError, IndexError, RpcError) as exc:
+                raise FinalizedRangeConsistencyError(
+                    "finalized log failed canonical identity validation"
                 ) from exc
             existing = transfers_by_id.get(transfer.event_id)
             if existing is not None and existing != transfer:
@@ -389,6 +427,9 @@ class BaseOnchainRuntime:
         self.metrics["duplicate_count"] = int(
             self.metrics["duplicate_count"]
         ) + duplicates
+        self.metrics["skipped_indexed_transfer_count"] = int(
+            self.metrics["skipped_indexed_transfer_count"]
+        ) + skipped_indexed_transfers
         self.metrics["priced_count"] = int(
             self.metrics["priced_count"]
         ) + priced

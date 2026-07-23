@@ -22,6 +22,7 @@ DEFAULT_RUNTIME_STATUS: dict[str, object] = {
     "rpc_error_count": 0,
     "logs_received": 0,
     "duplicate_count": 0,
+    "skipped_indexed_transfer_count": 0,
     "orphan_count": 0,
     "priced_count": 0,
     "unpriced_count": 0,
