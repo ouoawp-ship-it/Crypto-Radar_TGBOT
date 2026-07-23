@@ -173,6 +173,8 @@ def _load_news_contexts(
             payload = store.list_feed(
                 start_ts=now - 86_400,
                 end_ts=now,
+                source="Binance",
+                source_type="official_announcement",
                 symbol=symbol,
                 page_size=100,
             )
@@ -297,9 +299,9 @@ def _context_lines(context: dict[str, Any]) -> list[str]:
     oi_change = _number(market.get("oi_change_pct"))
     funding = _number(market.get("funding_pct"))
     if spot_flow:
-        market_parts.append(f"现货 {spot_flow}")
+        market_parts.append(f"现货主动成交净额 {spot_flow}")
     if futures_flow:
-        market_parts.append(f"合约 {futures_flow}")
+        market_parts.append(f"合约主动成交净额 {futures_flow}")
     if oi_change is not None:
         market_parts.append(f"OI {oi_change:+.2f}%")
     if funding is not None:
