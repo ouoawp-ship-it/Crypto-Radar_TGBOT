@@ -17,7 +17,6 @@ from .funding_sources import (
     to_float,
     to_int,
 )
-from .price_alerts import format_price, normalize_symbol
 from .storage import JsonStore
 
 
@@ -70,6 +69,31 @@ SYMBOL_STOP_WORDS = {
     "COINGLASS",
     "COINPAPRIKA",
 }
+
+
+def normalize_symbol(value: str) -> str:
+    symbol = re.sub(r"[^A-Za-z0-9]", "", value or "").upper()
+    if not symbol:
+        raise ValueError("币种不能为空")
+    if symbol.endswith("USD") and not symbol.endswith("USDT"):
+        symbol = f"{symbol}T"
+    if not symbol.endswith("USDT"):
+        symbol = f"{symbol}USDT"
+    if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
+        raise ValueError("币种格式不正确")
+    return symbol
+
+
+def format_price(value: float | None) -> str:
+    if value is None:
+        return "暂无"
+    if value >= 1000:
+        return f"${value:,.2f}"
+    if value >= 1:
+        return f"${value:.4f}".rstrip("0").rstrip(".")
+    if value < 0.000001:
+        return f"${value:.12f}".rstrip("0").rstrip(".")
+    return f"${value:.8f}".rstrip("0").rstrip(".")
 
 DOSSIER_INTENT_RE = re.compile(
     r"(查|查询|分析|怎么看|看法|雷达档案|币种档案|档案|多空|方向|走势|趋势|值得|适合|做多|做空|能多|能空|可以多|可以空)",

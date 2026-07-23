@@ -1,0 +1,8 @@
+# Reproducible production runtime resolved for Python 3.12.
+# Update this file only after resolving and testing requirements.txt.
+certifi==2026.7.22
+charset-normalizer==3.4.9
+idna==3.18
+requests==2.34.2
+urllib3==2.7.0
+websocket-client==1.9.0

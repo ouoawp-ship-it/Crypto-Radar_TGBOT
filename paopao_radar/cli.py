@@ -19,9 +19,7 @@ from __future__ import annotations
 """
 
 import argparse
-import getpass
 import json
-import os
 import re
 import sys
 import time
@@ -30,8 +28,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime
 
-from .auth import append_auth_audit, generate_password_hash, generate_session_secret
-from .config import ENV_FILE, Settings, load_env_file
+from .config import Settings
 from .data_sources import BinanceDataSource
 from .flow_radar import FlowRadarEngine
 from .market_cockpit import persist_flow_market_rows, persist_market_batch
@@ -130,10 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "web", "ai-assistant", "price-alerts", "admin-password", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "signal-repair", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；about 查看功能说明；doctor 检查环境；stable-check 稳定版验收；cleanup 清理运行垃圾；readiness 检查真实推送准备度；flow-radar 扫描五因子资金流；once 扫描一轮；observe dry-run 观察；loop/daemon 持续运行；live 通过门禁后真实推送",
     )
-    parser.add_argument("admin_action", nargs="?", default="", help="用于 admin-password：set")
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
     parser.add_argument("--confirm-real-send", action="store_true", help="确认真实发送 Telegram")
     parser.add_argument("--apply", action="store_true", help="用于 migrate-state：真正复制旧状态文件")
@@ -153,10 +149,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-announcements", action="store_true", help="本轮不扫描公告机会/风险")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
     parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
-    parser.add_argument("--host", default="", help="web 控制台监听地址，默认读取 WEB_HOST")
-    parser.add_argument("--port", type=int, default=0, help="web 控制台端口，默认读取 WEB_PORT")
-    parser.add_argument("--web-token", default="", help="旧 token 认证模式访问令牌；也可用 WEB_ADMIN_TOKEN")
-    parser.add_argument("--hidden", action="store_true", help="用于 admin-password set：隐藏输入密码")
     parser.add_argument("--json", action="store_true", help="用于 stable-check：输出完整 JSON 快照")
     parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
     return parser
@@ -203,7 +195,6 @@ def make_runtime_for_args(args: argparse.Namespace) -> tuple[Settings, JsonStore
 def state_paths(settings: Settings) -> list[Path]:
     return [
         settings.tg_push_history_path,
-        settings.ai_price_alerts_db_path,
         settings.runtime_status_path,
         settings.radar_state_path,
         settings.funding_snapshot_path,
@@ -226,84 +217,6 @@ def build_status(settings: Settings, store: JsonStore) -> dict[str, object]:
 def print_status(settings: Settings, store: JsonStore) -> None:
     status = build_status(settings, store)
     print(json.dumps(status, ensure_ascii=False, indent=2))
-
-
-def update_env_values(path: Path, updates: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    positions: dict[str, int] = {}
-    for index, line in enumerate(lines):
-        if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
-            continue
-        key = line.split("=", 1)[0].strip()
-        positions.setdefault(key, index)
-    for key, value in updates.items():
-        if key in positions:
-            lines[positions[key]] = f"{key}={value}"
-        else:
-            if lines and lines[-1].strip():
-                lines.append("")
-            lines.append(f"{key}={value}")
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    for key, value in updates.items():
-        os.environ[key] = value
-
-
-def run_admin_password(args: argparse.Namespace) -> int:
-    action = str(getattr(args, "admin_action", "") or "set")
-    if action != "set":
-        print("用法: python main.py admin-password set [--hidden]")
-        return 2
-    load_env_file(ENV_FILE)
-    hidden = bool(getattr(args, "hidden", False))
-    if not hidden:
-        print("提示：当前密码输入会明文显示，请确认终端环境安全。")
-    username = input("后台用户名 [admin]: ").strip() or "admin"
-    if hidden:
-        password = getpass.getpass("后台密码: ")
-        confirm = getpass.getpass("再次输入后台密码: ")
-    else:
-        password = input("后台密码: ")
-        confirm = input("再次输入后台密码: ")
-    if not password:
-        print("密码不能为空")
-        return 2
-    if password != confirm:
-        print("两次输入的密码不一致，请重新执行设置命令。")
-        return 2
-    current_secret = os.getenv("WEB_SESSION_SECRET", "").strip()
-    updates = {
-        "WEB_AUTH_MODE": "password",
-        "WEB_ADMIN_USERNAME": username,
-        "WEB_ADMIN_PASSWORD_HASH": generate_password_hash(password),
-        "WEB_SESSION_SECRET": current_secret or generate_session_secret(),
-        "WEB_SESSION_TTL_SEC": os.getenv("WEB_SESSION_TTL_SEC", "86400").strip() or "86400",
-        "WEB_AUTH_COOKIE_NAME": os.getenv("WEB_AUTH_COOKIE_NAME", "paopao_admin_session").strip() or "paopao_admin_session",
-    }
-    update_env_values(ENV_FILE, updates)
-    try:
-        append_auth_audit(
-            Path(os.getenv("DATA_DIR", str(ENV_FILE.parent / "data"))),
-            event="password_changed",
-            username=username,
-            ip="local-cli",
-            user_agent="main.py admin-password set",
-            result="success",
-            reason="password_set",
-            limit=max(1, int(os.getenv("WEB_AUTH_AUDIT_LIMIT", "500") or "500")),
-            secret=updates["WEB_SESSION_SECRET"],
-        )
-    except Exception:
-        pass
-    print(f"后台用户名已设置：{username}")
-    print("后台密码哈希已更新")
-    if current_secret:
-        print("会话密钥已保留")
-    else:
-        print("会话密钥已生成")
-    print("请重启 paopao-web 服务生效：")
-    print("sudo systemctl restart paopao-web")
-    return 0
 
 
 def command_mode(args: argparse.Namespace) -> str:
@@ -385,42 +298,59 @@ def _stable_check_status_label(status: str) -> str:
     }.get(str(status or ""), str(status or "未知"))
 
 
-def _release_readiness_status_label(status: str) -> str:
-    return {
-        "complete_candidate": "完整稳定版候选",
-        "candidate": "准稳定候选",
-        "blocked": "需要处理",
-        "ok": "通过",
-        "warn": "关注",
-        "fail": "未达标",
-    }.get(str(status or ""), str(status or "未知"))
-
-
-def _trend_value(value: object) -> str:
-    return "未记录" if value is None else str(value)
-
-
 def print_stable_check(as_json: bool = False, save: bool = True) -> int:
-    from .web import build_deployment_acceptance, build_release_readiness, build_release_trend, ops_snapshot_payload, save_stability_snapshot, stability_history_payload
+    settings, store, _engine, _gateway = make_runtime()
+    checks: list[dict[str, str]] = []
+    for name, ok, detail in telegram_config_checks(settings):
+        checks.append({"name": name, "status": "ok" if ok else "fail", "detail": detail})
 
-    snapshot = ops_snapshot_payload()
+    runtime_checks = [
+        ("runtime_status", settings.runtime_status_path, "主进程运行状态"),
+        ("signal_store", settings.signal_events_db_path, "信号事件数据库"),
+        ("market_snapshots", settings.market_snapshots_db_path, "市场快照数据库"),
+        ("realtime_features", settings.realtime_features_db_path, "实时行情数据库"),
+    ]
+    for name, path, label in runtime_checks:
+        exists = path.exists()
+        checks.append({
+            "name": name,
+            "status": "ok" if exists else "warn",
+            "detail": f"{label}{'已就绪' if exists else '尚未生成；首次运行后自动创建'}",
+        })
+
+    fail_count = sum(item["status"] == "fail" for item in checks)
+    warn_count = sum(item["status"] == "warn" for item in checks)
+    status = "blocked" if fail_count else "attention" if warn_count else "ready"
+    snapshot: dict[str, object] = {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "scope": "telegram-bot-only",
+        "version": (settings.base_dir / "VERSION").read_text(encoding="utf-8").strip() if (settings.base_dir / "VERSION").exists() else "unknown",
+        "stability": {
+            "status": status,
+            "summary": f"BOT 核心检查：失败 {fail_count}，待预热 {warn_count}",
+            "checks": checks,
+        },
+    }
     if save:
-        snapshot["stability_saved"] = save_stability_snapshot(snapshot)
-        snapshot["stability_history"] = stability_history_payload(limit=8)
-        snapshot["release_readiness"] = build_release_readiness(snapshot)
-        snapshot["release_trend"] = build_release_trend(snapshot["stability_history"])
-        snapshot["deployment_acceptance"] = build_deployment_acceptance(snapshot)
-    stability = snapshot.get("stability", {}) if isinstance(snapshot.get("stability"), dict) else {}
-    release_readiness = snapshot.get("release_readiness", {}) if isinstance(snapshot.get("release_readiness"), dict) else {}
-    release_trend = snapshot.get("release_trend", {}) if isinstance(snapshot.get("release_trend"), dict) else {}
-    deployment = snapshot.get("deployment_acceptance", {}) if isinstance(snapshot.get("deployment_acceptance"), dict) else {}
+        latest_path = settings.data_dir / "stability_latest.json"
+        history_path = settings.data_dir / "stability_history.json"
+        store.save(latest_path, snapshot)
+
+        def append_history(current: object) -> list[object]:
+            history = list(current) if isinstance(current, list) else []
+            history.append(snapshot)
+            return history[-100:]
+
+        history = store.update(history_path, append_history, [])
+        snapshot["stability_saved"] = {"saved": True, "history_count": len(history)}
+
+    stability = snapshot["stability"]
     if as_json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     else:
-        git = snapshot.get("git", {}) if isinstance(snapshot.get("git"), dict) else {}
-        print("泡泡雷达稳定版自检")
+        print("泡泡雷达 BOT-only 稳定性自检")
         print(f"生成时间: {snapshot.get('generated_at', '')}")
-        print(f"版本: {git.get('version', '')} {git.get('branch', '')} {git.get('commit', '')}".strip())
+        print(f"版本: {snapshot.get('version', '')}")
         print(f"状态: {_stable_check_status_label(str(stability.get('status') or ''))}")
         print(f"摘要: {stability.get('summary') or ''}")
         saved = snapshot.get("stability_saved", {}) if isinstance(snapshot.get("stability_saved"), dict) else {}
@@ -429,82 +359,12 @@ def print_stable_check(as_json: bool = False, save: bool = True) -> int:
         elif not save:
             print("记录: 本次未保存（--no-save）")
         print("")
-        print("长期运行就绪度:")
-        print(f"状态: {_release_readiness_status_label(str(release_readiness.get('status') or ''))}")
-        print(f"评分: {release_readiness.get('score', '')}/100")
-        print(f"摘要: {release_readiness.get('summary') or ''}")
-        print(f"下一目标: {release_readiness.get('next_version_goal') or ''}")
-        print(
-            "计数: "
-            f"通过 {int(release_readiness.get('ok_count', 0) or 0)} | "
-            f"警告 {int(release_readiness.get('warn_count', 0) or 0)} | "
-            f"阻断 {int(release_readiness.get('fail_count', 0) or 0)}"
-        )
-        readiness_checks = release_readiness.get("checks", []) if isinstance(release_readiness.get("checks"), list) else []
-        if readiness_checks:
-            print("就绪度检查:")
-        for item in readiness_checks:
-            if not isinstance(item, dict):
-                continue
-            status_label = _release_readiness_status_label(str(item.get("status") or ""))
-            line = f"- {item.get('label', '')}: {status_label} - {item.get('detail', '')}"
-            action = str(item.get("action") or "")
-            if action:
-                line += f" | 建议: {action}"
-            print(line)
-        print("")
-        print("服务器部署验收:")
-        print(f"状态: {deployment.get('label') or _stable_check_status_label(str(deployment.get('status') or ''))}")
-        print(f"摘要: {deployment.get('summary') or ''}")
-        print(f"下一步: {deployment.get('next_action') or ''}")
-        print(
-            "计数: "
-            f"通过 {int(deployment.get('ok_count', 0) or 0)} | "
-            f"警告 {int(deployment.get('warn_count', 0) or 0)} | "
-            f"阻断 {int(deployment.get('fail_count', 0) or 0)}"
-        )
-        deployment_checks = deployment.get("checks", []) if isinstance(deployment.get("checks"), list) else []
-        if deployment_checks:
-            print("部署检查:")
-        for item in deployment_checks:
-            if not isinstance(item, dict):
-                continue
-            line = f"- {item.get('label', '')}: {_stable_check_status_label(str(item.get('status') or ''))} - {item.get('detail', '')}"
-            action = str(item.get("action") or "")
-            if action:
-                line += f" | 建议: {action}"
-            print(line)
-        print("")
-        print("趋势变化:")
-        print(f"状态: {release_trend.get('label') or '暂无趋势'}")
-        print(
-            "分数: "
-            f"当前 {_trend_value(release_trend.get('current_score'))} | "
-            f"上次 {_trend_value(release_trend.get('previous_score'))} | "
-            f"变化 {_trend_value(release_trend.get('score_delta'))}"
-        )
-        print(f"摘要: {release_trend.get('summary') or ''}")
-        print(f"建议: {release_trend.get('action') or ''}")
-        print("")
         print("检查项:")
         checks = stability.get("checks", []) if isinstance(stability.get("checks"), list) else []
-        if not checks:
-            print("- 暂无自检结果")
         for item in checks:
             if not isinstance(item, dict):
                 continue
-            line = f"- {item.get('label', '')}: {_stable_check_status_label(str(item.get('status') or ''))} - {item.get('detail', '')}"
-            action = str(item.get("action") or "")
-            if action:
-                line += f" | 建议: {action}"
-            print(line)
-        print("")
-        print("建议动作:")
-        recommendations = snapshot.get("recommendations", []) if isinstance(snapshot.get("recommendations"), list) else []
-        if not recommendations:
-            print("- 暂无")
-        for item in recommendations:
-            print(f"- {item}")
+            print(f"- {item.get('name', '')}: {_stable_check_status_label(str(item.get('status') or ''))} - {item.get('detail', '')}")
     status = str(stability.get("status") or "")
     if status == "blocked":
         return 2
@@ -1449,18 +1309,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_console_encoding()
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "web":
-        from .web import run_web_server
-
-        return run_web_server(args.host, args.port, args.web_token)
-    if args.command == "ai-assistant":
-        from .ai_assistant import run_ai_assistant_service
-
-        return run_ai_assistant_service()
     if args.command == "stable-check":
         return print_stable_check(as_json=args.json, save=not args.no_save)
-    if args.command == "admin-password":
-        return run_admin_password(args)
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":
@@ -1504,11 +1354,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
-        return 0
-    if args.command == "price-alerts":
-        from .ai_assistant import price_alerts_payload
-
-        print(json.dumps(price_alerts_payload(settings), ensure_ascii=False, indent=2))
         return 0
     if args.command == "watchlist":
         print_watchlist(settings, store, args.top)

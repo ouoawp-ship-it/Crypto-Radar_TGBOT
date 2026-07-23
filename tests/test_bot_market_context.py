@@ -31,7 +31,7 @@ def feature_row(symbol: str, minute: int, *, buy: float, sell: float) -> dict[st
 
 
 class BotMarketContextTests(unittest.TestCase):
-    def test_appends_closed_window_web_facts_without_changing_trigger_copy(self) -> None:
+    def test_appends_closed_window_market_facts_without_changing_trigger_copy(self) -> None:
         rows = [
             feature_row(
                 "BTCUSDT",
@@ -52,7 +52,7 @@ class BotMarketContextTests(unittest.TestCase):
                 now_ts=1_200,
             )
         self.assertTrue(text.startswith("🚀 原启动预警"))
-        self.assertIn("Web 市场事实增强", text)
+        self.assertIn("BOT 市场事实增强", text)
         self.assertIn("5m CVD", text)
         self.assertIn("Surge 偏多", text)
         self.assertIn("五窗", text)
@@ -70,7 +70,7 @@ class BotMarketContextTests(unittest.TestCase):
         )
         self.assertEqual(enriched, original)
 
-    def test_appends_funds_and_info_facts_without_realtime_rows(self) -> None:
+    def test_appends_flow_and_news_facts_without_realtime_rows(self) -> None:
         with TemporaryDirectory() as tmp:
             market_path = Path(tmp) / "market.db"
             news_path = Path(tmp) / "news.db"
@@ -145,7 +145,7 @@ class BotMarketContextTests(unittest.TestCase):
         self.assertIn("费率 +0.0123%", text)
         self.assertIn("↳ 24h 情报 1 · 高影响 1 · 风险 1", text)
         self.assertIn("BTC 合约参数调整公告", text)
-        self.assertIn("Web 市场事实增强", summary_text)
+        self.assertIn("BOT 市场事实增强", summary_text)
 
     def test_missing_summary_facts_and_test_messages_are_never_enriched(self) -> None:
         settings = SimpleNamespace(realtime_features_db_path=Path("missing.db"))

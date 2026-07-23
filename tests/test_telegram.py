@@ -18,40 +18,6 @@ CST = timezone(timedelta(hours=8))
 
 
 class TelegramGatewayTests(unittest.TestCase):
-    def test_real_signal_push_includes_exact_public_context_button(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                tg_bot_token="123456:test",
-                tg_chat_id="42",
-                tg_push_history_path=Path(tmp) / "history.json",
-                tg_topic_routes_path=Path(tmp) / "routes.json",
-                tg_topic_intro_enable=False,
-                signal_events_path=Path(tmp) / "signal_events.json",
-                signal_events_db_path=Path(tmp) / "signals.db",
-                tg_default_cooldown_sec=0,
-                public_web_base_url="https://paoxx.com",
-            )
-            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
-
-            with patch.object(gateway, "_send_real_message_ids", return_value=(True, [222])) as send_mock:
-                result = gateway.send(
-                    "BTCUSDT\n启动雷达\n分数: 88",
-                    "TG_LAUNCH_ALERT",
-                    "launch:btc:exact-link",
-                    send=True,
-                    confirm_real_send=True,
-                    cooldown_sec=0,
-                )
-
-            markup = send_mock.call_args.kwargs["reply_markup"]
-            button = markup["inline_keyboard"][0][0]
-            stored = SignalEventStore(settings.signal_events_db_path).list_signals()["items"][0]
-
-        self.assertTrue(result.sent)
-        self.assertEqual(button["text"], "查看 BTC 信号详情")
-        self.assertEqual(button["url"], f"https://paoxx.com/radar?signal={stored['public_ref']}")
-
     def test_dry_run_records_without_real_send(self) -> None:
         with TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "push_history.json"

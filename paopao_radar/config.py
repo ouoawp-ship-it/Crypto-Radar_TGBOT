@@ -77,23 +77,6 @@ def env_first(*names: str) -> str:
     return ""
 
 
-def normalize_ai_model(value: str) -> str:
-    text = str(value or "").strip().strip('"').strip("'")
-    for _ in range(3):
-        key, sep, rest = text.partition("=")
-        normalized_key = key.strip().upper().replace("_", "")
-        if sep and normalized_key in {"AIMODEL", "MODEL"}:
-            text = rest.strip().strip('"').strip("'")
-            continue
-        break
-    return text or "deepseek-v4-pro"
-
-
-def normalize_cockpit_v2_mode(value: str) -> str:
-    mode = str(value or "enabled").strip().lower()
-    return mode if mode in {"enabled", "preview", "disabled"} else "enabled"
-
-
 def data_path(data_dir: Path, env_name: str, default_name: str) -> Path:
     value = os.getenv(env_name, default_name)
     path = Path(value)
@@ -131,45 +114,13 @@ class Settings:
     tg_default_cooldown_sec: int = 6 * 3600
     tg_push_history_limit: int = 2000
     tg_push_history_retention_days: int = 30
-    public_web_base_url: str = "https://paoxx.com"
-    public_api_rate_limit_per_minute: int = 180
-    public_api_heavy_rate_limit_per_minute: int = 30
-    public_api_trusted_proxy_ips: tuple[str, ...] = ("127.0.0.1", "::1")
-    cockpit_v2_mode: str = "enabled"
-    ai_assistant_enable: bool = False
-    ai_bot_token: str = ""
-    ai_bot_username: str = ""
-    ai_admin_user_ids: tuple[str, ...] = ()
-    ai_allow_group_chat: bool = False
-    ai_allowed_chat_ids: tuple[str, ...] = ()
-    ai_price_alerts_enable: bool = True
-    ai_price_alerts_db_path: Path = BASE_DIR / "data" / "price_alerts.db"
-    ai_default_chat_id: str = ""
-    ai_alert_check_interval_sec: int = 10
-    ai_poll_timeout_sec: int = 5
-    ai_provider_enable: bool = False
-    ai_api_key: str = ""
-    ai_base_url: str = "https://api.deepseek.com"
-    ai_model: str = "deepseek-v4-pro"
-    ai_request_timeout_sec: int = 90
-    ai_prompts_path: Path = BASE_DIR / "data" / "ai_prompts.json"
     signal_events_path: Path = BASE_DIR / "data" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "signals.db"
     market_snapshots_db_path: Path = BASE_DIR / "data" / "market_snapshots.db"
     realtime_features_db_path: Path = BASE_DIR / "data" / "realtime_features.db"
     news_events_db_path: Path = BASE_DIR / "data" / "news_events.db"
-    agent_insights_db_path: Path = BASE_DIR / "data" / "agent_insights.db"
     news_events_retention_days: int = 90
     news_events_limit: int = 5000
-    info_public_sources_enable: bool = True
-    info_kol_handles: tuple[str, ...] = (
-        "vitalik.ca",
-        "brian-armstrong.bsky.social",
-        "cobie.bsky.social",
-        "saylor.bsky.social",
-        "aantonop.com",
-    )
-    info_plaza_feed_uri: str = "at://did:plc:5cgr3vgieoz4dh5nkhofpn33/app.bsky.feed.generator/aaaekwiqyodf4"
     market_snapshot_interval_sec: int = 300
     market_snapshot_retention_days: int = 30
     market_snapshot_limit: int = 500
@@ -194,22 +145,6 @@ class Settings:
     coinglass_api_key: str = ""
     coinglass_api_base_url: str = "https://open-api-v4.coinglass.com"
     coinglass_rate_limit_per_minute: int = 80
-    web_jobs_db_path: Path = BASE_DIR / "data" / "jobs.db"
-    web_jobs_retention_days: int = 30
-    web_jobs_limit: int = 500
-    web_jobs_stdout_tail_chars: int = 12000
-    web_jobs_stderr_tail_chars: int = 6000
-    web_auth_mode: str = "password"
-    web_admin_username: str = "admin"
-    web_admin_password_hash: str = ""
-    web_session_secret: str = ""
-    web_session_ttl_sec: int = 86400
-    web_auth_cookie_name: str = "paopao_admin_session"
-    web_auth_max_failures: int = 5
-    web_auth_lockout_sec: int = 600
-    web_auth_failure_window_sec: int = 900
-    web_auth_audit_limit: int = 500
-    web_session_refresh_threshold_ratio: float = 0.5
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
@@ -306,8 +241,6 @@ class Settings:
         default_market_snapshots_db_path = BASE_DIR / "data" / "market_snapshots.db"
         default_realtime_features_db_path = BASE_DIR / "data" / "realtime_features.db"
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
-        default_agent_insights_db_path = BASE_DIR / "data" / "agent_insights.db"
-        default_web_jobs_db_path = BASE_DIR / "data" / "jobs.db"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.signal_events_db_path == default_signal_db_path:
@@ -318,10 +251,6 @@ class Settings:
             object.__setattr__(self, "realtime_features_db_path", self.data_dir / "realtime_features.db")
         if self.data_dir != BASE_DIR / "data" and self.news_events_db_path == default_news_events_db_path:
             object.__setattr__(self, "news_events_db_path", self.data_dir / "news_events.db")
-        if self.data_dir != BASE_DIR / "data" and self.agent_insights_db_path == default_agent_insights_db_path:
-            object.__setattr__(self, "agent_insights_db_path", self.data_dir / "agent_insights.db")
-        if self.data_dir != BASE_DIR / "data" and self.web_jobs_db_path == default_web_jobs_db_path:
-            object.__setattr__(self, "web_jobs_db_path", self.data_dir / "jobs.db")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -351,48 +280,13 @@ class Settings:
             tg_default_cooldown_sec=env_int("TG_DEFAULT_COOLDOWN_SEC", 6 * 3600),
             tg_push_history_limit=env_int("TG_PUSH_HISTORY_LIMIT", 2000),
             tg_push_history_retention_days=env_int("TG_PUSH_HISTORY_RETENTION_DAYS", 30),
-            public_web_base_url=os.getenv("PAOXX_PUBLIC_BASE_URL", "https://paoxx.com").strip().rstrip("/"),
-            public_api_rate_limit_per_minute=env_int("PUBLIC_API_RATE_LIMIT_PER_MINUTE", 180),
-            public_api_heavy_rate_limit_per_minute=env_int("PUBLIC_API_HEAVY_RATE_LIMIT_PER_MINUTE", 30),
-            public_api_trusted_proxy_ips=env_list("PUBLIC_API_TRUSTED_PROXY_IPS", ("127.0.0.1", "::1")),
-            cockpit_v2_mode=normalize_cockpit_v2_mode(os.getenv("PAOXX_COCKPIT_V2_MODE", "enabled")),
-            ai_assistant_enable=env_bool("AI_ASSISTANT_ENABLE", False),
-            ai_bot_token=os.getenv("AI_BOT_TOKEN", "").strip(),
-            ai_bot_username=os.getenv("AI_BOT_USERNAME", "").strip().lstrip("@"),
-            ai_admin_user_ids=env_list("AI_ADMIN_USER_IDS"),
-            ai_allow_group_chat=env_bool("AI_ALLOW_GROUP_CHAT", False),
-            ai_allowed_chat_ids=env_list("AI_ALLOWED_CHAT_IDS"),
-            ai_price_alerts_enable=env_bool("AI_PRICE_ALERTS_ENABLE", True),
-            ai_price_alerts_db_path=data_path(data_dir, "AI_PRICE_ALERTS_DB_FILE", "price_alerts.db"),
-            ai_default_chat_id=os.getenv("AI_DEFAULT_CHAT_ID", "").strip(),
-            ai_alert_check_interval_sec=env_int("AI_ALERT_CHECK_INTERVAL_SEC", 10),
-            ai_poll_timeout_sec=env_int("AI_POLL_TIMEOUT_SEC", 5),
-            ai_provider_enable=env_bool("AI_PROVIDER_ENABLE", False),
-            ai_api_key=os.getenv("AI_API_KEY", "").strip(),
-            ai_base_url=os.getenv("AI_BASE_URL", "https://api.deepseek.com").rstrip("/"),
-            ai_model=normalize_ai_model(os.getenv("AI_MODEL", "deepseek-v4-pro")),
-            ai_request_timeout_sec=env_int("AI_REQUEST_TIMEOUT_SEC", 90),
-            ai_prompts_path=data_path(data_dir, "AI_PROMPTS_FILE", "ai_prompts.json"),
             signal_events_path=data_path(data_dir, "SIGNAL_EVENTS_FILE", "signal_events.json"),
             signal_events_db_path=data_path(data_dir, "SIGNAL_EVENTS_DB_FILE", "signals.db"),
             market_snapshots_db_path=data_path(data_dir, "MARKET_SNAPSHOTS_DB_FILE", "market_snapshots.db"),
             realtime_features_db_path=data_path(data_dir, "REALTIME_FEATURES_DB_FILE", "realtime_features.db"),
             news_events_db_path=data_path(data_dir, "NEWS_EVENTS_DB_FILE", "news_events.db"),
-            agent_insights_db_path=data_path(data_dir, "AGENT_INSIGHTS_DB_FILE", "agent_insights.db"),
             news_events_retention_days=env_int("NEWS_EVENTS_RETENTION_DAYS", 90),
             news_events_limit=env_int("NEWS_EVENTS_LIMIT", 5000),
-            info_public_sources_enable=env_bool("INFO_PUBLIC_SOURCES_ENABLE", True),
-            info_kol_handles=env_list("INFO_KOL_HANDLES", (
-                "vitalik.ca",
-                "brian-armstrong.bsky.social",
-                "cobie.bsky.social",
-                "saylor.bsky.social",
-                "aantonop.com",
-            )),
-            info_plaza_feed_uri=os.getenv(
-                "INFO_PLAZA_FEED_URI",
-                "at://did:plc:5cgr3vgieoz4dh5nkhofpn33/app.bsky.feed.generator/aaaekwiqyodf4",
-            ).strip(),
             market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
             market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 30),
             market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 500),
@@ -419,22 +313,6 @@ class Settings:
                 "COINGLASS_API_BASE_URL", "https://open-api-v4.coinglass.com"
             ).rstrip("/"),
             coinglass_rate_limit_per_minute=env_int("COINGLASS_RATE_LIMIT_PER_MINUTE", 80),
-            web_jobs_db_path=data_path(data_dir, "WEB_JOBS_DB_FILE", "jobs.db"),
-            web_jobs_retention_days=env_int("WEB_JOBS_RETENTION_DAYS", 30),
-            web_jobs_limit=env_int("WEB_JOBS_LIMIT", 500),
-            web_jobs_stdout_tail_chars=env_int("WEB_JOBS_STDOUT_TAIL_CHARS", 12000),
-            web_jobs_stderr_tail_chars=env_int("WEB_JOBS_STDERR_TAIL_CHARS", 6000),
-            web_auth_mode=(os.getenv("WEB_AUTH_MODE", "password").strip().lower() or "password"),
-            web_admin_username=(os.getenv("WEB_ADMIN_USERNAME", "admin").strip() or "admin"),
-            web_admin_password_hash=os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip(),
-            web_session_secret=os.getenv("WEB_SESSION_SECRET", "").strip(),
-            web_session_ttl_sec=env_int("WEB_SESSION_TTL_SEC", 86400),
-            web_auth_cookie_name=(os.getenv("WEB_AUTH_COOKIE_NAME", "paopao_admin_session").strip() or "paopao_admin_session"),
-            web_auth_max_failures=env_int("WEB_AUTH_MAX_FAILURES", 5),
-            web_auth_lockout_sec=env_int("WEB_AUTH_LOCKOUT_SEC", 600),
-            web_auth_failure_window_sec=env_int("WEB_AUTH_FAILURE_WINDOW_SEC", 900),
-            web_auth_audit_limit=env_int("WEB_AUTH_AUDIT_LIMIT", 500),
-            web_session_refresh_threshold_ratio=env_float("WEB_SESSION_REFRESH_THRESHOLD_RATIO", 0.5),
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
@@ -521,15 +399,8 @@ class Settings:
         )
 
     def redacted_status(self) -> dict[str, Any]:
-        file_env = load_env_file()
-        web_host = (file_env.get("WEB_HOST") or os.getenv("WEB_HOST", "127.0.0.1")).strip() or "127.0.0.1"
-        web_port_raw = (file_env.get("WEB_PORT") or os.getenv("WEB_PORT", "8080")).strip()
-        try:
-            web_port = int(web_port_raw)
-        except ValueError:
-            web_port = 8080
-        web_admin_token = (file_env.get("WEB_ADMIN_TOKEN") or os.getenv("WEB_ADMIN_TOKEN", "")).strip()
         return {
+            "scope": "telegram-bot-only",
             "base_dir": str(self.base_dir),
             "data_dir": str(self.data_dir),
             "env_file_exists": ENV_FILE.exists(),
@@ -550,28 +421,8 @@ class Settings:
                 "topic_intro_enable": self.tg_topic_intro_enable,
                 "topic_intro_pin": self.tg_topic_intro_pin,
                 "use_topic": self.tg_use_topic,
-                "public_web_base_url": self.public_web_base_url,
             },
-            "ai_assistant": {
-                "enable": self.ai_assistant_enable,
-                "bot_token_configured": bool(self.ai_bot_token),
-                "bot_username": self.ai_bot_username,
-                "admin_user_ids_configured": bool(self.ai_admin_user_ids),
-                "admin_user_count": len(self.ai_admin_user_ids),
-                "allow_group_chat": self.ai_allow_group_chat,
-                "allowed_chat_ids_configured": bool(self.ai_allowed_chat_ids),
-                "allowed_chat_count": len(self.ai_allowed_chat_ids),
-                "price_alerts_enable": self.ai_price_alerts_enable,
-                "price_alerts_db_file": str(self.ai_price_alerts_db_path),
-                "default_chat_id_configured": bool(self.ai_default_chat_id),
-                "alert_check_interval_sec": self.ai_alert_check_interval_sec,
-                "poll_timeout_sec": self.ai_poll_timeout_sec,
-                "provider_enable": self.ai_provider_enable,
-                "api_key_configured": bool(self.ai_api_key),
-                "base_url": self.ai_base_url,
-                "model": self.ai_model,
-                "request_timeout_sec": self.ai_request_timeout_sec,
-                "prompts_file": str(self.ai_prompts_path),
+            "bot_data": {
                 "signal_events_file": str(self.signal_events_path),
                 "signal_events_db_file": str(self.signal_events_db_path),
                 "signal_events_db_exists": self.signal_events_db_path.exists(),
@@ -596,12 +447,10 @@ class Settings:
                 "market_flow_fact_interval_sec": self.market_flow_fact_interval_sec,
                 "market_flow_fact_limit": self.market_flow_fact_limit,
                 "market_readiness_target_days": self.market_readiness_target_days,
-                "web_jobs_db_file": str(self.web_jobs_db_path),
-                "web_jobs_db_exists": self.web_jobs_db_path.exists(),
-                "web_jobs_retention_days": self.web_jobs_retention_days,
-                "web_jobs_limit": self.web_jobs_limit,
-                "web_jobs_stdout_tail_chars": self.web_jobs_stdout_tail_chars,
-                "web_jobs_stderr_tail_chars": self.web_jobs_stderr_tail_chars,
+                "news_events_db_file": str(self.news_events_db_path),
+                "news_events_db_exists": self.news_events_db_path.exists(),
+                "news_events_retention_days": self.news_events_retention_days,
+                "news_events_limit": self.news_events_limit,
                 "signal_events_limit": self.signal_events_limit,
                 "signal_events_retention_days": self.signal_events_retention_days,
             },
@@ -610,32 +459,6 @@ class Settings:
                 "cleanup_enable": self.cleanup_enable,
                 "cleanup_interval_sec": self.cleanup_interval_sec,
                 "cleanup_state_file": str(self.cleanup_state_path),
-            },
-            "web": {
-                "host": web_host,
-                "port": web_port,
-                "admin_token_configured": bool(web_admin_token),
-                "auth_mode": self.web_auth_mode,
-                "admin_username_configured": bool(self.web_admin_username),
-                "admin_password_hash_configured": bool(self.web_admin_password_hash),
-                "session_secret_configured": bool(self.web_session_secret),
-                "session_ttl_sec": self.web_session_ttl_sec,
-                "auth_cookie_name": self.web_auth_cookie_name,
-                "auth_max_failures": self.web_auth_max_failures,
-                "auth_lockout_sec": self.web_auth_lockout_sec,
-                "auth_failure_window_sec": self.web_auth_failure_window_sec,
-                "auth_audit_limit": self.web_auth_audit_limit,
-                "session_refresh_threshold_ratio": self.web_session_refresh_threshold_ratio,
-            },
-            "cockpit_v2": {
-                "mode": normalize_cockpit_v2_mode(self.cockpit_v2_mode),
-                "enabled": normalize_cockpit_v2_mode(self.cockpit_v2_mode) != "disabled",
-                "news_events_db_file": str(self.news_events_db_path),
-                "news_events_db_exists": self.news_events_db_path.exists(),
-                "agent_insights_db_file": str(self.agent_insights_db_path),
-                "agent_insights_db_exists": self.agent_insights_db_path.exists(),
-                "news_events_retention_days": self.news_events_retention_days,
-                "news_events_limit": self.news_events_limit,
             },
             "http": {
                 "futures_base_url": self.binance_fapi_base_url,

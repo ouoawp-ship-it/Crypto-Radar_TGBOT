@@ -68,7 +68,7 @@ def build_bot_market_context(item: dict[str, Any]) -> dict[str, Any]:
             "state": str(lifecycle.get("state") or "inactive"),
             "label": str(lifecycle.get("label") or "未触发"),
         },
-        "boundary": "仅追加 Web 工作站封闭窗口事实，不改变原 BOT 模块的触发阈值、去重或冷却。",
+        "boundary": "仅追加本地封闭窗口市场事实，不改变原 BOT 模块的触发阈值、去重或冷却。",
     }
 
 
@@ -344,7 +344,7 @@ def enrich_telegram_with_market_context(
         return text
     block = [
         "",
-        "<blockquote><b>Web 市场事实增强</b></blockquote>",
+        "<blockquote><b>BOT 市场事实增强</b></blockquote>",
         *[line for context in contexts for line in _context_lines(context)],
         "<i>封闭窗口参考，不改变本模块原触发阈值；不构成投资建议。</i>",
     ]
