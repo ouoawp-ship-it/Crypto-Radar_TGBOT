@@ -210,6 +210,24 @@ def bot_market_contexts_for_records(
     return contexts
 
 
+def closed_market_contexts_for_symbols(
+    settings: Any,
+    symbols: list[str],
+    *,
+    now_ts: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return Binance-backed closed 15m market facts without the Telegram 3-symbol cap."""
+
+    normalized = list(dict.fromkeys(
+        symbol
+        for symbol in (_symbol(value) for value in symbols)
+        if symbol
+    ))
+    if not normalized:
+        return {}
+    return _load_market_contexts(settings, normalized, now_ts=now_ts)
+
+
 def _direction_label(value: Any) -> str:
     return {"long": "偏多", "short": "偏空", "neutral": "中性"}.get(str(value or "neutral"), "中性")
 
@@ -305,5 +323,6 @@ __all__ = [
     "BOT_MARKET_CONTEXT_SCHEMA_VERSION",
     "bot_market_contexts_for_records",
     "build_bot_market_context",
+    "closed_market_contexts_for_symbols",
     "enrich_telegram_with_market_context",
 ]

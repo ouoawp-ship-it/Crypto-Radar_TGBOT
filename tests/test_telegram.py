@@ -505,6 +505,67 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(first_payload["reply_to_message_id"], 111)
             self.assertNotIn("reply_to_message_id", second_payload)
 
+    def test_send_photo_bytes_uses_multipart_without_writing_a_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_use_topic=True,
+                tg_push_retry=1,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            png = b"\x89PNG\r\n\x1a\nmemory-only"
+
+            class Response:
+                status_code = 200
+
+                @staticmethod
+                def json() -> dict[str, object]:
+                    return {"result": {"message_id": 444}}
+
+            with (
+                patch.object(gateway, "_ensure_topic_id_for_template", return_value="12"),
+                patch.object(gateway, "_ensure_topic_intro"),
+                patch("paopao_radar.telegram.requests.post", return_value=Response()) as post_mock,
+            ):
+                result = gateway.send_photo_bytes(
+                    png,
+                    caption="<b>TEST</b>",
+                    template_id="TG_LAUNCH_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result.status, "sent")
+            self.assertEqual(result.message_ids, [444])
+            request = post_mock.call_args.kwargs
+            self.assertEqual(request["data"]["message_thread_id"], 12)
+            self.assertEqual(request["files"]["photo"][1], png)
+            self.assertEqual(request["files"]["photo"][2], "image/png")
+            self.assertEqual(list(Path(tmp).glob("*.png")), [])
+
+    def test_send_photo_bytes_rejects_non_png_before_network(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            with patch("paopao_radar.telegram.requests.post") as post_mock:
+                result = gateway.send_photo_bytes(
+                    b"not-an-image",
+                    caption="TEST",
+                    template_id="TG_LAUNCH_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.reason, "invalid_png")
+            post_mock.assert_not_called()
+
     def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
