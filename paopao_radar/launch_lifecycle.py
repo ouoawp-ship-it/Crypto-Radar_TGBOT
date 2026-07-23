@@ -51,11 +51,18 @@ class LaunchLifecycleStore:
     start_score: int = 60
     invalid_windows_required: int = 2
     window_sec: int = 15 * 60
+    package_enabled: bool = False
+    package_score_delta: int = 15
+    package_price_delta_pct: float = 3.0
+    package_oi_delta_pct: float = 5.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
         object.__setattr__(self, "invalid_windows_required", max(1, int(self.invalid_windows_required)))
         object.__setattr__(self, "window_sec", max(60, int(self.window_sec)))
+        object.__setattr__(self, "package_score_delta", max(1, int(self.package_score_delta)))
+        object.__setattr__(self, "package_price_delta_pct", max(0.0, float(self.package_price_delta_pct)))
+        object.__setattr__(self, "package_oi_delta_pct", max(0.0, float(self.package_oi_delta_pct)))
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -91,6 +98,11 @@ class LaunchLifecycleStore:
                 invalid_window_count INTEGER NOT NULL DEFAULT 0,
                 breakout_below_count INTEGER NOT NULL DEFAULT 0,
                 breakout_price REAL,
+                last_published_observation_id INTEGER,
+                latest_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                cleanup_pending_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                package_version INTEGER NOT NULL DEFAULT 0,
+                package_updated_at INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(symbol, cycle_no)
@@ -130,6 +142,9 @@ class LaunchLifecycleStore:
                 primary_data_source TEXT NOT NULL,
                 data_confirmation_json TEXT NOT NULL DEFAULT '{}',
                 reasons_json TEXT NOT NULL DEFAULT '[]',
+                spot_active_net_usd REAL,
+                futures_active_net_usd REAL,
+                funds_direction TEXT NOT NULL DEFAULT 'unknown',
                 price_vs_first_pct REAL,
                 oi_vs_first_pct REAL,
                 funding_vs_first_pct_point REAL,
@@ -142,10 +157,38 @@ class LaunchLifecycleStore:
                 funding_8h_vs_previous_pct_point REAL,
                 funding_interval_vs_previous_hours INTEGER NOT NULL DEFAULT 0,
                 score_vs_previous INTEGER NOT NULL DEFAULT 0,
+                checkpoint_no INTEGER,
+                checkpoint_reasons_json TEXT NOT NULL DEFAULT '[]',
+                published_at INTEGER,
                 UNIQUE(cycle_id, window_end_ts),
                 FOREIGN KEY(cycle_id) REFERENCES launch_lifecycle_cycles(id) ON DELETE CASCADE
             )
             """
+        )
+        cycle_columns = {
+            "last_published_observation_id": "INTEGER",
+            "latest_message_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "cleanup_pending_message_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "package_version": "INTEGER NOT NULL DEFAULT 0",
+            "package_updated_at": "INTEGER",
+        }
+        observation_columns = {
+            "spot_active_net_usd": "REAL",
+            "futures_active_net_usd": "REAL",
+            "funds_direction": "TEXT NOT NULL DEFAULT 'unknown'",
+            "checkpoint_no": "INTEGER",
+            "checkpoint_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
+            "published_at": "INTEGER",
+        }
+        LaunchLifecycleStore._ensure_columns(
+            conn,
+            "launch_lifecycle_cycles",
+            cycle_columns,
+        )
+        LaunchLifecycleStore._ensure_columns(
+            conn,
+            "launch_lifecycle_observations",
+            observation_columns,
         )
         conn.execute(
             """
@@ -166,6 +209,26 @@ class LaunchLifecycleStore:
             ON launch_lifecycle_observations(cycle_id, window_end_ts)
             """
         )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_launch_lifecycle_observations_checkpoint
+            ON launch_lifecycle_observations(cycle_id, checkpoint_no)
+            """
+        )
+
+    @staticmethod
+    def _ensure_columns(
+        conn: sqlite3.Connection,
+        table: str,
+        columns: Mapping[str, str],
+    ) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def list_active_symbols(self, *, limit: int | None = None) -> list[str]:
         sql = (
@@ -212,8 +275,201 @@ class LaunchLifecycleStore:
                     str(item.pop("data_confirmation_json") or "{}")
                 )
                 item["reasons"] = json.loads(str(item.pop("reasons_json") or "[]"))
+                item["checkpoint_reasons"] = json.loads(
+                    str(item.pop("checkpoint_reasons_json") or "[]")
+                )
                 items.append(item)
             return items
+
+    def list_pending_cleanups(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, symbol, cycle_no, cleanup_pending_message_ids_json
+                FROM launch_lifecycle_cycles
+                WHERE cleanup_pending_message_ids_json != '[]'
+                ORDER BY package_updated_at ASC, id ASC
+                LIMIT ?
+                """,
+                (max(0, int(limit)),),
+            ).fetchall()
+            return [
+                {
+                    "cycle_id": int(row["id"]),
+                    "symbol": str(row["symbol"]),
+                    "cycle_no": int(row["cycle_no"]),
+                    "message_ids": self._message_ids(
+                        row["cleanup_pending_message_ids_json"]
+                    ),
+                }
+                for row in rows
+            ]
+
+    def commit_package(
+        self,
+        *,
+        cycle_id: int,
+        observation_id: int,
+        message_ids: list[int],
+        checkpoint_reasons: list[str],
+        published_at: int,
+    ) -> dict[str, Any]:
+        normalized = self._message_ids(message_ids)
+        if not normalized:
+            return {"status": "rejected", "reason": "missing_message_ids"}
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cycle = conn.execute(
+                "SELECT * FROM launch_lifecycle_cycles WHERE id = ?",
+                (int(cycle_id),),
+            ).fetchone()
+            observation = conn.execute(
+                """
+                SELECT * FROM launch_lifecycle_observations
+                WHERE id = ? AND cycle_id = ?
+                """,
+                (int(observation_id), int(cycle_id)),
+            ).fetchone()
+            if cycle is None or observation is None:
+                return {"status": "rejected", "reason": "lifecycle_record_not_found"}
+            if observation["checkpoint_no"] is not None:
+                return {
+                    "status": "idempotent",
+                    "cycle_id": int(cycle_id),
+                    "checkpoint_no": int(observation["checkpoint_no"]),
+                    "delete_message_ids": self._message_ids(
+                        cycle["cleanup_pending_message_ids_json"]
+                    ),
+                }
+
+            checkpoint_no = int(
+                conn.execute(
+                    """
+                    SELECT COALESCE(MAX(checkpoint_no), 0) + 1
+                    FROM launch_lifecycle_observations
+                    WHERE cycle_id = ?
+                    """,
+                    (int(cycle_id),),
+                ).fetchone()[0]
+            )
+            previous_ids = self._message_ids(cycle["latest_message_ids_json"])
+            pending_ids = self._message_ids(
+                cycle["cleanup_pending_message_ids_json"]
+            )
+            delete_ids = [
+                message_id
+                for message_id in dict.fromkeys([*pending_ids, *previous_ids])
+                if message_id not in normalized
+            ]
+            reasons = [
+                str(reason)
+                for reason in checkpoint_reasons
+                if str(reason).strip()
+            ]
+            conn.execute(
+                """
+                UPDATE launch_lifecycle_observations
+                SET checkpoint_no = ?,
+                    checkpoint_reasons_json = ?,
+                    published_at = ?
+                WHERE id = ?
+                """,
+                (
+                    checkpoint_no,
+                    json.dumps(reasons, ensure_ascii=False),
+                    int(published_at),
+                    int(observation_id),
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE launch_lifecycle_cycles
+                SET last_published_observation_id = ?,
+                    latest_message_ids_json = ?,
+                    cleanup_pending_message_ids_json = ?,
+                    package_version = package_version + 1,
+                    package_updated_at = ?,
+                    updated_at = MAX(updated_at, ?)
+                WHERE id = ?
+                """,
+                (
+                    int(observation_id),
+                    json.dumps(normalized),
+                    json.dumps(delete_ids),
+                    int(published_at),
+                    int(published_at),
+                    int(cycle_id),
+                ),
+            )
+            return {
+                "status": "committed",
+                "cycle_id": int(cycle_id),
+                "checkpoint_no": checkpoint_no,
+                "message_ids": normalized,
+                "delete_message_ids": delete_ids,
+            }
+
+    def complete_package_cleanup(
+        self,
+        *,
+        cycle_id: int,
+        deleted_ids: list[int],
+        failed_ids: list[int],
+        updated_at: int,
+    ) -> dict[str, Any]:
+        deleted = set(self._message_ids(deleted_ids))
+        failed = self._message_ids(failed_ids)
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cycle = conn.execute(
+                "SELECT * FROM launch_lifecycle_cycles WHERE id = ?",
+                (int(cycle_id),),
+            ).fetchone()
+            if cycle is None:
+                return {"status": "not_found", "remaining_ids": failed}
+            pending = self._message_ids(
+                cycle["cleanup_pending_message_ids_json"]
+            )
+            remaining = [
+                message_id
+                for message_id in dict.fromkeys([*failed, *pending])
+                if message_id not in deleted
+            ]
+            conn.execute(
+                """
+                UPDATE launch_lifecycle_cycles
+                SET cleanup_pending_message_ids_json = ?,
+                    package_updated_at = ?,
+                    updated_at = MAX(updated_at, ?)
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(remaining),
+                    int(updated_at),
+                    int(updated_at),
+                    int(cycle_id),
+                ),
+            )
+            return {
+                "status": "complete" if not remaining else "pending",
+                "remaining_ids": remaining,
+            }
+
+    @staticmethod
+    def _message_ids(value: Any) -> list[int]:
+        raw = value
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw = []
+        if not isinstance(raw, (list, tuple, set)):
+            raw = []
+        return list(dict.fromkeys(
+            int(message_id)
+            for message_id in raw
+            if isinstance(message_id, int) or str(message_id).isdigit()
+        ))
 
     def record_observation(
         self,
@@ -576,6 +832,17 @@ class LaunchLifecycleStore:
                 ensure_ascii=False,
             ),
             "reasons_json": json.dumps(list(snapshot.get("reasons") or []), ensure_ascii=False),
+            "spot_active_net_usd": (
+                _number(snapshot.get("spot_active_net_usd"))
+                if snapshot.get("spot_active_net_usd") is not None
+                else None
+            ),
+            "futures_active_net_usd": (
+                _number(snapshot.get("futures_active_net_usd"))
+                if snapshot.get("futures_active_net_usd") is not None
+                else None
+            ),
+            "funds_direction": str(snapshot.get("funds_direction") or "unknown"),
             "price_vs_first_pct": _round_optional(
                 _percent_change(closed_price, _number(first_row["closed_price"]))
             ),
@@ -611,14 +878,17 @@ class LaunchLifecycleStore:
                 funding_interval_hours - int(previous_row["funding_interval_hours"])
             ),
             "score_vs_previous": score - int(previous_row["score"]),
+            "checkpoint_no": None,
+            "checkpoint_reasons_json": "[]",
+            "published_at": None,
             "_invalid_window_count": invalid_count,
             "_breakout_below_count": breakout_below_count,
             "_cycle_breakout_price": cycle_breakout_price if cycle_breakout_price > 0 else None,
             "_end_reason": end_reason,
         }
 
-    @staticmethod
     def _result(
+        self,
         conn: sqlite3.Connection,
         *,
         cycle_id: int,
@@ -629,9 +899,15 @@ class LaunchLifecycleStore:
             "SELECT * FROM launch_lifecycle_cycles WHERE id = ?",
             (int(cycle_id),),
         ).fetchone()
+        publication = self._publication_context(
+            conn,
+            cycle=cycle,
+            observation=observation,
+        )
         return {
             "status": status,
             "cycle_id": int(cycle_id),
+            "observation_id": int(observation["id"]),
             "cycle_no": int(cycle["cycle_no"]),
             "symbol": str(cycle["symbol"]),
             "cycle_status": str(cycle["status"]),
@@ -663,6 +939,154 @@ class LaunchLifecycleStore:
                 "funding_interval_hours": int(observation["funding_interval_vs_previous_hours"]),
                 "score": int(observation["score_vs_previous"]),
             },
+            "publication": publication,
+        }
+
+    def _publication_context(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        cycle: sqlite3.Row,
+        observation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        current = dict(observation)
+        first_row = conn.execute(
+            """
+            SELECT * FROM launch_lifecycle_observations
+            WHERE cycle_id = ?
+            ORDER BY observation_no ASC
+            LIMIT 1
+            """,
+            (int(cycle["id"]),),
+        ).fetchone()
+        last_published = None
+        if cycle["last_published_observation_id"] is not None:
+            last_published = conn.execute(
+                """
+                SELECT * FROM launch_lifecycle_observations
+                WHERE id = ? AND cycle_id = ?
+                """,
+                (
+                    int(cycle["last_published_observation_id"]),
+                    int(cycle["id"]),
+                ),
+            ).fetchone()
+        reasons = self._publication_reasons(current, last_published)
+        checkpoints = conn.execute(
+            """
+            SELECT * FROM launch_lifecycle_observations
+            WHERE cycle_id = ? AND checkpoint_no IS NOT NULL
+            ORDER BY checkpoint_no ASC
+            """,
+            (int(cycle["id"]),),
+        ).fetchall()
+        checkpoint_items = [
+            self._observation_summary(row)
+            for row in checkpoints
+        ]
+        current_checkpoint_no = (
+            int(current["checkpoint_no"])
+            if current.get("checkpoint_no") is not None
+            else int(cycle["package_version"] or 0) + 1
+        )
+        return {
+            "enabled": bool(self.package_enabled),
+            "publish_required": bool(self.package_enabled and reasons),
+            "checkpoint_no": current_checkpoint_no,
+            "checkpoint_reasons": reasons,
+            "first": self._observation_summary(first_row),
+            "previous_published": self._observation_summary(last_published),
+            "current": self._observation_summary(current),
+            "checkpoints": checkpoint_items,
+            "latest_message_ids": self._message_ids(
+                cycle["latest_message_ids_json"]
+            ),
+            "cleanup_pending_message_ids": self._message_ids(
+                cycle["cleanup_pending_message_ids_json"]
+            ),
+        }
+
+    def _publication_reasons(
+        self,
+        current: Mapping[str, Any],
+        previous: sqlite3.Row | None,
+    ) -> list[str]:
+        if not self.package_enabled:
+            return []
+        if current.get("checkpoint_no") is not None:
+            return []
+        if previous is None:
+            return ["cycle_opened"]
+
+        reasons: list[str] = []
+        current_stage = str(current.get("lifecycle_stage") or "idle")
+        previous_stage = str(previous["lifecycle_stage"] or "idle")
+        if current_stage != previous_stage:
+            reasons.append("stage_changed")
+        if abs(int(current.get("score") or 0) - int(previous["score"] or 0)) >= self.package_score_delta:
+            reasons.append("score_delta")
+        price_delta = _percent_change(
+            _number(current.get("closed_price")),
+            _number(previous["closed_price"]),
+        )
+        if price_delta is not None and abs(price_delta) >= self.package_price_delta_pct:
+            reasons.append("price_delta")
+        oi_delta = _percent_change(
+            _number(current.get("closed_oi_usd")),
+            _number(previous["closed_oi_usd"]),
+        )
+        if oi_delta is not None and abs(oi_delta) >= self.package_oi_delta_pct:
+            reasons.append("oi_delta")
+        current_interval = int(_number(current.get("funding_interval_hours")))
+        previous_interval = int(_number(previous["funding_interval_hours"]))
+        if (
+            current_interval > 0
+            and previous_interval > 0
+            and current_interval != previous_interval
+        ):
+            reasons.append("funding_interval_changed")
+        current_funds = str(current.get("funds_direction") or "unknown")
+        previous_funds = str(previous["funds_direction"] or "unknown")
+        if current_funds.startswith("divergence_") and current_funds != previous_funds:
+            reasons.append("funds_divergence")
+        return reasons
+
+    @staticmethod
+    def _observation_summary(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "observation_id": int(row["id"]),
+            "observation_no": int(row["observation_no"]),
+            "checkpoint_no": (
+                int(row["checkpoint_no"])
+                if row["checkpoint_no"] is not None
+                else None
+            ),
+            "window_end_ts": int(row["window_end_ts"]),
+            "stage": str(row["lifecycle_stage"]),
+            "status": str(row["lifecycle_status"]),
+            "score": int(row["score"]),
+            "price": _number(row["closed_price"]),
+            "oi_usd": _number(row["closed_oi_usd"]),
+            "funding_pct": _number(row["funding_pct"]),
+            "funding_interval_hours": int(_number(row["funding_interval_hours"])),
+            "spot_active_net_usd": (
+                _number(row["spot_active_net_usd"])
+                if row["spot_active_net_usd"] is not None
+                else None
+            ),
+            "futures_active_net_usd": (
+                _number(row["futures_active_net_usd"])
+                if row["futures_active_net_usd"] is not None
+                else None
+            ),
+            "funds_direction": str(row["funds_direction"] or "unknown"),
+            "checkpoint_reasons": (
+                json.loads(str(row["checkpoint_reasons_json"] or "[]"))
+                if row["checkpoint_reasons_json"] is not None
+                else []
+            ),
         }
 
 
