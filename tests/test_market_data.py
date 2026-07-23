@@ -147,6 +147,19 @@ class MarketCapSourceTests(unittest.TestCase):
         self.assertEqual(session.get.call_count, 2)
         session.close.assert_called_once_with()
 
+    def test_http_client_merges_provider_auth_headers_without_logging_them(self) -> None:
+        with TemporaryDirectory() as tmp:
+            session = Mock()
+            session.get.return_value.status_code = 200
+            session.get.return_value.json.return_value = {"ok": True}
+            client = HttpClient(Settings(data_dir=Path(tmp)), DataQuality(), session=session)
+
+            client.get_json("https://example.test/private", headers={"api_key": "secret"})
+
+        headers = session.get.call_args.kwargs["headers"]
+        self.assertEqual(headers["api_key"], "secret")
+        self.assertNotIn("secret", str(client.diagnostics()))
+
     def test_http_client_does_not_close_injected_session(self) -> None:
         with TemporaryDirectory() as tmp:
             session = Mock()

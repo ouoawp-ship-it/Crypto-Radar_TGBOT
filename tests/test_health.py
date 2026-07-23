@@ -95,6 +95,33 @@ class RuntimeHealthTests(unittest.TestCase):
         signal = next(item for item in checks if item["name"] == "signal_store_integrity")
         self.assertEqual(signal["status"], "fail")
 
+    def test_derivatives_validation_reports_partial_and_invalid_configuration(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial = self.make_settings(root)
+            partial = Settings(**{
+                **partial.__dict__,
+                "coinalyze_enable": True,
+                "coinalyze_api_key": "configured",
+            })
+            partial_check = next(
+                item for item in runtime_health_checks(partial, JsonStore(root), now_ts=10_000)
+                if item["name"] == "derivatives_validation"
+            )
+
+            invalid = Settings(**{
+                **partial.__dict__,
+                "coinglass_enable": True,
+                "coinglass_api_key": "",
+            })
+            invalid_check = next(
+                item for item in runtime_health_checks(invalid, JsonStore(root), now_ts=10_000)
+                if item["name"] == "derivatives_validation"
+            )
+
+        self.assertEqual(partial_check["status"], "warn")
+        self.assertEqual(invalid_check["status"], "fail")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,11 +59,13 @@ class EnvSyncTests(unittest.TestCase):
             example = Path(tmp) / ".env.oi.example"
             env.write_text(
                 "TG_BOT_TOKEN=secret\nTG_CHAT_ID=-1001234567890\n"
+                "COINALYZE_API_KEY=ca-secret\n"
                 "RADAR_SUMMARY_MIN_INTERVAL_SEC=1800\nWEB_PORT=8080\nCUSTOM_KEEP=1\n",
                 encoding="utf-8",
             )
             example.write_text(
-                "TG_BOT_TOKEN=\nTG_CHAT_ID=\nRADAR_SUMMARY_MIN_INTERVAL_SEC=21600\n",
+                "TG_BOT_TOKEN=\nTG_CHAT_ID=\nCOINALYZE_API_KEY=\n"
+                "RADAR_SUMMARY_MIN_INTERVAL_SEC=21600\n",
                 encoding="utf-8",
             )
             result = module.sync_env(env, example)
@@ -71,6 +73,7 @@ class EnvSyncTests(unittest.TestCase):
 
         self.assertIn("TG_BOT_TOKEN=secret", text)
         self.assertIn("TG_CHAT_ID=-1001234567890", text)
+        self.assertIn("COINALYZE_API_KEY=ca-secret", text)
         self.assertIn("RADAR_SUMMARY_MIN_INTERVAL_SEC=21600", text)
         self.assertIn("CUSTOM_KEEP=1", text)
         self.assertNotIn("WEB_PORT", text)

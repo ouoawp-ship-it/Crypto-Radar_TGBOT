@@ -134,6 +134,9 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "spot_inflow_usd", "spot_outflow_usd", "futures_inflow_usd",
     "futures_outflow_usd", "data_status", "window_sec", "observed_at", "source",
     "exchange", "grade", "scenario", "dedup_key", "code", "url",
+    "data_quality_status", "data_quality_score", "quality_gate",
+    "primary_data_source", "oi_source_agreement_score", "oi_binance_1h",
+    "predicted_funding_pct", "funding_acceleration_pct",
 })
 
 

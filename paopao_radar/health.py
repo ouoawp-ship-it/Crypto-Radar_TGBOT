@@ -178,6 +178,48 @@ def _disk_check(settings: Settings) -> dict[str, Any]:
     )
 
 
+def _derivatives_provider_check(settings: Settings) -> dict[str, Any]:
+    missing_keys: list[str] = []
+    if settings.coinglass_enable and not settings.coinglass_api_key:
+        missing_keys.append("CoinGlass")
+    if settings.coinalyze_enable and not settings.coinalyze_api_key:
+        missing_keys.append("Coinalyze")
+    if missing_keys:
+        return _check(
+            "derivatives_validation",
+            "fail",
+            f"已启用但缺少 API Key：{', '.join(missing_keys)}",
+        )
+
+    active = [
+        name for name, ready in (
+            ("CoinGlass", settings.coinglass_enable and bool(settings.coinglass_api_key)),
+            ("Coinalyze", settings.coinalyze_enable and bool(settings.coinalyze_api_key)),
+        )
+        if ready
+    ]
+    if len(active) == 2:
+        return _check(
+            "derivatives_validation",
+            "ok",
+            "CoinGlass 主源与 Coinalyze 校验源均已配置",
+            active_sources=active,
+        )
+    if len(active) == 1:
+        return _check(
+            "derivatives_validation",
+            "warn",
+            f"当前仅启用 {active[0]}，多源一致性将降级运行",
+            active_sources=active,
+        )
+    return _check(
+        "derivatives_validation",
+        "warn",
+        "衍生品外部校验源未启用，继续使用交易所原生数据",
+        active_sources=[],
+    )
+
+
 def runtime_health_checks(
     settings: Settings,
     store: JsonStore,
@@ -193,6 +235,7 @@ def runtime_health_checks(
         _quick_check("news_store_integrity", settings.news_events_db_path),
         _market_snapshot_check(settings, now),
         _realtime_check(settings, now),
+        _derivatives_provider_check(settings),
         _disk_check(settings),
     ]
     runtime = store.load(settings.runtime_status_path, {})

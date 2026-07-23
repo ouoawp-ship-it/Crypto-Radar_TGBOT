@@ -236,6 +236,10 @@ UPSTREAM_SOURCE_METRICS = UpstreamSourceMetrics()
 
 def _source_id_from_quality_key(quality_key: str) -> str:
     key = str(quality_key or "http").strip()
+    if key.startswith("coinglass"):
+        return "coinglass_derivatives"
+    if key.startswith("coinalyze"):
+        return "coinalyze_derivatives"
     if key.startswith("funding:"):
         exchange = key.split(":", 1)[1].strip().lower()
         return "binance_futures_public" if exchange == "binance" else f"{exchange}_funding_public"
@@ -309,6 +313,7 @@ class HttpClient:
         timeout: Optional[int] = None,
         retries: Optional[int] = None,
         cache: bool = True,
+        headers: Optional[dict[str, str]] = None,
     ) -> Any:
         now = time.time()
         fuse_key = quality_key
@@ -338,7 +343,10 @@ class HttpClient:
         started_at = time.perf_counter()
         for attempt in range(1, retry_count + 1):
             try:
-                response = self.session.get(url, params=params, headers=HTTP_HEADERS, timeout=timeout_sec)
+                request_headers = dict(HTTP_HEADERS)
+                if headers:
+                    request_headers.update(headers)
+                response = self.session.get(url, params=params, headers=request_headers, timeout=timeout_sec)
                 if response.status_code == 200:
                     data = response.json()
                     with self._state_lock:

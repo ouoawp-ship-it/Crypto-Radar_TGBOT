@@ -17,6 +17,17 @@ TG_BOT_TOKEN=123456:...
 TG_CHAT_ID=-1001234567890
 ```
 
+如需启用 P1 衍生品多源校验，再填写：
+
+```dotenv
+COINGLASS_ENABLE=true
+COINGLASS_API_KEY=...
+COINALYZE_ENABLE=true
+COINALYZE_API_KEY=...
+```
+
+只启用其中一套不会阻止服务启动，但健康检查会报告降级；启用某数据源却未填写对应 Key 会被健康检查判定为配置失败。
+
 安装脚本会创建 `.venv`、安装锁定依赖、执行编译和单元测试，并安装三个 systemd 单元：
 
 - `paopao-radar`：主 BOT 信号推送服务。

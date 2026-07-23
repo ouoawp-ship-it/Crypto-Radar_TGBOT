@@ -148,6 +148,11 @@ class Settings:
     coinglass_api_key: str = ""
     coinglass_api_base_url: str = "https://open-api-v4.coinglass.com"
     coinglass_rate_limit_per_minute: int = 80
+    coinalyze_enable: bool = False
+    coinalyze_api_key: str = ""
+    coinalyze_base_url: str = "https://api.coinalyze.net/v1"
+    coinalyze_rate_limit_per_minute: int = 40
+    derivatives_validation_symbol_limit: int = 8
     signal_events_limit: int = 5000
     signal_events_retention_days: int = 60
     runtime_status_path: Path = BASE_DIR / "data" / "runtime_status.json"
@@ -327,6 +332,16 @@ class Settings:
                 "COINGLASS_API_BASE_URL", "https://open-api-v4.coinglass.com"
             ).rstrip("/"),
             coinglass_rate_limit_per_minute=env_int("COINGLASS_RATE_LIMIT_PER_MINUTE", 80),
+            coinalyze_enable=env_bool("COINALYZE_ENABLE", False),
+            coinalyze_api_key=os.getenv("COINALYZE_API_KEY", "").strip(),
+            coinalyze_base_url=os.getenv(
+                "COINALYZE_BASE_URL", "https://api.coinalyze.net/v1"
+            ).rstrip("/"),
+            coinalyze_rate_limit_per_minute=env_int(
+                "COINALYZE_RATE_LIMIT_PER_MINUTE",
+                env_int("COINALYZE_REQUEST_BUDGET", 40),
+            ),
+            derivatives_validation_symbol_limit=env_int("DERIVATIVES_VALIDATION_SYMBOL_LIMIT", 8),
             signal_events_limit=env_int("SIGNAL_EVENTS_LIMIT", 5000),
             signal_events_retention_days=env_int("SIGNAL_EVENTS_RETENTION_DAYS", 60),
             runtime_status_path=data_path(data_dir, "RUNTIME_STATUS_FILE", "runtime_status.json"),
@@ -532,6 +547,13 @@ class Settings:
                 "decay_quiet_scans": self.funding_alert_decay_quiet_scans,
                 "end_quiet_scans": self.funding_alert_end_quiet_scans,
                 "state_file": str(self.funding_alert_state_path),
+            },
+            "derivatives_validation": {
+                "coinglass_enabled": self.coinglass_enable,
+                "coinglass_key_configured": bool(self.coinglass_api_key),
+                "coinalyze_enabled": self.coinalyze_enable,
+                "coinalyze_key_configured": bool(self.coinalyze_api_key),
+                "symbol_limit": self.derivatives_validation_symbol_limit,
             },
             "launch": {
                 "scan_limit": self.launch_scan_limit,

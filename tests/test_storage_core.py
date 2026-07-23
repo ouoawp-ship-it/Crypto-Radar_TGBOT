@@ -394,6 +394,22 @@ class ConfigLoadTests(unittest.TestCase):
         self.assertEqual(settings.coinglass_api_base_url, "https://open-api-v4.coinglass.com")
         self.assertEqual(settings.coinglass_rate_limit_per_minute, 80)
 
+    def test_settings_loads_coinalyze_validation_configuration(self) -> None:
+        with patch.dict(os.environ, {
+            "COINALYZE_ENABLE": "true",
+            "COINALYZE_API_KEY": "ca-test-key",
+            "COINALYZE_BASE_URL": "https://api.coinalyze.net/v1/",
+            "COINALYZE_RATE_LIMIT_PER_MINUTE": "40",
+            "DERIVATIVES_VALIDATION_SYMBOL_LIMIT": "6",
+        }):
+            settings = Settings.load()
+
+        self.assertTrue(settings.coinalyze_enable)
+        self.assertEqual(settings.coinalyze_api_key, "ca-test-key")
+        self.assertEqual(settings.coinalyze_base_url, "https://api.coinalyze.net/v1")
+        self.assertEqual(settings.coinalyze_rate_limit_per_minute, 40)
+        self.assertEqual(settings.derivatives_validation_symbol_limit, 6)
+
     def test_load_env_file_overrides_empty_process_value_with_file_value(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"

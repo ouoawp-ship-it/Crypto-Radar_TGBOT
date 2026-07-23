@@ -332,6 +332,26 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn("分数图例", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
 
+    def test_launch_oi_conflict_blocks_score_and_push_stage(self) -> None:
+        item = {
+            "score": 95,
+            "oi_1h": 8.0,
+            "price_1h": 6.0,
+            "reasons": ["1h OI +8.0%"],
+        }
+
+        RadarEngine._apply_launch_oi_validation(item, {
+            "status": "conflict",
+            "score": 10,
+            "gate": "block",
+            "primary_source": "coinglass",
+            "selected_change_pct": -3.0,
+        })
+
+        self.assertEqual(item["score"], 0)
+        self.assertEqual(item["quality_gate"], "block")
+        self.assertIn("已阻止启动推送", item["reasons"][0])
+
     def test_launch_alert_formats_multi_exchange_funding(self) -> None:
         with TemporaryDirectory() as tmp:
             engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))

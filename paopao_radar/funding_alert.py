@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .derivatives_quality import DerivativesQualityService
 from .funding_sources import (
     MultiExchangeFundingClient,
     funding_cycle_text,
@@ -330,7 +331,6 @@ class FundingAlertEngine:
                 decay_alert = self._maybe_decay_alert(symbol, candidate, rows, state, now_ts)
                 if decay_alert:
                     alerts.append(decay_alert)
-                    self._mark_alert(decay_alert["dedup_key"], state, now_ts)
                 continue
 
             full_rows = full_rows_by_symbol.get(symbol, [])
@@ -350,9 +350,46 @@ class FundingAlertEngine:
             }
             self._update_symbol_state(symbol, rows, state, now_ts, candidate, classification, tracking)
             if self._cooldown_ok(alert["dedup_key"], state, now_ts):
-                alert["text"] = self._format_alert(alert)
                 alerts.append(alert)
-                self._mark_alert(alert["dedup_key"], state, now_ts)
+
+        quality_service = DerivativesQualityService(self.settings, http)
+        funding_validations = quality_service.validate_funding_rows(alerts, now_ts=now_ts)
+        validated_alerts: list[dict[str, Any]] = []
+        for alert in alerts:
+            symbol = str(alert.get("symbol") or "").upper()
+            validation = funding_validations.get(symbol)
+            if validation is None:
+                alert.update({
+                    "data_quality_status": "not_checked_budget",
+                    "data_quality_score": 0,
+                    "quality_gate": "degraded",
+                    "primary_data_source": "native_multi_exchange",
+                })
+            else:
+                alert["funding_validation"] = validation
+                alert["data_quality_status"] = validation.get("status", "missing")
+                alert["data_quality_score"] = validation.get("score", 0)
+                alert["quality_gate"] = validation.get("gate", "degraded")
+                alert["primary_data_source"] = validation.get("primary_source", "binance")
+                alert["predicted_funding_pct"] = validation.get("predicted_funding_pct")
+                alert["funding_acceleration_pct"] = validation.get("funding_acceleration_pct")
+
+            classification = alert.get("classification")
+            extreme_count = to_int(classification.get("extreme_count")) if isinstance(classification, dict) else 0
+            native_confirmed = extreme_count >= self.settings.funding_alert_min_exchange_count
+            if validation is None and quality_service.configured:
+                if native_confirmed:
+                    alert["quality_gate"] = "native_multi_exchange_only"
+                else:
+                    continue
+            if alert.get("quality_gate") == "block" and native_confirmed:
+                alert["quality_gate"] = "native_multi_exchange_override"
+            elif alert.get("quality_gate") == "block":
+                continue
+            alert["text"] = self._format_alert(alert)
+            validated_alerts.append(alert)
+            self._mark_alert(str(alert.get("dedup_key") or ""), state, now_ts)
+        alerts = validated_alerts
 
         state["updated_at"] = datetime.now(CST).isoformat(timespec="seconds")
         state["last_scanned"] = scanned
@@ -371,6 +408,7 @@ class FundingAlertEngine:
                 "exchanges": list(self.settings.funding_alert_exchanges),
                 "scan_metrics": scan_metrics,
                 "history_metrics": history_metrics,
+                "derivatives_quality": quality_service.summary(funding_validations),
             },
         }
 
@@ -750,6 +788,11 @@ class FundingAlertEngine:
             else "暂无数据（未知流动性）"
         )
         judgment = self._judgment_text(classification, stage)
+        quality_status = str(alert.get("data_quality_status") or "not_checked")
+        quality_score = to_float(alert.get("data_quality_score"))
+        quality_gate = str(alert.get("quality_gate") or "degraded")
+        predicted = alert.get("predicted_funding_pct")
+        acceleration = alert.get("funding_acceleration_pct")
         lines = [
             f"⚠️ {tg_bold('资金费率警报')} {coin_link(symbol)}",
             f"⏰ {cst_now_text()}",
@@ -762,6 +805,15 @@ class FundingAlertEngine:
             tg_quote("市场概况"),
             f"市值: {tg_escape(market_cap_text)}",
             f"24h成交额: {tg_escape(liquidity_text)}",
+            f"数据校验: {tg_escape(quality_status)} / {quality_score:.0f}分 / {tg_escape(quality_gate)}",
+            *(
+                [
+                    f"Coinalyze预测费率: {to_float(predicted):+.3f}%",
+                    f"预测变化: {to_float(acceleration):+.3f}%",
+                ]
+                if predicted is not None and acceleration is not None
+                else []
+            ),
             "",
             f"{tg_bold('交易所偏离')}: {divergence:.3f}%",
             "说明: 最高资金费率和最低资金费率之间的差值；偏离越大，越说明不同交易所合约拥挤程度不一致，可能是单所盘口异常、局部清算压力或套利资金迁移。",

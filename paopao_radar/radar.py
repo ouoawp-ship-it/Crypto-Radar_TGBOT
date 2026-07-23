@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from .config import Settings
 from .data_sources import BinanceDataSource
+from .derivatives_quality import DerivativesQualityService
 from .funding_alert import funding_table
 from .funding_sources import MultiExchangeFundingClient, funding_last_settlement_text, funding_settlement_period_text
 from .market_links import coinglass_tv_url as _coinglass_tv_url
@@ -1384,10 +1385,31 @@ class RadarEngine:
         now_ts = int(time.time())
         self._prune_launch_state(state, now_ts)
 
+        analyzed_items: list[dict[str, Any]] = []
         for item in candidates:
             analyzed = self._analyze_launch_symbol(source, item)
             if not analyzed:
                 continue
+            analyzed_items.append(analyzed)
+
+        quality_service: DerivativesQualityService | None = None
+        oi_validations: dict[str, dict[str, Any]] = {}
+        http = getattr(source, "http", None)
+        if http is not None:
+            quality_service = DerivativesQualityService(self.settings, http)
+            oi_validations = quality_service.validate_oi_rows(
+                sorted(analyzed_items, key=lambda item: to_float(item.get("score")), reverse=True),
+                timeframe="1h",
+                local_field="oi_1h",
+                now_ts=now_ts,
+            )
+
+        for analyzed in analyzed_items:
+            validation = oi_validations.get(str(analyzed.get("symbol") or "").upper())
+            self._apply_launch_oi_validation(analyzed, validation)
+            if validation is None and quality_service is not None and quality_service.configured:
+                analyzed["score"] = 0
+                analyzed["reasons"] = ["本轮外部校验预算未覆盖，暂不推送"]
             watchlist.append(self._launch_watch_record(analyzed, now_ts))
             previous = state.get(analyzed["symbol"], {})
             next_stage = self._launch_stage(analyzed["score"])
@@ -1441,7 +1463,62 @@ class RadarEngine:
             "messages": messages,
             "alerts": alerts,
             "watchlist_count": len(watchlist),
+            "diagnostics": {
+                "derivatives_quality": (
+                    quality_service.summary(oi_validations)
+                    if quality_service is not None
+                    else {"checked": 0, "status_counts": {"not_configured": len(analyzed_items)}, "blocked_symbols": []}
+                ),
+            },
         }
+
+    @staticmethod
+    def _apply_launch_oi_validation(
+        item: dict[str, Any],
+        validation: dict[str, Any] | None,
+    ) -> None:
+        if validation is None:
+            item.update({
+                "data_quality_status": "not_checked_budget",
+                "data_quality_score": 0,
+                "quality_gate": "degraded",
+                "primary_data_source": "binance",
+            })
+            return
+
+        item["oi_validation"] = validation
+        item["data_quality_status"] = validation.get("status", "missing")
+        item["data_quality_score"] = validation.get("score", 0)
+        item["oi_source_agreement_score"] = validation.get("score", 0)
+        item["quality_gate"] = validation.get("gate", "degraded")
+        item["primary_data_source"] = validation.get("primary_source", "binance")
+        selected = validation.get("selected_change_pct")
+        if selected is not None and validation.get("primary_source") == "coinglass":
+            previous_oi = to_float(item.get("oi_1h"))
+            price_1h = to_float(item.get("price_1h"))
+            new_oi = to_float(selected)
+            previous_points = (15 if previous_oi >= 6 else 0) + (
+                15 if previous_oi >= 3 and abs(price_1h) <= 2 else 0
+            )
+            new_points = (15 if new_oi >= 6 else 0) + (
+                15 if new_oi >= 3 and abs(price_1h) <= 2 else 0
+            )
+            item["oi_binance_1h"] = previous_oi
+            item["oi_1h"] = new_oi
+            item["score"] = max(0, int(to_float(item.get("score"))) - previous_points + new_points)
+            reasons = [
+                str(reason) for reason in (item.get("reasons") or [])
+                if not str(reason).startswith("1h OI") and str(reason) != "资金暗流但价格未大动"
+            ]
+            if new_oi >= 6:
+                reasons.append(f"多所1h OI {new_oi:+.1f}%")
+            if new_oi >= 3 and abs(price_1h) <= 2:
+                reasons.append("多所资金暗流但价格未大动")
+            item["reasons"] = reasons[:5]
+
+        if validation.get("gate") == "block":
+            item["score"] = 0
+            item["reasons"] = ["OI 多数据源方向冲突，已阻止启动推送"]
 
     def _enrich_launch_funding(self, source: BinanceDataSource, alerts: list[dict[str, Any]]) -> None:
         if not alerts or not self.settings.launch_multi_exchange_funding_enable:
@@ -1757,6 +1834,7 @@ class RadarEngine:
             f"15m OI: {item['oi_15m']:+.1f}%",
             f"1h OI: {item['oi_1h']:+.1f}%",
             f"成交量: {item['volume_ratio']:.1f}x 均值",
+            f"数据校验: {tg_escape(item.get('data_quality_status', 'not_checked'))} / {to_float(item.get('data_quality_score')):.0f}分",
             *([f"资金费率: {funding_text}"] if single_funding_available else []),
             *([f"结算周期: {funding_transition}"] if funding_transition and single_funding_available else []),
             *(
@@ -1803,6 +1881,10 @@ class RadarEngine:
             "price_1h": round(item["price_1h"], 4),
             "oi_15m": round(item["oi_15m"], 4),
             "oi_1h": round(item["oi_1h"], 4),
+            "data_quality_status": str(item.get("data_quality_status") or "not_checked"),
+            "data_quality_score": round(to_float(item.get("data_quality_score")), 2),
+            "quality_gate": str(item.get("quality_gate") or "degraded"),
+            "primary_data_source": str(item.get("primary_data_source") or "binance"),
             "volume_ratio": round(item["volume_ratio"], 4),
             "breakout": bool(item["breakout"]),
             "quote_volume": round(item["quote_volume"], 2),
