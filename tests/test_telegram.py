@@ -320,6 +320,8 @@ class TelegramGatewayTests(unittest.TestCase):
             store = JsonStore(Path(tmp))
             settings = Settings(
                 data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_outbox_path=Path(tmp) / "tg_outbox.json",
                 tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                 tg_chat_id="-1001234567890",
                 tg_default_cooldown_sec=0,
@@ -354,6 +356,8 @@ class TelegramGatewayTests(unittest.TestCase):
             store = JsonStore(Path(tmp))
             settings = Settings(
                 data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_outbox_path=Path(tmp) / "tg_outbox.json",
                 tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                 tg_chat_id="-1001234567890",
                 tg_default_cooldown_sec=0,
