@@ -311,6 +311,44 @@ class TelegramGateway:
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
         return result
 
+    def send_photo_bytes(
+        self,
+        photo: bytes,
+        *,
+        caption: str,
+        template_id: str,
+        send: bool,
+        confirm_real_send: bool,
+        parse_mode: str = "HTML",
+    ) -> PushResult:
+        """Send one in-memory PNG as part of an already-admitted signal package."""
+
+        if not isinstance(photo, bytes) or not photo.startswith(b"\x89PNG\r\n\x1a\n"):
+            return PushResult("failed", "invalid_png", False, [])
+        if len(photo) > 10 * 1024 * 1024:
+            return PushResult("failed", "photo_too_large", False, [])
+        if not send:
+            return PushResult("dry_run", "send_flag_not_set", False, [])
+        if not confirm_real_send:
+            return PushResult("blocked", "missing_confirm_real_send", False, [])
+        if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
+            return PushResult("blocked", "telegram_not_configured", False, [])
+
+        topic_id = self._ensure_topic_id_for_template(template_id)
+        self._ensure_topic_intro(template_id, topic_id)
+        ok, message_ids = self._send_real_photo_bytes(
+            photo,
+            caption=caption[:1024],
+            parse_mode=parse_mode,
+            topic_id=topic_id,
+        )
+        return PushResult(
+            "sent" if ok else "failed",
+            "telegram_photo_api" if ok else "telegram_photo_api_failed",
+            ok,
+            message_ids,
+        )
+
     def _begin_delivery(
         self,
         *,
@@ -452,6 +490,65 @@ class TelegramGateway:
             ok = ok and sent
             time.sleep(0.25)
         return ok, message_ids
+
+    def _send_real_photo_bytes(
+        self,
+        photo: bytes,
+        *,
+        caption: str,
+        parse_mode: str,
+        topic_id: str = "",
+    ) -> tuple[bool, list[int]]:
+        url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendPhoto"
+        payload: dict[str, Any] = {
+            "chat_id": self.settings.tg_chat_id,
+            "caption": caption,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if topic_id and (
+            self.settings.tg_use_topic
+            or str(self.settings.tg_chat_id).startswith("-100")
+        ):
+            try:
+                payload["message_thread_id"] = int(topic_id)
+            except ValueError:
+                pass
+        for attempt in range(1, self.settings.tg_push_retry + 1):
+            try:
+                response = requests.post(
+                    url,
+                    data=payload,
+                    files={"photo": ("launch-chart.png", photo, "image/png")},
+                    timeout=self.settings.tg_push_timeout_sec,
+                )
+                if response.status_code == 200:
+                    message_ids: list[int] = []
+                    self._append_message_id(response, message_ids)
+                    return True, message_ids
+                if response.status_code == 400 and payload.get("parse_mode"):
+                    fallback = dict(payload)
+                    fallback.pop("parse_mode", None)
+                    fallback["caption"] = plain_fallback(caption)[:1024]
+                    response = requests.post(
+                        url,
+                        data=fallback,
+                        files={"photo": ("launch-chart.png", photo, "image/png")},
+                        timeout=self.settings.tg_push_timeout_sec,
+                    )
+                    if response.status_code == 200:
+                        message_ids = []
+                        self._append_message_id(response, message_ids)
+                        return True, message_ids
+                    return False, []
+                if response.status_code in {429, 500, 502, 503, 504}:
+                    time.sleep(min(5, attempt))
+                    continue
+                return False, []
+            except Exception:
+                if attempt < self.settings.tg_push_retry:
+                    time.sleep(min(5, attempt))
+        return False, []
 
     @staticmethod
     def _append_message_id(response: requests.Response, message_ids: list[int]) -> None:
@@ -662,7 +759,12 @@ class TelegramGateway:
     def delete_messages(self, message_ids: list[int]) -> int:
         return len(self.delete_messages_detailed(message_ids)["deleted_ids"])
 
-    def delete_messages_detailed(self, message_ids: list[int]) -> dict[str, list[int]]:
+    def delete_messages_detailed(
+        self,
+        message_ids: list[int],
+        *,
+        reason: str = "launch_signal_expired",
+    ) -> dict[str, list[int]]:
         normalized_ids = list(dict.fromkeys(
             int(message_id)
             for message_id in message_ids
@@ -679,10 +781,15 @@ class TelegramGateway:
                 failed_ids.append(message_id)
             time.sleep(0.15)
         if deleted_ids:
-            self._mark_history_messages_deleted(deleted_ids)
+            self._mark_history_messages_deleted(deleted_ids, reason=reason)
         return {"deleted_ids": deleted_ids, "failed_ids": failed_ids}
 
-    def _mark_history_messages_deleted(self, message_ids: list[int]) -> None:
+    def _mark_history_messages_deleted(
+        self,
+        message_ids: list[int],
+        *,
+        reason: str,
+    ) -> None:
         deleted = {int(message_id) for message_id in message_ids}
         now_ts = utc_ts()
 
@@ -712,7 +819,7 @@ class TelegramGateway:
                     "deleted_message_ids": deleted_for_record,
                     "lifecycle_deleted": bool(record_message_ids) and record_message_ids <= set(deleted_for_record),
                     "lifecycle_deleted_at": now_ts,
-                    "lifecycle_delete_reason": "launch_signal_expired",
+                    "lifecycle_delete_reason": str(reason or "launch_signal_expired"),
                 })
             return updated
 

@@ -16,6 +16,7 @@ from .config import Settings
 from .data_sources import BinanceDataSource
 from .funding_alert import funding_table
 from .funding_sources import funding_last_settlement_text, funding_settlement_period_text
+from .launch_chart import render_launch_chart_png
 from .launch_lifecycle import LaunchLifecycleStore
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
@@ -75,6 +76,20 @@ def tg_bold(value: Any) -> str:
 
 def tg_quote(title: str) -> str:
     return f"<blockquote><b>{tg_escape(title)}</b></blockquote>"
+
+
+def launch_funds_direction(spot_active_net_usd: Any, futures_active_net_usd: Any) -> str:
+    spot = to_float(spot_active_net_usd)
+    futures = to_float(futures_active_net_usd)
+    if spot == 0 or futures == 0:
+        return "unknown"
+    if spot > 0 and futures > 0:
+        return "both_buy"
+    if spot < 0 and futures < 0:
+        return "both_sell"
+    if spot > 0 > futures:
+        return "divergence_spot_buy_futures_sell"
+    return "divergence_spot_sell_futures_buy"
 
 
 def seconds_text(seconds: int) -> str:
@@ -1436,6 +1451,8 @@ class RadarEngine:
             "opened": 0,
             "failed": 0,
             "frozen": 0,
+            "publish_candidates": 0,
+            "silent_observations": 0,
             "errors": 0,
         }
         lifecycle_active_symbols: list[str] = []
@@ -1446,9 +1463,17 @@ class RadarEngine:
                     watch_score=self.settings.launch_watch_score,
                     start_score=self.settings.launch_min_score_push,
                     invalid_windows_required=self.settings.launch_lifecycle_invalid_windows,
+                    package_enabled=self.settings.launch_message_package_v2_enable,
+                    package_score_delta=self.settings.launch_package_score_delta,
+                    package_price_delta_pct=self.settings.launch_package_price_delta_pct,
+                    package_oi_delta_pct=self.settings.launch_package_oi_delta_pct,
                 )
                 lifecycle_active_symbols = lifecycle_store.list_active_symbols()
-                lifecycle_diagnostics["status"] = "shadow"
+                lifecycle_diagnostics["status"] = (
+                    "package_active"
+                    if self.settings.launch_message_package_v2_enable
+                    else "shadow"
+                )
                 lifecycle_diagnostics["active_symbols"] = len(lifecycle_active_symbols)
             except (OSError, sqlite3.Error, ValueError) as exc:
                 lifecycle_diagnostics["status"] = "degraded"
@@ -1557,6 +1582,31 @@ class RadarEngine:
                 observed_at=int(analyzed.get("window_end_ts") or now_ts),
             )
 
+        if self.settings.launch_message_package_v2_enable and analyzed_items:
+            from .bot_market_context import closed_market_contexts_for_symbols
+
+            package_symbols = [
+                str(analyzed.get("symbol") or "")
+                for analyzed in analyzed_items
+                if int(to_float(analyzed.get("score"))) >= self.settings.launch_watch_score
+                or str(analyzed.get("symbol") or "") in lifecycle_active_symbols
+            ]
+            market_contexts = closed_market_contexts_for_symbols(
+                self.settings,
+                package_symbols,
+                now_ts=now_ts,
+            )
+            for analyzed in analyzed_items:
+                market = market_contexts.get(str(analyzed.get("symbol") or ""))
+                if not isinstance(market, dict):
+                    continue
+                analyzed["spot_active_net_usd"] = market.get("spot_flow_usd")
+                analyzed["futures_active_net_usd"] = market.get("futures_flow_usd")
+                analyzed["funds_direction"] = launch_funds_direction(
+                    market.get("spot_flow_usd"),
+                    market.get("futures_flow_usd"),
+                )
+
         if lifecycle_store is not None and analyzed_items:
             try:
                 lifecycle_results = lifecycle_store.record_observations([
@@ -1578,6 +1628,12 @@ class RadarEngine:
                         lifecycle_diagnostics["failed"] += 1
                     if lifecycle_status == "frozen":
                         lifecycle_diagnostics["frozen"] += 1
+                    publication = lifecycle.get("publication")
+                    if isinstance(publication, dict) and publication.get("enabled"):
+                        if publication.get("publish_required"):
+                            lifecycle_diagnostics["publish_candidates"] += 1
+                        elif lifecycle_status in {"opened", "active", "failed", "duplicate"}:
+                            lifecycle_diagnostics["silent_observations"] += 1
             except (OSError, sqlite3.Error, ValueError) as exc:
                 lifecycle_diagnostics["status"] = "degraded"
                 lifecycle_diagnostics["errors"] += 1
@@ -1589,6 +1645,50 @@ class RadarEngine:
             next_stage = self._launch_stage(analyzed["score"])
             watchlist.append(self._launch_watch_record(analyzed, now_ts))
             previous = state.get(analyzed["symbol"], {})
+            lifecycle = analyzed.get("launch_lifecycle")
+            publication = (
+                lifecycle.get("publication")
+                if isinstance(lifecycle, dict)
+                and isinstance(lifecycle.get("publication"), dict)
+                else {}
+            )
+            if (
+                self.settings.launch_message_package_v2_enable
+                and isinstance(lifecycle, dict)
+                and publication.get("enabled")
+            ):
+                current_stage = str(lifecycle.get("current_stage") or next_stage)
+                previous_published = publication.get("previous_published")
+                previous_stage = (
+                    str(previous_published.get("stage") or "idle")
+                    if isinstance(previous_published, dict)
+                    else "idle"
+                )
+                record = {
+                    **(previous if isinstance(previous, dict) else {}),
+                    **analyzed,
+                    "stage": current_stage,
+                    "first_seen": int(lifecycle.get("first_window_end") or now_ts),
+                    "last_seen": now_ts,
+                    "last_active_at": now_ts,
+                    "appear_count": int(lifecycle.get("observation_no") or 1),
+                    "previous_stage": previous_stage,
+                    "reply_to_message_id": 0,
+                    "launch_message_package_v2": True,
+                    "launch_package": publication,
+                }
+                for lifecycle_key in ("cooling_at", "delete_pending"):
+                    record.pop(lifecycle_key, None)
+                if str(lifecycle.get("cycle_status") or "") == "failed":
+                    record["failed_at"] = int(lifecycle.get("window_end_ts") or now_ts)
+                    record["fail_reason"] = str(lifecycle.get("end_reason") or "lifecycle_failed")
+                else:
+                    record.pop("failed_at", None)
+                    record.pop("fail_reason", None)
+                if publication.get("publish_required"):
+                    alerts.append(record)
+                state[analyzed["symbol"]] = record
+                continue
             if next_stage == "idle":
                 inactive = self._inactive_launch_record(
                     previous,
@@ -1656,6 +1756,30 @@ class RadarEngine:
             limit=self.settings.launch_watch_history_limit,
         )
         alerts = alerts[:5]
+        chart_diagnostics: dict[str, Any] = {
+            "enabled": bool(self.settings.launch_chart_v2_enable),
+            "status": (
+                "active"
+                if self.settings.launch_chart_v2_enable
+                and self.settings.launch_message_package_v2_enable
+                else "misconfigured"
+                if self.settings.launch_chart_v2_enable
+                else "disabled"
+            ),
+            "ready": 0,
+            "unavailable": 0,
+        }
+        if (
+            self.settings.launch_chart_v2_enable
+            and self.settings.launch_message_package_v2_enable
+        ):
+            for alert in alerts:
+                if not alert.get("launch_message_package_v2"):
+                    continue
+                if self._attach_launch_chart(source, alert):
+                    chart_diagnostics["ready"] += 1
+                else:
+                    chart_diagnostics["unavailable"] += 1
         messages = [self._format_launch_alert(alert) for alert in alerts]
         return {
             "template_id": "TG_LAUNCH_ALERT",
@@ -1665,6 +1789,7 @@ class RadarEngine:
             "diagnostics": {
                 "binance_confirmation": confirmation_summary(analyzed_items),
                 "lifecycle_v2": lifecycle_diagnostics,
+                "chart_v2": chart_diagnostics,
             },
         }
 
@@ -1693,11 +1818,76 @@ class RadarEngine:
                     ]
                     state[symbol]["last_message_id"] = message_ids[0]
                     state[symbol]["last_message_ids"] = message_ids
-                    state[symbol]["message_ids"] = list(dict.fromkeys(
-                        [*existing_message_ids, *message_ids]
-                    ))[-100:]
+                    state[symbol]["message_ids"] = (
+                        message_ids
+                        if alert.get("launch_message_package_v2")
+                        else list(dict.fromkeys(
+                            [*existing_message_ids, *message_ids]
+                        ))[-100:]
+                    )
                     state[symbol]["last_message_stage"] = alert.get("stage")
         self.store.save(self.settings.launch_state_path, state)
+
+    def commit_launch_package(
+        self,
+        alert: dict[str, Any],
+        message_ids: list[int],
+        *,
+        published_at: int | None = None,
+    ) -> dict[str, Any]:
+        lifecycle = alert.get("launch_lifecycle")
+        publication = alert.get("launch_package")
+        if (
+            not self.settings.launch_message_package_v2_enable
+            or not isinstance(lifecycle, dict)
+            or not isinstance(publication, dict)
+        ):
+            return {"status": "disabled", "delete_message_ids": []}
+        return self._launch_lifecycle_store(package_enabled=True).commit_package(
+            cycle_id=int(lifecycle.get("cycle_id") or 0),
+            observation_id=int(lifecycle.get("observation_id") or 0),
+            message_ids=message_ids,
+            checkpoint_reasons=list(publication.get("checkpoint_reasons") or []),
+            published_at=int(published_at or time.time()),
+        )
+
+    def complete_launch_package_cleanup(
+        self,
+        *,
+        cycle_id: int,
+        deleted_ids: list[int],
+        failed_ids: list[int],
+        updated_at: int | None = None,
+    ) -> dict[str, Any]:
+        return self._launch_lifecycle_store(package_enabled=True).complete_package_cleanup(
+            cycle_id=int(cycle_id),
+            deleted_ids=deleted_ids,
+            failed_ids=failed_ids,
+            updated_at=int(updated_at or time.time()),
+        )
+
+    def pending_launch_package_cleanups(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.settings.launch_message_package_v2_enable:
+            return []
+        return self._launch_lifecycle_store(package_enabled=True).list_pending_cleanups(
+            limit=limit
+        )
+
+    def _launch_lifecycle_store(self, *, package_enabled: bool | None = None) -> LaunchLifecycleStore:
+        return LaunchLifecycleStore(
+            self.settings.signal_events_db_path,
+            watch_score=self.settings.launch_watch_score,
+            start_score=self.settings.launch_min_score_push,
+            invalid_windows_required=self.settings.launch_lifecycle_invalid_windows,
+            package_enabled=(
+                self.settings.launch_message_package_v2_enable
+                if package_enabled is None
+                else bool(package_enabled)
+            ),
+            package_score_delta=self.settings.launch_package_score_delta,
+            package_price_delta_pct=self.settings.launch_package_price_delta_pct,
+            package_oi_delta_pct=self.settings.launch_package_oi_delta_pct,
+        )
 
     def cleanup_failed_launch_messages(
         self,
@@ -1735,6 +1925,8 @@ class RadarEngine:
 
         for symbol, record in state.items():
             if not isinstance(record, dict) or record.get("stage") != "failed":
+                continue
+            if record.get("launch_message_package_v2"):
                 continue
             result["failed_signals"] += 1
             cycle_started_at = int(
@@ -1855,6 +2047,85 @@ class RadarEngine:
         if changed:
             self.store.save(self.settings.launch_state_path, state)
         return result
+
+    def _attach_launch_chart(
+        self,
+        source: BinanceDataSource,
+        alert: dict[str, Any],
+    ) -> bool:
+        lifecycle = alert.get("launch_lifecycle")
+        publication = alert.get("launch_package")
+        if not isinstance(lifecycle, dict) or not isinstance(publication, dict):
+            alert["chart_status"] = "unavailable"
+            alert["chart_error"] = "missing_lifecycle_context"
+            return False
+
+        first_window_end = int(to_float(lifecycle.get("first_window_end")))
+        current_window_end = int(to_float(lifecycle.get("window_end_ts")))
+        if first_window_end <= 0 or current_window_end <= 0:
+            alert["chart_status"] = "unavailable"
+            alert["chart_error"] = "invalid_chart_window"
+            return False
+        interval_sec = 15 * 60
+        requested_start = first_window_end - 16 * interval_sec
+        candle_count = max(
+            32,
+            (current_window_end - requested_start) // interval_sec + 1,
+        )
+        candle_count = min(1000, candle_count)
+        start_ts = max(
+            requested_start,
+            current_window_end - candle_count * interval_sec,
+        )
+        try:
+            rows = source.klines(
+                str(alert.get("symbol") or ""),
+                interval="15m",
+                limit=int(candle_count),
+                start_time=start_ts * 1000,
+                end_time=current_window_end * 1000 - 1,
+            )
+            candles = [
+                {
+                    "close_ts": int(to_float(row[0])) // 1000 + interval_sec,
+                    "open": to_float(row[1]),
+                    "high": to_float(row[2]),
+                    "low": to_float(row[3]),
+                    "close": to_float(row[4]),
+                    "quote_volume": to_float(row[7]),
+                }
+                for row in rows
+                if isinstance(row, list) and len(row) >= 8
+            ]
+            checkpoints = [
+                dict(checkpoint)
+                for checkpoint in (publication.get("checkpoints") or [])
+                if isinstance(checkpoint, dict)
+            ]
+            current = publication.get("current")
+            if isinstance(current, dict):
+                current_checkpoint = dict(current)
+                current_checkpoint["checkpoint_no"] = int(
+                    publication.get("checkpoint_no") or len(checkpoints) + 1
+                )
+                checkpoints.append(current_checkpoint)
+            image = render_launch_chart_png(
+                symbol=str(alert.get("symbol") or ""),
+                candles=candles,
+                checkpoints=checkpoints,
+                cycle_no=int(lifecycle.get("cycle_no") or 1),
+            )
+        except Exception as exc:
+            alert["chart_status"] = "unavailable"
+            alert["chart_error"] = type(exc).__name__
+            return False
+
+        alert["chart_png_bytes"] = image
+        alert["chart_status"] = "ready"
+        alert["chart_candle_count"] = len(candles)
+        alert["chart_checkpoint_count"] = len(checkpoints)
+        alert["chart_generated_in_memory"] = True
+        return True
 
     def _analyze_launch_symbol(self, source: BinanceDataSource, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         symbol = item["symbol"]
@@ -2111,7 +2382,156 @@ class RadarEngine:
                 lines.append(f"{exchange}周期: {transition}")
         return lines
 
+    @staticmethod
+    def _launch_package_time(value: Any) -> str:
+        timestamp = int(to_float(value))
+        if timestamp <= 0:
+            return "未知"
+        return datetime.fromtimestamp(timestamp, CST).strftime("%m-%d %H:%M")
+
+    @staticmethod
+    def _launch_package_duration(value: Any) -> str:
+        seconds = max(0, int(to_float(value)))
+        hours, remainder = divmod(seconds, 3600)
+        minutes = remainder // 60
+        if hours:
+            return f"{hours}小时{minutes:02d}分钟"
+        return f"{minutes}分钟"
+
+    @staticmethod
+    def _launch_package_delta(current: Any, base: Any) -> float | None:
+        current_value = to_float(current)
+        base_value = to_float(base)
+        if base_value <= 0:
+            return None
+        return (current_value / base_value - 1.0) * 100.0
+
+    @staticmethod
+    def _launch_package_funding(snapshot: dict[str, Any] | None) -> str:
+        if not isinstance(snapshot, dict):
+            return "暂不可用"
+        funding = to_float(snapshot.get("funding_pct"))
+        interval = int(to_float(snapshot.get("funding_interval_hours")))
+        return funding_cycle_text(funding, interval) if interval > 0 else f"{funding:+.4f}%/周期暂不可用"
+
+    @staticmethod
+    def _launch_package_direction(value: Any) -> str:
+        return {
+            "both_buy": "现货与合约主动买入同步",
+            "both_sell": "现货与合约主动卖出同步",
+            "divergence_spot_buy_futures_sell": "现货主动买入、合约主动卖出",
+            "divergence_spot_sell_futures_buy": "现货主动卖出、合约主动买入",
+            "unknown": "主动成交方向暂不可用",
+        }.get(str(value or "unknown"), "主动成交方向暂不可用")
+
+    def _format_launch_package(self, item: dict[str, Any]) -> str:
+        lifecycle = item.get("launch_lifecycle")
+        publication = item.get("launch_package")
+        if not isinstance(lifecycle, dict) or not isinstance(publication, dict):
+            return self._format_launch_alert({**item, "launch_message_package_v2": False})
+
+        first = publication.get("first") if isinstance(publication.get("first"), dict) else {}
+        previous = (
+            publication.get("previous_published")
+            if isinstance(publication.get("previous_published"), dict)
+            else first
+        )
+        current = publication.get("current") if isinstance(publication.get("current"), dict) else {}
+        checkpoint_no = int(publication.get("checkpoint_no") or 1)
+        current_stage = self._stage_label(str(current.get("stage") or item.get("stage") or "idle"))
+        first_stage = self._stage_label(str(first.get("stage") or "idle"))
+        peak_stage = self._stage_label(str(lifecycle.get("peak_stage") or item.get("stage") or "idle"))
+        price_from_first = self._launch_package_delta(current.get("price"), first.get("price"))
+        oi_from_first = self._launch_package_delta(current.get("oi_usd"), first.get("oi_usd"))
+        price_from_previous = self._launch_package_delta(current.get("price"), previous.get("price"))
+        oi_from_previous = self._launch_package_delta(current.get("oi_usd"), previous.get("oi_usd"))
+        reasons = [
+            {
+                "cycle_opened": "首次达到启动阈值",
+                "stage_changed": "生命周期阶段变化",
+                "score_delta": f"分数变化≥{self.settings.launch_package_score_delta}",
+                "price_delta": f"价格变化≥{self.settings.launch_package_price_delta_pct:g}%",
+                "oi_delta": f"OI变化≥{self.settings.launch_package_oi_delta_pct:g}%",
+                "funding_interval_changed": "资金费率结算周期变化",
+                "funds_divergence": "现货/合约主动成交方向背离",
+            }.get(str(reason), str(reason))
+            for reason in (publication.get("checkpoint_reasons") or [])
+        ]
+
+        checkpoints = [
+            checkpoint
+            for checkpoint in (publication.get("checkpoints") or [])
+            if isinstance(checkpoint, dict)
+        ]
+        timeline = checkpoints[-5:] + [current]
+        timeline_lines: list[str] = []
+        for point in timeline:
+            event_no = (
+                checkpoint_no
+                if point is current
+                else int(point.get("checkpoint_no") or 0)
+            )
+            timeline_lines.append(
+                f"{event_no:02d}. "
+                f"{self._launch_package_time(point.get('window_end_ts'))}｜"
+                f"{self._stage_label(str(point.get('stage') or 'idle'))} "
+                f"{int(point.get('score') or 0)}分"
+            )
+
+        first_funding = self._launch_package_funding(first)
+        current_funding = self._launch_package_funding(current)
+        direction_text = self._launch_package_direction(current.get("funds_direction"))
+        status = str(lifecycle.get("cycle_status") or "active")
+        invalidation = (
+            f"本轮已结束：{str(lifecycle.get('end_reason') or '失效条件成立')}"
+            if status == "failed"
+            else "连续两根已闭合15m低于观察阈值，或连续两根收盘跌破本轮有效突破位"
+        )
+        return "\n".join([
+            f"🚀 {coin_link(item)}｜第{int(lifecycle.get('cycle_no') or 1)}轮启动跟踪｜事件{checkpoint_no:02d}",
+            f"⏰ {cst_now_text()}",
+            "",
+            f"{tg_bold('当前')}: {current_stage} {int(current.get('score') or item.get('score') or 0)}分",
+            f"{tg_bold('首次出现')}: {self._launch_package_time(first.get('window_end_ts'))}｜{first_stage} {int(first.get('score') or 0)}分",
+            f"{tg_bold('持续时间')}: {self._launch_package_duration(lifecycle.get('duration_sec'))}",
+            f"{tg_bold('最高阶段')}: {peak_stage}",
+            f"{tg_bold('本次更新')}: {tg_escape('、'.join(reasons) or '重要状态更新')}",
+            "",
+            tg_quote("相对首次"),
+            f"价格: {price_from_first:+.2f}%" if price_from_first is not None else "价格: 暂不可比",
+            f"OI: {oi_from_first:+.2f}%" if oi_from_first is not None else "OI: 暂不可比",
+            f"资金费率: {first_funding} → {current_funding}",
+            "",
+            tg_quote("相对上次发布"),
+            f"价格: {price_from_previous:+.2f}%" if price_from_previous is not None else "价格: 暂不可比",
+            f"OI: {oi_from_previous:+.2f}%" if oi_from_previous is not None else "OI: 暂不可比",
+            f"分数: {int(previous.get('score') or 0)} → {int(current.get('score') or 0)}",
+            f"主动成交: {tg_escape(direction_text)}",
+            "",
+            tg_quote("事件轴"),
+            *timeline_lines,
+            *(
+                [
+                    "",
+                    f"{tg_bold('K线图')}: Binance 合约15m；E1、E2…对应本轮已发布事件，带“<”表示事件早于当前可见窗口。",
+                    "图片只在内存中生成并直接上传 Telegram，不写入服务器磁盘。",
+                ]
+                if item.get("chart_status") == "ready"
+                else []
+            ),
+            "",
+            f"{tg_bold('数据确认')}: {tg_escape(confirmation_text(item))}",
+            "来源: Binance USDⓈ-M Futures 原生已闭合15m行情；主动成交方向补充自 Binance Spot + Futures 已闭合窗口。",
+            "计算: 价格/OI变化均以本轮首次或上次已成功发布的检查点为基准；未达到替换阈值的扫描只记录、不推送。",
+            "",
+            f"{tg_bold('失效条件')}: {tg_escape(invalidation)}",
+            "每次新消息确认发送并持久化成功后，才删除上一条；删除失败会自动重试。",
+            "不构成投资建议。",
+        ])
+
     def _format_launch_alert(self, item: dict[str, Any]) -> str:
+        if item.get("launch_message_package_v2"):
+            return self._format_launch_package(item)
         stage_name = self._stage_label(str(item.get("stage", "")))
         previous_stage = self._stage_label(str(item.get("previous_stage", "idle")))
         current_stage = self._stage_label(str(item.get("stage", "")))

@@ -82,6 +82,212 @@ def launch_runtime_diagnostics(launch: dict[str, object]) -> dict[str, object]:
     return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
 
+def push_launch_messages(
+    settings: Settings,
+    engine: RadarEngine,
+    gateway: TelegramGateway,
+    launch: dict[str, object],
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    package_enabled = bool(settings.launch_message_package_v2_enable)
+    real_send = bool(args.send and args.confirm_real_send)
+    cleanup_diagnostics: dict[str, object] = {
+        "enabled": package_enabled,
+        "retried_packages": 0,
+        "deleted_messages": 0,
+        "failed_deletions": 0,
+        "charts_sent": 0,
+        "chart_failures": 0,
+    }
+    if package_enabled and real_send:
+        for pending in engine.pending_launch_package_cleanups(
+            limit=settings.launch_message_cleanup_limit
+        ):
+            message_ids = list(pending.get("message_ids") or [])
+            deletion = gateway.delete_messages_detailed(
+                message_ids,
+                reason="launch_package_replaced",
+            )
+            engine.complete_launch_package_cleanup(
+                cycle_id=int(pending.get("cycle_id") or 0),
+                deleted_ids=list(deletion.get("deleted_ids") or []),
+                failed_ids=list(deletion.get("failed_ids") or []),
+            )
+            cleanup_diagnostics["retried_packages"] = int(
+                cleanup_diagnostics["retried_packages"]
+            ) + 1
+            cleanup_diagnostics["deleted_messages"] = int(
+                cleanup_diagnostics["deleted_messages"]
+            ) + len(deletion.get("deleted_ids") or [])
+            cleanup_diagnostics["failed_deletions"] = int(
+                cleanup_diagnostics["failed_deletions"]
+            ) + len(deletion.get("failed_ids") or [])
+
+    messages = list(launch.get("messages") or [])
+    alerts = list(launch.get("alerts") or [])
+    pushes: list[dict[str, object]] = []
+    sent_alerts: list[dict[str, object]] = []
+    for idx, message in enumerate(messages, start=1):
+        alert = alerts[idx - 1]
+        is_package = bool(alert.get("launch_message_package_v2"))
+        chart_required = bool(is_package and settings.launch_chart_v2_enable)
+        lifecycle = alert.get("launch_lifecycle")
+        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+        dedup_key = (
+            f"launch-package:{int(lifecycle.get('cycle_id') or 0)}:"
+            f"{int(lifecycle.get('observation_id') or 0)}"
+            if is_package
+            else f"launch:{alert['symbol']}:{alert['stage']}"
+        )
+        push_record: dict[str, object] = {
+            "symbol": str(alert.get("symbol", "")),
+            "stage": str(alert.get("stage", "")),
+            "reply_to": "" if is_package else str(alert.get("reply_to_message_id") or ""),
+            "package_v2": is_package,
+            "chart_v2": chart_required,
+        }
+        chart_bytes = alert.get("chart_png_bytes")
+        if chart_required and not isinstance(chart_bytes, bytes):
+            push_record["status"] = "skipped"
+            push_record["reason"] = str(alert.get("chart_error") or "chart_unavailable")
+            cleanup_diagnostics["chart_failures"] = int(
+                cleanup_diagnostics["chart_failures"]
+            ) + 1
+            print(
+                f"launch_push[{idx}]: skipped "
+                f"({push_record['reason']}; old package retained)"
+            )
+            pushes.append(push_record)
+            continue
+
+        signal_record = {
+            key: value
+            for key, value in alert.items()
+            if key != "chart_png_bytes"
+        }
+        push = gateway.send(
+            str(message),
+            "TG_LAUNCH_ALERT",
+            dedup_key,
+            send=args.send,
+            confirm_real_send=args.confirm_real_send,
+            cooldown_sec=0 if is_package else settings.launch_stage_cooldown_sec,
+            parse_mode="HTML",
+            reply_to_message_id=(
+                None
+                if is_package
+                else int(alert.get("reply_to_message_id", 0) or 0) or None
+            ),
+            signal_records=[signal_record],
+        )
+        print(f"launch_push[{idx}]: {push.status} ({push.reason})")
+        push_record["status"] = push.status
+        push_record["reason"] = push.reason
+        if push.status == "sent":
+            new_message_ids = list(push.message_ids or [])
+            if chart_required:
+                publication = alert.get("launch_package")
+                publication = publication if isinstance(publication, dict) else {}
+                photo = gateway.send_photo_bytes(
+                    chart_bytes,
+                    caption=(
+                        f"<b>{str(alert.get('symbol') or '')}</b>｜"
+                        f"第{int(lifecycle.get('cycle_no') or 1)}轮｜"
+                        f"事件{int(publication.get('checkpoint_no') or 1):02d}｜"
+                        "Binance 已闭合15m"
+                    ),
+                    template_id="TG_LAUNCH_ALERT",
+                    send=args.send,
+                    confirm_real_send=args.confirm_real_send,
+                    parse_mode="HTML",
+                )
+                alert.pop("chart_png_bytes", None)
+                chart_bytes = None
+                push_record["photo_status"] = photo.status
+                push_record["photo_reason"] = photo.reason
+                new_message_ids.extend(photo.message_ids or [])
+                if photo.status != "sent":
+                    rollback = gateway.delete_messages_detailed(
+                        new_message_ids,
+                        reason="launch_package_photo_rollback",
+                    )
+                    push_record["status"] = "photo_failed"
+                    push_record["reason"] = photo.reason
+                    push_record["rollback_deleted"] = len(
+                        rollback.get("deleted_ids") or []
+                    )
+                    push_record["rollback_failures"] = len(
+                        rollback.get("failed_ids") or []
+                    )
+                    cleanup_diagnostics["chart_failures"] = int(
+                        cleanup_diagnostics["chart_failures"]
+                    ) + 1
+                    pushes.append(push_record)
+                    continue
+                cleanup_diagnostics["charts_sent"] = int(
+                    cleanup_diagnostics["charts_sent"]
+                ) + 1
+            alert["message_ids"] = new_message_ids
+            if is_package:
+                commit = engine.commit_launch_package(
+                    alert,
+                    new_message_ids,
+                )
+                push_record["package_commit"] = str(commit.get("status") or "")
+                if commit.get("status") not in {"committed", "idempotent"}:
+                    rollback = gateway.delete_messages_detailed(
+                        new_message_ids,
+                        reason="launch_package_commit_rollback",
+                    )
+                    push_record["status"] = "package_commit_failed"
+                    push_record["rollback_deleted"] = len(
+                        rollback.get("deleted_ids") or []
+                    )
+                    push_record["rollback_failures"] = len(
+                        rollback.get("failed_ids") or []
+                    )
+                    pushes.append(push_record)
+                    continue
+                deletion = gateway.delete_messages_detailed(
+                    list(commit.get("delete_message_ids") or []),
+                    reason="launch_package_replaced",
+                )
+                engine.complete_launch_package_cleanup(
+                    cycle_id=int(commit.get("cycle_id") or 0),
+                    deleted_ids=list(deletion.get("deleted_ids") or []),
+                    failed_ids=list(deletion.get("failed_ids") or []),
+                )
+                push_record["replaced_message_count"] = len(
+                    deletion.get("deleted_ids") or []
+                )
+                push_record["replacement_delete_failures"] = len(
+                    deletion.get("failed_ids") or []
+                )
+                cleanup_diagnostics["deleted_messages"] = int(
+                    cleanup_diagnostics["deleted_messages"]
+                ) + len(deletion.get("deleted_ids") or [])
+                cleanup_diagnostics["failed_deletions"] = int(
+                    cleanup_diagnostics["failed_deletions"]
+                ) + len(deletion.get("failed_ids") or [])
+            sent_alerts.append(alert)
+        elif is_package and push.message_ids and real_send:
+            rollback = gateway.delete_messages_detailed(
+                list(push.message_ids),
+                reason="launch_package_send_rollback",
+            )
+            push_record["rollback_deleted"] = len(
+                rollback.get("deleted_ids") or []
+            )
+            push_record["rollback_failures"] = len(
+                rollback.get("failed_ids") or []
+            )
+        if chart_required:
+            alert.pop("chart_png_bytes", None)
+        pushes.append(push_record)
+    engine.mark_launch_pushed(sent_alerts)
+    return pushes, cleanup_diagnostics
+
+
 def _clean_config_value(value: str) -> str:
     return (value or "").strip().strip('"').strip("'")
 
@@ -847,32 +1053,14 @@ def run_once(args: argparse.Namespace) -> int:
 
     launch_pushes: list[dict[str, str]] = []
     if not args.no_launch:
-        sent_launch_alerts = []
-        for idx, message in enumerate(result["launch"]["messages"], start=1):
-            alert = result["launch"]["alerts"][idx - 1]
-            push = gateway.send(
-                message,
-                "TG_LAUNCH_ALERT",
-                f"launch:{alert['symbol']}:{alert['stage']}",
-                send=args.send,
-                confirm_real_send=args.confirm_real_send,
-                cooldown_sec=settings.launch_stage_cooldown_sec,
-                parse_mode="HTML",
-                reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
-                signal_records=[alert],
-            )
-            print(f"launch_push[{idx}]: {push.status} ({push.reason})")
-            launch_pushes.append({
-                "symbol": str(alert.get("symbol", "")),
-                "stage": str(alert.get("stage", "")),
-                "reply_to": str(alert.get("reply_to_message_id") or ""),
-                "status": push.status,
-                "reason": push.reason,
-            })
-            if push.status == "sent":
-                alert["message_ids"] = push.message_ids or []
-                sent_launch_alerts.append(alert)
-        engine.mark_launch_pushed(sent_launch_alerts)
+        launch_pushes, package_cleanup = push_launch_messages(
+            settings,
+            engine,
+            gateway,
+            result["launch"],
+            args,
+        )
+        result["diagnostics"]["launch_package_cleanup"] = package_cleanup
 
     announcement_pushes: list[dict[str, str]] = []
     if not args.no_announcements:
@@ -1099,32 +1287,14 @@ def run_loop(args: argparse.Namespace) -> int:
                     launch_diag["signal_effectiveness"] = refresh_signal_effectiveness(settings)
                 except (OSError, sqlite3.Error, ValueError) as exc:
                     launch_diag["signal_effectiveness"] = {"status": "failed", "error": type(exc).__name__}
-                sent_launch_alerts = []
-                for idx, message in enumerate(launch["messages"], start=1):
-                    alert = launch["alerts"][idx - 1]
-                    push = gateway.send(
-                        message,
-                        "TG_LAUNCH_ALERT",
-                        f"launch:{alert['symbol']}:{alert['stage']}",
-                        send=args.send,
-                        confirm_real_send=args.confirm_real_send,
-                        cooldown_sec=settings.launch_stage_cooldown_sec,
-                        parse_mode="HTML",
-                        reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
-                        signal_records=[alert],
-                    )
-                    print(f"launch_push[{idx}]: {push.status} ({push.reason})")
-                    launch_pushes.append({
-                        "symbol": str(alert.get("symbol", "")),
-                        "stage": str(alert.get("stage", "")),
-                        "reply_to": str(alert.get("reply_to_message_id") or ""),
-                        "status": push.status,
-                        "reason": push.reason,
-                    })
-                    if push.status == "sent":
-                        alert["message_ids"] = push.message_ids or []
-                        sent_launch_alerts.append(alert)
-                engine.mark_launch_pushed(sent_launch_alerts)
+                launch_pushes, package_cleanup = push_launch_messages(
+                    settings,
+                    engine,
+                    gateway,
+                    launch,
+                    args,
+                )
+                launch_diag["package_cleanup"] = package_cleanup
                 launch_diag["binance"] = source.diagnostics()
                 print(json.dumps({"launch": launch_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
@@ -1186,37 +1356,18 @@ def run_trial(args: argparse.Namespace) -> int:
             signal_effectiveness = refresh_signal_effectiveness(settings)
         except (OSError, sqlite3.Error, ValueError) as exc:
             signal_effectiveness = {"status": "failed", "error": type(exc).__name__}
-        sent_launch_alerts = []
-        launch_pushes: list[dict[str, str]] = []
-        for idx, message in enumerate(launch["messages"], start=1):
-            alert = launch["alerts"][idx - 1]
-            push = gateway.send(
-                message,
-                "TG_LAUNCH_ALERT",
-                f"launch:{alert['symbol']}:{alert['stage']}",
-                send=args.send,
-                confirm_real_send=args.confirm_real_send,
-                cooldown_sec=settings.launch_stage_cooldown_sec,
-                parse_mode="HTML",
-                reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
-                signal_records=[alert],
-            )
-            print(f"launch_push[{idx}]: {push.status} ({push.reason})")
-            launch_pushes.append({
-                "symbol": str(alert.get("symbol", "")),
-                "stage": str(alert.get("stage", "")),
-                "reply_to": str(alert.get("reply_to_message_id") or ""),
-                "status": push.status,
-                "reason": push.reason,
-            })
-            if push.status == "sent":
-                alert["message_ids"] = push.message_ids or []
-                sent_launch_alerts.append(alert)
-        engine.mark_launch_pushed(sent_launch_alerts)
+        launch_pushes, package_cleanup = push_launch_messages(
+            settings,
+            engine,
+            gateway,
+            launch,
+            args,
+        )
         diagnostics = {
             **launch_runtime_diagnostics(launch),
             "binance": source.diagnostics(),
             "lifecycle_cleanup": launch_cleanup,
+            "package_cleanup": package_cleanup,
             "market_snapshot": market_snapshot,
             "signal_effectiveness": signal_effectiveness,
         }
