@@ -231,23 +231,36 @@ def classify_funding_alert(rows: list[dict[str, Any]], settings: Settings) -> di
     rates = [to_float(row.get("funding_pct")) for row in rows]
     divergence = max(rates) - min(rates) if len(rates) >= 2 else 0.0
     max_abs_rate = max((abs(rate) for rate in rates), default=0.0)
+    negative_exchanges = list(dict.fromkeys(
+        str(row.get("exchange") or "").strip()
+        for row in extreme_negative
+        if str(row.get("exchange") or "").strip()
+    ))
+    positive_exchanges = list(dict.fromkeys(
+        str(row.get("exchange") or "").strip()
+        for row in extreme_positive
+        if str(row.get("exchange") or "").strip()
+    ))
+    multi_exchange_count = max(2, settings.funding_alert_min_exchange_count)
 
     types: list[str] = []
     primary_kind = ""
     if transitions:
         types.append("结算周期缩短")
         primary_kind = primary_kind or "interval_shortened"
-    if len(extreme_negative) >= max(1, settings.funding_alert_min_exchange_count):
+    if len(negative_exchanges) >= multi_exchange_count:
         types.append("多所极负共振")
         primary_kind = primary_kind or "multi_negative"
     elif extreme_negative:
-        types.append("极负资金费率")
+        exchange = negative_exchanges[0] if len(negative_exchanges) == 1 else ""
+        types.append(f"{exchange} 极负资金费率".strip())
         primary_kind = primary_kind or "extreme_negative"
-    if len(extreme_positive) >= max(1, settings.funding_alert_min_exchange_count):
+    if len(positive_exchanges) >= multi_exchange_count:
         types.append("多所极正共振")
         primary_kind = primary_kind or "multi_positive"
     elif extreme_positive:
-        types.append("极正资金费率")
+        exchange = positive_exchanges[0] if len(positive_exchanges) == 1 else ""
+        types.append(f"{exchange} 极正资金费率".strip())
         primary_kind = primary_kind or "extreme_positive"
     if divergence >= settings.funding_alert_divergence_pct:
         types.append("交易所费率偏离")
@@ -268,6 +281,8 @@ def classify_funding_alert(rows: list[dict[str, Any]], settings: Settings) -> di
         "risk": risk,
         "negative_count": len(extreme_negative),
         "positive_count": len(extreme_positive),
+        "negative_exchanges": negative_exchanges,
+        "positive_exchanges": positive_exchanges,
         "transition_count": len(transitions),
         "extreme_count": len(extreme_negative) + len(extreme_positive),
         "divergence_pct": divergence,
@@ -920,11 +935,15 @@ class FundingAlertEngine:
         if primary == "multi_negative":
             return "多家交易所同步极负，说明空头拥挤严重；如果价格不继续下跌，容易形成挤空燃料。"
         if primary == "extreme_negative":
-            return "单交易所出现极负费率，优先判断该交易所合约是否出现空头拥挤或盘口异常。"
+            exchanges = " / ".join(str(item) for item in classification.get("negative_exchanges", []) if item)
+            source = exchanges or "单交易所"
+            return f"{source} 出现极负费率，说明该合约空头拥挤；如果价格不再继续下跌，同时 OI、主动成交出现反转，可能形成挤空条件。"
         if primary == "multi_positive":
             return "多家交易所同步极正，说明多头拥挤，价格滞涨时追高风险明显上升。"
         if primary == "extreme_positive":
-            return "单交易所出现极正费率，说明局部多头拥挤，注意回落和插针风险。"
+            exchanges = " / ".join(str(item) for item in classification.get("positive_exchanges", []) if item)
+            source = exchanges or "单交易所"
+            return f"{source} 出现极正费率，说明该合约多头拥挤；价格滞涨时应注意回落和插针风险。"
         if primary == "exchange_divergence":
             return "不同交易所资金费率差距过大，可能存在单所盘口异常、资金拥挤或套利资金迁移。"
         return "资金费率出现异常，需要结合价格、OI、成交量和结算周期继续确认。"

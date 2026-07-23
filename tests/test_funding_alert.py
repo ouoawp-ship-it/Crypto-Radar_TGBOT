@@ -84,6 +84,17 @@ class MissingBinanceHistoryHttp(FundingHttp):
         return super().get_json(url, params=params, **kwargs)
 
 
+class HourlyBinanceFundingHttp(FundingHttp):
+    def get_json(self, url: str, params=None, **kwargs):  # type: ignore[no-untyped-def]
+        if "fapi/v1/fundingRate" in url:
+            return [
+                {"fundingTime": ms_at(14), "fundingRate": "-0.001"},
+                {"fundingTime": ms_at(15), "fundingRate": "-0.002"},
+                {"fundingTime": ms_at(16), "fundingRate": "-0.004"},
+            ]
+        return super().get_json(url, params=params, **kwargs)
+
+
 class FundingSource:
     def __init__(self, http: FundingHttp) -> None:
         self.http = http
@@ -181,6 +192,27 @@ class FundingAlertTests(unittest.TestCase):
         self.assertEqual(result["risk"], "极高")
         self.assertIn("多所极负共振", result["types"])
 
+    def test_single_binance_source_is_not_classified_as_multi_exchange(self) -> None:
+        settings = Settings(
+            funding_alert_extreme_negative_pct=-0.5,
+            funding_alert_extreme_positive_pct=0.5,
+            funding_alert_min_exchange_count=1,
+        )
+
+        negative = classify_funding_alert([
+            {"exchange": "Binance", "funding_pct": -0.982},
+        ], settings)
+        positive = classify_funding_alert([
+            {"exchange": "Binance", "funding_pct": 0.982},
+        ], settings)
+
+        self.assertEqual(negative["primary_kind"], "extreme_negative")
+        self.assertEqual(negative["types"], ["Binance 极负资金费率"])
+        self.assertEqual(negative["risk"], "高")
+        self.assertEqual(positive["primary_kind"], "extreme_positive")
+        self.assertEqual(positive["types"], ["Binance 极正资金费率"])
+        self.assertEqual(positive["risk"], "高")
+
     def test_build_pushes_multi_exchange_negative_alert(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
@@ -231,16 +263,20 @@ class FundingAlertTests(unittest.TestCase):
                 data_dir=Path(tmp),
                 funding_alert_state_path=Path(tmp) / "funding_alert_state.json",
                 funding_alert_scan_limit=1,
-                funding_alert_exchanges=("BINANCE", "BYBIT"),
-                funding_alert_min_exchange_count=2,
+                funding_alert_exchanges=("BINANCE",),
+                funding_alert_min_exchange_count=1,
             )
 
             result = FundingAlertEngine(settings, JsonStore(Path(tmp))).build(  # type: ignore[arg-type]
-                FundingSource(FundingHttp())
+                FundingSource(HourlyBinanceFundingHttp())
             )
 
         self.assertEqual(len(result["alerts"]), 1)
-        self.assertIn("Binance", result["messages"][0])
+        self.assertIn("<b>警报类型</b>: Binance 极负资金费率", result["messages"][0])
+        self.assertIn("数据确认: 原生交易所接口 1所（Binance）", result["messages"][0])
+        self.assertIn("Binance 出现极负费率", result["messages"][0])
+        self.assertNotIn("多所极负共振", result["messages"][0])
+        self.assertNotIn("多家交易所同步极负", result["messages"][0])
 
     def test_reply_chain_uses_previous_message_id_for_same_symbol(self) -> None:
         with TemporaryDirectory() as tmp:
