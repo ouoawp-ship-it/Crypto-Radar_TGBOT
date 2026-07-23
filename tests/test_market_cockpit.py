@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
 import sqlite3
-import threading
-import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,10 +15,6 @@ from paopao_radar.market_cockpit import (
     load_market_cockpit_windows,
     persist_flow_market_rows,
     persist_market_batch,
-)
-from paopao_radar.web_services.public import (
-    public_market_overview_payload,
-    public_radar_boards_payload,
 )
 
 
@@ -383,62 +376,6 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertFalse({board["key"]: board for board in payload["boards"]}["oi"]["available"])
         self.assertTrue(payload["warnings"])
 
-    def test_public_cold_start_returns_empty_while_scheduling_background_warmup(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = self.settings(tmp)
-            with (
-                patch("paopao_radar.market_cockpit.collect_binance_market_rows", side_effect=AssertionError("request path must not collect")),
-                patch("paopao_radar.web_services.public._schedule_market_warmup", return_value=True) as schedule,
-            ):
-                payload = public_market_overview_payload(window_sec=3_600, settings=settings)
-
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["data"]["data_status"], "empty")
-        self.assertIn("后台预热", payload["data"]["warnings"][0])
-        schedule.assert_called_once_with(settings)
-
-    def test_public_market_warmup_is_single_flight_and_persists_result(self) -> None:
-        from paopao_radar.web_services import public as public_service
-
-        with TemporaryDirectory() as tmp:
-            settings = self.settings(tmp)
-            started = threading.Event()
-            release = threading.Event()
-            closed = threading.Event()
-            observed_at = int(time.time())
-
-            class FakeSource:
-                class Http:
-                    @staticmethod
-                    def close() -> None:
-                        closed.set()
-
-                http = Http()
-
-            def persist(*_args, **kwargs):
-                started.set()
-                release.wait(timeout=2)
-                kwargs["store"].append_many([{
-                    "symbol": "BTCUSDT", "observed_at": observed_at, "source": "binance_futures_batch",
-                    "price": 100, "quote_volume": 100_000_000, "coverage": {"price": True, "volume": True},
-                }])
-                return {"status": "saved", "count": 1, "flow_facts": {"status": "saved", "count": 1}}
-
-            with (
-                patch.object(public_service, "BinanceDataSource", return_value=FakeSource()),
-                patch.object(public_service, "persist_market_batch", side_effect=persist) as persist_batch,
-            ):
-                self.assertTrue(public_service._schedule_market_warmup(settings))
-                self.assertTrue(started.wait(timeout=1))
-                self.assertFalse(public_service._schedule_market_warmup(settings))
-                release.set()
-                self.assertTrue(closed.wait(timeout=2))
-                self.assertTrue(persist_batch.call_args.kwargs["force"])
-
-            saved_at = MarketSnapshotStore(settings.market_snapshots_db_path).latest_timestamp("binance_futures_batch")
-
-        self.assertEqual(saved_at, observed_at)
-
     def test_batch_collector_filters_excluded_assets_and_persists_on_interval(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings(tmp)
@@ -541,26 +478,6 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(latest[0]["spot_inflow_usd"], 540_000)
         self.assertEqual(latest[0]["spot_outflow_usd"], 460_000)
         self.assertEqual(latest[0]["futures_flow_usd"], 120_000)
-
-    def test_public_overview_and_boards_are_bounded_and_redacted(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = self.settings(tmp)
-            store = MarketSnapshotStore(settings.market_snapshots_db_path)
-            store.append_many(self.baseline_rows(1_000))
-            store.append_many(self.latest_rows(4_600))
-
-            overview = public_market_overview_payload(window_sec=3_600, settings=settings, now_ts=4_600)
-            boards = public_radar_boards_payload(window_sec=3_600, board_limit=3, settings=settings, now_ts=4_600)
-
-        self.assertTrue(overview["ok"])
-        self.assertTrue(boards["ok"])
-        self.assertEqual(overview["data"]["data_status"], "ready")
-        self.assertEqual(overview["data"]["readiness"]["status"], "ready")
-        self.assertEqual(boards["data"]["readiness"]["coverage"]["oi_ratio"], 1.0)
-        self.assertEqual(len(boards["data"]["boards"]), 5)
-        serialized = json.dumps({"overview": overview, "boards": boards}, ensure_ascii=False).lower()
-        for forbidden in ("bot_token", "api_key", "password", "coverage_json"):
-            self.assertNotIn(forbidden, serialized)
 
     def test_readiness_distinguishes_warmup_from_stale_and_reports_progress(self) -> None:
         with TemporaryDirectory() as tmp:

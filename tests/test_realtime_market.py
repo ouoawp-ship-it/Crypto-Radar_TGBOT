@@ -25,7 +25,6 @@ from paopao_radar.realtime_market import (
     select_realtime_symbols,
     run_realtime_market_service,
 )
-from paopao_radar.web_services.public import public_radar_boards_payload, public_realtime_market_payload
 
 
 class BinanceMarketEventTests(unittest.TestCase):
@@ -510,58 +509,6 @@ class RealtimeFeatureStoreTests(unittest.TestCase):
             self.assertFalse(service.pipeline.handle_message(replayed))
             self.assertTrue(service.pipeline.handle_message(current))
             self.assertEqual(service.stats()["late_events"], 1)
-
-    def test_public_payload_exposes_fresh_features_and_explicit_empty_state(self) -> None:
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "realtime.db"
-            settings = SimpleNamespace(realtime_features_db_path=path)
-            empty = public_realtime_market_payload(settings=settings, now_ts=130)
-            store = RealtimeFeatureStore(path)
-            store.replace_many([{
-                "exchange": "binance", "market": "futures", "symbol": "BTCUSDT",
-                "bucket_start": 60, "bucket_sec": 60,
-                "trade_buy_usd": 300, "trade_sell_usd": 100, "cvd_usd": 200,
-                "trade_count": 2, "price_open": 100, "price_high": 110,
-                "price_low": 95, "price_close": 105, "long_liquidation_usd": 180,
-                "short_liquidation_usd": 0, "liquidation_count": 1,
-                "last_event_ms": 63_000,
-            }])
-            payload = public_realtime_market_payload(
-                symbol="BTCUSDT", settings=settings, now_ts=130, max_age_sec=120,
-            )
-
-        self.assertTrue(empty["ok"])
-        self.assertEqual(empty["data"]["data_status"], "unavailable")
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["data"]["data_status"], "ready")
-        self.assertEqual(payload["data"]["items"][0]["cvd_usd"], 200)
-        self.assertEqual(payload["data"]["items"][0]["price_close"], 105)
-        self.assertEqual(payload["data"]["items"][0]["price_change_pct"], 5)
-        self.assertEqual(payload["data"]["items"][0]["age_sec"], 10)
-
-    def test_radar_boards_append_realtime_boards_without_replacing_rest_fallback(self) -> None:
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "realtime.db"
-            settings = SimpleNamespace(cockpit_v2_mode="enabled", realtime_features_db_path=path)
-            RealtimeFeatureStore(path).replace_many([{
-                "exchange": "binance", "market": "futures", "symbol": "BTCUSDT",
-                "bucket_start": 60, "bucket_sec": 60,
-                "trade_buy_usd": 300, "trade_sell_usd": 100, "cvd_usd": 200,
-                "trade_count": 2, "long_liquidation_usd": 180,
-                "short_liquidation_usd": 0, "liquidation_count": 1,
-                "last_event_ms": 63_000,
-            }])
-            cockpit = {
-                "schema_version": "test", "generated_at": "", "window_sec": 3600,
-                "data_status": "ready", "warnings": [], "coverage": {"assets": 1},
-                "readiness": {}, "boards": [{"key": "price"}], "methodology": {},
-            }
-            with patch("paopao_radar.web_services.public._market_cockpit_raw", return_value=cockpit):
-                payload = public_radar_boards_payload(settings=settings, now_ts=130)
-
-        keys = [board["key"] for board in payload["data"]["boards"]]
-        self.assertEqual(keys, ["price", "realtime_futures_flow", "realtime_liquidations"])
-        self.assertEqual(payload["data"]["coverage"]["realtime"], 1)
 
     def test_pipeline_parses_json_and_flushes_only_closed_buckets(self) -> None:
         with TemporaryDirectory() as tmp:

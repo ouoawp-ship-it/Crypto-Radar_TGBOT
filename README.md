@@ -1,101 +1,69 @@
-# 泡泡抓币 Crypto Radar
+# Crypto Radar Telegram Bot
 
-泡泡抓币是一套面向 Telegram 用户的异常机会雷达与信号验证工作台。系统聚焦实时监控、风险提示、可解释信号、主动提醒和稳定运维，不执行交易。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.0.0` 已移除公开网站、后台管理、用户系统、独立 AI 助手和全部 Web 部署依赖，恢复为小而稳定的 BOT 运行时。
 
 ## 核心功能
 
-- 资金雷达：结合价格、成交量、持仓量与资金费率筛选市场异动。
-- 启动雷达：按 15m/1h 完整窗口识别预热、临界和启动阶段。
-- 资金流雷达：汇总 CVD、OI、费率和量价变化。
-- 资金费率警报：监控极端或快速变化的资金费率。
-- Binance 公告监听：跟踪上新、下架、Launchpool、HODLer、空投等公告。
-- 多交易所实时流：归一化 Binance、Bybit 与 OKX 公开成交，接入 Binance/Bybit 公开强平，生成封闭分钟 CVD、Surge、短周期潜伏和方向共振。
-- Telegram 推送：支持话题路由、冷却、去重、限流、推送历史与精确信号深链。
-- AI 助手：独立 Bot，承接 Web 币种分析深链、目标价/涨跌/OI/费率提醒和可选 AI 问答。
-- 信号情报：自身历史极端度、市场相对强度、同口径绝对规模、跨模块共振和生命周期。
-- Web 前台：公开总览、四类机会榜、证据抽屉、轻量单币上下文和浏览器本地自选。
-- Web 后台：服务、配置、任务、日志、审计、价格提醒和提示词管理。
+- 启动预警：基于价格、OI、成交量、资金费率与突破结构识别启动阶段。
+- 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
+- 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
+- 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
+- 公告风险：解析 Binance 官方上新、下架、Launchpool、Airdrop 等公告。
+- 推送安全：默认 dry-run，真实发送必须同时提供 `--send --confirm-real-send`，并经过 readiness 门禁、去重、冷却、限流和重试。
 
-## Web 路由
+实时行情进程会采集 Binance、Bybit、OKX 的成交和清算数据，为 Telegram 信号补充 CVD、清算和市场上下文。CoinGlass 是可选增强源，不配置 Key 时自动降级。
 
-- `/`：公开总览
-- `/radar`：公开信号雷达
-- `/coin/<symbol>`：轻量单币验证上下文
-- `/watchlist`：当前浏览器的本地自选
-- `/admin`：需登录的运维控制台
-- `/public-api/signals`：公开信号列表
-- `/public-api/signals/stats`：公开信号统计
-- `/public-api/signals/context?id=...`：证据、排名、共振和生命周期
-- `/public-api/radar/intelligence`：四类机会榜与情报层
-- `/public-api/coin/context?symbol=...`：单币聚合上下文
-- `/public-api/market/watchlist?symbols=...`：批量自选快照
-- `/public-api/data/sources`：数据源治理清单和脱敏运行状态
-- `/public-api/health`：脱敏健康、P95/SLO、上游、缓存和限流计数
+## 本地运行
 
-公开接口只返回脱敏后的结构化信号。配置、日志、任务、服务控制和审计接口均需后台认证。
-线上信号接口为 `https://paoxx.com/public-api/signals`。
+```powershell
+Copy-Item .env.oi.example .env.oi
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+.\.venv\Scripts\python.exe main.py doctor
+.\.venv\Scripts\python.exe main.py once
+```
 
-## 常用命令
+必须在 `.env.oi` 中填写：
 
-```bash
+```dotenv
+TG_BOT_TOKEN=123456:...
+TG_CHAT_ID=-1001234567890
+```
+
+常用命令：
+
+```text
 python main.py status
 python main.py doctor
 python main.py readiness
 python main.py stable-check
+python main.py telegram-test
 python main.py once
+python main.py flow-radar
+python main.py funding-alert
+python main.py market-stream
 python main.py live --send --confirm-real-send
-python main.py ai-assistant
-python main.py web
 ```
 
-真实 Telegram 推送必须同时传入 `--send --confirm-real-send`，并通过 readiness 门禁。
+## 测试
 
-## 本地运行
+```powershell
+.\.venv\Scripts\python.exe -m compileall -q paopao_radar tests scripts main.py
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+## Linux 服务器
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.oi.example .env.oi
-python main.py doctor
+bash scripts/install_server.sh
+bash scripts/update_server.sh --check
+bash scripts/update_server.sh --yes
 ```
 
-公开前台：
+生产环境仅保留：
 
-```bash
-cd frontend
-npm ci
-npm run dev
-```
+- `paopao-radar.service`：扫描、评分与 Telegram 推送。
+- `paopao-market-stream.service`：实时成交和清算采集。
+- `paopao-cleanup.timer`：运行期缓存与过期状态清理。
 
-工程门禁：
-
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-python -m compileall -q paopao_radar tests scripts
-cd frontend
-npm run typecheck
-npm run build
-npm run e2e
-npm audit --audit-level=high
-```
-
-## 服务器更新
-
-```bash
-cd ~/paopao-crypto-radar
-paopao update --yes || bash scripts/update_server.sh --yes
-bash scripts/check_https_deploy.sh --with-stable-check
-```
-
-部署结构为 Nginx 对外提供 80/443，Next.js 仅监听 `127.0.0.1:3000`，Python 后端监听 `0.0.0.0:8080` 供 Nginx 反代。云安全组应关闭公网 3000/8080。
-
-详细安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)，公开与后台 API 见 [docs/API.md](docs/API.md)。
-
-## 安全边界
-
-- 不读取交易所私钥，不执行下单。
-- 不提供自动交易。
-- 不恢复通用研究型回测、模型注册、校准和研究生命周期 Web 平台；实时异常只提供有样本门槛的轻量离线方向结果统计。
-- 所有推送均为市场监控和风险提示，不构成投资建议。
-- `.env.oi`、数据库、日志和运行历史不得提交到 Git。
+更完整的模块边界见 [docs/BOT_ONLY_ARCHITECTURE.md](docs/BOT_ONLY_ARCHITECTURE.md)，安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。

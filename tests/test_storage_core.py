@@ -263,10 +263,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from paopao_radar import web
 from paopao_radar.config import Settings
 from paopao_radar.runtime_cache import RuntimeCache, clear
-from paopao_radar.web_services import jobs, ops
 
 
 class RuntimeCacheTests(unittest.TestCase):
@@ -370,86 +368,6 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertEqual(stats["expired_pruned"], 2)
 
 
-class DashboardRuntimeCacheTests(unittest.TestCase):
-    def setUp(self) -> None:
-        clear()
-
-    def tearDown(self) -> None:
-        clear()
-
-    @staticmethod
-    def _fake_web_subprocess(argv: list[str], **_kwargs: object) -> dict[str, object]:
-        if argv[:2] == ["systemctl", "is-active"]:
-            stdout = "active\n"
-        elif argv[:2] == ["systemctl", "is-enabled"]:
-            stdout = "enabled\n"
-        elif argv[:3] == ["git", "rev-parse", "--short"]:
-            stdout = "abc1234\n"
-        elif argv[:2] == ["git", "log"]:
-            stdout = "cached dashboard\n"
-        elif argv[:2] == ["git", "branch"]:
-            stdout = "main\n"
-        else:
-            stdout = "ok\n"
-        return {"ok": True, "returncode": 0, "stdout": stdout, "stderr": "", "command": " ".join(argv)}
-
-    @staticmethod
-    def _fake_ops_subprocess(*_args: object, **_kwargs: object) -> object:
-        return type("Completed", (), {"returncode": 0, "stdout": "abc1234\n"})()
-
-    def test_cached_service_dict_cannot_be_mutated_by_caller(self) -> None:
-        with (
-            patch.object(web, "command_exists", return_value=True),
-            patch.object(web, "run_subprocess", side_effect=self._fake_web_subprocess),
-        ):
-            first = web.service_status("paopao-test")
-            first["active"] = "tampered"
-            second = web.service_status("paopao-test")
-
-        self.assertEqual(second["active"], "active")
-
-    def test_service_action_and_config_save_invalidate_cached_results(self) -> None:
-        with (
-            patch.object(web, "command_exists", return_value=True),
-            patch.object(web, "run_subprocess", side_effect=self._fake_web_subprocess) as run_web,
-        ):
-            web.service_status(web.MAIN_SERVICE)
-            web.service_status(web.MAIN_SERVICE)
-            self.assertEqual(run_web.call_count, 2)
-
-            web.run_service_action("restart-main")
-            web.service_status(web.MAIN_SERVICE)
-            self.assertEqual(run_web.call_count, 5)
-
-            web.git_info()
-            git_calls = run_web.call_count
-            web.git_info()
-            self.assertEqual(run_web.call_count, git_calls)
-            with TemporaryDirectory() as tmp:
-                env_path = Path(tmp) / ".env.oi"
-                env_path.write_text("WEB_PORT=8080\n", encoding="utf-8")
-                result = web.write_env_updates({"WEB_PORT": "8081"}, path=env_path)
-            self.assertTrue(result["ok"])
-            web.git_info()
-            self.assertEqual(run_web.call_count, git_calls + 3)
-
-    def test_job_start_and_finish_invalidate_related_cache_prefixes(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(data_dir=Path(tmp), web_jobs_db_path=Path(tmp) / "jobs.db")
-            with patch.object(jobs, "invalidate_runtime_cache") as invalidate:
-                created = jobs.create_job_payload("api-self-test", settings=settings, start=False)
-                store = jobs.store_for_settings(settings)
-                finished = jobs.run_job_sync_for_tests(store, int(created["job"]["id"]))
-
-        self.assertEqual(finished["status"], "success")
-        prefixes = [call.args[0] for call in invalidate.call_args_list]
-        self.assertGreaterEqual(prefixes.count("dashboard:"), 3)
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 # Source group: test_config.py
 
 import os
@@ -479,24 +397,24 @@ class ConfigLoadTests(unittest.TestCase):
     def test_load_env_file_overrides_empty_process_value_with_file_value(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
-            env_path.write_text("WEB_ADMIN_TOKEN=file-token\n", encoding="utf-8")
+            env_path.write_text("TG_BOT_TOKEN=file-token\n", encoding="utf-8")
 
-            with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": ""}):
+            with patch.dict(os.environ, {"TG_BOT_TOKEN": ""}):
                 env = load_env_file(env_path)
 
-                self.assertEqual(env["WEB_ADMIN_TOKEN"], "file-token")
-                self.assertEqual(os.environ["WEB_ADMIN_TOKEN"], "file-token")
+                self.assertEqual(env["TG_BOT_TOKEN"], "file-token")
+                self.assertEqual(os.environ["TG_BOT_TOKEN"], "file-token")
 
     def test_load_env_file_preserves_non_empty_process_value(self) -> None:
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env.oi"
-            env_path.write_text("WEB_ADMIN_TOKEN=file-token\n", encoding="utf-8")
+            env_path.write_text("TG_BOT_TOKEN=file-token\n", encoding="utf-8")
 
-            with patch.dict(os.environ, {"WEB_ADMIN_TOKEN": "process-token"}):
+            with patch.dict(os.environ, {"TG_BOT_TOKEN": "process-token"}):
                 env = load_env_file(env_path)
 
-                self.assertEqual(env["WEB_ADMIN_TOKEN"], "file-token")
-                self.assertEqual(os.environ["WEB_ADMIN_TOKEN"], "process-token")
+                self.assertEqual(env["TG_BOT_TOKEN"], "file-token")
+                self.assertEqual(os.environ["TG_BOT_TOKEN"], "process-token")
 
 
 if __name__ == "__main__":

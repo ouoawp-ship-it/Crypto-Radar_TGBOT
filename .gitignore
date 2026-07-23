@@ -36,22 +36,8 @@ fr_snapshot.json
 heat_history.json
 *.log
 
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-frontend/.turbo/
-frontend/tsconfig.tsbuildinfo
-frontend/test-results/
-frontend/playwright-report/
-frontend/blob-report/
-frontend/e2e/mercu-targets/*
-!frontend/e2e/mercu-targets/mercu-radar-1440x900.png
-!frontend/e2e/mercu-targets/mercu-radar-1920x1080.png
-!frontend/e2e/mercu-targets/mercu-info-1440x900.png
-!frontend/e2e/mercu-targets/mercu-info-1920x1080.png
-!frontend/e2e/mercu-targets/mercu-funds-1440x900.png
-!frontend/e2e/mercu-targets/mercu-funds-1920x1080.png
-frontend/e2e/mercu-diffs/
+# The Web product was removed in v2.0. Keep archived local captures and dependencies out of BOT commits.
+frontend/
 /test-results/
 node_modules/
 .next/
