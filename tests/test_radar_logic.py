@@ -333,7 +333,7 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn("分数图例", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
 
-    def test_launch_oi_conflict_blocks_score_and_push_stage(self) -> None:
+    def test_launch_signal_uses_binance_native_confirmation(self) -> None:
         item = {
             "score": 95,
             "oi_1h": 8.0,
@@ -341,32 +341,43 @@ class RadarScoringTests(unittest.TestCase):
             "reasons": ["1h OI +8.0%"],
         }
 
-        RadarEngine._apply_launch_oi_validation(item, {
-            "status": "conflict",
-            "score": 10,
-            "gate": "block",
-            "primary_source": "coinglass",
-            "selected_change_pct": -3.0,
-        })
+        from paopao_radar.binance_confirmation import apply_binance_confirmation
 
-        self.assertEqual(item["score"], 0)
-        self.assertEqual(item["quality_gate"], "block")
-        self.assertIn("已阻止启动推送", item["reasons"][0])
+        apply_binance_confirmation(
+            item,
+            {"价格": True, "OI": True, "成交量": True},
+            scope="Binance USDⓈ-M Futures",
+            window="15m闭合窗口",
+            observed_at=1000,
+        )
 
-    def test_summary_oi_conflict_is_marked_and_blocked_from_oi_rankings(self) -> None:
+        self.assertEqual(item["score"], 95)
+        self.assertEqual(item["quality_gate"], "allow")
+        self.assertEqual(item["primary_data_source"], "binance_native")
+
+    def test_summary_oi_is_labeled_as_binance_native(self) -> None:
         item = {"symbol": "BTCUSDT", "oi_6h": 8.0}
 
-        RadarEngine._apply_summary_oi_validation(item, {
-            "status": "conflict",
-            "score": 10,
-            "gate": "block",
-            "primary_source": "binance",
-        })
+        from paopao_radar.binance_confirmation import apply_binance_confirmation
 
-        self.assertEqual(item["data_quality_status"], "conflict")
-        self.assertEqual(item["quality_gate"], "block")
-        self.assertFalse(RadarEngine._summary_oi_allowed(item))
-        self.assertEqual(RadarEngine._summary_oi_quality_badge(item), "冲突")
+        apply_binance_confirmation(
+            item,
+            {"OI窗口": True},
+            scope="Binance USDⓈ-M Futures",
+            window="6h闭合窗口",
+            observed_at=1000,
+        )
+
+        self.assertEqual(item["data_quality_status"], "confirmed")
+        self.assertEqual(item["quality_gate"], "allow")
+        self.assertTrue(RadarEngine._summary_oi_allowed(item))
+        self.assertEqual(RadarEngine._summary_oi_quality_badge(item), "币安")
+
+    def test_missing_market_cap_never_receives_small_cap_points(self) -> None:
+        from paopao_radar.radar import score_mcap
+
+        self.assertEqual(score_mcap(0), 0)
+        self.assertEqual(score_mcap(-1), 0)
 
     def test_summary_oi_change_uses_window_start_not_prefetch_baseline(self) -> None:
         start_ms = 1_000_000

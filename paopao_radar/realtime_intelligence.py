@@ -715,7 +715,7 @@ def _resonance(windows: dict[str, dict[str, Any]]) -> dict[str, Any]:
             }
             for key, _seconds in MOMENTUM_WINDOWS
         ],
-        "method": "15m、30m、1h、4h、1d 封闭窗口的 CVD 方向需获得价格非反向确认；至少两个周期同向才算方向共振。",
+        "method": "15m、30m、1h、4h、1d 封闭窗口的主动成交净额方向需获得价格非反向确认；至少两个周期同向才算方向共振。",
     }
 
 
@@ -927,7 +927,7 @@ def build_realtime_intelligence(
                 "self": _rank(
                     current_strength,
                     _historical_strengths(five_minute_windows, anchor),
-                    method="当前 5m CVD 占比绝对值在该币近 24h 非重叠 5m 窗口中的经验分位",
+                    method="当前 5m 主动成交净占比绝对值在该币近 24h 非重叠 5m 窗口中的经验分位",
                 ),
             },
         })

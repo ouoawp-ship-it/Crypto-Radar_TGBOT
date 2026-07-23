@@ -17,7 +17,6 @@ BOT_MARKET_WINDOW_SEC = 900
 BOT_MARKET_SOURCES = {
     "binance_futures_batch",
     "market_flow_15m",
-    "flow_radar",
 }
 
 
@@ -85,7 +84,11 @@ def _load_realtime_payload(settings: Any, *, now_ts: int | None = None) -> dict[
     now = int(now_ts or time.time())
 
     def build() -> dict[str, Any]:
-        rows = RealtimeFeatureStore(path).recent_rows(now_ts=now, window_sec=86_400)
+        rows = [
+            row
+            for row in RealtimeFeatureStore(path).recent_rows(now_ts=now, window_sec=86_400)
+            if str(row.get("exchange") or "").lower() == "binance"
+        ]
         return build_realtime_intelligence(rows, now_ts=now, limit=30, include_backtest=False)
 
     if now_ts is not None:
@@ -236,7 +239,7 @@ def _context_lines(context: dict[str, Any]) -> list[str]:
     resonance = context.get("resonance") if isinstance(context.get("resonance"), dict) else {}
     parts = [f"<b>{html.escape(coin)}</b>"]
     if cvd is not None:
-        parts.append(f"5m CVD {cvd:+.2f}%")
+        parts.append(f"5m合约主动净占比 {cvd:+.2f}%")
     if surge.get("triggered"):
         parts.append(f"Surge {_direction_label(surge.get('direction'))} {float(surge.get('score') or 0):.1f}")
     elif ambush.get("triggered"):
@@ -289,9 +292,11 @@ def enrich_telegram_with_market_context(
         return text
     block = [
         "",
-        "<blockquote><b>BOT 实时市场数据确认</b></blockquote>",
+        "<blockquote><b>BOT Binance 原生数据确认</b></blockquote>",
         *[line for context in contexts for line in _context_lines(context)],
-        "<i>仅采用交易所实时/封闭窗口行情，不采用新闻或社交情报；不改变本模块原触发阈值；不构成投资建议。</i>",
+        "<i>来源: Binance Spot + Binance USDⓈ-M Futures；仅代表 Binance 市场。</i>",
+        "<i>计算: 主动成交净额=taker主动买入报价额-taker主动卖出报价额；主动净占比=主动成交净额/总成交额；OI变化=(窗口末OI-窗口初OI)/窗口初OI。</i>",
+        "<i>只采用实时或已闭合窗口行情，不采用新闻、社交情报或 CoinGlass/Coinalyze；不改变本模块原触发阈值；不构成投资建议。</i>",
     ]
     return f"{text.rstrip()}\n" + "\n".join(block)
 

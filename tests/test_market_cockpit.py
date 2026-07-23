@@ -136,7 +136,7 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(comparison["delta"]["futures_net_flow_usd"], 10_000)
         self.assertIsNone(comparison["previous"]["oi_net_change_usd"])
         self.assertIsNone(boards["price"]["positive"]["items"][0]["magnitude_usd"])
-        self.assertIn("CVD", payload["methodology"]["flow"])
+        self.assertIn("主动成交净额", payload["methodology"]["flow"])
 
     def test_board_items_preserve_or_infer_non_crypto_asset_type(self) -> None:
         latest = [

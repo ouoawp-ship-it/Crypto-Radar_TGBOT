@@ -1,8 +1,8 @@
 # 独立链上交易所资金流监听系统设计
 
-状态：**设计基线 / Codex 实施输入**  
-目标仓库：`Crypto-Radar_TGBOT`  
-目标模块：`paopao-onchain-flow`  
+状态：**设计基线 / Codex 实施输入**
+目标仓库：`Crypto-Radar_TGBOT`
+目标模块：`paopao-onchain-flow`
 
 ## 1. 目标
 
