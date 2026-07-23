@@ -183,6 +183,10 @@ elif [ "$CHECK_ONLY" = "1" ]; then
 else
   confirm_update || { printf '已取消更新。\n'; exit 0; }
   git pull --ff-only "$REMOTE" "$BRANCH"
+  if [ "${PAOPAO_UPDATE_REEXEC:-0}" != "1" ]; then
+    export PAOPAO_UPDATE_REEXEC=1
+    exec bash "${APP_DIR}/scripts/update_server.sh" --yes
+  fi
 fi
 
 if [ ! -x .venv/bin/python ]; then
