@@ -514,6 +514,8 @@ class TelegramGatewayTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             settings = Settings(
                 data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
                 tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                 tg_chat_id="-1001234567890",
                 tg_use_topic=True,
