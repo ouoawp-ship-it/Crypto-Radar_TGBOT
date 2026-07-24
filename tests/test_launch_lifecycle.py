@@ -390,6 +390,57 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertEqual(complete["status"], "complete")
             self.assertEqual(store.list_pending_cleanups(), [])
 
+    def test_topic_cleanup_reconciles_latest_and_pending_message_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+            )
+            first = store.record_observation(
+                snapshot(window_end_ts=900, score=60, price=100, oi=1_000),
+                stage="primed",
+                observed_at=910,
+            )
+            store.commit_package(
+                cycle_id=first["cycle_id"],
+                observation_id=first["observation_id"],
+                message_ids=[101],
+                checkpoint_reasons=["cycle_opened"],
+                published_at=920,
+            )
+            second = store.record_observation(
+                snapshot(window_end_ts=1800, score=75, price=104, oi=1_060),
+                stage="breakout",
+                observed_at=1810,
+            )
+            store.commit_package(
+                cycle_id=second["cycle_id"],
+                observation_id=second["observation_id"],
+                message_ids=[201],
+                checkpoint_reasons=second["publication"]["checkpoint_reasons"],
+                published_at=1820,
+            )
+
+            result = store.reconcile_topic_message_cleanup(
+                deleted_ids=[101, 201],
+                updated_at=1830,
+            )
+
+            self.assertEqual(result["cycles_updated"], 1)
+            self.assertEqual(result["message_ids_removed"], 2)
+            with store.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT latest_message_ids_json,
+                           cleanup_pending_message_ids_json
+                    FROM launch_lifecycle_cycles
+                    WHERE id = ?
+                    """,
+                    (first["cycle_id"],),
+                ).fetchone()
+            self.assertEqual(row["latest_message_ids_json"], "[]")
+            self.assertEqual(row["cleanup_pending_message_ids_json"], "[]")
+
     def test_funds_direction_divergence_is_a_package_trigger(self) -> None:
         with TemporaryDirectory() as tmp:
             store = LaunchLifecycleStore(
@@ -496,6 +547,38 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
 
 
 class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
+    def test_topic_cleanup_reconciles_launch_state_message_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                signal_events_db_path=Path(tmp) / "signals.db",
+            )
+            json_store = JsonStore(Path(tmp))
+            json_store.save(settings.launch_state_path, {
+                "AUSDT": {
+                    "message_ids": [101],
+                    "last_message_ids": [101],
+                    "last_message_id": 101,
+                },
+                "BUSDT": {
+                    "message_ids": [202],
+                    "last_message_ids": [202],
+                    "last_message_id": 202,
+                },
+            })
+            engine = RadarEngine(settings, json_store)
+
+            result = engine.reconcile_launch_topic_messages(
+                deleted_ids=[101],
+                updated_at=1_000,
+            )
+
+            state = json_store.load(settings.launch_state_path, {})
+            self.assertEqual(result["state_records_updated"], 1)
+            self.assertEqual(state["AUSDT"]["message_ids"], [])
+            self.assertEqual(state["AUSDT"]["last_message_id"], 0)
+            self.assertEqual(state["BUSDT"]["message_ids"], [202])
+
     def test_launch_chart_fetches_cycle_window_and_stays_in_memory(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(

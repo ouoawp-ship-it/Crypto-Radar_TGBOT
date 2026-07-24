@@ -1055,6 +1055,70 @@ class LaunchLifecycleStore:
                 "remaining_ids": remaining,
             }
 
+    def reconcile_topic_message_cleanup(
+        self,
+        *,
+        deleted_ids: list[int],
+        updated_at: int,
+    ) -> dict[str, int]:
+        deleted = set(self._message_ids(deleted_ids))
+        if not deleted:
+            return {"cycles_updated": 0, "message_ids_removed": 0}
+        cycles_updated = 0
+        message_ids_removed = 0
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT id, latest_message_ids_json,
+                       cleanup_pending_message_ids_json
+                FROM launch_lifecycle_cycles
+                """
+            ).fetchall()
+            for row in rows:
+                latest = self._message_ids(row["latest_message_ids_json"])
+                pending = self._message_ids(
+                    row["cleanup_pending_message_ids_json"]
+                )
+                filtered_latest = [
+                    message_id
+                    for message_id in latest
+                    if message_id not in deleted
+                ]
+                filtered_pending = [
+                    message_id
+                    for message_id in pending
+                    if message_id not in deleted
+                ]
+                removed = (len(latest) - len(filtered_latest)) + (
+                    len(pending) - len(filtered_pending)
+                )
+                if removed <= 0:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE launch_lifecycle_cycles
+                    SET latest_message_ids_json = ?,
+                        cleanup_pending_message_ids_json = ?,
+                        package_updated_at = ?,
+                        updated_at = MAX(updated_at, ?)
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(filtered_latest),
+                        json.dumps(filtered_pending),
+                        int(updated_at),
+                        int(updated_at),
+                        int(row["id"]),
+                    ),
+                )
+                cycles_updated += 1
+                message_ids_removed += removed
+        return {
+            "cycles_updated": cycles_updated,
+            "message_ids_removed": message_ids_removed,
+        }
+
     @staticmethod
     def _message_ids(value: Any) -> list[int]:
         raw = value

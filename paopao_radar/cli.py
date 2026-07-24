@@ -141,6 +141,7 @@ def push_launch_messages(
     alerts = list(launch.get("alerts") or [])
     pushes: list[dict[str, object]] = []
     sent_alerts: list[dict[str, object]] = []
+    topic_deleted_message_ids: list[int] = []
     for idx, message in enumerate(messages, start=1):
         alert = alerts[idx - 1]
         is_package = bool(alert.get("launch_message_package_v2"))
@@ -291,6 +292,11 @@ def push_launch_messages(
                 cleanup_diagnostics["topic_history_undeletable"] = int(
                     cleanup_diagnostics["topic_history_undeletable"]
                 ) + len(undeletable_ids)
+                topic_deleted_message_ids.extend(
+                    int(message_id)
+                    for message_id in (topic_deletion.get("deleted_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                )
             sent_alerts.append(alert)
         elif is_package and push.message_ids and real_send:
             rollback = gateway.delete_messages_detailed(
@@ -311,6 +317,10 @@ def push_launch_messages(
             alert.pop("chart_png_bytes", None)
         pushes.append(push_record)
     engine.mark_launch_pushed(sent_alerts)
+    reconciliation = engine.reconcile_launch_topic_messages(
+        deleted_ids=topic_deleted_message_ids,
+    )
+    cleanup_diagnostics["topic_state_reconciliation"] = reconciliation
     return pushes, cleanup_diagnostics
 
 
