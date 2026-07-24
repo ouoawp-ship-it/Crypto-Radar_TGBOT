@@ -187,6 +187,8 @@ def push_launch_messages(
                 else int(alert.get("reply_to_message_id", 0) or 0) or None
             ),
             signal_records=[signal_record],
+            photo=chart_bytes if chart_required else None,
+            enrich_market_context=not is_package,
         )
         print(f"launch_push[{idx}]: {push.status} ({push.reason})")
         push_record["status"] = push.status
@@ -194,44 +196,10 @@ def push_launch_messages(
         if push.status == "sent":
             new_message_ids = list(push.message_ids or [])
             if chart_required:
-                publication = alert.get("launch_package")
-                publication = publication if isinstance(publication, dict) else {}
-                photo = gateway.send_photo_bytes(
-                    chart_bytes,
-                    caption=(
-                        f"<b>{str(alert.get('symbol') or '')}</b>｜"
-                        f"第{int(lifecycle.get('cycle_no') or 1)}轮｜"
-                        f"事件{int(publication.get('checkpoint_no') or 1):02d}｜"
-                        "Binance 已闭合15m"
-                    ),
-                    template_id="TG_LAUNCH_ALERT",
-                    send=args.send,
-                    confirm_real_send=args.confirm_real_send,
-                    parse_mode="HTML",
-                )
                 alert.pop("chart_png_bytes", None)
                 chart_bytes = None
-                push_record["photo_status"] = photo.status
-                push_record["photo_reason"] = photo.reason
-                new_message_ids.extend(photo.message_ids or [])
-                if photo.status != "sent":
-                    rollback = gateway.delete_messages_detailed(
-                        new_message_ids,
-                        reason="launch_package_photo_rollback",
-                    )
-                    push_record["status"] = "photo_failed"
-                    push_record["reason"] = photo.reason
-                    push_record["rollback_deleted"] = len(
-                        rollback.get("deleted_ids") or []
-                    )
-                    push_record["rollback_failures"] = len(
-                        rollback.get("failed_ids") or []
-                    )
-                    cleanup_diagnostics["chart_failures"] = int(
-                        cleanup_diagnostics["chart_failures"]
-                    ) + 1
-                    pushes.append(push_record)
-                    continue
+                push_record["photo_status"] = push.status
+                push_record["photo_reason"] = push.reason
                 cleanup_diagnostics["charts_sent"] = int(
                     cleanup_diagnostics["charts_sent"]
                 ) + 1
@@ -289,6 +257,10 @@ def push_launch_messages(
             push_record["rollback_failures"] = len(
                 rollback.get("failed_ids") or []
             )
+        if chart_required and push.status == "failed":
+            cleanup_diagnostics["chart_failures"] = int(
+                cleanup_diagnostics["chart_failures"]
+            ) + 1
         if chart_required:
             alert.pop("chart_png_bytes", None)
         pushes.append(push_record)

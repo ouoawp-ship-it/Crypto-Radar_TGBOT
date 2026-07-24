@@ -12,6 +12,7 @@ from paopao_radar.radar import RadarEngine
 from paopao_radar.signal_effectiveness import SignalOutcomeTracker
 from paopao_radar.signal_store import SignalEventStore
 from paopao_radar.storage import JsonStore
+from paopao_radar.telegram import plain_fallback
 
 
 def snapshot(
@@ -495,6 +496,7 @@ class LaunchOutcomeTests(unittest.TestCase):
             self.assertIn("样本积累中｜同口径已完成 2/20 轮", text)
             self.assertIn("样本未达门槛，不展示比例", text)
             self.assertNotIn("启动确认率", text)
+            self.assertLessEqual(len(plain_fallback(text)), 1024)
 
     def test_completed_message_explains_final_cycle_result(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -534,7 +536,9 @@ class LaunchOutcomeTests(unittest.TestCase):
             self.assertIn("本轮结果", text)
             self.assertIn("达到启动确认且价格完成跟随", text)
             self.assertIn("结束收益: +1.00%", text)
-            self.assertIn("本轮已结束", text)
+            self.assertIn("本轮结束", text)
+            self.assertIn("失效原因:", text)
+            self.assertLessEqual(len(plain_fallback(text)), 1024)
 
     def test_package_messages_are_not_double_counted_as_generic_outcomes(self) -> None:
         with TemporaryDirectory() as tmp:

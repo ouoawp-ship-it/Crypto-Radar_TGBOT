@@ -12,6 +12,7 @@ from paopao_radar.launch_lifecycle import LaunchLifecycleStore
 from paopao_radar.radar import RadarEngine
 from paopao_radar.signal_store import SignalEventStore
 from paopao_radar.storage import JsonStore
+from paopao_radar.telegram import plain_fallback
 
 
 def snapshot(
@@ -482,7 +483,7 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                             (1800 + index * 900) * 1000 - 1,
                             str(100_000 + index * 1000),
                         ]
-                        for index in range(32)
+                        for index in range(limit)
                     ]
 
             alert = {
@@ -512,6 +513,8 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertTrue(alert["chart_png_bytes"].startswith(PNG_SIGNATURE))
             self.assertTrue(alert["chart_generated_in_memory"])
             self.assertEqual(alert["chart_checkpoint_count"], 2)
+            self.assertGreaterEqual(alert["chart_candle_count"], 96)
+            self.assertGreaterEqual(captured["limit"], 96)
             self.assertLessEqual(captured["limit"], 1000)
             self.assertEqual(captured["end_time"], 29_700_000 - 1)
             self.assertEqual(list(Path(tmp).rglob("*.png")), [])
@@ -587,6 +590,18 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertIn("生命周期阶段变化", text)
             self.assertIn("事件轴", text)
             self.assertIn("现货主动买入、合约主动卖出", text)
+            self.assertIn(
+                'href="https://www.coinglass.com/tv/zh/Binance_TESTUSDT"',
+                text,
+            )
+            self.assertIn("<code>TESTUSDT</code>", text)
+            self.assertIn(
+                'href="https://www.tradingview.com/chart/?symbol=BINANCE%3ATESTUSDT.P"',
+                text,
+            )
+            self.assertLessEqual(len(plain_fallback(text)), 1024)
+            self.assertNotIn("图片只在内存中生成", text)
+            self.assertNotIn("每次新消息确认发送", text)
 
     def test_launch_analysis_exposes_absolute_closed_window_values(self) -> None:
         with TemporaryDirectory() as tmp:
