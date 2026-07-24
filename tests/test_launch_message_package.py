@@ -257,7 +257,7 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertFalse(any(event.startswith("delete:") for event in events))
             self.assertEqual(pushes[0]["status"], "failed")
 
-    def test_topic_history_is_deleted_only_after_new_package_commit(self) -> None:
+    def test_new_package_only_deletes_previous_package_for_same_cycle(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             settings = Settings(
@@ -279,20 +279,21 @@ class LaunchMessagePackageTests(unittest.TestCase):
                 SimpleNamespace(send=True, confirm_real_send=True),
             )
 
-            self.assertLess(events.index("commit"), events.index("topic_candidates:[201]"))
-            self.assertLess(events.index("topic_candidates:[201]"), events.index("delete:[88, 89]"))
-            self.assertIn("reason:launch_topic_replaced", events)
-            self.assertIn(
+            self.assertLess(events.index("commit"), events.index("delete:[101]"))
+            self.assertIn("reason:launch_package_replaced", events)
+            self.assertNotIn("topic_candidates:[201]", events)
+            self.assertNotIn("delete:[88, 89]", events)
+            self.assertNotIn(
                 "undeletable:telegram_delete_window_expired:[77]",
                 events,
             )
-            self.assertLess(events.index("mark"), events.index("reconcile:[88, 89]"))
-            self.assertEqual(pushes[0]["topic_history_replaced_count"], 2)
-            self.assertEqual(cleanup["topic_history_deleted"], 2)
-            self.assertEqual(cleanup["topic_history_undeletable"], 1)
+            self.assertLess(events.index("mark"), events.index("reconcile:[]"))
+            self.assertNotIn("topic_history_replaced_count", pushes[0])
+            self.assertEqual(cleanup["topic_history_deleted"], 0)
+            self.assertEqual(cleanup["topic_history_undeletable"], 0)
             self.assertEqual(
                 cleanup["topic_state_reconciliation"]["message_ids_removed"],
-                2,
+                0,
             )
 
     def test_partial_send_is_rolled_back_without_touching_old_package(self) -> None:
