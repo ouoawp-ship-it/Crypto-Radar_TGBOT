@@ -33,6 +33,7 @@ data/*.txt
 data/charts/
 data/backups/
 /data/onchain/
+/config/onchain/cex_addresses.local*.csv
 *.corrupt.*
 bn_signal_history.json
 fr_snapshot.json

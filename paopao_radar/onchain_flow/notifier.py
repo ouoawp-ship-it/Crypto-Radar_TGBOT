@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from paopao_radar.config import Settings
 from paopao_radar.storage import JsonStore
 from paopao_radar.telegram import PushResult, TelegramGateway
@@ -45,20 +47,34 @@ class OnchainNotifier:
         *,
         send: bool,
         confirm_real_send: bool,
+        attempted_at: int | None = None,
     ) -> PushResult:
-        result = self.gateway.send(
-            format_alert(alert),
-            TEMPLATE_ID,
-            alert.alert_key,
-            send=bool(send and self.onchain_settings.real_send),
-            confirm_real_send=bool(confirm_real_send),
-            cooldown_sec=self.onchain_settings.alert_cooldown_sec,
+        attempt_time = (
+            int(time.time()) if attempted_at is None else int(attempted_at)
         )
+        try:
+            result = self.gateway.send(
+                format_alert(alert),
+                TEMPLATE_ID,
+                alert.alert_key,
+                send=bool(send and self.onchain_settings.real_send),
+                confirm_real_send=bool(confirm_real_send),
+                cooldown_sec=self.onchain_settings.alert_cooldown_sec,
+            )
+        except Exception as exc:
+            self.store.record_delivery(
+                alert.alert_key,
+                status="failed",
+                sent=False,
+                reason=type(exc).__name__,
+                attempted_at=attempt_time,
+            )
+            raise
         self.store.record_delivery(
             alert.alert_key,
             status=result.status,
             sent=result.sent,
             reason=result.reason,
-            created_at=alert.created_at,
+            attempted_at=attempt_time,
         )
         return result

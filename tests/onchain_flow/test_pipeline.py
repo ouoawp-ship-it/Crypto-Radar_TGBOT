@@ -15,7 +15,10 @@ from paopao_radar.onchain_flow.collectors.base import (
 from paopao_radar.onchain_flow.db import OnchainStore
 from paopao_radar.onchain_flow.formatter import format_alert
 from paopao_radar.onchain_flow.models import ClassifiedFlow, DetectedFlow
-from paopao_radar.onchain_flow.runtime import replay_fixture
+from paopao_radar.onchain_flow.runtime import (
+    isolated_replay_settings,
+    replay_fixture,
+)
 from paopao_radar.onchain_flow.scorer import score_detection
 
 from .support import FIXTURE_PATH, make_settings
@@ -140,16 +143,19 @@ class OnchainPipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             settings = make_settings(Path(tmp))
             first = replay_fixture(settings, FIXTURE_PATH, notify=False)
-            store = OnchainStore(settings)
+            replay_settings = isolated_replay_settings(
+                settings, FIXTURE_PATH
+            )
+            store = OnchainStore(replay_settings)
             counts_first = store.table_counts()
             alerts_first = store.active_alerts()
-            with closing(sqlite3.connect(settings.db_path)) as conn:
+            with closing(sqlite3.connect(replay_settings.db_path)) as conn:
                 dump_first = "\n".join(conn.iterdump())
 
             second = replay_fixture(settings, FIXTURE_PATH, notify=False)
             counts_second = store.table_counts()
             alerts_second = store.active_alerts()
-            with closing(sqlite3.connect(settings.db_path)) as conn:
+            with closing(sqlite3.connect(replay_settings.db_path)) as conn:
                 dump_second = "\n".join(conn.iterdump())
 
             self.assertEqual(first.as_dict(), second.as_dict())
@@ -177,7 +183,9 @@ class OnchainPipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             settings = make_settings(Path(tmp))
             replay_fixture(settings, FIXTURE_PATH, notify=False)
-            store = OnchainStore(settings)
+            store = OnchainStore(
+                isolated_replay_settings(settings, FIXTURE_PATH)
+            )
             flows = store.finalized_flows()
             self.assertNotIn(
                 "8453:0x0000000000000000000000000000000000000000000000000000000000000007:0",
@@ -201,7 +209,9 @@ class OnchainPipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             settings = make_settings(Path(tmp))
             replay_fixture(settings, FIXTURE_PATH, notify=False)
-            store = OnchainStore(settings)
+            store = OnchainStore(
+                isolated_replay_settings(settings, FIXTURE_PATH)
+            )
             flows = store.finalized_flows()
             unpriced = [
                 flow
@@ -230,7 +240,10 @@ class OnchainPipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             settings = make_settings(Path(tmp))
             replay_fixture(settings, FIXTURE_PATH, notify=False)
-            with closing(sqlite3.connect(settings.db_path)) as conn:
+            replay_settings = isolated_replay_settings(
+                settings, FIXTURE_PATH
+            )
+            with closing(sqlite3.connect(replay_settings.db_path)) as conn:
                 duplicate_rows = conn.execute(
                     """
                     SELECT chain_id, tx_hash, log_index, COUNT(*)
