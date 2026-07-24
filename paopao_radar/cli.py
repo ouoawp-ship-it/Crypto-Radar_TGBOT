@@ -101,17 +101,30 @@ def push_launch_messages(
         "topic_history_undeletable": 0,
         "charts_sent": 0,
         "chart_failures": 0,
+        "protected_latest_messages": 0,
     }
     if package_enabled and real_send:
         cleanup_budget = max(0, int(settings.launch_message_cleanup_limit))
         attempted_cleanup_messages = 0
+        protected_latest_ids = set(gateway.latest_launch_topic_message_ids())
         for pending in engine.pending_launch_package_cleanups(
             limit=cleanup_budget
         ):
             available = max(0, cleanup_budget - attempted_cleanup_messages)
             if available <= 0:
                 break
-            message_ids = list(pending.get("message_ids") or [])[:available]
+            pending_message_ids = list(pending.get("message_ids") or [])
+            protected_pending_ids = (
+                protected_latest_ids.intersection(pending_message_ids)
+                if pending.get("expire_latest")
+                else set()
+            )
+            if protected_pending_ids:
+                cleanup_diagnostics["protected_latest_messages"] = int(
+                    cleanup_diagnostics["protected_latest_messages"]
+                ) + len(protected_pending_ids)
+                continue
+            message_ids = pending_message_ids[:available]
             attempted_cleanup_messages += len(message_ids)
             deletion = gateway.delete_messages_detailed(
                 message_ids,
