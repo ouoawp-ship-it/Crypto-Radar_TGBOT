@@ -1521,6 +1521,7 @@ class RadarEngine:
             for item in premium_items
             if str(item.get("symbol", "")).endswith("USDT")
         }
+        lifecycle_active_symbol_set = set(lifecycle_active_symbols)
         binance_market_caps = source.market_caps() if hasattr(source, "market_caps") else {}
         binance_market_caps = binance_market_caps or {}
         candidates: list[dict[str, Any]] = []
@@ -1545,6 +1546,7 @@ class RadarEngine:
                 "funding_available": isinstance(premium, dict) and bool(premium),
                 "funding_pct": to_float(premium.get("lastFundingRate")) * 100 if isinstance(premium, dict) else 0.0,
                 "funding_next_time_ms": int(to_float(premium.get("nextFundingTime"))) if isinstance(premium, dict) else 0,
+                "launch_lifecycle_active": symbol in lifecycle_active_symbol_set,
                 "mcap": mcap,
                 "mcap_source": "Binance" if mcap > 0 else "",
                 "market_cap_tier": market_cap_tier(mcap),
@@ -2278,7 +2280,11 @@ class RadarEngine:
 
         funding_pct = to_float(item.get("funding_pct"))
         next_funding_time_ms = int(to_float(item.get("funding_next_time_ms")))
-        if score >= self.settings.launch_watch_score or funding_pct <= -0.5:
+        if (
+            bool(item.get("launch_lifecycle_active"))
+            or score >= self.settings.launch_watch_score
+            or funding_pct <= -0.5
+        ):
             funding_context = self._launch_funding_context(source, symbol, funding_pct, next_funding_time_ms)
         else:
             funding_context = {
@@ -2487,6 +2493,13 @@ class RadarEngine:
         return f"{minutes}分钟"
 
     @staticmethod
+    def _launch_package_stage_delay(value: Any) -> str:
+        seconds = max(0, int(to_float(value)))
+        if seconds == 0:
+            return "首次信号即达到"
+        return f"{RadarEngine._launch_package_duration(seconds)}后"
+
+    @staticmethod
     def _launch_package_delta(current: Any, base: Any) -> float | None:
         current_value = to_float(current)
         base_value = to_float(base)
@@ -2495,12 +2508,23 @@ class RadarEngine:
         return (current_value / base_value - 1.0) * 100.0
 
     @staticmethod
-    def _launch_package_funding(snapshot: dict[str, Any] | None) -> str:
+    def _launch_package_funding(
+        snapshot: dict[str, Any] | None,
+        *,
+        last_confirmed_interval_hours: int = 0,
+    ) -> str:
         if not isinstance(snapshot, dict):
             return "暂不可用"
         funding = to_float(snapshot.get("funding_pct"))
         interval = int(to_float(snapshot.get("funding_interval_hours")))
-        return funding_cycle_text(funding, interval) if interval > 0 else f"{funding:+.4f}%/周期暂不可用"
+        if interval > 0:
+            return funding_cycle_text(funding, interval)
+        if last_confirmed_interval_hours > 0:
+            return (
+                f"{funding:+.4f}%/本次未确认"
+                f"（上次确认{funding_interval_label(last_confirmed_interval_hours)}）"
+            )
+        return f"{funding:+.4f}%/周期暂不可用"
 
     @staticmethod
     def _launch_package_direction(value: Any) -> str:
@@ -2579,8 +2603,17 @@ class RadarEngine:
                 f"{int(point.get('score') or 0)}分"
             )
 
+        last_confirmed_interval = 0
+        for point in [previous, *reversed(checkpoints), first]:
+            point_interval = int(to_float(point.get("funding_interval_hours")))
+            if point_interval > 0:
+                last_confirmed_interval = point_interval
+                break
         first_funding = self._launch_package_funding(first)
-        current_funding = self._launch_package_funding(current)
+        current_funding = self._launch_package_funding(
+            current,
+            last_confirmed_interval_hours=last_confirmed_interval,
+        )
         direction_text = self._launch_package_direction(current.get("funds_direction"))
         outcome_evaluation = (
             lifecycle.get("outcome_evaluation")
@@ -2636,15 +2669,15 @@ class RadarEngine:
                 f"OI最高/最低变动: "
                 f"{to_float(progress.get('max_oi_increase_pct')):+.2f}% / "
                 f"{to_float(progress.get('max_oi_decrease_pct')):+.2f}%",
-                "达到启动确认: "
+                "首次达到启动确认: "
                 + (
-                    self._launch_package_duration(progress.get("time_to_confirm_sec"))
+                    self._launch_package_stage_delay(progress.get("time_to_confirm_sec"))
                     if progress.get("confirmed")
                     else "尚未达到"
                 ),
-                "达到启动瞬间: "
+                "首次达到启动瞬间: "
                 + (
-                    self._launch_package_duration(progress.get("time_to_launch_sec"))
+                    self._launch_package_stage_delay(progress.get("time_to_launch_sec"))
                     if progress.get("launched")
                     else "尚未达到"
                 ),
