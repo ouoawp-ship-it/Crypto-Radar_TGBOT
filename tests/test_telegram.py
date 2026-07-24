@@ -617,7 +617,9 @@ class TelegramGatewayTests(unittest.TestCase):
                 Settings(data_dir=Path(tmp)),
             )
 
-            self.assertIn("整个话题只保留本说明和最新一条“图表 + 说明”", intro)
+            self.assertIn("每个尚未失效的币种各保留一条最新的“图表 + 说明”", intro)
+            self.assertIn("同一币种出现重要更新时", intro)
+            self.assertNotIn("整个话题只保留本说明和最新一条", intro)
             self.assertIn("点击代码可复制交易对", intro)
             self.assertIn("分数怎么计算（最高130分）", intro)
             self.assertIn("15分钟价格上涨≥4%：+25分", intro)
@@ -626,9 +628,9 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("资金费率极端或结算周期变化只作为拥挤风险提示", intro)
             self.assertIn("不是使用 3 分钟K线", intro)
             self.assertIn("所有判断只使用完整收线的 15 分钟K线", intro)
-            self.assertIn("确认失效后会保留最后一条“已失效”总结", intro)
-            self.assertIn("下一条新信号发送并保存成功后", intro)
-            self.assertIn("再删除此前保留的最新总结", intro)
+            self.assertIn("确认失效后会进入该币的失效清理", intro)
+            self.assertIn("其他仍在监控中的币种不受影响", intro)
+            self.assertIn("才会删除同一币种的上一条消息", intro)
             self.assertIn("删除失败会在后续更新时自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

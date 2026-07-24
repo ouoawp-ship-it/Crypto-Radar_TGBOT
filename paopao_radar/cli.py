@@ -273,43 +273,6 @@ def push_launch_messages(
                 cleanup_diagnostics["failed_deletions"] = int(
                     cleanup_diagnostics["failed_deletions"]
                 ) + len(deletion.get("failed_ids") or [])
-                topic_cleanup_plan = gateway.launch_topic_cleanup_plan(
-                    keep_message_ids=new_message_ids,
-                )
-                undeletable_ids = list(
-                    topic_cleanup_plan.get("undeletable_ids") or []
-                )
-                gateway.mark_history_messages_undeletable(
-                    undeletable_ids,
-                    reason="telegram_delete_window_expired",
-                )
-                topic_cleanup_ids = list(
-                    topic_cleanup_plan.get("deletable_ids") or []
-                )[:max(0, int(settings.launch_message_cleanup_limit))]
-                topic_deletion = gateway.delete_messages_detailed(
-                    topic_cleanup_ids,
-                    reason="launch_topic_replaced",
-                )
-                push_record["topic_history_replaced_count"] = len(
-                    topic_deletion.get("deleted_ids") or []
-                )
-                push_record["topic_history_delete_failures"] = len(
-                    topic_deletion.get("failed_ids") or []
-                )
-                cleanup_diagnostics["topic_history_deleted"] = int(
-                    cleanup_diagnostics["topic_history_deleted"]
-                ) + len(topic_deletion.get("deleted_ids") or [])
-                cleanup_diagnostics["topic_history_delete_failures"] = int(
-                    cleanup_diagnostics["topic_history_delete_failures"]
-                ) + len(topic_deletion.get("failed_ids") or [])
-                cleanup_diagnostics["topic_history_undeletable"] = int(
-                    cleanup_diagnostics["topic_history_undeletable"]
-                ) + len(undeletable_ids)
-                topic_deleted_message_ids.extend(
-                    int(message_id)
-                    for message_id in (topic_deletion.get("deleted_ids") or [])
-                    if isinstance(message_id, int) or str(message_id).isdigit()
-                )
             sent_alerts.append(alert)
         elif is_package and push.message_ids and real_send:
             rollback = gateway.delete_messages_detailed(

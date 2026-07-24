@@ -2579,6 +2579,7 @@ class RadarEngine:
                 "oi_delta": f"OI变化≥{self.settings.launch_package_oi_delta_pct:g}%",
                 "funding_interval_changed": "资金费率结算周期变化",
                 "funds_divergence": "现货/合约主动成交方向背离",
+                "active_message_missing": "有效信号消息缺失，自动恢复",
             }.get(str(reason), str(reason))
             for reason in (publication.get("checkpoint_reasons") or [])
         ]
