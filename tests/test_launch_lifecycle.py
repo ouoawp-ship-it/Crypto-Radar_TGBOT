@@ -342,6 +342,41 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertEqual(complete["status"], "complete")
             self.assertEqual(store.list_pending_cleanups(), [])
 
+    def test_active_cycle_republishes_when_its_latest_message_was_deleted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+            )
+            first = store.record_observation(
+                snapshot(window_end_ts=900, score=60, price=100, oi=1_000),
+                stage="primed",
+                observed_at=910,
+            )
+            store.commit_package(
+                cycle_id=first["cycle_id"],
+                observation_id=first["observation_id"],
+                message_ids=[101],
+                checkpoint_reasons=["cycle_opened"],
+                published_at=920,
+            )
+            store.reconcile_topic_message_cleanup(
+                deleted_ids=[101],
+                updated_at=930,
+            )
+
+            recovered = store.record_observation(
+                snapshot(window_end_ts=1800, score=62, price=100.5, oi=1_010),
+                stage="primed",
+                observed_at=1810,
+            )
+
+            self.assertTrue(recovered["publication"]["publish_required"])
+            self.assertEqual(
+                recovered["publication"]["checkpoint_reasons"],
+                ["active_message_missing"],
+            )
+
     def test_failed_package_latest_message_becomes_cleanup_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
             store = LaunchLifecycleStore(

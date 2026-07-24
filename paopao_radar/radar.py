@@ -2812,6 +2812,7 @@ class RadarEngine:
                 "funds_divergence": "现货/合约主动成交方向背离",
                 "price_action_changed": "突破/假突破结构状态变化",
                 "smc_changed": "SMC结构状态变化",
+                "active_message_missing": "有效信号消息缺失，自动恢复",
             }.get(str(reason), str(reason))
             for reason in (publication.get("checkpoint_reasons") or [])
         ]

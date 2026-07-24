@@ -1690,7 +1690,18 @@ class LaunchLifecycleStore:
                     int(cycle["id"]),
                 ),
             ).fetchone()
+        latest_message_ids = self._message_ids(
+            cycle["latest_message_ids_json"]
+        )
         reasons = self._publication_reasons(current, last_published)
+        if (
+            self.package_enabled
+            and str(cycle["status"]) == ACTIVE_STATUS
+            and last_published is not None
+            and not latest_message_ids
+            and "active_message_missing" not in reasons
+        ):
+            reasons.append("active_message_missing")
         checkpoints = conn.execute(
             """
             SELECT * FROM launch_lifecycle_observations
@@ -1717,9 +1728,7 @@ class LaunchLifecycleStore:
             "previous_published": self._observation_summary(last_published),
             "current": self._observation_summary(current),
             "checkpoints": checkpoint_items,
-            "latest_message_ids": self._message_ids(
-                cycle["latest_message_ids_json"]
-            ),
+            "latest_message_ids": latest_message_ids,
             "cleanup_pending_message_ids": self._message_ids(
                 cycle["cleanup_pending_message_ids_json"]
             ),
