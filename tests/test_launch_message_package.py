@@ -66,6 +66,7 @@ class FakeGateway:
             True,
             [202],
         )
+        self.topic_cleanup_candidates: list[int] = []
         self.send_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def send(self, *args: object, **kwargs: object) -> PushResult:
@@ -85,6 +86,14 @@ class FakeGateway:
         self.events.append(f"reason:{reason}")
         self.events.append(f"delete:{message_ids}")
         return {"deleted_ids": message_ids, "failed_ids": []}
+
+    def launch_topic_cleanup_candidates(
+        self,
+        *,
+        keep_message_ids: list[int] | None = None,
+    ) -> list[int]:
+        self.events.append(f"topic_candidates:{keep_message_ids}")
+        return list(self.topic_cleanup_candidates)
 
 
 def launch_payload() -> dict[str, object]:
@@ -176,6 +185,33 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertNotIn("commit", events)
             self.assertFalse(any(event.startswith("delete:") for event in events))
             self.assertEqual(pushes[0]["status"], "failed")
+
+    def test_topic_history_is_deleted_only_after_new_package_commit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+            )
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            gateway.topic_cleanup_candidates = [88, 89]
+
+            pushes, cleanup = push_launch_messages(
+                settings,
+                FakeEngine(events),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                launch_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertLess(events.index("commit"), events.index("topic_candidates:[201]"))
+            self.assertLess(events.index("topic_candidates:[201]"), events.index("delete:[88, 89]"))
+            self.assertIn("reason:launch_topic_replaced", events)
+            self.assertEqual(pushes[0]["topic_history_replaced_count"], 2)
+            self.assertEqual(cleanup["topic_history_deleted"], 2)
 
     def test_partial_send_is_rolled_back_without_touching_old_package(self) -> None:
         with TemporaryDirectory() as tmp:

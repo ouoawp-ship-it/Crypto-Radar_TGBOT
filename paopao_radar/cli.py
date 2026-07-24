@@ -96,6 +96,8 @@ def push_launch_messages(
         "retried_packages": 0,
         "deleted_messages": 0,
         "failed_deletions": 0,
+        "topic_history_deleted": 0,
+        "topic_history_delete_failures": 0,
         "charts_sent": 0,
         "chart_failures": 0,
     }
@@ -256,6 +258,25 @@ def push_launch_messages(
                 cleanup_diagnostics["failed_deletions"] = int(
                     cleanup_diagnostics["failed_deletions"]
                 ) + len(deletion.get("failed_ids") or [])
+                topic_cleanup_ids = gateway.launch_topic_cleanup_candidates(
+                    keep_message_ids=new_message_ids,
+                )[:max(0, int(settings.launch_message_cleanup_limit))]
+                topic_deletion = gateway.delete_messages_detailed(
+                    topic_cleanup_ids,
+                    reason="launch_topic_replaced",
+                )
+                push_record["topic_history_replaced_count"] = len(
+                    topic_deletion.get("deleted_ids") or []
+                )
+                push_record["topic_history_delete_failures"] = len(
+                    topic_deletion.get("failed_ids") or []
+                )
+                cleanup_diagnostics["topic_history_deleted"] = int(
+                    cleanup_diagnostics["topic_history_deleted"]
+                ) + len(topic_deletion.get("deleted_ids") or [])
+                cleanup_diagnostics["topic_history_delete_failures"] = int(
+                    cleanup_diagnostics["topic_history_delete_failures"]
+                ) + len(topic_deletion.get("failed_ids") or [])
             sent_alerts.append(alert)
         elif is_package and push.message_ids and real_send:
             rollback = gateway.delete_messages_detailed(
