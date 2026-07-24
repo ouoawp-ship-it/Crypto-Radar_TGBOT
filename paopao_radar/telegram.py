@@ -139,10 +139,11 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         f"- 所有判断只使用完整收线的 15 分钟K线，并在收线后延迟{seconds_cn(settings.launch_close_delay_sec)}读取，避免使用尚未结束的数据。",
         "- 同一根 15 分钟K线期间即使检查多次，未达到阶段变化或重要替换条件时也只会内部记录，不会重复推送。",
         "",
-        "<b>什么时候结束并删除</b>",
+        "<b>什么时候结束并替换</b>",
         "- 连续两根完整15分钟K线低于观察阈值，或连续两根收盘价跌破本轮有效突破位，本轮信号才会确认失效。",
-        "- 确认失效后会删除该轮最新消息；如果其他币种随后产生新信号，也会由更新的信号替换。",
-        "- 每次更新时，会先确认新消息发送并保存成功，再删除话题中之前的启动推送；删除失败会在后续更新时自动重试。",
+        "- 确认失效后会保留最后一条“已失效”总结，避免话题只剩说明而看不到最近发生过什么。",
+        "- 下一条新信号发送并保存成功后，才会再删除此前保留的最新总结。",
+        "- 删除失败会在后续更新时自动重试，任何时候都优先保证最新一条消息可见。",
         "",
         "<b>数据来源</b>",
         "- K线、价格、OI和资金费率来自 Binance USDⓈ-M Futures 原生接口。",
@@ -804,6 +805,45 @@ class TelegramGateway:
     def delete_messages(self, message_ids: list[int]) -> int:
         return len(self.delete_messages_detailed(message_ids)["deleted_ids"])
 
+    @staticmethod
+    def _latest_launch_topic_message_ids(
+        history: list[dict[str, Any]],
+    ) -> list[int]:
+        launch_records = [
+            record
+            for record in history
+            if isinstance(record, dict)
+            and record.get("template_id") == "TG_LAUNCH_ALERT"
+            and record.get("status") == "sent"
+            and not record.get("lifecycle_deleted")
+        ]
+        for _index, record in sorted(
+            enumerate(launch_records),
+            key=lambda item: (int(item[1].get("ts") or 0), item[0]),
+            reverse=True,
+        ):
+            message_ids = [
+                int(message_id)
+                for message_id in (record.get("message_ids") or [])
+                if isinstance(message_id, int) or str(message_id).isdigit()
+            ]
+            deleted_ids = {
+                int(message_id)
+                for message_id in (record.get("deleted_message_ids") or [])
+                if isinstance(message_id, int) or str(message_id).isdigit()
+            }
+            latest_ids = [
+                message_id
+                for message_id in message_ids
+                if message_id not in deleted_ids
+            ]
+            if latest_ids:
+                return latest_ids
+        return []
+
+    def latest_launch_topic_message_ids(self) -> list[int]:
+        return self._latest_launch_topic_message_ids(self._load_history())
+
     def launch_topic_cleanup_candidates(
         self,
         *,
@@ -842,29 +882,7 @@ class TelegramGateway:
             and record.get("status") == "sent"
         ]
         if not explicit_keep:
-            for _index, record in sorted(
-                enumerate(launch_records),
-                key=lambda item: (int(item[1].get("ts") or 0), item[0]),
-                reverse=True,
-            ):
-                message_ids = [
-                    int(message_id)
-                    for message_id in (record.get("message_ids") or [])
-                    if isinstance(message_id, int) or str(message_id).isdigit()
-                ]
-                deleted_ids = {
-                    int(message_id)
-                    for message_id in (record.get("deleted_message_ids") or [])
-                    if isinstance(message_id, int) or str(message_id).isdigit()
-                }
-                latest_ids = [
-                    message_id
-                    for message_id in message_ids
-                    if message_id not in deleted_ids
-                ]
-                if latest_ids:
-                    protected.update(latest_ids)
-                    break
+            protected.update(self._latest_launch_topic_message_ids(history))
 
         cutoff = utc_ts() - max(
             1,

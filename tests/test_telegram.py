@@ -626,9 +626,9 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("资金费率极端或结算周期变化只作为拥挤风险提示", intro)
             self.assertIn("不是使用 3 分钟K线", intro)
             self.assertIn("所有判断只使用完整收线的 15 分钟K线", intro)
-            self.assertIn("确认失效后会删除该轮最新消息", intro)
-            self.assertIn("其他币种随后产生新信号", intro)
-            self.assertIn("再删除话题中之前的启动推送", intro)
+            self.assertIn("确认失效后会保留最后一条“已失效”总结", intro)
+            self.assertIn("下一条新信号发送并保存成功后", intro)
+            self.assertIn("再删除此前保留的最新总结", intro)
             self.assertIn("删除失败会在后续更新时自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
@@ -693,6 +693,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 gateway.launch_topic_cleanup_candidates(),
                 [70],
             )
+            self.assertEqual(gateway.latest_launch_topic_message_ids(), [72])
             self.assertEqual(
                 gateway.launch_topic_cleanup_candidates(keep_message_ids=[72]),
                 [70],

@@ -80,6 +80,7 @@ class FakeGateway:
         )
         self.topic_cleanup_candidates: list[int] = []
         self.topic_undeletable_candidates: list[int] = []
+        self.latest_topic_message_ids: list[int] = []
         self.send_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def send(self, *args: object, **kwargs: object) -> PushResult:
@@ -107,6 +108,10 @@ class FakeGateway:
     ) -> list[int]:
         self.events.append(f"topic_candidates:{keep_message_ids}")
         return list(self.topic_cleanup_candidates)
+
+    def latest_launch_topic_message_ids(self) -> list[int]:
+        self.events.append("latest_topic_messages")
+        return list(self.latest_topic_message_ids)
 
     def launch_topic_cleanup_plan(
         self,
@@ -145,6 +150,40 @@ def launch_payload() -> dict[str, object]:
 
 
 class LaunchMessagePackageTests(unittest.TestCase):
+    def test_failed_latest_package_is_retained_until_a_new_signal_replaces_it(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            engine = FakeEngine(events)
+            engine.pending_cleanups = [{
+                "cycle_id": 7,
+                "message_ids": [202],
+                "expire_latest": True,
+            }]
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            gateway.latest_topic_message_ids = [202]
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+            )
+
+            pushes, cleanup = push_launch_messages(
+                settings,
+                engine,  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                {"messages": [], "alerts": []},
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertEqual(pushes, [])
+            self.assertIn("latest_topic_messages", events)
+            self.assertNotIn("reason:launch_cycle_expired", events)
+            self.assertNotIn("delete:[202]", events)
+            self.assertFalse(any(event.startswith("complete:") for event in events))
+            self.assertEqual(cleanup["protected_latest_messages"], 1)
+
     def test_expired_package_cleanup_obeys_message_budget(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
