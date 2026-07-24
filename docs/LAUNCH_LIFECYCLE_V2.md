@@ -39,6 +39,108 @@ keeps an already-open signal under observation even if its 24-hour volume later
 falls below the normal discovery threshold. The existing request budgets remain
 hard limits.
 
+## Closed-candle price-action follow-up
+
+`LAUNCH_PRICE_ACTION_V3_ENABLE=true` adds a price-action state to each lifecycle
+observation. It does not start a second scanner. New candidates retain the
+existing 17-bar request; already-active lifecycle symbols request enough 15m
+history to build a closed 1h box without consuming another request slot.
+
+The detector freezes the original structure level when a valid 15m breakout is
+found. A valid breakout requires:
+
+- the preceding range to fit within `LAUNCH_PA_MAX_BOX_RANGE_PCT`;
+- the 15m close to finish outside that range;
+- candle direction to agree with the breakout; and
+- body/range to be at least `LAUNCH_PA_MIN_BODY_RATIO`.
+
+It then evaluates only completed higher-timeframe candles against that frozen
+level. The current chain is `15m -> 1h -> 4h`. A wick through the level followed
+by a close back inside is classified as a liquidity sweep when wick/body is at
+least `LAUNCH_PA_WICK_BODY_RATIO`; a close back inside without the required wick
+is a failed breakout, not a sweep.
+
+Price-action state changes are lifecycle package checkpoints, so a confirmed
+breakout or false breakout updates the existing symbol package instead of
+creating a separate Telegram stream. Repeated scans of the same 15m window stay
+idempotent through the existing `(cycle_id, window_end_ts)` constraint.
+
+Safe rollout defaults:
+
+```dotenv
+LAUNCH_PRICE_ACTION_V3_ENABLE=false
+LAUNCH_PA_BOX_LOOKBACK=16
+LAUNCH_PA_MAX_BOX_RANGE_PCT=12
+LAUNCH_PA_MIN_BODY_RATIO=0.45
+LAUNCH_PA_WICK_BODY_RATIO=1.5
+```
+
+Lifecycle V2 is required for durable monitoring. Without message-package V2 the
+detector runs in shadow mode and records state without sending structure-only
+Telegram updates.
+
+The implementation is original to this repository. Its transparent rule design
+was cross-checked against the MIT-licensed
+[`stockalgo/stolgo`](https://github.com/stockalgo/stolgo),
+[`coding-kitties/PyIndicators`](https://github.com/coding-kitties/PyIndicators),
+[`joshyattridge/smart-money-concepts`](https://github.com/joshyattridge/smart-money-concepts),
+and [`xgboosted/pandas-ta-classic`](https://github.com/xgboosted/pandas-ta-classic)
+projects; no external runtime dependency or copied source file is introduced.
+
+## Full closed-candle SMC V4
+
+`LAUNCH_SMC_V4_ENABLE=true` extends the price-action state with a deterministic
+SMC layer for active lifecycle symbols. It is separately gated and defaults to
+disabled. It reuses the symbol's existing Binance 15m kline request; no second
+scanner, service, database, or Telegram stream is created.
+
+The implementation covers:
+
+- confirmed `HH`, `HL`, `LH`, and `LL` swing structure;
+- close-confirmed `BOS`, `CHoCH`, and displacement-qualified `MSS`;
+- equal-high/equal-low buy-side and sell-side liquidity pools and wick sweeps;
+- three-candle fair value gaps with mitigation/fill state;
+- order blocks derived from a confirmed structure break;
+- breaker blocks after an order block is invalidated by a close;
+- mitigation events on the first valid OB or FVG revisit;
+- current dealing-range premium, equilibrium, and discount;
+- 4h/1h higher-timeframe bias and 15m execution alignment; and
+- the persistent sequence `sweep -> CHoCH/MSS -> displacement/FVG ->
+  OB/FVG retest -> BOS`.
+
+Anti-repaint rules are part of the data contract:
+
+- the Binance 15m parser accepts only candles closed before the requested
+  boundary;
+- a swing is not published until `LAUNCH_SMC_SWING_LENGTH` closed candles exist
+  on its right side;
+- BOS, CHoCH, MSS, order-block invalidation, and breaker creation require a
+  candle close, not an intrabar wick;
+- 1h and 4h candles are aggregated only when every constituent 15m candle is
+  present and the higher-timeframe candle is fully closed; and
+- event keys are persisted in the lifecycle price-action JSON, so rescanning
+  the same closed window is idempotent.
+
+The in-memory PNG uses the same state snapshot. It draws swing labels,
+structure-break lines, BSL/SSL and sweep markers, FVG/OB/Breaker/Mitigation
+zones, and premium/discount equilibrium on the existing lifecycle chart.
+
+Safe defaults:
+
+```dotenv
+LAUNCH_SMC_V4_ENABLE=false
+LAUNCH_SMC_HISTORY_BARS=400
+LAUNCH_SMC_SWING_LENGTH=2
+LAUNCH_SMC_EQUAL_TOLERANCE_ATR=0.15
+LAUNCH_SMC_DISPLACEMENT_BODY_ATR=1.0
+LAUNCH_SMC_MAX_ZONE_AGE_BARS=96
+```
+
+The rule definitions were cross-checked against the MIT-licensed
+[`joshyattridge/smart-money-concepts`](https://github.com/joshyattridge/smart-money-concepts)
+indicator contract. The bot implementation is original, dependency-free, and
+uses stricter closed-candle confirmation for lifecycle monitoring.
+
 ## Rollout
 
 The feature defaults to disabled:
@@ -60,7 +162,11 @@ Telegram package. P2.3 adds the in-memory K-line image. The production package
 is one photo message whose caption contains the dynamic lifecycle text, links,
 and copyable symbol. Static chart/data/lifecycle guidance lives in the pinned
 launch-topic introduction so each symbol does not repeat boilerplate. After a
-new package is sent and committed, the bot deletes older launch-topic signal
+price-action V3 event starts, that same image includes the frozen 15m
+consolidation box and structure level, plus `15M BO`, `1H OK`, and `4H OK`
+close-confirmation markers as they occur. A long-wick re-entry is marked
+`SWEEP H` or `SWEEP L`; a body-close invalidation is marked `FAIL`.
+After a new package is sent and committed, the bot deletes older launch-topic signal
 messages and keeps only the pinned introduction plus the latest package. Failed
 deletions remain discoverable in Telegram delivery history and are retried
 while they remain inside Telegram's deletion window. Older records are marked

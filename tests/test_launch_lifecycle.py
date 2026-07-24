@@ -669,6 +669,24 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                     "current": {
                         "window_end_ts": 29_700,
                         "stage": "breakout",
+                        "price_action": {
+                            "enabled": True,
+                            "status": "confirmed_1h",
+                            "direction": "up",
+                            "lookback": 16,
+                            "box_high": 102.0,
+                            "box_low": 99.0,
+                            "level": 102.0,
+                            "box_start_ts": 900,
+                            "box_end_ts": 14_400,
+                            "trigger_window_end_ts": 15_300,
+                            "event_window_end_ts": 29_700,
+                            "confirmation_ends": {
+                                "15m": 15_300,
+                                "1h": 29_700,
+                            },
+                            "timeframes": {},
+                        },
                     },
                 },
             }
@@ -680,6 +698,7 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertTrue(alert["chart_generated_in_memory"])
             self.assertEqual(alert["chart_checkpoint_count"], 2)
             self.assertGreaterEqual(alert["chart_candle_count"], 96)
+            self.assertEqual(alert["chart_price_action_status"], "confirmed_1h")
             self.assertGreaterEqual(captured["limit"], 96)
             self.assertLessEqual(captured["limit"], 1000)
             self.assertEqual(captured["end_time"], 29_700_000 - 1)

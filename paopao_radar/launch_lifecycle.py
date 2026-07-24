@@ -8,6 +8,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Iterator, Mapping
 
+from .launch_price_action import advance_price_action_state
+
 
 ACTIVE_STATUS = "active"
 FAILED_STATUS = "failed"
@@ -44,6 +46,16 @@ def _round_optional(value: float | None, digits: int = 8) -> float | None:
     return round(value, digits) if value is not None else None
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
 @dataclass(frozen=True)
 class LaunchLifecycleStore:
     """Durable, window-idempotent lifecycle state for launch signals."""
@@ -62,6 +74,7 @@ class LaunchLifecycleStore:
     outcome_min_samples: int = 20
     breakout_score: int = 75
     launched_score: int = 90
+    price_action_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -159,6 +172,7 @@ class LaunchLifecycleStore:
                 spot_active_net_usd REAL,
                 futures_active_net_usd REAL,
                 funds_direction TEXT NOT NULL DEFAULT 'unknown',
+                price_action_json TEXT NOT NULL DEFAULT '{}',
                 price_vs_first_pct REAL,
                 oi_vs_first_pct REAL,
                 funding_vs_first_pct_point REAL,
@@ -229,6 +243,7 @@ class LaunchLifecycleStore:
             "spot_active_net_usd": "REAL",
             "futures_active_net_usd": "REAL",
             "funds_direction": "TEXT NOT NULL DEFAULT 'unknown'",
+            "price_action_json": "TEXT NOT NULL DEFAULT '{}'",
             "checkpoint_no": "INTEGER",
             "checkpoint_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
             "published_at": "INTEGER",
@@ -1481,6 +1496,19 @@ class LaunchLifecycleStore:
         first_funding_8h = first_row["funding_8h_pct"]
         previous_funding_8h = previous_row["funding_8h_pct"]
         observation_no = int(previous["observation_no"]) + 1 if previous is not None else 1
+        previous_price_action = (
+            _json_object(previous["price_action_json"])
+            if previous is not None
+            else {}
+        )
+        price_action = (
+            advance_price_action_state(
+                previous_price_action,
+                snapshot.get("price_action_analysis"),
+            )
+            if self.price_action_enabled
+            else {}
+        )
 
         return {
             "cycle_id": int(cycle["id"]),
@@ -1526,6 +1554,7 @@ class LaunchLifecycleStore:
                 else None
             ),
             "funds_direction": str(snapshot.get("funds_direction") or "unknown"),
+            "price_action_json": json.dumps(price_action, ensure_ascii=False),
             "price_vs_first_pct": _round_optional(
                 _percent_change(closed_price, _number(first_row["closed_price"]))
             ),
@@ -1627,6 +1656,7 @@ class LaunchLifecycleStore:
                 "funding_interval_hours": int(observation["funding_interval_vs_previous_hours"]),
                 "score": int(observation["score_vs_previous"]),
             },
+            "price_action": _json_object(observation.get("price_action_json")),
             "publication": publication,
             "outcome_evaluation": outcome_evaluation,
         }
@@ -1747,6 +1777,22 @@ class LaunchLifecycleStore:
         previous_funds = str(previous["funds_direction"] or "unknown")
         if current_funds.startswith("divergence_") and current_funds != previous_funds:
             reasons.append("funds_divergence")
+        current_price_action = _json_object(current.get("price_action_json"))
+        previous_price_action = _json_object(previous["price_action_json"])
+        if (
+            current_price_action.get("enabled")
+            and str(current_price_action.get("event_key") or "")
+            and current_price_action.get("event_key")
+            != previous_price_action.get("event_key")
+        ):
+            reasons.append("price_action_changed")
+        if (
+            current_price_action.get("enabled")
+            and str(current_price_action.get("smc_event_key") or "")
+            and current_price_action.get("smc_event_key")
+            != previous_price_action.get("smc_event_key")
+        ):
+            reasons.append("smc_changed")
         return reasons
 
     @staticmethod
@@ -1780,6 +1826,7 @@ class LaunchLifecycleStore:
                 else None
             ),
             "funds_direction": str(row["funds_direction"] or "unknown"),
+            "price_action": _json_object(row["price_action_json"]),
             "checkpoint_reasons": (
                 json.loads(str(row["checkpoint_reasons_json"] or "[]"))
                 if row["checkpoint_reasons_json"] is not None
