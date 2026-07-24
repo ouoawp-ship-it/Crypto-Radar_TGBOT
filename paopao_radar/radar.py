@@ -2455,6 +2455,19 @@ class RadarEngine:
         if not isinstance(lifecycle, dict) or not isinstance(publication, dict):
             return self._format_launch_alert({**item, "launch_message_package_v2": False})
 
+        market_cap = to_float(item.get("mcap"))
+        quote_volume = to_float(item.get("quote_volume"))
+        market_cap_source = str(item.get("mcap_source") or "").strip()
+        market_cap_text = (
+            f"{fmt_money(market_cap)}（{market_cap_tier(market_cap)}，来源 {market_cap_source or '未知'}）"
+            if market_cap > 0
+            else "未收录（Binance/CoinPaprika 均无）"
+        )
+        liquidity_text = (
+            f"{fmt_money(quote_volume)}/24h（{liquidity_tier(quote_volume)}）"
+            if quote_volume > 0
+            else "暂无数据（未知流动性）"
+        )
         first = publication.get("first") if isinstance(publication.get("first"), dict) else {}
         previous = (
             publication.get("previous_published")
@@ -2625,6 +2638,10 @@ class RadarEngine:
             f"{tg_bold('持续时间')}: {self._launch_package_duration(lifecycle.get('duration_sec'))}",
             f"{tg_bold('最高阶段')}: {peak_stage}",
             f"{tg_bold('本次更新')}: {tg_escape('、'.join(reasons) or '重要状态更新')}",
+            "",
+            tg_quote("市场概况"),
+            f"市值: {market_cap_text}",
+            f"流动性: {liquidity_text}",
             "",
             tg_quote("相对首次"),
             f"价格: {price_from_first:+.2f}%" if price_from_first is not None else "价格: 暂不可比",

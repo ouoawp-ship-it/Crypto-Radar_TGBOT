@@ -615,14 +615,76 @@ class TelegramGatewayTests(unittest.TestCase):
                 Settings(data_dir=Path(tmp)),
             )
 
-            self.assertIn("每个币种每一轮只保留最新一条“图表 + 说明”", intro)
+            self.assertIn("整个话题只保留本说明和最新一条“图表 + 说明”", intro)
             self.assertIn("点击代码可复制交易对", intro)
+            self.assertIn("分数怎么计算（最高130分）", intro)
+            self.assertIn("15分钟价格上涨≥4%：+25分", intro)
+            self.assertIn("资金暗流：1小时 OI 增长≥3%", intro)
+            self.assertIn("60-74 提前预警", intro)
+            self.assertIn("资金费率极端或结算周期变化只作为拥挤风险提示", intro)
             self.assertIn("不是使用 3 分钟K线", intro)
             self.assertIn("所有判断只使用完整收线的 15 分钟K线", intro)
             self.assertIn("确认失效后会删除该轮最新消息", intro)
-            self.assertIn("仍然活跃的币种不会被清理", intro)
-            self.assertIn("删除失败会自动重试", intro)
+            self.assertIn("其他币种随后产生新信号", intro)
+            self.assertIn("再删除话题中之前的启动推送", intro)
+            self.assertIn("删除失败会在后续更新时自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
+
+    def test_launch_topic_cleanup_candidates_keep_latest_and_intro(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            history_path = Path(tmp) / "push_history.json"
+            store = JsonStore(Path(tmp))
+            store.save(route_path, {
+                "intros": {
+                    "TG_LAUNCH_ALERT:12": {
+                        "template_id": "TG_LAUNCH_ALERT",
+                        "topic_id": "12",
+                        "message_id": 50,
+                    }
+                }
+            })
+            store.save(history_path, [
+                {
+                    "template_id": "TG_LAUNCH_ALERT",
+                    "status": "sent",
+                    "message_ids": [50, 70],
+                },
+                {
+                    "template_id": "TG_LAUNCH_ALERT",
+                    "status": "sent",
+                    "message_ids": [71],
+                    "deleted_message_ids": [71],
+                },
+                {
+                    "template_id": "TG_LAUNCH_ALERT",
+                    "status": "sent",
+                    "message_ids": [72],
+                },
+                {
+                    "template_id": "TG_FUNDING_ALERT",
+                    "status": "sent",
+                    "message_ids": [73],
+                },
+            ])
+            gateway = TelegramGateway(
+                Settings(
+                    data_dir=Path(tmp),
+                    tg_push_history_path=history_path,
+                    tg_topic_routes_path=route_path,
+                    tg_launch_alert_topic_id="12",
+                ),
+                store,
+            )
+
+            self.assertEqual(
+                gateway.launch_topic_cleanup_candidates(),
+                [70],
+            )
+            self.assertEqual(
+                gateway.launch_topic_cleanup_candidates(keep_message_ids=[72]),
+                [70],
+            )
 
     def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -768,6 +830,43 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(record["message_id"], 100)
             self.assertTrue(record["pinned"])
             self.assertNotEqual(record["content_hash"], "old")
+
+    def test_topic_intro_refresh_keeps_old_intro_when_new_pin_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            store.save(route_path, {
+                "intros": {
+                    "TG_RADAR_SUMMARY:11": {
+                        "template_id": "TG_RADAR_SUMMARY",
+                        "topic_id": "11",
+                        "message_id": 99,
+                        "pinned": True,
+                        "intro_version": "old",
+                        "content_hash": "old",
+                    }
+                }
+            })
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_topic_routes_path=route_path,
+                tg_radar_summary_topic_id="11",
+                tg_topic_intro_enable=True,
+                tg_topic_intro_pin=True,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(gateway, "_send_real_message_ids", return_value=(True, [100])),
+                patch.object(gateway, "_pin_message", return_value=False),
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
+            ):
+                gateway._ensure_topic_intro("TG_RADAR_SUMMARY", "11")
+
+            delete_mock.assert_called_once_with(100)
+            record = store.load(route_path, {})["intros"]["TG_RADAR_SUMMARY:11"]
+            self.assertEqual(record["message_id"], 99)
+            self.assertEqual(record["intro_version"], "old")
 
     def test_flow_intro_mentions_hourly_schedule_and_all_categories(self) -> None:
         with TemporaryDirectory() as tmp:

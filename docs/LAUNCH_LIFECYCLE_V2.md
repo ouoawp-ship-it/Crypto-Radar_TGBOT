@@ -59,10 +59,13 @@ P2.2 consumes this stored contract to build and atomically replace the latest
 Telegram package. P2.3 adds the in-memory K-line image. The production package
 is one photo message whose caption contains the dynamic lifecycle text, links,
 and copyable symbol. Static chart/data/lifecycle guidance lives in the pinned
-launch-topic introduction so each symbol does not repeat boilerplate. P2.4 stores
-one outcome per completed lifecycle, reports close-based favorable/adverse
-movement and stage timing, and keeps historical rates hidden until enough
-completed cycles exist under the same rule key.
+launch-topic introduction so each symbol does not repeat boilerplate. After a
+new package is sent and committed, the bot deletes older launch-topic signal
+messages and keeps only the pinned introduction plus the latest package. Failed
+deletions remain discoverable in Telegram delivery history and are retried on a
+later update. P2.4 stores one outcome per completed lifecycle, reports
+close-based favorable/adverse movement and stage timing, and keeps historical
+rates hidden until enough completed cycles exist under the same rule key.
 
 ## P2.4 outcome contract
 

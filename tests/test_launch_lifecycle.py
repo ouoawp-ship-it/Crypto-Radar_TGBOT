@@ -622,6 +622,9 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                 "coin": "TEST",
                 "score": 75,
                 "stage": "breakout",
+                "mcap": 53_000_000,
+                "mcap_source": "CoinPaprika",
+                "quote_volume": 286_000_000,
                 "launch_message_package_v2": True,
                 "launch_lifecycle": lifecycle,
                 "launch_package": publication,
@@ -638,6 +641,9 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertIn("生命周期阶段变化", text)
             self.assertIn("事件轴", text)
             self.assertIn("现货主动买入、合约主动卖出", text)
+            self.assertIn("市场概况", text)
+            self.assertIn("市值: $53M（低市值，来源 CoinPaprika）", text)
+            self.assertIn("流动性: $286M/24h（高流动性）", text)
             self.assertIn(
                 'href="https://www.coinglass.com/tv/zh/Binance_TESTUSDT"',
                 text,

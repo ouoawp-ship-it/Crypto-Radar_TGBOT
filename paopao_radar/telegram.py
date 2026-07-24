@@ -109,7 +109,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         return "\n".join([
         "📌 <b>启动预警使用说明</b>",
         "",
-        "这里跟踪币种从“出现异动”到“确认启动”或“信号失效”的过程。每个币种每一轮只保留最新一条“图表 + 说明”，旧版本会自动删除，避免重复刷屏。",
+        "这里跟踪币种从“出现异动”到“确认启动”或“信号失效”的过程。整个话题只保留本说明和最新一条“图表 + 说明”，之前的启动推送会自动删除，避免重复刷屏。",
         "",
         "<b>先看什么</b>",
         "1. 先看“当前阶段”，再看“相对首次”和“相对上次”，判断价格、OI、资金费率和主动成交是否继续增强。",
@@ -121,6 +121,19 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- K线图只使用 Binance 合约已经完整收线的 15 分钟行情。",
         "- 价格和 OI 的变化会分别与本轮首次信号、上一次成功推送的数据比较。",
         "",
+        "<b>分数怎么计算（最高130分）</b>",
+        "- 15分钟价格上涨≥4%：+25分；1小时价格上涨≥5%：+15分。",
+        "- 最新收盘价突破前序约4小时最高价：+25分。",
+        "- 最新15分钟成交额达到前序完整窗口均值的2倍：+20分。",
+        "- 15分钟 OI 增长≥3%：+15分；1小时 OI 增长≥6%：+15分。",
+        "- 资金暗流：1小时 OI 增长≥3%，同时1小时价格在 -2%～+2% 之间：+15分。",
+        f"- 阶段图例：<{settings.launch_watch_score} 未触发；"
+        f"{settings.launch_watch_score}-{settings.launch_primed_score - 1} 提前观察；"
+        f"{settings.launch_primed_score}-{settings.launch_breakout_score - 1} 提前预警；"
+        f"{settings.launch_breakout_score}-{settings.launch_launched_score - 1} 启动确认；"
+        f"≥{settings.launch_launched_score} 启动瞬间。",
+        "- 资金费率极端或结算周期变化只作为拥挤风险提示，目前不直接加分。",
+        "",
         "<b>多久检查一次</b>",
         f"- BOT 默认每{seconds_cn(180)}检查一次市场，但不是使用 3 分钟K线。",
         f"- 所有判断只使用完整收线的 15 分钟K线，并在收线后延迟{seconds_cn(settings.launch_close_delay_sec)}读取，避免使用尚未结束的数据。",
@@ -128,8 +141,8 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "<b>什么时候结束并删除</b>",
         "- 连续两根完整15分钟K线低于观察阈值，或连续两根收盘价跌破本轮有效突破位，本轮信号才会确认失效。",
-        "- 确认失效后会删除该轮最新消息；仍然活跃的币种不会被清理。",
-        "- 更新消息时，会先确认新消息发送并保存成功，再删除旧版本；删除失败会自动重试。",
+        "- 确认失效后会删除该轮最新消息；如果其他币种随后产生新信号，也会由更新的信号替换。",
+        "- 每次更新时，会先确认新消息发送并保存成功，再删除话题中之前的启动推送；删除失败会在后续更新时自动重试。",
         "",
         "<b>数据来源</b>",
         "- K线、价格、OI和资金费率来自 Binance USDⓈ-M Futures 原生接口。",
@@ -694,6 +707,7 @@ class TelegramGateway:
         current_hash = intro_hash(intro)
         intro_key = self._topic_intro_key(template_id, topic_id)
         record = self._topic_intro_record(intro_key)
+        previous_message_id = 0
         if record:
             try:
                 message_id = int(record.get("message_id") or 0)
@@ -716,14 +730,18 @@ class TelegramGateway:
                             current_hash,
                         )
                 return
-            if message_id > 0:
-                self._delete_message(message_id)
+            previous_message_id = message_id
         ok, message_ids = self._send_real_message_ids(intro, parse_mode="HTML", topic_id=topic_id)
         if not ok or not message_ids:
             return
         message_id = message_ids[0]
         pinned = self._pin_message(message_id) if self.settings.tg_topic_intro_pin else False
+        if self.settings.tg_topic_intro_pin and not pinned:
+            self._delete_message(message_id)
+            return
         self._save_topic_intro_record(intro_key, template_id, topic_id, message_id, pinned, current_hash)
+        if previous_message_id > 0 and previous_message_id != message_id:
+            self._delete_message(previous_message_id)
 
     @staticmethod
     def _topic_intro_key(template_id: str, topic_id: str) -> str:
@@ -785,6 +803,74 @@ class TelegramGateway:
 
     def delete_messages(self, message_ids: list[int]) -> int:
         return len(self.delete_messages_detailed(message_ids)["deleted_ids"])
+
+    def launch_topic_cleanup_candidates(
+        self,
+        *,
+        keep_message_ids: list[int] | None = None,
+    ) -> list[int]:
+        history = self._load_history()
+        explicit_keep = bool(keep_message_ids)
+        protected = {
+            int(message_id)
+            for message_id in (keep_message_ids or [])
+            if isinstance(message_id, int) or str(message_id).isdigit()
+        }
+        intro_key = self._topic_intro_key(
+            "TG_LAUNCH_ALERT",
+            self._topic_id_for_template("TG_LAUNCH_ALERT"),
+        )
+        intro = self._topic_intro_record(intro_key)
+        intro_message_id = intro.get("message_id")
+        if isinstance(intro_message_id, int) or str(intro_message_id or "").isdigit():
+            protected.add(int(intro_message_id))
+
+        launch_records = [
+            record
+            for record in history
+            if isinstance(record, dict)
+            and record.get("template_id") == "TG_LAUNCH_ALERT"
+            and record.get("status") == "sent"
+        ]
+        if not explicit_keep:
+            for record in reversed(launch_records):
+                message_ids = [
+                    int(message_id)
+                    for message_id in (record.get("message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                ]
+                deleted_ids = {
+                    int(message_id)
+                    for message_id in (record.get("deleted_message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                }
+                latest_ids = [
+                    message_id
+                    for message_id in message_ids
+                    if message_id not in deleted_ids
+                ]
+                if latest_ids:
+                    protected.update(latest_ids)
+                    break
+
+        candidates: list[int] = []
+        for record in launch_records:
+            deleted_ids = {
+                int(message_id)
+                for message_id in (record.get("deleted_message_ids") or [])
+                if isinstance(message_id, int) or str(message_id).isdigit()
+            }
+            for message_id in record.get("message_ids") or []:
+                if not (isinstance(message_id, int) or str(message_id).isdigit()):
+                    continue
+                normalized = int(message_id)
+                if (
+                    normalized not in protected
+                    and normalized not in deleted_ids
+                    and normalized not in candidates
+                ):
+                    candidates.append(normalized)
+        return candidates
 
     def delete_messages_detailed(
         self,
