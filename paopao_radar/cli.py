@@ -740,6 +740,12 @@ def push_funding_alert(
     return push_status, result["diagnostics"]
 
 
+def launch_alert_pressure_within_limit(total_alerts: int, records: int) -> bool:
+    """Allow multiple symbol candidates per scan without treating them as sent messages."""
+
+    return max(0, int(total_alerts)) <= max(1, max(0, int(records)) * 2)
+
+
 def print_readiness(settings: Settings, store: JsonStore) -> int:
     records = store.load(settings.launch_watch_history_path, [])
     record_count = len(records) if isinstance(records, list) else 0
@@ -759,7 +765,17 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
             else "；".join(str(item.get("detail") or "") for item in health_failures),
         ),
         ("observe_history", record_count >= 5, f"启动观察历史 {record_count} 轮"),
-        ("launch_alert_pressure", int(report.get("total_alerts", 0) or 0) <= max(1, int(report.get("records", 0) or 0)), f"最近推送候选 {report.get('total_alerts', 0)} / {report.get('records', 0)} 轮"),
+        (
+            "launch_alert_pressure",
+            launch_alert_pressure_within_limit(
+                int(report.get("total_alerts", 0) or 0),
+                int(report.get("records", 0) or 0),
+            ),
+            (
+                f"最近推送候选 {report.get('total_alerts', 0)} / "
+                f"{report.get('records', 0)} 轮（上限每轮 2 个候选；不等于实际推送）"
+            ),
+        ),
         ("history_file", settings.launch_watch_history_path.exists(), "启动观察历史文件存在" if settings.launch_watch_history_path.exists() else "启动观察历史文件不存在"),
     ]
     passed = sum(1 for _name, ok, _message in checks if ok)

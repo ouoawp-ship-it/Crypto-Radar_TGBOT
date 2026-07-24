@@ -216,6 +216,13 @@ class BotOnlyDeploymentTests(unittest.TestCase):
 
 
 class LaunchReportTests(unittest.TestCase):
+    def test_launch_alert_pressure_allows_two_symbol_candidates_per_scan(self) -> None:
+        self.assertTrue(main.launch_alert_pressure_within_limit(104, 100))
+        self.assertTrue(main.launch_alert_pressure_within_limit(200, 100))
+
+    def test_launch_alert_pressure_still_blocks_excessive_candidate_volume(self) -> None:
+        self.assertFalse(main.launch_alert_pressure_within_limit(201, 100))
+
     def test_launch_report_summarizes_scores_and_buckets(self) -> None:
         settings = Settings(base_dir=Path("."), data_dir=Path("data"))
         report = main.build_launch_report(
