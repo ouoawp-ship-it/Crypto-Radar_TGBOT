@@ -493,10 +493,26 @@ class LaunchOutcomeTests(unittest.TestCase):
 
             self.assertIn("本轮进展", text)
             self.assertIn("最高/最低收盘变动: +2.50% / -0.50%", text)
+            self.assertIn("首次达到启动确认: 尚未达到", text)
+            self.assertIn("首次达到启动瞬间: 尚未达到", text)
             self.assertIn("样本积累中｜同口径已完成 2/20 轮", text)
             self.assertIn("样本未达门槛，不展示比例", text)
             self.assertNotIn("启动确认率", text)
             self.assertLessEqual(len(plain_fallback(text)), 1024)
+
+    def test_stage_delay_copy_distinguishes_immediate_and_elapsed_reach(self) -> None:
+        self.assertEqual(
+            RadarEngine._launch_package_stage_delay(0),
+            "首次信号即达到",
+        )
+        self.assertEqual(
+            RadarEngine._launch_package_stage_delay(15 * 60),
+            "15分钟后",
+        )
+        self.assertEqual(
+            RadarEngine._launch_package_stage_delay(60 * 60),
+            "1小时00分钟后",
+        )
 
     def test_completed_message_explains_final_cycle_result(self) -> None:
         with TemporaryDirectory() as tmp:

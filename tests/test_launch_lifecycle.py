@@ -682,6 +682,7 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                 "price": 104.0,
                 "oi_usd": 1_060.0,
                 "funding_pct": -0.005,
+                "funding_interval_hours": 0,
                 "funds_direction": "divergence_spot_buy_futures_sell",
             }
             lifecycle = {
@@ -724,6 +725,10 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertIn("生命周期阶段变化", text)
             self.assertIn("事件轴", text)
             self.assertIn("现货主动买入、合约主动卖出", text)
+            self.assertIn(
+                "资金费率: -0.010%/4H → -0.0050%/本次未确认（上次确认4H）",
+                text,
+            )
             self.assertIn("市场概况", text)
             self.assertIn("市值: $53M（低市值，来源 CoinPaprika）", text)
             self.assertIn("流动性: $286M/24h（高流动性）", text)
@@ -787,6 +792,67 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertEqual(result["closed_oi_usd"], 1_010_000.0)
             self.assertEqual(result["closed_quote_volume"], 7_500.0)
             self.assertEqual(result["breakout_price"], 102.0)
+
+    def test_active_lifecycle_verifies_funding_interval_even_when_score_falls(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
+            klines = [
+                [0, "100", "102", "99", "100", "0", 0, "5000"]
+                for _ in range(17)
+            ]
+            oi_history = [
+                {"sumOpenInterestValue": "1000000"}
+                for _ in range(17)
+            ]
+
+            class Source:
+                funding_calls = 0
+
+                @staticmethod
+                def klines(*_args: object, **_kwargs: object) -> list[list[object]]:
+                    return klines
+
+                @staticmethod
+                def open_interest_hist(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+                    return oi_history
+
+                @classmethod
+                def funding_rate(
+                    cls,
+                    *_args: object,
+                    **_kwargs: object,
+                ) -> list[dict[str, object]]:
+                    cls.funding_calls += 1
+                    return [
+                        {"fundingTime": 1_000_000_000, "fundingRate": "-0.0008"},
+                        {"fundingTime": 1_014_400_000, "fundingRate": "-0.0007"},
+                        {"fundingTime": 1_028_800_000, "fundingRate": "-0.0006"},
+                    ]
+
+            result = engine._analyze_launch_symbol(  # type: ignore[arg-type]
+                Source(),
+                {
+                    "symbol": "TESTUSDT",
+                    "coin": "TEST",
+                    "quote_volume": 10_000_000,
+                    "price_24h": 0.0,
+                    "price": 100.0,
+                    "funding_available": True,
+                    "funding_pct": -0.0729,
+                    "funding_next_time_ms": 0,
+                    "launch_lifecycle_active": True,
+                    "mcap": 100_000_000,
+                    "mcap_source": "Binance",
+                    "market_cap_tier": "低市值",
+                    "liquidity_tier": "低流动性",
+                },
+            )
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result["score"], 0)
+            self.assertEqual(result["funding_interval_hours"], 4)
+            self.assertEqual(Source.funding_calls, 1)
 
     def test_active_legacy_symbol_is_scanned_before_higher_volume_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
