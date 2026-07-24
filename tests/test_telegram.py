@@ -649,22 +649,32 @@ class TelegramGatewayTests(unittest.TestCase):
                     "template_id": "TG_LAUNCH_ALERT",
                     "status": "sent",
                     "message_ids": [50, 70],
+                    "ts": utc_ts(),
                 },
                 {
                     "template_id": "TG_LAUNCH_ALERT",
                     "status": "sent",
                     "message_ids": [71],
                     "deleted_message_ids": [71],
+                    "ts": utc_ts(),
                 },
                 {
                     "template_id": "TG_LAUNCH_ALERT",
                     "status": "sent",
                     "message_ids": [72],
+                    "ts": utc_ts(),
+                },
+                {
+                    "template_id": "TG_LAUNCH_ALERT",
+                    "status": "sent",
+                    "message_ids": [69],
+                    "ts": 1,
                 },
                 {
                     "template_id": "TG_FUNDING_ALERT",
                     "status": "sent",
                     "message_ids": [73],
+                    "ts": utc_ts(),
                 },
             ])
             gateway = TelegramGateway(
@@ -684,6 +694,18 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(
                 gateway.launch_topic_cleanup_candidates(keep_message_ids=[72]),
                 [70],
+            )
+            plan = gateway.launch_topic_cleanup_plan(keep_message_ids=[72])
+            self.assertEqual(plan["deletable_ids"], [70])
+            self.assertEqual(plan["undeletable_ids"], [69])
+            gateway.mark_history_messages_undeletable([69])
+            history = store.load(history_path, [])
+            self.assertEqual(history[3]["undeletable_message_ids"], [69])
+            self.assertEqual(
+                gateway.launch_topic_cleanup_plan(keep_message_ids=[72])[
+                    "undeletable_ids"
+                ],
+                [],
             )
 
     def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:

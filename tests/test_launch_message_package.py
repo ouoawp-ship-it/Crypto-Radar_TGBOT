@@ -67,6 +67,7 @@ class FakeGateway:
             [202],
         )
         self.topic_cleanup_candidates: list[int] = []
+        self.topic_undeletable_candidates: list[int] = []
         self.send_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def send(self, *args: object, **kwargs: object) -> PushResult:
@@ -94,6 +95,25 @@ class FakeGateway:
     ) -> list[int]:
         self.events.append(f"topic_candidates:{keep_message_ids}")
         return list(self.topic_cleanup_candidates)
+
+    def launch_topic_cleanup_plan(
+        self,
+        *,
+        keep_message_ids: list[int] | None = None,
+    ) -> dict[str, list[int]]:
+        self.events.append(f"topic_candidates:{keep_message_ids}")
+        return {
+            "deletable_ids": list(self.topic_cleanup_candidates),
+            "undeletable_ids": list(self.topic_undeletable_candidates),
+        }
+
+    def mark_history_messages_undeletable(
+        self,
+        message_ids: list[int],
+        *,
+        reason: str = "",
+    ) -> None:
+        self.events.append(f"undeletable:{reason}:{message_ids}")
 
 
 def launch_payload() -> dict[str, object]:
@@ -198,6 +218,7 @@ class LaunchMessagePackageTests(unittest.TestCase):
                 PushResult("sent", "telegram_api", True, [201]),
             )
             gateway.topic_cleanup_candidates = [88, 89]
+            gateway.topic_undeletable_candidates = [77]
 
             pushes, cleanup = push_launch_messages(
                 settings,
@@ -210,8 +231,13 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertLess(events.index("commit"), events.index("topic_candidates:[201]"))
             self.assertLess(events.index("topic_candidates:[201]"), events.index("delete:[88, 89]"))
             self.assertIn("reason:launch_topic_replaced", events)
+            self.assertIn(
+                "undeletable:telegram_delete_window_expired:[77]",
+                events,
+            )
             self.assertEqual(pushes[0]["topic_history_replaced_count"], 2)
             self.assertEqual(cleanup["topic_history_deleted"], 2)
+            self.assertEqual(cleanup["topic_history_undeletable"], 1)
 
     def test_partial_send_is_rolled_back_without_touching_old_package(self) -> None:
         with TemporaryDirectory() as tmp:
