@@ -2084,16 +2084,20 @@ class RadarEngine:
             alert["chart_error"] = "invalid_chart_window"
             return False
         interval_sec = 15 * 60
-        requested_start = first_window_end - 16 * interval_sec
+        requested_start = min(
+            first_window_end - 16 * interval_sec,
+            current_window_end - 96 * interval_sec,
+        )
+        start_ts = max(
+            0,
+            requested_start,
+            current_window_end - 1000 * interval_sec,
+        )
         candle_count = max(
-            32,
-            (current_window_end - requested_start) // interval_sec + 1,
+            96,
+            (current_window_end - start_ts) // interval_sec,
         )
         candle_count = min(1000, candle_count)
-        start_ts = max(
-            requested_start,
-            current_window_end - candle_count * interval_sec,
-        )
         try:
             rows = source.klines(
                 str(alert.get("symbol") or ""),
@@ -2599,19 +2603,14 @@ class RadarEngine:
                     f"该币历史完整周期: {symbol_samples}轮；样本不足时不单列比率。"
                 )
         status = str(lifecycle.get("cycle_status") or "active")
-        invalidation = (
-            f"本轮已结束：{str(lifecycle.get('end_reason') or '失效条件成立')}"
+        ending_lines = (
+            [
+                "",
+                tg_quote("本轮结束"),
+                f"失效原因: {tg_escape(str(lifecycle.get('end_reason') or '失效条件成立'))}",
+            ]
             if status == "failed"
-            else "连续两根已闭合15m低于观察阈值，或连续两根收盘跌破本轮有效突破位"
-        )
-        calculation_text = (
-            "计算: 价格/OI变化均以本轮首次或上次已成功发布的检查点为基准；"
-            "结果评估按每轮已记录15m收盘价计算，不使用盘中高低点；"
-            "未达到替换阈值的扫描只记录、不推送。"
-            if outcome_evaluation.get("enabled")
-            else
-            "计算: 价格/OI变化均以本轮首次或上次已成功发布的检查点为基准；"
-            "未达到替换阈值的扫描只记录、不推送。"
+            else []
         )
         return "\n".join([
             f"🚀 {coin_link(item)}｜第{int(lifecycle.get('cycle_no') or 1)}轮启动跟踪｜事件{checkpoint_no:02d}",
@@ -2637,23 +2636,9 @@ class RadarEngine:
             tg_quote("事件轴"),
             *timeline_lines,
             *outcome_lines,
-            *(
-                [
-                    "",
-                    f"{tg_bold('K线图')}: Binance 合约15m；E1、E2…对应本轮已发布事件，带“<”表示事件早于当前可见窗口。",
-                    "图片只在内存中生成并直接上传 Telegram，不写入服务器磁盘。",
-                ]
-                if item.get("chart_status") == "ready"
-                else []
-            ),
             "",
             f"{tg_bold('数据确认')}: {tg_escape(confirmation_text(item))}",
-            "来源: Binance USDⓈ-M Futures 原生已闭合15m行情；主动成交方向补充自 Binance Spot + Futures 已闭合窗口。",
-            calculation_text,
-            "",
-            f"{tg_bold('失效条件')}: {tg_escape(invalidation)}",
-            "每次新消息确认发送并持久化成功后，才删除上一条；删除失败会自动重试。",
-            "不构成投资建议。",
+            *ending_lines,
         ])
 
     def _format_launch_alert(self, item: dict[str, Any]) -> str:

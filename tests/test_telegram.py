@@ -11,7 +11,12 @@ from unittest.mock import patch
 from paopao_radar.config import Settings
 from paopao_radar.signal_store import SignalEventStore
 from paopao_radar.storage import JsonStore
-from paopao_radar.telegram import TelegramGateway, utc_ts
+from paopao_radar.telegram import (
+    TelegramGateway,
+    plain_fallback,
+    topic_intro_message,
+    utc_ts,
+)
 
 
 CST = timezone(timedelta(hours=8))
@@ -505,7 +510,7 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(first_payload["reply_to_message_id"], 111)
             self.assertNotIn("reply_to_message_id", second_payload)
 
-    def test_send_photo_bytes_uses_multipart_without_writing_a_file(self) -> None:
+    def test_send_tracks_photo_and_caption_as_one_message(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
                 data_dir=Path(tmp),
@@ -516,6 +521,10 @@ class TelegramGatewayTests(unittest.TestCase):
             )
             gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
             png = b"\x89PNG\r\n\x1a\nmemory-only"
+            caption = (
+                '<a href="https://example.com"><b>TEST</b></a> · '
+                "📋 <code>TESTUSDT</code>"
+            )
 
             class Response:
                 status_code = 200
@@ -529,23 +538,33 @@ class TelegramGatewayTests(unittest.TestCase):
                 patch.object(gateway, "_ensure_topic_intro"),
                 patch("paopao_radar.telegram.requests.post", return_value=Response()) as post_mock,
             ):
-                result = gateway.send_photo_bytes(
-                    png,
-                    caption="<b>TEST</b>",
-                    template_id="TG_LAUNCH_ALERT",
+                result = gateway.send(
+                    caption,
+                    "TG_LAUNCH_ALERT",
+                    "launch-package:1:2",
                     send=True,
                     confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                    photo=png,
+                    enrich_market_context=False,
                 )
 
             self.assertEqual(result.status, "sent")
+            self.assertEqual(result.reason, "telegram_photo_api")
             self.assertEqual(result.message_ids, [444])
+            self.assertEqual(post_mock.call_count, 1)
             request = post_mock.call_args.kwargs
+            self.assertEqual(request["data"]["caption"], caption)
             self.assertEqual(request["data"]["message_thread_id"], 12)
+            self.assertNotIn("show_caption_above_media", request["data"])
             self.assertEqual(request["files"]["photo"][1], png)
             self.assertEqual(request["files"]["photo"][2], "image/png")
             self.assertEqual(list(Path(tmp).glob("*.png")), [])
+            history = JsonStore(Path(tmp)).load(settings.tg_push_history_path, [])
+            self.assertEqual(history[-1]["message_ids"], [444])
 
-    def test_send_photo_bytes_rejects_non_png_before_network(self) -> None:
+    def test_send_rejects_non_png_before_network(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
                 data_dir=Path(tmp),
@@ -554,17 +573,55 @@ class TelegramGatewayTests(unittest.TestCase):
             )
             gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
             with patch("paopao_radar.telegram.requests.post") as post_mock:
-                result = gateway.send_photo_bytes(
-                    b"not-an-image",
-                    caption="TEST",
-                    template_id="TG_LAUNCH_ALERT",
+                result = gateway.send(
+                    "TEST",
+                    "TG_LAUNCH_ALERT",
+                    "launch-package:1:2",
                     send=True,
                     confirm_real_send=True,
+                    photo=b"not-an-image",
                 )
 
             self.assertEqual(result.status, "failed")
             self.assertEqual(result.reason, "invalid_png")
             post_mock.assert_not_called()
+
+    def test_send_rejects_caption_over_telegram_limit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            with patch("paopao_radar.telegram.requests.post") as post_mock:
+                result = gateway.send(
+                    "A" * 1025,
+                    "TG_LAUNCH_ALERT",
+                    "launch-package:1:2",
+                    send=True,
+                    confirm_real_send=True,
+                    photo=b"\x89PNG\r\n\x1a\nmemory-only",
+                )
+
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.reason, "caption_too_long")
+            post_mock.assert_not_called()
+
+    def test_launch_topic_intro_holds_static_chart_and_lifecycle_guidance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            intro = topic_intro_message(
+                "TG_LAUNCH_ALERT",
+                Settings(data_dir=Path(tmp)),
+            )
+
+            self.assertIn("每个币种只保留本轮最新一条“图表 + 文字”消息", intro)
+            self.assertIn("点击代码可复制交易对", intro)
+            self.assertIn("E1、E2…对应本轮已发布事件", intro)
+            self.assertIn("价格/OI变化以本轮首次或上次成功发布的检查点为基准", intro)
+            self.assertIn("连续两根已闭合15m低于观察阈值", intro)
+            self.assertIn("删除失败会自动重试", intro)
+            self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_auto_create_precedes_default_topic_for_known_templates(self) -> None:
         with TemporaryDirectory() as tmp:

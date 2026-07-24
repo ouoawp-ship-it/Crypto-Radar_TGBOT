@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from paopao_radar.cli import push_launch_messages
 from paopao_radar.config import Settings
-from paopao_radar.telegram import PushResult
+from paopao_radar.telegram import PushResult, plain_fallback
 
 
 class FakeEngine:
@@ -64,14 +64,15 @@ class FakeGateway:
             True,
             [202],
         )
+        self.send_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def send(self, *_args: object, **_kwargs: object) -> PushResult:
+    def send(self, *args: object, **kwargs: object) -> PushResult:
+        self.send_calls.append((args, kwargs))
+        if kwargs.get("photo") is not None:
+            self.events.append("photo")
+            return self.photo_result
         self.events.append("send")
         return self.result
-
-    def send_photo_bytes(self, *_args: object, **_kwargs: object) -> PushResult:
-        self.events.append("photo")
-        return self.photo_result
 
     def delete_messages_detailed(
         self,
@@ -185,7 +186,7 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertNotIn("delete:[101]", events)
             self.assertEqual(pushes[0]["status"], "package_commit_failed")
 
-    def test_chart_and_text_are_committed_as_one_two_message_package(self) -> None:
+    def test_chart_and_text_are_committed_as_one_photo_caption_message(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             settings = Settings(
@@ -195,31 +196,37 @@ class LaunchMessagePackageTests(unittest.TestCase):
             )
             payload = launch_payload()
             payload["alerts"][0]["chart_png_bytes"] = b"\x89PNG\r\n\x1a\nchart"  # type: ignore[index]
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+                photo_result=PushResult(
+                    "sent",
+                    "telegram_photo_api",
+                    True,
+                    [202],
+                ),
+            )
             pushes, cleanup = push_launch_messages(
                 settings,
                 FakeEngine(events),  # type: ignore[arg-type]
-                FakeGateway(
-                    events,
-                    PushResult("sent", "telegram_api", True, [201]),
-                    photo_result=PushResult(
-                        "sent",
-                        "telegram_photo_api",
-                        True,
-                        [202],
-                    ),
-                ),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
                 payload,
                 SimpleNamespace(send=True, confirm_real_send=True),
             )
 
-            self.assertLess(events.index("send"), events.index("photo"))
             self.assertLess(events.index("photo"), events.index("commit"))
-            self.assertIn("commit_ids:[201, 202]", events)
+            self.assertNotIn("send", events)
+            self.assertIn("commit_ids:[202]", events)
             self.assertEqual(pushes[0]["status"], "sent")
             self.assertEqual(cleanup["charts_sent"], 1)
             self.assertNotIn("chart_png_bytes", payload["alerts"][0])  # type: ignore[index]
+            text = str(gateway.send_calls[0][0][0])
+            kwargs = gateway.send_calls[0][1]
+            self.assertLessEqual(len(plain_fallback(text)), 1024)
+            self.assertEqual(kwargs["photo"], b"\x89PNG\r\n\x1a\nchart")
+            self.assertFalse(kwargs["enrich_market_context"])
 
-    def test_photo_failure_rolls_back_new_text_and_retains_old_package(self) -> None:
+    def test_photo_failure_retains_old_package_without_sending_separate_text(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             settings = Settings(
@@ -247,9 +254,11 @@ class LaunchMessagePackageTests(unittest.TestCase):
             )
 
             self.assertNotIn("commit", events)
-            self.assertIn("delete:[201]", events)
+            self.assertNotIn("send", events)
+            self.assertIn("photo", events)
+            self.assertNotIn("delete:[201]", events)
             self.assertNotIn("delete:[101]", events)
-            self.assertEqual(pushes[0]["status"], "photo_failed")
+            self.assertEqual(pushes[0]["status"], "failed")
             self.assertEqual(cleanup["chart_failures"], 1)
             self.assertNotIn("chart_png_bytes", payload["alerts"][0])  # type: ignore[index]
 

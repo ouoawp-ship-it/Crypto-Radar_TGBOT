@@ -109,19 +109,25 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         return "\n".join([
         "📌 <b>启动预警话题说明</b>",
         "",
-        "这里推送即时启动雷达，偏短周期异动提醒。",
-        "重点看：阶段、分数、15m/1h价格、15m/1h OI、成交量放大和触发原因。",
+        "这里推送即时启动雷达，偏短周期异动提醒。每个币种只保留本轮最新一条“图表 + 文字”消息，文字位于K线图下方。",
         "",
-        "扫描和发送频率：",
+        "<b>阅读方式</b>",
+        "1. 点击币种打开 CoinGlass，点击代码可复制交易对，点击 TV 打开 TradingView。",
+        "2. 提前预警 = 开始异动；启动确认 = 多因子共振增强；启动瞬间 = 波动最大，避免盲目追高。",
+        "3. E1、E2…对应本轮已发布事件；带“<”表示该事件早于当前图表可见窗口。",
+        "",
+        "<b>数据与计算口径</b>",
+        "- K线图使用 Binance USDⓈ-M Futures 原生已闭合15m行情；主动成交方向补充自 Binance Spot + Futures 已闭合窗口。",
+        "- 价格/OI变化以本轮首次或上次成功发布的检查点为基准；未达到替换阈值的扫描只记录、不推送。",
+        "- 结果评估只使用已记录的15m收盘价，不使用盘中高低点。",
+        "",
+        "<b>生命周期与消息替换</b>",
         f"- 默认每{seconds_cn(180)}检查一次；服务启动参数 --launch-interval 可以覆盖。",
         f"- 启动判断使用最近完整 15m 收线窗口，默认收线后延迟{seconds_cn(settings.launch_close_delay_sec)}再抓取。",
-        f"- 同币同阶段默认冷却{seconds_cn(settings.launch_stage_cooldown_sec)}，避免重复刷同一阶段。",
-        "- 同一币种后续更高阶段信号会自动回复上一条该币启动消息，方便沿着一条消息链追踪。",
+        "- 失效条件：连续两根已闭合15m低于观察阈值，或连续两根收盘跌破本轮有效突破位。",
+        "- 新消息确认发送并持久化成功后才删除上一条；删除失败会自动重试。",
         "",
-        "阅读方式：",
-        "1. 提前预警 = 开始异动，适合加入盯盘。",
-        "2. 启动确认 = 多因子共振更强，但仍要等结构确认。",
-        "3. 启动瞬间 = 波动最大，避免盲目追高。",
+        "数据确认仅代表 Binance 市场；不构成投资建议。",
         ])
     if template_id == "TG_ANNOUNCEMENT_ALERT":
         ttl = max(1, int(settings.announcement_default_ttl_days))
@@ -224,8 +230,14 @@ class TelegramGateway:
         parse_mode: str = "Markdown",
         reply_to_message_id: int | None = None,
         signal_records: list[dict[str, Any]] | None = None,
+        photo: bytes | None = None,
+        enrich_market_context: bool = True,
     ) -> PushResult:
-        if str(parse_mode or "").upper() == "HTML" and signal_records:
+        if (
+            enrich_market_context
+            and str(parse_mode or "").upper() == "HTML"
+            and signal_records
+        ):
             text = enrich_telegram_with_market_context(
                 self.settings,
                 text,
@@ -236,6 +248,21 @@ class TelegramGateway:
         cooldown = self.settings.tg_default_cooldown_sec if cooldown_sec is None else cooldown_sec
         history = self._load_history()
         topic_id = self._topic_id_for_template(template_id)
+
+        photo_error = self._photo_validation_error(photo, text) if photo is not None else ""
+        if photo_error:
+            result = PushResult("failed", photo_error, False, [])
+            self._record(
+                history,
+                template_id,
+                dedup_key,
+                result,
+                text,
+                topic_id=topic_id,
+                reply_to_message_id=reply_to_message_id,
+                signal_records=signal_records,
+            )
+            return result
 
         duplicate = self._recent_match(history, dedup_key, cooldown)
         if duplicate:
@@ -261,6 +288,8 @@ class TelegramGateway:
                 print(f"topic_id: {topic_id}")
             if reply_to_message_id:
                 print(f"reply_to_message_id: {reply_to_message_id}")
+            if photo is not None:
+                print(f"photo_bytes: {len(photo)}")
             print(text)
             print("========== END DRY-RUN ==============\n")
             result = PushResult("dry_run", "send_flag_not_set", False)
@@ -283,22 +312,39 @@ class TelegramGateway:
             template_id=template_id,
             dedup_key=dedup_key,
             topic_id=topic_id,
-            total_chunks=len(chunk_text(text, self.settings.tg_push_split_limit)),
+            total_chunks=(
+                1
+                if photo is not None
+                else len(chunk_text(text, self.settings.tg_push_split_limit))
+            ),
             now=now,
         )
         if not delivery_id:
             result = PushResult("skipped", "delivery_quarantine", False)
             self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
-        ok, message_ids = self._send_real_message_ids(
-            text,
-            parse_mode=parse_mode,
-            topic_id=topic_id,
-            reply_to_message_id=reply_to_message_id,
+        if photo is not None:
+            ok, message_ids = self._send_real_photo_bytes(
+                photo,
+                caption=text,
+                parse_mode=parse_mode,
+                topic_id=topic_id,
+            )
+        else:
+            ok, message_ids = self._send_real_message_ids(
+                text,
+                parse_mode=parse_mode,
+                topic_id=topic_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+        reason = (
+            "telegram_photo_api" if ok else "telegram_photo_api_failed"
+        ) if photo is not None else (
+            "telegram_api" if ok else "telegram_api_failed"
         )
         result = PushResult(
             "sent" if ok else "failed",
-            "telegram_api" if ok else "telegram_api_failed",
+            reason,
             ok,
             message_ids,
             delivery_id,
@@ -311,43 +357,15 @@ class TelegramGateway:
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
         return result
 
-    def send_photo_bytes(
-        self,
-        photo: bytes,
-        *,
-        caption: str,
-        template_id: str,
-        send: bool,
-        confirm_real_send: bool,
-        parse_mode: str = "HTML",
-    ) -> PushResult:
-        """Send one in-memory PNG as part of an already-admitted signal package."""
-
+    @staticmethod
+    def _photo_validation_error(photo: bytes, caption: str) -> str:
         if not isinstance(photo, bytes) or not photo.startswith(b"\x89PNG\r\n\x1a\n"):
-            return PushResult("failed", "invalid_png", False, [])
+            return "invalid_png"
         if len(photo) > 10 * 1024 * 1024:
-            return PushResult("failed", "photo_too_large", False, [])
-        if not send:
-            return PushResult("dry_run", "send_flag_not_set", False, [])
-        if not confirm_real_send:
-            return PushResult("blocked", "missing_confirm_real_send", False, [])
-        if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
-            return PushResult("blocked", "telegram_not_configured", False, [])
-
-        topic_id = self._ensure_topic_id_for_template(template_id)
-        self._ensure_topic_intro(template_id, topic_id)
-        ok, message_ids = self._send_real_photo_bytes(
-            photo,
-            caption=caption[:1024],
-            parse_mode=parse_mode,
-            topic_id=topic_id,
-        )
-        return PushResult(
-            "sent" if ok else "failed",
-            "telegram_photo_api" if ok else "telegram_photo_api_failed",
-            ok,
-            message_ids,
-        )
+            return "photo_too_large"
+        if len(plain_fallback(caption)) > 1024:
+            return "caption_too_long"
+        return ""
 
     def _begin_delivery(
         self,
