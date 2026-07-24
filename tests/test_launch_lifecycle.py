@@ -342,6 +342,54 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertEqual(complete["status"], "complete")
             self.assertEqual(store.list_pending_cleanups(), [])
 
+    def test_failed_package_latest_message_becomes_cleanup_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+                invalid_windows_required=2,
+            )
+            first = store.record_observation(
+                snapshot(window_end_ts=900, score=60, price=100, oi=1_000),
+                stage="primed",
+                observed_at=910,
+            )
+            store.commit_package(
+                cycle_id=first["cycle_id"],
+                observation_id=first["observation_id"],
+                message_ids=[101, 102],
+                checkpoint_reasons=["cycle_opened"],
+                published_at=920,
+            )
+            store.record_observation(
+                snapshot(window_end_ts=1800, score=20, price=99, oi=980),
+                stage="idle",
+                observed_at=1810,
+            )
+            failed = store.record_observation(
+                snapshot(window_end_ts=2700, score=20, price=98, oi=960),
+                stage="idle",
+                observed_at=2710,
+            )
+            self.assertEqual(failed["cycle_status"], "failed")
+
+            pending = store.list_pending_cleanups(
+                now_ts=2800,
+                max_age_sec=47 * 3600,
+            )
+            self.assertEqual(pending[0]["message_ids"], [101, 102])
+            self.assertTrue(pending[0]["expire_latest"])
+
+            complete = store.complete_package_cleanup(
+                cycle_id=first["cycle_id"],
+                deleted_ids=[101, 102],
+                failed_ids=[],
+                updated_at=2810,
+                expire_latest=True,
+            )
+            self.assertEqual(complete["status"], "complete")
+            self.assertEqual(store.list_pending_cleanups(), [])
+
     def test_funds_direction_divergence_is_a_package_trigger(self) -> None:
         with TemporaryDirectory() as tmp:
             store = LaunchLifecycleStore(

@@ -100,18 +100,29 @@ def push_launch_messages(
         "chart_failures": 0,
     }
     if package_enabled and real_send:
+        cleanup_budget = max(0, int(settings.launch_message_cleanup_limit))
+        attempted_cleanup_messages = 0
         for pending in engine.pending_launch_package_cleanups(
-            limit=settings.launch_message_cleanup_limit
+            limit=cleanup_budget
         ):
-            message_ids = list(pending.get("message_ids") or [])
+            available = max(0, cleanup_budget - attempted_cleanup_messages)
+            if available <= 0:
+                break
+            message_ids = list(pending.get("message_ids") or [])[:available]
+            attempted_cleanup_messages += len(message_ids)
             deletion = gateway.delete_messages_detailed(
                 message_ids,
-                reason="launch_package_replaced",
+                reason=(
+                    "launch_cycle_expired"
+                    if pending.get("expire_latest")
+                    else "launch_package_replaced"
+                ),
             )
             engine.complete_launch_package_cleanup(
                 cycle_id=int(pending.get("cycle_id") or 0),
                 deleted_ids=list(deletion.get("deleted_ids") or []),
                 failed_ids=list(deletion.get("failed_ids") or []),
+                expire_latest=bool(pending.get("expire_latest")),
             )
             cleanup_diagnostics["retried_packages"] = int(
                 cleanup_diagnostics["retried_packages"]
