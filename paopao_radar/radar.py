@@ -1870,19 +1870,23 @@ class RadarEngine:
         deleted_ids: list[int],
         failed_ids: list[int],
         updated_at: int | None = None,
+        expire_latest: bool = False,
     ) -> dict[str, Any]:
         return self._launch_lifecycle_store(package_enabled=True).complete_package_cleanup(
             cycle_id=int(cycle_id),
             deleted_ids=deleted_ids,
             failed_ids=failed_ids,
             updated_at=int(updated_at or time.time()),
+            expire_latest=expire_latest,
         )
 
     def pending_launch_package_cleanups(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not self.settings.launch_message_package_v2_enable:
             return []
         return self._launch_lifecycle_store(package_enabled=True).list_pending_cleanups(
-            limit=limit
+            limit=limit,
+            now_ts=int(time.time()),
+            max_age_sec=self.settings.launch_message_cleanup_max_age_sec,
         )
 
     def _launch_lifecycle_store(self, *, package_enabled: bool | None = None) -> LaunchLifecycleStore:

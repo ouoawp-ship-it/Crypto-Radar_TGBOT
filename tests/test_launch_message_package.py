@@ -14,10 +14,11 @@ class FakeEngine:
     def __init__(self, events: list[str], *, commit_status: str = "committed") -> None:
         self.events = events
         self.commit_status = commit_status
+        self.pending_cleanups: list[dict[str, object]] = []
 
     def pending_launch_package_cleanups(self, *, limit: int) -> list[dict[str, object]]:
         self.events.append(f"pending:{limit}")
-        return []
+        return self.pending_cleanups[:limit]
 
     def commit_launch_package(
         self,
@@ -38,9 +39,10 @@ class FakeEngine:
         cycle_id: int,
         deleted_ids: list[int],
         failed_ids: list[int],
+        expire_latest: bool = False,
     ) -> dict[str, object]:
         self.events.append(
-            f"complete:{cycle_id}:{deleted_ids}:{failed_ids}"
+            f"complete:{cycle_id}:{deleted_ids}:{failed_ids}:{expire_latest}"
         )
         return {"status": "complete"}
 
@@ -102,6 +104,38 @@ def launch_payload() -> dict[str, object]:
 
 
 class LaunchMessagePackageTests(unittest.TestCase):
+    def test_expired_package_cleanup_obeys_message_budget(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            engine = FakeEngine(events)
+            engine.pending_cleanups = [{
+                "cycle_id": 7,
+                "message_ids": list(range(100, 125)),
+                "expire_latest": True,
+            }]
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+                launch_message_cleanup_limit=20,
+            )
+
+            pushes, cleanup = push_launch_messages(
+                settings,
+                engine,  # type: ignore[arg-type]
+                FakeGateway(events, PushResult("sent", "telegram_api", True, [201])),  # type: ignore[arg-type]
+                {"messages": [], "alerts": []},
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertEqual(pushes, [])
+            self.assertIn("reason:launch_cycle_expired", events)
+            self.assertIn(f"delete:{list(range(100, 120))}", events)
+            self.assertIn(
+                f"complete:7:{list(range(100, 120))}:[]:True",
+                events,
+            )
+            self.assertEqual(cleanup["deleted_messages"], 20)
+
     def test_new_message_is_committed_before_old_message_is_deleted(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
@@ -119,7 +153,7 @@ class LaunchMessagePackageTests(unittest.TestCase):
 
             self.assertLess(events.index("send"), events.index("commit"))
             self.assertLess(events.index("commit"), events.index("delete:[101]"))
-            self.assertIn("complete:7:[101]:[]", events)
+            self.assertIn("complete:7:[101]:[]:False", events)
             self.assertEqual(pushes[0]["status"], "sent")
             self.assertEqual(cleanup["deleted_messages"], 1)
 

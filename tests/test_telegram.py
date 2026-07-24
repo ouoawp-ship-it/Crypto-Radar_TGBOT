@@ -615,11 +615,12 @@ class TelegramGatewayTests(unittest.TestCase):
                 Settings(data_dir=Path(tmp)),
             )
 
-            self.assertIn("每个币种只保留本轮最新一条“图表 + 文字”消息", intro)
+            self.assertIn("每个币种每一轮只保留最新一条“图表 + 说明”", intro)
             self.assertIn("点击代码可复制交易对", intro)
-            self.assertIn("E1、E2…对应本轮已发布事件", intro)
-            self.assertIn("价格/OI变化以本轮首次或上次成功发布的检查点为基准", intro)
-            self.assertIn("连续两根已闭合15m低于观察阈值", intro)
+            self.assertIn("不是使用 3 分钟K线", intro)
+            self.assertIn("所有判断只使用完整收线的 15 分钟K线", intro)
+            self.assertIn("确认失效后会删除该轮最新消息", intro)
+            self.assertIn("仍然活跃的币种不会被清理", intro)
             self.assertIn("删除失败会自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

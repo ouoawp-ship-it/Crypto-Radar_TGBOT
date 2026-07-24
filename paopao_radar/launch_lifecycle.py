@@ -841,29 +841,58 @@ class LaunchLifecycleStore:
             ),
         }
 
-    def list_pending_cleanups(self, *, limit: int = 20) -> list[dict[str, Any]]:
+    def list_pending_cleanups(
+        self,
+        *,
+        limit: int = 20,
+        now_ts: int | None = None,
+        max_age_sec: int | None = None,
+    ) -> list[dict[str, Any]]:
+        cutoff = (
+            max(0, int(now_ts or 0) - max(1, int(max_age_sec)))
+            if max_age_sec is not None
+            else 0
+        )
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, symbol, cycle_no, cleanup_pending_message_ids_json
+                SELECT id, symbol, cycle_no, status, package_updated_at,
+                       latest_message_ids_json, cleanup_pending_message_ids_json
                 FROM launch_lifecycle_cycles
                 WHERE cleanup_pending_message_ids_json != '[]'
+                   OR (
+                       status = ?
+                       AND latest_message_ids_json != '[]'
+                       AND COALESCE(package_updated_at, 0) >= ?
+                   )
                 ORDER BY package_updated_at ASC, id ASC
                 LIMIT ?
                 """,
-                (max(0, int(limit)),),
+                (FAILED_STATUS, cutoff, max(0, int(limit))),
             ).fetchall()
-            return [
-                {
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                expire_latest = (
+                    str(row["status"]) == FAILED_STATUS
+                    and bool(self._message_ids(row["latest_message_ids_json"]))
+                    and int(row["package_updated_at"] or 0) >= cutoff
+                )
+                pending = self._message_ids(
+                    row["cleanup_pending_message_ids_json"]
+                )
+                latest = (
+                    self._message_ids(row["latest_message_ids_json"])
+                    if expire_latest
+                    else []
+                )
+                result.append({
                     "cycle_id": int(row["id"]),
                     "symbol": str(row["symbol"]),
                     "cycle_no": int(row["cycle_no"]),
-                    "message_ids": self._message_ids(
-                        row["cleanup_pending_message_ids_json"]
-                    ),
-                }
-                for row in rows
-            ]
+                    "message_ids": list(dict.fromkeys([*pending, *latest])),
+                    "expire_latest": expire_latest,
+                })
+            return result
 
     def commit_package(
         self,
@@ -976,6 +1005,7 @@ class LaunchLifecycleStore:
         deleted_ids: list[int],
         failed_ids: list[int],
         updated_at: int,
+        expire_latest: bool = False,
     ) -> dict[str, Any]:
         deleted = set(self._message_ids(deleted_ids))
         failed = self._message_ids(failed_ids)
@@ -990,21 +1020,31 @@ class LaunchLifecycleStore:
             pending = self._message_ids(
                 cycle["cleanup_pending_message_ids_json"]
             )
+            latest = (
+                self._message_ids(cycle["latest_message_ids_json"])
+                if expire_latest and str(cycle["status"]) == FAILED_STATUS
+                else []
+            )
             remaining = [
                 message_id
-                for message_id in dict.fromkeys([*failed, *pending])
+                for message_id in dict.fromkeys([*failed, *pending, *latest])
                 if message_id not in deleted
             ]
             conn.execute(
                 """
                 UPDATE launch_lifecycle_cycles
                 SET cleanup_pending_message_ids_json = ?,
+                    latest_message_ids_json = CASE
+                        WHEN ? THEN '[]'
+                        ELSE latest_message_ids_json
+                    END,
                     package_updated_at = ?,
                     updated_at = MAX(updated_at, ?)
                 WHERE id = ?
                 """,
                 (
                     json.dumps(remaining),
+                    int(bool(expire_latest)),
                     int(updated_at),
                     int(updated_at),
                     int(cycle_id),
