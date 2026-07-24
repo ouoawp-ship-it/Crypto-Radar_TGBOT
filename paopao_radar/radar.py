@@ -1880,6 +1880,69 @@ class RadarEngine:
             expire_latest=expire_latest,
         )
 
+    def reconcile_launch_topic_messages(
+        self,
+        *,
+        deleted_ids: list[int],
+        updated_at: int | None = None,
+    ) -> dict[str, int]:
+        deleted = {
+            int(message_id)
+            for message_id in deleted_ids
+            if isinstance(message_id, int) or str(message_id).isdigit()
+        }
+        result = {
+            "cycles_updated": 0,
+            "message_ids_removed": 0,
+            "state_records_updated": 0,
+        }
+        if not deleted:
+            return result
+        reconciled = self._launch_lifecycle_store(
+            package_enabled=True
+        ).reconcile_topic_message_cleanup(
+            deleted_ids=sorted(deleted),
+            updated_at=int(updated_at or time.time()),
+        )
+        result.update(reconciled)
+
+        state = self.store.load(self.settings.launch_state_path, {})
+        if not isinstance(state, dict):
+            return result
+        changed = False
+        for record in state.values():
+            if not isinstance(record, dict):
+                continue
+            record_changed = False
+            for key in ("message_ids", "last_message_ids"):
+                values = [
+                    int(message_id)
+                    for message_id in (record.get(key) or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                ]
+                filtered = [
+                    message_id
+                    for message_id in values
+                    if message_id not in deleted
+                ]
+                if filtered != values:
+                    record[key] = filtered
+                    record_changed = True
+            last_message_id = record.get("last_message_id")
+            if (
+                isinstance(last_message_id, int)
+                or str(last_message_id or "").isdigit()
+            ) and int(last_message_id) in deleted:
+                remaining = list(record.get("last_message_ids") or [])
+                record["last_message_id"] = int(remaining[0]) if remaining else 0
+                record_changed = True
+            if record_changed:
+                changed = True
+                result["state_records_updated"] += 1
+        if changed:
+            self.store.save(self.settings.launch_state_path, state)
+        return result
+
     def pending_launch_package_cleanups(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not self.settings.launch_message_package_v2_enable:
             return []

@@ -49,6 +49,18 @@ class FakeEngine:
     def mark_launch_pushed(self, _alerts: list[dict[str, object]]) -> None:
         self.events.append("mark")
 
+    def reconcile_launch_topic_messages(
+        self,
+        *,
+        deleted_ids: list[int],
+    ) -> dict[str, int]:
+        self.events.append(f"reconcile:{deleted_ids}")
+        return {
+            "cycles_updated": len(deleted_ids),
+            "message_ids_removed": len(deleted_ids),
+            "state_records_updated": len(deleted_ids),
+        }
+
 
 class FakeGateway:
     def __init__(
@@ -235,9 +247,14 @@ class LaunchMessagePackageTests(unittest.TestCase):
                 "undeletable:telegram_delete_window_expired:[77]",
                 events,
             )
+            self.assertLess(events.index("mark"), events.index("reconcile:[88, 89]"))
             self.assertEqual(pushes[0]["topic_history_replaced_count"], 2)
             self.assertEqual(cleanup["topic_history_deleted"], 2)
             self.assertEqual(cleanup["topic_history_undeletable"], 1)
+            self.assertEqual(
+                cleanup["topic_state_reconciliation"]["message_ids_removed"],
+                2,
+            )
 
     def test_partial_send_is_rolled_back_without_touching_old_package(self) -> None:
         with TemporaryDirectory() as tmp:
