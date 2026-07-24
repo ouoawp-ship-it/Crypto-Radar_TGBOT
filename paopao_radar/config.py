@@ -245,6 +245,17 @@ class Settings:
     launch_lifecycle_v2_enable: bool = False
     launch_lifecycle_invalid_windows: int = 2
     launch_message_package_v2_enable: bool = False
+    launch_price_action_v3_enable: bool = False
+    launch_pa_box_lookback: int = 16
+    launch_pa_max_box_range_pct: float = 12.0
+    launch_pa_min_body_ratio: float = 0.45
+    launch_pa_wick_body_ratio: float = 1.5
+    launch_smc_v4_enable: bool = False
+    launch_smc_history_bars: int = 400
+    launch_smc_swing_length: int = 2
+    launch_smc_equal_tolerance_atr: float = 0.15
+    launch_smc_displacement_body_atr: float = 1.0
+    launch_smc_max_zone_age_bars: int = 96
     launch_chart_v2_enable: bool = False
     launch_outcome_v2_enable: bool = False
     launch_outcome_follow_through_pct: float = 3.0
@@ -454,6 +465,26 @@ class Settings:
             launch_lifecycle_v2_enable=env_bool("LAUNCH_LIFECYCLE_V2_ENABLE", False),
             launch_lifecycle_invalid_windows=env_int("LAUNCH_LIFECYCLE_INVALID_WINDOWS", 2),
             launch_message_package_v2_enable=env_bool("LAUNCH_MESSAGE_PACKAGE_V2_ENABLE", False),
+            launch_price_action_v3_enable=env_bool("LAUNCH_PRICE_ACTION_V3_ENABLE", False),
+            launch_pa_box_lookback=env_int("LAUNCH_PA_BOX_LOOKBACK", 16),
+            launch_pa_max_box_range_pct=env_float("LAUNCH_PA_MAX_BOX_RANGE_PCT", 12.0),
+            launch_pa_min_body_ratio=env_float("LAUNCH_PA_MIN_BODY_RATIO", 0.45),
+            launch_pa_wick_body_ratio=env_float("LAUNCH_PA_WICK_BODY_RATIO", 1.5),
+            launch_smc_v4_enable=env_bool("LAUNCH_SMC_V4_ENABLE", False),
+            launch_smc_history_bars=env_int("LAUNCH_SMC_HISTORY_BARS", 400),
+            launch_smc_swing_length=env_int("LAUNCH_SMC_SWING_LENGTH", 2),
+            launch_smc_equal_tolerance_atr=env_float(
+                "LAUNCH_SMC_EQUAL_TOLERANCE_ATR",
+                0.15,
+            ),
+            launch_smc_displacement_body_atr=env_float(
+                "LAUNCH_SMC_DISPLACEMENT_BODY_ATR",
+                1.0,
+            ),
+            launch_smc_max_zone_age_bars=env_int(
+                "LAUNCH_SMC_MAX_ZONE_AGE_BARS",
+                96,
+            ),
             launch_chart_v2_enable=env_bool("LAUNCH_CHART_V2_ENABLE", False),
             launch_outcome_v2_enable=env_bool("LAUNCH_OUTCOME_V2_ENABLE", False),
             launch_outcome_follow_through_pct=env_float("LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT", 3.0),
@@ -618,6 +649,23 @@ class Settings:
                 "lifecycle_v2_enable": self.launch_lifecycle_v2_enable,
                 "lifecycle_invalid_windows": self.launch_lifecycle_invalid_windows,
                 "message_package_v2_enable": self.launch_message_package_v2_enable,
+                "price_action_v3_enable": self.launch_price_action_v3_enable,
+                "price_action": {
+                    "box_lookback": self.launch_pa_box_lookback,
+                    "max_box_range_pct": self.launch_pa_max_box_range_pct,
+                    "min_body_ratio": self.launch_pa_min_body_ratio,
+                    "wick_body_ratio": self.launch_pa_wick_body_ratio,
+                    "follow_up_timeframes": ["1h", "4h"],
+                },
+                "smc_v4_enable": self.launch_smc_v4_enable,
+                "smc": {
+                    "history_bars": self.launch_smc_history_bars,
+                    "swing_length": self.launch_smc_swing_length,
+                    "equal_tolerance_atr": self.launch_smc_equal_tolerance_atr,
+                    "displacement_body_atr": self.launch_smc_displacement_body_atr,
+                    "max_zone_age_bars": self.launch_smc_max_zone_age_bars,
+                    "closed_candles_only": True,
+                },
                 "chart_v2_enable": self.launch_chart_v2_enable,
                 "outcome_v2_enable": self.launch_outcome_v2_enable,
                 "outcome_follow_through_pct": self.launch_outcome_follow_through_pct,

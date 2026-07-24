@@ -18,6 +18,10 @@ from .funding_alert import funding_table
 from .funding_sources import funding_last_settlement_text, funding_settlement_period_text
 from .launch_chart import render_launch_chart_png
 from .launch_lifecycle import LaunchLifecycleStore
+from .launch_price_action import (
+    analyze_launch_price_action,
+    required_15m_kline_limit,
+)
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .storage import JsonStore
@@ -1458,6 +1462,41 @@ class RadarEngine:
                 "enabled": bool(self.settings.launch_outcome_v2_enable),
                 "status": "disabled",
             },
+            "price_action_v3": {
+                "enabled": bool(self.settings.launch_price_action_v3_enable),
+                "status": (
+                    "active"
+                    if self.settings.launch_price_action_v3_enable
+                    and self.settings.launch_lifecycle_v2_enable
+                    and self.settings.launch_message_package_v2_enable
+                    else "shadow"
+                    if self.settings.launch_price_action_v3_enable
+                    and self.settings.launch_lifecycle_v2_enable
+                    else "misconfigured"
+                    if self.settings.launch_price_action_v3_enable
+                    else "disabled"
+                ),
+                "tracked": 0,
+            },
+            "smc_v4": {
+                "enabled": bool(self.settings.launch_smc_v4_enable),
+                "status": (
+                    "active"
+                    if self.settings.launch_smc_v4_enable
+                    and self.settings.launch_price_action_v3_enable
+                    and self.settings.launch_lifecycle_v2_enable
+                    and self.settings.launch_message_package_v2_enable
+                    and self.settings.launch_chart_v2_enable
+                    else "shadow"
+                    if self.settings.launch_smc_v4_enable
+                    and self.settings.launch_price_action_v3_enable
+                    and self.settings.launch_lifecycle_v2_enable
+                    else "misconfigured"
+                    if self.settings.launch_smc_v4_enable
+                    else "disabled"
+                ),
+                "tracked": 0,
+            },
         }
         lifecycle_active_symbols: list[str] = []
         if self.settings.launch_lifecycle_v2_enable:
@@ -1476,6 +1515,7 @@ class RadarEngine:
                     outcome_min_samples=self.settings.launch_outcome_min_samples,
                     breakout_score=self.settings.launch_breakout_score,
                     launched_score=self.settings.launch_launched_score,
+                    price_action_enabled=self.settings.launch_price_action_v3_enable,
                 )
                 lifecycle_active_symbols = lifecycle_store.list_active_symbols()
                 lifecycle_diagnostics["outcome_v2"] = lifecycle_store.refresh_outcomes(
@@ -1595,6 +1635,18 @@ class RadarEngine:
                 window="15m闭合窗口（1h=4根）",
                 observed_at=int(analyzed.get("window_end_ts") or now_ts),
             )
+            price_action = analyzed.get("price_action_analysis")
+            if (
+                isinstance(price_action, dict)
+                and str(price_action.get("data_status") or "") == "ready"
+            ):
+                lifecycle_diagnostics["price_action_v3"]["tracked"] += 1
+                smc = price_action.get("smc_analysis")
+                if (
+                    isinstance(smc, dict)
+                    and str(smc.get("data_status") or "") == "ready"
+                ):
+                    lifecycle_diagnostics["smc_v4"]["tracked"] += 1
 
         if self.settings.launch_message_package_v2_enable and analyzed_items:
             from .bot_market_context import closed_market_contexts_for_symbols
@@ -1973,6 +2025,7 @@ class RadarEngine:
             outcome_min_samples=self.settings.launch_outcome_min_samples,
             breakout_score=self.settings.launch_breakout_score,
             launched_score=self.settings.launch_launched_score,
+            price_action_enabled=self.settings.launch_price_action_v3_enable,
         )
 
     def cleanup_failed_launch_messages(
@@ -2192,6 +2245,11 @@ class RadarEngine:
                 for checkpoint in (publication.get("checkpoints") or [])
                 if isinstance(checkpoint, dict)
             ]
+            chart_price_action = (
+                dict(lifecycle["price_action"])
+                if isinstance(lifecycle.get("price_action"), dict)
+                else None
+            )
             current = publication.get("current")
             if isinstance(current, dict):
                 current_checkpoint = dict(current)
@@ -2199,11 +2257,14 @@ class RadarEngine:
                     publication.get("checkpoint_no") or len(checkpoints) + 1
                 )
                 checkpoints.append(current_checkpoint)
+                if isinstance(current.get("price_action"), dict):
+                    chart_price_action = dict(current["price_action"])
             image = render_launch_chart_png(
                 symbol=str(alert.get("symbol") or ""),
                 candles=candles,
                 checkpoints=checkpoints,
                 cycle_no=int(lifecycle.get("cycle_no") or 1),
+                price_action=chart_price_action,
             )
         except Exception as exc:
             alert["chart_status"] = "unavailable"
@@ -2215,16 +2276,33 @@ class RadarEngine:
         alert["chart_candle_count"] = len(candles)
         alert["chart_checkpoint_count"] = len(checkpoints)
         alert["chart_generated_in_memory"] = True
+        if chart_price_action:
+            alert["chart_price_action_status"] = str(
+                chart_price_action.get("status") or ""
+            )
         return True
 
     def _analyze_launch_symbol(self, source: BinanceDataSource, item: dict[str, Any]) -> Optional[dict[str, Any]]:
         symbol = item["symbol"]
         window = closed_window(interval_sec=15 * 60, delay_sec=self.settings.launch_close_delay_sec)
-        lookback_ms = 17 * 15 * 60 * 1000
+        price_action_follow_up = bool(
+            self.settings.launch_price_action_v3_enable
+            and item.get("launch_lifecycle_active")
+        )
+        kline_limit = required_15m_kline_limit(
+            self.settings.launch_pa_box_lookback,
+            follow_up=price_action_follow_up,
+            smc_history_bars=(
+                min(1000, max(0, self.settings.launch_smc_history_bars))
+                if self.settings.launch_smc_v4_enable
+                else 0
+            ),
+        )
+        lookback_ms = kline_limit * 15 * 60 * 1000
         klines = source.klines(
             symbol,
             interval="15m",
-            limit=17,
+            limit=kline_limit,
             start_time=max(0, window.end_ms - lookback_ms),
             end_time=window.end_ms - 1,
         )
@@ -2232,15 +2310,16 @@ class RadarEngine:
             symbol,
             period="15m",
             limit=17,
-            start_time=max(0, window.end_ms - lookback_ms),
+            start_time=max(0, window.end_ms - 17 * 15 * 60 * 1000),
             end_time=window.end_ms,
         )
         if len(klines) < 5 or len(oi_hist) < 5:
             return None
 
-        closes = [to_float(kline[4]) for kline in klines]
-        highs = [to_float(kline[2]) for kline in klines]
-        quote_volumes = [to_float(kline[7]) for kline in klines]
+        scoring_klines = klines[-17:]
+        closes = [to_float(kline[4]) for kline in scoring_klines]
+        highs = [to_float(kline[2]) for kline in scoring_klines]
+        quote_volumes = [to_float(kline[7]) for kline in scoring_klines]
         oi_values = [to_float(row.get("sumOpenInterestValue")) for row in oi_hist]
         if min(closes[-5:]) <= 0 or min(oi_values[-5:]) <= 0:
             return None
@@ -2299,7 +2378,7 @@ class RadarEngine:
         elif funding_context.get("funding_interval_transition"):
             reasons.append("资金费率结算周期缩短")
 
-        return {
+        result = {
             **item,
             "score": score,
             "closed_price": closes[-1],
@@ -2318,6 +2397,27 @@ class RadarEngine:
             "window_end_ts": int(window.end.timestamp()),
             **funding_context,
         }
+        if self.settings.launch_price_action_v3_enable:
+            result["price_action_analysis"] = analyze_launch_price_action(
+                klines,
+                window_end_ms=window.end_ms,
+                lookback=self.settings.launch_pa_box_lookback,
+                max_box_range_pct=self.settings.launch_pa_max_box_range_pct,
+                min_body_ratio=self.settings.launch_pa_min_body_ratio,
+                wick_body_ratio=self.settings.launch_pa_wick_body_ratio,
+                smc_enable=self.settings.launch_smc_v4_enable,
+                smc_swing_length=self.settings.launch_smc_swing_length,
+                smc_equal_tolerance_atr=(
+                    self.settings.launch_smc_equal_tolerance_atr
+                ),
+                smc_displacement_body_atr=(
+                    self.settings.launch_smc_displacement_body_atr
+                ),
+                smc_max_zone_age_bars=(
+                    self.settings.launch_smc_max_zone_age_bars
+                ),
+            )
+        return result
 
     def _launch_funding_context(
         self,
@@ -2536,6 +2636,137 @@ class RadarEngine:
             "unknown": "主动成交方向暂不可用",
         }.get(str(value or "unknown"), "主动成交方向暂不可用")
 
+    @staticmethod
+    def _launch_price_action_label(state: Any) -> str:
+        if not isinstance(state, dict) or not state.get("enabled"):
+            return ""
+        return {
+            "watching": "结构监控中",
+            "breakout_15m": "15m实体收盘突破，等待1h确认",
+            "confirmed_1h": "1h实体收盘确认，等待4h确认",
+            "confirmed_4h": "4h实体收盘确认",
+            "sweep_high_15m": "15m长上影扫高，假突破",
+            "sweep_low_15m": "15m长下影扫低，流动性扫除",
+            "false_breakout_15m": "15m回落并收长影，突破失败",
+            "failed_breakout_15m": "15m重新收回结构内，突破失效",
+            "false_breakout_1h": "1h长上/下影扫除，假突破确认",
+            "failed_breakout_1h": "1h未能站稳结构位，突破失效",
+            "false_breakout_4h": "4h长上/下影扫除，假突破确认",
+            "failed_breakout_4h": "4h未能站稳结构位，突破失效",
+        }.get(str(state.get("status") or ""), "结构状态待确认")
+
+    def _launch_price_action_lines(self, state: Any) -> list[str]:
+        label = self._launch_price_action_label(state)
+        if not label or not isinstance(state, dict):
+            return []
+        status = str(state.get("status") or "")
+        timeframe = (
+            "4h"
+            if status.endswith("_4h")
+            else "1h"
+            if status.endswith("_1h")
+            else "15m"
+        )
+        timeframes = state.get("timeframes")
+        frame = (
+            timeframes.get(timeframe)
+            if isinstance(timeframes, dict)
+            and isinstance(timeframes.get(timeframe), dict)
+            else {}
+        )
+        details: list[str] = []
+        level = to_float(state.get("level"))
+        if level > 0:
+            details.append(f"结构位 {fmt_price(level)}")
+        direction = str(state.get("direction") or "")
+        if direction:
+            details.append("上破方向" if direction == "up" else "下破方向")
+        if "sweep_high" in status or (
+            "false_breakout" in status and direction == "up"
+        ):
+            details.append(
+                f"上影/实体 {to_float(frame.get('upper_wick_body_ratio')):.2f}x"
+            )
+        elif "sweep_low" in status or (
+            "false_breakout" in status and direction == "down"
+        ):
+            details.append(
+                f"下影/实体 {to_float(frame.get('lower_wick_body_ratio')):.2f}x"
+            )
+        confirmed = [
+            str(value)
+            for value in (state.get("confirmed_timeframes") or [])
+            if str(value)
+        ]
+        if confirmed:
+            details.append("已确认 " + "→".join(confirmed))
+        lines = ["", tg_quote("结构确认"), f"状态: {tg_escape(label)}"]
+        if details:
+            lines.append("｜".join(details))
+        lines.extend(self._launch_smc_lines(state.get("smc")))
+        return lines
+
+    @staticmethod
+    def _launch_smc_lines(state: Any) -> list[str]:
+        if not isinstance(state, dict) or not state.get("enabled"):
+            return []
+        status = str(state.get("status") or "watching")
+        label = {
+            "watching": "SMC结构监控中",
+            "structure": "市场结构事件已确认",
+            "liquidity_sweep": "流动性扫除已确认，等待CHoCH/MSS",
+            "choch": "CHoCH已确认，等待位移与FVG",
+            "displacement": "位移与FVG已确认，等待OB/FVG回踩",
+            "retest": "OB/FVG回踩已确认，等待BOS",
+            "bos_confirmed": "扫流动性→MSS→回踩→BOS完整链确认",
+        }.get(status, "SMC结构状态已更新")
+        direction = str(state.get("direction") or "")
+        bias = state.get("htf_bias")
+        bias = bias if isinstance(bias, dict) else {}
+        bias_direction = str(bias.get("direction") or "neutral")
+        bias_text = {
+            "up": "偏多",
+            "down": "偏空",
+            "neutral": "中性",
+        }.get(bias_direction, "混合")
+        details = [f"高周期 {bias_text}"]
+        if direction in {"up", "down"}:
+            details.append("执行方向 多" if direction == "up" else "执行方向 空")
+        latest = state.get("latest_event")
+        if isinstance(latest, dict) and latest.get("label"):
+            details.append(f"最新 {latest['label']}")
+        snapshot = state.get("snapshot")
+        timeframes = (
+            snapshot.get("timeframes")
+            if isinstance(snapshot, dict)
+            and isinstance(snapshot.get("timeframes"), dict)
+            else {}
+        )
+        frame_15m = (
+            timeframes.get("15m")
+            if isinstance(timeframes.get("15m"), dict)
+            else {}
+        )
+        active_fvgs = sum(
+            1
+            for item in (frame_15m.get("fvgs") or [])
+            if isinstance(item, dict) and item.get("status") == "active"
+        )
+        active_obs = sum(
+            1
+            for item in (frame_15m.get("order_blocks") or [])
+            if isinstance(item, dict)
+            and item.get("status") in {"active", "mitigated"}
+        )
+        if active_fvgs or active_obs:
+            details.append(f"活动FVG {active_fvgs} / OB {active_obs}")
+        return [
+            "",
+            tg_quote("SMC 结构"),
+            f"状态: {tg_escape(label)}",
+            "｜".join(details),
+        ]
+
     def _format_launch_package(self, item: dict[str, Any]) -> str:
         lifecycle = item.get("launch_lifecycle")
         publication = item.get("launch_package")
@@ -2579,6 +2810,8 @@ class RadarEngine:
                 "oi_delta": f"OI变化≥{self.settings.launch_package_oi_delta_pct:g}%",
                 "funding_interval_changed": "资金费率结算周期变化",
                 "funds_divergence": "现货/合约主动成交方向背离",
+                "price_action_changed": "突破/假突破结构状态变化",
+                "smc_changed": "SMC结构状态变化",
             }.get(str(reason), str(reason))
             for reason in (publication.get("checkpoint_reasons") or [])
         ]
@@ -2615,6 +2848,9 @@ class RadarEngine:
             last_confirmed_interval_hours=last_confirmed_interval,
         )
         direction_text = self._launch_package_direction(current.get("funds_direction"))
+        price_action_lines = self._launch_price_action_lines(
+            current.get("price_action")
+        )
         outcome_evaluation = (
             lifecycle.get("outcome_evaluation")
             if isinstance(lifecycle.get("outcome_evaluation"), dict)
@@ -2738,6 +2974,7 @@ class RadarEngine:
             tg_quote("市场概况"),
             f"市值: {market_cap_text}",
             f"流动性: {liquidity_text}",
+            *price_action_lines,
             "",
             tg_quote("相对首次"),
             f"价格: {price_from_first:+.2f}%" if price_from_first is not None else "价格: 暂不可比",
