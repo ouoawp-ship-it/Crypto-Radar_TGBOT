@@ -98,6 +98,7 @@ def push_launch_messages(
         "failed_deletions": 0,
         "topic_history_deleted": 0,
         "topic_history_delete_failures": 0,
+        "topic_history_undeletable": 0,
         "charts_sent": 0,
         "chart_failures": 0,
     }
@@ -258,8 +259,18 @@ def push_launch_messages(
                 cleanup_diagnostics["failed_deletions"] = int(
                     cleanup_diagnostics["failed_deletions"]
                 ) + len(deletion.get("failed_ids") or [])
-                topic_cleanup_ids = gateway.launch_topic_cleanup_candidates(
+                topic_cleanup_plan = gateway.launch_topic_cleanup_plan(
                     keep_message_ids=new_message_ids,
+                )
+                undeletable_ids = list(
+                    topic_cleanup_plan.get("undeletable_ids") or []
+                )
+                gateway.mark_history_messages_undeletable(
+                    undeletable_ids,
+                    reason="telegram_delete_window_expired",
+                )
+                topic_cleanup_ids = list(
+                    topic_cleanup_plan.get("deletable_ids") or []
                 )[:max(0, int(settings.launch_message_cleanup_limit))]
                 topic_deletion = gateway.delete_messages_detailed(
                     topic_cleanup_ids,
@@ -277,6 +288,9 @@ def push_launch_messages(
                 cleanup_diagnostics["topic_history_delete_failures"] = int(
                     cleanup_diagnostics["topic_history_delete_failures"]
                 ) + len(topic_deletion.get("failed_ids") or [])
+                cleanup_diagnostics["topic_history_undeletable"] = int(
+                    cleanup_diagnostics["topic_history_undeletable"]
+                ) + len(undeletable_ids)
             sent_alerts.append(alert)
         elif is_package and push.message_ids and real_send:
             rollback = gateway.delete_messages_detailed(

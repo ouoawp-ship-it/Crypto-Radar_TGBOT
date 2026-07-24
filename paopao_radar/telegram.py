@@ -809,6 +809,15 @@ class TelegramGateway:
         *,
         keep_message_ids: list[int] | None = None,
     ) -> list[int]:
+        return self.launch_topic_cleanup_plan(
+            keep_message_ids=keep_message_ids,
+        )["deletable_ids"]
+
+    def launch_topic_cleanup_plan(
+        self,
+        *,
+        keep_message_ids: list[int] | None = None,
+    ) -> dict[str, list[int]]:
         history = self._load_history()
         explicit_keep = bool(keep_message_ids)
         protected = {
@@ -833,7 +842,11 @@ class TelegramGateway:
             and record.get("status") == "sent"
         ]
         if not explicit_keep:
-            for record in reversed(launch_records):
+            for _index, record in sorted(
+                enumerate(launch_records),
+                key=lambda item: (int(item[1].get("ts") or 0), item[0]),
+                reverse=True,
+            ):
                 message_ids = [
                     int(message_id)
                     for message_id in (record.get("message_ids") or [])
@@ -853,13 +866,29 @@ class TelegramGateway:
                     protected.update(latest_ids)
                     break
 
-        candidates: list[int] = []
+        cutoff = utc_ts() - max(
+            1,
+            int(self.settings.launch_message_cleanup_max_age_sec),
+        )
+        deletable_ids: list[int] = []
+        undeletable_ids: list[int] = []
+        planned_ids: set[int] = set()
         for record in launch_records:
             deleted_ids = {
                 int(message_id)
                 for message_id in (record.get("deleted_message_ids") or [])
                 if isinstance(message_id, int) or str(message_id).isdigit()
             }
+            unavailable_ids = {
+                int(message_id)
+                for message_id in (record.get("undeletable_message_ids") or [])
+                if isinstance(message_id, int) or str(message_id).isdigit()
+            }
+            destination = (
+                deletable_ids
+                if int(record.get("ts") or 0) >= cutoff
+                else undeletable_ids
+            )
             for message_id in record.get("message_ids") or []:
                 if not (isinstance(message_id, int) or str(message_id).isdigit()):
                     continue
@@ -867,10 +896,60 @@ class TelegramGateway:
                 if (
                     normalized not in protected
                     and normalized not in deleted_ids
-                    and normalized not in candidates
+                    and normalized not in unavailable_ids
+                    and normalized not in planned_ids
                 ):
-                    candidates.append(normalized)
-        return candidates
+                    destination.append(normalized)
+                    planned_ids.add(normalized)
+        return {
+            "deletable_ids": deletable_ids,
+            "undeletable_ids": undeletable_ids,
+        }
+
+    def mark_history_messages_undeletable(
+        self,
+        message_ids: list[int],
+        *,
+        reason: str = "telegram_delete_window_expired",
+    ) -> None:
+        unavailable = {
+            int(message_id)
+            for message_id in message_ids
+            if isinstance(message_id, int) or str(message_id).isdigit()
+        }
+        if not unavailable:
+            return
+        now_ts = utc_ts()
+
+        def update_history(history: Any) -> list[dict[str, Any]]:
+            records = history if isinstance(history, list) else []
+            updated: list[dict[str, Any]] = []
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                record_message_ids = {
+                    int(message_id)
+                    for message_id in (record.get("message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                }
+                matched = record_message_ids & unavailable
+                if not matched:
+                    updated.append(record)
+                    continue
+                existing = {
+                    int(message_id)
+                    for message_id in (record.get("undeletable_message_ids") or [])
+                    if isinstance(message_id, int) or str(message_id).isdigit()
+                }
+                updated.append({
+                    **record,
+                    "undeletable_message_ids": sorted(existing | matched),
+                    "lifecycle_undeletable_at": now_ts,
+                    "lifecycle_undeletable_reason": str(reason),
+                })
+            return updated
+
+        self.store.update(self.settings.tg_push_history_path, update_history, [])
 
     def delete_messages_detailed(
         self,
