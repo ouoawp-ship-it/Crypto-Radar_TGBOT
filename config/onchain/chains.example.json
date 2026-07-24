@@ -1,21 +1,15 @@
 {
-  "schema_version": "p3.0-v1",
+  "schema_version": "p3.1-v1",
   "chains": [
     {
       "chain_id": 8453,
       "name": "Base",
       "enabled": false,
       "confirmation_depth": 20,
+      "bootstrap_lookback_blocks": 300,
+      "reorg_lookback_blocks": 64,
       "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
       "wss_rpc_env": "ONCHAIN_BASE_WSS_RPC_URL"
-    },
-    {
-      "chain_id": 1,
-      "name": "Ethereum",
-      "enabled": false,
-      "confirmation_depth": 12,
-      "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
-      "wss_rpc_env": "ONCHAIN_ETHEREUM_WSS_RPC_URL"
     }
   ]
 }

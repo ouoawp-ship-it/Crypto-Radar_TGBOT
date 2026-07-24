@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
+import time
 from pathlib import Path
 
 from .models import AddressLabel
@@ -114,6 +115,40 @@ def load_labels_csv(path: Path) -> list[AddressLabel]:
                 )
             )
     return labels
+
+
+def validate_live_labels(
+    labels: list[AddressLabel],
+    *,
+    min_confidence: float,
+    chain_id: int = 8453,
+    timestamp: int | None = None,
+) -> list[AddressLabel]:
+    now = int(time.time()) if timestamp is None else int(timestamp)
+    active_base_cex = [
+        label
+        for label in labels
+        if label.chain_id == chain_id
+        and label.entity_type == "cex"
+        and label.active_at(now)
+    ]
+    if any(
+        label.source.strip().lower() == "synthetic_fixture"
+        for label in active_base_cex
+    ):
+        raise LabelValidationError(
+            "live mode rejects source=synthetic_fixture labels"
+        )
+    active_cex = [
+        label
+        for label in active_base_cex
+        if label.confidence >= min_confidence
+    ]
+    if not active_cex:
+        raise LabelValidationError(
+            "live mode requires an active high-confidence Base CEX label"
+        )
+    return active_cex
 
 
 class LabelRegistry:

@@ -11,7 +11,14 @@ from .constants import (
     WINDOW_15M_SEC,
     WINDOW_60M_SEC,
 )
-from .models import ClassifiedFlow, DetectedFlow, FlowWindow, TokenMetadata
+from .models import (
+    ClassifiedFlow,
+    DetectedFlow,
+    DetectedRollingFlow,
+    FlowWindow,
+    RollingFlowSnapshot,
+    TokenMetadata,
+)
 
 
 def _value(value: Decimal | None) -> Decimal:
@@ -141,3 +148,65 @@ def detect_flows(
             item.detection_types,
         ),
     )
+
+
+def detect_rolling_flows(
+    snapshots: Iterable[RollingFlowSnapshot],
+    metadata: dict[tuple[int, str], TokenMetadata],
+    settings: OnchainSettings,
+) -> list[DetectedRollingFlow]:
+    detected: list[DetectedRollingFlow] = []
+    for snapshot in snapshots:
+        token = metadata.get((snapshot.chain_id, snapshot.token_address))
+        if (
+            token is None
+            or token.metadata_status not in {"verified", "verified_erc20"}
+            or snapshot.valuation_price_usd is None
+            or snapshot.direction == "balanced"
+            or snapshot.min_label_confidence < settings.min_label_confidence
+            or snapshot.net_dominance < settings.net_dominance_min
+        ):
+            continue
+        threshold = _window_threshold(
+            settings, token, snapshot.duration_sec
+        )
+        directional_tx_count = (
+            snapshot.inflow_tx_count
+            if snapshot.direction == "inflow"
+            else snapshot.outflow_tx_count
+        )
+        directional_counterparties = (
+            snapshot.distinct_inbound_counterparties
+            if snapshot.direction == "inflow"
+            else snapshot.distinct_outbound_counterparties
+        )
+        detection_types: list[str] = []
+        if (
+            snapshot.duration_sec == WINDOW_15M_SEC
+            and directional_tx_count >= 5
+            and directional_counterparties >= 3
+            and abs(snapshot.net_flow_usd) >= threshold
+        ):
+            detection_types.append("batch_flow")
+        if (
+            snapshot.duration_sec == WINDOW_60M_SEC
+            and directional_tx_count >= 8
+            and snapshot.active_15m_buckets >= 3
+            and abs(snapshot.net_flow_usd) >= threshold
+        ):
+            detection_types.append("continuous_flow")
+        if (
+            snapshot.duration_sec == WINDOW_60M_SEC
+            and len(snapshot.directional_exchanges) >= 2
+            and abs(snapshot.net_flow_usd) >= threshold
+        ):
+            detection_types.append("multi_exchange")
+        if detection_types:
+            detected.append(
+                DetectedRollingFlow(
+                    snapshot=snapshot,
+                    detection_types=tuple(detection_types),
+                    threshold_usd=threshold,
+                )
+            )
+    return detected

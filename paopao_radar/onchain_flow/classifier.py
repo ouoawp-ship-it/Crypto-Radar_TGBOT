@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from .constants import ZERO_ADDRESS
 from .labels import LabelRegistry
 from .models import ClassifiedFlow, NormalizedTransfer, TokenMetadata
 
@@ -24,7 +25,11 @@ def classify_transfer(
     from_cex = _is_cex(from_label)
     to_cex = _is_cex(to_label)
 
-    if (
+    if transfer.from_address == ZERO_ADDRESS:
+        flow_type = "mint"
+    elif transfer.to_address == ZERO_ADDRESS:
+        flow_type = "burn"
+    elif (
         from_cex
         and to_cex
         and from_label is not None
@@ -64,7 +69,7 @@ def classify_transfer(
         symbol = metadata.symbol
         metadata_usable = (
             metadata.token_kind == "erc20"
-            and metadata.metadata_status == "verified"
+            and metadata.metadata_status in {"verified", "verified_erc20"}
             and metadata.decimals is not None
         )
         if metadata_usable:
@@ -102,4 +107,10 @@ def classify_transfer(
         amount_usd=amount_usd,
         label_confidence=label_confidence,
         price_status=price_status,
+        block_number=transfer.block_number,
+        block_hash=transfer.block_hash,
+        price_source=metadata.price_source if metadata is not None else "",
+        price_observed_at=(
+            metadata.price_observed_at if metadata is not None else 0
+        ),
     )

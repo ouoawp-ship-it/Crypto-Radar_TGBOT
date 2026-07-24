@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from .constants import PRODUCTION_WRITE_PATHS
 
@@ -42,10 +43,13 @@ def _bool(values: Mapping[str, str], name: str, default: bool) -> bool:
 
 
 def _int(values: Mapping[str, str], name: str, default: int) -> int:
-    try:
-        return int(values.get(name, str(default)))
-    except (TypeError, ValueError):
+    value = values.get(name)
+    if value is None or value.strip() == "":
         return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise SettingsValidationError(f"{name} must be an integer") from exc
 
 
 def _decimal(values: Mapping[str, str], name: str, default: str) -> Decimal:
@@ -85,6 +89,17 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
+def _endpoint_diagnostic(value: str) -> dict[str, object]:
+    if not value:
+        return {"configured": False, "scheme": "", "host": ""}
+    parsed = urlsplit(value)
+    return {
+        "configured": True,
+        "scheme": parsed.scheme.lower(),
+        "host": parsed.hostname or "",
+    }
+
+
 @dataclass(frozen=True)
 class OnchainSettings:
     base_dir: Path = BASE_DIR
@@ -114,6 +129,36 @@ class OnchainSettings:
     batch_volume_ratio: Decimal = Decimal("0.002")
     continuous_volume_ratio: Decimal = Decimal("0.004")
     baseline_mad_multiplier: Decimal = Decimal("3")
+    base_enable: bool = False
+    base_chain_id: int = 8453
+    base_http_rpc_url: str = ""
+    base_wss_rpc_url: str = ""
+    base_confirmation_depth: int = 20
+    base_bootstrap_lookback_blocks: int = 300
+    base_reorg_lookback_blocks: int = 64
+    rpc_timeout_sec: Decimal = Decimal("10")
+    rpc_retry: int = 3
+    rpc_backoff_sec: Decimal = Decimal("1")
+    rpc_max_block_range: int = 1000
+    rpc_min_block_range: int = 1
+    rpc_topic_address_batch: int = 50
+    rpc_poll_sec: Decimal = Decimal("5")
+    rpc_rate_limit_per_second: int = 20
+    rpc_adaptive_max_requests: int = 64
+    rpc_adaptive_max_depth: int = 12
+    wss_reconnect_sec: Decimal = Decimal("5")
+    wss_idle_timeout_sec: Decimal = Decimal("30")
+    wss_queue_max: int = 100
+    price_enable: bool = False
+    price_provider: str = "none"
+    price_max_age_sec: int = 300
+    price_batch_size: int = 50
+    price_rate_limit_per_minute: int = 30
+    coingecko_api_key: str = ""
+    coingecko_api_base_url: str = "https://pro-api.coingecko.com/api/v3"
+    net_dominance_min: Decimal = Decimal("0.60")
+    rolling_evaluation_bucket_sec: int = 300
+    alert_max_event_age_sec: int = 1800
 
     @classmethod
     def load(
@@ -218,6 +263,87 @@ class OnchainSettings:
             baseline_mad_multiplier=_decimal(
                 values, "ONCHAIN_BASELINE_MAD_MULTIPLIER", "3"
             ),
+            base_enable=_bool(values, "ONCHAIN_BASE_ENABLE", False),
+            base_chain_id=_int(values, "ONCHAIN_BASE_CHAIN_ID", 8453),
+            base_http_rpc_url=values.get(
+                "ONCHAIN_BASE_HTTP_RPC_URL", ""
+            ).strip(),
+            base_wss_rpc_url=values.get(
+                "ONCHAIN_BASE_WSS_RPC_URL", ""
+            ).strip(),
+            base_confirmation_depth=_int(
+                values, "ONCHAIN_BASE_CONFIRMATION_DEPTH", 20
+            ),
+            base_bootstrap_lookback_blocks=_int(
+                values, "ONCHAIN_BASE_BOOTSTRAP_LOOKBACK_BLOCKS", 300
+            ),
+            base_reorg_lookback_blocks=_int(
+                values, "ONCHAIN_BASE_REORG_LOOKBACK_BLOCKS", 64
+            ),
+            rpc_timeout_sec=_decimal(
+                values, "ONCHAIN_RPC_TIMEOUT_SEC", "10"
+            ),
+            rpc_retry=_int(values, "ONCHAIN_RPC_RETRY", 3),
+            rpc_backoff_sec=_decimal(
+                values, "ONCHAIN_RPC_BACKOFF_SEC", "1"
+            ),
+            rpc_max_block_range=_int(
+                values, "ONCHAIN_RPC_MAX_BLOCK_RANGE", 1000
+            ),
+            rpc_min_block_range=_int(
+                values, "ONCHAIN_RPC_MIN_BLOCK_RANGE", 1
+            ),
+            rpc_topic_address_batch=_int(
+                values, "ONCHAIN_RPC_TOPIC_ADDRESS_BATCH", 50
+            ),
+            rpc_poll_sec=_decimal(
+                values, "ONCHAIN_RPC_POLL_SEC", "5"
+            ),
+            rpc_rate_limit_per_second=_int(
+                values, "ONCHAIN_RPC_RATE_LIMIT_PER_SECOND", 20
+            ),
+            rpc_adaptive_max_requests=_int(
+                values, "ONCHAIN_RPC_ADAPTIVE_MAX_REQUESTS", 64
+            ),
+            rpc_adaptive_max_depth=_int(
+                values, "ONCHAIN_RPC_ADAPTIVE_MAX_DEPTH", 12
+            ),
+            wss_reconnect_sec=_decimal(
+                values, "ONCHAIN_WSS_RECONNECT_SEC", "5"
+            ),
+            wss_idle_timeout_sec=_decimal(
+                values, "ONCHAIN_WSS_IDLE_TIMEOUT_SEC", "30"
+            ),
+            wss_queue_max=_int(values, "ONCHAIN_WSS_QUEUE_MAX", 100),
+            price_enable=_bool(values, "ONCHAIN_PRICE_ENABLE", False),
+            price_provider=values.get(
+                "ONCHAIN_PRICE_PROVIDER", "none"
+            ).strip().lower(),
+            price_max_age_sec=_int(
+                values, "ONCHAIN_PRICE_MAX_AGE_SEC", 300
+            ),
+            price_batch_size=_int(
+                values, "ONCHAIN_PRICE_BATCH_SIZE", 50
+            ),
+            price_rate_limit_per_minute=_int(
+                values, "ONCHAIN_PRICE_RATE_LIMIT_PER_MINUTE", 30
+            ),
+            coingecko_api_key=values.get(
+                "ONCHAIN_COINGECKO_API_KEY", ""
+            ).strip(),
+            coingecko_api_base_url=values.get(
+                "ONCHAIN_COINGECKO_API_BASE_URL",
+                "https://pro-api.coingecko.com/api/v3",
+            ).strip().rstrip("/"),
+            net_dominance_min=_decimal(
+                values, "ONCHAIN_NET_DOMINANCE_MIN", "0.60"
+            ),
+            rolling_evaluation_bucket_sec=_int(
+                values, "ONCHAIN_ROLLING_EVALUATION_BUCKET_SEC", 300
+            ),
+            alert_max_event_age_sec=_int(
+                values, "ONCHAIN_ALERT_MAX_EVENT_AGE_SEC", 1800
+            ),
         )
 
     @property
@@ -269,6 +395,12 @@ class OnchainSettings:
             "batch_volume_ratio",
             "continuous_volume_ratio",
             "baseline_mad_multiplier",
+            "rpc_timeout_sec",
+            "rpc_backoff_sec",
+            "rpc_poll_sec",
+            "wss_reconnect_sec",
+            "wss_idle_timeout_sec",
+            "net_dominance_min",
         )
         for field_name in non_negative_decimals:
             value = getattr(self, field_name)
@@ -282,6 +414,86 @@ class OnchainSettings:
                 raise SettingsValidationError(
                     f"{field_name} must be finite and non-negative"
                 )
+        if self.base_chain_id != 8453:
+            raise SettingsValidationError("ONCHAIN_BASE_CHAIN_ID must be 8453")
+        positive_ints = (
+            "rpc_max_block_range",
+            "rpc_min_block_range",
+            "rpc_topic_address_batch",
+            "rpc_rate_limit_per_second",
+            "wss_queue_max",
+            "price_max_age_sec",
+            "price_batch_size",
+            "price_rate_limit_per_minute",
+            "rolling_evaluation_bucket_sec",
+            "rpc_adaptive_max_requests",
+            "rpc_adaptive_max_depth",
+        )
+        for field_name in positive_ints:
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise SettingsValidationError(f"{field_name} must be positive")
+        non_negative_ints = (
+            "base_confirmation_depth",
+            "base_bootstrap_lookback_blocks",
+            "base_reorg_lookback_blocks",
+            "rpc_retry",
+            "alert_max_event_age_sec",
+        )
+        for field_name in non_negative_ints:
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise SettingsValidationError(
+                    f"{field_name} must be non-negative"
+                )
+        if self.rpc_min_block_range > self.rpc_max_block_range:
+            raise SettingsValidationError(
+                "rpc_min_block_range cannot exceed rpc_max_block_range"
+            )
+        if self.rpc_timeout_sec <= 0 or self.rpc_poll_sec <= 0:
+            raise SettingsValidationError(
+                "RPC timeout and poll interval must be positive"
+            )
+        if self.wss_reconnect_sec <= 0 or self.wss_idle_timeout_sec <= 0:
+            raise SettingsValidationError(
+                "WSS reconnect and idle timeout must be positive"
+            )
+        if self.net_dominance_min > 1:
+            raise SettingsValidationError(
+                "net_dominance_min must be in [0, 1]"
+            )
+        if self.price_provider not in {"none", "static", "coingecko_onchain"}:
+            raise SettingsValidationError(
+                "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
+            )
+        price_api = urlsplit(self.coingecko_api_base_url)
+        if (
+            price_api.scheme.lower() != "https"
+            or not price_api.hostname
+            or price_api.username is not None
+            or price_api.password is not None
+        ):
+            raise SettingsValidationError(
+                "ONCHAIN_COINGECKO_API_BASE_URL must be a credential-free HTTPS URL"
+            )
+        if price_api.hostname.lower() == "api.coingecko.com":
+            raise SettingsValidationError(
+                "CoinGecko Pro credentials cannot use api.coingecko.com"
+            )
+        for name, value, schemes in (
+            (
+                "ONCHAIN_BASE_HTTP_RPC_URL",
+                self.base_http_rpc_url,
+                {"http", "https"},
+            ),
+            (
+                "ONCHAIN_BASE_WSS_RPC_URL",
+                self.base_wss_rpc_url,
+                {"ws", "wss"},
+            ),
+        ):
+            if value and urlsplit(value).scheme.lower() not in schemes:
+                raise SettingsValidationError(f"{name} has an invalid scheme")
         self.assert_safe_paths()
 
     def diagnostic(self) -> dict[str, object]:
@@ -293,6 +505,24 @@ class OnchainSettings:
             "db_file": str(self.db_path),
             "labels_file": str(self.labels_path),
             "chains_file": str(self.chains_path),
+            "base": {
+                "enabled": self.base_enable,
+                "chain_id": self.base_chain_id,
+                "confirmation_depth": self.base_confirmation_depth,
+                "http_provider": _endpoint_diagnostic(
+                    self.base_http_rpc_url
+                ),
+                "wss_provider": _endpoint_diagnostic(
+                    self.base_wss_rpc_url
+                ),
+            },
+            "price": {
+                "enabled": self.price_enable,
+                "provider": self.price_provider,
+                "api_key_configured": bool(self.coingecko_api_key),
+                "api": _endpoint_diagnostic(self.coingecko_api_base_url),
+                "max_age_sec": self.price_max_age_sec,
+            },
             "telegram": {
                 "bot_token_configured": bool(self.tg_bot_token),
                 "chat_id_configured": bool(self.tg_chat_id),
