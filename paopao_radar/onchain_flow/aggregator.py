@@ -115,7 +115,7 @@ def build_rolling_snapshots(
             flow
             for flow in flow_list
             if flow.flow_type in DIRECTIONAL_FLOW_TYPES
-            and flow.amount is not None
+            and (flow.amount is not None or flow.amount_usd is not None)
             and flow.label_confidence >= min_label_confidence
             and minimum_time <= flow.block_time <= evaluation_time
         ]
@@ -123,12 +123,21 @@ def build_rolling_snapshots(
         for flow in eligible:
             grouped[(flow.chain_id, flow.token_address)].append(flow)
         for (chain_id, token_address), records in sorted(grouped.items()):
+            direct_historical_usd = all(
+                flow.amount_usd is not None
+                and flow.price_source == "arkham_historical_usd"
+                for flow in records
+            )
             quote = (
                 quotes.get((chain_id, token_address))
                 if quotes is not None
                 else None
             )
-            if quote is None and quotes is None:
+            if (
+                quote is None
+                and quotes is None
+                and not direct_historical_usd
+            ):
                 latest = max(
                     records, key=lambda flow: flow.price_observed_at
                 )
@@ -148,7 +157,7 @@ def build_rolling_snapshots(
                         market_observed_at=latest.price_observed_at,
                         fetched_at=latest.price_observed_at,
                     )
-            if (
+            if not direct_historical_usd and (
                 quote is None
                 or evaluation_time - quote.freshness_timestamp
                 > price_max_age_sec
@@ -156,20 +165,53 @@ def build_rolling_snapshots(
                 continue
             inflows = [flow for flow in records if flow.flow_type == "inflow"]
             outflows = [flow for flow in records if flow.flow_type == "outflow"]
-            gross_inflow = sum(
-                (
-                    (flow.amount or Decimal("0")) * quote.price_usd
-                    for flow in inflows
-                ),
-                Decimal("0"),
-            )
-            gross_outflow = sum(
-                (
-                    (flow.amount or Decimal("0")) * quote.price_usd
-                    for flow in outflows
-                ),
-                Decimal("0"),
-            )
+            if direct_historical_usd:
+                gross_inflow = sum(
+                    (
+                        flow.amount_usd or Decimal("0")
+                        for flow in inflows
+                    ),
+                    Decimal("0"),
+                )
+                gross_outflow = sum(
+                    (
+                        flow.amount_usd or Decimal("0")
+                        for flow in outflows
+                    ),
+                    Decimal("0"),
+                )
+                latest = max(records, key=lambda flow: flow.block_time)
+                price_source = "arkham_historical_usd"
+                price_observed_at = latest.block_time
+                valuation_price = (
+                    latest.amount_usd / latest.amount
+                    if latest.amount is not None
+                    and latest.amount > 0
+                    and latest.amount_usd is not None
+                    else None
+                )
+                price_fetched_at = latest.block_time
+            else:
+                if quote is None:
+                    continue
+                gross_inflow = sum(
+                    (
+                        (flow.amount or Decimal("0")) * quote.price_usd
+                        for flow in inflows
+                    ),
+                    Decimal("0"),
+                )
+                gross_outflow = sum(
+                    (
+                        (flow.amount or Decimal("0")) * quote.price_usd
+                        for flow in outflows
+                    ),
+                    Decimal("0"),
+                )
+                price_source = quote.source
+                price_observed_at = quote.freshness_timestamp
+                valuation_price = quote.price_usd
+                price_fetched_at = quote.fetched_at
             net_flow = gross_inflow - gross_outflow
             directional = inflows if net_flow >= 0 else outflows
             source_fingerprint = sha256(
@@ -237,15 +279,28 @@ def build_rolling_snapshots(
                     min_label_confidence=min(
                         flow.label_confidence for flow in records
                     ),
-                    price_source=quote.source,
-                    price_observed_at=quote.freshness_timestamp,
+                    price_source=price_source,
+                    price_observed_at=price_observed_at,
                     evaluation_block=evaluation_block,
                     algorithm_version=P3_1_ALGORITHM_VERSION,
                     inflow_exchanges=inflow_exchanges,
                     outflow_exchanges=outflow_exchanges,
-                    valuation_price_usd=quote.price_usd,
-                    price_market_observed_at=quote.freshness_timestamp,
-                    price_fetched_at=quote.fetched_at,
+                    valuation_price_usd=valuation_price,
+                    price_market_observed_at=price_observed_at,
+                    price_fetched_at=price_fetched_at,
+                    source=records[0].source,
+                    attribution_quality=min(
+                        (
+                            flow.attribution_quality for flow in records
+                        ),
+                        key=lambda value: {
+                            "unlabeled": 0,
+                            "arkham_label": 1,
+                            "arkham_entity": 2,
+                        }.get(value, 0),
+                    ),
+                    token_policy=records[0].token_policy,
+                    signal_context=records[0].signal_context,
                 )
             )
     return snapshots

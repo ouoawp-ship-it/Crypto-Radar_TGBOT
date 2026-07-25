@@ -6,6 +6,13 @@ import sqlite3
 from pathlib import Path
 from typing import Sequence
 
+from .arkham_normalizer import ArkhamNormalizationError
+from .arkham_runtime import (
+    ArkhamConfigurationError,
+    ArkhamPageProcessingError,
+    ArkhamRestRuntime,
+)
+from .collectors.arkham_rest import ArkhamError
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
 from .collectors.evm_ws import WssError
@@ -34,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor")
     subparsers.add_parser("labels-check")
     subparsers.add_parser("db-check")
+    subparsers.add_parser("arkham-check")
+    subparsers.add_parser("arkham-once")
+    subparsers.add_parser("arkham-status")
     provider_check = subparsers.add_parser("provider-check")
     provider_check.add_argument("--chain", choices=("base",), required=True)
     cursor_status = subparsers.add_parser("cursor-status")
@@ -78,31 +88,60 @@ def _doctor(settings: OnchainSettings) -> tuple[int, dict[str, object]]:
     except UnsafeOnchainPath as exc:
         checks["path_isolation"] = f"failed: {exc}"
         ok = False
-    try:
-        labels = load_labels_csv(settings.labels_path)
-        if settings.enable or settings.base_enable:
-            validate_live_labels(
-                labels,
-                min_confidence=settings.min_label_confidence,
-                chain_id=settings.base_chain_id,
-            )
-        checks["labels"] = {"status": "ok", "count": len(labels)}
-    except LabelValidationError as exc:
-        checks["labels"] = {"status": "failed", "reason": str(exc)}
-        ok = False
-    try:
-        chains = _load_chains(settings.chains_path)
+    if settings.source_mode == "base_rpc":
+        try:
+            labels = load_labels_csv(settings.labels_path)
+            if settings.enable or settings.base_enable:
+                validate_live_labels(
+                    labels,
+                    min_confidence=settings.min_label_confidence,
+                    chain_id=settings.base_chain_id,
+                )
+            checks["labels"] = {"status": "ok", "count": len(labels)}
+        except LabelValidationError as exc:
+            checks["labels"] = {"status": "failed", "reason": str(exc)}
+            ok = False
+        try:
+            chains = _load_chains(settings.chains_path)
+            checks["chains"] = {
+                "status": "ok",
+                "configured": len(chains),
+                "enabled": sum(
+                    bool(chain.get("enabled", False)) for chain in chains
+                ),
+                "network_checked": False,
+                "base_http_configured": bool(
+                    settings.base_http_rpc_url
+                ),
+                "base_wss_configured": bool(
+                    settings.base_wss_rpc_url
+                ),
+            }
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            checks["chains"] = {
+                "status": "failed",
+                "reason": str(exc),
+            }
+            ok = False
+    else:
+        checks["labels"] = {
+            "status": "not_required",
+            "source": "arkham",
+        }
         checks["chains"] = {
-            "status": "ok",
-            "configured": len(chains),
-            "enabled": sum(bool(chain.get("enabled", False)) for chain in chains),
+            "status": "not_required",
+            "source": "arkham",
             "network_checked": False,
             "base_http_configured": bool(settings.base_http_rpc_url),
             "base_wss_configured": bool(settings.base_wss_rpc_url),
         }
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        checks["chains"] = {"status": "failed", "reason": str(exc)}
-        ok = False
+    checks["arkham"] = {
+        "enabled": settings.arkham_enable,
+        "rest_enabled": settings.arkham_rest_enable,
+        "websocket_enabled": settings.arkham_ws_enable,
+        "api_key_configured": bool(settings.arkham_api_key),
+        "network_checked": False,
+    }
     try:
         integrity = OnchainStore.integrity_check_existing(settings.db_path)
         checks["sqlite_integrity"] = integrity
@@ -153,6 +192,24 @@ def _disabled_command(settings: OnchainSettings, command: str) -> int:
             )
         )
         return 0
+    if settings.source_mode == "arkham":
+        print(
+            json.dumps(
+                {
+                    "command": command,
+                    "status": "disabled",
+                    "reason": (
+                        "Base RPC commands are disabled in Arkham source mode"
+                    ),
+                    "network_activity": False,
+                    "database_writes": False,
+                    "telegram_calls": False,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
     return -1
 
 
@@ -179,6 +236,19 @@ def main(
             return code
         if args.command == "labels-check":
             settings.validate()
+            if settings.source_mode == "arkham":
+                print(
+                    json.dumps(
+                        {
+                            "status": "not_required",
+                            "source": "arkham",
+                            "labels": 0,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
             labels = load_labels_csv(settings.labels_path)
             if settings.enable or settings.base_enable:
                 validate_live_labels(
@@ -199,6 +269,39 @@ def main(
             result = OnchainStore.integrity_check_existing(settings.db_path)
             print(json.dumps({"integrity_check": result}, sort_keys=True))
             return 0 if result in {"ok", "not_initialized"} else 1
+        if args.command == "arkham-check":
+            payload = ArkhamRestRuntime(settings).capability_check()
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return (
+                1
+                if payload.get("type_cex_rest_supported") is False
+                else 0
+            )
+        if args.command == "arkham-once":
+            payload = ArkhamRestRuntime(settings).process_once()
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "arkham-status":
+            settings.validate()
+            payload: dict[str, object] = {
+                "status": "not_initialized",
+                "source_mode": settings.source_mode,
+                "enabled": settings.enable,
+                "arkham_enabled": settings.arkham_enable,
+                "real_send_enabled": settings.real_send,
+                "api_key_configured": bool(settings.arkham_api_key),
+                "websocket_enabled": settings.arkham_ws_enable,
+            }
+            if settings.db_path.exists():
+                try:
+                    payload.update(OnchainStore(settings).arkham_status())
+                    payload["status"] = "ok"
+                except sqlite3.OperationalError as exc:
+                    if "no such table" not in str(exc).lower():
+                        raise
+                    payload["status"] = "migration_required"
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
         if args.command == "provider-check":
             payload = BaseOnchainRuntime(settings).provider_check()
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
@@ -276,6 +379,10 @@ def main(
             return 0
     except (
         FixtureValidationError,
+        ArkhamConfigurationError,
+        ArkhamError,
+        ArkhamNormalizationError,
+        ArkhamPageProcessingError,
         LabelValidationError,
         LiveConfigurationError,
         ReorgManualInterventionRequired,

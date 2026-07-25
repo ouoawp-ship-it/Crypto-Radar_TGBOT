@@ -28,6 +28,8 @@ def _signed_usd(value: Decimal) -> str:
 
 
 def format_alert(alert: OnchainAlert) -> str:
+    if alert.source == "arkham":
+        return _format_arkham_alert(alert)
     if alert.net_flow_usd is not None:
         return _format_rolling_alert(alert)
     if alert.chain_name and (
@@ -74,6 +76,48 @@ def format_alert(alert: OnchainAlert) -> str:
             f"标签最低置信度：{alert.label_confidence:.2f}",
         ]
     )
+
+
+def _format_arkham_alert(alert: OnchainAlert) -> str:
+    flow_name = {
+        "inflow": "CEX inflow",
+        "outflow": "CEX outflow",
+    }.get(alert.direction, alert.direction)
+    exchange_text = ", ".join(alert.exchanges) or "identified CEX"
+    attribution = {
+        "arkham_entity": "Arkham entity",
+        "arkham_label": "Arkham label",
+        "unlabeled": "unlabeled",
+    }.get(alert.attribution_quality, alert.attribution_quality or "unknown")
+    lines = [
+        f"[Arkham] ${alert.symbol} {flow_name}",
+        f"Chain: {alert.chain_name or alert.chain_id}",
+        f"Event-time value: {_usd(alert.total_usd)}",
+        f"Exchange: {exchange_text}",
+        f"Attribution quality: {attribution} (probabilistic)",
+        f"Context: {alert.signal_context}",
+    ]
+    if alert.signal_context == "market_liquidity_context":
+        lines.extend(
+            [
+                "Interpretation: stablecoin exchange flow is market liquidity context.",
+                "It does not predict that the stablecoin will pump or dump.",
+            ]
+        )
+    else:
+        prior = (
+            "potential supply-side pressure"
+            if alert.direction == "inflow"
+            else "potential exchange balance withdrawal"
+        )
+        lines.extend(
+            [
+                f"Directional prior: {prior}.",
+                "This is not certainty and does not claim a price probability.",
+            ]
+        )
+    lines.append("Source: Arkham /transfers historicalUSD")
+    return "\n".join(lines)
 
 
 def _format_live_single_alert(alert: OnchainAlert) -> str:

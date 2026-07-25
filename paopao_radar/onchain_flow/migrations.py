@@ -311,6 +311,73 @@ MIGRATIONS = (
             ON alert_deliveries(notification_key, updated_at);
         """,
     ),
+    (
+        4,
+        """
+        ALTER TABLE flow_events
+            ADD COLUMN source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE flow_events
+            ADD COLUMN attribution_quality TEXT NOT NULL DEFAULT '';
+        ALTER TABLE flow_events
+            ADD COLUMN token_policy TEXT NOT NULL DEFAULT 'normal_token';
+        ALTER TABLE flow_events
+            ADD COLUMN signal_context TEXT NOT NULL DEFAULT 'token_directional';
+
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN attribution_quality TEXT NOT NULL DEFAULT '';
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN token_policy TEXT NOT NULL DEFAULT 'normal_token';
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN signal_context TEXT NOT NULL DEFAULT 'token_directional';
+
+        ALTER TABLE alerts
+            ADD COLUMN source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE alerts
+            ADD COLUMN attribution_quality TEXT NOT NULL DEFAULT '';
+        ALTER TABLE alerts
+            ADD COLUMN token_policy TEXT NOT NULL DEFAULT 'normal_token';
+        ALTER TABLE alerts
+            ADD COLUMN signal_context TEXT NOT NULL DEFAULT 'token_directional';
+
+        CREATE TABLE IF NOT EXISTS arkham_raw_events (
+            arkham_transfer_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            received_via TEXT NOT NULL,
+            received_at INTEGER NOT NULL,
+            processed_status TEXT NOT NULL,
+            error_type TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS arkham_sync_state (
+            stream_name TEXT PRIMARY KEY,
+            last_timestamp_ms INTEGER NOT NULL DEFAULT 0,
+            last_event_id TEXT NOT NULL DEFAULT '',
+            last_success_at INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'not_started'
+        );
+
+        CREATE TABLE IF NOT EXISTS entity_snapshots (
+            chain TEXT NOT NULL,
+            address TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            entity_name TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            label_name TEXT NOT NULL,
+            source TEXT NOT NULL,
+            first_seen INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            PRIMARY KEY (chain, address, source)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_arkham_raw_received
+            ON arkham_raw_events(received_at, arkham_transfer_id);
+        CREATE INDEX IF NOT EXISTS idx_entity_snapshots_entity
+            ON entity_snapshots(entity_id, chain);
+        """,
+    ),
 )
 
 

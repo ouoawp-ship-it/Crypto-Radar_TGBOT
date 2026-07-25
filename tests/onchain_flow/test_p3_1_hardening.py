@@ -406,7 +406,7 @@ class MigrationRecoveryTests(unittest.TestCase):
                     """
                 ).fetchone()
             self.assertTrue(path.exists())
-        self.assertEqual(versions, [1, 2, 3])
+        self.assertEqual(versions, [1, 2, 3, 4])
         self.assertIn("notification_key", alert_columns)
         self.assertIsNotNone(decision_table)
 

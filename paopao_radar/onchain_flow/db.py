@@ -7,6 +7,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .arkham_models import (
+    ArkhamProcessedEvent,
+    ArkhamRawEvent,
+    ArkhamSyncState,
+)
 from .config import OnchainSettings
 from .migrations import apply_migrations
 from .models import (
@@ -86,8 +91,10 @@ def _upsert_flow_row(
             event_id, chain_id, token_address, symbol, block_time,
             flow_type, exchange_from, exchange_to, counterparty_address,
             amount, amount_usd, label_confidence, price_status,
-            block_number, block_hash, price_source, price_observed_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            block_number, block_hash, price_source, price_observed_at, status,
+            source, attribution_quality, token_policy, signal_context
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
+                  ?, ?, ?, ?)
         ON CONFLICT(event_id) DO UPDATE SET
             chain_id=excluded.chain_id,
             token_address=excluded.token_address,
@@ -105,6 +112,10 @@ def _upsert_flow_row(
             block_hash=excluded.block_hash,
             price_source=excluded.price_source,
             price_observed_at=excluded.price_observed_at,
+            source=excluded.source,
+            attribution_quality=excluded.attribution_quality,
+            token_policy=excluded.token_policy,
+            signal_context=excluded.signal_context,
             status='active'
         """,
         (
@@ -125,6 +136,88 @@ def _upsert_flow_row(
             flow.block_hash,
             flow.price_source,
             flow.price_observed_at,
+            flow.source,
+            flow.attribution_quality,
+            flow.token_policy,
+            flow.signal_context,
+        ),
+    )
+
+
+def _upsert_token_metadata_row(
+    conn: sqlite3.Connection, metadata: TokenMetadata
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO token_metadata(
+            chain_id, token_address, symbol, name, decimals, token_kind,
+            metadata_status, updated_at, price_usd, volume_24h_usd,
+            historical_single_p99_usd, historical_15m_p99_usd,
+            historical_60m_p99_usd, historical_window_median_usd,
+            historical_window_mad_usd, price_source, price_observed_at,
+            retry_after
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chain_id, token_address) DO UPDATE SET
+            symbol=excluded.symbol,
+            name=excluded.name,
+            decimals=excluded.decimals,
+            token_kind=excluded.token_kind,
+            metadata_status=excluded.metadata_status,
+            updated_at=excluded.updated_at,
+            price_usd=excluded.price_usd,
+            volume_24h_usd=excluded.volume_24h_usd,
+            historical_single_p99_usd=excluded.historical_single_p99_usd,
+            historical_15m_p99_usd=excluded.historical_15m_p99_usd,
+            historical_60m_p99_usd=excluded.historical_60m_p99_usd,
+            historical_window_median_usd=excluded.historical_window_median_usd,
+            historical_window_mad_usd=excluded.historical_window_mad_usd,
+            price_source=excluded.price_source,
+            price_observed_at=excluded.price_observed_at,
+            retry_after=excluded.retry_after
+        """,
+        (
+            metadata.chain_id,
+            metadata.token_address,
+            metadata.symbol,
+            metadata.name,
+            metadata.decimals,
+            metadata.token_kind,
+            metadata.metadata_status,
+            metadata.updated_at,
+            str(metadata.price_usd) if metadata.price_usd is not None else None,
+            (
+                str(metadata.volume_24h_usd)
+                if metadata.volume_24h_usd is not None
+                else None
+            ),
+            (
+                str(metadata.historical_single_p99_usd)
+                if metadata.historical_single_p99_usd is not None
+                else None
+            ),
+            (
+                str(metadata.historical_15m_p99_usd)
+                if metadata.historical_15m_p99_usd is not None
+                else None
+            ),
+            (
+                str(metadata.historical_60m_p99_usd)
+                if metadata.historical_60m_p99_usd is not None
+                else None
+            ),
+            (
+                str(metadata.historical_window_median_usd)
+                if metadata.historical_window_median_usd is not None
+                else None
+            ),
+            (
+                str(metadata.historical_window_mad_usd)
+                if metadata.historical_window_mad_usd is not None
+                else None
+            ),
+            metadata.price_source,
+            metadata.price_observed_at,
+            metadata.retry_after,
         ),
     )
 
@@ -145,8 +238,9 @@ def _insert_alert_row(
             distinct_inbound_counterparties,
             distinct_outbound_counterparties, evaluation_block,
             price_source, price_observed_at, chain_name, notification_key
+            , source, attribution_quality, token_policy, signal_context
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(alert_key) DO NOTHING
         """,
         (
@@ -194,6 +288,10 @@ def _insert_alert_row(
             alert.price_observed_at,
             alert.chain_name,
             alert.notification_key or alert.alert_key,
+            alert.source,
+            alert.attribution_quality,
+            alert.token_policy,
+            alert.signal_context,
         ),
     )
 
@@ -238,6 +336,10 @@ def _alert_from_row(row: sqlite3.Row) -> OnchainAlert:
         price_observed_at=int(row["price_observed_at"]),
         chain_name=str(row["chain_name"]),
         notification_key=str(row["notification_key"]),
+        source=str(row["source"]),
+        attribution_quality=str(row["attribution_quality"]),
+        token_policy=str(row["token_policy"]),
+        signal_context=str(row["signal_context"]),
     )
 
 
@@ -268,6 +370,10 @@ def _flow_from_row(row: sqlite3.Row) -> ClassifiedFlow:
         block_hash=str(row["block_hash"]),
         price_source=str(row["price_source"]),
         price_observed_at=int(row["price_observed_at"]),
+        source=str(row["source"]),
+        attribution_quality=str(row["attribution_quality"]),
+        token_policy=str(row["token_policy"]),
+        signal_context=str(row["signal_context"]),
     )
 
 
@@ -381,79 +487,7 @@ class OnchainStore:
 
     def upsert_token_metadata(self, metadata: TokenMetadata) -> None:
         with closing(self._connect()) as conn, conn:
-            conn.execute(
-                """
-                INSERT INTO token_metadata(
-                    chain_id, token_address, symbol, name, decimals, token_kind,
-                    metadata_status, updated_at, price_usd, volume_24h_usd,
-                    historical_single_p99_usd, historical_15m_p99_usd,
-                    historical_60m_p99_usd, historical_window_median_usd,
-                    historical_window_mad_usd, price_source, price_observed_at,
-                    retry_after
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chain_id, token_address) DO UPDATE SET
-                    symbol=excluded.symbol,
-                    name=excluded.name,
-                    decimals=excluded.decimals,
-                    token_kind=excluded.token_kind,
-                    metadata_status=excluded.metadata_status,
-                    updated_at=excluded.updated_at,
-                    price_usd=excluded.price_usd,
-                    volume_24h_usd=excluded.volume_24h_usd,
-                    historical_single_p99_usd=excluded.historical_single_p99_usd,
-                    historical_15m_p99_usd=excluded.historical_15m_p99_usd,
-                    historical_60m_p99_usd=excluded.historical_60m_p99_usd,
-                    historical_window_median_usd=excluded.historical_window_median_usd,
-                    historical_window_mad_usd=excluded.historical_window_mad_usd,
-                    price_source=excluded.price_source,
-                    price_observed_at=excluded.price_observed_at,
-                    retry_after=excluded.retry_after
-                """,
-                (
-                    metadata.chain_id,
-                    metadata.token_address,
-                    metadata.symbol,
-                    metadata.name,
-                    metadata.decimals,
-                    metadata.token_kind,
-                    metadata.metadata_status,
-                    metadata.updated_at,
-                    str(metadata.price_usd) if metadata.price_usd is not None else None,
-                    (
-                        str(metadata.volume_24h_usd)
-                        if metadata.volume_24h_usd is not None
-                        else None
-                    ),
-                    (
-                        str(metadata.historical_single_p99_usd)
-                        if metadata.historical_single_p99_usd is not None
-                        else None
-                    ),
-                    (
-                        str(metadata.historical_15m_p99_usd)
-                        if metadata.historical_15m_p99_usd is not None
-                        else None
-                    ),
-                    (
-                        str(metadata.historical_60m_p99_usd)
-                        if metadata.historical_60m_p99_usd is not None
-                        else None
-                    ),
-                    (
-                        str(metadata.historical_window_median_usd)
-                        if metadata.historical_window_median_usd is not None
-                        else None
-                    ),
-                    (
-                        str(metadata.historical_window_mad_usd)
-                        if metadata.historical_window_mad_usd is not None
-                        else None
-                    ),
-                    metadata.price_source,
-                    metadata.price_observed_at,
-                    metadata.retry_after,
-                ),
-            )
+            _upsert_token_metadata_row(conn, metadata)
 
     def metadata_map(self) -> dict[tuple[int, str], TokenMetadata]:
         with closing(self._connect()) as conn:
@@ -890,9 +924,10 @@ class OnchainStore:
                     price_observed_at, evaluation_block, algorithm_version,
                     status, inflow_exchanges_json, outflow_exchanges_json,
                     valuation_price_usd, price_market_observed_at,
-                    price_fetched_at
+                    price_fetched_at, source, attribution_quality,
+                    token_policy, signal_context
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
-                          ?, ?, ?, ?, ?)
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(snapshot_key) DO UPDATE SET
                     gross_inflow_usd=excluded.gross_inflow_usd,
                     gross_outflow_usd=excluded.gross_outflow_usd,
@@ -912,6 +947,10 @@ class OnchainStore:
                     valuation_price_usd=excluded.valuation_price_usd,
                     price_market_observed_at=excluded.price_market_observed_at,
                     price_fetched_at=excluded.price_fetched_at,
+                    source=excluded.source,
+                    attribution_quality=excluded.attribution_quality,
+                    token_policy=excluded.token_policy,
+                    signal_context=excluded.signal_context,
                     status='active'
                 """,
                 (
@@ -948,6 +987,10 @@ class OnchainStore:
                     ),
                     snapshot.price_market_observed_at,
                     snapshot.price_fetched_at,
+                    snapshot.source,
+                    snapshot.attribution_quality,
+                    snapshot.token_policy,
+                    snapshot.signal_context,
                 ),
             )
 
@@ -1243,17 +1286,23 @@ class OnchainStore:
             _insert_alert_row(conn, alert)
             self._queue_delivery_row(conn, alert, created_at)
 
-    def pending_delivery_alerts(self) -> list[OnchainAlert]:
+    def pending_delivery_alerts(
+        self, *, source: str | None = None
+    ) -> list[OnchainAlert]:
+        source_filter = " AND a.source=?" if source is not None else ""
+        params = (source,) if source is not None else ()
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT a.*
                 FROM alert_deliveries d
                 JOIN alerts a ON a.alert_key=d.alert_key
                 WHERE d.status IN ('pending', 'failed')
                   AND a.status='active'
+                  {source_filter}
                 ORDER BY d.created_at, d.delivery_key
-                """
+                """,
+                params,
             ).fetchall()
         return [_alert_from_row(row) for row in rows]
 
@@ -1352,6 +1401,255 @@ class OnchainStore:
                 ),
             )
 
+    def arkham_sync_state(
+        self, stream_name: str
+    ) -> ArkhamSyncState | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT stream_name, last_timestamp_ms, last_event_id,
+                       last_success_at, status
+                FROM arkham_sync_state
+                WHERE stream_name=?
+                """,
+                (stream_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ArkhamSyncState(
+            stream_name=str(row["stream_name"]),
+            last_timestamp_ms=int(row["last_timestamp_ms"]),
+            last_event_id=str(row["last_event_id"]),
+            last_success_at=int(row["last_success_at"]),
+            status=str(row["status"]),
+        )
+
+    def source_flows_since(
+        self, source: str, minimum_block_time: int
+    ) -> list[ClassifiedFlow]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT f.*
+                FROM flow_events f
+                JOIN transfer_events t ON t.event_id=f.event_id
+                WHERE t.removed=0
+                  AND t.confirmation_status='finalized'
+                  AND f.status='active'
+                  AND f.source=?
+                  AND f.block_time>=?
+                ORDER BY f.block_time, f.event_id
+                """,
+                (source, minimum_block_time),
+            ).fetchall()
+        return [_flow_from_row(row) for row in rows]
+
+    def persist_arkham_page(
+        self,
+        events: Sequence[ArkhamProcessedEvent],
+        *,
+        stream_name: str,
+        cursor_timestamp_ms: int,
+        last_event_id: str,
+        last_success_at: int,
+    ) -> tuple[int, int]:
+        inserted = 0
+        duplicates = 0
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for event in events:
+                    existing = conn.execute(
+                        """
+                        SELECT payload_hash
+                        FROM arkham_raw_events
+                        WHERE arkham_transfer_id=?
+                        """,
+                        (event.raw.transfer_id,),
+                    ).fetchone()
+                    if (
+                        existing is not None
+                        and str(existing["payload_hash"])
+                        != event.raw.payload_hash
+                    ):
+                        raise sqlite3.IntegrityError(
+                            "Arkham transfer ID payload conflict"
+                        )
+                    conn.execute(
+                        """
+                        INSERT INTO arkham_raw_events(
+                            arkham_transfer_id, payload_json, payload_hash,
+                            received_via, received_at, processed_status,
+                            error_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(arkham_transfer_id) DO NOTHING
+                        """,
+                        (
+                            event.raw.transfer_id,
+                            event.raw.payload_json,
+                            event.raw.payload_hash,
+                            event.raw.received_via,
+                            event.raw.received_at,
+                            event.raw.processed_status,
+                            event.raw.error_type,
+                        ),
+                    )
+                    if _upsert_transfer_row(conn, event.transfer):
+                        inserted += 1
+                    else:
+                        duplicates += 1
+                    _upsert_token_metadata_row(conn, event.metadata)
+                    _upsert_flow_row(conn, event.flow)
+                    for entity in event.entities:
+                        conn.execute(
+                            """
+                            INSERT INTO entity_snapshots(
+                                chain, address, entity_id, entity_name,
+                                entity_type, label_name, source, first_seen,
+                                last_seen
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(chain, address, source) DO UPDATE SET
+                                entity_id=excluded.entity_id,
+                                entity_name=excluded.entity_name,
+                                entity_type=excluded.entity_type,
+                                label_name=excluded.label_name,
+                                first_seen=MIN(
+                                    entity_snapshots.first_seen,
+                                    excluded.first_seen
+                                ),
+                                last_seen=MAX(
+                                    entity_snapshots.last_seen,
+                                    excluded.last_seen
+                                )
+                            """,
+                            (
+                                entity.chain,
+                                entity.address,
+                                entity.entity_id,
+                                entity.entity_name,
+                                entity.entity_type,
+                                entity.label_name,
+                                entity.source,
+                                entity.first_seen,
+                                entity.last_seen,
+                            ),
+                        )
+                conn.execute(
+                    """
+                    INSERT INTO arkham_sync_state(
+                        stream_name, last_timestamp_ms, last_event_id,
+                        last_success_at, status
+                    ) VALUES (?, ?, ?, ?, 'ok')
+                    ON CONFLICT(stream_name) DO UPDATE SET
+                        last_timestamp_ms=excluded.last_timestamp_ms,
+                        last_event_id=excluded.last_event_id,
+                        last_success_at=excluded.last_success_at,
+                        status='ok'
+                    """,
+                    (
+                        stream_name,
+                        cursor_timestamp_ms,
+                        last_event_id,
+                        last_success_at,
+                    ),
+                )
+            except BaseException:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+        return inserted, duplicates
+
+    def record_arkham_page_failure(
+        self,
+        raw_events: Sequence[ArkhamRawEvent],
+        *,
+        stream_name: str,
+        error_type: str,
+    ) -> None:
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for raw in raw_events:
+                    conn.execute(
+                        """
+                        INSERT INTO arkham_raw_events(
+                            arkham_transfer_id, payload_json, payload_hash,
+                            received_via, received_at, processed_status,
+                            error_type
+                        ) VALUES (?, ?, ?, ?, ?, 'failed', ?)
+                        ON CONFLICT(arkham_transfer_id) DO UPDATE SET
+                            processed_status='failed',
+                            error_type=excluded.error_type
+                        """,
+                        (
+                            raw.transfer_id,
+                            raw.payload_json,
+                            raw.payload_hash,
+                            raw.received_via,
+                            raw.received_at,
+                            error_type,
+                        ),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO arkham_sync_state(
+                        stream_name, last_timestamp_ms, last_event_id,
+                        last_success_at, status
+                    ) VALUES (?, 0, '', 0, 'failed')
+                    ON CONFLICT(stream_name) DO UPDATE SET status='failed'
+                    """,
+                    (stream_name,),
+                )
+            except BaseException:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+
+    def arkham_status(self) -> dict[str, object]:
+        with closing(self._connect()) as conn:
+            states = conn.execute(
+                """
+                SELECT stream_name, last_timestamp_ms, last_event_id,
+                       last_success_at, status
+                FROM arkham_sync_state
+                ORDER BY stream_name
+                """
+            ).fetchall()
+            status_rows = conn.execute(
+                """
+                SELECT processed_status, COUNT(*) AS count
+                FROM arkham_raw_events
+                GROUP BY processed_status
+                ORDER BY processed_status
+                """
+            ).fetchall()
+            entity_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM entity_snapshots"
+                ).fetchone()[0]
+            )
+        return {
+            "streams": [
+                {
+                    "stream_name": str(row["stream_name"]),
+                    "last_timestamp_ms": int(row["last_timestamp_ms"]),
+                    "last_event_id_configured": bool(
+                        str(row["last_event_id"])
+                    ),
+                    "last_success_at": int(row["last_success_at"]),
+                    "status": str(row["status"]),
+                }
+                for row in states
+            ],
+            "raw_event_status_counts": {
+                str(row["processed_status"]): int(row["count"])
+                for row in status_rows
+            },
+            "entity_snapshot_count": entity_count,
+        }
+
     def table_counts(self) -> dict[str, int]:
         tables = (
             "address_labels",
@@ -1366,6 +1664,9 @@ class OnchainStore:
             "flow_window_snapshots",
             "orphaned_transfer_audit",
             "single_event_decisions",
+            "arkham_raw_events",
+            "arkham_sync_state",
+            "entity_snapshots",
         )
         with closing(self._connect()) as conn:
             return {

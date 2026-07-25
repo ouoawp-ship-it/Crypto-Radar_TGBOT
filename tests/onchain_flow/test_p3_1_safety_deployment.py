@@ -138,7 +138,7 @@ class P31SafetyTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
-        self.assertEqual(versions, [1, 2, 3])
+        self.assertEqual(versions, [1, 2, 3, 4])
         self.assertTrue(
             {
                 "processed_blocks",

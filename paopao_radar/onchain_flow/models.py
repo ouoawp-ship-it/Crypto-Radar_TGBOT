@@ -122,6 +122,10 @@ class ClassifiedFlow:
     block_hash: str = ""
     price_source: str = ""
     price_observed_at: int = 0
+    source: str = ""
+    attribution_quality: str = ""
+    token_policy: str = "normal_token"
+    signal_context: str = "token_directional"
 
     @property
     def exchange(self) -> str | None:
@@ -201,6 +205,10 @@ class OnchainAlert:
     price_observed_at: int = 0
     chain_name: str = ""
     notification_key: str = ""
+    source: str = ""
+    attribution_quality: str = ""
+    token_policy: str = "normal_token"
+    signal_context: str = "token_directional"
 
 
 @dataclass(frozen=True)
@@ -265,6 +273,10 @@ class RollingFlowSnapshot:
     valuation_price_usd: Decimal | None = None
     price_market_observed_at: int = 0
     price_fetched_at: int = 0
+    source: str = ""
+    attribution_quality: str = ""
+    token_policy: str = "normal_token"
+    signal_context: str = "token_directional"
 
     @property
     def max_gross_usd(self) -> Decimal:

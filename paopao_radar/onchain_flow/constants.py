@@ -7,6 +7,7 @@ THRESHOLD_VERSION = "p3.0-conservative-v1"
 SEVERITY_VERSION = "p3.0-v1"
 P3_1_ALGORITHM_VERSION = "p3.1-base-rolling-v1"
 P3_1_SEVERITY_VERSION = "p3.1-v1"
+P3_2A_SEVERITY_VERSION = "p3.2a-arkham-rest-v1"
 TEMPLATE_ID = "TG_ONCHAIN_FLOW_ALERT"
 TRANSFER_TOPIC = (
     "0xddf252ad1be2c89b69c2b068fc378daa"
@@ -21,7 +22,15 @@ WINDOW_60M_SEC = 60 * 60
 
 DIRECTIONAL_FLOW_TYPES = frozenset({"inflow", "outflow"})
 NON_DIRECTIONAL_FLOW_TYPES = frozenset(
-    {"internal", "cross_cex", "consolidation", "mint", "burn", "non_cex"}
+    {
+        "internal",
+        "cross_cex",
+        "consolidation",
+        "mint",
+        "burn",
+        "non_cex",
+        "unidentified",
+    }
 )
 FLOW_TYPES = DIRECTIONAL_FLOW_TYPES | NON_DIRECTIONAL_FLOW_TYPES
 

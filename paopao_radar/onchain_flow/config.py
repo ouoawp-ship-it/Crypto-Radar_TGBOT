@@ -62,6 +62,14 @@ def _decimal(values: Mapping[str, str], name: str, default: str) -> Decimal:
         raise SettingsValidationError(f"{name} must be a decimal") from exc
 
 
+def _csv_tuple(values: Mapping[str, str], name: str) -> tuple[str, ...]:
+    return tuple(
+        item.strip()
+        for item in values.get(name, "").split(",")
+        if item.strip()
+    )
+
+
 def _resolve_data_dir(base_dir: Path, raw: str) -> Path:
     path = Path(raw)
     return path if path.is_absolute() else base_dir / path
@@ -105,6 +113,7 @@ class OnchainSettings:
     base_dir: Path = BASE_DIR
     enable: bool = False
     real_send: bool = False
+    source_mode: str = "base_rpc"
     data_dir: Path = BASE_DIR / "data" / "onchain"
     db_path: Path = BASE_DIR / "data" / "onchain" / "onchain_flow.db"
     runtime_status_path: Path = BASE_DIR / "data" / "onchain" / "runtime_status.json"
@@ -159,6 +168,26 @@ class OnchainSettings:
     net_dominance_min: Decimal = Decimal("0.60")
     rolling_evaluation_bucket_sec: int = 300
     alert_max_event_age_sec: int = 1800
+    arkham_enable: bool = False
+    arkham_api_key: str = ""
+    arkham_api_base_url: str = "https://api.arkm.com"
+    arkham_rest_enable: bool = True
+    arkham_rest_reconcile_sec: int = 60
+    arkham_rest_overlap_sec: int = 180
+    arkham_rest_max_pages: int = 10
+    arkham_rest_limit: int = 100
+    arkham_cex_filter_mode: str = "type_cex"
+    arkham_cex_entity_ids: tuple[str, ...] = ()
+    arkham_chains: tuple[str, ...] = ()
+    arkham_global_usd_gte: Decimal = Decimal("100000")
+    arkham_ws_enable: bool = False
+    arkham_ws_url: str = "wss://api.arkm.com/ws/transfers"
+    arkham_ws_hourly_soft_limit: int = 8000
+    arkham_ws_monthly_soft_limit: int = 800000
+    stablecoin_token_ids: tuple[str, ...] = ()
+    stablecoin_contracts: tuple[str, ...] = ()
+    wrapped_or_receipt_token_ids: tuple[str, ...] = ()
+    wrapped_or_receipt_contracts: tuple[str, ...] = ()
 
     @classmethod
     def load(
@@ -179,6 +208,9 @@ class OnchainSettings:
             base_dir=base_dir,
             enable=_bool(values, "ONCHAIN_ENABLE", False),
             real_send=_bool(values, "ONCHAIN_REAL_SEND", False),
+            source_mode=values.get(
+                "ONCHAIN_SOURCE_MODE", "base_rpc"
+            ).strip().lower(),
             data_dir=data_dir,
             db_path=_resolve_data_file(
                 base_dir,
@@ -344,6 +376,72 @@ class OnchainSettings:
             alert_max_event_age_sec=_int(
                 values, "ONCHAIN_ALERT_MAX_EVENT_AGE_SEC", 1800
             ),
+            arkham_enable=_bool(values, "ARKHAM_ENABLE", False),
+            arkham_api_key=values.get("ARKHAM_API_KEY", "").strip(),
+            arkham_api_base_url=values.get(
+                "ARKHAM_API_BASE_URL", "https://api.arkm.com"
+            ).strip().rstrip("/"),
+            arkham_rest_enable=_bool(
+                values, "ARKHAM_REST_ENABLE", True
+            ),
+            arkham_rest_reconcile_sec=_int(
+                values, "ARKHAM_REST_RECONCILE_SEC", 60
+            ),
+            arkham_rest_overlap_sec=_int(
+                values, "ARKHAM_REST_OVERLAP_SEC", 180
+            ),
+            arkham_rest_max_pages=_int(
+                values, "ARKHAM_REST_MAX_PAGES", 10
+            ),
+            arkham_rest_limit=_int(
+                values, "ARKHAM_REST_LIMIT", 100
+            ),
+            arkham_cex_filter_mode=values.get(
+                "ARKHAM_CEX_FILTER_MODE", "type_cex"
+            ).strip().lower(),
+            arkham_cex_entity_ids=_csv_tuple(
+                values, "ARKHAM_CEX_ENTITY_IDS"
+            ),
+            arkham_chains=tuple(
+                item.lower() for item in _csv_tuple(values, "ARKHAM_CHAINS")
+            ),
+            arkham_global_usd_gte=_decimal(
+                values, "ARKHAM_GLOBAL_USD_GTE", "100000"
+            ),
+            arkham_ws_enable=_bool(values, "ARKHAM_WS_ENABLE", False),
+            arkham_ws_url=values.get(
+                "ARKHAM_WS_URL", "wss://api.arkm.com/ws/transfers"
+            ).strip(),
+            arkham_ws_hourly_soft_limit=_int(
+                values, "ARKHAM_WS_HOURLY_SOFT_LIMIT", 8000
+            ),
+            arkham_ws_monthly_soft_limit=_int(
+                values, "ARKHAM_WS_MONTHLY_SOFT_LIMIT", 800000
+            ),
+            stablecoin_token_ids=tuple(
+                item.lower()
+                for item in _csv_tuple(
+                    values, "ONCHAIN_STABLECOIN_TOKEN_IDS"
+                )
+            ),
+            stablecoin_contracts=tuple(
+                item.lower()
+                for item in _csv_tuple(
+                    values, "ONCHAIN_STABLECOIN_CONTRACTS"
+                )
+            ),
+            wrapped_or_receipt_token_ids=tuple(
+                item.lower()
+                for item in _csv_tuple(
+                    values, "ONCHAIN_WRAPPED_OR_RECEIPT_TOKEN_IDS"
+                )
+            ),
+            wrapped_or_receipt_contracts=tuple(
+                item.lower()
+                for item in _csv_tuple(
+                    values, "ONCHAIN_WRAPPED_OR_RECEIPT_CONTRACTS"
+                )
+            ),
         )
 
     @property
@@ -401,6 +499,7 @@ class OnchainSettings:
             "wss_reconnect_sec",
             "wss_idle_timeout_sec",
             "net_dominance_min",
+            "arkham_global_usd_gte",
         )
         for field_name in non_negative_decimals:
             value = getattr(self, field_name)
@@ -428,17 +527,31 @@ class OnchainSettings:
             "rolling_evaluation_bucket_sec",
             "rpc_adaptive_max_requests",
             "rpc_adaptive_max_depth",
+            "arkham_rest_reconcile_sec",
+            "arkham_rest_max_pages",
+            "arkham_rest_limit",
+            "arkham_ws_hourly_soft_limit",
+            "arkham_ws_monthly_soft_limit",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise SettingsValidationError(f"{field_name} must be positive")
+        if self.arkham_rest_limit > 100:
+            raise SettingsValidationError(
+                "ARKHAM_REST_LIMIT cannot exceed 100"
+            )
+        if self.arkham_rest_max_pages > 100:
+            raise SettingsValidationError(
+                "ARKHAM_REST_MAX_PAGES cannot exceed 100"
+            )
         non_negative_ints = (
             "base_confirmation_depth",
             "base_bootstrap_lookback_blocks",
             "base_reorg_lookback_blocks",
             "rpc_retry",
             "alert_max_event_age_sec",
+            "arkham_rest_overlap_sec",
         )
         for field_name in non_negative_ints:
             value = getattr(self, field_name)
@@ -462,6 +575,32 @@ class OnchainSettings:
             raise SettingsValidationError(
                 "net_dominance_min must be in [0, 1]"
             )
+        if self.source_mode not in {"arkham", "base_rpc", "hybrid"}:
+            raise SettingsValidationError(
+                "ONCHAIN_SOURCE_MODE must be arkham, base_rpc, or hybrid"
+            )
+        if self.arkham_cex_filter_mode not in {"type_cex", "entity_ids"}:
+            raise SettingsValidationError(
+                "ARKHAM_CEX_FILTER_MODE must be type_cex or entity_ids"
+            )
+        if (
+            self.enable
+            and self.arkham_enable
+            and self.source_mode in {"arkham", "hybrid"}
+            and not self.arkham_api_key
+        ):
+            raise SettingsValidationError(
+                "ARKHAM_API_KEY is required when Arkham ingestion is enabled"
+            )
+        if (
+            self.enable
+            and self.arkham_enable
+            and self.arkham_cex_filter_mode == "entity_ids"
+            and not self.arkham_cex_entity_ids
+        ):
+            raise SettingsValidationError(
+                "ARKHAM_CEX_ENTITY_IDS is required for entity_ids filter mode"
+            )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
                 "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
@@ -479,6 +618,28 @@ class OnchainSettings:
         if price_api.hostname.lower() == "api.coingecko.com":
             raise SettingsValidationError(
                 "CoinGecko Pro credentials cannot use api.coingecko.com"
+            )
+        arkham_api = urlsplit(self.arkham_api_base_url)
+        if (
+            arkham_api.scheme.lower() != "https"
+            or not arkham_api.hostname
+            or arkham_api.username is not None
+            or arkham_api.password is not None
+            or arkham_api.query
+        ):
+            raise SettingsValidationError(
+                "ARKHAM_API_BASE_URL must be a credential-free HTTPS URL"
+            )
+        arkham_ws = urlsplit(self.arkham_ws_url)
+        if (
+            arkham_ws.scheme.lower() != "wss"
+            or not arkham_ws.hostname
+            or arkham_ws.username is not None
+            or arkham_ws.password is not None
+            or arkham_ws.query
+        ):
+            raise SettingsValidationError(
+                "ARKHAM_WS_URL must be a credential-free WSS URL"
             )
         for name, value, schemes in (
             (
@@ -501,6 +662,7 @@ class OnchainSettings:
         return {
             "enabled": self.enable,
             "real_send_enabled": self.real_send,
+            "source_mode": self.source_mode,
             "data_dir": str(self.data_dir),
             "db_file": str(self.db_path),
             "labels_file": str(self.labels_path),
@@ -522,6 +684,19 @@ class OnchainSettings:
                 "api_key_configured": bool(self.coingecko_api_key),
                 "api": _endpoint_diagnostic(self.coingecko_api_base_url),
                 "max_age_sec": self.price_max_age_sec,
+            },
+            "arkham": {
+                "enabled": self.arkham_enable,
+                "rest_enabled": self.arkham_rest_enable,
+                "websocket_enabled": self.arkham_ws_enable,
+                "api_key_configured": bool(self.arkham_api_key),
+                "api": _endpoint_diagnostic(self.arkham_api_base_url),
+                "websocket": _endpoint_diagnostic(self.arkham_ws_url),
+                "cex_filter_mode": self.arkham_cex_filter_mode,
+                "cex_entity_ids_configured": bool(
+                    self.arkham_cex_entity_ids
+                ),
+                "configured_chain_count": len(self.arkham_chains),
             },
             "telegram": {
                 "bot_token_configured": bool(self.tg_bot_token),
