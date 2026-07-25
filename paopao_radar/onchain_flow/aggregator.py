@@ -123,11 +123,26 @@ def build_rolling_snapshots(
         for flow in eligible:
             grouped[(flow.chain_id, flow.token_address)].append(flow)
         for (chain_id, token_address), records in sorted(grouped.items()):
-            direct_historical_usd = all(
-                flow.amount_usd is not None
-                and flow.price_source == "arkham_historical_usd"
-                for flow in records
+            is_arkham_group = all(
+                flow.source == "arkham" for flow in records
             )
+            excluded_unpriced_count = 0
+            valuation_records = records
+            if is_arkham_group:
+                valuation_records = [
+                    flow
+                    for flow in records
+                    if flow.amount_usd is not None
+                    and flow.amount_usd.is_finite()
+                    and flow.amount_usd > 0
+                    and flow.price_source == "arkham_historical_usd"
+                ]
+                excluded_unpriced_count = (
+                    len(records) - len(valuation_records)
+                )
+                if not valuation_records:
+                    continue
+            direct_historical_usd = is_arkham_group
             quote = (
                 quotes.get((chain_id, token_address))
                 if quotes is not None
@@ -163,8 +178,16 @@ def build_rolling_snapshots(
                 > price_max_age_sec
             ):
                 continue
-            inflows = [flow for flow in records if flow.flow_type == "inflow"]
-            outflows = [flow for flow in records if flow.flow_type == "outflow"]
+            inflows = [
+                flow
+                for flow in valuation_records
+                if flow.flow_type == "inflow"
+            ]
+            outflows = [
+                flow
+                for flow in valuation_records
+                if flow.flow_type == "outflow"
+            ]
             if direct_historical_usd:
                 gross_inflow = sum(
                     (
@@ -180,7 +203,9 @@ def build_rolling_snapshots(
                     ),
                     Decimal("0"),
                 )
-                latest = max(records, key=lambda flow: flow.block_time)
+                latest = max(
+                    valuation_records, key=lambda flow: flow.block_time
+                )
                 price_source = "arkham_historical_usd"
                 price_observed_at = latest.block_time
                 valuation_price = (
@@ -221,7 +246,7 @@ def build_rolling_snapshots(
                             f"{flow.event_id}:{flow.block_number}:"
                             f"{flow.block_hash}:{flow.block_time}"
                         )
-                        for flow in records
+                        for flow in valuation_records
                     )
                 ).encode("utf-8")
             ).hexdigest()[:16]
@@ -255,7 +280,7 @@ def build_rolling_snapshots(
                     ),
                     chain_id=chain_id,
                     token_address=token_address,
-                    symbol=records[0].symbol,
+                    symbol=valuation_records[0].symbol,
                     evaluation_time=evaluation_time,
                     duration_sec=duration,
                     gross_inflow_usd=gross_inflow,
@@ -277,7 +302,8 @@ def build_rolling_snapshots(
                         }
                     ),
                     min_label_confidence=min(
-                        flow.label_confidence for flow in records
+                        flow.label_confidence
+                        for flow in valuation_records
                     ),
                     price_source=price_source,
                     price_observed_at=price_observed_at,
@@ -288,10 +314,11 @@ def build_rolling_snapshots(
                     valuation_price_usd=valuation_price,
                     price_market_observed_at=price_observed_at,
                     price_fetched_at=price_fetched_at,
-                    source=records[0].source,
+                    source=valuation_records[0].source,
                     attribution_quality=min(
                         (
-                            flow.attribution_quality for flow in records
+                            flow.attribution_quality
+                            for flow in valuation_records
                         ),
                         key=lambda value: {
                             "unlabeled": 0,
@@ -299,8 +326,9 @@ def build_rolling_snapshots(
                             "arkham_entity": 2,
                         }.get(value, 0),
                     ),
-                    token_policy=records[0].token_policy,
-                    signal_context=records[0].signal_context,
+                    token_policy=valuation_records[0].token_policy,
+                    signal_context=valuation_records[0].signal_context,
+                    excluded_unpriced_count=excluded_unpriced_count,
                 )
             )
     return snapshots

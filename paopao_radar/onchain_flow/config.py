@@ -12,6 +12,7 @@ from .constants import PRODUCTION_WRITE_PATHS
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_STABLECOIN_TOKEN_IDS = ("usd-coin", "tether", "dai")
 
 
 class UnsafeOnchainPath(ValueError):
@@ -174,6 +175,8 @@ class OnchainSettings:
     arkham_rest_enable: bool = True
     arkham_rest_reconcile_sec: int = 60
     arkham_rest_overlap_sec: int = 180
+    arkham_rest_bootstrap_lookback_sec: int = 3600
+    arkham_rest_indexing_delay_sec: int = 60
     arkham_rest_max_pages: int = 10
     arkham_rest_limit: int = 100
     arkham_cex_filter_mode: str = "type_cex"
@@ -184,7 +187,7 @@ class OnchainSettings:
     arkham_ws_url: str = "wss://api.arkm.com/ws/transfers"
     arkham_ws_hourly_soft_limit: int = 8000
     arkham_ws_monthly_soft_limit: int = 800000
-    stablecoin_token_ids: tuple[str, ...] = ()
+    stablecoin_token_ids: tuple[str, ...] = DEFAULT_STABLECOIN_TOKEN_IDS
     stablecoin_contracts: tuple[str, ...] = ()
     wrapped_or_receipt_token_ids: tuple[str, ...] = ()
     wrapped_or_receipt_contracts: tuple[str, ...] = ()
@@ -390,6 +393,12 @@ class OnchainSettings:
             arkham_rest_overlap_sec=_int(
                 values, "ARKHAM_REST_OVERLAP_SEC", 180
             ),
+            arkham_rest_bootstrap_lookback_sec=_int(
+                values, "ARKHAM_REST_BOOTSTRAP_LOOKBACK_SEC", 3600
+            ),
+            arkham_rest_indexing_delay_sec=_int(
+                values, "ARKHAM_REST_INDEXING_DELAY_SEC", 60
+            ),
             arkham_rest_max_pages=_int(
                 values, "ARKHAM_REST_MAX_PAGES", 10
             ),
@@ -419,9 +428,17 @@ class OnchainSettings:
                 values, "ARKHAM_WS_MONTHLY_SOFT_LIMIT", 800000
             ),
             stablecoin_token_ids=tuple(
-                item.lower()
-                for item in _csv_tuple(
-                    values, "ONCHAIN_STABLECOIN_TOKEN_IDS"
+                dict.fromkeys(
+                    (
+                        *DEFAULT_STABLECOIN_TOKEN_IDS,
+                        *(
+                            item.lower()
+                            for item in _csv_tuple(
+                                values,
+                                "ONCHAIN_STABLECOIN_TOKEN_IDS",
+                            )
+                        ),
+                    )
                 )
             ),
             stablecoin_contracts=tuple(
@@ -552,6 +569,8 @@ class OnchainSettings:
             "rpc_retry",
             "alert_max_event_age_sec",
             "arkham_rest_overlap_sec",
+            "arkham_rest_bootstrap_lookback_sec",
+            "arkham_rest_indexing_delay_sec",
         )
         for field_name in non_negative_ints:
             value = getattr(self, field_name)

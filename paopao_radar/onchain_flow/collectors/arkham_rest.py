@@ -192,27 +192,6 @@ class ArkhamRestClient:
             raise ArkhamSchemaError("Arkham chain entry is malformed")
         return payload
 
-    def session_info(self) -> dict[str, int]:
-        payload = self._request("/ws/session-info")
-        if not isinstance(payload, dict):
-            raise ArkhamSchemaError(
-                "Arkham WebSocket pricing response is malformed"
-            )
-        result: dict[str, int] = {}
-        for field in ("creditPerSession", "creditPerTransfer"):
-            value = payload.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ArkhamSchemaError(
-                    "Arkham WebSocket pricing field is malformed"
-                )
-            parsed = int(value)
-            if parsed < 0:
-                raise ArkhamSchemaError(
-                    "Arkham WebSocket pricing field is malformed"
-                )
-            result[field] = parsed
-        return result
-
     def transfers(
         self, params: Mapping[str, object]
     ) -> tuple[list[dict[str, object]], int]:
@@ -249,9 +228,7 @@ class ArkhamRestClient:
         chains: tuple[str, ...],
         limit: int,
     ) -> dict[str, object]:
-        self.health()
         supported_chains = self.chains()
-        pricing = self.session_info()
         base_params: dict[str, object] = {
             "timeLast": "1h",
             "usdGte": str(max(global_usd_gte, Decimal("10000000"))),
@@ -276,12 +253,12 @@ class ArkhamRestClient:
             "authenticated": True,
             "supported_chain_count": len(supported_chains),
             "type_cex_rest_supported": supported,
-            "current_session_credit_price": pricing[
-                "creditPerSession"
-            ],
-            "current_transfer_credit_price": pricing[
-                "creditPerTransfer"
-            ],
             "rate_limit": dict(self.last_rate_limit_info),
+            "rest_capability_status": (
+                "ok"
+                if supported
+                else "explicit_cex_entity_ids_required"
+            ),
+            "websocket_check": "not_run_p3_2a",
             "requires_explicit_cex_entity_ids": not supported,
         }

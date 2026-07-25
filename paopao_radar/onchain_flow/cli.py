@@ -280,7 +280,7 @@ def main(
         if args.command == "arkham-once":
             payload = ArkhamRestRuntime(settings).process_once()
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-            return 0
+            return 2 if payload.get("status") == "partial_backlog" else 0
         if args.command == "arkham-status":
             settings.validate()
             payload: dict[str, object] = {

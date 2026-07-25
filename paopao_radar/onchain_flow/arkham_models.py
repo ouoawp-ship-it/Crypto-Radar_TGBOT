@@ -23,6 +23,7 @@ class ArkhamRawEvent:
     transfer_id: str
     payload_json: str
     payload_hash: str
+    immutable_fingerprint: str
     received_via: str
     received_at: int
     processed_status: str
@@ -46,3 +47,5 @@ class ArkhamSyncState:
     last_event_id: str
     last_success_at: int
     status: str
+    query_upper_ms: int = 0
+    backlog_remaining: int = 0

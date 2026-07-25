@@ -71,9 +71,10 @@ def _failed_raw_event(
         transfer_id=transfer_id,
         payload_json=payload_json,
         payload_hash=payload_hash,
+        immutable_fingerprint="",
         received_via="rest",
         received_at=received_at,
-        processed_status="failed",
+        processed_status="rejected_schema",
         error_type=error_type,
     )
 
@@ -172,31 +173,59 @@ class ArkhamRestRuntime:
             "unpriced_events": 0,
             "non_directional_events": 0,
             "policy_suppressed_events": 0,
+            "rejected_schema_events": 0,
+            "excluded_unpriced_count": 0,
             "alerts_generated": 0,
             "telegram_dry_run_count": 0,
             "telegram_delivery_failure_count": 0,
+            "cooldown_suppressed": 0,
             "real_telegram_requests": 0,
             "websocket_sessions_created": 0,
+            "streams_partial_backlog": 0,
+            "backlog_remaining": 0,
+            "query_upper_ms": max(
+                0,
+                int(self.clock() * 1000)
+                - (
+                    self.settings.arkham_rest_indexing_delay_sec
+                    * 1000
+                ),
+            ),
         }
+        query_upper_ms = int(metrics["query_upper_ms"])
         for stream_name, side in (
             ("arkham_cex_inflow", "to"),
             ("arkham_cex_outflow", "from"),
         ):
-            self._reconcile_stream(
+            completed = self._reconcile_stream(
                 store,
                 stream_name=stream_name,
                 side=side,
+                query_upper_ms=query_upper_ms,
                 metrics=metrics,
             )
-            metrics["streams_completed"] = (
-                int(metrics["streams_completed"]) + 1
-            )
-        alerts = self._evaluate(store)
+            if completed:
+                metrics["streams_completed"] = (
+                    int(metrics["streams_completed"]) + 1
+                )
+            else:
+                metrics["streams_partial_backlog"] = (
+                    int(metrics["streams_partial_backlog"]) + 1
+                )
+        alerts, excluded_unpriced_count = self._evaluate(store)
         metrics["alerts_generated"] = len(alerts)
-        dry_run, failed = self._deliver(store)
+        metrics["excluded_unpriced_count"] = (
+            excluded_unpriced_count
+        )
+        dry_run, failed, cooldown_suppressed = self._deliver(store)
         metrics["telegram_dry_run_count"] = dry_run
         metrics["telegram_delivery_failure_count"] = failed
-        metrics["status"] = "ok"
+        metrics["cooldown_suppressed"] = cooldown_suppressed
+        metrics["status"] = (
+            "partial_backlog"
+            if int(metrics["streams_partial_backlog"]) > 0
+            else "ok"
+        )
         metrics["sqlite_integrity"] = store.integrity_check()
         return metrics
 
@@ -215,47 +244,66 @@ class ArkhamRestRuntime:
         *,
         stream_name: str,
         side: str,
+        query_upper_ms: int,
         metrics: dict[str, object],
-    ) -> None:
+    ) -> bool:
         state = store.arkham_sync_state(stream_name)
-        query_started_ms = int(self.clock() * 1000)
         previous_timestamp = (
-            state.last_timestamp_ms if state is not None else query_started_ms
+            state.last_timestamp_ms if state is not None else 0
         )
         previous_event_id = (
             state.last_event_id if state is not None else ""
         )
-        time_gte = max(
-            0,
-            previous_timestamp
-            - (self.settings.arkham_rest_overlap_sec * 1000),
-        )
+        if previous_timestamp > 0:
+            time_gte = min(
+                query_upper_ms,
+                max(
+                    0,
+                    previous_timestamp
+                    - (
+                        self.settings.arkham_rest_overlap_sec
+                        * 1000
+                    ),
+                ),
+            )
+        else:
+            time_gte = max(
+                0,
+                query_upper_ms
+                - (
+                    self.settings.arkham_rest_bootstrap_lookback_sec
+                    * 1000
+                ),
+            )
         limit = self.settings.arkham_rest_limit
         cursor_timestamp = previous_timestamp
         cursor_event_id = previous_event_id
         policy = ConfiguredTokenPolicy(self.settings)
+        base_params: dict[str, object] = {
+            side: self._selector(),
+            "timeGte": str(time_gte),
+            "timeLte": str(query_upper_ms),
+            "usdGte": str(self.settings.arkham_global_usd_gte),
+            "sortKey": "time",
+            "sortDir": "asc",
+            "limit": limit,
+        }
+        if self.settings.arkham_chains:
+            base_params["chains"] = ",".join(
+                self.settings.arkham_chains
+            )
         for page_index in range(self.settings.arkham_rest_max_pages):
-            params: dict[str, object] = {
-                side: self._selector(),
-                "timeGte": str(time_gte),
-                "usdGte": str(self.settings.arkham_global_usd_gte),
-                "sortKey": "time",
-                "sortDir": "asc",
-                "limit": limit,
-                "offset": page_index * limit,
-            }
-            if self.settings.arkham_chains:
-                params["chains"] = ",".join(
-                    self.settings.arkham_chains
-                )
+            offset = page_index * limit
+            params = {**base_params, "offset": offset}
             payloads, count = self._client().transfers(params)
             metrics["transfers_received"] = (
                 int(metrics["transfers_received"]) + len(payloads)
             )
             received_at = int(self.clock())
             events: list[ArkhamProcessedEvent] = []
-            try:
-                for payload in payloads:
+            rejected_events: list[ArkhamRawEvent] = []
+            for payload in payloads:
+                try:
                     events.append(
                         normalize_arkham_transfer(
                             payload,
@@ -263,23 +311,14 @@ class ArkhamRestRuntime:
                             received_at=received_at,
                         )
                     )
-            except ArkhamNormalizationError as exc:
-                failed_raw = [
-                    _failed_raw_event(
-                        payload,
-                        received_at=received_at,
-                        error_type=type(exc).__name__,
+                except ArkhamNormalizationError as exc:
+                    rejected_events.append(
+                        _failed_raw_event(
+                            payload,
+                            received_at=received_at,
+                            error_type=type(exc).__name__,
+                        )
                     )
-                    for payload in payloads
-                ]
-                store.record_arkham_page_failure(
-                    failed_raw,
-                    stream_name=stream_name,
-                    error_type=type(exc).__name__,
-                )
-                raise ArkhamPageProcessingError(
-                    "Arkham page normalization failed"
-                ) from exc
             if events:
                 latest = max(
                     events,
@@ -292,17 +331,50 @@ class ArkhamRestRuntime:
                     cursor_timestamp, latest.timestamp_ms
                 )
                 cursor_event_id = latest.transfer.event_id
-            elif page_index == 0:
-                cursor_timestamp = max(
-                    cursor_timestamp, query_started_ms
-                )
-            inserted, duplicates = store.persist_arkham_page(
-                events,
-                stream_name=stream_name,
-                cursor_timestamp_ms=cursor_timestamp,
-                last_event_id=cursor_event_id,
-                last_success_at=int(self.clock()),
+            accounted_count = offset + len(payloads)
+            backlog_remaining = max(0, count - accounted_count)
+            has_more = backlog_remaining > 0
+            exhausted = (
+                has_more
+                and page_index + 1
+                >= self.settings.arkham_rest_max_pages
             )
+            stream_complete = not has_more
+            persisted_cursor = (
+                max(previous_timestamp, query_upper_ms)
+                if stream_complete
+                else cursor_timestamp
+            )
+            sync_status = (
+                "partial_backlog" if exhausted else "ok"
+            )
+            try:
+                inserted, duplicates = store.persist_arkham_page(
+                    events,
+                    rejected_events=rejected_events,
+                    stream_name=stream_name,
+                    cursor_timestamp_ms=persisted_cursor,
+                    last_event_id=cursor_event_id,
+                    last_success_at=int(self.clock()),
+                    sync_status=sync_status,
+                    query_upper_ms=query_upper_ms,
+                    backlog_remaining=(
+                        backlog_remaining if exhausted else 0
+                    ),
+                )
+            except Exception as exc:
+                try:
+                    store.mark_arkham_stream_status(
+                        stream_name,
+                        status="failed",
+                        query_upper_ms=query_upper_ms,
+                        backlog_remaining=backlog_remaining,
+                    )
+                except Exception:
+                    pass
+                raise ArkhamPageProcessingError(
+                    "Arkham page could not be durably accounted for"
+                ) from exc
             metrics["pages_processed"] = (
                 int(metrics["pages_processed"]) + 1
             )
@@ -311,6 +383,10 @@ class ArkhamRestRuntime:
             )
             metrics["duplicate_events"] = (
                 int(metrics["duplicate_events"]) + duplicates
+            )
+            metrics["rejected_schema_events"] = (
+                int(metrics["rejected_schema_events"])
+                + len(rejected_events)
             )
             for event in events:
                 status = event.raw.processed_status
@@ -326,12 +402,19 @@ class ArkhamRestRuntime:
                     metrics["policy_suppressed_events"] = (
                         int(metrics["policy_suppressed_events"]) + 1
                     )
-            if not payloads or len(payloads) < limit:
-                break
-            if (page_index + 1) * limit >= count:
-                break
+            if exhausted:
+                metrics["backlog_remaining"] = (
+                    int(metrics["backlog_remaining"])
+                    + backlog_remaining
+                )
+                return False
+            if stream_complete:
+                return True
+        return False
 
-    def _evaluate(self, store: OnchainStore) -> list[OnchainAlert]:
+    def _evaluate(
+        self, store: OnchainStore
+    ) -> tuple[list[OnchainAlert], int]:
         now = int(self.clock())
         bucket = self.settings.rolling_evaluation_bucket_sec
         evaluation_time = now - (now % bucket)
@@ -344,7 +427,7 @@ class ArkhamRestRuntime:
             and flow.attribution_quality == "arkham_entity"
         ]
         if not flows:
-            return []
+            return [], 0
         metadata = store.metadata_map()
         detection_settings = replace(
             self.settings, min_label_confidence=0.0
@@ -360,7 +443,9 @@ class ArkhamRestRuntime:
             flow = by_event[detected.source_event_ids[0]]
             if now - flow.block_time > self.settings.alert_max_event_age_sec:
                 continue
-            alert = self._arkham_single_alert(detected, flow)
+            alert = self._arkham_single_alert(
+                detected, flow, evaluation_time=evaluation_time
+            )
             store.persist_alert_for_delivery(alert, created_at=now)
             alerts.append(alert)
 
@@ -380,17 +465,30 @@ class ArkhamRestRuntime:
             alert = self._arkham_rolling_alert(detected.snapshot, detected)
             store.persist_alert_for_delivery(alert, created_at=now)
             alerts.append(alert)
-        return alerts
+        return (
+            alerts,
+            sum(
+                1
+                for flow in flows
+                if flow.amount_usd is None
+                or not flow.amount_usd.is_finite()
+                or flow.amount_usd <= 0
+            ),
+        )
 
     def _arkham_single_alert(
-        self, detected: DetectedFlow, flow: ClassifiedFlow
+        self,
+        detected: DetectedFlow,
+        flow: ClassifiedFlow,
+        *,
+        evaluation_time: int,
     ) -> OnchainAlert:
         alert = score_detection(detected)
         alert = replace(
             alert,
             alert_key=(
                 f"arkham:{flow.event_id}:single:"
-                f"{P3_2A_SEVERITY_VERSION}"
+                f"{evaluation_time}:{P3_2A_SEVERITY_VERSION}"
             ),
             severity_version=P3_2A_SEVERITY_VERSION,
             gross_inflow_usd=(
@@ -407,16 +505,17 @@ class ArkhamRestRuntime:
             price_source=flow.price_source,
             price_observed_at=flow.price_observed_at,
             chain_name=_chain_name(flow.chain_id),
-            notification_key=(
-                f"arkham:{flow.chain_id}:{flow.token_address}:"
-                f"{flow.flow_type}:single"
-            ),
+            notification_key="",
             source="arkham",
             attribution_quality=flow.attribution_quality,
             token_policy=flow.token_policy,
             signal_context=flow.signal_context,
         )
-        return self._apply_policy(alert)
+        alert = self._apply_policy(alert)
+        return replace(
+            alert,
+            notification_key=self._notification_key(alert),
+        )
 
     def _arkham_rolling_alert(
         self,
@@ -432,16 +531,37 @@ class ArkhamRestRuntime:
             ),
             severity_version=P3_2A_SEVERITY_VERSION,
             chain_name=_chain_name(snapshot.chain_id),
-            notification_key=(
-                f"arkham:{snapshot.chain_id}:{snapshot.token_address}:"
-                f"{snapshot.direction}:{snapshot.duration_sec}"
-            ),
+            notification_key="",
             source="arkham",
             attribution_quality=snapshot.attribution_quality,
             token_policy=snapshot.token_policy,
             signal_context=snapshot.signal_context,
+            excluded_unpriced_count=(
+                snapshot.excluded_unpriced_count
+            ),
         )
-        return self._apply_policy(alert)
+        alert = self._apply_policy(alert)
+        return replace(
+            alert,
+            notification_key=self._notification_key(alert),
+        )
+
+    @staticmethod
+    def _notification_key(alert: OnchainAlert) -> str:
+        family = "+".join(sorted(alert.detection_types)) or "unknown"
+        absolute_score = abs(alert.score)
+        severity_tier = (
+            "high"
+            if absolute_score >= 70
+            else "medium"
+            if absolute_score >= 45
+            else "context"
+        )
+        return (
+            f"{alert.source}:{alert.chain_id}:{alert.token_address}:"
+            f"{alert.direction}:{alert.duration_sec}:{family}:"
+            f"{alert.confidence}-{severity_tier}"
+        )
 
     @staticmethod
     def _apply_policy(alert: OnchainAlert) -> OnchainAlert:
@@ -459,17 +579,34 @@ class ArkhamRestRuntime:
             signal_context="market_liquidity_context",
         )
 
-    def _deliver(self, store: OnchainStore) -> tuple[int, int]:
+    def _deliver(self, store: OnchainStore) -> tuple[int, int, int]:
         notifier = OnchainNotifier(self.settings, store)
         dry_run = 0
         failed = 0
+        cooldown_suppressed = 0
         for alert in store.pending_delivery_alerts(source="arkham"):
+            attempted_at = int(self.clock())
+            if store.delivery_in_cooldown(
+                alert.notification_key,
+                now=attempted_at,
+                cooldown_sec=self.settings.alert_cooldown_sec,
+                excluding_alert_key=alert.alert_key,
+            ):
+                store.record_delivery(
+                    alert.alert_key,
+                    status="cooldown_suppressed",
+                    sent=False,
+                    reason="notification_key_in_cooldown",
+                    attempted_at=attempted_at,
+                )
+                cooldown_suppressed += 1
+                continue
             try:
                 result = notifier.notify(
                     alert,
                     send=False,
                     confirm_real_send=False,
-                    attempted_at=int(self.clock()),
+                    attempted_at=attempted_at,
                 )
             except Exception:
                 failed += 1
@@ -478,4 +615,4 @@ class ArkhamRestRuntime:
                 dry_run += 1
             elif result.status == "failed":
                 failed += 1
-        return dry_run, failed
+        return dry_run, failed, cooldown_suppressed

@@ -166,6 +166,7 @@ def score_rolling_detection(detected: DetectedRollingFlow) -> OnchainAlert:
             f"{snapshot.direction}:{snapshot.duration_sec}:"
             f"{'+'.join(detected.detection_types)}:{confidence}"
         ),
+        excluded_unpriced_count=snapshot.excluded_unpriced_count,
     )
 
 

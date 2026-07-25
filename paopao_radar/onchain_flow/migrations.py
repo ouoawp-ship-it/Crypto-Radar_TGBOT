@@ -331,6 +331,8 @@ MIGRATIONS = (
             ADD COLUMN token_policy TEXT NOT NULL DEFAULT 'normal_token';
         ALTER TABLE flow_window_snapshots
             ADD COLUMN signal_context TEXT NOT NULL DEFAULT 'token_directional';
+        ALTER TABLE flow_window_snapshots
+            ADD COLUMN excluded_unpriced_count INTEGER NOT NULL DEFAULT 0;
 
         ALTER TABLE alerts
             ADD COLUMN source TEXT NOT NULL DEFAULT '';
@@ -340,15 +342,30 @@ MIGRATIONS = (
             ADD COLUMN token_policy TEXT NOT NULL DEFAULT 'normal_token';
         ALTER TABLE alerts
             ADD COLUMN signal_context TEXT NOT NULL DEFAULT 'token_directional';
+        ALTER TABLE alerts
+            ADD COLUMN excluded_unpriced_count INTEGER NOT NULL DEFAULT 0;
 
         CREATE TABLE IF NOT EXISTS arkham_raw_events (
             arkham_transfer_id TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
             payload_hash TEXT NOT NULL,
+            immutable_fingerprint TEXT NOT NULL DEFAULT '',
             received_via TEXT NOT NULL,
             received_at INTEGER NOT NULL,
             processed_status TEXT NOT NULL,
             error_type TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS arkham_raw_event_versions (
+            arkham_transfer_id TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            immutable_fingerprint TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL,
+            received_via TEXT NOT NULL,
+            received_at INTEGER NOT NULL,
+            processed_status TEXT NOT NULL,
+            error_type TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (arkham_transfer_id, payload_hash)
         );
 
         CREATE TABLE IF NOT EXISTS arkham_sync_state (
@@ -356,7 +373,9 @@ MIGRATIONS = (
             last_timestamp_ms INTEGER NOT NULL DEFAULT 0,
             last_event_id TEXT NOT NULL DEFAULT '',
             last_success_at INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'not_started'
+            status TEXT NOT NULL DEFAULT 'not_started',
+            query_upper_ms INTEGER NOT NULL DEFAULT 0,
+            backlog_remaining INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS entity_snapshots (
@@ -374,6 +393,8 @@ MIGRATIONS = (
 
         CREATE INDEX IF NOT EXISTS idx_arkham_raw_received
             ON arkham_raw_events(received_at, arkham_transfer_id);
+        CREATE INDEX IF NOT EXISTS idx_arkham_raw_versions_received
+            ON arkham_raw_event_versions(received_at, arkham_transfer_id);
         CREATE INDEX IF NOT EXISTS idx_entity_snapshots_entity
             ON entity_snapshots(entity_id, chain);
         """,

@@ -80,43 +80,82 @@ def format_alert(alert: OnchainAlert) -> str:
 
 def _format_arkham_alert(alert: OnchainAlert) -> str:
     flow_name = {
-        "inflow": "CEX inflow",
-        "outflow": "CEX outflow",
-    }.get(alert.direction, alert.direction)
-    exchange_text = ", ".join(alert.exchanges) or "identified CEX"
+        "inflow": "流入交易所",
+        "outflow": "从交易所流出",
+    }.get(alert.direction, "非方向性资金流")
+    signal_type = (
+        "单笔信号"
+        if alert.duration_sec <= 0
+        else f"{alert.duration_sec // 60} 分钟滚动信号"
+    )
+    exchange_text = "、".join(alert.exchanges) or "已识别交易所"
     attribution = {
-        "arkham_entity": "Arkham entity",
-        "arkham_label": "Arkham label",
-        "unlabeled": "unlabeled",
-    }.get(alert.attribution_quality, alert.attribution_quality or "unknown")
+        "arkham_entity": "Arkham 实体",
+        "arkham_label": "Arkham 标签",
+        "unlabeled": "未标注",
+    }.get(alert.attribution_quality, "未知")
+    confidence = {
+        "high": "高",
+        "medium": "中",
+        "low": "低",
+        "context": "背景信息",
+    }.get(alert.confidence, alert.confidence)
+    gross_inflow = alert.gross_inflow_usd or Decimal("0")
+    gross_outflow = alert.gross_outflow_usd or Decimal("0")
+    net_flow = (
+        alert.net_flow_usd
+        if alert.net_flow_usd is not None
+        else gross_inflow - gross_outflow
+    )
     lines = [
-        f"[Arkham] ${alert.symbol} {flow_name}",
-        f"Chain: {alert.chain_name or alert.chain_id}",
-        f"Event-time value: {_usd(alert.total_usd)}",
-        f"Exchange: {exchange_text}",
-        f"Attribution quality: {attribution} (probabilistic)",
-        f"Context: {alert.signal_context}",
+        f"[Arkham] 链上资金流｜${alert.symbol}｜{flow_name}",
+        f"Token 标识：{alert.token_address}",
+        f"链：{alert.chain_name or alert.chain_id}",
+        f"信号类型：{signal_type}",
+        f"交易所：{exchange_text}",
+        f"事件发生时美元价值：{_usd(alert.total_usd)}",
+        f"总流入：{_usd(gross_inflow)}",
+        f"总流出：{_usd(gross_outflow)}",
     ]
+    if alert.duration_sec > 0:
+        lines.append(f"净流量（流入-流出）：{_signed_usd(net_flow)}")
+        lines.append(
+            "交易笔数："
+            f"流入 {alert.inflow_tx_count}｜流出 {alert.outflow_tx_count}"
+        )
+    lines.extend(
+        [
+            f"Arkham 归因质量：{attribution}",
+            f"方向评分：{alert.score:+d} / 100（评分不是概率）",
+            f"置信等级：{confidence}",
+            "说明：Arkham 实体归因为概率性情报，并非确定事实。",
+        ]
+    )
     if alert.signal_context == "market_liquidity_context":
         lines.extend(
             [
-                "Interpretation: stablecoin exchange flow is market liquidity context.",
-                "It does not predict that the stablecoin will pump or dump.",
+                "解读：稳定币流向只作为市场流动性背景。",
+                "该信号不预测稳定币自身价格上涨或下跌。",
             ]
         )
     else:
         prior = (
-            "potential supply-side pressure"
+            "可能增加交易所内的潜在可售供应"
             if alert.direction == "inflow"
-            else "potential exchange balance withdrawal"
+            else "可能代表提币或交易所余额转出"
         )
         lines.extend(
             [
-                f"Directional prior: {prior}.",
-                "This is not certainty and does not claim a price probability.",
+                f"方向性先验：{prior}。",
+                "这只是资金流背景，不保证价格方向，也不代表价格概率。",
             ]
         )
-    lines.append("Source: Arkham /transfers historicalUSD")
+    if alert.excluded_unpriced_count:
+        lines.append(
+            "未计入美元汇总的无价格事件："
+            f"{alert.excluded_unpriced_count} 条"
+        )
+    lines.append("数据来源：Arkham /transfers 的 historicalUSD")
     return "\n".join(lines)
 
 

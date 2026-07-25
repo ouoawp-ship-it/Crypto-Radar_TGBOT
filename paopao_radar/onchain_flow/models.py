@@ -209,6 +209,7 @@ class OnchainAlert:
     attribution_quality: str = ""
     token_policy: str = "normal_token"
     signal_context: str = "token_directional"
+    excluded_unpriced_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -277,6 +278,7 @@ class RollingFlowSnapshot:
     attribution_quality: str = ""
     token_policy: str = "normal_token"
     signal_context: str = "token_directional"
+    excluded_unpriced_count: int = 0
 
     @property
     def max_gross_usd(self) -> Decimal:

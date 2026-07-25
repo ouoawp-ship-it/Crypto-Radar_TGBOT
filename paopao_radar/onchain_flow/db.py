@@ -238,9 +238,10 @@ def _insert_alert_row(
             distinct_inbound_counterparties,
             distinct_outbound_counterparties, evaluation_block,
             price_source, price_observed_at, chain_name, notification_key
-            , source, attribution_quality, token_policy, signal_context
+            , source, attribution_quality, token_policy, signal_context,
+            excluded_unpriced_count
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(alert_key) DO NOTHING
         """,
         (
@@ -292,6 +293,7 @@ def _insert_alert_row(
             alert.attribution_quality,
             alert.token_policy,
             alert.signal_context,
+            alert.excluded_unpriced_count,
         ),
     )
 
@@ -340,6 +342,11 @@ def _alert_from_row(row: sqlite3.Row) -> OnchainAlert:
         attribution_quality=str(row["attribution_quality"]),
         token_policy=str(row["token_policy"]),
         signal_context=str(row["signal_context"]),
+        excluded_unpriced_count=(
+            int(row["excluded_unpriced_count"])
+            if "excluded_unpriced_count" in row.keys()
+            else 0
+        ),
     )
 
 
@@ -925,9 +932,9 @@ class OnchainStore:
                     status, inflow_exchanges_json, outflow_exchanges_json,
                     valuation_price_usd, price_market_observed_at,
                     price_fetched_at, source, attribution_quality,
-                    token_policy, signal_context
+                    token_policy, signal_context, excluded_unpriced_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active',
-                          ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(snapshot_key) DO UPDATE SET
                     gross_inflow_usd=excluded.gross_inflow_usd,
                     gross_outflow_usd=excluded.gross_outflow_usd,
@@ -951,6 +958,7 @@ class OnchainStore:
                     attribution_quality=excluded.attribution_quality,
                     token_policy=excluded.token_policy,
                     signal_context=excluded.signal_context,
+                    excluded_unpriced_count=excluded.excluded_unpriced_count,
                     status='active'
                 """,
                 (
@@ -991,6 +999,7 @@ class OnchainStore:
                     snapshot.attribution_quality,
                     snapshot.token_policy,
                     snapshot.signal_context,
+                    snapshot.excluded_unpriced_count,
                 ),
             )
 
@@ -1408,7 +1417,8 @@ class OnchainStore:
             row = conn.execute(
                 """
                 SELECT stream_name, last_timestamp_ms, last_event_id,
-                       last_success_at, status
+                       last_success_at, status, query_upper_ms,
+                       backlog_remaining
                 FROM arkham_sync_state
                 WHERE stream_name=?
                 """,
@@ -1422,6 +1432,8 @@ class OnchainStore:
             last_event_id=str(row["last_event_id"]),
             last_success_at=int(row["last_success_at"]),
             status=str(row["status"]),
+            query_upper_ms=int(row["query_upper_ms"]),
+            backlog_remaining=int(row["backlog_remaining"]),
         )
 
     def source_flows_since(
@@ -1448,10 +1460,14 @@ class OnchainStore:
         self,
         events: Sequence[ArkhamProcessedEvent],
         *,
+        rejected_events: Sequence[ArkhamRawEvent] = (),
         stream_name: str,
         cursor_timestamp_ms: int,
         last_event_id: str,
         last_success_at: int,
+        sync_status: str = "ok",
+        query_upper_ms: int = 0,
+        backlog_remaining: int = 0,
     ) -> tuple[int, int]:
         inserted = 0
         duplicates = 0
@@ -1461,7 +1477,7 @@ class OnchainStore:
                 for event in events:
                     existing = conn.execute(
                         """
-                        SELECT payload_hash
+                        SELECT payload_hash, immutable_fingerprint
                         FROM arkham_raw_events
                         WHERE arkham_transfer_id=?
                         """,
@@ -1469,25 +1485,55 @@ class OnchainStore:
                     ).fetchone()
                     if (
                         existing is not None
-                        and str(existing["payload_hash"])
-                        != event.raw.payload_hash
+                        and str(existing["immutable_fingerprint"])
+                        and str(existing["immutable_fingerprint"])
+                        != event.raw.immutable_fingerprint
                     ):
                         raise sqlite3.IntegrityError(
-                            "Arkham transfer ID payload conflict"
+                            "Arkham transfer ID immutable fact conflict"
                         )
+                    conn.execute(
+                        """
+                        INSERT INTO arkham_raw_event_versions(
+                            arkham_transfer_id, payload_hash,
+                            immutable_fingerprint, payload_json, received_via,
+                            received_at, processed_status, error_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(arkham_transfer_id, payload_hash)
+                        DO NOTHING
+                        """,
+                        (
+                            event.raw.transfer_id,
+                            event.raw.payload_hash,
+                            event.raw.immutable_fingerprint,
+                            event.raw.payload_json,
+                            event.raw.received_via,
+                            event.raw.received_at,
+                            event.raw.processed_status,
+                            event.raw.error_type,
+                        ),
+                    )
                     conn.execute(
                         """
                         INSERT INTO arkham_raw_events(
                             arkham_transfer_id, payload_json, payload_hash,
-                            received_via, received_at, processed_status,
-                            error_type
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(arkham_transfer_id) DO NOTHING
+                            immutable_fingerprint, received_via, received_at,
+                            processed_status, error_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(arkham_transfer_id) DO UPDATE SET
+                            payload_json=excluded.payload_json,
+                            payload_hash=excluded.payload_hash,
+                            immutable_fingerprint=excluded.immutable_fingerprint,
+                            received_via=excluded.received_via,
+                            received_at=excluded.received_at,
+                            processed_status=excluded.processed_status,
+                            error_type=excluded.error_type
                         """,
                         (
                             event.raw.transfer_id,
                             event.raw.payload_json,
                             event.raw.payload_hash,
+                            event.raw.immutable_fingerprint,
                             event.raw.received_via,
                             event.raw.received_at,
                             event.raw.processed_status,
@@ -1534,23 +1580,79 @@ class OnchainStore:
                                 entity.last_seen,
                             ),
                         )
+                for raw in rejected_events:
+                    conn.execute(
+                        """
+                        INSERT INTO arkham_raw_event_versions(
+                            arkham_transfer_id, payload_hash,
+                            immutable_fingerprint, payload_json, received_via,
+                            received_at, processed_status, error_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(arkham_transfer_id, payload_hash)
+                        DO NOTHING
+                        """,
+                        (
+                            raw.transfer_id,
+                            raw.payload_hash,
+                            raw.immutable_fingerprint,
+                            raw.payload_json,
+                            raw.received_via,
+                            raw.received_at,
+                            raw.processed_status,
+                            raw.error_type,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO arkham_raw_events(
+                            arkham_transfer_id, payload_json, payload_hash,
+                            immutable_fingerprint, received_via, received_at,
+                            processed_status, error_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(arkham_transfer_id) DO UPDATE SET
+                            payload_json=excluded.payload_json,
+                            payload_hash=excluded.payload_hash,
+                            received_via=excluded.received_via,
+                            received_at=excluded.received_at,
+                            processed_status=excluded.processed_status,
+                            error_type=excluded.error_type
+                        WHERE arkham_raw_events.processed_status
+                              IN ('failed', 'rejected_schema')
+                        """,
+                        (
+                            raw.transfer_id,
+                            raw.payload_json,
+                            raw.payload_hash,
+                            raw.immutable_fingerprint,
+                            raw.received_via,
+                            raw.received_at,
+                            raw.processed_status,
+                            raw.error_type,
+                        ),
+                    )
                 conn.execute(
                     """
                     INSERT INTO arkham_sync_state(
                         stream_name, last_timestamp_ms, last_event_id,
-                        last_success_at, status
-                    ) VALUES (?, ?, ?, ?, 'ok')
+                        last_success_at, status, query_upper_ms,
+                        backlog_remaining
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(stream_name) DO UPDATE SET
                         last_timestamp_ms=excluded.last_timestamp_ms,
                         last_event_id=excluded.last_event_id,
                         last_success_at=excluded.last_success_at,
-                        status='ok'
+                        status=excluded.status,
+                        query_upper_ms=excluded.query_upper_ms,
+                        backlog_remaining=excluded.backlog_remaining
                     """,
                     (
                         stream_name,
                         cursor_timestamp_ms,
                         last_event_id,
                         last_success_at,
+                        sync_status,
+                        query_upper_ms,
+                        max(0, backlog_remaining),
                     ),
                 )
             except BaseException:
@@ -1560,46 +1662,35 @@ class OnchainStore:
                 conn.commit()
         return inserted, duplicates
 
-    def record_arkham_page_failure(
+    def mark_arkham_stream_status(
         self,
-        raw_events: Sequence[ArkhamRawEvent],
-        *,
         stream_name: str,
-        error_type: str,
+        *,
+        status: str,
+        query_upper_ms: int,
+        backlog_remaining: int = 0,
     ) -> None:
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                for raw in raw_events:
-                    conn.execute(
-                        """
-                        INSERT INTO arkham_raw_events(
-                            arkham_transfer_id, payload_json, payload_hash,
-                            received_via, received_at, processed_status,
-                            error_type
-                        ) VALUES (?, ?, ?, ?, ?, 'failed', ?)
-                        ON CONFLICT(arkham_transfer_id) DO UPDATE SET
-                            processed_status='failed',
-                            error_type=excluded.error_type
-                        """,
-                        (
-                            raw.transfer_id,
-                            raw.payload_json,
-                            raw.payload_hash,
-                            raw.received_via,
-                            raw.received_at,
-                            error_type,
-                        ),
-                    )
                 conn.execute(
                     """
                     INSERT INTO arkham_sync_state(
                         stream_name, last_timestamp_ms, last_event_id,
-                        last_success_at, status
-                    ) VALUES (?, 0, '', 0, 'failed')
-                    ON CONFLICT(stream_name) DO UPDATE SET status='failed'
+                        last_success_at, status, query_upper_ms,
+                        backlog_remaining
+                    ) VALUES (?, 0, '', 0, ?, ?, ?)
+                    ON CONFLICT(stream_name) DO UPDATE SET
+                        status=excluded.status,
+                        query_upper_ms=excluded.query_upper_ms,
+                        backlog_remaining=excluded.backlog_remaining
                     """,
-                    (stream_name,),
+                    (
+                        stream_name,
+                        status,
+                        query_upper_ms,
+                        max(0, backlog_remaining),
+                    ),
                 )
             except BaseException:
                 conn.rollback()
@@ -1612,7 +1703,8 @@ class OnchainStore:
             states = conn.execute(
                 """
                 SELECT stream_name, last_timestamp_ms, last_event_id,
-                       last_success_at, status
+                       last_success_at, status, query_upper_ms,
+                       backlog_remaining
                 FROM arkham_sync_state
                 ORDER BY stream_name
                 """
@@ -1630,6 +1722,11 @@ class OnchainStore:
                     "SELECT COUNT(*) FROM entity_snapshots"
                 ).fetchone()[0]
             )
+            version_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM arkham_raw_event_versions"
+                ).fetchone()[0]
+            )
         return {
             "streams": [
                 {
@@ -1640,6 +1737,10 @@ class OnchainStore:
                     ),
                     "last_success_at": int(row["last_success_at"]),
                     "status": str(row["status"]),
+                    "query_upper_ms": int(row["query_upper_ms"]),
+                    "backlog_remaining": int(
+                        row["backlog_remaining"]
+                    ),
                 }
                 for row in states
             ],
@@ -1648,6 +1749,7 @@ class OnchainStore:
                 for row in status_rows
             },
             "entity_snapshot_count": entity_count,
+            "raw_event_version_count": version_count,
         }
 
     def table_counts(self) -> dict[str, int]:
@@ -1665,6 +1767,7 @@ class OnchainStore:
             "orphaned_transfer_audit",
             "single_event_decisions",
             "arkham_raw_events",
+            "arkham_raw_event_versions",
             "arkham_sync_state",
             "entity_snapshots",
         )

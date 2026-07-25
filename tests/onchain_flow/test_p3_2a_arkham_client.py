@@ -60,11 +60,7 @@ class ArkhamRestClientTests(unittest.TestCase):
     def test_capability_check_uses_api_key_and_both_cex_queries(self) -> None:
         session = ScriptedSession(
             [
-                FakeResponse(text="ok"),
                 FakeResponse(["ethereum", {"id": "base"}]),
-                FakeResponse(
-                    {"creditPerSession": 500, "creditPerTransfer": 1}
-                ),
                 FakeResponse({"transfers": [], "count": 0}),
                 FakeResponse(
                     {"transfers": [], "count": 0},
@@ -90,20 +86,31 @@ class ArkhamRestClientTests(unittest.TestCase):
         self.assertTrue(result["authenticated"])
         self.assertTrue(result["type_cex_rest_supported"])
         self.assertEqual(result["supported_chain_count"], 2)
-        self.assertEqual(result["current_session_credit_price"], 500)
-        self.assertEqual(result["current_transfer_credit_price"], 1)
+        self.assertEqual(result["rest_capability_status"], "ok")
         self.assertEqual(
-            session.requests[3]["params"]["to"], "type:cex"
+            result["websocket_check"], "not_run_p3_2a"
         )
         self.assertEqual(
-            session.requests[4]["params"]["from"], "type:cex"
+            session.requests[1]["params"]["to"], "type:cex"
         )
         self.assertEqual(
-            session.requests[3]["params"]["usdGte"], "10000000"
+            session.requests[2]["params"]["from"], "type:cex"
         )
-        self.assertEqual(session.requests[3]["params"]["limit"], 2)
-        self.assertEqual(session.requests[3]["params"]["chains"], "base")
+        self.assertEqual(
+            session.requests[1]["params"]["usdGte"], "10000000"
+        )
+        self.assertEqual(session.requests[1]["params"]["limit"], 2)
+        self.assertEqual(session.requests[1]["params"]["chains"], "base")
         self.assertEqual(sleeps, [1.0])
+        self.assertEqual(len(session.requests), 3)
+        self.assertNotIn(
+            "/health",
+            {request["url"] for request in session.requests},
+        )
+        self.assertNotIn(
+            "/ws/session-info",
+            {request["url"] for request in session.requests},
+        )
         for request in session.requests:
             self.assertEqual(
                 request["headers"], {"API-Key": "top-secret-key"}
@@ -114,11 +121,7 @@ class ArkhamRestClientTests(unittest.TestCase):
     def test_type_cex_rejection_requires_explicit_entity_ids(self) -> None:
         session = ScriptedSession(
             [
-                FakeResponse(text="ok"),
                 FakeResponse([]),
-                FakeResponse(
-                    {"creditPerSession": 500, "creditPerTransfer": 1}
-                ),
                 FakeResponse({}, status_code=400),
                 FakeResponse({}, status_code=400),
             ]
@@ -138,7 +141,31 @@ class ArkhamRestClientTests(unittest.TestCase):
         )
         self.assertFalse(result["type_cex_rest_supported"])
         self.assertTrue(result["requires_explicit_cex_entity_ids"])
-        self.assertEqual(len(session.requests), 5)
+        self.assertEqual(
+            result["rest_capability_status"],
+            "explicit_cex_entity_ids_required",
+        )
+        self.assertEqual(
+            result["websocket_check"], "not_run_p3_2a"
+        )
+        self.assertEqual(len(session.requests), 3)
+
+    def test_health_remains_optional_and_schema_checked(self) -> None:
+        healthy = ArkhamRestClient(
+            "https://api.arkm.com",
+            "secret",
+            retry=0,
+            session=ScriptedSession([FakeResponse(text="ok")]),
+        )
+        self.assertEqual(healthy.health(), "ok")
+        unhealthy = ArkhamRestClient(
+            "https://api.arkm.com",
+            "secret",
+            retry=0,
+            session=ScriptedSession([FakeResponse(text="not-ok")]),
+        )
+        with self.assertRaises(ArkhamSchemaError):
+            unhealthy.health()
 
     def test_auth_errors_fail_closed_and_redact_key(self) -> None:
         for status in (401, 403):

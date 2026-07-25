@@ -44,12 +44,14 @@ class ArkhamParty:
     label_name: str
 
     @property
-    def identified(self) -> bool:
-        return bool(self.entity_id and self.entity_type)
+    def has_entity_attribution(self) -> bool:
+        return bool(
+            self.entity_id or self.entity_name or self.entity_type
+        )
 
     @property
     def is_cex(self) -> bool:
-        return self.identified and self.entity_type == "cex"
+        return self.entity_type == "cex"
 
 
 def arkham_chain_id(chain: str) -> int:
@@ -161,67 +163,108 @@ def _timestamp_ms(value: object) -> int:
 def _classification(
     from_party: ArkhamParty, to_party: ArkhamParty
 ) -> tuple[str, str | None, str | None, str]:
-    if not from_party.identified or not to_party.identified:
-        return "unidentified", None, None, "unlabeled"
-    quality = "arkham_entity"
+    def quality(party: ArkhamParty) -> str:
+        if party.has_entity_attribution:
+            return "arkham_entity"
+        if party.label_name:
+            return "arkham_label"
+        return "unlabeled"
+
     if from_party.is_cex and to_party.is_cex:
-        if from_party.entity_id == to_party.entity_id:
+        if (
+            from_party.entity_id
+            and to_party.entity_id
+            and from_party.entity_id == to_party.entity_id
+        ):
             return (
                 "internal",
                 from_party.entity_name or from_party.entity_id,
                 to_party.entity_name or to_party.entity_id,
-                quality,
+                "arkham_entity",
+            )
+        if (
+            from_party.entity_id
+            and to_party.entity_id
+            and from_party.entity_id != to_party.entity_id
+        ):
+            return (
+                "cross_cex",
+                from_party.entity_name or from_party.entity_id,
+                to_party.entity_name or to_party.entity_id,
+                "arkham_entity",
             )
         return (
-            "cross_cex",
-            from_party.entity_name or from_party.entity_id,
-            to_party.entity_name or to_party.entity_id,
-            quality,
+            "cex_to_cex_unresolved",
+            from_party.entity_name or from_party.entity_id or None,
+            to_party.entity_name or to_party.entity_id or None,
+            "arkham_entity",
         )
-    if not from_party.is_cex and to_party.is_cex:
+    if to_party.is_cex:
         return (
             "inflow",
             None,
-            to_party.entity_name or to_party.entity_id,
-            quality,
+            to_party.entity_name or to_party.entity_id or None,
+            quality(to_party),
         )
-    if from_party.is_cex and not to_party.is_cex:
+    if from_party.is_cex:
         return (
             "outflow",
-            from_party.entity_name or from_party.entity_id,
+            from_party.entity_name or from_party.entity_id or None,
             None,
-            quality,
+            quality(from_party),
         )
-    return "non_cex", None, None, quality
+    strongest_quality = max(
+        (quality(from_party), quality(to_party)),
+        key=lambda value: {
+            "unlabeled": 0,
+            "arkham_label": 1,
+            "arkham_entity": 2,
+        }[value],
+    )
+    flow_type = (
+        "non_cex"
+        if from_party.address and to_party.address
+        else "unidentified"
+    )
+    return flow_type, None, None, strongest_quality
 
 
-def _fallback_identity(
-    transfer: Mapping[str, object],
+def _immutable_fingerprint(
     *,
     chain: str,
     tx_hash: str,
+    block_number: int,
+    timestamp_ms: int,
+    block_hash: str,
+    token_address: str,
+    token_id: str,
+    from_address: str,
+    to_address: str,
+    unit_value: Decimal | None,
+    token_decimals: int | None,
 ) -> str:
-    discriminator = {
+    immutable = {
         "chain": chain,
         "transactionHash": tx_hash,
-        "blockNumber": transfer.get("blockNumber"),
-        "tokenAddress": transfer.get("tokenAddress"),
-        "tokenId": transfer.get("tokenId"),
-        "from": _mapping(transfer.get("fromAddress")).get("address"),
-        "to": _mapping(transfer.get("toAddress")).get("address"),
-        "unitValue": transfer.get("unitValue"),
-        "historicalUSD": transfer.get("historicalUSD"),
+        "blockNumber": block_number,
+        "blockTimestampMs": timestamp_ms,
+        "blockHash": block_hash,
+        "tokenAddress": token_address,
+        "tokenId": token_id,
+        "from": from_address,
+        "to": to_address,
+        "unitValue": str(unit_value) if unit_value is not None else None,
+        "tokenDecimals": token_decimals,
     }
-    digest = sha256(
+    return sha256(
         json.dumps(
-            discriminator,
+            immutable,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         ).encode("utf-8")
     ).hexdigest()
-    return f"fallback:{digest}"
 
 
 def normalize_arkham_transfer(
@@ -239,17 +282,6 @@ def normalize_arkham_transfer(
     timestamp_ms = _timestamp_ms(transfer.get("blockTimestamp"))
     block_time = timestamp_ms // 1000
     tx_hash = _string(transfer.get("transactionHash")).lower()
-    transfer_id = _string(transfer.get("id"))
-    if not transfer_id:
-        transfer_id = _fallback_identity(
-            transfer, chain=chain, tx_hash=tx_hash
-        )
-    event_id = f"arkham:{transfer_id}"
-    if not tx_hash:
-        tx_hash = f"arkham:{sha256(event_id.encode()).hexdigest()}"
-    discriminator = int(
-        sha256(event_id.encode("utf-8")).hexdigest()[:15], 16
-    )
     from_party = _party(transfer.get("fromAddress"))
     to_party = _party(transfer.get("toAddress"))
     flow_type, exchange_from, exchange_to, quality = _classification(
@@ -290,6 +322,35 @@ def normalize_arkham_transfer(
         else None
     )
     unit_value = _non_negative_decimal(transfer.get("unitValue"))
+    block_number = (
+        int(transfer.get("blockNumber"))
+        if isinstance(transfer.get("blockNumber"), int)
+        and not isinstance(transfer.get("blockNumber"), bool)
+        else 0
+    )
+    block_hash = _string(transfer.get("blockHash")).lower()
+    immutable_fingerprint = _immutable_fingerprint(
+        chain=chain,
+        tx_hash=tx_hash,
+        block_number=block_number,
+        timestamp_ms=timestamp_ms,
+        block_hash=block_hash,
+        token_address=token_address,
+        token_id=token_id,
+        from_address=from_party.address,
+        to_address=to_party.address,
+        unit_value=unit_value,
+        token_decimals=decimals,
+    )
+    transfer_id = _string(transfer.get("id"))
+    if not transfer_id:
+        transfer_id = f"fallback:{immutable_fingerprint}"
+    event_id = f"arkham:{transfer_id}"
+    if not tx_hash:
+        tx_hash = f"arkham:{sha256(event_id.encode()).hexdigest()}"
+    discriminator = int(
+        sha256(event_id.encode("utf-8")).hexdigest()[:15], 16
+    )
     amount_raw = 0
     if unit_value is not None and decimals is not None:
         amount_raw = int(unit_value * (Decimal(10) ** decimals))
@@ -307,13 +368,8 @@ def normalize_arkham_transfer(
         event_id=event_id,
         chain_id=chain_id,
         chain_name=chain,
-        block_number=(
-            int(transfer.get("blockNumber"))
-            if isinstance(transfer.get("blockNumber"), int)
-            and not isinstance(transfer.get("blockNumber"), bool)
-            else 0
-        ),
-        block_hash=_string(transfer.get("blockHash")).lower(),
+        block_number=block_number,
+        block_hash=block_hash,
         block_time=block_time,
         tx_hash=tx_hash,
         log_index=discriminator,
@@ -410,6 +466,7 @@ def normalize_arkham_transfer(
         transfer_id=transfer_id,
         payload_json=payload_json,
         payload_hash=sha256(payload_json.encode("utf-8")).hexdigest(),
+        immutable_fingerprint=immutable_fingerprint,
         received_via=received_via,
         received_at=received_at,
         processed_status=processed_status,

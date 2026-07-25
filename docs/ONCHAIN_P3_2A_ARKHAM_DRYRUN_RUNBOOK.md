@@ -45,10 +45,12 @@ Run the read-only capability check:
 python onchain_main.py arkham-check
 ```
 
-It calls only `GET /health`, `GET /chains`, `GET /ws/session-info`, and two
-small high-threshold `/transfers` queries. It does not create a WebSocket
-session. The output contains only authentication status, supported-chain
-count, `type:cex` support, credit prices, and redacted rate-limit metadata.
+It requires only authenticated `GET /chains` plus two small high-threshold
+`/transfers` queries. `/health` remains an optional client diagnostic and is
+not a capability dependency. P3.2A does not call deprecated WebSocket session
+endpoints or create a WebSocket session. Output contains only authentication
+status, supported-chain count, `type:cex` support, REST capability status,
+redacted rate-limit metadata, and `websocket_check=not_run_p3_2a`.
 
 If `type_cex_rest_supported=false`, obtain and review explicit Arkham entity
 IDs, then configure both values deliberately:
@@ -77,23 +79,48 @@ and redacted errors.
 
 Each stream starts from its durable cursor minus
 `ARKHAM_REST_OVERLAP_SEC`. A page is normalized and persisted in one short
-SQLite transaction. Its cursor advances only after every item in that page is
-processed. A failed page is recorded as failed and leaves the previous cursor
-position intact. Repeated overlap results are idempotently deduplicated.
+SQLite transaction. The first run uses
+`ARKHAM_REST_BOOTSTRAP_LOOKBACK_SEC=3600`; every cycle freezes
+`timeLte=now-ARKHAM_REST_INDEXING_DELAY_SEC` with a default 60-second indexing
+delay. All pages in that cycle reuse the same lower and upper time bounds.
+
+Each payload is normalized independently. A malformed payload is durably
+quarantined as `rejected_schema`, using its payload hash when it has no
+transfer ID, without downgrading valid siblings or an already processed
+event. The cursor advances only after every item is either processed or
+quarantined. When the page budget is exhausted, status is
+`partial_backlog`, backlog metrics remain visible, and `arkham-once` exits
+with an attention code instead of reporting success. Repeated overlap results
+are idempotently deduplicated.
+
+Arkham raw payloads retain an immutable transfer fingerprint separately from
+mutable entity/label enrichment. Updated attribution with unchanged transfer
+facts creates an audit version and refreshes the latest entity snapshot. A
+real immutable-fact conflict fails closed without advancing the cursor.
 
 ## Valuation and attribution
 
 - Positive finite `historicalUSD` is the event-time USD value.
 - Missing or invalid `historicalUSD` is stored as unpriced and cannot create a
   USD directional alert.
+- A mixed priced/unpriced window aggregates only the priced subset and records
+  `excluded_unpriced_count`; unpriced events never erase valid priced flow.
 - Arkham entity/label attribution is probabilistic. The runtime stores
   `arkham_entity`, `arkham_label`, or `unlabeled`; it does not manufacture a
   numeric Arkham confidence score.
 - Normal tokens may use the existing CEX inflow/outflow directional prior.
-- Configured stablecoins use `market_liquidity_context` and never claim that
-  the stablecoin will pump or dump.
+- Built-in stablecoin token IDs are `usd-coin`, `tether`, and `dai`.
+  `ONCHAIN_STABLECOIN_TOKEN_IDS` extends this set; it does not erase these
+  safety defaults. Stablecoins use `market_liquidity_context` and never claim
+  that the stablecoin itself will rise or fall.
 - Wrapped/receipt and unknown token policies are stored without a directional
   alert in P3.2A.
+
+Arkham notifications use a stable source/chain/token/direction/duration/
+detection/severity key. Completed dry-run and sent attempts start the isolated
+on-chain cooldown. A suppressed evaluation remains an audited alert fact with
+`cooldown_suppressed`; severity escalation and direction reversal use a new
+notification key.
 
 ## Manual acceptance with a private key
 

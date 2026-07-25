@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .config import OnchainSettings
+from .config import DEFAULT_STABLECOIN_TOKEN_IDS, OnchainSettings
 
 
 NORMAL_TOKEN = "normal_token"
@@ -30,7 +30,8 @@ def _contract_identity(chain: str, token_address: str) -> str:
 
 class ConfiguredTokenPolicy:
     def __init__(self, settings: OnchainSettings):
-        self._stablecoin_ids = set(settings.stablecoin_token_ids)
+        self._stablecoin_ids = set(DEFAULT_STABLECOIN_TOKEN_IDS)
+        self._stablecoin_ids.update(settings.stablecoin_token_ids)
         self._stablecoin_contracts = set(settings.stablecoin_contracts)
         self._wrapped_ids = set(settings.wrapped_or_receipt_token_ids)
         self._wrapped_contracts = set(
