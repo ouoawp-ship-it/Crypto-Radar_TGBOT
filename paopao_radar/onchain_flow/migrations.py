@@ -375,7 +375,10 @@ MIGRATIONS = (
             last_success_at INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'not_started',
             query_upper_ms INTEGER NOT NULL DEFAULT 0,
-            backlog_remaining INTEGER NOT NULL DEFAULT 0
+            backlog_remaining INTEGER NOT NULL DEFAULT 0,
+            window_lower_ms INTEGER NOT NULL DEFAULT 0,
+            window_upper_ms INTEGER NOT NULL DEFAULT 0,
+            next_offset INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS entity_snapshots (

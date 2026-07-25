@@ -75,7 +75,10 @@ python onchain_main.py db-check
 `arkham-once` performs sequential inbound (`to=...`) and outbound
 (`from=...`) queries. `/transfers` is budgeted at no more than one request per
 second. Every request has a finite timeout, bounded retry, bounded pagination,
-and redacted errors.
+disabled redirects, and redacted errors. Numeric `Retry-After` values are
+capped by `ARKHAM_RETRY_AFTER_MAX_SEC=60`; malformed values use bounded
+exponential backoff. The API key is therefore never forwarded to a redirect
+host.
 
 Each stream starts from its durable cursor minus
 `ARKHAM_REST_OVERLAP_SEC`. A page is normalized and persisted in one short
@@ -83,6 +86,10 @@ SQLite transaction. The first run uses
 `ARKHAM_REST_BOOTSTRAP_LOOKBACK_SEC=3600`; every cycle freezes
 `timeLte=now-ARKHAM_REST_INDEXING_DELAY_SEC` with a default 60-second indexing
 delay. All pages in that cycle reuse the same lower and upper time bounds.
+If the page budget is exhausted, Migration 4 preserves the frozen lower/upper
+bounds and the next offset. The next invocation resumes that exact window
+from the durable offset rather than replaying page zero. Only a fully drained
+window advances the completed cursor to its frozen safe upper bound.
 
 Each payload is normalized independently. A malformed payload is durably
 quarantined as `rejected_schema`, using its payload hash when it has no
@@ -92,6 +99,12 @@ quarantined. When the page budget is exhausted, status is
 `partial_backlog`, backlog metrics remain visible, and `arkham-once` exits
 with an attention code instead of reporting success. Repeated overlap results
 are idempotently deduplicated.
+
+`arkham-status` derives its top-level result from every initialized stream:
+`ok` exits 0, `failed` exits 1, `partial_backlog` exits 2, and an
+uninitialized database exits 0 as `not_initialized`. It also reports each
+stream's completed cursor, last success, backlog, frozen window, and next
+offset.
 
 Arkham raw payloads retain an immutable transfer fingerprint separately from
 mutable entity/label enrichment. Updated attribution with unchanged transfer
@@ -115,12 +128,19 @@ real immutable-fact conflict fails closed without advancing the cursor.
   that the stablecoin itself will rise or fall.
 - Wrapped/receipt and unknown token policies are stored without a directional
   alert in P3.2A.
+- A transfer with neither contract nor Arkham token ID receives a deterministic
+  `arkham-token-unknown:<immutable-fingerprint>` identity. It remains auditable
+  under the unknown policy and cannot create a directional alert.
 
 Arkham notifications use a stable source/chain/token/direction/duration/
 detection/severity key. Completed dry-run and sent attempts start the isolated
-on-chain cooldown. A suppressed evaluation remains an audited alert fact with
-`cooldown_suppressed`; severity escalation and direction reversal use a new
-notification key.
+on-chain cooldown. Re-reading the identical Arkham transfer reuses its one
+single-event alert fact and delivery row. A distinct transfer still creates
+its own fact; when its notification is inside cooldown, that fact remains
+audited with `cooldown_suppressed`. Severity escalation and direction reversal
+use a new notification key. If mutable Arkham attribution changes the
+directional interpretation of one transfer, the prior interpretation is
+marked superseded and one revision fact is created.
 
 ## Manual acceptance with a private key
 

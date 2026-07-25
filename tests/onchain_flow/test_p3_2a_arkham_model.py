@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from paopao_radar.onchain_flow.arkham_normalizer import (
     normalize_arkham_transfer,
 )
+from paopao_radar.onchain_flow.config import SettingsValidationError
 from paopao_radar.onchain_flow.db import OnchainStore
 from paopao_radar.onchain_flow.migrations import apply_migrations
 from paopao_radar.onchain_flow.token_policy import (
@@ -246,6 +247,28 @@ class ArkhamNormalizationTests(unittest.TestCase):
         self.assertEqual(no_contract.transfer.event_id, again.transfer.event_id)
         self.assertTrue(no_contract.transfer.event_id.startswith("arkham:"))
 
+    def test_missing_token_identity_is_deterministic_and_suppressed(
+        self,
+    ) -> None:
+        payload = transfer_payload(
+            transfer_id="unknown-token",
+            token_address="",
+            token_id="",
+        )
+        first = self.normalize(payload)
+        second = self.normalize(dict(payload))
+        self.assertEqual(
+            first.transfer.token_address,
+            second.transfer.token_address,
+        )
+        self.assertTrue(
+            first.transfer.token_address.startswith(
+                "arkham-token-unknown:"
+            )
+        )
+        self.assertEqual(first.flow.token_policy, UNKNOWN)
+        self.assertEqual(first.raw.processed_status, "policy_suppressed")
+
     def test_configured_token_policy_is_conservative(self) -> None:
         settings = replace(
             self.settings,
@@ -326,6 +349,19 @@ class ArkhamNormalizationTests(unittest.TestCase):
                     normalized.flow.signal_context,
                     "market_liquidity_context",
                 )
+
+    def test_retry_after_cap_must_be_positive_and_bounded(self) -> None:
+        for value in (0, 3601):
+            with self.subTest(value=value), self.assertRaises(
+                SettingsValidationError
+            ):
+                replace(
+                    self.settings,
+                    arkham_retry_after_max_sec=value,
+                ).validate()
+        replace(
+            self.settings, arkham_retry_after_max_sec=60
+        ).validate()
 
 
 class ArkhamPersistenceTests(unittest.TestCase):
@@ -449,6 +485,74 @@ class ArkhamPersistenceTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(snapshot["entity_id"], "new-fund")
             self.assertEqual(snapshot["entity_name"], "New Fund")
+
+    def test_canonical_facts_and_snapshot_non_downgrade(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = make_settings(Path(tmp))
+            store = OnchainStore(settings)
+            store.migrate()
+            policy = ConfiguredTokenPolicy(settings)
+            original_payload = transfer_payload()
+            original_payload["unitValue"] = 2
+            original = normalize_arkham_transfer(
+                original_payload, token_policy=policy, received_at=1
+            )
+            store.persist_arkham_page(
+                [original],
+                stream_name="inflow",
+                cursor_timestamp_ms=original.timestamp_ms,
+                last_event_id=original.transfer.event_id,
+                last_success_at=1,
+            )
+
+            enrichment = transfer_payload()
+            enrichment["unitValue"] = "2.000"
+            enrichment["tokenDecimals"] = 6
+            enrichment["tokenName"] = "Corrected Name"
+            enrichment["tokenSymbol"] = "NEW"
+            enrichment["historicalUSD"] = 2_100_000
+            enrichment["toAddress"] = party(
+                "0xto", "", "", label="Updated label"
+            )
+            updated = normalize_arkham_transfer(
+                enrichment, token_policy=policy, received_at=2
+            )
+            self.assertEqual(
+                original.raw.immutable_fingerprint,
+                updated.raw.immutable_fingerprint,
+            )
+            store.persist_arkham_page(
+                [updated],
+                stream_name="inflow",
+                cursor_timestamp_ms=updated.timestamp_ms,
+                last_event_id=updated.transfer.event_id,
+                last_success_at=2,
+            )
+            with closing(store._connect()) as conn:
+                snapshot = conn.execute(
+                    """
+                    SELECT entity_id, entity_name, entity_type, label_name
+                    FROM entity_snapshots
+                    WHERE chain='base' AND address='0xto'
+                    """
+                ).fetchone()
+            self.assertEqual(snapshot["entity_id"], "binance")
+            self.assertEqual(snapshot["entity_name"], "Binance")
+            self.assertEqual(snapshot["entity_type"], "cex")
+            self.assertEqual(snapshot["label_name"], "Updated label")
+            self.assertEqual(
+                store.table_counts()["arkham_raw_event_versions"], 2
+            )
+
+            decimal_payload = transfer_payload()
+            decimal_payload["unitValue"] = 2.0
+            decimal_event = normalize_arkham_transfer(
+                decimal_payload, token_policy=policy, received_at=3
+            )
+            self.assertEqual(
+                original.raw.immutable_fingerprint,
+                decimal_event.raw.immutable_fingerprint,
+            )
 
     def test_immutable_transfer_conflict_fails_closed(self) -> None:
         with TemporaryDirectory() as tmp:

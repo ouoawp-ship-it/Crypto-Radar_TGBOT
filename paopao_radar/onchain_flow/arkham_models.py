@@ -49,3 +49,6 @@ class ArkhamSyncState:
     status: str
     query_upper_ms: int = 0
     backlog_remaining: int = 0
+    window_lower_ms: int = 0
+    window_upper_ms: int = 0
+    next_offset: int = 0

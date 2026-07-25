@@ -139,7 +139,15 @@ def _timestamp_ms(value: object) -> int:
             "Arkham blockTimestamp is malformed"
         )
     if isinstance(value, (int, float)):
-        parsed = int(value)
+        try:
+            numeric = Decimal(str(value))
+            if not numeric.is_finite() or numeric < 0:
+                raise ValueError
+            parsed = int(numeric)
+        except (InvalidOperation, OverflowError, ValueError) as exc:
+            raise ArkhamNormalizationError(
+                "Arkham blockTimestamp is malformed"
+            ) from exc
         return parsed if parsed >= 10**12 else parsed * 1000
     text = _string(value)
     if not text:
@@ -147,11 +155,16 @@ def _timestamp_ms(value: object) -> int:
             "Arkham blockTimestamp is missing"
         )
     if text.isdigit():
-        parsed = int(text)
+        try:
+            parsed = int(text)
+        except (OverflowError, ValueError) as exc:
+            raise ArkhamNormalizationError(
+                "Arkham blockTimestamp is malformed"
+            ) from exc
         return parsed if parsed >= 10**12 else parsed * 1000
     try:
         moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as exc:
+    except (OSError, OverflowError, ValueError) as exc:
         raise ArkhamNormalizationError(
             "Arkham blockTimestamp is malformed"
         ) from exc
@@ -229,6 +242,14 @@ def _classification(
     return flow_type, None, None, strongest_quality
 
 
+def _canonical_decimal(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
+
+
 def _immutable_fingerprint(
     *,
     chain: str,
@@ -236,12 +257,10 @@ def _immutable_fingerprint(
     block_number: int,
     timestamp_ms: int,
     block_hash: str,
-    token_address: str,
-    token_id: str,
+    token_identity: str,
     from_address: str,
     to_address: str,
     unit_value: Decimal | None,
-    token_decimals: int | None,
 ) -> str:
     immutable = {
         "chain": chain,
@@ -249,12 +268,10 @@ def _immutable_fingerprint(
         "blockNumber": block_number,
         "blockTimestampMs": timestamp_ms,
         "blockHash": block_hash,
-        "tokenAddress": token_address,
-        "tokenId": token_id,
+        "tokenIdentity": token_identity,
         "from": from_address,
         "to": to_address,
-        "unitValue": str(unit_value) if unit_value is not None else None,
-        "tokenDecimals": token_decimals,
+        "unitValue": _canonical_decimal(unit_value),
     }
     return sha256(
         json.dumps(
@@ -267,7 +284,7 @@ def _immutable_fingerprint(
     ).hexdigest()
 
 
-def normalize_arkham_transfer(
+def _normalize_arkham_transfer(
     payload: Mapping[str, object],
     *,
     token_policy: TokenPolicy,
@@ -295,14 +312,11 @@ def normalize_arkham_transfer(
     token_address = _string(transfer.get("tokenAddress")).lower()
     token_id = _string(transfer.get("tokenId")).lower()
     if token_address:
-        token_identity = token_address
+        token_fact_identity = token_address
     elif token_id:
-        token_identity = f"arkham-token:{token_id}"
+        token_fact_identity = f"arkham-token:{token_id}"
     else:
-        token_identity = (
-            "arkham-token-unknown:"
-            + sha256(f"{chain}:{event_id}".encode()).hexdigest()
-        )
+        token_fact_identity = "arkham-token-unknown"
     policy = token_policy.classify(
         chain=chain,
         token_id=token_id,
@@ -335,12 +349,15 @@ def normalize_arkham_transfer(
         block_number=block_number,
         timestamp_ms=timestamp_ms,
         block_hash=block_hash,
-        token_address=token_address,
-        token_id=token_id,
+        token_identity=token_fact_identity,
         from_address=from_party.address,
         to_address=to_party.address,
         unit_value=unit_value,
-        token_decimals=decimals,
+    )
+    token_identity = (
+        f"arkham-token-unknown:{immutable_fingerprint}"
+        if not token_address and not token_id
+        else token_fact_identity
     )
     transfer_id = _string(transfer.get("id"))
     if not transfer_id:
@@ -353,7 +370,14 @@ def normalize_arkham_transfer(
     )
     amount_raw = 0
     if unit_value is not None and decimals is not None:
-        amount_raw = int(unit_value * (Decimal(10) ** decimals))
+        try:
+            amount_raw = int(
+                unit_value * (Decimal(10) ** decimals)
+            )
+        except (ArithmeticError, OverflowError, ValueError) as exc:
+            raise ArkhamNormalizationError(
+                "Arkham unitValue cannot be normalized"
+            ) from exc
     historical_usd = _positive_decimal(
         transfer.get("historicalUSD")
     )
@@ -479,3 +503,25 @@ def normalize_arkham_transfer(
         entities=entities,
         timestamp_ms=timestamp_ms,
     )
+
+
+def normalize_arkham_transfer(
+    payload: Mapping[str, object],
+    *,
+    token_policy: TokenPolicy,
+    received_at: int,
+    received_via: str = "rest",
+) -> ArkhamProcessedEvent:
+    try:
+        return _normalize_arkham_transfer(
+            payload,
+            token_policy=token_policy,
+            received_at=received_at,
+            received_via=received_via,
+        )
+    except ArkhamNormalizationError:
+        raise
+    except (ArithmeticError, OverflowError, TypeError, ValueError) as exc:
+        raise ArkhamNormalizationError(
+            "Arkham transfer payload cannot be normalized"
+        ) from exc

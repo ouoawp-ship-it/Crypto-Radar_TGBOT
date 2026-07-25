@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import closing
 from dataclasses import replace
@@ -244,6 +245,58 @@ class ArkhamRuntimeTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(retried["count"], 1)
 
+    def test_unknown_token_and_bad_numeric_timestamp_are_isolated(
+        self,
+    ) -> None:
+        unknown = event("unknown-token")
+        unknown["tokenAddress"] = ""
+        unknown["tokenId"] = ""
+        valid = event("valid-sibling")
+        malformed = event("bad-time")
+        malformed["blockTimestamp"] = float("inf")
+
+        def handler(params):
+            return (
+                ([unknown, valid, malformed], 3)
+                if "to" in params
+                else ([], 0)
+            )
+
+        with TemporaryDirectory() as tmp:
+            settings = arkham_settings(
+                Path(tmp), arkham_rest_limit=3
+            )
+            result = ArkhamRestRuntime(
+                settings,
+                client=FakeArkhamClient(handler),
+                clock=lambda: NOW,
+            ).process_once()
+            self.assertEqual(result["unique_inserted_events"], 2)
+            self.assertEqual(result["rejected_schema_events"], 1)
+            store = OnchainStore(settings)
+            with closing(store._connect()) as conn:
+                unknown_row = conn.execute(
+                    """
+                    SELECT token_address, token_policy
+                    FROM flow_events WHERE event_id='arkham:unknown-token'
+                    """
+                ).fetchone()
+                rejected = conn.execute(
+                    """
+                    SELECT processed_status
+                    FROM arkham_raw_events
+                    WHERE arkham_transfer_id='bad-time'
+                    """
+                ).fetchone()
+            self.assertTrue(
+                unknown_row["token_address"].startswith(
+                    "arkham-token-unknown:"
+                )
+            )
+            self.assertEqual(unknown_row["token_policy"], "unknown")
+            self.assertEqual(rejected["processed_status"], "rejected_schema")
+            self.assertEqual(store.table_counts()["alerts"], 1)
+
     def test_processed_event_is_not_downgraded_by_later_rejection(
         self,
     ) -> None:
@@ -357,16 +410,14 @@ class ArkhamRuntimeTests(unittest.TestCase):
     def test_max_page_exhaustion_reports_and_recovers_backlog(
         self,
     ) -> None:
-        first_page = [event("backlog-1"), event("backlog-2")]
-        remaining = event("backlog-3")
-        cycle = [1]
+        records = [event(f"backlog-{index}") for index in range(5)]
 
         def handler(params):
             if "from" in params:
                 return [], 0
-            if cycle[0] == 1:
-                return first_page, 3
-            return [remaining], 1
+            offset = int(params["offset"])
+            limit = int(params["limit"])
+            return records[offset : offset + limit], len(records)
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -383,17 +434,29 @@ class ArkhamRuntimeTests(unittest.TestCase):
             self.assertEqual(partial["status"], "partial_backlog")
             self.assertEqual(partial["streams_completed"], 1)
             self.assertEqual(partial["streams_partial_backlog"], 1)
-            self.assertEqual(partial["backlog_remaining"], 1)
+            self.assertEqual(partial["backlog_remaining"], 3)
             state = OnchainStore(settings).arkham_sync_state(
                 "arkham_cex_inflow"
             )
             self.assertEqual(state.status, "partial_backlog")
-            self.assertEqual(state.backlog_remaining, 1)
+            self.assertEqual(state.backlog_remaining, 3)
+            self.assertEqual(state.next_offset, 2)
+            frozen_upper = state.window_upper_ms
+            frozen_lower = state.window_lower_ms
             self.assertNotEqual(
                 state.last_timestamp_ms, partial["query_upper_ms"]
             )
 
-            cycle[0] = 2
+            clock_now[0] += 300
+            second = runtime.process_once()
+            self.assertEqual(second["status"], "partial_backlog")
+            state = OnchainStore(settings).arkham_sync_state(
+                "arkham_cex_inflow"
+            )
+            self.assertEqual(state.next_offset, 4)
+            self.assertEqual(state.window_upper_ms, frozen_upper)
+            self.assertEqual(state.window_lower_ms, frozen_lower)
+
             clock_now[0] += 300
             recovered = runtime.process_once()
             self.assertEqual(recovered["status"], "ok")
@@ -403,8 +466,31 @@ class ArkhamRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(state.status, "ok")
             self.assertEqual(state.backlog_remaining, 0)
+            self.assertEqual(state.last_timestamp_ms, frozen_upper)
+            self.assertEqual(state.next_offset, 0)
+            self.assertEqual(state.window_lower_ms, 0)
+            self.assertEqual(state.window_upper_ms, 0)
+            inbound = [
+                call
+                for call in runtime._client_instance.calls
+                if "to" in call
+            ]
             self.assertEqual(
-                state.last_timestamp_ms, recovered["query_upper_ms"]
+                [call["offset"] for call in inbound], [0, 2, 4]
+            )
+            self.assertEqual(
+                {call["timeGte"] for call in inbound},
+                {str(frozen_lower)},
+            )
+            self.assertEqual(
+                {call["timeLte"] for call in inbound},
+                {str(frozen_upper)},
+            )
+            self.assertEqual(
+                OnchainStore(settings).table_counts()[
+                    "arkham_raw_events"
+                ],
+                5,
             )
 
     def test_cli_returns_attention_exit_for_partial_backlog(self) -> None:
@@ -596,7 +682,7 @@ class ArkhamRuntimeTests(unittest.TestCase):
             clock_now[0] += 300
             second = runtime.process_once()
             self.assertEqual(second["telegram_dry_run_count"], 0)
-            self.assertEqual(second["cooldown_suppressed"], 1)
+            self.assertEqual(second["cooldown_suppressed"], 0)
             store = OnchainStore(settings)
             with closing(store._connect()) as conn:
                 statuses = [
@@ -609,10 +695,93 @@ class ArkhamRuntimeTests(unittest.TestCase):
                         """
                     ).fetchall()
                 ]
-            self.assertEqual(
-                set(statuses), {"dry_run", "cooldown_suppressed"}
+            self.assertEqual(statuses, ["dry_run"])
+            self.assertEqual(store.table_counts()["alerts"], 1)
+
+    def test_distinct_transfer_fact_is_audited_inside_cooldown(
+        self,
+    ) -> None:
+        payloads = [event("distinct-1"), event("distinct-2")]
+
+        def handler(params):
+            return (payloads, 2) if "to" in params else ([], 0)
+
+        with TemporaryDirectory() as tmp:
+            settings = arkham_settings(
+                Path(tmp), alert_cooldown_sec=3600
             )
+            result = ArkhamRestRuntime(
+                settings,
+                client=FakeArkhamClient(handler),
+                clock=lambda: NOW,
+            ).process_once()
+            self.assertEqual(result["telegram_dry_run_count"], 1)
+            self.assertEqual(result["cooldown_suppressed"], 1)
+            store = OnchainStore(settings)
             self.assertEqual(store.table_counts()["alerts"], 2)
+            with closing(store._connect()) as conn:
+                statuses = {
+                    row["status"]
+                    for row in conn.execute(
+                        "SELECT status FROM alert_deliveries"
+                    ).fetchall()
+                }
+            self.assertEqual(
+                statuses, {"dry_run", "cooldown_suppressed"}
+            )
+
+    def test_mutable_attribution_direction_change_supersedes_fact(
+        self,
+    ) -> None:
+        first = event("direction-revision")
+        from_address = first["fromAddress"]["address"]
+        to_address = first["toAddress"]["address"]
+        revised = dict(first)
+        revised["fromAddress"] = party(
+            from_address, "binance", "cex", "Binance"
+        )
+        revised["toAddress"] = party(
+            to_address, "fund", "fund", "Fund"
+        )
+        inbound_calls = [0]
+
+        def handler(params):
+            if "from" in params:
+                return [], 0
+            inbound_calls[0] += 1
+            return (
+                ([first], 1)
+                if inbound_calls[0] == 1
+                else ([revised], 1)
+            )
+
+        with TemporaryDirectory() as tmp:
+            settings = arkham_settings(
+                Path(tmp), alert_cooldown_sec=3600
+            )
+            clock_now = [NOW]
+            runtime = ArkhamRestRuntime(
+                settings,
+                client=FakeArkhamClient(handler),
+                clock=lambda: clock_now[0],
+            )
+            runtime.process_once()
+            clock_now[0] += 300
+            runtime.process_once()
+            with closing(OnchainStore(settings)._connect()) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT direction, status FROM alerts
+                    WHERE alert_key LIKE
+                          'arkham:arkham:direction-revision:single:%'
+                    ORDER BY direction
+                    """
+                ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                {row["direction"]: row["status"] for row in rows},
+                {"inflow": "superseded", "outflow": "active"},
+            )
 
     def test_severity_escalation_and_direction_reversal_bypass_cooldown(
         self,
@@ -750,6 +919,40 @@ class ArkhamRuntimeTests(unittest.TestCase):
                     )
                     self.assertNotIn("private-key", output.getvalue())
             self.assertFalse(settings.db_path.exists())
+
+    def test_arkham_status_exit_codes_follow_stream_health(self) -> None:
+        cases = (
+            ("not_initialized", None, 0),
+            ("ok", "ok", 0),
+            ("partial_backlog", "partial_backlog", 2),
+            ("failed", "failed", 1),
+        )
+        for expected, stream_status, exit_code in cases:
+            with self.subTest(status=expected), TemporaryDirectory() as tmp:
+                settings = arkham_settings(Path(tmp))
+                if stream_status is not None:
+                    store = OnchainStore(settings)
+                    store.migrate()
+                    store.mark_arkham_stream_status(
+                        "arkham_cex_inflow",
+                        status=stream_status,
+                        query_upper_ms=123,
+                        backlog_remaining=(
+                            7 if stream_status == "partial_backlog" else 0
+                        ),
+                        window_lower_ms=100,
+                        window_upper_ms=200,
+                        next_offset=4,
+                    )
+                with patch(
+                    "sys.stdout", new_callable=StringIO
+                ) as output:
+                    result = onchain_cli(
+                        ["arkham-status"], settings=settings
+                    )
+                payload = json.loads(output.getvalue())
+                self.assertEqual(result, exit_code)
+                self.assertEqual(payload["status"], expected)
 
     def test_arkham_doctor_does_not_require_base_files_or_rpc(self) -> None:
         with TemporaryDirectory() as tmp:

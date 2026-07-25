@@ -139,6 +139,9 @@ class ArkhamRestRuntime:
                 timeout_sec=float(self.settings.rpc_timeout_sec),
                 retry=min(self.settings.rpc_retry, 3),
                 backoff_sec=float(self.settings.rpc_backoff_sec),
+                retry_after_max_sec=(
+                    self.settings.arkham_retry_after_max_sec
+                ),
                 sleep=self.sleep,
             )
         return self._client_instance
@@ -254,7 +257,16 @@ class ArkhamRestRuntime:
         previous_event_id = (
             state.last_event_id if state is not None else ""
         )
-        if previous_timestamp > 0:
+        resuming_backlog = bool(
+            state is not None
+            and state.status == "partial_backlog"
+            and state.window_upper_ms > 0
+        )
+        if resuming_backlog:
+            time_gte = state.window_lower_ms
+            frozen_upper_ms = state.window_upper_ms
+            offset = state.next_offset
+        elif previous_timestamp > 0:
             time_gte = min(
                 query_upper_ms,
                 max(
@@ -266,6 +278,8 @@ class ArkhamRestRuntime:
                     ),
                 ),
             )
+            frozen_upper_ms = query_upper_ms
+            offset = 0
         else:
             time_gte = max(
                 0,
@@ -275,14 +289,14 @@ class ArkhamRestRuntime:
                     * 1000
                 ),
             )
+            frozen_upper_ms = query_upper_ms
+            offset = 0
         limit = self.settings.arkham_rest_limit
-        cursor_timestamp = previous_timestamp
-        cursor_event_id = previous_event_id
         policy = ConfiguredTokenPolicy(self.settings)
         base_params: dict[str, object] = {
             side: self._selector(),
             "timeGte": str(time_gte),
-            "timeLte": str(query_upper_ms),
+            "timeLte": str(frozen_upper_ms),
             "usdGte": str(self.settings.arkham_global_usd_gte),
             "sortKey": "time",
             "sortDir": "asc",
@@ -293,7 +307,6 @@ class ArkhamRestRuntime:
                 self.settings.arkham_chains
             )
         for page_index in range(self.settings.arkham_rest_max_pages):
-            offset = page_index * limit
             params = {**base_params, "offset": offset}
             payloads, count = self._client().transfers(params)
             metrics["transfers_received"] = (
@@ -319,56 +332,53 @@ class ArkhamRestRuntime:
                             error_type=type(exc).__name__,
                         )
                     )
-            if events:
-                latest = max(
+            accounted_count = offset + len(payloads)
+            backlog_remaining = max(0, count - accounted_count)
+            has_more = backlog_remaining > 0
+            stream_complete = not has_more
+            completed_event_id = previous_event_id
+            if stream_complete and events:
+                completed_event_id = max(
                     events,
                     key=lambda event: (
                         event.timestamp_ms,
                         event.transfer.event_id,
                     ),
-                )
-                cursor_timestamp = max(
-                    cursor_timestamp, latest.timestamp_ms
-                )
-                cursor_event_id = latest.transfer.event_id
-            accounted_count = offset + len(payloads)
-            backlog_remaining = max(0, count - accounted_count)
-            has_more = backlog_remaining > 0
-            exhausted = (
-                has_more
-                and page_index + 1
-                >= self.settings.arkham_rest_max_pages
-            )
-            stream_complete = not has_more
+                ).transfer.event_id
             persisted_cursor = (
-                max(previous_timestamp, query_upper_ms)
+                max(previous_timestamp, frozen_upper_ms)
                 if stream_complete
-                else cursor_timestamp
+                else previous_timestamp
             )
-            sync_status = (
-                "partial_backlog" if exhausted else "ok"
-            )
+            next_offset = accounted_count if has_more else 0
+            sync_status = "partial_backlog" if has_more else "ok"
             try:
                 inserted, duplicates = store.persist_arkham_page(
                     events,
                     rejected_events=rejected_events,
                     stream_name=stream_name,
                     cursor_timestamp_ms=persisted_cursor,
-                    last_event_id=cursor_event_id,
+                    last_event_id=completed_event_id,
                     last_success_at=int(self.clock()),
                     sync_status=sync_status,
-                    query_upper_ms=query_upper_ms,
-                    backlog_remaining=(
-                        backlog_remaining if exhausted else 0
+                    query_upper_ms=frozen_upper_ms,
+                    backlog_remaining=backlog_remaining,
+                    window_lower_ms=time_gte if has_more else 0,
+                    window_upper_ms=(
+                        frozen_upper_ms if has_more else 0
                     ),
+                    next_offset=next_offset,
                 )
             except Exception as exc:
                 try:
                     store.mark_arkham_stream_status(
                         stream_name,
                         status="failed",
-                        query_upper_ms=query_upper_ms,
+                        query_upper_ms=frozen_upper_ms,
                         backlog_remaining=backlog_remaining,
+                        window_lower_ms=time_gte,
+                        window_upper_ms=frozen_upper_ms,
+                        next_offset=offset,
                     )
                 except Exception:
                     pass
@@ -402,11 +412,16 @@ class ArkhamRestRuntime:
                     metrics["policy_suppressed_events"] = (
                         int(metrics["policy_suppressed_events"]) + 1
                     )
-            if exhausted:
+            if has_more:
                 metrics["backlog_remaining"] = (
                     int(metrics["backlog_remaining"])
                     + backlog_remaining
                 )
+                if not payloads:
+                    return False
+                offset = next_offset
+                if page_index + 1 < self.settings.arkham_rest_max_pages:
+                    continue
                 return False
             if stream_complete:
                 return True
@@ -444,7 +459,10 @@ class ArkhamRestRuntime:
             if now - flow.block_time > self.settings.alert_max_event_age_sec:
                 continue
             alert = self._arkham_single_alert(
-                detected, flow, evaluation_time=evaluation_time
+                detected, flow
+            )
+            store.supersede_arkham_single_alerts(
+                flow.event_id, current_alert_key=alert.alert_key
             )
             store.persist_alert_for_delivery(alert, created_at=now)
             alerts.append(alert)
@@ -480,15 +498,13 @@ class ArkhamRestRuntime:
         self,
         detected: DetectedFlow,
         flow: ClassifiedFlow,
-        *,
-        evaluation_time: int,
     ) -> OnchainAlert:
         alert = score_detection(detected)
         alert = replace(
             alert,
             alert_key=(
                 f"arkham:{flow.event_id}:single:"
-                f"{evaluation_time}:{P3_2A_SEVERITY_VERSION}"
+                f"{flow.flow_type}:{P3_2A_SEVERITY_VERSION}"
             ),
             severity_version=P3_2A_SEVERITY_VERSION,
             gross_inflow_usd=(

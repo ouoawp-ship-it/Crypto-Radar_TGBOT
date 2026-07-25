@@ -8,6 +8,7 @@ import requests
 from paopao_radar.onchain_flow.collectors.arkham_rest import (
     ArkhamAuthError,
     ArkhamRateLimitError,
+    ArkhamResponseError,
     ArkhamRestClient,
     ArkhamSchemaError,
     ArkhamServiceError,
@@ -41,13 +42,16 @@ class ScriptedSession:
         self.actions = list(actions)
         self.requests = []
 
-    def get(self, url, *, params, headers, timeout):
+    def get(
+        self, url, *, params, headers, timeout, allow_redirects=True
+    ):
         self.requests.append(
             {
                 "url": url,
                 "params": params,
                 "headers": headers,
                 "timeout": timeout,
+                "allow_redirects": allow_redirects,
             }
         )
         action = self.actions.pop(0)
@@ -227,6 +231,77 @@ class ArkhamRestClientTests(unittest.TestCase):
         with self.assertRaises(ArkhamServiceError):
             service_client.chains()
         self.assertEqual(len(service_session.requests), 2)
+
+    def test_retry_after_is_capped_and_redirects_are_rejected(
+        self,
+    ) -> None:
+        sleeps: list[float] = []
+        capped = ScriptedSession(
+            [
+                FakeResponse(
+                    {},
+                    status_code=429,
+                    headers={"Retry-After": "999999"},
+                ),
+                FakeResponse([]),
+            ]
+        )
+        ArkhamRestClient(
+            "https://api.arkm.com",
+            "secret",
+            retry=1,
+            backoff_sec=2,
+            retry_after_max_sec=60,
+            session=capped,
+            sleep=sleeps.append,
+        ).chains()
+        self.assertEqual(sleeps, [60.0])
+
+        malformed_sleeps: list[float] = []
+        malformed = ScriptedSession(
+            [
+                FakeResponse(
+                    {},
+                    status_code=429,
+                    headers={"Retry-After": "not-a-number"},
+                ),
+                FakeResponse([]),
+            ]
+        )
+        ArkhamRestClient(
+            "https://api.arkm.com",
+            "secret",
+            retry=1,
+            backoff_sec=2,
+            retry_after_max_sec=60,
+            session=malformed,
+            sleep=malformed_sleeps.append,
+        ).chains()
+        self.assertEqual(malformed_sleeps, [2.0])
+
+        redirected = ScriptedSession(
+            [
+                FakeResponse(
+                    {},
+                    status_code=302,
+                    headers={
+                        "Location": "https://evil.invalid/collect"
+                    },
+                )
+            ]
+        )
+        client = ArkhamRestClient(
+            "https://api.arkm.com",
+            "never-leak-this",
+            retry=3,
+            session=redirected,
+        )
+        with self.assertRaises(ArkhamResponseError) as raised:
+            client.chains()
+        self.assertEqual(len(redirected.requests), 1)
+        self.assertFalse(redirected.requests[0]["allow_redirects"])
+        self.assertNotIn("evil.invalid", str(raised.exception))
+        self.assertNotIn("never-leak-this", str(raised.exception))
 
     def test_timeout_and_malformed_json_are_bounded(self) -> None:
         timeout_session = ScriptedSession(

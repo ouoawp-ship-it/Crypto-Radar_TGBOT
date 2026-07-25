@@ -179,6 +179,7 @@ class OnchainSettings:
     arkham_rest_indexing_delay_sec: int = 60
     arkham_rest_max_pages: int = 10
     arkham_rest_limit: int = 100
+    arkham_retry_after_max_sec: int = 60
     arkham_cex_filter_mode: str = "type_cex"
     arkham_cex_entity_ids: tuple[str, ...] = ()
     arkham_chains: tuple[str, ...] = ()
@@ -405,6 +406,9 @@ class OnchainSettings:
             arkham_rest_limit=_int(
                 values, "ARKHAM_REST_LIMIT", 100
             ),
+            arkham_retry_after_max_sec=_int(
+                values, "ARKHAM_RETRY_AFTER_MAX_SEC", 60
+            ),
             arkham_cex_filter_mode=values.get(
                 "ARKHAM_CEX_FILTER_MODE", "type_cex"
             ).strip().lower(),
@@ -547,6 +551,7 @@ class OnchainSettings:
             "arkham_rest_reconcile_sec",
             "arkham_rest_max_pages",
             "arkham_rest_limit",
+            "arkham_retry_after_max_sec",
             "arkham_ws_hourly_soft_limit",
             "arkham_ws_monthly_soft_limit",
         )
@@ -561,6 +566,10 @@ class OnchainSettings:
         if self.arkham_rest_max_pages > 100:
             raise SettingsValidationError(
                 "ARKHAM_REST_MAX_PAGES cannot exceed 100"
+            )
+        if self.arkham_retry_after_max_sec > 3600:
+            raise SettingsValidationError(
+                "ARKHAM_RETRY_AFTER_MAX_SEC cannot exceed 3600"
             )
         non_negative_ints = (
             "base_confirmation_depth",

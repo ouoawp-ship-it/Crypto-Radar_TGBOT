@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from decimal import Decimal
+from math import isfinite
 from typing import Any, Callable, Mapping
 
 import requests
@@ -66,6 +67,7 @@ class ArkhamRestClient:
         timeout_sec: float = 10,
         retry: int = 2,
         backoff_sec: float = 1,
+        retry_after_max_sec: int = 60,
         session: Any | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -79,6 +81,14 @@ class ArkhamRestClient:
         self.timeout_sec = float(timeout_sec)
         self.retry = min(3, max(0, int(retry)))
         self.backoff_sec = max(0.0, float(backoff_sec))
+        if (
+            isinstance(retry_after_max_sec, bool)
+            or int(retry_after_max_sec) <= 0
+        ):
+            raise ValueError("Arkham Retry-After cap must be positive")
+        self.retry_after_max_sec = min(
+            3600, int(retry_after_max_sec)
+        )
         self._session = session or requests.Session()
         self._sleep = sleep
         self._clock = clock
@@ -114,13 +124,14 @@ class ArkhamRestClient:
                     params=dict(params or {}),
                     headers={"API-Key": self._api_key},
                     timeout=self.timeout_sec,
+                    allow_redirects=False,
                 )
             except (requests.Timeout, requests.ConnectionError) as exc:
                 if attempt + 1 >= attempts:
                     raise ArkhamTransportError(
                         "Arkham request transport failed"
                     ) from exc
-                self._sleep(self.backoff_sec * (2**attempt))
+                self._sleep(self._bounded_delay(None, attempt))
                 continue
             except requests.RequestException as exc:
                 raise ArkhamTransportError(
@@ -143,18 +154,14 @@ class ArkhamRestClient:
                 retry_after = self.last_rate_limit_info.get(
                     "retry-after", ""
                 )
-                try:
-                    delay = float(retry_after)
-                except (TypeError, ValueError):
-                    delay = self.backoff_sec * (2**attempt)
-                self._sleep(max(0.0, delay))
+                self._sleep(self._bounded_delay(retry_after, attempt))
                 continue
             if 500 <= status <= 599:
                 if attempt + 1 >= attempts:
                     raise ArkhamServiceError(
                         f"Arkham service failed with HTTP {status}"
                     )
-                self._sleep(self.backoff_sec * (2**attempt))
+                self._sleep(self._bounded_delay(None, attempt))
                 continue
             if status < 200 or status >= 300:
                 raise ArkhamResponseError(
@@ -175,6 +182,18 @@ class ArkhamRestClient:
                     "Arkham response is not valid JSON"
                 ) from exc
         raise ArkhamTransportError("Arkham request attempts exhausted")
+
+    def _bounded_delay(
+        self, retry_after: object | None, attempt: int
+    ) -> float:
+        fallback = self.backoff_sec * (2**attempt)
+        try:
+            delay = float(retry_after)
+        except (TypeError, ValueError):
+            delay = fallback
+        if not isfinite(delay) or delay < 0:
+            delay = fallback
+        return min(float(self.retry_after_max_sec), max(0.0, delay))
 
     def health(self) -> str:
         payload = self._request("/health", expect_json=False)

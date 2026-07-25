@@ -1295,6 +1295,30 @@ class OnchainStore:
             _insert_alert_row(conn, alert)
             self._queue_delivery_row(conn, alert, created_at)
 
+    def supersede_arkham_single_alerts(
+        self, source_event_id: str, *, current_alert_key: str
+    ) -> int:
+        prefix = f"arkham:{source_event_id}:single:"
+        escaped = (
+            prefix.replace("!", "!!")
+            .replace("%", "!%")
+            .replace("_", "!_")
+        )
+        with closing(self._connect()) as conn, conn:
+            cursor = conn.execute(
+                """
+                UPDATE alerts
+                SET status='superseded'
+                WHERE source='arkham'
+                  AND duration_sec=0
+                  AND alert_key LIKE ? ESCAPE '!'
+                  AND alert_key<>?
+                  AND status<>'superseded'
+                """,
+                (escaped + "%", current_alert_key),
+            )
+        return max(0, int(cursor.rowcount))
+
     def pending_delivery_alerts(
         self, *, source: str | None = None
     ) -> list[OnchainAlert]:
@@ -1418,7 +1442,8 @@ class OnchainStore:
                 """
                 SELECT stream_name, last_timestamp_ms, last_event_id,
                        last_success_at, status, query_upper_ms,
-                       backlog_remaining
+                       backlog_remaining, window_lower_ms,
+                       window_upper_ms, next_offset
                 FROM arkham_sync_state
                 WHERE stream_name=?
                 """,
@@ -1434,6 +1459,9 @@ class OnchainStore:
             status=str(row["status"]),
             query_upper_ms=int(row["query_upper_ms"]),
             backlog_remaining=int(row["backlog_remaining"]),
+            window_lower_ms=int(row["window_lower_ms"]),
+            window_upper_ms=int(row["window_upper_ms"]),
+            next_offset=int(row["next_offset"]),
         )
 
     def source_flows_since(
@@ -1468,6 +1496,9 @@ class OnchainStore:
         sync_status: str = "ok",
         query_upper_ms: int = 0,
         backlog_remaining: int = 0,
+        window_lower_ms: int = 0,
+        window_upper_ms: int = 0,
+        next_offset: int = 0,
     ) -> tuple[int, int]:
         inserted = 0
         duplicates = 0
@@ -1555,10 +1586,26 @@ class OnchainStore:
                                 last_seen
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(chain, address, source) DO UPDATE SET
-                                entity_id=excluded.entity_id,
-                                entity_name=excluded.entity_name,
-                                entity_type=excluded.entity_type,
-                                label_name=excluded.label_name,
+                                entity_id=CASE
+                                    WHEN excluded.entity_id<>''
+                                    THEN excluded.entity_id
+                                    ELSE entity_snapshots.entity_id
+                                END,
+                                entity_name=CASE
+                                    WHEN excluded.entity_name<>''
+                                    THEN excluded.entity_name
+                                    ELSE entity_snapshots.entity_name
+                                END,
+                                entity_type=CASE
+                                    WHEN excluded.entity_type<>''
+                                    THEN excluded.entity_type
+                                    ELSE entity_snapshots.entity_type
+                                END,
+                                label_name=CASE
+                                    WHEN excluded.label_name<>''
+                                    THEN excluded.label_name
+                                    ELSE entity_snapshots.label_name
+                                END,
                                 first_seen=MIN(
                                     entity_snapshots.first_seen,
                                     excluded.first_seen
@@ -1635,15 +1682,19 @@ class OnchainStore:
                     INSERT INTO arkham_sync_state(
                         stream_name, last_timestamp_ms, last_event_id,
                         last_success_at, status, query_upper_ms,
-                        backlog_remaining
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        backlog_remaining, window_lower_ms,
+                        window_upper_ms, next_offset
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(stream_name) DO UPDATE SET
                         last_timestamp_ms=excluded.last_timestamp_ms,
                         last_event_id=excluded.last_event_id,
                         last_success_at=excluded.last_success_at,
                         status=excluded.status,
                         query_upper_ms=excluded.query_upper_ms,
-                        backlog_remaining=excluded.backlog_remaining
+                        backlog_remaining=excluded.backlog_remaining,
+                        window_lower_ms=excluded.window_lower_ms,
+                        window_upper_ms=excluded.window_upper_ms,
+                        next_offset=excluded.next_offset
                     """,
                     (
                         stream_name,
@@ -1653,6 +1704,9 @@ class OnchainStore:
                         sync_status,
                         query_upper_ms,
                         max(0, backlog_remaining),
+                        max(0, window_lower_ms),
+                        max(0, window_upper_ms),
+                        max(0, next_offset),
                     ),
                 )
             except BaseException:
@@ -1669,6 +1723,9 @@ class OnchainStore:
         status: str,
         query_upper_ms: int,
         backlog_remaining: int = 0,
+        window_lower_ms: int = 0,
+        window_upper_ms: int = 0,
+        next_offset: int = 0,
     ) -> None:
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1678,18 +1735,25 @@ class OnchainStore:
                     INSERT INTO arkham_sync_state(
                         stream_name, last_timestamp_ms, last_event_id,
                         last_success_at, status, query_upper_ms,
-                        backlog_remaining
-                    ) VALUES (?, 0, '', 0, ?, ?, ?)
+                        backlog_remaining, window_lower_ms,
+                        window_upper_ms, next_offset
+                    ) VALUES (?, 0, '', 0, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(stream_name) DO UPDATE SET
                         status=excluded.status,
                         query_upper_ms=excluded.query_upper_ms,
-                        backlog_remaining=excluded.backlog_remaining
+                        backlog_remaining=excluded.backlog_remaining,
+                        window_lower_ms=excluded.window_lower_ms,
+                        window_upper_ms=excluded.window_upper_ms,
+                        next_offset=excluded.next_offset
                     """,
                     (
                         stream_name,
                         status,
                         query_upper_ms,
                         max(0, backlog_remaining),
+                        max(0, window_lower_ms),
+                        max(0, window_upper_ms),
+                        max(0, next_offset),
                     ),
                 )
             except BaseException:
@@ -1704,7 +1768,8 @@ class OnchainStore:
                 """
                 SELECT stream_name, last_timestamp_ms, last_event_id,
                        last_success_at, status, query_upper_ms,
-                       backlog_remaining
+                       backlog_remaining, window_lower_ms,
+                       window_upper_ms, next_offset
                 FROM arkham_sync_state
                 ORDER BY stream_name
                 """
@@ -1727,23 +1792,38 @@ class OnchainStore:
                     "SELECT COUNT(*) FROM arkham_raw_event_versions"
                 ).fetchone()[0]
             )
+        streams = [
+            {
+                "stream_name": str(row["stream_name"]),
+                "last_timestamp_ms": int(row["last_timestamp_ms"]),
+                "last_event_id_configured": bool(
+                    str(row["last_event_id"])
+                ),
+                "last_success_at": int(row["last_success_at"]),
+                "status": str(row["status"]),
+                "query_upper_ms": int(row["query_upper_ms"]),
+                "backlog_remaining": int(row["backlog_remaining"]),
+                "window_lower_ms": int(row["window_lower_ms"]),
+                "window_upper_ms": int(row["window_upper_ms"]),
+                "next_offset": int(row["next_offset"]),
+            }
+            for row in states
+        ]
+        stream_statuses = {
+            str(stream["status"]) for stream in streams
+        }
+        aggregate_status = (
+            "failed"
+            if "failed" in stream_statuses
+            else "partial_backlog"
+            if "partial_backlog" in stream_statuses
+            else "ok"
+            if streams and stream_statuses == {"ok"}
+            else "not_initialized"
+        )
         return {
-            "streams": [
-                {
-                    "stream_name": str(row["stream_name"]),
-                    "last_timestamp_ms": int(row["last_timestamp_ms"]),
-                    "last_event_id_configured": bool(
-                        str(row["last_event_id"])
-                    ),
-                    "last_success_at": int(row["last_success_at"]),
-                    "status": str(row["status"]),
-                    "query_upper_ms": int(row["query_upper_ms"]),
-                    "backlog_remaining": int(
-                        row["backlog_remaining"]
-                    ),
-                }
-                for row in states
-            ],
+            "status": aggregate_status,
+            "streams": streams,
             "raw_event_status_counts": {
                 str(row["processed_status"]): int(row["count"])
                 for row in status_rows

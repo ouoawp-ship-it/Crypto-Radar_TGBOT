@@ -295,13 +295,15 @@ def main(
             if settings.db_path.exists():
                 try:
                     payload.update(OnchainStore(settings).arkham_status())
-                    payload["status"] = "ok"
                 except sqlite3.OperationalError as exc:
                     if "no such table" not in str(exc).lower():
                         raise
-                    payload["status"] = "migration_required"
+                    payload["status"] = "not_initialized"
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-            return 0
+            return {
+                "failed": 1,
+                "partial_backlog": 2,
+            }.get(str(payload.get("status")), 0)
         if args.command == "provider-check":
             payload = BaseOnchainRuntime(settings).provider_check()
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
