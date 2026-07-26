@@ -64,6 +64,34 @@ CHAIN_SYMBOL_TOKEN_NAMES = {
     "TON": {"toncoin"},
 }
 CST = timezone(timedelta(hours=8))
+_LAUNCH_STATE_TRANSIENT_KEYS = frozenset({
+    "chart_png_bytes",
+    "launch_lifecycle",
+    "launch_package",
+    "price_action_analysis",
+})
+
+
+def compact_launch_state_records(
+    state: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    """Drop rebuildable launch-analysis payloads from durable JSON state."""
+
+    compacted: dict[str, Any] = {}
+    changed = 0
+    for symbol, value in state.items():
+        if not isinstance(value, dict):
+            compacted[symbol] = value
+            continue
+        record = {
+            key: item
+            for key, item in value.items()
+            if key not in _LAUNCH_STATE_TRANSIENT_KEYS
+        }
+        if len(record) != len(value):
+            changed += 1
+        compacted[symbol] = record
+    return compacted, changed
 
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
@@ -1810,7 +1838,8 @@ class RadarEngine:
                 if inactive is not None:
                     state[symbol] = inactive
 
-        self.store.save(self.settings.launch_state_path, state)
+        persisted_state, _compacted_records = compact_launch_state_records(state)
+        self.store.save(self.settings.launch_state_path, persisted_state)
         self.store.save(self.settings.launch_watchlist_path, {
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "count": len(watchlist),
@@ -3137,7 +3166,6 @@ class RadarEngine:
             "funding_pct": round(to_float(item.get("funding_pct")), 6),
             "funding_interval_hours": int(to_float(item.get("funding_interval_hours"))),
             "funding_interval_transition": str(item.get("funding_interval_transition") or ""),
-            "launch_lifecycle": item.get("launch_lifecycle", {}),
             "reasons": item.get("reasons", []),
         }
 

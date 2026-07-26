@@ -28,6 +28,7 @@ from pathlib import Path
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime
+from typing import Any
 
 from .config import Settings
 from .database_backup import backup_databases
@@ -816,7 +817,7 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
         mark = "OK" if ok else "WAIT"
         print(f"- {mark} {name}: {message}")
     print("")
-    print(format_launch_report(settings, store, 100, 8))
+    print(format_launch_report(settings, store, 100, 8, records=records))
     if passed == len(checks):
         print("")
         print("下一步: 可以先运行 python main.py telegram-test --send --confirm-real-send 验证 Telegram。")
@@ -835,6 +836,46 @@ def require_real_send_gate(settings: Settings, store: JsonStore, args: argparse.
         print("真实推送已阻止：readiness 未通过。")
         return 2
     return 0
+
+
+def bootstrap_live_market_snapshot(
+    settings: Settings,
+    store: JsonStore,
+) -> dict[str, object]:
+    """Refresh a stale snapshot without opening the Telegram send path."""
+
+    market_check = next(
+        (
+            item
+            for item in runtime_health_checks(settings, store)
+            if item.get("name") == "market_snapshots_freshness"
+        ),
+        {},
+    )
+    if market_check.get("status") != "fail":
+        return {"status": "not_needed"}
+    source: BinanceDataSource | None = None
+    try:
+        source = BinanceDataSource(settings)
+        result = persist_market_batch(
+            settings,
+            source=source,
+            force=True,
+        )
+        return {
+            "status": str(result.get("status") or "unknown"),
+            "count": int(result.get("count") or 0),
+            "telegram_calls": 0,
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "error": type(exc).__name__,
+            "telegram_calls": 0,
+        }
+    finally:
+        if source is not None:
+            source.close()
 
 
 def print_watchlist(settings: Settings, store: JsonStore, top_n: int) -> None:
@@ -943,8 +984,19 @@ def print_launch_report(settings: Settings, store: JsonStore, record_limit: int,
     print(format_launch_report(settings, store, record_limit, top_n))
 
 
-def format_launch_report(settings: Settings, store: JsonStore, record_limit: int, top_n: int) -> str:
-    records = store.load(settings.launch_watch_history_path, [])
+def format_launch_report(
+    settings: Settings,
+    store: JsonStore,
+    record_limit: int,
+    top_n: int,
+    *,
+    records: list[Any] | None = None,
+) -> str:
+    records = (
+        store.load(settings.launch_watch_history_path, [])
+        if records is None
+        else records
+    )
     if not isinstance(records, list) or not records:
         return "暂无启动观察历史。先运行：python main.py trial --cycles 1"
     selected = records[-max(1, record_limit):]
@@ -1657,6 +1709,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "observe":
         return run_observe(args)
     if args.command == "live":
+        if args.send and args.confirm_real_send:
+            bootstrap = bootstrap_live_market_snapshot(settings, store)
+            print(json.dumps({"live_readiness_bootstrap": bootstrap}, ensure_ascii=False))
         gate = require_real_send_gate(settings, store, args)
         if gate != 0:
             return gate

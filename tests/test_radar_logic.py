@@ -7,7 +7,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.config import Settings
-from paopao_radar.radar import CST, RadarEngine, funding_interval_transition, score_funding
+from paopao_radar.radar import (
+    CST,
+    RadarEngine,
+    compact_launch_state_records,
+    funding_interval_transition,
+    score_funding,
+)
 from paopao_radar.signal_store import SignalEventStore
 from paopao_radar.storage import JsonStore
 from paopao_radar.time_windows import closed_window
@@ -37,6 +43,63 @@ class _FakeAnnouncementSource:
 
     def usdt_perp_symbols(self) -> list[dict[str, str]]:
         return [{"symbol": f"{base}USDT"} for base in self._contract_bases]
+
+
+class LaunchPersistenceTests(unittest.TestCase):
+    def test_watch_history_excludes_rebuildable_lifecycle_payload(self) -> None:
+        record = RadarEngine._launch_watch_record(
+            {
+                "symbol": "TESTUSDT",
+                "coin": "TEST",
+                "score": 75,
+                "closed_price": 1.0,
+                "closed_oi_usd": 2.0,
+                "closed_quote_volume": 3.0,
+                "price_15m": 1.0,
+                "price_1h": 2.0,
+                "oi_15m": 3.0,
+                "oi_1h": 4.0,
+                "volume_ratio": 2.5,
+                "breakout": True,
+                "quote_volume": 1_000_000,
+                "mcap": 5_000_000,
+                "launch_lifecycle": {
+                    "publication": {
+                        "checkpoints": [{"price_action": {"smc": "x" * 100_000}}],
+                    },
+                },
+            },
+            123,
+        )
+
+        self.assertNotIn("launch_lifecycle", record)
+        self.assertEqual(record["symbol"], "TESTUSDT")
+        self.assertEqual(record["score"], 75)
+
+    def test_durable_launch_state_excludes_rebuildable_analysis(self) -> None:
+        compacted, changed = compact_launch_state_records(
+            {
+                "TESTUSDT": {
+                    "stage": "breakout",
+                    "score": 75,
+                    "message_ids": [123],
+                    "launch_lifecycle": {"cycle_id": 1},
+                    "launch_package": {"checkpoints": [1, 2]},
+                    "price_action_analysis": {"smc_analysis": {"large": "x" * 1000}},
+                    "chart_png_bytes": b"png",
+                },
+            },
+        )
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(
+            compacted["TESTUSDT"],
+            {
+                "stage": "breakout",
+                "score": 75,
+                "message_ids": [123],
+            },
+        )
 
 
 class RadarAnnouncementTests(unittest.TestCase):
