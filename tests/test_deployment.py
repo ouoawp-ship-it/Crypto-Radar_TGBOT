@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import paopao_radar.cli as main
 from paopao_radar.config import Settings
@@ -312,6 +312,50 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("真实推送准备度", output.getvalue())
         self.assertIn("WAIT", output.getvalue())
+
+    def test_live_bootstrap_refreshes_stale_snapshot_without_telegram(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            source = MagicMock()
+            with patch.object(
+                main,
+                "runtime_health_checks",
+                return_value=[{
+                    "name": "market_snapshots_freshness",
+                    "status": "fail",
+                }],
+            ), patch.object(
+                main,
+                "BinanceDataSource",
+                return_value=source,
+            ), patch.object(
+                main,
+                "persist_market_batch",
+                return_value={"status": "saved", "count": 80},
+            ) as persist:
+                result = main.bootstrap_live_market_snapshot(settings, store)
+
+        self.assertEqual(result["status"], "saved")
+        self.assertEqual(result["count"], 80)
+        self.assertEqual(result["telegram_calls"], 0)
+        persist.assert_called_once_with(settings, source=source, force=True)
+        source.close.assert_called_once_with()
+
+    def test_live_bootstrap_skips_when_snapshot_is_fresh(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            with patch.object(
+                main,
+                "runtime_health_checks",
+                return_value=[{
+                    "name": "market_snapshots_freshness",
+                    "status": "ok",
+                }],
+            ), patch.object(main, "BinanceDataSource") as source:
+                result = main.bootstrap_live_market_snapshot(settings, store)
+
+        self.assertEqual(result, {"status": "not_needed"})
+        source.assert_not_called()
 
     def test_live_requires_explicit_real_send_confirmation(self) -> None:
         with TemporaryDirectory() as tmp:

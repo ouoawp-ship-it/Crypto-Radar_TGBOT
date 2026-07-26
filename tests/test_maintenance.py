@@ -86,6 +86,73 @@ class MaintenanceTests(unittest.TestCase):
             self.assertEqual(result["signal_database"]["status"], "ok")
             self.assertTrue(settings.cleanup_state_path.exists())
 
+    def test_cleanup_compacts_legacy_launch_analysis_without_losing_signal_facts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data = base / "data"
+            history_path = data / "launch_watch_history.json"
+            state_path = data / "launch_state.json"
+            settings = Settings(
+                base_dir=base,
+                data_dir=data,
+                launch_watch_history_path=history_path,
+                launch_state_path=state_path,
+                cleanup_state_path=data / "cleanup_state.json",
+            )
+            store = JsonStore(data)
+            large_analysis = {
+                "publication": {
+                    "checkpoints": [
+                        {"price_action": {"smc": "x" * 100_000}},
+                    ],
+                },
+            }
+            store.save(
+                history_path,
+                [{
+                    "ts": 1,
+                    "items": [{
+                        "symbol": "TESTUSDT",
+                        "score": 75,
+                        "launch_lifecycle": large_analysis,
+                    }],
+                }],
+            )
+            store.save(
+                state_path,
+                {
+                    "TESTUSDT": {
+                        "stage": "breakout",
+                        "score": 75,
+                        "message_ids": [321],
+                        "launch_lifecycle": large_analysis,
+                        "launch_package": large_analysis["publication"],
+                        "price_action_analysis": {"smc": "x" * 100_000},
+                    },
+                },
+            )
+
+            result = cleanup_runtime_artifacts(settings, store, force=True)
+
+            history = store.load(history_path, [])
+            state = store.load(state_path, {})
+            self.assertNotIn("launch_lifecycle", history[0]["items"][0])
+            self.assertEqual(history[0]["items"][0]["score"], 75)
+            self.assertNotIn("launch_lifecycle", state["TESTUSDT"])
+            self.assertNotIn("launch_package", state["TESTUSDT"])
+            self.assertNotIn("price_action_analysis", state["TESTUSDT"])
+            self.assertEqual(state["TESTUSDT"]["message_ids"], [321])
+            history_result = next(
+                item
+                for item in result["pruned"]
+                if item["path"] == str(history_path)
+            )
+            self.assertGreater(history_result["freed_bytes"], 0)
+            self.assertGreater(
+                result["launch_state_compaction"]["freed_bytes"],
+                0,
+            )
+
     def test_cleanup_generated_root_artifacts_removes_reports_only(self) -> None:
         with TemporaryDirectory() as tmp:
             base = Path(tmp)
