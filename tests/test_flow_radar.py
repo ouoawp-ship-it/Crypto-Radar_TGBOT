@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from paopao_radar.binance_confirmation import apply_binance_confirmation
 from paopao_radar.config import Settings
@@ -10,11 +12,14 @@ from paopao_radar.flow_radar import (
     binance_oi_stats,
     FlowRadarEngine,
     flow_category,
+    flow_classification,
+    flow_net_ratio_pct,
     fmt_cvd,
     kline_cvd_delta_info,
     kline_cvd_flow_info,
     series_delta_info,
 )
+from paopao_radar.storage import JsonStore
 from paopao_radar.time_windows import ClosedWindow, closed_window
 
 
@@ -189,7 +194,11 @@ class FlowRadarTests(unittest.TestCase):
             "price_24h": 6.0,
             "oi_24h": 8.0,
             "spot_cvd_delta": 1_000_000,
+            "spot_inflow_usd": 3_000_000,
+            "spot_outflow_usd": 2_000_000,
             "futures_cvd_delta": 800_000,
+            "futures_inflow_usd": 2_400_000,
+            "futures_outflow_usd": 1_600_000,
             "funding_pct": 0.02,
             "quote_volume": 80_000_000,
         })
@@ -248,6 +257,234 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(category, "数据不足")
         self.assertEqual(score, 0)
         self.assertIn("资金费率缺失", reason)
+
+    def test_active_net_ratio_requires_absolute_and_relative_thresholds(self) -> None:
+        settings = Settings(
+            flow_spot_net_min_usd=10_000,
+            flow_spot_net_ratio_min_pct=3,
+            flow_futures_net_min_usd=25_000,
+            flow_futures_net_ratio_min_pct=2,
+        )
+        low_absolute = self._flow_item(
+            spot_cvd_delta=5_000,
+            spot_inflow_usd=52_500,
+            spot_outflow_usd=47_500,
+            futures_cvd_delta=0,
+            futures_inflow_usd=500_000,
+            futures_outflow_usd=500_000,
+        )
+        low_ratio = self._flow_item(
+            spot_cvd_delta=20_000,
+            spot_inflow_usd=510_000,
+            spot_outflow_usd=490_000,
+            futures_cvd_delta=0,
+            futures_inflow_usd=500_000,
+            futures_outflow_usd=500_000,
+        )
+
+        self.assertFalse(flow_classification(low_absolute, settings)["eligible"])
+        self.assertFalse(flow_classification(low_ratio, settings)["eligible"])
+        self.assertAlmostEqual(flow_net_ratio_pct(20_000, 510_000, 490_000), 2.0)
+
+    def test_p0_categories_require_complete_core_gates(self) -> None:
+        for missing_field in (
+            "price_ready",
+            "oi_ready",
+            "spot_cvd_ready",
+            "futures_cvd_ready",
+            "funding_ready",
+        ):
+            with self.subTest(missing_field=missing_field):
+                item = self._flow_item()
+                item[missing_field] = False
+                result = flow_classification(item)
+                self.assertEqual(result["category"], "数据不足")
+                self.assertFalse(result["eligible"])
+
+    def test_p0_strict_category_fixtures(self) -> None:
+        cases = {
+            "真启动候选": self._flow_item(),
+            "吸筹观察": self._flow_item(
+                price_24h=0.4,
+                futures_cvd_delta=0,
+                futures_inflow_usd=500_000,
+                futures_outflow_usd=500_000,
+            ),
+            "空头燃料": self._flow_item(
+                price_24h=-0.2,
+                spot_cvd_delta=0,
+                spot_inflow_usd=500_000,
+                spot_outflow_usd=500_000,
+                futures_cvd_delta=-120_000,
+                futures_inflow_usd=440_000,
+                futures_outflow_usd=560_000,
+                funding_pct=-0.06,
+            ),
+            "合约拉盘": self._flow_item(
+                spot_cvd_delta=0,
+                spot_inflow_usd=500_000,
+                spot_outflow_usd=500_000,
+                funding_pct=0.01,
+            ),
+            "挤空/止损": self._flow_item(
+                oi_1h=-3.0,
+                oi_24h=-3.0,
+                spot_cvd_delta=0,
+                spot_inflow_usd=500_000,
+                spot_outflow_usd=500_000,
+                funding_pct=-0.02,
+            ),
+            "诱多/派发": self._flow_item(
+                oi_1h=0.5,
+                oi_24h=0.5,
+                spot_cvd_delta=-100_000,
+                spot_inflow_usd=450_000,
+                spot_outflow_usd=550_000,
+                funding_pct=0.04,
+            ),
+            "恐慌下跌": self._flow_item(
+                price_24h=-3.0,
+                spot_cvd_delta=-100_000,
+                spot_inflow_usd=450_000,
+                spot_outflow_usd=550_000,
+                futures_cvd_delta=-120_000,
+                futures_inflow_usd=440_000,
+                futures_outflow_usd=560_000,
+                funding_pct=-0.01,
+            ),
+        }
+
+        for expected, item in cases.items():
+            with self.subTest(category=expected):
+                result = flow_classification(item)
+                self.assertEqual(result["category"], expected)
+                self.assertTrue(result["eligible"])
+                self.assertGreaterEqual(result["score"], 60)
+
+    def test_p0_score_is_monotonic_for_stronger_same_category_evidence(self) -> None:
+        weak = flow_classification(self._flow_item(
+            price_24h=1.1,
+            oi_1h=2.1,
+            oi_24h=2.1,
+            spot_cvd_delta=40_000,
+            spot_inflow_usd=520_000,
+            spot_outflow_usd=480_000,
+            futures_cvd_delta=30_000,
+            futures_inflow_usd=515_000,
+            futures_outflow_usd=485_000,
+            quote_volume=10_000_000,
+        ))
+        strong = flow_classification(self._flow_item(
+            price_24h=4.0,
+            oi_1h=8.0,
+            oi_24h=8.0,
+            spot_cvd_delta=300_000,
+            spot_inflow_usd=650_000,
+            spot_outflow_usd=350_000,
+            futures_cvd_delta=400_000,
+            futures_inflow_usd=700_000,
+            futures_outflow_usd=300_000,
+            quote_volume=150_000_000,
+        ))
+
+        self.assertEqual(weak["category"], "真启动候选")
+        self.assertEqual(strong["category"], "真启动候选")
+        self.assertGreaterEqual(strong["score"], weak["score"])
+
+    def test_candidate_pool_diversifies_liquidity_movers_and_funding(self) -> None:
+        class Source:
+            def usdt_perp_symbols(self):
+                return [
+                    {"symbol": symbol}
+                    for symbol in ("LIQUSDT", "MOVEUSDT", "FUNDUSDT", "OTHERUSDT")
+                ]
+
+            def premium_index(self):
+                return [
+                    {"symbol": "LIQUSDT", "lastFundingRate": "0.0001"},
+                    {"symbol": "MOVEUSDT", "lastFundingRate": "0.0002"},
+                    {"symbol": "FUNDUSDT", "lastFundingRate": "-0.01"},
+                    {"symbol": "OTHERUSDT", "lastFundingRate": "0"},
+                ]
+
+            def ticker_24h(self):
+                return [
+                    {"symbol": "LIQUSDT", "quoteVolume": "1000000000", "priceChangePercent": "1"},
+                    {"symbol": "MOVEUSDT", "quoteVolume": "10000000", "priceChangePercent": "30"},
+                    {"symbol": "FUNDUSDT", "quoteVolume": "9000000", "priceChangePercent": "2"},
+                    {"symbol": "OTHERUSDT", "quoteVolume": "8000000", "priceChangePercent": "3"},
+                ]
+
+        settings = Settings(
+            radar_min_quote_volume=1,
+            flow_candidate_pool=4,
+            flow_scan_limit=3,
+        )
+        candidates = FlowRadarEngine(settings)._candidate_symbols(Source())
+
+        self.assertEqual(
+            {item["symbol"] for item in candidates[:3]},
+            {"LIQUSDT", "MOVEUSDT", "FUNDUSDT"},
+        )
+
+    def test_model_comparison_records_old_and_new_without_affecting_primary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                flow_model_comparison_path=data_dir / "comparison.json",
+                flow_model_comparison_history_limit=2,
+            )
+            engine = FlowRadarEngine(settings, JsonStore(data_dir))
+            window = ClosedWindow(
+                start=datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc),
+                end=datetime(2026, 7, 27, 1, 0, tzinfo=timezone.utc),
+                interval_sec=3600,
+                delay_sec=300,
+            )
+            item = self._flow_item(symbol="BTCUSDT")
+            item.update({
+                "category": "观察",
+                "score": 0,
+                "flow_model_eligible": False,
+                "legacy_category": "吸筹观察",
+                "legacy_score": 75,
+                "quality_gate": "allow",
+                "category_margin": 0,
+            })
+
+            status = engine._record_model_comparison([item], window)
+
+            self.assertEqual(status["status"], "recorded")
+            record = JsonStore(data_dir).load(settings.flow_model_comparison_path, [])[0]
+            self.assertEqual(record["legacy_eligible_count"], 1)
+            self.assertEqual(record["p0_eligible_count"], 0)
+            self.assertEqual(record["legacy_suppressed_count"], 1)
+            self.assertEqual(record["items"][0]["p0_category"], "观察")
+
+    @staticmethod
+    def _flow_item(**overrides: object) -> dict[str, object]:
+        item: dict[str, object] = {
+            "symbol": "TESTUSDT",
+            "price_24h": 3.0,
+            "price_ready": True,
+            "oi_1h": 5.0,
+            "oi_24h": 5.0,
+            "oi_ready": True,
+            "spot_cvd_delta": 100_000,
+            "spot_inflow_usd": 550_000,
+            "spot_outflow_usd": 450_000,
+            "spot_cvd_ready": True,
+            "futures_cvd_delta": 120_000,
+            "futures_inflow_usd": 560_000,
+            "futures_outflow_usd": 440_000,
+            "futures_cvd_ready": True,
+            "funding_pct": 0.01,
+            "funding_ready": True,
+            "quote_volume": 80_000_000,
+        }
+        item.update(overrides)
+        return item
 
     def test_binance_confirmation_requires_every_declared_input(self) -> None:
         item: dict[str, object] = {}
