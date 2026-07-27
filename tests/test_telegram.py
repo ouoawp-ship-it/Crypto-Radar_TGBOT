@@ -634,6 +634,30 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("删除失败会在后续更新时自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
+    def test_summary_topic_intro_holds_static_legend(self) -> None:
+        with TemporaryDirectory() as tmp:
+            intro = topic_intro_message(
+                "TG_RADAR_SUMMARY",
+                Settings(data_dir=Path(tmp)),
+            )
+
+            expected = [
+                "📖 图例",
+                "负费率 = 空头拥挤，可能形成反向燃料",
+                "🔥加速 = 费率继续变负",
+                "⬇️变负 = 刚从正费率转为负费率",
+                "⬆️回升 = 负费率缓和",
+                "暗流 = OI增加但价格没动",
+                "窗口 = 本次统计窗口内的完整收线数据",
+                "背离 = OI窗口变化% - 价格窗口变化%",
+                "OI·币安 = OI来自 Binance USDⓈ-M 已闭合窗口，不再使用外部聚合源改写",
+                "市值 = Binance市场资料；缺失时为0分，不再使用成交额/OI倍数猜测市值",
+                "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
+            ]
+            for line in expected:
+                self.assertIn(line, intro)
+            self.assertLessEqual(len(plain_fallback(intro)), 4096)
+
     def test_launch_topic_cleanup_candidates_keep_latest_and_intro(self) -> None:
         with TemporaryDirectory() as tmp:
             route_path = Path(tmp) / "topic_routes.json"

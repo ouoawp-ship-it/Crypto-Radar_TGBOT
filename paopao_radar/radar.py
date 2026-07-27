@@ -1155,20 +1155,6 @@ class RadarEngine:
         self._append_new_pool(lines, new_pool)
         self._append_divergence(lines, divergence)
         self._append_highlights(lines, negative, combined, ambush, momentum, divergence)
-        lines.extend([
-            "",
-            tg_quote("📖 图例"),
-            "负费率 = 空头拥挤，可能形成反向燃料",
-            "🔥加速 = 费率继续变负",
-            "⬇️变负 = 刚从正费率转为负费率",
-            "⬆️回升 = 负费率缓和",
-            "暗流 = OI增加但价格没动",
-            "窗口 = 本次统计窗口内的完整收线数据",
-            "背离 = OI窗口变化% - 价格窗口变化%",
-            "OI·币安 = OI来自 Binance USDⓈ-M 已闭合窗口，不再使用外部聚合源改写",
-            "市值 = Binance市场资料；缺失时为0分，不再使用成交额/OI倍数猜测市值",
-            "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
-        ])
         return "\n".join(lines)
 
     def _append_negative(self, lines: list[str], items: list[dict[str, Any]]) -> None:

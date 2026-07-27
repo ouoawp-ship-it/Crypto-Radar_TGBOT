@@ -361,7 +361,8 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn('href="https://www.tradingview.com/chart/?symbol=BINANCE%3ATESTUSDT.P"', text)
             self.assertIn("<b>TV</b></a>\n 88分", text)
             self.assertNotIn("&nbsp;", text)
-            self.assertIn("链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView", text)
+            self.assertNotIn("📖 图例", text)
+            self.assertNotIn("负费率 = 空头拥挤，可能形成反向燃料", text)
 
     def test_launch_alert_translates_state_and_explains_score(self) -> None:
         with TemporaryDirectory() as tmp:
