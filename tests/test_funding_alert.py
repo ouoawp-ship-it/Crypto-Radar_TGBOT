@@ -236,7 +236,8 @@ class FundingAlertTests(unittest.TestCase):
             self.assertIn("Binance", result["messages"][0])
             self.assertIn("-2.000%/1H 超极负", result["messages"][0])
             self.assertIn("交易所偏离", result["messages"][0])
-            self.assertIn("最高资金费率和最低资金费率之间的差值", result["messages"][0])
+            self.assertNotIn("最高资金费率和最低资金费率之间的差值", result["messages"][0])
+            self.assertNotIn("资金费率只代表合约拥挤程度", result["messages"][0])
 
     def test_native_exchange_rows_are_confirmed_without_external_provider(self) -> None:
         with TemporaryDirectory() as tmp:

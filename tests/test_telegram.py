@@ -634,6 +634,41 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("删除失败会在后续更新时自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
+    def test_remaining_alert_topic_intros_hold_static_guidance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            expected = {
+                "TG_FLOW_RADAR": [
+                    "分类图例",
+                    "真启动 = 价格、OI、现货主动成交净额、合约主动成交净额共振",
+                    "恐慌下跌 = 下跌增仓且主动卖出增强",
+                    "数据来源与计算口径",
+                    "价格变化 =（窗口收盘价 - 窗口开盘价）/ 窗口开盘价",
+                    "主动成交净额 = taker主动买入报价额 - taker主动卖出报价额",
+                    "五项全部就绪才允许进入信号推送",
+                ],
+                "TG_FUNDING_ALERT": [
+                    "数据来源与计算口径",
+                    "使用消息中列出的交易所原生公开接口",
+                    "交易所偏离 = 最高资金费率 - 最低资金费率",
+                    "周期补查仍失败时明确显示“周期数据暂不可用”",
+                    "统一风险说明",
+                    "资金费率只代表合约拥挤程度",
+                ],
+                "TG_ANNOUNCEMENT_ALERT": [
+                    "数据来源与正文边界",
+                    "只采用 Binance 官方公告",
+                    "统一处理规则",
+                    "机会事件：记录后等待资金面确认",
+                    "风险事件：暂停新增观察",
+                ],
+            }
+            for template_id, phrases in expected.items():
+                intro = topic_intro_message(template_id, settings)
+                for phrase in phrases:
+                    self.assertIn(phrase, intro)
+                self.assertLessEqual(len(plain_fallback(intro)), 4096)
+
     def test_summary_topic_intro_holds_static_legend(self) -> None:
         with TemporaryDirectory() as tmp:
             intro = topic_intro_message(

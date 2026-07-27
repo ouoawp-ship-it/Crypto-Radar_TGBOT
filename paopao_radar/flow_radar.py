@@ -37,15 +37,6 @@ def tg_quote(title: str) -> str:
     return f"<blockquote><b>{tg_escape(title)}</b></blockquote>"
 
 
-def seconds_text(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    if seconds >= 3600 and seconds % 3600 == 0:
-        return f"{seconds // 3600}小时"
-    if seconds >= 60 and seconds % 60 == 0:
-        return f"{seconds // 60}分钟"
-    return f"{seconds}秒"
-
-
 def coinglass_tv_url(coin_or_symbol: str) -> str:
     return _coinglass_tv_url(coin_or_symbol)
 
@@ -567,13 +558,10 @@ class FlowRadarEngine:
             "🧭 <b>五因子资金流雷达</b>",
             f"⏰ {cst_now_text()}",
             f"统计窗口: {window.label()}",
-            f"数据规则: 整点收线后延迟 {seconds_text(window.delay_sec)}抓取上一完整窗口",
             "",
             tg_quote("📊 本轮统计"),
             f"候选币: {len(candidates)}",
             f"入选信号: {len(rows)}",
-            "数据源: Binance Spot + Binance USDⓈ-M Futures 原生公开行情",
-            "市场边界: 仅代表 Binance，不使用 CoinGlass/Coinalyze，不代表全市场",
             f"数据确认: 完整 {confirmed_count}/{scanned_count} | 缺项 {scanned_count - confirmed_count}/{scanned_count}",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
             f"主动净额: 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
@@ -620,22 +608,4 @@ class FlowRadarEngine:
                 "如果主动成交数据长期缺失，通常是币种没有对应 Binance 现货交易对、接口限频或窗口数据尚未完整。",
                 "",
             ])
-        lines.extend([
-            tg_quote("📖 图例"),
-            "显示分类 = 真启动候选 / 吸筹观察 / 空头燃料 / 合约拉盘 / 挤空/止损 / 诱多/派发 / 恐慌下跌；本轮只显示达标分类",
-            "真启动 = 价格、OI、现货主动净额、合约主动净额共振且费率未过热",
-            "吸筹 = 价格未明显启动，但OI和现货主动净额提前增强",
-            "空头燃料 = 负费率叠加增仓，偏挤空候选",
-            "合约拉盘 = 合约主动买入强、现货主动买入弱，追高风险更高",
-            "挤空/止损 = 上涨伴随OI下降，可能是空头止损推动",
-            "诱多/派发 = 价格上涨但现货主动买入不足",
-            "恐慌下跌 = 下跌增仓且主动卖出增强，先按风险处理",
-            "",
-            tg_quote("📐 数据与计算口径"),
-            "价格变化 = (窗口收盘价 - 窗口开盘价) / 窗口开盘价",
-            "OI变化 = (窗口末持仓价值 - 窗口初持仓价值) / 窗口初持仓价值",
-            "主动成交净额 = taker主动买入报价额 - taker主动卖出报价额",
-            "资金费率 = Binance USDⓈ-M 最新资金费率快照；缺失不会按0参与评分",
-            "只有价格、OI、现货主动成交、合约主动成交、费率五项全部就绪才允许推送",
-        ])
         return "\n".join(lines)

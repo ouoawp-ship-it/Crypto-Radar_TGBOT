@@ -1056,13 +1056,6 @@ class RadarEngine:
                 f"{tg_bold('合约状态')}: {market_note}",
                 f"{tg_bold('风险')}: 下架 / 移除交易对 / 停止交易",
                 f"{tg_bold('公告')}: {title}",
-                "",
-                tg_bold("影响"),
-                "- 合约或现货流动性可能快速下降",
-                "- 观察状态中该币应标记为 风险",
-                "",
-                tg_bold("处理"),
-                "暂停新增观察，只保留风险记录",
                 f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
             ])
         return "\n".join([
@@ -1076,10 +1069,6 @@ class RadarEngine:
             "",
             tg_bold("原因"),
             f"- {tg_escape(alert['reason'])}",
-            "- Binance 官方公告触发",
-            "",
-            tg_bold("处理"),
-            "已记录为机会事件，等待资金面确认",
             f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
         ])
 
@@ -3048,13 +3037,6 @@ class RadarEngine:
         funding_exchange_table = funding_table(funding_exchanges, self.settings) if funding_exchanges else ""
         funding_transition_lines = self._format_launch_funding_transitions(funding_exchanges)
         single_funding_available = funding_available and not funding_exchange_table
-        score_legend = (
-            f"分数图例: <{self.settings.launch_watch_score}未触发 | "
-            f"{self.settings.launch_watch_score}-{self.settings.launch_primed_score - 1}提前观察 | "
-            f"{self.settings.launch_primed_score}-{self.settings.launch_breakout_score - 1}提前预警 | "
-            f"{self.settings.launch_breakout_score}-{self.settings.launch_launched_score - 1}启动确认 | "
-            f"≥{self.settings.launch_launched_score}启动瞬间"
-        )
         lines = [
             f"🚀 {tg_bold('启动雷达')} {coin_link(item)}",
             f"⏰ {cst_now_text()}",
@@ -3084,19 +3066,6 @@ class RadarEngine:
             "",
             tg_quote("判断"),
             "资金和价格开始共振，疑似进入启动阶段" if item.get("breakout") else "资金开始异动，进入观察状态",
-            "",
-            tg_quote("分数说明"),
-            "构成(最高130): 15m价25 + 1h价15 + 突破25 + 成交20 + 15m OI15 + 1h OI15 + 暗流15",
-            tg_escape(score_legend),
-            "",
-            tg_quote("数据与计算口径"),
-            "来源: Binance USDⓈ-M Futures 原生公开行情",
-            "价格/OI: 只使用已收线15m数据；1h变化由连续4个15m窗口计算",
-            "成交倍数: 最新完整15m成交额 / 前序完整15m平均成交额",
-            "突破: 最新15m收盘价高于前序窗口最高价",
-            "",
-            tg_quote("风险"),
-            "跌回突破位则启动失败；同币同阶段会进入冷却",
         ]
         return "\n".join(lines)
 

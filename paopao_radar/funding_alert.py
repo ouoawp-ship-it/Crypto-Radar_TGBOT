@@ -903,7 +903,6 @@ class FundingAlertEngine:
         if multi_exchange:
             lines.extend([
                 f"{tg_bold('交易所偏离')}: {divergence:.3f}%",
-                "说明: 最高资金费率和最低资金费率之间的差值；偏离越大，越说明不同交易所合约拥挤程度不一致，可能是单所盘口异常、局部清算压力或套利资金迁移。",
                 "",
             ])
         lines.extend([
@@ -916,9 +915,6 @@ class FundingAlertEngine:
             "",
             tg_quote("判断"),
             tg_escape(judgment),
-            "",
-            tg_quote("风险"),
-            "资金费率只代表合约拥挤程度；极端费率币种容易上下插针，必须结合价格、OI 和流动性确认。",
         ])
         return "\n".join(lines)
 
