@@ -193,6 +193,22 @@ class Settings:
     radar_summary_max_daily_push: int = 4
     radar_state_path: Path = BASE_DIR / "data" / "radar_state.json"
     funding_snapshot_path: Path = BASE_DIR / "data" / "funding_snapshot.json"
+    accumulation_quality_v2_enable: bool = False
+    accumulation_min_history_days: int = 45
+    accumulation_max_range_pct: float = 80.0
+    accumulation_max_abs_slope_pct: float = 20.0
+    accumulation_max_avg_daily_quote_volume: float = 20_000_000
+    accumulation_recent_days: int = 7
+    accumulation_max_recent_price_gain_pct: float = 300.0
+    heat_context_enable: bool = False
+    heat_context_cache_path: Path = BASE_DIR / "data" / "heat_context_cache.json"
+    heat_context_cache_ttl_sec: int = 900
+    heat_context_timeout_sec: int = 5
+    heat_context_candidate_limit: int = 20
+    heat_volume_ratio_min: float = 2.5
+    binance_square_heat_enable: bool = False
+    binance_square_heat_candidate_limit: int = 5
+    coingecko_api_base_url: str = "https://api.coingecko.com/api/v3"
 
     flow_scan_limit: int = 24
     flow_candidate_pool: int = 60
@@ -231,6 +247,15 @@ class Settings:
     funding_alert_decay_quiet_scans: int = 2
     funding_alert_end_quiet_scans: int = 5
     funding_alert_state_path: Path = BASE_DIR / "data" / "funding_alert_state.json"
+    funding_flip_oi_enable: bool = False
+    funding_flip_oi_state_path: Path = BASE_DIR / "data" / "funding_flip_oi_state.json"
+    funding_flip_oi_window_points: int = 48
+    funding_flip_oi_min_coverage: float = 0.90
+    funding_flip_oi_max_age_sec: int = 3 * 3600
+    funding_flip_oi_min_growth_pct: float = 8.0
+    funding_flip_oi_segment_tolerance_pct: float = 0.5
+    funding_flip_oi_rate_max_age_sec: int = 15 * 60
+    funding_flip_oi_cooldown_sec: int = 24 * 3600
 
     oi_hist_budget: int = 80
     kline_budget: int = 120
@@ -284,6 +309,14 @@ class Settings:
     announcement_page_size: int = 50
     announcement_only_today: bool = True
     announcement_default_ttl_days: int = 3
+    announcement_enrichment_enable: bool = False
+    announcement_enrichment_cache_path: Path = (
+        BASE_DIR / "data" / "announcement_enrichment_cache.json"
+    )
+    announcement_enrichment_cache_ttl_sec: int = 3600
+    announcement_enrichment_timeout_sec: int = 6
+    announcement_enrichment_candidate_limit: int = 4
+    announcement_enrichment_max_concurrency: int = 2
 
     divergence_state_path: Path = BASE_DIR / "data" / "oi_divergence_state.json"
     divergence_cooldown_path: Path = BASE_DIR / "data" / "oi_divergence_cooldown.json"
@@ -297,6 +330,11 @@ class Settings:
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
         default_database_backup_dir = BASE_DIR / "data" / "backups"
         default_flow_model_comparison_path = BASE_DIR / "data" / "flow_model_comparison.json"
+        default_heat_context_cache_path = BASE_DIR / "data" / "heat_context_cache.json"
+        default_funding_flip_oi_state_path = BASE_DIR / "data" / "funding_flip_oi_state.json"
+        default_announcement_enrichment_cache_path = (
+            BASE_DIR / "data" / "announcement_enrichment_cache.json"
+        )
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.tg_outbox_path == default_outbox_path:
@@ -319,6 +357,30 @@ class Settings:
                 self,
                 "flow_model_comparison_path",
                 self.data_dir / "flow_model_comparison.json",
+            )
+        if (
+            self.data_dir != BASE_DIR / "data"
+            and self.heat_context_cache_path == default_heat_context_cache_path
+        ):
+            object.__setattr__(self, "heat_context_cache_path", self.data_dir / "heat_context_cache.json")
+        if (
+            self.data_dir != BASE_DIR / "data"
+            and self.funding_flip_oi_state_path == default_funding_flip_oi_state_path
+        ):
+            object.__setattr__(
+                self,
+                "funding_flip_oi_state_path",
+                self.data_dir / "funding_flip_oi_state.json",
+            )
+        if (
+            self.data_dir != BASE_DIR / "data"
+            and self.announcement_enrichment_cache_path
+            == default_announcement_enrichment_cache_path
+        ):
+            object.__setattr__(
+                self,
+                "announcement_enrichment_cache_path",
+                self.data_dir / "announcement_enrichment_cache.json",
             )
 
     @classmethod
@@ -438,6 +500,38 @@ class Settings:
             radar_summary_max_daily_push=env_int("RADAR_SUMMARY_MAX_DAILY_PUSH", 4),
             radar_state_path=data_path(data_dir, "RADAR_STATE_FILE", "radar_state.json"),
             funding_snapshot_path=data_path(data_dir, "FUNDING_SNAPSHOT_FILE", "funding_snapshot.json"),
+            accumulation_quality_v2_enable=env_bool("ACCUMULATION_QUALITY_V2_ENABLE", False),
+            accumulation_min_history_days=env_int("ACCUMULATION_MIN_HISTORY_DAYS", 45),
+            accumulation_max_range_pct=env_float("ACCUMULATION_MAX_RANGE_PCT", 80.0),
+            accumulation_max_abs_slope_pct=env_float("ACCUMULATION_MAX_ABS_SLOPE_PCT", 20.0),
+            accumulation_max_avg_daily_quote_volume=env_float(
+                "ACCUMULATION_MAX_AVG_DAILY_QUOTE_VOLUME",
+                20_000_000,
+            ),
+            accumulation_recent_days=env_int("ACCUMULATION_RECENT_DAYS", 7),
+            accumulation_max_recent_price_gain_pct=env_float(
+                "ACCUMULATION_MAX_RECENT_PRICE_GAIN_PCT",
+                300.0,
+            ),
+            heat_context_enable=env_bool("HEAT_CONTEXT_ENABLE", False),
+            heat_context_cache_path=data_path(
+                data_dir,
+                "HEAT_CONTEXT_CACHE_FILE",
+                "heat_context_cache.json",
+            ),
+            heat_context_cache_ttl_sec=env_int("HEAT_CONTEXT_CACHE_TTL_SEC", 900),
+            heat_context_timeout_sec=env_int("HEAT_CONTEXT_TIMEOUT_SEC", 5),
+            heat_context_candidate_limit=env_int("HEAT_CONTEXT_CANDIDATE_LIMIT", 20),
+            heat_volume_ratio_min=env_float("HEAT_VOLUME_RATIO_MIN", 2.5),
+            binance_square_heat_enable=env_bool("BINANCE_SQUARE_HEAT_ENABLE", False),
+            binance_square_heat_candidate_limit=env_int(
+                "BINANCE_SQUARE_HEAT_CANDIDATE_LIMIT",
+                5,
+            ),
+            coingecko_api_base_url=os.getenv(
+                "COINGECKO_API_BASE_URL",
+                "https://api.coingecko.com/api/v3",
+            ).rstrip("/"),
             flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 24),
             flow_candidate_pool=env_int("FLOW_CANDIDATE_POOL", 60),
             flow_top_n=env_int("FLOW_TOP_N", 5),
@@ -481,6 +575,28 @@ class Settings:
             funding_alert_decay_quiet_scans=env_int("FUNDING_ALERT_DECAY_QUIET_SCANS", 2),
             funding_alert_end_quiet_scans=env_int("FUNDING_ALERT_END_QUIET_SCANS", 5),
             funding_alert_state_path=data_path(data_dir, "FUNDING_ALERT_STATE_FILE", "funding_alert_state.json"),
+            funding_flip_oi_enable=env_bool("FUNDING_FLIP_OI_ENABLE", False),
+            funding_flip_oi_state_path=data_path(
+                data_dir,
+                "FUNDING_FLIP_OI_STATE_FILE",
+                "funding_flip_oi_state.json",
+            ),
+            funding_flip_oi_window_points=env_int("FUNDING_FLIP_OI_WINDOW_POINTS", 48),
+            funding_flip_oi_min_coverage=env_float("FUNDING_FLIP_OI_MIN_COVERAGE", 0.90),
+            funding_flip_oi_max_age_sec=env_int("FUNDING_FLIP_OI_MAX_AGE_SEC", 3 * 3600),
+            funding_flip_oi_min_growth_pct=env_float("FUNDING_FLIP_OI_MIN_GROWTH_PCT", 8.0),
+            funding_flip_oi_segment_tolerance_pct=env_float(
+                "FUNDING_FLIP_OI_SEGMENT_TOLERANCE_PCT",
+                0.5,
+            ),
+            funding_flip_oi_rate_max_age_sec=env_int(
+                "FUNDING_FLIP_OI_RATE_MAX_AGE_SEC",
+                15 * 60,
+            ),
+            funding_flip_oi_cooldown_sec=env_int(
+                "FUNDING_FLIP_OI_COOLDOWN_SEC",
+                24 * 3600,
+            ),
             oi_hist_budget=env_int("OI_HIST_REQUEST_BUDGET", 80),
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
@@ -540,6 +656,31 @@ class Settings:
             announcement_page_size=env_int("ANNOUNCEMENT_PAGE_SIZE", 50),
             announcement_only_today=env_bool("ANNOUNCEMENT_ONLY_TODAY", True),
             announcement_default_ttl_days=env_int("ANNOUNCEMENT_DEFAULT_TTL_DAYS", 3),
+            announcement_enrichment_enable=env_bool(
+                "ANNOUNCEMENT_ENRICHMENT_ENABLE",
+                False,
+            ),
+            announcement_enrichment_cache_path=data_path(
+                data_dir,
+                "ANNOUNCEMENT_ENRICHMENT_CACHE_FILE",
+                "announcement_enrichment_cache.json",
+            ),
+            announcement_enrichment_cache_ttl_sec=env_int(
+                "ANNOUNCEMENT_ENRICHMENT_CACHE_TTL_SEC",
+                3600,
+            ),
+            announcement_enrichment_timeout_sec=env_int(
+                "ANNOUNCEMENT_ENRICHMENT_TIMEOUT_SEC",
+                6,
+            ),
+            announcement_enrichment_candidate_limit=env_int(
+                "ANNOUNCEMENT_ENRICHMENT_CANDIDATE_LIMIT",
+                4,
+            ),
+            announcement_enrichment_max_concurrency=env_int(
+                "ANNOUNCEMENT_ENRICHMENT_MAX_CONCURRENCY",
+                2,
+            ),
             divergence_state_path=data_path(data_dir, "OI_DIVERGENCE_STATE_FILE", "oi_divergence_state.json"),
             divergence_cooldown_path=data_path(data_dir, "OI_DIVERGENCE_COOLDOWN_FILE", "oi_divergence_cooldown.json"),
         )
@@ -635,6 +776,9 @@ class Settings:
                 "top_n": self.radar_top_n,
                 "summary_min_interval_sec": self.radar_summary_min_interval_sec,
                 "summary_max_daily_push": self.radar_summary_max_daily_push,
+                "accumulation_quality_v2_enable": self.accumulation_quality_v2_enable,
+                "heat_context_enable": self.heat_context_enable,
+                "binance_square_heat_enable": self.binance_square_heat_enable,
             },
             "flow_radar": {
                 "scan_limit": self.flow_scan_limit,
@@ -674,6 +818,9 @@ class Settings:
                 "decay_quiet_scans": self.funding_alert_decay_quiet_scans,
                 "end_quiet_scans": self.funding_alert_end_quiet_scans,
                 "state_file": str(self.funding_alert_state_path),
+                "flip_oi_enable": self.funding_flip_oi_enable,
+                "flip_oi_min_growth_pct": self.funding_flip_oi_min_growth_pct,
+                "flip_oi_state_file": str(self.funding_flip_oi_state_path),
             },
             "derivatives_validation": {
                 "coinglass_enabled": self.coinglass_enable,
@@ -732,5 +879,6 @@ class Settings:
             },
             "announcements": {
                 "page_size": self.announcement_page_size,
+                "enrichment_enable": self.announcement_enrichment_enable,
             },
         }
