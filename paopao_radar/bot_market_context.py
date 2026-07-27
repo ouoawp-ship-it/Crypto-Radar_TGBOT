@@ -146,7 +146,9 @@ def _load_market_contexts(
         return {
             _symbol(item.get("symbol") or item.get("coin")): {
                 "window_sec": BOT_MARKET_WINDOW_SEC,
+                "price": _number(item.get("price")),
                 "price_change_pct": _number(item.get("price_change_pct")),
+                "oi_usd": _number(item.get("oi_usd")),
                 "oi_change_pct": _number(item.get("oi_change_pct")),
                 "spot_flow_usd": _number(item.get("spot_flow_usd")),
                 "futures_flow_usd": _number(item.get("futures_flow_usd")),

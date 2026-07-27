@@ -553,7 +553,12 @@ class LaunchOutcomeTests(unittest.TestCase):
             self.assertIn("达到启动确认且价格完成跟随", text)
             self.assertIn("结束收益: +1.00%", text)
             self.assertIn("本轮结束", text)
-            self.assertIn("失效原因:", text)
+            self.assertIn(
+                "失效原因: 连续两个15分钟闭合窗口低于观察阈值，"
+                "本轮启动跟踪结束",
+                text,
+            )
+            self.assertNotIn("two_windows_below_watch_score", text)
             self.assertLessEqual(len(plain_fallback(text)), 1024)
 
     def test_package_messages_are_not_double_counted_as_generic_outcomes(self) -> None:

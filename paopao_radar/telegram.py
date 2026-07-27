@@ -241,34 +241,42 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         return "\n".join([
         "📌 <b>资金费率警报话题说明</b>",
         "",
-        "这里专门推送资金费率异常，不和启动雷达、资金流雷达混在一起。",
-        "重点看：极负费率、极正费率、多交易所共振、结算周期缩短、单交易所费率明显偏离。",
+        "这里专门跟踪 Binance USDⓈ-M Futures 的异常资金费率，不和启动雷达、资金流雷达混在一起。",
+        "重点观察极负/极正费率、结算周期变化，以及资金费率与价格、OI、主动成交之间的关系。",
         "",
-        "扫描和发送频率：",
+        "<b>扫描与推送</b>",
         f"- 默认每{seconds_cn(settings.funding_alert_interval_sec)}扫描一次。",
         f"- 默认扫描 Binance 成交额前 {int(settings.funding_alert_scan_limit)} 个 USDT 合约。",
-        f"- 默认交易所：{', '.join(settings.funding_alert_exchanges)}。",
-        f"- 同币同类警报默认冷却 {seconds_cn(settings.funding_alert_cooldown_sec)}，风险升级或新类型警报会重新推送。",
-        "- 同一个币再次出现信号时，会回复上一条该币资金费率警报，方便沿着同一条消息链追踪。",
+        "- 扫描不等于推送：只有首次触发、风险变化或达到有效更新条件时才发送。",
+        f"- 同币同类警报默认冷却 {seconds_cn(settings.funding_alert_cooldown_sec)}；风险升级、警报类型变化或本轮结束可重新推送。",
+        "- 每个仍在跟踪的币种只保留一条最新消息；新消息发送并保存成功后，才删除该币上一条，其他币种不受影响。",
+        "- 最新消息会保留本轮首次快照、相对首次与上次变化以及已发布事件轴；普通扫描只记录，不计入事件轴。",
+        "- 删除失败会保存待清理消息编号，并在后续扫描中自动重试。",
         "",
-        "阅读方式：",
+        "<b>最新跟踪卡包含</b>",
+        "- 本轮首次出现时间、初始费率、价格、OI和主动成交。",
+        "- 当前阶段、资金费率、结算周期和风险状态。",
+        "- 相对首次及上次更新的价格、OI、费率和主动成交变化。",
+        "- 本轮已发布事件轴；普通扫描只记录，不加入事件轴。",
+        "",
+        "<b>阅读方式</b>",
         "1. 极负费率 = 空头拥挤；如果价格不继续跌，容易变成挤空燃料。",
         "2. 极正费率 = 多头拥挤；如果价格滞涨，追高风险更大。",
-        "3. 多交易所共振比单交易所异常更重要，说明不是孤立盘口问题。",
+        "3. 费率极端不等于直接买卖信号，必须结合价格、OI和主动成交确认。",
         "4. 结算周期从 8H 到 4H 或 4H 到 1H，代表交易所提高结算频率，应按高风险事件处理。",
-        "5. 阶段会从首次异动、拥挤加剧、高危活跃、风险释放到热度衰减逐步跟踪。",
-        "6. 交易所偏离 = 最高资金费率 - 最低资金费率，用来判断是否存在单所盘口异常、局部清算压力或套利资金迁移。",
-        "7. 资金费率只代表合约拥挤程度，不等于直接买卖方向。",
+        "5. 阶段会从首次异动、拥挤加剧、高危活跃、风险释放、热度衰减到本轮结束逐步跟踪。",
+        f"6. 连续 {int(settings.funding_alert_decay_quiet_scans)} 次扫描不再满足异常条件会进入热度衰减；连续 {int(settings.funding_alert_end_quiet_scans)} 次后结束本轮。",
+        "7. 本轮结束后再次触发会建立新一轮记录，不与旧轮次混合。",
         "",
         "<b>数据来源与计算口径</b>",
-        "- 使用消息中列出的交易所原生公开接口；每条警报会明确实际确认了多少家交易所。",
-        "- 交易所偏离 = 最高资金费率 - 最低资金费率；偏离越大，越说明各交易所拥挤程度不一致。",
+        "- 资金费率、结算时间和OI来自 Binance USDⓈ-M Futures 原生公开接口。",
+        "- 价格、OI及主动成交变化使用 Binance 已闭合15分钟窗口。",
         "- 资金费率周期优先使用当前结算时间确认；周期缺失或上下次时间相同时补查 Binance 历史费率。",
-        "- 周期补查仍失败时明确显示“周期数据暂不可用”，不会伪造上次结算时间。",
+        "- 周期补查仍失败时明确显示“本次未确认”，并保留上次已确认周期；不会伪造结算时间。",
         "",
         "<b>统一风险说明</b>",
-        "- 资金费率只代表合约拥挤程度；极端费率币种容易上下插针，必须结合价格、OI、主动成交和流动性确认。",
-        "- 普通推送只保留本次阶段、实时费率表、周期变化和动态判断；不构成投资建议。",
+        "- 资金费率只代表 Binance 合约市场的拥挤程度，不代表全市场，也不等于直接买卖方向。",
+        "- 极端费率币种容易上下插针，必须结合价格、OI、主动成交和流动性确认；不构成投资建议。",
         ])
     if template_id == "TG_ONCHAIN_FLOW_ALERT":
         return "\n".join([
@@ -316,6 +324,16 @@ class TelegramGateway:
         photo: bytes | None = None,
         enrich_market_context: bool = True,
     ) -> PushResult:
+        if (
+            template_id == "TG_FUNDING_ALERT"
+            and signal_records
+            and any(
+                isinstance(record, dict)
+                and isinstance(record.get("event_snapshot"), dict)
+                for record in signal_records
+            )
+        ):
+            enrich_market_context = False
         if (
             enrich_market_context
             and str(parse_mode or "").upper() == "HTML"
@@ -438,6 +456,18 @@ class TelegramGateway:
             message_ids=message_ids,
         )
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+        if template_id == "TG_FUNDING_ALERT" and signal_records:
+            if result.sent:
+                for record in signal_records:
+                    if isinstance(record, dict):
+                        record["_funding_delete_callback"] = (
+                            self.delete_messages_detailed
+                        )
+            elif result.message_ids:
+                self.delete_messages_detailed(
+                    list(result.message_ids),
+                    reason="funding_partial_send_rollback",
+                )
         if result.sent and template_id == "TG_RADAR_SUMMARY":
             self._cleanup_replaced_summary_messages(result.message_ids or [])
         return result

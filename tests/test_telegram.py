@@ -433,6 +433,102 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(outbox[-1]["completed_chunks"], 1)
             self.assertEqual(outbox[-1]["message_ids"], [301])
 
+    def test_funding_send_binds_replacement_callback_without_duplicate_enrichment(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_outbox_path=Path(tmp) / "tg_outbox.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_funding_alert_topic_id="16",
+                tg_auto_create_topics=False,
+                tg_default_cooldown_sec=0,
+                tg_topic_intro_enable=False,
+            )
+            gateway = TelegramGateway(settings, store)
+            alert = {
+                "symbol": "TESTUSDT",
+                "event_snapshot": {"event_no": 1},
+            }
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    return_value=(True, [222]),
+                ),
+                patch(
+                    "paopao_radar.telegram.enrich_telegram_with_market_context"
+                ) as enrich_mock,
+            ):
+                result = gateway.send(
+                    "funding",
+                    "TG_FUNDING_ALERT",
+                    "funding:test",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                    signal_records=[alert],
+                )
+
+            self.assertTrue(result.sent)
+            self.assertIs(
+                alert["_funding_delete_callback"].__self__,
+                gateway,
+            )
+            enrich_mock.assert_not_called()
+
+    def test_partial_funding_send_rolls_back_partial_messages(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_outbox_path=Path(tmp) / "tg_outbox.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_funding_alert_topic_id="16",
+                tg_auto_create_topics=False,
+                tg_default_cooldown_sec=0,
+                tg_topic_intro_enable=False,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    return_value=(False, [301]),
+                ),
+                patch.object(
+                    gateway,
+                    "delete_messages_detailed",
+                    return_value={"deleted_ids": [301], "failed_ids": []},
+                ) as delete_mock,
+            ):
+                result = gateway.send(
+                    "funding",
+                    "TG_FUNDING_ALERT",
+                    "funding:partial",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                    signal_records=[{
+                        "symbol": "TESTUSDT",
+                        "event_snapshot": {"event_no": 1},
+                    }],
+                )
+
+            self.assertEqual(result.status, "failed")
+            delete_mock.assert_called_once_with(
+                [301],
+                reason="funding_partial_send_rollback",
+            )
+
     def test_real_sender_adds_reply_payload_on_first_chunk(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
@@ -649,11 +745,17 @@ class TelegramGatewayTests(unittest.TestCase):
                 ],
                 "TG_FUNDING_ALERT": [
                     "数据来源与计算口径",
-                    "使用消息中列出的交易所原生公开接口",
-                    "交易所偏离 = 最高资金费率 - 最低资金费率",
-                    "周期补查仍失败时明确显示“周期数据暂不可用”",
+                    "资金费率、结算时间和OI来自 Binance USDⓈ-M Futures",
+                    "价格、OI及主动成交变化使用 Binance 已闭合15分钟窗口",
+                    "周期补查仍失败时明确显示“本次未确认”",
+                    "每个仍在跟踪的币种只保留一条最新消息",
+                    "其他币种不受影响",
+                    "扫描不等于推送",
+                    "本轮首次出现时间、初始费率、价格、OI和主动成交",
+                    "普通扫描只记录，不计入事件轴",
+                    "删除失败会保存待清理消息编号",
                     "统一风险说明",
-                    "资金费率只代表合约拥挤程度",
+                    "只代表 Binance 合约市场的拥挤程度",
                 ],
                 "TG_ANNOUNCEMENT_ALERT": [
                     "数据来源与正文边界",
@@ -667,6 +769,10 @@ class TelegramGatewayTests(unittest.TestCase):
                 intro = topic_intro_message(template_id, settings)
                 for phrase in phrases:
                     self.assertIn(phrase, intro)
+                if template_id == "TG_FUNDING_ALERT":
+                    self.assertNotIn("多交易所共振", intro)
+                    self.assertNotIn("交易所偏离", intro)
+                    self.assertNotIn("回复上一条", intro)
                 self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_summary_topic_intro_holds_static_legend(self) -> None:

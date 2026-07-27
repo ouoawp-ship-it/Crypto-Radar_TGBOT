@@ -70,6 +70,14 @@ _LAUNCH_STATE_TRANSIENT_KEYS = frozenset({
     "launch_package",
     "price_action_analysis",
 })
+_LAUNCH_END_REASON_TEXT = {
+    "two_windows_below_watch_score": (
+        "连续两个15分钟闭合窗口低于观察阈值，本轮启动跟踪结束"
+    ),
+    "two_closes_below_breakout": (
+        "连续两根15分钟K线收盘跌破本轮有效突破位，本轮启动跟踪结束"
+    ),
+}
 
 
 def compact_launch_state_records(
@@ -96,6 +104,13 @@ def compact_launch_state_records(
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
     return datetime.now(CST).strftime(fmt)
+
+
+def launch_end_reason_text(reason: Any) -> str:
+    return _LAUNCH_END_REASON_TEXT.get(
+        str(reason or ""),
+        "启动条件已失效，本轮启动跟踪结束",
+    )
 
 
 def tg_escape(value: Any) -> str:
@@ -2957,11 +2972,12 @@ class RadarEngine:
                     f"该币历史完整周期: {symbol_samples}轮；样本不足时不单列比率。"
                 )
         status = str(lifecycle.get("cycle_status") or "active")
+        end_reason_text = launch_end_reason_text(lifecycle.get("end_reason"))
         ending_lines = (
             [
                 "",
                 tg_quote("本轮结束"),
-                f"失效原因: {tg_escape(str(lifecycle.get('end_reason') or '失效条件成立'))}",
+                f"失效原因: {tg_escape(end_reason_text)}",
             ]
             if status == "failed"
             else []
