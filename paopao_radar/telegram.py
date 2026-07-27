@@ -211,13 +211,15 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- 手动执行 flow-radar 会立即扫描，但仍统计上一完整闭合窗口；daemon/live 循环按闭合窗口调度。",
         "- 推送正文会写明“统计窗口”，价格、OI、主动成交净额只在窗口数据完整时参与评分。",
         "- 使用 Binance 免费公开数据；主动成交净额由 K 线 taker 主动买入/卖出报价额计算，代表 Binance 内部成交方向，不代表交易所充提或全市场聚合。",
+        "- P0.1 先运行单一1小时闭合窗口；旧评分只在本地留作新旧模型对照，不参与 Telegram 推送。",
         "",
         "阅读方式：",
         "1. 真启动候选 = 现货和合约资金共同推动，费率未过热。",
         "2. 吸筹观察 = 价格未大涨，但 OI 和现货主动成交净额提前增强。",
         "3. 合约拉盘/诱多派发 = 合约强于现货，追高风险更高。",
         "4. 可出现 7 类标题：真启动候选、吸筹观察、空头燃料、合约拉盘、挤空/止损、诱多/派发、恐慌下跌；本轮只显示达标分类。",
-        "5. 主动成交净额 = taker主动买入报价额 - taker主动卖出报价额；近0为中性。",
+        "5. 主动成交净额 = taker主动买入报价额 - taker主动卖出报价额；主动净占比 = 主动成交净额 / 总成交额。",
+        "6. 现货和合约方向必须同时通过“绝对净额 + 主动净占比”双门槛；小额偏差或低占比只按中性处理。",
         "",
         "<b>分类图例</b>",
         "- 真启动 = 价格、OI、现货主动成交净额、合约主动成交净额共振，且费率未过热。",
@@ -233,8 +235,15 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- 价格变化 =（窗口收盘价 - 窗口开盘价）/ 窗口开盘价。",
         "- OI变化 =（窗口末持仓价值 - 窗口初持仓价值）/ 窗口初持仓价值。",
         "- 主动成交净额 = taker主动买入报价额 - taker主动卖出报价额。",
+        f"- 现货双门槛：绝对净额≥${settings.flow_spot_net_min_usd:,.0f}，主动净占比≥{settings.flow_spot_net_ratio_min_pct:.1f}%。",
+        f"- 合约双门槛：绝对净额≥${settings.flow_futures_net_min_usd:,.0f}，主动净占比≥{settings.flow_futures_net_ratio_min_pct:.1f}%。",
         "- 资金费率使用 Binance USDⓈ-M 最新快照；缺失不会按 0 参与评分。",
         "- 价格、OI、现货主动成交、合约主动成交、费率五项全部就绪才允许进入信号推送。",
+        "- 评分最低从完整分类门禁通过后开始，未满足核心定义时不会靠零散加分凑成信号。",
+        "",
+        "<b>消息保留规则</b>",
+        "- 新一轮资金流摘要完整发送并记录成功后，才删除上一轮摘要；发送失败时保留上一轮。",
+        "- 如果摘要因长度被拆成多条消息，会保留最新一轮的全部分段。",
         "- 普通推送只保留本轮数据、达标分类、判断和数据确认；不构成投资建议。",
         ])
     if template_id == "TG_FUNDING_ALERT":
@@ -470,6 +479,14 @@ class TelegramGateway:
                 )
         if result.sent and template_id == "TG_RADAR_SUMMARY":
             self._cleanup_replaced_summary_messages(result.message_ids or [])
+        if template_id == "TG_FLOW_RADAR":
+            if result.sent:
+                self._cleanup_replaced_flow_messages(result.message_ids or [])
+            elif result.message_ids:
+                self.delete_messages_detailed(
+                    list(result.message_ids),
+                    reason="flow_radar_partial_send_rollback",
+                )
         return result
 
     @staticmethod
@@ -941,14 +958,35 @@ class TelegramGateway:
         *,
         keep_message_ids: list[int],
     ) -> dict[str, list[int]]:
+        return self._latest_topic_cleanup_plan(
+            "TG_RADAR_SUMMARY",
+            keep_message_ids=keep_message_ids,
+        )
+
+    def flow_topic_cleanup_plan(
+        self,
+        *,
+        keep_message_ids: list[int],
+    ) -> dict[str, list[int]]:
+        return self._latest_topic_cleanup_plan(
+            "TG_FLOW_RADAR",
+            keep_message_ids=keep_message_ids,
+        )
+
+    def _latest_topic_cleanup_plan(
+        self,
+        template_id: str,
+        *,
+        keep_message_ids: list[int],
+    ) -> dict[str, list[int]]:
         protected = {
             int(message_id)
             for message_id in keep_message_ids
             if isinstance(message_id, int) or str(message_id).isdigit()
         }
         intro_key = self._topic_intro_key(
-            "TG_RADAR_SUMMARY",
-            self._topic_id_for_template("TG_RADAR_SUMMARY"),
+            template_id,
+            self._topic_id_for_template(template_id),
         )
         intro = self._topic_intro_record(intro_key)
         intro_message_id = intro.get("message_id")
@@ -965,7 +1003,7 @@ class TelegramGateway:
         for record in self._load_history():
             if (
                 not isinstance(record, dict)
-                or record.get("template_id") != "TG_RADAR_SUMMARY"
+                or record.get("template_id") != template_id
                 or record.get("status") != "sent"
             ):
                 continue
@@ -1005,25 +1043,49 @@ class TelegramGateway:
         self,
         keep_message_ids: list[int],
     ) -> None:
+        self._cleanup_replaced_topic_messages(
+            "TG_RADAR_SUMMARY",
+            keep_message_ids,
+            reason_prefix="radar_summary",
+        )
+
+    def _cleanup_replaced_flow_messages(
+        self,
+        keep_message_ids: list[int],
+    ) -> None:
+        self._cleanup_replaced_topic_messages(
+            "TG_FLOW_RADAR",
+            keep_message_ids,
+            reason_prefix="flow_radar",
+        )
+
+    def _cleanup_replaced_topic_messages(
+        self,
+        template_id: str,
+        keep_message_ids: list[int],
+        *,
+        reason_prefix: str,
+    ) -> None:
         try:
-            plan = self.summary_topic_cleanup_plan(
+            plan = self._latest_topic_cleanup_plan(
+                template_id,
                 keep_message_ids=keep_message_ids,
             )
             undeletable_ids = list(plan.get("undeletable_ids") or [])
             if undeletable_ids:
                 self.mark_history_messages_undeletable(
                     undeletable_ids,
-                    reason="radar_summary_delete_window_expired",
+                    reason=f"{reason_prefix}_delete_window_expired",
                 )
             deletable_ids = list(plan.get("deletable_ids") or [])
             if deletable_ids:
                 self.delete_messages_detailed(
                     deletable_ids,
-                    reason="radar_summary_replaced",
+                    reason=f"{reason_prefix}_replaced",
                 )
         except Exception as exc:
             print(
-                f"[telegram] radar summary cleanup failed {type(exc).__name__}: {exc}",
+                f"[telegram] {reason_prefix} cleanup failed {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
 

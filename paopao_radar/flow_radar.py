@@ -14,6 +14,7 @@ from .data_sources import BinanceDataSource
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .radar import fmt_money, pct_cell, to_float
+from .storage import JsonStore
 from .time_windows import ClosedWindow, closed_window
 
 
@@ -324,7 +325,7 @@ def binance_futures_flow_stats(
     return kline_cvd_flow_info(klines, window)
 
 
-def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
+def legacy_flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     if not item.get("price_ready", True) or not item.get("oi_ready", True):
         return ("数据不足", 0, "价格或 OI 未覆盖完整统计窗口，暂不评分")
     if not item.get("funding_ready", True):
@@ -404,9 +405,299 @@ def flow_category(item: dict[str, Any]) -> tuple[str, int, str]:
     return max(candidates, key=lambda row: row[1])
 
 
+def flow_net_ratio_pct(net: float, inflow: Any, outflow: Any) -> float:
+    gross = to_float(inflow) + to_float(outflow)
+    if gross <= 0:
+        return 0.0
+    return to_float(net) / gross * 100
+
+
+def _flow_direction(
+    *,
+    net: float,
+    ratio_pct: float,
+    ready: bool,
+    min_abs_usd: float,
+    min_ratio_pct: float,
+) -> int:
+    if not ready:
+        return 0
+    if abs(net) < max(0.0, min_abs_usd):
+        return 0
+    if abs(ratio_pct) < max(0.0, min_ratio_pct):
+        return 0
+    return 1 if net > 0 else -1
+
+
+def _bounded_strength(value: float, threshold: float, points: int) -> int:
+    threshold = max(abs(threshold), 1e-9)
+    return min(points, max(0, round(abs(value) / threshold * (points / 2))))
+
+
+def flow_classification(
+    item: dict[str, Any],
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    settings = settings or Settings()
+    model_version = "flow_p0_1"
+    required = {
+        "价格": bool(item.get("price_ready", True)),
+        "oi": bool(item.get("oi_ready", True)),
+        "Binance 现货主动成交": bool(item.get("spot_cvd_ready", True)),
+        "Binance 合约主动成交": bool(item.get("futures_cvd_ready", True)),
+        "Binance 资金费率": bool(item.get("funding_ready", True)),
+    }
+    missing = [name for name, ready in required.items() if not ready]
+    if missing:
+        if (
+            "Binance 现货主动成交" in missing
+            and "Binance 合约主动成交" in missing
+        ):
+            reason = "Binance 主动成交数据缺失；本轮不评分"
+        elif "Binance 资金费率" in missing:
+            reason = "Binance 资金费率缺失；本轮不评分"
+        else:
+            reason = f"核心数据缺失：{', '.join(missing)}；本轮不评分"
+        return {
+            "model_version": model_version,
+            "category": "数据不足",
+            "score": 0,
+            "reason": reason,
+            "eligible": False,
+            "gates": required,
+            "spot_net_ratio_pct": 0.0,
+            "futures_net_ratio_pct": 0.0,
+            "category_margin": 0,
+            "alternatives": [],
+        }
+
+    price = to_float(item.get("price_24h"))
+    oi = to_float(item.get("oi_1h", item.get("oi_24h")))
+    spot_net = to_float(item.get("spot_cvd_delta"))
+    futures_net = to_float(item.get("futures_cvd_delta"))
+    funding = to_float(item.get("funding_pct"))
+    quote_volume = abs(to_float(item.get("quote_volume")))
+    spot_ratio = to_float(
+        item.get(
+            "spot_net_ratio_pct",
+            flow_net_ratio_pct(
+                spot_net,
+                item.get("spot_inflow_usd"),
+                item.get("spot_outflow_usd"),
+            ),
+        )
+    )
+    futures_ratio = to_float(
+        item.get(
+            "futures_net_ratio_pct",
+            flow_net_ratio_pct(
+                futures_net,
+                item.get("futures_inflow_usd"),
+                item.get("futures_outflow_usd"),
+            ),
+        )
+    )
+    spot_direction = _flow_direction(
+        net=spot_net,
+        ratio_pct=spot_ratio,
+        ready=True,
+        min_abs_usd=settings.flow_spot_net_min_usd,
+        min_ratio_pct=settings.flow_spot_net_ratio_min_pct,
+    )
+    futures_direction = _flow_direction(
+        net=futures_net,
+        ratio_pct=futures_ratio,
+        ready=True,
+        min_abs_usd=settings.flow_futures_net_min_usd,
+        min_ratio_pct=settings.flow_futures_net_ratio_min_pct,
+    )
+    move = max(0.01, settings.flow_price_move_min_pct)
+    flat = max(move, settings.flow_price_flat_max_pct)
+    oi_build = max(0.01, settings.flow_oi_build_min_pct)
+    oi_unwind = min(-0.01, settings.flow_oi_unwind_max_pct)
+
+    def score_candidate(
+        *,
+        include_spot: bool = True,
+        include_futures: bool = True,
+        funding_strength: float = 0.0,
+        oi_value: float | None = None,
+    ) -> int:
+        score = 60
+        score += _bounded_strength(price, move, 10)
+        score += _bounded_strength(oi if oi_value is None else oi_value, oi_build, 10)
+        if include_spot:
+            score += _bounded_strength(
+                spot_ratio,
+                settings.flow_spot_net_ratio_min_pct,
+                8,
+            )
+        if include_futures:
+            score += _bounded_strength(
+                futures_ratio,
+                settings.flow_futures_net_ratio_min_pct,
+                8,
+            )
+        score += min(6, max(0, round(funding_strength)))
+        if quote_volume >= 100_000_000:
+            score += 4
+        elif quote_volume >= 30_000_000:
+            score += 2
+        return min(100, score)
+
+    candidates: list[dict[str, Any]] = []
+
+    def add(
+        category: str,
+        passed: bool,
+        reason: str,
+        *,
+        include_spot: bool = True,
+        include_futures: bool = True,
+        funding_strength: float = 0.0,
+        oi_value: float | None = None,
+    ) -> None:
+        if passed:
+            candidates.append({
+                "category": category,
+                "score": score_candidate(
+                    include_spot=include_spot,
+                    include_futures=include_futures,
+                    funding_strength=funding_strength,
+                    oi_value=oi_value,
+                ),
+                "reason": reason,
+            })
+
+    add(
+        "真启动候选",
+        price >= move
+        and oi >= oi_build
+        and spot_direction > 0
+        and futures_direction > 0
+        and funding <= 0.05,
+        "价格与OI同步上升，现货和合约主动买入均通过净额与净占比门槛，费率未过热",
+        funding_strength=max(0.0, (0.05 - funding) / 0.01),
+    )
+    add(
+        "吸筹观察",
+        abs(price) <= flat
+        and oi >= oi_build
+        and spot_direction > 0
+        and futures_direction >= 0
+        and funding <= 0.03,
+        "价格仍在窄幅区间，OI增加且现货主动买入通过双门槛，合约未出现显著主动卖出",
+        include_futures=futures_direction != 0,
+        funding_strength=max(0.0, (0.03 - funding) / 0.01),
+    )
+    add(
+        "空头燃料",
+        funding <= -0.03
+        and oi >= oi_build
+        and price > -flat
+        and futures_direction < 0,
+        "负费率、增仓和合约主动卖出同时成立，但价格尚未明显下跌，属于潜在挤空燃料",
+        include_spot=spot_direction != 0,
+        funding_strength=abs(funding) / 0.03 * 2,
+    )
+    add(
+        "合约拉盘",
+        price >= move
+        and oi >= oi_build
+        and futures_direction > 0
+        and spot_direction <= 0
+        and funding >= 0,
+        "价格与OI上涨主要由合约主动买入推动，现货买盘未通过门槛，持续性需要谨慎",
+        include_spot=spot_direction != 0,
+        funding_strength=funding / 0.02,
+    )
+    add(
+        "挤空/止损",
+        price >= move
+        and oi <= oi_unwind
+        and futures_direction > 0
+        and funding <= 0.05,
+        "价格上涨而OI明显下降，合约主动买入增强，更接近空头止损或回补推动",
+        include_spot=spot_direction != 0,
+        funding_strength=max(0.0, (0.05 - funding) / 0.01),
+        oi_value=abs(oi),
+    )
+    add(
+        "诱多/派发",
+        price >= move
+        and spot_direction < 0
+        and (futures_direction > 0 or funding >= 0.03)
+        and oi < oi_build,
+        "价格上涨但现货主动卖出占优，合约买盘或正费率托住价格，存在诱多或派发风险",
+        funding_strength=max(0.0, funding / 0.02),
+    )
+    add(
+        "恐慌下跌",
+        price <= -move
+        and oi >= oi_build
+        and spot_direction < 0
+        and futures_direction < 0,
+        "价格下跌、OI增加，现货与合约主动卖出均通过双门槛，属于增仓下跌风险",
+        funding_strength=max(0.0, abs(min(funding, 0.0)) / 0.02),
+    )
+
+    candidates.sort(key=lambda row: int(row["score"]), reverse=True)
+    if not candidates:
+        return {
+            "model_version": model_version,
+            "category": "观察",
+            "score": 0,
+            "reason": (
+                f"未通过任一完整核心门禁；现货净占比 {spot_ratio:+.2f}%，"
+                f"合约净占比 {futures_ratio:+.2f}%"
+            ),
+            "eligible": False,
+            "gates": required,
+            "spot_net_ratio_pct": spot_ratio,
+            "futures_net_ratio_pct": futures_ratio,
+            "category_margin": 0,
+            "alternatives": [],
+        }
+    best = candidates[0]
+    margin = int(best["score"]) - (
+        int(candidates[1]["score"]) if len(candidates) > 1 else 0
+    )
+    return {
+        "model_version": model_version,
+        "category": str(best["category"]),
+        "score": int(best["score"]),
+        "reason": (
+            f"{best['reason']}；现货净占比 {spot_ratio:+.2f}%，"
+            f"合约净占比 {futures_ratio:+.2f}%"
+        ),
+        "eligible": True,
+        "gates": required,
+        "spot_net_ratio_pct": spot_ratio,
+        "futures_net_ratio_pct": futures_ratio,
+        "category_margin": margin,
+        "alternatives": [
+            {"category": row["category"], "score": row["score"]}
+            for row in candidates[1:3]
+        ],
+    }
+
+
+def flow_category(
+    item: dict[str, Any],
+    settings: Settings | None = None,
+) -> tuple[str, int, str]:
+    classification = flow_classification(item, settings)
+    return (
+        str(classification["category"]),
+        int(classification["score"]),
+        str(classification["reason"]),
+    )
+
+
 class FlowRadarEngine:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, store: JsonStore | None = None):
         self.settings = settings
+        self.store = store or JsonStore(settings.data_dir)
 
     def build(self, binance: BinanceDataSource) -> dict[str, Any]:
         window = closed_window(
@@ -432,6 +723,16 @@ class FlowRadarEngine:
             funding_pct = to_float(candidate.get("funding_pct", 0.0))
             quote_volume = to_float(candidate["quote_volume"])
             oi_usd = oi_fallback_usd
+            spot_ratio_pct = flow_net_ratio_pct(
+                spot_cvd,
+                spot_inflow,
+                spot_outflow,
+            )
+            futures_ratio_pct = flow_net_ratio_pct(
+                futures_cvd,
+                futures_inflow,
+                futures_outflow,
+            )
             item = {
                 "symbol": symbol,
                 "coin": coin,
@@ -447,9 +748,11 @@ class FlowRadarEngine:
                 "spot_cvd_delta": spot_cvd,
                 "spot_inflow_usd": spot_inflow if spot_cvd_ready else None,
                 "spot_outflow_usd": spot_outflow if spot_cvd_ready else None,
+                "spot_net_ratio_pct": spot_ratio_pct,
                 "futures_cvd_delta": futures_cvd,
                 "futures_inflow_usd": futures_inflow if futures_cvd_ready else None,
                 "futures_outflow_usd": futures_outflow if futures_cvd_ready else None,
+                "futures_net_ratio_pct": futures_ratio_pct,
                 "spot_cvd_ready": spot_cvd_ready,
                 "futures_cvd_ready": futures_cvd_ready,
                 "spot_cvd_points": spot_cvd_points,
@@ -459,8 +762,21 @@ class FlowRadarEngine:
                 "quote_volume": abs(quote_volume),
                 "oi_usd": oi_usd,
             }
-            category, score, reason = flow_category(item)
-            item.update({"category": category, "score": score, "reason": reason})
+            legacy_category, legacy_score, legacy_reason = legacy_flow_category(item)
+            classification = flow_classification(item, self.settings)
+            item.update({
+                "category": classification["category"],
+                "score": classification["score"],
+                "reason": classification["reason"],
+                "flow_model_version": classification["model_version"],
+                "flow_model_eligible": classification["eligible"],
+                "flow_core_gates": classification["gates"],
+                "category_margin": classification["category_margin"],
+                "category_alternatives": classification["alternatives"],
+                "legacy_category": legacy_category,
+                "legacy_score": legacy_score,
+                "legacy_reason": legacy_reason,
+            })
             scanned_items.append(item)
 
         for item in scanned_items:
@@ -478,6 +794,8 @@ class FlowRadarEngine:
                 observed_at=int(window.end.timestamp()),
             )
             if (
+                item.get("flow_model_eligible")
+                and
                 item["score"] >= self.settings.flow_min_score
                 and item.get("quality_gate") == "allow"
             ):
@@ -485,6 +803,7 @@ class FlowRadarEngine:
 
         rows.sort(key=lambda item: item["score"], reverse=True)
         rows = rows[: max(1, self.settings.flow_top_n)]
+        comparison_status = self._record_model_comparison(scanned_items, window)
         return {
             "template_id": "TG_FLOW_RADAR",
             "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
@@ -496,6 +815,7 @@ class FlowRadarEngine:
             "diagnostics": {
                 "binance": binance.diagnostics(),
                 "binance_confirmation": confirmation_summary(scanned_items),
+                "flow_model_comparison": comparison_status,
             },
         }
 
@@ -527,8 +847,126 @@ class FlowRadarEngine:
                 "funding_pct": premium_map.get(symbol, 0.0),
                 "funding_ready": symbol in premium_map,
             })
-        candidates.sort(key=lambda item: (item["quote_volume"], abs(item["price_24h"])), reverse=True)
-        return candidates[: max(1, self.settings.flow_candidate_pool)]
+        pool_size = max(1, self.settings.flow_candidate_pool)
+        liquidity = sorted(
+            candidates,
+            key=lambda item: item["quote_volume"],
+            reverse=True,
+        )
+        movers = sorted(
+            candidates,
+            key=lambda item: abs(item["price_24h"]),
+            reverse=True,
+        )
+        funding_extremes = sorted(
+            (item for item in candidates if item.get("funding_ready")),
+            key=lambda item: abs(item["funding_pct"]),
+            reverse=True,
+        )
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        reason_map: dict[str, set[str]] = {}
+        rankings = (
+            ("liquidity", liquidity),
+            ("price_mover", movers),
+            ("funding_extreme", funding_extremes),
+        )
+        rank = 0
+        while len(selected) < pool_size and any(rank < len(rows) for _, rows in rankings):
+            for reason, ranked in rankings:
+                if rank >= len(ranked):
+                    continue
+                candidate = ranked[rank]
+                symbol = str(candidate["symbol"])
+                reason_map.setdefault(symbol, set()).add(reason)
+                if symbol not in selected_symbols:
+                    selected.append(candidate)
+                    selected_symbols.add(symbol)
+                    if len(selected) >= pool_size:
+                        break
+            rank += 1
+        for candidate in selected:
+            candidate["selection_reasons"] = sorted(
+                reason_map.get(str(candidate["symbol"]), set())
+            )
+        return selected
+
+    def _record_model_comparison(
+        self,
+        items: list[dict[str, Any]],
+        window: ClosedWindow,
+    ) -> dict[str, Any]:
+        if not self.settings.flow_model_comparison_enable:
+            return {"status": "disabled"}
+        legacy_eligible = [
+            item for item in items
+            if int(item.get("legacy_score") or 0) >= 50
+            and item.get("quality_gate") == "allow"
+        ]
+        p0_eligible = [
+            item for item in items
+            if bool(item.get("flow_model_eligible"))
+            and int(item.get("score") or 0) >= self.settings.flow_min_score
+            and item.get("quality_gate") == "allow"
+        ]
+        changed_count = sum(
+            1 for item in items
+            if item.get("legacy_category") != item.get("category")
+        )
+        legacy_suppressed_count = sum(
+            1 for item in legacy_eligible
+            if item not in p0_eligible
+        )
+        record = {
+            "schema_version": 1,
+            "model_version": "flow_p0_1",
+            "observed_at": int(window.end.timestamp()),
+            "window_start": int(window.start.timestamp()),
+            "window_end": int(window.end.timestamp()),
+            "legacy_eligible_count": len(legacy_eligible),
+            "p0_eligible_count": len(p0_eligible),
+            "category_changed_count": changed_count,
+            "legacy_suppressed_count": legacy_suppressed_count,
+            "items": [
+                {
+                    "symbol": item.get("symbol"),
+                    "price_1h_pct": item.get("price_24h"),
+                    "oi_1h_pct": item.get("oi_1h"),
+                    "spot_net_usd": item.get("spot_cvd_delta"),
+                    "spot_net_ratio_pct": item.get("spot_net_ratio_pct"),
+                    "futures_net_usd": item.get("futures_cvd_delta"),
+                    "futures_net_ratio_pct": item.get("futures_net_ratio_pct"),
+                    "funding_pct": item.get("funding_pct"),
+                    "legacy_category": item.get("legacy_category"),
+                    "legacy_score": item.get("legacy_score"),
+                    "p0_category": item.get("category"),
+                    "p0_score": item.get("score"),
+                    "p0_eligible": item.get("flow_model_eligible"),
+                    "quality_gate": item.get("quality_gate"),
+                    "category_margin": item.get("category_margin"),
+                }
+                for item in items
+            ],
+        }
+        try:
+            self.store.append_record(
+                self.settings.flow_model_comparison_path,
+                record,
+                limit=max(1, self.settings.flow_model_comparison_history_limit),
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "error_type": type(exc).__name__,
+            }
+        return {
+            "status": "recorded",
+            "path": str(self.settings.flow_model_comparison_path),
+            "legacy_eligible_count": len(legacy_eligible),
+            "p0_eligible_count": len(p0_eligible),
+            "category_changed_count": changed_count,
+            "legacy_suppressed_count": legacy_suppressed_count,
+        }
 
     def _format(
         self,
@@ -547,11 +985,23 @@ class FlowRadarEngine:
         )
         spot_active_count = sum(
             1 for item in scanned_items
-            if item.get("spot_cvd_ready") and abs(float(item.get("spot_cvd_delta") or 0.0)) > CVD_NEUTRAL_ABS
+            if _flow_direction(
+                net=to_float(item.get("spot_cvd_delta")),
+                ratio_pct=to_float(item.get("spot_net_ratio_pct")),
+                ready=bool(item.get("spot_cvd_ready")),
+                min_abs_usd=self.settings.flow_spot_net_min_usd,
+                min_ratio_pct=self.settings.flow_spot_net_ratio_min_pct,
+            )
         )
         futures_active_count = sum(
             1 for item in scanned_items
-            if item.get("futures_cvd_ready") and abs(float(item.get("futures_cvd_delta") or 0.0)) > CVD_NEUTRAL_ABS
+            if _flow_direction(
+                net=to_float(item.get("futures_cvd_delta")),
+                ratio_pct=to_float(item.get("futures_net_ratio_pct")),
+                ready=bool(item.get("futures_cvd_ready")),
+                min_abs_usd=self.settings.flow_futures_net_min_usd,
+                min_ratio_pct=self.settings.flow_futures_net_ratio_min_pct,
+            )
         )
         scanned_count = len(scanned_items)
         lines = [
@@ -564,7 +1014,7 @@ class FlowRadarEngine:
             f"入选信号: {len(rows)}",
             f"数据确认: 完整 {confirmed_count}/{scanned_count} | 缺项 {scanned_count - confirmed_count}/{scanned_count}",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
-            f"主动净额: 现货有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
+            f"主动成交: 现货双门槛有效 {spot_active_count}/{scanned_count}，可读 {spot_ready_count}/{scanned_count} | 合约双门槛有效 {futures_active_count}/{scanned_count}，可读 {futures_ready_count}/{scanned_count}",
             "",
         ]
         if scanned_count and (price_ready_count < scanned_count or oi_ready_count < scanned_count):
@@ -579,7 +1029,7 @@ class FlowRadarEngine:
             ])
         if scanned_count and (spot_active_count < spot_ready_count or futures_active_count < futures_ready_count):
             lines.extend([
-                "ℹ️ 部分主动成交净额近0；近0只作为中性状态，不按主动买入或主动卖出评分。",
+                "ℹ️ 主动成交必须同时通过绝对净额和主动净占比门槛；未通过只按中性状态处理。",
                 "",
             ])
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -595,8 +1045,10 @@ class FlowRadarEngine:
                 lines.append(
                     f"{item['score']}分 | 价{pct_cell(item['price_24h'])} | "
                     f"OI 1h{pct_cell(item['oi_1h'])} | "
-                    f"现货主动净额 {fmt_cvd(item['spot_cvd_delta'], bool(item.get('spot_cvd_ready')))} | "
-                    f"合约主动净额 {fmt_cvd(item['futures_cvd_delta'], bool(item.get('futures_cvd_ready')))} | "
+                    f"现货 {fmt_cvd(item['spot_cvd_delta'], bool(item.get('spot_cvd_ready')))}"
+                    f"/{to_float(item.get('spot_net_ratio_pct')):+.1f}% | "
+                    f"合约 {fmt_cvd(item['futures_cvd_delta'], bool(item.get('futures_cvd_ready')))}"
+                    f"/{to_float(item.get('futures_net_ratio_pct')):+.1f}% | "
                     f"费率 {item['funding_pct']:+.3f}%"
                 )
                 lines.append(f"判断: {tg_escape(item['reason'])}")

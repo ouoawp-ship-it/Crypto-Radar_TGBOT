@@ -194,12 +194,23 @@ class Settings:
     radar_state_path: Path = BASE_DIR / "data" / "radar_state.json"
     funding_snapshot_path: Path = BASE_DIR / "data" / "funding_snapshot.json"
 
-    flow_scan_limit: int = 12
-    flow_candidate_pool: int = 50
-    flow_top_n: int = 8
-    flow_min_score: int = 50
+    flow_scan_limit: int = 24
+    flow_candidate_pool: int = 60
+    flow_top_n: int = 5
+    flow_min_score: int = 60
     flow_interval_sec: int = 3600
     flow_close_delay_sec: int = 300
+    flow_spot_net_ratio_min_pct: float = 3.0
+    flow_futures_net_ratio_min_pct: float = 2.0
+    flow_spot_net_min_usd: float = 10_000
+    flow_futures_net_min_usd: float = 25_000
+    flow_price_move_min_pct: float = 1.0
+    flow_price_flat_max_pct: float = 1.5
+    flow_oi_build_min_pct: float = 2.0
+    flow_oi_unwind_max_pct: float = -1.5
+    flow_model_comparison_enable: bool = True
+    flow_model_comparison_path: Path = BASE_DIR / "data" / "flow_model_comparison.json"
+    flow_model_comparison_history_limit: int = 500
 
     funding_alert_enable: bool = True
     funding_alert_interval_sec: int = 180
@@ -285,6 +296,7 @@ class Settings:
         default_realtime_features_db_path = BASE_DIR / "data" / "realtime_features.db"
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
         default_database_backup_dir = BASE_DIR / "data" / "backups"
+        default_flow_model_comparison_path = BASE_DIR / "data" / "flow_model_comparison.json"
         if self.data_dir != BASE_DIR / "data" and self.signal_events_path == default_signal_path:
             object.__setattr__(self, "signal_events_path", self.data_dir / "signal_events.json")
         if self.data_dir != BASE_DIR / "data" and self.tg_outbox_path == default_outbox_path:
@@ -299,6 +311,15 @@ class Settings:
             object.__setattr__(self, "news_events_db_path", self.data_dir / "news_events.db")
         if self.data_dir != BASE_DIR / "data" and self.database_backup_dir == default_database_backup_dir:
             object.__setattr__(self, "database_backup_dir", self.data_dir / "backups")
+        if (
+            self.data_dir != BASE_DIR / "data"
+            and self.flow_model_comparison_path == default_flow_model_comparison_path
+        ):
+            object.__setattr__(
+                self,
+                "flow_model_comparison_path",
+                self.data_dir / "flow_model_comparison.json",
+            )
 
     @classmethod
     def load(cls) -> "Settings":
@@ -417,12 +438,30 @@ class Settings:
             radar_summary_max_daily_push=env_int("RADAR_SUMMARY_MAX_DAILY_PUSH", 4),
             radar_state_path=data_path(data_dir, "RADAR_STATE_FILE", "radar_state.json"),
             funding_snapshot_path=data_path(data_dir, "FUNDING_SNAPSHOT_FILE", "funding_snapshot.json"),
-            flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 12),
-            flow_candidate_pool=env_int("FLOW_CANDIDATE_POOL", 50),
-            flow_top_n=env_int("FLOW_TOP_N", 8),
-            flow_min_score=env_int("FLOW_MIN_SCORE", 50),
+            flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 24),
+            flow_candidate_pool=env_int("FLOW_CANDIDATE_POOL", 60),
+            flow_top_n=env_int("FLOW_TOP_N", 5),
+            flow_min_score=env_int("FLOW_MIN_SCORE", 60),
             flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 3600),
             flow_close_delay_sec=env_int("FLOW_CLOSE_DELAY_SEC", 300),
+            flow_spot_net_ratio_min_pct=env_float("FLOW_SPOT_NET_RATIO_MIN_PCT", 3.0),
+            flow_futures_net_ratio_min_pct=env_float("FLOW_FUTURES_NET_RATIO_MIN_PCT", 2.0),
+            flow_spot_net_min_usd=env_float("FLOW_SPOT_NET_MIN_USD", 10_000),
+            flow_futures_net_min_usd=env_float("FLOW_FUTURES_NET_MIN_USD", 25_000),
+            flow_price_move_min_pct=env_float("FLOW_PRICE_MOVE_MIN_PCT", 1.0),
+            flow_price_flat_max_pct=env_float("FLOW_PRICE_FLAT_MAX_PCT", 1.5),
+            flow_oi_build_min_pct=env_float("FLOW_OI_BUILD_MIN_PCT", 2.0),
+            flow_oi_unwind_max_pct=env_float("FLOW_OI_UNWIND_MAX_PCT", -1.5),
+            flow_model_comparison_enable=env_bool("FLOW_MODEL_COMPARISON_ENABLE", True),
+            flow_model_comparison_path=data_path(
+                data_dir,
+                "FLOW_MODEL_COMPARISON_FILE",
+                "flow_model_comparison.json",
+            ),
+            flow_model_comparison_history_limit=env_int(
+                "FLOW_MODEL_COMPARISON_HISTORY_LIMIT",
+                500,
+            ),
             funding_alert_enable=env_bool("FUNDING_ALERT_ENABLE", True),
             funding_alert_interval_sec=env_int("FUNDING_ALERT_INTERVAL_SEC", 180),
             funding_alert_scan_limit=env_int("FUNDING_ALERT_SCAN_LIMIT", 120),
@@ -603,6 +642,17 @@ class Settings:
                 "top_n": self.flow_top_n,
                 "min_score": self.flow_min_score,
                 "interval_sec": self.flow_interval_sec,
+                "spot_net_ratio_min_pct": self.flow_spot_net_ratio_min_pct,
+                "futures_net_ratio_min_pct": self.flow_futures_net_ratio_min_pct,
+                "spot_net_min_usd": self.flow_spot_net_min_usd,
+                "futures_net_min_usd": self.flow_futures_net_min_usd,
+                "price_move_min_pct": self.flow_price_move_min_pct,
+                "price_flat_max_pct": self.flow_price_flat_max_pct,
+                "oi_build_min_pct": self.flow_oi_build_min_pct,
+                "oi_unwind_max_pct": self.flow_oi_unwind_max_pct,
+                "model_comparison_enable": self.flow_model_comparison_enable,
+                "model_comparison_file": str(self.flow_model_comparison_path),
+                "model_comparison_history_limit": self.flow_model_comparison_history_limit,
             },
             "funding_alert": {
                 "enable": self.funding_alert_enable,

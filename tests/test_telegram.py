@@ -1096,6 +1096,161 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertTrue(history[1]["lifecycle_deleted"])
             self.assertNotIn("deleted_message_ids", history[2])
 
+    def test_flow_replacement_deletes_only_previous_flow_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_flow_radar_topic_id="15",
+                tg_radar_summary_topic_id="11",
+                tg_use_topic=True,
+                tg_topic_intro_enable=False,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    side_effect=[(True, [101]), (True, [201]), (True, [102, 103])],
+                ),
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
+            ):
+                gateway.send(
+                    "flow one",
+                    "TG_FLOW_RADAR",
+                    "flow:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                gateway.send(
+                    "summary",
+                    "TG_RADAR_SUMMARY",
+                    "summary:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                result = gateway.send(
+                    "flow two",
+                    "TG_FLOW_RADAR",
+                    "flow:two",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertTrue(result.sent)
+            self.assertEqual(
+                [call.args[0] for call in delete_mock.call_args_list],
+                [101],
+            )
+            history = store.load(settings.tg_push_history_path, [])
+            flow_one = next(record for record in history if record["dedup_key"] == "flow:one")
+            summary = next(record for record in history if record["dedup_key"] == "summary:one")
+            self.assertEqual(flow_one["deleted_message_ids"], [101])
+            self.assertNotIn("deleted_message_ids", summary)
+
+    def test_flow_replacement_keeps_previous_when_new_delivery_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_flow_radar_topic_id="15",
+                tg_use_topic=True,
+                tg_topic_intro_enable=False,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    side_effect=[(True, [101]), (False, [])],
+                ),
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
+            ):
+                gateway.send(
+                    "flow one",
+                    "TG_FLOW_RADAR",
+                    "flow:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+                result = gateway.send(
+                    "flow two",
+                    "TG_FLOW_RADAR",
+                    "flow:two",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+
+            self.assertFalse(result.sent)
+            delete_mock.assert_not_called()
+
+    def test_flow_partial_delivery_rolls_back_partial_ids_and_keeps_previous(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_flow_radar_topic_id="15",
+                tg_use_topic=True,
+                tg_topic_intro_enable=False,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    side_effect=[(True, [101]), (False, [102])],
+                ),
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
+            ):
+                gateway.send(
+                    "flow one",
+                    "TG_FLOW_RADAR",
+                    "flow:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+                result = gateway.send(
+                    "flow two",
+                    "TG_FLOW_RADAR",
+                    "flow:two",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+
+            self.assertFalse(result.sent)
+            delete_mock.assert_called_once_with(102)
+            history = store.load(settings.tg_push_history_path, [])
+            flow_one = next(record for record in history if record["dedup_key"] == "flow:one")
+            self.assertNotIn("deleted_message_ids", flow_one)
+
     def test_topic_intro_refreshes_when_content_version_changes(self) -> None:
         with TemporaryDirectory() as tmp:
             route_path = Path(tmp) / "topic_routes.json"
