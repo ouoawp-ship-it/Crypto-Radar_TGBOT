@@ -168,6 +168,22 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertEqual(window.label(), "05-26 16:00-17:00 CST")
 
+    def test_push_body_excludes_static_legend_and_calculation_copy(self) -> None:
+        window = closed_window(
+            now=datetime(2026, 5, 26, 18, 5, 0, tzinfo=timezone.utc),
+            interval_sec=3600,
+            delay_sec=300,
+        )
+
+        text = FlowRadarEngine(Settings())._format([], [], [], window)
+
+        self.assertIn("本轮统计", text)
+        self.assertNotIn("📖 图例", text)
+        self.assertNotIn("📐 数据与计算口径", text)
+        self.assertNotIn("市场边界: 仅代表 Binance", text)
+        self.assertNotIn("数据规则: 整点收线后延迟", text)
+        self.assertNotIn("主动成交净额 = taker主动买入报价额", text)
+
     def test_true_launch_category_scores_multi_factor_confirmation(self) -> None:
         category, score, _reason = flow_category({
             "price_24h": 6.0,

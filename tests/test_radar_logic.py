@@ -394,7 +394,9 @@ class RadarScoringTests(unittest.TestCase):
             self.assertIn("流动性: $55M/24h（中流动性）", text)
             self.assertIn("资金费率: -2.000%/1H（极负）", text)
             self.assertIn("结算周期: 2026-07-01 16:00:00 4H结算一次 → 2026-07-01 17:00:00 1H结算一次", text)
-            self.assertIn("分数图例", text)
+            self.assertNotIn("分数图例", text)
+            self.assertNotIn("数据与计算口径", text)
+            self.assertNotIn("跌回突破位则启动失败", text)
             self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
 
     def test_launch_signal_uses_binance_native_confirmation(self) -> None:
@@ -768,7 +770,8 @@ class RadarScoringTests(unittest.TestCase):
             })
 
             self.assertIn("风险提醒", text)
-            self.assertIn("标记为 风险", text)
+            self.assertNotIn("标记为 风险", text)
+            self.assertNotIn("暂停新增观察", text)
             self.assertNotIn("risk", text)
 
 
