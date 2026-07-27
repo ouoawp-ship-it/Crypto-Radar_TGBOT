@@ -11,6 +11,7 @@ from paopao_radar.funding_alert import (
     FundingAlertEngine,
     _display_width,
     classify_funding_alert,
+    funding_alert_cards,
     funding_row_text,
     funding_table,
     funding_table_lines,
@@ -179,6 +180,36 @@ class FundingAlertTests(unittest.TestCase):
             _display_width(okx_line.split("07-02 00:00", 1)[0]),
         )
 
+    def test_funding_alert_cards_use_mobile_friendly_two_line_layout(self) -> None:
+        settings = Settings(data_dir=Path("."))
+        rows = [
+            {
+                "exchange": "Binance",
+                "funding_pct": -0.476,
+                "interval_hours": 4,
+                "last_funding_time": "2026-07-28 00:00:00",
+                "next_funding_time": "2026-07-28 04:00:00",
+            },
+            {
+                "exchange": "OKX",
+                "funding_pct": 0.01,
+                "interval_hours": 8,
+                "last_funding_time": "2026-07-28 00:00:00",
+                "next_funding_time": "2026-07-28 08:00:00",
+            },
+        ]
+
+        cards = funding_alert_cards(rows, settings)
+
+        self.assertNotIn("<pre>", cards)
+        self.assertIn("<b>Binance</b>｜<b>-0.476%</b> · 4H", cards)
+        self.assertIn("结算｜07-28 00:00 → 07-28 04:00", cards)
+        self.assertIn(
+            "\n\n<b>OKX</b>｜<b>+0.010%</b> · 8H\n"
+            "结算｜07-28 00:00 → 07-28 08:00",
+            cards,
+        )
+
     def test_classifies_multi_exchange_negative_funding(self) -> None:
         settings = Settings(
             funding_alert_extreme_negative_pct=-0.5,
@@ -236,9 +267,9 @@ class FundingAlertTests(unittest.TestCase):
             self.assertIn("开始监控时", result["messages"][0])
             self.assertIn("相对首次信号", result["messages"][0])
             self.assertIn("本轮事件轴", result["messages"][0])
-            self.assertIn("<pre>", result["messages"][0])
-            self.assertIn("Binance", result["messages"][0])
-            self.assertIn("-2.000%/1H 超极负", result["messages"][0])
+            self.assertNotIn("<pre>", result["messages"][0])
+            self.assertIn("<b>Binance</b>｜<b>-2.000%</b> · 4H→1H · 超极负", result["messages"][0])
+            self.assertIn("结算｜07-01 16:00 → 07-01 17:00", result["messages"][0])
             self.assertIn("交易所费率偏离", result["messages"][0])
             self.assertNotIn("最高资金费率和最低资金费率之间的差值", result["messages"][0])
             self.assertNotIn("资金费率只代表合约拥挤程度", result["messages"][0])

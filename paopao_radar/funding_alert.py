@@ -228,6 +228,29 @@ def funding_table(rows: list[dict[str, Any]], settings: Settings) -> str:
     return "<pre>" + tg_escape("\n".join(funding_table_lines(rows, settings))) + "</pre>"
 
 
+def funding_alert_cards(rows: list[dict[str, Any]], settings: Settings) -> str:
+    cards: list[str] = []
+    for row in rows:
+        exchange = str(row.get("exchange") or "Unknown").strip()
+        funding_pct = to_float(row.get("funding_pct"))
+        period = funding_settlement_period_text(row)
+        label = funding_rate_label(funding_pct, settings)
+        summary = (
+            f"{tg_bold(exchange)}｜{tg_bold(f'{funding_pct:+.3f}%')}"
+            f" · {tg_escape(period)}"
+        )
+        if label:
+            summary += f" · {tg_escape(label)}"
+
+        last_time = short_funding_time(funding_last_settlement_text(row))
+        next_time = short_funding_time(str(row.get("next_funding_time") or ""))
+        cards.append(
+            f"{summary}\n"
+            f"结算｜{tg_escape(last_time)} → {tg_escape(next_time)}"
+        )
+    return "\n\n".join(cards)
+
+
 def classify_funding_alert(rows: list[dict[str, Any]], settings: Settings) -> dict[str, Any]:
     if not rows:
         return {}
@@ -1351,7 +1374,10 @@ class FundingAlertEngine:
             f"15m主动成交: {tg_escape(self._active_flow_text(current))}",
             "",
             tg_quote("交易所资金费率"),
-            funding_table([row for row in rows if isinstance(row, dict)], self.settings),
+            funding_alert_cards(
+                [row for row in rows if isinstance(row, dict)],
+                self.settings,
+            ),
             "",
             tg_quote("开始监控时"),
             f"时间: {short_cst_time(first.get('observed_at'))} CST",
