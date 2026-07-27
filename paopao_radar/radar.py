@@ -7,6 +7,15 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Optional
 
+from .accumulation_quality import (
+    accumulation_quality_allows_ambush,
+    analyze_accumulation_quality,
+    format_accumulation_evidence,
+)
+from .announcement_enrichment import (
+    AnnouncementProjectEnricher,
+    format_announcement_profiles,
+)
 from .binance_confirmation import (
     apply_binance_confirmation,
     confirmation_summary,
@@ -16,6 +25,11 @@ from .config import Settings
 from .data_sources import BinanceDataSource
 from .funding_alert import funding_table
 from .funding_sources import funding_last_settlement_text, funding_settlement_period_text
+from .heat_context import (
+    HeatContextEnricher,
+    five_day_volume_context,
+    format_heat_context_lines,
+)
 from .launch_chart import render_launch_chart_png
 from .launch_lifecycle import LaunchLifecycleStore
 from .launch_price_action import (
@@ -391,6 +405,7 @@ class RadarEngine:
     def __init__(self, settings: Settings, store: JsonStore):
         self.settings = settings
         self.store = store
+        self._heat_context_diagnostics: dict[str, Any] = {"status": "disabled"}
 
     def run_once(self, include_launch: bool = True, include_announcements: bool = True) -> dict[str, Any]:
         summary_source = BinanceDataSource(self.settings)
@@ -501,7 +516,17 @@ class RadarEngine:
         ambush = sorted(
             [
                 item for item in oi_items
-                if item["ambush_score"] >= 35 and (item["sideways_days"] >= 45 or self._is_dark_flow(item))
+                if (
+                    item["ambush_score"] >= 35
+                    and (item["sideways_days"] >= 45 or self._is_dark_flow(item))
+                    and (
+                        not self.settings.accumulation_quality_v2_enable
+                        or accumulation_quality_allows_ambush(
+                            item.get("accumulation_quality_v2") or {},
+                            min_baseline_days=self.settings.accumulation_min_history_days,
+                        )
+                    )
+                )
             ],
             key=lambda item: item["ambush_score"],
             reverse=True,
@@ -536,6 +561,7 @@ class RadarEngine:
         derivatives_quality = confirmation_summary(items)
         quality = source.diagnostics()
         quality["derivatives_quality"] = derivatives_quality
+        quality["heat_context"] = dict(self._heat_context_diagnostics)
         text = self._format_summary(
             now,
             negative,
@@ -652,6 +678,30 @@ class RadarEngine:
                 onboard_days = max(0, int((time.time() * 1000 - onboard_ms) / 86_400_000))
                 history_days = min(history_days or onboard_days, onboard_days)
             sideways_days = estimate_sideways_days(daily)
+            accumulation_quality: dict[str, Any] = {}
+            if self.settings.accumulation_quality_v2_enable:
+                accumulation_quality = analyze_accumulation_quality(
+                    daily,
+                    now_ms=int(time.time() * 1000),
+                    min_history_days=self.settings.accumulation_min_history_days,
+                    max_range_pct=self.settings.accumulation_max_range_pct,
+                    max_abs_slope_pct=self.settings.accumulation_max_abs_slope_pct,
+                    max_avg_daily_quote_volume=(
+                        self.settings.accumulation_max_avg_daily_quote_volume
+                    ),
+                    recent_days=self.settings.accumulation_recent_days,
+                    max_recent_price_gain_pct=(
+                        self.settings.accumulation_max_recent_price_gain_pct
+                    ),
+                )
+            volume_context: dict[str, Any] = {}
+            if self.settings.heat_context_enable:
+                volume_context = five_day_volume_context(
+                    daily,
+                    current_24h_quote_volume=item["quote_volume"],
+                    now_ms=int(time.time() * 1000),
+                    surge_ratio=self.settings.heat_volume_ratio_min,
+                )
 
             mcap = mcap_map.get(coin, 0.0)
             mcap_source = "Binance市场资料" if mcap > 0 else ""
@@ -671,8 +721,33 @@ class RadarEngine:
                 "sideways_days": sideways_days,
                 "history_days": history_days,
                 "dark_flow": oi_6h > 2 and abs(price_window) < 5,
+                **(
+                    {"accumulation_quality_v2": accumulation_quality}
+                    if self.settings.accumulation_quality_v2_enable
+                    else {}
+                ),
+                **(
+                    {"volume_context": volume_context}
+                    if self.settings.heat_context_enable
+                    else {}
+                ),
             })
 
+        if self.settings.heat_context_enable:
+            try:
+                result, self._heat_context_diagnostics = HeatContextEnricher(
+                    self.settings,
+                    self.store,
+                    source.http,
+                ).enrich(result)
+            except Exception as exc:
+                self._heat_context_diagnostics = {
+                    "status": "degraded",
+                    "reason": type(exc).__name__,
+                    "updated_at": int(time.time()),
+                }
+        else:
+            self._heat_context_diagnostics = {"status": "disabled"}
         self.store.save(self.settings.funding_snapshot_path, current_funding)
         return result
 
@@ -739,14 +814,30 @@ class RadarEngine:
                 continue
             alerts.append(alert)
 
-        messages = [self._format_announcement(alert) for alert in alerts[:8]]
+        alerts_classified_count = len(alerts)
+        delivery_alerts = alerts[:8]
+        enrichment_diagnostics: dict[str, Any] = {"status": "disabled"}
+        if self.settings.announcement_enrichment_enable:
+            try:
+                delivery_alerts, enrichment_diagnostics = AnnouncementProjectEnricher(
+                    self.settings,
+                    self.store,
+                    source.http,
+                ).enrich(delivery_alerts)
+            except Exception as exc:
+                enrichment_diagnostics = {
+                    "status": "degraded",
+                    "reason": type(exc).__name__,
+                }
+        messages = [self._format_announcement(alert) for alert in delivery_alerts]
         return {
             "template_id": "TG_ANNOUNCEMENT_ALERT",
             "messages": messages,
-            "alerts": alerts[:8],
+            "alerts": delivery_alerts,
             "articles_scanned": len(articles),
-            "alerts_classified": len(alerts),
+            "alerts_classified": alerts_classified_count,
             "news_ingestion": news_ingestion,
+            "enrichment": enrichment_diagnostics,
         }
 
     def cleanup_expired_announcements(
@@ -814,6 +905,11 @@ class RadarEngine:
             seen = {}
         now_ts = int(time.time())
         for alert in alerts:
+            announcement_release_ts = int(
+                alert.get("announcement_release_ts")
+                or alert.get("release_ts")
+                or 0
+            )
             seen[alert["code"]] = {
                 "title": alert["title"],
                 "kind": alert["kind"],
@@ -822,7 +918,8 @@ class RadarEngine:
                 "contract_symbols": alert.get("contract_symbols", []),
                 "non_contract_symbols": alert.get("non_contract_symbols", []),
                 "url": alert.get("url", ""),
-                "release_ts": int(alert.get("release_ts", 0) or 0),
+                "release_ts": announcement_release_ts,
+                "announcement_release_ts": announcement_release_ts,
                 "expires_at": int(alert.get("expires_at", 0) or 0),
                 "message_ids": alert.get("message_ids", []),
                 "seen_at": now_ts,
@@ -858,7 +955,7 @@ class RadarEngine:
         ]
         symbol = self._format_symbol_list(symbols)
         url = self._announcement_url(article)
-        release_ts = self._announcement_release_ts(article)
+        announcement_release_ts = self._announcement_release_ts(article)
         expires_at = self._announcement_expires_at(article)
         if any(keyword in lowered for keyword in RISK_KEYWORDS):
             return {
@@ -870,7 +967,8 @@ class RadarEngine:
                 "contract_symbols": symbols_with_contract,
                 "non_contract_symbols": symbols_without_contract,
                 "url": url,
-                "release_ts": release_ts,
+                "release_ts": announcement_release_ts,
+                "announcement_release_ts": announcement_release_ts,
                 "expires_at": expires_at,
                 "priority": "high",
                 "reason": "命中下架/移除/停止交易关键词",
@@ -887,7 +985,8 @@ class RadarEngine:
                 "contract_symbols": symbols_with_contract,
                 "non_contract_symbols": symbols_without_contract,
                 "url": url,
-                "release_ts": release_ts,
+                "release_ts": announcement_release_ts,
+                "announcement_release_ts": announcement_release_ts,
                 "expires_at": expires_at,
                 "priority": "normal",
                 "reason": "命中上新/Alpha/活动关键词",
@@ -1063,6 +1162,7 @@ class RadarEngine:
         contract_count = len(alert.get("contract_symbols", []))
         no_contract_count = len(alert.get("non_contract_symbols", []))
         market_note = f"有合约{contract_count}个 | 无合约{no_contract_count}个"
+        enrichment_lines = format_announcement_profiles(alert)
         if alert["kind"] == "risk":
             return "\n".join([
                 f"⚠️ {tg_bold('风险提醒')}",
@@ -1072,6 +1172,7 @@ class RadarEngine:
                 f"{tg_bold('风险')}: 下架 / 移除交易对 / 停止交易",
                 f"{tg_bold('公告')}: {title}",
                 f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
+                *enrichment_lines,
             ])
         return "\n".join([
             f"📢 {tg_bold('公告机会')}",
@@ -1085,6 +1186,7 @@ class RadarEngine:
             tg_bold("原因"),
             f"- {tg_escape(alert['reason'])}",
             f"{tg_bold('链接')}: <a href=\"{url}\">Binance 公告</a>",
+            *enrichment_lines,
         ])
 
     def _format_announcement_symbol_links(self, alert: dict[str, Any], max_count: int = 20) -> str:
@@ -1158,6 +1260,14 @@ class RadarEngine:
         self._append_momentum(lines, momentum)
         self._append_new_pool(lines, new_pool)
         self._append_divergence(lines, divergence)
+        if self.settings.heat_context_enable:
+            lines.extend(format_heat_context_lines(
+                all_items,
+                self._heat_context_diagnostics,
+                top_n=self.settings.radar_top_n,
+                square_enabled=self.settings.binance_square_heat_enable,
+                link_formatter=coin_link,
+            ))
         self._append_highlights(lines, negative, combined, ambush, momentum, divergence)
         return "\n".join(lines)
 
@@ -1206,6 +1316,10 @@ class RadarEngine:
                 f"{tag}"
             )
             append_metric_row(lines, item, metrics)
+            if self.settings.accumulation_quality_v2_enable:
+                quality = item.get("accumulation_quality_v2")
+                quality = quality if isinstance(quality, dict) else {}
+                lines.append(tg_escape(format_accumulation_evidence(quality)))
         if not items:
             lines.append("暂无")
         lines.append("")

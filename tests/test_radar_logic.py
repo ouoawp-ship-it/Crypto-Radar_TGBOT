@@ -175,6 +175,61 @@ class RadarAnnouncementTests(unittest.TestCase):
             self.assertEqual(result["alerts"][0]["kind"], "opportunity")
             self.assertEqual(result["alerts"][0]["symbols"], ["ABC"])
 
+    def test_disabled_enrichment_preserves_original_alert_schema_and_release_alias(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = JsonStore(root)
+            engine = RadarEngine(
+                Settings(
+                    data_dir=root,
+                    announcement_enrichment_enable=False,
+                    announcement_state_path=root / "announcement_state.json",
+                ),
+                store,
+            )
+            release_ms = int(time.time() * 1000)
+            source = _FakeAnnouncementSource(
+                [{
+                    "title": "Binance Will List ABC",
+                    "code": "listing-abc",
+                    "releaseDate": release_ms,
+                }],
+                ["ABC"],
+            )
+
+            result = engine.build_announcement_alerts(source)  # type: ignore[arg-type]
+            alert = result["alerts"][0]
+
+            self.assertNotIn("project_profiles", alert)
+            self.assertEqual(alert["release_ts"], alert["announcement_release_ts"])
+            self.assertEqual(alert["release_ts"], int(release_ms / 1000))
+            for key in (
+                "kind",
+                "code",
+                "title",
+                "symbol",
+                "symbols",
+                "contract_symbols",
+                "non_contract_symbols",
+                "url",
+                "release_ts",
+                "expires_at",
+                "priority",
+                "reason",
+            ):
+                self.assertIn(key, alert)
+
+            legacy_alert = dict(alert)
+            legacy_alert.pop("announcement_release_ts")
+            engine.mark_announcements_seen([legacy_alert])
+            saved = store.load(engine.settings.announcement_state_path, {})
+            record = saved["seen"]["listing-abc"]
+            self.assertEqual(record["release_ts"], alert["release_ts"])
+            self.assertEqual(
+                record["announcement_release_ts"],
+                alert["release_ts"],
+            )
+
     def test_announcement_skips_past_dated_article_after_reinstall(self) -> None:
         with TemporaryDirectory() as tmp:
             old_date = (datetime.now(CST) - timedelta(days=1)).strftime("%Y-%m-%d")

@@ -22,6 +22,7 @@ from .funding_sources import (
     to_float,
     to_int,
 )
+from .funding_flip_oi import FundingFlipOITracker
 from .market_links import coinglass_tv_url as _coinglass_tv_url
 from .market_links import telegram_coin_links
 from .storage import JsonStore
@@ -366,6 +367,22 @@ class FundingAlertEngine:
         symbols = [str(candidate.get("symbol") or "") for candidate in candidates]
         current_rows_by_symbol = client.snapshot_many(symbols, include_history=False)
         scan_metrics = dict(client.last_batch_metrics)
+        try:
+            flip_result = FundingFlipOITracker(self.settings, self.store).evaluate(
+                candidates,
+                current_rows_by_symbol,
+                source,
+                now_ts=now_ts,
+            )
+        except Exception as exc:
+            flip_result = {
+                "alerts": [],
+                "messages": [],
+                "diagnostics": {
+                    "status": "degraded",
+                    "reason": type(exc).__name__,
+                },
+            }
         prepared: list[tuple[dict[str, Any], str, list[dict[str, Any]], dict[str, Any]]] = []
         history_symbols: list[str] = []
         for candidate in candidates:
@@ -472,6 +489,12 @@ class FundingAlertEngine:
             alert["text"] = self._format_alert(alert)
             validated_alerts.append(alert)
         alerts = validated_alerts
+        flip_alerts = [
+            dict(alert)
+            for alert in (flip_result.get("alerts") or [])
+            if isinstance(alert, dict)
+        ]
+        alerts.extend(flip_alerts)
 
         state["updated_at"] = datetime.now(CST).isoformat(timespec="seconds")
         state["last_scanned"] = scanned
@@ -495,6 +518,7 @@ class FundingAlertEngine:
                     "confirmed": len(validated_alerts),
                     "incomplete": max(0, confirmation_candidates - len(validated_alerts)),
                 },
+                "funding_flip_oi": dict(flip_result.get("diagnostics") or {}),
             },
         }
 
@@ -507,7 +531,19 @@ class FundingAlertEngine:
         cleanup_jobs: list[dict[str, Any]] = []
         rollback_jobs: list[tuple[Any, list[int]]] = []
         delete_callback = None
+        flip_alerts = [
+            alert
+            for alert in alerts
+            if str(alert.get("event_family") or "") == "funding_flip_oi"
+        ]
+        if flip_alerts:
+            FundingFlipOITracker(self.settings, self.store).mark_pushed(
+                flip_alerts,
+                now_ts=now_ts,
+            )
         for alert in alerts:
+            if str(alert.get("event_family") or "") == "funding_flip_oi":
+                continue
             symbol = str(alert.get("symbol") or "")
             if not symbol:
                 continue
