@@ -653,9 +653,15 @@ class TelegramGatewayTests(unittest.TestCase):
                 "OI·币安 = OI来自 Binance USDⓈ-M 已闭合窗口，不再使用外部聚合源改写",
                 "市值 = Binance市场资料；缺失时为0分，不再使用成交额/OI倍数猜测市值",
                 "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
+                "来源：Binance Spot + Binance USDⓈ-M Futures；仅代表 Binance 市场。",
+                "主动成交净额 = taker主动买入报价额 - taker主动卖出报价额",
+                "主动净占比 = 主动成交净额 / 总成交额",
+                "OI变化 =（窗口末OI - 窗口初OI）/ 窗口初OI",
+                "只采用实时或已闭合窗口行情；不改变本模块原触发阈值；不构成投资建议。",
             ]
             for line in expected:
                 self.assertIn(line, intro)
+            self.assertNotIn("新闻、社交情报或 CoinGlass/Coinalyze", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_launch_topic_cleanup_candidates_keep_latest_and_intro(self) -> None:
@@ -792,6 +798,7 @@ class TelegramGatewayTests(unittest.TestCase):
             with (
                 patch.object(gateway, "_send_real_message_ids", side_effect=[(True, [100]), (True, [101]), (True, [102])]) as send_mock,
                 patch.object(gateway, "_pin_message", return_value=True) as pin_mock,
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
             ):
                 first = gateway.send(
                     "summary one",
@@ -819,11 +826,134 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(send_mock.call_args_list[1].args[0], "summary one")
             self.assertEqual(send_mock.call_args_list[2].args[0], "summary two")
             pin_mock.assert_called_once_with(100)
+            delete_mock.assert_called_once_with(101)
             data = store.load(route_path, {})
             self.assertEqual(data["intros"]["TG_RADAR_SUMMARY:11"]["message_id"], 100)
             self.assertTrue(data["intros"]["TG_RADAR_SUMMARY:11"]["pinned"])
             self.assertIn("content_hash", data["intros"]["TG_RADAR_SUMMARY:11"])
             self.assertIn("intro_version", data["intros"]["TG_RADAR_SUMMARY:11"])
+            history = store.load(settings.tg_push_history_path, [])
+            self.assertEqual(history[0]["deleted_message_ids"], [101])
+            self.assertTrue(history[0]["lifecycle_deleted"])
+            self.assertNotIn("deleted_message_ids", history[1])
+
+    def test_summary_replacement_keeps_previous_when_new_delivery_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_use_topic=True,
+                tg_topic_intro_enable=False,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    side_effect=[(True, [101]), (False, [])],
+                ),
+                patch.object(gateway, "_delete_message", return_value=True) as delete_mock,
+            ):
+                first = gateway.send(
+                    "summary one",
+                    "TG_RADAR_SUMMARY",
+                    "summary:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                second = gateway.send(
+                    "summary two",
+                    "TG_RADAR_SUMMARY",
+                    "summary:two",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertTrue(first.sent)
+            self.assertFalse(second.sent)
+            delete_mock.assert_not_called()
+            history = store.load(settings.tg_push_history_path, [])
+            self.assertNotIn("deleted_message_ids", history[0])
+
+    def test_summary_replacement_retries_failed_cleanup_on_next_success(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_use_topic=True,
+                tg_topic_intro_enable=False,
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    side_effect=[
+                        (True, [101]),
+                        (True, [102, 103]),
+                        (True, [104]),
+                    ],
+                ),
+                patch.object(
+                    gateway,
+                    "_delete_message",
+                    side_effect=[False, True, True, True],
+                ) as delete_mock,
+            ):
+                gateway.send(
+                    "summary one",
+                    "TG_RADAR_SUMMARY",
+                    "summary:one",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                gateway.send(
+                    "summary two",
+                    "TG_RADAR_SUMMARY",
+                    "summary:two",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                gateway.send(
+                    "summary three",
+                    "TG_RADAR_SUMMARY",
+                    "summary:three",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertEqual(
+                [call.args[0] for call in delete_mock.call_args_list],
+                [101, 101, 102, 103],
+            )
+            history = store.load(settings.tg_push_history_path, [])
+            self.assertTrue(history[0]["lifecycle_deleted"])
+            self.assertTrue(history[1]["lifecycle_deleted"])
+            self.assertNotIn("deleted_message_ids", history[2])
 
     def test_topic_intro_refreshes_when_content_version_changes(self) -> None:
         with TemporaryDirectory() as tmp:

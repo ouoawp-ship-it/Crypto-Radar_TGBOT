@@ -64,10 +64,9 @@ class BotMarketContextTests(unittest.TestCase):
         self.assertIn("Surge 偏多", text)
         self.assertIn("五窗", text)
         self.assertIn("24h 异动", text)
-        self.assertIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", text)
-        self.assertIn("主动成交净额=taker主动买入报价额-taker主动卖出报价额", text)
-        self.assertIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", text)
-        self.assertIn("不改变本模块原触发阈值", text)
+        self.assertNotIn("来源: Binance Spot + Binance USDⓈ-M Futures", text)
+        self.assertNotIn("主动成交净额=taker主动买入报价额-taker主动卖出报价额", text)
+        self.assertNotIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", text)
 
     def test_realtime_confirmation_ignores_non_binance_rows(self) -> None:
         rows = [
@@ -218,7 +217,9 @@ class BotMarketContextTests(unittest.TestCase):
         self.assertNotIn("liquidation social post", text)
         self.assertNotIn("other exchange announcement", text)
         self.assertIn("BOT Binance 原生数据确认", summary_text)
-        self.assertIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", summary_text)
+        self.assertNotIn("来源: Binance Spot + Binance USDⓈ-M Futures", summary_text)
+        self.assertNotIn("主动成交净额=taker主动买入报价额-taker主动卖出报价额", summary_text)
+        self.assertNotIn("不采用新闻、社交情报或 CoinGlass/Coinalyze", summary_text)
 
     def test_untrusted_snapshot_source_cannot_enrich_message(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -116,6 +116,17 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "OI·币安 = OI来自 Binance USDⓈ-M 已闭合窗口，不再使用外部聚合源改写",
         "市值 = Binance市场资料；缺失时为0分，不再使用成交额/OI倍数猜测市值",
         "链接 = 点击币种打开 CoinGlass，点击代码复制交易对，点击 TV 打开 TradingView",
+        "",
+        "<b>数据来源与计算口径</b>",
+        "来源：Binance Spot + Binance USDⓈ-M Futures；仅代表 Binance 市场。",
+        "主动成交净额 = taker主动买入报价额 - taker主动卖出报价额",
+        "主动净占比 = 主动成交净额 / 总成交额",
+        "OI变化 =（窗口末OI - 窗口初OI）/ 窗口初OI",
+        "只采用实时或已闭合窗口行情；不改变本模块原触发阈值；不构成投资建议。",
+        "",
+        "<b>消息保留规则</b>",
+        "新一轮资金摘要完整发送并记录成功后，才删除上一轮摘要；发送失败时保留上一轮。",
+        "如果摘要因长度被拆成多条消息，会保留最新一轮的全部分段。",
         ])
     if template_id == "TG_LAUNCH_ALERT":
         return "\n".join([
@@ -390,6 +401,8 @@ class TelegramGateway:
             message_ids=message_ids,
         )
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+        if result.sent and template_id == "TG_RADAR_SUMMARY":
+            self._cleanup_replaced_summary_messages(result.message_ids or [])
         return result
 
     @staticmethod
@@ -855,6 +868,97 @@ class TelegramGateway:
 
     def latest_launch_topic_message_ids(self) -> list[int]:
         return self._latest_launch_topic_message_ids(self._load_history())
+
+    def summary_topic_cleanup_plan(
+        self,
+        *,
+        keep_message_ids: list[int],
+    ) -> dict[str, list[int]]:
+        protected = {
+            int(message_id)
+            for message_id in keep_message_ids
+            if isinstance(message_id, int) or str(message_id).isdigit()
+        }
+        intro_key = self._topic_intro_key(
+            "TG_RADAR_SUMMARY",
+            self._topic_id_for_template("TG_RADAR_SUMMARY"),
+        )
+        intro = self._topic_intro_record(intro_key)
+        intro_message_id = intro.get("message_id")
+        if isinstance(intro_message_id, int) or str(intro_message_id or "").isdigit():
+            protected.add(int(intro_message_id))
+
+        cutoff = utc_ts() - max(
+            1,
+            int(self.settings.launch_message_cleanup_max_age_sec),
+        )
+        deletable_ids: list[int] = []
+        undeletable_ids: list[int] = []
+        planned_ids: set[int] = set()
+        for record in self._load_history():
+            if (
+                not isinstance(record, dict)
+                or record.get("template_id") != "TG_RADAR_SUMMARY"
+                or record.get("status") != "sent"
+            ):
+                continue
+            deleted_ids = {
+                int(message_id)
+                for message_id in (record.get("deleted_message_ids") or [])
+                if isinstance(message_id, int) or str(message_id).isdigit()
+            }
+            unavailable_ids = {
+                int(message_id)
+                for message_id in (record.get("undeletable_message_ids") or [])
+                if isinstance(message_id, int) or str(message_id).isdigit()
+            }
+            destination = (
+                deletable_ids
+                if int(record.get("ts") or 0) >= cutoff
+                else undeletable_ids
+            )
+            for message_id in record.get("message_ids") or []:
+                if not (isinstance(message_id, int) or str(message_id).isdigit()):
+                    continue
+                normalized = int(message_id)
+                if (
+                    normalized not in protected
+                    and normalized not in deleted_ids
+                    and normalized not in unavailable_ids
+                    and normalized not in planned_ids
+                ):
+                    destination.append(normalized)
+                    planned_ids.add(normalized)
+        return {
+            "deletable_ids": deletable_ids,
+            "undeletable_ids": undeletable_ids,
+        }
+
+    def _cleanup_replaced_summary_messages(
+        self,
+        keep_message_ids: list[int],
+    ) -> None:
+        try:
+            plan = self.summary_topic_cleanup_plan(
+                keep_message_ids=keep_message_ids,
+            )
+            undeletable_ids = list(plan.get("undeletable_ids") or [])
+            if undeletable_ids:
+                self.mark_history_messages_undeletable(
+                    undeletable_ids,
+                    reason="radar_summary_delete_window_expired",
+                )
+            deletable_ids = list(plan.get("deletable_ids") or [])
+            if deletable_ids:
+                self.delete_messages_detailed(
+                    deletable_ids,
+                    reason="radar_summary_replaced",
+                )
+        except Exception as exc:
+            print(
+                f"[telegram] radar summary cleanup failed {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
 
     def launch_topic_cleanup_candidates(
         self,

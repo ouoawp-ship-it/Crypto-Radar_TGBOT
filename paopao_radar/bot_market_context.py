@@ -312,9 +312,6 @@ def enrich_telegram_with_market_context(
         "",
         "<blockquote><b>BOT Binance 原生数据确认</b></blockquote>",
         *[line for context in contexts for line in _context_lines(context)],
-        "<i>来源: Binance Spot + Binance USDⓈ-M Futures；仅代表 Binance 市场。</i>",
-        "<i>计算: 主动成交净额=taker主动买入报价额-taker主动卖出报价额；主动净占比=主动成交净额/总成交额；OI变化=(窗口末OI-窗口初OI)/窗口初OI。</i>",
-        "<i>只采用实时或已闭合窗口行情，不采用新闻、社交情报或 CoinGlass/Coinalyze；不改变本模块原触发阈值；不构成投资建议。</i>",
     ]
     return f"{text.rstrip()}\n" + "\n".join(block)
 
