@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -11,6 +12,13 @@ from .accumulation_quality import (
     accumulation_quality_allows_ambush,
     analyze_accumulation_quality,
     format_accumulation_evidence,
+)
+from .accumulation_diagnostics import (
+    build_evaluation_result,
+    build_scan_summary,
+    persist_scan_summary,
+    scan_summary_without_results,
+    summary_log_line,
 )
 from .announcement_enrichment import (
     AnnouncementProjectEnricher,
@@ -439,6 +447,7 @@ class RadarEngine:
             announcement_source.close()
 
     def build_money_radar_summary(self, source: BinanceDataSource) -> dict[str, Any]:
+        scan_started = time.time()
         window = closed_window(
             interval_sec=self.settings.radar_summary_min_interval_sec,
             delay_sec=self.settings.radar_summary_close_delay_sec,
@@ -446,6 +455,16 @@ class RadarEngine:
         items = self._load_market_items(source, window)
         now = cst_now_text()
         if not items:
+            quality = source.diagnostics()
+            diagnostics = self._record_accumulation_quality_scan(
+                items,
+                window=window,
+                scan_started=scan_started,
+            )
+            if diagnostics:
+                quality["accumulation_quality_v2"] = scan_summary_without_results(
+                    diagnostics
+                )
             return {
                 "template_id": "TG_RADAR_SUMMARY",
                 "dedup_key": f"radar-summary:{window.end.strftime('%Y%m%d%H%M')}",
@@ -456,7 +475,7 @@ class RadarEngine:
                     "",
                     "暂无有效数据，可能是接口失败或候选不足。",
                 ]),
-                "quality": source.diagnostics(),
+                "quality": quality,
                 "context_records": [],
             }
 
@@ -576,6 +595,15 @@ class RadarEngine:
             window,
             derivatives_quality=derivatives_quality,
         )
+        diagnostics = self._record_accumulation_quality_scan(
+            items,
+            window=window,
+            scan_started=scan_started,
+        )
+        if diagnostics:
+            quality["accumulation_quality_v2"] = scan_summary_without_results(
+                diagnostics
+            )
         return {
             "template_id": "TG_RADAR_SUMMARY",
             "dedup_key": f"radar-summary:{window.end.strftime('%Y%m%d%H%M')}",
@@ -583,6 +611,39 @@ class RadarEngine:
             "quality": quality,
             "context_records": context_records,
         }
+
+    def _record_accumulation_quality_scan(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        window: ClosedWindow,
+        scan_started: float,
+    ) -> dict[str, Any] | None:
+        if not self.settings.accumulation_quality_v2_enable:
+            return None
+        completed = time.time()
+        summary = build_scan_summary(
+            items,
+            scan_id=f"accumulation-quality:{window.end_ms}",
+            scan_started_at=int(scan_started),
+            scan_completed_at=int(completed),
+            duration_sec=completed - scan_started,
+            feature_enabled=True,
+        )
+        try:
+            persist_scan_summary(
+                self.store,
+                self.settings.accumulation_quality_diagnostics_path,
+                summary,
+            )
+        except Exception as exc:
+            print(
+                "accumulation_quality_diagnostics warning="
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
+        print(summary_log_line(summary))
+        return summary
 
     def _load_market_items(self, source: BinanceDataSource, window: ClosedWindow) -> list[dict[str, Any]]:
         budget_cap = min(self.settings.oi_hist_budget, max(1, self.settings.kline_budget // 2))
@@ -679,6 +740,7 @@ class RadarEngine:
                 history_days = min(history_days or onboard_days, onboard_days)
             sideways_days = estimate_sideways_days(daily)
             accumulation_quality: dict[str, Any] = {}
+            accumulation_diagnostic: dict[str, Any] = {}
             if self.settings.accumulation_quality_v2_enable:
                 accumulation_quality = analyze_accumulation_quality(
                     daily,
@@ -693,6 +755,15 @@ class RadarEngine:
                     max_recent_price_gain_pct=(
                         self.settings.accumulation_max_recent_price_gain_pct
                     ),
+                )
+                accumulation_diagnostic = build_evaluation_result(
+                    symbol,
+                    accumulation_quality,
+                    input_row_count=len(daily),
+                    dark_flow_candidate=(
+                        oi_6h > 2 and abs(price_window) < 5
+                    ),
+                    evaluated_at=int(time.time()),
                 )
             volume_context: dict[str, Any] = {}
             if self.settings.heat_context_enable:
@@ -722,7 +793,10 @@ class RadarEngine:
                 "history_days": history_days,
                 "dark_flow": oi_6h > 2 and abs(price_window) < 5,
                 **(
-                    {"accumulation_quality_v2": accumulation_quality}
+                    {
+                        "accumulation_quality_v2": accumulation_quality,
+                        "accumulation_quality_diagnostic": accumulation_diagnostic,
+                    }
                     if self.settings.accumulation_quality_v2_enable
                     else {}
                 ),
