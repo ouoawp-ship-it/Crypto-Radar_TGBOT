@@ -194,6 +194,9 @@ class Settings:
     radar_state_path: Path = BASE_DIR / "data" / "radar_state.json"
     funding_snapshot_path: Path = BASE_DIR / "data" / "funding_snapshot.json"
     accumulation_quality_v2_enable: bool = False
+    accumulation_quality_diagnostics_path: Path = (
+        BASE_DIR / "data" / "accumulation_quality_diagnostics.json"
+    )
     accumulation_min_history_days: int = 45
     accumulation_max_range_pct: float = 80.0
     accumulation_max_abs_slope_pct: float = 20.0
@@ -330,6 +333,9 @@ class Settings:
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
         default_database_backup_dir = BASE_DIR / "data" / "backups"
         default_flow_model_comparison_path = BASE_DIR / "data" / "flow_model_comparison.json"
+        default_accumulation_quality_diagnostics_path = (
+            BASE_DIR / "data" / "accumulation_quality_diagnostics.json"
+        )
         default_heat_context_cache_path = BASE_DIR / "data" / "heat_context_cache.json"
         default_funding_flip_oi_state_path = BASE_DIR / "data" / "funding_flip_oi_state.json"
         default_announcement_enrichment_cache_path = (
@@ -357,6 +363,16 @@ class Settings:
                 self,
                 "flow_model_comparison_path",
                 self.data_dir / "flow_model_comparison.json",
+            )
+        if (
+            self.data_dir != BASE_DIR / "data"
+            and self.accumulation_quality_diagnostics_path
+            == default_accumulation_quality_diagnostics_path
+        ):
+            object.__setattr__(
+                self,
+                "accumulation_quality_diagnostics_path",
+                self.data_dir / "accumulation_quality_diagnostics.json",
             )
         if (
             self.data_dir != BASE_DIR / "data"
