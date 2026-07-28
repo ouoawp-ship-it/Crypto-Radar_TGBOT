@@ -129,6 +129,15 @@ class OnchainConfigTests(unittest.TestCase):
             ["labels-check"],
             ["db-check"],
             ["replay", "--fixture", str(FIXTURE_PATH)],
+            [
+                "token-activity",
+                "--chain",
+                "base",
+                "--contract",
+                "0x0000000000000000000000000000000000000001",
+                "--window",
+                "15m",
+            ],
             ["once"],
             ["live"],
         )

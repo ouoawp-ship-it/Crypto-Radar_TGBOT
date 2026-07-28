@@ -68,6 +68,10 @@ class RpcConnectionError(RpcTransportError):
     pass
 
 
+class RpcRequestBudgetError(RpcTransportError):
+    pass
+
+
 class AdaptiveRangeError(RpcError):
     pass
 
@@ -154,6 +158,22 @@ def canonical_log_contents(
     )
 
 
+def canonical_token_log_contents(
+    log: dict[str, object],
+) -> tuple[object, ...]:
+    contents = canonical_log_contents(log)
+    try:
+        block_number = parse_hex_quantity(
+            log.get("blockNumber"), "log block number"
+        )
+        log_index = parse_hex_quantity(log.get("logIndex"), "log index")
+    except RpcResponseError as exc:
+        raise LogValidationError(
+            "provider returned malformed canonical log quantities"
+        ) from exc
+    return (*contents[:3], block_number, *contents[4:6], log_index, contents[7])
+
+
 def address_batches(
     addresses: Iterable[str], batch_size: int
 ) -> list[tuple[str, ...]]:
@@ -170,13 +190,26 @@ def address_batches(
 class TransferLogFilter:
     direction: str
     topics: tuple[object, ...]
+    address: str | None = None
 
     def as_rpc(self, block_range: BlockRange) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "fromBlock": hex_quantity(block_range.start_block),
             "toBlock": hex_quantity(block_range.end_block),
             "topics": list(self.topics),
         }
+        if self.address is not None:
+            payload["address"] = self.address
+        return payload
+
+
+@dataclass(frozen=True)
+class TokenLogFetchResult:
+    logs: tuple[dict[str, object], ...]
+    truncated: bool
+    truncation_reason: str | None
+    adaptive_split_count: int
+    duplicate_log_count: int
 
 
 def build_transfer_filters(
@@ -200,6 +233,14 @@ def build_transfer_filters(
     return filters
 
 
+def build_token_transfer_filter(token_address: str) -> TransferLogFilter:
+    return TransferLogFilter(
+        direction="token",
+        topics=(TRANSFER_TOPIC,),
+        address=normalize_evm_address(token_address),
+    )
+
+
 class JsonRpcClient:
     def __init__(
         self,
@@ -212,6 +253,7 @@ class JsonRpcClient:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         rate_limit_per_second: int = 20,
+        max_requests: int | None = None,
     ):
         if not url:
             raise ValueError("HTTP RPC is not configured")
@@ -223,6 +265,7 @@ class JsonRpcClient:
         self.sleep = sleep
         self.clock = clock
         self.rate_limit_per_second = rate_limit_per_second
+        self.max_requests = max_requests
         self._request_times: deque[float] = deque()
         self._request_ids = itertools.count(1)
         self.request_count = 0
@@ -240,6 +283,13 @@ class JsonRpcClient:
         last_error: RpcError | None = None
         for attempt in range(attempts):
             self._apply_rate_limit()
+            if (
+                self.max_requests is not None
+                and self.request_count >= self.max_requests
+            ):
+                raise RpcRequestBudgetError(
+                    "RPC request budget exhausted"
+                )
             self.request_count += 1
             try:
                 response = self.session.post(
@@ -487,26 +537,171 @@ class BaseHttpCollector:
                     )
                 )
             cursor = batch_end + 1
+        deduplicated, _duplicate_count = self._deduplicate_logs(results)
+        return deduplicated
+
+    def fetch_token_logs(
+        self,
+        start_block: int,
+        end_block: int,
+        token_address: str,
+        *,
+        max_events: int,
+    ) -> TokenLogFetchResult:
+        if max_events <= 0:
+            raise ValueError("max_events must be positive")
+        if end_block < start_block:
+            return TokenLogFetchResult((), False, None, 0, 0)
+        token = normalize_evm_address(token_address)
+        transfer_filter = build_token_transfer_filter(token)
+        results: list[dict[str, object]] = []
+        diagnostics = {"adaptive_split_count": 0}
+        cursor = start_block
+        truncation_reason: str | None = None
+        while cursor <= end_block:
+            batch_end = min(
+                end_block,
+                cursor + self.settings.rpc_max_block_range - 1,
+            )
+            segment: list[dict[str, object]] = []
+            try:
+                self._fetch_adaptive(
+                    BlockRange(cursor, batch_end),
+                    transfer_filter,
+                    diagnostics=diagnostics,
+                    partial_results=segment,
+                )
+            except RpcRequestBudgetError:
+                truncation_reason = "max_rpc_requests"
+            except RpcRateLimitError:
+                truncation_reason = "provider_rate_limit"
+            except RpcTimeoutError:
+                truncation_reason = "provider_timeout"
+            except AdaptiveRangeError as exc:
+                cause: BaseException | None = exc
+                while getattr(cause, "__cause__", None) is not None:
+                    cause = cause.__cause__
+                if isinstance(cause, RpcTimeoutError):
+                    truncation_reason = "provider_timeout"
+                elif isinstance(cause, RpcRangeError):
+                    truncation_reason = "provider_range_limit"
+                else:
+                    truncation_reason = "pagination_or_split_budget"
+            except (RpcServiceError, RpcConnectionError):
+                truncation_reason = "provider_unavailable"
+            results.extend(segment)
+            self._validate_token_contract(results, token)
+            deduplicated, duplicate_count = self._deduplicate_logs(
+                results, canonical_identity=True
+            )
+            if len(deduplicated) > max_events:
+                ordered = sorted(deduplicated, key=self._raw_log_sort_key)
+                return TokenLogFetchResult(
+                    tuple(ordered[:max_events]),
+                    True,
+                    "max_events",
+                    diagnostics["adaptive_split_count"],
+                    duplicate_count,
+                )
+            if truncation_reason is not None:
+                return TokenLogFetchResult(
+                    tuple(sorted(deduplicated, key=self._raw_log_sort_key)),
+                    True,
+                    truncation_reason,
+                    diagnostics["adaptive_split_count"],
+                    duplicate_count,
+                )
+            cursor = batch_end + 1
+        deduplicated, duplicate_count = self._deduplicate_logs(
+            results, canonical_identity=True
+        )
+        return TokenLogFetchResult(
+            tuple(sorted(deduplicated, key=self._raw_log_sort_key)),
+            False,
+            None,
+            diagnostics["adaptive_split_count"],
+            duplicate_count,
+        )
+
+    @staticmethod
+    def _validate_token_contract(
+        logs: Iterable[dict[str, object]], token_address: str
+    ) -> None:
+        for log in logs:
+            try:
+                address = normalize_evm_address(
+                    str(log.get("address") or "")
+                )
+            except ValueError as exc:
+                raise LogValidationError(
+                    "provider returned a malformed log address"
+                ) from exc
+            if address != token_address:
+                raise LogValidationError(
+                    "provider returned a log for a different Token contract"
+                )
+
+    @staticmethod
+    def _raw_log_sort_key(
+        log: dict[str, object],
+    ) -> tuple[int, int, str]:
+        try:
+            block_number = parse_hex_quantity(
+                log.get("blockNumber"), "log block number"
+            )
+            log_index = parse_hex_quantity(log.get("logIndex"), "log index")
+        except RpcResponseError:
+            block_number = 2**256
+            log_index = 2**256
+        return (
+            block_number,
+            log_index,
+            str(log.get("transactionHash") or "").lower(),
+        )
+
+    @staticmethod
+    def _deduplicate_logs(
+        logs: Iterable[dict[str, object]],
+        *,
+        canonical_identity: bool = False,
+    ) -> tuple[list[dict[str, object]], int]:
         deduplicated: dict[str, dict[str, object]] = {}
         malformed: list[dict[str, object]] = []
-        for log in results:
+        duplicate_count = 0
+        for log in logs:
             tx_hash = log.get("transactionHash")
             log_index = log.get("logIndex")
             if isinstance(tx_hash, str) and isinstance(log_index, str):
-                key = f"{BASE_CHAIN_ID}:{tx_hash.lower()}:{log_index.lower()}"
+                identity_index = log_index.lower()
+                if canonical_identity:
+                    try:
+                        identity_index = str(
+                            parse_hex_quantity(log_index, "log index")
+                        )
+                    except RpcResponseError:
+                        malformed.append(log)
+                        continue
+                key = (
+                    f"{BASE_CHAIN_ID}:{tx_hash.lower()}:{identity_index}"
+                )
                 existing = deduplicated.get(key)
-                if (
-                    existing is not None
-                    and canonical_log_contents(existing)
-                    != canonical_log_contents(log)
-                ):
-                    raise FinalizedRangeConsistencyError(
-                        "duplicate event key has conflicting canonical contents"
+                if existing is not None:
+                    contents = (
+                        canonical_token_log_contents
+                        if canonical_identity
+                        else canonical_log_contents
                     )
+                    if (
+                        contents(existing) != contents(log)
+                    ):
+                        raise FinalizedRangeConsistencyError(
+                            "duplicate event key has conflicting canonical contents"
+                        )
+                    duplicate_count += 1
                 deduplicated[key] = log
             else:
                 malformed.append(log)
-        return list(deduplicated.values()) + malformed
+        return list(deduplicated.values()) + malformed, duplicate_count
 
     def _fetch_adaptive(
         self,
@@ -515,6 +710,8 @@ class BaseHttpCollector:
         *,
         budget: dict[str, int] | None = None,
         depth: int = 0,
+        diagnostics: dict[str, int] | None = None,
+        partial_results: list[dict[str, object]] | None = None,
     ) -> list[dict[str, object]]:
         if budget is None:
             budget = {"requests": 0}
@@ -524,7 +721,10 @@ class BaseHttpCollector:
         if budget["requests"] > self.settings.rpc_adaptive_max_requests:
             raise AdaptiveRangeError("adaptive range request budget exhausted")
         try:
-            return self.client.get_logs(transfer_filter.as_rpc(block_range))
+            logs = self.client.get_logs(transfer_filter.as_rpc(block_range))
+            if partial_results is not None:
+                partial_results.extend(logs)
+            return logs
         except (RpcRangeError, RpcTimeoutError) as exc:
             size = block_range.end_block - block_range.start_block + 1
             if size <= self.settings.rpc_min_block_range:
@@ -532,6 +732,10 @@ class BaseHttpCollector:
                     "minimum block range failed; cursor must not advance"
                 ) from exc
             midpoint = (block_range.start_block + block_range.end_block) // 2
+            if diagnostics is not None:
+                diagnostics["adaptive_split_count"] = (
+                    diagnostics.get("adaptive_split_count", 0) + 1
+                )
             left = BlockRange(block_range.start_block, midpoint)
             right = BlockRange(midpoint + 1, block_range.end_block)
             return self._fetch_adaptive(
@@ -539,9 +743,13 @@ class BaseHttpCollector:
                 transfer_filter,
                 budget=budget,
                 depth=depth + 1,
+                diagnostics=diagnostics,
+                partial_results=partial_results,
             ) + self._fetch_adaptive(
                 right,
                 transfer_filter,
                 budget=budget,
                 depth=depth + 1,
+                diagnostics=diagnostics,
+                partial_results=partial_results,
             )

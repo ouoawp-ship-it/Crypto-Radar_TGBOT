@@ -8,7 +8,15 @@ from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
-from .constants import PRODUCTION_WRITE_PATHS
+from .constants import (
+    PRODUCTION_WRITE_PATHS,
+    TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS_HARD,
+    TOKEN_ACTIVITY_MAX_EVENTS_HARD,
+    TOKEN_ACTIVITY_MAX_RPC_REQUESTS_HARD,
+    TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS_HARD,
+    TOKEN_ACTIVITY_MAX_WINDOW_HOURS_HARD,
+    TOKEN_ACTIVITY_TOP_N_HARD,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -159,6 +167,12 @@ class OnchainSettings:
     net_dominance_min: Decimal = Decimal("0.60")
     rolling_evaluation_bucket_sec: int = 300
     alert_max_event_age_sec: int = 1800
+    token_activity_max_window_hours: int = 24
+    token_activity_max_events: int = 5000
+    token_activity_max_rpc_requests: int = 256
+    token_activity_max_unique_block_headers: int = 2000
+    token_activity_top_n: int = 50
+    token_activity_block_search_max_calls: int = 32
 
     @classmethod
     def load(
@@ -344,6 +358,24 @@ class OnchainSettings:
             alert_max_event_age_sec=_int(
                 values, "ONCHAIN_ALERT_MAX_EVENT_AGE_SEC", 1800
             ),
+            token_activity_max_window_hours=_int(
+                values, "TOKEN_ACTIVITY_MAX_WINDOW_HOURS", 24
+            ),
+            token_activity_max_events=_int(
+                values, "TOKEN_ACTIVITY_MAX_EVENTS", 5000
+            ),
+            token_activity_max_rpc_requests=_int(
+                values, "TOKEN_ACTIVITY_MAX_RPC_REQUESTS", 256
+            ),
+            token_activity_max_unique_block_headers=_int(
+                values, "TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS", 2000
+            ),
+            token_activity_top_n=_int(
+                values, "TOKEN_ACTIVITY_TOP_N", 50
+            ),
+            token_activity_block_search_max_calls=_int(
+                values, "TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS", 32
+            ),
         )
 
     @property
@@ -428,6 +460,12 @@ class OnchainSettings:
             "rolling_evaluation_bucket_sec",
             "rpc_adaptive_max_requests",
             "rpc_adaptive_max_depth",
+            "token_activity_max_window_hours",
+            "token_activity_max_events",
+            "token_activity_max_rpc_requests",
+            "token_activity_max_unique_block_headers",
+            "token_activity_top_n",
+            "token_activity_block_search_max_calls",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
@@ -462,6 +500,43 @@ class OnchainSettings:
             raise SettingsValidationError(
                 "net_dominance_min must be in [0, 1]"
             )
+        query_caps = (
+            (
+                "TOKEN_ACTIVITY_MAX_WINDOW_HOURS",
+                self.token_activity_max_window_hours,
+                TOKEN_ACTIVITY_MAX_WINDOW_HOURS_HARD,
+            ),
+            (
+                "TOKEN_ACTIVITY_MAX_EVENTS",
+                self.token_activity_max_events,
+                TOKEN_ACTIVITY_MAX_EVENTS_HARD,
+            ),
+            (
+                "TOKEN_ACTIVITY_MAX_RPC_REQUESTS",
+                self.token_activity_max_rpc_requests,
+                TOKEN_ACTIVITY_MAX_RPC_REQUESTS_HARD,
+            ),
+            (
+                "TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS",
+                self.token_activity_max_unique_block_headers,
+                TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS_HARD,
+            ),
+            (
+                "TOKEN_ACTIVITY_TOP_N",
+                self.token_activity_top_n,
+                TOKEN_ACTIVITY_TOP_N_HARD,
+            ),
+            (
+                "TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS",
+                self.token_activity_block_search_max_calls,
+                TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS_HARD,
+            ),
+        )
+        for name, value, hard_cap in query_caps:
+            if value > hard_cap:
+                raise SettingsValidationError(
+                    f"{name} cannot exceed the hard cap {hard_cap}"
+                )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
                 "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
@@ -529,5 +604,17 @@ class OnchainSettings:
                 "topic_id_configured": bool(self.tg_onchain_flow_topic_id),
                 "hourly_limit": self.tg_hourly_limit,
                 "cooldown_sec": self.alert_cooldown_sec,
+            },
+            "token_activity": {
+                "max_window_hours": self.token_activity_max_window_hours,
+                "max_events": self.token_activity_max_events,
+                "max_rpc_requests": self.token_activity_max_rpc_requests,
+                "max_unique_block_headers": (
+                    self.token_activity_max_unique_block_headers
+                ),
+                "top_n": self.token_activity_top_n,
+                "block_search_max_calls": (
+                    self.token_activity_block_search_max_calls
+                ),
             },
         }

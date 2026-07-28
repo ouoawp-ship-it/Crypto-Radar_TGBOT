@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -10,6 +12,7 @@ from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
 from .collectors.evm_ws import WssError
 from .config import OnchainSettings, SettingsValidationError, UnsafeOnchainPath
+from .constants import PRODUCTION_WRITE_PATHS
 from .db import OnchainStore
 from .health import read_runtime_status
 from .labels import (
@@ -23,6 +26,12 @@ from .live_runtime import (
     ReorgManualInterventionRequired,
 )
 from .runtime import replay_fixture
+from .token_activity import (
+    TokenActivityQuery,
+    TokenActivityQueryError,
+    TokenActivityQueryService,
+    failed_token_activity_payload,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,6 +47,18 @@ def build_parser() -> argparse.ArgumentParser:
     provider_check.add_argument("--chain", choices=("base",), required=True)
     cursor_status = subparsers.add_parser("cursor-status")
     cursor_status.add_argument("--chain", choices=("base",), required=True)
+    token_activity = subparsers.add_parser("token-activity")
+    token_activity.add_argument("--chain", required=True)
+    token_activity.add_argument("--contract", required=True)
+    token_activity.add_argument("--window", required=True)
+    token_activity.add_argument("--allow-network", action="store_true")
+    token_activity.add_argument("--max-events", type=int, default=None)
+    token_activity.add_argument("--max-rpc-requests", type=int, default=None)
+    token_activity.add_argument("--top", type=int, default=None)
+    token_activity.add_argument("--with-price", action="store_true")
+    token_activity.add_argument("--min-usd", default=None)
+    token_activity.add_argument("--pretty", action="store_true")
+    token_activity.add_argument("--output-file", default=None)
 
     replay = subparsers.add_parser("replay")
     replay.add_argument("--fixture", required=True)
@@ -156,6 +177,98 @@ def _disabled_command(settings: OnchainSettings, command: str) -> int:
     return -1
 
 
+def _write_token_activity_output(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    pretty: bool,
+) -> None:
+    parent = path.resolve().parent
+    if not parent.exists():
+        raise OSError("output directory does not exist")
+    text = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2 if pretty else None,
+        separators=None if pretty else (",", ":"),
+    )
+    temporary_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            handle.write(text + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        if temporary_name and Path(temporary_name).exists():
+            Path(temporary_name).unlink()
+
+
+def _validate_token_activity_output_path(
+    settings: OnchainSettings, raw_path: str
+) -> None:
+    path = Path(raw_path).resolve()
+    data_root = (settings.base_dir / "data").resolve()
+    protected = {
+        item.resolve() for item in settings.writable_paths
+    } | {
+        (settings.base_dir / relative).resolve()
+        for relative in PRODUCTION_WRITE_PATHS
+    } | {
+        (settings.base_dir / ".env.oi").resolve(),
+        (settings.base_dir / ".env.onchain").resolve(),
+    }
+    if path in protected or path.is_relative_to(data_root):
+        raise TokenActivityQueryError(
+            "unsafe_output_file",
+            "--output-file cannot overwrite a BOT or on-chain state file",
+        )
+
+
+def _print_token_activity(
+    payload: dict[str, object],
+    *,
+    pretty: bool,
+    output_file: str | None,
+) -> None:
+    output: dict[str, object] = payload
+    if output_file:
+        output_path = Path(output_file)
+        _write_token_activity_output(output_path, payload, pretty=pretty)
+        summary = payload.get("summary")
+        output = {
+            "schema_version": payload.get("schema_version"),
+            "status": payload.get("status"),
+            "complete": payload.get("complete"),
+            "truncated": payload.get("truncated"),
+            "truncation_reason": payload.get("truncation_reason"),
+            "transfer_count": (
+                summary.get("transfer_count")
+                if isinstance(summary, dict)
+                else None
+            ),
+            "output_file": str(output_path),
+        }
+    print(
+        json.dumps(
+            output,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2 if pretty else None,
+            separators=None if pretty else (",", ":"),
+        )
+    )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -163,8 +276,51 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     runtime: BaseOnchainRuntime | None = None
+    token_activity_network_started = False
     try:
         settings = settings or OnchainSettings.load()
+        if args.command == "token-activity":
+            settings.validate()
+            query = TokenActivityQuery.create(
+                settings,
+                chain=args.chain,
+                contract=args.contract,
+                window=args.window,
+                max_events=args.max_events,
+                max_rpc_requests=args.max_rpc_requests,
+                top_n=args.top,
+                with_price=bool(args.with_price),
+                min_usd=args.min_usd,
+            )
+            if args.output_file:
+                _validate_token_activity_output_path(
+                    settings, args.output_file
+                )
+            if not args.allow_network:
+                payload = failed_token_activity_payload(
+                    TokenActivityQueryError(
+                        "allow_network_required",
+                        "token-activity requires explicit --allow-network",
+                    ),
+                    network_activity=False,
+                )
+                _print_token_activity(
+                    payload,
+                    pretty=bool(args.pretty),
+                    output_file=None,
+                )
+                return 1
+            service = TokenActivityQueryService.from_settings(
+                settings, query
+            )
+            token_activity_network_started = True
+            payload = service.execute(query)
+            _print_token_activity(
+                payload,
+                pretty=bool(args.pretty),
+                output_file=args.output_file,
+            )
+            return 0 if payload["status"] == "ok" else 2
         if args.command == "status":
             payload = settings.diagnostic()
             payload["db_exists"] = settings.db_path.exists()
@@ -274,6 +430,17 @@ def main(
                 )
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
+    except TokenActivityQueryError as exc:
+        payload = failed_token_activity_payload(
+            exc,
+            network_activity=token_activity_network_started,
+        )
+        _print_token_activity(
+            payload,
+            pretty=bool(getattr(args, "pretty", False)),
+            output_file=None,
+        )
+        return 1
     except (
         FixtureValidationError,
         LabelValidationError,
