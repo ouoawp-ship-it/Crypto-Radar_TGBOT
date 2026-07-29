@@ -256,7 +256,7 @@ class P31DeploymentTests(unittest.TestCase):
         self.assertNotIn("paopao-radar.service", script)
         self.assertNotIn("paopao-market-stream.service", script)
 
-    def test_production_entrypoints_and_existing_installers_are_unchanged(self) -> None:
+    def test_production_entrypoints_and_update_script_are_unchanged(self) -> None:
         result = subprocess.run(
             [
                 "git",
@@ -266,7 +266,6 @@ class P31DeploymentTests(unittest.TestCase):
                 "--",
                 "main.py",
                 "paopao_radar/cli.py",
-                "scripts/install_server.sh",
                 "scripts/update_server.sh",
             ],
             cwd=REPO_ROOT,

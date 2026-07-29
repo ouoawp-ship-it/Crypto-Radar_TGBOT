@@ -104,15 +104,19 @@ class MemoryCache:
         self.reservations = 0
         self.get_prompt_versions: list[str] = []
         self.put_prompt_versions: list[str] = []
+        self.get_cache_controls: list[dict[str, str]] = []
+        self.put_cache_controls: list[dict[str, str]] = []
 
     def get(
         self,
         context_hash: str,
         model: str,
         prompt_version: str,
+        **controls: str,
     ) -> object:
         del context_hash, model
         self.get_prompt_versions.append(prompt_version)
+        self.get_cache_controls.append(dict(controls))
         return type("CacheResult", (), {"result": self.result})()
 
     def reserve_call(self) -> bool:
@@ -125,9 +129,11 @@ class MemoryCache:
         model: str,
         prompt_version: str,
         result: dict[str, object],
+        **controls: str,
     ) -> None:
         del context_hash, model
         self.put_prompt_versions.append(prompt_version)
+        self.put_cache_controls.append(dict(controls))
         self.result = deepcopy(result)
 
 

@@ -91,8 +91,9 @@ class RegistryService:
         if actual_symbol != expected_symbol and not accept_symbol_mismatch:
             raise AutomationStoreError(
                 "symbol_mismatch_requires_confirmation",
-                "on-chain symbol differs from the market symbol; explicit "
-                "confirmation is required",
+                f"on-chain symbol {actual_symbol or '<empty>'} differs from "
+                f"market symbol {expected_symbol}; explicit confirmation "
+                "is required",
             )
         facts = {
             "chain_id": BASE_CHAIN_ID,

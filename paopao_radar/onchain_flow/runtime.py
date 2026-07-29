@@ -47,6 +47,7 @@ def isolated_replay_settings(
         enable=False,
         base_enable=False,
         real_send=False,
+        oar_ai_enable=False,
         data_dir=replay_dir,
         db_path=replay_dir / "onchain_flow.db",
         runtime_status_path=replay_dir / "runtime_status.json",
@@ -56,6 +57,10 @@ def isolated_replay_settings(
         signal_events_path=replay_dir / "signal_events.json",
         signal_events_db_path=replay_dir / "onchain_signals.db",
         oar_automation_db_path=replay_dir / "oar_automation.db",
+        oar_ai_cache_path=replay_dir / "oar_ai_cache.json",
+        oar_ai_operator_prompt_path=(
+            replay_dir / "config" / "oar_ai_operator_prompt.txt"
+        ),
         labels_path=(
             BASE_DIR
             / "config"

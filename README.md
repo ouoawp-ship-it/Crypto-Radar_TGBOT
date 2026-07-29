@@ -105,7 +105,7 @@ python main.py live --send --confirm-real-send
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall -q paopao_radar tests scripts main.py
+.\.venv\Scripts\python.exe -m compileall -q paopao_radar tests scripts main.py onchain_main.py
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 ```
 
@@ -136,3 +136,7 @@ Base ERC-20 合约的有界、只读主动查询见
 [docs/OAR_P3_AI_TELEGRAM_REPORTING.md](docs/OAR_P3_AI_TELEGRAM_REPORTING.md)。
 已验证 Token Registry、主信号只读桥接与有界自动观察见
 [docs/OAR_P4_SIGNAL_WATCHLIST_AUTOMATION.md](docs/OAR_P4_SIGNAL_WATCHLIST_AUTOMATION.md)。
+DeepSeek V4 Pro Profile、分层业务提示词与安全 AI 诊断见
+[docs/OAR_DEEPSEEK_V4_PRO.md](docs/OAR_DEEPSEEK_V4_PRO.md)。
+FinalShell 的 `paopao` / `pp` 中文运维菜单见
+[docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。

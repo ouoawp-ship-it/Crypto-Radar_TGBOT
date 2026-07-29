@@ -73,7 +73,7 @@ class OarP4ReportingTests(unittest.TestCase):
         first = build_ai_context(first_payload, max_chars=30000)
         second = build_ai_context(second_payload, max_chars=30000)
         self.assertEqual(OAR_AI_CONTEXT_SCHEMA_VERSION, 2)
-        self.assertEqual(OAR_AI_PROMPT_VERSION, "oar-ai-prompt-v2")
+        self.assertEqual(OAR_AI_PROMPT_VERSION, "oar-ai-prompt-v3")
         self.assertEqual(first["context_hash"], second["context_hash"])
         self.assertEqual(len(first["linked_market_signals"]), 10)
         serialized = json.dumps(first, ensure_ascii=False)

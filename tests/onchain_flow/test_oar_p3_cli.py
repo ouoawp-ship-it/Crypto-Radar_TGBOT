@@ -158,6 +158,7 @@ class OarP3CliTests(unittest.TestCase):
         settings = OnchainSettings.load(
             environ={
                 "OAR_AI_ENABLE": "true",
+                "OAR_AI_PROVIDER": "openai_compatible",
                 "OAR_AI_BASE_URL": "https://ai.invalid/v1",
                 "OAR_AI_API_KEY": "super-secret-value",
                 "OAR_AI_MODEL": "fixture-model",
@@ -184,6 +185,7 @@ class OarP3CliTests(unittest.TestCase):
                 settings = OnchainSettings.load(
                     environ={
                         "OAR_AI_ENABLE": "true",
+                        "OAR_AI_PROVIDER": "openai_compatible",
                         "OAR_AI_BASE_URL": base_url,
                         "OAR_AI_API_KEY": "configured-secret",
                         "OAR_AI_MODEL": "fixture-model",
@@ -195,6 +197,7 @@ class OarP3CliTests(unittest.TestCase):
         settings = OnchainSettings.load(
             environ={
                 "OAR_AI_ENABLE": "true",
+                "OAR_AI_PROVIDER": "openai_compatible",
                 "OAR_AI_BASE_URL": "http://remote.example/v1",
                 "OAR_AI_API_KEY": "configured-secret",
                 "OAR_AI_MODEL": "fixture-model",
@@ -220,6 +223,7 @@ class OarP3CliTests(unittest.TestCase):
                 settings = OnchainSettings.load(
                     environ={
                         "OAR_AI_ENABLE": "true",
+                        "OAR_AI_PROVIDER": "openai_compatible",
                         "OAR_AI_BASE_URL": base_url,
                         "OAR_AI_API_KEY": "configured-secret",
                         "OAR_AI_MODEL": "fixture-model",

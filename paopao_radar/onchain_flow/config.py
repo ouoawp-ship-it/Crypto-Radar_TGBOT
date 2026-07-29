@@ -141,6 +141,9 @@ class OnchainSettings:
     signal_events_path: Path = BASE_DIR / "data" / "onchain" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "onchain" / "onchain_signals.db"
     oar_ai_cache_path: Path = BASE_DIR / "data" / "onchain" / "oar_ai_cache.json"
+    oar_ai_operator_prompt_path: Path = (
+        BASE_DIR / "data" / "onchain" / "config" / "oar_ai_operator_prompt.txt"
+    )
     oar_automation_db_path: Path = (
         BASE_DIR / "data" / "onchain" / "oar_automation.db"
     )
@@ -210,9 +213,13 @@ class OnchainSettings:
     oar_max_wallet_groups: int = 20
     oar_max_source_event_ids: int = 50
     oar_ai_enable: bool = False
-    oar_ai_base_url: str = ""
+    oar_ai_provider: str = "deepseek"
+    oar_ai_base_url: str = "https://api.deepseek.com"
     oar_ai_api_key: str = ""
-    oar_ai_model: str = ""
+    oar_ai_model: str = "deepseek-v4-pro"
+    oar_ai_thinking_mode: str = "enabled"
+    oar_ai_reasoning_effort: str = "high"
+    oar_ai_max_tokens: int = 8192
     oar_ai_timeout_sec: int = 20
     oar_ai_max_retries: int = 1
     oar_ai_max_calls_per_hour: int = 10
@@ -265,6 +272,19 @@ class OnchainSettings:
                 self,
                 "oar_automation_db_path",
                 self.data_dir / "oar_automation.db",
+            )
+        default_operator_prompt = (
+            BASE_DIR
+            / "data"
+            / "onchain"
+            / "config"
+            / "oar_ai_operator_prompt.txt"
+        )
+        if self.oar_ai_operator_prompt_path == default_operator_prompt:
+            object.__setattr__(
+                self,
+                "oar_ai_operator_prompt_path",
+                self.data_dir / "config" / "oar_ai_operator_prompt.txt",
             )
         default_main_signals = BASE_DIR / "data" / "signals.db"
         if self.main_signal_db_path == default_main_signals:
@@ -333,6 +353,14 @@ class OnchainSettings:
                 base_dir,
                 data_dir,
                 values.get("OAR_AI_CACHE_FILE", "oar_ai_cache.json"),
+            ),
+            oar_ai_operator_prompt_path=_resolve_data_file(
+                base_dir,
+                data_dir,
+                values.get(
+                    "OAR_AI_OPERATOR_PROMPT_FILE",
+                    "config/oar_ai_operator_prompt.txt",
+                ),
             ),
             oar_automation_db_path=_resolve_data_file(
                 base_dir,
@@ -529,11 +557,25 @@ class OnchainSettings:
                 values, "OAR_MAX_SOURCE_EVENT_IDS", 50
             ),
             oar_ai_enable=_bool(values, "OAR_AI_ENABLE", False),
+            oar_ai_provider=values.get(
+                "OAR_AI_PROVIDER", "deepseek"
+            ).strip().lower(),
             oar_ai_base_url=(
-                values.get("OAR_AI_BASE_URL", "").strip().rstrip("/")
+                values.get(
+                    "OAR_AI_BASE_URL", "https://api.deepseek.com"
+                ).strip().rstrip("/")
             ),
             oar_ai_api_key=values.get("OAR_AI_API_KEY", "").strip(),
-            oar_ai_model=values.get("OAR_AI_MODEL", "").strip(),
+            oar_ai_model=values.get(
+                "OAR_AI_MODEL", "deepseek-v4-pro"
+            ).strip(),
+            oar_ai_thinking_mode=values.get(
+                "OAR_AI_THINKING_MODE", "enabled"
+            ).strip().lower(),
+            oar_ai_reasoning_effort=values.get(
+                "OAR_AI_REASONING_EFFORT", "high"
+            ).strip().lower(),
+            oar_ai_max_tokens=_int(values, "OAR_AI_MAX_TOKENS", 8192),
             oar_ai_timeout_sec=_int(values, "OAR_AI_TIMEOUT_SEC", 20),
             oar_ai_max_retries=_int(values, "OAR_AI_MAX_RETRIES", 1),
             oar_ai_max_calls_per_hour=_int(
@@ -660,6 +702,7 @@ class OnchainSettings:
             self.signal_events_path,
             self.signal_events_db_path,
             self.oar_automation_db_path,
+            self.oar_ai_operator_prompt_path,
         )
         if self.oar_ai_enable:
             return (*paths, self.oar_ai_cache_path)
@@ -1105,6 +1148,7 @@ class OnchainSettings:
         for name, value, minimum, maximum in (
             ("OAR_AI_TIMEOUT_SEC", self.oar_ai_timeout_sec, 1, 120),
             ("OAR_AI_MAX_RETRIES", self.oar_ai_max_retries, 0, 3),
+            ("OAR_AI_MAX_TOKENS", self.oar_ai_max_tokens, 512, 32768),
             (
                 "OAR_AI_MAX_CALLS_PER_HOUR",
                 self.oar_ai_max_calls_per_hour,
@@ -1134,15 +1178,31 @@ class OnchainSettings:
                 raise SettingsValidationError(
                     f"{name} must be in [{minimum}, {maximum}]"
                 )
-        if self.oar_ai_enable:
-            if not (
-                self.oar_ai_base_url
-                and self.oar_ai_api_key
-                and self.oar_ai_model
-            ):
-                raise SettingsValidationError(
-                    "enabled OAR AI requires base URL, API key, and model"
-                )
+        if self.oar_ai_provider not in {"deepseek", "openai_compatible"}:
+            raise SettingsValidationError(
+                "OAR_AI_PROVIDER must be deepseek or openai_compatible"
+            )
+        if self.oar_ai_thinking_mode not in {"enabled", "disabled"}:
+            raise SettingsValidationError(
+                "OAR_AI_THINKING_MODE must be enabled or disabled"
+            )
+        if self.oar_ai_reasoning_effort not in {"high", "max"}:
+            raise SettingsValidationError(
+                "OAR_AI_REASONING_EFFORT must be high or max"
+            )
+        if (
+            self.oar_ai_provider == "deepseek"
+            and self.oar_ai_model
+            and self.oar_ai_model not in {
+                "deepseek-v4-pro",
+                "deepseek-v4-flash",
+            }
+        ):
+            raise SettingsValidationError(
+                "DeepSeek OAR model must be deepseek-v4-pro or "
+                "deepseek-v4-flash"
+            )
+        if self.oar_ai_base_url:
             ai_url = urlsplit(self.oar_ai_base_url)
             if (
                 ai_url.scheme.lower() not in {"http", "https"}
@@ -1164,6 +1224,14 @@ class OnchainSettings:
                 raise SettingsValidationError(
                     "OAR_AI_BASE_URL must use HTTPS unless it targets loopback"
                 )
+        if self.oar_ai_enable and not (
+            self.oar_ai_base_url
+            and self.oar_ai_api_key
+            and self.oar_ai_model
+        ):
+            raise SettingsValidationError(
+                "enabled OAR AI requires base URL, API key, and model"
+            )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
                 "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
@@ -1278,9 +1346,17 @@ class OnchainSettings:
             },
             "oar_reporting": {
                 "ai_enabled": self.oar_ai_enable,
+                "ai_provider": self.oar_ai_provider,
                 "ai_base_url_configured": bool(self.oar_ai_base_url),
                 "ai_api_key_configured": bool(self.oar_ai_api_key),
                 "ai_model_configured": bool(self.oar_ai_model),
+                "ai_model": self.oar_ai_model,
+                "ai_thinking_mode": self.oar_ai_thinking_mode,
+                "ai_reasoning_effort": self.oar_ai_reasoning_effort,
+                "ai_max_tokens": self.oar_ai_max_tokens,
+                "ai_operator_prompt_configured": (
+                    self.oar_ai_operator_prompt_path.exists()
+                ),
                 "ai_timeout_sec": self.oar_ai_timeout_sec,
                 "ai_max_retries": self.oar_ai_max_retries,
                 "ai_max_calls_per_hour": self.oar_ai_max_calls_per_hour,
