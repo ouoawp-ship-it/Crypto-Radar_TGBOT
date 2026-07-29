@@ -4,10 +4,17 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Sequence
 
+from .ai_client import (
+    OarAiError,
+    OpenAiCompatibleOarClient,
+    validate_ai_output,
+)
 from .automation_store import AutomationStore, AutomationStoreError
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
@@ -26,6 +33,7 @@ from .live_runtime import (
     LiveConfigurationError,
     ReorgManualInterventionRequired,
 )
+from .prompt_manager import OperatorPromptError, OperatorPromptManager
 from .runtime import replay_fixture
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
@@ -66,6 +74,28 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor")
     subparsers.add_parser("labels-check")
     subparsers.add_parser("db-check")
+    subparsers.add_parser("ai-prompt-check")
+    ai_prompt = subparsers.add_parser("ai-prompt")
+    ai_prompt.add_argument(
+        "action",
+        choices=(
+            "status",
+            "show",
+            "validate",
+            "install-default",
+            "save",
+            "restore-default",
+            "history",
+            "rollback",
+            "hash",
+        ),
+    )
+    ai_prompt.add_argument("--version", default="")
+    ai_prompt.add_argument("--stdin", action="store_true")
+    ai_provider_check = subparsers.add_parser("ai-provider-check")
+    ai_provider_check.add_argument("--allow-network", action="store_true")
+    ai_smoke = subparsers.add_parser("ai-smoke")
+    ai_smoke.add_argument("--allow-network", action="store_true")
     provider_check = subparsers.add_parser("provider-check")
     provider_check.add_argument("--chain", choices=("base",), required=True)
     cursor_status = subparsers.add_parser("cursor-status")
@@ -113,6 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch_remove.add_argument("--token-key", required=True)
 
     subparsers.add_parser("bridge-once")
+    unresolved_summary = subparsers.add_parser("unresolved-summary")
+    unresolved_summary.add_argument("--limit", type=int, default=20)
     watch_once = subparsers.add_parser("watch-once")
     watch_once.add_argument("--allow-network", action="store_true")
     watch_once.add_argument("--notify-dry-run", action="store_true")
@@ -476,6 +508,241 @@ def _print_token_activity(
     )
 
 
+def _ai_client(
+    settings: OnchainSettings,
+    *,
+    operator_prompt: str = "",
+    operator_prompt_hash: str = "",
+    max_retries: int | None = None,
+) -> OpenAiCompatibleOarClient:
+    return OpenAiCompatibleOarClient(
+        base_url=settings.oar_ai_base_url,
+        api_key=settings.oar_ai_api_key,
+        model=settings.oar_ai_model,
+        timeout_sec=settings.oar_ai_timeout_sec,
+        max_retries=(
+            settings.oar_ai_max_retries
+            if max_retries is None
+            else int(max_retries)
+        ),
+        max_output_chars=settings.oar_ai_max_output_chars,
+        provider=settings.oar_ai_provider,
+        thinking_mode=settings.oar_ai_thinking_mode,
+        reasoning_effort=settings.oar_ai_reasoning_effort,
+        max_tokens=settings.oar_ai_max_tokens,
+        operator_prompt=operator_prompt,
+        operator_prompt_hash=operator_prompt_hash,
+    )
+
+
+def _ai_prerequisites(settings: OnchainSettings) -> None:
+    if not (
+        settings.oar_ai_base_url
+        and settings.oar_ai_api_key
+        and settings.oar_ai_model
+    ):
+        raise OarAiError(
+            "ai_not_configured",
+            "AI provider configuration is incomplete",
+        )
+    settings.validate()
+
+
+def _ai_synthetic_context() -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "context_hash": (
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ),
+        "token": {
+            "chain": "base",
+            "chain_id": 8453,
+            "contract": "0x1111111111111111111111111111111111111111",
+            "symbol": "TEST",
+            "name": "Synthetic OAR Fixture",
+            "decimals": 18,
+        },
+        "query": {
+            "window": "15m",
+            "from_time": 1700000000,
+            "to_time": 1700000900,
+            "complete": False,
+            "truncated": False,
+        },
+        "transfer_summary": {"transfer_count": 0},
+        "largest_transfers": [],
+        "cex_flows": {},
+        "primary_behavior": {
+            "type": "no_activity",
+            "label": "未发现近期活动",
+            "score": 0,
+        },
+        "behavior_candidates": [],
+        "wallet_groups": [],
+        "supporting_evidence": [],
+        "counter_evidence": [],
+        "data_limitations": ["synthetic_smoke_context"],
+    }
+
+
+def _prompt_command(
+    settings: OnchainSettings,
+    args: argparse.Namespace,
+) -> int:
+    manager = OperatorPromptManager.from_settings(settings)
+    if args.command == "ai-prompt-check":
+        payload = {
+            **manager.status(),
+            "network_activity": False,
+            "rpc_calls": 0,
+            "ai_calls": 0,
+            "telegram_calls": 0,
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 0 if payload["status"] != "invalid" else 1
+    action = args.action
+    if action == "show":
+        print(manager.show())
+        return 0
+    if action == "status":
+        result = manager.status()
+    elif action == "validate":
+        result = manager.validate()
+    elif action == "install-default":
+        prompt = manager.install_default()
+        result = {
+            "status": "ok",
+            "length": len(prompt.content),
+            "prompt_hash": prompt.prompt_hash,
+        }
+    elif action == "save":
+        if not args.stdin:
+            raise OperatorPromptError(
+                "ai-prompt save requires --stdin"
+            )
+        prompt = manager.save(sys.stdin.read())
+        result = {
+            "status": "ok",
+            "length": len(prompt.content),
+            "prompt_hash": prompt.prompt_hash,
+        }
+    elif action == "restore-default":
+        prompt = manager.restore_default()
+        result = {
+            "status": "ok",
+            "length": len(prompt.content),
+            "prompt_hash": prompt.prompt_hash,
+        }
+    elif action == "history":
+        result = {"status": "ok", "history": manager.history()}
+    elif action == "rollback":
+        if not args.version:
+            raise OperatorPromptError(
+                "ai-prompt rollback requires --version"
+            )
+        prompt = manager.rollback(args.version)
+        result = {
+            "status": "ok",
+            "length": len(prompt.content),
+            "prompt_hash": prompt.prompt_hash,
+        }
+    elif action == "hash":
+        result = {"status": "ok", "prompt_hash": manager.hash()}
+    else:  # pragma: no cover - argparse constrains the action
+        raise OperatorPromptError("unsupported operator prompt action")
+    result.update(
+        {
+            "network_activity": False,
+            "rpc_calls": 0,
+            "ai_calls": 0,
+            "telegram_calls": 0,
+        }
+    )
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _ai_network_command(
+    settings: OnchainSettings,
+    args: argparse.Namespace,
+) -> int:
+    if not args.allow_network:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": "allow_network_required",
+                    "network_activity": False,
+                    "rpc_calls": 0,
+                    "ai_calls": 0,
+                    "telegram_calls": 0,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+    started = time.perf_counter()
+    network_started = False
+    try:
+        _ai_prerequisites(settings)
+        if args.command == "ai-provider-check":
+            network_started = True
+            result = _ai_client(settings).check_model()
+            payload = {
+                **result,
+                "provider": settings.oar_ai_provider,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "network_activity": True,
+                "generation_calls": 0,
+                "rpc_calls": 0,
+                "telegram_calls": 0,
+            }
+        else:
+            prompt = OperatorPromptManager.from_settings(
+                settings
+            ).load_for_request()
+            network_started = True
+            ai_result = _ai_client(
+                settings,
+                operator_prompt=prompt.content,
+                operator_prompt_hash=prompt.prompt_hash,
+                max_retries=0,
+            ).analyze(
+                _ai_synthetic_context(),
+                restricted_input=True,
+            )
+            validate_ai_output(ai_result, restricted_input=True)
+            payload = {
+                "status": "ok",
+                "model": settings.oar_ai_model,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "schema_valid": True,
+            }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OarAiError, OperatorPromptError, SettingsValidationError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": getattr(exc, "code", type(exc).__name__),
+                    "reason": str(exc),
+                    "network_activity": network_started,
+                    "ai_calls": (
+                        1
+                        if args.command == "ai-smoke" and network_started
+                        else 0
+                    ),
+                    "rpc_calls": 0,
+                    "telegram_calls": 0,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -487,6 +754,11 @@ def main(
     automation_network_started = False
     try:
         settings = settings or OnchainSettings.load()
+        if args.command in {"ai-prompt-check", "ai-prompt"}:
+            settings.validate()
+            return _prompt_command(settings, args)
+        if args.command in {"ai-provider-check", "ai-smoke"}:
+            return _ai_network_command(settings, args)
         if args.command in {
             "registry-add",
             "registry-verify",
@@ -496,6 +768,7 @@ def main(
             "watch-list",
             "watch-remove",
             "bridge-once",
+            "unresolved-summary",
             "watch-once",
             "watch-live",
         }:
@@ -665,6 +938,28 @@ def main(
                     in {"ok", "source_not_initialized", "source_locked"}
                     else 1
                 )
+            if args.command == "unresolved-summary":
+                items = store.unresolved_summary(limit=args.limit)
+                print(
+                    json.dumps(
+                        {
+                            "status": (
+                                "not_initialized"
+                                if not settings.oar_automation_db_path.exists()
+                                else "ok"
+                            ),
+                            "items": items,
+                            "count": len(items),
+                            "database_writes": False,
+                            "network_activity": False,
+                            "telegram_calls": False,
+                            "ai_calls": False,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
             scanner = WatchScanner(settings, store)
             if args.command == "watch-once":
                 payload = scanner.run_once(

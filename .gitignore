@@ -35,6 +35,7 @@ data/backups/
 # Bounded runtime history for opt-in accumulation quality diagnostics.
 /data/accumulation_quality_diagnostics.json
 /data/onchain/
+/reports/onchain/
 /config/onchain/cex_addresses.local*.csv
 *.corrupt.*
 bn_signal_history.json

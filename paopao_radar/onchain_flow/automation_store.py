@@ -1208,6 +1208,31 @@ class AutomationStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def unresolved_summary(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        bounded_limit = max(1, min(int(limit), 20))
+        with self.connect_existing() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT reason, source_symbol, candidate_chain,
+                       candidate_contract, COUNT(*) AS count,
+                       MAX(source_ts) AS latest_source_ts
+                FROM unresolved_signals
+                WHERE status='open'
+                GROUP BY reason, source_symbol, candidate_chain,
+                         candidate_contract
+                ORDER BY count DESC, latest_source_ts DESC, source_symbol
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def resolve_unresolved(
         self,
         unresolved_id: int,

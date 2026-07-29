@@ -18,6 +18,10 @@ from .constants import (
     OAR_REPORT_ALGORITHM_VERSION,
     OAR_REPORT_SCHEMA_VERSION,
 )
+from .prompt_manager import (
+    OperatorPromptError,
+    OperatorPromptManager,
+)
 from .token_activity import TokenActivityQuery
 from .token_analysis import TokenAnalysisService
 
@@ -266,11 +270,13 @@ class TokenReportService:
         *,
         ai_client: OarAiClient | None = None,
         ai_cache: OarAiCache | None = None,
+        prompt_manager: OperatorPromptManager | None = None,
     ):
         self.settings = settings
         self.analysis_service = analysis_service
         self._ai_client = ai_client
         self._ai_cache = ai_cache
+        self._prompt_manager = prompt_manager
 
     @classmethod
     def from_settings(
@@ -365,6 +371,19 @@ class TokenReportService:
                 "calls": 0,
                 "result": None,
             }
+        prompt_manager = (
+            self._prompt_manager
+            or OperatorPromptManager.from_settings(self.settings)
+        )
+        try:
+            operator_prompt = prompt_manager.load_for_request()
+        except (OSError, OperatorPromptError):
+            return {
+                "status": "failed",
+                "calls": 0,
+                "result": None,
+                "error": "operator_prompt_unavailable",
+            }
         cache = self._ai_cache or OarAiCache(
             path=self.settings.oar_ai_cache_path,
             data_dir=self.settings.data_dir,
@@ -377,6 +396,11 @@ class TokenReportService:
                 context_hash,
                 self.settings.oar_ai_model,
                 OAR_AI_PROMPT_VERSION,
+                provider=self.settings.oar_ai_provider,
+                operator_prompt_hash=operator_prompt.prompt_hash,
+                thinking_mode=self.settings.oar_ai_thinking_mode,
+                reasoning_effort=self.settings.oar_ai_reasoning_effort,
+                max_tokens=self.settings.oar_ai_max_tokens,
             )
         except (OSError, ValueError):
             return {
@@ -422,6 +446,12 @@ class TokenReportService:
             timeout_sec=self.settings.oar_ai_timeout_sec,
             max_retries=self.settings.oar_ai_max_retries,
             max_output_chars=self.settings.oar_ai_max_output_chars,
+            provider=self.settings.oar_ai_provider,
+            thinking_mode=self.settings.oar_ai_thinking_mode,
+            reasoning_effort=self.settings.oar_ai_reasoning_effort,
+            max_tokens=self.settings.oar_ai_max_tokens,
+            operator_prompt=operator_prompt.content,
+            operator_prompt_hash=operator_prompt.prompt_hash,
         )
         try:
             result = client.analyze(
@@ -461,6 +491,11 @@ class TokenReportService:
                 self.settings.oar_ai_model,
                 OAR_AI_PROMPT_VERSION,
                 validated,
+                provider=self.settings.oar_ai_provider,
+                operator_prompt_hash=operator_prompt.prompt_hash,
+                thinking_mode=self.settings.oar_ai_thinking_mode,
+                reasoning_effort=self.settings.oar_ai_reasoning_effort,
+                max_tokens=self.settings.oar_ai_max_tokens,
             )
         except (OSError, ValueError):
             response["warning"] = "ai_cache_write_failed"

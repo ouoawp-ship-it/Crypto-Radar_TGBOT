@@ -74,9 +74,14 @@ python onchain_main.py token-notify \
 
 ```dotenv
 OAR_AI_ENABLE=false
+OAR_AI_PROVIDER=deepseek
 OAR_AI_BASE_URL=
 OAR_AI_API_KEY=
-OAR_AI_MODEL=
+OAR_AI_MODEL=deepseek-v4-pro
+OAR_AI_THINKING_MODE=enabled
+OAR_AI_REASONING_EFFORT=high
+OAR_AI_MAX_TOKENS=8192
+OAR_AI_OPERATOR_PROMPT_FILE=data/onchain/config/oar_ai_operator_prompt.txt
 OAR_AI_TIMEOUT_SEC=20
 OAR_AI_MAX_RETRIES=1
 OAR_AI_MAX_CALLS_PER_HOUR=10
@@ -89,7 +94,7 @@ OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY=false
 
 适配器使用 OpenAI-compatible `chat/completions`，有限超时和重试，拒绝 HTTP Redirect，并对 401/403、429、5xx、timeout 和连接失败分类。远程 Base URL 必须使用 HTTPS；HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1` 回环地址。URL 不允许包含用户名、密码、query 或 fragment。API Key 只进入 Authorization Header，不进入日志、JSON、异常或缓存。
 
-当前 AI Prompt Version 为 `oar-ai-prompt-v1`。Provider 的 System Prompt 会实际携带完整输出契约，要求只返回一个 JSON Object，包含且仅包含：
+当前 Core AI Prompt Version 为 `oar-ai-prompt-v3`。Provider 的 System Prompt 会实际携带完整输出契约，要求只返回一个 JSON Object，包含且仅包含：
 
 - `schema_version`
 - `bias`
@@ -108,8 +113,11 @@ User Message 使用稳定 Envelope：
 ```json
 {
   "control": {
-    "prompt_version": "oar-ai-prompt-v1",
-    "restricted_input": true
+    "prompt_version": "oar-ai-prompt-v3",
+    "core_prompt_version": "oar-ai-prompt-v3",
+    "restricted_input": true,
+    "operator_prompt_hash": "...",
+    "operator_prompt_present": true
   },
   "facts": {}
 }
@@ -117,7 +125,7 @@ User Message 使用稳定 Envelope：
 
 当查询/分析不完整，分析为 `partial_input`、`partial_analysis`、`insufficient_evidence`、`no_activity`，或 Primary Behavior 为 `no_activity`、`isolated`、`inconclusive_activity`、`insufficient_data` 时，AI 只能输出 `neutral|uncertain` 和 `low` confidence。缓存结果也重新执行相同校验，不合格的旧缓存不会被复用。
 
-有效 AI 结果可缓存于 `data/onchain/oar_ai_cache.json`。缓存键由 `model:prompt_version:context_hash` 组成，条目只保存这三项、验证后结果和过期时间，不保存完整 Prompt、Key 或 Header。旧缓存缺少 Prompt Version 或版本不一致时视为 miss；Prompt 升级不会复用旧版本结果，旧条目仅按正常过期流程清理。小时调用预算独立于 RPC 预算。
+有效 AI 结果可缓存于 `data/onchain/oar_ai_cache.json`。缓存身份包含 Provider、model、Core Prompt Version、Operator Prompt Hash、Context Hash、Thinking Mode、Reasoning Effort 和 Max Tokens。条目只保存这些非敏感身份、验证后结果和过期时间，不保存完整 Prompt、Key、Header 或 reasoning content。任一身份变化都会 miss；旧条目仅按正常过期流程清理。小时调用预算独立于 RPC 预算。
 
 ## 独立 Telegram 话题
 

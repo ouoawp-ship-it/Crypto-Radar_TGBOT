@@ -15,6 +15,7 @@ RADAR_MEMORY_MAX="${RADAR_MEMORY_MAX:-650M}"
 MARKET_STREAM_MEMORY_HIGH="${MARKET_STREAM_MEMORY_HIGH:-128M}"
 MARKET_STREAM_MEMORY_MAX="${MARKET_STREAM_MEMORY_MAX:-256M}"
 AUTO_START="${AUTO_START:-1}"
+INSTALL_PP_SHORTCUT="${INSTALL_PP_SHORTCUT:-1}"
 
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -54,7 +55,8 @@ install_python_runtime() {
 
 run_checks() {
   cd "$APP_DIR"
-  "${APP_DIR}/.venv/bin/python" -m compileall -q paopao_radar tests scripts main.py
+  "${APP_DIR}/.venv/bin/python" -m compileall -q \
+    paopao_radar tests scripts main.py onchain_main.py
   "${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -p 'test_*.py'
 }
 
@@ -210,12 +212,16 @@ EOF
 }
 
 install_shortcut() {
+  test -x "${APP_DIR}/scripts/paopao_menu.sh"
   run_root tee /usr/local/bin/paopao >/dev/null <<EOF
 #!/usr/bin/env bash
 export PAOPAO_APP_DIR="${APP_DIR}"
 exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
 EOF
   run_root chmod +x /usr/local/bin/paopao
+  if [ "$INSTALL_PP_SHORTCUT" = "1" ]; then
+    run_root ln -sfn /usr/local/bin/paopao /usr/local/bin/pp
+  fi
 }
 
 main() {
