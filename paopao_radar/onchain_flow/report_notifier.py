@@ -40,6 +40,11 @@ class ReportNotifier:
         *,
         send: bool,
         confirm_real_send: bool,
+        source: str = "manual_token_notify",
+        linked_source_refs: list[str] | None = None,
+        linked_source_modules: list[str] | None = None,
+        watch_priority: int | None = None,
+        watch_reason_count: int | None = None,
     ) -> PushResult:
         report = _mapping(payload.get("report"))
         analysis = _mapping(payload.get("analysis"))
@@ -57,6 +62,16 @@ class ReportNotifier:
         behavior_score = int(primary.get("score") or 0)
         context_hash = str(report.get("context_hash") or "")
         ai_status = str(ai.get("status") or "not_requested")
+        source_refs = sorted(
+            {str(item) for item in (linked_source_refs or []) if str(item)}
+        )[:10]
+        source_modules = sorted(
+            {
+                str(item)
+                for item in (linked_source_modules or [])
+                if str(item)
+            }
+        )
         signal_record = {
             "module": "onchain",
             "template_id": TEMPLATE_ID,
@@ -74,11 +89,17 @@ class ReportNotifier:
             "summary": str(report.get("rule_summary_text") or "")[:1200],
             "context_hash": context_hash,
             "ai_status": ai_status,
-            "source": "manual_token_notify",
+            "source": str(source or "manual_token_notify"),
             "oar_card_key": card_key,
             "oar_content_hash": content_hash,
             "analysis_status": str(analysis.get("status") or ""),
             "analysis_complete": complete,
+            "linked_source_refs": source_refs,
+            "linked_source_modules": source_modules,
+            "linked_source_count": len(source_refs),
+            "source_modules_text": ",".join(source_modules)[:160],
+            "watch_priority": watch_priority,
+            "watch_reason_count": watch_reason_count,
         }
         history = self.gateway.history_records()
         old_cards = self._active_cards(history, card_key)

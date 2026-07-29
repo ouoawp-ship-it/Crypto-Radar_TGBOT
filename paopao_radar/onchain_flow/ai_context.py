@@ -11,6 +11,7 @@ from .constants import OAR_AI_CONTEXT_SCHEMA_VERSION
 MAX_LARGEST_TRANSFERS = 20
 MAX_WALLET_GROUPS = 10
 MAX_WALLETS_PER_GROUP = 20
+MAX_LINKED_MARKET_SIGNALS = 10
 MAX_TEXT_LENGTH = 320
 
 
@@ -165,6 +166,21 @@ def _wallet_group(value: object) -> dict[str, object]:
     }
 
 
+def _linked_market_signal(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "public_ref": _text(source.get("public_ref"), limit=160),
+        "module": _text(source.get("module"), limit=40),
+        "symbol": _text(source.get("symbol"), limit=40),
+        "score": source.get("score"),
+        "stage": _text(source.get("stage"), limit=80),
+        "severity": _text(source.get("severity"), limit=24),
+        "ts": _integer(source.get("ts")),
+        "age_sec": max(0, _integer(source.get("age_sec"))),
+        "summary": _text(source.get("summary"), limit=300),
+    }
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -246,6 +262,26 @@ def build_ai_context(
         limitations.add("query_incomplete")
     if not bool(analysis_map.get("complete")):
         limitations.add("analysis_incomplete")
+    linked_source = [
+        item
+        for item in (payload.get("linked_market_signals") or [])
+        if isinstance(item, dict)
+    ]
+    linked = {
+        str(item.get("public_ref") or ""): item for item in linked_source
+        if str(item.get("public_ref") or "")
+    }
+    linked_signals = [
+        _linked_market_signal(item)
+        for item in sorted(
+            linked.values(),
+            key=lambda item: (
+                -_integer(item.get("_priority")),
+                -_integer(item.get("ts")),
+                _text(item.get("public_ref"), limit=160),
+            ),
+        )[:MAX_LINKED_MARKET_SIGNALS]
+    ]
 
     context: dict[str, object] = {
         "schema_version": OAR_AI_CONTEXT_SCHEMA_VERSION,
@@ -301,6 +337,7 @@ def build_ai_context(
         "primary_behavior": primary,
         "behavior_candidates": candidates,
         "wallet_groups": groups,
+        "linked_market_signals": linked_signals,
         "supporting_evidence": sorted(supporting),
         "counter_evidence": sorted(counter),
         "data_limitations": sorted(limitations),

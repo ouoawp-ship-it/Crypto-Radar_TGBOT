@@ -55,6 +55,7 @@ def isolated_replay_settings(
         tg_topic_routes_path=replay_dir / "tg_topic_routes.json",
         signal_events_path=replay_dir / "signal_events.json",
         signal_events_db_path=replay_dir / "onchain_signals.db",
+        oar_automation_db_path=replay_dir / "oar_automation.db",
         labels_path=(
             BASE_DIR
             / "config"

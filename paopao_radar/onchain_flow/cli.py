@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
+from .automation_store import AutomationStore, AutomationStoreError
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
 from .collectors.evm_ws import WssError
@@ -28,6 +29,8 @@ from .live_runtime import (
 from .runtime import replay_fixture
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
+from .registry import RegistryService
+from .signal_bridge import MainSignalReader, SignalBridge
 from .token_activity import (
     TokenActivityQuery,
     TokenActivityQueryError,
@@ -35,6 +38,7 @@ from .token_activity import (
     failed_token_activity_payload,
 )
 from .token_analysis import TokenAnalysisService
+from .watch_scanner import WatchScanner
 
 
 def _add_token_query_arguments(
@@ -76,6 +80,52 @@ def build_parser() -> argparse.ArgumentParser:
     token_notify.add_argument("--with-ai", action="store_true")
     token_notify.add_argument("--send", action="store_true")
     token_notify.add_argument("--confirm-real-send", action="store_true")
+
+    registry_add = subparsers.add_parser("registry-add")
+    registry_add.add_argument("--market-symbol", required=True)
+    registry_add.add_argument("--chain", choices=("base",), required=True)
+    registry_add.add_argument("--contract", required=True)
+    registry_add.add_argument("--source", default="manual")
+    registry_add.add_argument("--note", default="")
+    registry_verify = subparsers.add_parser("registry-verify")
+    registry_verify.add_argument("--token-key", required=True)
+    registry_verify.add_argument("--allow-network", action="store_true")
+    registry_verify.add_argument("--set-primary", action="store_true")
+    registry_verify.add_argument(
+        "--accept-symbol-mismatch", action="store_true"
+    )
+    registry_list = subparsers.add_parser("registry-list")
+    registry_list.add_argument("--status", default=None)
+    registry_list.add_argument("--market-symbol", default=None)
+    registry_list.add_argument("--limit", type=int, default=100)
+    registry_disable = subparsers.add_parser("registry-disable")
+    registry_disable.add_argument("--token-key", required=True)
+
+    watch_add = subparsers.add_parser("watch-add")
+    watch_add.add_argument("--token-key", required=True)
+    watch_add.add_argument("--ttl-hours", type=int, default=None)
+    watch_add.add_argument("--priority", type=int, default=None)
+    watch_list = subparsers.add_parser("watch-list")
+    watch_list.add_argument("--status", default=None)
+    watch_list.add_argument("--due-only", action="store_true")
+    watch_list.add_argument("--limit", type=int, default=100)
+    watch_remove = subparsers.add_parser("watch-remove")
+    watch_remove.add_argument("--token-key", required=True)
+
+    subparsers.add_parser("bridge-once")
+    watch_once = subparsers.add_parser("watch-once")
+    watch_once.add_argument("--allow-network", action="store_true")
+    watch_once.add_argument("--notify-dry-run", action="store_true")
+    watch_once.add_argument("--with-ai", action="store_true")
+    watch_once.add_argument("--send", action="store_true")
+    watch_once.add_argument("--confirm-real-send", action="store_true")
+    watch_live = subparsers.add_parser("watch-live")
+    watch_live.add_argument("--allow-network", action="store_true")
+    watch_live.add_argument("--duration-minutes", type=float, default=None)
+    watch_live.add_argument("--notify-dry-run", action="store_true")
+    watch_live.add_argument("--with-ai", action="store_true")
+    watch_live.add_argument("--send", action="store_true")
+    watch_live.add_argument("--confirm-real-send", action="store_true")
 
     replay = subparsers.add_parser("replay")
     replay.add_argument("--fixture", required=True)
@@ -147,6 +197,44 @@ def _doctor(settings: OnchainSettings) -> tuple[int, dict[str, object]]:
         ok = ok and integrity in {"ok", "not_initialized"}
     except sqlite3.Error as exc:
         checks["sqlite_integrity"] = f"failed: {exc}"
+        ok = False
+    automation = AutomationStore.from_settings(settings)
+    try:
+        automation_check = automation.doctor()
+        checks["oar_automation"] = automation_check
+        ok = ok and automation_check["status"] in {
+            "ok",
+            "not_initialized",
+        }
+    except (AutomationStoreError, sqlite3.Error) as exc:
+        checks["oar_automation"] = {
+            "status": "failed",
+            "reason": str(exc),
+        }
+        ok = False
+    try:
+        source_check = MainSignalReader(settings.main_signal_db_path).read(
+            checkpoint_ts=0,
+            checkpoint_id=0,
+            overlap_sec=0,
+            bootstrap_lookback_sec=60,
+            limit=1,
+            now=0,
+        )
+        checks["main_signal_reader"] = {
+            "status": source_check["status"],
+            "read_only": True,
+        }
+        ok = ok and source_check["status"] in {
+            "ok",
+            "source_not_initialized",
+            "source_locked",
+        }
+    except sqlite3.Error as exc:
+        checks["main_signal_reader"] = {
+            "status": "failed",
+            "reason": str(exc),
+        }
         ok = False
     checks["telegram"] = {
         "bot_token_configured": bool(settings.tg_bot_token),
@@ -396,8 +484,205 @@ def main(
     args = build_parser().parse_args(argv)
     runtime: BaseOnchainRuntime | None = None
     token_activity_network_started = False
+    automation_network_started = False
     try:
         settings = settings or OnchainSettings.load()
+        if args.command in {
+            "registry-add",
+            "registry-verify",
+            "registry-list",
+            "registry-disable",
+            "watch-add",
+            "watch-list",
+            "watch-remove",
+            "bridge-once",
+            "watch-once",
+            "watch-live",
+        }:
+            settings.validate()
+            store = AutomationStore.from_settings(settings)
+            if args.command == "registry-add":
+                item = store.add_registry(
+                    market_symbol=args.market_symbol,
+                    contract=args.contract,
+                    source=args.source,
+                    note=args.note,
+                )
+                print(
+                    json.dumps(
+                        {"status": "ok", "token": item},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "registry-verify":
+                if not args.allow_network:
+                    raise AutomationStoreError(
+                        "allow_network_required",
+                        "registry-verify requires explicit --allow-network",
+                    )
+                automation_network_started = True
+                item = RegistryService(settings, store).verify(
+                    args.token_key,
+                    allow_network=True,
+                    set_primary=bool(args.set_primary),
+                    accept_symbol_mismatch=bool(
+                        args.accept_symbol_mismatch
+                    ),
+                )
+                print(
+                    json.dumps(
+                        {
+                            "status": "ok",
+                            "token": item,
+                            "network_activity": True,
+                            "telegram_calls": False,
+                            "ai_calls": False,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "registry-list":
+                items = store.list_registry(
+                    status=args.status,
+                    market_symbol=args.market_symbol,
+                    limit=args.limit,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "status": (
+                                "not_initialized"
+                                if items is None
+                                else "ok"
+                            ),
+                            "tokens": items or [],
+                            "database_writes": False,
+                            "network_activity": False,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "registry-disable":
+                item = store.disable_registry(args.token_key)
+                print(
+                    json.dumps(
+                        {"status": "ok", "token": item},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "watch-add":
+                ttl_hours = (
+                    int(args.ttl_hours)
+                    if args.ttl_hours is not None
+                    else (settings.oar_watch_manual_ttl_sec + 3599) // 3600
+                )
+                priority = (
+                    int(args.priority)
+                    if args.priority is not None
+                    else settings.oar_watch_manual_priority
+                )
+                if ttl_hours <= 0 or ttl_hours > 365 * 24:
+                    raise AutomationStoreError(
+                        "invalid_watch_ttl",
+                        "--ttl-hours must be in [1, 8760]",
+                    )
+                if priority < 0 or priority > 100:
+                    raise AutomationStoreError(
+                        "invalid_watch_priority",
+                        "--priority must be in [0, 100]",
+                    )
+                item = store.add_manual_watch(
+                    args.token_key,
+                    ttl_sec=ttl_hours * 3600,
+                    priority=priority,
+                    query_window=settings.oar_watch_query_window,
+                    scan_interval_sec=settings.oar_watch_scan_interval_sec,
+                    max_active_tokens=settings.oar_watch_max_active_tokens,
+                )
+                print(
+                    json.dumps(
+                        {"status": "ok", "watch": item},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "watch-list":
+                items = store.list_watch_items(
+                    status=args.status,
+                    due_only=bool(args.due_only),
+                    limit=args.limit,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "status": (
+                                "not_initialized"
+                                if items is None
+                                else "ok"
+                            ),
+                            "watch_items": items or [],
+                            "database_writes": False,
+                            "network_activity": False,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "watch-remove":
+                item = store.remove_manual_watch(args.token_key)
+                print(
+                    json.dumps(
+                        {"status": "ok", "watch": item},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "bridge-once":
+                payload = SignalBridge(settings, store).run_once()
+                print(
+                    json.dumps(
+                        payload, ensure_ascii=False, sort_keys=True
+                    )
+                )
+                return (
+                    0
+                    if payload["source_status"]
+                    in {"ok", "source_not_initialized", "source_locked"}
+                    else 1
+                )
+            scanner = WatchScanner(settings, store)
+            if args.command == "watch-once":
+                payload = scanner.run_once(
+                    allow_network=bool(args.allow_network),
+                    notify_dry_run=bool(args.notify_dry_run),
+                    with_ai=bool(args.with_ai),
+                    send=bool(args.send),
+                    confirm_real_send=bool(args.confirm_real_send),
+                )
+            else:
+                payload = scanner.run_live(
+                    allow_network=bool(args.allow_network),
+                    duration_minutes=args.duration_minutes,
+                    notify_dry_run=bool(args.notify_dry_run),
+                    with_ai=bool(args.with_ai),
+                    send=bool(args.send),
+                    confirm_real_send=bool(args.confirm_real_send),
+                )
+            print(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            )
+            return 0 if payload["status"] == "ok" else 1
         if args.command in {
             "token-activity",
             "token-analysis",
@@ -490,6 +775,9 @@ def main(
         if args.command == "status":
             payload = settings.diagnostic()
             payload["db_exists"] = settings.db_path.exists()
+            payload["automation_status"] = (
+                AutomationStore.from_settings(settings).status_summary()
+            )
             payload["runtime"] = read_runtime_status(
                 settings.runtime_status_path
             )
@@ -607,6 +895,23 @@ def main(
             payload,
             pretty=bool(getattr(args, "pretty", False)),
             output_file=None,
+        )
+        return 1
+    except AutomationStoreError as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": exc.code,
+                    "reason": str(exc),
+                    "network_activity": automation_network_started,
+                    "database_writes": False,
+                    "telegram_calls": False,
+                    "ai_calls": False,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         )
         return 1
     except (

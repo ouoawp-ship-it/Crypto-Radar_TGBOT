@@ -1437,6 +1437,8 @@ class TelegramGateway:
                 "analysis_status",
                 "analysis_complete",
                 "ai_status",
+                "linked_source_count",
+                "source_modules_text",
             }
             record["signal_records"] = [
                 {

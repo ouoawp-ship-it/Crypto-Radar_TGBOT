@@ -105,6 +105,33 @@ def format_token_report(payload: dict[str, object]) -> str:
     else:
         lines.append("- 未形成达到门槛的钱包关联候选")
 
+    linked = [
+        item
+        for item in _items(summary.get("linked_market_signals"))
+        if isinstance(item, dict)
+    ][:3]
+    if linked:
+        module_labels = {
+            "launch": "启动预警",
+            "flow": "资金流雷达",
+            "funding": "资金费率警报",
+            "announcement": "公告风险",
+            "manual": "手工关注",
+        }
+        lines.extend(["", "<b>关联市场信号</b>"])
+        for item in linked:
+            module = str(item.get("module") or "")
+            score = item.get("score")
+            score_text = (
+                f" · {escape(str(score))}分" if score is not None else ""
+            )
+            age_minutes = max(0, int(item.get("age_sec") or 0)) // 60
+            lines.append(
+                "- "
+                f"{module_labels.get(module, escape(module or '市场信号'))}"
+                f"{score_text} · {age_minutes}分钟前"
+            )
+
     ai = _map(report.get("ai"))
     ai_result = _map(ai.get("result"))
     lines.extend(["", "<b>AI 解读</b>"])

@@ -111,6 +111,33 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
     )
     if not bool(payload.get("complete")):
         limitations.append("query_incomplete")
+    linked_by_ref = {
+        str(item.get("public_ref") or ""): item
+        for item in _list(payload.get("linked_market_signals"))
+        if isinstance(item, dict) and str(item.get("public_ref") or "")
+    }
+    ordered_linked = sorted(
+        linked_by_ref.values(),
+        key=lambda item: (
+            -int(item.get("_priority") or 0),
+            -int(item.get("ts") or 0),
+            str(item.get("public_ref") or ""),
+        ),
+    )
+    linked = [
+        {
+            "public_ref": str(item.get("public_ref") or "")[:160],
+            "module": str(item.get("module") or "")[:40],
+            "symbol": str(item.get("symbol") or "")[:40],
+            "score": item.get("score"),
+            "stage": str(item.get("stage") or "")[:80],
+            "severity": str(item.get("severity") or "")[:24],
+            "ts": int(item.get("ts") or 0),
+            "age_sec": max(0, int(item.get("age_sec") or 0)),
+            "summary": str(item.get("summary") or "")[:300],
+        }
+        for item in ordered_linked
+    ][:3]
     return {
         "token": {
             "chain": str(query.get("chain") or ""),
@@ -186,6 +213,7 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
             for item in groups
         ],
         "representative_transfers": representatives,
+        "linked_market_signals": linked,
         "data_limitations": sorted(set(limitations)),
         "risk_notes": list(RISK_NOTES),
     }
@@ -198,6 +226,7 @@ def build_rule_summary_text(summary: dict[str, object]) -> str:
     flows = _mapping(summary.get("cex_flows"))
     primary = _mapping(summary.get("primary_behavior"))
     groups = _list(summary.get("wallet_groups"))
+    linked = _list(summary.get("linked_market_signals"))
     lines = [
         (
             f"{token.get('symbol') or 'UNKNOWN'} / Base / "
@@ -219,6 +248,11 @@ def build_rule_summary_text(summary: dict[str, object]) -> str:
             f"规则分数 {primary.get('score', 0)}（评分不是概率）。"
         ),
         f"钱包关联候选：{len(groups)} 组（高分不等于确认同一主力）。",
+        (
+            f"关联市场信号：{len(linked)} 条。"
+            if linked
+            else "关联市场信号：无。"
+        ),
         *RISK_NOTES,
     ]
     return "\n".join(lines)
@@ -256,6 +290,23 @@ class TokenReportService:
         with_ai: bool,
     ) -> dict[str, object]:
         payload = self.analysis_service.execute(query)
+        return self.build_from_analysis(
+            payload,
+            with_ai=with_ai,
+            linked_market_signals=[],
+        )
+
+    def build_from_analysis(
+        self,
+        analyzed_payload: dict[str, object],
+        *,
+        with_ai: bool,
+        linked_market_signals: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        payload = dict(analyzed_payload)
+        payload["linked_market_signals"] = list(
+            linked_market_signals or []
+        )
         context = build_ai_context(
             payload,
             max_chars=self.settings.oar_ai_max_context_chars,
