@@ -9,6 +9,7 @@ HEALTH_SERVICE_NAME="${HEALTH_SERVICE_NAME:-paopao-health}"
 BACKUP_SERVICE_NAME="${BACKUP_SERVICE_NAME:-paopao-backup}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
 [ -x "$PYTHON_BIN" ] || PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
+UPDATE_SCRIPT="${PAOPAO_UPDATE_SCRIPT:-${APP_DIR}/scripts/update_server.sh}"
 
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
@@ -181,8 +182,7 @@ prompt_rollback() {
 
 clear_ai_cache() {
   confirm_phrase "清理AI缓存" || return 0
-  rm -f "${APP_DIR}/data/onchain/oar_ai_cache.json"
-  printf 'AI Cache 已清理；未修改提示词或数据库。\n'
+  run_onchain ai-cache clear-results
 }
 
 config_rollback() {
@@ -192,8 +192,41 @@ config_rollback() {
   run_config backups "$target"
   printf '请输入备份文件名：'
   IFS= read -r version
-  confirm_phrase "恢复配置" || return 0
+  confirm_phrase "回滚配置" || return 0
   run_config rollback "$target" --version "$version"
+}
+
+registry_verify_menu() {
+  local token_key mode output code
+  local -a verify_args
+  printf 'Token Key：'
+  IFS= read -r token_key
+  cat <<'EOF'
+Registry 验证：
+1. 验证并设为 Primary
+2. 仅验证为 Secondary
+0. 取消
+EOF
+  IFS= read -r mode
+  case "$mode" in
+    1) verify_args=(registry-verify --token-key "$token_key" --allow-network --set-primary) ;;
+    2) verify_args=(registry-verify --token-key "$token_key" --allow-network) ;;
+    0) return 0 ;;
+    *) printf '无效选项。\n'; return 0 ;;
+  esac
+  set +e
+  output="$(run_onchain "${verify_args[@]}" 2>&1)"
+  code=$?
+  set -e
+  printf '%s\n' "$output"
+  if [ "$code" -eq 0 ]; then
+    return 0
+  fi
+  if [[ "$output" != *"symbol_mismatch_requires_confirmation"* ]]; then
+    return 0
+  fi
+  confirm_phrase "接受Symbol不一致" || return 0
+  run_onchain "${verify_args[@]}" --accept-symbol-mismatch
 }
 
 diagnostic_export() {
@@ -287,7 +320,7 @@ EOF
     IFS= read -r choice
     case "$choice" in
       1) show_status; run_root systemctl status "$OAR_SERVICE_NAME" --no-pager || true; pause_menu ;;
-      2) restart_services; pause_menu ;;
+      2) confirm_phrase "重启主服务" && restart_services; pause_menu ;;
       3) confirm_phrase "停止主BOT" && run_root systemctl stop "$SERVICE_NAME"; pause_menu ;;
       4) duplicate_worker_check; run_root systemctl start "$OAR_SERVICE_NAME"; pause_menu ;;
       5) run_root systemctl stop "$OAR_SERVICE_NAME"; pause_menu ;;
@@ -314,8 +347,8 @@ EOF
     IFS= read -r choice
     case "$choice" in
       1) show_version; (cd "$APP_DIR" && git log -5 --oneline); pause_menu ;;
-      2) (cd "$APP_DIR" && bash scripts/update_server.sh --check); pause_menu ;;
-      3) (cd "$APP_DIR" && bash scripts/update_server.sh --yes); pause_menu ;;
+      2) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --check); pause_menu ;;
+      3) confirm_phrase "执行安全更新" && (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --yes); pause_menu ;;
       4) find "${APP_DIR}/backups" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | sort -r | head -50; pause_menu ;;
       0) return ;;
     esac
@@ -361,42 +394,50 @@ ai_menu() {
     menu_header
     cat <<'EOF'
 AI 模型与提示词
-1. 启用 AI
-2. 禁用 AI
-3. 设置 Provider
-4. 设置模型
-5. 设置 Thinking Mode
-6. 设置 Reasoning Effort
-7. 提示词状态
-8. 显示提示词
-9. 编辑提示词
-10. 校验提示词
-11. 恢复默认提示词
-12. 历史与回滚
-13. AI Provider Check
-14. AI Smoke
-15. AI Cache 状态
-16. 清理 AI Cache
+1. 查看 AI 配置状态
+2. 应用 DeepSeek V4 Pro 推荐配置
+3. 设置 DeepSeek API Key
+4. 设置 AI Base URL
+5. 设置模型
+6. 设置 Thinking Mode
+7. 设置 Reasoning Effort
+8. 设置 Max Tokens
+9. Prompt 状态
+10. 显示 Prompt
+11. 编辑 Prompt
+12. 校验 Prompt
+13. 恢复默认 Prompt
+14. Prompt 历史与回滚
+15. Provider Check
+16. AI Smoke
+17. AI Cache 状态
+18. 清理 AI 结果缓存
+19. 启用 AI
+20. 禁用 AI
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
-      1) run_config enable OAR_AI_ENABLE; pause_menu ;;
-      2) run_config disable OAR_AI_ENABLE; pause_menu ;;
-      3) config_set OAR_AI_PROVIDER; pause_menu ;;
-      4) config_set OAR_AI_MODEL; pause_menu ;;
-      5) config_set OAR_AI_THINKING_MODE; pause_menu ;;
-      6) config_set OAR_AI_REASONING_EFFORT; pause_menu ;;
-      7) run_onchain ai-prompt-check; pause_menu ;;
-      8) run_onchain ai-prompt show; pause_menu ;;
-      9) prompt_edit; pause_menu ;;
-      10) run_onchain ai-prompt validate; pause_menu ;;
-      11) confirm_phrase "恢复提示词" && run_onchain ai-prompt restore-default; pause_menu ;;
-      12) prompt_rollback; pause_menu ;;
-      13) run_onchain ai-provider-check --allow-network; pause_menu ;;
-      14) run_onchain ai-smoke --allow-network; pause_menu ;;
-      15) ls -lh "${APP_DIR}/data/onchain/oar_ai_cache.json" 2>/dev/null || printf 'AI Cache 不存在。\n'; pause_menu ;;
-      16) clear_ai_cache; pause_menu ;;
+      1) run_config status; pause_menu ;;
+      2) run_config profile deepseek-v4-pro; pause_menu ;;
+      3) config_set OAR_AI_API_KEY; pause_menu ;;
+      4) config_set OAR_AI_BASE_URL; pause_menu ;;
+      5) config_set OAR_AI_MODEL; pause_menu ;;
+      6) config_set OAR_AI_THINKING_MODE; pause_menu ;;
+      7) config_set OAR_AI_REASONING_EFFORT; pause_menu ;;
+      8) config_set OAR_AI_MAX_TOKENS; pause_menu ;;
+      9) run_onchain ai-prompt-check; pause_menu ;;
+      10) run_onchain ai-prompt show; pause_menu ;;
+      11) prompt_edit; pause_menu ;;
+      12) run_onchain ai-prompt validate; pause_menu ;;
+      13) confirm_phrase "恢复提示词" && run_onchain ai-prompt restore-default; pause_menu ;;
+      14) prompt_rollback; pause_menu ;;
+      15) run_onchain ai-provider-check --allow-network; pause_menu ;;
+      16) run_onchain ai-smoke --allow-network; pause_menu ;;
+      17) run_onchain ai-cache status; pause_menu ;;
+      18) clear_ai_cache; pause_menu ;;
+      19) run_config enable OAR_AI_ENABLE; pause_menu ;;
+      20) run_config disable OAR_AI_ENABLE; pause_menu ;;
       0) return ;;
     esac
   done
@@ -427,8 +468,8 @@ EOF
     case "$choice" in
       1) run_onchain registry-list; pause_menu ;;
       2) printf 'Market Symbol：'; IFS= read -r symbol; printf 'Base Contract：'; IFS= read -r contract; run_onchain registry-add --market-symbol "$symbol" --chain base --contract "$contract" --source manual; pause_menu ;;
-      3) printf 'Token Key：'; IFS= read -r token_key; run_onchain registry-verify --token-key "$token_key" --allow-network; pause_menu ;;
-      4) printf 'Token Key：'; IFS= read -r token_key; run_onchain registry-disable --token-key "$token_key"; pause_menu ;;
+      3) registry_verify_menu; pause_menu ;;
+      4) printf 'Token Key：'; IFS= read -r token_key; confirm_phrase "禁用Registry" && run_onchain registry-disable --token-key "$token_key"; pause_menu ;;
       5) run_onchain watch-list; pause_menu ;;
       6) printf 'Token Key：'; IFS= read -r token_key; run_onchain watch-add --token-key "$token_key"; pause_menu ;;
       7) printf 'Token Key：'; IFS= read -r token_key; run_onchain watch-remove --token-key "$token_key"; pause_menu ;;
@@ -607,8 +648,8 @@ case "$command" in
   backup|database-backup) run_main database-backup "$@" ;;
   telegram-test) run_main telegram-test "$@" ;;
   cleanup) run_main cleanup --force-cleanup "$@" ;;
-  check-update|check) (cd "$APP_DIR" && bash scripts/update_server.sh --check) ;;
-  update) (cd "$APP_DIR" && bash scripts/update_server.sh --yes) ;;
+  check-update|check) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --check) ;;
+  update) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --yes) ;;
   version) show_version ;;
   config-status) run_config status "$@" ;;
   onchain-status) run_onchain status "$@" ;;

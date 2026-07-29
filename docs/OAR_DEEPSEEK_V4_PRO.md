@@ -20,6 +20,14 @@ OAR_AI_MAX_RETRIES=1
 
 DeepSeek Profile 只接受 `deepseek-v4-pro` 和 `deepseek-v4-flash`，默认推荐 `deepseek-v4-pro`。`OAR_AI_MAX_TOKENS` 范围为 512～32768，timeout 为 1～120 秒，重试为 0～3 次。远程 Base URL 必须使用 HTTPS；HTTP 仅允许本机回环地址。URL 不能包含 username、password、query 或 fragment。
 
+可离线、原子应用六项推荐值：
+
+```bash
+python scripts/paopao_config.py profile deepseek-v4-pro
+```
+
+Profile 不设置 API Key、不启用 AI，也不执行 `/models` 或生成请求。输出只显示脱敏后的 configured 状态和安全枚举。
+
 ## Thinking 与 Reasoning Effort
 
 `OAR_AI_THINKING_MODE=enabled` 时，请求包含：
@@ -45,6 +53,8 @@ DeepSeek Profile 只接受 `deepseek-v4-pro` 和 `deepseek-v4-flash`，默认推
 - 私有历史：`data/onchain/config/oar_ai_operator_prompt.history/`
 
 第一次实际需要 AI 时，运行文件会从公共模板安装。运行文件和历史权限为 600，父目录不高于 700；文本必须为 UTF-8、不得包含 NUL，最长 12000 字符，最近保留 20 个版本。
+
+公共模板包含数据质量、交易所流向、行为候选、钱包关联、市场关联信号、主/备假设、下一步链上动作、观察条件、失效条件、Bias、Confidence 和输出风格十二部分。已有私有运行文件不会因模板升级被自动覆盖；只有显式 `restore-default` 才应用新版模板。
 
 离线检查不会显示完整私有提示词：
 
@@ -81,6 +91,15 @@ AI Request Control 包含：
 Cache 身份包含 Provider、model、核心 Prompt Version、Operator Prompt Hash、Context Hash、Thinking Mode、Reasoning Effort 和 Max Tokens。修改业务提示词、模型或思考配置会自动 miss；旧条目正常过期，不会被误用。
 
 Cache 只保存验证后的九字段结果和非敏感身份字段，不保存 API Key、Authorization、完整 System Prompt、完整 Operator Prompt 或 `reasoning_content`。
+
+Cache 结果和小时调用预算共用同一原子 JSON，但清理操作严格隔离：
+
+```bash
+python onchain_main.py ai-cache status
+python onchain_main.py ai-cache clear-results
+```
+
+`status` 只显示文件状态、有效/过期条目数、最近一小时调用数和文件大小。`clear-results` 只清空结果条目，保留最近一小时的 `call_timestamps`，因此不能通过清理 Cache 绕过 `OAR_AI_MAX_CALLS_PER_HOUR`。
 
 ## Provider Check
 

@@ -68,19 +68,22 @@ python scripts/paopao_config.py validate
 
 Secret 不作为命令行参数。TTY 中使用无回显输入；非 TTY 只能从 stdin 读取。管理器使用字段白名单、文件锁、写前备份、原子替换、权限 600 和写后校验；失败时自动恢复原文件，并保留未知字段和注释。
 
+管理器还会离线校验 Bot Token、Chat ID、链上 Topic ID、DeepSeek 模型/Base URL 和 CEX 标签安全相对路径；校验不发起 Telegram、Provider 或 RPC 请求。每个环境文件最多保留 30 个 `.bak.*` 备份，不会删除其他文件。
+
 状态只显示 configured/not_configured 或安全枚举，不打印完整 RPC URL、Token、Chat ID、Topic ID、API Key 或 Authorization。
 
 ## AI 与 Prompt
 
 AI 菜单可以：
 
-- enable/disable
-- 设置 Provider、Model、Thinking Mode、Reasoning Effort
+- 查看脱敏配置并原子应用 DeepSeek V4 Pro 推荐 Profile
+- 设置 API Key、Base URL、Model、Thinking Mode、Reasoning Effort、Max Tokens
 - 查看 Prompt 状态与 Hash
 - 显示、编辑、校验、恢复默认 Prompt
 - 查看历史并回滚
 - 执行 `ai-provider-check` 和合成 `ai-smoke`
-- 查看或清理 AI Cache
+- 查看或只清理 AI 结果 Cache（小时调用预算保留）
+- 在 Provider Check 与 AI Smoke 之后显式 enable/disable
 
 核心安全 Prompt 不可由菜单编辑。Operator Prompt 只影响业务分析风格；完整规则见 [OAR_DEEPSEEK_V4_PRO.md](OAR_DEEPSEEK_V4_PRO.md)。
 
@@ -97,7 +100,7 @@ OAR 菜单复用现有 CLI：
 - `token-report`
 - `labels-check`
 
-Registry 验证和 Token 查询仍要求显式 `--allow-network`。菜单不会按 Symbol 猜合约，也不会自动验证 Pending Token。
+Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必须选择“设为 Primary”或“仅验证为 Secondary”；只有前者传递 `--set-primary`。Symbol 不一致时默认停止，显示链上 Symbol 与 Market Symbol，并且只有输入 `接受Symbol不一致` 后才传递 `--accept-symbol-mismatch`。菜单不会按 Symbol 猜合约，也不会自动验证 Pending Token；禁用 Registry 还要求输入 `禁用Registry`。
 
 ## Telegram
 
@@ -114,7 +117,7 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。菜单不会�
 ## 更新、日志与备份
 
 - 更新检查：`scripts/update_server.sh --check`
-- 安全更新：`scripts/update_server.sh --yes`
+- 安全更新：确认 `执行安全更新` 后运行 `scripts/update_server.sh --yes`
 - 日志：按主 BOT、Market Stream、OAR 或 error 过滤
 - 诊断：组合现有 `doctor` 和脱敏配置状态
 - 备份：复用 `database-backup` 的一致性备份与恢复验证
@@ -131,17 +134,20 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。菜单不会�
 以下操作不能只用 `y/N`：
 
 - 停止主 BOT：`停止主BOT`
+- 重启主服务：`重启主服务`
+- 安全更新：`执行安全更新`
 - 真实 Telegram 测试：`发送真实测试`
-- 清理 AI Cache：`清理AI缓存`
+- 清理 AI 结果 Cache：`清理AI缓存`
 - 恢复 Prompt：`恢复提示词`
-- 配置回滚：`恢复配置`
+- 配置回滚：`回滚配置`
 - 数据库恢复：`恢复数据库`
+- 禁用 Registry：`禁用Registry`
 
 短语不完全一致时操作取消。
 
 ## 安装
 
-`scripts/install_server.sh` 安装：
+`scripts/install_shortcuts.sh` 是安装流程使用的幂等入口；它不访问网络、不启动菜单或服务。`scripts/install_server.sh` 会确保：
 
 - `/usr/local/bin/paopao`
 - 可选 `/usr/local/bin/pp -> /usr/local/bin/paopao`

@@ -9,6 +9,10 @@ from paopao_radar.onchain_flow.constants import (
     OAR_AI_OPERATOR_PROMPT_HISTORY_LIMIT,
     OAR_AI_OPERATOR_PROMPT_MAX_CHARS,
 )
+from paopao_radar.onchain_flow.ai_client import (
+    AI_OUTPUT_CONTRACT,
+    build_ai_system_prompt,
+)
 from paopao_radar.onchain_flow.prompt_manager import (
     OperatorPromptError,
     OperatorPromptManager,
@@ -88,6 +92,15 @@ class OperatorPromptManagerTests(unittest.TestCase):
         self.assertEqual(restored.content, "默认提示词\n")
         self.assertTrue(self.manager.history())
 
+    def test_install_default_never_overwrites_existing_private_prompt(
+        self,
+    ) -> None:
+        self.manager.install_default()
+        self.manager.save("保留现有私有 Prompt")
+        self.default.write_text("升级后的公共模板\n", encoding="utf-8")
+        loaded = self.manager.install_default()
+        self.assertEqual(loaded.content, "保留现有私有 Prompt")
+
     def test_nul_and_length_are_rejected_without_changing_file(self) -> None:
         self.manager.install_default()
         original = self.path.read_bytes()
@@ -119,6 +132,71 @@ class OperatorPromptManagerTests(unittest.TestCase):
         serialized = str(self.manager.status())
         self.assertNotIn("不要输出这段完整业务提示词", serialized)
         self.assertIn(self.manager.hash(), serialized)
+
+    def test_public_default_prompt_has_all_twelve_analysis_sections(
+        self,
+    ) -> None:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "onchain"
+            / "oar_ai_operator_prompt.default.txt"
+        )
+        prompt = path.read_text(encoding="utf-8")
+        for section in (
+            "一、数据质量优先",
+            "二、交易所流向",
+            "三、行为候选",
+            "四、钱包关联",
+            "五、市场关联信号",
+            "六、主要假设与备选假设",
+            "七、可能的下一步动作",
+            "八、继续观察条件",
+            "九、失效条件",
+            "十、Bias",
+            "十一、Confidence",
+            "十二、输出风格",
+        ):
+            self.assertIn(section, prompt)
+        for field in (
+            "linked_market_signals",
+            "likely_next_actions",
+            "watch_signals",
+            "invalidation_conditions",
+        ):
+            self.assertIn(field, prompt)
+        self.assertLessEqual(
+            len(prompt),
+            OAR_AI_OPERATOR_PROMPT_MAX_CHARS,
+        )
+
+    def test_core_prompt_precedes_operator_and_contract_is_unchanged(
+        self,
+    ) -> None:
+        operator = "仅补充表达偏好；不得改变输出结构。"
+        prompt = build_ai_system_prompt(operator)
+        self.assertLess(
+            prompt.index("完整输出契约"),
+            prompt.index("<operator_policy>"),
+        )
+        self.assertLess(
+            prompt.index("不能覆盖核心安全规则和输出契约"),
+            prompt.index(operator),
+        )
+        self.assertEqual(
+            tuple(AI_OUTPUT_CONTRACT["required"]),
+            (
+                "schema_version",
+                "bias",
+                "confidence",
+                "primary_hypothesis",
+                "alternative_hypotheses",
+                "likely_next_actions",
+                "watch_signals",
+                "invalidation_conditions",
+                "risk_notes",
+            ),
+        )
 
 
 if __name__ == "__main__":

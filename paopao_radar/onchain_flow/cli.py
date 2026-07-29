@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .ai_client import (
+    OarAiCache,
     OarAiError,
     OpenAiCompatibleOarClient,
     validate_ai_output,
@@ -92,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ai_prompt.add_argument("--version", default="")
     ai_prompt.add_argument("--stdin", action="store_true")
+    ai_cache = subparsers.add_parser("ai-cache")
+    ai_cache.add_argument(
+        "action",
+        choices=("status", "clear-results"),
+    )
     ai_provider_check = subparsers.add_parser("ai-provider-check")
     ai_provider_check.add_argument("--allow-network", action="store_true")
     ai_smoke = subparsers.add_parser("ai-smoke")
@@ -662,6 +668,27 @@ def _prompt_command(
     return 0
 
 
+def _ai_cache_command(
+    settings: OnchainSettings,
+    args: argparse.Namespace,
+) -> int:
+    cache = OarAiCache(
+        path=settings.oar_ai_cache_path,
+        data_dir=settings.data_dir,
+        ttl_sec=settings.oar_ai_cache_ttl_sec,
+        max_calls_per_hour=settings.oar_ai_max_calls_per_hour,
+    )
+    result = (
+        cache.status()
+        if args.action == "status"
+        else cache.clear_results()
+    )
+    if args.action == "status":
+        result.pop("status", None)
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def _ai_network_command(
     settings: OnchainSettings,
     args: argparse.Namespace,
@@ -754,6 +781,9 @@ def main(
     automation_network_started = False
     try:
         settings = settings or OnchainSettings.load()
+        if args.command == "ai-cache":
+            settings.validate()
+            return _ai_cache_command(settings, args)
         if args.command in {"ai-prompt-check", "ai-prompt"}:
             settings.validate()
             return _prompt_command(settings, args)

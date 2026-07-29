@@ -6,6 +6,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -346,6 +347,134 @@ class DeepSeekProfileTests(unittest.TestCase):
 
 
 class VersionedAiCacheTests(unittest.TestCase):
+    def test_clear_results_preserves_hourly_call_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "cache.json"
+            cache = OarAiCache(
+                path=path,
+                data_dir=root,
+                ttl_sec=3600,
+                max_calls_per_hour=4,
+                now=lambda: 1000,
+            )
+            for index in range(4):
+                self.assertTrue(cache.reserve_call())
+                if index < 3:
+                    cache.put(
+                        f"context-{index}",
+                        "deepseek-v4-pro",
+                        OAR_AI_PROMPT_VERSION,
+                        valid_output(),
+                        provider="deepseek",
+                    )
+            before = cache.status()
+            cleared = cache.clear_results()
+            after = cache.status()
+            data = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(before["valid_entry_count"], 3)
+            self.assertEqual(before["calls_last_hour"], 4)
+            self.assertEqual(cleared["cleared_entry_count"], 3)
+            self.assertEqual(after["valid_entry_count"], 0)
+            self.assertEqual(after["calls_last_hour"], 4)
+            self.assertEqual(data["entries"], {})
+            self.assertEqual(len(data["call_timestamps"]), 4)
+            self.assertFalse(cache.reserve_call())
+            self.assertNotIn(
+                "primary_hypothesis",
+                json.dumps(cleared, ensure_ascii=False),
+            )
+
+    def test_clear_results_is_idempotent_when_file_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "missing.json"
+            cache = OarAiCache(
+                path=path,
+                data_dir=root,
+                ttl_sec=3600,
+                max_calls_per_hour=4,
+            )
+            result = cache.clear_results()
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(result["exists"])
+            self.assertFalse(path.exists())
+
+    def test_clear_results_and_reserve_are_concurrency_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "cache.json"
+            cache = OarAiCache(
+                path=path,
+                data_dir=root,
+                ttl_sec=3600,
+                max_calls_per_hour=100,
+                now=lambda: 1000,
+            )
+            cache.put(
+                "context",
+                "deepseek-v4-pro",
+                OAR_AI_PROMPT_VERSION,
+                valid_output(),
+            )
+            barrier = threading.Barrier(3)
+            failures: list[Exception] = []
+
+            def clear_worker() -> None:
+                try:
+                    barrier.wait()
+                    for _ in range(10):
+                        cache.clear_results()
+                except Exception as exc:  # pragma: no cover - assertion aid
+                    failures.append(exc)
+
+            def reserve_worker() -> None:
+                try:
+                    barrier.wait()
+                    for _ in range(10):
+                        cache.reserve_call()
+                except Exception as exc:  # pragma: no cover - assertion aid
+                    failures.append(exc)
+
+            threads = [
+                threading.Thread(target=clear_worker),
+                threading.Thread(target=reserve_worker),
+            ]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            self.assertFalse(failures)
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["schema_version"], 1)
+            self.assertIsInstance(data["entries"], dict)
+            self.assertEqual(len(data["call_timestamps"]), 10)
+
+    def test_ai_cache_cli_reports_only_bounded_status(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            settings = make_settings(Path(raw))
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(["ai-cache", "status"], settings=settings)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                set(payload),
+                {
+                    "exists",
+                    "valid_entry_count",
+                    "calls_last_hour",
+                    "expires_or_stale_entry_count",
+                    "file_size",
+                },
+            )
+            self.assertFalse(payload["exists"])
+            self.assertEqual(payload["valid_entry_count"], 0)
+
     def test_operator_prompt_hash_and_thinking_profile_isolate_cache(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

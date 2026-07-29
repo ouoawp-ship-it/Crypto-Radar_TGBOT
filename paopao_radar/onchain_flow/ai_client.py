@@ -497,6 +497,100 @@ class OarAiCache:
         self.max_calls_per_hour = int(max_calls_per_hour)
         self.now = now
 
+    def status(self) -> dict[str, object]:
+        now = self.now()
+        exists = self.path.exists()
+        if not exists:
+            return {
+                "status": "ok",
+                "exists": False,
+                "valid_entry_count": 0,
+                "calls_last_hour": 0,
+                "expires_or_stale_entry_count": 0,
+                "file_size": 0,
+            }
+        data = self.store.load(self.path, {})
+        entries = data.get("entries") if isinstance(data, dict) else {}
+        entry_values = (
+            list(entries.values()) if isinstance(entries, dict) else []
+        )
+        def valid_entry(item: object) -> bool:
+            if not isinstance(item, dict) or not isinstance(
+                item.get("result"),
+                dict,
+            ):
+                return False
+            expires_at = item.get("expires_at")
+            return isinstance(expires_at, int) and expires_at > now
+
+        valid_entry_count = sum(
+            1 for item in entry_values if valid_entry(item)
+        )
+        calls_last_hour = sum(
+            1
+            for item in (
+                data.get("call_timestamps")
+                if isinstance(data, dict)
+                else []
+            )
+            if isinstance(item, int) and int(item) >= now - 3600
+        )
+        return {
+            "status": "ok",
+            "exists": True,
+            "valid_entry_count": valid_entry_count,
+            "calls_last_hour": calls_last_hour,
+            "expires_or_stale_entry_count": (
+                len(entry_values) - valid_entry_count
+            ),
+            "file_size": self.path.stat().st_size,
+        }
+
+    def clear_results(self) -> dict[str, object]:
+        now = self.now()
+        if not self.path.exists():
+            return {
+                "status": "ok",
+                "exists": False,
+                "cleared_entry_count": 0,
+                "calls_last_hour": 0,
+            }
+        cleared = {"entries": 0, "calls": 0}
+
+        def update(value: Any) -> dict[str, object]:
+            data = dict(value) if isinstance(value, dict) else {}
+            entries = (
+                dict(data.get("entries"))
+                if isinstance(data.get("entries"), dict)
+                else {}
+            )
+            calls = [
+                int(item)
+                for item in (data.get("call_timestamps") or [])
+                if isinstance(item, int) and int(item) >= now - 3600
+            ]
+            cleared["entries"] = len(entries)
+            cleared["calls"] = len(calls)
+            schema_version = data.get("schema_version")
+            return {
+                "schema_version": (
+                    schema_version
+                    if isinstance(schema_version, int)
+                    and schema_version > 0
+                    else 1
+                ),
+                "call_timestamps": calls,
+                "entries": {},
+            }
+
+        self.store.update(self.path, update, {})
+        return {
+            "status": "ok",
+            "exists": True,
+            "cleared_entry_count": cleared["entries"],
+            "calls_last_hour": cleared["calls"],
+        }
+
     def get(
         self,
         context_hash: str,

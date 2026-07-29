@@ -212,16 +212,9 @@ EOF
 }
 
 install_shortcut() {
-  test -x "${APP_DIR}/scripts/paopao_menu.sh"
-  run_root tee /usr/local/bin/paopao >/dev/null <<EOF
-#!/usr/bin/env bash
-export PAOPAO_APP_DIR="${APP_DIR}"
-exec bash "${APP_DIR}/scripts/paopao_menu.sh" "\$@"
-EOF
-  run_root chmod +x /usr/local/bin/paopao
-  if [ "$INSTALL_PP_SHORTCUT" = "1" ]; then
-    run_root ln -sfn /usr/local/bin/paopao /usr/local/bin/pp
-  fi
+  PAOPAO_APP_DIR="$APP_DIR" \
+    INSTALL_PP_SHORTCUT="$INSTALL_PP_SHORTCUT" \
+    bash "${APP_DIR}/scripts/install_shortcuts.sh"
 }
 
 main() {

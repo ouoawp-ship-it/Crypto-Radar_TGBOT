@@ -23,6 +23,8 @@ from scripts.paopao_config import (
 ROOT = Path(__file__).resolve().parents[1]
 MENU = ROOT / "scripts" / "paopao_menu.sh"
 INSTALL = ROOT / "scripts" / "install_server.sh"
+UPDATE = ROOT / "scripts" / "update_server.sh"
+SHORTCUTS = ROOT / "scripts" / "install_shortcuts.sh"
 BASH = Path(r"C:\Program Files\Git\bin\bash.exe")
 
 
@@ -52,8 +54,9 @@ class ConfigManagerTests(unittest.TestCase):
         self.assertIn("OAR_AI_PROVIDER=openai_compatible", text)
 
     def test_secret_is_read_from_stdin_and_not_returned(self) -> None:
+        secret = "123456:abcdefghijklmnopqrstuvwxyz_ABC"
         output = StringIO()
-        with patch("sys.stdin", StringIO("very-secret-token\n")):
+        with patch("sys.stdin", StringIO(f"{secret}\n")):
             with redirect_stdout(output):
                 code = main([
                     "--base-dir",
@@ -62,9 +65,9 @@ class ConfigManagerTests(unittest.TestCase):
                     "TG_BOT_TOKEN",
                 ])
         self.assertEqual(code, 0)
-        self.assertNotIn("very-secret-token", output.getvalue())
+        self.assertNotIn(secret, output.getvalue())
         self.assertIn(
-            "very-secret-token",
+            secret,
             (self.root / ".env.oi").read_text(encoding="utf-8"),
         )
 
@@ -100,8 +103,8 @@ class ConfigManagerTests(unittest.TestCase):
 
     def test_modification_creates_backup_and_chmods_file(self) -> None:
         path = self.root / ".env.oi"
-        path.write_text("TG_CHAT_ID=old\n", encoding="utf-8")
-        result = self.manager.set("TG_CHAT_ID", "new")
+        path.write_text("TG_CHAT_ID=-1001\n", encoding="utf-8")
+        result = self.manager.set("TG_CHAT_ID", "-1002")
         self.assertTrue(result["backup_created"])
         self.assertTrue(list(self.root.glob(".env.oi.bak.*")))
         if os.name != "nt":
@@ -143,22 +146,152 @@ class ConfigManagerTests(unittest.TestCase):
     def test_duplicate_key_is_rejected_without_rewrite(self) -> None:
         path = self.root / ".env.oi"
         path.write_text(
-            "TG_CHAT_ID=one\nTG_CHAT_ID=two\n",
+            "TG_CHAT_ID=1001\nTG_CHAT_ID=1002\n",
             encoding="utf-8",
         )
         original = path.read_bytes()
         with self.assertRaises(ConfigManagerError):
-            self.manager.set("TG_CHAT_ID", "three")
+            self.manager.set("TG_CHAT_ID", "1003")
         self.assertEqual(path.read_bytes(), original)
 
     def test_configuration_rollback_restores_allowlisted_backup(self) -> None:
         path = self.root / ".env.oi"
-        path.write_text("TG_CHAT_ID=first\n", encoding="utf-8")
-        self.manager.set("TG_CHAT_ID", "second")
+        path.write_text("TG_CHAT_ID=-1001\n", encoding="utf-8")
+        self.manager.set("TG_CHAT_ID", "-1002")
         version = self.manager.backups("oi")[0]["version"]
         result = self.manager.rollback("oi", str(version))
         self.assertEqual(result["status"], "ok")
-        self.assertIn("TG_CHAT_ID=first", path.read_text(encoding="utf-8"))
+        self.assertIn("TG_CHAT_ID=-1001", path.read_text(encoding="utf-8"))
+
+    def test_deepseek_profile_is_atomic_and_does_not_enable_or_set_key(
+        self,
+    ) -> None:
+        path = self.root / ".env.onchain"
+        path.write_text(
+            "# keep\nOAR_AI_API_KEY=private-key\nOAR_AI_ENABLE=false\n",
+            encoding="utf-8",
+        )
+        result = self.manager.profile("deepseek-v4-pro")
+        values = dict(
+            line.split("=", 1)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")
+        )
+        expected = {
+            "OAR_AI_PROVIDER": "deepseek",
+            "OAR_AI_BASE_URL": "https://api.deepseek.com",
+            "OAR_AI_MODEL": "deepseek-v4-pro",
+            "OAR_AI_THINKING_MODE": "enabled",
+            "OAR_AI_REASONING_EFFORT": "high",
+            "OAR_AI_MAX_TOKENS": "8192",
+        }
+        self.assertEqual(
+            {key: values[key] for key in expected},
+            expected,
+        )
+        self.assertEqual(values["OAR_AI_API_KEY"], "private-key")
+        self.assertEqual(values["OAR_AI_ENABLE"], "false")
+        self.assertEqual(
+            result["configuration"]["OAR_AI_API_KEY"],
+            "configured",
+        )
+        self.assertFalse(result["configuration"]["OAR_AI_ENABLE"])
+        self.assertNotIn("private-key", json.dumps(result))
+
+    def test_profile_validation_failure_restores_exact_file(self) -> None:
+        onchain = self.root / ".env.onchain"
+        onchain.write_text(
+            "# exact original\nOAR_AI_ENABLE=false\n",
+            encoding="utf-8",
+        )
+        (self.root / ".env.oi").write_text(
+            "TG_CHAT_ID=not-an-integer\n",
+            encoding="utf-8",
+        )
+        original = onchain.read_bytes()
+        with self.assertRaises(ConfigManagerError):
+            self.manager.profile("deepseek-v4-pro")
+        self.assertEqual(onchain.read_bytes(), original)
+
+    def test_fresh_deepseek_configuration_can_be_completed_offline(
+        self,
+    ) -> None:
+        self.manager.profile("deepseek-v4-pro")
+        self.manager.set("OAR_AI_API_KEY", "private-key-from-stdin")
+        enabled = self.manager.set("OAR_AI_ENABLE", "true")
+        validated = self.manager.validate(".env.onchain")
+        self.assertTrue(enabled["value"])
+        self.assertEqual(validated["status"], "ok")
+        self.assertNotIn(
+            "private-key-from-stdin",
+            json.dumps(enabled, ensure_ascii=False),
+        )
+
+    def test_telegram_business_formats_are_validated_locally(self) -> None:
+        for key, value in (
+            ("TG_BOT_TOKEN", "not-a-bot-token"),
+            ("TG_CHAT_ID", "0"),
+            ("TG_CHAT_ID", "@channel"),
+            ("TG_ONCHAIN_FLOW_TOPIC_ID", "-1"),
+            ("TG_ONCHAIN_FLOW_TOPIC_ID", "topic"),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(key, value)
+        self.assertEqual(
+            self.manager.set("TG_BOT_TOKEN", "123456:safe_TOKEN-1")[
+                "status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set("TG_CHAT_ID", "-100123")["status"],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set("TG_ONCHAIN_FLOW_TOPIC_ID", "42")["status"],
+            "ok",
+        )
+
+    def test_cex_labels_path_is_safe_and_may_be_absent(self) -> None:
+        result = self.manager.set(
+            "ONCHAIN_CEX_LABELS_FILE",
+            "config/onchain/private.csv",
+        )
+        self.assertEqual(
+            result["validation"]["checks"]["cex_labels_file"],
+            "not_present",
+        )
+        for value in (
+            "../private.csv",
+            str((self.root.parent / "private.csv").resolve()),
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set("ONCHAIN_CEX_LABELS_FILE", value)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation is restricted")
+    def test_cex_labels_symlink_cannot_escape_project(self) -> None:
+        outside = self.root.parent / f"{self.root.name}-outside-labels.csv"
+        self.addCleanup(outside.unlink, missing_ok=True)
+        outside.write_text("header\n", encoding="utf-8")
+        link = self.root / "labels.csv"
+        link.symlink_to(outside)
+        with self.assertRaises(ConfigManagerError):
+            self.manager.set("ONCHAIN_CEX_LABELS_FILE", "labels.csv")
+
+    def test_backups_are_bounded_without_deleting_unrelated_files(self) -> None:
+        path = self.root / ".env.oi"
+        path.write_text("TG_CHAT_ID=1\n", encoding="utf-8")
+        unrelated = self.root / ".env.oi.backup.keep"
+        unrelated.write_text("keep", encoding="utf-8")
+        for value in range(2, 40):
+            self.manager.set("TG_CHAT_ID", str(value))
+        self.assertLessEqual(
+            len(list(self.root.glob(".env.oi.bak.*"))),
+            30,
+        )
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep")
 
 
 class ChineseMenuTests(unittest.TestCase):
@@ -171,7 +304,8 @@ class ChineseMenuTests(unittest.TestCase):
         for path in (
             MENU,
             INSTALL,
-            ROOT / "scripts" / "update_server.sh",
+            UPDATE,
+            SHORTCUTS,
         ):
             with self.subTest(path=path.name):
                 result = subprocess.run(
@@ -266,13 +400,36 @@ class ChineseMenuTests(unittest.TestCase):
         text = MENU.read_text(encoding="utf-8")
         for phrase in (
             'confirm_phrase "停止主BOT"',
+            'confirm_phrase "重启主服务"',
+            'confirm_phrase "执行安全更新"',
             'confirm_phrase "发送真实测试"',
             'confirm_phrase "恢复数据库"',
-            'confirm_phrase "恢复配置"',
+            'confirm_phrase "回滚配置"',
             'confirm_phrase "清理AI缓存"',
             'confirm_phrase "恢复提示词"',
+            'confirm_phrase "禁用Registry"',
+            'confirm_phrase "接受Symbol不一致"',
         ):
             self.assertIn(phrase, text)
+
+    def test_menu_exposes_complete_deepseek_and_registry_choices(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        for expected in (
+            "profile deepseek-v4-pro",
+            "设置 AI Base URL",
+            "设置 Max Tokens",
+            "ai-cache status",
+            "ai-cache clear-results",
+            "验证并设为 Primary",
+            "仅验证为 Secondary",
+            "--set-primary",
+            "--accept-symbol-mismatch",
+        ):
+            self.assertIn(expected, text)
+        self.assertNotIn(
+            'rm -f "${APP_DIR}/data/onchain/oar_ai_cache.json"',
+            text,
+        )
 
     def test_menu_uses_config_manager_instead_of_sed(self) -> None:
         text = MENU.read_text(encoding="utf-8")
@@ -280,12 +437,17 @@ class ChineseMenuTests(unittest.TestCase):
         self.assertNotIn("sed -i", text)
 
     def test_installer_adds_pp_without_touching_bashrc(self) -> None:
-        text = INSTALL.read_text(encoding="utf-8")
-        self.assertIn("/usr/local/bin/paopao", text)
-        self.assertIn("/usr/local/bin/pp", text)
-        self.assertIn("ln -sfn", text)
-        self.assertNotIn(".bashrc", text)
-        self.assertNotIn("interactive_menu", text)
+        install = INSTALL.read_text(encoding="utf-8")
+        update = UPDATE.read_text(encoding="utf-8")
+        shortcuts = SHORTCUTS.read_text(encoding="utf-8")
+        self.assertIn("scripts/install_shortcuts.sh", install)
+        self.assertIn("/usr/local/bin", shortcuts)
+        self.assertIn('TARGET_DIR}/paopao', shortcuts)
+        self.assertIn('TARGET_DIR}/pp', shortcuts)
+        self.assertIn("ln -sfn", shortcuts)
+        for text in (install, update, shortcuts):
+            self.assertNotIn(".bashrc", text)
+        self.assertNotIn("interactive_menu", shortcuts)
 
     def test_private_prompt_and_diagnostic_exports_are_git_ignored(self) -> None:
         ignored_paths = (
