@@ -12,6 +12,7 @@ from .behavior import (
     build_nested_windows,
     decimal_value,
     event_ids,
+    has_independent_nested_evidence,
     identity_of,
     is_classification_cex,
 )
@@ -71,13 +72,26 @@ class WalletGroupAnalyzer:
         seeds, seed_budget_exhausted = self._seeds(
             windows, allowed_wallets
         )
-        occurrences = Counter(seed.signature for seed in seeds)
+        windows_by_name = {window.name: window for window in windows}
         all_records = windows[-1].relevant
         groups = [
             self._score(
                 activity,
                 seed,
-                occurrences=occurrences[seed.signature],
+                repeated_across_windows=has_independent_nested_evidence(
+                    windows_by_name[seed.window],
+                    seed.records,
+                    (
+                        (
+                            windows_by_name[other.window],
+                            other.records,
+                        )
+                        for other in seeds
+                        if other.signature == seed.signature
+                        and windows_by_name[other.window].seconds
+                        < windows_by_name[seed.window].seconds
+                    ),
+                ),
                 all_records=all_records,
                 input_complete=input_complete,
                 analysis_truncated=(
@@ -191,7 +205,10 @@ class WalletGroupAnalyzer:
         group_type = "shared_target" if incoming else "shared_source"
         grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
         for record in window.relevant:
-            if record.get("flow_type") in {"mint", "burn"}:
+            if record.get("flow_type") not in {
+                "non_cex",
+                "unclassified",
+            }:
                 continue
             anchor = address_of(record, anchor_side)
             member = address_of(record, member_side)
@@ -202,6 +219,7 @@ class WalletGroupAnalyzer:
                 or anchor not in allowed_wallets
                 or member not in allowed_wallets
                 or is_classification_cex(record, anchor_side)
+                or is_classification_cex(record, member_side)
             ):
                 continue
             grouped[anchor].append(record)
@@ -333,7 +351,7 @@ class WalletGroupAnalyzer:
         activity: dict[str, object],
         seed: GroupSeed,
         *,
-        occurrences: int,
+        repeated_across_windows: bool,
         all_records: tuple[dict[str, object], ...],
         input_complete: bool,
         analysis_truncated: bool,
@@ -358,7 +376,7 @@ class WalletGroupAnalyzer:
                     if seed.group_type == "shared_target"
                     else "sender_role_unknown"
                 )
-        if occurrences >= 2 and seed.synchronized:
+        if repeated_across_windows:
             score += 20
             supporting.append("repeated_across_nested_windows")
             evidence_types.add("nested_windows")

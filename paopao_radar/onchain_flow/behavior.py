@@ -17,10 +17,12 @@ BEHAVIOR_ORDER = (
     "wallet_consolidation_candidate",
     "fanout_candidate",
     "isolated",
+    "inconclusive_activity",
 )
 BEHAVIOR_LABELS = {
     "no_activity": "未发现近期活动",
     "isolated": "偶发行为",
+    "inconclusive_activity": "存在活动，但证据不足以形成明确行为模式",
     "accumulation_candidate": "持续吸筹候选",
     "distribution_candidate": "持续派发候选",
     "wallet_consolidation_candidate": "多钱包归集候选",
@@ -91,6 +93,52 @@ def event_ids(
         }
     )
     return values[:limit], len(values) > limit
+
+
+def has_independent_nested_evidence(
+    window: WindowFacts,
+    records: Iterable[dict[str, object]],
+    shorter_occurrences: Iterable[
+        tuple[WindowFacts, Iterable[dict[str, object]]]
+    ],
+) -> bool:
+    current_records = tuple(records)
+    current_by_id = {
+        str(record.get("event_id") or ""): record
+        for record in current_records
+        if str(record.get("event_id") or "")
+    }
+    if not current_by_id:
+        return False
+    for shorter_window, shorter_records_iter in shorter_occurrences:
+        if shorter_window.seconds >= window.seconds:
+            continue
+        shorter_records = tuple(shorter_records_iter)
+        shorter_ids = {
+            str(record.get("event_id") or "")
+            for record in shorter_records
+            if str(record.get("event_id") or "")
+        }
+        if not shorter_ids:
+            continue
+        shorter_buckets = {
+            int(record.get("block_time") or 0) // WINDOW_SECONDS["15m"]
+            for record in shorter_records
+        }
+        independent_records = tuple(
+            record
+            for event_id, record in current_by_id.items()
+            if event_id not in shorter_ids
+            and int(record.get("block_time") or 0)
+            < shorter_window.window_start
+        )
+        if independent_records and any(
+            int(record.get("block_time") or 0) // WINDOW_SECONDS["15m"]
+            not in shorter_buckets
+            for record in independent_records
+        ):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -384,17 +432,32 @@ class BehaviorAnalyzer:
         candidates = self._sort_candidates(candidates)
         if candidates:
             primary = dict(candidates[0])
+            status = "ok"
         else:
-            isolated = self._primary(
-                "isolated",
+            fallback_type = (
+                "isolated"
+                if self._is_isolated(windows[-1])
+                else "inconclusive_activity"
+            )
+            primary = self._primary(
+                fallback_type,
                 window=windows[-1].name,
-                evidence=["no_repeated_behavior_gate_met"],
+                evidence=[
+                    (
+                        "single_bucket_low_frequency_activity"
+                        if fallback_type == "isolated"
+                        else "formal_behavior_gate_not_met"
+                    )
+                ],
                 source_records=windows[-1].relevant,
             )
-            candidates = [isolated]
-            primary = dict(isolated)
+            status = (
+                "ok"
+                if fallback_type == "isolated"
+                else "insufficient_evidence"
+            )
         return {
-            "status": "ok",
+            "status": status,
             "complete": True,
             "input_complete": True,
             "valuation_basis": valuation_basis,
@@ -427,7 +490,9 @@ class BehaviorAnalyzer:
             if direction == "inflow"
             else "accumulation_candidate"
         )
-        qualified_windows: list[str] = []
+        qualified_windows: list[
+            tuple[WindowFacts, tuple[dict[str, object], ...]]
+        ] = []
         for window in windows:
             if window.seconds < WINDOW_SECONDS["1h"]:
                 continue
@@ -444,8 +509,17 @@ class BehaviorAnalyzer:
                 len(direction_records) >= self.settings.oar_behavior_min_tx
                 and dominance
                 >= self.settings.oar_behavior_dominance_min
+                and self._direction_counterparty_gate(
+                    direction_records, direction=direction
+                )
+                and window.active_buckets(direction_records)
+                >= (
+                    self.settings.oar_behavior_min_active_buckets_1h
+                    if window.name == "1h"
+                    else self.settings.oar_behavior_min_active_buckets_long
+                )
             ):
-                qualified_windows.append(window.name)
+                qualified_windows.append((window, direction_records))
 
         candidates: list[dict[str, object]] = []
         for window in windows:
@@ -494,14 +568,18 @@ class BehaviorAnalyzer:
                 "multiple_or_repeated_counterparties",
             ]
             score = 25 + 20 + 20 + 15
-            nested_direction = [
-                name
-                for name in qualified_windows
-                if WINDOW_SECONDS[name] <= window.seconds
-            ]
-            if len(nested_direction) >= 2:
+            if has_independent_nested_evidence(
+                window,
+                direction_records,
+                (
+                    (qualified_window, qualified_records)
+                    for qualified_window, qualified_records
+                    in qualified_windows
+                    if qualified_window.seconds < window.seconds
+                ),
+            ):
                 score += 10
-                supporting.append("direction_repeated_across_nested_windows")
+                supporting.append("repeated_across_nested_windows")
             non_mint_burn_amount = sum(
                 (
                     decimal_value(record.get("amount") or "0")
@@ -600,7 +678,10 @@ class BehaviorAnalyzer:
         for window in windows:
             groups: dict[str, list[dict[str, object]]] = defaultdict(list)
             for record in window.relevant:
-                if record.get("flow_type") in {"mint", "burn"}:
+                if record.get("flow_type") not in {
+                    "non_cex",
+                    "unclassified",
+                }:
                     continue
                 anchor = address_of(record, anchor_side)
                 member = address_of(record, member_side)
@@ -608,7 +689,9 @@ class BehaviorAnalyzer:
                     not anchor
                     or not member
                     or anchor == ZERO_ADDRESS
+                    or member == ZERO_ADDRESS
                     or is_classification_cex(record, anchor_side)
+                    or is_classification_cex(record, member_side)
                 ):
                     continue
                 groups[anchor].append(record)
@@ -647,14 +730,6 @@ class BehaviorAnalyzer:
                         (window, anchor, tuple(records), members)
                     )
 
-        signatures = Counter(
-            (
-                behavior_type,
-                anchor,
-                tuple(sorted(members)),
-            )
-            for _, anchor, _, members in qualifying
-        )
         best: dict[tuple[str, str], dict[str, object]] = {}
         for window, anchor, records, members in qualifying:
             supporting = [
@@ -666,12 +741,21 @@ class BehaviorAnalyzer:
             if window.active_buckets(records) >= 2:
                 score += 15
                 supporting.append("multiple_15m_buckets")
-            signature = (
-                behavior_type,
-                anchor,
-                tuple(sorted(members)),
-            )
-            if signatures[signature] >= 2:
+            if has_independent_nested_evidence(
+                window,
+                records,
+                (
+                    (other_window, other_records)
+                    for (
+                        other_window,
+                        other_anchor,
+                        other_records,
+                        other_members,
+                    ) in qualifying
+                    if other_window.seconds < window.seconds
+                    and other_anchor == anchor
+                ),
+            ):
                 score += 15
                 supporting.append("repeated_across_nested_windows")
             anchor_identity = identity_of(records[0], anchor_side)
@@ -684,6 +768,7 @@ class BehaviorAnalyzer:
                 )
             if len(members) > 20:
                 limitations.append("batch_or_airdrop_possible")
+                score = min(score, 69)
             identifiers, identifiers_truncated = event_ids(
                 records,
                 self.settings.oar_max_source_event_ids,
@@ -694,7 +779,11 @@ class BehaviorAnalyzer:
                 "type": behavior_type,
                 "label": BEHAVIOR_LABELS[behavior_type],
                 "score": min(100, score),
-                "confidence_level": self._confidence(min(100, score)),
+                "confidence_level": (
+                    "low"
+                    if len(members) > 20
+                    else self._confidence(min(100, score))
+                ),
                 "window": window.name,
                 "persistence": (
                     "multi_bucket"
@@ -728,16 +817,71 @@ class BehaviorAnalyzer:
                 str(record.get("flow_type") or "")
                 for record in window.relevant
             )
-            for flow_type in ("inflow", "outflow"):
+            pattern_names = {
+                "inflow": "cex_inflow_observed",
+                "outflow": "cex_outflow_observed",
+                "internal": "cex_internal_activity_observed",
+                "cross_cex": "cross_cex_activity_observed",
+                "consolidation": "cex_consolidation_observed",
+                "unclassified": "unclassified_activity_observed",
+                "non_cex": "non_cex_activity_observed",
+            }
+            for flow_type, pattern_type in pattern_names.items():
                 if counts[flow_type]:
                     observed.append(
                         {
-                            "type": f"cex_{flow_type}_observed",
+                            "type": pattern_type,
                             "window": window.name,
                             "event_count": counts[flow_type],
                         }
                     )
         return observed
+
+    def _is_isolated(self, window: WindowFacts) -> bool:
+        records = window.relevant
+        if len(records) not in {1, 2} or window.active_buckets(records) > 1:
+            return False
+        counts = Counter(
+            str(record.get("flow_type") or "") for record in records
+        )
+        if counts["inflow"] >= 2 or counts["outflow"] >= 2:
+            return False
+        if sum(
+            counts[flow_type]
+            for flow_type in ("internal", "cross_cex", "consolidation")
+        ) >= 2:
+            return False
+        graph_records = tuple(
+            record
+            for record in records
+            if record.get("flow_type") in {"non_cex", "unclassified"}
+            and address_of(record, "from") != ZERO_ADDRESS
+            and address_of(record, "to") != ZERO_ADDRESS
+        )
+        targets_by_source: dict[str, set[str]] = defaultdict(set)
+        sources_by_target: dict[str, set[str]] = defaultdict(set)
+        for record in graph_records:
+            source = address_of(record, "from")
+            target = address_of(record, "to")
+            if source and target:
+                targets_by_source[source].add(target)
+                sources_by_target[target].add(source)
+        return not (
+            any(len(targets) >= 2 for targets in targets_by_source.values())
+            or any(len(sources) >= 2 for sources in sources_by_target.values())
+        )
+
+    @staticmethod
+    def _direction_counterparty_gate(
+        records: Iterable[dict[str, object]], *, direction: str
+    ) -> bool:
+        counterpart_side = "from" if direction == "inflow" else "to"
+        counts = Counter(
+            address_of(record, counterpart_side)
+            for record in records
+            if address_of(record, counterpart_side)
+        )
+        return len(counts) >= 2 or max(counts.values(), default=0) >= 3
 
     def _primary(
         self,

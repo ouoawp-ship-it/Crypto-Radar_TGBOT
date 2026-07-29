@@ -64,8 +64,16 @@ JSON 中的 Decimal 使用字符串。
 
 ### 偶发行为
 
-存在 Transfer，但没有行为达到正式门槛时输出 `isolated`。它只是“尚未形成
-可解释重复模式”，并不表示后续一定没有活动。
+`isolated` 只用于输入完整、最大窗口内仅有 1～2 笔相关 Transfer、且活动
+只落在一个 15m 桶内的低频事件。它还要求没有正式行为候选、重复 CEX
+方向、多对一或一对多图形。
+
+### 证据不足的活动
+
+存在活动但不符合上述严格偶发边界，也没有正式候选时输出
+`inconclusive_activity`，并设置
+`analysis.status=insufficient_evidence`。例如三笔以上的零散活动、跨多个
+15m 桶的弱活动、内部调拨或大量未分类活动，都不会再被写成“偶发行为”。
 
 ### 持续吸筹候选
 
@@ -94,7 +102,9 @@ JSON 中的 Decimal 使用字符串。
 非方向分类 CEX 地址转账，至少 3 笔，且组内金额达到窗口非 mint/burn
 Token 数量的 10%。未知目标会标记 `target_role_unknown`。
 
-它与现有 Deposit → Hot/Collector 的 CEX consolidation 完全分开。
+一般归集只使用 `non_cex` 或 `unclassified` Transfer，并要求两端都不是
+方向分类 CEX。它与现有 Deposit → Hot/Collector 的 CEX consolidation
+完全分开。
 
 ### 批量分发候选
 
@@ -102,13 +112,19 @@ Token 数量的 10%。未知目标会标记 `target_role_unknown`。
 转账，至少 3 笔，且达到相同金额占比门槛。未知发送方会标记
 `sender_role_unknown`，结果不得解释成发送方控制所有接收钱包。
 
+一般分发同样只使用 `non_cex` 或 `unclassified` Transfer。CEX inflow、
+outflow、internal、consolidation 和 cross-CEX 不进入一般归集/分发候选。
+
+一般归集或分发的成员超过 20 时，会增加 `batch_or_airdrop_possible`，
+行为分数封顶 69 且置信度固定为 `low`；候选事实仍会保留。
+
 候选可以并存。`primary_behavior` 按分数、支持证据数量和固定类型顺序选择：
 
 1. distribution_candidate
 2. accumulation_candidate
 3. wallet_consolidation_candidate
 4. fanout_candidate
-5. isolated
+5. isolated / inconclusive_activity（仅作为无正式候选时的 fallback）
 
 ## 钱包候选群组
 
@@ -129,7 +145,7 @@ Token 数量的 10%。未知目标会标记 `target_role_unknown`。
 `rule_score_not_probability`：
 
 - 共享非 CEX 目标或来源：+30
-- 多个嵌套窗口重复同步：+20
+- 多个嵌套窗口存在独立的较早事件和新增 15m 桶：+20
 - 时间在配置的同步窗口内：+15
 - 金额差异在配置容差内：+15
 - 群组成员间存在直接 Token Transfer：+10
@@ -155,6 +171,11 @@ Token 数量的 10%。未知目标会标记 `target_role_unknown`。
 - 分析预算耗尽：最高 59，`analysis.status=partial_analysis`。
 
 这些等级不是控制权概率，更不能表述为“已确认同一主力”或“钱包已合并”。
+
+`repeated_across_nested_windows` 不按窗口名称计数。同一批事件同时出现在
+15m、1h、4h 或 24h 窗口时只算一次；只有较长窗口包含较短窗口之外的
+较早 source event、形成新增 15m 桶，并保持同一方向或结构签名时，才会
+增加跨窗口持续证据。钱包群组使用相同的独立事件判定。
 
 ## 输出
 

@@ -120,7 +120,7 @@ class WalletGroupTests(unittest.TestCase):
         group = self.group(result, "shared_target")
         self.assertIn("time_synchronized", group["supporting_evidence"])
         self.assertIn("amounts_similar", group["supporting_evidence"])
-        self.assertIn(
+        self.assertNotIn(
             "repeated_across_nested_windows",
             group["supporting_evidence"],
         )
@@ -219,6 +219,156 @@ class WalletGroupTests(unittest.TestCase):
         group = self.group(result, "shared_target")
         self.assertLessEqual(group["score"], 39)
         self.assertIn("batch_or_airdrop_possible", group["limitations"])
+
+    def test_identical_nested_event_sets_do_not_increase_group_score(
+        self,
+    ) -> None:
+        target = wallet(999)
+        transfers = [
+            record(
+                index,
+                block_time=self.to_time - seconds,
+                from_address=wallet(index),
+                to_address=target,
+                amount="10",
+                flow_type="non_cex",
+            )
+            for index, seconds in enumerate((240, 120, 30), start=1)
+        ]
+        result = self.analyzer.analyze(
+            activity(
+                window="4h",
+                transfers=transfers,
+                to_time=self.to_time,
+            )
+        )
+        groups = [
+            item
+            for item in result["groups"]
+            if item["group_type"] == "shared_target"
+        ]
+        self.assertTrue(groups)
+        self.assertTrue(
+            all(
+                "repeated_across_nested_windows"
+                not in item["supporting_evidence"]
+                for item in groups
+            )
+        )
+
+    def test_older_independent_bucket_increases_group_evidence(self) -> None:
+        target = wallet(999)
+        transfers = [
+            record(
+                index,
+                block_time=self.to_time - seconds,
+                from_address=wallet(index),
+                to_address=target,
+                amount="10",
+                flow_type="non_cex",
+            )
+            for index, seconds in enumerate((240, 120, 30), start=1)
+        ]
+        transfers.append(
+            record(
+                10,
+                block_time=self.to_time - 2 * 3600,
+                from_address=wallet(1),
+                to_address=target,
+                amount="10",
+                flow_type="non_cex",
+            )
+        )
+        result = self.analyzer.analyze(
+            activity(
+                window="4h",
+                transfers=transfers,
+                to_time=self.to_time,
+            )
+        )
+        four_hour = next(
+            item
+            for item in result["groups"]
+            if item["group_type"] == "shared_target"
+            and item["window"] == "4h"
+        )
+        self.assertIn(
+            "repeated_across_nested_windows",
+            four_hour["supporting_evidence"],
+        )
+
+    def test_older_event_in_existing_bucket_does_not_repeat_group(
+        self,
+    ) -> None:
+        target = wallet(999)
+        transfers = [
+            record(
+                index,
+                block_time=timestamp,
+                from_address=wallet(index),
+                to_address=target,
+                amount="10",
+                flow_type="non_cex",
+            )
+            for index, timestamp in (
+                (1, self.to_time - 3590),
+                (2, self.to_time - 1800),
+                (3, self.to_time - 300),
+                (4, self.to_time - 3610),
+            )
+        ]
+        result = self.analyzer.analyze(
+            activity(
+                window="4h",
+                transfers=transfers,
+                to_time=self.to_time,
+            )
+        )
+        self.assertTrue(
+            all(
+                "repeated_across_nested_windows"
+                not in item["supporting_evidence"]
+                for item in result["groups"]
+            )
+        )
+
+    def test_cex_addresses_never_enter_shared_wallet_groups(self) -> None:
+        target = wallet(999)
+        outflows = [
+            record(
+                index,
+                block_time=self.to_time - seconds,
+                from_address=CEX,
+                to_address=target,
+                amount="10",
+                flow_type="outflow",
+            )
+            for index, seconds in enumerate((240, 120, 30), start=1)
+        ]
+        inflows = [
+            record(
+                index + 10,
+                block_time=self.to_time - seconds,
+                from_address=target,
+                to_address=CEX,
+                amount="10",
+                flow_type="inflow",
+            )
+            for index, seconds in enumerate((240, 120, 30), start=1)
+        ]
+        for transfers in (outflows, inflows):
+            result = self.analyzer.analyze(
+                activity(
+                    transfers=transfers,
+                    to_time=self.to_time,
+                )
+            )
+            for group in result["groups"]:
+                if group["group_type"] in {
+                    "shared_target",
+                    "shared_source",
+                }:
+                    self.assertNotIn(CEX, group["wallets"])
 
     def test_no_transitive_or_permanent_wallet_merge(self) -> None:
         target = wallet(90)
