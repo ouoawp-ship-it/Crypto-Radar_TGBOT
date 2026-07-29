@@ -192,7 +192,7 @@ config_rollback() {
   run_config backups "$target"
   printf '请输入备份文件名：'
   IFS= read -r version
-  confirm_phrase "回滚配置" || return 0
+  confirm_phrase "恢复配置" || return 0
   run_config rollback "$target" --version "$version"
 }
 

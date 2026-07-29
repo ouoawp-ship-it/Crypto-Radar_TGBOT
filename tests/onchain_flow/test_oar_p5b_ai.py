@@ -58,6 +58,10 @@ class DeepSeekProfileTests(unittest.TestCase):
         settings = OnchainSettings()
         self.assertFalse(settings.oar_ai_enable)
         self.assertEqual(settings.oar_ai_provider, "deepseek")
+        self.assertEqual(
+            settings.oar_ai_base_url,
+            "https://api.deepseek.com",
+        )
         self.assertEqual(settings.oar_ai_model, "deepseek-v4-pro")
         self.assertEqual(settings.oar_ai_thinking_mode, "enabled")
         self.assertEqual(settings.oar_ai_reasoning_effort, "high")
@@ -95,7 +99,13 @@ class DeepSeekProfileTests(unittest.TestCase):
         self.assertEqual(body["thinking"], {"type": "enabled"})
         self.assertEqual(body["reasoning_effort"], "max")
         self.assertEqual(body["max_tokens"], 16384)
-        self.assertNotIn("temperature", body)
+        for forbidden in (
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+        ):
+            self.assertNotIn(forbidden, body)
 
     def test_thinking_disabled_body_has_temperature_without_effort(self) -> None:
         body = build_ai_request_body(
@@ -144,6 +154,14 @@ class DeepSeekProfileTests(unittest.TestCase):
         )
         self.assertTrue(
             envelope["control"]["operator_prompt_present"]
+        )
+        self.assertEqual(
+            envelope["control"]["thinking_mode"],
+            "enabled",
+        )
+        self.assertEqual(
+            envelope["control"]["reasoning_effort"],
+            "high",
         )
         self.assertNotIn("只补充风格", body["messages"][1]["content"])
         self.assertIn(

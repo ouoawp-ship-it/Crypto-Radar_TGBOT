@@ -7,7 +7,7 @@ OAR 继续复用现有 OpenAI-compatible 客户端。DeepSeek 是一个受约束
 ```dotenv
 OAR_AI_ENABLE=false
 OAR_AI_PROVIDER=deepseek
-OAR_AI_BASE_URL=
+OAR_AI_BASE_URL=https://api.deepseek.com
 OAR_AI_API_KEY=
 OAR_AI_MODEL=deepseek-v4-pro
 OAR_AI_THINKING_MODE=enabled
@@ -74,6 +74,8 @@ AI Request Control 包含：
 - `core_prompt_version`
 - `operator_prompt_hash`
 - `operator_prompt_present`
+- `thinking_mode`
+- `reasoning_effort`
 - `restricted_input`
 
 Cache 身份包含 Provider、model、核心 Prompt Version、Operator Prompt Hash、Context Hash、Thinking Mode、Reasoning Effort 和 Max Tokens。修改业务提示词、模型或思考配置会自动 miss；旧条目正常过期，不会被误用。

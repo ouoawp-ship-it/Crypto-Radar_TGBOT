@@ -214,7 +214,7 @@ class OnchainSettings:
     oar_max_source_event_ids: int = 50
     oar_ai_enable: bool = False
     oar_ai_provider: str = "deepseek"
-    oar_ai_base_url: str = ""
+    oar_ai_base_url: str = "https://api.deepseek.com"
     oar_ai_api_key: str = ""
     oar_ai_model: str = "deepseek-v4-pro"
     oar_ai_thinking_mode: str = "enabled"
@@ -561,7 +561,9 @@ class OnchainSettings:
                 "OAR_AI_PROVIDER", "deepseek"
             ).strip().lower(),
             oar_ai_base_url=(
-                values.get("OAR_AI_BASE_URL", "").strip().rstrip("/")
+                values.get(
+                    "OAR_AI_BASE_URL", "https://api.deepseek.com"
+                ).strip().rstrip("/")
             ),
             oar_ai_api_key=values.get("OAR_AI_API_KEY", "").strip(),
             oar_ai_model=values.get(

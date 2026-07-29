@@ -268,7 +268,7 @@ class ChineseMenuTests(unittest.TestCase):
             'confirm_phrase "停止主BOT"',
             'confirm_phrase "发送真实测试"',
             'confirm_phrase "恢复数据库"',
-            'confirm_phrase "回滚配置"',
+            'confirm_phrase "恢复配置"',
             'confirm_phrase "清理AI缓存"',
             'confirm_phrase "恢复提示词"',
         ):

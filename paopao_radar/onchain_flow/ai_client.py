@@ -163,6 +163,8 @@ def build_ai_request_body(
             "restricted_input": bool(restricted_input),
             "operator_prompt_hash": operator_prompt_hash,
             "operator_prompt_present": bool(operator_prompt),
+            "thinking_mode": thinking_mode,
+            "reasoning_effort": reasoning_effort,
         },
         "facts": context,
     }
