@@ -40,9 +40,11 @@ python onchain_main.py token-activity \
 Gateway 或发送消息。
 
 `--min-usd` 只能和 `--with-price` 一起使用。`--output-file` 使用临时文件和
-原子替换写入完整 JSON，stdout 只输出状态、Transfer 数量和文件路径。
-为避免覆盖生产状态，输出路径不得位于仓库 `data/` 下，也不得指向
-`.env.oi`、`.env.onchain` 或现有 BOT/on-chain 状态文件。
+原子无覆盖提交写入完整 JSON，stdout 只输出状态、Transfer 数量和文件路径。
+为避免覆盖生产状态和源码，目标文件必须尚不存在，也不能是符号链接。
+仓库内仅允许写入已经存在的 `reports/onchain/` 目录；仓库外允许写入已经
+存在的父目录。最终提交使用同目录临时文件、`flush`、`fsync` 和原子无覆盖
+hard-link，不使用会替换现有文件的 `os.replace`。
 
 ## Finalized 与时间窗口
 
@@ -77,6 +79,14 @@ Token 查询使用：
 ABI 校验、canonical event identity 和去重。现有 CEX topic1/topic2 Filter
 保持原样。Provider 若返回其他 Token 合约的日志，查询会 fail closed。
 4-topic indexed-value/ERC-721 形态只计入跳过诊断，不会被解释为 ERC-20 数量。
+每个 Adaptive Range Segment 的返回日志还会在进入 partial、去重、标准化和
+Block Header 查询之前验证：
+
+```text
+segment_start <= log.blockNumber <= segment_end
+```
+
+任何越界日志都会令查询以 `malformed_log` fail closed。
 
 ## 查询预算
 
@@ -156,7 +166,12 @@ Schema 版本为 `1`，主要结构如下：
     "observed_at": 0,
     "historical_price": false
   },
-  "labels": {"status": "ok", "count": 0},
+  "labels": {
+    "status": "ok",
+    "count": 0,
+    "identity_label_count": 0,
+    "classification_eligible_cex_count": 0
+  },
   "summary": {},
   "largest_transfers": [],
   "transfers": [],
@@ -182,6 +197,7 @@ Schema 版本为 `1`，主要结构如下：
   "from": {
     "address": "0x...",
     "known": false,
+    "classification_eligible": false,
     "entity_name": "未知钱包",
     "entity_type": "",
     "address_type": "",
@@ -207,7 +223,16 @@ Metadata 复用 `TokenMetadataResolver` 的 bytecode、`decimals()`、
 不写 `token_metadata` 表。合约不存在、无法验证 ERC-20 或 decimals 非法时
 fail closed；symbol/name 解码失败允许降级。
 
-标签文件有效时复用 `LabelRegistry` 和 `classify_transfer`，支持：
+主动查询把标签分成两个语义层：
+
+- Identity Registry：显示地址名称、类型、来源、置信度；
+- Direction Registry：只包含 Base、查询窗口有效、置信度不低于
+  `ONCHAIN_MIN_LABEL_CONFIDENCE` 且非 `synthetic_fixture` 的 CEX 标签。
+
+`known=true` 只表示存在有效身份标签，不代表该标签可以用于交易所方向分类。
+每个地址的 `classification_eligible` 会明确说明是否进入 Direction Registry。
+
+Direction Registry 覆盖正常时复用 `classify_transfer`，支持：
 
 - `inflow`
 - `outflow`
@@ -219,9 +244,17 @@ fail closed；symbol/name 解码失败允许降级。
 - `burn`
 
 标签文件不存在时，查询仍运行，所有地址显示“未知钱包”，
-`labels.status=missing`，方向为 `unclassified`。标签文件存在但损坏或不满足
-live 标签校验时 fail closed。流入交易所不等于已经卖出，从交易所提出也不等于
-已经买入或必然上涨。
+`labels.status=missing`。文件格式正确但没有足够的高置信度 Base CEX 标签时，
+`labels.status=insufficient_cex_coverage`；Identity 标签继续显示，但依赖 CEX
+身份的方向统一为 `unclassified`。低置信度 CEX 标签不会产生 inflow/outflow。
+
+Mint 和 burn 由 zero address 确定，不依赖标签覆盖，因此在 missing 或
+insufficient 状态下仍保留。普通钱包间的 `non_cex` 只在覆盖正常且双方都有
+有效、非 synthetic 且达到最低置信度的非 CEX Identity 标签时输出。
+
+标签文件格式损坏、字段非法、地址重复，或联网查询使用
+`source=synthetic_fixture` 的 CEX 标签时 fail closed。流入交易所不等于已经
+卖出，从交易所提出也不等于已经买入或必然上涨。
 
 ## 可选价格
 
@@ -264,6 +297,10 @@ live 标签校验时 fail closed。流入交易所不等于已经卖出，从交
 - `label_file_invalid`：标签文件存在但不安全；
 - `malformed_log`：Provider 返回不一致或非 canonical 日志；
 - `query_budget_exhausted_before_any_result`：形成可靠结果前已耗尽预算。
+- `output_file_exists`：输出目标已经存在，不会覆盖；
+- `unsafe_output_file`：符号链接或受保护的仓库/状态路径；
+- `output_parent_missing`：输出父目录不存在；
+- `output_write_failed`：无法完成安全无覆盖提交。
 
 错误输出会脱敏，不包含 RPC URL、API Key、Authorization 或 Telegram Token。
 

@@ -183,9 +183,7 @@ def _write_token_activity_output(
     *,
     pretty: bool,
 ) -> None:
-    parent = path.resolve().parent
-    if not parent.exists():
-        raise OSError("output directory does not exist")
+    parent = path.parent
     text = json.dumps(
         payload,
         ensure_ascii=False,
@@ -207,17 +205,65 @@ def _write_token_activity_output(
             handle.write(text + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_name, path)
+        try:
+            os.link(temporary_name, path)
+        except FileExistsError as exc:
+            code = (
+                "unsafe_output_file"
+                if path.is_symlink()
+                else "output_file_exists"
+            )
+            raise TokenActivityQueryError(
+                code,
+                "the output target became unavailable before finalization",
+            ) from exc
+        except OSError as exc:
+            raise TokenActivityQueryError(
+                "output_write_failed",
+                "the output file could not be finalized safely",
+            ) from exc
+    except TokenActivityQueryError:
+        raise
+    except OSError as exc:
+        raise TokenActivityQueryError(
+            "output_write_failed",
+            "the output file could not be written safely",
+        ) from exc
     finally:
         if temporary_name and Path(temporary_name).exists():
-            Path(temporary_name).unlink()
+            try:
+                Path(temporary_name).unlink()
+            except OSError as exc:
+                raise TokenActivityQueryError(
+                    "output_write_failed",
+                    "the temporary output file could not be removed safely",
+                ) from exc
 
 
 def _validate_token_activity_output_path(
     settings: OnchainSettings, raw_path: str
-) -> None:
-    path = Path(raw_path).resolve()
-    data_root = (settings.base_dir / "data").resolve()
+) -> Path:
+    lexical_path = Path(os.path.abspath(os.path.expanduser(raw_path)))
+    if lexical_path.is_symlink():
+        raise TokenActivityQueryError(
+            "unsafe_output_file",
+            "--output-file cannot be a symbolic link",
+        )
+    if os.path.lexists(lexical_path):
+        raise TokenActivityQueryError(
+            "output_file_exists",
+            "--output-file must name a new file",
+        )
+    repository_root = settings.base_dir.resolve()
+    allowed_repository_root = repository_root / "reports" / "onchain"
+    lexical_inside_repository = lexical_path.is_relative_to(repository_root)
+    if lexical_inside_repository and not (
+        lexical_path.is_relative_to(allowed_repository_root)
+    ):
+        raise TokenActivityQueryError(
+            "unsafe_output_file",
+            "repository output is limited to reports/onchain",
+        )
     protected = {
         item.resolve() for item in settings.writable_paths
     } | {
@@ -227,11 +273,59 @@ def _validate_token_activity_output_path(
         (settings.base_dir / ".env.oi").resolve(),
         (settings.base_dir / ".env.onchain").resolve(),
     }
-    if path in protected or path.is_relative_to(data_root):
+    protected_roots = {
+        (settings.base_dir / "data").resolve(),
+        settings.data_dir.resolve(),
+    }
+    if lexical_path in protected or any(
+        lexical_path.is_relative_to(root) for root in protected_roots
+    ):
         raise TokenActivityQueryError(
             "unsafe_output_file",
             "--output-file cannot overwrite a BOT or on-chain state file",
         )
+
+    parent = lexical_path.parent
+    if not parent.exists() or not parent.is_dir():
+        raise TokenActivityQueryError(
+            "output_parent_missing",
+            "--output-file parent directory must already exist",
+        )
+    path = parent.resolve(strict=True) / lexical_path.name
+    if lexical_inside_repository:
+        if not allowed_repository_root.exists():
+            raise TokenActivityQueryError(
+                "output_parent_missing",
+                "reports/onchain must exist before repository output",
+            )
+        resolved_allowed_root = allowed_repository_root.resolve(strict=True)
+        if (
+            resolved_allowed_root != allowed_repository_root
+            or not path.is_relative_to(resolved_allowed_root)
+        ):
+            raise TokenActivityQueryError(
+                "unsafe_output_file",
+                "repository output cannot traverse symbolic-link directories",
+            )
+    elif path.is_relative_to(repository_root):
+        if (
+            not allowed_repository_root.exists()
+            or allowed_repository_root.resolve(strict=True)
+            != allowed_repository_root
+            or not path.is_relative_to(allowed_repository_root)
+        ):
+            raise TokenActivityQueryError(
+                "unsafe_output_file",
+                "resolved output path points to a protected repository path",
+            )
+    if path in protected or any(
+        path.is_relative_to(root) for root in protected_roots
+    ):
+        raise TokenActivityQueryError(
+            "unsafe_output_file",
+            "resolved output path points to a BOT or on-chain state path",
+        )
+    return path
 
 
 def _print_token_activity(
@@ -239,10 +333,18 @@ def _print_token_activity(
     *,
     pretty: bool,
     output_file: str | None,
+    settings: OnchainSettings | None = None,
 ) -> None:
     output: dict[str, object] = payload
     if output_file:
-        output_path = Path(output_file)
+        if settings is None:
+            raise TokenActivityQueryError(
+                "unsafe_output_file",
+                "output settings are unavailable",
+            )
+        output_path = _validate_token_activity_output_path(
+            settings, output_file
+        )
         _write_token_activity_output(output_path, payload, pretty=pretty)
         summary = payload.get("summary")
         output = {
@@ -319,6 +421,7 @@ def main(
                 payload,
                 pretty=bool(args.pretty),
                 output_file=args.output_file,
+                settings=settings,
             )
             return 0 if payload["status"] == "ok" else 2
         if args.command == "status":

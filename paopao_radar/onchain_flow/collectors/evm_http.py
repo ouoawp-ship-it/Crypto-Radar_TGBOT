@@ -570,6 +570,7 @@ class BaseHttpCollector:
                     transfer_filter,
                     diagnostics=diagnostics,
                     partial_results=segment,
+                    validate_log_range=True,
                 )
             except RpcRequestBudgetError:
                 truncation_reason = "max_rpc_requests"
@@ -639,6 +640,28 @@ class BaseHttpCollector:
             if address != token_address:
                 raise LogValidationError(
                     "provider returned a log for a different Token contract"
+                )
+
+    @staticmethod
+    def _validate_logs_in_range(
+        logs: Iterable[dict[str, object]], block_range: BlockRange
+    ) -> None:
+        for log in logs:
+            try:
+                block_number = parse_hex_quantity(
+                    log.get("blockNumber"), "log block number"
+                )
+            except RpcResponseError as exc:
+                raise LogValidationError(
+                    "provider returned a malformed log block number"
+                ) from exc
+            if not (
+                block_range.start_block
+                <= block_number
+                <= block_range.end_block
+            ):
+                raise LogValidationError(
+                    "provider returned a log outside the requested segment"
                 )
 
     @staticmethod
@@ -712,6 +735,7 @@ class BaseHttpCollector:
         depth: int = 0,
         diagnostics: dict[str, int] | None = None,
         partial_results: list[dict[str, object]] | None = None,
+        validate_log_range: bool = False,
     ) -> list[dict[str, object]]:
         if budget is None:
             budget = {"requests": 0}
@@ -722,6 +746,8 @@ class BaseHttpCollector:
             raise AdaptiveRangeError("adaptive range request budget exhausted")
         try:
             logs = self.client.get_logs(transfer_filter.as_rpc(block_range))
+            if validate_log_range:
+                self._validate_logs_in_range(logs, block_range)
             if partial_results is not None:
                 partial_results.extend(logs)
             return logs
@@ -745,6 +771,7 @@ class BaseHttpCollector:
                 depth=depth + 1,
                 diagnostics=diagnostics,
                 partial_results=partial_results,
+                validate_log_range=validate_log_range,
             ) + self._fetch_adaptive(
                 right,
                 transfer_filter,
@@ -752,4 +779,5 @@ class BaseHttpCollector:
                 depth=depth + 1,
                 diagnostics=diagnostics,
                 partial_results=partial_results,
+                validate_log_range=validate_log_range,
             )

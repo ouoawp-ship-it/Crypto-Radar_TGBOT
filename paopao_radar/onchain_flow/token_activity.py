@@ -34,7 +34,6 @@ from .labels import (
     LabelValidationError,
     load_labels_csv,
     normalize_evm_address,
-    validate_live_labels,
 )
 from .models import AddressLabel, NormalizedTransfer, PriceQuote, TokenMetadata
 from .price_oracle import PriceProvider, build_price_provider
@@ -184,6 +183,13 @@ class BlockHeader:
     timestamp: int
 
 
+@dataclass(frozen=True)
+class TokenActivityLabelContext:
+    status: str
+    identity_labels: tuple[AddressLabel, ...]
+    direction_labels: tuple[AddressLabel, ...]
+
+
 class BlockHeaderCache:
     def __init__(self, rpc: Any, max_unique_headers: int):
         self.rpc = rpc
@@ -274,7 +280,7 @@ class TokenActivityQueryService:
     def execute(self, query: TokenActivityQuery) -> dict[str, object]:
         started = self.clock()
         request_start = int(getattr(self.rpc, "request_count", 0))
-        labels, labels_status = self._load_labels()
+        labels, labels_file_status = self._load_labels()
         try:
             chain_id = self.rpc.chain_id()
         except RpcAuthError as exc:
@@ -374,20 +380,14 @@ class TokenActivityQueryService:
                 "rpc_unavailable", "could not resolve the query block range"
             ) from exc
 
-        if labels_status == "ok":
-            try:
-                validate_live_labels(
-                    labels,
-                    min_confidence=self.settings.min_label_confidence,
-                    chain_id=chain_id,
-                    timestamp=to_header.timestamp,
-                )
-            except LabelValidationError as exc:
-                raise TokenActivityQueryError(
-                    "label_file_invalid",
-                    "configured address labels failed validation",
-                ) from exc
-        registry = LabelRegistry(labels if labels_status == "ok" else [])
+        label_context = self._prepare_labels(
+            labels,
+            file_status=labels_file_status,
+            from_time=from_time,
+            to_time=to_header.timestamp,
+        )
+        identity_registry = LabelRegistry(label_context.identity_labels)
+        direction_registry = LabelRegistry(label_context.direction_labels)
 
         try:
             fetched = self.collector.fetch_token_logs(
@@ -447,17 +447,23 @@ class TokenActivityQueryService:
             self._record(
                 transfer,
                 metadata,
-                registry,
-                labels_status=labels_status,
+                identity_registry,
+                direction_registry,
+                labels_status=label_context.status,
                 price_status=price_status,
             )
             for transfer in transfers
         ]
         usd_filter_applied = False
         warnings: list[str] = []
-        if labels_status == "missing":
+        if label_context.status == "missing":
             warnings.append(
                 "地址标签文件缺失；地址显示为未知钱包，不生成交易所方向分类"
+            )
+        elif label_context.status == "insufficient_cex_coverage":
+            warnings.append(
+                "标签文件缺少查询窗口内有效的高置信度 Base CEX 标签；"
+                "地址身份仍显示，交易所方向分类不可用"
             )
         if query.with_price:
             warnings.append("美元金额按查询时可用价格估算")
@@ -536,8 +542,14 @@ class TokenActivityQueryService:
                 "historical_price": False,
             },
             "labels": {
-                "status": labels_status,
-                "count": len(labels) if labels_status == "ok" else 0,
+                "status": label_context.status,
+                "count": len(label_context.identity_labels),
+                "identity_label_count": len(
+                    label_context.identity_labels
+                ),
+                "classification_eligible_cex_count": len(
+                    label_context.direction_labels
+                ),
             },
             "summary": summary,
             "largest_transfers": largest,
@@ -564,11 +576,56 @@ class TokenActivityQueryService:
             return [], "missing"
         try:
             return load_labels_csv(self.settings.labels_path), "ok"
-        except LabelValidationError as exc:
+        except (LabelValidationError, OSError) as exc:
             raise TokenActivityQueryError(
                 "label_file_invalid",
                 "configured address labels could not be parsed",
             ) from exc
+
+    def _prepare_labels(
+        self,
+        labels: list[AddressLabel],
+        *,
+        file_status: str,
+        from_time: int,
+        to_time: int,
+    ) -> TokenActivityLabelContext:
+        if file_status == "missing":
+            return TokenActivityLabelContext("missing", (), ())
+        if any(
+            label.chain_id == BASE_CHAIN_ID
+            and label.entity_type == "cex"
+            and label.source.strip().lower() == "synthetic_fixture"
+            for label in labels
+        ):
+            raise TokenActivityQueryError(
+                "label_file_invalid",
+                "synthetic CEX labels are not allowed for network queries",
+            )
+
+        def overlaps_query(label: AddressLabel) -> bool:
+            return (
+                label.valid_to is None or label.valid_to >= from_time
+            ) and (
+                label.valid_from is None or label.valid_from <= to_time
+            )
+
+        direction_labels = tuple(
+            label
+            for label in labels
+            if label.chain_id == BASE_CHAIN_ID
+            and label.entity_type == "cex"
+            and label.confidence >= self.settings.min_label_confidence
+            and overlaps_query(label)
+        )
+        status = (
+            "ok" if direction_labels else "insufficient_cex_coverage"
+        )
+        return TokenActivityLabelContext(
+            status,
+            tuple(labels),
+            direction_labels,
+        )
 
     def _find_first_block_at_or_after(
         self,
@@ -714,21 +771,61 @@ class TokenActivityQueryService:
         self,
         transfer: NormalizedTransfer,
         metadata: TokenMetadata,
-        registry: LabelRegistry,
+        identity_registry: LabelRegistry,
+        direction_registry: LabelRegistry,
         *,
         labels_status: str,
         price_status: str,
     ) -> dict[str, object]:
-        flow = classify_transfer(transfer, metadata, registry)
-        flow_type = (
-            flow.flow_type if labels_status == "ok" else "unclassified"
-        )
-        from_label = registry.lookup(
+        flow = classify_transfer(transfer, metadata, direction_registry)
+        from_label = identity_registry.lookup(
             transfer.chain_id, transfer.from_address, transfer.block_time
         )
-        to_label = registry.lookup(
+        to_label = identity_registry.lookup(
             transfer.chain_id, transfer.to_address, transfer.block_time
         )
+        from_direction_label = direction_registry.lookup(
+            transfer.chain_id, transfer.from_address, transfer.block_time
+        )
+        to_direction_label = direction_registry.lookup(
+            transfer.chain_id, transfer.to_address, transfer.block_time
+        )
+        if flow.flow_type in {"mint", "burn"}:
+            flow_type = flow.flow_type
+        elif labels_status != "ok":
+            flow_type = "unclassified"
+        elif (
+            from_label is not None
+            and from_label.entity_type == "cex"
+            and from_direction_label is None
+        ) or (
+            to_label is not None
+            and to_label.entity_type == "cex"
+            and to_direction_label is None
+        ):
+            flow_type = "unclassified"
+        elif flow.flow_type == "non_cex":
+            def confirms_non_cex(label: AddressLabel | None) -> bool:
+                return (
+                    label is not None
+                    and label.entity_type != "cex"
+                    and label.confidence
+                    >= self.settings.min_label_confidence
+                    and label.source.strip().lower()
+                    != "synthetic_fixture"
+                )
+
+            identities_confirm_non_cex = (
+                confirms_non_cex(from_label)
+                and confirms_non_cex(to_label)
+            )
+            flow_type = (
+                "non_cex"
+                if identities_confirm_non_cex
+                else "unclassified"
+            )
+        else:
+            flow_type = flow.flow_type
         amount = Decimal(transfer.amount_raw) / (
             Decimal(10) ** int(metadata.decimals or 0)
         )
@@ -748,9 +845,15 @@ class TokenActivityQueryService:
             "explorer_url": f"https://basescan.org/tx/{transfer.tx_hash}",
             "token_contract": transfer.token_address,
             "from": self._address_payload(
-                transfer.from_address, from_label
+                transfer.from_address,
+                from_label,
+                classification_eligible=from_direction_label is not None,
             ),
-            "to": self._address_payload(transfer.to_address, to_label),
+            "to": self._address_payload(
+                transfer.to_address,
+                to_label,
+                classification_eligible=to_direction_label is not None,
+            ),
             "amount_raw": str(transfer.amount_raw),
             "amount": self._decimal_string(amount),
             "amount_usd": (
@@ -764,12 +867,16 @@ class TokenActivityQueryService:
 
     @staticmethod
     def _address_payload(
-        address: str, label: AddressLabel | None
+        address: str,
+        label: AddressLabel | None,
+        *,
+        classification_eligible: bool,
     ) -> dict[str, object]:
         if label is None:
             return {
                 "address": address,
                 "known": False,
+                "classification_eligible": False,
                 "entity_name": "未知钱包",
                 "entity_type": "",
                 "address_type": "",
@@ -779,6 +886,7 @@ class TokenActivityQueryService:
         return {
             "address": address,
             "known": True,
+            "classification_eligible": classification_eligible,
             "entity_name": label.entity_name,
             "entity_type": label.entity_type,
             "address_type": label.address_type,

@@ -16,6 +16,7 @@ from paopao_radar.onchain_flow.collectors.base import BlockRange
 from paopao_radar.onchain_flow.collectors.evm_http import (
     BaseHttpCollector,
     JsonRpcClient,
+    LogValidationError,
     RpcRangeError,
     RpcRateLimitError,
     RpcRequestBudgetError,
@@ -46,6 +47,8 @@ TOKEN = "0x9999999999999999999999999999999999999999"
 OTHER_TOKEN = "0x8888888888888888888888888888888888888888"
 WALLET_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 WALLET_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+WALLET_C = "0xcccccccccccccccccccccccccccccccccccccccc"
+WALLET_D = "0xdddddddddddddddddddddddddddddddddddddddd"
 CEX_A_HOT = "0x1111111111111111111111111111111111111111"
 CEX_A_DEPOSIT = "0x2222222222222222222222222222222222222222"
 CEX_A_COLLECTOR = "0x3333333333333333333333333333333333333333"
@@ -124,6 +127,7 @@ class FakeRpc:
         range_limit: int | None = None,
         log_error: Exception | None = None,
         log_error_after: int | None = None,
+        ignore_log_range: bool = False,
         fail_after: int | None = None,
         code: str = "0x6000",
         decimals: int = 6,
@@ -134,6 +138,7 @@ class FakeRpc:
         self.range_limit = range_limit
         self.log_error = log_error
         self.log_error_after = log_error_after
+        self.ignore_log_range = ignore_log_range
         self.fail_after = fail_after
         self.code = code
         self.decimals = decimals
@@ -196,6 +201,8 @@ class FakeRpc:
         end = int(str(payload["toBlock"]), 16)
         if self.range_limit is not None and end - start + 1 > self.range_limit:
             raise RpcRangeError("range too large")
+        if self.ignore_log_range:
+            return list(self.logs)
         return [
             item
             for item in self.logs
@@ -215,15 +222,33 @@ class StaticProvider:
         return {addresses[0]: self.quote} if self.quote is not None else {}
 
 
+LABEL_HEADER = (
+    "chain_id,address,entity_name,entity_type,address_type,source,"
+    "confidence,valid_from,valid_to\n"
+)
+
+
+def write_label_rows(path: Path, rows: list[str]) -> None:
+    path.write_text(LABEL_HEADER + "".join(rows), encoding="utf-8")
+
+
 def write_labels(path: Path) -> None:
-    path.write_text(
-        "chain_id,address,entity_name,entity_type,address_type,source,"
-        "confidence,valid_from,valid_to\n"
-        f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,0.99,,\n"
-        f"8453,{CEX_A_DEPOSIT},Binance,cex,deposit,reviewed,0.99,,\n"
-        f"8453,{CEX_A_COLLECTOR},Binance,cex,collector,reviewed,0.99,,\n"
-        f"8453,{CEX_B_HOT},OKX,cex,hot,reviewed,0.98,,\n",
-        encoding="utf-8",
+    write_label_rows(
+        path,
+        [
+            f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,0.99,,\n",
+            (
+                f"8453,{CEX_A_DEPOSIT},Binance,cex,deposit,"
+                "reviewed,0.99,,\n"
+            ),
+            (
+                f"8453,{CEX_A_COLLECTOR},Binance,cex,collector,"
+                "reviewed,0.99,,\n"
+            ),
+            f"8453,{CEX_B_HOT},OKX,cex,hot,reviewed,0.98,,\n",
+            f"8453,{WALLET_C},Fund A,wallet,wallet,reviewed,0.90,,\n",
+            f"8453,{WALLET_D},Fund B,wallet,wallet,reviewed,0.90,,\n",
+        ],
     )
 
 
@@ -291,6 +316,52 @@ class TokenActivityTestCase(unittest.TestCase):
 
 
 class CliAndValidationTests(TokenActivityTestCase):
+    def run_output_command(
+        self,
+        output_path: Path,
+        *,
+        payload: dict[str, object] | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        result = payload or {
+            "schema_version": 1,
+            "status": "ok",
+            "complete": True,
+            "truncated": False,
+            "truncation_reason": None,
+            "summary": {"transfer_count": 2},
+            "transfers": [{"event_id": "one"}, {"event_id": "two"}],
+        }
+
+        class Service:
+            def execute(self, _query):
+                return result
+
+        output = StringIO()
+        with (
+            patch.object(
+                TokenActivityQueryService,
+                "from_settings",
+                return_value=Service(),
+            ),
+            redirect_stdout(output),
+        ):
+            code = main(
+                [
+                    "token-activity",
+                    "--chain",
+                    "base",
+                    "--contract",
+                    TOKEN,
+                    "--window",
+                    "15m",
+                    "--allow-network",
+                    "--output-file",
+                    str(output_path),
+                ],
+                settings=self.settings,
+            )
+        return code, json.loads(output.getvalue())
+
     def test_cli_registers_token_activity_without_send_flags(self) -> None:
         args = build_parser().parse_args(
             [
@@ -421,7 +492,8 @@ class CliAndValidationTests(TokenActivityTestCase):
                     replace(defaults, **{field: value}).validate()
 
     def test_output_file_writes_full_json_and_stdout_summary(self) -> None:
-        output_path = self.root / "result.json"
+        output_path = self.root / "reports" / "onchain" / "result.json"
+        output_path.parent.mkdir(parents=True)
         fake_payload = {
             "schema_version": 1,
             "status": "ok",
@@ -431,48 +503,28 @@ class CliAndValidationTests(TokenActivityTestCase):
             "summary": {"transfer_count": 2},
             "transfers": [{"event_id": "one"}, {"event_id": "two"}],
         }
-
-        class Service:
-            def execute(self, _query):
-                return fake_payload
-
-        output = StringIO()
-        with (
-            patch.object(
-                TokenActivityQueryService,
-                "from_settings",
-                return_value=Service(),
-            ),
-            redirect_stdout(output),
-        ):
-            code = main(
-                [
-                    "token-activity",
-                    "--chain",
-                    "base",
-                    "--contract",
-                    TOKEN,
-                    "--window",
-                    "15m",
-                    "--allow-network",
-                    "--output-file",
-                    str(output_path),
-                ],
-                settings=self.settings,
-            )
+        code, summary = self.run_output_command(
+            output_path, payload=fake_payload
+        )
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output_path.read_text()), fake_payload)
-        summary = json.loads(output.getvalue())
         self.assertEqual(summary["transfer_count"], 2)
         self.assertEqual(summary["output_file"], str(output_path))
-        self.assertFalse(list(self.root.glob(".*.tmp")))
+        self.assertFalse(list(output_path.parent.glob(".*.tmp")))
 
     def test_output_file_cannot_overwrite_business_state(self) -> None:
         protected_paths = (
-            self.settings.db_path,
             self.settings.base_dir / "data" / "query-result.json",
             self.settings.base_dir / ".env.onchain",
             self.settings.base_dir / ".env.oi",
+            self.settings.base_dir / "root-result.json",
+            self.settings.base_dir / "paopao_radar" / "new.py",
+            self.settings.base_dir / "tests" / "new.py",
+            self.settings.base_dir / "scripts" / "new.py",
+            self.settings.base_dir / "config" / "new.json",
+            self.settings.base_dir / "docs" / "new.md",
+            self.settings.base_dir / ".github" / "new.yml",
+            self.settings.base_dir / "migrations" / "new.sql",
         )
         for protected_path in protected_paths:
             with self.subTest(path=protected_path):
@@ -506,6 +558,100 @@ class CliAndValidationTests(TokenActivityTestCase):
                 )
                 service_factory.assert_not_called()
 
+    def test_existing_files_are_never_overwritten(self) -> None:
+        existing_paths = (
+            self.root / "existing.json",
+            self.root / "README.md",
+            self.root / "paopao_radar" / "module.py",
+            self.settings.db_path,
+        )
+        for index, path in enumerate(existing_paths):
+            with self.subTest(path=path):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                original = f"original-{index}".encode()
+                path.write_bytes(original)
+                with patch.object(
+                    TokenActivityQueryService, "from_settings"
+                ) as service_factory:
+                    code, payload = self.run_output_command(path)
+                self.assertEqual(code, 1)
+                self.assertEqual(payload["error"], "output_file_exists")
+                self.assertEqual(path.read_bytes(), original)
+                service_factory.assert_not_called()
+
+    def test_symbolic_link_output_is_rejected(self) -> None:
+        target = self.root / "outside.json"
+        target.write_bytes(b"original")
+        link = self.root / "reports" / "onchain" / "link.json"
+        link.parent.mkdir(parents=True)
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+        code, payload = self.run_output_command(link)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"], "unsafe_output_file")
+        self.assertEqual(target.read_bytes(), b"original")
+
+    def test_symbolic_link_parent_cannot_escape_repository_allowlist(
+        self,
+    ) -> None:
+        protected = self.root / "docs"
+        protected.mkdir()
+        reports = self.root / "reports"
+        reports.mkdir()
+        allowed_link = reports / "onchain"
+        try:
+            allowed_link.symlink_to(protected, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+        output_path = allowed_link / "escaped.json"
+        code, payload = self.run_output_command(output_path)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"], "unsafe_output_file")
+        self.assertFalse((protected / "escaped.json").exists())
+
+    def test_new_external_output_file_is_allowed(self) -> None:
+        with TemporaryDirectory() as external:
+            output_path = Path(external) / "result.json"
+            code, summary = self.run_output_command(output_path)
+            self.assertEqual(code, 0)
+            self.assertEqual(summary["output_file"], str(output_path))
+            self.assertTrue(output_path.exists())
+
+    def test_finalization_race_does_not_overwrite_or_leave_temp_file(
+        self,
+    ) -> None:
+        output_path = self.root / "reports" / "onchain" / "race.json"
+        output_path.parent.mkdir(parents=True)
+
+        def competing_writer(_source, destination):
+            Path(destination).write_bytes(b"competitor")
+            raise FileExistsError("simulated race")
+
+        with patch(
+            "paopao_radar.onchain_flow.cli.os.link",
+            side_effect=competing_writer,
+        ):
+            code, payload = self.run_output_command(output_path)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"], "output_file_exists")
+        self.assertEqual(output_path.read_bytes(), b"competitor")
+        self.assertFalse(list(output_path.parent.glob(".*.tmp")))
+
+    def test_output_write_failure_leaves_no_target_or_temp_file(self) -> None:
+        output_path = self.root / "reports" / "onchain" / "failed.json"
+        output_path.parent.mkdir(parents=True)
+        with patch(
+            "paopao_radar.onchain_flow.cli.os.link",
+            side_effect=OSError("simulated failure"),
+        ):
+            code, payload = self.run_output_command(output_path)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"], "output_write_failed")
+        self.assertFalse(output_path.exists())
+        self.assertFalse(list(output_path.parent.glob(".*.tmp")))
+
 
 class FilterAndCollectionTests(TokenActivityTestCase):
     def test_token_filter_sets_contract_and_only_transfer_topic(self) -> None:
@@ -520,6 +666,89 @@ class FilterAndCollectionTests(TokenActivityTestCase):
             payload = item.as_rpc(BlockRange(1, 2))
             self.assertNotIn("address", payload)
             self.assertEqual(payload["topics"][0], TRANSFER_TOPIC)
+
+    def test_provider_log_before_or_after_requested_range_is_rejected(
+        self,
+    ) -> None:
+        collector = BaseHttpCollector(
+            FakeRpc(ignore_log_range=True), self.settings
+        )
+        for block in (99, 111):
+            with self.subTest(block=block):
+                collector.client.logs = [
+                    transfer_log(block, 0, WALLET_A, WALLET_B)
+                ]
+                with self.assertRaises(LogValidationError):
+                    collector.fetch_token_logs(
+                        100, 110, TOKEN, max_events=10
+                    )
+
+    def test_provider_log_must_belong_to_current_adaptive_segment(
+        self,
+    ) -> None:
+        settings = replace(self.settings, rpc_max_block_range=5)
+        rpc = FakeRpc(
+            [transfer_log(108, 0, WALLET_A, WALLET_B)],
+            ignore_log_range=True,
+        )
+        collector = BaseHttpCollector(rpc, settings)
+        with self.assertRaises(LogValidationError):
+            collector.fetch_token_logs(100, 110, TOKEN, max_events=10)
+        self.assertEqual(
+            (rpc.log_filters[0]["fromBlock"], rpc.log_filters[0]["toBlock"]),
+            (hex(100), hex(104)),
+        )
+        self.assertEqual(len(rpc.log_filters), 1)
+
+    def test_requested_segment_boundaries_are_accepted(self) -> None:
+        logs = [
+            transfer_log(100, 0, WALLET_A, WALLET_B),
+            transfer_log(110, 0, WALLET_A, WALLET_B),
+        ]
+        rpc = FakeRpc(logs, ignore_log_range=True)
+        settings = replace(self.settings, rpc_max_block_range=11)
+        result = BaseHttpCollector(rpc, settings).fetch_token_logs(
+            100, 110, TOKEN, max_events=10
+        )
+        self.assertEqual(
+            [int(str(item["blockNumber"]), 16) for item in result.logs],
+            [100, 110],
+        )
+
+    def test_out_of_segment_log_stops_before_header_or_price_lookup(
+        self,
+    ) -> None:
+        out_of_segment_block = FINALIZED - 1
+        rpc = FakeRpc(
+            [
+                transfer_log(
+                    out_of_segment_block, 0, WALLET_A, WALLET_B
+                )
+            ],
+            ignore_log_range=True,
+        )
+        settings = replace(self.settings, rpc_max_block_range=5)
+        provider = StaticProvider(
+            PriceQuote(
+                chain_id=8453,
+                token_address=TOKEN,
+                price_usd=Decimal("2.5"),
+                volume_24h_usd=None,
+                source="static",
+                observed_at=GENESIS_TIME,
+            )
+        )
+        with self.assertRaises(TokenActivityQueryError) as raised:
+            self.run_query(
+                rpc.logs,
+                rpc=rpc,
+                settings=settings,
+                query=self.query(settings=settings, with_price=True),
+                provider=provider,
+            )
+        self.assertEqual(raised.exception.code, "malformed_log")
+        self.assertNotIn(out_of_segment_block, rpc.block_calls)
+        self.assertEqual(provider.calls, 0)
 
     def test_adaptive_range_is_reused_for_token_queries(self) -> None:
         log = transfer_log(FINALIZED - 1, 0, WALLET_A, WALLET_B)
@@ -776,18 +1005,20 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
         block = FINALIZED - 1
         logs = [
             transfer_log(block, 0, WALLET_A, WALLET_B),
-            transfer_log(block, 1, WALLET_A, CEX_A_HOT),
-            transfer_log(block, 2, CEX_A_HOT, WALLET_A),
-            transfer_log(block, 3, CEX_A_HOT, CEX_A_DEPOSIT),
-            transfer_log(block, 4, CEX_A_DEPOSIT, CEX_A_HOT),
-            transfer_log(block, 5, CEX_A_HOT, CEX_B_HOT),
-            transfer_log(block, 6, ZERO_ADDRESS, WALLET_A),
-            transfer_log(block, 7, WALLET_A, ZERO_ADDRESS),
+            transfer_log(block, 1, WALLET_C, WALLET_D),
+            transfer_log(block, 2, WALLET_A, CEX_A_HOT),
+            transfer_log(block, 3, CEX_A_HOT, WALLET_A),
+            transfer_log(block, 4, CEX_A_HOT, CEX_A_DEPOSIT),
+            transfer_log(block, 5, CEX_A_DEPOSIT, CEX_A_HOT),
+            transfer_log(block, 6, CEX_A_HOT, CEX_B_HOT),
+            transfer_log(block, 7, ZERO_ADDRESS, WALLET_A),
+            transfer_log(block, 8, WALLET_A, ZERO_ADDRESS),
         ]
         result, _ = self.run_query(logs)
         self.assertEqual(
             [item["flow_type"] for item in result["transfers"]],
             [
+                "unclassified",
                 "non_cex",
                 "inflow",
                 "outflow",
@@ -802,7 +1033,15 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
             result["transfers"][0]["from"]["entity_name"], "未知钱包"
         )
         self.assertFalse(result["transfers"][0]["from"]["known"])
+        self.assertFalse(
+            result["transfers"][0]["from"]["classification_eligible"]
+        )
+        self.assertTrue(result["transfers"][2]["to"]["known"])
+        self.assertTrue(
+            result["transfers"][2]["to"]["classification_eligible"]
+        )
         for key in (
+            "unclassified_count",
             "inflow_count",
             "outflow_count",
             "internal_count",
@@ -833,6 +1072,192 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
         )
         self.assertFalse(result["transfers"][0]["to"]["known"])
         self.assertEqual(result["summary"]["inflow_count"], 0)
+        self.assertEqual(
+            result["labels"]["classification_eligible_cex_count"], 0
+        )
+        self.assertEqual(result["labels"]["identity_label_count"], 0)
+        self.assertTrue(result["warnings"])
+
+    def test_missing_labels_preserve_mint_and_burn(self) -> None:
+        settings = replace(
+            self.settings,
+            labels_path=self.root / "missing.csv",
+        )
+        block = FINALIZED - 1
+        result, _ = self.run_query(
+            [
+                transfer_log(block, 0, ZERO_ADDRESS, WALLET_A),
+                transfer_log(block, 1, WALLET_A, ZERO_ADDRESS),
+            ],
+            settings=settings,
+            query=self.query(settings=settings),
+        )
+        self.assertEqual(
+            [item["flow_type"] for item in result["transfers"]],
+            ["mint", "burn"],
+        )
+
+    def test_insufficient_cex_coverage_preserves_mint_and_burn(self) -> None:
+        write_label_rows(
+            self.labels,
+            [
+                f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,0.40,,\n",
+            ],
+        )
+        block = FINALIZED - 1
+        result, _ = self.run_query(
+            [
+                transfer_log(block, 0, ZERO_ADDRESS, WALLET_A),
+                transfer_log(block, 1, WALLET_A, ZERO_ADDRESS),
+            ]
+        )
+        self.assertEqual(
+            result["labels"]["status"], "insufficient_cex_coverage"
+        )
+        self.assertEqual(
+            [item["flow_type"] for item in result["transfers"]],
+            ["mint", "burn"],
+        )
+
+    def test_low_confidence_cex_is_identity_only(self) -> None:
+        write_label_rows(
+            self.labels,
+            [
+                f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,0.40,,\n",
+            ],
+        )
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    FINALIZED - 1, 0, WALLET_A, CEX_A_HOT
+                )
+            ]
+        )
+        destination = result["transfers"][0]["to"]
+        self.assertEqual(
+            result["labels"]["status"], "insufficient_cex_coverage"
+        )
+        self.assertEqual(result["transfers"][0]["flow_type"], "unclassified")
+        self.assertTrue(destination["known"])
+        self.assertEqual(destination["entity_name"], "Binance")
+        self.assertEqual(destination["confidence"], 0.4)
+        self.assertFalse(destination["classification_eligible"])
+        self.assertTrue(result["warnings"])
+
+    def test_high_confidence_cex_produces_inflow(self) -> None:
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    FINALIZED - 1, 0, WALLET_A, CEX_A_HOT
+                )
+            ]
+        )
+        destination = result["transfers"][0]["to"]
+        self.assertEqual(result["labels"]["status"], "ok")
+        self.assertEqual(result["transfers"][0]["flow_type"], "inflow")
+        self.assertTrue(destination["classification_eligible"])
+        self.assertGreater(
+            result["labels"]["classification_eligible_cex_count"], 0
+        )
+
+    def test_low_confidence_cex_does_not_become_directional_via_peer(
+        self,
+    ) -> None:
+        write_label_rows(
+            self.labels,
+            [
+                f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,0.40,,\n",
+                f"8453,{CEX_B_HOT},OKX,cex,hot,reviewed,0.99,,\n",
+            ],
+        )
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    FINALIZED - 1, 0, CEX_A_HOT, CEX_B_HOT
+                )
+            ]
+        )
+        record = result["transfers"][0]
+        self.assertEqual(result["labels"]["status"], "ok")
+        self.assertEqual(record["flow_type"], "unclassified")
+        self.assertTrue(record["from"]["known"])
+        self.assertFalse(record["from"]["classification_eligible"])
+        self.assertTrue(record["to"]["classification_eligible"])
+
+    def test_expired_cex_label_does_not_produce_direction(self) -> None:
+        expired_at = GENESIS_TIME + (FINALIZED - 10) * 60
+        write_label_rows(
+            self.labels,
+            [
+                (
+                    f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,"
+                    f"0.99,,{expired_at}\n"
+                ),
+                f"8453,{CEX_B_HOT},OKX,cex,hot,reviewed,0.99,,\n",
+            ],
+        )
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    FINALIZED - 1, 0, WALLET_A, CEX_A_HOT
+                )
+            ]
+        )
+        self.assertEqual(result["labels"]["status"], "ok")
+        self.assertEqual(result["transfers"][0]["flow_type"], "unclassified")
+        self.assertFalse(result["transfers"][0]["to"]["known"])
+        self.assertFalse(
+            result["transfers"][0]["to"]["classification_eligible"]
+        )
+
+    def test_known_non_cex_identities_can_produce_non_cex(self) -> None:
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    FINALIZED - 1, 0, WALLET_C, WALLET_D
+                )
+            ]
+        )
+        record = result["transfers"][0]
+        self.assertEqual(record["flow_type"], "non_cex")
+        self.assertTrue(record["from"]["known"])
+        self.assertEqual(record["from"]["entity_type"], "wallet")
+        self.assertFalse(record["from"]["classification_eligible"])
+
+    def test_low_confidence_non_cex_identity_stays_unclassified(self) -> None:
+        write_label_rows(
+            self.labels,
+            [
+                f"8453,{CEX_A_HOT},Binance,cex,hot,reviewed,0.99,,\n",
+                f"8453,{WALLET_C},Fund A,wallet,wallet,reviewed,0.40,,\n",
+                f"8453,{WALLET_D},Fund B,wallet,wallet,reviewed,0.90,,\n",
+            ],
+        )
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    FINALIZED - 1, 0, WALLET_C, WALLET_D
+                )
+            ]
+        )
+        record = result["transfers"][0]
+        self.assertEqual(record["flow_type"], "unclassified")
+        self.assertTrue(record["from"]["known"])
+        self.assertEqual(record["from"]["confidence"], 0.4)
+
+    def test_synthetic_cex_label_is_rejected_for_network_query(self) -> None:
+        write_label_rows(
+            self.labels,
+            [
+                (
+                    f"8453,{CEX_A_HOT},Binance,cex,hot,"
+                    "synthetic_fixture,0.99,,\n"
+                ),
+            ],
+        )
+        with self.assertRaises(TokenActivityQueryError) as raised:
+            self.run_query([])
+        self.assertEqual(raised.exception.code, "label_file_invalid")
 
     def test_malformed_labels_fail_closed(self) -> None:
         self.labels.write_text("bad,columns\n1,2\n", encoding="utf-8")
