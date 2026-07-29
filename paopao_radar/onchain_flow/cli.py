@@ -26,6 +26,8 @@ from .live_runtime import (
     ReorgManualInterventionRequired,
 )
 from .runtime import replay_fixture
+from .report import TokenReportService
+from .report_notifier import ReportNotifier
 from .token_activity import (
     TokenActivityQuery,
     TokenActivityQueryError,
@@ -66,6 +68,14 @@ def build_parser() -> argparse.ArgumentParser:
     cursor_status.add_argument("--chain", choices=("base",), required=True)
     _add_token_query_arguments(subparsers.add_parser("token-activity"))
     _add_token_query_arguments(subparsers.add_parser("token-analysis"))
+    token_report = subparsers.add_parser("token-report")
+    _add_token_query_arguments(token_report)
+    token_report.add_argument("--with-ai", action="store_true")
+    token_notify = subparsers.add_parser("token-notify")
+    _add_token_query_arguments(token_notify)
+    token_notify.add_argument("--with-ai", action="store_true")
+    token_notify.add_argument("--send", action="store_true")
+    token_notify.add_argument("--confirm-real-send", action="store_true")
 
     replay = subparsers.add_parser("replay")
     replay.add_argument("--fixture", required=True)
@@ -388,7 +398,12 @@ def main(
     token_activity_network_started = False
     try:
         settings = settings or OnchainSettings.load()
-        if args.command in {"token-activity", "token-analysis"}:
+        if args.command in {
+            "token-activity",
+            "token-analysis",
+            "token-report",
+            "token-notify",
+        }:
             settings.validate()
             query = TokenActivityQuery.create(
                 settings,
@@ -413,32 +428,64 @@ def main(
                     ),
                     network_activity=False,
                 )
+                if args.command in {"token-report", "token-notify"}:
+                    payload["ai_calls"] = False
                 _print_token_activity(
                     payload,
                     pretty=bool(args.pretty),
                     output_file=None,
                 )
                 return 1
-            service = (
-                TokenActivityQueryService.from_settings(settings, query)
-                if args.command == "token-activity"
-                else TokenAnalysisService.from_settings(settings, query)
-            )
+            if args.command == "token-activity":
+                service = TokenActivityQueryService.from_settings(
+                    settings, query
+                )
+            elif args.command == "token-analysis":
+                service = TokenAnalysisService.from_settings(settings, query)
+            else:
+                service = TokenReportService.from_settings(settings, query)
             token_activity_network_started = True
-            payload = service.execute(query)
+            if args.command in {"token-report", "token-notify"}:
+                payload = service.execute(
+                    query,
+                    with_ai=bool(args.with_ai),
+                )
+            else:
+                payload = service.execute(query)
+            notification_status = ""
+            if args.command == "token-notify":
+                notification = ReportNotifier(settings).notify(
+                    payload,
+                    send=bool(args.send),
+                    confirm_real_send=bool(args.confirm_real_send),
+                )
+                payload["notification"] = {
+                    "status": notification.status,
+                    "reason": notification.reason,
+                    "sent": notification.sent,
+                    "message_ids": notification.message_ids or [],
+                    "delivery_id": notification.delivery_id,
+                }
+                notification_status = notification.status
             _print_token_activity(
                 payload,
                 pretty=bool(args.pretty),
                 output_file=args.output_file,
                 settings=settings,
             )
-            if args.command == "token-analysis":
+            if args.command in {
+                "token-analysis",
+                "token-report",
+                "token-notify",
+            }:
                 analysis = payload.get("analysis")
                 if (
                     isinstance(analysis, dict)
                     and not bool(analysis.get("complete"))
                 ):
                     return 2
+            if notification_status in {"blocked", "failed"}:
+                return 1
             return 0 if payload["status"] == "ok" else 2
         if args.command == "status":
             payload = settings.diagnostic()
@@ -554,6 +601,8 @@ def main(
             exc,
             network_activity=token_activity_network_started,
         )
+        if args.command in {"token-report", "token-notify"}:
+            payload["ai_calls"] = False
         _print_token_activity(
             payload,
             pretty=bool(getattr(args, "pretty", False)),

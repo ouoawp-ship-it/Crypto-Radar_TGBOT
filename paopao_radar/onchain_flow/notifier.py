@@ -13,33 +13,40 @@ from .formatter import format_alert
 from .models import OnchainAlert
 
 
+def build_onchain_telegram_gateway(
+    settings: OnchainSettings,
+) -> TelegramGateway:
+    settings.assert_safe_paths()
+    gateway_settings = Settings(
+        base_dir=settings.base_dir,
+        data_dir=settings.data_dir,
+        tg_bot_token=settings.tg_bot_token,
+        tg_chat_id=settings.tg_chat_id,
+        tg_onchain_flow_topic_id=settings.tg_onchain_flow_topic_id,
+        tg_use_topic=(
+            settings.tg_use_topic or bool(settings.tg_onchain_flow_topic_id)
+        ),
+        tg_topic_routes_path=settings.tg_topic_routes_path,
+        tg_push_history_path=settings.tg_push_history_path,
+        tg_outbox_path=settings.tg_outbox_path,
+        tg_global_hourly_limit=settings.tg_hourly_limit,
+        tg_default_cooldown_sec=settings.alert_cooldown_sec,
+        signal_events_path=settings.signal_events_path,
+        signal_events_db_path=settings.signal_events_db_path,
+        runtime_status_path=settings.runtime_status_path,
+    )
+    return TelegramGateway(
+        gateway_settings,
+        JsonStore(settings.data_dir),
+    )
+
+
 class OnchainNotifier:
     def __init__(self, settings: OnchainSettings, store: OnchainStore):
         settings.assert_safe_paths()
         self.onchain_settings = settings
         self.store = store
-        gateway_settings = Settings(
-            base_dir=settings.base_dir,
-            data_dir=settings.data_dir,
-            tg_bot_token=settings.tg_bot_token,
-            tg_chat_id=settings.tg_chat_id,
-            tg_onchain_flow_topic_id=settings.tg_onchain_flow_topic_id,
-            tg_use_topic=(
-                settings.tg_use_topic or bool(settings.tg_onchain_flow_topic_id)
-            ),
-            tg_topic_routes_path=settings.tg_topic_routes_path,
-            tg_push_history_path=settings.tg_push_history_path,
-            tg_outbox_path=settings.tg_outbox_path,
-            tg_global_hourly_limit=settings.tg_hourly_limit,
-            tg_default_cooldown_sec=settings.alert_cooldown_sec,
-            signal_events_path=settings.signal_events_path,
-            signal_events_db_path=settings.signal_events_db_path,
-            runtime_status_path=settings.runtime_status_path,
-        )
-        self.gateway = TelegramGateway(
-            gateway_settings,
-            JsonStore(settings.data_dir),
-        )
+        self.gateway = build_onchain_telegram_gateway(settings)
 
     def notify(
         self,
