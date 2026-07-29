@@ -205,6 +205,7 @@ class OnchainSettings:
     oar_ai_max_context_chars: int = 30000
     oar_ai_max_output_chars: int = 8000
     oar_replace_complete_card_with_partial: bool = False
+    oar_replace_rich_ai_card_with_rule_only: bool = False
 
     @classmethod
     def load(
@@ -474,6 +475,11 @@ class OnchainSettings:
             oar_replace_complete_card_with_partial=_bool(
                 values,
                 "OAR_REPLACE_COMPLETE_CARD_WITH_PARTIAL",
+                False,
+            ),
+            oar_replace_rich_ai_card_with_rule_only=_bool(
+                values,
+                "OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY",
                 False,
             ),
         )
@@ -788,9 +794,20 @@ class OnchainSettings:
                 or not ai_url.hostname
                 or ai_url.username is not None
                 or ai_url.password is not None
+                or bool(ai_url.query)
+                or bool(ai_url.fragment)
             ):
                 raise SettingsValidationError(
-                    "OAR_AI_BASE_URL must be a credential-free HTTP(S) URL"
+                    "OAR_AI_BASE_URL must be a credential-free HTTP(S) URL "
+                    "without query or fragment"
+                )
+            if (
+                ai_url.scheme.lower() == "http"
+                and ai_url.hostname.lower()
+                not in {"localhost", "127.0.0.1", "::1"}
+            ):
+                raise SettingsValidationError(
+                    "OAR_AI_BASE_URL must use HTTPS unless it targets loopback"
                 )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
@@ -907,6 +924,9 @@ class OnchainSettings:
                 "ai_cache_ttl_sec": self.oar_ai_cache_ttl_sec,
                 "replace_complete_card_with_partial": (
                     self.oar_replace_complete_card_with_partial
+                ),
+                "replace_rich_ai_card_with_rule_only": (
+                    self.oar_replace_rich_ai_card_with_rule_only
                 ),
             },
         }

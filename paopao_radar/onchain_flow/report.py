@@ -44,6 +44,29 @@ def _canonical_hash(value: object) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _restricted_ai_input(payload: dict[str, object]) -> bool:
+    analysis = _mapping(payload.get("analysis"))
+    primary = _mapping(analysis.get("primary_behavior"))
+    return (
+        not bool(payload.get("complete"))
+        or not bool(analysis.get("complete"))
+        or str(analysis.get("status") or "")
+        in {
+            "partial_input",
+            "partial_analysis",
+            "insufficient_evidence",
+            "no_activity",
+        }
+        or str(primary.get("type") or "")
+        in {
+            "no_activity",
+            "isolated",
+            "inconclusive_activity",
+            "insufficient_data",
+        }
+    )
+
+
 def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
     query = _mapping(payload.get("query"))
     token = _mapping(payload.get("token"))
@@ -236,19 +259,11 @@ class TokenReportService:
         rule_summary = build_rule_summary(payload)
         rule_text = build_rule_summary_text(rule_summary)
         analysis = _mapping(payload.get("analysis"))
-        partial_for_ai = (
-            not bool(payload.get("complete"))
-            or str(analysis.get("status") or "")
-            in {
-                "partial_input",
-                "partial_analysis",
-                "insufficient_evidence",
-            }
-        )
+        restricted_for_ai = _restricted_ai_input(payload)
         ai = self._ai_result(
             context,
             requested=with_ai,
-            partial_input=partial_for_ai,
+            restricted_input=restricted_for_ai,
         )
         content_basis = {
             "rule_summary": rule_summary,
@@ -281,7 +296,7 @@ class TokenReportService:
         context: dict[str, object],
         *,
         requested: bool,
-        partial_input: bool,
+        restricted_input: bool,
     ) -> dict[str, object]:
         if not requested:
             return {
@@ -315,7 +330,7 @@ class TokenReportService:
             try:
                 validated = validate_ai_output(
                     cached.result,
-                    partial_input=partial_input,
+                    restricted_input=restricted_input,
                 )
             except OarAiError:
                 validated = None
@@ -352,11 +367,11 @@ class TokenReportService:
         try:
             result = client.analyze(
                 context,
-                partial_input=partial_input,
+                restricted_input=restricted_input,
             )
             validated = validate_ai_output(
                 result,
-                partial_input=partial_input,
+                restricted_input=restricted_input,
             )
         except OarAiError as exc:
             return {

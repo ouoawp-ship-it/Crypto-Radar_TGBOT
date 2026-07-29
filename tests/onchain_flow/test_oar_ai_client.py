@@ -92,7 +92,7 @@ class OarAiClientTests(unittest.TestCase):
         session = FakeSession([FakeResponse(200, envelope(valid_output()))])
         result = self.client(session).analyze(
             {"schema_version": 1},
-            partial_input=False,
+            restricted_input=False,
         )
         self.assertEqual(result["bias"], "neutral")
         self.assertFalse(session.calls[0]["allow_redirects"])
@@ -102,16 +102,16 @@ class OarAiClientTests(unittest.TestCase):
         extra = valid_output()
         extra["facts"] = {"transfer_count": 999}
         with self.assertRaises(OarAiError):
-            validate_ai_output(extra, partial_input=False)
+            validate_ai_output(extra, restricted_input=False)
         invalid = valid_output(bias="certain")
         with self.assertRaises(OarAiError):
-            validate_ai_output(invalid, partial_input=False)
+            validate_ai_output(invalid, restricted_input=False)
 
     def test_array_length_and_markdown_are_rejected(self) -> None:
         oversized = valid_output()
         oversized["watch_signals"] = ["x"] * 6
         with self.assertRaises(OarAiError):
-            validate_ai_output(oversized, partial_input=False)
+            validate_ai_output(oversized, restricted_input=False)
         session = FakeSession(
             [
                 FakeResponse(
@@ -125,17 +125,17 @@ class OarAiClientTests(unittest.TestCase):
             ]
         )
         with self.assertRaises(OarAiError):
-            self.client(session).analyze({}, partial_input=False)
+            self.client(session).analyze({}, restricted_input=False)
 
     def test_partial_input_forces_low_neutral_or_uncertain(self) -> None:
         with self.assertRaises(OarAiError):
             validate_ai_output(
                 valid_output(bias="bullish", confidence="high"),
-                partial_input=True,
+                restricted_input=True,
             )
         accepted = validate_ai_output(
             valid_output(bias="uncertain", confidence="low"),
-            partial_input=True,
+            restricted_input=True,
         )
         self.assertEqual(accepted["confidence"], "low")
 
@@ -145,7 +145,7 @@ class OarAiClientTests(unittest.TestCase):
             payload["primary_hypothesis"] = phrase
             with self.subTest(phrase=phrase):
                 with self.assertRaises(OarAiError):
-                    validate_ai_output(payload, partial_input=False)
+                    validate_ai_output(payload, restricted_input=False)
 
     def test_429_and_5xx_retry_is_bounded(self) -> None:
         sleeps: list[float] = []
@@ -160,7 +160,7 @@ class OarAiClientTests(unittest.TestCase):
             session,
             retries=2,
             sleep=sleeps,
-        ).analyze({}, partial_input=False)
+        ).analyze({}, restricted_input=False)
         self.assertEqual(result["bias"], "neutral")
         self.assertEqual(len(session.calls), 3)
         self.assertEqual(sleeps, [1, 2])
@@ -172,7 +172,7 @@ class OarAiClientTests(unittest.TestCase):
         with self.assertRaises(OarAiError) as caught:
             self.client(session, retries=1).analyze(
                 {},
-                partial_input=False,
+                restricted_input=False,
             )
         self.assertEqual(caught.exception.code, "ai_timeout")
         self.assertNotIn("top-secret-key", str(caught.exception))
@@ -181,7 +181,7 @@ class OarAiClientTests(unittest.TestCase):
     def test_redirect_is_not_followed(self) -> None:
         session = FakeSession([FakeResponse(302, {})])
         with self.assertRaises(OarAiError) as caught:
-            self.client(session).analyze({}, partial_input=False)
+            self.client(session).analyze({}, restricted_input=False)
         self.assertEqual(caught.exception.code, "ai_redirect_rejected")
         self.assertEqual(len(session.calls), 1)
 

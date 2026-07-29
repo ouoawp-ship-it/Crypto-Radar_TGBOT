@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -116,18 +117,23 @@ def old_card(
     content_hash: str,
     message_ids: list[int],
     complete: bool = True,
+    context_hash: str | None = None,
+    ai_status: str | None = None,
 ) -> dict[str, object]:
+    signal_record: dict[str, object] = {
+        "oar_card_key": f"oar:8453:{contract}:4h",
+        "oar_content_hash": content_hash,
+        "analysis_complete": complete,
+    }
+    if context_hash is not None:
+        signal_record["context_hash"] = context_hash
+    if ai_status is not None:
+        signal_record["ai_status"] = ai_status
     return {
         "template_id": "TG_ONCHAIN_FLOW_ALERT",
         "status": "sent",
         "message_ids": message_ids,
-        "signal_records": [
-            {
-                "oar_card_key": f"oar:8453:{contract}:4h",
-                "oar_content_hash": content_hash,
-                "analysis_complete": complete,
-            }
-        ],
+        "signal_records": [signal_record],
     }
 
 
@@ -300,6 +306,33 @@ class OarReportNotifierTests(unittest.TestCase):
         self.assertFalse(gateway.send_kwargs)
         self.assertFalse(any(event[0] == "delete" for event in gateway.events))
 
+    def test_partial_protection_precedes_ai_degradation_protection(self) -> None:
+        partial = self.report("partial_input")
+        context_hash = partial["report"]["context_hash"]
+        gateway = FakeGateway(
+            history=[
+                old_card(
+                    contract=(
+                        "0x9999999999999999999999999999999999999999"
+                    ),
+                    content_hash="complete",
+                    message_ids=[10],
+                    complete=True,
+                    context_hash=context_hash,
+                    ai_status="available",
+                )
+            ]
+        )
+        result = ReportNotifier(
+            replace(self.settings, real_send=True),
+            gateway=gateway,
+        ).notify(partial, send=True, confirm_real_send=True)
+        self.assertEqual(
+            result.reason,
+            "partial_does_not_replace_complete",
+        )
+        self.assertFalse(gateway.send_kwargs)
+
     def test_delete_failure_is_audited_and_remains_retryable(self) -> None:
         contract = "0x9999999999999999999999999999999999999999"
         gateway = FakeGateway(
@@ -349,6 +382,74 @@ class OarReportNotifierTests(unittest.TestCase):
         self.assertIn(("delete", [10]), gateway.events)
         self.assertNotIn(("delete", [20]), gateway.events)
 
+    def test_ai_degradation_does_not_replace_richer_same_context(self) -> None:
+        for old_status, new_status in (
+            ("available", "failed"),
+            ("cached", "hourly_limit"),
+            ("available", "not_requested"),
+        ):
+            with self.subTest(
+                old_status=old_status,
+                new_status=new_status,
+            ):
+                payload = self.report()
+                payload["report"]["ai"]["status"] = new_status
+                context_hash = payload["report"]["context_hash"]
+                gateway = FakeGateway(
+                    history=[
+                        old_card(
+                            contract=(
+                                "0x9999999999999999999999999999999999999999"
+                            ),
+                            content_hash="rich",
+                            message_ids=[10],
+                            context_hash=context_hash,
+                            ai_status=old_status,
+                        )
+                    ]
+                )
+                result = ReportNotifier(
+                    replace(self.settings, real_send=True),
+                    gateway=gateway,
+                ).notify(
+                    payload,
+                    send=True,
+                    confirm_real_send=True,
+                )
+                self.assertEqual(result.status, "skipped")
+                self.assertEqual(
+                    result.reason,
+                    "ai_degradation_does_not_replace_richer_card",
+                )
+                self.assertFalse(gateway.send_kwargs)
+                self.assertFalse(
+                    any(event[0] == "delete" for event in gateway.events)
+                )
+
+    def test_changed_context_allows_rule_only_fact_card(self) -> None:
+        payload = self.report()
+        payload["report"]["ai"]["status"] = "failed"
+        gateway = FakeGateway(
+            history=[
+                old_card(
+                    contract=(
+                        "0x9999999999999999999999999999999999999999"
+                    ),
+                    content_hash="rich",
+                    message_ids=[10],
+                    context_hash="different-context",
+                    ai_status="available",
+                )
+            ]
+        )
+        result = ReportNotifier(
+            replace(self.settings, real_send=True),
+            gateway=gateway,
+        ).notify(payload, send=True, confirm_real_send=True)
+        self.assertTrue(result.sent)
+        self.assertEqual(gateway.events[0][0], "send")
+        self.assertIn(("delete", [10]), gateway.events)
+
     def test_dry_run_writes_only_independent_onchain_signal_store(self) -> None:
         payload = self.report()
         with patch(
@@ -368,14 +469,35 @@ class OarReportNotifierTests(unittest.TestCase):
             sqlite3.connect(self.settings.signal_events_db_path)
         ) as conn:
             row = conn.execute(
-                "SELECT module, template_id, symbol, payload_json "
+                "SELECT module, template_id, symbol, score, payload_json "
                 "FROM signals ORDER BY id DESC LIMIT 1"
             ).fetchone()
         self.assertEqual(row[0], "onchain")
         self.assertEqual(row[1], "TG_ONCHAIN_FLOW_ALERT")
         self.assertEqual(row[2], "TST")
-        self.assertIn('"behavior_type"', row[3])
+        stored_payload = json.loads(row[4])
+        stored_facts = stored_payload["facts"]
+        self.assertEqual(row[3], stored_facts["behavior_score"])
+        self.assertEqual(
+            stored_facts["score"],
+            stored_facts["behavior_score"],
+        )
+        self.assertIn("behavior_type", stored_facts)
         self.assertTrue(self.settings.tg_push_history_path.exists())
+        history = json.loads(
+            self.settings.tg_push_history_path.read_text(encoding="utf-8")
+        )
+        audit = history[-1]["signal_records"][0]
+        self.assertEqual(audit["score"], audit["behavior_score"])
+        self.assertEqual(
+            audit["context_hash"],
+            payload["report"]["context_hash"],
+        )
+        self.assertNotIn("summary", audit)
+        serialized = json.dumps(audit, ensure_ascii=False)
+        self.assertNotIn("OAR_AI_API_KEY", serialized)
+        self.assertNotIn("RPC_URL", serialized)
+        self.assertNotIn("private", serialized.lower())
 
 
 if __name__ == "__main__":

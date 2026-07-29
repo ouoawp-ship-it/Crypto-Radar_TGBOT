@@ -44,9 +44,9 @@ class FakeAi:
         self,
         context: dict[str, object],
         *,
-        partial_input: bool,
+        restricted_input: bool,
     ) -> dict[str, object]:
-        del context, partial_input
+        del context, restricted_input
         self.calls += 1
         return {
             "schema_version": 1,
@@ -59,6 +59,42 @@ class FakeAi:
             "invalidation_conditions": [],
             "risk_notes": [],
         }
+
+
+class ConfiguredAi:
+    def __init__(self, result: dict[str, object]):
+        self.result = deepcopy(result)
+        self.calls = 0
+        self.restricted_inputs: list[bool] = []
+
+    def analyze(
+        self,
+        context: dict[str, object],
+        *,
+        restricted_input: bool,
+    ) -> dict[str, object]:
+        del context
+        self.calls += 1
+        self.restricted_inputs.append(restricted_input)
+        return deepcopy(self.result)
+
+
+def ai_output(
+    *,
+    bias: str = "neutral",
+    confidence: str = "low",
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "bias": bias,
+        "confidence": confidence,
+        "primary_hypothesis": "链上活动仍需继续确认。",
+        "alternative_hypotheses": [],
+        "likely_next_actions": [],
+        "watch_signals": [],
+        "invalidation_conditions": [],
+        "risk_notes": [],
+    }
 
 
 class MemoryCache:
@@ -85,8 +121,8 @@ class MemoryCache:
 
 
 class FailingAi:
-    def analyze(self, context: object, *, partial_input: bool) -> object:
-        del context, partial_input
+    def analyze(self, context: object, *, restricted_input: bool) -> object:
+        del context, restricted_input
         raise RuntimeError("provider exploded with secret")
 
 
@@ -109,6 +145,19 @@ class OarReportTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def ai_settings(self) -> object:
+        return replace(
+            self.settings,
+            oar_ai_enable=True,
+            oar_ai_base_url="https://ai.invalid/v1",
+            oar_ai_api_key="configured-secret",
+            oar_ai_model="fixture-model",
+            oar_ai_cache_path=self.settings.data_dir / "ai.json",
+        )
+
+    def analyzed_case(self, name: str) -> dict[str, object]:
+        return analyzed_payload(self.settings, name)
 
     def test_context_uses_only_whitelisted_bounded_facts(self) -> None:
         payload = analyzed_payload(self.settings, "accumulation")
@@ -287,6 +336,90 @@ class OarReportTests(unittest.TestCase):
         ).execute(self.query, with_ai=False)
         self.assertEqual(result["report"]["status"], "ok")
         self.assertEqual(result["analysis"]["valuation_basis"], "token_amount")
+
+    def test_low_evidence_behaviors_reject_directional_high_ai(self) -> None:
+        cases = ("no_activity", "isolated")
+        for name in cases:
+            with self.subTest(name=name):
+                payload = self.analyzed_case(name)
+                fake = ConfiguredAi(
+                    ai_output(bias="bullish", confidence="high")
+                )
+                result = TokenReportService(
+                    self.ai_settings(),
+                    StaticActivity(payload),
+                    ai_client=fake,
+                    ai_cache=MemoryCache(),
+                ).execute(self.query, with_ai=True)
+                self.assertEqual(result["report"]["ai"]["status"], "invalid")
+                self.assertEqual(fake.restricted_inputs, [True])
+
+    def test_low_evidence_behaviors_accept_low_neutral_ai(self) -> None:
+        for name, bias in (
+            ("no_activity", "uncertain"),
+            ("isolated", "neutral"),
+        ):
+            with self.subTest(name=name):
+                fake = ConfiguredAi(
+                    ai_output(bias=bias, confidence="low")
+                )
+                result = TokenReportService(
+                    self.ai_settings(),
+                    StaticActivity(self.analyzed_case(name)),
+                    ai_client=fake,
+                    ai_cache=MemoryCache(),
+                ).execute(self.query, with_ai=True)
+                self.assertEqual(
+                    result["report"]["ai"]["status"],
+                    "available",
+                )
+                self.assertEqual(fake.restricted_inputs, [True])
+
+    def test_inconclusive_is_restricted_but_formal_behavior_is_not(self) -> None:
+        inconclusive = self.analyzed_case("isolated")
+        inconclusive["analysis"]["status"] = "insufficient_evidence"
+        inconclusive["analysis"]["primary_behavior"]["type"] = (
+            "inconclusive_activity"
+        )
+        restricted_ai = ConfiguredAi(
+            ai_output(bias="bearish", confidence="high")
+        )
+        restricted = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(inconclusive),
+            ai_client=restricted_ai,
+            ai_cache=MemoryCache(),
+        ).execute(self.query, with_ai=True)
+        self.assertEqual(restricted["report"]["ai"]["status"], "invalid")
+        self.assertEqual(restricted_ai.restricted_inputs, [True])
+
+        formal_ai = ConfiguredAi(
+            ai_output(bias="bullish", confidence="high")
+        )
+        formal = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(self.analyzed_case("accumulation")),
+            ai_client=formal_ai,
+            ai_cache=MemoryCache(),
+        ).execute(self.query, with_ai=True)
+        self.assertEqual(formal["report"]["ai"]["status"], "available")
+        self.assertEqual(formal_ai.restricted_inputs, [False])
+
+    def test_restricted_input_rejects_stale_richer_cache(self) -> None:
+        cache = MemoryCache()
+        cache.result = ai_output(bias="bullish", confidence="high")
+        fake = ConfiguredAi(
+            ai_output(bias="uncertain", confidence="low")
+        )
+        result = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(self.analyzed_case("no_activity")),
+            ai_client=fake,
+            ai_cache=cache,
+        ).execute(self.query, with_ai=True)
+        self.assertEqual(result["report"]["ai"]["status"], "available")
+        self.assertEqual(fake.calls, 1)
+        self.assertEqual(cache.reservations, 1)
 
 
 if __name__ == "__main__":

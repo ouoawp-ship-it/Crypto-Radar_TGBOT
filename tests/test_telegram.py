@@ -12,9 +12,12 @@ from paopao_radar.config import Settings
 from paopao_radar.signal_store import SignalEventStore
 from paopao_radar.storage import JsonStore
 from paopao_radar.telegram import (
+    DEFAULT_TOPIC_INTRO_VERSION,
     TelegramGateway,
+    intro_hash,
     plain_fallback,
     topic_intro_message,
+    topic_intro_version,
     utc_ts,
 )
 
@@ -23,6 +26,94 @@ CST = timezone(timedelta(hours=8))
 
 
 class TelegramGatewayTests(unittest.TestCase):
+    def test_topic_intro_versions_are_isolated_by_template(self) -> None:
+        self.assertEqual(
+            topic_intro_version("TG_ONCHAIN_FLOW_ALERT"),
+            "2026-07-29-oar-p3-v1",
+        )
+        for template_id in ("TG_FUNDING_ALERT", "TG_LAUNCH_ALERT"):
+            with self.subTest(template_id=template_id):
+                self.assertEqual(
+                    topic_intro_version(template_id),
+                    DEFAULT_TOPIC_INTRO_VERSION,
+                )
+
+    def test_oar_intro_refresh_does_not_touch_core_intro_records(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_topic_routes_path=route_path,
+                tg_topic_intro_enable=True,
+                tg_topic_intro_pin=True,
+            )
+            funding_intro = topic_intro_message(
+                "TG_FUNDING_ALERT",
+                settings,
+            )
+            funding_record = {
+                "template_id": "TG_FUNDING_ALERT",
+                "topic_id": "12",
+                "message_id": 701,
+                "pinned": True,
+                "intro_version": DEFAULT_TOPIC_INTRO_VERSION,
+                "content_hash": intro_hash(funding_intro),
+            }
+            store.save(route_path, {
+                "intros": {
+                    "TG_ONCHAIN_FLOW_ALERT:21": {
+                        "template_id": "TG_ONCHAIN_FLOW_ALERT",
+                        "topic_id": "21",
+                        "message_id": 777,
+                        "pinned": True,
+                        "intro_version": topic_intro_version(
+                            "TG_ONCHAIN_FLOW_ALERT"
+                        ),
+                        "content_hash": "stale-oar-content",
+                    },
+                    "TG_FUNDING_ALERT:12": funding_record,
+                }
+            })
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    return_value=(True, [778]),
+                ) as send_mock,
+                patch.object(
+                    gateway,
+                    "_pin_message",
+                    return_value=True,
+                ),
+                patch.object(
+                    gateway,
+                    "_delete_message",
+                    return_value=True,
+                ) as delete_mock,
+            ):
+                gateway._ensure_topic_intro(
+                    "TG_ONCHAIN_FLOW_ALERT",
+                    "21",
+                )
+                gateway._ensure_topic_intro("TG_FUNDING_ALERT", "12")
+
+            send_mock.assert_called_once()
+            delete_mock.assert_called_once_with(777)
+            data = store.load(route_path, {})
+            self.assertEqual(
+                data["intros"]["TG_FUNDING_ALERT:12"],
+                funding_record,
+            )
+            self.assertEqual(
+                data["intros"]["TG_ONCHAIN_FLOW_ALERT:21"][
+                    "intro_version"
+                ],
+                "2026-07-29-oar-p3-v1",
+            )
+
     def test_detailed_delete_audits_history_and_releases_dedup(self) -> None:
         with TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "push_history.json"
@@ -376,6 +467,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 tg_outbox_path=Path(tmp) / "tg_outbox.json",
                 tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                 tg_chat_id="-1001234567890",
+                tg_auto_create_topics=False,
                 tg_default_cooldown_sec=0,
                 tg_topic_intro_enable=False,
             )
@@ -412,6 +504,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 tg_outbox_path=Path(tmp) / "tg_outbox.json",
                 tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                 tg_chat_id="-1001234567890",
+                tg_auto_create_topics=False,
                 tg_default_cooldown_sec=0,
                 tg_topic_intro_enable=False,
             )

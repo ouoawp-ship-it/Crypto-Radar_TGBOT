@@ -84,13 +84,14 @@ OAR_AI_CACHE_TTL_SEC=3600
 OAR_AI_MAX_CONTEXT_CHARS=30000
 OAR_AI_MAX_OUTPUT_CHARS=8000
 OAR_AI_CACHE_FILE=oar_ai_cache.json
+OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY=false
 ```
 
-适配器使用 OpenAI-compatible `chat/completions`，有限超时和重试，拒绝 HTTP Redirect，并对 401/403、429、5xx、timeout 和连接失败分类。API Key 只进入 Authorization Header，不进入日志、JSON、异常或缓存。
+适配器使用 OpenAI-compatible `chat/completions`，有限超时和重试，拒绝 HTTP Redirect，并对 401/403、429、5xx、timeout 和连接失败分类。远程 Base URL 必须使用 HTTPS；HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1` 回环地址。URL 不允许包含用户名、密码、query 或 fragment。API Key 只进入 Authorization Header，不进入日志、JSON、异常或缓存。
 
 AI 必须返回严格 JSON，字段为 `bias`、`confidence`、主要/备选假设、可能动作、观察信号、失效条件和风险提示。未知字段、Markdown 代码块、价格目标、杠杆建议、自动交易指令、确定性钱包身份，以及“入所已经卖出/提币已经买入”等表述会被拒绝。
 
-当查询不完整，或分析为 `partial_input`、`partial_analysis`、`insufficient_evidence` 时，AI 只能输出 `neutral|uncertain` 和 `low` confidence。
+当查询/分析不完整，分析为 `partial_input`、`partial_analysis`、`insufficient_evidence`、`no_activity`，或 Primary Behavior 为 `no_activity`、`isolated`、`inconclusive_activity`、`insufficient_data` 时，AI 只能输出 `neutral|uncertain` 和 `low` confidence。缓存结果也重新执行相同校验，不合格的旧缓存不会被复用。
 
 有效 AI 结果可缓存于 `data/onchain/oar_ai_cache.json`。缓存只保存 context hash、model、验证后结果和过期时间，不保存 Prompt、Key 或 Header。小时调用预算独立于 RPC 预算。
 
@@ -102,9 +103,11 @@ AI 必须返回严格 JSON，字段为 `bias`、`confidence`、主要/备选假�
 - `TG_ONCHAIN_FLOW_TOPIC_ID`
 - 链上独立 push history、outbox 和 topic routes
 - cooldown、小时限额、delivery ID 和多 chunk 发送
-- topic intro 和双发送门禁
+- 按 Template ID 独立版本化的 topic intro 和双发送门禁
 
 没有第二个 Bot，也没有直接调用 Telegram HTTP 的新发送器。
+
+OAR 使用自己的 Intro 版本；Funding、Launch、Flow、Announcement 和 Radar Summary 等其他模板继续使用 Core Radar Intro 版本。OAR Intro 更新不会触发其他话题重发或删除。
 
 ## 最新状态卡片
 
@@ -125,6 +128,8 @@ dedup_key = {card_key}:{content_hash 前 16 位}
 6. 不删除其他 Token、其他窗口或 Topic Intro。
 
 默认 `OAR_REPLACE_COMPLETE_CARD_WITH_PARTIAL=false`。已有完整卡片时，新的 Partial 结果不会进行真实替换。
+
+默认 `OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY=false`。同一 `card_key`、同一 `context_hash` 下，已有 `available|cached` AI 的高质量卡片不会被 `failed`、`invalid`、`hourly_limit`、`not_requested` 或 `disabled` 的规则-only 卡片替换。链上事实变化导致 `context_hash` 改变时仍允许发送新事实卡片。Partial 不替换完整卡片的保护优先执行。
 
 ## SignalEvent 摘要
 

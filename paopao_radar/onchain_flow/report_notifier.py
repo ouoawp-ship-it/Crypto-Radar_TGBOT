@@ -54,6 +54,9 @@ class ReportNotifier:
         complete = bool(payload.get("complete")) and bool(
             analysis.get("complete")
         )
+        behavior_score = int(primary.get("score") or 0)
+        context_hash = str(report.get("context_hash") or "")
+        ai_status = str(ai.get("status") or "not_requested")
         signal_record = {
             "module": "onchain",
             "template_id": TEMPLATE_ID,
@@ -62,14 +65,15 @@ class ReportNotifier:
             "chain_id": int(query.get("chain_id") or 0),
             "contract": str(query.get("contract") or "").lower(),
             "status": "complete" if complete else "partial",
-            "score": int(primary.get("score") or 0),
+            "score": behavior_score,
+            "behavior_score": behavior_score,
             "behavior_type": str(
                 primary.get("type") or "insufficient_data"
             ),
             "behavior_label": str(primary.get("label") or "数据不足"),
             "summary": str(report.get("rule_summary_text") or "")[:1200],
-            "context_hash": str(report.get("context_hash") or ""),
-            "ai_status": str(ai.get("status") or "not_requested"),
+            "context_hash": context_hash,
+            "ai_status": ai_status,
             "source": "manual_token_notify",
             "oar_card_key": card_key,
             "oar_content_hash": content_hash,
@@ -91,6 +95,31 @@ class ReportNotifier:
             result = PushResult(
                 "skipped",
                 "partial_does_not_replace_complete",
+                False,
+                [],
+            )
+            self.gateway.record_result(
+                template_id=TEMPLATE_ID,
+                dedup_key=dedup_key,
+                result=result,
+                text=text,
+                signal_records=[signal_record],
+            )
+            return result
+
+        if (
+            real_attempt
+            and not self.settings.oar_replace_rich_ai_card_with_rule_only
+            and ai_status not in {"available", "cached"}
+            and context_hash
+            and any(
+                self._record_has_richer_ai(record, context_hash)
+                for record in old_cards
+            )
+        ):
+            result = PushResult(
+                "skipped",
+                "ai_degradation_does_not_replace_richer_card",
                 False,
                 [],
             )
@@ -199,6 +228,20 @@ class ReportNotifier:
         for item in record.get("signal_records") or []:
             if isinstance(item, dict):
                 return bool(item.get("analysis_complete"))
+        return False
+
+    @staticmethod
+    def _record_has_richer_ai(
+        record: dict[str, object],
+        context_hash: str,
+    ) -> bool:
+        for item in record.get("signal_records") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("context_hash") == context_hash
+                and item.get("ai_status") in {"available", "cached"}
+            ):
+                return True
         return False
 
     @staticmethod

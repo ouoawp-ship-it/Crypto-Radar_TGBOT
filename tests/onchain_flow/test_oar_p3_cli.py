@@ -9,7 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from paopao_radar.onchain_flow.cli import build_parser, main as cli_main
-from paopao_radar.onchain_flow.config import OnchainSettings
+from paopao_radar.onchain_flow.config import (
+    OnchainSettings,
+    SettingsValidationError,
+)
 
 from tests.onchain_flow.support import make_settings
 
@@ -99,6 +102,9 @@ class OarP3CliTests(unittest.TestCase):
         )
         self.assertFalse(settings.oar_ai_enable)
         self.assertFalse(settings.oar_replace_complete_card_with_partial)
+        self.assertFalse(
+            settings.oar_replace_rich_ai_card_with_rule_only
+        )
         diagnostic = settings.diagnostic()["oar_reporting"]
         self.assertFalse(diagnostic["ai_enabled"])
         self.assertFalse(diagnostic["ai_api_key_configured"])
@@ -165,6 +171,67 @@ class OarP3CliTests(unittest.TestCase):
         )
         self.assertNotIn("super-secret-value", diagnostic)
         self.assertIn('"ai_api_key_configured": true', diagnostic)
+
+    def test_ai_base_url_requires_https_except_for_loopback(self) -> None:
+        allowed = (
+            "https://remote.example/v1",
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        )
+        for base_url in allowed:
+            with self.subTest(base_url=base_url):
+                settings = OnchainSettings.load(
+                    environ={
+                        "OAR_AI_ENABLE": "true",
+                        "OAR_AI_BASE_URL": base_url,
+                        "OAR_AI_API_KEY": "configured-secret",
+                        "OAR_AI_MODEL": "fixture-model",
+                    },
+                    base_dir=self.root,
+                )
+                settings.validate()
+
+        settings = OnchainSettings.load(
+            environ={
+                "OAR_AI_ENABLE": "true",
+                "OAR_AI_BASE_URL": "http://remote.example/v1",
+                "OAR_AI_API_KEY": "configured-secret",
+                "OAR_AI_MODEL": "fixture-model",
+            },
+            base_dir=self.root,
+        )
+        with self.assertRaises(SettingsValidationError) as caught:
+            settings.validate()
+        self.assertEqual(
+            str(caught.exception),
+            "OAR_AI_BASE_URL must use HTTPS unless it targets loopback",
+        )
+        self.assertNotIn("configured-secret", str(caught.exception))
+
+    def test_ai_base_url_rejects_credentials_query_and_fragment(self) -> None:
+        rejected = (
+            "https://user:pass@remote.example/v1",
+            "https://remote.example/v1?mode=test",
+            "https://remote.example/v1#fragment",
+        )
+        for base_url in rejected:
+            with self.subTest(base_url=base_url):
+                settings = OnchainSettings.load(
+                    environ={
+                        "OAR_AI_ENABLE": "true",
+                        "OAR_AI_BASE_URL": base_url,
+                        "OAR_AI_API_KEY": "configured-secret",
+                        "OAR_AI_MODEL": "fixture-model",
+                    },
+                    base_dir=self.root,
+                )
+                with self.assertRaises(SettingsValidationError) as caught:
+                    settings.validate()
+                self.assertNotIn(
+                    "configured-secret",
+                    str(caught.exception),
+                )
 
 
 if __name__ == "__main__":

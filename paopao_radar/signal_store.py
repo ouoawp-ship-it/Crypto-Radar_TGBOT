@@ -146,7 +146,8 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "evaluation_eligible", "launch_message_package_v2", "launch_cycle_id",
     "launch_cycle_no", "launch_observation_id",
     "module", "template_id", "chain", "chain_id", "contract",
-    "behavior_type", "behavior_label", "context_hash", "ai_status",
+    "behavior_type", "behavior_label", "behavior_score", "context_hash",
+    "ai_status",
     "oar_card_key", "oar_content_hash", "analysis_status",
     "analysis_complete",
 })

@@ -66,7 +66,17 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_ONCHAIN_FLOW_ALERT": "链上活动雷达",
 }
 
-TOPIC_INTRO_VERSION = "2026-07-29-oar-p3-v1"
+DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
+TOPIC_INTRO_VERSIONS = {
+    "TG_ONCHAIN_FLOW_ALERT": "2026-07-29-oar-p3-v1",
+}
+
+
+def topic_intro_version(template_id: str) -> str:
+    return TOPIC_INTRO_VERSIONS.get(
+        template_id,
+        DEFAULT_TOPIC_INTRO_VERSION,
+    )
 
 
 def seconds_cn(seconds: int) -> str:
@@ -867,6 +877,7 @@ class TelegramGateway:
         if not intro:
             return
         current_hash = intro_hash(intro)
+        current_version = topic_intro_version(template_id)
         intro_key = self._topic_intro_key(template_id, topic_id)
         record = self._topic_intro_record(intro_key)
         previous_message_id = 0
@@ -876,7 +887,7 @@ class TelegramGateway:
             except (TypeError, ValueError):
                 message_id = 0
             is_current = (
-                record.get("intro_version") == TOPIC_INTRO_VERSION
+                record.get("intro_version") == current_version
                 and record.get("content_hash") == current_hash
             )
             if is_current:
@@ -939,7 +950,7 @@ class TelegramGateway:
             "topic_id": topic_id,
             "message_id": message_id,
             "pinned": pinned,
-            "intro_version": TOPIC_INTRO_VERSION,
+            "intro_version": topic_intro_version(template_id),
             "content_hash": content_hash,
             "sent_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1420,7 +1431,9 @@ class TelegramGateway:
                 "contract",
                 "symbol",
                 "behavior_type",
+                "score",
                 "behavior_score",
+                "context_hash",
                 "analysis_status",
                 "analysis_complete",
                 "ai_status",
