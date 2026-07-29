@@ -9,6 +9,7 @@ from typing import Mapping
 from urllib.parse import urlsplit
 
 from .constants import (
+    OAR_BRIDGE_MAX_SIGNALS_PER_CYCLE_HARD,
     OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_HARD,
     OAR_BEHAVIOR_MIN_TX_HARD,
     OAR_MAX_ANALYZED_WALLETS_HARD,
@@ -16,6 +17,9 @@ from .constants import (
     OAR_MAX_WALLET_GROUPS_HARD,
     OAR_PATTERN_MIN_TX_HARD,
     OAR_PATTERN_MIN_WALLETS_HARD,
+    OAR_WATCH_MAX_ACTIVE_TOKENS_HARD,
+    OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE_HARD,
+    OAR_WATCH_MAX_TOKENS_PER_CYCLE_HARD,
     OAR_WALLET_SYNC_WINDOW_SEC_HARD,
     PRODUCTION_WRITE_PATHS,
     TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS_HARD,
@@ -78,6 +82,13 @@ def _decimal(values: Mapping[str, str], name: str, default: str) -> Decimal:
         raise SettingsValidationError(f"{name} must be a decimal") from exc
 
 
+def _csv(values: Mapping[str, str], name: str, default: str) -> tuple[str, ...]:
+    raw = values.get(name, default)
+    return tuple(
+        item.strip().lower() for item in raw.split(",") if item.strip()
+    )
+
+
 def _resolve_data_dir(base_dir: Path, raw: str) -> Path:
     path = Path(raw)
     return path if path.is_absolute() else base_dir / path
@@ -130,6 +141,10 @@ class OnchainSettings:
     signal_events_path: Path = BASE_DIR / "data" / "onchain" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "onchain" / "onchain_signals.db"
     oar_ai_cache_path: Path = BASE_DIR / "data" / "onchain" / "oar_ai_cache.json"
+    oar_automation_db_path: Path = (
+        BASE_DIR / "data" / "onchain" / "oar_automation.db"
+    )
+    main_signal_db_path: Path = BASE_DIR / "data" / "signals.db"
     labels_path: Path = BASE_DIR / "config" / "onchain" / "cex_addresses.example.csv"
     chains_path: Path = BASE_DIR / "config" / "onchain" / "chains.example.json"
     tg_bot_token: str = ""
@@ -206,6 +221,58 @@ class OnchainSettings:
     oar_ai_max_output_chars: int = 8000
     oar_replace_complete_card_with_partial: bool = False
     oar_replace_rich_ai_card_with_rule_only: bool = False
+    oar_automation_enable: bool = False
+    oar_bridge_allowed_modules: tuple[str, ...] = (
+        "launch",
+        "flow",
+        "funding",
+        "announcement",
+    )
+    oar_bridge_overlap_sec: int = 300
+    oar_bridge_bootstrap_lookback_sec: int = 3600
+    oar_bridge_max_signals_per_cycle: int = 100
+    oar_watch_max_active_tokens: int = 50
+    oar_watch_max_tokens_per_cycle: int = 5
+    oar_watch_scan_interval_sec: int = 900
+    oar_watch_live_poll_sec: int = 60
+    oar_watch_query_window: str = "4h"
+    oar_watch_lease_sec: int = 600
+    oar_watch_max_consecutive_failures: int = 10
+    oar_watch_manual_ttl_sec: int = 2592000
+    oar_watch_launch_ttl_sec: int = 86400
+    oar_watch_flow_ttl_sec: int = 86400
+    oar_watch_funding_ttl_sec: int = 43200
+    oar_watch_announcement_ttl_sec: int = 259200
+    oar_watch_manual_priority: int = 100
+    oar_watch_launch_priority: int = 90
+    oar_watch_flow_priority: int = 80
+    oar_watch_funding_priority: int = 70
+    oar_watch_announcement_priority: int = 75
+    oar_watch_notify_min_behavior_score: int = 55
+    oar_watch_notify_min_wallet_score: int = 60
+    oar_watch_notify_partial: bool = False
+    oar_watch_max_events_per_token: int = 1000
+    oar_watch_max_rpc_requests_per_token: int = 100
+    oar_watch_top_transfers: int = 20
+    oar_watch_max_rpc_requests_per_cycle: int = 400
+
+    def __post_init__(self) -> None:
+        default_automation = (
+            BASE_DIR / "data" / "onchain" / "oar_automation.db"
+        )
+        if self.oar_automation_db_path == default_automation:
+            object.__setattr__(
+                self,
+                "oar_automation_db_path",
+                self.data_dir / "oar_automation.db",
+            )
+        default_main_signals = BASE_DIR / "data" / "signals.db"
+        if self.main_signal_db_path == default_main_signals:
+            object.__setattr__(
+                self,
+                "main_signal_db_path",
+                self.base_dir / "data" / "signals.db",
+            )
 
     @classmethod
     def load(
@@ -266,6 +333,15 @@ class OnchainSettings:
                 base_dir,
                 data_dir,
                 values.get("OAR_AI_CACHE_FILE", "oar_ai_cache.json"),
+            ),
+            oar_automation_db_path=_resolve_data_file(
+                base_dir,
+                data_dir,
+                values.get("OAR_AUTOMATION_DB_FILE", "oar_automation.db"),
+            ),
+            main_signal_db_path=_resolve_repo_file(
+                base_dir,
+                values.get("OAR_MAIN_SIGNAL_DB_FILE", "data/signals.db"),
             ),
             labels_path=_resolve_repo_file(
                 base_dir,
@@ -482,6 +558,95 @@ class OnchainSettings:
                 "OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY",
                 False,
             ),
+            oar_automation_enable=_bool(
+                values, "OAR_AUTOMATION_ENABLE", False
+            ),
+            oar_bridge_allowed_modules=_csv(
+                values,
+                "OAR_BRIDGE_ALLOWED_MODULES",
+                "launch,flow,funding,announcement",
+            ),
+            oar_bridge_overlap_sec=_int(
+                values, "OAR_BRIDGE_OVERLAP_SEC", 300
+            ),
+            oar_bridge_bootstrap_lookback_sec=_int(
+                values, "OAR_BRIDGE_BOOTSTRAP_LOOKBACK_SEC", 3600
+            ),
+            oar_bridge_max_signals_per_cycle=_int(
+                values, "OAR_BRIDGE_MAX_SIGNALS_PER_CYCLE", 100
+            ),
+            oar_watch_max_active_tokens=_int(
+                values, "OAR_WATCH_MAX_ACTIVE_TOKENS", 50
+            ),
+            oar_watch_max_tokens_per_cycle=_int(
+                values, "OAR_WATCH_MAX_TOKENS_PER_CYCLE", 5
+            ),
+            oar_watch_scan_interval_sec=_int(
+                values, "OAR_WATCH_SCAN_INTERVAL_SEC", 900
+            ),
+            oar_watch_live_poll_sec=_int(
+                values, "OAR_WATCH_LIVE_POLL_SEC", 60
+            ),
+            oar_watch_query_window=values.get(
+                "OAR_WATCH_QUERY_WINDOW", "4h"
+            ).strip(),
+            oar_watch_lease_sec=_int(
+                values, "OAR_WATCH_LEASE_SEC", 600
+            ),
+            oar_watch_max_consecutive_failures=_int(
+                values, "OAR_WATCH_MAX_CONSECUTIVE_FAILURES", 10
+            ),
+            oar_watch_manual_ttl_sec=_int(
+                values, "OAR_WATCH_MANUAL_TTL_SEC", 2592000
+            ),
+            oar_watch_launch_ttl_sec=_int(
+                values, "OAR_WATCH_LAUNCH_TTL_SEC", 86400
+            ),
+            oar_watch_flow_ttl_sec=_int(
+                values, "OAR_WATCH_FLOW_TTL_SEC", 86400
+            ),
+            oar_watch_funding_ttl_sec=_int(
+                values, "OAR_WATCH_FUNDING_TTL_SEC", 43200
+            ),
+            oar_watch_announcement_ttl_sec=_int(
+                values, "OAR_WATCH_ANNOUNCEMENT_TTL_SEC", 259200
+            ),
+            oar_watch_manual_priority=_int(
+                values, "OAR_WATCH_MANUAL_PRIORITY", 100
+            ),
+            oar_watch_launch_priority=_int(
+                values, "OAR_WATCH_LAUNCH_PRIORITY", 90
+            ),
+            oar_watch_flow_priority=_int(
+                values, "OAR_WATCH_FLOW_PRIORITY", 80
+            ),
+            oar_watch_funding_priority=_int(
+                values, "OAR_WATCH_FUNDING_PRIORITY", 70
+            ),
+            oar_watch_announcement_priority=_int(
+                values, "OAR_WATCH_ANNOUNCEMENT_PRIORITY", 75
+            ),
+            oar_watch_notify_min_behavior_score=_int(
+                values, "OAR_WATCH_NOTIFY_MIN_BEHAVIOR_SCORE", 55
+            ),
+            oar_watch_notify_min_wallet_score=_int(
+                values, "OAR_WATCH_NOTIFY_MIN_WALLET_SCORE", 60
+            ),
+            oar_watch_notify_partial=_bool(
+                values, "OAR_WATCH_NOTIFY_PARTIAL", False
+            ),
+            oar_watch_max_events_per_token=_int(
+                values, "OAR_WATCH_MAX_EVENTS_PER_TOKEN", 1000
+            ),
+            oar_watch_max_rpc_requests_per_token=_int(
+                values, "OAR_WATCH_MAX_RPC_REQUESTS_PER_TOKEN", 100
+            ),
+            oar_watch_top_transfers=_int(
+                values, "OAR_WATCH_TOP_TRANSFERS", 20
+            ),
+            oar_watch_max_rpc_requests_per_cycle=_int(
+                values, "OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE", 400
+            ),
         )
 
     @property
@@ -494,6 +659,7 @@ class OnchainSettings:
             self.tg_topic_routes_path,
             self.signal_events_path,
             self.signal_events_db_path,
+            self.oar_automation_db_path,
         )
         if self.oar_ai_enable:
             return (*paths, self.oar_ai_cache_path)
@@ -589,6 +755,23 @@ class OnchainSettings:
             "oar_ai_cache_ttl_sec",
             "oar_ai_max_context_chars",
             "oar_ai_max_output_chars",
+            "oar_bridge_bootstrap_lookback_sec",
+            "oar_bridge_max_signals_per_cycle",
+            "oar_watch_max_active_tokens",
+            "oar_watch_max_tokens_per_cycle",
+            "oar_watch_scan_interval_sec",
+            "oar_watch_live_poll_sec",
+            "oar_watch_lease_sec",
+            "oar_watch_max_consecutive_failures",
+            "oar_watch_manual_ttl_sec",
+            "oar_watch_launch_ttl_sec",
+            "oar_watch_flow_ttl_sec",
+            "oar_watch_funding_ttl_sec",
+            "oar_watch_announcement_ttl_sec",
+            "oar_watch_max_events_per_token",
+            "oar_watch_max_rpc_requests_per_token",
+            "oar_watch_top_transfers",
+            "oar_watch_max_rpc_requests_per_cycle",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
@@ -601,6 +784,7 @@ class OnchainSettings:
             "rpc_retry",
             "alert_max_event_age_sec",
             "oar_ai_max_retries",
+            "oar_bridge_overlap_sec",
         )
         for field_name in non_negative_ints:
             value = getattr(self, field_name)
@@ -747,6 +931,177 @@ class OnchainSettings:
                 raise SettingsValidationError(
                     f"{name} must be in [{minimum}, {maximum}]"
                 )
+        allowed_bridge_modules = {
+            "launch",
+            "flow",
+            "funding",
+            "announcement",
+        }
+        if (
+            not self.oar_bridge_allowed_modules
+            or len(set(self.oar_bridge_allowed_modules))
+            != len(self.oar_bridge_allowed_modules)
+            or not set(self.oar_bridge_allowed_modules).issubset(
+                allowed_bridge_modules
+            )
+        ):
+            raise SettingsValidationError(
+                "OAR_BRIDGE_ALLOWED_MODULES must be a unique non-empty subset "
+                "of launch,flow,funding,announcement"
+            )
+        for name, value, hard_cap in (
+            (
+                "OAR_BRIDGE_MAX_SIGNALS_PER_CYCLE",
+                self.oar_bridge_max_signals_per_cycle,
+                OAR_BRIDGE_MAX_SIGNALS_PER_CYCLE_HARD,
+            ),
+            (
+                "OAR_WATCH_MAX_ACTIVE_TOKENS",
+                self.oar_watch_max_active_tokens,
+                OAR_WATCH_MAX_ACTIVE_TOKENS_HARD,
+            ),
+            (
+                "OAR_WATCH_MAX_TOKENS_PER_CYCLE",
+                self.oar_watch_max_tokens_per_cycle,
+                OAR_WATCH_MAX_TOKENS_PER_CYCLE_HARD,
+            ),
+            (
+                "OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE",
+                self.oar_watch_max_rpc_requests_per_cycle,
+                OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE_HARD,
+            ),
+        ):
+            if value > hard_cap:
+                raise SettingsValidationError(
+                    f"{name} cannot exceed the hard cap {hard_cap}"
+                )
+        for name, value, minimum, maximum in (
+            ("OAR_BRIDGE_OVERLAP_SEC", self.oar_bridge_overlap_sec, 0, 3600),
+            (
+                "OAR_BRIDGE_BOOTSTRAP_LOOKBACK_SEC",
+                self.oar_bridge_bootstrap_lookback_sec,
+                60,
+                86400,
+            ),
+            (
+                "OAR_WATCH_SCAN_INTERVAL_SEC",
+                self.oar_watch_scan_interval_sec,
+                60,
+                86400,
+            ),
+            (
+                "OAR_WATCH_LIVE_POLL_SEC",
+                self.oar_watch_live_poll_sec,
+                10,
+                3600,
+            ),
+            ("OAR_WATCH_LEASE_SEC", self.oar_watch_lease_sec, 60, 3600),
+            (
+                "OAR_WATCH_MAX_CONSECUTIVE_FAILURES",
+                self.oar_watch_max_consecutive_failures,
+                1,
+                100,
+            ),
+            (
+                "OAR_WATCH_MANUAL_TTL_SEC",
+                self.oar_watch_manual_ttl_sec,
+                60,
+                365 * 86400,
+            ),
+            (
+                "OAR_WATCH_LAUNCH_TTL_SEC",
+                self.oar_watch_launch_ttl_sec,
+                60,
+                30 * 86400,
+            ),
+            (
+                "OAR_WATCH_FLOW_TTL_SEC",
+                self.oar_watch_flow_ttl_sec,
+                60,
+                30 * 86400,
+            ),
+            (
+                "OAR_WATCH_FUNDING_TTL_SEC",
+                self.oar_watch_funding_ttl_sec,
+                60,
+                30 * 86400,
+            ),
+            (
+                "OAR_WATCH_ANNOUNCEMENT_TTL_SEC",
+                self.oar_watch_announcement_ttl_sec,
+                60,
+                30 * 86400,
+            ),
+            (
+                "OAR_WATCH_MAX_EVENTS_PER_TOKEN",
+                self.oar_watch_max_events_per_token,
+                1,
+                TOKEN_ACTIVITY_MAX_EVENTS_HARD,
+            ),
+            (
+                "OAR_WATCH_MAX_RPC_REQUESTS_PER_TOKEN",
+                self.oar_watch_max_rpc_requests_per_token,
+                1,
+                TOKEN_ACTIVITY_MAX_RPC_REQUESTS_HARD,
+            ),
+            (
+                "OAR_WATCH_TOP_TRANSFERS",
+                self.oar_watch_top_transfers,
+                1,
+                TOKEN_ACTIVITY_TOP_N_HARD,
+            ),
+        ):
+            if value < minimum or value > maximum:
+                raise SettingsValidationError(
+                    f"{name} must be in [{minimum}, {maximum}]"
+                )
+        for name, value in (
+            ("OAR_WATCH_MANUAL_PRIORITY", self.oar_watch_manual_priority),
+            ("OAR_WATCH_LAUNCH_PRIORITY", self.oar_watch_launch_priority),
+            ("OAR_WATCH_FLOW_PRIORITY", self.oar_watch_flow_priority),
+            ("OAR_WATCH_FUNDING_PRIORITY", self.oar_watch_funding_priority),
+            (
+                "OAR_WATCH_ANNOUNCEMENT_PRIORITY",
+                self.oar_watch_announcement_priority,
+            ),
+            (
+                "OAR_WATCH_NOTIFY_MIN_BEHAVIOR_SCORE",
+                self.oar_watch_notify_min_behavior_score,
+            ),
+            (
+                "OAR_WATCH_NOTIFY_MIN_WALLET_SCORE",
+                self.oar_watch_notify_min_wallet_score,
+            ),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value > 100
+            ):
+                raise SettingsValidationError(f"{name} must be in [0, 100]")
+        if self.oar_watch_query_window not in {"15m", "1h", "4h", "24h"}:
+            raise SettingsValidationError(
+                "OAR_WATCH_QUERY_WINDOW must be 15m, 1h, 4h, or 24h"
+            )
+        if self.oar_watch_max_rpc_requests_per_cycle < (
+            self.oar_watch_max_rpc_requests_per_token
+        ):
+            raise SettingsValidationError(
+                "OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE cannot be lower than "
+                "OAR_WATCH_MAX_RPC_REQUESTS_PER_TOKEN"
+            )
+        if self.oar_automation_enable and (
+            self.oar_watch_max_events_per_token
+            > self.token_activity_max_events
+            or self.oar_watch_max_rpc_requests_per_token
+            > self.token_activity_max_rpc_requests
+            or self.oar_watch_top_transfers > self.token_activity_top_n
+        ):
+            raise SettingsValidationError(
+                "enabled OAR watch query budgets cannot exceed the configured "
+                "Token Activity limits"
+            )
         for name, value, minimum, maximum in (
             ("OAR_AI_TIMEOUT_SEC", self.oar_ai_timeout_sec, 1, 120),
             ("OAR_AI_MAX_RETRIES", self.oar_ai_max_retries, 0, 3),
@@ -842,6 +1197,14 @@ class OnchainSettings:
             if value and urlsplit(value).scheme.lower() not in schemes:
                 raise SettingsValidationError(f"{name} has an invalid scheme")
         self.assert_safe_paths()
+        main_signal_path = self.main_signal_db_path.resolve()
+        if main_signal_path == self.oar_automation_db_path.resolve() or (
+            _is_relative_to(main_signal_path, self.data_dir.resolve())
+        ):
+            raise SettingsValidationError(
+                "OAR_MAIN_SIGNAL_DB_FILE must remain outside the on-chain "
+                "writable data directory"
+            )
 
     def diagnostic(self) -> dict[str, object]:
         self.validate()
@@ -928,5 +1291,41 @@ class OnchainSettings:
                 "replace_rich_ai_card_with_rule_only": (
                     self.oar_replace_rich_ai_card_with_rule_only
                 ),
+            },
+            "oar_automation": {
+                "enabled": self.oar_automation_enable,
+                "automation_db_exists": self.oar_automation_db_path.exists(),
+                "main_signal_db_exists": self.main_signal_db_path.exists(),
+                "allowed_modules": list(self.oar_bridge_allowed_modules),
+                "bridge_overlap_sec": self.oar_bridge_overlap_sec,
+                "bridge_bootstrap_lookback_sec": (
+                    self.oar_bridge_bootstrap_lookback_sec
+                ),
+                "bridge_max_signals_per_cycle": (
+                    self.oar_bridge_max_signals_per_cycle
+                ),
+                "watch_max_active_tokens": self.oar_watch_max_active_tokens,
+                "watch_max_tokens_per_cycle": (
+                    self.oar_watch_max_tokens_per_cycle
+                ),
+                "watch_scan_interval_sec": self.oar_watch_scan_interval_sec,
+                "watch_live_poll_sec": self.oar_watch_live_poll_sec,
+                "watch_query_window": self.oar_watch_query_window,
+                "watch_max_events_per_token": (
+                    self.oar_watch_max_events_per_token
+                ),
+                "watch_max_rpc_requests_per_token": (
+                    self.oar_watch_max_rpc_requests_per_token
+                ),
+                "watch_max_rpc_requests_per_cycle": (
+                    self.oar_watch_max_rpc_requests_per_cycle
+                ),
+                "notify_min_behavior_score": (
+                    self.oar_watch_notify_min_behavior_score
+                ),
+                "notify_min_wallet_score": (
+                    self.oar_watch_notify_min_wallet_score
+                ),
+                "notify_partial": self.oar_watch_notify_partial,
             },
         }

@@ -150,6 +150,8 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "ai_status",
     "oar_card_key", "oar_content_hash", "analysis_status",
     "analysis_complete",
+    "linked_source_refs", "linked_source_modules", "watch_priority",
+    "watch_reason_count",
 })
 
 
@@ -260,6 +262,15 @@ def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
         if value is None or isinstance(value, (str, int, float, bool)):
             if value is not None:
                 payload[key] = value
+        elif (
+            key in {"linked_source_refs", "linked_source_modules"}
+            and isinstance(value, list)
+        ):
+            payload[key] = [
+                str(item)[:160]
+                for item in value[:10]
+                if isinstance(item, str) and item
+            ]
     return payload
 
 

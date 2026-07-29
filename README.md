@@ -134,3 +134,5 @@ Base ERC-20 合约的有界、只读主动查询见
 [docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md](docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md)。
 确定性规则报告、可选 AI 解读与链上独立 Telegram 卡片见
 [docs/OAR_P3_AI_TELEGRAM_REPORTING.md](docs/OAR_P3_AI_TELEGRAM_REPORTING.md)。
+已验证 Token Registry、主信号只读桥接与有界自动观察见
+[docs/OAR_P4_SIGNAL_WATCHLIST_AUTOMATION.md](docs/OAR_P4_SIGNAL_WATCHLIST_AUTOMATION.md)。
