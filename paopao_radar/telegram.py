@@ -63,10 +63,10 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
-    "TG_ONCHAIN_FLOW_ALERT": "链上交易所资金流",
+    "TG_ONCHAIN_FLOW_ALERT": "链上活动雷达",
 }
 
-TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
+TOPIC_INTRO_VERSION = "2026-07-29-oar-p3-v1"
 
 
 def seconds_cn(seconds: int) -> str:
@@ -289,15 +289,16 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         ])
     if template_id == "TG_ONCHAIN_FLOW_ALERT":
         return "\n".join([
-        "📌 <b>链上交易所资金流话题说明</b>",
+        "📌 <b>链上活动雷达话题说明</b>",
         "",
-        "这里专门推送已确认的链上代币与中心化交易所之间的异常资金流。",
+        "这里推送 Base ERC-20 Token 的链上活动规则报告与可选 AI 解读。",
         "链上资金流使用独立历史、outbox、冷却和小时配额，不占用主 BOT 推送额度。",
         "",
         "阅读方式：",
         "1. 流入交易所代表潜在可售供应，从交易所流出代表潜在提币或积累。",
-        "2. 内部调拨、跨交易所、充值归集、低置信标签和缺失价格不会生成方向性警报。",
-        "3. 方向评分不是概率，资金流只代表倾向，不保证价格必然上涨或下跌。",
+        "2. 行为和钱包关联均为可解释候选；方向评分不是概率，规则分数也不是概率，不确认钱包属于同一主体。",
+        "3. AI 只解释确定性事实，失败时仍保留规则摘要；数据不完整时降低结论等级。",
+        "4. 入所不等于已经卖出，提币不等于已经买入或必然上涨。",
         ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([
@@ -488,6 +489,57 @@ class TelegramGateway:
                     reason="flow_radar_partial_send_rollback",
                 )
         return result
+
+    def history_records(self) -> list[dict[str, Any]]:
+        return self._load_history()
+
+    def record_result(
+        self,
+        *,
+        template_id: str,
+        dedup_key: str,
+        result: PushResult,
+        text: str,
+        signal_records: list[dict[str, Any]] | None = None,
+    ) -> None:
+        history = self._load_history()
+        self._record(
+            history,
+            template_id,
+            dedup_key,
+            result,
+            text,
+            topic_id=self._topic_id_for_template(template_id),
+            signal_records=signal_records,
+        )
+
+    def annotate_delivery_history(
+        self,
+        delivery_id: str,
+        *,
+        deleted_message_ids: list[int],
+        failed_delete_message_ids: list[int],
+    ) -> None:
+        normalized_deleted = sorted(
+            {int(item) for item in deleted_message_ids}
+        )
+        normalized_failed = sorted(
+            {int(item) for item in failed_delete_message_ids}
+        )
+
+        def update(history: Any) -> list[dict[str, Any]]:
+            records = history if isinstance(history, list) else []
+            for record in reversed(records):
+                if (
+                    isinstance(record, dict)
+                    and record.get("delivery_id") == delivery_id
+                ):
+                    record["oar_deleted_old_message_ids"] = normalized_deleted
+                    record["oar_failed_delete_message_ids"] = normalized_failed
+                    break
+            return records
+
+        self.store.update(self.settings.tg_push_history_path, update, [])
 
     @staticmethod
     def _photo_validation_error(photo: bytes, caption: str) -> str:
@@ -1360,6 +1412,32 @@ class TelegramGateway:
             "reply_to_message_id": int(reply_to_message_id or 0),
             "preview": text[:240],
         }
+        if template_id == "TG_ONCHAIN_FLOW_ALERT" and signal_records:
+            allowed = {
+                "oar_card_key",
+                "oar_content_hash",
+                "chain_id",
+                "contract",
+                "symbol",
+                "behavior_type",
+                "behavior_score",
+                "analysis_status",
+                "analysis_complete",
+                "ai_status",
+            }
+            record["signal_records"] = [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key in allowed
+                    and (
+                        value is None
+                        or isinstance(value, (str, int, float, bool))
+                    )
+                }
+                for item in signal_records
+                if isinstance(item, dict)
+            ]
         history.append(record)
         self._append_history_record(record)
         try:

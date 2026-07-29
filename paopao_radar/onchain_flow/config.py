@@ -129,6 +129,7 @@ class OnchainSettings:
     tg_topic_routes_path: Path = BASE_DIR / "data" / "onchain" / "tg_topic_routes.json"
     signal_events_path: Path = BASE_DIR / "data" / "onchain" / "signal_events.json"
     signal_events_db_path: Path = BASE_DIR / "data" / "onchain" / "onchain_signals.db"
+    oar_ai_cache_path: Path = BASE_DIR / "data" / "onchain" / "oar_ai_cache.json"
     labels_path: Path = BASE_DIR / "config" / "onchain" / "cex_addresses.example.csv"
     chains_path: Path = BASE_DIR / "config" / "onchain" / "chains.example.json"
     tg_bot_token: str = ""
@@ -193,6 +194,17 @@ class OnchainSettings:
     oar_max_analyzed_wallets: int = 100
     oar_max_wallet_groups: int = 20
     oar_max_source_event_ids: int = 50
+    oar_ai_enable: bool = False
+    oar_ai_base_url: str = ""
+    oar_ai_api_key: str = ""
+    oar_ai_model: str = ""
+    oar_ai_timeout_sec: int = 20
+    oar_ai_max_retries: int = 1
+    oar_ai_max_calls_per_hour: int = 10
+    oar_ai_cache_ttl_sec: int = 3600
+    oar_ai_max_context_chars: int = 30000
+    oar_ai_max_output_chars: int = 8000
+    oar_replace_complete_card_with_partial: bool = False
 
     @classmethod
     def load(
@@ -248,6 +260,11 @@ class OnchainSettings:
                 base_dir,
                 data_dir,
                 values.get("ONCHAIN_SIGNAL_EVENTS_DB_FILE", "onchain_signals.db"),
+            ),
+            oar_ai_cache_path=_resolve_data_file(
+                base_dir,
+                data_dir,
+                values.get("OAR_AI_CACHE_FILE", "oar_ai_cache.json"),
             ),
             labels_path=_resolve_repo_file(
                 base_dir,
@@ -434,11 +451,36 @@ class OnchainSettings:
             oar_max_source_event_ids=_int(
                 values, "OAR_MAX_SOURCE_EVENT_IDS", 50
             ),
+            oar_ai_enable=_bool(values, "OAR_AI_ENABLE", False),
+            oar_ai_base_url=(
+                values.get("OAR_AI_BASE_URL", "").strip().rstrip("/")
+            ),
+            oar_ai_api_key=values.get("OAR_AI_API_KEY", "").strip(),
+            oar_ai_model=values.get("OAR_AI_MODEL", "").strip(),
+            oar_ai_timeout_sec=_int(values, "OAR_AI_TIMEOUT_SEC", 20),
+            oar_ai_max_retries=_int(values, "OAR_AI_MAX_RETRIES", 1),
+            oar_ai_max_calls_per_hour=_int(
+                values, "OAR_AI_MAX_CALLS_PER_HOUR", 10
+            ),
+            oar_ai_cache_ttl_sec=_int(
+                values, "OAR_AI_CACHE_TTL_SEC", 3600
+            ),
+            oar_ai_max_context_chars=_int(
+                values, "OAR_AI_MAX_CONTEXT_CHARS", 30000
+            ),
+            oar_ai_max_output_chars=_int(
+                values, "OAR_AI_MAX_OUTPUT_CHARS", 8000
+            ),
+            oar_replace_complete_card_with_partial=_bool(
+                values,
+                "OAR_REPLACE_COMPLETE_CARD_WITH_PARTIAL",
+                False,
+            ),
         )
 
     @property
     def writable_paths(self) -> tuple[Path, ...]:
-        return (
+        paths = (
             self.db_path,
             self.runtime_status_path,
             self.tg_push_history_path,
@@ -447,6 +489,9 @@ class OnchainSettings:
             self.signal_events_path,
             self.signal_events_db_path,
         )
+        if self.oar_ai_enable:
+            return (*paths, self.oar_ai_cache_path)
+        return paths
 
     def assert_safe_paths(self) -> None:
         root = self.data_dir.resolve()
@@ -533,6 +578,11 @@ class OnchainSettings:
             "oar_max_analyzed_wallets",
             "oar_max_wallet_groups",
             "oar_max_source_event_ids",
+            "oar_ai_timeout_sec",
+            "oar_ai_max_calls_per_hour",
+            "oar_ai_cache_ttl_sec",
+            "oar_ai_max_context_chars",
+            "oar_ai_max_output_chars",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
@@ -544,6 +594,7 @@ class OnchainSettings:
             "base_reorg_lookback_blocks",
             "rpc_retry",
             "alert_max_event_age_sec",
+            "oar_ai_max_retries",
         )
         for field_name in non_negative_ints:
             value = getattr(self, field_name)
@@ -690,6 +741,57 @@ class OnchainSettings:
                 raise SettingsValidationError(
                     f"{name} must be in [{minimum}, {maximum}]"
                 )
+        for name, value, minimum, maximum in (
+            ("OAR_AI_TIMEOUT_SEC", self.oar_ai_timeout_sec, 1, 120),
+            ("OAR_AI_MAX_RETRIES", self.oar_ai_max_retries, 0, 3),
+            (
+                "OAR_AI_MAX_CALLS_PER_HOUR",
+                self.oar_ai_max_calls_per_hour,
+                1,
+                100,
+            ),
+            (
+                "OAR_AI_CACHE_TTL_SEC",
+                self.oar_ai_cache_ttl_sec,
+                60,
+                86400,
+            ),
+            (
+                "OAR_AI_MAX_CONTEXT_CHARS",
+                self.oar_ai_max_context_chars,
+                5000,
+                100000,
+            ),
+            (
+                "OAR_AI_MAX_OUTPUT_CHARS",
+                self.oar_ai_max_output_chars,
+                1000,
+                20000,
+            ),
+        ):
+            if value < minimum or value > maximum:
+                raise SettingsValidationError(
+                    f"{name} must be in [{minimum}, {maximum}]"
+                )
+        if self.oar_ai_enable:
+            if not (
+                self.oar_ai_base_url
+                and self.oar_ai_api_key
+                and self.oar_ai_model
+            ):
+                raise SettingsValidationError(
+                    "enabled OAR AI requires base URL, API key, and model"
+                )
+            ai_url = urlsplit(self.oar_ai_base_url)
+            if (
+                ai_url.scheme.lower() not in {"http", "https"}
+                or not ai_url.hostname
+                or ai_url.username is not None
+                or ai_url.password is not None
+            ):
+                raise SettingsValidationError(
+                    "OAR_AI_BASE_URL must be a credential-free HTTP(S) URL"
+                )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
                 "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
@@ -793,5 +895,18 @@ class OnchainSettings:
                 "max_analyzed_wallets": self.oar_max_analyzed_wallets,
                 "max_wallet_groups": self.oar_max_wallet_groups,
                 "max_source_event_ids": self.oar_max_source_event_ids,
+            },
+            "oar_reporting": {
+                "ai_enabled": self.oar_ai_enable,
+                "ai_base_url_configured": bool(self.oar_ai_base_url),
+                "ai_api_key_configured": bool(self.oar_ai_api_key),
+                "ai_model_configured": bool(self.oar_ai_model),
+                "ai_timeout_sec": self.oar_ai_timeout_sec,
+                "ai_max_retries": self.oar_ai_max_retries,
+                "ai_max_calls_per_hour": self.oar_ai_max_calls_per_hour,
+                "ai_cache_ttl_sec": self.oar_ai_cache_ttl_sec,
+                "replace_complete_card_with_partial": (
+                    self.oar_replace_complete_card_with_partial
+                ),
             },
         }

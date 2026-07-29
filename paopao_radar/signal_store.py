@@ -19,6 +19,7 @@ from .symbol_dossier import clean_signal_text, extract_symbols_from_text, signal
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
 SIGNAL_STORE_SCHEMA_VERSION = 6
 ACTIVE_SIGNAL_MODULES = (
+    "onchain",
     "funding",
     "flow",
     "launch",
@@ -130,7 +131,8 @@ SIGNAL_COMPAT_DEFAULTS = {
 }
 
 STRUCTURED_SIGNAL_FIELDS = frozenset({
-    "symbol", "coin", "score", "total_score", "stage", "category", "kind", "state",
+    "symbol", "coin", "score", "total_score", "stage", "category", "kind",
+    "state", "status",
     "severity", "risk_level", "reason", "summary", "title", "price", "price_pct",
     "price_24h", "quote_volume", "market_cap", "mcap", "oi_usd", "oi_change_pct",
     "oi_24h", "funding_pct", "spot_cvd_delta", "futures_cvd_delta",
@@ -143,6 +145,10 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "last_price", "price_24h_pct", "primary_kind", "signal_direction",
     "evaluation_eligible", "launch_message_package_v2", "launch_cycle_id",
     "launch_cycle_no", "launch_observation_id",
+    "module", "template_id", "chain", "chain_id", "contract",
+    "behavior_type", "behavior_label", "context_hash", "ai_status",
+    "oar_card_key", "oar_content_hash", "analysis_status",
+    "analysis_complete",
 })
 
 
@@ -258,6 +264,8 @@ def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 def _module_for_template(template_id: str) -> str:
     value = str(template_id or "").upper()
+    if value == "TG_ONCHAIN_FLOW_ALERT":
+        return "onchain"
     if "FUNDING" in value:
         return "funding"
     if "FLOW" in value:
@@ -557,9 +565,20 @@ class SignalEventStore:
                 candidates = list(record.get("symbols") or [])
             for candidate in candidates:
                 normalized_symbol = str(candidate or "").strip().upper()
-                if normalized_symbol and not normalized_symbol.endswith("USDT"):
+                if (
+                    module != "onchain"
+                    and normalized_symbol
+                    and not normalized_symbol.endswith("USDT")
+                ):
                     normalized_symbol = f"{normalized_symbol}USDT"
-                if normalized_symbol and not re.fullmatch(r"[A-Z0-9]{2,24}USDT", normalized_symbol):
+                symbol_pattern = (
+                    r"[A-Z0-9][A-Z0-9._-]{0,23}"
+                    if module == "onchain"
+                    else r"[A-Z0-9]{2,24}USDT"
+                )
+                if normalized_symbol and not re.fullmatch(
+                    symbol_pattern, normalized_symbol
+                ):
                     continue
                 prepared_records.append({**record, "symbol": normalized_symbol})
         structured_mode = bool(prepared_records)

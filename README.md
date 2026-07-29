@@ -132,3 +132,5 @@ Base ERC-20 合约的有界、只读主动查询见
 [docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md](docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md)。
 基于完整查询事实的可解释行为与钱包候选群组分析见
 [docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md](docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md)。
+确定性规则报告、可选 AI 解读与链上独立 Telegram 卡片见
+[docs/OAR_P3_AI_TELEGRAM_REPORTING.md](docs/OAR_P3_AI_TELEGRAM_REPORTING.md)。
