@@ -127,3 +127,6 @@ bash scripts/update_server.sh --yes
 默认保留 365 天信号效果样本（最多 20,000 条）和 7 天本机数据库备份。备份目录、保留天数与健康检查最大时效可通过 `.env.oi` 调整；本机备份不能替代后续需要单独配置的异机/对象存储灾备。
 
 更完整的模块边界见 [docs/BOT_ONLY_ARCHITECTURE.md](docs/BOT_ONLY_ARCHITECTURE.md)，安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
+
+Base ERC-20 合约的有界、只读主动查询见
+[docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md](docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md)。

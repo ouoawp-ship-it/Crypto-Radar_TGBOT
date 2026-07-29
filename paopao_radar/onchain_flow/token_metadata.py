@@ -48,20 +48,29 @@ class TokenMetadataResolver:
     def __init__(
         self,
         rpc: JsonRpcClient,
-        store: OnchainStore,
+        store: OnchainStore | None,
         *,
         clock: Callable[[], float] = time.time,
         retry_delay_sec: int = 60,
+        raise_rpc_errors: bool = False,
     ):
         self.rpc = rpc
         self.store = store
         self.clock = clock
         self.retry_delay_sec = retry_delay_sec
+        self.raise_rpc_errors = raise_rpc_errors
+        self._memory_cache: dict[tuple[int, str], TokenMetadata] = {}
+        self.last_resolution_reason = ""
 
     def resolve(self, chain_id: int, token_address: str) -> TokenMetadata:
         address = normalize_evm_address(token_address)
         now = int(self.clock())
-        cached = self.store.metadata_map().get((chain_id, address))
+        self.last_resolution_reason = ""
+        cached = (
+            self.store.metadata_map().get((chain_id, address))
+            if self.store is not None
+            else self._memory_cache.get((chain_id, address))
+        )
         if cached is not None:
             if cached.metadata_status in {
                 "verified_erc20",
@@ -74,6 +83,7 @@ class TokenMetadataResolver:
         try:
             code = self.rpc.get_code(address)
             if code in {"0x", "0x0", ""}:
+                self.last_resolution_reason = "not_contract"
                 return self._save(
                     chain_id,
                     address,
@@ -85,6 +95,7 @@ class TokenMetadataResolver:
             try:
                 decimals = decode_uint256(decimals_raw)
             except ValueError:
+                self.last_resolution_reason = "invalid_decimals"
                 return self._save(
                     chain_id,
                     address,
@@ -93,6 +104,7 @@ class TokenMetadataResolver:
                     now=now,
                 )
             if decimals < 0 or decimals > 36:
+                self.last_resolution_reason = "invalid_decimals"
                 return self._save(
                     chain_id,
                     address,
@@ -104,6 +116,7 @@ class TokenMetadataResolver:
             try:
                 decode_uint256(supply_raw)
             except ValueError:
+                self.last_resolution_reason = "invalid_total_supply"
                 return self._save(
                     chain_id,
                     address,
@@ -125,6 +138,9 @@ class TokenMetadataResolver:
                 now=now,
             )
         except RpcTransportError:
+            if self.raise_rpc_errors:
+                raise
+            self.last_resolution_reason = "rpc_failed"
             return self._save(
                 chain_id,
                 address,
@@ -134,6 +150,9 @@ class TokenMetadataResolver:
                 retry_after=now + self.retry_delay_sec,
             )
         except RpcError:
+            if self.raise_rpc_errors:
+                raise
+            self.last_resolution_reason = "rpc_incomplete"
             return self._save(
                 chain_id,
                 address,
@@ -173,5 +192,8 @@ class TokenMetadataResolver:
             updated_at=now,
             retry_after=retry_after,
         )
-        self.store.upsert_token_metadata(metadata)
+        if self.store is not None:
+            self.store.upsert_token_metadata(metadata)
+        else:
+            self._memory_cache[(chain_id, address)] = metadata
         return metadata
