@@ -32,6 +32,23 @@ from .token_activity import (
     TokenActivityQueryService,
     failed_token_activity_payload,
 )
+from .token_analysis import TokenAnalysisService
+
+
+def _add_token_query_arguments(
+    parser: argparse.ArgumentParser,
+) -> None:
+    parser.add_argument("--chain", required=True)
+    parser.add_argument("--contract", required=True)
+    parser.add_argument("--window", required=True)
+    parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--max-events", type=int, default=None)
+    parser.add_argument("--max-rpc-requests", type=int, default=None)
+    parser.add_argument("--top", type=int, default=None)
+    parser.add_argument("--with-price", action="store_true")
+    parser.add_argument("--min-usd", default=None)
+    parser.add_argument("--pretty", action="store_true")
+    parser.add_argument("--output-file", default=None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,18 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     provider_check.add_argument("--chain", choices=("base",), required=True)
     cursor_status = subparsers.add_parser("cursor-status")
     cursor_status.add_argument("--chain", choices=("base",), required=True)
-    token_activity = subparsers.add_parser("token-activity")
-    token_activity.add_argument("--chain", required=True)
-    token_activity.add_argument("--contract", required=True)
-    token_activity.add_argument("--window", required=True)
-    token_activity.add_argument("--allow-network", action="store_true")
-    token_activity.add_argument("--max-events", type=int, default=None)
-    token_activity.add_argument("--max-rpc-requests", type=int, default=None)
-    token_activity.add_argument("--top", type=int, default=None)
-    token_activity.add_argument("--with-price", action="store_true")
-    token_activity.add_argument("--min-usd", default=None)
-    token_activity.add_argument("--pretty", action="store_true")
-    token_activity.add_argument("--output-file", default=None)
+    _add_token_query_arguments(subparsers.add_parser("token-activity"))
+    _add_token_query_arguments(subparsers.add_parser("token-analysis"))
 
     replay = subparsers.add_parser("replay")
     replay.add_argument("--fixture", required=True)
@@ -381,7 +388,7 @@ def main(
     token_activity_network_started = False
     try:
         settings = settings or OnchainSettings.load()
-        if args.command == "token-activity":
+        if args.command in {"token-activity", "token-analysis"}:
             settings.validate()
             query = TokenActivityQuery.create(
                 settings,
@@ -402,7 +409,7 @@ def main(
                 payload = failed_token_activity_payload(
                     TokenActivityQueryError(
                         "allow_network_required",
-                        "token-activity requires explicit --allow-network",
+                        f"{args.command} requires explicit --allow-network",
                     ),
                     network_activity=False,
                 )
@@ -412,8 +419,10 @@ def main(
                     output_file=None,
                 )
                 return 1
-            service = TokenActivityQueryService.from_settings(
-                settings, query
+            service = (
+                TokenActivityQueryService.from_settings(settings, query)
+                if args.command == "token-activity"
+                else TokenAnalysisService.from_settings(settings, query)
             )
             token_activity_network_started = True
             payload = service.execute(query)
@@ -423,6 +432,13 @@ def main(
                 output_file=args.output_file,
                 settings=settings,
             )
+            if args.command == "token-analysis":
+                analysis = payload.get("analysis")
+                if (
+                    isinstance(analysis, dict)
+                    and not bool(analysis.get("complete"))
+                ):
+                    return 2
             return 0 if payload["status"] == "ok" else 2
         if args.command == "status":
             payload = settings.diagnostic()

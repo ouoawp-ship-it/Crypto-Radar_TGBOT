@@ -138,6 +138,15 @@ class OnchainConfigTests(unittest.TestCase):
                 "--window",
                 "15m",
             ],
+            [
+                "token-analysis",
+                "--chain",
+                "base",
+                "--contract",
+                "0x0000000000000000000000000000000000000001",
+                "--window",
+                "15m",
+            ],
             ["once"],
             ["live"],
         )

@@ -130,3 +130,5 @@ bash scripts/update_server.sh --yes
 
 Base ERC-20 合约的有界、只读主动查询见
 [docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md](docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md)。
+基于完整查询事实的可解释行为与钱包候选群组分析见
+[docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md](docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md)。

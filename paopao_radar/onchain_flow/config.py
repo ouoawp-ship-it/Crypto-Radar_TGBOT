@@ -9,6 +9,14 @@ from typing import Mapping
 from urllib.parse import urlsplit
 
 from .constants import (
+    OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_HARD,
+    OAR_BEHAVIOR_MIN_TX_HARD,
+    OAR_MAX_ANALYZED_WALLETS_HARD,
+    OAR_MAX_SOURCE_EVENT_IDS_HARD,
+    OAR_MAX_WALLET_GROUPS_HARD,
+    OAR_PATTERN_MIN_TX_HARD,
+    OAR_PATTERN_MIN_WALLETS_HARD,
+    OAR_WALLET_SYNC_WINDOW_SEC_HARD,
     PRODUCTION_WRITE_PATHS,
     TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS_HARD,
     TOKEN_ACTIVITY_MAX_EVENTS_HARD,
@@ -173,6 +181,18 @@ class OnchainSettings:
     token_activity_max_unique_block_headers: int = 2000
     token_activity_top_n: int = 50
     token_activity_block_search_max_calls: int = 32
+    oar_behavior_min_tx: int = 3
+    oar_behavior_dominance_min: Decimal = Decimal("0.67")
+    oar_behavior_min_active_buckets_1h: int = 2
+    oar_behavior_min_active_buckets_long: int = 3
+    oar_pattern_min_wallets: int = 3
+    oar_pattern_min_tx: int = 3
+    oar_pattern_min_amount_share: Decimal = Decimal("0.10")
+    oar_wallet_sync_window_sec: int = 300
+    oar_wallet_amount_similarity_tolerance: Decimal = Decimal("0.10")
+    oar_max_analyzed_wallets: int = 100
+    oar_max_wallet_groups: int = 20
+    oar_max_source_event_ids: int = 50
 
     @classmethod
     def load(
@@ -376,6 +396,44 @@ class OnchainSettings:
             token_activity_block_search_max_calls=_int(
                 values, "TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS", 32
             ),
+            oar_behavior_min_tx=_int(
+                values, "OAR_BEHAVIOR_MIN_TX", 3
+            ),
+            oar_behavior_dominance_min=_decimal(
+                values, "OAR_BEHAVIOR_DOMINANCE_MIN", "0.67"
+            ),
+            oar_behavior_min_active_buckets_1h=_int(
+                values, "OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_1H", 2
+            ),
+            oar_behavior_min_active_buckets_long=_int(
+                values, "OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_LONG", 3
+            ),
+            oar_pattern_min_wallets=_int(
+                values, "OAR_PATTERN_MIN_WALLETS", 3
+            ),
+            oar_pattern_min_tx=_int(
+                values, "OAR_PATTERN_MIN_TX", 3
+            ),
+            oar_pattern_min_amount_share=_decimal(
+                values, "OAR_PATTERN_MIN_AMOUNT_SHARE", "0.10"
+            ),
+            oar_wallet_sync_window_sec=_int(
+                values, "OAR_WALLET_SYNC_WINDOW_SEC", 300
+            ),
+            oar_wallet_amount_similarity_tolerance=_decimal(
+                values,
+                "OAR_WALLET_AMOUNT_SIMILARITY_TOLERANCE",
+                "0.10",
+            ),
+            oar_max_analyzed_wallets=_int(
+                values, "OAR_MAX_ANALYZED_WALLETS", 100
+            ),
+            oar_max_wallet_groups=_int(
+                values, "OAR_MAX_WALLET_GROUPS", 20
+            ),
+            oar_max_source_event_ids=_int(
+                values, "OAR_MAX_SOURCE_EVENT_IDS", 50
+            ),
         )
 
     @property
@@ -466,6 +524,15 @@ class OnchainSettings:
             "token_activity_max_unique_block_headers",
             "token_activity_top_n",
             "token_activity_block_search_max_calls",
+            "oar_behavior_min_tx",
+            "oar_behavior_min_active_buckets_1h",
+            "oar_behavior_min_active_buckets_long",
+            "oar_pattern_min_wallets",
+            "oar_pattern_min_tx",
+            "oar_wallet_sync_window_sec",
+            "oar_max_analyzed_wallets",
+            "oar_max_wallet_groups",
+            "oar_max_source_event_ids",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
@@ -536,6 +603,92 @@ class OnchainSettings:
             if value > hard_cap:
                 raise SettingsValidationError(
                     f"{name} cannot exceed the hard cap {hard_cap}"
+                )
+        analysis_caps = (
+            (
+                "OAR_BEHAVIOR_MIN_TX",
+                self.oar_behavior_min_tx,
+                OAR_BEHAVIOR_MIN_TX_HARD,
+            ),
+            (
+                "OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_1H",
+                self.oar_behavior_min_active_buckets_1h,
+                OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_HARD,
+            ),
+            (
+                "OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_LONG",
+                self.oar_behavior_min_active_buckets_long,
+                OAR_BEHAVIOR_MIN_ACTIVE_BUCKETS_HARD,
+            ),
+            (
+                "OAR_PATTERN_MIN_WALLETS",
+                self.oar_pattern_min_wallets,
+                OAR_PATTERN_MIN_WALLETS_HARD,
+            ),
+            (
+                "OAR_PATTERN_MIN_TX",
+                self.oar_pattern_min_tx,
+                OAR_PATTERN_MIN_TX_HARD,
+            ),
+            (
+                "OAR_WALLET_SYNC_WINDOW_SEC",
+                self.oar_wallet_sync_window_sec,
+                OAR_WALLET_SYNC_WINDOW_SEC_HARD,
+            ),
+            (
+                "OAR_MAX_ANALYZED_WALLETS",
+                self.oar_max_analyzed_wallets,
+                OAR_MAX_ANALYZED_WALLETS_HARD,
+            ),
+            (
+                "OAR_MAX_WALLET_GROUPS",
+                self.oar_max_wallet_groups,
+                OAR_MAX_WALLET_GROUPS_HARD,
+            ),
+            (
+                "OAR_MAX_SOURCE_EVENT_IDS",
+                self.oar_max_source_event_ids,
+                OAR_MAX_SOURCE_EVENT_IDS_HARD,
+            ),
+        )
+        for name, value, hard_cap in analysis_caps:
+            if value > hard_cap:
+                raise SettingsValidationError(
+                    f"{name} cannot exceed the hard cap {hard_cap}"
+                )
+        for name, value, minimum, maximum in (
+            (
+                "OAR_BEHAVIOR_DOMINANCE_MIN",
+                self.oar_behavior_dominance_min,
+                Decimal("0.5"),
+                Decimal("1"),
+            ),
+            (
+                "OAR_PATTERN_MIN_AMOUNT_SHARE",
+                self.oar_pattern_min_amount_share,
+                Decimal("0"),
+                Decimal("1"),
+            ),
+            (
+                "OAR_WALLET_AMOUNT_SIMILARITY_TOLERANCE",
+                self.oar_wallet_amount_similarity_tolerance,
+                Decimal("0"),
+                Decimal("0.50"),
+            ),
+        ):
+            try:
+                decimal_value = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise SettingsValidationError(
+                    f"{name} must be a finite decimal"
+                ) from exc
+            if (
+                not decimal_value.is_finite()
+                or decimal_value < minimum
+                or decimal_value > maximum
+            ):
+                raise SettingsValidationError(
+                    f"{name} must be in [{minimum}, {maximum}]"
                 )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
@@ -616,5 +769,29 @@ class OnchainSettings:
                 "block_search_max_calls": (
                     self.token_activity_block_search_max_calls
                 ),
+            },
+            "token_analysis": {
+                "behavior_min_tx": self.oar_behavior_min_tx,
+                "behavior_dominance_min": str(
+                    self.oar_behavior_dominance_min
+                ),
+                "behavior_min_active_buckets_1h": (
+                    self.oar_behavior_min_active_buckets_1h
+                ),
+                "behavior_min_active_buckets_long": (
+                    self.oar_behavior_min_active_buckets_long
+                ),
+                "pattern_min_wallets": self.oar_pattern_min_wallets,
+                "pattern_min_tx": self.oar_pattern_min_tx,
+                "pattern_min_amount_share": str(
+                    self.oar_pattern_min_amount_share
+                ),
+                "wallet_sync_window_sec": self.oar_wallet_sync_window_sec,
+                "wallet_amount_similarity_tolerance": str(
+                    self.oar_wallet_amount_similarity_tolerance
+                ),
+                "max_analyzed_wallets": self.oar_max_analyzed_wallets,
+                "max_wallet_groups": self.oar_max_wallet_groups,
+                "max_source_event_ids": self.oar_max_source_event_ids,
             },
         }

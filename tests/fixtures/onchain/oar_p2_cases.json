@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "token_contract": "0x9999999999999999999999999999999999999999",
+  "to_time": 1700000000,
+  "cases": [
+    {
+      "name": "no_activity",
+      "complete": true,
+      "window": "1h",
+      "events": []
+    },
+    {
+      "name": "isolated",
+      "complete": true,
+      "window": "1h",
+      "events": [
+        {
+          "minutes_ago": 5,
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "amount": "10",
+          "flow_type": "unclassified"
+        }
+      ]
+    },
+    {
+      "name": "accumulation",
+      "complete": true,
+      "window": "4h",
+      "events": [
+        {
+          "minutes_ago": 55,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 32,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 7,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount": "100",
+          "flow_type": "outflow"
+        }
+      ]
+    },
+    {
+      "name": "distribution",
+      "complete": true,
+      "window": "4h",
+      "events": [
+        {
+          "minutes_ago": 56,
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "100",
+          "flow_type": "inflow"
+        },
+        {
+          "minutes_ago": 31,
+          "from": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "100",
+          "flow_type": "inflow"
+        },
+        {
+          "minutes_ago": 6,
+          "from": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "100",
+          "flow_type": "inflow"
+        }
+      ]
+    },
+    {
+      "name": "wallet_consolidation",
+      "complete": true,
+      "window": "1h",
+      "events": [
+        {
+          "minutes_ago": 40,
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0xdddddddddddddddddddddddddddddddddddddddd",
+          "amount": "10",
+          "flow_type": "unclassified"
+        },
+        {
+          "minutes_ago": 25,
+          "from": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "to": "0xdddddddddddddddddddddddddddddddddddddddd",
+          "amount": "10",
+          "flow_type": "unclassified"
+        },
+        {
+          "minutes_ago": 5,
+          "from": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "to": "0xdddddddddddddddddddddddddddddddddddddddd",
+          "amount": "10",
+          "flow_type": "unclassified"
+        }
+      ]
+    },
+    {
+      "name": "fanout",
+      "complete": true,
+      "window": "1h",
+      "events": [
+        {
+          "minutes_ago": 40,
+          "from": "0xdddddddddddddddddddddddddddddddddddddddd",
+          "to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": "10",
+          "flow_type": "unclassified"
+        },
+        {
+          "minutes_ago": 25,
+          "from": "0xdddddddddddddddddddddddddddddddddddddddd",
+          "to": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "amount": "10",
+          "flow_type": "unclassified"
+        },
+        {
+          "minutes_ago": 5,
+          "from": "0xdddddddddddddddddddddddddddddddddddddddd",
+          "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount": "10",
+          "flow_type": "unclassified"
+        }
+      ]
+    },
+    {
+      "name": "synchronized_cex_cohort",
+      "complete": true,
+      "window": "1h",
+      "events": [
+        {
+          "minutes_ago": 8,
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "10",
+          "flow_type": "inflow"
+        },
+        {
+          "minutes_ago": 6,
+          "from": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "10",
+          "flow_type": "inflow"
+        },
+        {
+          "minutes_ago": 4,
+          "from": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "10",
+          "flow_type": "inflow"
+        }
+      ]
+    },
+    {
+      "name": "mixed_opposing_flows",
+      "complete": true,
+      "window": "1h",
+      "events": [
+        {
+          "minutes_ago": 50,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 35,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 20,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 10,
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "100",
+          "flow_type": "inflow"
+        },
+        {
+          "minutes_ago": 8,
+          "from": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "100",
+          "flow_type": "inflow"
+        },
+        {
+          "minutes_ago": 5,
+          "from": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "to": "0x1111111111111111111111111111111111111111",
+          "amount": "100",
+          "flow_type": "inflow"
+        }
+      ]
+    },
+    {
+      "name": "partial_input",
+      "complete": false,
+      "window": "4h",
+      "events": [
+        {
+          "minutes_ago": 55,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 32,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "amount": "100",
+          "flow_type": "outflow"
+        },
+        {
+          "minutes_ago": 7,
+          "from": "0x1111111111111111111111111111111111111111",
+          "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount": "100",
+          "flow_type": "outflow"
+        }
+      ]
+    }
+  ]
+}
