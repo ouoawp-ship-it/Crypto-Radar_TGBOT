@@ -40,6 +40,12 @@ python onchain_main.py registry-add --market-symbol XYZUSDT --chain base --contr
 python onchain_main.py registry-verify --token-key 8453:0x... --allow-network --set-primary
 ```
 
+重复验证不会改变当前 Primary/Secondary 身份；只有显式
+`--set-primary` 才会原子切换同一市场交易对的 Primary。Token 成为
+verified Primary 后，会按 `public_ref` 只读回查仍在 TTL 内的 open
+unresolved 信号并恢复 Watch；主信号库暂时不可读时验证仍成功，恢复后
+`bridge-once` 会继续有界重试。
+
 只读列表和保留审计的禁用：
 
 ```text
@@ -69,7 +75,7 @@ Bridge 只消费 `launch`、`flow`、`funding`、`announcement` 模块中满足 
 
 首次只看最近一小时。后续使用 `last_signal_ts + last_signal_id` 水位，并回看 300 秒重叠窗口以捕获同 ID 的更新。每条信号的 Registry 解析、Source/Unresolved upsert、Watch 更新和水位推进在同一事务完成；失败时水位不会越过该信号。
 
-主数据库不存在或暂时锁定时返回降级状态，不创建、不修改主数据库。Bridge 不读取 `text_html`，只保留结构化最小字段、最多 300 字的 excerpt 和 payload hash。
+主数据库不存在或暂时锁定时返回降级状态，不创建、不修改主数据库。Bridge 不读取 `text_html`，只保留结构化最小字段、最多 300 字的 excerpt 和 payload hash。精确 unresolved 回读最多 100 个 public ref；已过 TTL 的来源标记为 expired，成功恢复的来源标记为 resolved，审计记录不会删除。
 
 ## TTL、优先级和合并
 
@@ -87,9 +93,9 @@ Bridge 只消费 `launch`、`flow`、`funding`、`announcement` 模块中满足 
 
 ## Claim、Lease 与失败恢复
 
-每轮使用短 `BEGIN IMMEDIATE` 顺序 Claim 到期 Token，并写入 `lease_owner/lease_until`。其他 Worker 不能重复 Claim；进程崩溃后 Lease 到期即可恢复。
+每轮使用短 `BEGIN IMMEDIATE` 逐个 Claim 到期 Token，并为每次 Claim 生成唯一 `lease_owner/lease_until`。续租、成功、失败和延期完成都必须匹配 Owner；旧 Worker 在 Lease 过期并被新 Worker 接管后只能留下 bounded stale audit，不能覆盖新 Worker 的状态或发送通知。进程崩溃后 Lease 到期即可恢复。
 
-成功后按扫描间隔调度。Partial 或失败按 5、15、30、60 分钟有界退避；连续失败达到阈值后 Watch 转为 paused，保留所有历史等待人工处理。扫描审计不保存完整 Transfer 数组，每 Token 保留最近 100 次、全局最多 5000 次。
+成功后按扫描间隔调度。Partial 或失败按 5、15、30、60 分钟有界退避；连续失败达到阈值后 Watch 转为 paused，保留所有历史等待人工处理。整轮 RPC 预算耗尽后的未扫描 Token 标记为 `deferred_by_cycle_budget`，不增加失败次数、不退避、不暂停，下一轮仍可立即 Claim。扫描审计不保存完整 Transfer 数组，每 Token 保留最近 100 次、全局最多 5000 次。
 
 ## 自动扫描
 
@@ -117,7 +123,7 @@ python onchain_main.py watch-live --allow-network --duration-minutes 30
 
 ## 查询预算与通知门禁
 
-默认每轮最多 5 个 Token、总计 400 个 RPC 请求；每 Token 最多 1000 个事件、100 个 RPC 请求，保留 20 条代表性 Transfer。高密度 Token 或 Provider 限流可产生 Partial；Partial 被审计并退避，但默认不通知。
+默认每轮最多 5 个 Token、总计 400 个 RPC 请求；每 Token 最多 1000 个事件、100 个 RPC 请求，保留 20 条代表性 Transfer。扫描器根据真实消耗逐个决定是否 Claim 下一 Token；整轮预算归零后不再创建 Analysis、Report、AI 或 Telegram 对象。高密度 Token 或 Provider 限流可产生 Partial；Partial 被审计并退避，但默认不通知。
 
 进入报告/通知阶段必须满足完整 Activity、完整 Analysis、`analysis.status=ok`，并满足以下之一：
 
@@ -143,16 +149,17 @@ python onchain_main.py doctor
 
 ## 数据库 Schema
 
-`oar_automation.db` 使用版本化、事务化 Schema 1：
+`oar_automation.db` 使用版本化、事务化 Schema 2：
 
 - `token_registry`：pending/verified/disabled/rejected Token 映射；
 - `watch_items`：合并后的调度、TTL、Priority、Lease 和退避；
 - `watch_sources`：来源信号幂等审计；
 - `bridge_state`：时间水位与 ID tie-breaker；
-- `unresolved_signals`：未解析、歧义、未验证和容量拒绝；
+- `unresolved_signals`：未解析、歧义、未验证和容量拒绝，保留
+  open/resolved/expired 状态、解决时间和目标 Token；
 - `watch_scan_runs`：有界扫描结果。
 
-本阶段不修改主数据库 Schema，也不增加 `onchain_flow.db` Migration。
+Schema 1 → 2 只迁移独立 Automation DB，并使用显式事务，失败整体回滚。旧 unresolved 记录默认变为 open。本阶段不修改主数据库 Schema，也不增加 `onchain_flow.db` Migration。
 
 ## 失败隔离与回滚
 

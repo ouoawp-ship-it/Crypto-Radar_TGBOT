@@ -478,12 +478,120 @@ class WatchScannerTests(unittest.TestCase):
             confirm_real_send=False,
         )
         self.assertEqual(calls, 1)
-        self.assertEqual(result["scanned_tokens"], 2)
+        self.assertEqual(result["claimed_tokens"], 1)
+        self.assertEqual(result["scanned_tokens"], 1)
+        self.assertEqual(result["deferred_tokens"], 1)
+        self.assertEqual(result["failed_tokens"], 1)
+        self.assertEqual(result["partial_tokens"], 0)
         self.assertEqual(result["rpc_budget_consumed"], 100)
         self.assertLessEqual(
             result["rpc_budget_consumed"],
             settings.oar_watch_max_rpc_requests_per_cycle,
         )
+
+    def test_cycle_budget_defers_fifth_token_without_failure(self) -> None:
+        keys = [
+            self.watch(
+                f"0x{index:040x}",
+                f"T{index}USDT",
+                priority=100 - index,
+            )
+            for index in range(1, 6)
+        ]
+        payloads = []
+        for _ in range(4):
+            payload = self.analyzed("isolated")
+            payload["diagnostics"]["rpc_request_count"] = 100
+            payloads.append(payload)
+        settings = make_settings(
+            self.root,
+            oar_watch_max_tokens_per_cycle=5,
+            oar_watch_max_rpc_requests_per_token=100,
+            oar_watch_max_rpc_requests_per_cycle=400,
+        )
+        result = self.scanner(payloads, settings=settings).run_once(
+            allow_network=True,
+            notify_dry_run=True,
+            with_ai=True,
+            send=False,
+            confirm_real_send=False,
+        )
+        self.assertEqual(result["claimed_tokens"], 4)
+        self.assertEqual(result["scanned_tokens"], 4)
+        self.assertEqual(result["deferred_tokens"], 1)
+        self.assertEqual(result["deferred_token_keys"], [keys[4]])
+        self.assertTrue(result["cycle_budget_exhausted"])
+        self.assertEqual(result["failed_tokens"], 0)
+        self.assertEqual(result["partial_tokens"], 0)
+        self.assertEqual(result["rpc_budget_consumed"], 400)
+        self.assertEqual(result["notifications_attempted"], 0)
+        self.assertFalse(result["telegram_calls"])
+        self.assertFalse(result["ai_calls"])
+        deferred = self.store.get_watch(keys[4]) or {}
+        self.assertEqual(deferred["status"], "active")
+        self.assertEqual(deferred["lease_owner"], "")
+        self.assertEqual(deferred["consecutive_failures"], 0)
+        self.assertEqual(deferred["last_error_code"], "")
+        self.assertEqual(deferred["next_scan_at"], 1002)
+        next_payload = self.analyzed("isolated")
+        next_payload["diagnostics"]["rpc_request_count"] = 7
+        next_cycle = self.scanner(
+            [next_payload], settings=settings
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        self.assertEqual(next_cycle["scanned_tokens"], 1)
+        self.assertEqual(
+            (self.store.get_watch(keys[4]) or {})["last_scan_status"],
+            "ok",
+        )
+
+    def test_stale_worker_cannot_report_notify_or_overwrite_new_owner(self) -> None:
+        key = self.watch()
+        analyzed = self.analyzed("accumulation")
+        report = FakeReport()
+        notifier = FakeNotifier()
+        lease_sec = self.settings.oar_watch_lease_sec
+
+        class StealingAnalysis:
+            def execute(inner_self, query: object) -> dict[str, object]:
+                del inner_self, query
+                claimed = self.store.claim_due(
+                    owner="worker-b",
+                    limit=1,
+                    lease_sec=lease_sec,
+                    now=2000 + lease_sec + 1,
+                )
+                self.assertEqual(len(claimed), 1)
+                return deepcopy(analyzed)
+
+        scanner = WatchScanner(
+            self.settings,
+            self.store,
+            bridge=self.bridge,
+            analysis_factory=lambda settings, query: StealingAnalysis(),
+            report_factory=lambda settings: report,
+            notifier_factory=lambda settings: notifier,
+            clock=lambda: 2000,
+        )
+        result = scanner.run_once(
+            allow_network=True,
+            notify_dry_run=True,
+            with_ai=True,
+            send=False,
+            confirm_real_send=False,
+        )
+        self.assertEqual(result["stale_tokens"], 1)
+        self.assertEqual(result["results"][0]["error"], "lease_lost")
+        self.assertEqual(report.calls, 0)
+        self.assertEqual(len(notifier.calls), 0)
+        watch = self.store.get_watch(key) or {}
+        self.assertEqual(watch["lease_owner"], "worker-b")
+        self.assertEqual(watch["consecutive_failures"], 0)
 
     def test_linked_signal_order_is_deterministic_and_bounded(self) -> None:
         sources = [

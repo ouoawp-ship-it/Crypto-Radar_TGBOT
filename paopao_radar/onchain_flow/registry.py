@@ -18,10 +18,12 @@ class RegistryService:
         store: AutomationStore,
         *,
         rpc: Any | None = None,
+        bridge: Any | None = None,
     ):
         self.settings = settings
         self.store = store
         self._rpc = rpc
+        self._bridge = bridge
 
     def verify(
         self,
@@ -108,7 +110,7 @@ class RegistryService:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
-        return self.store.verify_registry(
+        verified = self.store.verify_registry(
             token_key,
             token_symbol=actual_symbol,
             token_name=str(metadata.name or ""),
@@ -122,3 +124,10 @@ class RegistryService:
             ),
             set_primary=set_primary,
         )
+        bridge = self._bridge
+        if bridge is None:
+            from .signal_bridge import SignalBridge
+
+            bridge = SignalBridge(self.settings, self.store)
+        verified["reconciliation"] = bridge.reconcile_token(verified)
+        return verified

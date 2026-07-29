@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from paopao_radar.onchain_flow.cli import build_parser, main as cli_main
 
@@ -135,6 +135,46 @@ class OarP4CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(payload["error"], "allow_network_required")
         self.assertFalse(payload["network_activity"])
+
+    def test_registry_verify_reports_primary_and_reconciliation(self) -> None:
+        token_key = f"8453:{CONTRACT}"
+        service = Mock()
+        service.verify.return_value = {
+            "token_key": token_key,
+            "status": "verified",
+            "is_primary": 1,
+            "verification": {
+                "was_primary": False,
+                "is_primary": True,
+                "primary_changed": True,
+            },
+            "reconciliation": {
+                "status": "ok",
+                "examined": 1,
+                "resolved": 1,
+                "expired": 0,
+                "remaining_open": 0,
+                "watch_created": 1,
+                "watch_refreshed": 0,
+            },
+        }
+        with patch(
+            "paopao_radar.onchain_flow.cli.RegistryService",
+            return_value=service,
+        ):
+            code, payload = self.run_cli(
+                [
+                    "registry-verify",
+                    "--token-key",
+                    token_key,
+                    "--allow-network",
+                    "--set-primary",
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["verification"]["primary_changed"])
+        self.assertEqual(payload["reconciliation"]["resolved"], 1)
+        self.assertNotIn("reconciliation", payload["token"])
 
     def test_bridge_missing_main_db_never_creates_it(self) -> None:
         code, payload = self.run_cli(["bridge-once"])

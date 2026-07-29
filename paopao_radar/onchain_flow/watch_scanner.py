@@ -84,37 +84,50 @@ class WatchScanner:
             manual_priority=self.settings.oar_watch_manual_priority,
             now=now,
         )
-        owner = f"watch-once:{uuid.uuid4().hex}"
-        claimed = self.store.claim_due(
-            owner=owner,
-            limit=self.settings.oar_watch_max_tokens_per_cycle,
-            lease_sec=self.settings.oar_watch_lease_sec,
-            now=now,
-        )
         result: dict[str, object] = {
             "status": "ok",
             "bridge": bridge_result,
-            "claimed_tokens": len(claimed),
+            "claimed_tokens": 0,
             "scanned_tokens": 0,
+            "deferred_tokens": 0,
+            "deferred_token_keys": [],
+            "cycle_budget_exhausted": False,
             "actionable_tokens": 0,
             "notifications_attempted": 0,
             "notifications_sent": 0,
             "partial_tokens": 0,
             "failed_tokens": 0,
+            "stale_tokens": 0,
             "rpc_request_count": 0,
             "rpc_budget_consumed": 0,
             "results": [],
-            "network_activity": bool(claimed),
+            "network_activity": False,
             "database_writes": True,
             "telegram_calls": False,
             "ai_calls": False,
         }
         remaining_rpc = self.settings.oar_watch_max_rpc_requests_per_cycle
-        for item in claimed:
+        while (
+            int(result["claimed_tokens"])
+            < self.settings.oar_watch_max_tokens_per_cycle
+            and remaining_rpc > 0
+        ):
+            owner = f"watch-once:{uuid.uuid4().hex}"
+            claimed = self.store.claim_due(
+                owner=owner,
+                limit=1,
+                lease_sec=self.settings.oar_watch_lease_sec,
+                now=int(self.clock()),
+            )
+            if not claimed:
+                break
+            item = claimed[0]
+            result["claimed_tokens"] = int(result["claimed_tokens"]) + 1
             token_result = self._scan_item(
                 item,
                 now=now,
                 remaining_rpc=remaining_rpc,
+                lease_owner=owner,
                 notify_requested=bool(notify_dry_run or send),
                 with_ai=with_ai,
                 send=send,
@@ -123,7 +136,9 @@ class WatchScanner:
             results = result["results"]
             assert isinstance(results, list)
             results.append(token_result)
-            result["scanned_tokens"] = int(result["scanned_tokens"]) + 1
+            if token_result.get("analysis_started"):
+                result["scanned_tokens"] = int(result["scanned_tokens"]) + 1
+                result["network_activity"] = True
             used = int(token_result.get("rpc_request_count") or 0)
             budget_used = int(
                 token_result.get("rpc_budget_consumed") or used
@@ -139,6 +154,8 @@ class WatchScanner:
                 result["partial_tokens"] = int(result["partial_tokens"]) + 1
             if token_result["status"] == "failed":
                 result["failed_tokens"] = int(result["failed_tokens"]) + 1
+            if token_result["status"] == "stale":
+                result["stale_tokens"] = int(result["stale_tokens"]) + 1
             if token_result.get("actionable"):
                 result["actionable_tokens"] = (
                     int(result["actionable_tokens"]) + 1
@@ -158,7 +175,23 @@ class WatchScanner:
                 )
             if int(token_result.get("ai_calls") or 0):
                 result["ai_calls"] = True
+        result["cycle_budget_exhausted"] = remaining_rpc <= 0
+        if remaining_rpc <= 0:
+            remaining_slots = max(
+                0,
+                self.settings.oar_watch_max_tokens_per_cycle
+                - int(result["claimed_tokens"]),
+            )
+            if remaining_slots:
+                deferred = self.store.due_token_keys(
+                    limit=remaining_slots,
+                    now=int(self.clock()),
+                )
+                result["deferred_token_keys"] = deferred
+                result["deferred_tokens"] = len(deferred)
         if int(result["failed_tokens"]) or int(result["partial_tokens"]):
+            result["status"] = "partial"
+        if int(result["stale_tokens"]):
             result["status"] = "partial"
         return result
 
@@ -168,6 +201,7 @@ class WatchScanner:
         *,
         now: int,
         remaining_rpc: int,
+        lease_owner: str,
         notify_requested: bool,
         with_ai: bool,
         send: bool,
@@ -183,17 +217,33 @@ class WatchScanner:
             if str(source.get("public_ref") or "")
         ]
         if remaining_rpc <= 0:
-            return self._record_failure(
+            released = self.store.release_claim_without_failure(
                 token_key,
-                started_at=started_at,
-                code="cycle_rpc_budget_exhausted",
-                source_refs=source_refs,
-                rpc_budget_consumed=0,
+                lease_owner=lease_owner,
+                reason="cycle_rpc_budget_exhausted",
+                now=int(self.clock()),
             )
+            return {
+                "token_key": token_key,
+                "status": "deferred" if released else "stale",
+                "error": (
+                    "cycle_rpc_budget_exhausted"
+                    if released
+                    else "lease_lost"
+                ),
+                "actionable": False,
+                "analysis_started": False,
+                "rpc_request_count": 0,
+                "rpc_budget_consumed": 0,
+                "notification_attempted": False,
+                "notification_status": "not_requested",
+                "ai_calls": 0,
+            }
         per_token_rpc = min(
             self.settings.oar_watch_max_rpc_requests_per_token,
             remaining_rpc,
         )
+        analysis_started = False
         try:
             query = TokenActivityQuery.create(
                 self.settings,
@@ -207,6 +257,7 @@ class WatchScanner:
                 min_usd=None,
             )
             analysis_service = self.analysis_factory(self.settings, query)
+            analysis_started = True
             analyzed = analysis_service.execute(query)
         except (AutomationStoreError, TokenActivityQueryError, ValueError) as exc:
             code = getattr(exc, "code", type(exc).__name__)
@@ -216,6 +267,8 @@ class WatchScanner:
                 code=str(code),
                 source_refs=source_refs,
                 rpc_budget_consumed=per_token_rpc,
+                lease_owner=lease_owner,
+                analysis_started=analysis_started,
             )
         except Exception:
             return self._record_failure(
@@ -224,11 +277,22 @@ class WatchScanner:
                 code="token_scan_failed",
                 source_refs=source_refs,
                 rpc_budget_consumed=per_token_rpc,
+                lease_owner=lease_owner,
+                analysis_started=analysis_started,
             )
 
         diagnostics = analyzed.get("diagnostics")
         diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
         rpc_count = int(diagnostics.get("rpc_request_count") or 0)
+        if not self._renew_lease(token_key, lease_owner):
+            return self._record_stale(
+                token_key,
+                lease_owner=lease_owner,
+                started_at=started_at,
+                source_refs=source_refs,
+                rpc_request_count=rpc_count,
+                analysis_started=True,
+            )
         analysis = analyzed.get("analysis")
         analysis = analysis if isinstance(analysis, dict) else {}
         primary = analysis.get("primary_behavior")
@@ -254,6 +318,15 @@ class WatchScanner:
         ai_calls = 0
         reported: dict[str, object] | None = None
         if actionable:
+            if not self._renew_lease(token_key, lease_owner):
+                return self._record_stale(
+                    token_key,
+                    lease_owner=lease_owner,
+                    started_at=started_at,
+                    source_refs=source_refs,
+                    rpc_request_count=rpc_count,
+                    analysis_started=True,
+                )
             report_service = self.report_factory(self.settings)
             reported = report_service.build_from_analysis(
                 analyzed,
@@ -267,6 +340,15 @@ class WatchScanner:
             ai_calls = int(ai.get("calls") or 0)
             context_hash = str(report.get("context_hash") or "")
         if actionable and notify_requested and reported is not None:
+            if not self._renew_lease(token_key, lease_owner):
+                return self._record_stale(
+                    token_key,
+                    lease_owner=lease_owner,
+                    started_at=started_at,
+                    source_refs=source_refs,
+                    rpc_request_count=rpc_count,
+                    analysis_started=True,
+                )
             notifier = self.notifier_factory(self.settings)
             notification = notifier.notify(
                 reported,
@@ -302,8 +384,18 @@ class WatchScanner:
             )
         summary = analyzed.get("summary")
         summary = summary if isinstance(summary, dict) else {}
-        self.store.record_scan(
+        if not self._renew_lease(token_key, lease_owner):
+            return self._record_stale(
+                token_key,
+                lease_owner=lease_owner,
+                started_at=started_at,
+                source_refs=source_refs,
+                rpc_request_count=rpc_count,
+                analysis_started=True,
+            )
+        completion = self.store.record_scan(
             token_key,
+            lease_owner=lease_owner,
             started_at=started_at,
             status=scan_status,
             activity_complete=activity_complete,
@@ -325,6 +417,12 @@ class WatchScanner:
             ),
             now=int(self.clock()),
         )
+        if completion == "lease_lost":
+            return self._stale_result(
+                token_key,
+                rpc_request_count=rpc_count,
+                analysis_started=True,
+            )
         return {
             "token_key": token_key,
             "status": scan_status,
@@ -342,6 +440,7 @@ class WatchScanner:
             "notification_reason": notification_reason,
             "error": partial_reason,
             "ai_calls": ai_calls,
+            "analysis_started": True,
         }
 
     def _record_failure(
@@ -352,9 +451,12 @@ class WatchScanner:
         code: str,
         source_refs: list[str],
         rpc_budget_consumed: int,
+        lease_owner: str,
+        analysis_started: bool,
     ) -> dict[str, object]:
-        self.store.record_scan(
+        completion = self.store.record_scan(
             token_key,
+            lease_owner=lease_owner,
             started_at=started_at,
             status="failed",
             activity_complete=None,
@@ -367,6 +469,13 @@ class WatchScanner:
             ),
             now=int(self.clock()),
         )
+        if completion == "lease_lost":
+            return self._stale_result(
+                token_key,
+                rpc_request_count=0,
+                rpc_budget_consumed=rpc_budget_consumed,
+                analysis_started=analysis_started,
+            )
         return {
             "token_key": token_key,
             "status": "failed",
@@ -377,6 +486,74 @@ class WatchScanner:
             "notification_attempted": False,
             "notification_status": "not_requested",
             "ai_calls": 0,
+            "analysis_started": analysis_started,
+        }
+
+    def _renew_lease(self, token_key: str, lease_owner: str) -> bool:
+        return self.store.renew_lease(
+            token_key,
+            lease_owner=lease_owner,
+            lease_sec=self.settings.oar_watch_lease_sec,
+            now=int(self.clock()),
+        )
+
+    def _record_stale(
+        self,
+        token_key: str,
+        *,
+        lease_owner: str,
+        started_at: int,
+        source_refs: list[str],
+        rpc_request_count: int,
+        analysis_started: bool,
+    ) -> dict[str, object]:
+        self.store.record_scan(
+            token_key,
+            lease_owner=lease_owner,
+            started_at=started_at,
+            status="stale",
+            activity_complete=None,
+            analysis_complete=None,
+            error_code="lease_lost",
+            source_refs=source_refs,
+            scan_interval_sec=self.settings.oar_watch_scan_interval_sec,
+            max_consecutive_failures=(
+                self.settings.oar_watch_max_consecutive_failures
+            ),
+            now=int(self.clock()),
+        )
+        return self._stale_result(
+            token_key,
+            rpc_request_count=rpc_request_count,
+            analysis_started=analysis_started,
+        )
+
+    @staticmethod
+    def _stale_result(
+        token_key: str,
+        *,
+        rpc_request_count: int,
+        rpc_budget_consumed: int | None = None,
+        analysis_started: bool,
+    ) -> dict[str, object]:
+        return {
+            "token_key": token_key,
+            "status": "stale",
+            "error": "lease_lost",
+            "actionable": False,
+            "rpc_request_count": max(0, int(rpc_request_count)),
+            "rpc_budget_consumed": max(
+                0,
+                int(
+                    rpc_request_count
+                    if rpc_budget_consumed is None
+                    else rpc_budget_consumed
+                ),
+            ),
+            "notification_attempted": False,
+            "notification_status": "not_requested",
+            "ai_calls": 0,
+            "analysis_started": analysis_started,
         }
 
     def _notification_gate(

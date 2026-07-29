@@ -110,6 +110,71 @@ class MainSignalReader:
         except sqlite3.Error:
             return {"status": "source_failed", "signals": []}
 
+    def read_by_public_refs(
+        self,
+        public_refs: list[str],
+        *,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        refs = sorted(
+            {
+                str(value or "")[:160]
+                for value in public_refs
+                if str(value or "")
+            }
+        )[: max(1, min(int(limit), 100))]
+        if not refs:
+            return {"status": "ok", "signals": []}
+        if not self.path.exists():
+            return {"status": "source_not_initialized", "signals": []}
+        uri = f"file:{quote(self.path.resolve().as_posix(), safe='/:')}?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=1)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA query_only=ON")
+                conn.execute("PRAGMA busy_timeout=1000")
+                columns = {
+                    str(row["name"])
+                    for row in conn.execute(
+                        "PRAGMA table_info(signals)"
+                    ).fetchall()
+                }
+                if not REQUIRED_SIGNAL_COLUMNS.issubset(columns):
+                    return {
+                        "status": "source_schema_incompatible",
+                        "signals": [],
+                    }
+                placeholders = ",".join("?" for _ in refs)
+                rows = conn.execute(
+                    f"""
+                    SELECT id, public_ref, ts, module, template_id, symbol,
+                           stage, severity, score, excerpt, status, sent,
+                           ingest_mode, quality_status, payload_json
+                    FROM signals
+                    WHERE public_ref IN ({placeholders})
+                    ORDER BY ts ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (*refs, len(refs)),
+                ).fetchall()
+                return {
+                    "status": "ok",
+                    "signals": [self._normalize(row) for row in rows],
+                }
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            status = (
+                "source_locked"
+                if "locked" in message or "busy" in message
+                else "source_failed"
+            )
+            return {"status": status, "signals": []}
+        except sqlite3.Error:
+            return {"status": "source_failed", "signals": []}
+
     def _read_incremental(
         self,
         conn: sqlite3.Connection,
@@ -311,7 +376,185 @@ class SignalBridge:
             "last_signal_ts": after[0],
             "last_signal_id": after[1],
         }
+        reconciliation = self.reconcile_open(now=now, limit=100)
+        summary["reconciliation"] = reconciliation
+        summary["database_writes"] = bool(
+            summary["database_writes"]
+            or reconciliation.get("database_writes")
+        )
         return summary
+
+    def reconcile_token(
+        self,
+        token: dict[str, object],
+        *,
+        now: int | None = None,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        if (
+            str(token.get("status") or "") != "verified"
+            or int(token.get("is_primary") or 0) != 1
+        ):
+            return self._reconciliation_summary(
+                status="not_primary",
+                remaining_open=self.store.open_unresolved_count(
+                    market_symbol=str(token.get("market_symbol") or "")
+                ),
+            )
+        rows = self.store.list_open_unresolved(
+            market_symbol=str(token["market_symbol"]),
+            limit=limit,
+        )
+        if not rows:
+            return self._reconciliation_summary(
+                status="ok",
+                remaining_open=self.store.open_unresolved_count(
+                    market_symbol=str(token["market_symbol"])
+                ),
+            )
+        return self._reconcile_rows(
+            rows,
+            expected_token_key=str(token["token_key"]),
+            now=int(now if now is not None else self.clock()),
+        )
+
+    def reconcile_open(
+        self,
+        *,
+        now: int | None = None,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        rows = self.store.list_open_unresolved(limit=limit)
+        return self._reconcile_rows(
+            rows,
+            expected_token_key=None,
+            now=int(now if now is not None else self.clock()),
+        )
+
+    def _reconcile_rows(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        expected_token_key: str | None,
+        now: int,
+    ) -> dict[str, object]:
+        if not rows:
+            return self._reconciliation_summary(
+                status="ok",
+                remaining_open=(
+                    self.store.open_unresolved_count()
+                    if expected_token_key is None
+                    else 0
+                ),
+            )
+        read_result = self.reader.read_by_public_refs(
+            [str(row.get("source_public_ref") or "") for row in rows],
+            limit=min(len(rows), 100),
+        )
+        if read_result["status"] != "ok":
+            return self._reconciliation_summary(
+                status="source_unavailable",
+                remaining_open=(
+                    self.store.open_unresolved_count()
+                    if expected_token_key is None
+                    else len(rows)
+                ),
+                source_status=str(read_result["status"]),
+            )
+        signals = {
+            str(signal.get("public_ref") or ""): signal
+            for signal in read_result["signals"]
+            if isinstance(signal, dict)
+        }
+        result = self._reconciliation_summary(status="ok")
+        unresolved_remaining = False
+        for unresolved in rows:
+            result["examined"] = int(result["examined"]) + 1
+            signal = signals.get(str(unresolved["source_public_ref"]))
+            if signal is None:
+                unresolved_remaining = True
+                continue
+            eligible, _ = self._eligibility(signal)
+            if not eligible:
+                unresolved_remaining = True
+                continue
+            module = str(signal.get("module") or "")
+            ttl = self._source_ttl(module)
+            if int(signal.get("ts") or 0) + ttl <= now:
+                if self.store.resolve_unresolved(
+                    int(unresolved["id"]),
+                    status="expired",
+                    note="source_ttl_expired",
+                    now=now,
+                ):
+                    result["expired"] = int(result["expired"]) + 1
+                    result["database_writes"] = True
+                continue
+            resolution = self._resolve(signal)
+            token = resolution.get("token")
+            if (
+                resolution.get("status") != "resolved"
+                or not isinstance(token, dict)
+                or (
+                    expected_token_key is not None
+                    and str(token.get("token_key") or "")
+                    != expected_token_key
+                )
+            ):
+                unresolved_remaining = True
+                continue
+            outcome = self.store.process_bridge_signal(
+                signal,
+                resolution=resolution,
+                source_ttl_sec=ttl,
+                source_priority=self._source_priority(module),
+                query_window=self.settings.oar_watch_query_window,
+                scan_interval_sec=self.settings.oar_watch_scan_interval_sec,
+                max_active_tokens=self.settings.oar_watch_max_active_tokens,
+                now=now,
+            )
+            result["database_writes"] = True
+            if outcome not in {"watch_created", "watch_refreshed"}:
+                unresolved_remaining = True
+                continue
+            if self.store.resolve_unresolved(
+                int(unresolved["id"]),
+                status="resolved",
+                token_key=str(token["token_key"]),
+                note=outcome,
+                now=now,
+            ):
+                result["resolved"] = int(result["resolved"]) + 1
+                result[outcome] = int(result[outcome]) + 1
+        result["remaining_open"] = (
+            self.store.open_unresolved_count()
+            if expected_token_key is None
+            else self.store.open_unresolved_count(
+                market_symbol=str(rows[0]["source_symbol"])
+            )
+        )
+        if unresolved_remaining or int(result["remaining_open"]):
+            result["status"] = "partial"
+        return result
+
+    @staticmethod
+    def _reconciliation_summary(
+        *,
+        status: str,
+        remaining_open: int = 0,
+        source_status: str = "ok",
+    ) -> dict[str, object]:
+        return {
+            "status": status,
+            "source_status": source_status,
+            "examined": 0,
+            "resolved": 0,
+            "expired": 0,
+            "remaining_open": int(remaining_open),
+            "watch_created": 0,
+            "watch_refreshed": 0,
+            "database_writes": False,
+        }
 
     def _eligibility(
         self, signal: dict[str, object]

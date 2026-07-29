@@ -158,14 +158,22 @@ class AutomationStore:
                     "SELECT value FROM automation_meta "
                     "WHERE key='schema_version'"
                 ).fetchone()
-                if current is not None and int(current["value"]) != (
-                    OAR_AUTOMATION_SCHEMA_VERSION
-                ):
+                current_version = (
+                    int(current["value"]) if current is not None else 0
+                )
+                if current_version not in {
+                    0,
+                    1,
+                    OAR_AUTOMATION_SCHEMA_VERSION,
+                }:
                     raise AutomationStoreError(
                         "automation_schema_incompatible",
                         "automation database schema version is incompatible",
                     )
-                self._create_schema(conn)
+                if current_version == 1:
+                    self._migrate_v1_to_v2(conn)
+                else:
+                    self._create_schema(conn)
                 conn.execute(
                     "INSERT OR REPLACE INTO automation_meta(key, value) "
                     "VALUES('schema_version', ?)",
@@ -176,6 +184,29 @@ class AutomationStore:
             except Exception:
                 conn.rollback()
                 raise
+
+    @staticmethod
+    def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "ALTER TABLE unresolved_signals "
+            "ADD COLUMN status TEXT NOT NULL DEFAULT 'open'"
+        )
+        conn.execute(
+            "ALTER TABLE unresolved_signals "
+            "ADD COLUMN resolved_at INTEGER"
+        )
+        conn.execute(
+            "ALTER TABLE unresolved_signals "
+            "ADD COLUMN resolved_token_key TEXT"
+        )
+        conn.execute(
+            "ALTER TABLE unresolved_signals "
+            "ADD COLUMN resolution_note TEXT NOT NULL DEFAULT ''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_unresolved_open_symbol "
+            "ON unresolved_signals(status, source_symbol, reason)"
+        )
 
     @staticmethod
     def _create_schema(conn: sqlite3.Connection) -> None:
@@ -275,8 +306,14 @@ class AutomationStore:
                 attempts INTEGER NOT NULL DEFAULT 1,
                 first_seen_at INTEGER NOT NULL,
                 last_seen_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                resolved_at INTEGER,
+                resolved_token_key TEXT,
+                resolution_note TEXT NOT NULL DEFAULT '',
                 UNIQUE(source_public_ref, source_payload_hash, reason)
             );
+            CREATE INDEX IF NOT EXISTS idx_unresolved_open_symbol
+                ON unresolved_signals(status, source_symbol, reason);
 
             CREATE TABLE IF NOT EXISTS watch_scan_runs (
                 scan_id TEXT PRIMARY KEY,
@@ -458,7 +495,8 @@ class AutomationStore:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT market_symbol FROM token_registry WHERE token_key=?",
+                "SELECT market_symbol, status, is_primary "
+                "FROM token_registry WHERE token_key=?",
                 (token_key.lower(),),
             ).fetchone()
             if row is None:
@@ -479,6 +517,8 @@ class AutomationStore:
                         token_key.lower(),
                     ),
                 )
+            was_primary = bool(int(row["is_primary"] or 0))
+            target_primary = bool(set_primary or was_primary)
             conn.execute(
                 """
                 UPDATE token_registry SET
@@ -496,14 +536,20 @@ class AutomationStore:
                     str(verification_method or "")[:80],
                     str(verification_note or "")[:500],
                     str(metadata_hash or "")[:64],
-                    1 if set_primary else 0,
+                    int(target_primary),
                     timestamp,
                     timestamp,
                     token_key.lower(),
                 ),
             )
             conn.commit()
-        return self.get_registry(token_key) or {}
+        result = self.get_registry(token_key) or {}
+        result["verification"] = {
+            "was_primary": was_primary,
+            "is_primary": target_primary,
+            "primary_changed": was_primary != target_primary,
+        }
+        return result
 
     def disable_registry(
         self, token_key: str, *, now: int | None = None
@@ -1098,13 +1144,22 @@ class AutomationStore:
                 source_public_ref, source_signal_id, source_module,
                 source_symbol, source_ts, source_payload_hash, reason,
                 candidate_chain, candidate_contract, attempts,
-                first_seen_at, last_seen_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                first_seen_at, last_seen_at, status, resolved_at,
+                resolved_token_key, resolution_note
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', NULL, NULL, '')
             ON CONFLICT(source_public_ref, source_payload_hash, reason)
             DO UPDATE SET
                 source_signal_id=excluded.source_signal_id,
-                attempts=unresolved_signals.attempts + 1,
-                last_seen_at=excluded.last_seen_at
+                attempts=CASE
+                    WHEN unresolved_signals.status='open'
+                    THEN unresolved_signals.attempts + 1
+                    ELSE unresolved_signals.attempts
+                END,
+                last_seen_at=CASE
+                    WHEN unresolved_signals.status='open'
+                    THEN excluded.last_seen_at
+                    ELSE unresolved_signals.last_seen_at
+                END
             """,
             (
                 str(signal.get("public_ref") or "")[:160],
@@ -1120,6 +1175,97 @@ class AutomationStore:
                 now,
             ),
         )
+
+    def list_open_unresolved(
+        self,
+        *,
+        market_symbol: str | None = None,
+        reasons: tuple[str, ...] = (
+            "unresolved_contract",
+            "registry_not_verified",
+            "ambiguous_contract",
+        ),
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        if not reasons:
+            return []
+        clauses = ["status='open'"]
+        params: list[object] = []
+        if market_symbol is not None:
+            clauses.append("source_symbol=?")
+            params.append(canonical_market_symbol(market_symbol))
+        placeholders = ",".join("?" for _ in reasons)
+        clauses.append(f"reason IN ({placeholders})")
+        params.extend(reasons)
+        with self.connect_existing() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM unresolved_signals WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY source_ts, id LIMIT ?",
+                (*params, max(1, min(int(limit), 100))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def resolve_unresolved(
+        self,
+        unresolved_id: int,
+        *,
+        status: str,
+        token_key: str = "",
+        note: str = "",
+        now: int | None = None,
+    ) -> bool:
+        if status not in {"resolved", "expired"}:
+            raise AutomationStoreError(
+                "invalid_unresolved_status",
+                "unresolved status must be resolved or expired",
+            )
+        self.migrate()
+        timestamp = int(now if now is not None else self.clock())
+        normalized_key: str | None = None
+        if token_key:
+            parse_token_key(token_key)
+            normalized_key = token_key.lower()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                """
+                UPDATE unresolved_signals
+                SET status=?, resolved_at=?, resolved_token_key=?,
+                    resolution_note=?, last_seen_at=?
+                WHERE id=? AND status='open'
+                """,
+                (
+                    status,
+                    timestamp,
+                    normalized_key,
+                    str(note or "")[:200],
+                    timestamp,
+                    int(unresolved_id),
+                ),
+            ).rowcount
+            conn.commit()
+        return bool(changed)
+
+    def open_unresolved_count(
+        self, *, market_symbol: str | None = None
+    ) -> int:
+        params: tuple[object, ...] = ()
+        where = "status='open'"
+        if market_symbol is not None:
+            where += " AND source_symbol=?"
+            params = (canonical_market_symbol(market_symbol),)
+        with self.connect_existing() as conn:
+            if conn is None:
+                return 0
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM unresolved_signals WHERE {where}",
+                    params,
+                ).fetchone()[0]
+            )
 
     def expire_and_recompute(
         self,
@@ -1192,7 +1338,120 @@ class AutomationStore:
                     (owner, timestamp + int(lease_sec), timestamp, token_key),
                 )
             conn.commit()
-            return [dict(row) for row in rows]
+            return [
+                {
+                    **dict(row),
+                    "lease_owner": owner,
+                    "lease_until": timestamp + int(lease_sec),
+                }
+                for row in rows
+            ]
+
+    def due_token_keys(
+        self,
+        *,
+        limit: int,
+        now: int | None = None,
+    ) -> list[str]:
+        timestamp = int(now if now is not None else self.clock())
+        with self.connect_existing() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT w.token_key
+                FROM watch_items w
+                JOIN token_registry r ON r.token_key=w.token_key
+                WHERE w.status='active'
+                  AND w.next_scan_at<=?
+                  AND w.expires_at>?
+                  AND r.status='verified'
+                  AND (w.lease_until IS NULL OR w.lease_until<=?)
+                ORDER BY w.priority DESC, w.next_scan_at, w.token_key
+                LIMIT ?
+                """,
+                (timestamp, timestamp, timestamp, max(1, min(int(limit), 100))),
+            ).fetchall()
+            return [str(row["token_key"]) for row in rows]
+
+    def renew_lease(
+        self,
+        token_key: str,
+        *,
+        lease_owner: str,
+        lease_sec: int,
+        now: int | None = None,
+    ) -> bool:
+        self.migrate()
+        parse_token_key(token_key)
+        timestamp = int(now if now is not None else self.clock())
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                """
+                UPDATE watch_items
+                SET lease_until=?, updated_at=?
+                WHERE token_key=? AND lease_owner=?
+                """,
+                (
+                    timestamp + int(lease_sec),
+                    timestamp,
+                    token_key.lower(),
+                    str(lease_owner),
+                ),
+            ).rowcount
+            conn.commit()
+        return bool(changed)
+
+    def release_claim_without_failure(
+        self,
+        token_key: str,
+        *,
+        lease_owner: str,
+        reason: str = "deferred_by_cycle_budget",
+        now: int | None = None,
+    ) -> bool:
+        self.migrate()
+        parse_token_key(token_key)
+        timestamp = int(now if now is not None else self.clock())
+        scan_id = uuid.uuid4().hex
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT lease_owner FROM watch_items WHERE token_key=?",
+                (token_key.lower(),),
+            ).fetchone()
+            if current is None or str(current["lease_owner"] or "") != str(
+                lease_owner
+            ):
+                conn.rollback()
+                return False
+            conn.execute(
+                """
+                INSERT INTO watch_scan_runs(
+                    scan_id, token_key, started_at, completed_at, status,
+                    error_code
+                ) VALUES(?, ?, ?, ?, 'deferred', ?)
+                """,
+                (
+                    scan_id,
+                    token_key.lower(),
+                    timestamp,
+                    timestamp,
+                    str(reason or "deferred_by_cycle_budget")[:80],
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE watch_items
+                SET lease_owner='', lease_until=NULL, updated_at=?
+                WHERE token_key=? AND lease_owner=?
+                """,
+                (timestamp, token_key.lower(), str(lease_owner)),
+            )
+            self._trim_scan_audit(conn, token_key.lower())
+            conn.commit()
+        return True
 
     def active_sources(
         self,
@@ -1222,6 +1481,7 @@ class AutomationStore:
         self,
         token_key: str,
         *,
+        lease_owner: str,
         started_at: int,
         status: str,
         activity_complete: bool | None,
@@ -1248,6 +1508,16 @@ class AutomationStore:
         failure = status in {"failed", "partial"}
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT consecutive_failures, lease_owner "
+                "FROM watch_items WHERE token_key=?",
+                (token_key.lower(),),
+            ).fetchone()
+            lease_matches = current is not None and str(
+                current["lease_owner"] or ""
+            ) == str(lease_owner)
+            audit_status = status if lease_matches else "stale"
+            audit_error = error_code if lease_matches else "lease_lost"
             conn.execute(
                 """
                 INSERT INTO watch_scan_runs(
@@ -1264,7 +1534,7 @@ class AutomationStore:
                     token_key.lower(),
                     int(started_at),
                     completed_at,
-                    status,
+                    audit_status,
                     None if activity_complete is None else int(activity_complete),
                     None if analysis_complete is None else int(analysis_complete),
                     str(analysis_status or "")[:80],
@@ -1276,17 +1546,17 @@ class AutomationStore:
                     str(context_hash or "")[:64],
                     str(notification_status or "")[:40],
                     str(notification_reason or "")[:120],
-                    str(error_code or "")[:80],
+                    str(audit_error or "")[:80],
                     _json_list(sorted(set(source_refs or []))[:10]),
                 ),
             )
-            current = conn.execute(
-                "SELECT consecutive_failures FROM watch_items WHERE token_key=?",
-                (token_key.lower(),),
-            ).fetchone()
+            if not lease_matches:
+                self._trim_scan_audit(conn, token_key.lower())
+                conn.commit()
+                return "lease_lost"
             failures = (
                 int(current["consecutive_failures"] or 0) + 1
-                if failure and current
+                if failure
                 else 0
             )
             if failure:
@@ -1301,13 +1571,13 @@ class AutomationStore:
             else:
                 next_scan_at = completed_at + int(scan_interval_sec)
                 watch_status = "active"
-            conn.execute(
+            changed = conn.execute(
                 """
                 UPDATE watch_items SET
                     status=?, next_scan_at=?, lease_owner='',
                     lease_until=NULL, last_scan_at=?, last_scan_status=?,
                     consecutive_failures=?, last_error_code=?, updated_at=?
-                WHERE token_key=?
+                WHERE token_key=? AND lease_owner=?
                 """,
                 (
                     watch_status,
@@ -1318,32 +1588,42 @@ class AutomationStore:
                     str(error_code or "")[:80],
                     completed_at,
                     token_key.lower(),
+                    str(lease_owner),
                 ),
-            )
-            conn.execute(
-                """
-                DELETE FROM watch_scan_runs
-                WHERE scan_id IN (
-                    SELECT scan_id FROM watch_scan_runs
-                    WHERE token_key=?
-                    ORDER BY started_at DESC, scan_id DESC
-                    LIMIT -1 OFFSET 100
-                )
-                """,
-                (token_key.lower(),),
-            )
-            conn.execute(
-                """
-                DELETE FROM watch_scan_runs
-                WHERE scan_id IN (
-                    SELECT scan_id FROM watch_scan_runs
-                    ORDER BY started_at DESC, scan_id DESC
-                    LIMIT -1 OFFSET 5000
-                )
-                """
-            )
+            ).rowcount
+            if not changed:
+                conn.rollback()
+                return "lease_lost"
+            self._trim_scan_audit(conn, token_key.lower())
             conn.commit()
         return scan_id
+
+    @staticmethod
+    def _trim_scan_audit(
+        conn: sqlite3.Connection, token_key: str
+    ) -> None:
+        conn.execute(
+            """
+            DELETE FROM watch_scan_runs
+            WHERE scan_id IN (
+                SELECT scan_id FROM watch_scan_runs
+                WHERE token_key=?
+                ORDER BY started_at DESC, scan_id DESC
+                LIMIT -1 OFFSET 100
+            )
+            """,
+            (token_key,),
+        )
+        conn.execute(
+            """
+            DELETE FROM watch_scan_runs
+            WHERE scan_id IN (
+                SELECT scan_id FROM watch_scan_runs
+                ORDER BY started_at DESC, scan_id DESC
+                LIMIT -1 OFFSET 5000
+            )
+            """
+        )
 
     def status_summary(self, *, now: int | None = None) -> dict[str, object]:
         timestamp = int(now if now is not None else self.clock())
@@ -1380,7 +1660,8 @@ class AutomationStore:
             )
             unresolved = int(
                 conn.execute(
-                    "SELECT COUNT(*) FROM unresolved_signals"
+                    "SELECT COUNT(*) FROM unresolved_signals "
+                    "WHERE status='open'"
                 ).fetchone()[0]
             )
             bridge = conn.execute(

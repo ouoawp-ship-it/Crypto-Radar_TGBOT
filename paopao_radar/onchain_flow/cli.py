@@ -531,11 +531,15 @@ def main(
                         args.accept_symbol_mismatch
                     ),
                 )
+                verification = item.pop("verification", {})
+                reconciliation = item.pop("reconciliation", {})
                 print(
                     json.dumps(
                         {
                             "status": "ok",
                             "token": item,
+                            "verification": verification,
+                            "reconciliation": reconciliation,
                             "network_activity": True,
                             "telegram_calls": False,
                             "ai_calls": False,

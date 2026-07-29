@@ -83,7 +83,7 @@ class AutomationStoreTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT value FROM automation_meta WHERE key='schema_version'"
             ).fetchone()
-        self.assertEqual(version[0], "1")
+        self.assertEqual(version[0], "2")
 
     def test_same_chain_contract_is_idempotent(self) -> None:
         self.add()
@@ -192,6 +192,52 @@ class AutomationStoreTests(unittest.TestCase):
         resolved = self.store.resolve_registry("AAAUSDT")
         self.assertEqual(resolved["status"], "resolved")
         self.assertEqual(resolved["token"]["token_key"], key_b)
+
+    def test_reverify_preserves_primary_and_secondary_roles(self) -> None:
+        key_a = self.add(CONTRACT_A, "AAAUSDT")
+        key_b = self.add(CONTRACT_B, "AAAUSDT")
+        self.verify(key_a, primary=True)
+        self.verify(key_b, primary=False)
+        primary = self.verify(key_a, primary=False)
+        secondary = self.verify(key_b, primary=False)
+        self.assertEqual(primary["is_primary"], 1)
+        self.assertEqual(secondary["is_primary"], 0)
+        self.assertFalse(primary["verification"]["primary_changed"])
+        self.assertFalse(secondary["verification"]["primary_changed"])
+
+    def test_explicit_primary_switch_is_atomic_and_idempotent(self) -> None:
+        key_a = self.add(CONTRACT_A, "AAAUSDT")
+        key_b = self.add(CONTRACT_B, "AAAUSDT")
+        self.verify(key_a, primary=True)
+        switched = self.verify(key_b, primary=True)
+        repeated = self.verify(key_b, primary=False)
+        self.assertEqual((self.store.get_registry(key_a) or {})["is_primary"], 0)
+        self.assertEqual(switched["is_primary"], 1)
+        self.assertTrue(switched["verification"]["primary_changed"])
+        self.assertEqual(repeated["is_primary"], 1)
+        self.assertFalse(repeated["verification"]["primary_changed"])
+
+    def test_primary_switch_failure_rolls_back_previous_primary(self) -> None:
+        key_a = self.add(CONTRACT_A, "AAAUSDT")
+        key_b = self.add(CONTRACT_B, "AAAUSDT")
+        self.verify(key_a, primary=True)
+        self.verify(key_b, primary=False)
+        with self.store.connect() as conn:
+            conn.execute(
+                f"""
+                CREATE TRIGGER fail_primary_switch
+                BEFORE UPDATE ON token_registry
+                WHEN NEW.token_key='{key_b}' AND NEW.is_primary=1
+                BEGIN
+                    SELECT RAISE(ABORT, 'fixture');
+                END
+                """
+            )
+            conn.commit()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.verify(key_b, primary=True)
+        self.assertEqual((self.store.get_registry(key_a) or {})["is_primary"], 1)
+        self.assertEqual((self.store.get_registry(key_b) or {})["is_primary"], 0)
 
     def test_doctor_detects_ambiguous_verified_registry(self) -> None:
         key_a = self.add(CONTRACT_A, "AAAUSDT")
@@ -337,6 +383,104 @@ class AutomationStoreTests(unittest.TestCase):
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
         self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]["lease_owner"], "two")
+        self.assertEqual(recovered[0]["lease_until"], 1123)
+
+    def test_lease_owner_fences_stale_completion_and_failure(self) -> None:
+        self.add()
+        self.verify()
+        self.store.add_manual_watch(
+            self.key_a,
+            ttl_sec=10000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        self.store.claim_due(owner="worker-a", limit=1, lease_sec=60, now=1002)
+        claimed_b = self.store.claim_due(
+            owner="worker-b", limit=1, lease_sec=60, now=1063
+        )
+        self.assertEqual(len(claimed_b), 1)
+        before = self.store.get_watch(self.key_a) or {}
+        result = self.store.record_scan(
+            self.key_a,
+            lease_owner="worker-a",
+            started_at=1002,
+            status="failed",
+            activity_complete=None,
+            analysis_complete=None,
+            error_code="stale_failure",
+            source_refs=[],
+            scan_interval_sec=900,
+            max_consecutive_failures=2,
+            now=1064,
+        )
+        after = self.store.get_watch(self.key_a) or {}
+        self.assertEqual(result, "lease_lost")
+        self.assertEqual(after["lease_owner"], "worker-b")
+        self.assertEqual(after["lease_until"], before["lease_until"])
+        self.assertEqual(after["next_scan_at"], before["next_scan_at"])
+        self.assertEqual(after["consecutive_failures"], 0)
+        self.assertNotEqual(
+            self.store.record_scan(
+                self.key_a,
+                lease_owner="worker-b",
+                started_at=1063,
+                status="ok",
+                activity_complete=True,
+                analysis_complete=True,
+                source_refs=[],
+                scan_interval_sec=900,
+                max_consecutive_failures=2,
+                now=1065,
+            ),
+            "lease_lost",
+        )
+        self.assertEqual((self.store.get_watch(self.key_a) or {})["lease_owner"], "")
+
+    def test_lease_renew_and_deferred_release_require_owner(self) -> None:
+        self.add()
+        self.verify()
+        self.store.add_manual_watch(
+            self.key_a,
+            ttl_sec=10000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        self.store.claim_due(owner="owner", limit=1, lease_sec=60, now=1002)
+        self.assertFalse(
+            self.store.renew_lease(
+                self.key_a,
+                lease_owner="wrong",
+                lease_sec=60,
+                now=1010,
+            )
+        )
+        self.assertTrue(
+            self.store.renew_lease(
+                self.key_a,
+                lease_owner="owner",
+                lease_sec=60,
+                now=1010,
+            )
+        )
+        self.assertFalse(
+            self.store.release_claim_without_failure(
+                self.key_a, lease_owner="wrong", now=1011
+            )
+        )
+        self.assertTrue(
+            self.store.release_claim_without_failure(
+                self.key_a, lease_owner="owner", now=1011
+            )
+        )
+        watch = self.store.get_watch(self.key_a) or {}
+        self.assertEqual(watch["lease_owner"], "")
+        self.assertEqual(watch["consecutive_failures"], 0)
+        self.assertEqual(watch["next_scan_at"], 1002)
 
     def test_failure_backoff_and_pause_are_bounded(self) -> None:
         self.add()
@@ -349,8 +493,17 @@ class AutomationStoreTests(unittest.TestCase):
             scan_interval_sec=900,
             now=1002,
         )
+        self.assertEqual(
+            len(
+                self.store.claim_due(
+                    owner="failure-one", limit=1, lease_sec=60, now=1010
+                )
+            ),
+            1,
+        )
         self.store.record_scan(
             self.key_a,
+            lease_owner="failure-one",
             started_at=1010,
             status="failed",
             activity_complete=None,
@@ -364,8 +517,17 @@ class AutomationStoreTests(unittest.TestCase):
         first = self.store.get_watch(self.key_a)
         self.assertEqual(first["next_scan_at"], 1311)
         self.assertEqual(first["status"], "active")
+        self.assertEqual(
+            len(
+                self.store.claim_due(
+                    owner="failure-two", limit=1, lease_sec=60, now=1311
+                )
+            ),
+            1,
+        )
         self.store.record_scan(
             self.key_a,
+            lease_owner="failure-two",
             started_at=1311,
             status="failed",
             activity_complete=None,
@@ -391,8 +553,17 @@ class AutomationStoreTests(unittest.TestCase):
             scan_interval_sec=900,
             now=1002,
         )
+        self.assertEqual(
+            len(
+                self.store.claim_due(
+                    owner="partial", limit=1, lease_sec=60, now=1010
+                )
+            ),
+            1,
+        )
         self.store.record_scan(
             self.key_a,
+            lease_owner="partial",
             started_at=1010,
             status="partial",
             activity_complete=False,
@@ -426,6 +597,109 @@ class AutomationStoreTests(unittest.TestCase):
         self.assertNotIn("partial_schema", names)
         self.assertNotIn("automation_meta", names)
 
+    def test_schema_v1_unresolved_rows_migrate_to_open_v2(self) -> None:
+        self.store.path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.store.path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE automation_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO automation_meta VALUES('schema_version', '1');
+                CREATE TABLE unresolved_signals(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_public_ref TEXT NOT NULL,
+                    source_signal_id INTEGER,
+                    source_module TEXT NOT NULL,
+                    source_symbol TEXT NOT NULL,
+                    source_ts INTEGER NOT NULL,
+                    source_payload_hash TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    candidate_chain TEXT NOT NULL DEFAULT '',
+                    candidate_contract TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at INTEGER NOT NULL,
+                    last_seen_at INTEGER NOT NULL,
+                    UNIQUE(source_public_ref, source_payload_hash, reason)
+                );
+                INSERT INTO unresolved_signals(
+                    source_public_ref, source_module, source_symbol, source_ts,
+                    source_payload_hash, reason, first_seen_at, last_seen_at
+                ) VALUES('launch:1', 'launch', 'AAAUSDT', 1000, 'x',
+                         'registry_not_verified', 1001, 1001);
+                """
+            )
+            conn.commit()
+        self.store.migrate()
+        with closing(sqlite3.connect(self.store.path)) as conn:
+            version = conn.execute(
+                "SELECT value FROM automation_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            row = conn.execute(
+                "SELECT status, resolved_at, resolved_token_key, "
+                "resolution_note FROM unresolved_signals"
+            ).fetchone()
+        self.assertEqual(version, "2")
+        self.assertEqual(row, ("open", None, None, ""))
+
+    def test_schema_v1_to_v2_failure_rolls_back(self) -> None:
+        other_path = self.root / "rollback" / "oar_automation.db"
+        other_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(other_path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE automation_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO automation_meta VALUES('schema_version', '1');
+                CREATE TABLE unresolved_signals(
+                    id INTEGER PRIMARY KEY,
+                    source_public_ref TEXT NOT NULL,
+                    source_signal_id INTEGER,
+                    source_module TEXT NOT NULL,
+                    source_symbol TEXT NOT NULL,
+                    source_ts INTEGER NOT NULL,
+                    source_payload_hash TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    candidate_chain TEXT NOT NULL DEFAULT '',
+                    candidate_contract TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at INTEGER NOT NULL,
+                    last_seen_at INTEGER NOT NULL,
+                    UNIQUE(source_public_ref, source_payload_hash, reason)
+                );
+                """
+            )
+            conn.commit()
+        store = AutomationStore(other_path, data_dir=self.root)
+
+        def fail_v2(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "ALTER TABLE unresolved_signals "
+                "ADD COLUMN status TEXT NOT NULL DEFAULT 'open'"
+            )
+            raise RuntimeError("fixture")
+
+        with patch.object(
+            AutomationStore, "_migrate_v1_to_v2", side_effect=fail_v2
+        ):
+            with self.assertRaises(RuntimeError):
+                store.migrate()
+        with closing(sqlite3.connect(other_path)) as conn:
+            version = conn.execute(
+                "SELECT value FROM automation_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(unresolved_signals)"
+                ).fetchall()
+            }
+        self.assertEqual(version, "1")
+        self.assertNotIn("status", columns)
+
     def test_scan_audit_is_bounded_per_token(self) -> None:
         self.add()
         self.verify()
@@ -456,8 +730,17 @@ class AutomationStoreTests(unittest.TestCase):
                 ],
             )
             conn.commit()
+        self.assertEqual(
+            len(
+                self.store.claim_due(
+                    owner="audit", limit=1, lease_sec=60, now=1204
+                )
+            ),
+            1,
+        )
         self.store.record_scan(
             self.key_a,
+            lease_owner="audit",
             started_at=1204,
             status="ok",
             activity_complete=True,
