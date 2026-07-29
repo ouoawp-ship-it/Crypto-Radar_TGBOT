@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from paopao_radar.onchain_flow.ai_context import build_ai_context
+from paopao_radar.onchain_flow.constants import OAR_AI_PROMPT_VERSION
 from paopao_radar.onchain_flow.report import TokenReportService
 from paopao_radar.onchain_flow.token_activity import TokenActivityQuery
 from paopao_radar.onchain_flow.token_analysis import TokenAnalysisService
@@ -101,9 +102,17 @@ class MemoryCache:
     def __init__(self):
         self.result: dict[str, object] | None = None
         self.reservations = 0
+        self.get_prompt_versions: list[str] = []
+        self.put_prompt_versions: list[str] = []
 
-    def get(self, context_hash: str, model: str) -> object:
+    def get(
+        self,
+        context_hash: str,
+        model: str,
+        prompt_version: str,
+    ) -> object:
         del context_hash, model
+        self.get_prompt_versions.append(prompt_version)
         return type("CacheResult", (), {"result": self.result})()
 
     def reserve_call(self) -> bool:
@@ -114,9 +123,11 @@ class MemoryCache:
         self,
         context_hash: str,
         model: str,
+        prompt_version: str,
         result: dict[str, object],
     ) -> None:
         del context_hash, model
+        self.put_prompt_versions.append(prompt_version)
         self.result = deepcopy(result)
 
 
@@ -284,6 +295,14 @@ class OarReportTests(unittest.TestCase):
         )
         self.assertEqual(fake.calls, 1)
         self.assertEqual(cache.reservations, 1)
+        self.assertEqual(
+            cache.get_prompt_versions,
+            [OAR_AI_PROMPT_VERSION, OAR_AI_PROMPT_VERSION],
+        )
+        self.assertEqual(
+            cache.put_prompt_versions,
+            [OAR_AI_PROMPT_VERSION],
+        )
 
     def test_ai_failure_does_not_block_rule_summary(self) -> None:
         settings = replace(

@@ -89,11 +89,35 @@ OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY=false
 
 适配器使用 OpenAI-compatible `chat/completions`，有限超时和重试，拒绝 HTTP Redirect，并对 401/403、429、5xx、timeout 和连接失败分类。远程 Base URL 必须使用 HTTPS；HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1` 回环地址。URL 不允许包含用户名、密码、query 或 fragment。API Key 只进入 Authorization Header，不进入日志、JSON、异常或缓存。
 
-AI 必须返回严格 JSON，字段为 `bias`、`confidence`、主要/备选假设、可能动作、观察信号、失效条件和风险提示。未知字段、Markdown 代码块、价格目标、杠杆建议、自动交易指令、确定性钱包身份，以及“入所已经卖出/提币已经买入”等表述会被拒绝。
+当前 AI Prompt Version 为 `oar-ai-prompt-v1`。Provider 的 System Prompt 会实际携带完整输出契约，要求只返回一个 JSON Object，包含且仅包含：
+
+- `schema_version`
+- `bias`
+- `confidence`
+- `primary_hypothesis`
+- `alternative_hypotheses`
+- `likely_next_actions`
+- `watch_signals`
+- `invalidation_conditions`
+- `risk_notes`
+
+`schema_version` 必须为 1；`bias`、`confidence` 使用受限枚举；每个数组最多 5 项。未知或缺失字段、Markdown 代码块、JSON 外文字、价格目标、杠杆建议、自动交易指令、确定性钱包身份，以及“入所已经卖出/提币已经买入”等表述会被本地严格验证器拒绝，不会静默补齐或修复。
+
+User Message 使用稳定 Envelope：
+
+```json
+{
+  "control": {
+    "prompt_version": "oar-ai-prompt-v1",
+    "restricted_input": true
+  },
+  "facts": {}
+}
+```
 
 当查询/分析不完整，分析为 `partial_input`、`partial_analysis`、`insufficient_evidence`、`no_activity`，或 Primary Behavior 为 `no_activity`、`isolated`、`inconclusive_activity`、`insufficient_data` 时，AI 只能输出 `neutral|uncertain` 和 `low` confidence。缓存结果也重新执行相同校验，不合格的旧缓存不会被复用。
 
-有效 AI 结果可缓存于 `data/onchain/oar_ai_cache.json`。缓存只保存 context hash、model、验证后结果和过期时间，不保存 Prompt、Key 或 Header。小时调用预算独立于 RPC 预算。
+有效 AI 结果可缓存于 `data/onchain/oar_ai_cache.json`。缓存键由 `model:prompt_version:context_hash` 组成，条目只保存这三项、验证后结果和过期时间，不保存完整 Prompt、Key 或 Header。旧缓存缺少 Prompt Version 或版本不一致时视为 miss；Prompt 升级不会复用旧版本结果，旧条目仅按正常过期流程清理。小时调用预算独立于 RPC 预算。
 
 ## 独立 Telegram 话题
 

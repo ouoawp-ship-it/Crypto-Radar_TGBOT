@@ -8,11 +8,15 @@ from pathlib import Path
 import requests
 
 from paopao_radar.onchain_flow.ai_client import (
+    AI_OUTPUT_KEYS,
     OarAiCache,
     OarAiError,
     OpenAiCompatibleOarClient,
+    build_ai_request_body,
     validate_ai_output,
 )
+from paopao_radar.onchain_flow.constants import OAR_AI_PROMPT_VERSION
+from paopao_radar.storage import JsonStore
 
 
 def valid_output(
@@ -97,8 +101,17 @@ class OarAiClientTests(unittest.TestCase):
         self.assertEqual(result["bias"], "neutral")
         self.assertFalse(session.calls[0]["allow_redirects"])
         self.assertEqual(session.calls[0]["timeout"], 2)
+        request_body = session.calls[0]["json"]
+        self.assertNotIn(
+            "top-secret-key",
+            json.dumps(request_body, ensure_ascii=False),
+        )
 
     def test_unknown_field_and_invalid_enum_are_rejected(self) -> None:
+        missing = valid_output()
+        missing.pop("risk_notes")
+        with self.assertRaises(OarAiError):
+            validate_ai_output(missing, restricted_input=False)
         extra = valid_output()
         extra["facts"] = {"transfer_count": 999}
         with self.assertRaises(OarAiError):
@@ -106,6 +119,80 @@ class OarAiClientTests(unittest.TestCase):
         invalid = valid_output(bias="certain")
         with self.assertRaises(OarAiError):
             validate_ai_output(invalid, restricted_input=False)
+
+    def test_provider_missing_or_extra_fields_are_rejected(self) -> None:
+        missing = valid_output()
+        missing.pop("risk_notes")
+        extra = valid_output()
+        extra["unexpected"] = "not allowed"
+        for payload in (missing, extra):
+            with self.subTest(keys=sorted(payload)):
+                session = FakeSession(
+                    [FakeResponse(200, envelope(payload))]
+                )
+                with self.assertRaises(OarAiError) as caught:
+                    self.client(session).analyze(
+                        {},
+                        restricted_input=False,
+                    )
+                self.assertEqual(
+                    caught.exception.code,
+                    "invalid_ai_output",
+                )
+
+    def test_request_body_exposes_strict_contract_and_controls(self) -> None:
+        body = build_ai_request_body(
+            {"z_fact": 2, "a_fact": 1},
+            True,
+            "fixture-model",
+        )
+        system_prompt = body["messages"][0]["content"]
+        for field in sorted(AI_OUTPUT_KEYS):
+            with self.subTest(field=field):
+                self.assertIn(field, system_prompt)
+        self.assertIn('"additionalProperties":false', system_prompt)
+        self.assertIn('"maxItems":5', system_prompt)
+        self.assertIn("Markdown code fence", system_prompt)
+        self.assertIn("neutral 或 uncertain", system_prompt)
+        self.assertIn("confidence 必须为 low", system_prompt)
+        envelope = json.loads(body["messages"][1]["content"])
+        self.assertEqual(
+            envelope["control"]["prompt_version"],
+            OAR_AI_PROMPT_VERSION,
+        )
+        self.assertTrue(envelope["control"]["restricted_input"])
+        self.assertEqual(
+            envelope["facts"],
+            {"a_fact": 1, "z_fact": 2},
+        )
+        self.assertEqual(
+            body["response_format"],
+            {"type": "json_object"},
+        )
+
+    def test_request_body_is_deterministic_and_has_no_credentials(self) -> None:
+        first = build_ai_request_body(
+            {"z_fact": 2, "a_fact": 1},
+            False,
+            "fixture-model",
+        )
+        second = build_ai_request_body(
+            {"a_fact": 1, "z_fact": 2},
+            False,
+            "fixture-model",
+        )
+        self.assertEqual(first, second)
+        envelope = json.loads(first["messages"][1]["content"])
+        self.assertFalse(envelope["control"]["restricted_input"])
+        serialized = json.dumps(first, ensure_ascii=False)
+        for secret in (
+            "top-secret-key",
+            "telegram-bot-token",
+            "https://private-rpc.invalid",
+            "Authorization",
+        ):
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, serialized)
 
     def test_array_length_and_markdown_are_rejected(self) -> None:
         oversized = valid_output()
@@ -198,8 +285,17 @@ class OarAiClientTests(unittest.TestCase):
             )
             self.assertTrue(cache.reserve_call())
             self.assertFalse(cache.reserve_call())
-            cache.put("context-hash", "model", valid_output())
-            hit = cache.get("context-hash", "model")
+            cache.put(
+                "context-hash",
+                "model",
+                OAR_AI_PROMPT_VERSION,
+                valid_output(),
+            )
+            hit = cache.get(
+                "context-hash",
+                "model",
+                OAR_AI_PROMPT_VERSION,
+            )
             self.assertEqual(hit.status, "hit")
             text = (root / "oar_ai_cache.json").read_text(
                 encoding="utf-8"
@@ -207,12 +303,81 @@ class OarAiClientTests(unittest.TestCase):
             self.assertNotIn("top-secret-key", text)
             self.assertNotIn("Authorization", text)
             self.assertNotIn("messages", text)
+            self.assertNotIn("完整输出契约", text)
+            self.assertIn(OAR_AI_PROMPT_VERSION, text)
             now["value"] += 4000
             self.assertEqual(
-                cache.get("context-hash", "model").status,
+                cache.get(
+                    "context-hash",
+                    "model",
+                    OAR_AI_PROMPT_VERSION,
+                ).status,
                 "miss",
             )
             self.assertTrue(cache.reserve_call())
+
+    def test_cache_misses_legacy_and_other_prompt_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "oar_ai_cache.json"
+            cache = OarAiCache(
+                path=path,
+                data_dir=root,
+                ttl_sec=3600,
+                max_calls_per_hour=10,
+                now=lambda: 1000,
+            )
+            legacy_key = (
+                f"model:{OAR_AI_PROMPT_VERSION}:legacy-context"
+            )
+            JsonStore(root).save(path, {
+                "schema_version": 1,
+                "entries": {
+                    legacy_key: {
+                        "context_hash": "legacy-context",
+                        "model": "model",
+                        "result": valid_output(),
+                        "expires_at": 2000,
+                    }
+                },
+            })
+            self.assertEqual(
+                cache.get(
+                    "legacy-context",
+                    "model",
+                    OAR_AI_PROMPT_VERSION,
+                ).status,
+                "miss",
+            )
+
+            cache.put(
+                "versioned-context",
+                "model",
+                "older-prompt-version",
+                valid_output(),
+            )
+            self.assertEqual(
+                cache.get(
+                    "versioned-context",
+                    "model",
+                    OAR_AI_PROMPT_VERSION,
+                ).status,
+                "miss",
+            )
+            cache.put(
+                "versioned-context",
+                "model",
+                OAR_AI_PROMPT_VERSION,
+                valid_output(),
+            )
+            self.assertEqual(
+                cache.get(
+                    "versioned-context",
+                    "model",
+                    OAR_AI_PROMPT_VERSION,
+                ).status,
+                "hit",
+            )
 
 
 if __name__ == "__main__":

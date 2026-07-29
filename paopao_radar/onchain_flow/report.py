@@ -13,7 +13,11 @@ from .ai_client import (
 )
 from .ai_context import build_ai_context
 from .config import OnchainSettings
-from .constants import OAR_REPORT_ALGORITHM_VERSION, OAR_REPORT_SCHEMA_VERSION
+from .constants import (
+    OAR_AI_PROMPT_VERSION,
+    OAR_REPORT_ALGORITHM_VERSION,
+    OAR_REPORT_SCHEMA_VERSION,
+)
 from .token_activity import TokenActivityQuery
 from .token_analysis import TokenAnalysisService
 
@@ -318,7 +322,11 @@ class TokenReportService:
         )
         context_hash = str(context["context_hash"])
         try:
-            cached = cache.get(context_hash, self.settings.oar_ai_model)
+            cached = cache.get(
+                context_hash,
+                self.settings.oar_ai_model,
+                OAR_AI_PROMPT_VERSION,
+            )
         except (OSError, ValueError):
             return {
                 "status": "failed",
@@ -397,7 +405,12 @@ class TokenReportService:
             "result": validated,
         }
         try:
-            cache.put(context_hash, self.settings.oar_ai_model, validated)
+            cache.put(
+                context_hash,
+                self.settings.oar_ai_model,
+                OAR_AI_PROMPT_VERSION,
+                validated,
+            )
         except (OSError, ValueError):
             response["warning"] = "ai_cache_write_failed"
         return response
