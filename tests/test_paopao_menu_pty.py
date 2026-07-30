@@ -235,7 +235,8 @@ class PaopaoMenuPtyTests(unittest.TestCase):
         self,
     ) -> None:
         _, _, denied = self._run_menu(
-            "6\n15\n5\ncandidate-1\nwrong\n\n0\n0\n0\n"
+            "6\n15\n5\ncandidate-1\nwrong\n\n0\n0\n0\n",
+            extra_env={"PAOPAO_TEST_FAKE_PYTHON": "1"},
         )
         self.assertFalse([
             line
@@ -243,7 +244,8 @@ class PaopaoMenuPtyTests(unittest.TestCase):
             if "label-candidates approve" in line
         ])
         code, output, allowed = self._run_menu(
-            "6\n15\n5\ncandidate-1\n批准CEX标签\n\n0\n0\n0\n"
+            "6\n15\n5\ncandidate-1\n批准CEX标签\n\n0\n0\n0\n",
+            extra_env={"PAOPAO_TEST_FAKE_PYTHON": "1"},
         )
         self.assertEqual(code, 0, output)
         approvals = [
