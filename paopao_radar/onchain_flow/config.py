@@ -222,8 +222,8 @@ class OnchainSettings:
     oar_ai_thinking_mode: str = "enabled"
     oar_ai_reasoning_effort: str = "high"
     oar_ai_max_tokens: int = 8192
-    oar_ai_timeout_sec: int = 20
-    oar_ai_max_retries: int = 1
+    oar_ai_timeout_sec: int = 60
+    oar_ai_max_retries: int = 0
     oar_ai_max_calls_per_hour: int = 10
     oar_ai_cache_ttl_sec: int = 3600
     oar_ai_max_context_chars: int = 30000
@@ -581,8 +581,8 @@ class OnchainSettings:
                 "OAR_AI_REASONING_EFFORT", "high"
             ).strip().lower(),
             oar_ai_max_tokens=_int(values, "OAR_AI_MAX_TOKENS", 8192),
-            oar_ai_timeout_sec=_int(values, "OAR_AI_TIMEOUT_SEC", 20),
-            oar_ai_max_retries=_int(values, "OAR_AI_MAX_RETRIES", 1),
+            oar_ai_timeout_sec=_int(values, "OAR_AI_TIMEOUT_SEC", 60),
+            oar_ai_max_retries=_int(values, "OAR_AI_MAX_RETRIES", 0),
             oar_ai_max_calls_per_hour=_int(
                 values, "OAR_AI_MAX_CALLS_PER_HOUR", 10
             ),
@@ -1157,8 +1157,8 @@ class OnchainSettings:
                 "Token Activity limits"
             )
         for name, value, minimum, maximum in (
-            ("OAR_AI_TIMEOUT_SEC", self.oar_ai_timeout_sec, 1, 120),
-            ("OAR_AI_MAX_RETRIES", self.oar_ai_max_retries, 0, 3),
+            ("OAR_AI_TIMEOUT_SEC", self.oar_ai_timeout_sec, 5, 180),
+            ("OAR_AI_MAX_RETRIES", self.oar_ai_max_retries, 0, 2),
             ("OAR_AI_MAX_TOKENS", self.oar_ai_max_tokens, 512, 32768),
             (
                 "OAR_AI_MAX_CALLS_PER_HOUR",

@@ -14,8 +14,10 @@ from .ai_client import (
     OarAiCache,
     OarAiError,
     OpenAiCompatibleOarClient,
+    build_ai_request_diagnostics,
     validate_ai_output,
 )
+from .ai_context import build_ai_context
 from .automation_store import AutomationStore, AutomationStoreError
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
@@ -36,7 +38,7 @@ from .live_runtime import (
 )
 from .prompt_manager import OperatorPromptError, OperatorPromptManager
 from .runtime import replay_fixture
-from .report import TokenReportService
+from .report import TokenReportService, restricted_ai_input
 from .report_notifier import ReportNotifier
 from .registry import RegistryService
 from .signal_bridge import MainSignalReader, SignalBridge
@@ -106,6 +108,8 @@ def build_parser() -> argparse.ArgumentParser:
     ai_provider_check.add_argument("--allow-network", action="store_true")
     ai_smoke = subparsers.add_parser("ai-smoke")
     ai_smoke.add_argument("--allow-network", action="store_true")
+    ai_request_check = subparsers.add_parser("ai-request-check")
+    _add_token_query_arguments(ai_request_check)
     telegram_topic_link = subparsers.add_parser("telegram-topic-link")
     telegram_topic_link.add_argument("action", choices=("check", "bind"))
     telegram_topic_link.add_argument("--stdin", action="store_true")
@@ -608,6 +612,72 @@ def _ai_synthetic_context() -> dict[str, object]:
     }
 
 
+def _ai_request_check(
+    settings: OnchainSettings,
+    query: TokenActivityQuery,
+) -> tuple[int, dict[str, object]]:
+    analyzed = TokenAnalysisService.from_settings(settings, query).execute(
+        query
+    )
+    context = build_ai_context(
+        analyzed,
+        max_chars=settings.oar_ai_max_context_chars,
+    )
+    prompt = OperatorPromptManager.from_settings(
+        settings
+    ).load_for_request()
+    restricted = restricted_ai_input(analyzed)
+    request = build_ai_request_diagnostics(
+        context,
+        restricted,
+        settings.oar_ai_model,
+        provider=settings.oar_ai_provider,
+        operator_prompt=prompt.content,
+        operator_prompt_hash=prompt.prompt_hash,
+        thinking_mode=settings.oar_ai_thinking_mode,
+        reasoning_effort=settings.oar_ai_reasoning_effort,
+        max_tokens=settings.oar_ai_max_tokens,
+        timeout_sec=settings.oar_ai_timeout_sec,
+    )
+    analysis = analyzed.get("analysis")
+    analysis_map = analysis if isinstance(analysis, dict) else {}
+    source_diagnostics = analyzed.get("diagnostics")
+    source_diagnostics_map = (
+        source_diagnostics
+        if isinstance(source_diagnostics, dict)
+        else {}
+    )
+    payload = {
+        "status": analyzed.get("status"),
+        "analysis_status": analysis_map.get("status"),
+        "analysis_complete": bool(analysis_map.get("complete")),
+        **{
+            key: request[key]
+            for key in (
+                "provider",
+                "model",
+                "thinking_mode",
+                "reasoning_effort",
+                "timeout_sec",
+                "max_tokens",
+                "restricted_input",
+                "operator_prompt_chars",
+                "ai_context_chars",
+                "request_body_chars",
+            )
+        },
+        "network_activity": True,
+        "rpc_calls": int(
+            source_diagnostics_map.get("rpc_request_count")
+            or analyzed.get("rpc_request_count")
+            or 0
+        ),
+        "ai_calls": 0,
+        "telegram_calls": 0,
+    }
+    return (0 if payload["status"] == "ok" else 2), payload
+
+
 def _prompt_command(
     settings: OnchainSettings,
     args: argparse.Namespace,
@@ -764,19 +834,31 @@ def _ai_network_command(
             }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0
-    except (OarAiError, OperatorPromptError, SettingsValidationError) as exc:
+    except OarAiError as exc:
+        payload = {
+            "status": "failed",
+            "error": exc.code,
+            **exc.public_details(),
+            "network_activity": network_started,
+            "ai_calls": (
+                1
+                if args.command == "ai-smoke" and network_started
+                else 0
+            ),
+            "rpc_calls": 0,
+            "telegram_calls": 0,
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 1
+    except (OperatorPromptError, SettingsValidationError) as exc:
         print(
             json.dumps(
                 {
                     "status": "failed",
-                    "error": getattr(exc, "code", type(exc).__name__),
+                    "error": type(exc).__name__,
                     "reason": str(exc),
                     "network_activity": network_started,
-                    "ai_calls": (
-                        1
-                        if args.command == "ai-smoke" and network_started
-                        else 0
-                    ),
+                    "ai_calls": 0,
                     "rpc_calls": 0,
                     "telegram_calls": 0,
                 },
@@ -1075,6 +1157,7 @@ def main(
         if args.command in {
             "token-activity",
             "token-analysis",
+            "ai-request-check",
             "token-report",
             "token-notify",
         }:
@@ -1102,8 +1185,13 @@ def main(
                     ),
                     network_activity=False,
                 )
-                if args.command in {"token-report", "token-notify"}:
-                    payload["ai_calls"] = False
+                if args.command in {
+                    "ai-request-check",
+                    "token-report",
+                    "token-notify",
+                }:
+                    payload["ai_calls"] = 0
+                    payload["telegram_calls"] = 0
                 _print_token_activity(
                     payload,
                     pretty=bool(args.pretty),
@@ -1116,6 +1204,17 @@ def main(
                 )
             elif args.command == "token-analysis":
                 service = TokenAnalysisService.from_settings(settings, query)
+            elif args.command == "ai-request-check":
+                code, payload = _ai_request_check(settings, query)
+                print(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2 if bool(args.pretty) else None,
+                    )
+                )
+                return code
             else:
                 service = TokenReportService.from_settings(settings, query)
             token_activity_network_started = True
@@ -1294,8 +1393,13 @@ def main(
             exc,
             network_activity=token_activity_network_started,
         )
-        if args.command in {"token-report", "token-notify"}:
-            payload["ai_calls"] = False
+        if args.command in {
+            "ai-request-check",
+            "token-report",
+            "token-notify",
+        }:
+            payload["ai_calls"] = 0
+            payload["telegram_calls"] = 0
         _print_token_activity(
             payload,
             pretty=bool(getattr(args, "pretty", False)),

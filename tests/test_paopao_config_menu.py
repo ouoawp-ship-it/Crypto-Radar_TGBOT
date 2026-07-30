@@ -292,6 +292,8 @@ class ConfigManagerTests(unittest.TestCase):
             "OAR_AI_THINKING_MODE": "enabled",
             "OAR_AI_REASONING_EFFORT": "high",
             "OAR_AI_MAX_TOKENS": "8192",
+            "OAR_AI_TIMEOUT_SEC": "60",
+            "OAR_AI_MAX_RETRIES": "0",
         }
         self.assertEqual(
             {key: values[key] for key in expected},
@@ -305,6 +307,27 @@ class ConfigManagerTests(unittest.TestCase):
         )
         self.assertFalse(result["configuration"]["OAR_AI_ENABLE"])
         self.assertNotIn("private-key", json.dumps(result))
+
+    def test_ai_timeout_and_retry_values_are_allowlisted_and_bounded(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self.manager.set("OAR_AI_TIMEOUT_SEC", "60")["status"],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set("OAR_AI_MAX_RETRIES", "0")["status"],
+            "ok",
+        )
+        for key, value in (
+            ("OAR_AI_TIMEOUT_SEC", "4"),
+            ("OAR_AI_TIMEOUT_SEC", "181"),
+            ("OAR_AI_MAX_RETRIES", "-1"),
+            ("OAR_AI_MAX_RETRIES", "3"),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(key, value)
 
     def test_profile_validation_failure_restores_exact_file(self) -> None:
         onchain = self.root / ".env.onchain"
@@ -527,6 +550,10 @@ class ChineseMenuTests(unittest.TestCase):
             "profile deepseek-v4-pro",
             "设置 AI Base URL",
             "设置 Max Tokens",
+            "设置 AI Timeout",
+            "设置 AI Max Retries",
+            "config_set OAR_AI_TIMEOUT_SEC",
+            "config_set OAR_AI_MAX_RETRIES",
             "ai-cache status",
             "ai-cache clear-results",
             "验证并设为 Primary",

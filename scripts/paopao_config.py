@@ -43,6 +43,8 @@ ALLOWLIST = {
     "OAR_AI_THINKING_MODE": "onchain",
     "OAR_AI_REASONING_EFFORT": "onchain",
     "OAR_AI_MAX_TOKENS": "onchain",
+    "OAR_AI_TIMEOUT_SEC": "onchain",
+    "OAR_AI_MAX_RETRIES": "onchain",
     "OAR_AUTOMATION_ENABLE": "onchain",
     "ONCHAIN_REAL_SEND": "onchain",
     "OAR_WATCH_DELIVERY_MODE": "onchain",
@@ -71,6 +73,8 @@ BOOLEAN_KEYS = {
 }
 INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
+    "OAR_AI_TIMEOUT_SEC": (5, 180),
+    "OAR_AI_MAX_RETRIES": (0, 2),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -80,6 +84,8 @@ DEEPSEEK_V4_PRO_PROFILE = {
     "OAR_AI_THINKING_MODE": "enabled",
     "OAR_AI_REASONING_EFFORT": "high",
     "OAR_AI_MAX_TOKENS": "8192",
+    "OAR_AI_TIMEOUT_SEC": "60",
+    "OAR_AI_MAX_RETRIES": "0",
 }
 OAR_REAL_SEND_ACK = "发送真实链上提醒"
 
@@ -201,6 +207,8 @@ class ConfigManager:
                     "OAR_AI_THINKING_MODE",
                     "OAR_AI_REASONING_EFFORT",
                     "OAR_AI_MAX_TOKENS",
+                    "OAR_AI_TIMEOUT_SEC",
+                    "OAR_AI_MAX_RETRIES",
                     "OAR_AI_API_KEY",
                     "OAR_AI_ENABLE",
                 )

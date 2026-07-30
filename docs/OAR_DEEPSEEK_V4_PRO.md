@@ -14,19 +14,19 @@ OAR_AI_THINKING_MODE=enabled
 OAR_AI_REASONING_EFFORT=high
 OAR_AI_MAX_TOKENS=8192
 OAR_AI_OPERATOR_PROMPT_FILE=data/onchain/config/oar_ai_operator_prompt.txt
-OAR_AI_TIMEOUT_SEC=20
-OAR_AI_MAX_RETRIES=1
+OAR_AI_TIMEOUT_SEC=60
+OAR_AI_MAX_RETRIES=0
 ```
 
-DeepSeek Profile 只接受 `deepseek-v4-pro` 和 `deepseek-v4-flash`，默认推荐 `deepseek-v4-pro`。`OAR_AI_MAX_TOKENS` 范围为 512～32768，timeout 为 1～120 秒，重试为 0～3 次。远程 Base URL 必须使用 HTTPS；HTTP 仅允许本机回环地址。URL 不能包含 username、password、query 或 fragment。
+DeepSeek Profile 只接受 `deepseek-v4-pro` 和 `deepseek-v4-flash`，默认推荐 `deepseek-v4-pro`。`OAR_AI_MAX_TOKENS` 范围为 512～32768，timeout 为 5～180 秒，重试为 0～2 次。远程 Base URL 必须使用 HTTPS；HTTP 仅允许本机回环地址。URL 不能包含 username、password、query 或 fragment。
 
-可离线、原子应用六项推荐值：
+可离线、原子应用推荐值：
 
 ```bash
 python scripts/paopao_config.py profile deepseek-v4-pro
 ```
 
-Profile 不设置 API Key、不启用 AI，也不执行 `/models` 或生成请求。输出只显示脱敏后的 configured 状态和安全枚举。
+Profile 同时设置 60 秒生成超时和 0 次自动重试，避免 Thinking 请求沿用过短超时，也避免超时后发生第二次付费生成。Profile 不设置 API Key、不启用 AI，也不执行 `/models` 或生成请求。输出只显示脱敏后的 configured 状态和安全枚举。
 
 ## Thinking 与 Reasoning Effort
 
@@ -120,6 +120,22 @@ python onchain_main.py ai-smoke --allow-network
 ```
 
 Smoke 使用固定、合成、脱敏且受限的 OAR Context，只执行一次生成，不调用 Base RPC 或 Telegram。返回只显示 status、model、latency 和 Schema 是否有效，不显示模型正文或思考内容。
+
+## 真实上下文请求诊断
+
+以下命令会执行 Token Analysis 和 Base RPC，但只构建 AI 请求，不调用 AI 或 Telegram：
+
+```bash
+python onchain_main.py ai-request-check \
+  --chain base \
+  --contract <审核合约> \
+  --window 15m \
+  --allow-network
+```
+
+输出仅包含分析状态、Restricted Input、Provider/Model/Thinking 配置、timeout/max_tokens，以及 Operator Prompt、AI Context 和完整请求体的字符数。它不返回 Prompt、Context、Transfer 明细、API Key、Base URL 或 Topic ID，且固定 `ai_calls=0`、`telegram_calls=0`。
+
+生成失败时，CLI 可返回不含正文的安全诊断：HTTP 尝试数、HTTP 状态、延迟、`finish_reason` 与上述字符数。400、402、404、422、429 和 5xx 分别映射为稳定错误码；Provider 的 `error.message` 永不输出或持久化。只有符合安全字符集且不超过 80 字符的 `error.type`、`error.code`、`error.param` 可以返回。`finish_reason=length` 映射为 `ai_output_truncated`，空 content 映射为 `ai_empty_content`。
 
 ## 真实启用顺序
 
