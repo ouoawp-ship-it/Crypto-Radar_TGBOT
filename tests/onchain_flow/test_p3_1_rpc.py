@@ -230,6 +230,66 @@ class JsonRpcTests(unittest.TestCase):
             rate.block_number()
         self.assertEqual(rate_session.calls, 3)
 
+    def test_http_400_json_rpc_range_error_preserves_split_semantics(self) -> None:
+        class RangeSession:
+            def post(self, _url, *, json, timeout, headers):
+                return FakeResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": json["id"],
+                        "error": {
+                            "code": -32600,
+                            "message": (
+                                "Log response size exceeded for this block range"
+                            ),
+                        },
+                    },
+                    400,
+                )
+
+        client = JsonRpcClient(
+            "https://example.invalid/private",
+            timeout_sec=1,
+            retry=1,
+            backoff_sec=0,
+            session=RangeSession(),
+        )
+        with self.assertRaises(RpcRangeError) as raised:
+            client.get_logs(
+                {
+                    "fromBlock": "0x1",
+                    "toBlock": "0x2",
+                    "topics": [TRANSFER_TOPIC],
+                }
+            )
+        self.assertEqual(str(raised.exception), "eth_getLogs RPC error")
+
+    def test_http_400_without_range_marker_remains_response_error(self) -> None:
+        class InvalidRequestSession:
+            def post(self, _url, *, json, timeout, headers):
+                return FakeResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": json["id"],
+                        "error": {
+                            "code": -32600,
+                            "message": "Invalid request",
+                        },
+                    },
+                    400,
+                )
+
+        client = JsonRpcClient(
+            "https://example.invalid/private",
+            timeout_sec=1,
+            retry=1,
+            backoff_sec=0,
+            session=InvalidRequestSession(),
+        )
+        with self.assertRaises(RpcResponseError) as raised:
+            client.block_number()
+        self.assertEqual(str(raised.exception), "eth_blockNumber RPC error")
+
 
 class TransferCollectionTests(unittest.TestCase):
     def test_filters_batch_addresses_and_never_set_token_address(self) -> None:
