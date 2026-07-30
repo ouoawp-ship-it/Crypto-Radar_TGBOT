@@ -25,7 +25,16 @@ MENU = ROOT / "scripts" / "paopao_menu.sh"
 INSTALL = ROOT / "scripts" / "install_server.sh"
 UPDATE = ROOT / "scripts" / "update_server.sh"
 SHORTCUTS = ROOT / "scripts" / "install_shortcuts.sh"
+OAR_RUNNER = ROOT / "scripts" / "run_oar_watch.sh"
 BASH = Path(r"C:\Program Files\Git\bin\bash.exe")
+
+
+def _env_values(path: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
 
 
 class ConfigManagerTests(unittest.TestCase):
@@ -147,6 +156,93 @@ class ConfigManagerTests(unittest.TestCase):
             "ONCHAIN_RPC_MAX_BLOCK_RANGE=10",
             (self.root / ".env.onchain").read_text(encoding="utf-8"),
         )
+
+    def test_watch_delivery_defaults_and_values_are_strict(self) -> None:
+        validation = self.manager.validate()
+        checks = validation["checks"]
+        self.assertEqual(checks["oar_watch_delivery_mode"], "observe")
+        self.assertFalse(checks["oar_watch_with_ai"])
+        self.assertFalse(checks["oar_watch_real_send"])
+        for key, value in (
+            ("OAR_WATCH_DELIVERY_MODE", "unknown"),
+            ("OAR_WATCH_WITH_AI", "yes"),
+            ("OAR_WATCH_REAL_SEND_ACK", "almost"),
+        ):
+            with self.subTest(key=key):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(key, value)
+
+    def test_observe_profile_closes_real_and_ai_gates_atomically(self) -> None:
+        path = self.root / ".env.onchain"
+        path.write_text(
+            "OAR_WATCH_DELIVERY_MODE=dry_run\n"
+            "OAR_WATCH_WITH_AI=true\n"
+            "ONCHAIN_REAL_SEND=true\n"
+            "OAR_WATCH_REAL_SEND_ACK=发送真实链上提醒\n",
+            encoding="utf-8",
+        )
+        result = self.manager.watch_delivery("observe")
+        values = _env_values(path)
+        self.assertEqual(values["OAR_WATCH_DELIVERY_MODE"], "observe")
+        self.assertEqual(values["OAR_WATCH_WITH_AI"], "false")
+        self.assertEqual(values["ONCHAIN_REAL_SEND"], "false")
+        self.assertEqual(values["OAR_WATCH_REAL_SEND_ACK"], "")
+        self.assertFalse(result["configuration"]["OAR_WATCH_WITH_AI"])
+        self.assertEqual(
+            result["configuration"]["OAR_WATCH_REAL_SEND_ACK"],
+            "not_configured",
+        )
+
+    def test_dry_run_does_not_enable_real_send_or_change_ai_choice(
+        self,
+    ) -> None:
+        self.manager.watch_delivery("enable-ai")
+        self.manager.watch_delivery("dry-run")
+        values = _env_values(self.root / ".env.onchain")
+        self.assertEqual(values["OAR_WATCH_DELIVERY_MODE"], "dry_run")
+        self.assertEqual(values["OAR_WATCH_WITH_AI"], "true")
+        self.assertEqual(values["ONCHAIN_REAL_SEND"], "false")
+        self.assertEqual(values["OAR_WATCH_REAL_SEND_ACK"], "")
+
+    def test_real_delivery_requires_complete_telegram_gate_and_rolls_back(
+        self,
+    ) -> None:
+        path = self.root / ".env.onchain"
+        path.write_text(
+            "# exact\nOAR_WATCH_DELIVERY_MODE=observe\n",
+            encoding="utf-8",
+        )
+        original = path.read_bytes()
+        with self.assertRaisesRegex(
+            ConfigManagerError,
+            "real_send_gate_blocked",
+        ):
+            self.manager.watch_delivery("real")
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_real_delivery_sets_only_guard_values_when_complete(self) -> None:
+        (self.root / ".env.oi").write_text(
+            "TG_BOT_TOKEN=123456:safe_TOKEN-1\n"
+            "TG_CHAT_ID=-100123\n",
+            encoding="utf-8",
+        )
+        (self.root / ".env.onchain").write_text(
+            "TG_ONCHAIN_FLOW_TOPIC_ID=42\n"
+            "OAR_WATCH_WITH_AI=false\n"
+            "OAR_AI_ENABLE=false\n",
+            encoding="utf-8",
+        )
+        result = self.manager.watch_delivery("real")
+        values = _env_values(self.root / ".env.onchain")
+        self.assertEqual(values["OAR_WATCH_DELIVERY_MODE"], "real")
+        self.assertEqual(values["ONCHAIN_REAL_SEND"], "true")
+        self.assertEqual(
+            values["OAR_WATCH_REAL_SEND_ACK"],
+            "发送真实链上提醒",
+        )
+        self.assertEqual(values["OAR_WATCH_WITH_AI"], "false")
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("发送真实链上提醒", serialized)
 
     def test_endpoint_with_credentials_is_rejected(self) -> None:
         with self.assertRaises(ConfigManagerError):
@@ -318,6 +414,7 @@ class ChineseMenuTests(unittest.TestCase):
             INSTALL,
             UPDATE,
             SHORTCUTS,
+            OAR_RUNNER,
         ):
             with self.subTest(path=path.name):
                 result = subprocess.run(
@@ -450,6 +547,21 @@ class ChineseMenuTests(unittest.TestCase):
             "config_set ONCHAIN_RPC_MAX_BLOCK_RANGE",
             text,
         )
+
+    def test_menu_exposes_guarded_watch_delivery_modes(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        for expected in (
+            "Watch 通知模式",
+            "watch-delivery observe",
+            "watch-delivery dry-run",
+            "watch-delivery real",
+            "watch-delivery enable-ai",
+            "watch-delivery disable-ai",
+            'confirm_phrase "启用链上DryRun"',
+            'confirm_phrase "启用真实链上提醒"',
+            'confirm_phrase "启用自动AI分析"',
+        ):
+            self.assertIn(expected, text)
 
     def test_menu_uses_config_manager_instead_of_sed(self) -> None:
         text = MENU.read_text(encoding="utf-8")

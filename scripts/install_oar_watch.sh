@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_DIR="${PAOPAO_APP_DIR:-/home/ubuntu/paopao-crypto-radar}"
 UNIT_NAME="${OAR_SERVICE_NAME:-paopao-oar-watch}"
 UNIT_SOURCE="${APP_DIR}/ops/systemd/${UNIT_NAME}.service"
+RUNNER_SOURCE="${APP_DIR}/scripts/run_oar_watch.sh"
 SYSTEMD_DIR="${PAOPAO_SYSTEMD_DIR:-/etc/systemd/system}"
 UNIT_TARGET="${SYSTEMD_DIR}/${UNIT_NAME}.service"
 
@@ -56,6 +57,7 @@ validate_host() {
   [ "$(stat -c '%a' "${APP_DIR}/.env.onchain")" = "600" ] || \
     fail "onchain_env_permissions_must_be_600"
   [ -f "$UNIT_SOURCE" ] || fail "oar_unit_source_missing"
+  [ -x "$RUNNER_SOURCE" ] || fail "oar_watch_runner_missing_or_not_executable"
   assert_no_conflicting_writer || exit 1
 }
 

@@ -276,6 +276,81 @@ clear_ai_cache() {
   run_onchain ai-cache clear-results
 }
 
+watch_ai_menu() {
+  local choice
+  cat <<'EOF'
+自动 AI：
+1. 启用自动 AI 分析
+2. 禁用自动 AI 分析
+0. 取消
+EOF
+  IFS= read -r choice
+  case "$choice" in
+    1)
+      confirm_phrase "启用自动AI分析" || return 0
+      run_config watch-delivery enable-ai || \
+        printf '自动 AI 偏好保存失败；全局 AI 开关未改变。\n' >&2
+      ;;
+    2)
+      run_config watch-delivery disable-ai || \
+        printf '自动 AI 偏好保存失败。\n' >&2
+      ;;
+    0) return 0 ;;
+    *) printf '无效选项。\n' ;;
+  esac
+}
+
+watch_delivery_menu() {
+  local choice
+  while true; do
+    menu_header
+    cat <<'EOF'
+Watch 通知模式
+1. Observe，只观察
+2. Telegram Dry-run
+3. Real，真实发送
+4. 自动 AI 开关
+5. 查看当前脱敏状态
+0. 返回
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1)
+        if run_config watch-delivery observe; then
+          printf '已切换为 Observe；重启 OAR Watch 后生效。\n'
+        else
+          printf 'Observe 配置保存失败。\n' >&2
+        fi
+        pause_menu
+        ;;
+      2)
+        if confirm_phrase "启用链上DryRun"; then
+          if run_config watch-delivery dry-run; then
+            printf '已切换为 Telegram Dry-run；重启 OAR Watch 后生效。\n'
+          else
+            printf 'Telegram Dry-run 配置保存失败。\n' >&2
+          fi
+        fi
+        pause_menu
+        ;;
+      3)
+        if confirm_phrase "启用真实链上提醒"; then
+          if run_config watch-delivery real; then
+            printf 'Real Gate 已通过；重启 OAR Watch 后生效。\n'
+          else
+            printf 'real_send_gate_blocked；未更改现有配置。\n' >&2
+          fi
+        fi
+        pause_menu
+        ;;
+      4) watch_ai_menu; pause_menu ;;
+      5) run_config status; pause_menu ;;
+      0) return ;;
+      *) printf '无效选项。\n' ;;
+    esac
+  done
+}
+
 config_rollback() {
   local target version
   printf '选择配置（oi/onchain）：'
@@ -566,6 +641,7 @@ oar_menu() {
 11. Token Activity
 12. Token Report
 13. Labels Check
+14. Watch 通知模式
 0. 返回
 EOF
     IFS= read -r choice
@@ -583,6 +659,7 @@ EOF
       11) token_query token-activity; pause_menu ;;
       12) token_query token-report; pause_menu ;;
       13) run_onchain labels-check; pause_menu ;;
+      14) watch_delivery_menu ;;
       0) return ;;
     esac
   done
