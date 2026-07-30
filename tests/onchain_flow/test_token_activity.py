@@ -14,6 +14,7 @@ from unittest.mock import patch
 from paopao_radar.onchain_flow.cli import build_parser, main
 from paopao_radar.onchain_flow.collectors.base import BlockRange
 from paopao_radar.onchain_flow.collectors.evm_http import (
+    AdaptiveRangeError,
     BaseHttpCollector,
     JsonRpcClient,
     LogValidationError,
@@ -268,6 +269,7 @@ class TokenActivityTestCase(unittest.TestCase):
             rpc_min_block_range=1,
             token_activity_max_events=100,
             token_activity_max_rpc_requests=128,
+            token_activity_adaptive_max_requests=128,
             token_activity_max_unique_block_headers=100,
             token_activity_top_n=20,
             token_activity_block_search_max_calls=32,
@@ -475,6 +477,9 @@ class CliAndValidationTests(TokenActivityTestCase):
         self.assertEqual(defaults.token_activity_max_events, 5000)
         self.assertEqual(defaults.token_activity_max_rpc_requests, 256)
         self.assertEqual(
+            defaults.token_activity_adaptive_max_requests, 128
+        )
+        self.assertEqual(
             defaults.token_activity_max_unique_block_headers, 2000
         )
         self.assertEqual(defaults.token_activity_top_n, 50)
@@ -483,6 +488,7 @@ class CliAndValidationTests(TokenActivityTestCase):
             ("token_activity_max_window_hours", 25),
             ("token_activity_max_events", 5001),
             ("token_activity_max_rpc_requests", 257),
+            ("token_activity_adaptive_max_requests", 257),
             ("token_activity_max_unique_block_headers", 2001),
             ("token_activity_top_n", 101),
             ("token_activity_block_search_max_calls", 33),
@@ -490,6 +496,16 @@ class CliAndValidationTests(TokenActivityTestCase):
             with self.subTest(field=field):
                 with self.assertRaises(ValueError):
                     replace(defaults, **{field: value}).validate()
+
+    def test_query_carries_token_specific_adaptive_budget(self) -> None:
+        settings = replace(
+            self.settings,
+            rpc_adaptive_max_requests=64,
+            token_activity_adaptive_max_requests=128,
+        )
+        query = self.query(settings=settings)
+        self.assertEqual(query.adaptive_max_requests, 128)
+        self.assertEqual(settings.rpc_adaptive_max_requests, 64)
 
     def test_output_file_writes_full_json_and_stdout_summary(self) -> None:
         output_path = self.root / "reports" / "onchain" / "result.json"
@@ -767,6 +783,110 @@ class FilterAndCollectionTests(TokenActivityTestCase):
         self.assertGreater(result["diagnostics"]["adaptive_split_count"], 0)
         self.assertTrue(result["complete"])
 
+    def test_full_32_split_tree_needs_65_log_requests(self) -> None:
+        log = transfer_log(1, 0, WALLET_A, WALLET_B)
+        rpc = FakeRpc([log], range_limit=1)
+        result = BaseHttpCollector(rpc, self.settings).fetch_token_logs(
+            1,
+            33,
+            TOKEN,
+            max_events=100,
+            adaptive_max_requests=128,
+        )
+        self.assertFalse(result.truncated)
+        self.assertEqual(result.adaptive_split_count, 32)
+        self.assertEqual(rpc.log_call_count, 65)
+
+    def test_token_adaptive_budget_64_stops_before_final_leaf(self) -> None:
+        log = transfer_log(1, 0, WALLET_A, WALLET_B)
+        rpc = FakeRpc([log], range_limit=1)
+        result = BaseHttpCollector(rpc, self.settings).fetch_token_logs(
+            1,
+            33,
+            TOKEN,
+            max_events=100,
+            adaptive_max_requests=64,
+        )
+        self.assertTrue(result.truncated)
+        self.assertEqual(
+            result.truncation_reason,
+            "adaptive_request_budget_exhausted",
+        )
+        self.assertEqual(result.adaptive_split_count, 32)
+        self.assertEqual(rpc.log_call_count, 64)
+        self.assertEqual(len(result.logs), 1)
+
+    def test_cex_collector_keeps_shared_adaptive_default(self) -> None:
+        class RangeLimitedRpc:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_logs(self, payload):
+                self.calls += 1
+                start = int(str(payload["fromBlock"]), 16)
+                end = int(str(payload["toBlock"]), 16)
+                if end > start:
+                    raise RpcRangeError("bounded range")
+                return []
+
+        settings = replace(
+            self.settings,
+            rpc_adaptive_max_requests=64,
+            token_activity_adaptive_max_requests=128,
+            rpc_max_block_range=64,
+            rpc_adaptive_max_depth=12,
+        )
+        rpc = RangeLimitedRpc()
+        with self.assertRaises(AdaptiveRangeError):
+            BaseHttpCollector(rpc, settings).fetch_cex_logs(
+                1, 64, [CEX_A_HOT]
+            )
+        self.assertEqual(rpc.calls, 64)
+
+    def test_adaptive_depth_reason_is_precise(self) -> None:
+        settings = replace(
+            self.settings,
+            rpc_adaptive_max_depth=0,
+            rpc_max_block_range=4,
+        )
+        rpc = FakeRpc([], range_limit=1)
+        result = BaseHttpCollector(rpc, settings).fetch_token_logs(
+            1,
+            4,
+            TOKEN,
+            max_events=100,
+            adaptive_max_requests=128,
+        )
+        self.assertTrue(result.truncated)
+        self.assertEqual(
+            result.truncation_reason, "adaptive_depth_exhausted"
+        )
+
+    def test_minimum_range_failure_reason_is_precise(self) -> None:
+        rpc = FakeRpc([], log_error=RpcRangeError("range too large"))
+        result = BaseHttpCollector(rpc, self.settings).fetch_token_logs(
+            1,
+            1,
+            TOKEN,
+            max_events=100,
+            adaptive_max_requests=128,
+        )
+        self.assertTrue(result.truncated)
+        self.assertEqual(
+            result.truncation_reason,
+            "provider_range_limit_at_minimum",
+        )
+
+    def test_explicit_adaptive_budget_hard_cap_is_enforced(self) -> None:
+        with self.assertRaises(ValueError):
+            BaseHttpCollector(FakeRpc(), self.settings).fetch_token_logs(
+                1,
+                1,
+                TOKEN,
+                max_events=100,
+                adaptive_max_requests=257,
+            )
+
     def test_different_token_log_is_rejected(self) -> None:
         wrong = transfer_log(
             FINALIZED - 1,
@@ -874,6 +994,37 @@ class WindowAndBudgetTests(TokenActivityTestCase):
             len(counts),
         )
 
+    def test_rpc_phase_requests_sum_to_total_and_separate_stages(self) -> None:
+        item = transfer_log(FINALIZED - 1, 0, WALLET_A, WALLET_B)
+        result, _ = self.run_query([item])
+        phases = result["diagnostics"]["rpc_phase_requests"]
+        self.assertEqual(
+            sum(phases.values()),
+            result["diagnostics"]["rpc_request_count"],
+        )
+        self.assertGreater(phases["chain_and_metadata"], 0)
+        self.assertGreater(phases["range_discovery"], 0)
+        self.assertGreater(phases["transfer_logs"], 0)
+        self.assertGreater(phases["block_headers"], 0)
+        self.assertEqual(phases["price"], 0)
+
+    def test_retry_attempts_are_counted_in_transfer_log_phase(self) -> None:
+        class RetryingLogRpc(FakeRpc):
+            def get_logs(self, payload):
+                self._hit()
+                self._hit()
+                self.log_filters.append(payload)
+                self.log_call_count += 2
+                return []
+
+        result, _ = self.run_query([], rpc=RetryingLogRpc())
+        phases = result["diagnostics"]["rpc_phase_requests"]
+        self.assertEqual(phases["transfer_logs"], 2)
+        self.assertEqual(
+            sum(phases.values()),
+            result["diagnostics"]["rpc_request_count"],
+        )
+
     def test_max_events_returns_partial_without_claiming_complete(self) -> None:
         settings = replace(self.settings, token_activity_max_events=1)
         logs = [
@@ -902,6 +1053,10 @@ class WindowAndBudgetTests(TokenActivityTestCase):
         self.assertFalse(result["complete"])
         self.assertEqual(result["truncation_reason"], "max_rpc_requests")
         self.assertGreaterEqual(result["summary"]["transfer_count"], 1)
+        self.assertEqual(
+            sum(result["diagnostics"]["rpc_phase_requests"].values()),
+            result["diagnostics"]["rpc_request_count"],
+        )
 
     def test_max_block_headers_after_some_facts_returns_partial(self) -> None:
         settings = replace(
@@ -940,7 +1095,7 @@ class WindowAndBudgetTests(TokenActivityTestCase):
                 )
                 self.assertLessEqual(
                     len(rpc.log_filters),
-                    self.settings.rpc_adaptive_max_requests,
+                    self.settings.token_activity_adaptive_max_requests,
                 )
 
     def test_timeout_after_reliable_fact_is_partial(self) -> None:

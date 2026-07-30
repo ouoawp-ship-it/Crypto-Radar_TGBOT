@@ -66,6 +66,7 @@ class TokenActivityQuery:
     window_seconds: int
     max_events: int
     max_rpc_requests: int
+    adaptive_max_requests: int
     max_unique_block_headers: int
     top_n: int
     block_search_max_calls: int
@@ -164,6 +165,9 @@ class TokenActivityQuery:
             window_seconds=window_seconds,
             max_events=event_limit,
             max_rpc_requests=rpc_limit,
+            adaptive_max_requests=(
+                settings.token_activity_adaptive_max_requests
+            ),
             max_unique_block_headers=(
                 settings.token_activity_max_unique_block_headers
             ),
@@ -345,6 +349,9 @@ class TokenActivityQueryService:
                 code,
                 "contract could not be verified as ERC-20",
             )
+        chain_and_metadata_end = int(
+            getattr(self.rpc, "request_count", request_start)
+        )
 
         try:
             head = self.rpc.block_number()
@@ -388,6 +395,9 @@ class TokenActivityQueryService:
         )
         identity_registry = LabelRegistry(label_context.identity_labels)
         direction_registry = LabelRegistry(label_context.direction_labels)
+        range_discovery_end = int(
+            getattr(self.rpc, "request_count", chain_and_metadata_end)
+        )
 
         try:
             fetched = self.collector.fetch_token_logs(
@@ -395,6 +405,7 @@ class TokenActivityQueryService:
                 to_block,
                 query.contract,
                 max_events=query.max_events,
+                adaptive_max_requests=query.adaptive_max_requests,
             )
         except (
             FinalizedRangeConsistencyError,
@@ -412,6 +423,9 @@ class TokenActivityQueryService:
             raise TokenActivityQueryError(
                 "rpc_unavailable", "Token Transfer query failed"
             ) from exc
+        transfer_logs_end = int(
+            getattr(self.rpc, "request_count", range_discovery_end)
+        )
 
         transfers, skipped, header_truncation = self._normalize_logs(
             fetched,
@@ -419,6 +433,9 @@ class TokenActivityQueryService:
             headers=headers,
             from_time=from_time,
             to_time=to_header.timestamp,
+        )
+        block_headers_end = int(
+            getattr(self.rpc, "request_count", transfer_logs_end)
         )
         truncation_reason = fetched.truncation_reason or header_truncation
         truncated = fetched.truncated or header_truncation is not None
@@ -434,6 +451,24 @@ class TokenActivityQueryService:
         quote, price_status, price_warning = self._price(
             query, metadata, to_header.timestamp
         )
+        price_end = int(
+            getattr(self.rpc, "request_count", block_headers_end)
+        )
+        rpc_phase_requests = {
+            "chain_and_metadata": max(
+                0, chain_and_metadata_end - request_start
+            ),
+            "range_discovery": max(
+                0, range_discovery_end - chain_and_metadata_end
+            ),
+            "transfer_logs": max(
+                0, transfer_logs_end - range_discovery_end
+            ),
+            "block_headers": max(
+                0, block_headers_end - transfer_logs_end
+            ),
+            "price": max(0, price_end - block_headers_end),
+        }
         if quote is not None:
             metadata = replace(
                 metadata,
@@ -557,11 +592,13 @@ class TokenActivityQueryService:
             "limits": {
                 "max_events": query.max_events,
                 "max_rpc_requests": query.max_rpc_requests,
+                "adaptive_max_requests": query.adaptive_max_requests,
                 "max_unique_block_headers": query.max_unique_block_headers,
                 "top_n": query.top_n,
             },
             "diagnostics": {
                 "rpc_request_count": self._rpc_requests(request_start),
+                "rpc_phase_requests": rpc_phase_requests,
                 "adaptive_split_count": fetched.adaptive_split_count,
                 "duplicate_log_count": fetched.duplicate_log_count,
                 "skipped_indexed_value_count": skipped,

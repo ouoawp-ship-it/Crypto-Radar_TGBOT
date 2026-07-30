@@ -11,7 +11,12 @@ from typing import Any, Callable, Iterable, Sequence
 import requests
 
 from ..config import OnchainSettings
-from ..constants import BASE_CHAIN_ID, BASE_CHAIN_NAME, TRANSFER_TOPIC
+from ..constants import (
+    BASE_CHAIN_ID,
+    BASE_CHAIN_NAME,
+    TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS_HARD,
+    TRANSFER_TOPIC,
+)
 from ..labels import normalize_evm_address
 from ..models import NormalizedTransfer
 from .base import BlockRange
@@ -73,6 +78,18 @@ class RpcRequestBudgetError(RpcTransportError):
 
 
 class AdaptiveRangeError(RpcError):
+    pass
+
+
+class AdaptiveRequestBudgetError(AdaptiveRangeError):
+    pass
+
+
+class AdaptiveDepthError(AdaptiveRangeError):
+    pass
+
+
+class AdaptiveMinimumRangeError(AdaptiveRangeError):
     pass
 
 
@@ -547,9 +564,20 @@ class BaseHttpCollector:
         token_address: str,
         *,
         max_events: int,
+        adaptive_max_requests: int | None = None,
     ) -> TokenLogFetchResult:
         if max_events <= 0:
             raise ValueError("max_events must be positive")
+        if adaptive_max_requests is not None and (
+            isinstance(adaptive_max_requests, bool)
+            or adaptive_max_requests <= 0
+            or adaptive_max_requests
+            > TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS_HARD
+        ):
+            raise ValueError(
+                "adaptive_max_requests must be between 1 and "
+                f"{TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS_HARD}"
+            )
         if end_block < start_block:
             return TokenLogFetchResult((), False, None, 0, 0)
         token = normalize_evm_address(token_address)
@@ -571,6 +599,7 @@ class BaseHttpCollector:
                     diagnostics=diagnostics,
                     partial_results=segment,
                     validate_log_range=True,
+                    max_requests=adaptive_max_requests,
                 )
             except RpcRequestBudgetError:
                 truncation_reason = "max_rpc_requests"
@@ -578,6 +607,18 @@ class BaseHttpCollector:
                 truncation_reason = "provider_rate_limit"
             except RpcTimeoutError:
                 truncation_reason = "provider_timeout"
+            except AdaptiveRequestBudgetError:
+                truncation_reason = "adaptive_request_budget_exhausted"
+            except AdaptiveDepthError:
+                truncation_reason = "adaptive_depth_exhausted"
+            except AdaptiveMinimumRangeError as exc:
+                cause: BaseException | None = exc
+                while getattr(cause, "__cause__", None) is not None:
+                    cause = cause.__cause__
+                if isinstance(cause, RpcTimeoutError):
+                    truncation_reason = "provider_timeout"
+                else:
+                    truncation_reason = "provider_range_limit_at_minimum"
             except AdaptiveRangeError as exc:
                 cause: BaseException | None = exc
                 while getattr(cause, "__cause__", None) is not None:
@@ -585,7 +626,7 @@ class BaseHttpCollector:
                 if isinstance(cause, RpcTimeoutError):
                     truncation_reason = "provider_timeout"
                 elif isinstance(cause, RpcRangeError):
-                    truncation_reason = "provider_range_limit"
+                    truncation_reason = "provider_range_limit_at_minimum"
                 else:
                     truncation_reason = "pagination_or_split_budget"
             except (RpcServiceError, RpcConnectionError):
@@ -736,14 +777,22 @@ class BaseHttpCollector:
         diagnostics: dict[str, int] | None = None,
         partial_results: list[dict[str, object]] | None = None,
         validate_log_range: bool = False,
+        max_requests: int | None = None,
     ) -> list[dict[str, object]]:
         if budget is None:
             budget = {"requests": 0}
+        effective_max_requests = (
+            self.settings.rpc_adaptive_max_requests
+            if max_requests is None
+            else max_requests
+        )
         if depth > self.settings.rpc_adaptive_max_depth:
-            raise AdaptiveRangeError("adaptive range maximum depth exceeded")
+            raise AdaptiveDepthError("adaptive range maximum depth exceeded")
         budget["requests"] += 1
-        if budget["requests"] > self.settings.rpc_adaptive_max_requests:
-            raise AdaptiveRangeError("adaptive range request budget exhausted")
+        if budget["requests"] > effective_max_requests:
+            raise AdaptiveRequestBudgetError(
+                "adaptive range request budget exhausted"
+            )
         try:
             logs = self.client.get_logs(transfer_filter.as_rpc(block_range))
             if validate_log_range:
@@ -754,7 +803,7 @@ class BaseHttpCollector:
         except (RpcRangeError, RpcTimeoutError) as exc:
             size = block_range.end_block - block_range.start_block + 1
             if size <= self.settings.rpc_min_block_range:
-                raise AdaptiveRangeError(
+                raise AdaptiveMinimumRangeError(
                     "minimum block range failed; cursor must not advance"
                 ) from exc
             midpoint = (block_range.start_block + block_range.end_block) // 2
@@ -772,6 +821,7 @@ class BaseHttpCollector:
                 diagnostics=diagnostics,
                 partial_results=partial_results,
                 validate_log_range=validate_log_range,
+                max_requests=effective_max_requests,
             ) + self._fetch_adaptive(
                 right,
                 transfer_filter,
@@ -780,4 +830,5 @@ class BaseHttpCollector:
                 diagnostics=diagnostics,
                 partial_results=partial_results,
                 validate_log_range=validate_log_range,
+                max_requests=effective_max_requests,
             )
