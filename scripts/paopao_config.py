@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import getpass
 import json
 import os
 from pathlib import Path
@@ -659,11 +658,7 @@ class ConfigManager:
 def _read_value(key: str) -> str:
     if sys.stdin.isatty():
         prompt = f"请输入 {key}: "
-        return (
-            getpass.getpass(prompt)
-            if key in SENSITIVE_KEYS
-            else input(prompt)
-        )
+        return input(prompt)
     return sys.stdin.read().rstrip("\r\n")
 
 

@@ -651,7 +651,18 @@ EOF
     IFS= read -r choice
     case "$choice" in
       1) run_onchain registry-list; pause_menu ;;
-      2) printf 'Market Symbol：'; IFS= read -r symbol; printf 'Base Contract：'; IFS= read -r contract; run_onchain registry-add --market-symbol "$symbol" --chain base --contract "$contract" --source manual; pause_menu ;;
+      2)
+        printf 'Market Symbol：'
+        IFS= read -r symbol
+        printf 'Base Contract：'
+        IFS= read -r contract
+        run_onchain registry-add \
+          --market-symbol "$symbol" \
+          --chain base \
+          --contract "$contract" \
+          --source manual
+        pause_menu
+        ;;
       3) registry_verify_menu; pause_menu ;;
       4) printf 'Token Key：'; IFS= read -r token_key; confirm_phrase "禁用Registry" && run_onchain registry-disable --token-key "$token_key"; pause_menu ;;
       5) run_onchain watch-list; pause_menu ;;
@@ -686,10 +697,10 @@ bind_telegram_topic_link() {
   local topic_link="" result="" error_code="topic_link_invalid"
   printf '%s\n' \
     '请在目标话题内任选一条消息，复制 Telegram 消息链接后粘贴。' \
-    '链接仅在本机内存中解析，不会写入日志或历史。'
-  printf '消息链接（输入不回显）：'
-  IFS= read -r -s topic_link
-  printf '\n'
+    '链接仅在本机内存中解析，不会写入日志或历史。' \
+    '输入内容将在当前 FinalShell 终端中明文显示，请确认周围无人查看屏幕。'
+  printf '消息链接：'
+  IFS= read -r topic_link
   if result="$(
     printf '%s\n' "$topic_link" |
       run_onchain telegram-topic-link bind --stdin 2>/dev/null

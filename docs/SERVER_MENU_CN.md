@@ -66,9 +66,9 @@ python scripts/paopao_config.py disable OAR_AI_ENABLE
 python scripts/paopao_config.py validate
 ```
 
-Secret 不作为命令行参数。TTY 中使用无回显输入；非 TTY 只能从 stdin 读取。管理器使用字段白名单、文件锁、写前备份、原子替换、权限 600 和写后校验；失败时自动恢复原文件，并保留未知字段和注释。
+Secret 不作为命令行参数。根据当前部署者要求，所有 FinalShell 输入均在当前终端明文显示；非 TTY 仍只从 stdin 读取。输入 API Key、Token 或 RPC 时请关闭共享屏幕和录屏，并确认周围无人查看。管理器使用字段白名单、文件锁、写前备份、原子替换、权限 600 和写后校验；失败时自动恢复原文件，并保留未知字段和注释。
 
-管理器还会离线校验 Bot Token、Chat ID、链上 Topic ID、DeepSeek 模型/Base URL 和 CEX 标签安全相对路径；校验不发起 Telegram、Provider 或 RPC 请求。每个环境文件最多保留 30 个 `.bak.*` 备份，不会删除其他文件。
+输入可见只影响当前输入行。保存后的配置状态、日志和报告仍保持脱敏；管理器不会重新打印刚输入的实际值。管理器还会离线校验 Bot Token、Chat ID、链上 Topic ID、DeepSeek 模型/Base URL 和 CEX 标签安全相对路径；校验不发起 Telegram、Provider 或 RPC 请求。每个环境文件最多保留 30 个 `.bak.*` 备份，不会删除其他文件。
 
 状态只显示 configured/not_configured 或安全枚举，不打印完整 RPC URL、Token、Chat ID、Topic ID、API Key 或 Authorization。
 
@@ -127,7 +127,7 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必�
 
 1. 在目标话题内任选一条消息并复制 Telegram 官方消息链接；
 2. 进入“Telegram 设置与测试 → 从消息链接绑定链上话题”；
-3. 在无回显输入框粘贴链接。
+3. 在可见输入行粘贴链接，并在回车前核对内容。
 
 链接只在本机进程内存中解析，经 stdin 传给
 `telegram-topic-link bind --stdin`，不会进入 argv、日志、配置或备份。
@@ -179,6 +179,11 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必�
 - Watch 自动 AI：`启用自动AI分析`
 
 短语不完全一致时操作取消。
+
+所有确认短语都使用普通可见输入。Operator Prompt 的多行编辑通过
+`$EDITOR`（默认 `vi`）完成，正文在编辑器中正常显示；单行配置也会在
+FinalShell 输入行原样显示。菜单不会使用星号替代字符，也不会关闭终端
+Echo。输入敏感值前应关闭共享屏幕和录屏。
 
 ## 安装
 
