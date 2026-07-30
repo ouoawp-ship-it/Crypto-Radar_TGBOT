@@ -437,7 +437,7 @@ class CandidateDiscoveryAndCliTests(unittest.TestCase):
             self.assertEqual(payload["error"], "allow_network_required")
             self.assertFalse(payload["network_activity"])
 
-    def test_missing_key_fails_before_network(self) -> None:
+    def test_missing_key_is_optional_before_network(self) -> None:
         with TemporaryDirectory() as raw:
             settings = make_settings(Path(raw), arkham_api_key="")
             output = StringIO()
@@ -451,9 +451,40 @@ class CandidateDiscoveryAndCliTests(unittest.TestCase):
                     settings=settings,
                 )
             payload = json.loads(output.getvalue())
-            self.assertEqual(code, 1)
-            self.assertEqual(payload["error"], "arkham_not_configured")
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "optional_disabled")
+            self.assertEqual(payload["reason"], "arkham_not_configured")
+            self.assertEqual(payload["arkham_request_count"], 0)
             self.assertFalse(payload["network_activity"])
+
+    def test_missing_key_discovery_is_optional_and_creates_nothing(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as raw:
+            settings = make_settings(Path(raw), arkham_api_key="")
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "label-candidates",
+                        "discover",
+                        "--chain",
+                        "base",
+                        "--contract",
+                        TOKEN,
+                        "--window",
+                        "4h",
+                        "--allow-network",
+                    ],
+                    settings=settings,
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "optional_disabled")
+            self.assertEqual(payload["candidates_found"], 0)
+            self.assertEqual(payload["created"], 0)
+            self.assertEqual(payload["arkham_request_count"], 0)
+            self.assertFalse(settings.label_candidates_path.exists())
 
     def test_settings_ranges_are_enforced(self) -> None:
         with TemporaryDirectory() as raw:

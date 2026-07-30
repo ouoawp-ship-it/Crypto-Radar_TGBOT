@@ -161,6 +161,20 @@ class OarWatchServiceTests(unittest.TestCase):
         )
         self.assertNotIn("--with-ai", args)
 
+    def test_complete_real_gate_does_not_require_arkham(self) -> None:
+        result, args = self._run_launcher({
+            "OAR_WATCH_DELIVERY_MODE": "real",
+            "ONCHAIN_REAL_SEND": "true",
+            "OAR_WATCH_REAL_SEND_ACK": "发送真实链上提醒",
+            "TG_BOT_TOKEN": "123456:safe_TOKEN-1",
+            "TG_CHAT_ID": "-100123",
+            "TG_ONCHAIN_FLOW_TOPIC_ID": "42",
+            "ARKHAM_API_KEY": "",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--send", args)
+        self.assertIn("--confirm-real-send", args)
+
     def test_ai_flag_requires_watch_global_and_complete_config(self) -> None:
         base = {
             "OAR_WATCH_DELIVERY_MODE": "dry_run",
