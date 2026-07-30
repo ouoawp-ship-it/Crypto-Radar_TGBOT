@@ -23,6 +23,8 @@ class PaopaoMenuPtyTests(unittest.TestCase):
     def _run_menu(
         self,
         user_input: str,
+        *,
+        extra_env: dict[str, str] | None = None,
     ) -> tuple[int, str, list[str]]:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -45,7 +47,29 @@ class PaopaoMenuPtyTests(unittest.TestCase):
                 "systemctl": (
                     "#!/usr/bin/env bash\n"
                     f"printf 'systemctl %s\\n' \"$*\" >>'{calls}'\n"
-                    "if [ \"${1:-}\" = is-active ]; then echo inactive; fi\n"
+                    "case \"${1:-}\" in\n"
+                    "  is-active)\n"
+                    "    echo \"${FAKE_SYSTEMD_ACTIVE:-inactive}\"\n"
+                    "    ;;\n"
+                    "  cat)\n"
+                    "    [ \"${FAKE_SYSTEMD_UNIT_EXISTS:-0}\" = 1 ]\n"
+                    "    ;;\n"
+                    "  show)\n"
+                    "    printf '%s\\n' \"${FAKE_SYSTEMD_MAIN_PID:-0}\"\n"
+                    "    ;;\n"
+                    "  start|stop|restart)\n"
+                    "    [ \"${FAKE_SYSTEMCTL_FAIL_ACTION:-}\" != \"$1\" ]\n"
+                    "    ;;\n"
+                    "esac\n"
+                ),
+                "pgrep": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf 'pgrep %s\\n' \"$*\" >>'{calls}'\n"
+                    "if [ -n \"${FAKE_PGREP_OUTPUT:-}\" ]; then\n"
+                    "  printf '%s\\n' \"$FAKE_PGREP_OUTPUT\"\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "exit 1\n"
                 ),
                 "sudo": (
                     "#!/usr/bin/env bash\n"
@@ -65,6 +89,7 @@ class PaopaoMenuPtyTests(unittest.TestCase):
                 "PAOPAO_PYTHON_BIN": sys.executable,
                 "PAOPAO_MENU_NO_CLEAR": "1",
                 "PAOPAO_UPDATE_SCRIPT": str(update),
+                **(extra_env or {}),
             }
             master, slave = pty.openpty()
             process = subprocess.Popen(
@@ -175,6 +200,80 @@ class PaopaoMenuPtyTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, output)
         self.assertNotIn("ai-cache clear-results", "\n".join(calls))
+
+    def test_missing_oar_unit_returns_to_menu_without_start(self) -> None:
+        code, output, calls = self._run_menu("2\n4\n\n0\n0\n")
+        self.assertEqual(code, 0, output)
+        self.assertIn("服务尚未安装", output)
+        self.assertFalse(
+            [line for line in calls if line.startswith("systemctl start ")],
+        )
+
+    def test_manual_worker_blocks_oar_start(self) -> None:
+        code, output, calls = self._run_menu(
+            "2\n4\n\n0\n0\n",
+            extra_env={
+                "FAKE_SYSTEMD_UNIT_EXISTS": "1",
+                "FAKE_PGREP_OUTPUT": (
+                    "4242 python onchain_main.py watch-live --allow-network"
+                ),
+            },
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("duplicate_writer_risk", output)
+        self.assertFalse(
+            [line for line in calls if line.startswith("systemctl start ")],
+        )
+
+    def test_running_systemd_worker_makes_start_idempotent(self) -> None:
+        code, output, calls = self._run_menu(
+            "2\n4\n\n0\n0\n",
+            extra_env={
+                "FAKE_SYSTEMD_UNIT_EXISTS": "1",
+                "FAKE_SYSTEMD_MAIN_PID": "321",
+                "FAKE_PGREP_OUTPUT": (
+                    "321 python onchain_main.py watch-live --allow-network"
+                ),
+            },
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("MainPID=321", output)
+        self.assertFalse(
+            [line for line in calls if line.startswith("systemctl start ")],
+        )
+
+    def test_extra_worker_blocks_oar_restart(self) -> None:
+        code, output, calls = self._run_menu(
+            "2\n6\n\n0\n0\n",
+            extra_env={
+                "FAKE_SYSTEMD_UNIT_EXISTS": "1",
+                "FAKE_SYSTEMD_MAIN_PID": "321",
+                "FAKE_PGREP_OUTPUT": (
+                    "321 python onchain_main.py watch-live --allow-network\n"
+                    "4242 python onchain_main.py watch-live --allow-network"
+                ),
+            },
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("duplicate_writer_risk", output)
+        self.assertFalse(
+            [line for line in calls if line.startswith("systemctl restart ")],
+        )
+
+    def test_systemctl_start_failure_does_not_exit_menu(self) -> None:
+        code, output, calls = self._run_menu(
+            "2\n4\n\n0\n0\n",
+            extra_env={
+                "FAKE_SYSTEMD_UNIT_EXISTS": "1",
+                "FAKE_SYSTEMCTL_FAIL_ACTION": "start",
+            },
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("OAR Watch 启动失败", output)
+        starts = [
+            line for line in calls if line.startswith("systemctl start ")
+        ]
+        self.assertEqual(len(starts), 1)
 
 
 if __name__ == "__main__":
