@@ -72,6 +72,10 @@ Secret 不作为命令行参数。TTY 中使用无回显输入；非 TTY 只能�
 
 状态只显示 configured/not_configured 或安全枚举，不打印完整 RPC URL、Token、Chat ID、Topic ID、API Key 或 Authorization。
 
+“API、Token 与密钥”菜单的 Base RPC 高级设置可通过配置管理器原子修改
+`ONCHAIN_RPC_MAX_BLOCK_RANGE`。该值只接受 1～10000 的整数；修改会在文件锁内
+创建备份、写入后执行离线配置校验，并保持 `.env.onchain` 权限为 600。
+
 ## AI 与 Prompt
 
 AI 菜单可以：
