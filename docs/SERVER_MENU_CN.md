@@ -121,6 +121,22 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必�
 
 普通菜单只提供脱敏配置、链上 Topic 设置、规则报告 dry-run 和 readiness。Dry-run 不带 `--send` 或 `--confirm-real-send`。
 
+当前 Bot 是 outbound-only，不运行 `getUpdates`、webhook 或入站 Update
+队列。已有论坛话题可以在服务器本地通过消息链接绑定：
+
+1. 在目标话题内任选一条消息并复制 Telegram 官方消息链接；
+2. 进入“Telegram 设置与测试 → 从消息链接绑定链上话题”；
+3. 在无回显输入框粘贴链接。
+
+链接只在本机进程内存中解析，经 stdin 传给
+`telegram-topic-link bind --stdin`，不会进入 argv、日志、配置或备份。
+工具不会调用 Telegram HTTP、`getUpdates` 或 `createForumTopic`，成功后
+只显示 `链上 Topic：configured`，不会显示 Topic ID。
+
+私有群 `t.me/c/...` 链接会根据已配置的数字 Chat ID 完成离线一致性校验。
+公共群消息链接只有 username，当前配置无法离线证明其对应同一群，因此
+默认拒绝绑定；不会根据链接自行信任或猜测目标群。
+
 真实 Telegram 测试只在“高级运维”中出现，并要求输入完整短语：
 
 ```text

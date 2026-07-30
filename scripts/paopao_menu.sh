@@ -665,6 +665,51 @@ EOF
   done
 }
 
+topic_link_error_cn() {
+  case "$1" in
+    topic_link_invalid) printf '消息链接格式无效。' ;;
+    topic_link_domain_invalid) printf '只接受 Telegram 官方 HTTPS 消息链接。' ;;
+    topic_link_not_forum_message) printf '该链接不是论坛话题消息链接。' ;;
+    topic_link_topic_invalid) printf '链接中的话题编号无效。' ;;
+    topic_link_chat_mismatch) printf '消息链接与当前配置群不一致。' ;;
+    topic_link_ambiguous) printf '消息链接包含冲突或重复的话题信息。' ;;
+    topic_link_public_chat_unverified) printf '公共群链接无法离线验证，请使用私有群 t.me/c 消息链接。' ;;
+    *) printf '消息链接绑定失败。' ;;
+  esac
+}
+
+bind_telegram_topic_link() {
+  local topic_link="" result="" error_code="topic_link_invalid"
+  printf '%s\n' \
+    '请在目标话题内任选一条消息，复制 Telegram 消息链接后粘贴。' \
+    '链接仅在本机内存中解析，不会写入日志或历史。'
+  printf '消息链接（输入不回显）：'
+  IFS= read -r -s topic_link
+  printf '\n'
+  if result="$(
+    printf '%s\n' "$topic_link" |
+      run_onchain telegram-topic-link bind --stdin 2>/dev/null
+  )"; then
+    topic_link=""
+    printf '链上 Topic：configured\n'
+    return 0
+  fi
+  topic_link=""
+  error_code="$(
+    printf '%s' "$result" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("error") or "topic_link_invalid")
+except Exception:
+    print("topic_link_invalid")
+' 2>/dev/null
+  )"
+  printf '%s：' "$error_code"
+  topic_link_error_cn "$error_code"
+  printf '\n'
+  return 1
+}
+
 telegram_menu() {
   local choice
   while true; do
@@ -673,16 +718,18 @@ telegram_menu() {
 Telegram 设置与测试
 1. 查看脱敏配置
 2. 设置链上 Topic ID
-3. 链上报告 Dry-run
-4. 主 BOT readiness
+3. 从消息链接绑定链上话题
+4. 链上报告 Dry-run
+5. 主 BOT readiness
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
       1) run_config status; pause_menu ;;
       2) config_set TG_ONCHAIN_FLOW_TOPIC_ID; pause_menu ;;
-      3) telegram_dry_run; pause_menu ;;
-      4) run_main readiness; pause_menu ;;
+      3) bind_telegram_topic_link; pause_menu ;;
+      4) telegram_dry_run; pause_menu ;;
+      5) run_main readiness; pause_menu ;;
       0) return ;;
     esac
   done
