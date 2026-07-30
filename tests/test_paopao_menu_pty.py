@@ -196,7 +196,7 @@ class PaopaoMenuPtyTests(unittest.TestCase):
             "config_rollback()"
         )])
         code, output, calls = self._run_menu(
-            "5\n18\nwrong\n\n0\n0\n"
+            "5\n20\nwrong\n\n0\n0\n"
         )
         self.assertEqual(code, 0, output)
         self.assertNotIn("ai-cache clear-results", "\n".join(calls))
