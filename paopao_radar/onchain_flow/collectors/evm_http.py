@@ -305,13 +305,13 @@ class JsonRpcClient:
                     raise RpcRateLimitError(f"{method} provider rate limited")
                 if status_code >= 500:
                     raise RpcServiceError(f"{method} provider unavailable")
-                if status_code >= 400:
-                    raise RpcResponseError(f"{method} provider HTTP error")
                 data = response.json()
                 if not isinstance(data, dict):
                     raise RpcResponseError(
                         f"{method} returned a non-object response"
                     )
+                if status_code >= 400 and data.get("error") is None:
+                    raise RpcResponseError(f"{method} provider HTTP error")
                 if data.get("id") != request_id:
                     raise RpcResponseError(
                         f"{method} returned a mismatched request id"
