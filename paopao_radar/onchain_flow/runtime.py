@@ -58,6 +58,9 @@ def isolated_replay_settings(
         signal_events_db_path=replay_dir / "onchain_signals.db",
         oar_automation_db_path=replay_dir / "oar_automation.db",
         label_candidates_path=replay_dir / "label_candidates.json",
+        address_intelligence_path=(
+            replay_dir / "address_intelligence.json"
+        ),
         oar_ai_cache_path=replay_dir / "oar_ai_cache.json",
         oar_ai_operator_prompt_path=(
             replay_dir / "config" / "oar_ai_operator_prompt.txt"

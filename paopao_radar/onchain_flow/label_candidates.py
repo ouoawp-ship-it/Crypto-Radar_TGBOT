@@ -22,9 +22,11 @@ from .arkham_intelligence import (
 )
 from .config import OnchainSettings
 from .labels import (
+    AUDIT_COLUMNS,
     REQUIRED_COLUMNS,
     LabelValidationError,
     load_labels_csv,
+    is_approved_label,
     normalize_evm_address,
     validate_live_labels,
 )
@@ -484,6 +486,10 @@ class LabelCandidateStore:
                         "confidence": "0.95",
                         "valid_from": str(now),
                         "valid_to": "",
+                        "evidence_hash": str(
+                            selected["evidence_hash"]
+                        ),
+                        "review_status": "approved",
                     })
                     text = self._render_rows(rows)
                     _atomic_write_text_unlocked(labels_path, text)
@@ -521,8 +527,9 @@ class LabelCandidateStore:
             return []
         load_labels_csv(path)
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            fields = list(REQUIRED_COLUMNS) + list(AUDIT_COLUMNS)
             return [
-                {key: str(row.get(key) or "") for key in REQUIRED_COLUMNS}
+                {key: str(row.get(key) or "") for key in fields}
                 for row in csv.DictReader(handle)
             ]
 
@@ -531,8 +538,9 @@ class LabelCandidateStore:
         buffer = io.StringIO(newline="")
         writer = csv.DictWriter(
             buffer,
-            fieldnames=list(REQUIRED_COLUMNS),
+            fieldnames=list(REQUIRED_COLUMNS) + list(AUDIT_COLUMNS),
             lineterminator="\n",
+            extrasaction="ignore",
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -800,6 +808,7 @@ def label_readiness(
         and label.confidence >= min_confidence
         and label.active_at(timestamp)
         and label.source.strip().lower() != "synthetic_fixture"
+        and is_approved_label(label)
     ]
     mode = (
         format(path.stat().st_mode & 0o777, "03o")

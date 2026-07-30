@@ -33,6 +33,7 @@ from .labels import (
     LabelRegistry,
     LabelValidationError,
     load_labels_csv,
+    is_approved_label,
     normalize_evm_address,
 )
 from .models import AddressLabel, NormalizedTransfer, PriceQuote, TokenMetadata
@@ -654,6 +655,7 @@ class TokenActivityQueryService:
             and label.entity_type == "cex"
             and label.confidence >= self.settings.min_label_confidence
             and overlaps_query(label)
+            and is_approved_label(label)
         )
         status = (
             "ok" if direction_labels else "insufficient_cex_coverage"

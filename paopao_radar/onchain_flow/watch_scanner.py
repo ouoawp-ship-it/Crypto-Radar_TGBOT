@@ -4,6 +4,7 @@ import time
 import uuid
 from typing import Any, Callable
 
+from .address_intelligence import AddressIntelligenceStore
 from .automation_store import AutomationStore, AutomationStoreError
 from .config import OnchainSettings
 from .report import TokenReportService
@@ -33,6 +34,7 @@ class WatchScanner:
         ] | None = None,
         report_factory: Callable[[OnchainSettings], Any] | None = None,
         notifier_factory: Callable[[OnchainSettings], Any] | None = None,
+        address_intelligence_store: Any | None = None,
         clock: Any = time.time,
         sleeper: Any = time.sleep,
     ):
@@ -50,6 +52,11 @@ class WatchScanner:
             )
         )
         self.notifier_factory = notifier_factory or ReportNotifier
+        self.address_intelligence_store = (
+            address_intelligence_store
+            if address_intelligence_store is not None
+            else AddressIntelligenceStore.from_settings(settings)
+        )
         self.clock = clock
         self.sleeper = sleeper
 
@@ -423,6 +430,27 @@ class WatchScanner:
                 rpc_request_count=rpc_count,
                 analysis_started=True,
             )
+        queue_result: dict[str, int] = {
+            "observed": 0,
+            "created": 0,
+            "updated": 0,
+        }
+        try:
+            queue_result = (
+                self.address_intelligence_store.observe_complete_scan(
+                    analyzed,
+                    observed_at=int(self.clock()),
+                )
+            )
+        except Exception:
+            # Address intelligence is local best-effort enrichment. It must
+            # never turn a successful scan into a failure or invoke a
+            # provider on the Watch hot path.
+            queue_result = {
+                "observed": 0,
+                "created": 0,
+                "updated": 0,
+            }
         return {
             "token_key": token_key,
             "status": scan_status,
@@ -441,6 +469,10 @@ class WatchScanner:
             "error": partial_reason,
             "ai_calls": ai_calls,
             "analysis_started": True,
+            "unknown_addresses_queued": int(
+                queue_result.get("observed") or 0
+            ),
+            "external_label_provider_calls": 0,
         }
 
     def _record_failure(

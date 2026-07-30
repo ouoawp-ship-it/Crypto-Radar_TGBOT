@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from paopao_radar.onchain_flow.automation_store import AutomationStore
 from paopao_radar.onchain_flow.token_analysis import TokenAnalysisService
@@ -148,6 +148,7 @@ class WatchScannerTests(unittest.TestCase):
         notifier: FakeNotifier | None = None,
         settings: object | None = None,
         order: list[str] | None = None,
+        address_store: object | None = None,
     ) -> WatchScanner:
         queue = list(payloads)
 
@@ -178,9 +179,46 @@ class WatchScannerTests(unittest.TestCase):
                     AssertionError("notifier created below gate")
                 )
             ),
+            address_intelligence_store=address_store,
             clock=lambda: 2000,
             sleeper=lambda value: None,
         )
+
+    def test_watch_only_queues_locally_and_never_calls_providers(
+        self,
+    ) -> None:
+        key = self.watch()
+        queue_store = Mock()
+        queue_store.observe_complete_scan.return_value = {
+            "observed": 2,
+            "created": 2,
+            "updated": 0,
+        }
+        with patch(
+            "paopao_radar.onchain_flow.address_intelligence."
+            "AddressIntelligenceService.discover",
+            side_effect=AssertionError("provider called from Watch"),
+        ) as discover:
+            result = self.scanner(
+                [self.analyzed("isolated")],
+                address_store=queue_store,
+            ).run_once(
+                allow_network=True,
+                notify_dry_run=False,
+                with_ai=False,
+                send=False,
+                confirm_real_send=False,
+            )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["results"][0]["token_key"], key)
+        self.assertEqual(
+            result["results"][0]["external_label_provider_calls"], 0
+        )
+        self.assertEqual(
+            result["results"][0]["unknown_addresses_queued"], 2
+        )
+        queue_store.observe_complete_scan.assert_called_once()
+        discover.assert_not_called()
 
     def test_no_network_gate_has_zero_writes_and_factories(self) -> None:
         self.watch()
