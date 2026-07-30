@@ -472,6 +472,7 @@ API、Token 与密钥
 7. 设置 DeepSeek API Key
 8. 主 Provider 检查
 9. Base RPC Smoke（手工输入合约）
+10. 设置 Base RPC 最大区块范围（高级）
 0. 返回
 EOF
     IFS= read -r choice
@@ -485,6 +486,7 @@ EOF
       7) config_set OAR_AI_API_KEY; pause_menu ;;
       8) run_main provider-check; pause_menu ;;
       9) token_query token-activity; pause_menu ;;
+      10) config_set ONCHAIN_RPC_MAX_BLOCK_RANGE; pause_menu ;;
       0) return ;;
     esac
   done

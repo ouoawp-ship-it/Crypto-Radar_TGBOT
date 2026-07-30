@@ -32,6 +32,7 @@ ALLOWLIST = {
     "COINGLASS_API_KEY": "oi",
     "COINALYZE_API_KEY": "oi",
     "ONCHAIN_BASE_HTTP_RPC_URL": "onchain",
+    "ONCHAIN_RPC_MAX_BLOCK_RANGE": "onchain",
     "ONCHAIN_CEX_LABELS_FILE": "onchain",
     "TG_ONCHAIN_FLOW_TOPIC_ID": "onchain",
     "OAR_AI_ENABLE": "onchain",
@@ -60,6 +61,9 @@ SENSITIVE_KEYS = SECRET_KEYS | {
 BOOLEAN_KEYS = {
     "OAR_AI_ENABLE",
     "OAR_AUTOMATION_ENABLE",
+}
+INTEGER_RANGES = {
+    "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -324,6 +328,18 @@ class ConfigManager:
             "false",
         }:
             raise ConfigManagerError(f"{key} must be true or false")
+        if key in INTEGER_RANGES:
+            minimum, maximum = INTEGER_RANGES[key]
+            try:
+                amount = int(value)
+            except ValueError as exc:
+                raise ConfigManagerError(
+                    f"{key} must be an integer"
+                ) from exc
+            if not minimum <= amount <= maximum:
+                raise ConfigManagerError(
+                    f"{key} must be in [{minimum}, {maximum}]"
+                )
         if key == "OAR_AI_PROVIDER" and value not in {
             "deepseek",
             "openai_compatible",

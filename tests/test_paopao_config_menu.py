@@ -131,10 +131,22 @@ class ConfigManagerTests(unittest.TestCase):
             ("OAR_AUTOMATION_ENABLE", "1"),
             ("OAR_AI_MAX_TOKENS", "511"),
             ("OAR_AI_MAX_TOKENS", "32769"),
+            ("ONCHAIN_RPC_MAX_BLOCK_RANGE", "0"),
+            ("ONCHAIN_RPC_MAX_BLOCK_RANGE", "10001"),
+            ("ONCHAIN_RPC_MAX_BLOCK_RANGE", "10.5"),
         ):
             with self.subTest(key=key, value=value):
                 with self.assertRaises(ConfigManagerError):
                     self.manager.set(key, value)
+
+    def test_rpc_max_block_range_is_allowlisted_and_bounded(self) -> None:
+        result = self.manager.set("ONCHAIN_RPC_MAX_BLOCK_RANGE", "10")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["value"], "10")
+        self.assertIn(
+            "ONCHAIN_RPC_MAX_BLOCK_RANGE=10",
+            (self.root / ".env.onchain").read_text(encoding="utf-8"),
+        )
 
     def test_endpoint_with_credentials_is_rejected(self) -> None:
         with self.assertRaises(ConfigManagerError):
@@ -428,6 +440,14 @@ class ChineseMenuTests(unittest.TestCase):
             self.assertIn(expected, text)
         self.assertNotIn(
             'rm -f "${APP_DIR}/data/onchain/oar_ai_cache.json"',
+            text,
+        )
+
+    def test_menu_exposes_bounded_base_rpc_range_setting(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        self.assertIn("设置 Base RPC 最大区块范围（高级）", text)
+        self.assertIn(
+            "config_set ONCHAIN_RPC_MAX_BLOCK_RANGE",
             text,
         )
 
