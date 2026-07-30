@@ -144,14 +144,105 @@ system_resources() {
   df -h "$APP_DIR" || true
 }
 
-duplicate_worker_check() {
-  local matches
-  matches="$(pgrep -af 'onchain_main.py.*watch-live' 2>/dev/null || true)"
+oar_systemd_main_pid() {
+  local main_pid
+  main_pid="$(systemctl show "$OAR_SERVICE_NAME" \
+    --property MainPID --value 2>/dev/null || true)"
+  if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "$main_pid"
+  else
+    printf '0\n'
+  fi
+}
+
+oar_unit_installed() {
+  command -v systemctl >/dev/null 2>&1 && \
+    systemctl cat "$OAR_SERVICE_NAME" >/dev/null 2>&1
+}
+
+show_oar_workers() {
+  local main_pid matches
+  main_pid="$(oar_systemd_main_pid)"
+  matches="$(pgrep -af '[o]nchain_main.py.*watch-live' 2>/dev/null || true)"
+  printf 'systemd MainPID: %s\n' "$main_pid"
   if [ -z "$matches" ]; then
     printf '未发现 OAR Watch Worker。\n'
   else
     printf '%s\n' "$matches"
   fi
+}
+
+assert_no_conflicting_oar_worker() {
+  local main_pid matches line pid conflicts=""
+  main_pid="$(oar_systemd_main_pid)"
+  matches="$(pgrep -af '[o]nchain_main.py.*watch-live' 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    pid="${line%% *}"
+    if [ "$pid" != "$main_pid" ]; then
+      conflicts="${conflicts}${line}"$'\n'
+    fi
+  done <<<"$matches"
+  if [ -n "$conflicts" ]; then
+    printf 'duplicate_writer_risk\n' >&2
+    printf '%s' "$conflicts" >&2
+    return 1
+  fi
+}
+
+start_oar_watch() {
+  local main_pid
+  if ! oar_unit_installed; then
+    printf '服务尚未安装：%s.service\n' "$OAR_SERVICE_NAME"
+    return 0
+  fi
+  if ! assert_no_conflicting_oar_worker; then
+    printf '检测到额外手工 Worker，拒绝启动第二个 Writer。\n'
+    return 0
+  fi
+  main_pid="$(oar_systemd_main_pid)"
+  if [ "$main_pid" != "0" ]; then
+    printf 'OAR Watch 已由 systemd 运行，MainPID=%s。\n' "$main_pid"
+    return 0
+  fi
+  if ! run_root systemctl start "$OAR_SERVICE_NAME"; then
+    printf 'OAR Watch 启动失败，请检查 systemctl status。\n' >&2
+    return 0
+  fi
+  printf 'OAR Watch 状态：%s\n' "$(service_state "$OAR_SERVICE_NAME")"
+}
+
+stop_oar_watch() {
+  if ! oar_unit_installed; then
+    printf '服务尚未安装：%s.service\n' "$OAR_SERVICE_NAME"
+    return 0
+  fi
+  if ! run_root systemctl stop "$OAR_SERVICE_NAME"; then
+    printf 'OAR Watch 停止失败，请检查 systemctl status。\n' >&2
+  fi
+  show_oar_workers
+}
+
+restart_oar_watch() {
+  local main_pid
+  if ! oar_unit_installed; then
+    printf '服务尚未安装：%s.service\n' "$OAR_SERVICE_NAME"
+    return 0
+  fi
+  if ! assert_no_conflicting_oar_worker; then
+    printf '检测到额外手工 Worker，拒绝重启以避免双 Writer。\n'
+    return 0
+  fi
+  main_pid="$(oar_systemd_main_pid)"
+  if [ "$main_pid" = "0" ]; then
+    printf 'OAR Watch 当前未由 systemd 运行，请使用启动操作。\n'
+    return 0
+  fi
+  if ! run_root systemctl restart "$OAR_SERVICE_NAME"; then
+    printf 'OAR Watch 重启失败，请检查 systemctl status。\n' >&2
+    return 0
+  fi
+  printf 'OAR Watch 状态：%s\n' "$(service_state "$OAR_SERVICE_NAME")"
 }
 
 config_set() {
@@ -320,13 +411,24 @@ EOF
     IFS= read -r choice
     case "$choice" in
       1) show_status; run_root systemctl status "$OAR_SERVICE_NAME" --no-pager || true; pause_menu ;;
-      2) confirm_phrase "重启主服务" && restart_services; pause_menu ;;
-      3) confirm_phrase "停止主BOT" && run_root systemctl stop "$SERVICE_NAME"; pause_menu ;;
-      4) duplicate_worker_check; run_root systemctl start "$OAR_SERVICE_NAME"; pause_menu ;;
-      5) run_root systemctl stop "$OAR_SERVICE_NAME"; pause_menu ;;
-      6) duplicate_worker_check; run_root systemctl restart "$OAR_SERVICE_NAME"; pause_menu ;;
-      7) duplicate_worker_check; pause_menu ;;
-      8) run_root systemctl show "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "$OAR_SERVICE_NAME" -p MainPID,NRestarts,MemoryCurrent,CPUUsageNSec; pause_menu ;;
+      2)
+        if confirm_phrase "重启主服务"; then
+          restart_services || printf '主服务重启失败，请检查 systemctl status。\n' >&2
+        fi
+        pause_menu
+        ;;
+      3)
+        if confirm_phrase "停止主BOT"; then
+          run_root systemctl stop "$SERVICE_NAME" || \
+            printf '主 BOT 停止失败，请检查 systemctl status。\n' >&2
+        fi
+        pause_menu
+        ;;
+      4) start_oar_watch; pause_menu ;;
+      5) stop_oar_watch; pause_menu ;;
+      6) restart_oar_watch; pause_menu ;;
+      7) show_oar_workers; pause_menu ;;
+      8) run_root systemctl show "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "$OAR_SERVICE_NAME" -p MainPID,NRestarts,MemoryCurrent,CPUUsageNSec || true; pause_menu ;;
       0) return ;;
     esac
   done
@@ -578,11 +680,11 @@ advanced_menu() {
 EOF
     IFS= read -r choice
     case "$choice" in
-      1) duplicate_worker_check; pause_menu ;;
+      1) show_oar_workers; pause_menu ;;
       2) run_config validate; pause_menu ;;
       3) config_rollback; pause_menu ;;
       4) confirm_phrase "发送真实测试" && run_main telegram-test --send --confirm-real-send; pause_menu ;;
-      5) run_root systemctl cat "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "$OAR_SERVICE_NAME"; pause_menu ;;
+      5) run_root systemctl cat "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "$OAR_SERVICE_NAME" || true; pause_menu ;;
       0) return ;;
     esac
   done
