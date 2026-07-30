@@ -31,6 +31,13 @@ from .labels import (
     load_labels_csv,
     validate_live_labels,
 )
+from .arkham_intelligence import ArkhamIntelligenceError
+from .label_candidates import (
+    LabelCandidateDiscovery,
+    LabelCandidateError,
+    LabelCandidateStore,
+    label_readiness,
+)
 from .live_runtime import (
     BaseOnchainRuntime,
     LiveConfigurationError,
@@ -118,6 +125,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=argparse.SUPPRESS,
     )
+    label_candidates = subparsers.add_parser("label-candidates")
+    candidate_actions = label_candidates.add_subparsers(
+        dest="candidate_action",
+        required=True,
+    )
+    candidate_provider = candidate_actions.add_parser("provider-check")
+    candidate_provider.add_argument("--allow-network", action="store_true")
+    candidate_discover = candidate_actions.add_parser("discover")
+    candidate_discover.add_argument(
+        "--chain", choices=("base",), required=True
+    )
+    candidate_discover.add_argument("--contract", required=True)
+    candidate_discover.add_argument(
+        "--window", choices=("4h",), required=True
+    )
+    candidate_discover.add_argument(
+        "--max-addresses", type=int, default=None
+    )
+    candidate_discover.add_argument("--allow-network", action="store_true")
+    candidate_list = candidate_actions.add_parser("list")
+    candidate_list.add_argument(
+        "--status", choices=("pending", "approved", "rejected"), default=None
+    )
+    candidate_list.add_argument("--limit", type=int, default=100)
+    candidate_approve = candidate_actions.add_parser("approve")
+    candidate_approve.add_argument("--candidate-id", required=True)
+    candidate_reject = candidate_actions.add_parser("reject")
+    candidate_reject.add_argument("--candidate-id", required=True)
     telegram_topic_link.add_argument(
         "unsafe_link_argv",
         nargs="*",
@@ -918,6 +953,7 @@ def main(
     runtime: BaseOnchainRuntime | None = None
     token_activity_network_started = False
     automation_network_started = False
+    arkham_network_started = False
     try:
         settings = settings or OnchainSettings.load()
         if args.command == "ai-cache":
@@ -931,6 +967,92 @@ def main(
         if args.command == "telegram-topic-link":
             settings.validate()
             return _telegram_topic_link_command(settings, args)
+        if args.command == "label-candidates":
+            settings.validate()
+            action = args.candidate_action
+            if action in {"provider-check", "discover"}:
+                if not args.allow_network:
+                    raise LabelCandidateError("allow_network_required")
+                if not settings.arkham_api_key:
+                    raise ArkhamIntelligenceError(
+                        "arkham_not_configured"
+                    )
+                arkham_network_started = True
+            if action == "provider-check":
+                payload = LabelCandidateDiscovery(
+                    settings
+                ).provider_check()
+                payload.update({
+                    "network_activity": True,
+                    "telegram_calls": 0,
+                    "ai_calls": 0,
+                })
+                print(json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True
+                ))
+                return 0
+            if action == "discover":
+                maximum = (
+                    settings.oar_label_candidate_max_addresses
+                    if args.max_addresses is None
+                    else int(args.max_addresses)
+                )
+                payload = LabelCandidateDiscovery(settings).discover(
+                    chain=args.chain,
+                    contract=args.contract,
+                    window=args.window,
+                    max_addresses=maximum,
+                )
+                print(json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True
+                ))
+                return 0
+            store = LabelCandidateStore.from_settings(settings)
+            if action == "list":
+                candidates = store.list(
+                    status=args.status,
+                    limit=args.limit,
+                )
+                print(json.dumps({
+                    "status": (
+                        "not_initialized"
+                        if not settings.label_candidates_path.exists()
+                        else "ok"
+                    ),
+                    "candidates": candidates,
+                    "count": len(candidates),
+                    "network_activity": False,
+                    "telegram_calls": 0,
+                    "ai_calls": 0,
+                }, ensure_ascii=False, sort_keys=True))
+                return 0
+            if action == "approve":
+                result = store.approve(
+                    args.candidate_id,
+                    labels_path=settings.labels_path,
+                    min_confidence=settings.min_label_confidence,
+                )
+                print(json.dumps({
+                    "status": "ok",
+                    "candidate_id": result["candidate"]["candidate_id"],
+                    "candidate_status": "approved",
+                    "private_labels_updated": True,
+                    "backup_created": result["backup_created"],
+                    "network_activity": False,
+                    "telegram_calls": 0,
+                    "ai_calls": 0,
+                }, ensure_ascii=False, sort_keys=True))
+                return 0
+            candidate = store.reject(args.candidate_id)
+            print(json.dumps({
+                "status": "ok",
+                "candidate_id": candidate["candidate_id"],
+                "candidate_status": "rejected",
+                "network_activity": False,
+                "telegram_calls": 0,
+                "ai_calls": 0,
+            }, ensure_ascii=False, sort_keys=True))
+            return 0
         if args.command in {
             "registry-add",
             "registry-verify",
@@ -1277,20 +1399,22 @@ def main(
             return code
         if args.command == "labels-check":
             settings.validate()
-            labels = load_labels_csv(settings.labels_path)
+            payload = label_readiness(
+                settings.labels_path,
+                min_confidence=settings.min_label_confidence,
+                chain_id=settings.base_chain_id,
+            )
             if settings.enable or settings.base_enable:
+                labels = load_labels_csv(settings.labels_path)
                 validate_live_labels(
                     labels,
                     min_confidence=settings.min_label_confidence,
                     chain_id=settings.base_chain_id,
                 )
-            print(
-                json.dumps(
-                    {"status": "ok", "labels": len(labels)},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
+            payload["labels"] = payload["total_labels"]
+            print(json.dumps(
+                payload, ensure_ascii=False, sort_keys=True
+            ))
             return 0
         if args.command == "db-check":
             settings.validate()
@@ -1387,6 +1511,15 @@ def main(
                 sort_keys=True,
             )
         )
+        return 1
+    except (ArkhamIntelligenceError, LabelCandidateError) as exc:
+        print(json.dumps({
+            "status": "failed",
+            "error": exc.code,
+            "network_activity": arkham_network_started,
+            "telegram_calls": 0,
+            "ai_calls": 0,
+        }, ensure_ascii=False, sort_keys=True))
         return 1
     except TokenActivityQueryError as exc:
         payload = failed_token_activity_payload(

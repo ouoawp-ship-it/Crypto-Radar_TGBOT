@@ -231,6 +231,30 @@ class PaopaoMenuPtyTests(unittest.TestCase):
         ]
         self.assertEqual(updates, ["update --yes"])
 
+    def test_cex_label_approval_requires_exact_chinese_phrase(
+        self,
+    ) -> None:
+        _, _, denied = self._run_menu(
+            "6\n15\n5\ncandidate-1\nwrong\n\n0\n0\n0\n",
+            extra_env={"PAOPAO_TEST_FAKE_PYTHON": "1"},
+        )
+        self.assertFalse([
+            line
+            for line in denied
+            if "label-candidates approve" in line
+        ])
+        code, output, allowed = self._run_menu(
+            "6\n15\n5\ncandidate-1\n批准CEX标签\n\n0\n0\n0\n",
+            extra_env={"PAOPAO_TEST_FAKE_PYTHON": "1"},
+        )
+        self.assertEqual(code, 0, output)
+        approvals = [
+            line
+            for line in allowed
+            if "label-candidates approve" in line
+        ]
+        self.assertEqual(len(approvals), 1)
+
     def test_main_service_restart_requires_exact_phrase(self) -> None:
         _, _, denied = self._run_menu("2\n2\nwrong\n\n0\n0\n")
         self.assertFalse(

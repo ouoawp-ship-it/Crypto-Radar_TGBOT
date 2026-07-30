@@ -49,12 +49,18 @@ ALLOWLIST = {
     "OAR_WATCH_DELIVERY_MODE": "onchain",
     "OAR_WATCH_WITH_AI": "onchain",
     "OAR_WATCH_REAL_SEND_ACK": "onchain",
+    "ARKHAM_API_BASE_URL": "onchain",
+    "ARKHAM_API_KEY": "onchain",
+    "ARKHAM_API_TIMEOUT_SEC": "onchain",
+    "ARKHAM_API_MAX_RETRIES": "onchain",
+    "OAR_LABEL_CANDIDATE_MAX_ADDRESSES": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
     "COINGLASS_API_KEY",
     "COINALYZE_API_KEY",
     "OAR_AI_API_KEY",
+    "ARKHAM_API_KEY",
 }
 SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
@@ -63,6 +69,7 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "ONCHAIN_CEX_LABELS_FILE",
     "OAR_AI_BASE_URL",
     "OAR_WATCH_REAL_SEND_ACK",
+    "ARKHAM_API_BASE_URL",
 }
 BOOLEAN_KEYS = {
     "OAR_AI_ENABLE",
@@ -74,6 +81,9 @@ INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
     "OAR_AI_TIMEOUT_SEC": (5, 180),
     "OAR_AI_MAX_RETRIES": (0, 2),
+    "ARKHAM_API_TIMEOUT_SEC": (1, 60),
+    "ARKHAM_API_MAX_RETRIES": (0, 2),
+    "OAR_LABEL_CANDIDATE_MAX_ADDRESSES": (1, 100),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -441,10 +451,18 @@ class ConfigManager:
                 raise ConfigManagerError(
                     "OAR_AI_MAX_TOKENS must be in [512, 32768]"
                 )
-        if key in {"ONCHAIN_BASE_HTTP_RPC_URL", "OAR_AI_BASE_URL"} and value:
+        if key in {
+            "ONCHAIN_BASE_HTTP_RPC_URL",
+            "OAR_AI_BASE_URL",
+            "ARKHAM_API_BASE_URL",
+        } and value:
             parsed = urlsplit(value)
             if (
-                parsed.scheme.lower() not in {"http", "https"}
+                parsed.scheme.lower() not in (
+                    {"https"}
+                    if key == "ARKHAM_API_BASE_URL"
+                    else {"http", "https"}
+                )
                 or not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
@@ -523,6 +541,22 @@ class ConfigManager:
         labels_status = self._validate_labels_path(
             values.get("ONCHAIN_CEX_LABELS_FILE", "").strip()
         )
+        arkham_base_url = values.get(
+            "ARKHAM_API_BASE_URL",
+            "https://api.arkm.com",
+        ).strip()
+        parsed_arkham = urlsplit(arkham_base_url)
+        if (
+            parsed_arkham.scheme.lower() != "https"
+            or not parsed_arkham.hostname
+            or parsed_arkham.username is not None
+            or parsed_arkham.password is not None
+            or bool(parsed_arkham.query)
+            or bool(parsed_arkham.fragment)
+        ):
+            raise ConfigManagerError(
+                "ARKHAM_API_BASE_URL must be a credential-free HTTPS URL"
+            )
         delivery_mode = values.get(
             "OAR_WATCH_DELIVERY_MODE",
             "observe",
@@ -576,6 +610,14 @@ class ConfigManager:
                 "configured" if topic_id else "not_configured"
             ),
             "cex_labels_file": labels_status,
+            "arkham_api_key": (
+                "configured"
+                if values.get("ARKHAM_API_KEY", "").strip()
+                else "not_configured"
+            ),
+            "arkham_api_base_url": (
+                "configured" if arkham_base_url else "not_configured"
+            ),
             "oar_watch_delivery_mode": delivery_mode,
             "oar_watch_with_ai": watch_with_ai == "true",
             "oar_watch_real_send": real_send == "true",

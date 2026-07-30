@@ -148,6 +148,9 @@ class OnchainSettings:
     oar_automation_db_path: Path = (
         BASE_DIR / "data" / "onchain" / "oar_automation.db"
     )
+    label_candidates_path: Path = (
+        BASE_DIR / "data" / "onchain" / "label_candidates.json"
+    )
     main_signal_db_path: Path = BASE_DIR / "data" / "signals.db"
     labels_path: Path = BASE_DIR / "config" / "onchain" / "cex_addresses.example.csv"
     chains_path: Path = BASE_DIR / "config" / "onchain" / "chains.example.json"
@@ -202,6 +205,11 @@ class OnchainSettings:
     token_activity_max_unique_block_headers: int = 2000
     token_activity_top_n: int = 50
     token_activity_block_search_max_calls: int = 32
+    arkham_api_base_url: str = "https://api.arkm.com"
+    arkham_api_key: str = ""
+    arkham_api_timeout_sec: int = 15
+    arkham_api_max_retries: int = 1
+    oar_label_candidate_max_addresses: int = 50
     oar_behavior_min_tx: int = 3
     oar_behavior_dominance_min: Decimal = Decimal("0.67")
     oar_behavior_min_active_buckets_1h: int = 2
@@ -274,6 +282,15 @@ class OnchainSettings:
                 self,
                 "oar_automation_db_path",
                 self.data_dir / "oar_automation.db",
+            )
+        default_label_candidates = (
+            BASE_DIR / "data" / "onchain" / "label_candidates.json"
+        )
+        if self.label_candidates_path == default_label_candidates:
+            object.__setattr__(
+                self,
+                "label_candidates_path",
+                self.data_dir / "label_candidates.json",
             )
         default_operator_prompt = (
             BASE_DIR
@@ -368,6 +385,14 @@ class OnchainSettings:
                 base_dir,
                 data_dir,
                 values.get("OAR_AUTOMATION_DB_FILE", "oar_automation.db"),
+            ),
+            label_candidates_path=_resolve_data_file(
+                base_dir,
+                data_dir,
+                values.get(
+                    "OAR_LABEL_CANDIDATES_FILE",
+                    "label_candidates.json",
+                ),
             ),
             main_signal_db_path=_resolve_repo_file(
                 base_dir,
@@ -522,6 +547,20 @@ class OnchainSettings:
             ),
             token_activity_block_search_max_calls=_int(
                 values, "TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS", 32
+            ),
+            arkham_api_base_url=values.get(
+                "ARKHAM_API_BASE_URL",
+                "https://api.arkm.com",
+            ).strip().rstrip("/"),
+            arkham_api_key=values.get("ARKHAM_API_KEY", "").strip(),
+            arkham_api_timeout_sec=_int(
+                values, "ARKHAM_API_TIMEOUT_SEC", 15
+            ),
+            arkham_api_max_retries=_int(
+                values, "ARKHAM_API_MAX_RETRIES", 1
+            ),
+            oar_label_candidate_max_addresses=_int(
+                values, "OAR_LABEL_CANDIDATE_MAX_ADDRESSES", 50
             ),
             oar_behavior_min_tx=_int(
                 values, "OAR_BEHAVIOR_MIN_TX", 3
@@ -707,6 +746,7 @@ class OnchainSettings:
             self.signal_events_path,
             self.signal_events_db_path,
             self.oar_automation_db_path,
+            self.label_candidates_path,
             self.oar_ai_operator_prompt_path,
         )
         if self.oar_ai_enable:
@@ -790,6 +830,8 @@ class OnchainSettings:
             "token_activity_max_unique_block_headers",
             "token_activity_top_n",
             "token_activity_block_search_max_calls",
+            "arkham_api_timeout_sec",
+            "oar_label_candidate_max_addresses",
             "oar_behavior_min_tx",
             "oar_behavior_min_active_buckets_1h",
             "oar_behavior_min_active_buckets_long",
@@ -833,6 +875,7 @@ class OnchainSettings:
             "rpc_retry",
             "alert_max_event_age_sec",
             "oar_ai_max_retries",
+            "arkham_api_max_retries",
             "oar_bridge_overlap_sec",
         )
         for field_name in non_negative_ints:
@@ -1243,6 +1286,31 @@ class OnchainSettings:
             raise SettingsValidationError(
                 "enabled OAR AI requires base URL, API key, and model"
             )
+        if not 1 <= self.arkham_api_timeout_sec <= 60:
+            raise SettingsValidationError(
+                "ARKHAM_API_TIMEOUT_SEC must be in [1, 60]"
+            )
+        if not 0 <= self.arkham_api_max_retries <= 2:
+            raise SettingsValidationError(
+                "ARKHAM_API_MAX_RETRIES must be in [0, 2]"
+            )
+        if not 1 <= self.oar_label_candidate_max_addresses <= 100:
+            raise SettingsValidationError(
+                "OAR_LABEL_CANDIDATE_MAX_ADDRESSES must be in [1, 100]"
+            )
+        arkham_url = urlsplit(self.arkham_api_base_url)
+        if (
+            arkham_url.scheme.lower() != "https"
+            or not arkham_url.hostname
+            or arkham_url.username is not None
+            or arkham_url.password is not None
+            or bool(arkham_url.query)
+            or bool(arkham_url.fragment)
+        ):
+            raise SettingsValidationError(
+                "ARKHAM_API_BASE_URL must be a credential-free HTTPS URL "
+                "without query or fragment"
+            )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
             raise SettingsValidationError(
                 "ONCHAIN_PRICE_PROVIDER must be none, static, or coingecko_onchain"
@@ -1333,6 +1401,17 @@ class OnchainSettings:
                 "block_search_max_calls": (
                     self.token_activity_block_search_max_calls
                 ),
+            },
+            "arkham_intelligence": {
+                "base_url_configured": bool(self.arkham_api_base_url),
+                "api_key_configured": bool(self.arkham_api_key),
+                "timeout_sec": self.arkham_api_timeout_sec,
+                "max_retries": self.arkham_api_max_retries,
+                "candidate_max_addresses": (
+                    self.oar_label_candidate_max_addresses
+                ),
+                "candidate_file_exists": self.label_candidates_path.exists(),
+                "automatic_calls": False,
             },
             "token_analysis": {
                 "behavior_min_tx": self.oar_behavior_min_tx,

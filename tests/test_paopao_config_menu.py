@@ -170,6 +170,40 @@ class ConfigManagerTests(unittest.TestCase):
             (self.root / ".env.onchain").read_text(encoding="utf-8"),
         )
 
+    def test_arkham_configuration_is_allowlisted_bounded_and_redacted(
+        self,
+    ) -> None:
+        key = "fake-visible-arkham-key"
+        result = self.manager.set("ARKHAM_API_KEY", key)
+        self.assertEqual(result["value"], "configured")
+        self.assertNotIn(key, json.dumps(result))
+        self.manager.set("ARKHAM_API_BASE_URL", "https://api.arkm.com")
+        self.manager.set("ARKHAM_API_TIMEOUT_SEC", "15")
+        self.manager.set("ARKHAM_API_MAX_RETRIES", "1")
+        self.manager.set("OAR_LABEL_CANDIDATE_MAX_ADDRESSES", "50")
+        status = json.dumps(self.manager.status())
+        self.assertNotIn(key, status)
+        self.assertIn("configured", status)
+        for key_name, value in (
+            ("ARKHAM_API_BASE_URL", "http://api.arkm.com"),
+            ("ARKHAM_API_BASE_URL", "https://u:p@api.arkm.com"),
+            ("ARKHAM_API_BASE_URL", "https://api.arkm.com?q=1"),
+            ("ARKHAM_API_TIMEOUT_SEC", "0"),
+            ("ARKHAM_API_TIMEOUT_SEC", "61"),
+            ("ARKHAM_API_MAX_RETRIES", "3"),
+            ("OAR_LABEL_CANDIDATE_MAX_ADDRESSES", "101"),
+        ):
+            with self.subTest(key=key_name, value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(key_name, value)
+
+    def test_arkham_key_tty_input_remains_visible(self) -> None:
+        key = "fake-visible-arkham-key"
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("builtins.input", return_value=key) as visible:
+                self.assertEqual(_read_value("ARKHAM_API_KEY"), key)
+        visible.assert_called_once_with("请输入 ARKHAM_API_KEY: ")
+
     def test_watch_delivery_defaults_and_values_are_strict(self) -> None:
         validation = self.manager.validate()
         checks = validation["checks"]
@@ -554,6 +588,7 @@ class ChineseMenuTests(unittest.TestCase):
             'confirm_phrase "恢复提示词"',
             'confirm_phrase "禁用Registry"',
             'confirm_phrase "接受Symbol不一致"',
+            'confirm_phrase "批准CEX标签"',
         ):
             self.assertIn(phrase, text)
 
@@ -587,6 +622,23 @@ class ChineseMenuTests(unittest.TestCase):
             "config_set ONCHAIN_RPC_MAX_BLOCK_RANGE",
             text,
         )
+
+    def test_menu_exposes_reviewed_arkham_candidate_workflow(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        for expected in (
+            "设置 Arkham API Key",
+            "config_set ARKHAM_API_KEY",
+            "CEX 标签候选",
+            "label-candidates provider-check --allow-network",
+            "label-candidates discover",
+            "label-candidates list",
+            "--status pending --limit 100",
+            "label-candidates approve",
+            "label-candidates reject",
+            'confirm_phrase "批准CEX标签"',
+        ):
+            self.assertIn(expected, text)
+        self.assertNotRegex(text, r"read\s+[^\n]*-s")
 
     def test_menu_exposes_guarded_watch_delivery_modes(self) -> None:
         text = MENU.read_text(encoding="utf-8")
@@ -648,6 +700,8 @@ class ChineseMenuTests(unittest.TestCase):
             "TG_ONCHAIN_FLOW_TOPIC_ID",
             "OAR_AI_API_KEY",
             "OAR_AI_BASE_URL",
+            "ARKHAM_API_KEY",
+            "ARKHAM_API_BASE_URL",
         ):
             self.assertIn(f"config_set {key}", text)
         self.assertNotIn("history -w", text)
