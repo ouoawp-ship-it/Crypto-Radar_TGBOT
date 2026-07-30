@@ -563,6 +563,17 @@ class ChineseMenuTests(unittest.TestCase):
         ):
             self.assertIn(expected, text)
 
+    def test_menu_binds_topic_link_through_hidden_stdin(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        self.assertIn("从消息链接绑定链上话题", text)
+        self.assertIn("IFS= read -r -s topic_link", text)
+        self.assertIn(
+            "run_onchain telegram-topic-link bind --stdin",
+            text,
+        )
+        self.assertNotIn("telegram-topic-link bind --url", text)
+        self.assertIn("链上 Topic：configured", text)
+
     def test_menu_uses_config_manager_instead_of_sed(self) -> None:
         text = MENU.read_text(encoding="utf-8")
         self.assertIn("scripts/paopao_config.py", text)

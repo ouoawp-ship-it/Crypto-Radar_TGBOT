@@ -47,6 +47,10 @@ from .token_activity import (
     failed_token_activity_payload,
 )
 from .token_analysis import TokenAnalysisService
+from .telegram_topic_link import (
+    TelegramTopicLinkError,
+    validate_telegram_topic_link,
+)
 from .watch_scanner import WatchScanner
 
 
@@ -102,6 +106,19 @@ def build_parser() -> argparse.ArgumentParser:
     ai_provider_check.add_argument("--allow-network", action="store_true")
     ai_smoke = subparsers.add_parser("ai-smoke")
     ai_smoke.add_argument("--allow-network", action="store_true")
+    telegram_topic_link = subparsers.add_parser("telegram-topic-link")
+    telegram_topic_link.add_argument("action", choices=("check", "bind"))
+    telegram_topic_link.add_argument("--stdin", action="store_true")
+    telegram_topic_link.add_argument(
+        "--url",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    telegram_topic_link.add_argument(
+        "unsafe_link_argv",
+        nargs="*",
+        help=argparse.SUPPRESS,
+    )
     provider_check = subparsers.add_parser("provider-check")
     provider_check.add_argument("--chain", choices=("base",), required=True)
     cursor_status = subparsers.add_parser("cursor-status")
@@ -770,6 +787,46 @@ def _ai_network_command(
         return 1
 
 
+def _telegram_topic_link_command(
+    settings: OnchainSettings,
+    args: argparse.Namespace,
+) -> int:
+    if (
+        not args.stdin
+        or args.url is not None
+        or bool(args.unsafe_link_argv)
+    ):
+        raise TelegramTopicLinkError(
+            "topic_link_invalid",
+            "Telegram topic link must be provided through stdin",
+        )
+    raw_link = sys.stdin.readline(4097)
+    parsed = validate_telegram_topic_link(
+        raw_link,
+        configured_chat_id=settings.tg_chat_id,
+    )
+    if args.action == "check":
+        payload = parsed.public_result()
+        payload.pop("topic_configured", None)
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    from scripts.paopao_config import ConfigManager, ConfigManagerError
+
+    try:
+        ConfigManager(settings.base_dir).set(
+            "TG_ONCHAIN_FLOW_TOPIC_ID",
+            str(parsed.topic_id),
+        )
+    except (ConfigManagerError, OSError, UnicodeError) as exc:
+        raise TelegramTopicLinkError(
+            "topic_link_invalid",
+            "Telegram topic configuration failed",
+        ) from exc
+    print("TG_ONCHAIN_FLOW_TOPIC_ID=configured")
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -789,6 +846,9 @@ def main(
             return _prompt_command(settings, args)
         if args.command in {"ai-provider-check", "ai-smoke"}:
             return _ai_network_command(settings, args)
+        if args.command == "telegram-topic-link":
+            settings.validate()
+            return _telegram_topic_link_command(settings, args)
         if args.command in {
             "registry-add",
             "registry-verify",
@@ -1213,6 +1273,22 @@ def main(
                 )
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
+    except TelegramTopicLinkError as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": exc.code,
+                    "network_activity": False,
+                    "rpc_calls": 0,
+                    "ai_calls": 0,
+                    "telegram_calls": 0,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
     except TokenActivityQueryError as exc:
         payload = failed_token_activity_payload(
             exc,

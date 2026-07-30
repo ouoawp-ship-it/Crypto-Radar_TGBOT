@@ -45,6 +45,23 @@ locked, backed-up, atomic configuration manager. Real delivery and automatic
 AI require their full Chinese confirmation phrases. Configuration changes
 take effect only after an explicit OAR Watch restart.
 
+## Existing Telegram topic binding
+
+The production bot is outbound-only: it has no `getUpdates` loop, webhook,
+or persisted inbound Update queue. An existing forum topic can be bound
+offline from an official Telegram message link with:
+
+```bash
+python onchain_main.py telegram-topic-link bind --stdin
+```
+
+The link is read from stdin, validated in memory, and never stored. Private
+`t.me/c/...` links are accepted only when their channel component matches the
+configured supergroup Chat ID. Public links are rejected unless a separately
+configured username can prove the same chat. The command does not call
+Telegram, create a topic, send a message, or print the Chat ID, Topic ID,
+Message ID, username, or original link.
+
 ## systemd stop behavior
 
 The CLI exits with status 130 after its SIGINT shutdown path. The versioned
