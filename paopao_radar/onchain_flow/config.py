@@ -1403,6 +1403,11 @@ class OnchainSettings:
                 ),
             },
             "arkham_intelligence": {
+                "status": (
+                    "configured"
+                    if self.arkham_api_key
+                    else "optional_disabled"
+                ),
                 "base_url_configured": bool(self.arkham_api_base_url),
                 "api_key_configured": bool(self.arkham_api_key),
                 "timeout_sec": self.arkham_api_timeout_sec,

@@ -974,9 +974,26 @@ def main(
                 if not args.allow_network:
                     raise LabelCandidateError("allow_network_required")
                 if not settings.arkham_api_key:
-                    raise ArkhamIntelligenceError(
-                        "arkham_not_configured"
-                    )
+                    payload: dict[str, object] = {
+                        "status": "optional_disabled",
+                        "reason": "arkham_not_configured",
+                        "provider": "arkham",
+                        "configured": False,
+                        "arkham_request_count": 0,
+                        "network_activity": False,
+                        "telegram_calls": 0,
+                        "ai_calls": 0,
+                    }
+                    if action == "discover":
+                        payload.update({
+                            "candidates_found": 0,
+                            "created": 0,
+                            "refreshed": 0,
+                        })
+                    print(json.dumps(
+                        payload, ensure_ascii=False, sort_keys=True
+                    ))
+                    return 0
                 arkham_network_started = True
             if action == "provider-check":
                 payload = LabelCandidateDiscovery(

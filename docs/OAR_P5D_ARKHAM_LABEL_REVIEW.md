@@ -5,6 +5,12 @@ Watch 扫描源、行为分析源或 Telegram 触发源。`watch-live` 不会调
 Arkham；所有网络调用都必须由操作者显式执行并携带
 `--allow-network`。
 
+Arkham 是可选 Provider。`ARKHAM_API_KEY` 为空时状态为
+`optional_disabled` / `not_configured`，不会阻断 Base RPC、Token Activity、
+行为与钱包组分析、Watchlist、systemd Watch、DeepSeek、Telegram Dry-run
+或受控 Real Send。显式执行 Provider Check 或候选发现时也只返回可选禁用
+状态，不发起网络请求，不修改或停止核心服务。
+
 ## 安全配置
 
 `.env.onchain` 支持：
@@ -83,6 +89,13 @@ python onchain_main.py labels-check
 `synthetic_fixture=0`。标签库就绪不代表查询窗口实际命中 CEX 地址：
 没有命中时应记录 `cex_direction_observed=false`。即使命中，入所也不等于
 已经卖出，提币不等于已经买入或必然上涨。
+
+CEX 标签来源不限于 Arkham，也可以是人工、Dune、BaseScan 或其他经过审核的
+来源。每一行都必须保留非空 `source`，只有人工核对地址、链、实体、角色、
+置信度和有效期后才可写入私有生产 CSV。标签不足时仍保留完整 Transfer 事实，
+`flow_type` 使用 `unclassified`，并报告 `insufficient_cex_coverage`，不得输出
+确定的交易所方向。Arkham 未配置和 CEX 覆盖不足都不是 Real Send 启动参数的
+硬门禁；发送内容仍受事实完整性、分类降级和既有 Telegram 双门禁约束。
 
 回滚只需恢复批准前的私有 CSV 备份；候选审计保留。该流程不会修改主
 `data/signals.db`、Chain Cursor、OAR Watch 状态、AI 或 Telegram 配置。

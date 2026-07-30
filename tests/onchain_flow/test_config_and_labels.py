@@ -247,6 +247,35 @@ class OnchainLabelTests(unittest.TestCase):
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             )
 
+    def test_reviewed_labels_preserve_multiple_audit_sources(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "labels.csv"
+            sources = (
+                "arkham_api_exact+manual_review",
+                "manual_review",
+                "dune+manual_review",
+                "basescan+manual_review",
+            )
+            rows = [
+                (
+                    f"8453,0x{index:040x},Exchange {index},cex,hot,"
+                    f"{source},0.95,,"
+                )
+                for index, source in enumerate(sources, start=1)
+            ]
+            path.write_text(
+                "chain_id,address,entity_name,entity_type,address_type,source,"
+                "confidence,valid_from,valid_to\n"
+                + "\n".join(rows)
+                + "\n",
+                encoding="utf-8",
+            )
+            labels = load_labels_csv(path)
+            self.assertEqual(
+                [label.source for label in labels],
+                list(sources),
+            )
+
     def test_duplicate_label_fails_closed(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "labels.csv"
