@@ -106,6 +106,17 @@ OAR 菜单复用现有 CLI：
 
 Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必须选择“设为 Primary”或“仅验证为 Secondary”；只有前者传递 `--set-primary`。Symbol 不一致时默认停止，显示链上 Symbol 与 Market Symbol，并且只有输入 `接受Symbol不一致` 后才传递 `--accept-symbol-mismatch`。菜单不会按 Symbol 猜合约，也不会自动验证 Pending Token；禁用 Registry 还要求输入 `禁用Registry`。
 
+### Watch 通知模式
+
+链上活动雷达菜单可原子切换：
+
+- Observe：只执行链上查询和分析，不创建通知或 AI 客户端；
+- Telegram Dry-run：输入 `启用链上DryRun` 后启用规则报告 dry-run；
+- Real：输入 `启用真实链上提醒`，且 Bot、Chat、Topic 和现有真实发送门禁完整时才保存；
+- 自动 AI：输入 `启用自动AI分析` 只设置 Watch 偏好，不会打开全局 `OAR_AI_ENABLE`。
+
+切回 Observe 会关闭真实发送、清空固定确认值并关闭 Watch 自动 AI。模式修改后仍需由操作者显式重启 OAR Watch 服务。
+
 ## Telegram
 
 普通菜单只提供脱敏配置、链上 Topic 设置、规则报告 dry-run 和 readiness。Dry-run 不带 `--send` 或 `--confirm-real-send`。
@@ -146,6 +157,9 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必�
 - 配置回滚：`回滚配置`
 - 数据库恢复：`恢复数据库`
 - 禁用 Registry：`禁用Registry`
+- Watch Dry-run：`启用链上DryRun`
+- Watch Real：`启用真实链上提醒`
+- Watch 自动 AI：`启用自动AI分析`
 
 短语不完全一致时操作取消。
 

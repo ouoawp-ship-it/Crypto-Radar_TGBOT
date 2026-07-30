@@ -44,6 +44,10 @@ ALLOWLIST = {
     "OAR_AI_REASONING_EFFORT": "onchain",
     "OAR_AI_MAX_TOKENS": "onchain",
     "OAR_AUTOMATION_ENABLE": "onchain",
+    "ONCHAIN_REAL_SEND": "onchain",
+    "OAR_WATCH_DELIVERY_MODE": "onchain",
+    "OAR_WATCH_WITH_AI": "onchain",
+    "OAR_WATCH_REAL_SEND_ACK": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -57,10 +61,13 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "ONCHAIN_BASE_HTTP_RPC_URL",
     "ONCHAIN_CEX_LABELS_FILE",
     "OAR_AI_BASE_URL",
+    "OAR_WATCH_REAL_SEND_ACK",
 }
 BOOLEAN_KEYS = {
     "OAR_AI_ENABLE",
     "OAR_AUTOMATION_ENABLE",
+    "ONCHAIN_REAL_SEND",
+    "OAR_WATCH_WITH_AI",
 }
 INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
@@ -74,6 +81,7 @@ DEEPSEEK_V4_PRO_PROFILE = {
     "OAR_AI_REASONING_EFFORT": "high",
     "OAR_AI_MAX_TOKENS": "8192",
 }
+OAR_REAL_SEND_ACK = "发送真实链上提醒"
 
 
 class ConfigManagerError(ValueError):
@@ -195,6 +203,53 @@ class ConfigManager:
                     "OAR_AI_MAX_TOKENS",
                     "OAR_AI_API_KEY",
                     "OAR_AI_ENABLE",
+                )
+            },
+            "validation": validation,
+        }
+
+    def watch_delivery(self, mode: str) -> dict[str, object]:
+        if mode == "observe":
+            values = {
+                "OAR_WATCH_DELIVERY_MODE": "observe",
+                "ONCHAIN_REAL_SEND": "false",
+                "OAR_WATCH_REAL_SEND_ACK": "",
+                "OAR_WATCH_WITH_AI": "false",
+            }
+        elif mode == "dry-run":
+            values = {
+                "OAR_WATCH_DELIVERY_MODE": "dry_run",
+                "ONCHAIN_REAL_SEND": "false",
+                "OAR_WATCH_REAL_SEND_ACK": "",
+            }
+        elif mode == "real":
+            values = {
+                "OAR_WATCH_DELIVERY_MODE": "real",
+                "ONCHAIN_REAL_SEND": "true",
+                "OAR_WATCH_REAL_SEND_ACK": OAR_REAL_SEND_ACK,
+            }
+        elif mode == "enable-ai":
+            values = {"OAR_WATCH_WITH_AI": "true"}
+        elif mode == "disable-ai":
+            values = {"OAR_WATCH_WITH_AI": "false"}
+        else:
+            raise ConfigManagerError("unknown OAR watch delivery action")
+        for key, value in values.items():
+            self._validate_value(key, value)
+        path = self.base_dir / ENV_FILES["onchain"]
+        backup, validation = self._write_values(path, values)
+        current = self.status()
+        return {
+            "status": "ok",
+            "action": mode,
+            "backup_created": backup is not None,
+            "configuration": {
+                key: current[key]
+                for key in (
+                    "OAR_WATCH_DELIVERY_MODE",
+                    "OAR_WATCH_WITH_AI",
+                    "ONCHAIN_REAL_SEND",
+                    "OAR_WATCH_REAL_SEND_ACK",
                 )
             },
             "validation": validation,
@@ -355,6 +410,19 @@ class ConfigManager:
             "max",
         }:
             raise ConfigManagerError("invalid OAR AI reasoning effort")
+        if key == "OAR_WATCH_DELIVERY_MODE" and value not in {
+            "observe",
+            "dry_run",
+            "real",
+        }:
+            raise ConfigManagerError("invalid OAR watch delivery mode")
+        if (
+            key == "OAR_WATCH_REAL_SEND_ACK"
+            and value not in {"", OAR_REAL_SEND_ACK}
+        ):
+            raise ConfigManagerError(
+                "OAR_WATCH_REAL_SEND_ACK must be empty or the fixed phrase"
+            )
         if key == "OAR_AI_MAX_TOKENS":
             try:
                 amount = int(value)
@@ -448,6 +516,48 @@ class ConfigManager:
         labels_status = self._validate_labels_path(
             values.get("ONCHAIN_CEX_LABELS_FILE", "").strip()
         )
+        delivery_mode = values.get(
+            "OAR_WATCH_DELIVERY_MODE",
+            "observe",
+        ).strip()
+        if delivery_mode not in {"observe", "dry_run", "real"}:
+            raise ConfigManagerError("invalid OAR watch delivery mode")
+        watch_with_ai = values.get(
+            "OAR_WATCH_WITH_AI",
+            "false",
+        ).strip().lower()
+        if watch_with_ai not in {"true", "false"}:
+            raise ConfigManagerError(
+                "OAR_WATCH_WITH_AI must be true or false"
+            )
+        real_send = values.get(
+            "ONCHAIN_REAL_SEND",
+            "false",
+        ).strip().lower()
+        if real_send not in {"true", "false"}:
+            raise ConfigManagerError(
+                "ONCHAIN_REAL_SEND must be true or false"
+            )
+        real_send_ack = values.get(
+            "OAR_WATCH_REAL_SEND_ACK",
+            "",
+        ).strip()
+        if real_send_ack not in {"", OAR_REAL_SEND_ACK}:
+            raise ConfigManagerError(
+                "OAR_WATCH_REAL_SEND_ACK must be empty or the fixed phrase"
+            )
+        if delivery_mode == "real" and not (
+            real_send == "true"
+            and real_send_ack == OAR_REAL_SEND_ACK
+            and token
+            and chat_id
+            and topic_id
+        ):
+            raise ConfigManagerError(
+                "real_send_gate_blocked: complete Telegram configuration, "
+                "ONCHAIN_REAL_SEND=true, and the fixed acknowledgement "
+                "are required"
+            )
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
@@ -459,6 +569,12 @@ class ConfigManager:
                 "configured" if topic_id else "not_configured"
             ),
             "cex_labels_file": labels_status,
+            "oar_watch_delivery_mode": delivery_mode,
+            "oar_watch_with_ai": watch_with_ai == "true",
+            "oar_watch_real_send": real_send == "true",
+            "oar_watch_real_send_ack": (
+                "configured" if real_send_ack else "not_configured"
+            ),
         }
 
     def _validate_labels_path(self, raw: str) -> str:
@@ -576,6 +692,11 @@ def build_parser() -> argparse.ArgumentParser:
     rollback.add_argument("--version", required=True)
     profile = subparsers.add_parser("profile")
     profile.add_argument("name", choices=("deepseek-v4-pro",))
+    watch_delivery = subparsers.add_parser("watch-delivery")
+    watch_delivery.add_argument(
+        "action",
+        choices=("observe", "dry-run", "real", "enable-ai", "disable-ai"),
+    )
     return parser
 
 
@@ -628,6 +749,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "profile":
             print(json.dumps(
                 manager.profile(args.name),
+                ensure_ascii=False,
+                sort_keys=True,
+            ))
+        elif args.command == "watch-delivery":
+            print(json.dumps(
+                manager.watch_delivery(args.action),
                 ensure_ascii=False,
                 sort_keys=True,
             ))

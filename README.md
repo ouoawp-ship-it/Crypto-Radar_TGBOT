@@ -140,3 +140,5 @@ DeepSeek V4 Pro Profile、分层业务提示词与安全 AI 诊断见
 [docs/OAR_DEEPSEEK_V4_PRO.md](docs/OAR_DEEPSEEK_V4_PRO.md)。
 FinalShell 的 `paopao` / `pp` 中文运维菜单见
 [docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。
+OAR Watch 的 Observe、Telegram Dry-run 与 Real 三种安全运行模式见
+[docs/OAR_P5D_WATCH_DELIVERY_MODE.md](docs/OAR_P5D_WATCH_DELIVERY_MODE.md)。

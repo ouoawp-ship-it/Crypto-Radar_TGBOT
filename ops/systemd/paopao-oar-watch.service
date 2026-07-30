@@ -7,14 +7,16 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/paopao-crypto-radar
+EnvironmentFile=-/home/ubuntu/paopao-crypto-radar/.env.oi
 EnvironmentFile=/home/ubuntu/paopao-crypto-radar/.env.onchain
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/home/ubuntu/paopao-crypto-radar/.venv/bin/python /home/ubuntu/paopao-crypto-radar/onchain_main.py watch-live --allow-network
+ExecStart=/home/ubuntu/paopao-crypto-radar/scripts/run_oar_watch.sh
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
 KillSignal=SIGINT
+SuccessExitStatus=130
 NoNewPrivileges=true
 PrivateTmp=true
 UMask=0077

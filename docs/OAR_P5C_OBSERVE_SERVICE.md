@@ -1,14 +1,16 @@
 # OAR-P5C Observe Service
 
-`paopao-oar-watch.service` runs the existing bounded `watch-live` command as
-an independent observe-only worker. It does not change the `paopao-radar` or
-`paopao-market-stream` services.
+`paopao-oar-watch.service` runs the existing bounded `watch-live` command
+through the guarded `scripts/run_oar_watch.sh` launcher. It does not change
+the `paopao-radar` or `paopao-market-stream` services.
 
 ## Safety defaults
 
-- The unit starts only `watch-live --allow-network`.
-- It never includes `--with-ai`, `--notify-dry-run`, `--send`, or
-  `--confirm-real-send`.
+- `OAR_WATCH_DELIVERY_MODE=observe` starts only
+  `watch-live --allow-network`.
+- The launcher adds notification, AI, or real-send flags only when their
+  independent configuration gates pass.
+- Unknown delivery modes and incomplete real-send configuration fail closed.
 - Runtime configuration comes from the private `.env.onchain` file.
 - Initial rollout must keep `OAR_AI_ENABLE=false` and
   `ONCHAIN_REAL_SEND=false`.
@@ -17,6 +19,8 @@ an independent observe-only worker. It does not change the `paopao-radar` or
   `watch-live` worker.
 - Installation copies the versioned unit and reloads systemd. It does not
   enable or start the service.
+- `SuccessExitStatus=130` treats the CLI's SIGINT shutdown result as a clean
+  operator stop; other non-zero exits still use `Restart=on-failure`.
 
 ## Installation
 
