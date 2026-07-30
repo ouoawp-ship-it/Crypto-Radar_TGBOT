@@ -15,7 +15,8 @@
 
 方向信号和 Telegram 市场数据确认统一以 Binance 原生公开行情为事实源：现货使用 Binance Spot，合约使用 Binance USDⓈ-M Futures。价格、OI、主动成交净额和费率只允许使用实时数据或已闭合窗口，推送会明确显示来源、窗口覆盖和计算口径。CoinGlass/Coinalyze 不再改写信号值或参与方向门控，只保留为可选的只读研究、诊断与故障排查工具。
 
-Arkham 不属于本阶段：它是链上实体事件层，后续作为独立模块开发，不与当前高频衍生品采集耦合。
+Arkham 不参与主信号、Transfer 事实或长期 Watch；它只在操作者显式授权时
+辅助生成 Base CEX 地址标签候选，且必须人工审核后才可进入私有标签库。
 
 ## 本地运行
 
@@ -142,3 +143,5 @@ FinalShell 的 `paopao` / `pp` 中文运维菜单见
 [docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。
 OAR Watch 的 Observe、Telegram Dry-run 与 Real 三种安全运行模式见
 [docs/OAR_P5D_WATCH_DELIVERY_MODE.md](docs/OAR_P5D_WATCH_DELIVERY_MODE.md)。
+Arkham 辅助、人工审核的 Base CEX 标签候选流程见
+[docs/OAR_P5D_ARKHAM_LABEL_REVIEW.md](docs/OAR_P5D_ARKHAM_LABEL_REVIEW.md)。

@@ -548,6 +548,8 @@ API、Token 与密钥
 8. 主 Provider 检查
 9. Base RPC Smoke（手工输入合约）
 10. 设置 Base RPC 最大区块范围（高级）
+11. 设置 Arkham API Key
+12. 设置 Arkham API Base URL（高级）
 0. 返回
 EOF
     IFS= read -r choice
@@ -562,6 +564,8 @@ EOF
       8) run_main provider-check; pause_menu ;;
       9) token_query token-activity; pause_menu ;;
       10) config_set ONCHAIN_RPC_MAX_BLOCK_RANGE; pause_menu ;;
+      11) config_set ARKHAM_API_KEY; pause_menu ;;
+      12) config_set ARKHAM_API_BASE_URL; pause_menu ;;
       0) return ;;
     esac
   done
@@ -626,6 +630,69 @@ EOF
   done
 }
 
+cex_label_candidate_menu() {
+  local choice contract candidate_id max_addresses
+  while true; do
+    menu_header
+    cat <<'EOF'
+CEX 标签候选（Arkham 仅作候选来源）
+1. Arkham 配置状态
+2. Arkham Provider Check
+3. 发现 Base CEX 候选
+4. 查看 Pending 候选
+5. 批准候选
+6. 拒绝候选
+7. Labels Check
+0. 返回
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1) run_config status; pause_menu ;;
+      2)
+        run_onchain label-candidates provider-check --allow-network || true
+        pause_menu
+        ;;
+      3)
+        printf '已审核 Base Token 合约：'
+        IFS= read -r contract
+        printf '最大候选地址数（1-100，建议 50）：'
+        IFS= read -r max_addresses
+        run_onchain label-candidates discover \
+          --chain base \
+          --contract "$contract" \
+          --window 4h \
+          --max-addresses "$max_addresses" \
+          --allow-network || true
+        pause_menu
+        ;;
+      4)
+        run_onchain label-candidates list \
+          --status pending --limit 100 || true
+        pause_menu
+        ;;
+      5)
+        printf 'Candidate ID：'
+        IFS= read -r candidate_id
+        if confirm_phrase "批准CEX标签"; then
+          run_onchain label-candidates approve \
+            --candidate-id "$candidate_id" || true
+        fi
+        pause_menu
+        ;;
+      6)
+        printf 'Candidate ID：'
+        IFS= read -r candidate_id
+        run_onchain label-candidates reject \
+          --candidate-id "$candidate_id" || true
+        pause_menu
+        ;;
+      7) run_onchain labels-check || true; pause_menu ;;
+      0) return ;;
+      *) printf '无效选项。\n' ;;
+    esac
+  done
+}
+
 oar_menu() {
   local choice token_key symbol contract
   while true; do
@@ -646,6 +713,7 @@ oar_menu() {
 12. Token Report
 13. Labels Check
 14. Watch 通知模式
+15. CEX 标签候选
 0. 返回
 EOF
     IFS= read -r choice
@@ -675,6 +743,7 @@ EOF
       12) token_query token-report; pause_menu ;;
       13) run_onchain labels-check; pause_menu ;;
       14) watch_delivery_menu ;;
+      15) cex_label_candidate_menu ;;
       0) return ;;
     esac
   done
