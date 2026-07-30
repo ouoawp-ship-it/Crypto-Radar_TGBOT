@@ -28,6 +28,12 @@ python scripts/paopao_config.py profile deepseek-v4-pro
 
 Profile 同时设置 60 秒生成超时和 0 次自动重试，避免 Thinking 请求沿用过短超时，也避免超时后发生第二次付费生成。Profile 不设置 API Key、不启用 AI，也不执行 `/models` 或生成请求。输出只显示脱敏后的 configured 状态和安全枚举。
 
+根据当前部署者要求，通过 FinalShell、`paopao` 或 `pp` 输入 AI Key、
+Base URL、模型和其他配置时，字符会在当前终端输入行原样显示。输入敏感
+值时应关闭共享屏幕和录屏，并确认周围无人查看。可见输入不会改变保存后
+的安全边界：状态、日志和报告仍保持脱敏，实际值不会进入命令参数、Git
+或完成报告。
+
 ## Thinking 与 Reasoning Effort
 
 `OAR_AI_THINKING_MODE=enabled` 时，请求包含：
@@ -76,6 +82,8 @@ python onchain_main.py ai-prompt rollback --version <版本或Hash前缀>
 ```
 
 保存使用文件锁、原子替换和有界历史。菜单中的恢复操作还要求完整中文确认短语。
+多行 Operator Prompt 通过 `$EDITOR`（默认 `vi`）可见编辑，用户可以在
+保存前检查完整正文。
 
 ## Prompt Hash 与 Cache
 

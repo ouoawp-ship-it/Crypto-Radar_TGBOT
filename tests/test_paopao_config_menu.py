@@ -15,6 +15,7 @@ from unittest.mock import patch
 from scripts.paopao_config import (
     ConfigManager,
     ConfigManagerError,
+    _read_value,
     build_parser,
     main,
 )
@@ -79,6 +80,18 @@ class ConfigManagerTests(unittest.TestCase):
             secret,
             (self.root / ".env.oi").read_text(encoding="utf-8"),
         )
+
+    def test_tty_value_uses_visible_input_and_redacts_saved_result(
+        self,
+    ) -> None:
+        secret = "fake-visible-ai-key"
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("builtins.input", return_value=secret) as visible:
+                self.assertEqual(_read_value("OAR_AI_API_KEY"), secret)
+        visible.assert_called_once_with("请输入 OAR_AI_API_KEY: ")
+        result = self.manager.set("OAR_AI_API_KEY", secret)
+        self.assertEqual(result["value"], "configured")
+        self.assertNotIn(secret, json.dumps(result, ensure_ascii=False))
 
     def test_secret_cannot_be_supplied_as_extra_argv(self) -> None:
         parser = build_parser()
@@ -590,16 +603,55 @@ class ChineseMenuTests(unittest.TestCase):
         ):
             self.assertIn(expected, text)
 
-    def test_menu_binds_topic_link_through_hidden_stdin(self) -> None:
+    def test_menu_binds_topic_link_through_visible_stdin(self) -> None:
         text = MENU.read_text(encoding="utf-8")
         self.assertIn("从消息链接绑定链上话题", text)
-        self.assertIn("IFS= read -r -s topic_link", text)
+        self.assertIn("IFS= read -r topic_link", text)
+        self.assertIn("输入内容将在当前 FinalShell 终端中明文显示", text)
+        self.assertNotIn("read -r -s topic_link", text)
         self.assertIn(
             "run_onchain telegram-topic-link bind --stdin",
             text,
         )
         self.assertNotIn("telegram-topic-link bind --url", text)
         self.assertIn("链上 Topic：configured", text)
+
+    def test_production_inputs_never_disable_terminal_echo(self) -> None:
+        config_text = (
+            ROOT / "scripts" / "paopao_config.py"
+        ).read_text(encoding="utf-8")
+        menu_text = MENU.read_text(encoding="utf-8")
+        production_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for directory in (ROOT / "scripts", ROOT / "paopao_radar")
+            for path in directory.rglob("*")
+            if path.is_file() and path.suffix in {".py", ".sh"}
+        )
+        self.assertNotIn("import getpass", config_text)
+        self.assertNotIn("getpass.getpass", production_text)
+        self.assertNotRegex(production_text, r"\bread\s+[^\n]*-s(?:\s|$)")
+        self.assertNotIn("stty -echo", production_text)
+        self.assertNotIn("termios", production_text)
+        self.assertIn("return input(prompt)", config_text)
+        self.assertIn("IFS= read -r topic_link", menu_text)
+
+    def test_all_sensitive_menu_fields_use_the_visible_config_reader(
+        self,
+    ) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        for key in (
+            "TG_BOT_TOKEN",
+            "TG_CHAT_ID",
+            "COINGLASS_API_KEY",
+            "COINALYZE_API_KEY",
+            "ONCHAIN_BASE_HTTP_RPC_URL",
+            "TG_ONCHAIN_FLOW_TOPIC_ID",
+            "OAR_AI_API_KEY",
+            "OAR_AI_BASE_URL",
+        ):
+            self.assertIn(f"config_set {key}", text)
+        self.assertNotIn("history -w", text)
+        self.assertNotIn("history -a", text)
 
     def test_menu_uses_config_manager_instead_of_sed(self) -> None:
         text = MENU.read_text(encoding="utf-8")
