@@ -97,6 +97,7 @@ segment_start <= log.blockNumber <= segment_end
 | `TOKEN_ACTIVITY_MAX_WINDOW_HOURS` | 24 | 24 |
 | `TOKEN_ACTIVITY_MAX_EVENTS` | 5000 | 5000 |
 | `TOKEN_ACTIVITY_MAX_RPC_REQUESTS` | 256 | 256 |
+| `TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS` | 128 | 256 |
 | `TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS` | 2000 | 2000 |
 | `TOKEN_ACTIVITY_TOP_N` | 50 | 100 |
 | `TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS` | 32 | 32 |
@@ -104,6 +105,15 @@ segment_start <= log.blockNumber <= segment_end
 CLI 可以在已配置上限内进一步降低 `max-events`、`max-rpc-requests` 和 `top`，
 不能提高上限。RPC 总预算包含 retry attempt、metadata、head、binary search、
 `eth_getLogs` 和 Block Header。
+
+Token Activity 的 adaptive `eth_getLogs` 拆分预算独立于 CEX Collector 的
+`ONCHAIN_RPC_ADAPTIVE_MAX_REQUESTS`。后者仍默认为 64；前者默认 128，且两者
+都不能绕过 Token 查询的 RPC 总预算。诊断中的 `rpc_phase_requests` 分别统计
+chain/metadata、range discovery、Transfer logs、Block Header 和 price 阶段，
+其总和等于 `rpc_request_count`。Adaptive 预算、深度、最小区块范围和 RPC
+总预算耗尽时分别返回 `adaptive_request_budget_exhausted`、
+`adaptive_depth_exhausted`、`provider_range_limit_at_minimum` 和
+`max_rpc_requests`。
 
 ## 完整性与退出码
 

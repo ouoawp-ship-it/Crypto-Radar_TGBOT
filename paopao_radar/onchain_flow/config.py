@@ -22,6 +22,7 @@ from .constants import (
     OAR_WATCH_MAX_TOKENS_PER_CYCLE_HARD,
     OAR_WALLET_SYNC_WINDOW_SEC_HARD,
     PRODUCTION_WRITE_PATHS,
+    TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS_HARD,
     TOKEN_ACTIVITY_BLOCK_SEARCH_MAX_CALLS_HARD,
     TOKEN_ACTIVITY_MAX_EVENTS_HARD,
     TOKEN_ACTIVITY_MAX_RPC_REQUESTS_HARD,
@@ -197,6 +198,7 @@ class OnchainSettings:
     token_activity_max_window_hours: int = 24
     token_activity_max_events: int = 5000
     token_activity_max_rpc_requests: int = 256
+    token_activity_adaptive_max_requests: int = 128
     token_activity_max_unique_block_headers: int = 2000
     token_activity_top_n: int = 50
     token_activity_block_search_max_calls: int = 32
@@ -509,6 +511,9 @@ class OnchainSettings:
             token_activity_max_rpc_requests=_int(
                 values, "TOKEN_ACTIVITY_MAX_RPC_REQUESTS", 256
             ),
+            token_activity_adaptive_max_requests=_int(
+                values, "TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS", 128
+            ),
             token_activity_max_unique_block_headers=_int(
                 values, "TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS", 2000
             ),
@@ -781,6 +786,7 @@ class OnchainSettings:
             "token_activity_max_window_hours",
             "token_activity_max_events",
             "token_activity_max_rpc_requests",
+            "token_activity_adaptive_max_requests",
             "token_activity_max_unique_block_headers",
             "token_activity_top_n",
             "token_activity_block_search_max_calls",
@@ -866,6 +872,11 @@ class OnchainSettings:
                 "TOKEN_ACTIVITY_MAX_RPC_REQUESTS",
                 self.token_activity_max_rpc_requests,
                 TOKEN_ACTIVITY_MAX_RPC_REQUESTS_HARD,
+            ),
+            (
+                "TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS",
+                self.token_activity_adaptive_max_requests,
+                TOKEN_ACTIVITY_ADAPTIVE_MAX_REQUESTS_HARD,
             ),
             (
                 "TOKEN_ACTIVITY_MAX_UNIQUE_BLOCK_HEADERS",
@@ -1312,6 +1323,9 @@ class OnchainSettings:
                 "max_window_hours": self.token_activity_max_window_hours,
                 "max_events": self.token_activity_max_events,
                 "max_rpc_requests": self.token_activity_max_rpc_requests,
+                "adaptive_max_requests": (
+                    self.token_activity_adaptive_max_requests
+                ),
                 "max_unique_block_headers": (
                     self.token_activity_max_unique_block_headers
                 ),
