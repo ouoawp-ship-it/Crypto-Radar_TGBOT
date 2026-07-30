@@ -67,6 +67,8 @@ class DeepSeekProfileTests(unittest.TestCase):
         self.assertEqual(settings.oar_ai_thinking_mode, "enabled")
         self.assertEqual(settings.oar_ai_reasoning_effort, "high")
         self.assertEqual(settings.oar_ai_max_tokens, 8192)
+        self.assertEqual(settings.oar_ai_timeout_sec, 60)
+        self.assertEqual(settings.oar_ai_max_retries, 0)
         settings.validate()
 
     def test_deepseek_v4_models_are_accepted(self) -> None:
@@ -133,6 +135,22 @@ class DeepSeekProfileTests(unittest.TestCase):
             with self.subTest(override=override):
                 with self.assertRaises(SettingsValidationError):
                     replace(OnchainSettings(), **override).validate()
+
+    def test_timeout_and_retry_ranges_are_bounded(self) -> None:
+        for override in (
+            {"oar_ai_timeout_sec": 4},
+            {"oar_ai_timeout_sec": 181},
+            {"oar_ai_max_retries": -1},
+            {"oar_ai_max_retries": 3},
+        ):
+            with self.subTest(override=override):
+                with self.assertRaises(SettingsValidationError):
+                    replace(OnchainSettings(), **override).validate()
+        replace(
+            OnchainSettings(),
+            oar_ai_timeout_sec=5,
+            oar_ai_max_retries=2,
+        ).validate()
 
     def test_request_control_contains_operator_hash_without_prompt_copy(self) -> None:
         body = build_ai_request_body(

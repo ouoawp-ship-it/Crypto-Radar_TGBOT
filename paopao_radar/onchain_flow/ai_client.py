@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,9 +211,145 @@ class OarAiClient(Protocol):
 
 
 class OarAiError(RuntimeError):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        http_status: int | None = None,
+        provider_error_type: str | int | None = None,
+        provider_error_code: str | int | None = None,
+        provider_error_param: str | int | None = None,
+        diagnostics: dict[str, object] | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.http_status = http_status
+        self.provider_error_type = provider_error_type
+        self.provider_error_code = provider_error_code
+        self.provider_error_param = provider_error_param
+        self.diagnostics = dict(diagnostics or {})
+
+    def public_details(self) -> dict[str, object]:
+        details: dict[str, object] = {}
+        for key in (
+            "http_status",
+            "provider_error_type",
+            "provider_error_code",
+            "provider_error_param",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                details[key] = value
+        if self.diagnostics:
+            details["diagnostics"] = dict(self.diagnostics)
+        return details
+
+
+_SAFE_PROVIDER_FIELD = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+_HTTP_ERROR_CODES = {
+    400: "ai_invalid_request",
+    402: "ai_insufficient_balance",
+    404: "ai_endpoint_not_found",
+    422: "ai_invalid_parameters",
+    429: "ai_rate_limited",
+}
+
+
+def _safe_provider_value(value: object) -> str | int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and _SAFE_PROVIDER_FIELD.fullmatch(value):
+        return value
+    return None
+
+
+def _safe_provider_error(
+    response: object,
+) -> dict[str, str | int | None]:
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return {}
+    result: dict[str, str | int | None] = {}
+    for source, target in (
+        ("type", "provider_error_type"),
+        ("code", "provider_error_code"),
+        ("param", "provider_error_param"),
+    ):
+        if source in error:
+            value = _safe_provider_value(error.get(source))
+            if value is not None or error.get(source) is None:
+                result[target] = value
+    return result
+
+
+def _request_body_chars(body: dict[str, object]) -> int:
+    return len(
+        json.dumps(
+            body,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
+def build_ai_request_diagnostics(
+    context: dict[str, object],
+    restricted_input: bool,
+    model: str,
+    *,
+    provider: str = "openai_compatible",
+    operator_prompt: str = "",
+    operator_prompt_hash: str = "",
+    thinking_mode: str = "disabled",
+    reasoning_effort: str = "high",
+    max_tokens: int = 8192,
+    timeout_sec: int = 60,
+) -> dict[str, object]:
+    body = build_ai_request_body(
+        context,
+        restricted_input,
+        model,
+        provider=provider,
+        operator_prompt=operator_prompt,
+        operator_prompt_hash=operator_prompt_hash,
+        thinking_mode=thinking_mode,
+        reasoning_effort=reasoning_effort,
+        max_tokens=max_tokens,
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "thinking_mode": thinking_mode,
+        "reasoning_effort": reasoning_effort,
+        "timeout_sec": int(timeout_sec),
+        "max_tokens": int(max_tokens),
+        "restricted_input": bool(restricted_input),
+        "operator_prompt_chars": len(operator_prompt),
+        "ai_context_chars": len(
+            json.dumps(
+                context,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
+        "request_body_chars": _request_body_chars(body),
+        "http_attempts": 0,
+        "http_status": None,
+        "finish_reason": None,
+    }
 
 
 def _string(value: object, *, limit: int) -> str:
@@ -316,6 +453,45 @@ class OpenAiCompatibleOarClient:
         self.operator_prompt_hash = operator_prompt_hash
         self.session = session or requests.Session()
         self.sleep = sleep
+        self.last_diagnostics: dict[str, object] = {}
+
+    def _diagnostics(
+        self,
+        context: dict[str, object],
+        *,
+        restricted_input: bool,
+    ) -> dict[str, object]:
+        return build_ai_request_diagnostics(
+            context,
+            restricted_input,
+            self.model,
+            provider=self.provider,
+            operator_prompt=self.operator_prompt,
+            operator_prompt_hash=self.operator_prompt_hash,
+            thinking_mode=self.thinking_mode,
+            reasoning_effort=self.reasoning_effort,
+            max_tokens=self.max_tokens,
+            timeout_sec=self.timeout_sec,
+        )
+
+    def _raise_http_error(
+        self,
+        response: object,
+        *,
+        status: int,
+        diagnostics: dict[str, object],
+    ) -> None:
+        code = _HTTP_ERROR_CODES.get(status)
+        if code is None:
+            code = "ai_provider" if 500 <= status < 600 else "ai_http_error"
+        safe_fields = _safe_provider_error(response)
+        raise OarAiError(
+            code,
+            "AI provider request failed",
+            http_status=status,
+            diagnostics=diagnostics,
+            **safe_fields,
+        )
 
     def analyze(
         self,
@@ -334,8 +510,15 @@ class OpenAiCompatibleOarClient:
             reasoning_effort=self.reasoning_effort,
             max_tokens=self.max_tokens,
         )
+        started = time.perf_counter()
+        diagnostics = self._diagnostics(
+            context,
+            restricted_input=restricted_input,
+        )
+        self.last_diagnostics = dict(diagnostics)
         response: Any | None = None
         for attempt in range(self.max_retries + 1):
+            diagnostics["http_attempts"] = attempt + 1
             try:
                 response = self.session.post(
                     f"{self.base_url}/chat/completions",
@@ -356,44 +539,119 @@ class OpenAiCompatibleOarClient:
                     if isinstance(exc, requests.Timeout)
                     else "ai_connection"
                 )
-                raise OarAiError(code, "AI provider request failed") from exc
+                diagnostics["latency_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                self.last_diagnostics = dict(diagnostics)
+                raise OarAiError(
+                    code,
+                    "AI provider request failed",
+                    diagnostics=diagnostics,
+                ) from exc
             status = int(response.status_code)
+            diagnostics["http_status"] = status
             if status in {401, 403}:
-                raise OarAiError("ai_auth_failed", "AI authentication failed")
+                diagnostics["latency_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                self.last_diagnostics = dict(diagnostics)
+                raise OarAiError(
+                    "ai_auth_failed",
+                    "AI authentication failed",
+                    http_status=status,
+                    diagnostics=diagnostics,
+                    **_safe_provider_error(response),
+                )
             if 300 <= status < 400:
+                diagnostics["latency_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                self.last_diagnostics = dict(diagnostics)
                 raise OarAiError(
                     "ai_redirect_rejected",
                     "AI provider redirects are not allowed",
+                    http_status=status,
+                    diagnostics=diagnostics,
                 )
             if status == 429 or 500 <= status < 600:
                 if attempt < self.max_retries:
                     self.sleep(min(2**attempt, 4))
                     continue
-                code = "ai_rate_limited" if status == 429 else "ai_provider"
-                raise OarAiError(code, "AI provider is temporarily unavailable")
+                diagnostics["latency_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                self.last_diagnostics = dict(diagnostics)
+                self._raise_http_error(
+                    response,
+                    status=status,
+                    diagnostics=diagnostics,
+                )
             if status < 200 or status >= 300:
-                raise OarAiError(
-                    "ai_provider",
-                    "AI provider returned an unsupported response",
+                diagnostics["latency_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                self.last_diagnostics = dict(diagnostics)
+                self._raise_http_error(
+                    response,
+                    status=status,
+                    diagnostics=diagnostics,
                 )
             break
         try:
             envelope = response.json()
-            content = envelope["choices"][0]["message"]["content"]
+            choice = envelope["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            diagnostics["finish_reason"] = (
+                finish_reason if isinstance(finish_reason, str) else None
+            )
+            message = choice["message"]
+            if "content" not in message:
+                raise KeyError("content")
+            content = message["content"]
         except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+            diagnostics["latency_ms"] = int(
+                (time.perf_counter() - started) * 1000
+            )
+            self.last_diagnostics = dict(diagnostics)
             raise OarAiError(
                 "invalid_ai_output",
                 "AI provider response is malformed",
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
             ) from exc
+        diagnostics["latency_ms"] = int(
+            (time.perf_counter() - started) * 1000
+        )
+        self.last_diagnostics = dict(diagnostics)
+        if diagnostics["finish_reason"] == "length":
+            raise OarAiError(
+                "ai_output_truncated",
+                "AI provider output reached its configured limit",
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
+            )
+        if content is None or (
+            isinstance(content, str) and not content.strip()
+        ):
+            raise OarAiError(
+                "ai_empty_content",
+                "AI provider returned empty content",
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
+            )
         if not isinstance(content, str) or len(content) > self.max_output_chars:
             raise OarAiError(
                 "invalid_ai_output",
                 "AI provider response exceeds the safe output size",
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
             )
         if content.strip().startswith("```"):
             raise OarAiError(
                 "invalid_ai_output",
                 "AI output must be raw JSON",
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
             )
         try:
             parsed = json.loads(content)
@@ -401,11 +659,21 @@ class OpenAiCompatibleOarClient:
             raise OarAiError(
                 "invalid_ai_output",
                 "AI output is not valid JSON",
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
             ) from exc
-        return validate_ai_output(
-            parsed,
-            restricted_input=restricted_input,
-        )
+        try:
+            return validate_ai_output(
+                parsed,
+                restricted_input=restricted_input,
+            )
+        except OarAiError as exc:
+            raise OarAiError(
+                exc.code,
+                str(exc),
+                http_status=diagnostics["http_status"],
+                diagnostics=diagnostics,
+            ) from exc
 
     def check_model(self) -> dict[str, object]:
         response: Any | None = None
@@ -432,22 +700,36 @@ class OpenAiCompatibleOarClient:
                 raise OarAiError(code, "AI provider request failed") from exc
             status = int(response.status_code)
             if status in {401, 403}:
-                raise OarAiError("ai_auth_failed", "AI authentication failed")
+                raise OarAiError(
+                    "ai_auth_failed",
+                    "AI authentication failed",
+                    http_status=status,
+                    **_safe_provider_error(response),
+                )
             if 300 <= status < 400:
                 raise OarAiError(
                     "ai_redirect_rejected",
                     "AI provider redirects are not allowed",
+                    http_status=status,
                 )
             if status == 429 or 500 <= status < 600:
                 if attempt < self.max_retries:
                     self.sleep(min(2**attempt, 4))
                     continue
-                code = "ai_rate_limited" if status == 429 else "ai_provider"
-                raise OarAiError(code, "AI provider is temporarily unavailable")
-            if status < 200 or status >= 300:
+                code = _HTTP_ERROR_CODES.get(status, "ai_provider")
                 raise OarAiError(
-                    "ai_provider",
-                    "AI provider returned an unsupported response",
+                    code,
+                    "AI provider request failed",
+                    http_status=status,
+                    **_safe_provider_error(response),
+                )
+            if status < 200 or status >= 300:
+                code = _HTTP_ERROR_CODES.get(status, "ai_http_error")
+                raise OarAiError(
+                    code,
+                    "AI provider request failed",
+                    http_status=status,
+                    **_safe_provider_error(response),
                 )
             break
         try:

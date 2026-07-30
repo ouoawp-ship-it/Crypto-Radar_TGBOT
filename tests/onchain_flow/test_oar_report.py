@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
+from paopao_radar.onchain_flow.ai_client import OarAiError
 from paopao_radar.onchain_flow.ai_context import build_ai_context
 from paopao_radar.onchain_flow.constants import OAR_AI_PROMPT_VERSION
 from paopao_radar.onchain_flow.report import TokenReportService
@@ -141,6 +142,22 @@ class FailingAi:
     def analyze(self, context: object, *, restricted_input: bool) -> object:
         del context, restricted_input
         raise RuntimeError("provider exploded with secret")
+
+
+class DiagnosticFailingAi:
+    def analyze(self, context: object, *, restricted_input: bool) -> object:
+        del context, restricted_input
+        raise OarAiError(
+            "ai_invalid_parameters",
+            "provider message must not be returned",
+            http_status=422,
+            provider_error_code="invalid_parameter",
+            provider_error_param="thinking",
+            diagnostics={
+                "request_body_chars": 4096,
+                "http_attempts": 1,
+            },
+        )
 
 
 class OarReportTests(unittest.TestCase):
@@ -338,6 +355,33 @@ class OarReportTests(unittest.TestCase):
             "configured-secret",
             json.dumps(result, ensure_ascii=False),
         )
+
+    def test_ai_failure_exposes_only_safe_provider_diagnostics(self) -> None:
+        settings = replace(
+            self.settings,
+            oar_ai_enable=True,
+            oar_ai_base_url="https://ai.invalid/v1",
+            oar_ai_api_key="configured-secret",
+            oar_ai_model="fixture-model",
+            oar_ai_cache_path=self.settings.data_dir / "ai.json",
+        )
+        result = TokenReportService(
+            settings,
+            TokenAnalysisService(
+                settings,
+                StaticActivity(fixture_case("isolated")),
+            ),
+            ai_client=DiagnosticFailingAi(),
+            ai_cache=MemoryCache(),
+        ).execute(self.query, with_ai=True)
+        ai = result["report"]["ai"]
+        self.assertEqual(ai["error"], "ai_invalid_parameters")
+        self.assertEqual(ai["http_status"], 422)
+        self.assertEqual(ai["provider_error_param"], "thinking")
+        self.assertEqual(ai["diagnostics"]["http_attempts"], 1)
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("provider message", serialized)
+        self.assertNotIn("configured-secret", serialized)
 
     def test_no_activity_does_not_invent_behavior(self) -> None:
         result = TokenReportService(

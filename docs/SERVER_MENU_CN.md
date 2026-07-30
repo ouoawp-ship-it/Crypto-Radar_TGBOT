@@ -81,11 +81,12 @@ Secret 不作为命令行参数。TTY 中使用无回显输入；非 TTY 只能�
 AI 菜单可以：
 
 - 查看脱敏配置并原子应用 DeepSeek V4 Pro 推荐 Profile
-- 设置 API Key、Base URL、Model、Thinking Mode、Reasoning Effort、Max Tokens
+- 设置 API Key、Base URL、Model、Thinking Mode、Reasoning Effort、Max Tokens、Timeout 和 Max Retries
 - 查看 Prompt 状态与 Hash
 - 显示、编辑、校验、恢复默认 Prompt
 - 查看历史并回滚
 - 执行 `ai-provider-check` 和合成 `ai-smoke`
+- 通过 `ai-request-check` 量化真实 Token Analysis 的 AI 请求规模而不调用 AI
 - 查看或只清理 AI 结果 Cache（小时调用预算保留）
 - 在 Provider Check 与 AI Smoke 之后显式 enable/disable
 

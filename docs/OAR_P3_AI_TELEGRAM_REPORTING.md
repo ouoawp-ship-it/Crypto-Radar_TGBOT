@@ -82,8 +82,8 @@ OAR_AI_THINKING_MODE=enabled
 OAR_AI_REASONING_EFFORT=high
 OAR_AI_MAX_TOKENS=8192
 OAR_AI_OPERATOR_PROMPT_FILE=data/onchain/config/oar_ai_operator_prompt.txt
-OAR_AI_TIMEOUT_SEC=20
-OAR_AI_MAX_RETRIES=1
+OAR_AI_TIMEOUT_SEC=60
+OAR_AI_MAX_RETRIES=0
 OAR_AI_MAX_CALLS_PER_HOUR=10
 OAR_AI_CACHE_TTL_SEC=3600
 OAR_AI_MAX_CONTEXT_CHARS=30000
@@ -92,7 +92,7 @@ OAR_AI_CACHE_FILE=oar_ai_cache.json
 OAR_REPLACE_RICH_AI_CARD_WITH_RULE_ONLY=false
 ```
 
-适配器使用 OpenAI-compatible `chat/completions`，有限超时和重试，拒绝 HTTP Redirect，并对 401/403、429、5xx、timeout 和连接失败分类。远程 Base URL 必须使用 HTTPS；HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1` 回环地址。URL 不允许包含用户名、密码、query 或 fragment。API Key 只进入 Authorization Header，不进入日志、JSON、异常或缓存。
+适配器使用 OpenAI-compatible `chat/completions`，有限超时和重试，拒绝 HTTP Redirect，并对 400、401/403、402、404、422、429、5xx、timeout 和连接失败精确分类。DeepSeek 推荐 Profile 使用 60 秒超时和 0 次自动重试；配置范围分别为 5～180 秒和 0～2 次。远程 Base URL 必须使用 HTTPS；HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1` 回环地址。URL 不允许包含用户名、密码、query 或 fragment。API Key 只进入 Authorization Header，不进入日志、JSON、异常或缓存。Provider `error.message` 和响应正文不会输出或持久化。
 
 当前 Core AI Prompt Version 为 `oar-ai-prompt-v3`。Provider 的 System Prompt 会实际携带完整输出契约，要求只返回一个 JSON Object，包含且仅包含：
 

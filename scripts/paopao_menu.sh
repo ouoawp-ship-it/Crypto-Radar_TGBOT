@@ -581,18 +581,20 @@ AI 模型与提示词
 6. 设置 Thinking Mode
 7. 设置 Reasoning Effort
 8. 设置 Max Tokens
-9. Prompt 状态
-10. 显示 Prompt
-11. 编辑 Prompt
-12. 校验 Prompt
-13. 恢复默认 Prompt
-14. Prompt 历史与回滚
-15. Provider Check
-16. AI Smoke
-17. AI Cache 状态
-18. 清理 AI 结果缓存
-19. 启用 AI
-20. 禁用 AI
+9. 设置 AI Timeout
+10. 设置 AI Max Retries
+11. Prompt 状态
+12. 显示 Prompt
+13. 编辑 Prompt
+14. 校验 Prompt
+15. 恢复默认 Prompt
+16. Prompt 历史与回滚
+17. Provider Check
+18. AI Smoke
+19. AI Cache 状态
+20. 清理 AI 结果缓存
+21. 启用 AI
+22. 禁用 AI
 0. 返回
 EOF
     IFS= read -r choice
@@ -605,18 +607,20 @@ EOF
       6) config_set OAR_AI_THINKING_MODE; pause_menu ;;
       7) config_set OAR_AI_REASONING_EFFORT; pause_menu ;;
       8) config_set OAR_AI_MAX_TOKENS; pause_menu ;;
-      9) run_onchain ai-prompt-check; pause_menu ;;
-      10) run_onchain ai-prompt show; pause_menu ;;
-      11) prompt_edit; pause_menu ;;
-      12) run_onchain ai-prompt validate; pause_menu ;;
-      13) confirm_phrase "恢复提示词" && run_onchain ai-prompt restore-default; pause_menu ;;
-      14) prompt_rollback; pause_menu ;;
-      15) run_onchain ai-provider-check --allow-network; pause_menu ;;
-      16) run_onchain ai-smoke --allow-network; pause_menu ;;
-      17) run_onchain ai-cache status; pause_menu ;;
-      18) clear_ai_cache; pause_menu ;;
-      19) run_config enable OAR_AI_ENABLE; pause_menu ;;
-      20) run_config disable OAR_AI_ENABLE; pause_menu ;;
+      9) config_set OAR_AI_TIMEOUT_SEC; pause_menu ;;
+      10) config_set OAR_AI_MAX_RETRIES; pause_menu ;;
+      11) run_onchain ai-prompt-check; pause_menu ;;
+      12) run_onchain ai-prompt show; pause_menu ;;
+      13) prompt_edit; pause_menu ;;
+      14) run_onchain ai-prompt validate; pause_menu ;;
+      15) confirm_phrase "恢复提示词" && run_onchain ai-prompt restore-default; pause_menu ;;
+      16) prompt_rollback; pause_menu ;;
+      17) run_onchain ai-provider-check --allow-network; pause_menu ;;
+      18) run_onchain ai-smoke --allow-network; pause_menu ;;
+      19) run_onchain ai-cache status; pause_menu ;;
+      20) clear_ai_cache; pause_menu ;;
+      21) run_config enable OAR_AI_ENABLE; pause_menu ;;
+      22) run_config disable OAR_AI_ENABLE; pause_menu ;;
       0) return ;;
     esac
   done

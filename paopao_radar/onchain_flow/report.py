@@ -52,7 +52,7 @@ def _canonical_hash(value: object) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _restricted_ai_input(payload: dict[str, object]) -> bool:
+def restricted_ai_input(payload: dict[str, object]) -> bool:
     analysis = _mapping(payload.get("analysis"))
     primary = _mapping(analysis.get("primary_behavior"))
     return (
@@ -320,7 +320,7 @@ class TokenReportService:
         rule_summary = build_rule_summary(payload)
         rule_text = build_rule_summary_text(rule_summary)
         analysis = _mapping(payload.get("analysis"))
-        restricted_for_ai = _restricted_ai_input(payload)
+        restricted_for_ai = restricted_ai_input(payload)
         ai = self._ai_result(
             context,
             requested=with_ai,
@@ -463,7 +463,7 @@ class TokenReportService:
                 restricted_input=restricted_input,
             )
         except OarAiError as exc:
-            return {
+            failure = {
                 "status": (
                     "invalid"
                     if exc.code == "invalid_ai_output"
@@ -473,6 +473,8 @@ class TokenReportService:
                 "result": None,
                 "error": exc.code,
             }
+            failure.update(exc.public_details())
+            return failure
         except Exception:
             return {
                 "status": "failed",
