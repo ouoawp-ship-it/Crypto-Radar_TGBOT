@@ -309,6 +309,7 @@ class SignalBridge:
             "watch_refreshed": 0,
             "capacity_rejected": 0,
             "ignored_onchain": 0,
+            "ignored_not_sent": 0,
             "checkpoint_before": {
                 "last_signal_ts": before[0],
                 "last_signal_id": before[1],
@@ -335,9 +336,9 @@ class SignalBridge:
                 )
                 resolution = self._resolve(signal)
             else:
-                if reason == "ignored_onchain":
-                    summary["ignored_onchain"] = (
-                        int(summary["ignored_onchain"]) + 1
+                if reason in {"ignored_onchain", "ignored_not_sent"}:
+                    summary[reason] = (
+                        int(summary[reason]) + 1
                     )
                     self.store.checkpoint_ignored_signal(
                         signal,
@@ -424,7 +425,15 @@ class SignalBridge:
         now: int | None = None,
         limit: int = 100,
     ) -> dict[str, object]:
-        rows = self.store.list_open_unresolved(limit=limit)
+        rows = self.store.list_open_unresolved(
+            reasons=(
+                "unresolved_contract",
+                "registry_not_verified",
+                "ambiguous_contract",
+                "ineligible_signal",
+            ),
+            limit=limit,
+        )
         return self._reconcile_rows(
             rows,
             expected_token_key=None,
@@ -474,8 +483,17 @@ class SignalBridge:
             if signal is None:
                 unresolved_remaining = True
                 continue
-            eligible, _ = self._eligibility(signal)
+            eligible, reason = self._eligibility(signal)
             if not eligible:
+                if reason == "ignored_not_sent" and self.store.resolve_unresolved(
+                    int(unresolved["id"]),
+                    status="expired",
+                    note="source_not_sent",
+                    now=now,
+                ):
+                    result["expired"] = int(result["expired"]) + 1
+                    result["database_writes"] = True
+                    continue
                 unresolved_remaining = True
                 continue
             module = str(signal.get("module") or "")
@@ -567,7 +585,10 @@ class SignalBridge:
         if (
             signal.get("status") != "sent"
             or int(signal.get("sent") or 0) != 1
-            or signal.get("ingest_mode") != "structured"
+        ):
+            return False, "ignored_not_sent"
+        if (
+            signal.get("ingest_mode") != "structured"
             or signal.get("quality_status") != "ready"
             or not str(signal.get("symbol") or "")
         ):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import os
@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from paopao_radar.config import Settings
 from paopao_radar.storage import JsonStore
@@ -305,8 +306,23 @@ class TelegramDryRunRedactionTests(unittest.TestCase):
             )
             gateway = TelegramGateway(settings, JsonStore(root))
             output = StringIO()
-            with redirect_stdout(output):
-                result = gateway.send(
+            errors = StringIO()
+            with (
+                redirect_stdout(output),
+                redirect_stderr(errors),
+                patch("paopao_radar.telegram.requests.post") as post_mock,
+                patch.object(
+                    gateway,
+                    "_ensure_topic_id_for_template",
+                ) as topic_mock,
+                patch.object(gateway, "_ensure_topic_intro") as intro_mock,
+                patch.object(
+                    gateway,
+                    "delete_messages_detailed",
+                ) as delete_mock,
+                patch.object(gateway, "_pin_message") as pin_mock,
+            ):
+                first = gateway.send(
                     "dry-run body",
                     "TG_TEST_MESSAGE",
                     "safe-dedup",
@@ -314,9 +330,25 @@ class TelegramDryRunRedactionTests(unittest.TestCase):
                     confirm_real_send=False,
                     reply_to_message_id=456789,
                 )
+                second = gateway.send(
+                    "dry-run body",
+                    "TG_TEST_MESSAGE",
+                    "safe-dedup",
+                    send=False,
+                    confirm_real_send=False,
+                    reply_to_message_id=456789,
+                )
+            history = JsonStore(root).load(
+                settings.tg_push_history_path,
+                [],
+            )
+            outbox_exists = settings.tg_outbox_path.exists()
 
         text = output.getvalue()
-        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(first.status, "dry_run")
+        self.assertEqual(second.status, "dry_run")
+        self.assertFalse(first.sent)
+        self.assertFalse(second.sent)
         self.assertIn("template_id: TG_TEST_MESSAGE", text)
         self.assertIn("dedup_key: safe-dedup", text)
         self.assertIn("topic_configured: true", text)
@@ -325,6 +357,19 @@ class TelegramDryRunRedactionTests(unittest.TestCase):
         self.assertNotIn("456789", text)
         self.assertNotIn("topic_id:", text)
         self.assertNotIn("reply_to_message_id:", text)
+        self.assertNotIn("123456:safe_TOKEN-1", text)
+        self.assertNotIn("-100123", text)
+        self.assertNotIn("api.telegram.org", text)
+        self.assertEqual(errors.getvalue(), "")
+        self.assertEqual(len(history), 2)
+        self.assertTrue(all(item["status"] == "dry_run" for item in history))
+        self.assertTrue(all(item["sent"] is False for item in history))
+        self.assertFalse(outbox_exists)
+        post_mock.assert_not_called()
+        topic_mock.assert_not_called()
+        intro_mock.assert_not_called()
+        delete_mock.assert_not_called()
+        pin_mock.assert_not_called()
 
 
 if __name__ == "__main__":
