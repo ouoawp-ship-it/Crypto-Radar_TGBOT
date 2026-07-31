@@ -55,6 +55,120 @@ restart_services() {
     "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" || true
 }
 
+main_bot_mode() {
+  run_config status --json 2>/dev/null | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin).get("MAIN_BOT_DELIVERY_MODE")
+except Exception:
+    value = None
+print(value if value in {"dry_run", "real"} else "dry_run")
+' 2>/dev/null || printf 'dry_run\n'
+}
+
+show_main_bot_delivery_status() {
+  local config_json
+  config_json="$(run_config status --json 2>/dev/null || printf '{}')"
+  printf '%s' "$config_json" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    value = {}
+mode = value.get("MAIN_BOT_DELIVERY_MODE")
+print("主 BOT 模式:", mode if mode in {"dry_run", "real"} else "dry_run")
+print("Real 发送:", bool(value.get("MAIN_BOT_REAL_SEND")))
+print(
+    "Real ACK:",
+    "configured"
+    if value.get("MAIN_BOT_REAL_SEND_ACK") == "configured"
+    else "not_configured",
+)
+print(
+    "Telegram Bot:",
+    "configured"
+    if value.get("TG_BOT_TOKEN") == "configured"
+    else "not_configured",
+)
+print(
+    "Telegram Chat:",
+    "configured"
+    if value.get("TG_CHAT_ID") == "configured"
+    else "not_configured",
+)
+' 2>/dev/null || true
+}
+
+restart_services_from_menu() {
+  local mode
+  mode="$(main_bot_mode)"
+  show_main_bot_delivery_status
+  if [ "$mode" = "real" ] &&
+    ! confirm_phrase "重启真实主BOT"; then
+    return 0
+  fi
+  restart_services
+}
+
+restart_main_bot_from_menu() {
+  local mode
+  mode="$(main_bot_mode)"
+  show_main_bot_delivery_status
+  if [ "$mode" = "real" ]; then
+    confirm_phrase "重启真实主BOT" || return 0
+  else
+    confirm_phrase "重启主BOT" || return 0
+  fi
+  if ! run_root systemctl restart "$SERVICE_NAME"; then
+    printf '主 BOT 重启失败，请检查 systemctl status。\n' >&2
+    return 0
+  fi
+  printf '主 BOT 状态：%s\n' "$(service_state "$SERVICE_NAME")"
+}
+
+main_bot_delivery_menu() {
+  local choice
+  while true; do
+    menu_header
+    cat <<'EOF'
+主 BOT 运行模式
+1. 安全 Dry-run
+2. Real 真实发送
+3. 查看当前脱敏状态
+4. 重启主 BOT
+5. 停止主 BOT
+0. 返回
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1)
+        if run_config main-bot-delivery dry-run; then
+          printf '主 BOT 已配置为安全 Dry-run；需要显式重启后生效。\n'
+        fi
+        pause_menu
+        ;;
+      2)
+        if confirm_phrase "启用真实主BOT提醒"; then
+          if run_config main-bot-delivery real; then
+            printf '主 BOT Real 配置已保存；不会自动启动或重启服务。\n'
+          fi
+        fi
+        pause_menu
+        ;;
+      3) show_main_bot_delivery_status; pause_menu ;;
+      4) restart_main_bot_from_menu; pause_menu ;;
+      5)
+        if confirm_phrase "停止主BOT"; then
+          run_root systemctl stop "$SERVICE_NAME" || \
+            printf '主 BOT 停止失败，请检查 systemctl status。\n' >&2
+        fi
+        pause_menu
+        ;;
+      0) return ;;
+    esac
+  done
+}
+
 show_version() {
   (cd "$APP_DIR" && {
     printf '版本: %s\n' "$(head -n 1 VERSION 2>/dev/null || printf unknown)"
@@ -481,6 +595,7 @@ service_menu() {
 6. 重启 OAR Watch
 7. 重复 Worker 检查
 8. 服务资源状态
+9. 主 BOT 运行模式
 0. 返回
 EOF
     IFS= read -r choice
@@ -488,7 +603,7 @@ EOF
       1) show_status; run_root systemctl status "$OAR_SERVICE_NAME" --no-pager || true; pause_menu ;;
       2)
         if confirm_phrase "重启主服务"; then
-          restart_services || printf '主服务重启失败，请检查 systemctl status。\n' >&2
+          restart_services_from_menu || printf '主服务重启失败，请检查 systemctl status。\n' >&2
         fi
         pause_menu
         ;;
@@ -504,6 +619,7 @@ EOF
       6) restart_oar_watch; pause_menu ;;
       7) show_oar_workers; pause_menu ;;
       8) run_root systemctl show "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "$OAR_SERVICE_NAME" -p MainPID,NRestarts,MemoryCurrent,CPUUsageNSec || true; pause_menu ;;
+      9) main_bot_delivery_menu ;;
       0) return ;;
     esac
   done

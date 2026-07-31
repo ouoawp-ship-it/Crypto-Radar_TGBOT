@@ -31,6 +31,9 @@ ALLOWLIST = {
     "TG_CHAT_ID": "oi",
     "COINGLASS_API_KEY": "oi",
     "COINALYZE_API_KEY": "oi",
+    "MAIN_BOT_DELIVERY_MODE": "oi",
+    "MAIN_BOT_REAL_SEND": "oi",
+    "MAIN_BOT_REAL_SEND_ACK": "oi",
     "ONCHAIN_BASE_HTTP_RPC_URL": "onchain",
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": "onchain",
     "ONCHAIN_CEX_LABELS_FILE": "onchain",
@@ -79,6 +82,7 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "ONCHAIN_CEX_LABELS_FILE",
     "OAR_AI_BASE_URL",
     "OAR_WATCH_REAL_SEND_ACK",
+    "MAIN_BOT_REAL_SEND_ACK",
     "ARKHAM_API_BASE_URL",
     "DUNE_API_BASE_URL",
 }
@@ -87,6 +91,7 @@ BOOLEAN_KEYS = {
     "OAR_AUTOMATION_ENABLE",
     "ONCHAIN_REAL_SEND",
     "OAR_WATCH_WITH_AI",
+    "MAIN_BOT_REAL_SEND",
 }
 INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
@@ -116,6 +121,7 @@ DEEPSEEK_V4_PRO_PROFILE = {
     "OAR_AI_MAX_RETRIES": "0",
 }
 OAR_REAL_SEND_ACK = "发送真实链上提醒"
+MAIN_BOT_REAL_SEND_ACK_PHRASE = "发送真实主BOT提醒"
 
 
 class ConfigManagerError(ValueError):
@@ -191,8 +197,15 @@ class ConfigManager:
                 values.update(_parse_env(path.read_text(
                     encoding="utf-8-sig"
                 )))
+        effective_defaults = {
+            "MAIN_BOT_DELIVERY_MODE": "dry_run",
+            "MAIN_BOT_REAL_SEND": "false",
+        }
         return {
-            key: _redacted(key, values.get(key, ""))
+            key: _redacted(
+                key,
+                values.get(key, effective_defaults.get(key, "")),
+            )
             for key in sorted(ALLOWLIST)
         }
 
@@ -286,6 +299,43 @@ class ConfigManager:
                     "OAR_WATCH_WITH_AI",
                     "ONCHAIN_REAL_SEND",
                     "OAR_WATCH_REAL_SEND_ACK",
+                )
+            },
+            "validation": validation,
+        }
+
+    def main_bot_delivery(self, mode: str) -> dict[str, object]:
+        if mode == "dry-run":
+            values = {
+                "MAIN_BOT_DELIVERY_MODE": "dry_run",
+                "MAIN_BOT_REAL_SEND": "false",
+                "MAIN_BOT_REAL_SEND_ACK": "",
+            }
+        elif mode == "real":
+            values = {
+                "MAIN_BOT_DELIVERY_MODE": "real",
+                "MAIN_BOT_REAL_SEND": "true",
+                "MAIN_BOT_REAL_SEND_ACK": MAIN_BOT_REAL_SEND_ACK_PHRASE,
+            }
+        else:
+            raise ConfigManagerError(
+                "unknown main BOT delivery action"
+            )
+        for key, value in values.items():
+            self._validate_value(key, value)
+        path = self.base_dir / ENV_FILES["oi"]
+        backup, validation = self._write_values(path, values)
+        current = self.status()
+        return {
+            "status": "ok",
+            "action": mode,
+            "backup_created": backup is not None,
+            "configuration": {
+                key: current[key]
+                for key in (
+                    "MAIN_BOT_DELIVERY_MODE",
+                    "MAIN_BOT_REAL_SEND",
+                    "MAIN_BOT_REAL_SEND_ACK",
                 )
             },
             "validation": validation,
@@ -464,12 +514,24 @@ class ConfigManager:
             "real",
         }:
             raise ConfigManagerError("invalid OAR watch delivery mode")
+        if key == "MAIN_BOT_DELIVERY_MODE" and value not in {
+            "dry_run",
+            "real",
+        }:
+            raise ConfigManagerError("invalid main BOT delivery mode")
         if (
             key == "OAR_WATCH_REAL_SEND_ACK"
             and value not in {"", OAR_REAL_SEND_ACK}
         ):
             raise ConfigManagerError(
                 "OAR_WATCH_REAL_SEND_ACK must be empty or the fixed phrase"
+            )
+        if (
+            key == "MAIN_BOT_REAL_SEND_ACK"
+            and value not in {"", MAIN_BOT_REAL_SEND_ACK_PHRASE}
+        ):
+            raise ConfigManagerError(
+                "MAIN_BOT_REAL_SEND_ACK must be empty or the fixed phrase"
             )
         if key == "OAR_AI_MAX_TOKENS":
             try:
@@ -683,6 +745,45 @@ class ConfigManager:
                 "ONCHAIN_REAL_SEND=true, and the fixed acknowledgement "
                 "are required"
             )
+        main_bot_mode = values.get(
+            "MAIN_BOT_DELIVERY_MODE",
+            "dry_run",
+        ).strip()
+        if main_bot_mode not in {"dry_run", "real"}:
+            raise ConfigManagerError("invalid main BOT delivery mode")
+        main_bot_real_send = values.get(
+            "MAIN_BOT_REAL_SEND",
+            "false",
+        ).strip().lower()
+        if main_bot_real_send not in {"true", "false"}:
+            raise ConfigManagerError(
+                "MAIN_BOT_REAL_SEND must be true or false"
+            )
+        main_bot_ack = values.get(
+            "MAIN_BOT_REAL_SEND_ACK",
+            "",
+        ).strip()
+        if main_bot_ack not in {"", MAIN_BOT_REAL_SEND_ACK_PHRASE}:
+            raise ConfigManagerError(
+                "MAIN_BOT_REAL_SEND_ACK must be empty or the fixed phrase"
+            )
+        if main_bot_mode == "real" and not (
+            main_bot_real_send == "true"
+            and main_bot_ack == MAIN_BOT_REAL_SEND_ACK_PHRASE
+            and token
+            and chat_id
+        ):
+            raise ConfigManagerError(
+                "main_bot_real_send_gate_blocked: complete Telegram "
+                "configuration, MAIN_BOT_REAL_SEND=true, and the fixed "
+                "acknowledgement are required"
+            )
+        if main_bot_mode == "dry_run" and (
+            main_bot_real_send != "false" or main_bot_ack
+        ):
+            raise ConfigManagerError(
+                "main_bot_dry_run_gate_inconsistent"
+            )
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
@@ -715,6 +816,11 @@ class ConfigManager:
             "oar_watch_real_send": real_send == "true",
             "oar_watch_real_send_ack": (
                 "configured" if real_send_ack else "not_configured"
+            ),
+            "main_bot_delivery_mode": main_bot_mode,
+            "main_bot_real_send": main_bot_real_send == "true",
+            "main_bot_real_send_ack": (
+                "configured" if main_bot_ack else "not_configured"
             ),
         }
 
@@ -834,6 +940,11 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         choices=("observe", "dry-run", "real", "enable-ai", "disable-ai"),
     )
+    main_bot_delivery = subparsers.add_parser("main-bot-delivery")
+    main_bot_delivery.add_argument(
+        "action",
+        choices=("dry-run", "real"),
+    )
     return parser
 
 
@@ -892,6 +1003,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "watch-delivery":
             print(json.dumps(
                 manager.watch_delivery(args.action),
+                ensure_ascii=False,
+                sort_keys=True,
+            ))
+        elif args.command == "main-bot-delivery":
+            print(json.dumps(
+                manager.main_bot_delivery(args.action),
                 ensure_ascii=False,
                 sort_keys=True,
             ))

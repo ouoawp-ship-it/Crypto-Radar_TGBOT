@@ -154,9 +154,28 @@ class BotOnlyDeploymentTests(unittest.TestCase):
     def test_server_scripts_install_only_bot_runtime_services(self) -> None:
         install = (ROOT / "scripts" / "install_server.sh").read_text(encoding="utf-8")
         update = (ROOT / "scripts" / "update_server.sh").read_text(encoding="utf-8")
+        main_installer = (
+            ROOT / "scripts" / "install_main_bot_service.sh"
+        ).read_text(encoding="utf-8")
+        main_runner = (
+            ROOT / "scripts" / "run_main_bot.sh"
+        ).read_text(encoding="utf-8")
         combined = install + "\n" + update
 
-        self.assertIn('"live --send --confirm-real-send"', combined)
+        self.assertIn("install_main_bot_service.sh", combined)
+        self.assertNotIn(
+            '"live --send --confirm-real-send"',
+            combined,
+        )
+        self.assertIn(
+            "ExecStart=${APP_DIR}/scripts/run_main_bot.sh",
+            main_installer,
+        )
+        self.assertIn('args+=("loop")', main_runner)
+        self.assertIn(
+            'args+=("live" "--send" "--confirm-real-send")',
+            main_runner,
+        )
         self.assertIn('"market-stream"', combined)
         self.assertIn("main.py ${command}", combined)
         self.assertIn("paopao-radar", combined)

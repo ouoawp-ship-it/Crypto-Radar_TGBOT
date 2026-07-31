@@ -405,10 +405,14 @@ class TelegramGateway:
             print("\n========== TELEGRAM DRY-RUN ==========")
             print(f"template_id: {template_id}")
             print(f"dedup_key: {dedup_key}")
-            if topic_id:
-                print(f"topic_id: {topic_id}")
-            if reply_to_message_id:
-                print(f"reply_to_message_id: {reply_to_message_id}")
+            print(
+                "topic_configured: "
+                f"{str(bool(topic_id)).lower()}"
+            )
+            print(
+                "reply_target_configured: "
+                f"{str(bool(reply_to_message_id)).lower()}"
+            )
             if photo is not None:
                 print(f"photo_bytes: {len(photo)}")
             print(text)
