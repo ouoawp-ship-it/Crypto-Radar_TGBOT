@@ -217,8 +217,8 @@ class OnchainSettings:
     dune_api_key: str = ""
     dune_api_timeout_sec: int = 15
     dune_api_max_retries: int = 1
-    dune_api_max_requests: int = 6
-    dune_api_poll_interval_sec: Decimal = Decimal("1")
+    dune_api_max_requests: int = 10
+    dune_api_poll_interval_sec: Decimal = Decimal("4")
     dune_api_execution_timeout_sec: int = 30
     dune_api_max_rows: int = 100
     oar_behavior_min_tx: int = 3
@@ -602,10 +602,10 @@ class OnchainSettings:
                 values, "DUNE_API_MAX_RETRIES", 1
             ),
             dune_api_max_requests=_int(
-                values, "DUNE_API_MAX_REQUESTS", 6
+                values, "DUNE_API_MAX_REQUESTS", 10
             ),
             dune_api_poll_interval_sec=_decimal(
-                values, "DUNE_API_POLL_INTERVAL_SEC", "1"
+                values, "DUNE_API_POLL_INTERVAL_SEC", "4"
             ),
             dune_api_execution_timeout_sec=_int(
                 values, "DUNE_API_EXECUTION_TIMEOUT_SEC", 30
@@ -1364,17 +1364,25 @@ class OnchainSettings:
             raise SettingsValidationError(
                 "DUNE_API_MAX_RETRIES must be in [0, 2]"
             )
-        if not 3 <= self.dune_api_max_requests <= 10:
+        if not 4 <= self.dune_api_max_requests <= 40:
             raise SettingsValidationError(
-                "DUNE_API_MAX_REQUESTS must be in [3, 10]"
+                "DUNE_API_MAX_REQUESTS must be in [4, 40]"
             )
-        if not Decimal("0.2") <= self.dune_api_poll_interval_sec <= Decimal("5"):
+        if not Decimal("0.2") <= self.dune_api_poll_interval_sec <= Decimal("10"):
             raise SettingsValidationError(
-                "DUNE_API_POLL_INTERVAL_SEC must be in [0.2, 5]"
+                "DUNE_API_POLL_INTERVAL_SEC must be in [0.2, 10]"
             )
         if not 5 <= self.dune_api_execution_timeout_sec <= 120:
             raise SettingsValidationError(
                 "DUNE_API_EXECUTION_TIMEOUT_SEC must be in [5, 120]"
+            )
+        if (
+            Decimal(self.dune_api_max_requests - 2)
+            * self.dune_api_poll_interval_sec
+            < Decimal(self.dune_api_execution_timeout_sec)
+        ):
+            raise SettingsValidationError(
+                "dune_poll_budget_inconsistent"
             )
         if not 1 <= self.dune_api_max_rows <= 500:
             raise SettingsValidationError(

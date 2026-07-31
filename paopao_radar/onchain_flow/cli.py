@@ -1135,6 +1135,13 @@ def main(
                     status=args.status,
                     limit=args.limit,
                 )
+                for item in items:
+                    if item.get("approval_block_reason") == (
+                        "more_specific_role_candidate_available"
+                    ):
+                        item["approval_message"] = (
+                            "存在更具体的地址角色候选，请审核具体角色候选。"
+                        )
                 print(json.dumps({
                     "status": "ok",
                     "candidates": items,

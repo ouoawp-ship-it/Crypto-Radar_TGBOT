@@ -107,13 +107,24 @@ Dune 自动同步把规范 EVM 地址写成 DuneSQL `VARBINARY` literal，并按
 `address, cex_name` 确定性排序。执行流程严格为 SQL execute、状态轮询、
 完成后单次读取结果，且固定使用 `performance=small`：
 
-- `DUNE_API_MAX_REQUESTS=6`，允许 3～10；
-- `DUNE_API_POLL_INTERVAL_SEC=1`，允许 0.2～5 秒；
+- `DUNE_API_MAX_REQUESTS=10`，允许 4～40；
+- `DUNE_API_POLL_INTERVAL_SEC=4`，允许 0.2～10 秒；
 - `DUNE_API_EXECUTION_TIMEOUT_SEC=30`，允许 5～120 秒。
+
+轮询配置还必须满足
+`(DUNE_API_MAX_REQUESTS - 2) × DUNE_API_POLL_INTERVAL_SEC >= DUNE_API_EXECUTION_TIMEOUT_SEC`；
+其中两次请求额度分别保留给执行请求和最终结果读取。
 
 Candidate ID 只依赖规范身份，不依赖 CSV 行号、文件路径、Dune execution
 ID 或返回顺序。多个来源佐证同一实体时记录来源数量，但不会自动批准。有效
 approved 标签作为身份锚点；一致候选只标记佐证，冲突候选 fail closed。
+
+候选列表同时显示 `address_role`、`preferred_address_role`、
+`approval_eligible`、`approval_block_reason`、`conflict_status`、
+`corroborated` 和 `evidence_source_count`。同一身份同时存在
+`cex_wallet` 与更具体角色时，只允许审核具体角色；通用候选会提示
+“存在更具体的地址角色候选，请审核具体角色候选。”。已批准
+`cex_wallet` 遇到具体角色时只标记角色细化候选，不会自动覆盖生产标签。
 
 CSV 逐行读取并在超过上限时立即拒绝；OLI 使用有界 Parquet batch。
 BaseScan 普通 Public Tag 不默认成为 CEX，只有显式 `entity_type=cex`、

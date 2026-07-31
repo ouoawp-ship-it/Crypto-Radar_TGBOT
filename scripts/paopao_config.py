@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
@@ -96,12 +97,12 @@ INTEGER_RANGES = {
     "OAR_LABEL_CANDIDATE_MAX_ADDRESSES": (1, 100),
     "DUNE_API_TIMEOUT_SEC": (1, 60),
     "DUNE_API_MAX_RETRIES": (0, 2),
-    "DUNE_API_MAX_REQUESTS": (3, 10),
+    "DUNE_API_MAX_REQUESTS": (4, 40),
     "DUNE_API_EXECUTION_TIMEOUT_SEC": (5, 120),
     "DUNE_API_MAX_ROWS": (1, 500),
 }
 DECIMAL_RANGES = {
-    "DUNE_API_POLL_INTERVAL_SEC": (0.2, 5.0),
+    "DUNE_API_POLL_INTERVAL_SEC": (0.2, 10.0),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -617,6 +618,29 @@ class ConfigManager:
             raise ConfigManagerError(
                 "DUNE_API_BASE_URL must be a credential-free HTTPS URL"
             )
+        try:
+            dune_max_requests = int(
+                values.get("DUNE_API_MAX_REQUESTS", "10")
+            )
+            dune_poll_interval = Decimal(
+                values.get("DUNE_API_POLL_INTERVAL_SEC", "4")
+            )
+            dune_execution_timeout = int(
+                values.get("DUNE_API_EXECUTION_TIMEOUT_SEC", "30")
+            )
+        except (InvalidOperation, ValueError) as exc:
+            raise ConfigManagerError(
+                "invalid Dune polling configuration"
+            ) from exc
+        if not dune_poll_interval.is_finite():
+            raise ConfigManagerError(
+                "invalid Dune polling configuration"
+            )
+        if (
+            Decimal(dune_max_requests - 2) * dune_poll_interval
+            < Decimal(dune_execution_timeout)
+        ):
+            raise ConfigManagerError("dune_poll_budget_inconsistent")
         delivery_mode = values.get(
             "OAR_WATCH_DELIVERY_MODE",
             "observe",

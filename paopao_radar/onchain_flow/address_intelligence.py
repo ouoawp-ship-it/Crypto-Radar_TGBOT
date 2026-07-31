@@ -240,6 +240,8 @@ def build_candidate(
         "corroborated": False,
         "corroborates_approved": False,
         "preferred_address_role": _bounded(address_role, 80).lower(),
+        "approval_eligible": False,
+        "approval_block_reason": "candidate_not_evaluated",
     }
     candidate["candidate_id"] = _candidate_id(candidate)
     return candidate
@@ -665,6 +667,10 @@ class AddressIntelligenceStore:
             "preferred_address_role",
             str(value.get("address_role") or ""),
         )
+        value.setdefault("approval_eligible", False)
+        value.setdefault(
+            "approval_block_reason", "candidate_not_evaluated"
+        )
         if (
             int(value["chain_id"]) != BASE_CHAIN_ID
             or normalize_evm_address(str(value["address"]))
@@ -692,6 +698,8 @@ class AddressIntelligenceStore:
                 item["status"] = "expired"
                 item["review_status"] = "expired"
                 item["conflict_status"] = "none"
+                item["approval_eligible"] = False
+                item["approval_block_reason"] = "candidate_expired"
 
     def _approved_anchors(
         self,
@@ -727,13 +735,21 @@ class AddressIntelligenceStore:
                 continue
             item.setdefault("evidence_source_count", 1)
             item.setdefault("corroborated", False)
-            item.setdefault("corroborates_approved", False)
+            item["corroborates_approved"] = False
+            if item.get("review_status") in {
+                "corroborates_approved",
+                "role_refinement_candidate",
+            }:
+                item["review_status"] = "unreviewed"
             item.setdefault(
                 "preferred_address_role",
                 str(item.get("address_role") or ""),
             )
+            item["approval_eligible"] = False
+            item["approval_block_reason"] = "candidate_not_eligible"
             if not str(item.get("entity_name") or ""):
                 item["conflict_status"] = "none"
+                item["approval_block_reason"] = "identity_required"
                 if item.get("status") == "conflicted":
                     item["status"] = "pending"
                 continue
@@ -745,36 +761,8 @@ class AddressIntelligenceStore:
                 for item in items:
                     item["status"] = "conflicted"
                     item["conflict_status"] = anchor_error
+                    item["approval_block_reason"] = anchor_error
                 continue
-            anchor = approved_anchors.get(key)
-            if anchor is not None:
-                anchor_name = _canonical_entity_name(
-                    getattr(anchor, "entity_name", "")
-                )
-                anchor_type = _canonical_entity_type(
-                    getattr(anchor, "entity_type", "")
-                )
-                for item in items:
-                    if (
-                        _canonical_entity_name(item.get("entity_name"))
-                        == anchor_name
-                        and _canonical_entity_type(item.get("entity_type"))
-                        == anchor_type
-                    ):
-                        item["status"] = "pending"
-                        item["conflict_status"] = "corroborates_approved"
-                        item["corroborates_approved"] = True
-                        item["review_status"] = "corroborates_approved"
-                    else:
-                        item["status"] = "conflicted"
-                        item["conflict_status"] = (
-                            "conflicted_with_approved"
-                        )
-                if any(
-                    item["conflict_status"] == "conflicted_with_approved"
-                    for item in items
-                ):
-                    continue
             identity_groups: dict[
                 tuple[str, str], list[dict[str, object]]
             ] = {}
@@ -787,6 +775,7 @@ class AddressIntelligenceStore:
                 for item in items:
                     item["conflict_status"] = "conflicted"
                     item["status"] = "conflicted"
+                    item["approval_block_reason"] = "identity_conflict"
                 continue
             identity_items = next(iter(identity_groups.values()))
             sources = {
@@ -814,12 +803,95 @@ class AddressIntelligenceStore:
                 item["evidence_source_count"] = len(sources)
                 item["corroborated"] = len(sources) > 1
                 item["preferred_address_role"] = preferred_role
-                if role_conflict:
+            if role_conflict:
+                for item in identity_items:
                     item["conflict_status"] = "conflicted"
                     item["status"] = "conflicted"
-                elif item.get("corroborates_approved") is not True:
-                    item["conflict_status"] = "none"
-                    item["status"] = "pending"
+                    item["approval_block_reason"] = "role_conflict"
+                continue
+            anchor = approved_anchors.get(key)
+            if anchor is not None:
+                anchor_name = _canonical_entity_name(
+                    getattr(anchor, "entity_name", "")
+                )
+                anchor_type = _canonical_entity_type(
+                    getattr(anchor, "entity_type", "")
+                )
+                anchor_role = _bounded(
+                    getattr(anchor, "address_type", ""), 80
+                ).lower()
+                for item in identity_items:
+                    if (
+                        _canonical_entity_name(item.get("entity_name"))
+                        != anchor_name
+                        or _canonical_entity_type(item.get("entity_type"))
+                        != anchor_type
+                    ):
+                        item["status"] = "conflicted"
+                        item["conflict_status"] = (
+                            "conflicted_with_approved"
+                        )
+                        item["approval_block_reason"] = (
+                            "approved_identity_conflict"
+                        )
+                        continue
+                    candidate_role = str(
+                        item.get("address_role") or ""
+                    )
+                    if frozenset(
+                        (anchor_role, candidate_role)
+                    ) in ROLE_CONFLICTS:
+                        item["status"] = "conflicted"
+                        item["conflict_status"] = (
+                            "conflicted_with_approved_role"
+                        )
+                        item["approval_block_reason"] = (
+                            "approved_role_conflict"
+                        )
+                    elif (
+                        candidate_role == anchor_role
+                        or (
+                            anchor_role not in GENERIC_ROLES
+                            and candidate_role in GENERIC_ROLES
+                        )
+                    ):
+                        item["status"] = "pending"
+                        item["conflict_status"] = (
+                            "corroborates_approved"
+                        )
+                        item["corroborates_approved"] = True
+                        item["review_status"] = (
+                            "corroborates_approved"
+                        )
+                        item["approval_block_reason"] = (
+                            "approved_label_already_covers_role"
+                        )
+                    else:
+                        item["status"] = "pending"
+                        item["conflict_status"] = (
+                            "role_refinement_candidate"
+                        )
+                        item["review_status"] = (
+                            "role_refinement_candidate"
+                        )
+                        item["approval_block_reason"] = (
+                            "approved_role_refinement_requires_revoke"
+                        )
+                continue
+            for item in identity_items:
+                item["conflict_status"] = "none"
+                item["status"] = "pending"
+                if (
+                    specific_roles
+                    and str(item.get("address_role") or "")
+                    in GENERIC_ROLES
+                ):
+                    item["approval_block_reason"] = (
+                        "more_specific_role_candidate_available"
+                    )
+                else:
+                    item["approval_eligible"] = True
+                    item["approval_block_reason"] = ""
 
     def expire(self, *, now: int | None = None) -> int:
         if not self.path.exists():
@@ -952,11 +1024,24 @@ class AddressIntelligenceStore:
         self._prepare()
         with _file_lock(self.path):
             data = self._read_unlocked()
+            values = [
+                item
+                for item in data["candidates"]
+                if isinstance(item, dict)
+            ]
+            anchors, anchor_error = self._approved_anchors(timestamp)
+            self._mark_conflicts(
+                values,
+                approved_anchors=anchors,
+                anchor_error=anchor_error,
+            )
+            if anchor_error is not None:
+                raise AddressIntelligenceError(anchor_error)
             selected = next(
                 (
-                    item for item in data["candidates"]
-                    if isinstance(item, dict)
-                    and item.get("candidate_id") == candidate_id
+                    item
+                    for item in values
+                    if item.get("candidate_id") == candidate_id
                 ),
                 None,
             )
@@ -970,6 +1055,8 @@ class AddressIntelligenceStore:
                 selected["status"] = "expired"
                 selected["review_status"] = "expired"
                 selected["conflict_status"] = "none"
+                selected["approval_eligible"] = False
+                selected["approval_block_reason"] = "candidate_expired"
                 selected["reviewed_at"] = timestamp
                 selected["review_note"] = "expired_before_approval"
                 _write_json_unlocked(self.path, data)
@@ -987,6 +1074,10 @@ class AddressIntelligenceStore:
             if selected.get("provider") == "behavior_inference":
                 raise AddressIntelligenceError(
                     "behavior_candidate_not_production_identity"
+                )
+            if selected.get("approval_eligible") is not True:
+                raise AddressIntelligenceError(
+                    "label_candidate_not_preferred_role"
                 )
             entity_name = _bounded(selected.get("entity_name"))
             entity_type = _bounded(
@@ -1519,8 +1610,8 @@ class DuneAddressProvider:
         base_url: str = "https://api.dune.com/api",
         timeout_sec: int = 15,
         max_retries: int = 1,
-        max_requests: int = 6,
-        poll_interval_sec: float = 1.0,
+        max_requests: int = 10,
+        poll_interval_sec: float = 4.0,
         execution_timeout_sec: int = 30,
         max_rows: int = 100,
         session: Any | None = None,
@@ -1538,11 +1629,11 @@ class DuneAddressProvider:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = int(timeout_sec)
         self.max_retries = max(0, min(int(max_retries), 2))
-        if not 3 <= int(max_requests) <= 10:
+        if not 4 <= int(max_requests) <= 40:
             raise AddressIntelligenceError(
                 "dune_max_requests_invalid"
             )
-        if not 0.2 <= float(poll_interval_sec) <= 5:
+        if not 0.2 <= float(poll_interval_sec) <= 10:
             raise AddressIntelligenceError(
                 "dune_poll_interval_invalid"
             )
@@ -1553,6 +1644,13 @@ class DuneAddressProvider:
         self.max_requests = int(max_requests)
         self.poll_interval_sec = float(poll_interval_sec)
         self.execution_timeout_sec = int(execution_timeout_sec)
+        if (
+            (self.max_requests - 2) * self.poll_interval_sec
+            < self.execution_timeout_sec
+        ):
+            raise AddressIntelligenceError(
+                "dune_poll_budget_inconsistent"
+            )
         self.max_rows = max(1, min(int(max_rows), 500))
         self.session = session or requests.Session()
         self.clock = clock
@@ -1685,6 +1783,16 @@ class DuneAddressProvider:
             raise AddressIntelligenceError("dune_invalid_response")
         deadline = self.monotonic() + self.execution_timeout_sec
         while True:
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                raise AddressIntelligenceError(
+                    "dune_execution_timeout"
+                )
+            if self.request_count >= self.max_requests - 1:
+                raise AddressIntelligenceError(
+                    "dune_request_budget_exhausted"
+                )
+            self.sleeper(min(self.poll_interval_sec, remaining))
             if self.monotonic() >= deadline:
                 raise AddressIntelligenceError(
                     "dune_execution_timeout"
@@ -1692,6 +1800,7 @@ class DuneAddressProvider:
             status_response = self._request(
                 "GET",
                 f"/v1/execution/{execution_id}/status",
+                _reserve_requests=1,
             )
             state = self._execution_state(
                 self._json(status_response)
@@ -1723,12 +1832,6 @@ class DuneAddressProvider:
                 raise AddressIntelligenceError(
                     "dune_invalid_response"
                 )
-            remaining = deadline - self.monotonic()
-            if remaining <= 0:
-                raise AddressIntelligenceError(
-                    "dune_execution_timeout"
-                )
-            self.sleeper(min(self.poll_interval_sec, remaining))
 
     @staticmethod
     def _execution_state(payload: dict[str, object]) -> str:
@@ -1740,9 +1843,13 @@ class DuneAddressProvider:
         return state
 
     def _request(self, method: str, path: str, **kwargs: object) -> Any:
+        reserve_requests = int(kwargs.pop("_reserve_requests", 0))
         last_code = "dune_connection_failed"
         for attempt in range(self.max_retries + 1):
-            if self.request_count >= self.max_requests:
+            if (
+                self.request_count
+                >= self.max_requests - reserve_requests
+            ):
                 raise AddressIntelligenceError(
                     "dune_request_budget_exhausted"
                 )
