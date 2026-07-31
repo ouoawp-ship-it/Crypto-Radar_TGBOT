@@ -106,7 +106,13 @@ retire_legacy_services() {
 install_runtime_services() {
   command -v systemctl >/dev/null 2>&1 || return 0
   local service_user="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
-  write_service "$SERVICE_NAME" "Paopao Telegram Signal Radar" "live --send --confirm-real-send" "$RADAR_MEMORY_HIGH" "$RADAR_MEMORY_MAX"
+  PAOPAO_APP_DIR="$APP_DIR" \
+    MAIN_BOT_SERVICE_NAME="$SERVICE_NAME" \
+    SERVICE_USER="$service_user" \
+    RADAR_MEMORY_HIGH="$RADAR_MEMORY_HIGH" \
+    RADAR_MEMORY_MAX="$RADAR_MEMORY_MAX" \
+    START_MAIN_BOT=0 \
+    bash "${APP_DIR}/scripts/install_main_bot_service.sh"
   write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
   run_root tee "/etc/systemd/system/${HEALTH_SERVICE_NAME}.service" >/dev/null <<EOF
 [Unit]

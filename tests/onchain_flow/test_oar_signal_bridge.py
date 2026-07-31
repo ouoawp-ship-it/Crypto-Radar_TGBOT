@@ -521,7 +521,7 @@ class SignalBridgeTests(unittest.TestCase):
         self.assertIsNone(self.store.get_watch(registry[0]["token_key"]))
 
     def test_ineligible_and_onchain_signals_never_create_watch(self) -> None:
-        self.verified()
+        key = self.verified()
         create_signal_db(self.signal_db)
         insert_signal(
             self.signal_db,
@@ -530,6 +530,9 @@ class SignalBridgeTests(unittest.TestCase):
             ts=4500,
             status="dry_run",
             sent=0,
+            payload={
+                "facts": {"chain": "base", "contract": CONTRACT_A}
+            },
         )
         insert_signal(
             self.signal_db,
@@ -543,13 +546,60 @@ class SignalBridgeTests(unittest.TestCase):
         ).run_once()
         self.assertEqual(result["eligible_signals"], 0)
         self.assertEqual(result["ignored_onchain"], 1)
+        self.assertEqual(result["ignored_not_sent"], 1)
+        self.assertEqual(result["unresolved"], 0)
         self.assertEqual(self.store.list_watch_items() or [], [])
+        self.assertEqual(
+            self.store.active_sources(key, now=5000),
+            [],
+        )
         with closing(sqlite3.connect(self.store.path)) as conn:
             unresolved = conn.execute(
                 "SELECT source_public_ref FROM unresolved_signals "
                 "ORDER BY source_public_ref"
             ).fetchall()
-        self.assertEqual([row[0] for row in unresolved], ["dry:1"])
+        self.assertEqual(unresolved, [])
+
+    def test_reconciliation_expires_legacy_dry_run_unresolved(self) -> None:
+        signal = {
+            "id": 1,
+            "public_ref": "legacy-dry:1",
+            "ts": 4500,
+            "module": "launch",
+            "symbol": "AAAUSDT",
+            "status": "dry_run",
+            "sent": 0,
+            "ingest_mode": "structured",
+            "quality_status": "ready",
+            "payload_hash": "legacy",
+        }
+        self.store.process_bridge_signal(
+            signal,
+            resolution={"status": "ineligible_signal", "token": None},
+            source_ttl_sec=3600,
+            source_priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            max_active_tokens=50,
+            now=4501,
+        )
+        create_signal_db(self.signal_db)
+        insert_signal(
+            self.signal_db,
+            signal_id=1,
+            public_ref="legacy-dry:1",
+            ts=4500,
+            status="dry_run",
+            sent=0,
+        )
+
+        result = SignalBridge(
+            self.settings, self.store, clock=lambda: 5000
+        ).reconcile_open()
+
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(result["remaining_open"], 0)
+        self.assertEqual(self.store.open_unresolved_count(), 0)
 
     def test_text_fallback_and_degraded_are_not_consumed(self) -> None:
         self.verified()

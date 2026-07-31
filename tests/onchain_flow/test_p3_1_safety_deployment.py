@@ -256,7 +256,9 @@ class P31DeploymentTests(unittest.TestCase):
         self.assertNotIn("paopao-radar.service", script)
         self.assertNotIn("paopao-market-stream.service", script)
 
-    def test_production_entrypoints_and_update_script_are_unchanged(self) -> None:
+    def test_onchain_work_keeps_main_entrypoints_and_update_isolation(
+        self,
+    ) -> None:
         result = subprocess.run(
             [
                 "git",
@@ -266,7 +268,6 @@ class P31DeploymentTests(unittest.TestCase):
                 "--",
                 "main.py",
                 "paopao_radar/cli.py",
-                "scripts/update_server.sh",
             ],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -274,6 +275,13 @@ class P31DeploymentTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        update_script = (
+            REPO_ROOT / "scripts" / "update_server.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("install_main_bot_service.sh", update_script)
+        self.assertNotIn("install_onchain_flow.sh", update_script)
+        self.assertNotIn("install_oar_watch.sh", update_script)
+        self.assertNotIn("onchain_main.py", update_script)
 
 
 if __name__ == "__main__":

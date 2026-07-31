@@ -102,8 +102,26 @@ python main.py flow-radar
 python main.py funding-alert
 python main.py signal-effectiveness
 python main.py market-stream
+python main.py loop
 python main.py live --send --confirm-real-send
 ```
+
+主 BOT 的 systemd 服务默认使用安全 Dry-run：
+
+```text
+main.py loop
+```
+
+只有显式切换为 Real 且固定确认、Telegram 配置及现有 readiness
+全部通过时，包装器才会启动：
+
+```text
+main.py live --send --confirm-real-send
+```
+
+相关配置、中文菜单和回滚方式见
+[docs/INSTALL_CN.md](docs/INSTALL_CN.md) 与
+[docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。
 
 ## 测试
 
@@ -122,7 +140,7 @@ bash scripts/update_server.sh --yes
 
 生产环境仅保留：
 
-- `paopao-radar.service`：扫描、评分与 Telegram 推送。
+- `paopao-radar.service`：扫描、评分与 Telegram Dry-run/Real 安全运行。
 - `paopao-market-stream.service`：实时成交和清算采集。
 - `paopao-health.timer`：定时执行 BOT、数据库、行情新鲜度和信号结果追踪健康检查。
 - `paopao-backup.timer`：每天创建活动 SQLite 数据库的一致性备份，并实际恢复到内存验证可用性。

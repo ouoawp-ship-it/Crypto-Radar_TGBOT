@@ -107,6 +107,42 @@ OAR 菜单复用现有 CLI：
 
 Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必须选择“设为 Primary”或“仅验证为 Secondary”；只有前者传递 `--set-primary`。Symbol 不一致时默认停止，显示链上 Symbol 与 Market Symbol，并且只有输入 `接受Symbol不一致` 后才传递 `--accept-symbol-mismatch`。菜单不会按 Symbol 猜合约，也不会自动验证 Pending Token；禁用 Registry 还要求输入 `禁用Registry`。
 
+## 主 BOT 运行模式
+
+“服务管理 → 主 BOT 运行模式”提供：
+
+1. 安全 Dry-run；
+2. Real 真实发送；
+3. 查看当前脱敏状态；
+4. 重启主 BOT；
+5. 停止主 BOT。
+
+Dry-run Profile 会在同一次文件锁和原子写入内设置：
+
+```dotenv
+MAIN_BOT_DELIVERY_MODE=dry_run
+MAIN_BOT_REAL_SEND=false
+MAIN_BOT_REAL_SEND_ACK=
+```
+
+它不会自动重启服务。重启后 systemd 包装器严格执行 `main.py loop`，
+不带 `--send` 或 `--confirm-real-send`，因此 Telegram HTTP 保持为 0。
+
+Real Profile 必须先输入 `启用真实主BOT提醒`，且 Bot Token 和 Chat ID
+均已配置；保存后仍不会自动启动或重启。Real 模式重启时还必须输入
+`重启真实主BOT`。包装器只有在 Mode、真实发送开关和固定 ACK 全部一致
+时才执行 `main.py live --send --confirm-real-send`，随后仍由 `live` 的
+现有 readiness 和双发送门禁决定是否运行。
+
+未知模式或不完整 Real Gate 会返回固定安全错误并以退出码 2 停止；
+systemd 不会因此反复重启。SIGINT 退出码 130 视为正常停止，真实运行异常
+仍可由 `Restart=on-failure` 恢复。
+
+主 BOT Dry-run 日志只显示 `topic_configured` 和
+`reply_target_configured` 布尔值，不显示 Topic ID、Reply Message ID、
+Chat ID、Bot Token 或 Telegram API URL。本地私有历史的既有 Schema
+保持不变。
+
 ### Watch 通知模式
 
 链上活动雷达菜单可原子切换：
@@ -167,6 +203,8 @@ Registry 验证和 Token 查询仍要求显式 `--allow-network`。验证时必�
 
 - 停止主 BOT：`停止主BOT`
 - 重启主服务：`重启主服务`
+- 启用主 BOT Real：`启用真实主BOT提醒`
+- 重启 Real 主 BOT：`重启真实主BOT`
 - 安全更新：`执行安全更新`
 - 真实 Telegram 测试：`发送真实测试`
 - 清理 AI 结果 Cache：`清理AI缓存`

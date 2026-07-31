@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -43,9 +44,16 @@ class PaopaoMenuPtyTests(unittest.TestCase):
             fake_python.write_text(
                 "#!/usr/bin/env bash\n"
                 f"printf 'python %s\\n' \"$*\" >>'{calls}'\n"
+                "if [ \"${1:-}\" = '-c' ]; then\n"
+                "  exec \"$PAOPAO_REAL_PYTHON\" \"$@\"\n"
+                "fi\n"
                 "case \"$*\" in\n"
                 "  *'scripts/paopao_config.py status --json'*)\n"
-                "    printf '{}\\n'\n"
+                "    if [ -n \"${FAKE_CONFIG_STATUS_JSON:-}\" ]; then\n"
+                "      printf '%s\\n' \"$FAKE_CONFIG_STATUS_JSON\"\n"
+                "    else\n"
+                "      printf '{}\\n'\n"
+                "    fi\n"
                 "    ;;\n"
                 "  *'scripts/paopao_config.py set '*)\n"
                 "    key=\"${*: -1}\"\n"
@@ -129,6 +137,7 @@ class PaopaoMenuPtyTests(unittest.TestCase):
                 "LC_ALL": "C.UTF-8",
                 "PAOPAO_APP_DIR": str(ROOT),
                 "PAOPAO_PYTHON_BIN": sys.executable,
+                "PAOPAO_REAL_PYTHON": sys.executable,
                 "PAOPAO_MENU_NO_CLEAR": "1",
                 "PAOPAO_UPDATE_SCRIPT": str(update),
                 **(extra_env or {}),
@@ -272,6 +281,59 @@ class PaopaoMenuPtyTests(unittest.TestCase):
             if line.startswith("systemctl restart ")
         ]
         self.assertEqual(len(restarts), 1)
+
+    def test_main_bot_dry_run_profile_does_not_restart_service(self) -> None:
+        code, output, calls = self._run_menu(
+            "2\n9\n1\n\n0\n0\n0\n",
+            extra_env={"PAOPAO_TEST_FAKE_PYTHON": "1"},
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(
+            len([
+                line for line in calls
+                if "main-bot-delivery dry-run" in line
+            ]),
+            1,
+        )
+        self.assertFalse([
+            line for line in calls
+            if line.startswith("systemctl restart ")
+        ])
+
+    def test_real_main_restart_requires_real_mode_phrase(self) -> None:
+        real_status = json.dumps({
+            "MAIN_BOT_DELIVERY_MODE": "real",
+            "MAIN_BOT_REAL_SEND": True,
+            "MAIN_BOT_REAL_SEND_ACK": "configured",
+            "TG_BOT_TOKEN": "configured",
+            "TG_CHAT_ID": "configured",
+        })
+        _, _, denied = self._run_menu(
+            "2\n2\n重启主服务\nwrong\n\n0\n0\n",
+            extra_env={
+                "PAOPAO_TEST_FAKE_PYTHON": "1",
+                "FAKE_CONFIG_STATUS_JSON": real_status,
+            },
+        )
+        self.assertFalse([
+            line for line in denied
+            if line.startswith("systemctl restart ")
+        ])
+        code, output, allowed = self._run_menu(
+            "2\n2\n重启主服务\n重启真实主BOT\n\n0\n0\n",
+            extra_env={
+                "PAOPAO_TEST_FAKE_PYTHON": "1",
+                "FAKE_CONFIG_STATUS_JSON": real_status,
+            },
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(
+            len([
+                line for line in allowed
+                if line.startswith("systemctl restart ")
+            ]),
+            1,
+        )
 
     def test_cache_menu_uses_controlled_cli_and_never_rm(self) -> None:
         text = MENU.read_text(encoding="utf-8")
