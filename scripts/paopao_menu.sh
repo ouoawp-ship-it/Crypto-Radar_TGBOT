@@ -1103,18 +1103,18 @@ telegram_menu() {
 Telegram 设置与测试
 1. 查看共享 Telegram 脱敏状态
 2. 自动识别群并创建/修复链上话题
-3. 发送并置顶链上话题说明
-4. 链上报告 Dry-run
-5. 主 BOT readiness
+3. 链上报告 Dry-run
+4. 主 BOT readiness
+5. 发送并置顶链上话题说明
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
       1) show_shared_telegram_status; pause_menu ;;
       2) bootstrap_telegram_topic; pause_menu ;;
-      3) publish_telegram_topic_intro; pause_menu ;;
-      4) telegram_dry_run; pause_menu ;;
-      5) run_main readiness; pause_menu ;;
+      3) telegram_dry_run; pause_menu ;;
+      4) run_main readiness; pause_menu ;;
+      5) publish_telegram_topic_intro; pause_menu ;;
       0) return ;;
     esac
   done
