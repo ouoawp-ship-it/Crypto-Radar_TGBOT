@@ -63,6 +63,16 @@ does not call `getUpdates`, send a message, enable Real mode, or print the
 Bot token, Chat ID, or Topic ID. The older message-link CLI remains available
 only as a compatibility recovery path.
 
+Publishing the static topic introduction is a separate, persistent operation:
+
+```bash
+python onchain_main.py telegram-topic intro \
+  --allow-network --send --confirm-real-send
+```
+
+It requires both real-send CLI gates, sends no report card, does not change
+the long-running delivery mode, and reuses an already current pinned intro.
+
 ## systemd stop behavior
 
 The CLI exits with status 130 after its SIGINT shutdown path. The versioned

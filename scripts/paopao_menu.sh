@@ -1000,7 +1000,10 @@ telegram_topic_bootstrap_error_cn() {
     telegram_send_permission_denied) printf '机器人没有在当前群发送消息的权限。' ;;
     telegram_forum_required) printf '当前共享群不是已启用话题的超级群。' ;;
     telegram_manage_topics_permission_required) printf '机器人缺少管理话题权限，无法创建链上活动雷达话题。' ;;
+    telegram_pin_permission_required) printf '机器人缺少置顶消息权限。' ;;
     telegram_topic_configuration_failed) printf '话题已处理，但本地配置保存失败，请检查配置文件权限。' ;;
+    telegram_topic_not_configured) printf '链上活动雷达话题尚未配置。' ;;
+    telegram_topic_intro_failed) printf '话题说明发送或置顶失败。' ;;
     telegram_timeout) printf 'Telegram 连接超时。' ;;
     telegram_dns_failed) printf 'Telegram 域名解析失败。' ;;
     telegram_tls_failed) printf 'Telegram TLS 连接失败。' ;;
@@ -1008,6 +1011,33 @@ telegram_topic_bootstrap_error_cn() {
     telegram_rate_limited) printf 'Telegram 请求受限，请稍后重试。' ;;
     *) printf '链上活动雷达话题初始化失败。' ;;
   esac
+}
+
+publish_telegram_topic_intro() {
+  local result="" reason="telegram_topic_intro_failed"
+  printf '%s\n' \
+    '本操作会向“链上活动雷达”话题发送一条永久说明消息并置顶。' \
+    '不会发送链上报告，也不会切换主 BOT 或 OAR 的 Real 模式。'
+  confirm_phrase "发送并置顶链上话题说明" || return 1
+  if result="$(run_onchain telegram-topic intro \
+    --allow-network --send --confirm-real-send 2>/dev/null)"; then
+    printf '链上活动雷达话题说明：已发送并置顶\n'
+    return 0
+  fi
+  reason="$(
+    printf '%s' "$result" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    print(value.get("reason") or value.get("error") or "telegram_topic_intro_failed")
+except Exception:
+    print("telegram_topic_intro_failed")
+' 2>/dev/null
+  )"
+  printf '%s：' "$reason"
+  telegram_topic_bootstrap_error_cn "$reason"
+  printf '\n'
+  return 1
 }
 
 bootstrap_telegram_topic() {
@@ -1075,6 +1105,7 @@ Telegram 设置与测试
 2. 自动识别群并创建/修复链上话题
 3. 链上报告 Dry-run
 4. 主 BOT readiness
+5. 发送并置顶链上话题说明
 0. 返回
 EOF
     IFS= read -r choice
@@ -1083,6 +1114,7 @@ EOF
       2) bootstrap_telegram_topic; pause_menu ;;
       3) telegram_dry_run; pause_menu ;;
       4) run_main readiness; pause_menu ;;
+      5) publish_telegram_topic_intro; pause_menu ;;
       0) return ;;
     esac
   done
