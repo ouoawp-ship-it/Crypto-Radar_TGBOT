@@ -123,6 +123,23 @@ class ConfigManagerTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, serialized)
 
+    def test_shared_telegram_identity_wins_over_stale_onchain_copy(
+        self,
+    ) -> None:
+        (self.root / ".env.oi").write_text(
+            "TG_BOT_TOKEN=123456:shared-token\n"
+            "TG_CHAT_ID=-1001234567890\n",
+            encoding="utf-8",
+        )
+        (self.root / ".env.onchain").write_text(
+            "TG_BOT_TOKEN=999999:stale-token\n"
+            "TG_CHAT_ID=-1009999999999\n",
+            encoding="utf-8",
+        )
+        values = self.manager._effective_values()
+        self.assertEqual(values["TG_BOT_TOKEN"], "123456:shared-token")
+        self.assertEqual(values["TG_CHAT_ID"], "-1001234567890")
+
     def test_modification_creates_backup_and_chmods_file(self) -> None:
         path = self.root / ".env.oi"
         path.write_text("TG_CHAT_ID=-1001\n", encoding="utf-8")
@@ -655,18 +672,17 @@ class ChineseMenuTests(unittest.TestCase):
         ):
             self.assertIn(expected, text)
 
-    def test_menu_binds_topic_link_through_visible_stdin(self) -> None:
+    def test_menu_bootstraps_topic_from_shared_group(self) -> None:
         text = MENU.read_text(encoding="utf-8")
-        self.assertIn("从消息链接绑定链上话题", text)
-        self.assertIn("IFS= read -r topic_link", text)
-        self.assertIn("输入内容将在当前 FinalShell 终端中明文显示", text)
-        self.assertNotIn("read -r -s topic_link", text)
+        self.assertIn("自动识别群并创建/修复链上话题", text)
         self.assertIn(
-            "run_onchain telegram-topic-link bind --stdin",
+            "run_onchain telegram-topic bootstrap --allow-network",
             text,
         )
-        self.assertNotIn("telegram-topic-link bind --url", text)
-        self.assertIn("链上 Topic：configured", text)
+        self.assertIn("将直接复用主 BOT 的 Token 和群", text)
+        self.assertIn("Bot/群配置来源: 主 BOT 共享 .env.oi", text)
+        self.assertNotIn("config_set TG_ONCHAIN_FLOW_TOPIC_ID", text)
+        self.assertNotIn("从消息链接绑定链上话题", text)
 
     def test_production_inputs_never_disable_terminal_echo(self) -> None:
         config_text = (
@@ -685,7 +701,6 @@ class ChineseMenuTests(unittest.TestCase):
         self.assertNotIn("stty -echo", production_text)
         self.assertNotIn("termios", production_text)
         self.assertIn("return input(prompt)", config_text)
-        self.assertIn("IFS= read -r topic_link", menu_text)
 
     def test_all_sensitive_menu_fields_use_the_visible_config_reader(
         self,
@@ -697,7 +712,6 @@ class ChineseMenuTests(unittest.TestCase):
             "COINGLASS_API_KEY",
             "COINALYZE_API_KEY",
             "ONCHAIN_BASE_HTTP_RPC_URL",
-            "TG_ONCHAIN_FLOW_TOPIC_ID",
             "OAR_AI_API_KEY",
             "OAR_AI_BASE_URL",
             "ARKHAM_API_KEY",

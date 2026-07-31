@@ -45,22 +45,23 @@ locked, backed-up, atomic configuration manager. Real delivery and automatic
 AI require their full Chinese confirmation phrases. Configuration changes
 take effect only after an explicit OAR Watch restart.
 
-## Existing Telegram topic binding
+## Shared Telegram topic bootstrap
 
 The production bot is outbound-only: it has no `getUpdates` loop, webhook,
-or persisted inbound Update queue. An existing forum topic can be bound
-offline from an official Telegram message link with:
+or persisted inbound Update queue. OAR reuses the main BOT token and chat
+from `.env.oi`; only its dedicated topic is stored separately. The operator
+can validate or initialize that topic with:
 
 ```bash
-python onchain_main.py telegram-topic-link bind --stdin
+python onchain_main.py telegram-topic bootstrap --allow-network
 ```
 
-The link is read from stdin, validated in memory, and never stored. Private
-`t.me/c/...` links are accepted only when their channel component matches the
-configured supergroup Chat ID. Public links are rejected unless a separately
-configured username can prove the same chat. The command does not call
-Telegram, create a topic, send a message, or print the Chat ID, Topic ID,
-Message ID, username, or original link.
+The command uses `getMe`, `getChat`, and `getChatMember` against the shared
+group. It reuses a valid configured topic; otherwise, with topic-management
+permission, it creates `链上活动雷达` once and atomically stores its ID. It
+does not call `getUpdates`, send a message, enable Real mode, or print the
+Bot token, Chat ID, or Topic ID. The older message-link CLI remains available
+only as a compatibility recovery path.
 
 ## systemd stop behavior
 

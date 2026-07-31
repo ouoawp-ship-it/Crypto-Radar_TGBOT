@@ -159,20 +159,23 @@ Chat ID、Bot Token 或 Telegram API URL。本地私有历史的既有 Schema
 普通菜单只提供脱敏配置、链上 Topic 设置、规则报告 dry-run 和 readiness。Dry-run 不带 `--send` 或 `--confirm-real-send`。
 
 当前 Bot 是 outbound-only，不运行 `getUpdates`、webhook 或入站 Update
-队列。已有论坛话题可以在服务器本地通过消息链接绑定：
+队列。主雷达和链上活动雷达共用 `.env.oi` 中唯一的 `TG_BOT_TOKEN` 与
+`TG_CHAT_ID`；`.env.onchain` 只保存链上专用 Topic，不再拥有独立的 Bot
+或群配置。
 
-1. 在目标话题内任选一条消息并复制 Telegram 官方消息链接；
-2. 进入“Telegram 设置与测试 → 从消息链接绑定链上话题”；
-3. 在可见输入行粘贴链接，并在回车前核对内容。
+进入“Telegram 设置与测试 → 自动识别群并创建/修复链上话题”后，程序会：
 
-链接只在本机进程内存中解析，经 stdin 传给
-`telegram-topic-link bind --stdin`，不会进入 argv、日志、配置或备份。
-工具不会调用 Telegram HTTP、`getUpdates` 或 `createForumTopic`，成功后
-只显示 `链上 Topic：configured`，不会显示 Topic ID。
+1. 使用主 BOT 已配置的群执行 `getMe`、`getChat` 和 `getChatMember`；
+2. 对已经保存的链上 Topic 使用 `sendChatAction` 做无持久消息验证；
+3. Topic 有效时直接复用；
+4. Topic 缺失、已关闭或失效，且机器人具有管理话题权限时，调用一次
+   `createForumTopic` 创建“链上活动雷达”；
+5. 通过配置管理器原子保存 Topic ID，但只显示 configured 状态。
 
-私有群 `t.me/c/...` 链接会根据已配置的数字 Chat ID 完成离线一致性校验。
-公共群消息链接只有 username，当前配置无法离线证明其对应同一群，因此
-默认拒绝绑定；不会根据链接自行信任或猜测目标群。
+该操作不调用 `getUpdates`，不创建或发送 Telegram 消息，也不会切换
+Dry-run/Real。Telegram Bot API 不能仅凭 Token 枚举机器人加入的所有群，
+因此这里的“自动识别群”是复用主 BOT 已审核的共享群配置，而不是猜测群。
+旧的 `telegram-topic-link` CLI 仅作为兼容恢复工具保留，不再是正常菜单流程。
 
 真实 Telegram 测试只在“高级运维”中出现，并要求输入完整短语：
 

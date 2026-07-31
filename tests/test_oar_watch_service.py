@@ -86,6 +86,14 @@ class OarWatchServiceTests(unittest.TestCase):
             "EnvironmentFile=/home/ubuntu/paopao-crypto-radar/.env.onchain",
             text,
         )
+        env_lines = [
+            line for line in text.splitlines()
+            if line.startswith("EnvironmentFile=")
+        ]
+        self.assertEqual(env_lines, [
+            "EnvironmentFile=/home/ubuntu/paopao-crypto-radar/.env.onchain",
+            "EnvironmentFile=-/home/ubuntu/paopao-crypto-radar/.env.oi",
+        ])
         self.assertIn("Restart=on-failure", text)
         self.assertIn("KillSignal=SIGINT", text)
         self.assertIn("SuccessExitStatus=130", text)

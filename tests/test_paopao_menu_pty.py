@@ -68,6 +68,9 @@ class PaopaoMenuPtyTests(unittest.TestCase):
                 "    IFS= read -r _link\n"
                 "    printf 'TG_ONCHAIN_FLOW_TOPIC_ID=configured\\n'\n"
                 "    ;;\n"
+                "  *'onchain_main.py telegram-topic bootstrap --allow-network'*)\n"
+                "    printf '{\"status\":\"ok\",\"topic_action\":\"created\"}\\n'\n"
+                "    ;;\n"
                 "  *'onchain_main.py ai-prompt show'*)\n"
                 "    printf 'existing prompt\\n'\n"
                 "    ;;\n"
@@ -429,8 +432,6 @@ class PaopaoMenuPtyTests(unittest.TestCase):
             "chat": "-1001234567890",
             "rpc": "https://fake-rpc.invalid/v2/visible-key",
             "ai": "FAKE_VISIBLE_DEEPSEEK_KEY",
-            "topic": "424242",
-            "link": "https://t.me/c/1234567890/42/99",
         }
         code, output, calls = self._run_menu(
             "",
@@ -454,16 +455,9 @@ class PaopaoMenuPtyTests(unittest.TestCase):
                 ('"configured"', "\n"),
                 ("10. 设置 Base RPC 最大区块范围", "0\n"),
                 ("请选择：", "7\n"),
-                ("5. 主 BOT readiness", "2\n"),
-                (
-                    "请输入 TG_ONCHAIN_FLOW_TOPIC_ID: ",
-                    values["topic"] + "\n",
-                ),
-                ('"configured"', "\n"),
-                ("5. 主 BOT readiness", "3\n"),
-                ("消息链接：", values["link"] + "\n"),
-                ("链上 Topic：configured", "\n"),
-                ("5. 主 BOT readiness", "0\n"),
+                ("4. 主 BOT readiness", "2\n"),
+                ("链上活动雷达话题：已自动创建并配置", "\n"),
+                ("4. 主 BOT readiness", "0\n"),
                 ("请选择：", "0\n"),
             ],
         )
@@ -471,7 +465,7 @@ class PaopaoMenuPtyTests(unittest.TestCase):
         for value in values.values():
             self.assertEqual(output.count(value), 1, value)
             self.assertNotIn(value, "\n".join(calls))
-        self.assertGreaterEqual(output.count("configured"), 6)
+        self.assertGreaterEqual(output.count("configured"), 4)
 
     def test_prompt_editor_displays_prompt_body_in_pty(self) -> None:
         code, output, calls = self._run_menu(
