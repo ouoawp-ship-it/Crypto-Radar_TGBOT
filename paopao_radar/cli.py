@@ -779,10 +779,54 @@ def launch_alert_pressure_within_limit(total_alerts: int, records: int) -> bool:
     return max(0, int(total_alerts)) <= max(1, max(0, int(records)) * 2)
 
 
+def current_launch_alert_candidate_count(
+    settings: Settings,
+    store: JsonStore,
+) -> int | None:
+    """Count distinct currently actionable launch symbols for readiness."""
+
+    if not settings.launch_state_path.exists():
+        return None
+    state = store.load(settings.launch_state_path, None)
+    if not isinstance(state, dict):
+        return None
+    actionable_stages = {"primed", "breakout", "launched"}
+    return sum(
+        1
+        for record in state.values()
+        if isinstance(record, dict)
+        and str(record.get("stage") or "") in actionable_stages
+        and isinstance(record.get("score"), (int, float))
+        and int(record["score"]) >= settings.launch_min_score_push
+    )
+
+
 def print_readiness(settings: Settings, store: JsonStore) -> int:
     records = store.load(settings.launch_watch_history_path, [])
     record_count = len(records) if isinstance(records, list) else 0
     report = build_launch_report(records[-100:] if isinstance(records, list) else [], settings)
+    pressure_total = int(report.get("total_alerts", 0) or 0)
+    pressure_records = int(report.get("records", 0) or 0)
+    pressure_ok = launch_alert_pressure_within_limit(
+        pressure_total,
+        pressure_records,
+    )
+    pressure_message = (
+        f"最近推送候选 {pressure_total} / {pressure_records} 轮"
+        "（上限每轮 2 个候选；不等于实际推送）"
+    )
+    if settings.launch_message_package_v2_enable:
+        current_candidates = current_launch_alert_candidate_count(settings, store)
+        if current_candidates is not None:
+            pressure_ok = launch_alert_pressure_within_limit(
+                current_candidates,
+                1,
+            )
+            pressure_message = (
+                f"当前独立有效候选 {current_candidates} / 2；"
+                f"历史候选 {pressure_total} / {pressure_records} 轮"
+                "（dry-run 会重复记录尚未成功发布的同一事件）"
+            )
     runtime_health = [
         item for item in runtime_health_checks(settings, store)
         if item.get("name") != "runtime_status"
@@ -800,14 +844,8 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
         ("observe_history", record_count >= 5, f"启动观察历史 {record_count} 轮"),
         (
             "launch_alert_pressure",
-            launch_alert_pressure_within_limit(
-                int(report.get("total_alerts", 0) or 0),
-                int(report.get("records", 0) or 0),
-            ),
-            (
-                f"最近推送候选 {report.get('total_alerts', 0)} / "
-                f"{report.get('records', 0)} 轮（上限每轮 2 个候选；不等于实际推送）"
-            ),
+            pressure_ok,
+            pressure_message,
         ),
         ("history_file", settings.launch_watch_history_path.exists(), "启动观察历史文件存在" if settings.launch_watch_history_path.exists() else "启动观察历史文件不存在"),
     ]
