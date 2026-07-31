@@ -7,6 +7,7 @@ import requests
 
 from paopao_radar.storage import JsonStore
 from paopao_radar.telegram import (
+    TOPIC_TEMPLATE_NAMES,
     classify_telegram_network_error,
     classify_telegram_response,
 )
@@ -93,6 +94,109 @@ class TelegramRouteChecker:
             return None, "telegram_invalid_response"
         return result, ""
 
+    def _check_shared_chat(
+        self,
+        result: dict[str, object],
+    ) -> int | None:
+        bot, error = self._request("getMe", {})
+        if bot is None:
+            result["error"] = error
+            return None
+        bot_id = bot.get("id")
+        if not isinstance(bot_id, int) or bot_id <= 0:
+            result["error"] = "telegram_invalid_response"
+            return None
+        result["token_auth"] = "ok"
+
+        chat, error = self._request(
+            "getChat",
+            {"chat_id": self.settings.tg_chat_id},
+        )
+        if chat is None:
+            result["error"] = error
+            return None
+        result["chat_access"] = "ok"
+        result["chat_type"] = (
+            "supergroup" if chat.get("type") == "supergroup" else "other"
+        )
+        result["forum_enabled"] = chat.get("is_forum") is True
+
+        membership, error = self._request(
+            "getChatMember",
+            {
+                "chat_id": self.settings.tg_chat_id,
+                "user_id": bot_id,
+            },
+        )
+        if membership is None:
+            result["error"] = error
+            return None
+        status = str(membership.get("status") or "unknown")
+        if status not in {
+            "administrator",
+            "member",
+            "restricted",
+            "left",
+            "kicked",
+        }:
+            status = "unknown"
+        result["bot_membership"] = status
+        if status in {"left", "kicked", "unknown"}:
+            result["error"] = "telegram_bot_not_member"
+            return None
+        can_send_text = status in {"administrator", "member"}
+        if status == "restricted":
+            can_send_text = membership.get("can_send_messages") is True
+        result["can_send_text"] = can_send_text
+        result["can_manage_topics"] = (
+            membership.get("can_manage_topics") is True
+        )
+        result["can_pin_messages"] = (
+            membership.get("can_pin_messages") is True
+        )
+        if not can_send_text:
+            result["error"] = "telegram_send_permission_denied"
+            return None
+        if not bool(result["forum_enabled"]):
+            result["error"] = "telegram_forum_required"
+            return None
+        return bot_id
+
+    def _saved_topic_id(self) -> str:
+        data = JsonStore(self.settings.data_dir).load(
+            self.settings.tg_topic_routes_path,
+            {},
+        )
+        if not isinstance(data, dict):
+            return ""
+        routes = data.get("routes")
+        if not isinstance(routes, dict):
+            return ""
+        record = routes.get("TG_ONCHAIN_FLOW_ALERT")
+        if not isinstance(record, dict):
+            return ""
+        return str(record.get("topic_id") or "")
+
+    @staticmethod
+    def _valid_topic_id(value: object) -> str:
+        try:
+            topic_id = int(str(value))
+        except (TypeError, ValueError):
+            return ""
+        return str(topic_id) if topic_id > 0 else ""
+
+    def _persist_topic_id(self, topic_id: str) -> bool:
+        from scripts.paopao_config import ConfigManager, ConfigManagerError
+
+        try:
+            ConfigManager(self.settings.base_dir).set(
+                "TG_ONCHAIN_FLOW_TOPIC_ID",
+                topic_id,
+            )
+        except (ConfigManagerError, OSError, UnicodeError):
+            return False
+        return True
+
     def check(self) -> dict[str, object]:
         result = self._empty_result()
         if not (
@@ -111,67 +215,7 @@ class TelegramRouteChecker:
             result["error"] = "telegram_topic_not_found"
             return self._finalize(result)
 
-        bot, error = self._request("getMe", {})
-        if bot is None:
-            result["error"] = error
-            return self._finalize(result)
-        bot_id = bot.get("id")
-        if not isinstance(bot_id, int) or bot_id <= 0:
-            result["error"] = "telegram_invalid_response"
-            return self._finalize(result)
-        result["token_auth"] = "ok"
-
-        chat, error = self._request(
-            "getChat",
-            {"chat_id": self.settings.tg_chat_id},
-        )
-        if chat is None:
-            result["error"] = error
-            return self._finalize(result)
-        result["chat_access"] = "ok"
-        result["chat_type"] = (
-            "supergroup" if chat.get("type") == "supergroup" else "other"
-        )
-        result["forum_enabled"] = chat.get("is_forum") is True
-
-        membership, error = self._request(
-            "getChatMember",
-            {
-                "chat_id": self.settings.tg_chat_id,
-                "user_id": bot_id,
-            },
-        )
-        if membership is None:
-            result["error"] = error
-            return self._finalize(result)
-        status = str(membership.get("status") or "unknown")
-        if status not in {
-            "administrator",
-            "member",
-            "restricted",
-            "left",
-            "kicked",
-        }:
-            status = "unknown"
-        result["bot_membership"] = status
-        if status in {"left", "kicked", "unknown"}:
-            result["error"] = "telegram_bot_not_member"
-            return self._finalize(result)
-        can_send_text = status in {"administrator", "member"}
-        if status == "restricted":
-            can_send_text = membership.get("can_send_messages") is True
-        result["can_send_text"] = can_send_text
-        result["can_manage_topics"] = (
-            membership.get("can_manage_topics") is True
-        )
-        result["can_pin_messages"] = (
-            membership.get("can_pin_messages") is True
-        )
-        if not can_send_text:
-            result["error"] = "telegram_send_permission_denied"
-            return self._finalize(result)
-        if not bool(result["forum_enabled"]):
-            result["error"] = "telegram_forum_required"
+        if self._check_shared_chat(result) is None:
             return self._finalize(result)
 
         action, error = self._request(
@@ -186,6 +230,78 @@ class TelegramRouteChecker:
             result["error"] = error
             return self._finalize(result)
         result["topic_route"] = "ok"
+        result["status"] = "ok"
+        return self._finalize(result)
+
+    def bootstrap_topic(self) -> dict[str, object]:
+        result = self._empty_result()
+        result.update({
+            "shared_telegram_config": True,
+            "topic_action": "none",
+            "topic_configured": False,
+            "topics_created": 0,
+        })
+        if not (self.settings.tg_bot_token and self.settings.tg_chat_id):
+            result["error"] = "telegram_shared_config_missing"
+            return self._finalize(result)
+        if self._check_shared_chat(result) is None:
+            return self._finalize(result)
+
+        configured_topic = self._valid_topic_id(
+            self.settings.tg_onchain_flow_topic_id
+        )
+        topic_id = configured_topic or self._valid_topic_id(
+            self._saved_topic_id()
+        )
+        if topic_id:
+            action, error = self._request(
+                "sendChatAction",
+                {
+                    "chat_id": self.settings.tg_chat_id,
+                    "message_thread_id": int(topic_id),
+                    "action": "typing",
+                },
+            )
+            if action is not None:
+                if not configured_topic and not self._persist_topic_id(topic_id):
+                    result["error"] = "telegram_topic_configuration_failed"
+                    return self._finalize(result)
+                result["topic_route"] = "ok"
+                result["topic_action"] = "reused"
+                result["topic_configured"] = True
+                result["status"] = "ok"
+                return self._finalize(result)
+            if error not in {
+                "telegram_topic_not_found",
+                "telegram_topic_closed",
+            }:
+                result["error"] = error
+                return self._finalize(result)
+
+        if result["can_manage_topics"] is not True:
+            result["error"] = "telegram_manage_topics_permission_required"
+            return self._finalize(result)
+        created, error = self._request(
+            "createForumTopic",
+            {
+                "chat_id": self.settings.tg_chat_id,
+                "name": TOPIC_TEMPLATE_NAMES["TG_ONCHAIN_FLOW_ALERT"],
+            },
+        )
+        if created is None:
+            result["error"] = error
+            return self._finalize(result)
+        topic_id = self._valid_topic_id(created.get("message_thread_id"))
+        if not topic_id:
+            result["error"] = "telegram_invalid_response"
+            return self._finalize(result)
+        result["topics_created"] = 1
+        if not self._persist_topic_id(topic_id):
+            result["error"] = "telegram_topic_configuration_failed"
+            return self._finalize(result)
+        result["topic_route"] = "ok"
+        result["topic_action"] = "created"
+        result["topic_configured"] = True
         result["status"] = "ok"
         return self._finalize(result)
 

@@ -137,6 +137,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     telegram_route_check = subparsers.add_parser("telegram-route-check")
     telegram_route_check.add_argument("--allow-network", action="store_true")
+    telegram_topic = subparsers.add_parser("telegram-topic")
+    telegram_topic_actions = telegram_topic.add_subparsers(
+        dest="telegram_topic_action",
+        required=True,
+    )
+    telegram_topic_bootstrap = telegram_topic_actions.add_parser("bootstrap")
+    telegram_topic_bootstrap.add_argument(
+        "--allow-network",
+        action="store_true",
+    )
     label_candidates = subparsers.add_parser("label-candidates")
     candidate_actions = label_candidates.add_subparsers(
         dest="candidate_action",
@@ -1043,6 +1053,17 @@ def main(
                 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
                 return 1
             payload = TelegramRouteChecker(settings).check()
+            save_route_check(settings, payload)
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0 if payload["status"] == "ok" else 1
+        if args.command == "telegram-topic":
+            settings.validate()
+            if not args.allow_network:
+                payload = TelegramRouteChecker._empty_result()
+                payload["error"] = "allow_network_required"
+                print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                return 1
+            payload = TelegramRouteChecker(settings).bootstrap_topic()
             save_route_check(settings, payload)
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0 if payload["status"] == "ok" else 1

@@ -341,9 +341,17 @@ class OnchainSettings:
         environ: Mapping[str, str] | None = None,
     ) -> "OnchainSettings":
         base_dir = base_dir.resolve()
-        shared = parse_env_file(base_dir / ".env.oi")
+        shared_path = base_dir / ".env.oi"
+        shared = parse_env_file(shared_path)
         onchain = parse_env_file(base_dir / ".env.onchain")
-        values = {**shared, **onchain, **dict(os.environ if environ is None else environ)}
+        runtime = dict(os.environ if environ is None else environ)
+        values = {**shared, **onchain, **runtime}
+        if shared_path.exists():
+            # The main BOT owns the shared Telegram identity.  OAR may keep
+            # its own topic, but a stale duplicate in .env.onchain or the
+            # service environment must never select a different BOT/group.
+            values["TG_BOT_TOKEN"] = shared.get("TG_BOT_TOKEN", "")
+            values["TG_CHAT_ID"] = shared.get("TG_CHAT_ID", "")
         data_dir = _resolve_data_dir(
             base_dir,
             values.get("ONCHAIN_DATA_DIR", "data/onchain"),

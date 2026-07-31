@@ -11,7 +11,10 @@ from unittest.mock import patch
 from paopao_radar.config import Settings
 from paopao_radar.onchain_flow.db import OnchainStore
 from paopao_radar.onchain_flow.models import OnchainAlert
-from paopao_radar.onchain_flow.notifier import OnchainNotifier
+from paopao_radar.onchain_flow.notifier import (
+    OnchainNotifier,
+    build_onchain_telegram_gateway,
+)
 from paopao_radar.storage import JsonStore
 from paopao_radar.telegram import TelegramGateway, topic_intro_message
 
@@ -46,6 +49,13 @@ def sample_alert() -> OnchainAlert:
 
 
 class OnchainNotifierTests(unittest.TestCase):
+    def test_watch_notifier_never_creates_topics_implicitly(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = build_onchain_telegram_gateway(
+                make_settings(Path(tmp))
+            )
+            self.assertFalse(gateway.settings.tg_auto_create_topics)
+
     def test_dry_run_has_no_network_and_uses_only_onchain_history(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -189,14 +189,17 @@ class ConfigManager:
             raise ConfigManagerError("configuration key is not allowlisted")
         return self.base_dir / ENV_FILES[target]
 
+    def _effective_values(self) -> dict[str, str]:
+        shared = self._read_env(ENV_FILES["oi"])
+        onchain = self._read_env(ENV_FILES["onchain"])
+        values = {**shared, **onchain}
+        if (self.base_dir / ENV_FILES["oi"]).exists():
+            values["TG_BOT_TOKEN"] = shared.get("TG_BOT_TOKEN", "")
+            values["TG_CHAT_ID"] = shared.get("TG_CHAT_ID", "")
+        return values
+
     def status(self) -> dict[str, object]:
-        values: dict[str, str] = {}
-        for filename in ENV_FILES.values():
-            path = self.base_dir / filename
-            if path.exists():
-                values.update(_parse_env(path.read_text(
-                    encoding="utf-8-sig"
-                )))
+        values = self._effective_values()
         effective_defaults = {
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
@@ -390,9 +393,7 @@ class ConfigManager:
             path = self.base_dir / target
             if path.exists():
                 _parse_env(path.read_text(encoding="utf-8-sig"))
-        shared = self._read_env(ENV_FILES["oi"])
-        onchain = self._read_env(ENV_FILES["onchain"])
-        checks = self._validate_business_values({**shared, **onchain})
+        checks = self._validate_business_values(self._effective_values())
         if filename in {None, ".env.onchain"}:
             try:
                 OnchainSettings.load(

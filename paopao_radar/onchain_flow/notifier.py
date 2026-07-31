@@ -26,6 +26,7 @@ def build_onchain_telegram_gateway(
         tg_use_topic=(
             settings.tg_use_topic or bool(settings.tg_onchain_flow_topic_id)
         ),
+        tg_auto_create_topics=False,
         tg_topic_routes_path=settings.tg_topic_routes_path,
         tg_push_history_path=settings.tg_push_history_path,
         tg_outbox_path=settings.tg_outbox_path,

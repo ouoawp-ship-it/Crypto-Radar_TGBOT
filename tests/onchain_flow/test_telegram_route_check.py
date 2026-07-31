@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import requests
+from unittest.mock import patch
 
 from paopao_radar.onchain_flow.telegram_route_check import (
     TelegramRouteChecker,
@@ -165,6 +166,185 @@ class TelegramRouteCheckTests(unittest.TestCase):
             self.assertEqual(payload["error"], "allow_network_required")
             self.assertEqual(payload["telegram_http_calls"], 0)
             self.assertEqual(payload["persistent_messages"], 0)
+
+    def test_bootstrap_reuses_valid_topic_without_creating_one(self) -> None:
+        with TemporaryDirectory() as tmp:
+            http = FakeHttp([
+                ok({"id": 77}),
+                ok({"type": "supergroup", "is_forum": True}),
+                ok({"status": "administrator", "can_manage_topics": True}),
+                ok(True),
+            ])
+            result = TelegramRouteChecker(
+                self.settings(Path(tmp)),
+                http_client=http,
+            ).bootstrap_topic()
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["topic_action"], "reused")
+            self.assertEqual(result["topics_created"], 0)
+            self.assertEqual(result["persistent_messages"], 0)
+            self.assertNotIn("createForumTopic", http.operations)
+
+    def test_bootstrap_creates_and_atomically_configures_missing_topic(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            http = FakeHttp([
+                ok({"id": 77}),
+                ok({"type": "supergroup", "is_forum": True}),
+                ok({"status": "administrator", "can_manage_topics": True}),
+                ok({"message_thread_id": 42}),
+            ])
+            settings = make_settings(
+                root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_onchain_flow_topic_id="",
+            )
+            result = TelegramRouteChecker(
+                settings,
+                http_client=http,
+            ).bootstrap_topic()
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["topic_action"], "created")
+            self.assertEqual(result["topics_created"], 1)
+            self.assertEqual(result["persistent_messages"], 0)
+            self.assertEqual(http.operations, [
+                "getMe", "getChat", "getChatMember", "createForumTopic"
+            ])
+            for forbidden in (
+                "sendMessage",
+                "sendPhoto",
+                "pinChatMessage",
+                "deleteMessage",
+                "getUpdates",
+                "setWebhook",
+                "deleteWebhook",
+            ):
+                self.assertNotIn(forbidden, http.operations)
+            env_text = (root / ".env.onchain").read_text(encoding="utf-8")
+            self.assertIn("TG_ONCHAIN_FLOW_TOPIC_ID=42", env_text)
+            public = json.dumps(result, ensure_ascii=False)
+            self.assertNotIn("-1001234567890", public)
+            self.assertNotIn("ABCDEFGHIJKLMNOPQRSTUVWXYZ", public)
+            self.assertNotIn('"42"', public)
+
+    def test_bootstrap_reuses_saved_main_gateway_route(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(
+                root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_onchain_flow_topic_id="",
+            )
+            settings.tg_topic_routes_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            settings.tg_topic_routes_path.write_text(
+                json.dumps({
+                    "routes": {
+                        "TG_ONCHAIN_FLOW_ALERT": {"topic_id": 44},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            http = FakeHttp([
+                ok({"id": 77}),
+                ok({"type": "supergroup", "is_forum": True}),
+                ok({"status": "member"}),
+                ok(True),
+            ])
+            result = TelegramRouteChecker(
+                settings,
+                http_client=http,
+            ).bootstrap_topic()
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["topic_action"], "reused")
+            self.assertNotIn("createForumTopic", http.operations)
+            env_text = (root / ".env.onchain").read_text(encoding="utf-8")
+            self.assertIn("TG_ONCHAIN_FLOW_TOPIC_ID=44", env_text)
+
+    def test_bootstrap_repairs_stale_topic_only_with_manage_permission(
+        self,
+    ) -> None:
+        stale = FakeResponse(400, {
+            "ok": False,
+            "error_code": 400,
+            "description": "Bad Request: message thread not found PRIVATE",
+        })
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            http = FakeHttp([
+                ok({"id": 77}),
+                ok({"type": "supergroup", "is_forum": True}),
+                ok({"status": "administrator", "can_manage_topics": True}),
+                stale,
+                ok({"message_thread_id": 43}),
+            ])
+            result = TelegramRouteChecker(
+                self.settings(root),
+                http_client=http,
+            ).bootstrap_topic()
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["topic_action"], "created")
+            self.assertEqual(http.operations[-1], "createForumTopic")
+            self.assertNotIn("PRIVATE", json.dumps(result))
+
+        with TemporaryDirectory() as tmp:
+            http = FakeHttp([
+                ok({"id": 77}),
+                ok({"type": "supergroup", "is_forum": True}),
+                ok({"status": "member"}),
+                stale,
+            ])
+            result = TelegramRouteChecker(
+                self.settings(Path(tmp)),
+                http_client=http,
+            ).bootstrap_topic()
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(
+                result["error"],
+                "telegram_manage_topics_permission_required",
+            )
+            self.assertNotIn("createForumTopic", http.operations)
+
+    def test_bootstrap_cli_requires_explicit_network_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                code = cli_main(
+                    ["telegram-topic", "bootstrap"],
+                    settings=self.settings(Path(tmp)),
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 1)
+            self.assertEqual(payload["error"], "allow_network_required")
+            self.assertEqual(payload["telegram_http_calls"], 0)
+
+    def test_bootstrap_cli_persists_only_safe_result(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            safe = TelegramRouteChecker._empty_result()
+            safe.update({
+                "status": "ok",
+                "topic_action": "reused",
+                "topic_configured": True,
+            })
+            output = StringIO()
+            with patch.object(
+                TelegramRouteChecker,
+                "bootstrap_topic",
+                return_value=safe,
+            ), redirect_stdout(output):
+                code = cli_main(
+                    ["telegram-topic", "bootstrap", "--allow-network"],
+                    settings=self.settings(root),
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue())["status"], "ok")
 
 
 if __name__ == "__main__":

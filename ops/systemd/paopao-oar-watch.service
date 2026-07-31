@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/paopao-crypto-radar
-EnvironmentFile=-/home/ubuntu/paopao-crypto-radar/.env.oi
 EnvironmentFile=/home/ubuntu/paopao-crypto-radar/.env.onchain
+EnvironmentFile=-/home/ubuntu/paopao-crypto-radar/.env.oi
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/home/ubuntu/paopao-crypto-radar/scripts/run_oar_watch.sh

@@ -991,49 +991,78 @@ EOF
   done
 }
 
-topic_link_error_cn() {
+telegram_topic_bootstrap_error_cn() {
   case "$1" in
-    topic_link_invalid) printf '消息链接格式无效。' ;;
-    topic_link_domain_invalid) printf '只接受 Telegram 官方 HTTPS 消息链接。' ;;
-    topic_link_not_forum_message) printf '该链接不是论坛话题消息链接。' ;;
-    topic_link_topic_invalid) printf '链接中的话题编号无效。' ;;
-    topic_link_chat_mismatch) printf '消息链接与当前配置群不一致。' ;;
-    topic_link_ambiguous) printf '消息链接包含冲突或重复的话题信息。' ;;
-    topic_link_public_chat_unverified) printf '公共群链接无法离线验证，请使用私有群 t.me/c 消息链接。' ;;
-    *) printf '消息链接绑定失败。' ;;
+    telegram_shared_config_missing) printf '请先在 API 菜单配置主 BOT 的 Token 和群 ID。' ;;
+    telegram_auth_failed) printf '主 BOT Token 无效，请重新配置。' ;;
+    telegram_chat_not_found) printf '主 BOT 当前配置群不可访问，请检查群 ID 和机器人入群状态。' ;;
+    telegram_bot_not_member) printf '机器人不在当前配置群中。' ;;
+    telegram_send_permission_denied) printf '机器人没有在当前群发送消息的权限。' ;;
+    telegram_forum_required) printf '当前共享群不是已启用话题的超级群。' ;;
+    telegram_manage_topics_permission_required) printf '机器人缺少管理话题权限，无法创建链上活动雷达话题。' ;;
+    telegram_topic_configuration_failed) printf '话题已处理，但本地配置保存失败，请检查配置文件权限。' ;;
+    telegram_timeout) printf 'Telegram 连接超时。' ;;
+    telegram_dns_failed) printf 'Telegram 域名解析失败。' ;;
+    telegram_tls_failed) printf 'Telegram TLS 连接失败。' ;;
+    telegram_connection_failed) printf 'Telegram 连接失败。' ;;
+    telegram_rate_limited) printf 'Telegram 请求受限，请稍后重试。' ;;
+    *) printf '链上活动雷达话题初始化失败。' ;;
   esac
 }
 
-bind_telegram_topic_link() {
-  local topic_link="" result="" error_code="topic_link_invalid"
+bootstrap_telegram_topic() {
+  local result="" error_code="telegram_http_error" action=""
   printf '%s\n' \
-    '请在目标话题内任选一条消息，复制 Telegram 消息链接后粘贴。' \
-    '链接仅在本机内存中解析，不会写入日志或历史。' \
-    '输入内容将在当前 FinalShell 终端中明文显示，请确认周围无人查看屏幕。'
-  printf '消息链接：'
-  IFS= read -r topic_link
-  if result="$(
-    printf '%s\n' "$topic_link" |
-      run_onchain telegram-topic-link bind --stdin 2>/dev/null
-  )"; then
-    topic_link=""
-    printf '链上 Topic：configured\n'
+    '将直接复用主 BOT 的 Token 和群，不需要再次输入。' \
+    '程序会检查群和机器人权限；已有有效链上话题会复用，否则创建“链上活动雷达”。' \
+    '本操作不会发送消息，也不会切换 Real 模式。'
+  if result="$(run_onchain telegram-topic bootstrap --allow-network 2>/dev/null)"; then
+    action="$(
+      printf '%s' "$result" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("topic_action") or "reused")
+except Exception:
+    print("reused")
+' 2>/dev/null
+    )"
+    if [ "$action" = "created" ]; then
+      printf '链上活动雷达话题：已自动创建并配置\n'
+    else
+      printf '链上活动雷达话题：已识别并复用\n'
+    fi
     return 0
   fi
-  topic_link=""
   error_code="$(
     printf '%s' "$result" | "$PYTHON_BIN" -c '
 import json, sys
 try:
-    print(json.load(sys.stdin).get("error") or "topic_link_invalid")
+    print(json.load(sys.stdin).get("error") or "telegram_http_error")
 except Exception:
-    print("topic_link_invalid")
+    print("telegram_http_error")
 ' 2>/dev/null
   )"
   printf '%s：' "$error_code"
-  topic_link_error_cn "$error_code"
+  telegram_topic_bootstrap_error_cn "$error_code"
   printf '\n'
   return 1
+}
+
+show_shared_telegram_status() {
+  run_config status --json 2>/dev/null | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    value = {}
+print("Telegram Bot:", value.get("TG_BOT_TOKEN") or "not_configured")
+print("Telegram 群:", value.get("TG_CHAT_ID") or "not_configured")
+print(
+    "链上活动雷达话题:",
+    value.get("TG_ONCHAIN_FLOW_TOPIC_ID") or "not_configured",
+)
+print("Bot/群配置来源: 主 BOT 共享 .env.oi")
+' 2>/dev/null || true
 }
 
 telegram_menu() {
@@ -1042,20 +1071,18 @@ telegram_menu() {
     menu_header
     cat <<'EOF'
 Telegram 设置与测试
-1. 查看脱敏配置
-2. 设置链上 Topic ID
-3. 从消息链接绑定链上话题
-4. 链上报告 Dry-run
-5. 主 BOT readiness
+1. 查看共享 Telegram 脱敏状态
+2. 自动识别群并创建/修复链上话题
+3. 链上报告 Dry-run
+4. 主 BOT readiness
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
-      1) run_config status; pause_menu ;;
-      2) config_set TG_ONCHAIN_FLOW_TOPIC_ID; pause_menu ;;
-      3) bind_telegram_topic_link; pause_menu ;;
-      4) telegram_dry_run; pause_menu ;;
-      5) run_main readiness; pause_menu ;;
+      1) show_shared_telegram_status; pause_menu ;;
+      2) bootstrap_telegram_topic; pause_menu ;;
+      3) telegram_dry_run; pause_menu ;;
+      4) run_main readiness; pause_menu ;;
       0) return ;;
     esac
   done

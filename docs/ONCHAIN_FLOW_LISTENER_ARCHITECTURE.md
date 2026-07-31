@@ -48,7 +48,10 @@ paopao-market-stream.service
 .env.onchain           # 本机密钥和运行参数，不提交
 ```
 
-`.env.oi` 仍由现有 BOT 使用。链上服务可以只读复用其中的 `TG_BOT_TOKEN`、`TG_CHAT_ID` 和公开行情端点；`.env.onchain` 的同名配置具有更高优先级。
+`.env.oi` 仍由现有 BOT 使用。链上服务只读复用其中唯一的
+`TG_BOT_TOKEN`、`TG_CHAT_ID` 和公开行情端点；即使 `.env.onchain` 留有
+旧的同名键，也不得覆盖主 BOT 的 Telegram 身份。链上环境只单独管理
+`TG_ONCHAIN_FLOW_TOPIC_ID`。
 
 默认值必须满足：
 

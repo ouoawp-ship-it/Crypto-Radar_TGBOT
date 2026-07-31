@@ -27,7 +27,9 @@ from .support import FIXTURE_PATH, make_settings
 
 
 class OnchainConfigTests(unittest.TestCase):
-    def test_env_onchain_overrides_shared_env_without_exposing_secret(self) -> None:
+    def test_shared_telegram_identity_cannot_be_overridden_by_onchain_env(
+        self,
+    ) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".env.oi").write_text(
@@ -38,14 +40,21 @@ class OnchainConfigTests(unittest.TestCase):
             )
             (root / ".env.onchain").write_text(
                 "TG_BOT_TOKEN=onchain-secret\n"
+                "TG_CHAT_ID=onchain-chat\n"
                 "ONCHAIN_TG_HOURLY_LIMIT=6\n",
                 encoding="utf-8",
             )
 
-            settings = OnchainSettings.load(base_dir=root, environ={})
+            settings = OnchainSettings.load(
+                base_dir=root,
+                environ={
+                    "TG_BOT_TOKEN": "service-secret",
+                    "TG_CHAT_ID": "service-chat",
+                },
+            )
             diagnostic = settings.diagnostic()
 
-            self.assertEqual(settings.tg_bot_token, "onchain-secret")
+            self.assertEqual(settings.tg_bot_token, "shared-secret")
             self.assertEqual(settings.tg_chat_id, "shared-chat")
             self.assertEqual(settings.tg_hourly_limit, 6)
             self.assertNotIn("onchain-secret", str(diagnostic))
