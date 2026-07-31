@@ -69,6 +69,7 @@ from .telegram_topic_link import (
     TelegramTopicLinkError,
     validate_telegram_topic_link,
 )
+from .telegram_route_check import TelegramRouteChecker, save_route_check
 from .watch_scanner import WatchScanner
 
 
@@ -134,6 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=argparse.SUPPRESS,
     )
+    telegram_route_check = subparsers.add_parser("telegram-route-check")
+    telegram_route_check.add_argument("--allow-network", action="store_true")
     label_candidates = subparsers.add_parser("label-candidates")
     candidate_actions = label_candidates.add_subparsers(
         dest="candidate_action",
@@ -1032,6 +1035,17 @@ def main(
         if args.command == "telegram-topic-link":
             settings.validate()
             return _telegram_topic_link_command(settings, args)
+        if args.command == "telegram-route-check":
+            settings.validate()
+            if not args.allow_network:
+                payload = TelegramRouteChecker._empty_result()
+                payload["error"] = "allow_network_required"
+                print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                return 1
+            payload = TelegramRouteChecker(settings).check()
+            save_route_check(settings, payload)
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0 if payload["status"] == "ok" else 1
         if args.command == "address-intelligence":
             settings.validate()
             store = AddressIntelligenceStore.from_settings(settings)
@@ -1632,6 +1646,11 @@ def main(
                     "sent": notification.sent,
                     "message_ids": notification.message_ids or [],
                     "delivery_id": notification.delivery_id,
+                    "diagnostics": (
+                        notification.diagnostics.public_dict()
+                        if notification.diagnostics is not None
+                        else None
+                    ),
                 }
                 notification_status = notification.status
             _print_token_activity(
@@ -1651,7 +1670,7 @@ def main(
                     and not bool(analysis.get("complete"))
                 ):
                     return 2
-            if notification_status in {"blocked", "failed"}:
+            if notification_status in {"blocked", "failed", "partial"}:
                 return 1
             return 0 if payload["status"] == "ok" else 2
         if args.command == "status":
