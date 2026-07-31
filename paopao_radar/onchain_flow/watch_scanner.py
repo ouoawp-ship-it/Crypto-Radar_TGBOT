@@ -435,22 +435,22 @@ class WatchScanner:
             "created": 0,
             "updated": 0,
         }
-        try:
-            queue_result = (
-                self.address_intelligence_store.observe_complete_scan(
-                    analyzed,
-                    observed_at=int(self.clock()),
+        queue_status = "skipped_incomplete"
+        queue_error = ""
+        if activity_complete and analysis_complete:
+            try:
+                queue_result = (
+                    self.address_intelligence_store.observe_complete_scan(
+                        analyzed,
+                        observed_at=int(self.clock()),
+                    )
                 )
-            )
-        except Exception:
-            # Address intelligence is local best-effort enrichment. It must
-            # never turn a successful scan into a failure or invoke a
-            # provider on the Watch hot path.
-            queue_result = {
-                "observed": 0,
-                "created": 0,
-                "updated": 0,
-            }
+                queue_status = "ok"
+            except Exception:
+                # Local best-effort enrichment must never fail a scan or
+                # expose exception text, paths, or secrets.
+                queue_status = "local_error"
+                queue_error = "address_intelligence_local_error"
         return {
             "token_key": token_key,
             "status": scan_status,
@@ -472,6 +472,8 @@ class WatchScanner:
             "unknown_addresses_queued": int(
                 queue_result.get("observed") or 0
             ),
+            "address_intelligence_queue_status": queue_status,
+            "address_intelligence_queue_error": queue_error,
             "external_label_provider_calls": 0,
         }
 
@@ -519,6 +521,9 @@ class WatchScanner:
             "notification_status": "not_requested",
             "ai_calls": 0,
             "analysis_started": analysis_started,
+            "address_intelligence_queue_status": "skipped_incomplete",
+            "address_intelligence_queue_error": "",
+            "external_label_provider_calls": 0,
         }
 
     def _renew_lease(self, token_key: str, lease_owner: str) -> bool:
@@ -586,6 +591,9 @@ class WatchScanner:
             "notification_status": "not_requested",
             "ai_calls": 0,
             "analysis_started": analysis_started,
+            "address_intelligence_queue_status": "skipped_incomplete",
+            "address_intelligence_queue_error": "",
+            "external_label_provider_calls": 0,
         }
 
     def _notification_gate(

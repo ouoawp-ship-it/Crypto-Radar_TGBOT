@@ -65,6 +65,13 @@ PRODUCTION_ROLES = {
     "contract",
     "wallet",
 }
+GENERIC_ROLES = {"cex_wallet"}
+ROLE_CONFLICTS = {
+    frozenset(("hot", "cold")),
+    frozenset(("deposit", "hot")),
+    frozenset(("deposit", "cold")),
+    frozenset(("collector", "cold")),
+}
 BEHAVIOR_ROLES = {
     "deposit_candidate",
     "collector_candidate",
@@ -143,12 +150,31 @@ def _candidate_id(value: dict[str, object]) -> str:
         "chain_id": value["chain_id"],
         "address": value["address"],
         "provider": value["provider"],
-        "source_ref": value["source_ref"],
-        "evidence_type": value["evidence_type"],
-        "entity_name": value["entity_name"],
-        "entity_type": value["entity_type"],
+        "entity_name": _canonical_entity_name(value["entity_name"]),
+        "entity_type": _canonical_entity_type(value["entity_type"]),
         "address_role": value["address_role"],
     })
+
+
+def _canonical_entity_name(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _canonical_entity_type(value: object) -> str:
+    normalized = " ".join(str(value or "").casefold().split())
+    return "cex" if normalized in {"cex", "exchange"} else normalized
+
+
+def _stable_source_ref(
+    provider: str,
+    address: str,
+    entity_name: str,
+    address_role: str,
+) -> str:
+    return (
+        f"{provider}:base:{address}:"
+        f"{_canonical_entity_name(entity_name)}:{address_role}"
+    )
 
 
 def build_candidate(
@@ -210,6 +236,10 @@ def build_candidate(
             int(observed_at) if status == "approved" else None
         ),
         "review_note": "",
+        "evidence_source_count": 1,
+        "corroborated": False,
+        "corroborates_approved": False,
+        "preferred_address_role": _bounded(address_role, 80).lower(),
     }
     candidate["candidate_id"] = _candidate_id(candidate)
     return candidate
@@ -250,14 +280,22 @@ def _sort_unknown(item: dict[str, object]) -> tuple[object, ...]:
 
 
 class AddressIntelligenceStore:
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        approved_labels_path: Path | None = None,
+    ):
         self.path = path
+        self.approved_labels_path = approved_labels_path
 
     @classmethod
     def from_settings(
         cls, settings: OnchainSettings
     ) -> "AddressIntelligenceStore":
-        return cls(settings.address_intelligence_path)
+        return cls(
+            settings.address_intelligence_path,
+            approved_labels_path=settings.labels_path,
+        )
 
     def _prepare(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -569,10 +607,21 @@ class AddressIntelligenceStore:
                         int(normalized["last_seen_at"]),
                     )
                     existing["expires_at"] = normalized.get("expires_at")
+                    existing["evidence_hash"] = normalized["evidence_hash"]
+                    existing["source_ref"] = normalized["source_ref"]
+                    existing["source_confidence"] = normalized[
+                        "source_confidence"
+                    ]
+                    existing["evidence_type"] = normalized["evidence_type"]
                     refreshed += 1
             values = list(current.values())
             self._expire_values(values, timestamp)
-            self._mark_conflicts(values)
+            anchors, anchor_error = self._approved_anchors(timestamp)
+            self._mark_conflicts(
+                values,
+                approved_anchors=anchors,
+                anchor_error=anchor_error,
+            )
             data["candidates"] = sorted(
                 values,
                 key=lambda item: str(item.get("candidate_id") or ""),
@@ -609,6 +658,13 @@ class AddressIntelligenceStore:
         if not required.issubset(candidate):
             raise AddressIntelligenceError("label_candidate_schema_invalid")
         value = dict(candidate)
+        value.setdefault("evidence_source_count", 1)
+        value.setdefault("corroborated", False)
+        value.setdefault("corroborates_approved", False)
+        value.setdefault(
+            "preferred_address_role",
+            str(value.get("address_role") or ""),
+        )
         if (
             int(value["chain_id"]) != BASE_CHAIN_ID
             or normalize_evm_address(str(value["address"]))
@@ -637,14 +693,45 @@ class AddressIntelligenceStore:
                 item["review_status"] = "expired"
                 item["conflict_status"] = "none"
 
+    def _approved_anchors(
+        self,
+        now: int,
+    ) -> tuple[dict[tuple[int, str], object], str | None]:
+        if self.approved_labels_path is None:
+            return {}, None
+        if not self.approved_labels_path.exists():
+            return {}, "approved_label_anchor_unavailable"
+        try:
+            labels = load_labels_csv(self.approved_labels_path)
+        except (LabelValidationError, OSError):
+            return {}, "approved_label_anchor_unavailable"
+        return {
+            (label.chain_id, label.address): label
+            for label in labels
+            if label.chain_id == BASE_CHAIN_ID
+            and label.active_at(now)
+            and is_approved_label(label)
+        }, None
+
     @staticmethod
     def _mark_conflicts(
         candidates: list[dict[str, object]],
+        *,
+        approved_anchors: dict[tuple[int, str], object] | None = None,
+        anchor_error: str | None = None,
     ) -> None:
+        approved_anchors = approved_anchors or {}
         groups: dict[tuple[int, str], list[dict[str, object]]] = {}
         for item in candidates:
             if item.get("status") not in {"pending", "conflicted"}:
                 continue
+            item.setdefault("evidence_source_count", 1)
+            item.setdefault("corroborated", False)
+            item.setdefault("corroborates_approved", False)
+            item.setdefault(
+                "preferred_address_role",
+                str(item.get("address_role") or ""),
+            )
             if not str(item.get("entity_name") or ""):
                 item["conflict_status"] = "none"
                 if item.get("status") == "conflicted":
@@ -653,23 +740,86 @@ class AddressIntelligenceStore:
             groups.setdefault(
                 (int(item["chain_id"]), str(item["address"])), []
             ).append(item)
-        for items in groups.values():
-            identities = {
-                (
-                    str(item.get("entity_name") or "").lower(),
-                    str(item.get("entity_type") or "").lower(),
-                    str(item.get("address_role") or "").lower(),
+        for key, items in groups.items():
+            if anchor_error is not None:
+                for item in items:
+                    item["status"] = "conflicted"
+                    item["conflict_status"] = anchor_error
+                continue
+            anchor = approved_anchors.get(key)
+            if anchor is not None:
+                anchor_name = _canonical_entity_name(
+                    getattr(anchor, "entity_name", "")
                 )
-                for item in items
-            }
-            conflicted = len(identities) > 1
+                anchor_type = _canonical_entity_type(
+                    getattr(anchor, "entity_type", "")
+                )
+                for item in items:
+                    if (
+                        _canonical_entity_name(item.get("entity_name"))
+                        == anchor_name
+                        and _canonical_entity_type(item.get("entity_type"))
+                        == anchor_type
+                    ):
+                        item["status"] = "pending"
+                        item["conflict_status"] = "corroborates_approved"
+                        item["corroborates_approved"] = True
+                        item["review_status"] = "corroborates_approved"
+                    else:
+                        item["status"] = "conflicted"
+                        item["conflict_status"] = (
+                            "conflicted_with_approved"
+                        )
+                if any(
+                    item["conflict_status"] == "conflicted_with_approved"
+                    for item in items
+                ):
+                    continue
+            identity_groups: dict[
+                tuple[str, str], list[dict[str, object]]
+            ] = {}
             for item in items:
-                item["conflict_status"] = (
-                    "conflicted" if conflicted else "none"
+                identity_groups.setdefault((
+                    _canonical_entity_name(item.get("entity_name")),
+                    _canonical_entity_type(item.get("entity_type")),
+                ), []).append(item)
+            if len(identity_groups) > 1:
+                for item in items:
+                    item["conflict_status"] = "conflicted"
+                    item["status"] = "conflicted"
+                continue
+            identity_items = next(iter(identity_groups.values()))
+            sources = {
+                str(item.get("provider") or "")
+                for item in identity_items
+            }
+            roles = {
+                str(item.get("address_role") or "")
+                for item in identity_items
+            }
+            specific_roles = roles - GENERIC_ROLES
+            role_conflict = any(
+                pair.issubset(specific_roles) for pair in ROLE_CONFLICTS
+            )
+            preferred_role = (
+                next(iter(specific_roles))
+                if len(specific_roles) == 1
+                else (
+                    "cex_wallet"
+                    if not specific_roles
+                    else sorted(specific_roles)[0]
                 )
-                item["status"] = (
-                    "conflicted" if conflicted else "pending"
-                )
+            )
+            for item in identity_items:
+                item["evidence_source_count"] = len(sources)
+                item["corroborated"] = len(sources) > 1
+                item["preferred_address_role"] = preferred_role
+                if role_conflict:
+                    item["conflict_status"] = "conflicted"
+                    item["status"] = "conflicted"
+                elif item.get("corroborates_approved") is not True:
+                    item["conflict_status"] = "none"
+                    item["status"] = "pending"
 
     def expire(self, *, now: int | None = None) -> int:
         if not self.path.exists():
@@ -775,10 +925,11 @@ class AddressIntelligenceStore:
             selected["review_status"] = review_status
             selected["reviewed_at"] = timestamp
             selected["review_note"] = _bounded(note, 200)
+            anchors, anchor_error = self._approved_anchors(timestamp)
             self._mark_conflicts([
                 item for item in data["candidates"]
                 if isinstance(item, dict)
-            ])
+            ], approved_anchors=anchors, anchor_error=anchor_error)
             _write_json_unlocked(self.path, data)
             _chmod_private(self.path, 0o600)
             return dict(selected)
@@ -811,6 +962,21 @@ class AddressIntelligenceStore:
             )
             if selected is None:
                 raise AddressIntelligenceError("label_candidate_not_found")
+            expires_at = selected.get("expires_at")
+            if (
+                expires_at is not None
+                and int(expires_at) <= timestamp
+            ):
+                selected["status"] = "expired"
+                selected["review_status"] = "expired"
+                selected["conflict_status"] = "none"
+                selected["reviewed_at"] = timestamp
+                selected["review_note"] = "expired_before_approval"
+                _write_json_unlocked(self.path, data)
+                _chmod_private(self.path, 0o600)
+                raise AddressIntelligenceError(
+                    "label_candidate_expired"
+                )
             if (
                 selected.get("status") != "pending"
                 or selected.get("conflict_status") != "none"
@@ -842,6 +1008,17 @@ class AddressIntelligenceStore:
             _chmod_private(labels_path.parent, 0o700)
             with _file_lock(labels_path):
                 existed = labels_path.exists()
+                if self.approved_labels_path is not None:
+                    if not existed:
+                        raise AddressIntelligenceError(
+                            "approved_label_anchor_unavailable"
+                        )
+                    try:
+                        load_labels_csv(labels_path)
+                    except (LabelValidationError, OSError) as exc:
+                        raise AddressIntelligenceError(
+                            "approved_label_anchor_unavailable"
+                        ) from exc
                 original = labels_path.read_bytes() if existed else b""
                 backup: Path | None = None
                 if existed:
@@ -1200,32 +1377,71 @@ class ManualCsvProvider:
         timestamp = (
             int(time.time()) if observed_at is None else int(observed_at)
         )
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-        if len(rows) > row_limit:
-            raise AddressIntelligenceError("label_import_row_limit")
-        file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        file_hash = _file_sha256(path)
         results: list[dict[str, object]] = []
-        for index, row in enumerate(rows, start=2):
-            blockchain = _bounded(
-                row.get("blockchain")
-                or row.get("chain")
-                or row.get("chain_id")
-            ).lower()
-            if blockchain not in {"base", "8453", "eip155:8453"}:
-                continue
-            try:
-                address = normalize_evm_address(
-                    str(row.get("address") or "")
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for index, row in enumerate(reader, start=2):
+                if index - 1 > row_limit:
+                    raise AddressIntelligenceError(
+                        "label_import_row_limit"
+                    )
+                candidate = self._candidate_from_csv_row(
+                    row,
+                    index=index,
+                    file_hash=file_hash,
+                    timestamp=timestamp,
                 )
-            except LabelValidationError:
-                continue
-            entity_name = _bounded(
-                row.get("cex_name")
-                or row.get("entity_name")
-                or row.get("name")
-                or row.get("label")
+                if candidate is not None:
+                    results.append(candidate)
+        return results
+
+    def _candidate_from_csv_row(
+        self,
+        row: dict[str, object],
+        *,
+        index: int,
+        file_hash: str,
+        timestamp: int,
+    ) -> dict[str, object] | None:
+        blockchain = _bounded(
+            row.get("blockchain")
+            or row.get("chain")
+            or row.get("chain_id")
+        ).lower()
+        if blockchain not in {"base", "8453", "eip155:8453"}:
+            return None
+        try:
+            address = normalize_evm_address(
+                str(row.get("address") or "")
             )
+        except LabelValidationError:
+            return None
+        entity_name = _bounded(
+            row.get("cex_name")
+            or row.get("entity_name")
+            or row.get("name")
+            or row.get("label")
+        )
+        if not entity_name:
+            return None
+        if self.provider_name == "basescan_manual":
+            entity_type = _bounded(
+                row.get("entity_type") or "entity"
+            ).lower()
+            role = _bounded(
+                row.get("address_role")
+                or row.get("address_type")
+                or "wallet"
+            ).lower()
+            if entity_type in {"cex", "exchange"}:
+                if not (
+                    row.get("address_role") or row.get("address_type")
+                ):
+                    return None
+                if not (row.get("source") or row.get("source_ref")):
+                    return None
+        else:
             entity_type = _bounded(
                 row.get("entity_type") or "cex"
             ).lower()
@@ -1238,39 +1454,48 @@ class ManualCsvProvider:
                     else "cex_wallet"
                 )
             ).lower()
-            if not entity_name:
-                continue
-            source_ref = _bounded(
-                row.get("source_ref")
-                or row.get("source")
-                or f"{path.name}:row:{index}",
-                240,
-            )
-            confidence = _normalize_confidence(
-                row.get("confidence"),
-                0.95
-                if self.provider_name == "dune_cex_deposit"
-                else 0.90,
-            )
-            results.append(build_candidate(
-                chain_id=BASE_CHAIN_ID,
-                address=address,
-                entity_name=entity_name,
-                entity_type=entity_type,
-                address_role=role,
-                provider=self.provider_name,
-                source_ref=source_ref,
-                source_confidence=confidence,
-                evidence_type="manual_csv_exact_address",
-                evidence={
-                    "file_hash": file_hash,
-                    "row": index,
-                    "provider": self.provider_name,
-                },
-                observed_at=timestamp,
-                expires_at=_optional_timestamp(row.get("expires_at")),
-            ))
-        return results
+        source_ref = _stable_source_ref(
+            self.provider_name,
+            address,
+            entity_name,
+            role,
+        )
+        confidence = _normalize_confidence(
+            row.get("confidence"),
+            0.95
+            if self.provider_name == "dune_cex_deposit"
+            else 0.90,
+        )
+        return build_candidate(
+            chain_id=BASE_CHAIN_ID,
+            address=address,
+            entity_name=entity_name,
+            entity_type=entity_type,
+            address_role=role,
+            provider=self.provider_name,
+            source_ref=source_ref,
+            source_confidence=confidence,
+            evidence_type="manual_csv_exact_address",
+            evidence={
+                "file_hash": file_hash,
+                "row": index,
+                "provider": self.provider_name,
+                "source": _bounded(
+                    row.get("source") or row.get("source_ref"),
+                    160,
+                ),
+            },
+            observed_at=timestamp,
+            expires_at=_optional_timestamp(row.get("expires_at")),
+        )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _optional_timestamp(value: object) -> int | None:
@@ -1294,10 +1519,14 @@ class DuneAddressProvider:
         base_url: str = "https://api.dune.com/api",
         timeout_sec: int = 15,
         max_retries: int = 1,
-        max_requests: int = 4,
+        max_requests: int = 6,
+        poll_interval_sec: float = 1.0,
+        execution_timeout_sec: int = 30,
         max_rows: int = 100,
         session: Any | None = None,
         clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
     ):
         if provider_name not in {"dune_cex", "dune_cex_deposit"}:
             raise AddressIntelligenceError("label_provider_invalid")
@@ -1309,10 +1538,26 @@ class DuneAddressProvider:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = int(timeout_sec)
         self.max_retries = max(0, min(int(max_retries), 2))
-        self.max_requests = max(1, min(int(max_requests), 6))
+        if not 3 <= int(max_requests) <= 10:
+            raise AddressIntelligenceError(
+                "dune_max_requests_invalid"
+            )
+        if not 0.2 <= float(poll_interval_sec) <= 5:
+            raise AddressIntelligenceError(
+                "dune_poll_interval_invalid"
+            )
+        if not 5 <= int(execution_timeout_sec) <= 120:
+            raise AddressIntelligenceError(
+                "dune_execution_timeout_invalid"
+            )
+        self.max_requests = int(max_requests)
+        self.poll_interval_sec = float(poll_interval_sec)
+        self.execution_timeout_sec = int(execution_timeout_sec)
         self.max_rows = max(1, min(int(max_rows), 500))
         self.session = session or requests.Session()
         self.clock = clock
+        self.monotonic = monotonic
+        self.sleeper = sleeper
         self.request_count = 0
 
     @property
@@ -1349,7 +1594,7 @@ class DuneAddressProvider:
         })[: self.max_rows]
         if not normalized:
             return []
-        quoted = ", ".join(f"'{value}'" for value in normalized)
+        varbinary_literals = ", ".join(normalized)
         if self.provider_name == "dune_cex_deposit":
             table = "cex.deposit_addresses"
             name_columns = "cex_name"
@@ -1360,13 +1605,14 @@ class DuneAddressProvider:
             "SELECT blockchain, address, "
             f"{name_columns} FROM {table} "
             "WHERE blockchain = 'base' "
-            f"AND lower(address) IN ({quoted}) "
+            f"AND address IN ({varbinary_literals}) "
+            "ORDER BY address, cex_name "
             f"LIMIT {self.max_rows}"
         )
         rows = self._execute_sql(sql)
         now = int(self.clock())
         results = []
-        for index, row in enumerate(rows):
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             blockchain = _bounded(row.get("blockchain")).lower()
@@ -1396,7 +1642,16 @@ class DuneAddressProvider:
                     else "cex_wallet"
                 ),
                 provider=self.provider_name,
-                source_ref=f"{table}:row:{index}",
+                source_ref=_stable_source_ref(
+                    self.provider_name,
+                    address,
+                    name,
+                    (
+                        "deposit"
+                        if self.provider_name == "dune_cex_deposit"
+                        else "cex_wallet"
+                    ),
+                ),
                 source_confidence=(
                     0.95
                     if self.provider_name == "dune_cex_deposit"
@@ -1417,12 +1672,9 @@ class DuneAddressProvider:
         response = self._request(
             "POST",
             "/v1/sql/execute",
-            json={"sql": sql},
+            json={"sql": sql, "performance": "small"},
         )
         payload = self._json(response)
-        immediate = self._result_rows(payload)
-        if immediate is not None:
-            return immediate[: self.max_rows]
         execution_id = _bounded(
             payload.get("execution_id")
             if isinstance(payload, dict)
@@ -1431,24 +1683,61 @@ class DuneAddressProvider:
         )
         if not execution_id:
             raise AddressIntelligenceError("dune_invalid_response")
-        while self.request_count < self.max_requests:
-            result_response = self._request(
+        deadline = self.monotonic() + self.execution_timeout_sec
+        while True:
+            if self.monotonic() >= deadline:
+                raise AddressIntelligenceError(
+                    "dune_execution_timeout"
+                )
+            status_response = self._request(
                 "GET",
-                f"/v1/execution/{execution_id}/results",
+                f"/v1/execution/{execution_id}/status",
             )
-            result_payload = self._json(result_response)
-            rows = self._result_rows(result_payload)
-            if rows is not None:
+            state = self._execution_state(
+                self._json(status_response)
+            )
+            if state == "QUERY_STATE_COMPLETED":
+                result_response = self._request(
+                    "GET",
+                    f"/v1/execution/{execution_id}/results",
+                )
+                rows = self._result_rows(self._json(result_response))
+                if rows is None:
+                    raise AddressIntelligenceError(
+                        "dune_invalid_response"
+                    )
                 return rows[: self.max_rows]
-            state = _bounded(
-                result_payload.get("state")
-                if isinstance(result_payload, dict)
-                else "",
-                80,
-            ).upper()
-            if state in {"QUERY_STATE_FAILED", "FAILED", "CANCELLED"}:
+            if state in {
+                "QUERY_STATE_FAILED",
+                "QUERY_STATE_CANCELLED",
+                "FAILED",
+                "CANCELLED",
+            }:
                 raise AddressIntelligenceError("dune_query_failed")
-        raise AddressIntelligenceError("dune_request_budget_exhausted")
+            if state not in {
+                "QUERY_STATE_PENDING",
+                "QUERY_STATE_EXECUTING",
+                "PENDING",
+                "EXECUTING",
+            }:
+                raise AddressIntelligenceError(
+                    "dune_invalid_response"
+                )
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                raise AddressIntelligenceError(
+                    "dune_execution_timeout"
+                )
+            self.sleeper(min(self.poll_interval_sec, remaining))
+
+    @staticmethod
+    def _execution_state(payload: dict[str, object]) -> str:
+        execution = payload.get("execution")
+        source = execution if isinstance(execution, dict) else payload
+        state = _bounded(source.get("state"), 80).upper()
+        if not state:
+            raise AddressIntelligenceError("dune_invalid_response")
+        return state
 
     def _request(self, method: str, path: str, **kwargs: object) -> Any:
         last_code = "dune_connection_failed"
@@ -1655,8 +1944,11 @@ class OliParquetProvider:
             raise AddressIntelligenceError(
                 "oli_parquet_dependency_missing"
             ) from exc
-        table = parquet.read_table(path)
-        return table.to_pylist()
+        parquet_file = parquet.ParquetFile(path)
+        for batch in parquet_file.iter_batches(batch_size=512):
+            for row in batch.to_pylist():
+                if isinstance(row, dict):
+                    yield row
 
 
 class ArkhamOptionalProvider:
@@ -1799,6 +2091,12 @@ class AddressIntelligenceService:
                 timeout_sec=self.settings.dune_api_timeout_sec,
                 max_retries=self.settings.dune_api_max_retries,
                 max_requests=self.settings.dune_api_max_requests,
+                poll_interval_sec=float(
+                    self.settings.dune_api_poll_interval_sec
+                ),
+                execution_timeout_sec=(
+                    self.settings.dune_api_execution_timeout_sec
+                ),
                 max_rows=self.settings.dune_api_max_rows,
             ),
             DuneAddressProvider(
@@ -1808,6 +2106,12 @@ class AddressIntelligenceService:
                 timeout_sec=self.settings.dune_api_timeout_sec,
                 max_retries=self.settings.dune_api_max_retries,
                 max_requests=self.settings.dune_api_max_requests,
+                poll_interval_sec=float(
+                    self.settings.dune_api_poll_interval_sec
+                ),
+                execution_timeout_sec=(
+                    self.settings.dune_api_execution_timeout_sec
+                ),
                 max_rows=self.settings.dune_api_max_rows,
             ),
             OliParquetProvider(),

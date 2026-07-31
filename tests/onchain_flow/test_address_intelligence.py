@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from contextlib import redirect_stdout
 from dataclasses import replace
+from decimal import Decimal
 import io
 import json
 import os
@@ -111,6 +112,12 @@ class AddressIntelligenceTests(unittest.TestCase):
             arkham_api_key="",
             dune_api_key="",
         )
+        self.labels.parent.mkdir(parents=True, exist_ok=True)
+        self.labels.write_text(
+            "chain_id,address,entity_name,entity_type,address_type,source,"
+            "confidence,valid_from,valid_to,evidence_hash,review_status\n",
+            encoding="utf-8",
+        )
         self.store = AddressIntelligenceStore.from_settings(self.settings)
 
     def tearDown(self) -> None:
@@ -163,6 +170,41 @@ class AddressIntelligenceTests(unittest.TestCase):
                 dune_api_base_url="",
                 dune_api_key="fake",
             ).validate()
+
+    def test_dune_polling_configuration_is_bounded(self) -> None:
+        replace(
+            self.settings,
+            dune_api_max_requests=3,
+            dune_api_poll_interval_sec=Decimal("0.2"),
+            dune_api_execution_timeout_sec=5,
+        ).validate()
+        invalid_values = (
+            {"dune_api_max_requests": 2},
+            {"dune_api_max_requests": 11},
+            {"dune_api_poll_interval_sec": Decimal("0.1")},
+            {"dune_api_poll_interval_sec": Decimal("5.1")},
+            {"dune_api_poll_interval_sec": Decimal("NaN")},
+            {"dune_api_execution_timeout_sec": 4},
+            {"dune_api_execution_timeout_sec": 121},
+        )
+        for values in invalid_values:
+            with self.subTest(values=values):
+                with self.assertRaises(SettingsValidationError):
+                    replace(self.settings, **values).validate()
+
+    def test_config_manager_accepts_bounded_dune_polling_values(
+        self,
+    ) -> None:
+        manager = ConfigManager(self.root)
+        manager.set("DUNE_API_MAX_REQUESTS", "6")
+        manager.set("DUNE_API_POLL_INTERVAL_SEC", "0.2")
+        manager.set("DUNE_API_EXECUTION_TIMEOUT_SEC", "30")
+        status = manager.status()
+        self.assertEqual(status["DUNE_API_MAX_REQUESTS"], "6")
+        self.assertEqual(status["DUNE_API_POLL_INTERVAL_SEC"], "0.2")
+        self.assertEqual(
+            status["DUNE_API_EXECUTION_TIMEOUT_SEC"], "30"
+        )
 
     def test_arkham_empty_key_never_constructs_client(self) -> None:
         factory = Mock(side_effect=AssertionError("network client created"))
@@ -293,10 +335,17 @@ class AddressIntelligenceTests(unittest.TestCase):
         )
         self.assertEqual(imported[0]["status"], "pending")
         self.store.merge_candidates(imported, now=1000)
-        self.assertFalse(self.labels.exists())
+        with self.labels.open(encoding="utf-8") as handle:
+            self.assertEqual(len(list(csv.DictReader(handle))), 0)
 
     def test_dune_automatic_sync_is_explicit_and_bounded(self) -> None:
         session = FakeSession([
+            FakeResponse(200, {
+                "execution_id": "exec-1",
+            }),
+            FakeResponse(200, {
+                "state": "QUERY_STATE_COMPLETED",
+            }),
             FakeResponse(200, {
                 "result": {
                     "rows": [{
@@ -311,14 +360,427 @@ class AddressIntelligenceTests(unittest.TestCase):
             provider_name="dune_cex",
             api_key="fake-key",
             session=session,
-            max_requests=2,
+            max_requests=6,
             max_rows=10,
+            sleeper=lambda _seconds: None,
         )
         rows = provider.discover([{"address": ADDRESS_A}])
         self.assertEqual(len(rows), 1)
-        self.assertEqual(provider.request_count, 1)
+        self.assertEqual(provider.request_count, 3)
         self.assertEqual(rows[0]["status"], "pending")
         self.assertNotIn("fake-key", json.dumps(rows))
+        sql = session.calls[0]["json"]["sql"]
+        self.assertNotIn("lower(address)", sql)
+        self.assertIn(f"address IN ({ADDRESS_A})", sql)
+        self.assertNotIn(f"'{ADDRESS_A}'", sql)
+        self.assertIn("ORDER BY address, cex_name", sql)
+        self.assertEqual(
+            session.calls[0]["json"]["performance"], "small"
+        )
+        self.assertTrue(session.calls[1]["url"].endswith("/status"))
+        self.assertTrue(session.calls[2]["url"].endswith("/results"))
+
+    def test_dune_invalid_address_never_enters_sql(self) -> None:
+        session = FakeSession([])
+        provider = DuneAddressProvider(
+            provider_name="dune_cex",
+            api_key="fake-key",
+            session=session,
+        )
+        with self.assertRaises(LabelValidationError):
+            provider.discover([{"address": "not-an-address"}])
+        self.assertEqual(session.calls, [])
+
+    def test_dune_async_polling_is_bounded_and_sleeps(self) -> None:
+        session = FakeSession([
+            FakeResponse(200, {"execution_id": "exec-1"}),
+            FakeResponse(200, {"state": "QUERY_STATE_PENDING"}),
+            FakeResponse(200, {"state": "QUERY_STATE_COMPLETED"}),
+            FakeResponse(200, {"result": {"rows": []}}),
+        ])
+        sleeps: list[float] = []
+        provider = DuneAddressProvider(
+            provider_name="dune_cex",
+            api_key="fake-key",
+            session=session,
+            max_requests=6,
+            sleeper=sleeps.append,
+        )
+        self.assertEqual(provider.discover([{"address": ADDRESS_A}]), [])
+        self.assertEqual(provider.request_count, 4)
+        self.assertEqual(sleeps, [1.0])
+        self.assertEqual(
+            sum(call["url"].endswith("/results") for call in session.calls),
+            1,
+        )
+
+    def test_dune_execution_timeout_is_deterministic(self) -> None:
+        session = FakeSession([
+            FakeResponse(200, {"execution_id": "exec-1"}),
+            FakeResponse(200, {"state": "QUERY_STATE_PENDING"}),
+        ])
+        elapsed = [0.0]
+
+        def sleep(seconds: float) -> None:
+            elapsed[0] += seconds
+
+        provider = DuneAddressProvider(
+            provider_name="dune_cex",
+            api_key="fake-key",
+            session=session,
+            max_requests=6,
+            poll_interval_sec=5,
+            execution_timeout_sec=5,
+            monotonic=lambda: elapsed[0],
+            sleeper=sleep,
+        )
+        with self.assertRaises(AddressIntelligenceError) as caught:
+            provider.discover([{"address": ADDRESS_A}])
+        self.assertEqual(caught.exception.code, "dune_execution_timeout")
+
+    def test_dune_request_budget_stops_before_extra_result_read(self) -> None:
+        session = FakeSession([
+            FakeResponse(200, {"execution_id": "exec-1"}),
+            FakeResponse(200, {"state": "QUERY_STATE_PENDING"}),
+            FakeResponse(200, {"state": "QUERY_STATE_COMPLETED"}),
+        ])
+        provider = DuneAddressProvider(
+            provider_name="dune_cex",
+            api_key="fake-key",
+            session=session,
+            max_requests=3,
+            sleeper=lambda _seconds: None,
+        )
+        with self.assertRaises(AddressIntelligenceError) as caught:
+            provider.discover([{"address": ADDRESS_A}])
+        self.assertEqual(
+            caught.exception.code,
+            "dune_request_budget_exhausted",
+        )
+        self.assertEqual(len(session.calls), 3)
+
+    def test_dune_failed_execution_is_classified(self) -> None:
+        for state in ("QUERY_STATE_FAILED", "QUERY_STATE_CANCELLED"):
+            with self.subTest(state=state):
+                session = FakeSession([
+                    FakeResponse(200, {"execution_id": "exec-1"}),
+                    FakeResponse(200, {"state": state}),
+                ])
+                provider = DuneAddressProvider(
+                    provider_name="dune_cex",
+                    api_key="fake-key",
+                    session=session,
+                )
+                with self.assertRaises(
+                    AddressIntelligenceError
+                ) as caught:
+                    provider.discover([{"address": ADDRESS_A}])
+                self.assertEqual(
+                    caught.exception.code, "dune_query_failed"
+                )
+
+    def test_manual_csv_order_does_not_change_candidate_ids(self) -> None:
+        first = self.root / "first.csv"
+        second = self.root / "second.csv"
+        header = "blockchain,address,cex_name,source\n"
+        first.write_text(
+            header
+            + f"base,{ADDRESS_A},Coinbase,dune\n"
+            + f"base,{ADDRESS_B},Binance,dune\n",
+            encoding="utf-8",
+        )
+        second.write_text(
+            header
+            + f"base,{ADDRESS_B},Binance,dune\n"
+            + f"base,{ADDRESS_A},Coinbase,dune\n",
+            encoding="utf-8",
+        )
+        provider = ManualCsvProvider("dune_cex")
+        ids_first = {
+            item["address"]: item["candidate_id"]
+            for item in provider.import_csv(first, observed_at=1000)
+        }
+        ids_second = {
+            item["address"]: item["candidate_id"]
+            for item in provider.import_csv(second, observed_at=1001)
+        }
+        self.assertEqual(ids_first, ids_second)
+
+    def test_dune_result_order_does_not_change_candidate_ids(self) -> None:
+        def discover(rows: list[dict[str, str]]) -> dict[str, str]:
+            session = FakeSession([
+                FakeResponse(200, {"execution_id": "exec-1"}),
+                FakeResponse(
+                    200, {"state": "QUERY_STATE_COMPLETED"}
+                ),
+                FakeResponse(200, {"result": {"rows": rows}}),
+            ])
+            provider = DuneAddressProvider(
+                provider_name="dune_cex",
+                api_key="fake",
+                session=session,
+                sleeper=lambda _seconds: None,
+            )
+            return {
+                item["address"]: str(item["candidate_id"])
+                for item in provider.discover([
+                    {"address": ADDRESS_A},
+                    {"address": ADDRESS_B},
+                ])
+            }
+
+        rows = [
+            {
+                "blockchain": "base",
+                "address": ADDRESS_A,
+                "cex_name": "Coinbase",
+            },
+            {
+                "blockchain": "base",
+                "address": ADDRESS_B,
+                "cex_name": "Binance",
+            },
+        ]
+        self.assertEqual(discover(rows), discover(list(reversed(rows))))
+
+    def test_identity_refresh_updates_evidence_without_duplicate(self) -> None:
+        first = candidate(now=1000)
+        second = build_candidate(
+            chain_id=8453,
+            address=ADDRESS_A,
+            entity_name="Exchange A",
+            entity_type="cex",
+            address_role="cex_wallet",
+            provider="dune_cex",
+            source_ref="stable",
+            source_confidence=0.96,
+            evidence_type="refresh",
+            evidence={"version": 2},
+            observed_at=1001,
+        )
+        self.assertEqual(first["candidate_id"], second["candidate_id"])
+        self.store.merge_candidates([first], now=1000)
+        result = self.store.merge_candidates([second], now=1001)
+        self.assertEqual(result, {"created": 0, "refreshed": 1})
+        stored = self.store.list_candidates()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["evidence_hash"], second["evidence_hash"])
+
+    def test_generic_and_specific_cex_roles_are_compatible(self) -> None:
+        for role in ("deposit", "hot", "cold", "collector"):
+            with self.subTest(role=role):
+                self.settings.address_intelligence_path.unlink(
+                    missing_ok=True
+                )
+                generic = candidate(role="cex_wallet")
+                specific = candidate(provider="oli", role=role)
+                self.store.merge_candidates(
+                    [generic, specific], now=1000
+                )
+                values = self.store.list_candidates(status="pending")
+                self.assertEqual(len(values), 2)
+                self.assertTrue(
+                    all(item["corroborated"] for item in values)
+                )
+                self.assertTrue(
+                    all(
+                        item["evidence_source_count"] == 2
+                        for item in values
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        item["preferred_address_role"] == role
+                        for item in values
+                    )
+                )
+
+    def test_incompatible_specific_roles_conflict(self) -> None:
+        for first_role, second_role in (
+            ("hot", "cold"),
+            ("deposit", "hot"),
+            ("deposit", "cold"),
+            ("collector", "cold"),
+        ):
+            with self.subTest(
+                first_role=first_role,
+                second_role=second_role,
+            ):
+                self.settings.address_intelligence_path.unlink(
+                    missing_ok=True
+                )
+                first = candidate(role=first_role)
+                second = candidate(
+                    provider="oli", role=second_role
+                )
+                self.store.merge_candidates([first, second], now=1000)
+                self.assertEqual(
+                    len(
+                        self.store.list_candidates(
+                            status="conflicted"
+                        )
+                    ),
+                    2,
+                )
+
+    def test_exchange_and_cex_entity_types_are_compatible(self) -> None:
+        first = candidate(entity_type="cex")
+        second = candidate(
+            provider="oli",
+            entity_type="exchange",
+        )
+        self.store.merge_candidates([first, second], now=1000)
+        self.assertEqual(
+            len(self.store.list_candidates(status="pending")), 2
+        )
+
+    def _write_approved_label(
+        self,
+        *,
+        name: str,
+        valid_to: str = "",
+    ) -> None:
+        self.labels.write_text(
+            "chain_id,address,entity_name,entity_type,address_type,source,"
+            "confidence,valid_from,valid_to,evidence_hash,review_status\n"
+            f"8453,{ADDRESS_A},{name},cex,hot,manual_review,0.99,1,"
+            f"{valid_to},anchor,approved\n",
+            encoding="utf-8",
+        )
+
+    def test_candidate_corroborates_active_approved_label(self) -> None:
+        self._write_approved_label(name="Coinbase")
+        original = self.labels.read_bytes()
+        item = candidate(name="Coinbase")
+        self.store.merge_candidates([item], now=1000)
+        stored = self.store.list_candidates()[0]
+        self.assertTrue(stored["corroborates_approved"])
+        self.assertEqual(
+            stored["conflict_status"], "corroborates_approved"
+        )
+        self.assertEqual(self.labels.read_bytes(), original)
+
+    def test_candidate_conflicting_with_approved_label_fails_closed(self) -> None:
+        self._write_approved_label(name="Coinbase")
+        original = self.labels.read_bytes()
+        item = candidate(name="Binance")
+        self.store.merge_candidates([item], now=1000)
+        stored = self.store.list_candidates()[0]
+        self.assertEqual(stored["status"], "conflicted")
+        self.assertEqual(
+            stored["conflict_status"], "conflicted_with_approved"
+        )
+        self.assertEqual(self.labels.read_bytes(), original)
+
+    def test_expired_approved_anchor_does_not_conflict(self) -> None:
+        self._write_approved_label(name="Coinbase", valid_to="999")
+        item = candidate(name="Binance")
+        self.store.merge_candidates([item], now=1000)
+        self.assertEqual(
+            self.store.list_candidates()[0]["status"], "pending"
+        )
+
+    def test_missing_or_invalid_approved_anchor_fails_closed(self) -> None:
+        for content in (None, "not,a,valid,label\n"):
+            with self.subTest(content=content):
+                self.labels.unlink(missing_ok=True)
+                if content is not None:
+                    self.labels.write_text(content, encoding="utf-8")
+                item = candidate(address=ADDRESS_B)
+                self.store.merge_candidates([item], now=1000)
+                stored = next(
+                    value
+                    for value in self.store.list_candidates()
+                    if value["address"] == ADDRESS_B
+                )
+                self.assertEqual(stored["status"], "conflicted")
+                self.assertEqual(
+                    stored["conflict_status"],
+                    "approved_label_anchor_unavailable",
+                )
+                self.settings.address_intelligence_path.unlink(
+                    missing_ok=True
+                )
+
+    def test_direct_approval_rejects_expired_candidate_transactionally(
+        self,
+    ) -> None:
+        item = candidate(expires_at=999)
+        self.store.merge_candidates([item], now=900)
+        original = self.labels.read_bytes()
+        with self.assertRaises(AddressIntelligenceError) as caught:
+            self.store.approve(
+                str(item["candidate_id"]),
+                labels_path=self.labels,
+                reviewed_at=1000,
+            )
+        self.assertEqual(caught.exception.code, "label_candidate_expired")
+        self.assertEqual(self.labels.read_bytes(), original)
+        self.assertEqual(
+            self.store.list_candidates()[0]["status"], "expired"
+        )
+
+    def test_basescan_import_never_defaults_to_cex(self) -> None:
+        path = self.root / "basescan.csv"
+        path.write_text(
+            "chain,address,name,source\n"
+            f"base,{ADDRESS_A},Public Name,basescan-public-tag\n",
+            encoding="utf-8",
+        )
+        values = ManualCsvProvider("basescan_manual").import_csv(path)
+        self.assertEqual(len(values), 1)
+        self.assertEqual(values[0]["entity_type"], "entity")
+        self.assertEqual(values[0]["address_role"], "wallet")
+
+    def test_basescan_explicit_cex_enters_pending(self) -> None:
+        path = self.root / "basescan.csv"
+        path.write_text(
+            "chain,address,name,entity_type,address_type,source\n"
+            f"base,{ADDRESS_A},Coinbase,cex,hot,manual-evidence\n",
+            encoding="utf-8",
+        )
+        values = ManualCsvProvider("basescan_manual").import_csv(path)
+        self.assertEqual(len(values), 1)
+        self.assertEqual(values[0]["entity_type"], "cex")
+        self.assertEqual(values[0]["status"], "pending")
+        self.assertEqual(len(str(values[0]["evidence_hash"])), 64)
+
+    def test_basescan_cex_without_manual_source_is_rejected(self) -> None:
+        path = self.root / "basescan.csv"
+        path.write_text(
+            "chain,address,name,entity_type,address_type\n"
+            f"base,{ADDRESS_A},Coinbase,cex,hot\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            ManualCsvProvider("basescan_manual").import_csv(path),
+            [],
+        )
+
+    def test_manual_csv_rejects_at_row_limit_without_full_list(self) -> None:
+        path = self.root / "bounded.csv"
+        path.write_text(
+            "chain,address,name\n"
+            f"base,{ADDRESS_A},A\n"
+            f"base,{ADDRESS_B},B\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(AddressIntelligenceError) as caught:
+            ManualCsvProvider("basescan_manual").import_csv(
+                path, row_limit=1
+            )
+        self.assertEqual(caught.exception.code, "label_import_row_limit")
+
+    def test_oli_reader_uses_bounded_parquet_batches(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "paopao_radar"
+            / "onchain_flow"
+            / "address_intelligence.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ParquetFile(path)", source)
+        self.assertIn("iter_batches(batch_size=512)", source)
+        self.assertNotIn("parquet.read_table(path)", source)
 
     def test_oli_import_keeps_attester_and_non_cex_label(self) -> None:
         rows = [{
@@ -378,7 +840,8 @@ class AddressIntelligenceTests(unittest.TestCase):
     def test_pending_candidate_never_enters_production_csv(self) -> None:
         item = candidate()
         self.store.merge_candidates([item], now=1000)
-        self.assertFalse(self.labels.exists())
+        with self.labels.open(encoding="utf-8") as handle:
+            self.assertEqual(len(list(csv.DictReader(handle))), 0)
         self.assertEqual(
             self.store.list_candidates()[0]["status"], "pending"
         )
@@ -427,7 +890,7 @@ class AddressIntelligenceTests(unittest.TestCase):
             self.assertEqual(len(list(csv.DictReader(handle))), 0)
 
     def test_production_csv_validation_failure_rolls_back(self) -> None:
-        self.labels.parent.mkdir(parents=True)
+        self.labels.parent.mkdir(parents=True, exist_ok=True)
         self.labels.write_text(
             "chain_id,address,entity_name,entity_type,address_type,source,"
             "confidence,valid_from,valid_to\n"
@@ -443,12 +906,16 @@ class AddressIntelligenceTests(unittest.TestCase):
             "load_labels_csv",
             side_effect=LabelValidationError("fixture"),
         ):
-            with self.assertRaises(LabelValidationError):
+            with self.assertRaises(AddressIntelligenceError) as caught:
                 self.store.approve(
                     str(item["candidate_id"]),
                     labels_path=self.labels,
                     reviewed_at=1001,
                 )
+        self.assertEqual(
+            caught.exception.code,
+            "approved_label_anchor_unavailable",
+        )
         self.assertEqual(self.labels.read_bytes(), original)
         self.assertEqual(
             self.store.list_candidates()[0]["status"], "pending"

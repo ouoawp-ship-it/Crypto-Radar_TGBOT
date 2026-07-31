@@ -101,6 +101,24 @@ python onchain_main.py address-intelligence import-oli --file <parquet>
 python onchain_main.py address-intelligence import-basescan --file <csv>
 ```
 
+## Dune 执行与身份稳定性
+
+Dune 自动同步把规范 EVM 地址写成 DuneSQL `VARBINARY` literal，并按
+`address, cex_name` 确定性排序。执行流程严格为 SQL execute、状态轮询、
+完成后单次读取结果，且固定使用 `performance=small`：
+
+- `DUNE_API_MAX_REQUESTS=6`，允许 3～10；
+- `DUNE_API_POLL_INTERVAL_SEC=1`，允许 0.2～5 秒；
+- `DUNE_API_EXECUTION_TIMEOUT_SEC=30`，允许 5～120 秒。
+
+Candidate ID 只依赖规范身份，不依赖 CSV 行号、文件路径、Dune execution
+ID 或返回顺序。多个来源佐证同一实体时记录来源数量，但不会自动批准。有效
+approved 标签作为身份锚点；一致候选只标记佐证，冲突候选 fail closed。
+
+CSV 逐行读取并在超过上限时立即拒绝；OLI 使用有界 Parquet batch。
+BaseScan 普通 Public Tag 不默认成为 CEX，只有显式 `entity_type=cex`、
+具体角色和人工证据来源齐备时才会成为待审核 CEX 候选。
+
 这些命令只生成候选，不会自动批准或自动写入生产标签。
 
 ## 回滚

@@ -217,8 +217,74 @@ class WatchScannerTests(unittest.TestCase):
         self.assertEqual(
             result["results"][0]["unknown_addresses_queued"], 2
         )
+        self.assertEqual(
+            result["results"][0][
+                "address_intelligence_queue_status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            result["results"][0][
+                "address_intelligence_queue_error"
+            ],
+            "",
+        )
         queue_store.observe_complete_scan.assert_called_once()
         discover.assert_not_called()
+
+    def test_local_queue_error_is_observable_without_failing_scan(
+        self,
+    ) -> None:
+        self.watch()
+        queue_store = Mock()
+        queue_store.observe_complete_scan.side_effect = OSError(
+            "secret path must not leak"
+        )
+        result = self.scanner(
+            [self.analyzed("isolated")],
+            address_store=queue_store,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        item = result["results"][0]
+        self.assertEqual(item["status"], "ok")
+        self.assertEqual(
+            item["address_intelligence_queue_status"], "local_error"
+        )
+        self.assertEqual(
+            item["address_intelligence_queue_error"],
+            "address_intelligence_local_error",
+        )
+        self.assertNotIn("secret path", str(item))
+        self.assertEqual(item["external_label_provider_calls"], 0)
+
+    def test_incomplete_scan_skips_local_queue(self) -> None:
+        self.watch()
+        queue_store = Mock()
+        payload = self.analyzed("isolated")
+        payload["complete"] = False
+        payload["analysis"]["complete"] = False
+        result = self.scanner(
+            [payload],
+            address_store=queue_store,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        item = result["results"][0]
+        self.assertEqual(
+            item["address_intelligence_queue_status"],
+            "skipped_incomplete",
+        )
+        self.assertEqual(item["address_intelligence_queue_error"], "")
+        queue_store.observe_complete_scan.assert_not_called()
 
     def test_no_network_gate_has_zero_writes_and_factories(self) -> None:
         self.watch()

@@ -208,6 +208,9 @@ Telegram。
 Watch 热路径只生成本地未知地址队列，不会请求任何外部标签 Provider。
 显式候选发现才允许使用 `--allow-network`。Dune CSV、OLI Parquet 和
 BaseScan CSV 导入都只进入 Pending；批准必须输入 `批准地址标签`。冲突、
+到期或与本地 approved 身份锚点不一致的候选会 fail closed。Dune 自动同步
+默认最多 6 次请求、1 秒轮询间隔和 30 秒执行超时；BaseScan Public Tag
+不会默认识别为 CEX。
 过期或只有行为推断的候选不能直接成为生产 CEX 身份。详见
 [`OAR_P5E_ADDRESS_INTELLIGENCE.md`](OAR_P5E_ADDRESS_INTELLIGENCE.md)。
 

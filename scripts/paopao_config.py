@@ -59,6 +59,8 @@ ALLOWLIST = {
     "DUNE_API_TIMEOUT_SEC": "onchain",
     "DUNE_API_MAX_RETRIES": "onchain",
     "DUNE_API_MAX_REQUESTS": "onchain",
+    "DUNE_API_POLL_INTERVAL_SEC": "onchain",
+    "DUNE_API_EXECUTION_TIMEOUT_SEC": "onchain",
     "DUNE_API_MAX_ROWS": "onchain",
 }
 SECRET_KEYS = {
@@ -94,8 +96,12 @@ INTEGER_RANGES = {
     "OAR_LABEL_CANDIDATE_MAX_ADDRESSES": (1, 100),
     "DUNE_API_TIMEOUT_SEC": (1, 60),
     "DUNE_API_MAX_RETRIES": (0, 2),
-    "DUNE_API_MAX_REQUESTS": (1, 6),
+    "DUNE_API_MAX_REQUESTS": (3, 10),
+    "DUNE_API_EXECUTION_TIMEOUT_SEC": (5, 120),
     "DUNE_API_MAX_ROWS": (1, 500),
+}
+DECIMAL_RANGES = {
+    "DUNE_API_POLL_INTERVAL_SEC": (0.2, 5.0),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -419,6 +425,18 @@ class ConfigManager:
             except ValueError as exc:
                 raise ConfigManagerError(
                     f"{key} must be an integer"
+                ) from exc
+            if not minimum <= amount <= maximum:
+                raise ConfigManagerError(
+                    f"{key} must be in [{minimum}, {maximum}]"
+                )
+        if key in DECIMAL_RANGES:
+            minimum, maximum = DECIMAL_RANGES[key]
+            try:
+                amount = float(value)
+            except ValueError as exc:
+                raise ConfigManagerError(
+                    f"{key} must be a decimal"
                 ) from exc
             if not minimum <= amount <= maximum:
                 raise ConfigManagerError(
