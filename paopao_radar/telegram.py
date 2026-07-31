@@ -1190,12 +1190,56 @@ class TelegramGateway:
         topic_id = result.get("message_thread_id")
         return str(topic_id or "")
 
-    def _ensure_topic_intro(self, template_id: str, topic_id: str) -> None:
+    def publish_topic_intro(
+        self,
+        template_id: str,
+        *,
+        send: bool,
+        confirm_real_send: bool,
+    ) -> dict[str, object]:
+        """Publish only the configured topic intro behind the real-send gates."""
+        result: dict[str, object] = {
+            "status": "blocked",
+            "reason": "real_send_gate_blocked",
+            "intro_configured": False,
+            "intro_pinned": False,
+            "persistent_messages": 0,
+        }
+        if not send or not confirm_real_send:
+            return result
+        if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
+            result["reason"] = "telegram_not_configured"
+            return result
+        topic_id = self._topic_id_for_template(template_id)
+        if not topic_id:
+            result["reason"] = "telegram_topic_not_configured"
+            return result
+
+        intro_key = self._topic_intro_key(template_id, topic_id)
+        before = self._topic_intro_record(intro_key)
+        if not self._ensure_topic_intro(template_id, topic_id):
+            result["status"] = "failed"
+            result["reason"] = "telegram_topic_intro_failed"
+            return result
+        after = self._topic_intro_record(intro_key)
+        created = bool(after) and after.get("message_id") != before.get(
+            "message_id"
+        )
+        result.update({
+            "status": "ok",
+            "reason": "",
+            "intro_configured": True,
+            "intro_pinned": bool(after.get("pinned")),
+            "persistent_messages": 1 if created else 0,
+        })
+        return result
+
+    def _ensure_topic_intro(self, template_id: str, topic_id: str) -> bool:
         if not self.settings.tg_topic_intro_enable:
-            return
+            return False
         intro = topic_intro_message(template_id, self.settings)
         if not intro:
-            return
+            return False
         current_hash = intro_hash(intro)
         current_version = topic_intro_version(template_id)
         intro_key = self._topic_intro_key(template_id, topic_id)
@@ -1222,19 +1266,22 @@ class TelegramGateway:
                             pinned,
                             current_hash,
                         )
-                return
+                    else:
+                        return False
+                return True
             previous_message_id = message_id
         ok, message_ids = self._send_real_message_ids(intro, parse_mode="HTML", topic_id=topic_id)
         if not ok or not message_ids:
-            return
+            return False
         message_id = message_ids[0]
         pinned = self._pin_message(message_id) if self.settings.tg_topic_intro_pin else False
         if self.settings.tg_topic_intro_pin and not pinned:
             self._delete_message(message_id)
-            return
+            return False
         self._save_topic_intro_record(intro_key, template_id, topic_id, message_id, pinned, current_hash)
         if previous_message_id > 0 and previous_message_id != message_id:
             self._delete_message(previous_message_id)
+        return True
 
     @staticmethod
     def _topic_intro_key(template_id: str, topic_id: str) -> str:

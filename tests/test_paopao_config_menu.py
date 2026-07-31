@@ -684,6 +684,19 @@ class ChineseMenuTests(unittest.TestCase):
         self.assertNotIn("config_set TG_ONCHAIN_FLOW_TOPIC_ID", text)
         self.assertNotIn("从消息链接绑定链上话题", text)
 
+    def test_menu_exposes_guarded_topic_intro_publish(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        self.assertIn("发送并置顶链上话题说明", text)
+        self.assertIn(
+            "run_onchain telegram-topic intro \\",
+            text,
+        )
+        self.assertIn("--allow-network --send --confirm-real-send", text)
+        self.assertIn(
+            'confirm_phrase "发送并置顶链上话题说明"',
+            text,
+        )
+
     def test_production_inputs_never_disable_terminal_echo(self) -> None:
         config_text = (
             ROOT / "scripts" / "paopao_config.py"

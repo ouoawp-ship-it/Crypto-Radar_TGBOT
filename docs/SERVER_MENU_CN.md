@@ -177,6 +177,18 @@ Dry-run/Real。Telegram Bot API 不能仅凭 Token 枚举机器人加入的所�
 因此这里的“自动识别群”是复用主 BOT 已审核的共享群配置，而不是猜测群。
 旧的 `telegram-topic-link` CLI 仅作为兼容恢复工具保留，不再是正常菜单流程。
 
+话题创建不会自动发送说明。需要立即生成并置顶说明时，使用“Telegram
+设置与测试 → 发送并置顶链上话题说明”，输入完整确认短语后，菜单才会
+执行一次：
+
+```bash
+python onchain_main.py telegram-topic intro \
+  --allow-network --send --confirm-real-send
+```
+
+该命令只发送既有的链上话题说明并置顶，不发送链上报告，不切换主 BOT
+或长期 OAR Watch 的运行模式；重复执行会复用当前版本的已置顶说明。
+
 真实 Telegram 测试只在“高级运维”中出现，并要求输入完整短语：
 
 ```text

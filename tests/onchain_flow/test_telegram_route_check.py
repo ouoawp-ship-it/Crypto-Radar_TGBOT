@@ -346,6 +346,84 @@ class TelegramRouteCheckTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(output.getvalue())["status"], "ok")
 
+    def test_intro_cli_requires_both_real_send_flags_without_http(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = StringIO()
+            with patch.object(
+                TelegramRouteChecker,
+                "check",
+            ) as check_mock, redirect_stdout(output):
+                code = cli_main(
+                    [
+                        "telegram-topic",
+                        "intro",
+                        "--allow-network",
+                        "--send",
+                    ],
+                    settings=self.settings(Path(tmp)),
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 1)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(payload["reason"], "real_send_gate_blocked")
+            self.assertEqual(payload["persistent_messages"], 0)
+            check_mock.assert_not_called()
+
+    def test_intro_cli_checks_route_then_publishes_only_intro(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            safe = TelegramRouteChecker._empty_result()
+            safe.update({
+                "status": "ok",
+                "token_auth": "ok",
+                "chat_access": "ok",
+                "forum_enabled": True,
+                "can_send_text": True,
+                "can_pin_messages": True,
+                "topic_route": "ok",
+            })
+            intro = {
+                "status": "ok",
+                "reason": "",
+                "intro_configured": True,
+                "intro_pinned": True,
+                "persistent_messages": 1,
+            }
+            output = StringIO()
+            with (
+                patch.object(
+                    TelegramRouteChecker,
+                    "check",
+                    return_value=safe,
+                ) as check_mock,
+                patch(
+                    "paopao_radar.onchain_flow.cli."
+                    "build_onchain_telegram_gateway",
+                ) as build_mock,
+                redirect_stdout(output),
+            ):
+                build_mock.return_value.publish_topic_intro.return_value = (
+                    intro
+                )
+                code = cli_main(
+                    [
+                        "telegram-topic",
+                        "intro",
+                        "--allow-network",
+                        "--send",
+                        "--confirm-real-send",
+                    ],
+                    settings=self.settings(root),
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue()), intro)
+            check_mock.assert_called_once_with()
+            build_mock.return_value.publish_topic_intro.assert_called_once_with(
+                "TG_ONCHAIN_FLOW_ALERT",
+                send=True,
+                confirm_real_send=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

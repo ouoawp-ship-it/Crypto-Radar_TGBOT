@@ -52,6 +52,7 @@ from .live_runtime import (
     LiveConfigurationError,
     ReorgManualInterventionRequired,
 )
+from .notifier import build_onchain_telegram_gateway
 from .prompt_manager import OperatorPromptError, OperatorPromptManager
 from .runtime import replay_fixture
 from .report import TokenReportService, restricted_ai_input
@@ -145,6 +146,16 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_topic_bootstrap = telegram_topic_actions.add_parser("bootstrap")
     telegram_topic_bootstrap.add_argument(
         "--allow-network",
+        action="store_true",
+    )
+    telegram_topic_intro = telegram_topic_actions.add_parser("intro")
+    telegram_topic_intro.add_argument(
+        "--allow-network",
+        action="store_true",
+    )
+    telegram_topic_intro.add_argument("--send", action="store_true")
+    telegram_topic_intro.add_argument(
+        "--confirm-real-send",
         action="store_true",
     )
     label_candidates = subparsers.add_parser("label-candidates")
@@ -1063,8 +1074,54 @@ def main(
                 payload["error"] = "allow_network_required"
                 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
                 return 1
-            payload = TelegramRouteChecker(settings).bootstrap_topic()
-            save_route_check(settings, payload)
+            if args.telegram_topic_action == "bootstrap":
+                payload = TelegramRouteChecker(settings).bootstrap_topic()
+                save_route_check(settings, payload)
+                print(json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
+                return 0 if payload["status"] == "ok" else 1
+            if not args.send or not args.confirm_real_send:
+                payload = {
+                    "status": "blocked",
+                    "reason": "real_send_gate_blocked",
+                    "intro_configured": False,
+                    "intro_pinned": False,
+                    "persistent_messages": 0,
+                }
+                print(json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
+                return 1
+            route = TelegramRouteChecker(settings).check()
+            save_route_check(settings, route)
+            if route["status"] != "ok":
+                print(json.dumps(
+                    route,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
+                return 1
+            if route["can_pin_messages"] is not True:
+                route["status"] = "failed"
+                route["error"] = "telegram_pin_permission_required"
+                print(json.dumps(
+                    route,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
+                return 1
+            payload = build_onchain_telegram_gateway(
+                settings
+            ).publish_topic_intro(
+                "TG_ONCHAIN_FLOW_ALERT",
+                send=True,
+                confirm_real_send=True,
+            )
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0 if payload["status"] == "ok" else 1
         if args.command == "address-intelligence":

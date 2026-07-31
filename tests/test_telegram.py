@@ -1074,6 +1074,68 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertTrue(history[0]["lifecycle_deleted"])
             self.assertNotIn("deleted_message_ids", history[1])
 
+    def test_intro_only_publish_keeps_dual_gate_and_sends_no_card(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_onchain_flow_topic_id="22",
+                tg_use_topic=True,
+                tg_topic_intro_enable=True,
+                tg_topic_intro_pin=True,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    return_value=(True, [100]),
+                ) as send_mock,
+                patch.object(
+                    gateway,
+                    "_pin_message",
+                    return_value=True,
+                ) as pin_mock,
+            ):
+                blocked = gateway.publish_topic_intro(
+                    "TG_ONCHAIN_FLOW_ALERT",
+                    send=True,
+                    confirm_real_send=False,
+                )
+                sent = gateway.publish_topic_intro(
+                    "TG_ONCHAIN_FLOW_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+                reused = gateway.publish_topic_intro(
+                    "TG_ONCHAIN_FLOW_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertEqual(blocked["persistent_messages"], 0)
+            self.assertEqual(sent["status"], "ok")
+            self.assertEqual(sent["persistent_messages"], 1)
+            self.assertTrue(sent["intro_pinned"])
+            self.assertEqual(reused["status"], "ok")
+            self.assertEqual(reused["persistent_messages"], 0)
+            send_mock.assert_called_once()
+            pin_mock.assert_called_once_with(100)
+            self.assertIn(
+                "链上活动雷达话题说明",
+                send_mock.call_args.args[0],
+            )
+            self.assertFalse(settings.tg_push_history_path.exists())
+
     def test_summary_replacement_keeps_previous_when_new_delivery_fails(self) -> None:
         with TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp))
