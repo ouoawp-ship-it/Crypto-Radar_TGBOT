@@ -550,6 +550,8 @@ API、Token 与密钥
 10. 设置 Base RPC 最大区块范围（高级）
 11. 设置 Arkham API Key
 12. 设置 Arkham API Base URL（高级）
+13. 设置 Dune API Key（可选）
+14. 设置 Dune API Base URL（高级）
 0. 返回
 EOF
     IFS= read -r choice
@@ -566,6 +568,8 @@ EOF
       10) config_set ONCHAIN_RPC_MAX_BLOCK_RANGE; pause_menu ;;
       11) config_set ARKHAM_API_KEY; pause_menu ;;
       12) config_set ARKHAM_API_BASE_URL; pause_menu ;;
+      13) config_set DUNE_API_KEY; pause_menu ;;
+      14) config_set DUNE_API_BASE_URL; pause_menu ;;
       0) return ;;
     esac
   done
@@ -693,6 +697,126 @@ EOF
   done
 }
 
+address_intelligence_menu() {
+  local choice provider max_addresses candidate_id import_file import_table
+  while true; do
+    menu_header
+    cat <<'EOF'
+地址情报中心
+1. Provider 状态
+2. 未知地址队列
+3. 运行显式候选发现
+4. 查看 Pending
+5. 查看冲突候选
+6. 批准
+7. 拒绝
+8. 暂缓
+9. 查看本地已批准标签
+10. 导入 Dune CSV
+11. 导入 OLI 数据
+12. 导入 BaseScan 人工 CSV
+13. Labels Check
+0. 返回
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1)
+        run_onchain address-intelligence providers || true
+        pause_menu
+        ;;
+      2)
+        run_onchain address-intelligence queue --limit 50 || true
+        pause_menu
+        ;;
+      3)
+        printf 'Provider（all/dune_cex/dune_cex_deposit/oli/basescan_manual/arkham_optional/behavior_inference）：'
+        IFS= read -r provider
+        printf '最大地址数（1-100，且受配置上限约束；默认 50）：'
+        IFS= read -r max_addresses
+        case "$provider" in
+          dune_cex|dune_cex_deposit|arkham_optional|all)
+            run_onchain address-intelligence discover \
+              --provider "$provider" \
+              --max-addresses "$max_addresses" \
+              --allow-network || true
+            ;;
+          oli|basescan_manual|behavior_inference|local_approved)
+            run_onchain address-intelligence discover \
+              --provider "$provider" \
+              --max-addresses "$max_addresses" || true
+            ;;
+          *) printf '未知 Provider。\n' ;;
+        esac
+        pause_menu
+        ;;
+      4)
+        run_onchain address-intelligence candidates \
+          --status pending --limit 100 || true
+        pause_menu
+        ;;
+      5)
+        run_onchain address-intelligence candidates \
+          --status conflicted --limit 100 || true
+        pause_menu
+        ;;
+      6)
+        printf 'Candidate ID：'
+        IFS= read -r candidate_id
+        if confirm_phrase "批准地址标签"; then
+          run_onchain address-intelligence approve \
+            --candidate-id "$candidate_id" || true
+        fi
+        pause_menu
+        ;;
+      7)
+        printf 'Candidate ID：'
+        IFS= read -r candidate_id
+        run_onchain address-intelligence reject \
+          --candidate-id "$candidate_id" || true
+        pause_menu
+        ;;
+      8)
+        printf 'Candidate ID：'
+        IFS= read -r candidate_id
+        run_onchain address-intelligence defer \
+          --candidate-id "$candidate_id" || true
+        pause_menu
+        ;;
+      9)
+        run_onchain address-intelligence approved || true
+        pause_menu
+        ;;
+      10)
+        printf 'Dune CSV 文件路径：'
+        IFS= read -r import_file
+        printf '表（cex.addresses / cex.deposit_addresses）：'
+        IFS= read -r import_table
+        run_onchain address-intelligence import-dune \
+          --file "$import_file" \
+          --table "$import_table" || true
+        pause_menu
+        ;;
+      11)
+        printf 'OLI Parquet 文件路径：'
+        IFS= read -r import_file
+        run_onchain address-intelligence import-oli \
+          --file "$import_file" || true
+        pause_menu
+        ;;
+      12)
+        printf 'BaseScan 人工 CSV 文件路径：'
+        IFS= read -r import_file
+        run_onchain address-intelligence import-basescan \
+          --file "$import_file" || true
+        pause_menu
+        ;;
+      13) run_onchain labels-check || true; pause_menu ;;
+      0) return ;;
+      *) printf '无效选项。\n' ;;
+    esac
+  done
+}
+
 oar_menu() {
   local choice token_key symbol contract
   while true; do
@@ -714,6 +838,7 @@ oar_menu() {
 13. Labels Check
 14. Watch 通知模式
 15. CEX 标签候选
+16. 地址情报中心
 0. 返回
 EOF
     IFS= read -r choice
@@ -744,6 +869,7 @@ EOF
       13) run_onchain labels-check; pause_menu ;;
       14) watch_delivery_menu ;;
       15) cex_label_candidate_menu ;;
+      16) address_intelligence_menu ;;
       0) return ;;
     esac
   done

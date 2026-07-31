@@ -4,6 +4,7 @@ import time
 import uuid
 from typing import Any, Callable
 
+from .address_intelligence import AddressIntelligenceStore
 from .automation_store import AutomationStore, AutomationStoreError
 from .config import OnchainSettings
 from .report import TokenReportService
@@ -33,6 +34,7 @@ class WatchScanner:
         ] | None = None,
         report_factory: Callable[[OnchainSettings], Any] | None = None,
         notifier_factory: Callable[[OnchainSettings], Any] | None = None,
+        address_intelligence_store: Any | None = None,
         clock: Any = time.time,
         sleeper: Any = time.sleep,
     ):
@@ -50,6 +52,11 @@ class WatchScanner:
             )
         )
         self.notifier_factory = notifier_factory or ReportNotifier
+        self.address_intelligence_store = (
+            address_intelligence_store
+            if address_intelligence_store is not None
+            else AddressIntelligenceStore.from_settings(settings)
+        )
         self.clock = clock
         self.sleeper = sleeper
 
@@ -423,6 +430,27 @@ class WatchScanner:
                 rpc_request_count=rpc_count,
                 analysis_started=True,
             )
+        queue_result: dict[str, int] = {
+            "observed": 0,
+            "created": 0,
+            "updated": 0,
+        }
+        queue_status = "skipped_incomplete"
+        queue_error = ""
+        if activity_complete and analysis_complete:
+            try:
+                queue_result = (
+                    self.address_intelligence_store.observe_complete_scan(
+                        analyzed,
+                        observed_at=int(self.clock()),
+                    )
+                )
+                queue_status = "ok"
+            except Exception:
+                # Local best-effort enrichment must never fail a scan or
+                # expose exception text, paths, or secrets.
+                queue_status = "local_error"
+                queue_error = "address_intelligence_local_error"
         return {
             "token_key": token_key,
             "status": scan_status,
@@ -441,6 +469,12 @@ class WatchScanner:
             "error": partial_reason,
             "ai_calls": ai_calls,
             "analysis_started": True,
+            "unknown_addresses_queued": int(
+                queue_result.get("observed") or 0
+            ),
+            "address_intelligence_queue_status": queue_status,
+            "address_intelligence_queue_error": queue_error,
+            "external_label_provider_calls": 0,
         }
 
     def _record_failure(
@@ -487,6 +521,9 @@ class WatchScanner:
             "notification_status": "not_requested",
             "ai_calls": 0,
             "analysis_started": analysis_started,
+            "address_intelligence_queue_status": "skipped_incomplete",
+            "address_intelligence_queue_error": "",
+            "external_label_provider_calls": 0,
         }
 
     def _renew_lease(self, token_key: str, lease_owner: str) -> bool:
@@ -554,6 +591,9 @@ class WatchScanner:
             "notification_status": "not_requested",
             "ai_calls": 0,
             "analysis_started": analysis_started,
+            "address_intelligence_queue_status": "skipped_incomplete",
+            "address_intelligence_queue_error": "",
+            "external_label_provider_calls": 0,
         }
 
     def _notification_gate(

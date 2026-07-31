@@ -20,10 +20,23 @@ REQUIRED_COLUMNS = (
     "valid_from",
     "valid_to",
 )
+AUDIT_COLUMNS = (
+    "evidence_hash",
+    "review_status",
+)
 
 
 class LabelValidationError(ValueError):
     pass
+
+
+def is_approved_label(label: AddressLabel) -> bool:
+    source = label.source.strip().lower()
+    return (
+        label.review_status == "approved"
+        or source in {"manual_review", "reviewed"}
+        or "manual_review" in source
+    )
 
 
 def normalize_evm_address(address: str) -> str:
@@ -112,6 +125,12 @@ def load_labels_csv(path: Path) -> list[AddressLabel]:
                     confidence=confidence,
                     valid_from=valid_from,
                     valid_to=valid_to,
+                    evidence_hash=str(
+                        row.get("evidence_hash") or ""
+                    ).strip().lower(),
+                    review_status=str(
+                        row.get("review_status") or ""
+                    ).strip().lower(),
                 )
             )
     return labels
@@ -131,6 +150,7 @@ def validate_live_labels(
         if label.chain_id == chain_id
         and label.entity_type == "cex"
         and label.active_at(now)
+        and is_approved_label(label)
     ]
     if any(
         label.source.strip().lower() == "synthetic_fixture"

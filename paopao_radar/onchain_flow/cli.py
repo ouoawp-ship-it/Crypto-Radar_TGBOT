@@ -18,6 +18,14 @@ from .ai_client import (
     validate_ai_output,
 )
 from .ai_context import build_ai_context
+from .address_intelligence import (
+    AddressIntelligenceError,
+    AddressIntelligenceService,
+    AddressIntelligenceStore,
+    ManualCsvProvider,
+    OliParquetProvider,
+    PROVIDER_NAMES,
+)
 from .automation_store import AutomationStore, AutomationStoreError
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
@@ -28,6 +36,7 @@ from .db import OnchainStore
 from .health import read_runtime_status
 from .labels import (
     LabelValidationError,
+    is_approved_label,
     load_labels_csv,
     validate_live_labels,
 )
@@ -153,6 +162,61 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_approve.add_argument("--candidate-id", required=True)
     candidate_reject = candidate_actions.add_parser("reject")
     candidate_reject.add_argument("--candidate-id", required=True)
+    address_intelligence = subparsers.add_parser(
+        "address-intelligence"
+    )
+    intelligence_actions = address_intelligence.add_subparsers(
+        dest="intelligence_action",
+        required=True,
+    )
+    intelligence_actions.add_parser("providers")
+    intelligence_queue = intelligence_actions.add_parser("queue")
+    intelligence_queue.add_argument("--limit", type=int, default=50)
+    intelligence_discover = intelligence_actions.add_parser("discover")
+    intelligence_discover.add_argument(
+        "--provider",
+        action="append",
+        choices=(*PROVIDER_NAMES, "all"),
+        default=[],
+    )
+    intelligence_discover.add_argument(
+        "--max-addresses", type=int, default=50
+    )
+    intelligence_discover.add_argument(
+        "--allow-network", action="store_true"
+    )
+    intelligence_candidates = intelligence_actions.add_parser(
+        "candidates"
+    )
+    intelligence_candidates.add_argument(
+        "--status",
+        choices=(
+            "pending",
+            "approved",
+            "rejected",
+            "expired",
+            "conflicted",
+        ),
+        default=None,
+    )
+    intelligence_candidates.add_argument("--limit", type=int, default=100)
+    intelligence_actions.add_parser("status")
+    intelligence_actions.add_parser("approved")
+    for review_action in ("approve", "reject", "defer", "revoke"):
+        review = intelligence_actions.add_parser(review_action)
+        review.add_argument("--candidate-id", required=True)
+        review.add_argument("--note", default="")
+    import_dune = intelligence_actions.add_parser("import-dune")
+    import_dune.add_argument("--file", required=True)
+    import_dune.add_argument(
+        "--table",
+        choices=("cex.addresses", "cex.deposit_addresses"),
+        required=True,
+    )
+    import_oli = intelligence_actions.add_parser("import-oli")
+    import_oli.add_argument("--file", required=True)
+    import_basescan = intelligence_actions.add_parser("import-basescan")
+    import_basescan.add_argument("--file", required=True)
     telegram_topic_link.add_argument(
         "unsafe_link_argv",
         nargs="*",
@@ -954,6 +1018,7 @@ def main(
     token_activity_network_started = False
     automation_network_started = False
     arkham_network_started = False
+    address_provider_network_started = False
     try:
         settings = settings or OnchainSettings.load()
         if args.command == "ai-cache":
@@ -967,6 +1032,196 @@ def main(
         if args.command == "telegram-topic-link":
             settings.validate()
             return _telegram_topic_link_command(settings, args)
+        if args.command == "address-intelligence":
+            settings.validate()
+            store = AddressIntelligenceStore.from_settings(settings)
+            action = args.intelligence_action
+            if action == "providers":
+                print(json.dumps(
+                    AddressIntelligenceService(settings).provider_status(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
+                return 0
+            if action == "status":
+                print(json.dumps(
+                    store.status(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
+                return 0
+            if action == "queue":
+                items = store.unknown_queue(limit=args.limit)
+                print(json.dumps({
+                    "status": (
+                        "ok"
+                        if settings.address_intelligence_path.exists()
+                        else "not_initialized"
+                    ),
+                    "items": items,
+                    "count": len(items),
+                    "network_activity": False,
+                    "telegram_calls": 0,
+                    "ai_calls": 0,
+                }, ensure_ascii=False, sort_keys=True))
+                return 0
+            if action == "approved":
+                labels = (
+                    load_labels_csv(settings.labels_path)
+                    if settings.labels_path.exists()
+                    else []
+                )
+                approved = [
+                    {
+                        "chain_id": label.chain_id,
+                        "address": label.address,
+                        "entity_name": label.entity_name,
+                        "entity_type": label.entity_type,
+                        "address_role": label.address_type,
+                        "source": label.source,
+                        "confidence": label.confidence,
+                        "valid_from": label.valid_from,
+                        "valid_to": label.valid_to,
+                        "evidence_hash": label.evidence_hash,
+                    }
+                    for label in labels
+                    if is_approved_label(label)
+                ]
+                print(json.dumps({
+                    "status": "ok",
+                    "labels": approved,
+                    "count": len(approved),
+                    "network_activity": False,
+                    "telegram_calls": 0,
+                    "ai_calls": 0,
+                }, ensure_ascii=False, sort_keys=True))
+                return 0
+            if action == "discover":
+                providers = args.provider or [
+                    "behavior_inference",
+                    "dune_cex_deposit",
+                    "dune_cex",
+                    "arkham_optional",
+                ]
+                address_provider_network_started = bool(
+                    args.allow_network
+                    and (
+                        settings.dune_api_key
+                        or settings.arkham_api_key
+                    )
+                    and any(
+                        name in {
+                            "dune_cex",
+                            "dune_cex_deposit",
+                            "arkham_optional",
+                            "all",
+                        }
+                        for name in providers
+                    )
+                )
+                payload = AddressIntelligenceService(
+                    settings
+                ).discover(
+                    provider_names=providers,
+                    allow_network=bool(args.allow_network),
+                    limit=args.max_addresses,
+                )
+                print(json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True
+                ))
+                return 0
+            if action == "candidates":
+                items = store.list_candidates(
+                    status=args.status,
+                    limit=args.limit,
+                )
+                for item in items:
+                    if item.get("approval_block_reason") == (
+                        "more_specific_role_candidate_available"
+                    ):
+                        item["approval_message"] = (
+                            "存在更具体的地址角色候选，请审核具体角色候选。"
+                        )
+                print(json.dumps({
+                    "status": "ok",
+                    "candidates": items,
+                    "count": len(items),
+                    "network_activity": False,
+                    "telegram_calls": 0,
+                    "ai_calls": 0,
+                }, ensure_ascii=False, sort_keys=True))
+                return 0
+            if action == "approve":
+                payload = store.approve(
+                    args.candidate_id,
+                    labels_path=settings.labels_path,
+                )
+            elif action == "reject":
+                payload = store.reject(
+                    args.candidate_id,
+                    note=args.note or "manual_review",
+                )
+            elif action == "defer":
+                payload = store.defer(
+                    args.candidate_id,
+                    note=args.note or "manual_defer",
+                )
+            elif action == "revoke":
+                payload = store.revoke(
+                    args.candidate_id,
+                    labels_path=settings.labels_path,
+                )
+            elif action == "import-dune":
+                provider_name = (
+                    "dune_cex_deposit"
+                    if args.table == "cex.deposit_addresses"
+                    else "dune_cex"
+                )
+                candidates = ManualCsvProvider(
+                    provider_name
+                ).import_csv(Path(args.file))
+                merged = store.merge_candidates(candidates)
+                payload = {
+                    "status": "ok",
+                    "provider": provider_name,
+                    "imported": len(candidates),
+                    **merged,
+                }
+            elif action == "import-basescan":
+                candidates = ManualCsvProvider(
+                    "basescan_manual"
+                ).import_csv(Path(args.file))
+                merged = store.merge_candidates(candidates)
+                payload = {
+                    "status": "ok",
+                    "provider": "basescan_manual",
+                    "imported": len(candidates),
+                    **merged,
+                }
+            elif action == "import-oli":
+                candidates = OliParquetProvider().import_parquet(
+                    Path(args.file)
+                )
+                merged = store.merge_candidates(candidates)
+                payload = {
+                    "status": "ok",
+                    "provider": "oli",
+                    "imported": len(candidates),
+                    **merged,
+                }
+            else:
+                raise AddressIntelligenceError(
+                    "address_intelligence_action_invalid"
+                )
+            payload.update({
+                "network_activity": False,
+                "telegram_calls": 0,
+                "ai_calls": 0,
+            })
+            print(json.dumps(
+                payload, ensure_ascii=False, sort_keys=True
+            ))
+            return 0
         if args.command == "label-candidates":
             settings.validate()
             action = args.candidate_action
@@ -1534,6 +1789,16 @@ def main(
             "status": "failed",
             "error": exc.code,
             "network_activity": arkham_network_started,
+            "telegram_calls": 0,
+            "ai_calls": 0,
+        }, ensure_ascii=False, sort_keys=True))
+        return 1
+    except AddressIntelligenceError as exc:
+        print(json.dumps({
+            "status": "failed",
+            "error": exc.code,
+            "network_activity": address_provider_network_started,
+            "core_services_affected": False,
             "telegram_calls": 0,
             "ai_calls": 0,
         }, ensure_ascii=False, sort_keys=True))

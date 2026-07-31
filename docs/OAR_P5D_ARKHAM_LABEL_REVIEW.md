@@ -1,5 +1,11 @@
 # OAR-P5D Arkham 辅助 CEX 标签审核
 
+Arkham 是可选候选来源，不是核心依赖或真实推送门禁。`ARKHAM_API_KEY`
+为空时状态为 `optional_disabled`，网络调用为 0；Token Activity、行为与
+钱包分析、Watch、DeepSeek、Telegram Dry-run 和受控真实发送继续运行。
+长期 Watch 不会自动请求 Arkham。标签不足时保留 Transfer 事实并降级为
+`unclassified / insufficient_cex_coverage`。
+
 Arkham 在本模块中只提供 Base CEX 地址标签候选，不是 Transfer 事实源、
 Watch 扫描源、行为分析源或 Telegram 触发源。`watch-live` 不会调用
 Arkham；所有网络调用都必须由操作者显式执行并携带

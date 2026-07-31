@@ -151,6 +151,9 @@ class OnchainSettings:
     label_candidates_path: Path = (
         BASE_DIR / "data" / "onchain" / "label_candidates.json"
     )
+    address_intelligence_path: Path = (
+        BASE_DIR / "data" / "onchain" / "address_intelligence.json"
+    )
     main_signal_db_path: Path = BASE_DIR / "data" / "signals.db"
     labels_path: Path = BASE_DIR / "config" / "onchain" / "cex_addresses.example.csv"
     chains_path: Path = BASE_DIR / "config" / "onchain" / "chains.example.json"
@@ -210,6 +213,14 @@ class OnchainSettings:
     arkham_api_timeout_sec: int = 15
     arkham_api_max_retries: int = 1
     oar_label_candidate_max_addresses: int = 50
+    dune_api_base_url: str = "https://api.dune.com/api"
+    dune_api_key: str = ""
+    dune_api_timeout_sec: int = 15
+    dune_api_max_retries: int = 1
+    dune_api_max_requests: int = 10
+    dune_api_poll_interval_sec: Decimal = Decimal("4")
+    dune_api_execution_timeout_sec: int = 30
+    dune_api_max_rows: int = 100
     oar_behavior_min_tx: int = 3
     oar_behavior_dominance_min: Decimal = Decimal("0.67")
     oar_behavior_min_active_buckets_1h: int = 2
@@ -291,6 +302,15 @@ class OnchainSettings:
                 self,
                 "label_candidates_path",
                 self.data_dir / "label_candidates.json",
+            )
+        default_address_intelligence = (
+            BASE_DIR / "data" / "onchain" / "address_intelligence.json"
+        )
+        if self.address_intelligence_path == default_address_intelligence:
+            object.__setattr__(
+                self,
+                "address_intelligence_path",
+                self.data_dir / "address_intelligence.json",
             )
         default_operator_prompt = (
             BASE_DIR
@@ -392,6 +412,14 @@ class OnchainSettings:
                 values.get(
                     "OAR_LABEL_CANDIDATES_FILE",
                     "label_candidates.json",
+                ),
+            ),
+            address_intelligence_path=_resolve_data_file(
+                base_dir,
+                data_dir,
+                values.get(
+                    "OAR_ADDRESS_INTELLIGENCE_FILE",
+                    "address_intelligence.json",
                 ),
             ),
             main_signal_db_path=_resolve_repo_file(
@@ -561,6 +589,29 @@ class OnchainSettings:
             ),
             oar_label_candidate_max_addresses=_int(
                 values, "OAR_LABEL_CANDIDATE_MAX_ADDRESSES", 50
+            ),
+            dune_api_base_url=values.get(
+                "DUNE_API_BASE_URL",
+                "https://api.dune.com/api",
+            ).strip().rstrip("/"),
+            dune_api_key=values.get("DUNE_API_KEY", "").strip(),
+            dune_api_timeout_sec=_int(
+                values, "DUNE_API_TIMEOUT_SEC", 15
+            ),
+            dune_api_max_retries=_int(
+                values, "DUNE_API_MAX_RETRIES", 1
+            ),
+            dune_api_max_requests=_int(
+                values, "DUNE_API_MAX_REQUESTS", 10
+            ),
+            dune_api_poll_interval_sec=_decimal(
+                values, "DUNE_API_POLL_INTERVAL_SEC", "4"
+            ),
+            dune_api_execution_timeout_sec=_int(
+                values, "DUNE_API_EXECUTION_TIMEOUT_SEC", 30
+            ),
+            dune_api_max_rows=_int(
+                values, "DUNE_API_MAX_ROWS", 100
             ),
             oar_behavior_min_tx=_int(
                 values, "OAR_BEHAVIOR_MIN_TX", 3
@@ -747,6 +798,7 @@ class OnchainSettings:
             self.signal_events_db_path,
             self.oar_automation_db_path,
             self.label_candidates_path,
+            self.address_intelligence_path,
             self.oar_ai_operator_prompt_path,
         )
         if self.oar_ai_enable:
@@ -796,6 +848,7 @@ class OnchainSettings:
             "wss_reconnect_sec",
             "wss_idle_timeout_sec",
             "net_dominance_min",
+            "dune_api_poll_interval_sec",
         )
         for field_name in non_negative_decimals:
             value = getattr(self, field_name)
@@ -832,6 +885,10 @@ class OnchainSettings:
             "token_activity_block_search_max_calls",
             "arkham_api_timeout_sec",
             "oar_label_candidate_max_addresses",
+            "dune_api_timeout_sec",
+            "dune_api_max_requests",
+            "dune_api_execution_timeout_sec",
+            "dune_api_max_rows",
             "oar_behavior_min_tx",
             "oar_behavior_min_active_buckets_1h",
             "oar_behavior_min_active_buckets_long",
@@ -876,6 +933,7 @@ class OnchainSettings:
             "alert_max_event_age_sec",
             "oar_ai_max_retries",
             "arkham_api_max_retries",
+            "dune_api_max_retries",
             "oar_bridge_overlap_sec",
         )
         for field_name in non_negative_ints:
@@ -1298,8 +1356,44 @@ class OnchainSettings:
             raise SettingsValidationError(
                 "OAR_LABEL_CANDIDATE_MAX_ADDRESSES must be in [1, 100]"
             )
-        arkham_url = urlsplit(self.arkham_api_base_url)
+        if not 1 <= self.dune_api_timeout_sec <= 60:
+            raise SettingsValidationError(
+                "DUNE_API_TIMEOUT_SEC must be in [1, 60]"
+            )
+        if not 0 <= self.dune_api_max_retries <= 2:
+            raise SettingsValidationError(
+                "DUNE_API_MAX_RETRIES must be in [0, 2]"
+            )
+        if not 4 <= self.dune_api_max_requests <= 40:
+            raise SettingsValidationError(
+                "DUNE_API_MAX_REQUESTS must be in [4, 40]"
+            )
+        if not Decimal("0.2") <= self.dune_api_poll_interval_sec <= Decimal("10"):
+            raise SettingsValidationError(
+                "DUNE_API_POLL_INTERVAL_SEC must be in [0.2, 10]"
+            )
+        if not 5 <= self.dune_api_execution_timeout_sec <= 120:
+            raise SettingsValidationError(
+                "DUNE_API_EXECUTION_TIMEOUT_SEC must be in [5, 120]"
+            )
         if (
+            Decimal(self.dune_api_max_requests - 2)
+            * self.dune_api_poll_interval_sec
+            < Decimal(self.dune_api_execution_timeout_sec)
+        ):
+            raise SettingsValidationError(
+                "dune_poll_budget_inconsistent"
+            )
+        if not 1 <= self.dune_api_max_rows <= 500:
+            raise SettingsValidationError(
+                "DUNE_API_MAX_ROWS must be in [1, 500]"
+            )
+        arkham_url = urlsplit(self.arkham_api_base_url)
+        if self.arkham_api_key and not self.arkham_api_base_url:
+            raise SettingsValidationError(
+                "ARKHAM_API_BASE_URL is required when Arkham is configured"
+            )
+        if self.arkham_api_base_url and (
             arkham_url.scheme.lower() != "https"
             or not arkham_url.hostname
             or arkham_url.username is not None
@@ -1309,6 +1403,23 @@ class OnchainSettings:
         ):
             raise SettingsValidationError(
                 "ARKHAM_API_BASE_URL must be a credential-free HTTPS URL "
+                "without query or fragment"
+            )
+        dune_url = urlsplit(self.dune_api_base_url)
+        if self.dune_api_key and not self.dune_api_base_url:
+            raise SettingsValidationError(
+                "DUNE_API_BASE_URL is required when Dune is configured"
+            )
+        if self.dune_api_base_url and (
+            dune_url.scheme.lower() != "https"
+            or not dune_url.hostname
+            or dune_url.username is not None
+            or dune_url.password is not None
+            or bool(dune_url.query)
+            or bool(dune_url.fragment)
+        ):
+            raise SettingsValidationError(
+                "DUNE_API_BASE_URL must be a credential-free HTTPS URL "
                 "without query or fragment"
             )
         if self.price_provider not in {"none", "static", "coingecko_onchain"}:
@@ -1417,6 +1528,22 @@ class OnchainSettings:
                 ),
                 "candidate_file_exists": self.label_candidates_path.exists(),
                 "automatic_calls": False,
+            },
+            "address_intelligence": {
+                "status": "available",
+                "store_exists": self.address_intelligence_path.exists(),
+                "dune_status": (
+                    "configured"
+                    if self.dune_api_key
+                    else "optional_disabled"
+                ),
+                "arkham_status": (
+                    "configured"
+                    if self.arkham_api_key
+                    else "optional_disabled"
+                ),
+                "watch_external_provider_calls": False,
+                "providers_optional": True,
             },
             "token_analysis": {
                 "behavior_min_tx": self.oar_behavior_min_tx,

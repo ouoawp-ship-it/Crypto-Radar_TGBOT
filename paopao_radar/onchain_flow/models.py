@@ -74,6 +74,8 @@ class AddressLabel:
     confidence: float
     valid_from: int | None = None
     valid_to: int | None = None
+    evidence_hash: str = ""
+    review_status: str = ""
 
     def active_at(self, timestamp: int) -> bool:
         if self.valid_from is not None and timestamp < self.valid_from:

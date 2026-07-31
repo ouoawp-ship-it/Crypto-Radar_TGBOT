@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,14 @@ ALLOWLIST = {
     "ARKHAM_API_TIMEOUT_SEC": "onchain",
     "ARKHAM_API_MAX_RETRIES": "onchain",
     "OAR_LABEL_CANDIDATE_MAX_ADDRESSES": "onchain",
+    "DUNE_API_BASE_URL": "onchain",
+    "DUNE_API_KEY": "onchain",
+    "DUNE_API_TIMEOUT_SEC": "onchain",
+    "DUNE_API_MAX_RETRIES": "onchain",
+    "DUNE_API_MAX_REQUESTS": "onchain",
+    "DUNE_API_POLL_INTERVAL_SEC": "onchain",
+    "DUNE_API_EXECUTION_TIMEOUT_SEC": "onchain",
+    "DUNE_API_MAX_ROWS": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -61,6 +70,7 @@ SECRET_KEYS = {
     "COINALYZE_API_KEY",
     "OAR_AI_API_KEY",
     "ARKHAM_API_KEY",
+    "DUNE_API_KEY",
 }
 SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
@@ -70,6 +80,7 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "OAR_AI_BASE_URL",
     "OAR_WATCH_REAL_SEND_ACK",
     "ARKHAM_API_BASE_URL",
+    "DUNE_API_BASE_URL",
 }
 BOOLEAN_KEYS = {
     "OAR_AI_ENABLE",
@@ -84,6 +95,14 @@ INTEGER_RANGES = {
     "ARKHAM_API_TIMEOUT_SEC": (1, 60),
     "ARKHAM_API_MAX_RETRIES": (0, 2),
     "OAR_LABEL_CANDIDATE_MAX_ADDRESSES": (1, 100),
+    "DUNE_API_TIMEOUT_SEC": (1, 60),
+    "DUNE_API_MAX_RETRIES": (0, 2),
+    "DUNE_API_MAX_REQUESTS": (4, 40),
+    "DUNE_API_EXECUTION_TIMEOUT_SEC": (5, 120),
+    "DUNE_API_MAX_ROWS": (1, 500),
+}
+DECIMAL_RANGES = {
+    "DUNE_API_POLL_INTERVAL_SEC": (0.2, 10.0),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -412,6 +431,18 @@ class ConfigManager:
                 raise ConfigManagerError(
                     f"{key} must be in [{minimum}, {maximum}]"
                 )
+        if key in DECIMAL_RANGES:
+            minimum, maximum = DECIMAL_RANGES[key]
+            try:
+                amount = float(value)
+            except ValueError as exc:
+                raise ConfigManagerError(
+                    f"{key} must be a decimal"
+                ) from exc
+            if not minimum <= amount <= maximum:
+                raise ConfigManagerError(
+                    f"{key} must be in [{minimum}, {maximum}]"
+                )
         if key == "OAR_AI_PROVIDER" and value not in {
             "deepseek",
             "openai_compatible",
@@ -455,12 +486,16 @@ class ConfigManager:
             "ONCHAIN_BASE_HTTP_RPC_URL",
             "OAR_AI_BASE_URL",
             "ARKHAM_API_BASE_URL",
+            "DUNE_API_BASE_URL",
         } and value:
             parsed = urlsplit(value)
             if (
                 parsed.scheme.lower() not in (
                     {"https"}
-                    if key == "ARKHAM_API_BASE_URL"
+                    if key in {
+                        "ARKHAM_API_BASE_URL",
+                        "DUNE_API_BASE_URL",
+                    }
                     else {"http", "https"}
                 )
                 or not parsed.hostname
@@ -546,7 +581,12 @@ class ConfigManager:
             "https://api.arkm.com",
         ).strip()
         parsed_arkham = urlsplit(arkham_base_url)
-        if (
+        arkham_key = values.get("ARKHAM_API_KEY", "").strip()
+        if arkham_key and not arkham_base_url:
+            raise ConfigManagerError(
+                "ARKHAM_API_BASE_URL is required when Arkham is configured"
+            )
+        if arkham_base_url and (
             parsed_arkham.scheme.lower() != "https"
             or not parsed_arkham.hostname
             or parsed_arkham.username is not None
@@ -557,6 +597,50 @@ class ConfigManager:
             raise ConfigManagerError(
                 "ARKHAM_API_BASE_URL must be a credential-free HTTPS URL"
             )
+        dune_base_url = values.get(
+            "DUNE_API_BASE_URL",
+            "https://api.dune.com/api",
+        ).strip()
+        parsed_dune = urlsplit(dune_base_url)
+        dune_key = values.get("DUNE_API_KEY", "").strip()
+        if dune_key and not dune_base_url:
+            raise ConfigManagerError(
+                "DUNE_API_BASE_URL is required when Dune is configured"
+            )
+        if dune_base_url and (
+            parsed_dune.scheme.lower() != "https"
+            or not parsed_dune.hostname
+            or parsed_dune.username is not None
+            or parsed_dune.password is not None
+            or bool(parsed_dune.query)
+            or bool(parsed_dune.fragment)
+        ):
+            raise ConfigManagerError(
+                "DUNE_API_BASE_URL must be a credential-free HTTPS URL"
+            )
+        try:
+            dune_max_requests = int(
+                values.get("DUNE_API_MAX_REQUESTS", "10")
+            )
+            dune_poll_interval = Decimal(
+                values.get("DUNE_API_POLL_INTERVAL_SEC", "4")
+            )
+            dune_execution_timeout = int(
+                values.get("DUNE_API_EXECUTION_TIMEOUT_SEC", "30")
+            )
+        except (InvalidOperation, ValueError) as exc:
+            raise ConfigManagerError(
+                "invalid Dune polling configuration"
+            ) from exc
+        if not dune_poll_interval.is_finite():
+            raise ConfigManagerError(
+                "invalid Dune polling configuration"
+            )
+        if (
+            Decimal(dune_max_requests - 2) * dune_poll_interval
+            < Decimal(dune_execution_timeout)
+        ):
+            raise ConfigManagerError("dune_poll_budget_inconsistent")
         delivery_mode = values.get(
             "OAR_WATCH_DELIVERY_MODE",
             "observe",
@@ -612,11 +696,19 @@ class ConfigManager:
             "cex_labels_file": labels_status,
             "arkham_api_key": (
                 "configured"
-                if values.get("ARKHAM_API_KEY", "").strip()
-                else "not_configured"
+                if arkham_key
+                else "optional_disabled"
             ),
             "arkham_api_base_url": (
                 "configured" if arkham_base_url else "not_configured"
+            ),
+            "dune_api_key": (
+                "configured"
+                if dune_key
+                else "optional_disabled"
+            ),
+            "dune_api_base_url": (
+                "configured" if dune_base_url else "not_configured"
             ),
             "oar_watch_delivery_mode": delivery_mode,
             "oar_watch_with_ai": watch_with_ai == "true",

@@ -198,6 +198,22 @@ Arkham API Key 在 FinalShell 输入行明文可见，但只经 stdin 进入配�
 生产 CSV。更完整的证据门槛、请求上限和回滚方式见
 [`OAR_P5D_ARKHAM_LABEL_REVIEW.md`](OAR_P5D_ARKHAM_LABEL_REVIEW.md)。
 
+## 地址情报中心
+
+“链上活动雷达 → 地址情报中心”统一管理本地已批准标签、Dune、OLI、
+BaseScan 人工来源、可选 Arkham 和本地行为角色候选。Dune 与 Arkham Key
+均可为空；未配置时显示 `optional_disabled`，不影响 Watch、DeepSeek 或
+Telegram。
+
+Watch 热路径只生成本地未知地址队列，不会请求任何外部标签 Provider。
+显式候选发现才允许使用 `--allow-network`。Dune CSV、OLI Parquet 和
+BaseScan CSV 导入都只进入 Pending；批准必须输入 `批准地址标签`。冲突、
+到期或与本地 approved 身份锚点不一致的候选会 fail closed。Dune 自动同步
+默认最多 6 次请求、1 秒轮询间隔和 30 秒执行超时；BaseScan Public Tag
+不会默认识别为 CEX。
+过期或只有行为推断的候选不能直接成为生产 CEX 身份。详见
+[`OAR_P5E_ADDRESS_INTELLIGENCE.md`](OAR_P5E_ADDRESS_INTELLIGENCE.md)。
+
 ## 安装
 
 `scripts/install_shortcuts.sh` 是安装流程使用的幂等入口；它不访问网络、不启动菜单或服务。`scripts/install_server.sh` 会确保：
