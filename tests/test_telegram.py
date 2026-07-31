@@ -521,7 +521,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 )
 
             outbox = store.load(settings.tg_outbox_path, [])
-            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.status, "partial")
             self.assertEqual(outbox[-1]["status"], "partial")
             self.assertEqual(outbox[-1]["completed_chunks"], 1)
             self.assertEqual(outbox[-1]["message_ids"], [301])
@@ -616,7 +616,7 @@ class TelegramGatewayTests(unittest.TestCase):
                     }],
                 )
 
-            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.status, "partial")
             delete_mock.assert_called_once_with(
                 [301],
                 reason="funding_partial_send_rollback",
@@ -649,7 +649,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 )
 
             self.assertTrue(ok)
-            self.assertEqual(message_ids, [222, 222])
+            self.assertEqual(message_ids, [222, 222, 222])
             first_payload = post_mock.call_args_list[0].kwargs["json"]
             second_payload = post_mock.call_args_list[1].kwargs["json"]
             self.assertEqual(first_payload["reply_to_message_id"], 111)
@@ -670,11 +670,14 @@ class TelegramGatewayTests(unittest.TestCase):
 
             class Response400:
                 status_code = 400
-                text = "bad reply"
 
                 @staticmethod
                 def json() -> dict[str, object]:
-                    return {}
+                    return {
+                        "ok": False,
+                        "error_code": 400,
+                        "description": "Bad Request: reply message not found",
+                    }
 
             class Response200:
                 status_code = 200

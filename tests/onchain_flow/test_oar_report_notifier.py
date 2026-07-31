@@ -253,7 +253,7 @@ class OarReportNotifierTests(unittest.TestCase):
         self.assertNotIn(20, gateway.events[1][1])
         self.assertNotIn(30, gateway.events[1][1])
 
-    def test_failed_new_send_keeps_old_card_and_rolls_back_partial(self) -> None:
+    def test_partial_new_send_keeps_old_card_and_rolls_back_partial(self) -> None:
         contract = "0x9999999999999999999999999999999999999999"
         gateway = FakeGateway(
             history=[
@@ -264,7 +264,7 @@ class OarReportNotifierTests(unittest.TestCase):
                 )
             ],
             result=PushResult(
-                "failed",
+                "partial",
                 "telegram_api_failed",
                 False,
                 [99],

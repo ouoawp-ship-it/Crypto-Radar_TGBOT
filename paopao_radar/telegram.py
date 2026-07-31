@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import sys
 import time
 import hashlib
@@ -24,12 +25,65 @@ MAX_TELEGRAM_HISTORY_ITEMS = 1000
 
 
 @dataclass
+class TelegramDeliveryDiagnostics:
+    operation: str = "sendMessage"
+    http_attempts: int = 0
+    total_chunks: int = 0
+    completed_chunks: int = 0
+    last_http_status: int | None = None
+    telegram_error_code: int | None = None
+    telegram_error_class: str = ""
+    retry_after_sec: int | None = None
+    parse_fallback_used: bool = False
+    reply_fallback_used: bool = False
+    network_error_class: str = ""
+    response_ok: bool = False
+    source_text_chars: int = 0
+    max_source_line_chars: int = 0
+    chunk_count: int = 0
+    max_chunk_chars: int = 0
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "http_attempts": self.http_attempts,
+            "total_chunks": self.total_chunks,
+            "completed_chunks": self.completed_chunks,
+            "last_http_status": self.last_http_status,
+            "telegram_error_code": self.telegram_error_code,
+            "telegram_error_class": self.telegram_error_class,
+            "retry_after_sec": self.retry_after_sec,
+            "parse_fallback_used": self.parse_fallback_used,
+            "reply_fallback_used": self.reply_fallback_used,
+            "network_error_class": self.network_error_class,
+            "response_ok": self.response_ok,
+            "source_text_chars": self.source_text_chars,
+            "max_source_line_chars": self.max_source_line_chars,
+            "chunk_count": self.chunk_count,
+            "max_chunk_chars": self.max_chunk_chars,
+        }
+
+    def audit_fields(self) -> dict[str, Any]:
+        return {
+            "telegram_http_attempts": self.http_attempts,
+            "telegram_last_http_status": self.last_http_status,
+            "telegram_error_class": self.telegram_error_class,
+            "telegram_completed_chunks": self.completed_chunks,
+            "telegram_total_chunks": self.total_chunks,
+            "telegram_parse_fallback_used": self.parse_fallback_used,
+            "telegram_reply_fallback_used": self.reply_fallback_used,
+            "telegram_retry_after_sec": self.retry_after_sec,
+        }
+
+
+@dataclass
 class PushResult:
     status: str
     reason: str
     sent: bool = False
     message_ids: list[int] | None = None
     delivery_id: str = ""
+    diagnostics: TelegramDeliveryDiagnostics | None = None
 
 
 def utc_ts() -> int:
@@ -37,18 +91,149 @@ def utc_ts() -> int:
 
 
 def chunk_text(text: str, limit: int) -> list[str]:
+    if limit <= 0:
+        raise ValueError("Telegram chunk limit must be positive")
     chunks: list[str] = []
     current = ""
     for line in text.splitlines():
-        extra = len(line) + (1 if current else 0)
-        if current and len(current) + extra > limit:
-            chunks.append(current)
-            current = line
-        else:
-            current = f"{current}\n{line}" if current else line
+        remaining = line
+        while remaining:
+            if current:
+                available = limit - len(current) - 1
+                if available <= 0:
+                    chunks.append(current)
+                    current = ""
+                    continue
+                if len(remaining) <= available:
+                    current = f"{current}\n{remaining}"
+                    remaining = ""
+                else:
+                    current = f"{current}\n{remaining[:available]}"
+                    chunks.append(current)
+                    current = ""
+                    remaining = remaining[available:]
+            elif len(remaining) > limit:
+                chunks.append(remaining[:limit])
+                remaining = remaining[limit:]
+            else:
+                current = remaining
+                remaining = ""
+        if not line and current:
+            if len(current) + 1 <= limit:
+                current += "\n"
+            else:
+                chunks.append(current)
+                current = ""
     if current:
         chunks.append(current)
-    return chunks or [text]
+    if chunks:
+        return chunks
+    return [text] if text else []
+
+
+def telegram_chunk_diagnostics(
+    text: str,
+    limit: int,
+) -> dict[str, int]:
+    chunks = chunk_text(text, limit)
+    source_lines = text.splitlines() or ([text] if text else [])
+    return {
+        "source_text_chars": len(text),
+        "max_source_line_chars": max((len(line) for line in source_lines), default=0),
+        "chunk_count": len(chunks),
+        "max_chunk_chars": max((len(chunk) for chunk in chunks), default=0),
+    }
+
+
+def _safe_telegram_error_payload(response: Any) -> tuple[int | None, str, int | None]:
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return None, "", None
+    if not isinstance(payload, dict):
+        return None, "", None
+    error_code = payload.get("error_code")
+    normalized_code = (
+        error_code
+        if isinstance(error_code, int) and not isinstance(error_code, bool)
+        else None
+    )
+    description = payload.get("description")
+    normalized_description = (
+        description.lower() if isinstance(description, str) else ""
+    )
+    parameters = payload.get("parameters")
+    retry_after: int | None = None
+    if isinstance(parameters, dict):
+        candidate = parameters.get("retry_after")
+        if (
+            isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and candidate >= 0
+        ):
+            retry_after = candidate
+    return normalized_code, normalized_description, retry_after
+
+
+def classify_telegram_response(response: Any) -> tuple[str, int | None, int | None]:
+    status = int(getattr(response, "status_code", 0) or 0)
+    error_code, description, retry_after = _safe_telegram_error_payload(response)
+    if status == 200:
+        return "telegram_ok", error_code, retry_after
+    if status == 400:
+        patterns = (
+            (("message thread not found", "thread not found"), "telegram_topic_not_found"),
+            (("topic_closed", "topic is closed"), "telegram_topic_closed"),
+            (("chat not found",), "telegram_chat_not_found"),
+            (("bot is not a member", "bot was kicked"), "telegram_bot_not_member"),
+            (("not enough rights", "forbidden to send", "have no rights"), "telegram_send_permission_denied"),
+            (("can't parse entities", "cant parse entities"), "telegram_parse_error"),
+            (("message is too long",), "telegram_message_too_long"),
+            (("reply message not found", "message to be replied not found"), "telegram_reply_target_not_found"),
+        )
+        for needles, error_class in patterns:
+            if any(needle in description for needle in needles):
+                return error_class, error_code, retry_after
+        return "telegram_bad_request", error_code, retry_after
+    if status == 401:
+        return "telegram_auth_failed", error_code, retry_after
+    if status == 403:
+        return "telegram_forbidden", error_code, retry_after
+    if status == 404:
+        return "telegram_endpoint_not_found", error_code, retry_after
+    if status == 429:
+        return "telegram_rate_limited", error_code, retry_after
+    if 500 <= status <= 599:
+        return "telegram_provider_unavailable", error_code, retry_after
+    return "telegram_http_error", error_code, retry_after
+
+
+def classify_telegram_network_error(exc: BaseException) -> str:
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "telegram_timeout"
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "telegram_tls_failed"
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if (
+            isinstance(current, socket.gaierror)
+            or type(current).__name__ == "NameResolutionError"
+        ):
+            return "telegram_dns_failed"
+        for candidate in (current.__cause__, current.__context__):
+            if isinstance(candidate, BaseException):
+                pending.append(candidate)
+        for candidate in getattr(current, "args", ()):
+            if isinstance(candidate, BaseException):
+                pending.append(candidate)
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "telegram_connection_failed"
+    return "telegram_http_error"
 
 
 def plain_fallback(text: str) -> str:
@@ -327,6 +512,7 @@ class TelegramGateway:
     def __init__(self, settings: Settings, store: JsonStore):
         self.settings = settings
         self.store = store
+        self._last_delivery_diagnostics: TelegramDeliveryDiagnostics | None = None
 
     def send(
         self,
@@ -449,6 +635,7 @@ class TelegramGateway:
             self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
         if photo is not None:
+            self._last_delivery_diagnostics = None
             ok, message_ids = self._send_real_photo_bytes(
                 photo,
                 caption=text,
@@ -456,6 +643,7 @@ class TelegramGateway:
                 topic_id=topic_id,
             )
         else:
+            self._last_delivery_diagnostics = None
             ok, message_ids = self._send_real_message_ids(
                 text,
                 parse_mode=parse_mode,
@@ -468,16 +656,18 @@ class TelegramGateway:
             "telegram_api" if ok else "telegram_api_failed"
         )
         result = PushResult(
-            "sent" if ok else "failed",
+            "sent" if ok else "partial" if message_ids else "failed",
             reason,
             ok,
             message_ids,
             delivery_id,
+            self._last_delivery_diagnostics,
         )
         self._finish_delivery(
             delivery_id,
             status="sent" if ok else "partial" if message_ids else "failed",
             message_ids=message_ids,
+            diagnostics=result.diagnostics,
         )
         self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
         if template_id == "TG_FUNDING_ALERT" and signal_records:
@@ -610,7 +800,14 @@ class TelegramGateway:
         self.store.update(self.settings.tg_outbox_path, reserve, [])
         return delivery_id if reserved["ok"] else ""
 
-    def _finish_delivery(self, delivery_id: str, *, status: str, message_ids: list[int]) -> None:
+    def _finish_delivery(
+        self,
+        delivery_id: str,
+        *,
+        status: str,
+        message_ids: list[int],
+        diagnostics: TelegramDeliveryDiagnostics | None = None,
+    ) -> None:
         now = utc_ts()
 
         def finish(value: Any) -> list[dict[str, Any]]:
@@ -621,6 +818,8 @@ class TelegramGateway:
                     item["updated_at"] = now
                     item["completed_chunks"] = len(message_ids)
                     item["message_ids"] = list(message_ids)
+                    if diagnostics is not None:
+                        item.update(diagnostics.audit_fields())
                     break
             return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
 
@@ -649,10 +848,25 @@ class TelegramGateway:
         reply_to_message_id: int | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendMessage"
-        ok = True
         message_ids: list[int] = []
         reply_id = int(reply_to_message_id or 0)
         chunks = chunk_text(text, self.settings.tg_push_split_limit)
+        size_diagnostics = telegram_chunk_diagnostics(
+            text,
+            self.settings.tg_push_split_limit,
+        )
+        diagnostics = TelegramDeliveryDiagnostics(
+            operation="sendMessage",
+            total_chunks=len(chunks),
+            source_text_chars=size_diagnostics["source_text_chars"],
+            max_source_line_chars=size_diagnostics["max_source_line_chars"],
+            chunk_count=size_diagnostics["chunk_count"],
+            max_chunk_chars=size_diagnostics["max_chunk_chars"],
+        )
+        self._last_delivery_diagnostics = diagnostics
+        if not chunks:
+            diagnostics.telegram_error_class = "telegram_bad_request"
+            return False, []
         for idx, chunk in enumerate(chunks):
             payload: dict[str, Any] = {
                 "chat_id": self.settings.tg_chat_id,
@@ -674,37 +888,74 @@ class TelegramGateway:
             for attempt in range(1, self.settings.tg_push_retry + 1):
                 try:
                     response = requests.post(url, json=payload, timeout=self.settings.tg_push_timeout_sec)
-                    if response.status_code == 200:
-                        self._append_message_id(response, message_ids)
-                        sent = True
+                    self._record_http_response(diagnostics, response)
+                    error_class = diagnostics.telegram_error_class
+                    if error_class == "telegram_ok":
+                        sent = self._append_message_id(response, message_ids)
+                        if not sent:
+                            diagnostics.response_ok = False
+                            diagnostics.telegram_error_class = "telegram_http_error"
                         break
-                    if response.status_code == 400 and payload.get("reply_to_message_id"):
+                    if (
+                        error_class == "telegram_reply_target_not_found"
+                        and payload.get("reply_to_message_id")
+                        and not diagnostics.reply_fallback_used
+                    ):
                         no_reply = dict(payload)
                         no_reply.pop("reply_to_message_id", None)
                         no_reply.pop("allow_sending_without_reply", None)
+                        diagnostics.reply_fallback_used = True
                         response = requests.post(url, json=no_reply, timeout=self.settings.tg_push_timeout_sec)
-                        if response.status_code == 200:
-                            self._append_message_id(response, message_ids)
-                            sent = True
-                            break
-                    if response.status_code == 400 and parse_mode:
+                        self._record_http_response(diagnostics, response)
+                        if diagnostics.telegram_error_class == "telegram_ok":
+                            sent = self._append_message_id(response, message_ids)
+                            if not sent:
+                                diagnostics.response_ok = False
+                                diagnostics.telegram_error_class = "telegram_http_error"
+                        break
+                    if (
+                        error_class == "telegram_parse_error"
+                        and parse_mode
+                        and not diagnostics.parse_fallback_used
+                    ):
                         fallback = dict(payload)
                         fallback.pop("parse_mode", None)
                         fallback["text"] = plain_fallback(chunk)
+                        diagnostics.parse_fallback_used = True
                         response = requests.post(url, json=fallback, timeout=self.settings.tg_push_timeout_sec)
-                        sent = response.status_code == 200
-                        if sent:
-                            self._append_message_id(response, message_ids)
+                        self._record_http_response(diagnostics, response)
+                        if diagnostics.telegram_error_class == "telegram_ok":
+                            sent = self._append_message_id(response, message_ids)
+                            if not sent:
+                                diagnostics.response_ok = False
+                                diagnostics.telegram_error_class = "telegram_http_error"
                         break
-                    if response.status_code in {429, 500, 502, 503, 504}:
+                    if error_class in {
+                        "telegram_rate_limited",
+                        "telegram_provider_unavailable",
+                    } and attempt < self.settings.tg_push_retry:
+                        delay = diagnostics.retry_after_sec or attempt
+                        time.sleep(min(5, max(0, delay)))
+                        continue
+                    break
+                except requests.exceptions.RequestException as exc:
+                    diagnostics.http_attempts += 1
+                    diagnostics.last_http_status = None
+                    diagnostics.telegram_error_code = None
+                    diagnostics.retry_after_sec = None
+                    diagnostics.network_error_class = classify_telegram_network_error(exc)
+                    diagnostics.telegram_error_class = diagnostics.network_error_class
+                    diagnostics.response_ok = False
+                    if attempt < self.settings.tg_push_retry:
                         time.sleep(min(5, attempt))
                         continue
                     break
-                except Exception:
-                    if attempt < self.settings.tg_push_retry:
-                        time.sleep(min(5, attempt))
-            ok = ok and sent
+            if not sent:
+                break
+            diagnostics.completed_chunks += 1
             time.sleep(0.25)
+        ok = diagnostics.completed_chunks == diagnostics.total_chunks
+        diagnostics.response_ok = ok
         return ok, message_ids
 
     def _send_real_photo_bytes(
@@ -730,6 +981,19 @@ class TelegramGateway:
                 payload["message_thread_id"] = int(topic_id)
             except ValueError:
                 pass
+        size_diagnostics = telegram_chunk_diagnostics(
+            caption,
+            max(1, len(caption) or 1),
+        )
+        diagnostics = TelegramDeliveryDiagnostics(
+            operation="sendPhoto",
+            total_chunks=1,
+            source_text_chars=size_diagnostics["source_text_chars"],
+            max_source_line_chars=size_diagnostics["max_source_line_chars"],
+            chunk_count=1,
+            max_chunk_chars=len(caption),
+        )
+        self._last_delivery_diagnostics = diagnostics
         for attempt in range(1, self.settings.tg_push_retry + 1):
             try:
                 response = requests.post(
@@ -738,45 +1002,87 @@ class TelegramGateway:
                     files={"photo": ("launch-chart.png", photo, "image/png")},
                     timeout=self.settings.tg_push_timeout_sec,
                 )
-                if response.status_code == 200:
+                self._record_http_response(diagnostics, response)
+                if diagnostics.telegram_error_class == "telegram_ok":
                     message_ids: list[int] = []
-                    self._append_message_id(response, message_ids)
-                    return True, message_ids
-                if response.status_code == 400 and payload.get("parse_mode"):
+                    sent = self._append_message_id(response, message_ids)
+                    diagnostics.completed_chunks = 1 if sent else 0
+                    diagnostics.response_ok = sent
+                    if not sent:
+                        diagnostics.telegram_error_class = "telegram_http_error"
+                    return sent, message_ids
+                if (
+                    diagnostics.telegram_error_class == "telegram_parse_error"
+                    and payload.get("parse_mode")
+                    and not diagnostics.parse_fallback_used
+                ):
                     fallback = dict(payload)
                     fallback.pop("parse_mode", None)
                     fallback["caption"] = plain_fallback(caption)[:1024]
+                    diagnostics.parse_fallback_used = True
                     response = requests.post(
                         url,
                         data=fallback,
                         files={"photo": ("launch-chart.png", photo, "image/png")},
                         timeout=self.settings.tg_push_timeout_sec,
                     )
-                    if response.status_code == 200:
+                    self._record_http_response(diagnostics, response)
+                    if diagnostics.telegram_error_class == "telegram_ok":
                         message_ids = []
-                        self._append_message_id(response, message_ids)
-                        return True, message_ids
+                        sent = self._append_message_id(response, message_ids)
+                        diagnostics.completed_chunks = 1 if sent else 0
+                        diagnostics.response_ok = sent
+                        if not sent:
+                            diagnostics.telegram_error_class = "telegram_http_error"
+                        return sent, message_ids
                     return False, []
-                if response.status_code in {429, 500, 502, 503, 504}:
-                    time.sleep(min(5, attempt))
+                if diagnostics.telegram_error_class in {
+                    "telegram_rate_limited",
+                    "telegram_provider_unavailable",
+                } and attempt < self.settings.tg_push_retry:
+                    delay = diagnostics.retry_after_sec or attempt
+                    time.sleep(min(5, max(0, delay)))
                     continue
                 return False, []
-            except Exception:
+            except requests.exceptions.RequestException as exc:
+                diagnostics.http_attempts += 1
+                diagnostics.last_http_status = None
+                diagnostics.telegram_error_code = None
+                diagnostics.retry_after_sec = None
+                diagnostics.network_error_class = classify_telegram_network_error(exc)
+                diagnostics.telegram_error_class = diagnostics.network_error_class
+                diagnostics.response_ok = False
                 if attempt < self.settings.tg_push_retry:
                     time.sleep(min(5, attempt))
         return False, []
 
     @staticmethod
-    def _append_message_id(response: requests.Response, message_ids: list[int]) -> None:
+    def _append_message_id(response: requests.Response, message_ids: list[int]) -> bool:
         try:
             data = response.json()
         except ValueError:
-            return
+            return False
         result = data.get("result", {}) if isinstance(data, dict) else {}
         if isinstance(result, dict):
             message_id = result.get("message_id")
             if isinstance(message_id, int):
                 message_ids.append(message_id)
+                return True
+        return False
+
+    @staticmethod
+    def _record_http_response(
+        diagnostics: TelegramDeliveryDiagnostics,
+        response: requests.Response,
+    ) -> None:
+        diagnostics.http_attempts += 1
+        diagnostics.last_http_status = int(response.status_code)
+        error_class, error_code, retry_after = classify_telegram_response(response)
+        diagnostics.telegram_error_class = error_class
+        diagnostics.telegram_error_code = error_code
+        if retry_after is not None or error_class != "telegram_ok":
+            diagnostics.retry_after_sec = retry_after
+        diagnostics.response_ok = error_class == "telegram_ok"
 
     def _topic_id_for_template(self, template_id: str) -> str:
         return (
@@ -859,10 +1165,20 @@ class TelegramGateway:
         }
         try:
             response = requests.post(url, json=payload, timeout=self.settings.tg_push_timeout_sec)
-        except Exception:
+        except requests.exceptions.RequestException as exc:
+            print(
+                "[telegram] createForumTopic failed "
+                f"error={classify_telegram_network_error(exc)}",
+                file=sys.stderr,
+            )
             return ""
         if response.status_code != 200:
-            print(f"[telegram] createForumTopic failed {response.status_code}: {response.text[:300]}", file=sys.stderr)
+            error_class, _error_code, _retry_after = classify_telegram_response(response)
+            print(
+                "[telegram] createForumTopic failed "
+                f"status={response.status_code} error={error_class}",
+                file=sys.stderr,
+            )
             return ""
         try:
             data = response.json()
@@ -971,10 +1287,20 @@ class TelegramGateway:
         }
         try:
             response = requests.post(url, json=payload, timeout=self.settings.tg_push_timeout_sec)
-        except Exception:
+        except requests.exceptions.RequestException as exc:
+            print(
+                "[telegram] pinChatMessage failed "
+                f"error={classify_telegram_network_error(exc)}",
+                file=sys.stderr,
+            )
             return False
         if response.status_code != 200:
-            print(f"[telegram] pinChatMessage failed {response.status_code}: {response.text[:300]}", file=sys.stderr)
+            error_class, _error_code, _retry_after = classify_telegram_response(response)
+            print(
+                "[telegram] pinChatMessage failed "
+                f"status={response.status_code} error={error_class}",
+                file=sys.stderr,
+            )
             return False
         return True
 
@@ -1355,10 +1681,20 @@ class TelegramGateway:
         }
         try:
             response = requests.post(url, json=payload, timeout=self.settings.tg_push_timeout_sec)
-        except Exception:
+        except requests.exceptions.RequestException as exc:
+            print(
+                "[telegram] deleteMessage failed "
+                f"error={classify_telegram_network_error(exc)}",
+                file=sys.stderr,
+            )
             return False
         if response.status_code != 200:
-            print(f"[telegram] deleteMessage failed {response.status_code}: {response.text[:300]}", file=sys.stderr)
+            error_class, _error_code, _retry_after = classify_telegram_response(response)
+            print(
+                "[telegram] deleteMessage failed "
+                f"status={response.status_code} error={error_class}",
+                file=sys.stderr,
+            )
             return False
         return True
 
@@ -1427,6 +1763,8 @@ class TelegramGateway:
             "reply_to_message_id": int(reply_to_message_id or 0),
             "preview": text[:240],
         }
+        if result.diagnostics is not None:
+            record.update(result.diagnostics.audit_fields())
         if template_id == "TG_ONCHAIN_FLOW_ALERT" and signal_records:
             allowed = {
                 "oar_card_key",

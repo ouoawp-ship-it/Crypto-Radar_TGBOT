@@ -141,6 +141,26 @@ User Message 使用稳定 Envelope：
 
 OAR 使用自己的 Intro 版本；Funding、Launch、Flow、Announcement 和 Radar Summary 等其他模板继续使用 Core Radar Intro 版本。OAR Intro 更新不会触发其他话题重发或删除。
 
+真实发送验收前可执行非持久路由检查：
+
+```bash
+python onchain_main.py telegram-route-check --allow-network
+```
+
+该命令有界调用 `getMe`、`getChat`、`getChatMember` 和
+`sendChatAction(action=typing)`，不会调用 `sendMessage`、`sendPhoto`、
+`createForumTopic`、`pinChatMessage`、`deleteMessage`、`getUpdates` 或
+Webhook 方法。输出及权限为 600 的
+`data/onchain/telegram_route_check.json` 只包含固定错误分类、权限布尔值和
+HTTP 调用计数，不包含 Bot、Chat、Topic、Message ID、URL、响应错误正文或
+任何凭据。
+
+真实投递诊断同样只记录 HTTP attempt、状态码、固定错误分类、已完成/总分段
+数量以及是否使用受限的 parse/reply fallback。只有 parse 错误会去除
+`parse_mode` 重试一次，只有 reply target 不存在会去除 reply 参数重试一次；
+Chat、Topic、权限或认证错误不会触发额外 fallback。Telegram 原始错误正文
+不会写入 stdout、stderr、History 或 Outbox。
+
 ## 最新状态卡片
 
 卡片身份：
