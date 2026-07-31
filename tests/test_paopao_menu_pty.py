@@ -44,6 +44,9 @@ class PaopaoMenuPtyTests(unittest.TestCase):
             fake_python.write_text(
                 "#!/usr/bin/env bash\n"
                 f"printf 'python %s\\n' \"$*\" >>'{calls}'\n"
+                "if [ \"${1:-}\" = '-c' ]; then\n"
+                "  exec \"$PAOPAO_REAL_PYTHON\" \"$@\"\n"
+                "fi\n"
                 "case \"$*\" in\n"
                 "  *'scripts/paopao_config.py status --json'*)\n"
                 "    if [ -n \"${FAKE_CONFIG_STATUS_JSON:-}\" ]; then\n"
@@ -134,6 +137,7 @@ class PaopaoMenuPtyTests(unittest.TestCase):
                 "LC_ALL": "C.UTF-8",
                 "PAOPAO_APP_DIR": str(ROOT),
                 "PAOPAO_PYTHON_BIN": sys.executable,
+                "PAOPAO_REAL_PYTHON": sys.executable,
                 "PAOPAO_MENU_NO_CLEAR": "1",
                 "PAOPAO_UPDATE_SCRIPT": str(update),
                 **(extra_env or {}),
@@ -280,7 +284,8 @@ class PaopaoMenuPtyTests(unittest.TestCase):
 
     def test_main_bot_dry_run_profile_does_not_restart_service(self) -> None:
         code, output, calls = self._run_menu(
-            "2\n9\n1\n\n0\n0\n0\n"
+            "2\n9\n1\n\n0\n0\n0\n",
+            extra_env={"PAOPAO_TEST_FAKE_PYTHON": "1"},
         )
         self.assertEqual(code, 0, output)
         self.assertEqual(
@@ -305,7 +310,10 @@ class PaopaoMenuPtyTests(unittest.TestCase):
         })
         _, _, denied = self._run_menu(
             "2\n2\n重启主服务\nwrong\n\n0\n0\n",
-            extra_env={"FAKE_CONFIG_STATUS_JSON": real_status},
+            extra_env={
+                "PAOPAO_TEST_FAKE_PYTHON": "1",
+                "FAKE_CONFIG_STATUS_JSON": real_status,
+            },
         )
         self.assertFalse([
             line for line in denied
@@ -313,7 +321,10 @@ class PaopaoMenuPtyTests(unittest.TestCase):
         ])
         code, output, allowed = self._run_menu(
             "2\n2\n重启主服务\n重启真实主BOT\n\n0\n0\n",
-            extra_env={"FAKE_CONFIG_STATUS_JSON": real_status},
+            extra_env={
+                "PAOPAO_TEST_FAKE_PYTHON": "1",
+                "FAKE_CONFIG_STATUS_JSON": real_status,
+            },
         )
         self.assertEqual(code, 0, output)
         self.assertEqual(
