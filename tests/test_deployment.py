@@ -242,6 +242,82 @@ class LaunchReportTests(unittest.TestCase):
     def test_launch_alert_pressure_still_blocks_excessive_candidate_volume(self) -> None:
         self.assertFalse(main.launch_alert_pressure_within_limit(201, 100))
 
+    def test_current_launch_pressure_counts_distinct_actionable_symbols(self) -> None:
+        with TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "launch_state.json"
+            settings = Settings(
+                base_dir=Path(tmp),
+                data_dir=Path(tmp),
+                launch_state_path=state_path,
+                launch_min_score_push=60,
+            )
+            store = JsonStore(Path(tmp))
+            store.save(state_path, {
+                "BTCUSDT": {"stage": "primed", "score": 60},
+                "ETHUSDT": {"stage": "breakout", "score": 75},
+                "SOLUSDT": {"stage": "watching", "score": 55},
+                "XRPUSDT": {"stage": "cooling", "score": 80},
+            })
+
+            self.assertEqual(
+                main.current_launch_alert_candidate_count(settings, store),
+                2,
+            )
+
+    def test_current_launch_pressure_fails_closed_without_valid_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                base_dir=Path(tmp),
+                data_dir=Path(tmp),
+                launch_state_path=Path(tmp) / "missing.json",
+            )
+
+            self.assertIsNone(
+                main.current_launch_alert_candidate_count(
+                    settings,
+                    JsonStore(Path(tmp)),
+                )
+            )
+
+    def test_readiness_uses_current_candidates_for_message_packages(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / "launch_state.json"
+            history_path = root / "launch_watch_history.json"
+            settings = Settings(
+                base_dir=root,
+                data_dir=root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd",
+                tg_chat_id="-1001234567890",
+                launch_state_path=state_path,
+                launch_watch_history_path=history_path,
+                launch_message_package_v2_enable=True,
+                launch_min_score_push=60,
+            )
+            store = JsonStore(root)
+            store.save(state_path, {
+                "BTCUSDT": {"stage": "primed", "score": 60},
+                "ETHUSDT": {"stage": "breakout", "score": 75},
+            })
+            store.save(history_path, [
+                {
+                    "alert_count": 8,
+                    "scanned": 80,
+                    "top_score": 75,
+                    "buckets": {"primed": 2},
+                    "top_symbols": ["BTCUSDT", "ETHUSDT"],
+                }
+                for _ in range(5)
+            ])
+
+            with patch.object(main, "runtime_health_checks", return_value=[]):
+                with redirect_stdout(StringIO()) as output:
+                    code = main.print_readiness(settings, store)
+
+            self.assertEqual(code, 0)
+            self.assertIn("当前独立有效候选 2 / 2", output.getvalue())
+            self.assertIn("dry-run 会重复记录", output.getvalue())
+
     def test_launch_report_summarizes_scores_and_buckets(self) -> None:
         settings = Settings(base_dir=Path("."), data_dir=Path("data"))
         report = main.build_launch_report(
