@@ -123,6 +123,31 @@ class TelegramSafeClassificationTests(unittest.TestCase):
         self.assertEqual(diagnostics["chunk_count"], 3)
         self.assertEqual(diagnostics["max_chunk_chars"], 10)
 
+    def test_complete_html_link_line_moves_to_next_chunk(self) -> None:
+        prefix = "x" * 70
+        link = '<a href="https://example.com"><b>BTC</b></a> · TV'
+
+        chunks = chunk_text(f"{prefix}\n{link}", 80)
+
+        self.assertEqual(chunks, [prefix, link])
+        self.assertTrue(all(len(item) <= 80 for item in chunks))
+        self.assertEqual(chunks[1].count("<a "), chunks[1].count("</a>"))
+
+    def test_multiple_html_link_lines_remain_parseable_across_chunks(self) -> None:
+        links = [
+            f'<a href="https://example.com/{index}"><b>COIN{index}</b></a> · '
+            f'<a href="https://example.com/tv/{index}"><b>TV</b></a>'
+            for index in range(6)
+        ]
+
+        chunks = chunk_text("\n".join(links), 180)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(item) <= 180 for item in chunks))
+        for chunk in chunks:
+            self.assertEqual(chunk.count("<a "), chunk.count("</a>"))
+            self.assertFalse(chunk.endswith("<"))
+
 
 class TelegramSafeFallbackTests(unittest.TestCase):
     def make_gateway(self, root: Path, **overrides: object) -> TelegramGateway:
