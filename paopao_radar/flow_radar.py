@@ -47,6 +47,14 @@ def coin_link(symbol: str) -> str:
     return telegram_coin_links(symbol)
 
 
+def compact_symbol_lines(symbols: list[str], *, per_line: int = 12) -> list[str]:
+    size = max(1, int(per_line))
+    return [
+        " · ".join(tg_escape(symbol) for symbol in symbols[index:index + size])
+        for index in range(0, len(symbols), size)
+    ]
+
+
 def flatten_points(data: Any) -> list[Any]:
     if isinstance(data, list):
         return data
@@ -815,7 +823,13 @@ class FlowRadarEngine:
         return {
             "template_id": "TG_FLOW_RADAR",
             "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
-            "text": self._format(rows, candidates, scanned_items, window),
+            "text": self._format(
+                rows,
+                candidates,
+                scanned_items,
+                window,
+                rotation_status=rotation_status,
+            ),
             "items": rows,
             "snapshots": scanned_items,
             "observed_at": int(window.end.timestamp()),
@@ -1009,6 +1023,10 @@ class FlowRadarEngine:
                 "pool_mode": "unlimited",
                 "total_candidates": len(entries),
                 "selected_count": len(selected_symbols),
+                "next_symbols": [
+                    str(item["symbol"])
+                    for item in next_order[: max(1, self.settings.flow_scan_limit)]
+                ],
             }
         return {
             "status": "ok",
@@ -1017,6 +1035,10 @@ class FlowRadarEngine:
             "scan_limit": max(1, self.settings.flow_scan_limit),
             "selected_count": len(selected_symbols),
             "unscanned_count": payload["unscanned_count"],
+            "next_symbols": [
+                str(item["symbol"])
+                for item in next_order[: max(1, self.settings.flow_scan_limit)]
+            ],
         }
 
     def _record_model_comparison(
@@ -1102,7 +1124,9 @@ class FlowRadarEngine:
         candidates: list[dict[str, Any]],
         scanned_items: list[dict[str, Any]],
         window: ClosedWindow,
+        rotation_status: dict[str, Any] | None = None,
     ) -> str:
+        rotation = rotation_status or {}
         spot_ready_count = sum(1 for item in scanned_items if item.get("spot_cvd_ready"))
         futures_ready_count = sum(1 for item in scanned_items if item.get("futures_cvd_ready"))
         price_ready_count = sum(1 for item in scanned_items if item.get("price_ready"))
@@ -1132,6 +1156,11 @@ class FlowRadarEngine:
             )
         )
         scanned_count = len(scanned_items)
+        remaining_first_coverage = (
+            int(rotation["unscanned_count"])
+            if "unscanned_count" in rotation
+            else max(0, len(candidates) - scanned_count)
+        )
         lines = [
             "🧭 <b>五因子资金流雷达</b>",
             f"⏰ {cst_now_text()}",
@@ -1140,7 +1169,7 @@ class FlowRadarEngine:
             tg_quote("📊 本轮统计"),
             f"全市场候选: {len(candidates)}（无固定数量上限）",
             f"本轮优先轮换: {scanned_count}/{len(candidates)}",
-            f"本轮后待轮换: {max(0, len(candidates) - scanned_count)}",
+            f"首次覆盖待轮换: {remaining_first_coverage}",
             f"入选信号: {len(rows)}",
             f"数据确认: 完整 {confirmed_count}/{scanned_count} | 缺项 {scanned_count - confirmed_count}/{scanned_count}",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",
@@ -1190,4 +1219,24 @@ class FlowRadarEngine:
                 "如果主动成交数据长期缺失，通常是币种没有对应 Binance 现货交易对、接口限频或窗口数据尚未完整。",
                 "",
             ])
+        current_symbols = [str(item.get("symbol") or "") for item in scanned_items]
+        next_symbols = [
+            str(symbol)
+            for symbol in rotation.get("next_symbols") or []
+            if str(symbol)
+        ]
+        all_symbols = [str(item.get("symbol") or "") for item in candidates]
+        lines.extend([
+            tg_quote("🔄 候选轮换"),
+            f"本轮深度扫描（{len(current_symbols)}）",
+            *compact_symbol_lines(current_symbols),
+            "",
+            f"下一轮优先队列（{len(next_symbols)}）",
+            *compact_symbol_lines(next_symbols),
+            "",
+            tg_quote(f"📋 全市场完整候选（{len(all_symbols)}）"),
+            *compact_symbol_lines(all_symbols),
+            "",
+            "说明：完整清单表示具备候选资格；只有本轮 24 个完成五因子深度扫描。",
+        ])
         return "\n".join(lines)
