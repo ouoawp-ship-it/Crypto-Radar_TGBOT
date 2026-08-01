@@ -4,7 +4,11 @@ import struct
 import unittest
 import zlib
 
-from paopao_radar.launch_chart import PNG_SIGNATURE, render_launch_chart_png
+from paopao_radar.launch_chart import (
+    PNG_SIGNATURE,
+    compact_smc_chart_frame,
+    render_launch_chart_png,
+)
 
 
 def sample_candles(count: int = 24) -> list[dict[str, float | int]]:
@@ -13,7 +17,7 @@ def sample_candles(count: int = 24) -> list[dict[str, float | int]]:
         open_price = 100 + index * 0.4
         close_price = open_price + (0.8 if index % 3 else -0.3)
         items.append({
-            "close_ts": 1_700_000_000 + index * 900,
+            "close_ts": 1_700_000_000 + index * 3600,
             "open": open_price,
             "high": max(open_price, close_price) + 0.5,
             "low": min(open_price, close_price) - 0.5,
@@ -176,7 +180,7 @@ class LaunchChartTests(unittest.TestCase):
             decode_rgb_rows(result)[2],
         )
 
-    def test_renders_full_smc_overlay_on_same_candlestick_chart(self) -> None:
+    def test_renders_compact_one_hour_smc_overlay(self) -> None:
         candles = sample_candles()
         ts = [int(item["close_ts"]) for item in candles]
         result = render_launch_chart_png(
@@ -193,7 +197,7 @@ class LaunchChartTests(unittest.TestCase):
                     "htf_bias": {"direction": "up"},
                     "snapshot": {
                         "timeframes": {
-                            "15m": {
+                            "1h": {
                                 "dealing_range": {
                                     "high": 109.5,
                                     "low": 99.2,
@@ -251,7 +255,7 @@ class LaunchChartTests(unittest.TestCase):
                                     "top": 105.2,
                                     "formed_ts": ts[14],
                                     "mitigated_ts": ts[20],
-                                    "status": "mitigated",
+                                    "status": "active",
                                 }],
                                 "order_blocks": [{
                                     "direction": "up",
@@ -259,7 +263,7 @@ class LaunchChartTests(unittest.TestCase):
                                     "top": 103.4,
                                     "formed_ts": ts[12],
                                     "invalidated_ts": 0,
-                                    "status": "mitigated",
+                                    "status": "active",
                                 }],
                                 "breaker_blocks": [{
                                     "direction": "down",
@@ -283,18 +287,50 @@ class LaunchChartTests(unittest.TestCase):
         raw = decode_rgb_rows(result)[2]
 
         for color in (
-            (168, 139, 84),
             (44, 151, 119),
             (66, 124, 218),
             (246, 189, 22),
             (196, 202, 211),
-            (53, 208, 127),
-            (255, 174, 66),
             (214, 96, 255),
             (238, 196, 72),
             (255, 126, 67),
         ):
             self.assertIn(bytes(color), raw)
+
+    def test_compact_smc_frame_keeps_only_latest_actionable_items(self) -> None:
+        result = compact_smc_chart_frame({
+            "swings": [{"ts": index} for index in range(8)],
+            "structures": [{"event_ts": index} for index in range(5)],
+            "liquidity": [
+                {"type": "BSL", "status": "broken", "formed_ts": 1},
+                {"type": "BSL", "status": "active", "formed_ts": 2},
+                {"type": "SSL", "status": "swept", "formed_ts": 3},
+            ],
+            "fvgs": [
+                {"status": "mitigated", "formed_ts": 1},
+                {"status": "active", "formed_ts": 2},
+                {"status": "active", "formed_ts": 3},
+            ],
+            "order_blocks": [
+                {"status": "invalidated", "formed_ts": 1},
+                {"status": "active", "formed_ts": 2},
+            ],
+            "breaker_blocks": [
+                {"status": "mitigated", "formed_ts": 1},
+                {"status": "active", "formed_ts": 2},
+            ],
+            "mitigation_blocks": [{"event_ts": 4}],
+            "dealing_range": {"high": 10, "low": 1},
+        })
+
+        self.assertEqual(len(result["swings"]), 4)
+        self.assertEqual(len(result["structures"]), 1)
+        self.assertEqual(len(result["liquidity"]), 2)
+        self.assertEqual(result["fvgs"], [{"status": "active", "formed_ts": 3}])
+        self.assertEqual(len(result["order_blocks"]), 1)
+        self.assertEqual(len(result["breaker_blocks"]), 1)
+        self.assertEqual(result["mitigation_blocks"], [])
+        self.assertEqual(result["dealing_range"], {})
 
     def test_rejects_incomplete_candle_series(self) -> None:
         with self.assertRaisesRegex(ValueError, "five valid candles"):

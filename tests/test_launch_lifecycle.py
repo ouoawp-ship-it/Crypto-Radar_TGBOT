@@ -621,7 +621,7 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                 launch_chart_v2_enable=True,
             )
             engine = RadarEngine(settings, JsonStore(Path(tmp)))
-            captured: dict[str, int] = {}
+            captured: dict[str, int | str] = {}
 
             class Source:
                 @staticmethod
@@ -634,19 +634,21 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                     end_time: int,
                 ) -> list[list[object]]:
                     captured.update({
+                        "interval": interval,
                         "limit": limit,
                         "start_time": start_time,
                         "end_time": end_time,
                     })
+                    last_closed_boundary = end_time // 3_600_000 * 3_600_000
                     return [
                         [
-                            (900 + index * 900) * 1000,
+                            last_closed_boundary - (limit - index) * 3_600_000,
                             "100",
                             "102",
                             "99",
                             str(100 + index * 0.1),
                             "10",
-                            (1800 + index * 900) * 1000 - 1,
+                            last_closed_boundary - (limit - index - 1) * 3_600_000 - 1,
                             str(100_000 + index * 1000),
                         ]
                         for index in range(limit)
@@ -656,18 +658,18 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                 "symbol": "TESTUSDT",
                 "launch_lifecycle": {
                     "cycle_no": 1,
-                    "first_window_end": 15_300,
-                    "window_end_ts": 29_700,
+                    "first_window_end": 1_700_000_000,
+                    "window_end_ts": 1_700_100_000,
                 },
                 "launch_package": {
                     "checkpoint_no": 2,
                     "checkpoints": [{
                         "checkpoint_no": 1,
-                        "window_end_ts": 15_300,
+                        "window_end_ts": 1_700_000_000,
                         "stage": "primed",
                     }],
                     "current": {
-                        "window_end_ts": 29_700,
+                        "window_end_ts": 1_700_100_000,
                         "stage": "breakout",
                         "price_action": {
                             "enabled": True,
@@ -677,13 +679,13 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                             "box_high": 102.0,
                             "box_low": 99.0,
                             "level": 102.0,
-                            "box_start_ts": 900,
-                            "box_end_ts": 14_400,
-                            "trigger_window_end_ts": 15_300,
-                            "event_window_end_ts": 29_700,
+                            "box_start_ts": 1_699_996_400,
+                            "box_end_ts": 1_699_999_100,
+                            "trigger_window_end_ts": 1_700_000_000,
+                            "event_window_end_ts": 1_700_100_000,
                             "confirmation_ends": {
-                                "15m": 15_300,
-                                "1h": 29_700,
+                                "15m": 1_700_000_000,
+                                "1h": 1_700_100_000,
                             },
                             "timeframes": {},
                         },
@@ -697,11 +699,14 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertTrue(alert["chart_png_bytes"].startswith(PNG_SIGNATURE))
             self.assertTrue(alert["chart_generated_in_memory"])
             self.assertEqual(alert["chart_checkpoint_count"], 2)
-            self.assertGreaterEqual(alert["chart_candle_count"], 96)
+            self.assertEqual(alert["chart_candle_count"], 72)
+            self.assertEqual(alert["chart_timeframe"], "1h")
+            self.assertEqual(alert["chart_trigger_timeframe"], "15m")
             self.assertEqual(alert["chart_price_action_status"], "confirmed_1h")
-            self.assertGreaterEqual(captured["limit"], 96)
-            self.assertLessEqual(captured["limit"], 1000)
-            self.assertEqual(captured["end_time"], 29_700_000 - 1)
+            self.assertEqual(captured["interval"], "1h")
+            self.assertGreaterEqual(captured["limit"], 72)
+            self.assertLessEqual(captured["limit"], 240)
+            self.assertEqual(captured["end_time"], 1_700_100_000_000 - 1)
             self.assertEqual(list(Path(tmp).rglob("*.png")), [])
 
     def test_launch_package_message_contains_cycle_deltas_and_event_axis(self) -> None:

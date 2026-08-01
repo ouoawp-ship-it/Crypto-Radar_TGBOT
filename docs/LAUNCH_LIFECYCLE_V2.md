@@ -121,9 +121,26 @@ Anti-repaint rules are part of the data contract:
 - event keys are persisted in the lifecycle price-action JSON, so rescanning
   the same closed window is idempotent.
 
-The in-memory PNG uses the same state snapshot. It draws swing labels,
-structure-break lines, BSL/SSL and sweep markers, FVG/OB/Breaker/Mitigation
-zones, and premium/discount equilibrium on the existing lifecycle chart.
+The in-memory PNG uses the same state snapshot but presents it as a compact 1h
+structure chart. The 15m scanner and lifecycle trigger are unchanged. The
+image keeps only the four latest 1h swings, the latest structure break, the
+latest BSL/SSL, and at most one active FVG, order block, and breaker. Completed
+15m/1h/4h confirmation markers and lifecycle checkpoints remain visible.
+Mitigated or invalidated historical zones are omitted from the picture.
+
+## Asset classification labels
+
+Launch candidates carry a display-only Binance instrument classification. The
+classifier separates crypto perpetuals from reviewed TradFi perpetuals,
+including individual equities, ETF/index products, leveraged ETFs, precious
+metals, energy, industrial metals, and forex metadata. Crypto contracts retain
+their Binance theme metadata and are labelled as core, major, or altcoin by a
+small reviewed tier list. Unknown future metadata falls back safely without
+changing the launch score, thresholds, lifecycle, or 15m trigger.
+
+The category and its source are included in the launch record. Telegram shows
+the Chinese category label, while the PNG uses a short ASCII category because
+the dependency-free chart font intentionally has no CJK glyph set.
 
 Safe defaults:
 
@@ -162,10 +179,12 @@ Telegram package. P2.3 adds the in-memory K-line image. The production package
 is one photo message whose caption contains the dynamic lifecycle text, links,
 and copyable symbol. Static chart/data/lifecycle guidance lives in the pinned
 launch-topic introduction so each symbol does not repeat boilerplate. After a
-price-action V3 event starts, that same image includes the frozen 15m
-consolidation box and structure level, plus `15M BO`, `1H OK`, and `4H OK`
-close-confirmation markers as they occur. A long-wick re-entry is marked
-`SWEEP H` or `SWEEP L`; a body-close invalidation is marked `FAIL`.
+price-action V3 event starts, the image uses fully closed Binance 1h candles as
+its main view. It retains the frozen 15m consolidation level and `15M BO`,
+`1H OK`, and `4H OK` close-confirmation markers, so the earlier 15m trigger is
+visible without filling the chart with all 15m SMC history. A long-wick
+re-entry is marked `SWEEP H` or `SWEEP L`; a body-close invalidation is marked
+`FAIL`.
 After a new package is sent and committed, the bot deletes older launch-topic signal
 messages and keeps only the pinned introduction plus the latest package. Failed
 deletions remain discoverable in Telegram delivery history and are retried

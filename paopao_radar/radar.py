@@ -24,6 +24,7 @@ from .announcement_enrichment import (
     AnnouncementProjectEnricher,
     format_announcement_profiles,
 )
+from .asset_classification import classify_binance_instrument
 from .binance_confirmation import (
     apply_binance_confirmation,
     confirmation_summary,
@@ -1753,6 +1754,17 @@ class RadarEngine:
         }
         lifecycle_diagnostics["forced_symbols"] = len(forced_symbol_order)
 
+        symbol_metadata: dict[str, dict[str, Any]] = {}
+        if hasattr(source, "usdt_perp_symbols"):
+            try:
+                symbol_metadata = {
+                    str(row.get("symbol") or "").upper(): dict(row)
+                    for row in source.usdt_perp_symbols()
+                    if isinstance(row, dict) and row.get("symbol")
+                }
+            except Exception:
+                symbol_metadata = {}
+
         ticker_map = {
             item.get("symbol"): item
             for item in source.ticker_24h()
@@ -1783,6 +1795,10 @@ class RadarEngine:
             if mcap <= 0:
                 missing_mcap_coins.add(coin)
             premium = premium_map.get(symbol, {}) if isinstance(premium_map, dict) else {}
+            classification = classify_binance_instrument(
+                str(symbol),
+                symbol_metadata.get(str(symbol).upper()),
+            )
             candidates.append({
                 "symbol": symbol,
                 "coin": coin,
@@ -1797,6 +1813,7 @@ class RadarEngine:
                 "mcap_source": "Binance" if mcap > 0 else "",
                 "market_cap_tier": market_cap_tier(mcap),
                 "liquidity_tier": liquidity_tier(quote_volume),
+                **classification,
             })
         if missing_mcap_coins and hasattr(source, "coinpaprika_market_caps"):
             coinpaprika_market_caps = source.coinpaprika_market_caps() or {}
@@ -2412,32 +2429,32 @@ class RadarEngine:
             alert["chart_status"] = "unavailable"
             alert["chart_error"] = "invalid_chart_window"
             return False
-        interval_sec = 15 * 60
+        interval_sec = 60 * 60
         requested_start = min(
             first_window_end - 16 * interval_sec,
-            current_window_end - 96 * interval_sec,
+            current_window_end - 72 * interval_sec,
         )
         start_ts = max(
             0,
             requested_start,
-            current_window_end - 1000 * interval_sec,
+            current_window_end - 240 * interval_sec,
         )
         candle_count = max(
-            96,
-            (current_window_end - start_ts) // interval_sec,
+            72,
+            (current_window_end - start_ts + interval_sec - 1) // interval_sec,
         )
-        candle_count = min(1000, candle_count)
+        candle_count = min(240, candle_count)
         try:
             rows = source.klines(
                 str(alert.get("symbol") or ""),
-                interval="15m",
+                interval="1h",
                 limit=int(candle_count),
                 start_time=start_ts * 1000,
                 end_time=current_window_end * 1000 - 1,
             )
             candles = [
                 {
-                    "close_ts": int(to_float(row[0])) // 1000 + interval_sec,
+                    "close_ts": int(to_float(row[6])) // 1000 + 1,
                     "open": to_float(row[1]),
                     "high": to_float(row[2]),
                     "low": to_float(row[3]),
@@ -2446,6 +2463,7 @@ class RadarEngine:
                 }
                 for row in rows
                 if isinstance(row, list) and len(row) >= 8
+                and int(to_float(row[6])) < current_window_end * 1000
             ]
             checkpoints = [
                 dict(checkpoint)
@@ -2472,6 +2490,7 @@ class RadarEngine:
                 checkpoints=checkpoints,
                 cycle_no=int(lifecycle.get("cycle_no") or 1),
                 price_action=chart_price_action,
+                asset_category=str(alert.get("asset_category_short") or ""),
             )
         except Exception as exc:
             alert["chart_status"] = "unavailable"
@@ -2483,6 +2502,8 @@ class RadarEngine:
         alert["chart_candle_count"] = len(candles)
         alert["chart_checkpoint_count"] = len(checkpoints)
         alert["chart_generated_in_memory"] = True
+        alert["chart_timeframe"] = "1h"
+        alert["chart_trigger_timeframe"] = "15m"
         if chart_price_action:
             alert["chart_price_action_status"] = str(
                 chart_price_action.get("status") or ""
@@ -3181,6 +3202,7 @@ class RadarEngine:
             f"{tg_bold('本次更新')}: {tg_escape('、'.join(reasons) or '重要状态更新')}",
             "",
             tg_quote("市场概况"),
+            f"品类: {tg_escape(item.get('asset_category_label') or '未分类')}",
             f"市值: {market_cap_text}",
             f"流动性: {liquidity_text}",
             *price_action_lines,
@@ -3250,6 +3272,7 @@ class RadarEngine:
             f"{tg_bold('状态')}: {previous_stage} -> {current_stage} | 累计{item.get('appear_count', 1)}次",
             "",
             tg_quote("市场概况"),
+            f"品类: {tg_escape(item.get('asset_category_label') or '未分类')}",
             f"市值: {market_cap_text}",
             f"流动性: {liquidity_text}",
             "",
@@ -3321,6 +3344,12 @@ class RadarEngine:
             "mcap_source": str(item.get("mcap_source") or ""),
             "market_cap_tier": market_cap_tier(to_float(item.get("mcap"))),
             "liquidity_tier": liquidity_tier(to_float(item.get("quote_volume"))),
+            "instrument_type": str(item.get("instrument_type") or ""),
+            "asset_family": str(item.get("asset_family") or ""),
+            "asset_class": str(item.get("asset_class") or ""),
+            "asset_subclass": str(item.get("asset_subclass") or ""),
+            "asset_category_label": str(item.get("asset_category_label") or "未分类"),
+            "asset_category_source": str(item.get("asset_category_source") or ""),
             "funding_available": bool(item.get("funding_available")),
             "funding_pct": round(to_float(item.get("funding_pct")), 6),
             "funding_interval_hours": int(to_float(item.get("funding_interval_hours"))),

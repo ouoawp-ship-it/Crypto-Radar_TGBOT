@@ -169,6 +169,43 @@ def _encode_png(canvas: Canvas) -> bytes:
     ])
 
 
+def compact_smc_chart_frame(frame: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep only the latest actionable 1h structures for a readable chart."""
+
+    source = frame if isinstance(frame, Mapping) else {}
+
+    def items(name: str) -> list[Mapping[str, Any]]:
+        values = source.get(name) or []
+        return [value for value in values if isinstance(value, Mapping)]
+
+    def latest_active(name: str) -> list[Mapping[str, Any]]:
+        return [
+            value for value in items(name)
+            if str(value.get("status") or "active") == "active"
+        ][-1:]
+
+    liquidity: list[Mapping[str, Any]] = []
+    for pool_type in ("BSL", "SSL"):
+        matches = [
+            value for value in items("liquidity")
+            if str(value.get("type") or "") == pool_type
+            and str(value.get("status") or "active") in {"active", "swept"}
+        ]
+        if matches:
+            liquidity.append(matches[-1])
+
+    return {
+        "swings": items("swings")[-4:],
+        "structures": items("structures")[-1:],
+        "liquidity": liquidity,
+        "fvgs": latest_active("fvgs"),
+        "order_blocks": latest_active("order_blocks"),
+        "breaker_blocks": latest_active("breaker_blocks"),
+        "mitigation_blocks": [],
+        "dealing_range": {},
+    }
+
+
 def render_launch_chart_png(
     *,
     symbol: str,
@@ -176,10 +213,11 @@ def render_launch_chart_png(
     checkpoints: list[Mapping[str, Any]],
     cycle_no: int,
     price_action: Mapping[str, Any] | None = None,
+    asset_category: str = "",
     width: int = 960,
     height: int = 540,
 ) -> bytes:
-    """Render a deterministic Binance 15m lifecycle chart entirely in memory."""
+    """Render a compact Binance 1h structure chart entirely in memory."""
 
     normalized = sorted(
         [
@@ -238,20 +276,23 @@ def render_launch_chart_png(
     smc_timeframes = (
         smc_timeframes if isinstance(smc_timeframes, Mapping) else {}
     )
-    smc_15m = smc_timeframes.get("15m")
-    smc_15m = dict(smc_15m) if isinstance(smc_15m, Mapping) else {}
+    smc_frame = smc_timeframes.get("1h")
+    if not isinstance(smc_frame, Mapping):
+        smc_frame = smc_timeframes.get("15m")
+    smc_chart = compact_smc_chart_frame(smc_frame)
 
     canvas = Canvas(width, height, (9, 12, 16))
     canvas.rect(0, 0, width - 1, 55, (15, 20, 27))
-    canvas.text(24, 18, str(symbol or "UNKNOWN"), (232, 237, 243), scale=2)
-    canvas.text(210, 18, "15M", (105, 167, 255), scale=2)
-    canvas.text(286, 18, f"CYCLE {max(1, int(cycle_no))}", (148, 163, 184), scale=2)
+    canvas.text(24, 14, str(symbol or "UNKNOWN"), (232, 237, 243), scale=2)
+    canvas.text(210, 13, str(asset_category or "USD-M PERP")[:20], (105, 167, 255), scale=1)
+    canvas.text(210, 32, "1H STRUCT / 15M TRIGGER", (148, 163, 184), scale=1)
+    canvas.text(410, 13, f"CYCLE {max(1, int(cycle_no))}", (148, 163, 184), scale=1)
     canvas.text(
-        440,
-        18,
+        500,
+        13,
         f"EVENTS {len(checkpoints)}",
         (148, 163, 184),
-        scale=2,
+        scale=1,
     )
     status = str(price_action_state.get("status") or "")
     status_labels = {
@@ -269,8 +310,8 @@ def render_launch_chart_png(
     }
     if status in status_labels:
         canvas.text(
-            555,
-            21,
+            410,
+            32,
             f"PA {status_labels[status]}",
             (86, 205, 220),
             scale=1,
@@ -280,8 +321,8 @@ def render_launch_chart_png(
     smc_direction = str(smc_bias.get("direction") or "")
     if smc_state.get("enabled") and smc_direction in {"up", "down"}:
         canvas.text(
-            635,
-            21,
+            510,
+            32,
             "SMC UP" if smc_direction == "up" else "SMC DOWN",
             (53, 208, 127) if smc_direction == "up" else (255, 105, 120),
             scale=1,
@@ -303,7 +344,7 @@ def render_launch_chart_png(
         canvas.line(x, price_top, x, volume_bottom, grid)
 
     smc_overlay_prices: list[float] = []
-    dealing_range = smc_15m.get("dealing_range")
+    dealing_range = smc_chart.get("dealing_range")
     if isinstance(dealing_range, Mapping):
         smc_overlay_prices.extend([
             _number(dealing_range.get("high")),
@@ -318,7 +359,7 @@ def render_launch_chart_png(
         "order_blocks",
         "breaker_blocks",
     ):
-        for item in smc_15m.get(collection) or []:
+        for item in smc_chart.get(collection) or []:
             if not isinstance(item, Mapping):
                 continue
             smc_overlay_prices.extend([
@@ -458,7 +499,7 @@ def render_launch_chart_png(
             canvas.text(range_x0 + 3, high_y + 3, "PREM", (156, 83, 96), scale=1)
             canvas.text(range_x0 + 3, eq_y + 4, "DISC", (55, 137, 105), scale=1)
 
-    for gap in (smc_15m.get("fvgs") or [])[-4:]:
+    for gap in smc_chart.get("fvgs") or []:
         if not isinstance(gap, Mapping):
             continue
         direction = str(gap.get("direction") or "")
@@ -470,7 +511,7 @@ def render_launch_chart_png(
             fill=(17, 47, 40) if direction == "up" else (49, 24, 31),
             end_ts=end_ts,
         )
-    for block in (smc_15m.get("order_blocks") or [])[-4:]:
+    for block in smc_chart.get("order_blocks") or []:
         if not isinstance(block, Mapping):
             continue
         direction = str(block.get("direction") or "")
@@ -482,7 +523,7 @@ def render_launch_chart_png(
             fill=(20, 38, 68) if direction == "up" else (48, 26, 55),
             end_ts=end_ts,
         )
-    for breaker in (smc_15m.get("breaker_blocks") or [])[-3:]:
+    for breaker in smc_chart.get("breaker_blocks") or []:
         if not isinstance(breaker, Mapping):
             continue
         direction = str(breaker.get("direction") or "")
@@ -629,7 +670,7 @@ def render_launch_chart_png(
         )
         canvas.text(label_x + 3, label_y + 2, label, color, scale=1)
 
-    for swing in (smc_15m.get("swings") or [])[-12:]:
+    for swing in smc_chart.get("swings") or []:
         if not isinstance(swing, Mapping):
             continue
         kind = str(swing.get("kind") or "")
@@ -646,7 +687,7 @@ def render_launch_chart_png(
         "CHOCH": (255, 174, 66),
         "MSS": (214, 96, 255),
     }
-    for structure in (smc_15m.get("structures") or [])[-8:]:
+    for structure in smc_chart.get("structures") or []:
         if not isinstance(structure, Mapping):
             continue
         event_type = str(structure.get("type") or "BOS")
@@ -669,7 +710,7 @@ def render_launch_chart_png(
             above=str(structure.get("direction") or "") == "up",
         )
 
-    for pool in (smc_15m.get("liquidity") or [])[-6:]:
+    for pool in smc_chart.get("liquidity") or []:
         if not isinstance(pool, Mapping):
             continue
         level_value = _number(pool.get("level"))
@@ -701,7 +742,7 @@ def render_launch_chart_png(
                 above=str(pool.get("type") or "") == "BSL",
             )
 
-    for mitigation in (smc_15m.get("mitigation_blocks") or [])[-4:]:
+    for mitigation in smc_chart.get("mitigation_blocks") or []:
         if not isinstance(mitigation, Mapping):
             continue
         direction = str(mitigation.get("direction") or "")
@@ -717,7 +758,7 @@ def render_launch_chart_png(
             (105, 167, 255),
             above=direction == "up",
         )
-    for gap in (smc_15m.get("fvgs") or [])[-4:]:
+    for gap in smc_chart.get("fvgs") or []:
         if not isinstance(gap, Mapping):
             continue
         mitigated_ts = int(_number(gap.get("mitigated_ts")))
@@ -822,14 +863,19 @@ def render_launch_chart_png(
         muted,
         scale=1,
     )
+    footer = "BINANCE CLOSED 1H / 15M TRIGGER"
     canvas.text(
-        width // 2 - 145,
+        width // 2 - len(footer) * 3,
         height - 30,
-        "BINANCE USD-M FUTURES CLOSED 15M",
+        footer,
         (82, 94, 112),
         scale=1,
     )
     return _encode_png(canvas)
 
 
-__all__ = ["PNG_SIGNATURE", "render_launch_chart_png"]
+__all__ = [
+    "PNG_SIGNATURE",
+    "compact_smc_chart_frame",
+    "render_launch_chart_png",
+]
