@@ -13,6 +13,7 @@ from paopao_radar.flow_candidates import build_candidate_list, format_candidate_
 from paopao_radar.flow_radar import (
     coinglass_tv_url,
     binance_oi_stats,
+    compact_symbol_lines,
     FlowRadarEngine,
     flow_category,
     flow_classification,
@@ -193,6 +194,50 @@ class FlowRadarTests(unittest.TestCase):
         self.assertNotIn("市场边界: 仅代表 Binance", text)
         self.assertNotIn("数据规则: 整点收线后延迟", text)
         self.assertNotIn("主动成交净额 = taker主动买入报价额", text)
+
+    def test_push_body_includes_current_next_and_full_candidate_lists(self) -> None:
+        window = closed_window(
+            now=datetime(2026, 5, 26, 18, 5, 0, tzinfo=timezone.utc),
+            interval_sec=3600,
+            delay_sec=300,
+        )
+        candidates = [
+            {"symbol": f"C{index:02d}USDT"}
+            for index in range(30)
+        ]
+        scanned = [
+            {"symbol": f"C{index:02d}USDT"}
+            for index in range(24)
+        ]
+        next_symbols = [f"C{index:02d}USDT" for index in range(24, 30)]
+
+        text = FlowRadarEngine(Settings())._format(
+            [],
+            candidates,
+            scanned,
+            window,
+            rotation_status={
+                "unscanned_count": 6,
+                "next_symbols": next_symbols,
+            },
+        )
+
+        self.assertIn("本轮深度扫描（24）", text)
+        self.assertIn("下一轮优先队列（6）", text)
+        self.assertIn("全市场完整候选（30）", text)
+        self.assertIn("首次覆盖待轮换: 6", text)
+        for candidate in candidates:
+            self.assertIn(candidate["symbol"], text)
+        self.assertIn("只有本轮 24 个完成五因子深度扫描", text)
+
+    def test_compact_symbol_lines_are_readable_and_bounded(self) -> None:
+        symbols = [f"C{index}USDT" for index in range(25)]
+
+        lines = compact_symbol_lines(symbols, per_line=12)
+
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(sum(line.count("USDT") for line in lines), 25)
+        self.assertNotIn("", lines)
 
     def test_true_launch_category_scores_multi_factor_confirmation(self) -> None:
         category, score, _reason = flow_category({
@@ -482,7 +527,7 @@ class FlowRadarTests(unittest.TestCase):
             engine = FlowRadarEngine(settings, JsonStore(data_dir))
 
             first, state = engine._rotation_candidates(candidates)
-            engine._save_candidate_state(
+            first_status = engine._save_candidate_state(
                 candidates,
                 state,
                 selected_symbols={str(item["symbol"]) for item in first},
@@ -498,6 +543,10 @@ class FlowRadarTests(unittest.TestCase):
             self.assertEqual(
                 {item["symbol"] for item in first + second},
                 {item["symbol"] for item in candidates},
+            )
+            self.assertEqual(
+                first_status["next_symbols"],
+                [str(item["symbol"]) for item in second],
             )
 
     def test_candidate_state_and_complete_cli_list_are_local_and_bounded(self) -> None:

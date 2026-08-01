@@ -67,6 +67,11 @@ paopao flow-candidates --all
 本地 `flow_candidate_state.json`，不会访问 Binance 或 Telegram。清单包含当前
 优先级、下轮顺位、扫描次数和选入原因；文件由每轮资金流雷达原子更新。
 
+每轮 `TG_FLOW_RADAR` 话题卡片也会直接附带本轮深度扫描币种、下一轮优先
+队列和全市场完整候选清单。清单来自同一轮已经取得的候选数据，不增加
+Binance、OI、K 线或 Telegram 请求；内容超过单条限制时继续使用现有安全
+分段和卡片替换流程。菜单入口仅作为不联网的离线备用查看方式。
+
 ## API、Token 与密钥
 
 菜单不会使用 `sed` 修改环境文件，而是调用：
