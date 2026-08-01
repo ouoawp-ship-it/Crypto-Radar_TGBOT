@@ -96,34 +96,32 @@ def chunk_text(text: str, limit: int) -> list[str]:
     chunks: list[str] = []
     current = ""
     for line in text.splitlines():
-        remaining = line
-        while remaining:
-            if current:
-                available = limit - len(current) - 1
-                if available <= 0:
-                    chunks.append(current)
-                    current = ""
-                    continue
-                if len(remaining) <= available:
-                    current = f"{current}\n{remaining}"
-                    remaining = ""
-                else:
-                    current = f"{current}\n{remaining[:available]}"
-                    chunks.append(current)
-                    current = ""
-                    remaining = remaining[available:]
-            elif len(remaining) > limit:
-                chunks.append(remaining[:limit])
-                remaining = remaining[limit:]
-            else:
-                current = remaining
-                remaining = ""
         if not line and current:
             if len(current) + 1 <= limit:
                 current += "\n"
             else:
                 chunks.append(current)
                 current = ""
+            continue
+
+        if len(line) <= limit:
+            if not current:
+                current = line
+            elif len(current) + 1 + len(line) <= limit:
+                current = f"{current}\n{line}"
+            else:
+                chunks.append(current)
+                current = line
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+        remaining = line
+        while len(remaining) > limit:
+            chunks.append(remaining[:limit])
+            remaining = remaining[limit:]
+        current = remaining
     if current:
         chunks.append(current)
     if chunks:
