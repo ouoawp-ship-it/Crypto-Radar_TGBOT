@@ -38,6 +38,7 @@ pp
 8. 数据库、备份与清理
 9. 日志与故障诊断
 10. 高级运维
+11. 五因子资金流雷达候选清单
 
 所有原命令继续兼容，例如：
 
@@ -52,7 +53,19 @@ paopao telegram-test
 paopao check-update
 paopao update
 paopao version
+paopao flow-candidates --all
 ```
+
+## 五因子资金流雷达候选轮换
+
+候选池覆盖当前全部符合成交额、排除名单和 Binance USDT 永续合约条件的
+市场，不再受旧 `FLOW_CANDIDATE_POOL=60` 截断。每轮仍只深度扫描
+`FLOW_SCAN_LIMIT` 个（默认 24），按“累计扫描次数最少、最久未扫描、当前
+市场优先级”确定性轮换，避免扩大单轮 K 线、OI 和主动成交请求预算。
+
+菜单“查看全市场完整候选清单”和命令 `paopao flow-candidates --all` 只读取
+本地 `flow_candidate_state.json`，不会访问 Binance 或 Telegram。清单包含当前
+优先级、下轮顺位、扫描次数和选入原因；文件由每轮资金流雷达原子更新。
 
 ## API、Token 与密钥
 

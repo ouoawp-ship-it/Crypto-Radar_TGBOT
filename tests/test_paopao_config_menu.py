@@ -632,6 +632,13 @@ class ChineseMenuTests(unittest.TestCase):
             text,
         )
 
+    def test_menu_exposes_full_market_flow_candidate_list(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        self.assertIn("五因子资金流雷达候选清单", text)
+        self.assertIn("查看全市场完整候选清单", text)
+        self.assertIn("run_flow_candidates --all", text)
+        self.assertIn("查看清单不会访问网络", text)
+
     def test_menu_exposes_bounded_base_rpc_range_setting(self) -> None:
         text = MENU.read_text(encoding="utf-8")
         self.assertIn("设置 Base RPC 最大区块范围（高级）", text)

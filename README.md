@@ -99,6 +99,7 @@ python main.py database-backup
 python main.py telegram-test
 python main.py once
 python main.py flow-radar
+python -m paopao_radar.flow_candidates --all
 python main.py funding-alert
 python main.py signal-effectiveness
 python main.py market-stream
