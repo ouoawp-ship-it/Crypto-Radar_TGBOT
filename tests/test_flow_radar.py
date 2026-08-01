@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from paopao_radar.binance_confirmation import apply_binance_confirmation
 from paopao_radar.config import Settings
+from paopao_radar.flow_candidates import build_candidate_list, format_candidate_list
 from paopao_radar.flow_radar import (
     coinglass_tv_url,
     binance_oi_stats,
@@ -183,6 +186,8 @@ class FlowRadarTests(unittest.TestCase):
         text = FlowRadarEngine(Settings())._format([], [], [], window)
 
         self.assertIn("本轮统计", text)
+        self.assertIn("全市场候选: 0（无固定数量上限）", text)
+        self.assertIn("本轮优先轮换: 0/0", text)
         self.assertNotIn("📖 图例", text)
         self.assertNotIn("📐 数据与计算口径", text)
         self.assertNotIn("市场边界: 仅代表 Binance", text)
@@ -426,6 +431,121 @@ class FlowRadarTests(unittest.TestCase):
             {item["symbol"] for item in candidates[:3]},
             {"LIQUSDT", "MOVEUSDT", "FUNDUSDT"},
         )
+        self.assertEqual(len(candidates), 4)
+
+    def test_legacy_candidate_pool_no_longer_truncates_full_market(self) -> None:
+        class Source:
+            def usdt_perp_symbols(self):
+                return [{"symbol": f"C{index}USDT"} for index in range(8)]
+
+            def premium_index(self):
+                return [
+                    {"symbol": f"C{index}USDT", "lastFundingRate": str(index / 10000)}
+                    for index in range(8)
+                ]
+
+            def ticker_24h(self):
+                return [
+                    {
+                        "symbol": f"C{index}USDT",
+                        "quoteVolume": str(1_000_000 - index),
+                        "priceChangePercent": str(index),
+                        "lastPrice": "1",
+                    }
+                    for index in range(8)
+                ]
+
+        settings = Settings(radar_min_quote_volume=1, flow_candidate_pool=2)
+        candidates = FlowRadarEngine(settings)._candidate_symbols(Source())
+
+        self.assertEqual(len(candidates), 8)
+        self.assertEqual({item["priority_rank"] for item in candidates}, set(range(1, 9)))
+
+    def test_rotation_covers_full_market_before_repeating(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(data_dir=data_dir, flow_scan_limit=24)
+            candidates = [
+                {
+                    "symbol": f"C{index:02d}USDT",
+                    "coin": f"C{index:02d}",
+                    "price": 1.0,
+                    "price_24h": float(index),
+                    "quote_volume": 1_000_000.0 - index,
+                    "funding_pct": 0.0,
+                    "funding_ready": True,
+                    "selection_reasons": ["liquidity"],
+                    "priority_rank": index + 1,
+                }
+                for index in range(48)
+            ]
+            engine = FlowRadarEngine(settings, JsonStore(data_dir))
+
+            first, state = engine._rotation_candidates(candidates)
+            engine._save_candidate_state(
+                candidates,
+                state,
+                selected_symbols={str(item["symbol"]) for item in first},
+                observed_at=100,
+            )
+            second, _state = FlowRadarEngine(settings, JsonStore(data_dir))._rotation_candidates(candidates)
+
+            self.assertEqual(len(first), 24)
+            self.assertEqual(len(second), 24)
+            self.assertTrue({item["symbol"] for item in first}.isdisjoint(
+                {item["symbol"] for item in second}
+            ))
+            self.assertEqual(
+                {item["symbol"] for item in first + second},
+                {item["symbol"] for item in candidates},
+            )
+
+    def test_candidate_state_and_complete_cli_list_are_local_and_bounded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(data_dir=data_dir, flow_scan_limit=2)
+            candidates = [
+                {
+                    "symbol": f"C{index}USDT",
+                    "coin": f"C{index}",
+                    "price": 1.0,
+                    "price_24h": float(index),
+                    "quote_volume": 1_000_000.0,
+                    "funding_pct": 0.0,
+                    "funding_ready": True,
+                    "selection_reasons": ["price_mover"],
+                    "priority_rank": index + 1,
+                }
+                for index in range(3)
+            ]
+            store = JsonStore(data_dir)
+            engine = FlowRadarEngine(settings, store)
+            selected, state = engine._rotation_candidates(candidates)
+            result = engine._save_candidate_state(
+                candidates,
+                state,
+                selected_symbols={str(item["symbol"]) for item in selected},
+                observed_at=123,
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                list_result = build_candidate_list(
+                    settings,
+                    store,
+                    show_all=True,
+                    limit=1,
+                )
+                print(format_candidate_list(list_result))
+
+            payload = store.load(settings.flow_candidate_state_path, {})
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(payload["pool_mode"], "unlimited")
+            self.assertEqual(payload["total_candidates"], 3)
+            self.assertEqual(list_result["status"], "ok")
+            self.assertIn("候选总数: 3", output.getvalue())
+            for index in range(3):
+                self.assertIn(f"C{index}USDT", output.getvalue())
+            self.assertIn("网络请求: 0", output.getvalue())
 
     def test_model_comparison_records_old_and_new_without_affecting_primary(self) -> None:
         with TemporaryDirectory() as tmp:

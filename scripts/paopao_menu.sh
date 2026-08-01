@@ -19,6 +19,10 @@ run_main() {
   (cd "$APP_DIR" && "$PYTHON_BIN" main.py "$@")
 }
 
+run_flow_candidates() {
+  (cd "$APP_DIR" && "$PYTHON_BIN" -m paopao_radar.flow_candidates "$@")
+}
+
 run_onchain() {
   (cd "$APP_DIR" && "$PYTHON_BIN" onchain_main.py "$@")
 }
@@ -191,6 +195,7 @@ Paopao Telegram Radar BOT-only 控制命令
   paopao backup         创建并恢复验证 SQLite 备份
   paopao telegram-test  执行 Telegram dry-run 测试
   paopao cleanup        清理运行期缓存
+  paopao flow-candidates 查看五因子资金流雷达完整候选清单
   paopao check-update   检查 GitHub 更新
   paopao update         拉取、测试并发布 GitHub 更新
   paopao version        查看版本与提交
@@ -576,6 +581,27 @@ EOF
       7) run_onchain status; pause_menu ;;
       8) run_onchain doctor; pause_menu ;;
       9) system_resources; pause_menu ;;
+      0) return ;;
+    esac
+  done
+}
+
+flow_radar_menu() {
+  local choice
+  while true; do
+    menu_header
+    cat <<'EOF'
+五因子资金流雷达
+1. 查看全市场完整候选清单
+2. 查看候选池状态 JSON
+0. 返回
+
+候选池不设固定数量上限；每轮只优先轮换 24 个，查看清单不会访问网络。
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1) run_flow_candidates --all; pause_menu ;;
+      2) run_flow_candidates --all --json; pause_menu ;;
       0) return ;;
     esac
   done
@@ -1217,6 +1243,7 @@ interactive_menu() {
 8. 数据库、备份与清理
 9. 日志与故障诊断
 10. 高级运维
+11. 五因子资金流雷达候选清单
 0. 退出
 EOF
     printf '请选择：'
@@ -1232,6 +1259,7 @@ EOF
       8) data_menu ;;
       9) log_menu ;;
       10) advanced_menu ;;
+      11) flow_radar_menu ;;
       0) return ;;
       *) printf '无效选项。\n'; sleep 1 ;;
     esac
@@ -1260,6 +1288,7 @@ case "$command" in
   providers|provider-check) run_main provider-check "$@" ;;
   backup|database-backup) run_main database-backup "$@" ;;
   telegram-test) run_main telegram-test "$@" ;;
+  flow-candidates) run_flow_candidates "$@" ;;
   cleanup) run_main cleanup --force-cleanup "$@" ;;
   check-update|check) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --check) ;;
   update) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --yes) ;;

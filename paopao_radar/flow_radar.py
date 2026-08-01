@@ -20,6 +20,7 @@ from .time_windows import ClosedWindow, closed_window
 
 CST = timezone(timedelta(hours=8))
 CVD_NEUTRAL_ABS = 1.0
+FLOW_CANDIDATE_STATE_SCHEMA_VERSION = 1
 
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
@@ -705,9 +706,10 @@ class FlowRadarEngine:
             delay_sec=self.settings.flow_close_delay_sec,
         )
         candidates = self._candidate_symbols(binance)
+        rotation_candidates, rotation_state = self._rotation_candidates(candidates)
         rows: list[dict[str, Any]] = []
         scanned_items: list[dict[str, Any]] = []
-        for candidate in candidates[: max(1, self.settings.flow_scan_limit)]:
+        for candidate in rotation_candidates:
             symbol = candidate["symbol"]
             coin = candidate["coin"]
             spot_cvd, spot_inflow, spot_outflow, spot_cvd_ready, spot_cvd_points = binance_spot_flow_stats(binance, symbol, window)
@@ -804,6 +806,12 @@ class FlowRadarEngine:
         rows.sort(key=lambda item: item["score"], reverse=True)
         rows = rows[: max(1, self.settings.flow_top_n)]
         comparison_status = self._record_model_comparison(scanned_items, window)
+        rotation_status = self._save_candidate_state(
+            candidates,
+            rotation_state,
+            selected_symbols={str(item["symbol"]) for item in rotation_candidates},
+            observed_at=int(window.end.timestamp()),
+        )
         return {
             "template_id": "TG_FLOW_RADAR",
             "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
@@ -816,6 +824,7 @@ class FlowRadarEngine:
                 "binance": binance.diagnostics(),
                 "binance_confirmation": confirmation_summary(scanned_items),
                 "flow_model_comparison": comparison_status,
+                "candidate_rotation": rotation_status,
             },
         }
 
@@ -847,7 +856,6 @@ class FlowRadarEngine:
                 "funding_pct": premium_map.get(symbol, 0.0),
                 "funding_ready": symbol in premium_map,
             })
-        pool_size = max(1, self.settings.flow_candidate_pool)
         liquidity = sorted(
             candidates,
             key=lambda item: item["quote_volume"],
@@ -872,7 +880,7 @@ class FlowRadarEngine:
             ("funding_extreme", funding_extremes),
         )
         rank = 0
-        while len(selected) < pool_size and any(rank < len(rows) for _, rows in rankings):
+        while len(selected) < len(candidates) and any(rank < len(rows) for _, rows in rankings):
             for reason, ranked in rankings:
                 if rank >= len(ranked):
                     continue
@@ -882,14 +890,134 @@ class FlowRadarEngine:
                 if symbol not in selected_symbols:
                     selected.append(candidate)
                     selected_symbols.add(symbol)
-                    if len(selected) >= pool_size:
+                    if len(selected) >= len(candidates):
                         break
             rank += 1
-        for candidate in selected:
+        for priority_rank, candidate in enumerate(selected, start=1):
             candidate["selection_reasons"] = sorted(
                 reason_map.get(str(candidate["symbol"]), set())
             )
+            candidate["priority_rank"] = priority_rank
         return selected
+
+    def _load_candidate_state(self) -> dict[str, Any]:
+        state = self.store.load(self.settings.flow_candidate_state_path, {})
+        if not isinstance(state, dict):
+            return {}
+        if state.get("schema_version") != FLOW_CANDIDATE_STATE_SCHEMA_VERSION:
+            return {}
+        if not isinstance(state.get("candidates"), list):
+            return {}
+        return state
+
+    @staticmethod
+    def _candidate_history(state: dict[str, Any]) -> dict[str, dict[str, int]]:
+        history: dict[str, dict[str, int]] = {}
+        for item in state.get("candidates", []):
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "")
+            if not symbol:
+                continue
+            history[symbol] = {
+                "scan_count": max(0, int(item.get("scan_count") or 0)),
+                "last_scanned_at": max(0, int(item.get("last_scanned_at") or 0)),
+            }
+        return history
+
+    def _rotation_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        state = self._load_candidate_state()
+        history = self._candidate_history(state)
+        ordered = sorted(
+            candidates,
+            key=lambda item: (
+                history.get(str(item["symbol"]), {}).get("scan_count", 0),
+                history.get(str(item["symbol"]), {}).get("last_scanned_at", 0),
+                int(item.get("priority_rank") or 0),
+                str(item["symbol"]),
+            ),
+        )
+        return ordered[: max(1, self.settings.flow_scan_limit)], state
+
+    def _save_candidate_state(
+        self,
+        candidates: list[dict[str, Any]],
+        previous_state: dict[str, Any],
+        *,
+        selected_symbols: set[str],
+        observed_at: int,
+    ) -> dict[str, Any]:
+        history = self._candidate_history(previous_state)
+        entries: list[dict[str, Any]] = []
+        for candidate in candidates:
+            symbol = str(candidate["symbol"])
+            prior = history.get(symbol, {})
+            scan_count = max(0, int(prior.get("scan_count") or 0))
+            last_scanned_at = max(0, int(prior.get("last_scanned_at") or 0))
+            selected = symbol in selected_symbols
+            if selected:
+                scan_count += 1
+                last_scanned_at = observed_at
+            entries.append({
+                "priority_rank": int(candidate.get("priority_rank") or 0),
+                "symbol": symbol,
+                "coin": str(candidate.get("coin") or ""),
+                "price": candidate.get("price"),
+                "price_24h": to_float(candidate.get("price_24h")),
+                "quote_volume": to_float(candidate.get("quote_volume")),
+                "funding_pct": to_float(candidate.get("funding_pct")),
+                "funding_ready": bool(candidate.get("funding_ready")),
+                "selection_reasons": list(candidate.get("selection_reasons") or []),
+                "scan_count": scan_count,
+                "last_scanned_at": last_scanned_at or None,
+                "selected_this_cycle": selected,
+            })
+        next_order = sorted(
+            entries,
+            key=lambda item: (
+                int(item["scan_count"]),
+                int(item.get("last_scanned_at") or 0),
+                int(item["priority_rank"]),
+                str(item["symbol"]),
+            ),
+        )
+        next_rank = {
+            str(item["symbol"]): rank
+            for rank, item in enumerate(next_order, start=1)
+        }
+        for entry in entries:
+            entry["next_rotation_rank"] = next_rank[str(entry["symbol"])]
+        payload = {
+            "schema_version": FLOW_CANDIDATE_STATE_SCHEMA_VERSION,
+            "updated_at": observed_at,
+            "pool_mode": "unlimited",
+            "total_candidates": len(entries),
+            "scan_limit": max(1, self.settings.flow_scan_limit),
+            "selected_count": len(selected_symbols),
+            "unscanned_count": sum(1 for item in entries if int(item["scan_count"]) == 0),
+            "candidates": entries,
+        }
+        try:
+            self.store.save(self.settings.flow_candidate_state_path, payload)
+        except Exception:
+            return {
+                "status": "local_error",
+                "error": "flow_candidate_state_write_failed",
+                "pool_mode": "unlimited",
+                "total_candidates": len(entries),
+                "selected_count": len(selected_symbols),
+            }
+        return {
+            "status": "ok",
+            "pool_mode": "unlimited",
+            "total_candidates": len(entries),
+            "scan_limit": max(1, self.settings.flow_scan_limit),
+            "selected_count": len(selected_symbols),
+            "unscanned_count": payload["unscanned_count"],
+        }
 
     def _record_model_comparison(
         self,
@@ -1010,7 +1138,9 @@ class FlowRadarEngine:
             f"统计窗口: {window.label()}",
             "",
             tg_quote("📊 本轮统计"),
-            f"候选币: {len(candidates)}",
+            f"全市场候选: {len(candidates)}（无固定数量上限）",
+            f"本轮优先轮换: {scanned_count}/{len(candidates)}",
+            f"本轮后待轮换: {max(0, len(candidates) - scanned_count)}",
             f"入选信号: {len(rows)}",
             f"数据确认: 完整 {confirmed_count}/{scanned_count} | 缺项 {scanned_count - confirmed_count}/{scanned_count}",
             f"窗口数据: 价格 {price_ready_count}/{scanned_count} | OI {oi_ready_count}/{scanned_count}",

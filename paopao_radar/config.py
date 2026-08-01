@@ -214,7 +214,10 @@ class Settings:
     coingecko_api_base_url: str = "https://api.coingecko.com/api/v3"
 
     flow_scan_limit: int = 24
+    # Retained for environment compatibility. The flow candidate universe is
+    # no longer truncated by this legacy value.
     flow_candidate_pool: int = 60
+    flow_candidate_state_path: Path = BASE_DIR / "data" / "flow_candidate_state.json"
     flow_top_n: int = 5
     flow_min_score: int = 60
     flow_interval_sec: int = 3600
@@ -333,6 +336,7 @@ class Settings:
         default_news_events_db_path = BASE_DIR / "data" / "news_events.db"
         default_database_backup_dir = BASE_DIR / "data" / "backups"
         default_flow_model_comparison_path = BASE_DIR / "data" / "flow_model_comparison.json"
+        default_flow_candidate_state_path = BASE_DIR / "data" / "flow_candidate_state.json"
         default_accumulation_quality_diagnostics_path = (
             BASE_DIR / "data" / "accumulation_quality_diagnostics.json"
         )
@@ -363,6 +367,15 @@ class Settings:
                 self,
                 "flow_model_comparison_path",
                 self.data_dir / "flow_model_comparison.json",
+            )
+        if (
+            self.data_dir != BASE_DIR / "data"
+            and self.flow_candidate_state_path == default_flow_candidate_state_path
+        ):
+            object.__setattr__(
+                self,
+                "flow_candidate_state_path",
+                self.data_dir / "flow_candidate_state.json",
             )
         if (
             self.data_dir != BASE_DIR / "data"
@@ -550,6 +563,11 @@ class Settings:
             ).rstrip("/"),
             flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 24),
             flow_candidate_pool=env_int("FLOW_CANDIDATE_POOL", 60),
+            flow_candidate_state_path=data_path(
+                data_dir,
+                "FLOW_CANDIDATE_STATE_FILE",
+                "flow_candidate_state.json",
+            ),
             flow_top_n=env_int("FLOW_TOP_N", 5),
             flow_min_score=env_int("FLOW_MIN_SCORE", 60),
             flow_interval_sec=env_int("FLOW_INTERVAL_SEC", 3600),
@@ -798,7 +816,9 @@ class Settings:
             },
             "flow_radar": {
                 "scan_limit": self.flow_scan_limit,
-                "candidate_pool": self.flow_candidate_pool,
+                "candidate_pool": "unlimited",
+                "legacy_candidate_pool_ignored": self.flow_candidate_pool,
+                "candidate_state_file": str(self.flow_candidate_state_path),
                 "top_n": self.flow_top_n,
                 "min_score": self.flow_min_score,
                 "interval_sec": self.flow_interval_sec,
