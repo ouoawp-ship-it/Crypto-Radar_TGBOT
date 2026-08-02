@@ -83,7 +83,7 @@ class AutomationStoreTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT value FROM automation_meta WHERE key='schema_version'"
             ).fetchone()
-        self.assertEqual(version[0], "3")
+        self.assertEqual(version[0], "4")
 
     def test_same_chain_contract_is_idempotent(self) -> None:
         self.add()
@@ -689,7 +689,7 @@ class AutomationStoreTests(unittest.TestCase):
                 "SELECT status, resolved_at, resolved_token_key, "
                 "resolution_note FROM unresolved_signals"
             ).fetchone()
-        self.assertEqual(version, "3")
+        self.assertEqual(version, "4")
         self.assertEqual(row, ("open", None, None, ""))
 
     def test_schema_v1_to_v2_failure_rolls_back(self) -> None:
@@ -795,7 +795,7 @@ class AutomationStoreTests(unittest.TestCase):
                     "PRAGMA table_info(watch_scan_runs)"
                 ).fetchall()
             }
-        self.assertEqual(version, "3")
+        self.assertEqual(version, "4")
         self.assertTrue(
             {
                 "query_window",
@@ -805,8 +805,123 @@ class AutomationStoreTests(unittest.TestCase):
                 "baseline_status",
                 "baseline_anomaly",
                 "baseline_json",
+                "address_intelligence_queue_status",
+                "address_intelligence_queue_error",
+                "unknown_addresses_queued",
+                "external_label_provider_calls",
             }.issubset(columns)
         )
+
+    def test_schema_v3_migrates_scan_side_effect_audit_columns(self) -> None:
+        other_path = self.root / "v3" / "oar_automation.db"
+        other_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(other_path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE automation_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO automation_meta VALUES('schema_version', '3');
+                CREATE TABLE watch_scan_runs(
+                    scan_id TEXT PRIMARY KEY,
+                    token_key TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    status TEXT NOT NULL,
+                    activity_complete INTEGER,
+                    analysis_complete INTEGER,
+                    analysis_status TEXT NOT NULL DEFAULT '',
+                    behavior_type TEXT NOT NULL DEFAULT '',
+                    behavior_score INTEGER,
+                    max_wallet_group_score INTEGER,
+                    transfer_count INTEGER,
+                    rpc_request_count INTEGER,
+                    query_window TEXT NOT NULL DEFAULT '',
+                    total_token_amount TEXT NOT NULL DEFAULT '',
+                    unique_senders INTEGER,
+                    unique_receivers INTEGER,
+                    baseline_status TEXT NOT NULL DEFAULT '',
+                    baseline_anomaly INTEGER NOT NULL DEFAULT 0,
+                    baseline_json TEXT NOT NULL DEFAULT '{}',
+                    context_hash TEXT NOT NULL DEFAULT '',
+                    notification_status TEXT NOT NULL DEFAULT '',
+                    notification_reason TEXT NOT NULL DEFAULT '',
+                    error_code TEXT NOT NULL DEFAULT '',
+                    source_refs_json TEXT NOT NULL DEFAULT '[]'
+                );
+                INSERT INTO watch_scan_runs(
+                    scan_id, token_key, started_at, completed_at, status,
+                    activity_complete, analysis_complete
+                ) VALUES('old', '8453:0x1111111111111111111111111111111111111111',
+                         1000, 1001, 'ok', 1, 1);
+                """
+            )
+            conn.commit()
+        store = AutomationStore(other_path, data_dir=self.root)
+        store.migrate()
+        with closing(sqlite3.connect(other_path)) as conn:
+            version = conn.execute(
+                "SELECT value FROM automation_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            row = conn.execute(
+                "SELECT address_intelligence_queue_status, "
+                "address_intelligence_queue_error, "
+                "unknown_addresses_queued, external_label_provider_calls "
+                "FROM watch_scan_runs WHERE scan_id='old'"
+            ).fetchone()
+        self.assertEqual(version, "4")
+        self.assertEqual(row, ("not_recorded", "", 0, 0))
+
+    def test_scan_side_effect_audit_is_fixed_and_readable(self) -> None:
+        self.add()
+        self.verify()
+        self.store.add_manual_watch(
+            self.key_a,
+            ttl_sec=100000,
+            priority=100,
+            query_window="15m",
+            scan_interval_sec=60,
+            now=1002,
+        )
+        self.store.claim_due(owner="audit", limit=1, lease_sec=60, now=1002)
+        scan_id = self.store.record_scan(
+            self.key_a,
+            lease_owner="audit",
+            started_at=1002,
+            status="ok",
+            activity_complete=True,
+            analysis_complete=True,
+            historical_baseline={"status": "cold_start", "anomaly": False},
+            source_refs=[],
+            scan_interval_sec=60,
+            max_consecutive_failures=10,
+            now=1003,
+        )
+        self.assertTrue(
+            self.store.update_scan_address_intelligence_audit(
+                scan_id,
+                self.key_a,
+                queue_status="ok",
+                queue_error="",
+                unknown_addresses_queued=7,
+            )
+        )
+        audit = self.store.latest_scan_baseline(self.key_a) or {}
+        self.assertEqual(audit["address_intelligence_queue_status"], "ok")
+        self.assertEqual(audit["address_intelligence_queue_error"], "")
+        self.assertEqual(audit["unknown_addresses_queued"], 7)
+        self.assertEqual(audit["external_label_provider_calls"], 0)
+        with self.assertRaisesRegex(
+            AutomationStoreError, "unsupported values"
+        ):
+            self.store.update_scan_address_intelligence_audit(
+                scan_id,
+                self.key_a,
+                queue_status="local_error",
+                queue_error="secret provider response",
+                unknown_addresses_queued=0,
+            )
 
     def test_scan_audit_is_bounded_per_token(self) -> None:
         self.add()

@@ -47,6 +47,19 @@ python onchain_main.py watch-baseline --token-key <verified-token-key>
 
 该命令不访问 RPC、AI、Telegram、Dune 或 Arkham，也不写数据库。
 
+Automation DB v4 还会在同一条 Scan Audit 中保存以下安全观测字段：
+
+- `address_intelligence_queue_status`；
+- `address_intelligence_queue_error`（只允许固定错误码）；
+- `unknown_addresses_queued`；
+- `external_label_provider_calls`。
+
+完整扫描先提交事实、分析和 Lease 结果，再以该次 `scan_id` 补充本地队列审计；
+队列或审计补充失败不会把已完成扫描改成失败，也不会保存异常正文、路径、Provider
+响应或凭据。历史 v3 行迁移后明确标记为 `not_recorded`，不伪造旧扫描的队列状态。
+`watch-baseline` 会只读返回最近扫描的这些字段，供长期 systemd Worker 做零外部标签
+Provider 调用验收。
+
 ## 标签覆盖与动态 Watch 安全语义
 
 Token Activity 在缺少可用于方向分类的已审核 CEX 标签时继续保留 Transfer 事实，并将方向保持为 `unclassified`。结构化报告、AI 白名单上下文和中文卡片会明确显示 `insufficient_cex_coverage`；“流入/提出为 0”不再被表达成“确认没有交易所流向”。

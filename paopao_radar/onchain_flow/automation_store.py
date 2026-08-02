@@ -24,6 +24,18 @@ TOKEN_KEY_RE = re.compile(r"^([1-9]\d*):(0x[0-9a-f]{40})$")
 CHAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 REGISTRY_STATUSES = {"pending", "verified", "disabled", "rejected"}
 WATCH_STATUSES = {"active", "paused", "expired"}
+ADDRESS_QUEUE_AUDIT_STATUSES = {
+    "not_recorded",
+    "ok",
+    "skipped_incomplete",
+    "skipped_chain_unsupported",
+    "local_error",
+}
+ADDRESS_QUEUE_AUDIT_ERRORS = {
+    "",
+    "address_intelligence_chain_unsupported",
+    "address_intelligence_local_error",
+}
 
 
 class AutomationStoreError(RuntimeError):
@@ -181,6 +193,7 @@ class AutomationStore:
                     0,
                     1,
                     2,
+                    3,
                     OAR_AUTOMATION_SCHEMA_VERSION,
                 }:
                     raise AutomationStoreError(
@@ -193,6 +206,11 @@ class AutomationStore:
                 if current_version == 2:
                     self._create_schema(conn)
                     self._migrate_v2_to_v3(conn)
+                    current_version = 3
+                if current_version == 3:
+                    self._create_schema(conn)
+                    self._migrate_v3_to_v4(conn)
+                    current_version = 4
                 if current_version in {0, OAR_AUTOMATION_SCHEMA_VERSION}:
                     self._create_schema(conn)
                 conn.execute(
@@ -239,6 +257,28 @@ class AutomationStore:
             "baseline_status TEXT NOT NULL DEFAULT ''",
             "baseline_anomaly INTEGER NOT NULL DEFAULT 0",
             "baseline_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        existing = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(watch_scan_runs)"
+            ).fetchall()
+        }
+        for definition in additions:
+            name = definition.split()[0]
+            if name not in existing:
+                conn.execute(
+                    f"ALTER TABLE watch_scan_runs ADD COLUMN {definition}"
+                )
+
+    @staticmethod
+    def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+        additions = (
+            "address_intelligence_queue_status TEXT NOT NULL "
+            "DEFAULT 'not_recorded'",
+            "address_intelligence_queue_error TEXT NOT NULL DEFAULT ''",
+            "unknown_addresses_queued INTEGER NOT NULL DEFAULT 0",
+            "external_label_provider_calls INTEGER NOT NULL DEFAULT 0",
         )
         existing = {
             str(row["name"])
@@ -386,6 +426,11 @@ class AutomationStore:
                 notification_reason TEXT NOT NULL DEFAULT '',
                 error_code TEXT NOT NULL DEFAULT '',
                 source_refs_json TEXT NOT NULL DEFAULT '[]',
+                address_intelligence_queue_status TEXT NOT NULL
+                    DEFAULT 'not_recorded',
+                address_intelligence_queue_error TEXT NOT NULL DEFAULT '',
+                unknown_addresses_queued INTEGER NOT NULL DEFAULT 0,
+                external_label_provider_calls INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(token_key) REFERENCES token_registry(token_key)
             );
             CREATE INDEX IF NOT EXISTS idx_scan_token_time
@@ -1599,6 +1644,11 @@ class AutomationStore:
             if isinstance(historical_baseline, dict)
             else {}
         )
+        queue_status = (
+            "not_recorded"
+            if activity_complete is True and analysis_complete is True
+            else "skipped_incomplete"
+        )
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
@@ -1622,8 +1672,12 @@ class AutomationStore:
                     baseline_status, baseline_anomaly, baseline_json,
                     context_hash,
                     notification_status, notification_reason, error_code,
-                    source_refs_json
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_refs_json,
+                    address_intelligence_queue_status,
+                    address_intelligence_queue_error,
+                    unknown_addresses_queued,
+                    external_label_provider_calls
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scan_id,
@@ -1651,6 +1705,10 @@ class AutomationStore:
                     str(notification_reason or "")[:120],
                     str(audit_error or "")[:80],
                     _json_list(sorted(set(source_refs or []))[:10]),
+                    queue_status,
+                    "",
+                    0,
+                    0,
                 ),
             )
             if not lease_matches:
@@ -1700,6 +1758,57 @@ class AutomationStore:
             self._trim_scan_audit(conn, token_key.lower())
             conn.commit()
         return scan_id
+
+    def update_scan_address_intelligence_audit(
+        self,
+        scan_id: str,
+        token_key: str,
+        *,
+        queue_status: str,
+        queue_error: str,
+        unknown_addresses_queued: int,
+    ) -> bool:
+        self.migrate()
+        parse_token_key(token_key)
+        status = str(queue_status or "")
+        error = str(queue_error or "")
+        try:
+            queued = int(unknown_addresses_queued)
+        except (TypeError, ValueError) as exc:
+            raise AutomationStoreError(
+                "invalid_scan_audit",
+                "scan audit counters must be non-negative integers",
+            ) from exc
+        if (
+            status not in ADDRESS_QUEUE_AUDIT_STATUSES
+            or error not in ADDRESS_QUEUE_AUDIT_ERRORS
+            or queued < 0
+        ):
+            raise AutomationStoreError(
+                "invalid_scan_audit",
+                "scan audit enrichment contains unsupported values",
+            )
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                """
+                UPDATE watch_scan_runs
+                SET address_intelligence_queue_status=?,
+                    address_intelligence_queue_error=?,
+                    unknown_addresses_queued=?,
+                    external_label_provider_calls=0
+                WHERE scan_id=? AND token_key=?
+                """,
+                (
+                    status,
+                    error,
+                    queued,
+                    str(scan_id),
+                    token_key.lower(),
+                ),
+            ).rowcount
+            conn.commit()
+        return bool(changed)
 
     def complete_scan_history(
         self,
@@ -1762,7 +1871,11 @@ class AutomationStore:
                 """
                 SELECT scan_id, token_key, started_at, completed_at,
                        query_window, baseline_status, baseline_anomaly,
-                       baseline_json
+                       baseline_json,
+                       address_intelligence_queue_status,
+                       address_intelligence_queue_error,
+                       unknown_addresses_queued,
+                       external_label_provider_calls
                 FROM watch_scan_runs
                 WHERE token_key=? AND baseline_status<>''
                 ORDER BY started_at DESC, scan_id DESC
@@ -1787,6 +1900,18 @@ class AutomationStore:
             "query_window": str(row["query_window"] or ""),
             "baseline_status": str(row["baseline_status"] or ""),
             "baseline_anomaly": bool(row["baseline_anomaly"]),
+            "address_intelligence_queue_status": str(
+                row["address_intelligence_queue_status"] or ""
+            ),
+            "address_intelligence_queue_error": str(
+                row["address_intelligence_queue_error"] or ""
+            ),
+            "unknown_addresses_queued": int(
+                row["unknown_addresses_queued"] or 0
+            ),
+            "external_label_provider_calls": int(
+                row["external_label_provider_calls"] or 0
+            ),
             "historical_baseline": (
                 baseline if isinstance(baseline, dict) else {}
             ),

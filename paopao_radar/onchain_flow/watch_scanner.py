@@ -592,6 +592,30 @@ class WatchScanner:
                     # expose exception text, paths, or secrets.
                     queue_status = "local_error"
                     queue_error = "address_intelligence_local_error"
+        scan_audit_enrichment_status = "ok"
+        scan_audit_enrichment_error = ""
+        try:
+            persisted = self.store.update_scan_address_intelligence_audit(
+                str(completion),
+                token_key,
+                queue_status=queue_status,
+                queue_error=queue_error,
+                unknown_addresses_queued=int(
+                    queue_result.get("observed") or 0
+                ),
+            )
+            if not persisted:
+                scan_audit_enrichment_status = "local_error"
+                scan_audit_enrichment_error = (
+                    "scan_audit_enrichment_local_error"
+                )
+        except Exception:
+            # The scan and lease release have already completed.  Audit
+            # enrichment remains best-effort and exposes only a fixed code.
+            scan_audit_enrichment_status = "local_error"
+            scan_audit_enrichment_error = (
+                "scan_audit_enrichment_local_error"
+            )
         return {
             "token_key": token_key,
             "status": scan_status,
@@ -623,6 +647,10 @@ class WatchScanner:
             "address_intelligence_queue_status": queue_status,
             "address_intelligence_queue_error": queue_error,
             "external_label_provider_calls": 0,
+            "scan_audit_enrichment_status": (
+                scan_audit_enrichment_status
+            ),
+            "scan_audit_enrichment_error": scan_audit_enrichment_error,
         }
 
     def _record_failure(

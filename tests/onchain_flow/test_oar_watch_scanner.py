@@ -301,6 +301,15 @@ class WatchScannerTests(unittest.TestCase):
             ],
             "",
         )
+        self.assertEqual(
+            result["results"][0]["scan_audit_enrichment_status"], "ok"
+        )
+        persisted = self.store.latest_scan_baseline(key) or {}
+        self.assertEqual(
+            persisted["address_intelligence_queue_status"], "ok"
+        )
+        self.assertEqual(persisted["unknown_addresses_queued"], 2)
+        self.assertEqual(persisted["external_label_provider_calls"], 0)
         queue_store.observe_complete_scan.assert_called_once()
         discover.assert_not_called()
 
@@ -507,6 +516,49 @@ class WatchScannerTests(unittest.TestCase):
         )
         self.assertNotIn("secret path", str(item))
         self.assertEqual(item["external_label_provider_calls"], 0)
+        self.assertEqual(item["scan_audit_enrichment_status"], "ok")
+        persisted = self.store.latest_scan_baseline(item["token_key"]) or {}
+        self.assertEqual(
+            persisted["address_intelligence_queue_status"], "local_error"
+        )
+        self.assertEqual(
+            persisted["address_intelligence_queue_error"],
+            "address_intelligence_local_error",
+        )
+        self.assertNotIn("secret path", str(persisted))
+
+    def test_scan_audit_enrichment_failure_does_not_fail_scan(self) -> None:
+        self.watch()
+        queue_store = Mock()
+        queue_store.observe_complete_scan.return_value = {
+            "observed": 1,
+            "created": 1,
+            "updated": 0,
+        }
+        scanner = self.scanner(
+            [self.analyzed("isolated")],
+            address_store=queue_store,
+        )
+        with patch.object(
+            self.store,
+            "update_scan_address_intelligence_audit",
+            side_effect=OSError("secret path must not leak"),
+        ):
+            result = scanner.run_once(
+                allow_network=True,
+                notify_dry_run=False,
+                with_ai=False,
+                send=False,
+                confirm_real_send=False,
+            )
+        item = result["results"][0]
+        self.assertEqual(item["status"], "ok")
+        self.assertEqual(item["scan_audit_enrichment_status"], "local_error")
+        self.assertEqual(
+            item["scan_audit_enrichment_error"],
+            "scan_audit_enrichment_local_error",
+        )
+        self.assertNotIn("secret path", str(item))
 
     def test_complete_scans_build_and_persist_historical_baseline(self) -> None:
         key = self.watch()
