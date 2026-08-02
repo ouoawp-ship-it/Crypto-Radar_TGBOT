@@ -492,6 +492,25 @@ class ConfigManagerTests(unittest.TestCase):
             before,
         )
 
+    def test_controlled_alert_gate_defaults_off_and_is_atomic(self) -> None:
+        self.assertEqual(
+            self.manager.status()["OAR_WATCH_CONTROLLED_ALERT_ENABLE"],
+            False,
+        )
+        result = self.manager.set(
+            "OAR_WATCH_CONTROLLED_ALERT_ENABLE", "true"
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(
+            result["validation"]["checks"][
+                "oar_watch_controlled_alert_enable"
+            ]
+        )
+        with self.assertRaises(ConfigManagerError):
+            self.manager.set(
+                "OAR_WATCH_CONTROLLED_ALERT_ENABLE", "enabled"
+            )
+
     def test_watch_baseline_setting_ranges_are_enforced(self) -> None:
         for key, value in (
             ("OAR_WATCH_BASELINE_MIN_SAMPLES", "3"),
@@ -714,6 +733,10 @@ class ChineseMenuTests(unittest.TestCase):
             'confirm_phrase "启用链上DryRun"',
             'confirm_phrase "启用真实链上提醒"',
             'confirm_phrase "启用自动AI分析"',
+            "受控自动预警门禁",
+            "run_config enable OAR_WATCH_CONTROLLED_ALERT_ENABLE",
+            "run_config disable OAR_WATCH_CONTROLLED_ALERT_ENABLE",
+            'confirm_phrase "启用受控自动预警"',
         ):
             self.assertIn(expected, text)
 

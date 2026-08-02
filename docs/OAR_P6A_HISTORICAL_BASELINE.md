@@ -69,7 +69,9 @@ Watch 会把已存在的动态来源与本轮链上规则、历史基线组合�
 
 Watch 同时输出只读 `controlled_alert_preview`。它要求扫描完整、现有链上规则门禁已通过、历史基线成熟且本轮异常、并且存在受支持的市场来源，才会返回 `would_alert=true`。多窗口同时异常时预演等级为 `high`，否则为 `medium`。
 
-未满足条件时，`block_reasons` 只使用固定错误码，例如 `historical_baseline_not_ready`、`historical_anomaly_not_observed` 或 `market_context_not_present`。该字段始终标记 `dry_run_only=true`、`notification_gate_changed=false`、`telegram_calls=0`，不会创建 Telegram 客户端、不会修改现有通知门禁，也不会产生持久消息。
+未满足条件时，`block_reasons` 只使用固定错误码，例如 `historical_baseline_not_ready`、`historical_anomaly_not_observed` 或 `market_context_not_present`。默认 `OAR_WATCH_CONTROLLED_ALERT_ENABLE=false`，此时字段保持 `dry_run_only=true`、`notification_gate_changed=false`，现有通知行为完全不变。
+
+操作者可以在中文菜单的 Watch 通知模式中显式启用“受控自动预警门禁”。启用后，只有扫描完整、原有规则门禁通过、历史基线成熟且本轮异常、并存在受支持的市场来源时，系统才构建报告、调用可选 AI 或进入通知流程；未满足时固定返回 `controlled_alert_gate_not_met`。该开关本身不会打开 Dry-run、Real、AI 或 Telegram，也不会绕过现有真实发送双门禁。修改配置后必须由操作者显式重启 OAR Watch。
 
 ## 谨慎 AI 输入门禁
 

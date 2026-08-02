@@ -283,6 +283,7 @@ class OnchainSettings:
     oar_watch_notify_min_behavior_score: int = 55
     oar_watch_notify_min_wallet_score: int = 60
     oar_watch_notify_partial: bool = False
+    oar_watch_controlled_alert_enable: bool = False
     oar_watch_max_events_per_token: int = 1000
     oar_watch_max_rpc_requests_per_token: int = 100
     oar_watch_top_transfers: int = 20
@@ -811,6 +812,9 @@ class OnchainSettings:
             ),
             oar_watch_notify_partial=_bool(
                 values, "OAR_WATCH_NOTIFY_PARTIAL", False
+            ),
+            oar_watch_controlled_alert_enable=_bool(
+                values, "OAR_WATCH_CONTROLLED_ALERT_ENABLE", False
             ),
             oar_watch_max_events_per_token=_int(
                 values, "OAR_WATCH_MAX_EVENTS_PER_TOKEN", 1000
@@ -1820,5 +1824,8 @@ class OnchainSettings:
                     self.oar_watch_notify_min_wallet_score
                 ),
                 "notify_partial": self.oar_watch_notify_partial,
+                "controlled_alert_enable": (
+                    self.oar_watch_controlled_alert_enable
+                ),
             },
         }

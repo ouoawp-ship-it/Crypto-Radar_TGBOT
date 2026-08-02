@@ -166,6 +166,8 @@ Chat ID、Bot Token 或 Telegram API URL。本地私有历史的既有 Schema
 
 ### Watch 通知模式
 
+“受控自动预警门禁”默认关闭。启用时，链上原有规则、成熟历史异常和受支持的市场来源必须同时满足，才会构建报告并进入当前 Delivery Mode；它不会自动开启 AI、Dry-run 或 Real。启用需输入完整确认短语 `启用受控自动预警`，保存后需要显式重启 OAR Watch。
+
 链上活动雷达菜单可原子切换：
 
 - Observe：只执行链上查询和分析，不创建通知或 AI 客户端；

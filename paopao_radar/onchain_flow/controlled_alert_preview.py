@@ -10,8 +10,9 @@ def evaluate_controlled_alert_preview(
     existing_rule_gate_met: bool,
     historical_baseline: Mapping[str, object],
     market_convergence: Mapping[str, object],
+    enforced: bool = False,
 ) -> dict[str, object]:
-    """Evaluate a fail-closed alert policy without changing delivery behavior."""
+    """Evaluate the fail-closed controlled alert policy."""
 
     baseline_status = str(historical_baseline.get("status") or "")
     baseline_ready = baseline_status == "ready"
@@ -54,8 +55,10 @@ def evaluate_controlled_alert_preview(
             market_convergence.get("level") or "none"
         ),
         "block_reasons": blockers,
-        "dry_run_only": True,
-        "notification_gate_changed": False,
+        "policy": "controlled_anomaly_v1",
+        "enforced": bool(enforced),
+        "dry_run_only": not bool(enforced),
+        "notification_gate_changed": bool(enforced),
         "telegram_calls": 0,
         "persistent_messages": 0,
     }

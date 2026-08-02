@@ -142,6 +142,76 @@ class WatchScannerTests(unittest.TestCase):
             self.settings, StaticActivity(activity)
         ).execute(object())
 
+    def seed_low_baseline(self, token_key: str, count: int = 4) -> None:
+        with self.store.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO watch_scan_runs(
+                    scan_id, token_key, started_at, completed_at, status,
+                    activity_complete, analysis_complete, query_window,
+                    transfer_count, total_token_amount, unique_senders,
+                    unique_receivers, behavior_score,
+                    max_wallet_group_score, baseline_status, baseline_json
+                ) VALUES(?, ?, ?, ?, 'ok', 1, 1, '4h',
+                    2, '20', 2, 2, 10, 10, 'cold_start', ?)
+                """,
+                [
+                    (
+                        f"controlled-baseline-{index}",
+                        token_key,
+                        1500 + index,
+                        1500 + index,
+                        json.dumps(
+                            {
+                                "windows": {
+                                    name: {
+                                        "current": {
+                                            "transfer_count": "2",
+                                            "total_token_amount": "20",
+                                            "unique_senders": "2",
+                                            "unique_receivers": "2",
+                                            "inflow_count": "0",
+                                            "outflow_count": "0",
+                                            "unclassified_count": "2",
+                                            "active_15m_buckets": "1",
+                                        }
+                                    }
+                                    for name in ("15m", "1h", "4h")
+                                }
+                            }
+                        ),
+                    )
+                    for index in range(count)
+                ],
+            )
+            conn.commit()
+
+    def link_launch_signal(self, token_key: str) -> None:
+        self.store.process_bridge_signal(
+            {
+                "id": 1,
+                "public_ref": "launch:controlled",
+                "ts": 1900,
+                "module": "launch",
+                "symbol": "AAAUSDT",
+                "score": 82,
+                "stage": "active",
+                "severity": "high",
+                "excerpt": "market source",
+                "payload_hash": "f" * 64,
+            },
+            resolution={
+                "status": "resolved",
+                "token": self.store.get_registry(token_key),
+            },
+            source_ttl_sec=3600,
+            source_priority=90,
+            query_window="4h",
+            scan_interval_sec=900,
+            max_active_tokens=50,
+            now=1950,
+        )
+
     def scanner(
         self,
         payloads: list[dict[str, object]],
@@ -646,6 +716,82 @@ class WatchScannerTests(unittest.TestCase):
         )
         self.assertFalse(preview["notification_gate_changed"])
         self.assertEqual(preview["telegram_calls"], 0)
+
+    def test_controlled_alert_blocks_cold_start_before_report_or_ai(self) -> None:
+        self.watch()
+        settings = make_settings(
+            self.root,
+            oar_watch_controlled_alert_enable=True,
+        )
+        result = self.scanner(
+            [self.analyzed("accumulation")],
+            settings=settings,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=True,
+            with_ai=True,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        item = result["results"][0]
+        self.assertTrue(item["actionable"])
+        self.assertFalse(item["controlled_alert_eligible"])
+        self.assertFalse(item["notification_gate_met"])
+        self.assertEqual(
+            item["notification_reason"],
+            "controlled_alert_gate_not_met",
+        )
+        self.assertEqual(result["notifications_attempted"], 0)
+        self.assertFalse(result["ai_calls"])
+        self.assertEqual(result["controlled_alert_tokens"], 0)
+
+    def test_controlled_alert_allows_mature_convergent_anomaly(self) -> None:
+        key = self.watch()
+        self.seed_low_baseline(key)
+        self.link_launch_signal(key)
+        analyzed = self.analyzed("accumulation")
+        analyzed["summary"].update(
+            {
+                "transfer_count": 20,
+                "total_token_amount": "200",
+                "unique_senders": 20,
+                "unique_receivers": 20,
+            }
+        )
+        report = FakeReport()
+        notifier = FakeNotifier()
+        settings = make_settings(
+            self.root,
+            oar_watch_baseline_min_samples=4,
+            oar_watch_baseline_max_samples=8,
+            oar_watch_controlled_alert_enable=True,
+        )
+        result = self.scanner(
+            [analyzed],
+            report=report,
+            notifier=notifier,
+            settings=settings,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=True,
+            with_ai=True,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        item = result["results"][0]
+        self.assertTrue(item["actionable"])
+        self.assertTrue(item["controlled_alert_eligible"])
+        self.assertTrue(item["notification_gate_met"])
+        self.assertEqual(result["controlled_alert_tokens"], 1)
+        self.assertEqual(result["notifications_attempted"], 1)
+        self.assertTrue(result["ai_calls"])
+        self.assertEqual(report.calls, 1)
+        self.assertEqual(len(notifier.calls), 1)
+        preview = item["controlled_alert_preview"]
+        self.assertTrue(preview["enforced"])
+        self.assertTrue(preview["notification_gate_changed"])
 
     def test_actionable_observe_builds_report_without_gateway(self) -> None:
         self.watch()

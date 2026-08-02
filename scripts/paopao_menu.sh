@@ -420,6 +420,36 @@ EOF
   esac
 }
 
+watch_controlled_alert_menu() {
+  local choice
+  cat <<'EOF'
+受控自动预警门禁：
+1. 启用（历史异常 + 市场共振 + 原有规则同时满足）
+2. 禁用（保留原有规则门禁）
+0. 取消
+EOF
+  IFS= read -r choice
+  case "$choice" in
+    1)
+      confirm_phrase "启用受控自动预警" || return 0
+      if run_config enable OAR_WATCH_CONTROLLED_ALERT_ENABLE; then
+        printf '受控自动预警门禁已启用；重启 OAR Watch 后生效。\n'
+      else
+        printf '受控自动预警门禁保存失败。\n' >&2
+      fi
+      ;;
+    2)
+      if run_config disable OAR_WATCH_CONTROLLED_ALERT_ENABLE; then
+        printf '受控自动预警门禁已禁用；重启 OAR Watch 后生效。\n'
+      else
+        printf '受控自动预警门禁保存失败。\n' >&2
+      fi
+      ;;
+    0) return 0 ;;
+    *) printf '无效选项。\n' ;;
+  esac
+}
+
 watch_delivery_menu() {
   local choice
   while true; do
@@ -430,7 +460,8 @@ Watch 通知模式
 2. Telegram Dry-run
 3. Real，真实发送
 4. 自动 AI 开关
-5. 查看当前脱敏状态
+5. 受控自动预警门禁
+6. 查看当前脱敏状态
 0. 返回
 EOF
     IFS= read -r choice
@@ -464,7 +495,8 @@ EOF
         pause_menu
         ;;
       4) watch_ai_menu; pause_menu ;;
-      5) run_config status; pause_menu ;;
+      5) watch_controlled_alert_menu; pause_menu ;;
+      6) run_config status; pause_menu ;;
       0) return ;;
       *) printf '无效选项。\n' ;;
     esac

@@ -17,6 +17,7 @@ class ControlledAlertPreviewTests(unittest.TestCase):
         anomaly: bool = True,
         multi_window: bool = False,
         market_signals: int = 1,
+        enforced: bool = False,
     ) -> dict[str, object]:
         return evaluate_controlled_alert_preview(
             activity_complete=complete,
@@ -31,6 +32,7 @@ class ControlledAlertPreviewTests(unittest.TestCase):
                 "level": "high" if multi_window else "medium",
                 "market_signal_count": market_signals,
             },
+            enforced=enforced,
         )
 
     def test_complete_convergent_anomaly_is_preview_eligible(self) -> None:
@@ -42,6 +44,16 @@ class ControlledAlertPreviewTests(unittest.TestCase):
         self.assertEqual(result["block_reasons"], [])
         self.assertTrue(result["dry_run_only"])
         self.assertFalse(result["notification_gate_changed"])
+        self.assertEqual(result["telegram_calls"], 0)
+
+    def test_enforced_policy_marks_notification_gate_changed(self) -> None:
+        result = self.evaluate(enforced=True)
+
+        self.assertTrue(result["would_alert"])
+        self.assertTrue(result["enforced"])
+        self.assertFalse(result["dry_run_only"])
+        self.assertTrue(result["notification_gate_changed"])
+        self.assertEqual(result["policy"], "controlled_anomaly_v1")
         self.assertEqual(result["telegram_calls"], 0)
 
     def test_multi_window_anomaly_is_high_preview_level(self) -> None:

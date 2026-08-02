@@ -110,6 +110,7 @@ class WatchScanner:
             "deferred_token_keys": [],
             "cycle_budget_exhausted": False,
             "actionable_tokens": 0,
+            "controlled_alert_tokens": 0,
             "notifications_attempted": 0,
             "notifications_sent": 0,
             "partial_tokens": 0,
@@ -176,6 +177,10 @@ class WatchScanner:
             if token_result.get("actionable"):
                 result["actionable_tokens"] = (
                     int(result["actionable_tokens"]) + 1
+                )
+            if token_result.get("controlled_alert_eligible"):
+                result["controlled_alert_tokens"] = (
+                    int(result["controlled_alert_tokens"]) + 1
                 )
             if token_result.get("notification_attempted"):
                 result["notifications_attempted"] = (
@@ -334,56 +339,6 @@ class WatchScanner:
         context_hash = ""
         ai_calls = 0
         reported: dict[str, object] | None = None
-        if actionable:
-            if not self._renew_lease(token_key, lease_owner):
-                return self._record_stale(
-                    token_key,
-                    lease_owner=lease_owner,
-                    started_at=started_at,
-                    source_refs=source_refs,
-                    rpc_request_count=rpc_count,
-                    analysis_started=True,
-                )
-            report_service = self.report_factory(self.settings)
-            reported = report_service.build_from_analysis(
-                analyzed,
-                with_ai=bool(with_ai),
-                linked_market_signals=linked,
-            )
-            report = reported.get("report")
-            report = report if isinstance(report, dict) else {}
-            ai = report.get("ai")
-            ai = ai if isinstance(ai, dict) else {}
-            ai_calls = int(ai.get("calls") or 0)
-            context_hash = str(report.get("context_hash") or "")
-        if actionable and notify_requested and reported is not None:
-            if not self._renew_lease(token_key, lease_owner):
-                return self._record_stale(
-                    token_key,
-                    lease_owner=lease_owner,
-                    started_at=started_at,
-                    source_refs=source_refs,
-                    rpc_request_count=rpc_count,
-                    analysis_started=True,
-                )
-            notifier = self.notifier_factory(self.settings)
-            notification = notifier.notify(
-                reported,
-                send=bool(send),
-                confirm_real_send=bool(confirm_real_send),
-                source="watchlist_automation",
-                linked_source_refs=source_refs,
-                linked_source_modules=[
-                    str(source.get("module") or "") for source in linked
-                ],
-                watch_priority=int(item.get("priority") or 0),
-                watch_reason_count=len(source_refs)
-                + int(bool(item.get("manual_watch"))),
-            )
-            notification_status = str(notification.status)
-            notification_reason = str(notification.reason)
-        elif actionable:
-            notification_reason = "observe_mode"
 
         activity_complete = bool(analyzed.get("complete"))
         analysis_complete = bool(analysis.get("complete"))
@@ -472,10 +427,74 @@ class WatchScanner:
             existing_rule_gate_met=actionable,
             historical_baseline=historical_baseline,
             market_convergence=market_convergence,
+            enforced=self.settings.oar_watch_controlled_alert_enable,
         )
         historical_baseline[
             "controlled_alert_preview"
         ] = controlled_alert_preview
+        controlled_alert_eligible = bool(
+            controlled_alert_preview.get("would_alert")
+        )
+        notification_gate_met = bool(
+            actionable
+            and (
+                controlled_alert_eligible
+                if self.settings.oar_watch_controlled_alert_enable
+                else True
+            )
+        )
+        if notification_gate_met:
+            if not self._renew_lease(token_key, lease_owner):
+                return self._record_stale(
+                    token_key,
+                    lease_owner=lease_owner,
+                    started_at=started_at,
+                    source_refs=source_refs,
+                    rpc_request_count=rpc_count,
+                    analysis_started=True,
+                )
+            report_service = self.report_factory(self.settings)
+            reported = report_service.build_from_analysis(
+                analyzed,
+                with_ai=bool(with_ai),
+                linked_market_signals=linked,
+            )
+            report = reported.get("report")
+            report = report if isinstance(report, dict) else {}
+            ai = report.get("ai")
+            ai = ai if isinstance(ai, dict) else {}
+            ai_calls = int(ai.get("calls") or 0)
+            context_hash = str(report.get("context_hash") or "")
+        if notification_gate_met and notify_requested and reported is not None:
+            if not self._renew_lease(token_key, lease_owner):
+                return self._record_stale(
+                    token_key,
+                    lease_owner=lease_owner,
+                    started_at=started_at,
+                    source_refs=source_refs,
+                    rpc_request_count=rpc_count,
+                    analysis_started=True,
+                )
+            notifier = self.notifier_factory(self.settings)
+            notification = notifier.notify(
+                reported,
+                send=bool(send),
+                confirm_real_send=bool(confirm_real_send),
+                source="watchlist_automation",
+                linked_source_refs=source_refs,
+                linked_source_modules=[
+                    str(source.get("module") or "") for source in linked
+                ],
+                watch_priority=int(item.get("priority") or 0),
+                watch_reason_count=len(source_refs)
+                + int(bool(item.get("manual_watch"))),
+            )
+            notification_status = str(notification.status)
+            notification_reason = str(notification.reason)
+        elif notification_gate_met:
+            notification_reason = "observe_mode"
+        elif actionable and self.settings.oar_watch_controlled_alert_enable:
+            notification_reason = "controlled_alert_gate_not_met"
         if not self._renew_lease(token_key, lease_owner):
             return self._record_stale(
                 token_key,
@@ -560,9 +579,13 @@ class WatchScanner:
             "behavior_score": int(primary.get("score") or 0),
             "max_wallet_group_score": max_wallet_score,
             "actionable": actionable,
+            "controlled_alert_eligible": controlled_alert_eligible,
+            "notification_gate_met": notification_gate_met,
             "rpc_request_count": rpc_count,
             "rpc_budget_consumed": rpc_count,
-            "notification_attempted": bool(actionable and notify_requested),
+            "notification_attempted": bool(
+                notification_gate_met and notify_requested
+            ),
             "notification_status": notification_status,
             "notification_reason": notification_reason,
             "error": partial_reason,
