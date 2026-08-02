@@ -395,6 +395,89 @@ class WatchScannerTests(unittest.TestCase):
         self.assertEqual(scanned["external_label_provider_calls"], 0)
         queue_store.observe_complete_scan.assert_not_called()
 
+    def test_disabled_chain_is_rejected_before_network_analysis(self) -> None:
+        chains_path = self.root / "chains-disabled.json"
+        chains_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": False,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                            "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = replace(self.settings, chains_path=chains_path)
+        item = self.store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="ethereum",
+            chain_id=1,
+            source="manual",
+            now=1000,
+        )
+        key = str(item["token_key"])
+        self.store.verify_registry(
+            key,
+            token_symbol="AAA",
+            token_name="AAA",
+            decimals=18,
+            metadata_hash="a" * 64,
+            verification_method="fixture",
+            set_primary=True,
+            now=1001,
+        )
+        self.store.add_manual_watch(
+            key,
+            ttl_sec=100000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        analysis_factory = Mock(
+            side_effect=AssertionError("disabled chain reached analysis")
+        )
+
+        result = WatchScanner(
+            settings,
+            self.store,
+            bridge=self.bridge,
+            analysis_factory=analysis_factory,
+            clock=lambda: 2000,
+            sleeper=lambda value: None,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        scanned = result["results"][0]
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(scanned["status"], "failed")
+        self.assertEqual(scanned["error"], "chain_watch_disabled")
+        self.assertFalse(scanned["analysis_started"])
+        self.assertEqual(scanned["rpc_budget_consumed"], 0)
+        self.assertFalse(result["network_activity"])
+        self.assertFalse(result["telegram_calls"])
+        self.assertFalse(result["ai_calls"])
+        analysis_factory.assert_not_called()
+        watch = self.store.get_watch(key) or {}
+        self.assertEqual(watch["lease_owner"], "")
+
     def test_local_queue_error_is_observable_without_failing_scan(
         self,
     ) -> None:

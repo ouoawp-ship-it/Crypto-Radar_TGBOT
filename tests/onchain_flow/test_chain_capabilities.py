@@ -68,6 +68,70 @@ class ChainCapabilityTests(unittest.TestCase):
         request.assert_not_called()
         self.assertNotIn("base.invalid", json.dumps(result))
 
+    def test_base_watch_uses_registry_enable_when_collector_is_disabled(
+        self,
+    ) -> None:
+        path = self.write_registry(
+            [
+                {
+                    "chain_id": 8453,
+                    "slug": "base",
+                    "name": "Base",
+                    "enabled": True,
+                    "confirmation_depth": 20,
+                    "bootstrap_lookback_blocks": 300,
+                    "reorg_lookback_blocks": 64,
+                    "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
+                    "explorer_tx_url": "https://base.invalid/tx/{tx_hash}",
+                }
+            ]
+        )
+        settings = replace(
+            self.settings,
+            chains_path=path,
+            base_enable=False,
+            oar_automation_enable=True,
+            base_http_rpc_url="https://base.invalid/v2/key",
+        )
+
+        result = chain_capability_report(settings, environ={})
+
+        chain = result["chains"][0]
+        self.assertFalse(settings.base_enable)
+        self.assertTrue(chain["configured_enabled"])
+        self.assertTrue(chain["effective_enabled"])
+        self.assertEqual(chain["watch_status"], "ready_offline")
+        self.assertTrue(chain["watch_supported"])
+
+    def test_base_collector_enable_keeps_legacy_chain_ready(self) -> None:
+        path = self.write_registry(
+            [
+                {
+                    "chain_id": 8453,
+                    "slug": "base",
+                    "name": "Base",
+                    "enabled": False,
+                    "confirmation_depth": 20,
+                    "bootstrap_lookback_blocks": 300,
+                    "reorg_lookback_blocks": 64,
+                    "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
+                    "explorer_tx_url": "https://base.invalid/tx/{tx_hash}",
+                }
+            ]
+        )
+        settings = replace(
+            self.settings,
+            chains_path=path,
+            base_enable=True,
+            base_http_rpc_url="https://base.invalid/v2/key",
+        )
+
+        chain = chain_capability_report(settings, environ={})["chains"][0]
+
+        self.assertFalse(chain["configured_enabled"])
+        self.assertTrue(chain["effective_enabled"])
+        self.assertTrue(chain["watch_supported"])
+
     def test_enabled_evm_chain_reports_watch_readiness_offline(self) -> None:
         path = self.write_registry(
             [
