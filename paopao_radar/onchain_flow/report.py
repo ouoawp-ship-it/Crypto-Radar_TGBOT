@@ -18,6 +18,7 @@ from .constants import (
     OAR_REPORT_ALGORITHM_VERSION,
     OAR_REPORT_SCHEMA_VERSION,
 )
+from .label_coverage import label_coverage_snapshot
 from .prompt_manager import (
     OperatorPromptError,
     OperatorPromptManager,
@@ -56,6 +57,8 @@ def ai_restriction_reasons(payload: dict[str, object]) -> list[str]:
     analysis = _mapping(payload.get("analysis"))
     primary = _mapping(analysis.get("primary_behavior"))
     labels = _mapping(payload.get("labels"))
+    summary = _mapping(payload.get("summary"))
+    coverage = label_coverage_snapshot(summary, labels)
     reasons: list[str] = []
     if not bool(payload.get("complete")):
         reasons.append("query_incomplete")
@@ -79,6 +82,10 @@ def ai_restriction_reasons(payload: dict[str, object]) -> list[str]:
         str(labels.get("status") or "missing")
         in {"missing", "insufficient_cex_coverage", "invalid"}
         or int(labels.get("classification_eligible_cex_count") or 0) <= 0
+        or (
+            int(coverage["classification_scope_transfer_count"]) > 0
+            and coverage["observed_status"] == "none"
+        )
     ):
         reasons.append("insufficient_cex_coverage")
     linked = [
@@ -222,22 +229,7 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
             "inflow_count": int(window.get("inflow_count") or 0),
             "outflow_count": int(window.get("outflow_count") or 0),
         },
-        "label_coverage": {
-            "status": str(labels.get("status") or "missing"),
-            "identity_label_count": int(
-                labels.get("identity_label_count") or 0
-            ),
-            "classification_eligible_cex_count": int(
-                labels.get("classification_eligible_cex_count") or 0
-            ),
-            "unclassified_transfer_count": int(
-                summary.get("unclassified_count") or 0
-            ),
-            "cex_direction_observed": bool(
-                int(summary.get("inflow_count") or 0)
-                or int(summary.get("outflow_count") or 0)
-            ),
-        },
+        "label_coverage": label_coverage_snapshot(summary, labels),
         "primary_behavior": {
             "type": str(primary.get("type") or "insufficient_data"),
             "label": str(primary.get("label") or "数据不足"),
@@ -288,6 +280,7 @@ def build_rule_summary_text(summary: dict[str, object]) -> str:
     query = _mapping(summary.get("query"))
     transfers = _mapping(summary.get("transfer_summary"))
     flows = _mapping(summary.get("cex_flows"))
+    coverage = _mapping(summary.get("label_coverage"))
     primary = _mapping(summary.get("primary_behavior"))
     groups = _list(summary.get("wallet_groups"))
     linked = _list(summary.get("linked_market_signals"))
@@ -309,6 +302,14 @@ def build_rule_summary_text(summary: dict[str, object]) -> str:
             f"流入交易所 {flows.get('gross_inflow_token', '0')}，"
             f"从交易所提出 {flows.get('gross_outflow_token', '0')}，"
             f"净流向（流入-提出）{flows.get('net_flow_token', '0')}。"
+        ),
+        (
+            "标签库状态 "
+            f"{coverage.get('registry_status') or coverage.get('status') or 'missing'}；"
+            "当前窗口身份分类 "
+            f"{coverage.get('observed_status') or 'unknown'}，"
+            f"已分类 {coverage.get('classified_transfer_count', 0)}/"
+            f"{coverage.get('classification_scope_transfer_count', 0)} 笔。"
         ),
         (
             f"行为：{primary.get('label') or '数据不足'}；"

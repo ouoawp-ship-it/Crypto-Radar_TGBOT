@@ -64,6 +64,8 @@ Provider 调用验收。
 
 Token Activity 在缺少可用于方向分类的已审核 CEX 标签时继续保留 Transfer 事实，并将方向保持为 `unclassified`。结构化报告、AI 白名单上下文和中文卡片会明确显示 `insufficient_cex_coverage`；“流入/提出为 0”不再被表达成“确认没有交易所流向”。
 
+Token Activity 还会把标签库状态与当前窗口命中覆盖分开：铸造和销毁不进入身份分类分母；普通转账分别统计 `classified`、`unclassified`、CEX 分类命中和明确的 `inflow/outflow` 方向命中，并以基点记录笔数覆盖率与代币量覆盖率。交易所内部、归集和跨交易所流转属于 CEX 分类，但不冒充流入/提出方向；`non_cex` 只有在双方均有达到门槛的已审核非 CEX 身份时才算已分类。全局标签库为 `ok`、但当前窗口覆盖状态为 `none` 时，事实和规则分析继续保留，AI 固定增加 `insufficient_cex_coverage` 谨慎限制。Watch 只把该快照附加到历史基线诊断，不加入异常分数，也不改变通知门禁。
+
 动态 Watchlist 已由 Signal Bridge 提供，但只接受主 BOT 中 `status=sent`、`sent=1`、结构化且质量就绪的真实发送信号。主 BOT Dry-run 记录继续被审计为 `ignored_not_sent`，不会创建 Watch 来源、不会触发链上扫描。这一门禁不得为扩大 Watchlist 而放宽。
 
 ## 链上与市场共振诊断

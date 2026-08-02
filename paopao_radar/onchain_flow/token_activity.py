@@ -34,6 +34,7 @@ from .config import OnchainSettings
 from .constants import (
     TOKEN_ACTIVITY_SCHEMA_VERSION,
 )
+from .label_coverage import summarize_classification_coverage
 from .labels import (
     LabelRegistry,
     LabelValidationError,
@@ -1020,6 +1021,7 @@ class TokenActivityQueryService:
         return {
             "transfer_count": len(records),
             **{f"{name}_count": value for name, value in counts.items()},
+            **summarize_classification_coverage(records),
             "unique_senders": len(senders),
             "unique_receivers": len(receivers),
             "total_token_amount": cls._decimal_string(total_amount),

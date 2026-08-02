@@ -160,6 +160,14 @@ def _contract_line(value: object, chain_id: object) -> str:
     return f"- 合约：<code>{escape(contract or '-')}</code>"
 
 
+def _coverage_percent(value: object) -> str:
+    try:
+        bps = max(0, min(10_000, int(value)))
+    except (TypeError, ValueError):
+        return "未记录"
+    return f"{bps / 100:.2f}%"
+
+
 def format_token_report(payload: dict[str, object]) -> str:
     report = _map(payload.get("report"))
     summary = _map(report.get("rule_summary"))
@@ -207,16 +215,69 @@ def format_token_report(payload: dict[str, object]) -> str:
         ),
     ]
     label_status = str(label_coverage.get("status") or "missing")
+    observed_status = str(label_coverage.get("observed_status") or "unknown")
+    scope_count = int(
+        label_coverage.get("classification_scope_transfer_count") or 0
+    )
+    classified_count = int(
+        label_coverage.get("classified_transfer_count") or 0
+    )
+    unclassified_count = int(
+        label_coverage.get("unclassified_transfer_count") or 0
+    )
+    cex_classified_count = int(
+        label_coverage.get("cex_classified_transfer_count") or 0
+    )
     if label_status == "ok":
         lines.append(
-            "- 交易所标签覆盖：就绪"
+            "- 交易所标签库：就绪"
             "（可用于方向分类的已审核标签 "
             f"{int(label_coverage.get('classification_eligible_cex_count') or 0)} 条）"
         )
+        if observed_status in {"none", "partial", "complete"}:
+            status_label = {
+                "none": "无覆盖",
+                "partial": "部分覆盖",
+                "complete": "完整覆盖",
+            }[observed_status]
+            transfer_coverage = _coverage_percent(
+                label_coverage.get("classification_transfer_coverage_bps")
+            )
+            amount_coverage = _coverage_percent(
+                label_coverage.get("classification_amount_coverage_bps")
+            )
+            lines.append(
+                f"- 当前窗口身份分类：{status_label}"
+                f"（{classified_count}/{scope_count} 笔，"
+                f"{transfer_coverage}；按代币量 {amount_coverage}）"
+            )
+            lines.append(f"- 已识别 CEX 分类：{cex_classified_count} 笔")
+            if unclassified_count > 0:
+                lines.append(f"- 尚未分类：{unclassified_count} 笔")
+                if not (
+                    int(flows.get("inflow_count") or 0)
+                    or int(flows.get("outflow_count") or 0)
+                ):
+                    lines.append(
+                        "  说明：这些转账可能包含尚未识别的交易所地址；"
+                        "当前显示 0 流入/0 提出，不代表已经确认没有入所或提币。"
+                    )
+                else:
+                    lines.append(
+                        "  说明：未分类部分未计入已识别方向，"
+                        "当前方向数字不代表全量地址覆盖。"
+                    )
+        elif observed_status == "not_applicable":
+            lines.append(
+                "- 当前窗口身份分类：不适用"
+                "（只有铸造/销毁或没有普通转账）"
+            )
+        else:
+            lines.append("- 当前窗口身份分类：旧记录未包含覆盖率诊断")
     else:
         lines.extend(
             [
-                "- ⚠️ 交易所标签覆盖：不足",
+                "- ⚠️ 交易所标签库：不足",
                 "  说明：未分类转账可能包含尚未识别的交易所地址；"
                 "当前显示 0 流入/0 提出，不代表已经确认没有入所或提币。",
             ]

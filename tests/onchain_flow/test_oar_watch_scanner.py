@@ -608,6 +608,14 @@ class WatchScannerTests(unittest.TestCase):
                 "total_token_amount": "200",
                 "unique_senders": 20,
                 "unique_receivers": 20,
+                "classification_scope_transfer_count": 20,
+                "classified_transfer_count": 0,
+                "unclassified_transfer_count": 20,
+                "cex_classified_transfer_count": 0,
+                "cex_direction_transfer_count": 0,
+                "classification_transfer_coverage_bps": 0,
+                "classification_amount_coverage_bps": 0,
+                "classification_coverage_status": "none",
             }
         )
         for name in ("15m", "1h"):
@@ -641,6 +649,13 @@ class WatchScannerTests(unittest.TestCase):
             baseline["anomalous_windows"], ["15m", "1h"]
         )
         self.assertTrue(baseline["multi_window_anomaly"])
+        self.assertEqual(baseline["label_coverage"]["status"], "ok")
+        self.assertEqual(
+            baseline["label_coverage"]["observed_status"], "none"
+        )
+        self.assertEqual(
+            baseline["label_coverage"]["unclassified_transfer_count"], 20
+        )
         persisted = self.store.latest_scan_baseline(key) or {}
         self.assertEqual(persisted["baseline_status"], "ready")
         self.assertTrue(persisted["baseline_anomaly"])

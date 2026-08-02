@@ -11,8 +11,9 @@ from .chain_capabilities import (
     resolve_watch_evm_chain,
 )
 from .config import OnchainSettings
-from .market_convergence import evaluate_market_convergence
 from .controlled_alert_preview import evaluate_controlled_alert_preview
+from .label_coverage import label_coverage_snapshot
+from .market_convergence import evaluate_market_convergence
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
 from .scan_baseline import (
@@ -379,6 +380,8 @@ class WatchScanner:
             )
         summary = analyzed.get("summary")
         summary = summary if isinstance(summary, dict) else {}
+        labels = analyzed.get("labels")
+        labels = labels if isinstance(labels, dict) else {}
         current_metrics = scan_metrics(
             summary,
             behavior_score=int(primary.get("score") or 0),
@@ -436,6 +439,10 @@ class WatchScanner:
                         self.settings.oar_watch_baseline_mad_multiplier
                     ),
                 )
+        historical_baseline["label_coverage"] = label_coverage_snapshot(
+            summary,
+            labels,
+        )
         market_convergence = evaluate_market_convergence(
             linked,
             historical_baseline,

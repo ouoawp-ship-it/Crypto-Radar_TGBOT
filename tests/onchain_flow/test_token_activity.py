@@ -1326,6 +1326,19 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
             "non_cex_count",
         ):
             self.assertEqual(result["summary"][key], 1)
+        coverage = result["summary"]
+        self.assertEqual(coverage["classification_scope_transfer_count"], 7)
+        self.assertEqual(coverage["classified_transfer_count"], 6)
+        self.assertEqual(coverage["unclassified_transfer_count"], 1)
+        self.assertEqual(coverage["cex_classified_transfer_count"], 5)
+        self.assertEqual(coverage["cex_direction_transfer_count"], 2)
+        self.assertEqual(
+            coverage["classification_transfer_coverage_bps"], 8571
+        )
+        self.assertEqual(
+            coverage["classification_amount_coverage_bps"], 8571
+        )
+        self.assertEqual(coverage["classification_coverage_status"], "partial")
 
     def test_missing_labels_degrade_to_unclassified(self) -> None:
         settings = replace(
@@ -1347,10 +1360,48 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
         self.assertFalse(result["transfers"][0]["to"]["known"])
         self.assertEqual(result["summary"]["inflow_count"], 0)
         self.assertEqual(
+            result["summary"]["classification_coverage_status"], "none"
+        )
+        self.assertEqual(
+            result["summary"]["classification_transfer_coverage_bps"], 0
+        )
+        self.assertEqual(
             result["labels"]["classification_eligible_cex_count"], 0
         )
         self.assertEqual(result["labels"]["identity_label_count"], 0)
         self.assertTrue(result["warnings"])
+
+    def test_count_and_amount_coverage_are_calculated_independently(
+        self,
+    ) -> None:
+        block = FINALIZED - 1
+        result, _ = self.run_query(
+            [
+                transfer_log(
+                    block,
+                    0,
+                    WALLET_A,
+                    WALLET_B,
+                    amount=3_000_000,
+                ),
+                transfer_log(
+                    block,
+                    1,
+                    WALLET_A,
+                    CEX_A_HOT,
+                    amount=1_000_000,
+                ),
+            ]
+        )
+        summary = result["summary"]
+        self.assertEqual(summary["classification_scope_transfer_count"], 2)
+        self.assertEqual(summary["classified_transfer_count"], 1)
+        self.assertEqual(summary["classification_transfer_coverage_bps"], 5000)
+        self.assertEqual(summary["classification_amount_coverage_bps"], 2500)
+        self.assertEqual(summary["classified_token_amount"], "1")
+        self.assertEqual(summary["unclassified_token_amount"], "3")
+        self.assertEqual(summary["cex_classified_token_amount"], "1")
+        self.assertEqual(summary["cex_direction_token_amount"], "1")
 
     def test_missing_labels_preserve_mint_and_burn(self) -> None:
         settings = replace(
@@ -1369,6 +1420,16 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
         self.assertEqual(
             [item["flow_type"] for item in result["transfers"]],
             ["mint", "burn"],
+        )
+        self.assertEqual(
+            result["summary"]["classification_coverage_status"],
+            "not_applicable",
+        )
+        self.assertIsNone(
+            result["summary"]["classification_transfer_coverage_bps"]
+        )
+        self.assertIsNone(
+            result["summary"]["classification_amount_coverage_bps"]
         )
 
     def test_insufficient_cex_coverage_preserves_mint_and_burn(self) -> None:
@@ -1497,6 +1558,13 @@ class ClassificationAndSchemaTests(TokenActivityTestCase):
         self.assertTrue(record["from"]["known"])
         self.assertEqual(record["from"]["entity_type"], "wallet")
         self.assertFalse(record["from"]["classification_eligible"])
+        self.assertEqual(
+            result["summary"]["classification_coverage_status"], "complete"
+        )
+        self.assertEqual(result["summary"]["classified_transfer_count"], 1)
+        self.assertEqual(
+            result["summary"]["cex_direction_transfer_count"], 0
+        )
 
     def test_low_confidence_non_cex_identity_stays_unclassified(self) -> None:
         write_label_rows(

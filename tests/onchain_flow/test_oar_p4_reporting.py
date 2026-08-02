@@ -215,23 +215,54 @@ class OarP4ReportingTests(unittest.TestCase):
         )
 
     def test_report_makes_cex_label_coverage_explicit(self) -> None:
+        analyzed = deepcopy(self.analyzed)
+        analyzed["summary"].update(
+            {
+                "classification_scope_transfer_count": 4,
+                "classified_transfer_count": 3,
+                "unclassified_transfer_count": 1,
+                "cex_classified_transfer_count": 2,
+                "cex_direction_transfer_count": 2,
+                "classification_transfer_coverage_bps": 7500,
+                "classification_amount_coverage_bps": 8000,
+                "classification_coverage_status": "partial",
+                "classification_scope_token_amount": "100",
+                "classified_token_amount": "80",
+                "unclassified_token_amount": "20",
+                "cex_classified_token_amount": "70",
+                "cex_direction_token_amount": "70",
+            }
+        )
         report = TokenReportService(
             self.settings, None
         ).build_from_analysis(
-            self.analyzed,
+            analyzed,
             with_ai=False,
             linked_market_signals=[],
         )
         coverage = report["report"]["rule_summary"]["label_coverage"]
         self.assertEqual(coverage["status"], "ok")
         self.assertEqual(coverage["classification_eligible_cex_count"], 1)
-        self.assertIn("交易所标签覆盖：就绪", format_token_report(report))
+        self.assertEqual(coverage["observed_status"], "partial")
+        text = format_token_report(report)
+        self.assertIn("交易所标签库：就绪", text)
+        self.assertIn(
+            "当前窗口身份分类：部分覆盖"
+            "（3/4 笔，75.00%；按代币量 80.00%）",
+            text,
+        )
+        self.assertIn("已识别 CEX 分类：2 笔", text)
+        self.assertIn("尚未分类：1 笔", text)
 
-        insufficient = deepcopy(self.analyzed)
+        insufficient = deepcopy(analyzed)
         insufficient["labels"]["status"] = "insufficient_cex_coverage"
         insufficient["labels"]["classification_eligible_cex_count"] = 0
         insufficient["summary"]["inflow_count"] = 0
         insufficient["summary"]["outflow_count"] = 0
+        insufficient_window = insufficient["query"]["window"]
+        insufficient["analysis"]["windows"][insufficient_window].update(
+            {"inflow_count": 0, "outflow_count": 0}
+        )
         insufficient_report = TokenReportService(
             self.settings, None
         ).build_from_analysis(
@@ -240,8 +271,43 @@ class OarP4ReportingTests(unittest.TestCase):
             linked_market_signals=[],
         )
         text = format_token_report(insufficient_report)
-        self.assertIn("交易所标签覆盖：不足", text)
+        self.assertIn("交易所标签库：不足", text)
         self.assertIn("0 流入/0 提出，不代表已经确认没有入所或提币", text)
+
+    def test_zero_observed_coverage_is_explicit_even_with_ready_registry(self) -> None:
+        analyzed = deepcopy(self.analyzed)
+        analyzed["summary"].update(
+            {
+                "classification_scope_transfer_count": 5,
+                "classified_transfer_count": 0,
+                "unclassified_transfer_count": 5,
+                "cex_classified_transfer_count": 0,
+                "cex_direction_transfer_count": 0,
+                "classification_transfer_coverage_bps": 0,
+                "classification_amount_coverage_bps": 0,
+                "classification_coverage_status": "none",
+            }
+        )
+        query_window = analyzed["query"]["window"]
+        analyzed["analysis"]["windows"][query_window].update(
+            {"inflow_count": 0, "outflow_count": 0}
+        )
+        report = TokenReportService(self.settings, None).build_from_analysis(
+            analyzed,
+            with_ai=False,
+            linked_market_signals=[],
+        )
+        coverage = report["report"]["rule_summary"]["label_coverage"]
+        self.assertEqual(coverage["status"], "ok")
+        self.assertEqual(coverage["observed_status"], "none")
+        text = format_token_report(report)
+        self.assertIn(
+            "当前窗口身份分类：无覆盖"
+            "（0/5 笔，0.00%；按代币量 0.00%）",
+            text,
+        )
+        self.assertIn("已识别 CEX 分类：0 笔", text)
+        self.assertIn("不代表已经确认没有入所或提币", text)
 
     def test_ai_context_contains_only_safe_label_coverage_counts(self) -> None:
         payload = deepcopy(self.analyzed)
@@ -251,15 +317,25 @@ class OarP4ReportingTests(unittest.TestCase):
             "classification_eligible_cex_count": 0,
             "private_path": "C:/secret/labels.csv",
         }
-        context = build_ai_context(payload, max_chars=30000)
-        self.assertEqual(
-            context["label_coverage"],
+        payload["summary"].update(
             {
-                "status": "insufficient_cex_coverage",
-                "identity_label_count": 7,
-                "classification_eligible_cex_count": 0,
-            },
+                "classification_scope_transfer_count": 5,
+                "classified_transfer_count": 0,
+                "unclassified_transfer_count": 5,
+                "cex_classified_transfer_count": 0,
+                "cex_direction_transfer_count": 0,
+                "classification_transfer_coverage_bps": 0,
+                "classification_amount_coverage_bps": 0,
+                "classification_coverage_status": "none",
+            }
         )
+        context = build_ai_context(payload, max_chars=30000)
+        coverage = context["label_coverage"]
+        self.assertEqual(coverage["status"], "insufficient_cex_coverage")
+        self.assertEqual(coverage["identity_label_count"], 7)
+        self.assertEqual(coverage["observed_status"], "none")
+        self.assertEqual(coverage["classified_transfer_count"], 0)
+        self.assertEqual(coverage["unclassified_transfer_count"], 5)
         self.assertNotIn("private_path", json.dumps(context))
 
     def test_automation_signal_links_stay_in_independent_store(self) -> None:
