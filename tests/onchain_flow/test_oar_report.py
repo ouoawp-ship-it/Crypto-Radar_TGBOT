@@ -504,6 +504,37 @@ class OarReportTests(unittest.TestCase):
         )
         self.assertEqual(fake.restricted_inputs, [True])
 
+    def test_zero_observed_window_coverage_forces_cautious_ai(self) -> None:
+        payload = self.analyzed_case("accumulation")
+        payload["summary"].update(
+            {
+                "classification_scope_transfer_count": 6,
+                "classified_transfer_count": 0,
+                "unclassified_transfer_count": 6,
+                "cex_classified_transfer_count": 0,
+                "cex_direction_transfer_count": 0,
+                "classification_transfer_coverage_bps": 0,
+                "classification_amount_coverage_bps": 0,
+                "classification_coverage_status": "none",
+            }
+        )
+        fake = ConfiguredAi(
+            ai_output(bias="bullish", confidence="high")
+        )
+
+        result = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(payload),
+            ai_client=fake,
+            ai_cache=MemoryCache(),
+        ).execute(self.query, with_ai=True)
+
+        ai = result["report"]["ai"]
+        self.assertEqual(ai["status"], "invalid")
+        self.assertTrue(ai["restricted_input"])
+        self.assertIn("insufficient_cex_coverage", ai["restriction_reasons"])
+        self.assertEqual(fake.restricted_inputs, [True])
+
     def test_unstructured_linked_market_direction_forces_cautious_ai(self) -> None:
         payload = self.analyzed_case("accumulation")
         fake = ConfiguredAi(

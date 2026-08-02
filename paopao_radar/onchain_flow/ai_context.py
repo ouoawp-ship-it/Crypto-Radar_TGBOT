@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
 from .constants import OAR_AI_CONTEXT_SCHEMA_VERSION
+from .label_coverage import label_coverage_snapshot
 
 
 MAX_LARGEST_TRANSFERS = 20
@@ -337,15 +338,7 @@ def build_ai_context(
                 "unpriced_transfer_count",
             ),
         ),
-        "label_coverage": {
-            "status": _text(labels_map.get("status"), limit=40),
-            "identity_label_count": _integer(
-                labels_map.get("identity_label_count")
-            ),
-            "classification_eligible_cex_count": _integer(
-                labels_map.get("classification_eligible_cex_count")
-            ),
-        },
+        "label_coverage": label_coverage_snapshot(summary, labels_map),
         "largest_transfers": sorted([
             _transfer(item)
             for item in (payload.get("largest_transfers") or [])
