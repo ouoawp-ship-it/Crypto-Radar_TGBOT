@@ -6,6 +6,10 @@ from typing import Any, Callable
 
 from .address_intelligence import AddressIntelligenceStore
 from .automation_store import AutomationStore, AutomationStoreError
+from .chain_capabilities import (
+    ChainCapabilityError,
+    resolve_watch_evm_chain,
+)
 from .config import OnchainSettings
 from .market_convergence import evaluate_market_convergence
 from .controlled_alert_preview import evaluate_controlled_alert_preview
@@ -261,6 +265,21 @@ class WatchScanner:
                 "notification_status": "not_requested",
                 "ai_calls": 0,
             }
+        try:
+            resolve_watch_evm_chain(
+                self.settings,
+                str(item["chain"]),
+            )
+        except ChainCapabilityError as exc:
+            return self._record_failure(
+                token_key,
+                started_at=started_at,
+                code=exc.code,
+                source_refs=source_refs,
+                rpc_budget_consumed=0,
+                lease_owner=lease_owner,
+                analysis_started=False,
+            )
         per_token_rpc = min(
             self.settings.oar_watch_max_rpc_requests_per_token,
             remaining_rpc,
@@ -281,7 +300,11 @@ class WatchScanner:
             analysis_service = self.analysis_factory(self.settings, query)
             analysis_started = True
             analyzed = analysis_service.execute(query)
-        except (AutomationStoreError, TokenActivityQueryError, ValueError) as exc:
+        except (
+            AutomationStoreError,
+            TokenActivityQueryError,
+            ValueError,
+        ) as exc:
             code = getattr(exc, "code", type(exc).__name__)
             return self._record_failure(
                 token_key,

@@ -93,6 +93,8 @@
 
 新增链必须在版本化链注册表中配置唯一 Chain ID、slug、确认深度、回看范围、专用 RPC 环境变量和 Explorer 模板。只有逐链 RPC、Registry、预算、重组、灰度和恢复点全部通过后才能启用 Watch。
 
+链注册表中的 `enabled` 控制该链是否允许进入 OAR Watch；`OAR_AUTOMATION_ENABLE` 继续控制 Watch Worker 总开关。Base 的 `ONCHAIN_BASE_ENABLE` 仅保留给独立链上 Collector，关闭它不会禁用已在链注册表启用的 Base OAR Watch。
+
 Base 地址情报命名空间不得接收其他链地址；未支持的地址情报队列应安全跳过，外部标签 Provider 调用保持 0。
 
 回滚：禁用单链注册项并停止该链 Watch 来源，不影响 Base 与其他已验收链。

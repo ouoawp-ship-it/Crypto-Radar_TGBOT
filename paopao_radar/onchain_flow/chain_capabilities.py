@@ -16,7 +16,9 @@ CHAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
 
 class ChainCapabilityError(ValueError):
-    pass
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,27 @@ def resolve_evm_chain(settings: OnchainSettings, chain: str) -> EvmChainSpec:
     return matches[0]
 
 
+def chain_watch_enabled(
+    settings: OnchainSettings, spec: EvmChainSpec
+) -> bool:
+    return bool(
+        spec.enabled
+        or (
+            spec.chain_id == settings.base_chain_id
+            and settings.base_enable
+        )
+    )
+
+
+def resolve_watch_evm_chain(
+    settings: OnchainSettings, chain: str
+) -> EvmChainSpec:
+    spec = resolve_evm_chain(settings, chain)
+    if not chain_watch_enabled(settings, spec):
+        raise ChainCapabilityError("chain_watch_disabled")
+    return spec
+
+
 def resolve_chain_rpc_url(
     settings: OnchainSettings,
     spec: EvmChainSpec,
@@ -179,11 +202,7 @@ def chain_capability_report(
     schema_version, specs = load_evm_chain_specs(settings.chains_path)
     capabilities: list[dict[str, object]] = []
     for spec in specs:
-        effective_enabled = (
-            bool(settings.base_enable)
-            if spec.chain_id == settings.base_chain_id
-            else spec.enabled
-        )
+        effective_enabled = chain_watch_enabled(settings, spec)
         rpc_value = resolve_chain_rpc_url(
             settings, spec, environ=environ
         )
