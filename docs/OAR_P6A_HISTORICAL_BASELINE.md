@@ -76,7 +76,7 @@ Watch 会把已存在的动态来源与本轮链上规则、历史基线组合�
 - `historical_anomaly_cooccurrence`：市场来源与单窗口历史异常同时出现；
 - `multi_window_anomaly_cooccurrence`：市场来源、链上规则候选和多窗口历史异常同时出现。
 
-共振分是确定性共现规则分，不是概率。由于现有主信号尚未提供统一的结构化方向字段，`direction_alignment=not_evaluated`；系统不得从摘要文字猜测多空方向。第一阶段 `notification_gate_changed=false`，不会因为共振诊断自动发送。
+共振分是确定性共现规则分，不是概率。Signal Bridge 只从结构化、质量就绪且真实发送的市场信号中读取既有方向语义，并保存为 `long`、`short` 或空值；不得从摘要文字猜测多空方向。链上侧只将达到原有规则门禁的 `accumulation_candidate` / `distribution_candidate` 映射为方向假设。诊断输出 `market_direction`、`onchain_direction` 和 `direction_alignment=aligned|opposed|mixed|not_evaluated`，并始终标明方向只是证据假设。该诊断继续保持 `notification_gate_changed=false`，不会自行改变通知行为。
 
 ## 受控自动预警预演
 

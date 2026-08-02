@@ -221,6 +221,7 @@ class SignalBridgeTests(unittest.TestCase):
             now=5000,
         )
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["signals"][0]["direction"], "long")
         self.assertNotIn(
             "SECRET FULL MESSAGE",
             json.dumps(result, ensure_ascii=False),
@@ -272,6 +273,45 @@ class SignalBridgeTests(unittest.TestCase):
         self.assertEqual(result["resolved"], 1)
         self.assertEqual(result["watch_created"], 1)
         self.assertEqual(self.store.get_watch(key)["status"], "active")
+        self.assertEqual(
+            self.store.active_sources(key, now=5000)[0][
+                "source_direction"
+            ],
+            "long",
+        )
+
+    def test_reader_derives_only_supported_structured_direction(self) -> None:
+        create_signal_db(self.signal_db)
+        insert_signal(
+            self.signal_db,
+            signal_id=1,
+            public_ref="funding:short",
+            ts=4500,
+            module="funding",
+            payload={"facts": {"primary_kind": "multi_positive"}},
+        )
+        insert_signal(
+            self.signal_db,
+            signal_id=2,
+            public_ref="flow:unknown",
+            ts=4501,
+            module="flow",
+            payload={"facts": {"signal_direction": "sideways"}},
+        )
+        result = MainSignalReader(self.signal_db).read(
+            checkpoint_ts=0,
+            checkpoint_id=0,
+            overlap_sec=300,
+            bootstrap_lookback_sec=3600,
+            limit=100,
+            now=5000,
+        )
+        by_ref = {
+            str(item["public_ref"]): item
+            for item in result["signals"]
+        }
+        self.assertEqual(by_ref["funding:short"]["direction"], "short")
+        self.assertEqual(by_ref["flow:unknown"]["direction"], "")
 
     def test_pending_and_missing_registry_are_unresolved(self) -> None:
         self.store.add_registry(

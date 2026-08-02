@@ -440,6 +440,7 @@ class WatchScanner:
             linked,
             historical_baseline,
             onchain_actionable=actionable,
+            behavior_type=str(primary.get("type") or ""),
             behavior_score=int(primary.get("score") or 0),
             max_wallet_group_score=max_wallet_score,
         )
@@ -822,6 +823,12 @@ class WatchScanner:
                 "score": source.get("source_score"),
                 "stage": str(source.get("source_stage") or ""),
                 "severity": str(source.get("source_severity") or ""),
+                "direction": (
+                    str(source.get("source_direction") or "")
+                    if str(source.get("source_direction") or "")
+                    in {"long", "short"}
+                    else ""
+                ),
                 "ts": int(source.get("source_ts") or 0),
                 "age_sec": max(
                     0, now - int(source.get("source_ts") or now)

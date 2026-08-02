@@ -798,6 +798,7 @@ class WatchScannerTests(unittest.TestCase):
             "score": 82,
             "stage": "active",
             "severity": "high",
+            "direction": "long",
             "excerpt": "market source",
             "payload_hash": "f" * 64,
         }
@@ -843,6 +844,9 @@ class WatchScannerTests(unittest.TestCase):
             convergence["status"], "onchain_market_cooccurrence"
         )
         self.assertEqual(convergence["market_modules"], ["launch"])
+        self.assertEqual(convergence["market_direction"], "long")
+        self.assertEqual(convergence["onchain_direction"], "long")
+        self.assertEqual(convergence["direction_alignment"], "aligned")
         self.assertFalse(convergence["notification_gate_changed"])
         preview = result["results"][0]["controlled_alert_preview"]
         self.assertFalse(preview["would_alert"])
@@ -1223,6 +1227,9 @@ class WatchScannerTests(unittest.TestCase):
                 "source_score": index,
                 "source_stage": "",
                 "source_severity": "",
+                "source_direction": (
+                    "long" if index == 11 else "unsupported"
+                ),
                 "source_ts": 1000 + index,
                 "source_summary": "x" * 400,
                 "source_priority": index,
@@ -1234,6 +1241,8 @@ class WatchScannerTests(unittest.TestCase):
         )
         self.assertEqual(len(linked), 10)
         self.assertEqual(linked[0]["public_ref"], "ref-11")
+        self.assertEqual(linked[0]["direction"], "long")
+        self.assertEqual(linked[1]["direction"], "")
         self.assertEqual(len(linked[0]["summary"]), 300)
 
     def test_automation_disabled_live_has_zero_side_effects(self) -> None:

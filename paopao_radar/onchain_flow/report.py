@@ -81,11 +81,29 @@ def ai_restriction_reasons(payload: dict[str, object]) -> list[str]:
         or int(labels.get("classification_eligible_cex_count") or 0) <= 0
     ):
         reasons.append("insufficient_cex_coverage")
-    if any(
-        isinstance(item, dict)
+    linked = [
+        item
         for item in _list(payload.get("linked_market_signals"))
-    ):
-        reasons.append("market_direction_not_structured")
+        if isinstance(item, dict)
+    ]
+    if linked:
+        directions = [
+            str(item.get("direction") or "").lower()
+            for item in linked
+        ]
+        if any(item not in {"long", "short"} for item in directions):
+            reasons.append("market_direction_not_structured")
+        elif len(set(directions)) > 1:
+            reasons.append("market_direction_conflicted")
+        else:
+            onchain_direction = {
+                "accumulation_candidate": "long",
+                "distribution_candidate": "short",
+            }.get(str(primary.get("type") or ""), "")
+            if not onchain_direction:
+                reasons.append("onchain_direction_not_structured")
+            elif onchain_direction != directions[0]:
+                reasons.append("market_onchain_direction_opposed")
     return reasons
 
 
@@ -155,6 +173,12 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
             "score": item.get("score"),
             "stage": str(item.get("stage") or "")[:80],
             "severity": str(item.get("severity") or "")[:24],
+            "direction": (
+                str(item.get("direction") or "").lower()
+                if str(item.get("direction") or "").lower()
+                in {"long", "short"}
+                else ""
+            ),
             "ts": int(item.get("ts") or 0),
             "age_sec": max(0, int(item.get("age_sec") or 0)),
             "summary": str(item.get("summary") or "")[:300],

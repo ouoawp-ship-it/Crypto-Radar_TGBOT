@@ -175,6 +175,12 @@ def _linked_market_signal(value: object) -> dict[str, object]:
         "score": source.get("score"),
         "stage": _text(source.get("stage"), limit=80),
         "severity": _text(source.get("severity"), limit=24),
+        "direction": (
+            _text(source.get("direction"), limit=16).lower()
+            if _text(source.get("direction"), limit=16).lower()
+            in {"long", "short"}
+            else ""
+        ),
         "ts": _integer(source.get("ts")),
         "age_sec": max(0, _integer(source.get("age_sec"))),
         "summary": _text(source.get("summary"), limit=300),
