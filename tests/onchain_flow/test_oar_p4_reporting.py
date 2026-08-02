@@ -104,6 +104,68 @@ class OarP4ReportingTests(unittest.TestCase):
         self.assertIn("关联市场信号", text)
         self.assertLessEqual(text.count("分钟前"), 3)
 
+    def test_report_explains_contract_transfers_evidence_and_group_score(self) -> None:
+        payload = {
+            "report": {
+                "rule_summary": {
+                    "token": {
+                        "symbol": "cbDOGE",
+                        "contract": "0xcbD06E5A2B0C65597161de254AA074E489dEb510",
+                    },
+                    "query": {"window": "15m", "complete": True},
+                    "transfer_summary": {
+                        "transfer_count": 13,
+                        "total_token_amount": "27258.7541876",
+                        "unique_senders": 11,
+                        "unique_receivers": 10,
+                    },
+                    "cex_flows": {},
+                    "primary_behavior": {
+                        "type": "wallet_consolidation_candidate",
+                        "label": "多钱包归集候选",
+                        "score": 70,
+                        "confidence_level": "medium",
+                        "supporting_evidence": [
+                            "token_amount_share_met",
+                            "transaction_count_met",
+                            "wallet_count_met",
+                        ],
+                    },
+                    "wallet_groups": [
+                        {
+                            "group_type": "shared_target",
+                            "level": "中等概率关联",
+                            "score": 45,
+                            "supporting_evidence": [
+                                "repeated_shared_target",
+                                "time_synchronized",
+                            ],
+                        }
+                    ],
+                },
+                "ai": {"status": "not_requested", "result": None},
+            }
+        }
+        text = format_token_report(payload)
+        contract = "0xcbD06E5A2B0C65597161de254AA074E489dEb510"
+        self.assertIn(f"https://basescan.org/token/{contract}", text)
+        self.assertIn(f">{contract}</a>", text)
+        self.assertIn("Transfer（转账记录）", text)
+        self.assertIn("本窗口已读取的 ERC-20 转账笔数", text)
+        self.assertIn("代币转账总量：27258.7541876 cbDOGE", text)
+        self.assertIn("不是成交额、净流入或买卖量", text)
+        self.assertIn("证据强度：中等", text)
+        self.assertIn("参与的不同钱包数量达到规则门槛（+30分）", text)
+        self.assertIn("符合该行为的转账笔数达到规则门槛（+20分）", text)
+        self.assertIn("该行为涉及的代币数量占比达到规则门槛（+20分）", text)
+        self.assertIn("共同收款地址 · 中等关联候选 · 45分", text)
+        self.assertIn("多个钱包共同转入同一地址 +30分", text)
+        self.assertIn("转账时间接近 +15分", text)
+        self.assertIn("不能确认这些钱包属于同一主体", text)
+        self.assertNotIn("token_amount_share_met", text)
+        self.assertNotIn("shared_target", text)
+        self.assertNotIn("not_requested", text)
+
     def test_manual_report_without_sources_remains_available(self) -> None:
         report = TokenReportService(
             self.settings, None
