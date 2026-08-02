@@ -27,6 +27,7 @@ from .address_intelligence import (
     PROVIDER_NAMES,
 )
 from .automation_store import AutomationStore, AutomationStoreError
+from .chain_capabilities import chain_capability_report
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
 from .collectors.evm_ws import WssError
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status")
+    subparsers.add_parser("chain-readiness")
     subparsers.add_parser("doctor")
     subparsers.add_parser("labels-check")
     subparsers.add_parser("db-check")
@@ -1797,6 +1799,11 @@ def main(
             payload["runtime"] = read_runtime_status(
                 settings.runtime_status_path
             )
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "chain-readiness":
+            settings.validate()
+            payload = chain_capability_report(settings)
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "doctor":

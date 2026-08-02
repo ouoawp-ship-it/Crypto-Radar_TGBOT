@@ -74,3 +74,9 @@ Watch 同时输出只读 `controlled_alert_preview`。它要求扫描完整、�
 ## 谨慎 AI 输入门禁
 
 AI 仍只在显式请求且 `OAR_AI_ENABLE=true` 时调用。查询或分析不完整、行为证据不足、CEX 标签覆盖不足，或关联市场信号尚无统一结构化方向时，报告会标记 `restricted_input=true` 并给出固定 `restriction_reasons`。此时 AI 输出契约只接受 `neutral/uncertain + low`；规则摘要不受 AI 成败影响。Prompt、Context、凭据和 Provider 原始错误均不进入这些诊断字段。
+
+## 多链 EVM 能力门禁
+
+`python onchain_main.py chain-readiness` 只读解析版本化链配置并输出脱敏能力真值表。它不连接 RPC、不创建数据库，也不调用 AI 或 Telegram。只有已经实现运行适配器、显式启用、RPC 已配置且 URL 结构合法的链，才会显示 `token_activity_supported=true` 和 `watch_supported=true`。
+
+当前生产运行适配器仍只有 Base。把其他 EVM 链写入配置文件不会自动获得运行能力；显式启用但尚无适配器时返回 `runtime_adapter_not_implemented` 和 `activation_blocked=true`。新增链必须后续分别完成确认深度、重组策略、Explorer、标签命名空间、RPC 预算和灰度验收，不能复用 Base 结论冒充已支持。
