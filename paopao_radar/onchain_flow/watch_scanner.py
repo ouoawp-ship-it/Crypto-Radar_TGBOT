@@ -264,7 +264,7 @@ class WatchScanner:
         try:
             query = TokenActivityQuery.create(
                 self.settings,
-                chain="base",
+                chain=str(item["chain"]),
                 contract=str(item["contract_address"]),
                 window=str(item["query_window"]),
                 max_events=self.settings.oar_watch_max_events_per_token,
@@ -530,19 +530,26 @@ class WatchScanner:
         queue_status = "skipped_incomplete"
         queue_error = ""
         if activity_complete and analysis_complete:
-            try:
-                queue_result = (
-                    self.address_intelligence_store.observe_complete_scan(
-                        analyzed,
-                        observed_at=int(self.clock()),
+            if int(item["chain_id"]) != self.settings.base_chain_id:
+                # External label providers and their local candidate store are
+                # currently Base-scoped.  A non-Base Watch scan stays complete
+                # but cannot silently place addresses in the Base namespace.
+                queue_status = "skipped_chain_unsupported"
+                queue_error = "address_intelligence_chain_unsupported"
+            else:
+                try:
+                    queue_result = (
+                        self.address_intelligence_store.observe_complete_scan(
+                            analyzed,
+                            observed_at=int(self.clock()),
+                        )
                     )
-                )
-                queue_status = "ok"
-            except Exception:
-                # Local best-effort enrichment must never fail a scan or
-                # expose exception text, paths, or secrets.
-                queue_status = "local_error"
-                queue_error = "address_intelligence_local_error"
+                    queue_status = "ok"
+                except Exception:
+                    # Local best-effort enrichment must never fail a scan or
+                    # expose exception text, paths, or secrets.
+                    queue_status = "local_error"
+                    queue_error = "address_intelligence_local_error"
         return {
             "token_key": token_key,
             "status": scan_status,

@@ -588,6 +588,7 @@ class TokenActivityQueryService:
             "query": {
                 "chain": query.chain,
                 "chain_id": chain_id,
+                "chain_name": query.chain_name,
                 "contract": query.contract,
                 "window": query.window,
                 "window_seconds": query.window_seconds,

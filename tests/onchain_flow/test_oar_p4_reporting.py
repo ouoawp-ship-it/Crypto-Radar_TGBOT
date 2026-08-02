@@ -166,6 +166,30 @@ class OarP4ReportingTests(unittest.TestCase):
         self.assertNotIn("shared_target", text)
         self.assertNotIn("not_requested", text)
 
+    def test_non_base_report_uses_chain_name_without_base_contract_link(self) -> None:
+        analyzed = deepcopy(self.analyzed)
+        analyzed["query"].update(
+            {
+                "chain": "ethereum",
+                "chain_id": 1,
+                "chain_name": "Ethereum",
+            }
+        )
+        report = TokenReportService(self.settings, None).build_from_analysis(
+            analyzed,
+            with_ai=False,
+            linked_market_signals=[],
+        )
+        token = report["report"]["rule_summary"]["token"]
+        text = format_token_report(report)
+        self.assertEqual(token["chain"], "ethereum")
+        self.assertEqual(token["chain_id"], 1)
+        self.assertEqual(token["chain_name"], "Ethereum")
+        self.assertIn("Ethereum ·", text)
+        self.assertNotIn(
+            f"https://basescan.org/token/{token['contract']}", text
+        )
+
     def test_manual_report_without_sources_remains_available(self) -> None:
         report = TokenReportService(
             self.settings, None

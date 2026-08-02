@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -232,6 +233,97 @@ class WatchScannerTests(unittest.TestCase):
         )
         queue_store.observe_complete_scan.assert_called_once()
         discover.assert_not_called()
+
+    def test_non_base_watch_uses_registry_chain_and_skips_base_label_queue(
+        self,
+    ) -> None:
+        chains_path = self.root / "chains.json"
+        chains_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": True,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                            "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = replace(self.settings, chains_path=chains_path)
+        item = self.store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="ethereum",
+            chain_id=1,
+            source="manual",
+            now=1000,
+        )
+        key = str(item["token_key"])
+        self.store.verify_registry(
+            key,
+            token_symbol="AAA",
+            token_name="AAA",
+            decimals=18,
+            metadata_hash="a" * 64,
+            verification_method="fixture",
+            set_primary=True,
+            now=1001,
+        )
+        self.store.add_manual_watch(
+            key,
+            ttl_sec=100000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        queue_store = Mock()
+        seen: list[tuple[str, int]] = []
+
+        def analysis_factory(current: object, query: object) -> StaticAnalysis:
+            del current
+            seen.append((str(getattr(query, "chain")), int(getattr(query, "chain_id"))))
+            return StaticAnalysis(self.analyzed("isolated"))
+
+        scanner = WatchScanner(
+            settings,
+            self.store,
+            bridge=self.bridge,
+            analysis_factory=analysis_factory,
+            address_intelligence_store=queue_store,
+            clock=lambda: 2000,
+            sleeper=lambda value: None,
+        )
+        result = scanner.run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        scanned = result["results"][0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(seen, [("ethereum", 1)])
+        self.assertEqual(
+            scanned["address_intelligence_queue_status"],
+            "skipped_chain_unsupported",
+        )
+        self.assertEqual(
+            scanned["address_intelligence_queue_error"],
+            "address_intelligence_chain_unsupported",
+        )
+        self.assertEqual(scanned["external_label_provider_calls"], 0)
+        queue_store.observe_complete_scan.assert_not_called()
 
     def test_local_queue_error_is_observable_without_failing_scan(
         self,

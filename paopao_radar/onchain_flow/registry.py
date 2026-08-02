@@ -4,10 +4,19 @@ import hashlib
 import json
 from typing import Any
 
-from .automation_store import AutomationStore, AutomationStoreError
+from .automation_store import (
+    AutomationStore,
+    AutomationStoreError,
+    parse_token_key,
+)
+from .chain_capabilities import (
+    ChainCapabilityError,
+    resolve_chain_rpc_url,
+    resolve_evm_chain,
+    rpc_url_valid,
+)
 from .collectors.evm_http import JsonRpcClient, RpcError
 from .config import OnchainSettings
-from .constants import BASE_CHAIN_ID
 from .token_metadata import TokenMetadataResolver
 
 
@@ -43,12 +52,32 @@ class RegistryService:
             raise AutomationStoreError(
                 "registry_not_found", "registry token does not exist"
             )
-        if not self.settings.base_http_rpc_url and self._rpc is None:
+        registry_chain_id, _contract = parse_token_key(token_key)
+        try:
+            chain_spec = resolve_evm_chain(
+                self.settings, str(registry.get("chain") or registry_chain_id)
+            )
+        except ChainCapabilityError as exc:
             raise AutomationStoreError(
-                "rpc_not_configured", "Base HTTP RPC is not configured"
+                exc.args[0], "registry chain is not configured"
+            ) from exc
+        if chain_spec.chain_id != registry_chain_id:
+            raise AutomationStoreError(
+                "registry_chain_mismatch",
+                "registry chain metadata is inconsistent",
+            )
+        rpc_url = resolve_chain_rpc_url(self.settings, chain_spec)
+        if not rpc_url and self._rpc is None:
+            raise AutomationStoreError(
+                "rpc_not_configured", "EVM HTTP RPC is not configured"
+            )
+        if self._rpc is None and not rpc_url_valid(rpc_url):
+            raise AutomationStoreError(
+                "rpc_configuration_invalid",
+                "EVM HTTP RPC configuration is invalid",
             )
         rpc = self._rpc or JsonRpcClient(
-            self.settings.base_http_rpc_url,
+            rpc_url,
             timeout_sec=float(self.settings.rpc_timeout_sec),
             retry=self.settings.rpc_retry,
             backoff_sec=float(self.settings.rpc_backoff_sec),
@@ -59,11 +88,11 @@ class RegistryService:
             chain_id = int(rpc.chain_id())
         except RpcError as exc:
             raise AutomationStoreError(
-                "rpc_unavailable", "Base RPC provider check failed"
+                "rpc_unavailable", "EVM RPC provider check failed"
             ) from exc
-        if chain_id != BASE_CHAIN_ID:
+        if chain_id != chain_spec.chain_id:
             raise AutomationStoreError(
-                "wrong_chain", "RPC chain ID must be 8453"
+                "wrong_chain", "RPC chain ID does not match the registry"
             )
         resolver = TokenMetadataResolver(
             rpc,
@@ -72,7 +101,7 @@ class RegistryService:
         )
         try:
             metadata = resolver.resolve(
-                BASE_CHAIN_ID,
+                chain_spec.chain_id,
                 str(registry["contract_address"]),
             )
         except RpcError as exc:
@@ -96,7 +125,7 @@ class RegistryService:
                 "is required",
             )
         facts = {
-            "chain_id": BASE_CHAIN_ID,
+            "chain_id": chain_spec.chain_id,
             "contract": str(registry["contract_address"]).lower(),
             "symbol": actual_symbol,
             "name": str(metadata.name or ""),
@@ -117,7 +146,9 @@ class RegistryService:
             token_name=str(metadata.name or ""),
             decimals=int(metadata.decimals),
             metadata_hash=metadata_hash,
-            verification_method="base_rpc_erc20_metadata",
+            verification_method=(
+                f"{chain_spec.slug}_rpc_erc20_metadata"
+            ),
             verification_note=(
                 "symbol mismatch explicitly accepted"
                 if actual_symbol != expected_symbol

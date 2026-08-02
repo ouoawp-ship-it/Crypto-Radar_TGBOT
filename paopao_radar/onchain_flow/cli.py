@@ -27,7 +27,7 @@ from .address_intelligence import (
     PROVIDER_NAMES,
 )
 from .automation_store import AutomationStore, AutomationStoreError
-from .chain_capabilities import chain_capability_report
+from .chain_capabilities import chain_capability_report, resolve_evm_chain
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
 from .collectors.evm_ws import WssError
@@ -273,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     registry_add = subparsers.add_parser("registry-add")
     registry_add.add_argument("--market-symbol", required=True)
-    registry_add.add_argument("--chain", choices=("base",), required=True)
+    registry_add.add_argument("--chain", required=True)
     registry_add.add_argument("--contract", required=True)
     registry_add.add_argument("--source", default="manual")
     registry_add.add_argument("--note", default="")
@@ -1455,9 +1455,12 @@ def main(
             settings.validate()
             store = AutomationStore.from_settings(settings)
             if args.command == "registry-add":
+                chain_spec = resolve_evm_chain(settings, args.chain)
                 item = store.add_registry(
                     market_symbol=args.market_symbol,
                     contract=args.contract,
+                    chain=chain_spec.slug,
+                    chain_id=chain_spec.chain_id,
                     source=args.source,
                     note=args.note,
                 )

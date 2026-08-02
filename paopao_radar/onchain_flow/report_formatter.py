@@ -144,10 +144,11 @@ def _evidence_lines(
     return result
 
 
-def _contract_line(value: object) -> str:
+def _contract_line(value: object, chain_id: object) -> str:
     contract = str(value or "")
     if (
-        len(contract) == 42
+        str(chain_id or "8453") == "8453"
+        and len(contract) == 42
         and contract.startswith("0x")
         and all(character in "0123456789abcdefABCDEF" for character in contract[2:])
     ):
@@ -170,14 +171,17 @@ def format_token_report(payload: dict[str, object]) -> str:
     primary = _map(summary.get("primary_behavior"))
     symbol = escape(str(token.get("symbol") or "UNKNOWN"))
     contract = token.get("contract")
+    chain_label = escape(
+        str(token.get("chain_name") or token.get("chain") or "Base")
+    )
     complete = bool(query.get("complete"))
     completeness = "数据完整" if complete else "⚠️ 数据不完整"
     lines = [
         f"🔗 <b>链上活动雷达 · {symbol}</b>",
         "",
         "<b>查询</b>",
-        f"- Base · 最近 {escape(str(query.get('window') or '-'))} · {completeness}",
-        _contract_line(contract),
+        f"- {chain_label} · 最近 {escape(str(query.get('window') or '-'))} · {completeness}",
+        _contract_line(contract, token.get("chain_id")),
         "",
         "<b>链上概览</b>",
         (

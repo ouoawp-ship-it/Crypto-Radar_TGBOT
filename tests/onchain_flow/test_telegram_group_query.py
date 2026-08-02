@@ -44,8 +44,11 @@ class FakeGateway:
 
 
 class FakeAutomationStore:
-    def __init__(self, status: str = "resolved") -> None:
+    def __init__(
+        self, status: str = "resolved", *, chain: str = "base"
+    ) -> None:
         self.status = status
+        self.chain = chain
         self.calls: list[str] = []
 
     def resolve_registry(self, symbol: str) -> dict[str, object]:
@@ -53,7 +56,10 @@ class FakeAutomationStore:
         if self.status == "resolved" and symbol == "CBDOGEUSDT":
             return {
                 "status": "resolved",
-                "token": {"contract_address": CONTRACT},
+                "token": {
+                    "chain": self.chain,
+                    "contract_address": CONTRACT,
+                },
             }
         return {"status": self.status, "token": None}
 
@@ -325,6 +331,69 @@ class TelegramGroupQueryTests(unittest.TestCase):
             self.assertTrue(call["confirm_real_send"])
             self.assertEqual(call["reply_to_message_id"], 77)
             self.assertIn("未调用 AI", str(call["text"]))
+
+    def test_registry_symbol_query_uses_resolved_non_base_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chains_path = root / "chains.json"
+            chains_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "test-v1",
+                        "chains": [
+                            {
+                                "chain_id": 1,
+                                "slug": "ethereum",
+                                "name": "Ethereum",
+                                "enabled": True,
+                                "confirmation_depth": 64,
+                                "bootstrap_lookback_blocks": 512,
+                                "reorg_lookback_blocks": 128,
+                                "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                                "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            settings = replace(
+                OnchainSettings(),
+                base_dir=root,
+                data_dir=root / "onchain",
+                chains_path=chains_path,
+                oar_telegram_query_state_path=root / "onchain" / "state.json",
+                tg_chat_id="-100123",
+                tg_onchain_flow_topic_id="42",
+            )
+            gateway = FakeGateway()
+            seen: list[tuple[str, int]] = []
+
+            def report_factory(_settings, query):
+                seen.append((query.chain, query.chain_id))
+                return FakeReportService()
+
+            service = TelegramQueryService(
+                settings,
+                gateway=gateway,
+                automation_store=FakeAutomationStore(chain="ethereum"),
+                report_factory=report_factory,
+                clock=lambda: 2000.0,
+            )
+            service.bot_username = "paopao_bot"
+            outcome = service.process_update({
+                "update_id": 99,
+                "message": {
+                    "message_id": 100,
+                    "message_thread_id": 42,
+                    "date": 2000,
+                    "text": "@paopao_bot 查询 CBDOGE 15m",
+                    "chat": {"id": -100123},
+                    "from": {"id": 12345, "is_bot": False},
+                },
+            })
+            self.assertEqual(outcome, "query_completed")
+            self.assertEqual(seen, [("ethereum", 1)])
 
     def test_registry_error_returns_safe_reply_without_crashing_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

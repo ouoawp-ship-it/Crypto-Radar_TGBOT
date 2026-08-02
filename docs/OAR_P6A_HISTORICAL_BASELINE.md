@@ -77,8 +77,10 @@ AI 仍只在显式请求且 `OAR_AI_ENABLE=true` 时调用。查询或分析不�
 
 ## 多链 EVM 能力门禁
 
-`python onchain_main.py chain-readiness` 只读解析版本化链配置并输出脱敏能力真值表。它不连接 RPC、不创建数据库，也不调用 AI 或 Telegram。只有已经实现运行适配器、显式启用、RPC 已配置且 URL 结构合法的链，才会显示 `token_activity_supported=true` 和 `watch_supported=true`。
+`python onchain_main.py chain-readiness` 只读解析版本化链配置并输出脱敏能力真值表。它不连接 RPC、不创建数据库，也不调用 AI 或 Telegram。RPC 已配置且 URL 结构合法时，显式 Token Activity 查询可显示 `token_activity_supported=true`；长期 Watch 还必须由链注册表显式启用，才会显示 `watch_supported=true`。
 
 Token Activity 已使用通用 EVM 查询适配器：链注册表必须提供唯一 Chain ID、slug、确认深度、回看范围、RPC 环境变量名和 Explorer 模板；对应专用 RPC 配置合法后，显式手工查询才会显示 `token_activity_supported=true`。RPC 值和 Host 不进入能力报告。
 
-长期 Registry / Watch 运行适配器当前仍只有 Base。把其他 EVM 链写入配置文件不会自动进入长期监控；显式启用时会返回 `watch_adapter_not_implemented` 和 `activation_blocked=true`。新增 Watch 链仍须分别完成标签命名空间、Registry 验证、重组策略、预算、恢复点和灰度验收，不能复用 Base 结论冒充已支持。
+Registry、手工 Watch 和 Watch 查询现已使用通用 EVM 链身份：`token_key` 为 `chain_id:contract`，Registry 验证会核对对应链 RPC 的 Chain ID，Watch 使用该链自己的确认深度、RPC 环境变量和 Explorer 模板。结构化主信号只有明确提供已配置链和完整合约时，才能生成 Pending Registry 候选；它不会自动验证、自动批准或绕过唯一 Primary 门禁。
+
+这不代表任意链已自动上线。版本化链注册表默认仍只有 Base；新增链必须单独配置、显式启用并完成专用 RPC、Registry、预算、重组参数、恢复点和真实灰度验收。外部地址标签与候选 Provider 当前仍为 Base 命名空间，非 Base Watch 会固定输出 `address_intelligence_queue_status=skipped_chain_unsupported`、`external_label_provider_calls=0`，不会把地址错误写进 Base 标签库。群内按唯一 Registry Symbol 查询会沿用已验证链；直接粘贴无链前缀的合约地址仍按 Base 处理，避免静默猜链。

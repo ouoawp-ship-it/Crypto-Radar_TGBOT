@@ -68,7 +68,7 @@ class ChainCapabilityTests(unittest.TestCase):
         request.assert_not_called()
         self.assertNotIn("base.invalid", json.dumps(result))
 
-    def test_unimplemented_enabled_chain_fails_closed(self) -> None:
+    def test_enabled_evm_chain_reports_watch_readiness_offline(self) -> None:
         path = self.write_registry(
             [
                 {
@@ -93,12 +93,11 @@ class ChainCapabilityTests(unittest.TestCase):
 
         chain = result["chains"][0]
         self.assertEqual(chain["token_activity_status"], "ready_offline")
-        self.assertEqual(
-            chain["watch_status"], "watch_adapter_not_implemented"
-        )
-        self.assertTrue(chain["activation_blocked"])
+        self.assertEqual(chain["watch_status"], "ready_offline")
+        self.assertEqual(chain["watch_adapter"], "evm_watch_v1")
+        self.assertFalse(chain["activation_blocked"])
         self.assertTrue(chain["token_activity_supported"])
-        self.assertFalse(chain["watch_supported"])
+        self.assertTrue(chain["watch_supported"])
         self.assertNotIn("eth.invalid", json.dumps(result))
 
     def test_duplicate_chain_identity_is_rejected(self) -> None:

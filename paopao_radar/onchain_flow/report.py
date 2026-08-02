@@ -165,6 +165,7 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
         "token": {
             "chain": str(query.get("chain") or ""),
             "chain_id": query.get("chain_id"),
+            "chain_name": str(query.get("chain_name") or ""),
             "contract": str(
                 query.get("contract") or token.get("contract") or ""
             ),
@@ -266,9 +267,12 @@ def build_rule_summary_text(summary: dict[str, object]) -> str:
     primary = _mapping(summary.get("primary_behavior"))
     groups = _list(summary.get("wallet_groups"))
     linked = _list(summary.get("linked_market_signals"))
+    chain_label = str(
+        token.get("chain_name") or token.get("chain") or "unknown"
+    )
     lines = [
         (
-            f"{token.get('symbol') or 'UNKNOWN'} / Base / "
+            f"{token.get('symbol') or 'UNKNOWN'} / {chain_label} / "
             f"{query.get('window') or '-'}："
             f"{'数据完整' if query.get('complete') else '数据不完整'}"
         ),

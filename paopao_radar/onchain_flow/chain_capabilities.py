@@ -199,8 +199,6 @@ def chain_capability_report(
 
         if not effective_enabled:
             watch_status = "disabled"
-        elif spec.chain_id != settings.base_chain_id:
-            watch_status = "watch_adapter_not_implemented"
         elif not token_activity_supported:
             watch_status = query_status
         else:
@@ -214,11 +212,7 @@ def chain_capability_report(
                 "configured_enabled": spec.enabled,
                 "effective_enabled": effective_enabled,
                 "token_activity_adapter": "evm_token_activity_v1",
-                "watch_adapter": (
-                    "base_watch_v1"
-                    if spec.chain_id == settings.base_chain_id
-                    else "not_implemented"
-                ),
+                "watch_adapter": "evm_watch_v1",
                 "confirmation_depth": spec.confirmation_depth,
                 "bootstrap_lookback_blocks": (
                     spec.bootstrap_lookback_blocks

@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -125,6 +126,42 @@ class SignalBridgeTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def multichain_settings(self):
+        path = self.root / "chains.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 8453,
+                            "slug": "base",
+                            "name": "Base",
+                            "enabled": True,
+                            "confirmation_depth": 20,
+                            "bootstrap_lookback_blocks": 300,
+                            "reorg_lookback_blocks": 64,
+                            "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
+                            "explorer_tx_url": "https://base.invalid/tx/{tx_hash}",
+                        },
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": True,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                            "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return replace(self.settings, chains_path=path)
 
     def verified(self, contract: str = CONTRACT_A) -> str:
         item = self.store.add_registry(
@@ -259,6 +296,57 @@ class SignalBridgeTests(unittest.TestCase):
                 "SELECT reason FROM unresolved_signals"
             ).fetchone()[0]
         self.assertEqual(reason, "registry_not_verified")
+
+    def test_structured_non_base_candidate_enters_pending_registry_only(self) -> None:
+        settings = self.multichain_settings()
+        create_signal_db(self.signal_db)
+        insert_signal(
+            self.signal_db,
+            signal_id=1,
+            public_ref="launch:ethereum:1",
+            ts=4500,
+            payload={
+                "facts": {
+                    "chain": "ethereum",
+                    "contract": CONTRACT_A,
+                }
+            },
+        )
+        result = SignalBridge(
+            settings, self.store, clock=lambda: 5000
+        ).run_once()
+        items = self.store.list_registry(market_symbol="AAAUSDT") or []
+        self.assertEqual(result["unresolved"], 1)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["token_key"], f"1:{CONTRACT_A}")
+        self.assertEqual(items[0]["chain"], "ethereum")
+        self.assertEqual(items[0]["status"], "pending")
+        self.assertIsNone(self.store.get_watch(str(items[0]["token_key"])))
+
+    def test_unconfigured_chain_candidate_fails_closed(self) -> None:
+        create_signal_db(self.signal_db)
+        insert_signal(
+            self.signal_db,
+            signal_id=1,
+            public_ref="launch:unknown:1",
+            ts=4500,
+            payload={
+                "facts": {
+                    "chain": "ethereum",
+                    "contract": CONTRACT_A,
+                }
+            },
+        )
+        result = SignalBridge(
+            self.settings, self.store, clock=lambda: 5000
+        ).run_once()
+        self.assertEqual(result["unresolved"], 1)
+        self.assertEqual(self.store.list_registry() or [], [])
+        with closing(sqlite3.connect(self.store.path)) as conn:
+            reason = conn.execute(
+                "SELECT reason FROM unresolved_signals"
+            ).fetchone()[0]
+        self.assertEqual(reason, "unsupported_chain")
 
     def test_primary_verification_reconciles_signal_outside_overlap(self) -> None:
         pending = self.store.add_registry(

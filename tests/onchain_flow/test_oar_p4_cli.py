@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -123,6 +124,46 @@ class OarP4CliTests(unittest.TestCase):
             ]
         )
         self.assertEqual(code, 0)
+        self.assertEqual(payload["token"]["status"], "pending")
+
+    def test_registry_add_accepts_configured_non_base_chain(self) -> None:
+        chains_path = self.root / "chains.json"
+        chains_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": True,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                            "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.settings = replace(self.settings, chains_path=chains_path)
+        code, payload = self.run_cli(
+            [
+                "registry-add",
+                "--market-symbol",
+                "AAAUSDT",
+                "--chain",
+                "ethereum",
+                "--contract",
+                CONTRACT,
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["token"]["token_key"], f"1:{CONTRACT}")
+        self.assertEqual(payload["token"]["chain"], "ethereum")
         self.assertEqual(payload["token"]["status"], "pending")
 
     def test_registry_verify_requires_network_before_client(self) -> None:
