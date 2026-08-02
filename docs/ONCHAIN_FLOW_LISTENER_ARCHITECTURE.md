@@ -480,6 +480,8 @@ window_threshold = max(
 - 基线结果写入独立 OAR Automation 审计，不写主 `signals.db`；
 - 计算失败时输出固定 `historical_baseline_local_error`，Watch 扫描继续；
 - 这一阶段只提供诊断，不改变已有通知阈值和发送门禁；
+- 1h、4h、24h 查询分别保存其包含的嵌套窗口基线；至少两个窗口同时偏离时只标记 `multi_window_anomaly=true`，不自动发送；
+- Partial 扫描标记 `skipped_incomplete`，不参与异常结论或后续基线；
 - Watch 热路径仍不调用 Dune、Arkham 或其他外部标签 Provider。
 
 运维可离线读取最近一次结果：

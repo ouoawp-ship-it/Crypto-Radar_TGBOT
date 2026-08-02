@@ -11,7 +11,10 @@ from .report import TokenReportService
 from .report_notifier import ReportNotifier
 from .scan_baseline import (
     HistoricalScanBaseline,
+    analyze_nested_windows,
     baseline_local_error,
+    baseline_skipped_incomplete,
+    nested_window_metrics,
     scan_metrics,
 )
 from .signal_bridge import SignalBridge
@@ -408,24 +411,51 @@ class WatchScanner:
                 self.settings.oar_watch_baseline_mad_multiplier
             ),
         )
-        try:
-            baseline_history = self.store.complete_scan_history(
-                token_key,
-                query_window=str(item["query_window"]),
-                limit=self.settings.oar_watch_baseline_max_samples,
-            )
-            historical_baseline = baseline_analyzer.analyze(
-                current_metrics,
-                baseline_history,
-            )
-        except Exception:
-            historical_baseline = baseline_local_error(
+        if not (activity_complete and analysis_complete):
+            historical_baseline = baseline_skipped_incomplete(
                 min_samples=self.settings.oar_watch_baseline_min_samples,
                 max_samples=self.settings.oar_watch_baseline_max_samples,
                 mad_multiplier=(
                     self.settings.oar_watch_baseline_mad_multiplier
                 ),
             )
+        else:
+            try:
+                baseline_history = self.store.complete_scan_history(
+                    token_key,
+                    query_window=str(item["query_window"]),
+                    limit=self.settings.oar_watch_baseline_max_samples,
+                )
+                historical_baseline = baseline_analyzer.analyze(
+                    current_metrics,
+                    baseline_history,
+                )
+                nested = analyze_nested_windows(
+                    nested_window_metrics(analysis),
+                    baseline_history,
+                    min_samples=(
+                        self.settings.oar_watch_baseline_min_samples
+                    ),
+                    max_samples=(
+                        self.settings.oar_watch_baseline_max_samples
+                    ),
+                    mad_multiplier=(
+                        self.settings.oar_watch_baseline_mad_multiplier
+                    ),
+                )
+                historical_baseline.update(nested)
+            except Exception:
+                historical_baseline = baseline_local_error(
+                    min_samples=(
+                        self.settings.oar_watch_baseline_min_samples
+                    ),
+                    max_samples=(
+                        self.settings.oar_watch_baseline_max_samples
+                    ),
+                    mad_multiplier=(
+                        self.settings.oar_watch_baseline_mad_multiplier
+                    ),
+                )
         if not self._renew_lease(token_key, lease_owner):
             return self._record_stale(
                 token_key,

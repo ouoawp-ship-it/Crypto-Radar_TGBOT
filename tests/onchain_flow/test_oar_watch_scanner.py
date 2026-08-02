@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from copy import deepcopy
@@ -271,13 +272,33 @@ class WatchScannerTests(unittest.TestCase):
                     scan_id, token_key, started_at, completed_at, status,
                     activity_complete, analysis_complete, query_window,
                     transfer_count, total_token_amount, unique_senders,
-                    unique_receivers, behavior_score, max_wallet_group_score
-                ) VALUES(?, ?, ?, ?, 'ok', 1, 1, '4h', ?, ?, ?, ?, ?, ?)
+                    unique_receivers, behavior_score, max_wallet_group_score,
+                    baseline_status, baseline_json
+                ) VALUES(?, ?, ?, ?, 'ok', 1, 1, '4h', ?, ?, ?, ?, ?, ?, 'cold_start', ?)
                 """,
                 [
                     (
                         f"baseline-{index}", key, 1500 + index, 1500 + index,
                         2, "20", 2, 2, 10, 10,
+                        json.dumps(
+                            {
+                                "windows": {
+                                    name: {
+                                        "current": {
+                                            "transfer_count": "2",
+                                            "total_token_amount": "20",
+                                            "unique_senders": "2",
+                                            "unique_receivers": "2",
+                                            "inflow_count": "0",
+                                            "outflow_count": "0",
+                                            "unclassified_count": "2",
+                                            "active_15m_buckets": "1",
+                                        }
+                                    }
+                                    for name in ("15m", "1h")
+                                }
+                            }
+                        ),
                     )
                     for index in range(4)
                 ],
@@ -292,6 +313,17 @@ class WatchScannerTests(unittest.TestCase):
                 "unique_receivers": 20,
             }
         )
+        for name in ("15m", "1h"):
+            payload["analysis"]["windows"][name].update(
+                {
+                    "transfer_count": 20,
+                    "total_token_amount": "200",
+                    "unique_senders": 20,
+                    "unique_receivers": 20,
+                    "unclassified_count": 20,
+                    "active_15m_buckets": 2,
+                }
+            )
         settings = make_settings(
             self.root,
             oar_watch_baseline_min_samples=4,
@@ -308,9 +340,28 @@ class WatchScannerTests(unittest.TestCase):
         self.assertEqual(baseline["status"], "ready")
         self.assertTrue(baseline["anomaly"])
         self.assertIn("transfer_count", baseline["anomalous_metrics"])
+        self.assertEqual(
+            baseline["anomalous_windows"], ["15m", "1h"]
+        )
+        self.assertTrue(baseline["multi_window_anomaly"])
         persisted = self.store.latest_scan_baseline(key) or {}
         self.assertEqual(persisted["baseline_status"], "ready")
         self.assertTrue(persisted["baseline_anomaly"])
+
+    def test_incomplete_scan_never_claims_historical_anomaly(self) -> None:
+        self.watch()
+        payload = self.analyzed("partial_input")
+        result = self.scanner([payload]).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        baseline = result["results"][0]["historical_baseline"]
+        self.assertEqual(baseline["status"], "skipped_incomplete")
+        self.assertFalse(baseline["anomaly"])
+        self.assertEqual(baseline["windows"], {})
 
     def test_baseline_local_error_does_not_fail_watch_or_leak_exception(self) -> None:
         self.watch()

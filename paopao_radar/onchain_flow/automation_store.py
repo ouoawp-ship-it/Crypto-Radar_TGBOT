@@ -1705,7 +1705,8 @@ class AutomationStore:
                 """
                 SELECT transfer_count, total_token_amount,
                        unique_senders, unique_receivers,
-                       behavior_score, max_wallet_group_score
+                       behavior_score, max_wallet_group_score,
+                       baseline_json
                 FROM watch_scan_runs
                 WHERE token_key=? AND query_window=? AND status='ok'
                   AND activity_complete=1 AND analysis_complete=1
@@ -1714,7 +1715,29 @@ class AutomationStore:
                 """,
                 (token_key.lower(), str(query_window), bounded_limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        result: list[dict[str, object]] = []
+        for row in reversed(rows):
+            item = dict(row)
+            try:
+                baseline = json.loads(str(item.pop("baseline_json") or "{}"))
+            except json.JSONDecodeError:
+                baseline = {}
+            windows = (
+                baseline.get("windows")
+                if isinstance(baseline, dict)
+                else {}
+            )
+            window_metrics: dict[str, object] = {}
+            if isinstance(windows, dict):
+                for name, value in windows.items():
+                    if not isinstance(value, dict):
+                        continue
+                    current = value.get("current")
+                    if isinstance(current, dict):
+                        window_metrics[str(name)] = current
+            item["window_metrics"] = window_metrics
+            result.append(item)
+        return result
 
     def latest_scan_baseline(
         self, token_key: str

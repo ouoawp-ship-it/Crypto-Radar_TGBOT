@@ -21,7 +21,9 @@ Partial、failed、stale 和其他窗口的记录不会污染基线。旧 Schema
 - 确定性行为分；
 - 最高钱包关联组分。
 
-每个指标保存当前值、历史中位数、MAD、阈值和是否异常。诊断不保存 Transfer 明细、RPC URL、凭据或外部 Provider 响应。
+每个指标保存当前值、历史中位数、MAD、阈值和是否异常。查询为 1h、4h 或 24h 时，还会分别为其包含的 15m / 1h / 4h / 24h 嵌套窗口建立独立基线；至少两个窗口同时异常时只读字段 `multi_window_anomaly=true`。诊断不保存 Transfer 明细、RPC URL、凭据或外部 Provider 响应。
+
+`multi_window_anomaly` 当前只表示多个时间尺度同时偏离自身历史，不会自动改变行为分、通知阈值或 Telegram 状态。Partial 扫描直接标记 `skipped_incomplete`，不得参与当前异常判断或后续历史样本。
 
 ## 冷启动与降级
 

@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from paopao_radar.onchain_flow.scan_baseline import (
     HistoricalScanBaseline,
+    analyze_nested_windows,
+    nested_window_metrics,
     scan_metrics,
 )
 
@@ -76,6 +78,73 @@ class HistoricalScanBaselineTests(unittest.TestCase):
         )
         self.assertEqual(result["total_token_amount"], "0")
         self.assertEqual(result["transfer_count"], 2)
+
+    def test_nested_windows_are_compared_independently(self) -> None:
+        current = {
+            "15m": {
+                "transfer_count": 20,
+                "total_token_amount": "200",
+                "unique_senders": 20,
+                "unique_receivers": 20,
+                "inflow_count": 0,
+                "outflow_count": 0,
+                "unclassified_count": 20,
+                "active_15m_buckets": 1,
+            },
+            "1h": {
+                "transfer_count": 20,
+                "total_token_amount": "200",
+                "unique_senders": 20,
+                "unique_receivers": 20,
+                "inflow_count": 0,
+                "outflow_count": 0,
+                "unclassified_count": 20,
+                "active_15m_buckets": 4,
+            },
+        }
+        prior = {
+            name: {
+                **metrics,
+                "transfer_count": 2,
+                "total_token_amount": "20",
+                "unique_senders": 2,
+                "unique_receivers": 2,
+                "unclassified_count": 2,
+            }
+            for name, metrics in current.items()
+        }
+        history = [{"window_metrics": prior} for _ in range(4)]
+        result = analyze_nested_windows(
+            current,
+            history,
+            min_samples=4,
+            max_samples=8,
+            mad_multiplier=Decimal("3.5"),
+        )
+        self.assertEqual(result["ready_windows"], ["15m", "1h"])
+        self.assertEqual(result["anomalous_windows"], ["15m", "1h"])
+        self.assertTrue(result["multi_window_anomaly"])
+
+    def test_nested_window_metrics_only_exposes_aggregate_facts(self) -> None:
+        result = nested_window_metrics(
+            {
+                "windows": {
+                    "15m": {
+                        "transfer_count": 2,
+                        "total_token_amount": "4.2",
+                        "unique_senders": 1,
+                        "unique_receivers": 2,
+                        "inflow_count": 0,
+                        "outflow_count": 0,
+                        "unclassified_count": 2,
+                        "active_15m_buckets": 1,
+                        "private_transfer_payload": "must-not-copy",
+                    }
+                }
+            }
+        )
+        self.assertEqual(result["15m"]["total_token_amount"], "4.2")
+        self.assertNotIn("private_transfer_payload", result["15m"])
 
 
 if __name__ == "__main__":
