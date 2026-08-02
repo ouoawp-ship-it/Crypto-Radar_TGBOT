@@ -8,6 +8,7 @@ from .address_intelligence import AddressIntelligenceStore
 from .automation_store import AutomationStore, AutomationStoreError
 from .config import OnchainSettings
 from .market_convergence import evaluate_market_convergence
+from .controlled_alert_preview import evaluate_controlled_alert_preview
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
 from .scan_baseline import (
@@ -465,6 +466,16 @@ class WatchScanner:
             max_wallet_group_score=max_wallet_score,
         )
         historical_baseline["market_convergence"] = market_convergence
+        controlled_alert_preview = evaluate_controlled_alert_preview(
+            activity_complete=activity_complete,
+            analysis_complete=analysis_complete,
+            existing_rule_gate_met=actionable,
+            historical_baseline=historical_baseline,
+            market_convergence=market_convergence,
+        )
+        historical_baseline[
+            "controlled_alert_preview"
+        ] = controlled_alert_preview
         if not self._renew_lease(token_key, lease_owner):
             return self._record_stale(
                 token_key,
@@ -552,6 +563,7 @@ class WatchScanner:
             "analysis_started": True,
             "historical_baseline": historical_baseline,
             "market_convergence": market_convergence,
+            "controlled_alert_preview": controlled_alert_preview,
             "unknown_addresses_queued": int(
                 queue_result.get("observed") or 0
             ),

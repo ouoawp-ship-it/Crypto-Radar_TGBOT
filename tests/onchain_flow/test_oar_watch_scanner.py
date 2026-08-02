@@ -347,6 +347,15 @@ class WatchScannerTests(unittest.TestCase):
         persisted = self.store.latest_scan_baseline(key) or {}
         self.assertEqual(persisted["baseline_status"], "ready")
         self.assertTrue(persisted["baseline_anomaly"])
+        persisted_baseline = persisted["historical_baseline"]
+        preview = persisted_baseline["controlled_alert_preview"]
+        self.assertFalse(preview["would_alert"])
+        self.assertIn(
+            "existing_rule_gate_not_met", preview["block_reasons"]
+        )
+        self.assertIn(
+            "market_context_not_present", preview["block_reasons"]
+        )
 
     def test_incomplete_scan_never_claims_historical_anomaly(self) -> None:
         self.watch()
@@ -538,6 +547,13 @@ class WatchScannerTests(unittest.TestCase):
         )
         self.assertEqual(convergence["market_modules"], ["launch"])
         self.assertFalse(convergence["notification_gate_changed"])
+        preview = result["results"][0]["controlled_alert_preview"]
+        self.assertFalse(preview["would_alert"])
+        self.assertIn(
+            "historical_baseline_not_ready", preview["block_reasons"]
+        )
+        self.assertFalse(preview["notification_gate_changed"])
+        self.assertEqual(preview["telegram_calls"], 0)
 
     def test_actionable_observe_builds_report_without_gateway(self) -> None:
         self.watch()
