@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from paopao_radar.flow_radar import (
     fmt_cvd,
     kline_cvd_delta_info,
     kline_cvd_flow_info,
+    market_cap_candidate_lines,
     series_delta_info,
 )
 from paopao_radar.storage import JsonStore
@@ -224,11 +226,87 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertIn("本轮深度扫描（24）", text)
         self.assertIn("下一轮优先队列（6）", text)
-        self.assertIn("全市场完整候选（30）", text)
+        self.assertIn("全市场候选 · 市值排行", text)
+        self.assertIn("候选 30 | 市值覆盖 0 | 待补全 30", text)
+        self.assertIn("市值待补全（30）", text)
         self.assertIn("首次覆盖待轮换: 6", text)
         for candidate in candidates:
             self.assertIn(candidate["symbol"], text)
         self.assertIn("只有本轮 24 个完成五因子深度扫描", text)
+
+    def test_market_cap_candidate_lines_rank_and_group_known_values(self) -> None:
+        candidates = [
+            {"symbol": "SMALLUSDT", "market_cap": 50_000_000, "priority_rank": 4},
+            {"symbol": "MEGAUSDT", "market_cap": 2_500_000_000_000, "priority_rank": 1},
+            {"symbol": "MIDUSDT", "market_cap": 200_000_000, "priority_rank": 3},
+            {"symbol": "LARGEUSDT", "market_cap": 2_000_000_000, "priority_rank": 2},
+            {"symbol": "UNKNOWNBUSDT", "market_cap": None, "priority_rank": 6},
+            {"symbol": "UNKNOWNAUSDT", "priority_rank": 5},
+        ]
+
+        lines = market_cap_candidate_lines(candidates)
+        text = "\n".join(lines)
+
+        self.assertIn("候选 6 | 市值覆盖 4 | 待补全 2", text)
+        self.assertIn("001 MEGAUSDT $2.5T", text)
+        self.assertIn("002 LARGEUSDT $2.0B", text)
+        self.assertIn("003 MIDUSDT $200M", text)
+        self.assertIn("004 SMALLUSDT $50M", text)
+        self.assertIn("🏛️ ≥ $10B（1）", text)
+        self.assertIn("🔷 $1B–10B（1）", text)
+        self.assertIn("🔹 $100M–1B（1）", text)
+        self.assertIn("▪️ < $100M（1）", text)
+        self.assertLess(text.index("UNKNOWNAUSDT"), text.index("UNKNOWNBUSDT"))
+        self.assertLessEqual(max(len(line) for line in lines), 80)
+
+    def test_cached_market_caps_use_fresh_read_only_snapshots(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            db_path = settings.market_snapshots_db_path
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE market_snapshots (
+                        symbol TEXT NOT NULL,
+                        market_cap REAL,
+                        observed_at INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.executemany(
+                    "INSERT INTO market_snapshots VALUES (?, ?, ?)",
+                    [
+                        ("FRESHUSDT", 2_000_000_000, 950),
+                        ("FRESHUSDT", 1_000_000_000, 900),
+                        ("STALEUSDT", 500_000_000, 1),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            candidates = [
+                {"symbol": "FRESHUSDT"},
+                {"symbol": "STALEUSDT"},
+            ]
+
+            result = FlowRadarEngine(settings)._enrich_cached_market_caps(
+                candidates,
+                now_ts=1_000,
+            )
+
+            self.assertEqual(result["status"], "partial")
+            self.assertEqual(result["known_count"], 1)
+            self.assertEqual(result["missing_count"], 1)
+            self.assertEqual(result["network_calls"], 0)
+            self.assertEqual(candidates[0]["market_cap"], 2_000_000_000)
+            self.assertEqual(candidates[0]["market_cap_source"], "local_market_snapshot")
+            self.assertIsNone(candidates[1]["market_cap"])
+            conn = sqlite3.connect(db_path)
+            try:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM market_snapshots").fetchone()[0], 3)
+            finally:
+                conn.close()
 
     def test_compact_symbol_lines_are_readable_and_bounded(self) -> None:
         symbols = [f"C{index}USDT" for index in range(25)]

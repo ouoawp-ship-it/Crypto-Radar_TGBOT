@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any
@@ -21,6 +23,7 @@ from .time_windows import ClosedWindow, closed_window
 CST = timezone(timedelta(hours=8))
 CVD_NEUTRAL_ABS = 1.0
 FLOW_CANDIDATE_STATE_SCHEMA_VERSION = 1
+FLOW_MARKET_CAP_MAX_AGE_SEC = 15 * 60
 
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
@@ -53,6 +56,89 @@ def compact_symbol_lines(symbols: list[str], *, per_line: int = 12) -> list[str]
         " · ".join(tg_escape(symbol) for symbol in symbols[index:index + size])
         for index in range(0, len(symbols), size)
     ]
+
+
+def fmt_market_cap(value: Any) -> str:
+    market_cap = to_float(value)
+    if market_cap >= 1_000_000_000_000:
+        return f"${market_cap / 1_000_000_000_000:.1f}T"
+    return fmt_money(market_cap)
+
+
+def market_cap_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
+    ranked = sorted(
+        (
+            item
+            for item in candidates
+            if to_float(item.get("market_cap")) > 0
+        ),
+        key=lambda item: (
+            -to_float(item.get("market_cap")),
+            str(item.get("symbol") or ""),
+        ),
+    )
+    missing = sorted(
+        (
+            item
+            for item in candidates
+            if to_float(item.get("market_cap")) <= 0
+        ),
+        key=lambda item: (
+            int(item.get("priority_rank") or 0),
+            str(item.get("symbol") or ""),
+        ),
+    )
+    lines = [
+        tg_quote("📋 全市场候选 · 市值排行"),
+        (
+            f"候选 {len(candidates)} | 市值覆盖 {len(ranked)} | "
+            f"待补全 {len(missing)}"
+        ),
+        (
+            "来源: 本地市场快照（15分钟内） | 排序: 流通市值降序"
+            if ranked
+            else "市值数据: 本地快照暂无可用值 | 缺失项不参与排名"
+        ),
+    ]
+    ranked_rows = list(enumerate(ranked, start=1))
+    tiers = (
+        ("🏛️ ≥ $10B", 10_000_000_000, None),
+        ("🔷 $1B–10B", 1_000_000_000, 10_000_000_000),
+        ("🔹 $100M–1B", 100_000_000, 1_000_000_000),
+        ("▪️ < $100M", 0, 100_000_000),
+    )
+    for title, minimum, maximum in tiers:
+        tier_rows = [
+            (rank, item)
+            for rank, item in ranked_rows
+            if to_float(item.get("market_cap")) >= minimum
+            and (maximum is None or to_float(item.get("market_cap")) < maximum)
+        ]
+        if not tier_rows:
+            continue
+        lines.extend(["", f"{title}（{len(tier_rows)}）"])
+        entries = [
+            (
+                f"{rank:03d} {tg_escape(item.get('symbol') or '')} "
+                f"{fmt_market_cap(item.get('market_cap'))}"
+            )
+            for rank, item in tier_rows
+        ]
+        lines.extend(
+            " · ".join(entries[index:index + 2])
+            for index in range(0, len(entries), 2)
+        )
+    if missing:
+        lines.extend([
+            "",
+            f"❔ 市值待补全（{len(missing)}）",
+            "以下仅保留候选资格，不参与市值名次。",
+            *compact_symbol_lines(
+                [str(item.get("symbol") or "") for item in missing],
+                per_line=4,
+            ),
+        ])
+    return lines
 
 
 def flatten_points(data: Any) -> list[Any]:
@@ -714,6 +800,7 @@ class FlowRadarEngine:
             delay_sec=self.settings.flow_close_delay_sec,
         )
         candidates = self._candidate_symbols(binance)
+        market_cap_status = self._enrich_cached_market_caps(candidates)
         rotation_candidates, rotation_state = self._rotation_candidates(candidates)
         rows: list[dict[str, Any]] = []
         scanned_items: list[dict[str, Any]] = []
@@ -839,7 +926,89 @@ class FlowRadarEngine:
                 "binance_confirmation": confirmation_summary(scanned_items),
                 "flow_model_comparison": comparison_status,
                 "candidate_rotation": rotation_status,
+                "market_cap_ranking": market_cap_status,
             },
+        }
+
+    def _enrich_cached_market_caps(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        now_ts: int | None = None,
+    ) -> dict[str, Any]:
+        symbols = [
+            str(item.get("symbol") or "")
+            for item in candidates
+            if str(item.get("symbol") or "")
+        ]
+        if not symbols:
+            return {
+                "status": "empty",
+                "known_count": 0,
+                "missing_count": 0,
+                "network_calls": 0,
+            }
+        path = self.settings.market_snapshots_db_path
+        if not path.exists():
+            return {
+                "status": "not_available",
+                "known_count": 0,
+                "missing_count": len(symbols),
+                "network_calls": 0,
+            }
+        observed_after = int(now_ts or time.time()) - FLOW_MARKET_CAP_MAX_AGE_SEC
+        placeholders = ",".join("?" for _symbol in symbols)
+        conn: sqlite3.Connection | None = None
+        try:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=0.2)
+            conn.execute("PRAGMA query_only = ON")
+            rows = conn.execute(
+                f"""
+                SELECT symbol, market_cap, observed_at
+                FROM market_snapshots
+                WHERE symbol IN ({placeholders})
+                  AND market_cap > 0
+                  AND observed_at >= ?
+                ORDER BY symbol, observed_at DESC
+                """,
+                (*symbols, observed_after),
+            ).fetchall()
+        except (OSError, sqlite3.Error):
+            return {
+                "status": "local_error",
+                "error": "market_cap_snapshot_read_failed",
+                "known_count": 0,
+                "missing_count": len(symbols),
+                "network_calls": 0,
+            }
+        finally:
+            if conn is not None:
+                conn.close()
+        latest: dict[str, tuple[float, int]] = {}
+        for symbol, market_cap, observed_at in rows:
+            normalized = str(symbol or "")
+            value = to_float(market_cap)
+            if normalized not in latest and value > 0:
+                latest[normalized] = (value, int(observed_at or 0))
+        for candidate in candidates:
+            snapshot = latest.get(str(candidate.get("symbol") or ""))
+            if snapshot is None:
+                candidate["market_cap"] = None
+                candidate["market_cap_source"] = ""
+                candidate["market_cap_observed_at"] = None
+                continue
+            candidate["market_cap"] = snapshot[0]
+            candidate["market_cap_source"] = "local_market_snapshot"
+            candidate["market_cap_observed_at"] = snapshot[1]
+        known_count = len(latest)
+        return {
+            "status": "ok" if known_count == len(symbols) else "partial",
+            "source": "local_market_snapshot",
+            "max_age_sec": FLOW_MARKET_CAP_MAX_AGE_SEC,
+            "known_count": known_count,
+            "missing_count": len(symbols) - known_count,
+            "network_calls": 0,
         }
 
     def _candidate_symbols(self, source: BinanceDataSource) -> list[dict[str, Any]]:
@@ -982,6 +1151,13 @@ class FlowRadarEngine:
                 "price": candidate.get("price"),
                 "price_24h": to_float(candidate.get("price_24h")),
                 "quote_volume": to_float(candidate.get("quote_volume")),
+                "market_cap": (
+                    to_float(candidate.get("market_cap"))
+                    if to_float(candidate.get("market_cap")) > 0
+                    else None
+                ),
+                "market_cap_source": str(candidate.get("market_cap_source") or ""),
+                "market_cap_observed_at": candidate.get("market_cap_observed_at"),
                 "funding_pct": to_float(candidate.get("funding_pct")),
                 "funding_ready": bool(candidate.get("funding_ready")),
                 "selection_reasons": list(candidate.get("selection_reasons") or []),
@@ -1225,18 +1401,16 @@ class FlowRadarEngine:
             for symbol in rotation.get("next_symbols") or []
             if str(symbol)
         ]
-        all_symbols = [str(item.get("symbol") or "") for item in candidates]
         lines.extend([
             tg_quote("🔄 候选轮换"),
             f"本轮深度扫描（{len(current_symbols)}）",
-            *compact_symbol_lines(current_symbols),
+            *compact_symbol_lines(current_symbols, per_line=6),
             "",
             f"下一轮优先队列（{len(next_symbols)}）",
-            *compact_symbol_lines(next_symbols),
+            *compact_symbol_lines(next_symbols, per_line=6),
             "",
-            tg_quote(f"📋 全市场完整候选（{len(all_symbols)}）"),
-            *compact_symbol_lines(all_symbols),
+            *market_cap_candidate_lines(candidates),
             "",
-            "说明：完整清单表示具备候选资格；只有本轮 24 个完成五因子深度扫描。",
+            "说明：市值排名不改变候选资格和轮换顺序；只有本轮 24 个完成五因子深度扫描。",
         ])
         return "\n".join(lines)
