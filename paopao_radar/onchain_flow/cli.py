@@ -71,6 +71,7 @@ from .telegram_topic_link import (
     validate_telegram_topic_link,
 )
 from .telegram_route_check import TelegramRouteChecker, save_route_check
+from .telegram_query import TelegramQueryError, TelegramQueryService
 from .watch_scanner import WatchScanner
 
 
@@ -158,6 +159,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm-real-send",
         action="store_true",
     )
+    telegram_query_live = subparsers.add_parser("telegram-query-live")
+    telegram_query_live.add_argument("--allow-network", action="store_true")
+    telegram_query_live.add_argument("--send", action="store_true")
+    telegram_query_live.add_argument(
+        "--confirm-real-send", action="store_true"
+    )
+    telegram_query_live.add_argument("--duration-minutes", type=float)
     label_candidates = subparsers.add_parser("label-candidates")
     candidate_actions = label_candidates.add_subparsers(
         dest="candidate_action",
@@ -1056,6 +1064,15 @@ def main(
         if args.command == "telegram-topic-link":
             settings.validate()
             return _telegram_topic_link_command(settings, args)
+        if args.command == "telegram-query-live":
+            payload = TelegramQueryService(settings).run_live(
+                allow_network=bool(args.allow_network),
+                send=bool(args.send),
+                confirm_real_send=bool(args.confirm_real_send),
+                duration_minutes=args.duration_minutes,
+            )
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
         if args.command == "telegram-route-check":
             settings.validate()
             if not args.allow_network:
@@ -1900,6 +1917,25 @@ def main(
             "ai_calls": 0,
         }, ensure_ascii=False, sort_keys=True))
         return 1
+    except TelegramQueryError as exc:
+        print(json.dumps({
+            "status": "failed",
+            "error": exc.reason,
+            "credentials_exposed": False,
+        }, ensure_ascii=False, sort_keys=True))
+        return 2 if exc.reason in {
+            "telegram_query_configuration_blocked",
+            "telegram_query_send_gate_blocked",
+            "telegram_webhook_conflict",
+            "telegram_polling_conflict",
+            "telegram_auth_failed",
+            "telegram_chat_not_found",
+            "telegram_bot_not_member",
+            "telegram_forbidden",
+            "telegram_query_admin_required",
+            "telegram_query_forum_required",
+            "telegram_bot_username_missing",
+        } else 1
     except TokenActivityQueryError as exc:
         payload = failed_token_activity_payload(
             exc,

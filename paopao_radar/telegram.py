@@ -251,7 +251,7 @@ TOPIC_TEMPLATE_NAMES = {
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS = {
-    "TG_ONCHAIN_FLOW_ALERT": "2026-07-29-oar-p3-v1",
+    "TG_ONCHAIN_FLOW_ALERT": "2026-08-02-oar-group-query-v1",
 }
 
 
@@ -486,6 +486,13 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "这里推送 Base ERC-20 Token 的链上活动规则报告与可选 AI 解读。",
         "链上资金流使用独立历史、outbox、冷却和小时配额，不占用主 BOT 推送额度。",
+        "",
+        "<b>群内查询使用方式</b>",
+        "请在本话题内直接发送以下任一格式：",
+        "<code>@Bot用户名 查询 CBDOGE 15m</code>",
+        "<code>@Bot用户名 查询 0x完整Base合约地址 1h</code>",
+        "<code>/oar@Bot用户名 CBDOGE 4h</code>",
+        "支持 15m、1h、4h。币种简称只查询本地已验证且唯一的 Registry 合约；无法唯一确认时请使用完整合约地址。",
         "",
         "阅读方式：",
         "1. 流入交易所代表潜在可售供应，从交易所流出代表潜在提币或积累。",
@@ -1098,6 +1105,7 @@ class TelegramGateway:
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
             "TG_ONCHAIN_FLOW_ALERT": self.settings.tg_onchain_flow_topic_id,
+            "TG_ONCHAIN_QUERY": self.settings.tg_onchain_flow_topic_id,
         }
         return topic_routes.get(template_id, "")
 
@@ -1842,6 +1850,11 @@ class TelegramGateway:
             ]
         history.append(record)
         self._append_history_record(record)
+        if template_id == "TG_ONCHAIN_QUERY":
+            # An operator-requested lookup is a reply, not a detected signal.
+            # Keep its dedicated Telegram audit while preventing Signal Bridge
+            # and OAR watch-source side effects.
+            return
         try:
             from .symbol_dossier import append_signal_events_from_push
 

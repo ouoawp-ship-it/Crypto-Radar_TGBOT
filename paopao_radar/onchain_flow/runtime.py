@@ -48,6 +48,8 @@ def isolated_replay_settings(
         base_enable=False,
         real_send=False,
         oar_ai_enable=False,
+        oar_telegram_query_enable=False,
+        oar_telegram_query_ack="",
         data_dir=replay_dir,
         db_path=replay_dir / "onchain_flow.db",
         runtime_status_path=replay_dir / "runtime_status.json",
@@ -60,6 +62,9 @@ def isolated_replay_settings(
         label_candidates_path=replay_dir / "label_candidates.json",
         address_intelligence_path=(
             replay_dir / "address_intelligence.json"
+        ),
+        oar_telegram_query_state_path=(
+            replay_dir / "telegram_query_state.json"
         ),
         oar_ai_cache_path=replay_dir / "oar_ai_cache.json",
         oar_ai_operator_prompt_path=(

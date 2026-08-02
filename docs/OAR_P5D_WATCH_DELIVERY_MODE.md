@@ -47,10 +47,13 @@ take effect only after an explicit OAR Watch restart.
 
 ## Shared Telegram topic bootstrap
 
-The production bot is outbound-only: it has no `getUpdates` loop, webhook,
-or persisted inbound Update queue. OAR reuses the main BOT token and chat
-from `.env.oi`; only its dedicated topic is stored separately. The operator
-can validate or initialize that topic with:
+Automatic radar delivery remains outbound-only. An optional, separately
+gated `paopao-oar-query.service` may run the repository's only `getUpdates`
+loop for explicit `@Bot` or `/oar@Bot` read-only queries. It does not set a
+webhook, change Watch delivery mode, or attach to the main BOT loop. OAR
+reuses the main BOT token and chat from `.env.oi`; only its dedicated topic
+and query-worker gates are stored separately. The operator can validate or
+initialize that topic with:
 
 ```bash
 python onchain_main.py telegram-topic bootstrap --allow-network

@@ -178,6 +178,7 @@ class OnchainNotifierTests(unittest.TestCase):
             intro = topic_intro_message("TG_ONCHAIN_FLOW_ALERT", settings)
             self.assertIn("独立历史、outbox、冷却和小时配额", intro)
             self.assertIn("方向评分不是概率", intro)
+            self.assertIn("@Bot用户名 查询 CBDOGE 15m", intro)
 
 
 if __name__ == "__main__":
