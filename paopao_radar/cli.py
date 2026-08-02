@@ -1312,6 +1312,11 @@ def run_loop(args: argparse.Namespace) -> int:
         delay_sec=settings.flow_close_delay_sec,
     )
     next_funding_alert = time.time()
+    heartbeat_interval_sec = max(
+        5,
+        min(60, settings.health_runtime_max_age_sec // 3),
+    )
+    next_heartbeat = time.time() + heartbeat_interval_sec
     write_runtime_status(
         settings,
         store,
@@ -1509,6 +1514,23 @@ def run_loop(args: argparse.Namespace) -> int:
                 diagnostics={"launch": launch_diag},
                 last_error="",
             )
+        if time.time() >= next_heartbeat:
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                no_launch=bool(args.no_launch),
+                no_flow=bool(args.no_flow),
+                no_funding_alert=bool(
+                    getattr(args, "no_funding_alert", False)
+                ),
+                heartbeat_interval_sec=heartbeat_interval_sec,
+                last_error="",
+            )
+            next_heartbeat = time.time() + heartbeat_interval_sec
         time.sleep(3)
 
 

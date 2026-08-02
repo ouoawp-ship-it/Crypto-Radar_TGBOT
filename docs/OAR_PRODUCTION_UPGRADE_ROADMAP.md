@@ -36,6 +36,7 @@
 - 四个雷达分别显示最近运行、下次调度、候选数和最近投递状态；
 - `delivery_block_reason=main_bot_dry_run` 表示仍在计算，但真实 Telegram 被安全模式阻止；
 - 运行状态过期时不得显示为 `running`；
+- 主循环独立刷新心跳，单个雷达错过调度宽限时显示 `scheduled_cycle_overdue`；
 - 异常只输出固定类型或错误码，不输出 Provider 正文、URL 或凭据。
 
 灰度：先部署诊断命令，不改变主 BOT 模式；观察至少一个完整调度周期。

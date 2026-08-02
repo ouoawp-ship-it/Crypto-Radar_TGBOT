@@ -117,8 +117,17 @@ def _radar_state(
     candidate_count: int | None,
     scanned_count: int | None,
     real_send: bool,
+    current_ts: int,
+    schedule_grace_sec: int,
 ) -> dict[str, object]:
     last_run_ts = _timestamp(last_run_at)
+    next_run_ts = _timestamp(next_run_at)
+    schedule_overdue = bool(
+        enabled
+        and runtime_active
+        and next_run_ts
+        and current_ts > next_run_ts + schedule_grace_sec
+    )
     safe_cycle_status = str(cycle_status or "unknown").lower()
     safe_error_code = _safe_error_code(error_code)
     if runtime_status == failure_status:
@@ -132,6 +141,9 @@ def _radar_state(
     elif safe_cycle_status == "failed":
         state = "degraded"
         reason = safe_error_code or failure_status
+    elif schedule_overdue:
+        state = "stale"
+        reason = "scheduled_cycle_overdue"
     elif not last_run_ts:
         state = "waiting_first_cycle"
         reason = "scheduled_not_run_yet"
@@ -156,6 +168,8 @@ def _radar_state(
         "last_error_code": safe_error_code,
         "last_run_at": _timestamp_text(last_run_at),
         "next_run_at": _timestamp_text(next_run_at),
+        "schedule_overdue": schedule_overdue,
+        "schedule_grace_sec": schedule_grace_sec,
         "last_push_status": last_push_status,
         "candidate_count": candidate_count,
         "scanned_count": scanned_count,
@@ -194,6 +208,10 @@ def build_market_radar_runtime_status(
         and heartbeat_fresh
     )
     real_send = bool(runtime.get("real_send"))
+    schedule_grace_sec = max(
+        30,
+        min(300, settings.health_runtime_max_age_sec // 3),
+    )
 
     launch_history = store.load(settings.launch_watch_history_path, [])
     launch_latest: Mapping[str, object] = {}
@@ -235,6 +253,8 @@ def build_market_radar_runtime_status(
             candidate_count=launch_candidates,
             scanned_count=_nonnegative_int(launch_latest.get("scanned")),
             real_send=real_send,
+            current_ts=current,
+            schedule_grace_sec=schedule_grace_sec,
         ),
         "radar_summary": _radar_state(
             enabled=True,
@@ -251,6 +271,8 @@ def build_market_radar_runtime_status(
             candidate_count=None,
             scanned_count=_nonnegative_int(runtime.get("radar_scan_limit")),
             real_send=real_send,
+            current_ts=current,
+            schedule_grace_sec=schedule_grace_sec,
         ),
         "funding_alert": _radar_state(
             enabled=not bool(runtime.get("no_funding_alert")),
@@ -270,6 +292,8 @@ def build_market_radar_runtime_status(
             candidate_count=funding_candidates,
             scanned_count=funding_scanned,
             real_send=real_send,
+            current_ts=current,
+            schedule_grace_sec=schedule_grace_sec,
         ),
         "flow_radar": _radar_state(
             enabled=not bool(runtime.get("no_flow")),
@@ -288,6 +312,8 @@ def build_market_radar_runtime_status(
             candidate_count=flow_candidates,
             scanned_count=flow_selected,
             real_send=real_send,
+            current_ts=current,
+            schedule_grace_sec=schedule_grace_sec,
         ),
     }
     if not runtime:
@@ -300,10 +326,11 @@ def build_market_radar_runtime_status(
         overall_status = "not_running"
         overall_reason = "main_bot_loop_not_active"
     elif runtime_status.endswith("_failed") or any(
-        item.get("state") == "degraded" for item in radars.values()
+        item.get("state") in {"degraded", "stale"}
+        for item in radars.values()
     ):
         overall_status = "degraded"
-        overall_reason = "one_or_more_radar_cycles_failed"
+        overall_reason = "one_or_more_radars_degraded"
     else:
         overall_status = "running"
         overall_reason = "runtime_heartbeat_fresh"

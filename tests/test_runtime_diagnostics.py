@@ -135,6 +135,64 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
             for item in result["radars"].values()
         ))
 
+    def test_overdue_radar_is_stale_while_loop_heartbeat_is_fresh(self) -> None:
+        now = 2_000_000_000
+        fresh = datetime.fromtimestamp(now - 5).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        overdue = datetime.fromtimestamp(now - 301).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with TemporaryDirectory() as tmp:
+            settings, store = self.runtime(Path(tmp))
+            store.save(settings.runtime_status_path, {
+                "updated_at": fresh,
+                "mode": "loop",
+                "task": "loop",
+                "status": "running",
+                "real_send": False,
+                "last_flow_at": fresh,
+                "next_flow_at": overdue,
+            })
+            result = build_market_radar_runtime_status(
+                settings, store, now=now
+            )
+
+        flow = result["radars"]["flow_radar"]
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["reason"], "one_or_more_radars_degraded")
+        self.assertEqual(flow["state"], "stale")
+        self.assertEqual(flow["state_reason"], "scheduled_cycle_overdue")
+        self.assertTrue(flow["schedule_overdue"])
+
+    def test_disabled_radar_does_not_report_schedule_overdue(self) -> None:
+        now = 2_000_000_000
+        stamp = datetime.fromtimestamp(now - 5).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        overdue = datetime.fromtimestamp(now - 600).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with TemporaryDirectory() as tmp:
+            settings, store = self.runtime(Path(tmp))
+            store.save(settings.runtime_status_path, {
+                "updated_at": stamp,
+                "mode": "loop",
+                "task": "loop",
+                "status": "running",
+                "real_send": False,
+                "no_flow": True,
+                "last_flow_at": stamp,
+                "next_flow_at": overdue,
+            })
+            result = build_market_radar_runtime_status(
+                settings, store, now=now
+            )
+
+        flow = result["radars"]["flow_radar"]
+        self.assertEqual(flow["state"], "disabled")
+        self.assertFalse(flow["schedule_overdue"])
+
     def test_one_failed_cycle_stays_degraded_without_error_body(self) -> None:
         now = 2_000_000_000
         secret = "private endpoint body must not leak"
