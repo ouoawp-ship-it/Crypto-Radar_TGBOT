@@ -51,6 +51,10 @@
 
 灰度：先只观察未知地址队列与 Signal Bridge 审计，不自动批准标签，不扩大 Active Watch。
 
+长期 Watch 的每条 Scan Audit 必须同时记录本地未知地址队列状态和
+`external_label_provider_calls`。旧记录缺少该证据时显示 `not_recorded`，不得用当前代码
+行为反推旧扫描；本地审计补充失败不得影响扫描或 Lease 释放。
+
 回滚：禁用新增来源或撤销单条审核标签；不得删除 Registry、Watch 或 Scan Audit 历史。
 
 ## 阶段 2：多窗口历史异常基线
