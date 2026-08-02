@@ -75,7 +75,7 @@
 
 ## 阶段 3：链上与市场共振
 
-共振只使用 Signal Bridge 已接受的真实市场信号，与本轮链上规则和历史异常进行确定性共现计算。第一版不从中文摘要猜测多空方向，`direction_alignment=not_evaluated`。
+共振只使用 Signal Bridge 已接受的真实市场信号，与本轮链上规则和历史异常进行确定性共现计算。方向只读取结构化、质量就绪信号中的既有语义；链上方向只来自达到原有规则门禁的吸筹/派发候选。系统输出 `aligned`、`opposed`、`mixed` 或 `not_evaluated`，不从中文摘要猜测方向，也不把方向假设写成概率或因果。
 
 验收：共振分明确标注为规则分而非概率，并保持 `notification_gate_changed=false`。
 

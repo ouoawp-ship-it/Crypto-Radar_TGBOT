@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..signal_effectiveness import infer_signal_direction
 from .automation_store import (
     AutomationStore,
     AutomationStoreError,
@@ -250,6 +251,9 @@ class MainSignalReader:
             or facts.get("token_address")
             or ""
         ).strip().lower()
+        direction = infer_signal_direction(
+            str(row["module"] or "").lower(), facts
+        )
         return {
             "id": int(row["id"]),
             "public_ref": str(row["public_ref"] or ""),
@@ -266,6 +270,7 @@ class MainSignalReader:
             "ingest_mode": str(row["ingest_mode"] or "").lower(),
             "quality_status": str(row["quality_status"] or "").lower(),
             "payload_hash": stable_payload_hash(safe_payload),
+            "direction": direction,
             "candidate_chain": candidate_chain,
             "candidate_contract": candidate_contract,
         }

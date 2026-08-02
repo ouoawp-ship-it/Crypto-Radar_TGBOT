@@ -6,6 +6,11 @@ from typing import Mapping, Sequence
 ALLOWED_MARKET_MODULES = frozenset(
     {"launch", "flow", "funding", "announcement"}
 )
+ALLOWED_DIRECTIONS = frozenset({"long", "short"})
+ONCHAIN_BEHAVIOR_DIRECTIONS = {
+    "accumulation_candidate": "long",
+    "distribution_candidate": "short",
+}
 
 
 def evaluate_market_convergence(
@@ -15,6 +20,7 @@ def evaluate_market_convergence(
     onchain_actionable: bool,
     behavior_score: int,
     max_wallet_group_score: int,
+    behavior_type: str = "",
 ) -> dict[str, object]:
     safe_signals = [
         item
@@ -33,6 +39,40 @@ def evaluate_market_convergence(
         (max(0, int(item.get("age_sec") or 0)) for item in safe_signals),
         default=None,
     )
+    structured_directions = [
+        str(item.get("direction") or "").lower()
+        for item in safe_signals
+        if str(item.get("direction") or "").lower()
+        in ALLOWED_DIRECTIONS
+    ]
+    distinct_directions = sorted(set(structured_directions))
+    market_direction = (
+        distinct_directions[0]
+        if len(distinct_directions) == 1
+        else "mixed"
+        if len(distinct_directions) > 1
+        else "not_structured"
+    )
+    onchain_direction = (
+        ONCHAIN_BEHAVIOR_DIRECTIONS.get(
+            str(behavior_type or ""), "not_structured"
+        )
+        if onchain_actionable
+        else "not_structured"
+    )
+    if market_direction == "mixed":
+        direction_alignment = "mixed"
+    elif (
+        market_direction in ALLOWED_DIRECTIONS
+        and onchain_direction in ALLOWED_DIRECTIONS
+    ):
+        direction_alignment = (
+            "aligned"
+            if market_direction == onchain_direction
+            else "opposed"
+        )
+    else:
+        direction_alignment = "not_evaluated"
     baseline_anomaly = bool(historical_baseline.get("anomaly"))
     multi_window_anomaly = bool(
         historical_baseline.get("multi_window_anomaly")
@@ -48,6 +88,14 @@ def evaluate_market_convergence(
         evidence.append("historical_scan_anomaly")
     if multi_window_anomaly:
         evidence.append("multi_window_scan_anomaly")
+    if market_direction in ALLOWED_DIRECTIONS:
+        evidence.append(f"market_direction_{market_direction}")
+    if onchain_direction in ALLOWED_DIRECTIONS:
+        evidence.append(f"onchain_direction_{onchain_direction}")
+    if direction_alignment == "aligned":
+        evidence.append("market_onchain_direction_aligned")
+    elif direction_alignment == "opposed":
+        evidence.append("market_onchain_direction_opposed")
 
     if not safe_signals:
         status = "no_market_context"
@@ -77,12 +125,26 @@ def evaluate_market_convergence(
         if safe_signals
         else 0
     )
+    limitations = ["cooccurrence_not_causation"]
+    if market_direction == "not_structured":
+        limitations.insert(0, "market_signal_direction_not_structured")
+    elif market_direction == "mixed":
+        limitations.insert(0, "market_signal_direction_conflicted")
+    if onchain_direction == "not_structured":
+        limitations.insert(0, "onchain_direction_not_structured")
+
     return {
         "status": status,
         "level": level,
         "rule_score": rule_score,
         "score_semantics": "cooccurrence_rule_score_not_probability",
-        "direction_alignment": "not_evaluated",
+        "direction_alignment": direction_alignment,
+        "market_direction": market_direction,
+        "onchain_direction": onchain_direction,
+        "structured_direction_signal_count": len(
+            structured_directions
+        ),
+        "directional_hypothesis_only": True,
         "market_signal_count": len(safe_signals),
         "market_modules": modules,
         "distinct_market_module_count": len(modules),
@@ -95,9 +157,6 @@ def evaluate_market_convergence(
         "historical_scan_anomaly": baseline_anomaly,
         "multi_window_scan_anomaly": multi_window_anomaly,
         "evidence": evidence,
-        "limitations": [
-            "market_signal_direction_not_structured",
-            "cooccurrence_not_causation",
-        ],
+        "limitations": limitations,
         "notification_gate_changed": False,
     }

@@ -55,6 +55,7 @@ class OarP4ReportingTests(unittest.TestCase):
                 "score": 70 + index,
                 "stage": "active",
                 "severity": "high",
+                "direction": "long",
                 "ts": 1_700_000_000 - index,
                 "age_sec": index * 60,
                 "summary": f"summary {index}",
@@ -72,10 +73,16 @@ class OarP4ReportingTests(unittest.TestCase):
         )
         first = build_ai_context(first_payload, max_chars=30000)
         second = build_ai_context(second_payload, max_chars=30000)
-        self.assertEqual(OAR_AI_CONTEXT_SCHEMA_VERSION, 2)
+        self.assertEqual(OAR_AI_CONTEXT_SCHEMA_VERSION, 3)
         self.assertEqual(OAR_AI_PROMPT_VERSION, "oar-ai-prompt-v3")
         self.assertEqual(first["context_hash"], second["context_hash"])
         self.assertEqual(len(first["linked_market_signals"]), 10)
+        self.assertTrue(
+            all(
+                item["direction"] == "long"
+                for item in first["linked_market_signals"]
+            )
+        )
         serialized = json.dumps(first, ensure_ascii=False)
         self.assertNotIn("_priority", serialized)
         self.assertNotIn("text_html", serialized)
@@ -102,6 +109,8 @@ class OarP4ReportingTests(unittest.TestCase):
         self.assertEqual(len(linked), 3)
         text = format_token_report(report)
         self.assertIn("关联市场信号", text)
+        self.assertIn("方向假设：看多", text)
+        self.assertIn("不代表因果关系或概率", text)
         self.assertLessEqual(text.count("分钟前"), 3)
 
     def test_report_explains_contract_transfers_evidence_and_group_score(self) -> None:

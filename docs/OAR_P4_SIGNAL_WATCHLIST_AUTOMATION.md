@@ -134,7 +134,7 @@ python onchain_main.py watch-live --allow-network --duration-minutes 30
 
 ## 关联市场信号
 
-报告的 `linked_market_signals` 只包含 public ref、module、symbol、score、stage、severity、timestamp、age 和短摘要。它按来源优先级、时间、public ref 确定性排序，最多 10 条进入 AI Context、3 条进入 Telegram。不会包含完整原话题正文、Message ID、Topic ID、主数据库路径或凭据。
+报告的 `linked_market_signals` 只包含 public ref、module、symbol、score、stage、severity、结构化方向、timestamp、age 和短摘要。方向只允许 `long`、`short` 或空值，不能从摘要正文猜测。它按来源优先级、时间、public ref 确定性排序，最多 10 条进入 AI Context、3 条进入 Telegram。不会包含完整原话题正文、Message ID、Topic ID、主数据库路径或凭据。
 
 AI Context Schema 为 2，Prompt Version 为 `oar-ai-prompt-v2`；旧 Prompt Cache 自动 miss。自动链上 Signal Record 记录最多 10 个 linked refs、来源模块、Watch priority 和原因数，并只写独立 `data/onchain/onchain_signals.db`。
 

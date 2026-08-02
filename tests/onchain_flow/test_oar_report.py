@@ -538,6 +538,91 @@ class OarReportTests(unittest.TestCase):
         )
         self.assertEqual(fake.restricted_inputs, [True])
 
+    def test_aligned_structured_market_direction_is_available_to_ai(self) -> None:
+        payload = self.analyzed_case("accumulation")
+        fake = ConfiguredAi(
+            ai_output(bias="bullish", confidence="high")
+        )
+        result = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(payload),
+            ai_client=fake,
+            ai_cache=MemoryCache(),
+        ).build_from_analysis(
+            payload,
+            with_ai=True,
+            linked_market_signals=[
+                {
+                    "public_ref": "launch:aligned",
+                    "module": "launch",
+                    "symbol": "AAAUSDT",
+                    "direction": "long",
+                }
+            ],
+        )
+        ai = result["report"]["ai"]
+        self.assertEqual(ai["status"], "available")
+        self.assertEqual(ai["restriction_reasons"], [])
+        self.assertEqual(fake.restricted_inputs, [False])
+        self.assertEqual(
+            result["report"]["ai_context"]["linked_market_signals"][0][
+                "direction"
+            ],
+            "long",
+        )
+
+    def test_conflicted_or_opposed_market_direction_is_restricted(self) -> None:
+        payload = self.analyzed_case("accumulation")
+        opposed = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(payload),
+            ai_client=ConfiguredAi(ai_output()),
+            ai_cache=MemoryCache(),
+        ).build_from_analysis(
+            payload,
+            with_ai=False,
+            linked_market_signals=[
+                {
+                    "public_ref": "funding:opposed",
+                    "module": "funding",
+                    "symbol": "AAAUSDT",
+                    "direction": "short",
+                }
+            ],
+        )
+        self.assertEqual(
+            opposed["report"]["ai"]["restriction_reasons"],
+            ["market_onchain_direction_opposed"],
+        )
+
+        conflicted = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(payload),
+            ai_client=ConfiguredAi(ai_output()),
+            ai_cache=MemoryCache(),
+        ).build_from_analysis(
+            payload,
+            with_ai=False,
+            linked_market_signals=[
+                {
+                    "public_ref": "launch:long",
+                    "module": "launch",
+                    "symbol": "AAAUSDT",
+                    "direction": "long",
+                },
+                {
+                    "public_ref": "funding:short",
+                    "module": "funding",
+                    "symbol": "AAAUSDT",
+                    "direction": "short",
+                },
+            ],
+        )
+        self.assertEqual(
+            conflicted["report"]["ai"]["restriction_reasons"],
+            ["market_direction_conflicted"],
+        )
+
     def test_restricted_input_rejects_stale_richer_cache(self) -> None:
         cache = MemoryCache()
         cache.result = ai_output(bias="bullish", confidence="high")

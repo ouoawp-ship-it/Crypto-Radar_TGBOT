@@ -83,7 +83,7 @@ class AutomationStoreTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT value FROM automation_meta WHERE key='schema_version'"
             ).fetchone()
-        self.assertEqual(version[0], "4")
+        self.assertEqual(version[0], "5")
 
     def test_same_chain_contract_is_idempotent(self) -> None:
         self.add()
@@ -689,7 +689,7 @@ class AutomationStoreTests(unittest.TestCase):
                 "SELECT status, resolved_at, resolved_token_key, "
                 "resolution_note FROM unresolved_signals"
             ).fetchone()
-        self.assertEqual(version, "4")
+        self.assertEqual(version, "5")
         self.assertEqual(row, ("open", None, None, ""))
 
     def test_schema_v1_to_v2_failure_rolls_back(self) -> None:
@@ -795,7 +795,7 @@ class AutomationStoreTests(unittest.TestCase):
                     "PRAGMA table_info(watch_scan_runs)"
                 ).fetchall()
             }
-        self.assertEqual(version, "4")
+        self.assertEqual(version, "5")
         self.assertTrue(
             {
                 "query_window",
@@ -870,8 +870,63 @@ class AutomationStoreTests(unittest.TestCase):
                 "unknown_addresses_queued, external_label_provider_calls "
                 "FROM watch_scan_runs WHERE scan_id='old'"
             ).fetchone()
-        self.assertEqual(version, "4")
+        self.assertEqual(version, "5")
         self.assertEqual(row, ("not_recorded", "", 0, 0))
+
+    def test_schema_v4_migrates_watch_source_direction(self) -> None:
+        other_path = self.root / "v4" / "oar_automation.db"
+        other_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(other_path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE automation_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO automation_meta VALUES('schema_version', '4');
+                CREATE TABLE watch_sources(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_key TEXT NOT NULL,
+                    source_module TEXT NOT NULL,
+                    source_public_ref TEXT NOT NULL,
+                    source_signal_id INTEGER,
+                    source_symbol TEXT NOT NULL,
+                    source_score REAL,
+                    source_priority INTEGER NOT NULL,
+                    source_stage TEXT NOT NULL DEFAULT '',
+                    source_severity TEXT NOT NULL DEFAULT '',
+                    source_summary TEXT NOT NULL DEFAULT '',
+                    source_ts INTEGER NOT NULL,
+                    source_payload_hash TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(source_public_ref, token_key)
+                );
+                INSERT INTO watch_sources(
+                    token_key, source_module, source_public_ref,
+                    source_symbol, source_priority, source_ts,
+                    source_payload_hash, expires_at, created_at, updated_at
+                ) VALUES(
+                    '8453:0x1111111111111111111111111111111111111111',
+                    'launch', 'sig_old', 'AAAUSDT', 100, 1000,
+                    'hash', 2000, 1000, 1000
+                );
+                """
+            )
+            conn.commit()
+        store = AutomationStore(other_path, data_dir=self.root)
+        store.migrate()
+        with closing(sqlite3.connect(other_path)) as conn:
+            version = conn.execute(
+                "SELECT value FROM automation_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            row = conn.execute(
+                "SELECT source_direction FROM watch_sources "
+                "WHERE source_public_ref='sig_old'"
+            ).fetchone()
+        self.assertEqual(version, "5")
+        self.assertEqual(row, ("",))
 
     def test_scan_side_effect_audit_is_fixed_and_readable(self) -> None:
         self.add()

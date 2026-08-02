@@ -308,6 +308,11 @@ def format_token_report(payload: dict[str, object]) -> str:
         lines.extend(["", "<b>关联市场信号</b>"])
         for item in linked:
             module = str(item.get("module") or "")
+            direction = str(item.get("direction") or "").lower()
+            direction_text = {
+                "long": " · 方向假设：看多",
+                "short": " · 方向假设：看空",
+            }.get(direction, "")
             score = item.get("score")
             score_text = (
                 f" · {escape(str(score))}分" if score is not None else ""
@@ -316,8 +321,9 @@ def format_token_report(payload: dict[str, object]) -> str:
             lines.append(
                 "- "
                 f"{module_labels.get(module, escape(module or '市场信号'))}"
-                f"{score_text} · {age_minutes}分钟前"
+                f"{score_text}{direction_text} · {age_minutes}分钟前"
             )
+        lines.append("- 方向仅为结构化信号假设，不代表因果关系或概率。")
 
     ai = _map(report.get("ai"))
     ai_result = _map(ai.get("result"))

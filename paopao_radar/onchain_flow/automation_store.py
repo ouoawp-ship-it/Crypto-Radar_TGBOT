@@ -194,6 +194,7 @@ class AutomationStore:
                     1,
                     2,
                     3,
+                    4,
                     OAR_AUTOMATION_SCHEMA_VERSION,
                 }:
                     raise AutomationStoreError(
@@ -211,6 +212,10 @@ class AutomationStore:
                     self._create_schema(conn)
                     self._migrate_v3_to_v4(conn)
                     current_version = 4
+                if current_version == 4:
+                    self._create_schema(conn)
+                    self._migrate_v4_to_v5(conn)
+                    current_version = 5
                 if current_version in {0, OAR_AUTOMATION_SCHEMA_VERSION}:
                     self._create_schema(conn)
                 conn.execute(
@@ -294,6 +299,20 @@ class AutomationStore:
                 )
 
     @staticmethod
+    def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(watch_sources)"
+            ).fetchall()
+        }
+        if "source_direction" not in existing:
+            conn.execute(
+                "ALTER TABLE watch_sources ADD COLUMN "
+                "source_direction TEXT NOT NULL DEFAULT ''"
+            )
+
+    @staticmethod
     def _create_schema(conn: sqlite3.Connection) -> None:
         schema = """
             CREATE TABLE IF NOT EXISTS token_registry (
@@ -358,6 +377,7 @@ class AutomationStore:
                 source_priority INTEGER NOT NULL,
                 source_stage TEXT NOT NULL DEFAULT '',
                 source_severity TEXT NOT NULL DEFAULT '',
+                source_direction TEXT NOT NULL DEFAULT '',
                 source_summary TEXT NOT NULL DEFAULT '',
                 source_ts INTEGER NOT NULL,
                 source_payload_hash TEXT NOT NULL,
@@ -997,6 +1017,9 @@ class AutomationStore:
         signal_id = int(signal.get("id") or 0)
         public_ref = str(signal.get("public_ref") or "")[:160]
         payload_hash = str(signal.get("payload_hash") or "")
+        source_direction = str(signal.get("direction") or "").lower()
+        if source_direction not in {"long", "short"}:
+            source_direction = ""
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -1012,7 +1035,8 @@ class AutomationStore:
                     prior_source = conn.execute(
                         """
                         SELECT source_signal_id, source_score, source_stage,
-                               source_severity, source_summary, source_ts,
+                               source_severity, source_direction,
+                               source_summary, source_ts,
                                source_payload_hash, expires_at
                         FROM watch_sources
                         WHERE source_public_ref=? AND token_key=?
@@ -1024,6 +1048,7 @@ class AutomationStore:
                         signal.get("score"),
                         str(signal.get("stage") or "")[:80],
                         str(signal.get("severity") or "")[:24],
+                        source_direction,
                         str(signal.get("excerpt") or "")[:300],
                         signal_ts,
                         payload_hash,
@@ -1063,11 +1088,12 @@ class AutomationStore:
                                 token_key, source_module, source_public_ref,
                                 source_signal_id, source_symbol, source_score,
                                 source_priority,
-                                source_stage, source_severity, source_summary,
+                                source_stage, source_severity,
+                                source_direction, source_summary,
                                 source_ts, source_payload_hash, expires_at,
                                 created_at, updated_at
                             ) VALUES(
-                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                             )
                             ON CONFLICT(source_public_ref, token_key) DO UPDATE SET
                                 source_signal_id=excluded.source_signal_id,
@@ -1075,6 +1101,7 @@ class AutomationStore:
                                 source_priority=excluded.source_priority,
                                 source_stage=excluded.source_stage,
                                 source_severity=excluded.source_severity,
+                                source_direction=excluded.source_direction,
                                 source_summary=excluded.source_summary,
                                 source_ts=excluded.source_ts,
                                 source_payload_hash=excluded.source_payload_hash,
@@ -1091,6 +1118,7 @@ class AutomationStore:
                                 int(source_priority),
                                 str(signal.get("stage") or "")[:80],
                                 str(signal.get("severity") or "")[:24],
+                                source_direction,
                                 str(signal.get("excerpt") or "")[:300],
                                 signal_ts,
                                 payload_hash,
