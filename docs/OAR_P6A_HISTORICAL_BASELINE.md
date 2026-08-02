@@ -70,3 +70,7 @@ Watch 会把已存在的动态来源与本轮链上规则、历史基线组合�
 Watch 同时输出只读 `controlled_alert_preview`。它要求扫描完整、现有链上规则门禁已通过、历史基线成熟且本轮异常、并且存在受支持的市场来源，才会返回 `would_alert=true`。多窗口同时异常时预演等级为 `high`，否则为 `medium`。
 
 未满足条件时，`block_reasons` 只使用固定错误码，例如 `historical_baseline_not_ready`、`historical_anomaly_not_observed` 或 `market_context_not_present`。该字段始终标记 `dry_run_only=true`、`notification_gate_changed=false`、`telegram_calls=0`，不会创建 Telegram 客户端、不会修改现有通知门禁，也不会产生持久消息。
+
+## 谨慎 AI 输入门禁
+
+AI 仍只在显式请求且 `OAR_AI_ENABLE=true` 时调用。查询或分析不完整、行为证据不足、CEX 标签覆盖不足，或关联市场信号尚无统一结构化方向时，报告会标记 `restricted_input=true` 并给出固定 `restriction_reasons`。此时 AI 输出契约只接受 `neutral/uncertain + low`；规则摘要不受 AI 成败影响。Prompt、Context、凭据和 Provider 原始错误均不进入这些诊断字段。

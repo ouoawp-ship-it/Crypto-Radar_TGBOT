@@ -264,6 +264,7 @@ def build_ai_context(
         limitations.add("query_incomplete")
     if not bool(analysis_map.get("complete")):
         limitations.add("analysis_incomplete")
+    limitations.update(_evidence(payload.get("ai_restriction_reasons")))
     linked_source = [
         item
         for item in (payload.get("linked_market_signals") or [])
