@@ -532,6 +532,12 @@ class WatchScannerTests(unittest.TestCase):
             notifier.calls[0]["linked_source_refs"], ["launch:1"]
         )
         self.assertTrue(result["ai_calls"])
+        convergence = result["results"][0]["market_convergence"]
+        self.assertEqual(
+            convergence["status"], "onchain_market_cooccurrence"
+        )
+        self.assertEqual(convergence["market_modules"], ["launch"])
+        self.assertFalse(convergence["notification_gate_changed"])
 
     def test_actionable_observe_builds_report_without_gateway(self) -> None:
         self.watch()

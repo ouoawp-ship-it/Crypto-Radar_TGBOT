@@ -7,6 +7,7 @@ from typing import Any, Callable
 from .address_intelligence import AddressIntelligenceStore
 from .automation_store import AutomationStore, AutomationStoreError
 from .config import OnchainSettings
+from .market_convergence import evaluate_market_convergence
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
 from .scan_baseline import (
@@ -456,6 +457,14 @@ class WatchScanner:
                         self.settings.oar_watch_baseline_mad_multiplier
                     ),
                 )
+        market_convergence = evaluate_market_convergence(
+            linked,
+            historical_baseline,
+            onchain_actionable=actionable,
+            behavior_score=int(primary.get("score") or 0),
+            max_wallet_group_score=max_wallet_score,
+        )
+        historical_baseline["market_convergence"] = market_convergence
         if not self._renew_lease(token_key, lease_owner):
             return self._record_stale(
                 token_key,
@@ -542,6 +551,7 @@ class WatchScanner:
             "ai_calls": ai_calls,
             "analysis_started": True,
             "historical_baseline": historical_baseline,
+            "market_convergence": market_convergence,
             "unknown_addresses_queued": int(
                 queue_result.get("observed") or 0
             ),

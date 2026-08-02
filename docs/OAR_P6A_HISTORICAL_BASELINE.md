@@ -52,3 +52,15 @@ python onchain_main.py watch-baseline --token-key <verified-token-key>
 Token Activity 在缺少可用于方向分类的已审核 CEX 标签时继续保留 Transfer 事实，并将方向保持为 `unclassified`。结构化报告、AI 白名单上下文和中文卡片会明确显示 `insufficient_cex_coverage`；“流入/提出为 0”不再被表达成“确认没有交易所流向”。
 
 动态 Watchlist 已由 Signal Bridge 提供，但只接受主 BOT 中 `status=sent`、`sent=1`、结构化且质量就绪的真实发送信号。主 BOT Dry-run 记录继续被审计为 `ignored_not_sent`，不会创建 Watch 来源、不会触发链上扫描。这一门禁不得为扩大 Watchlist 而放宽。
+
+## 链上与市场共振诊断
+
+Watch 会把已存在的动态来源与本轮链上规则、历史基线组合成只读 `market_convergence`：
+
+- `no_market_context`：没有已验证的主 BOT sent 来源；
+- `market_context_only`：只有市场来源，链上规则门禁未满足；
+- `onchain_market_cooccurrence`：市场来源与链上规则候选同时出现；
+- `historical_anomaly_cooccurrence`：市场来源与单窗口历史异常同时出现；
+- `multi_window_anomaly_cooccurrence`：市场来源、链上规则候选和多窗口历史异常同时出现。
+
+共振分是确定性共现规则分，不是概率。由于现有主信号尚未提供统一的结构化方向字段，`direction_alignment=not_evaluated`；系统不得从摘要文字猜测多空方向。第一阶段 `notification_gate_changed=false`，不会因为共振诊断自动发送。
