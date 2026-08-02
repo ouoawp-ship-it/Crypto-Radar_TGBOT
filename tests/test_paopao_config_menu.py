@@ -465,6 +465,44 @@ class ConfigManagerTests(unittest.TestCase):
                 with self.assertRaises(ConfigManagerError):
                     self.manager.set("ONCHAIN_CEX_LABELS_FILE", value)
 
+    def test_watch_baseline_settings_are_allowlisted_and_atomic(self) -> None:
+        self.assertEqual(
+            self.manager.set("OAR_WATCH_BASELINE_MIN_SAMPLES", "8")[
+                "status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set("OAR_WATCH_BASELINE_MAX_SAMPLES", "64")[
+                "status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set(
+                "OAR_WATCH_BASELINE_MAD_MULTIPLIER", "3.5"
+            )["status"],
+            "ok",
+        )
+        before = (self.root / ".env.onchain").read_text(encoding="utf-8")
+        with self.assertRaises(ConfigManagerError):
+            self.manager.set("OAR_WATCH_BASELINE_MIN_SAMPLES", "80")
+        self.assertEqual(
+            (self.root / ".env.onchain").read_text(encoding="utf-8"),
+            before,
+        )
+
+    def test_watch_baseline_setting_ranges_are_enforced(self) -> None:
+        for key, value in (
+            ("OAR_WATCH_BASELINE_MIN_SAMPLES", "3"),
+            ("OAR_WATCH_BASELINE_MAX_SAMPLES", "101"),
+            ("OAR_WATCH_BASELINE_MAD_MULTIPLIER", "0.9"),
+            ("OAR_WATCH_BASELINE_MAD_MULTIPLIER", "10.1"),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(key, value)
+
     @unittest.skipIf(os.name == "nt", "symlink creation is restricted")
     def test_cex_labels_symlink_cannot_escape_project(self) -> None:
         outside = self.root.parent / f"{self.root.name}-outside-labels.csv"

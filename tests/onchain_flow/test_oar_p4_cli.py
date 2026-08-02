@@ -47,6 +47,7 @@ class OarP4CliTests(unittest.TestCase):
             ["registry-disable", "--token-key", f"8453:{CONTRACT}"],
             ["watch-add", "--token-key", f"8453:{CONTRACT}"],
             ["watch-list"],
+            ["watch-baseline", "--token-key", f"8453:{CONTRACT}"],
             ["watch-remove", "--token-key", f"8453:{CONTRACT}"],
             ["bridge-once"],
             ["watch-once"],
@@ -97,6 +98,17 @@ class OarP4CliTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(payload["status"], "not_initialized")
                 self.assertFalse(self.settings.data_dir.exists())
+
+    def test_watch_baseline_is_offline_and_does_not_initialize_database(self) -> None:
+        code, payload = self.run_cli(
+            ["watch-baseline", "--token-key", f"8453:{CONTRACT}"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "not_found")
+        self.assertFalse(payload["network_activity"])
+        self.assertFalse(payload["telegram_calls"])
+        self.assertFalse(payload["ai_calls"])
+        self.assertFalse(self.settings.data_dir.exists())
 
     def test_registry_add_is_pending_and_offline(self) -> None:
         code, payload = self.run_cli(

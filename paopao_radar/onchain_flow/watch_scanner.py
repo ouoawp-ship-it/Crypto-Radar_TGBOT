@@ -9,6 +9,11 @@ from .automation_store import AutomationStore, AutomationStoreError
 from .config import OnchainSettings
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
+from .scan_baseline import (
+    HistoricalScanBaseline,
+    baseline_local_error,
+    scan_metrics,
+)
 from .signal_bridge import SignalBridge
 from .token_activity import TokenActivityQuery, TokenActivityQueryError
 from .token_analysis import TokenAnalysisService
@@ -391,6 +396,36 @@ class WatchScanner:
             )
         summary = analyzed.get("summary")
         summary = summary if isinstance(summary, dict) else {}
+        current_metrics = scan_metrics(
+            summary,
+            behavior_score=int(primary.get("score") or 0),
+            max_wallet_group_score=max_wallet_score,
+        )
+        baseline_analyzer = HistoricalScanBaseline(
+            min_samples=self.settings.oar_watch_baseline_min_samples,
+            max_samples=self.settings.oar_watch_baseline_max_samples,
+            mad_multiplier=(
+                self.settings.oar_watch_baseline_mad_multiplier
+            ),
+        )
+        try:
+            baseline_history = self.store.complete_scan_history(
+                token_key,
+                query_window=str(item["query_window"]),
+                limit=self.settings.oar_watch_baseline_max_samples,
+            )
+            historical_baseline = baseline_analyzer.analyze(
+                current_metrics,
+                baseline_history,
+            )
+        except Exception:
+            historical_baseline = baseline_local_error(
+                min_samples=self.settings.oar_watch_baseline_min_samples,
+                max_samples=self.settings.oar_watch_baseline_max_samples,
+                mad_multiplier=(
+                    self.settings.oar_watch_baseline_mad_multiplier
+                ),
+            )
         if not self._renew_lease(token_key, lease_owner):
             return self._record_stale(
                 token_key,
@@ -413,6 +448,13 @@ class WatchScanner:
             max_wallet_group_score=max_wallet_score,
             transfer_count=int(summary.get("transfer_count") or 0),
             rpc_request_count=rpc_count,
+            query_window=str(item["query_window"]),
+            total_token_amount=str(
+                current_metrics["total_token_amount"]
+            ),
+            unique_senders=int(current_metrics["unique_senders"]),
+            unique_receivers=int(current_metrics["unique_receivers"]),
+            historical_baseline=historical_baseline,
             context_hash=context_hash,
             notification_status=notification_status,
             notification_reason=notification_reason,
@@ -469,6 +511,7 @@ class WatchScanner:
             "error": partial_reason,
             "ai_calls": ai_calls,
             "analysis_started": True,
+            "historical_baseline": historical_baseline,
             "unknown_addresses_queued": int(
                 queue_result.get("observed") or 0
             ),

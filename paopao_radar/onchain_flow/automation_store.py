@@ -86,6 +86,16 @@ def _json_list(value: object) -> str:
     )
 
 
+def _json_dict(value: object) -> str:
+    item = value if isinstance(value, dict) else {}
+    return json.dumps(
+        item,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 class AutomationStore:
     def __init__(
         self,
@@ -164,6 +174,7 @@ class AutomationStore:
                 if current_version not in {
                     0,
                     1,
+                    2,
                     OAR_AUTOMATION_SCHEMA_VERSION,
                 }:
                     raise AutomationStoreError(
@@ -172,7 +183,11 @@ class AutomationStore:
                     )
                 if current_version == 1:
                     self._migrate_v1_to_v2(conn)
-                else:
+                    current_version = 2
+                if current_version == 2:
+                    self._create_schema(conn)
+                    self._migrate_v2_to_v3(conn)
+                if current_version in {0, OAR_AUTOMATION_SCHEMA_VERSION}:
                     self._create_schema(conn)
                 conn.execute(
                     "INSERT OR REPLACE INTO automation_meta(key, value) "
@@ -207,6 +222,30 @@ class AutomationStore:
             "CREATE INDEX IF NOT EXISTS idx_unresolved_open_symbol "
             "ON unresolved_signals(status, source_symbol, reason)"
         )
+
+    @staticmethod
+    def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+        additions = (
+            "query_window TEXT NOT NULL DEFAULT ''",
+            "total_token_amount TEXT NOT NULL DEFAULT ''",
+            "unique_senders INTEGER",
+            "unique_receivers INTEGER",
+            "baseline_status TEXT NOT NULL DEFAULT ''",
+            "baseline_anomaly INTEGER NOT NULL DEFAULT 0",
+            "baseline_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        existing = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(watch_scan_runs)"
+            ).fetchall()
+        }
+        for definition in additions:
+            name = definition.split()[0]
+            if name not in existing:
+                conn.execute(
+                    f"ALTER TABLE watch_scan_runs ADD COLUMN {definition}"
+                )
 
     @staticmethod
     def _create_schema(conn: sqlite3.Connection) -> None:
@@ -329,6 +368,13 @@ class AutomationStore:
                 max_wallet_group_score INTEGER,
                 transfer_count INTEGER,
                 rpc_request_count INTEGER,
+                query_window TEXT NOT NULL DEFAULT '',
+                total_token_amount TEXT NOT NULL DEFAULT '',
+                unique_senders INTEGER,
+                unique_receivers INTEGER,
+                baseline_status TEXT NOT NULL DEFAULT '',
+                baseline_anomaly INTEGER NOT NULL DEFAULT 0,
+                baseline_json TEXT NOT NULL DEFAULT '{}',
                 context_hash TEXT NOT NULL DEFAULT '',
                 notification_status TEXT NOT NULL DEFAULT '',
                 notification_reason TEXT NOT NULL DEFAULT '',
@@ -1517,6 +1563,11 @@ class AutomationStore:
         max_wallet_group_score: int | None = None,
         transfer_count: int | None = None,
         rpc_request_count: int | None = None,
+        query_window: str = "",
+        total_token_amount: str = "",
+        unique_senders: int | None = None,
+        unique_receivers: int | None = None,
+        historical_baseline: dict[str, object] | None = None,
         context_hash: str = "",
         notification_status: str = "",
         notification_reason: str = "",
@@ -1531,6 +1582,11 @@ class AutomationStore:
         completed_at = int(now if now is not None else self.clock())
         scan_id = uuid.uuid4().hex
         failure = status in {"failed", "partial"}
+        baseline = (
+            historical_baseline
+            if isinstance(historical_baseline, dict)
+            else {}
+        )
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
@@ -1549,10 +1605,13 @@ class AutomationStore:
                     scan_id, token_key, started_at, completed_at, status,
                     activity_complete, analysis_complete, analysis_status,
                     behavior_type, behavior_score, max_wallet_group_score,
-                    transfer_count, rpc_request_count, context_hash,
+                    transfer_count, rpc_request_count, query_window,
+                    total_token_amount, unique_senders, unique_receivers,
+                    baseline_status, baseline_anomaly, baseline_json,
+                    context_hash,
                     notification_status, notification_reason, error_code,
                     source_refs_json
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scan_id,
@@ -1568,6 +1627,13 @@ class AutomationStore:
                     max_wallet_group_score,
                     transfer_count,
                     rpc_request_count,
+                    str(query_window or "")[:8],
+                    str(total_token_amount or "")[:160],
+                    unique_senders,
+                    unique_receivers,
+                    str(baseline.get("status") or "")[:24],
+                    int(bool(baseline.get("anomaly"))),
+                    _json_dict(baseline),
                     str(context_hash or "")[:64],
                     str(notification_status or "")[:40],
                     str(notification_reason or "")[:120],
@@ -1622,6 +1688,74 @@ class AutomationStore:
             self._trim_scan_audit(conn, token_key.lower())
             conn.commit()
         return scan_id
+
+    def complete_scan_history(
+        self,
+        token_key: str,
+        *,
+        query_window: str,
+        limit: int = 64,
+    ) -> list[dict[str, object]]:
+        parse_token_key(token_key)
+        bounded_limit = max(1, min(int(limit), 100))
+        with self.connect_existing() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT transfer_count, total_token_amount,
+                       unique_senders, unique_receivers,
+                       behavior_score, max_wallet_group_score
+                FROM watch_scan_runs
+                WHERE token_key=? AND query_window=? AND status='ok'
+                  AND activity_complete=1 AND analysis_complete=1
+                ORDER BY started_at DESC, scan_id DESC
+                LIMIT ?
+                """,
+                (token_key.lower(), str(query_window), bounded_limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def latest_scan_baseline(
+        self, token_key: str
+    ) -> dict[str, object] | None:
+        parse_token_key(token_key)
+        with self.connect_existing() as conn:
+            if conn is None:
+                return None
+            row = conn.execute(
+                """
+                SELECT scan_id, token_key, started_at, completed_at,
+                       query_window, baseline_status, baseline_anomaly,
+                       baseline_json
+                FROM watch_scan_runs
+                WHERE token_key=? AND baseline_status<>''
+                ORDER BY started_at DESC, scan_id DESC
+                LIMIT 1
+                """,
+                (token_key.lower(),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            baseline = json.loads(str(row["baseline_json"] or "{}"))
+        except json.JSONDecodeError:
+            baseline = {
+                "status": "local_error",
+                "error": "historical_baseline_invalid_audit",
+            }
+        return {
+            "scan_id": str(row["scan_id"]),
+            "token_key": str(row["token_key"]),
+            "started_at": int(row["started_at"]),
+            "completed_at": int(row["completed_at"] or 0),
+            "query_window": str(row["query_window"] or ""),
+            "baseline_status": str(row["baseline_status"] or ""),
+            "baseline_anomaly": bool(row["baseline_anomaly"]),
+            "historical_baseline": (
+                baseline if isinstance(baseline, dict) else {}
+            ),
+        }
 
     @staticmethod
     def _trim_scan_audit(

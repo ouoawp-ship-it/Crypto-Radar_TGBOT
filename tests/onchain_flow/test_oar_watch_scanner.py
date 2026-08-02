@@ -262,6 +262,77 @@ class WatchScannerTests(unittest.TestCase):
         self.assertNotIn("secret path", str(item))
         self.assertEqual(item["external_label_provider_calls"], 0)
 
+    def test_complete_scans_build_and_persist_historical_baseline(self) -> None:
+        key = self.watch()
+        with self.store.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO watch_scan_runs(
+                    scan_id, token_key, started_at, completed_at, status,
+                    activity_complete, analysis_complete, query_window,
+                    transfer_count, total_token_amount, unique_senders,
+                    unique_receivers, behavior_score, max_wallet_group_score
+                ) VALUES(?, ?, ?, ?, 'ok', 1, 1, '4h', ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        f"baseline-{index}", key, 1500 + index, 1500 + index,
+                        2, "20", 2, 2, 10, 10,
+                    )
+                    for index in range(4)
+                ],
+            )
+            conn.commit()
+        payload = self.analyzed("isolated")
+        payload["summary"].update(
+            {
+                "transfer_count": 20,
+                "total_token_amount": "200",
+                "unique_senders": 20,
+                "unique_receivers": 20,
+            }
+        )
+        settings = make_settings(
+            self.root,
+            oar_watch_baseline_min_samples=4,
+            oar_watch_baseline_max_samples=8,
+        )
+        result = self.scanner([payload], settings=settings).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        baseline = result["results"][0]["historical_baseline"]
+        self.assertEqual(baseline["status"], "ready")
+        self.assertTrue(baseline["anomaly"])
+        self.assertIn("transfer_count", baseline["anomalous_metrics"])
+        persisted = self.store.latest_scan_baseline(key) or {}
+        self.assertEqual(persisted["baseline_status"], "ready")
+        self.assertTrue(persisted["baseline_anomaly"])
+
+    def test_baseline_local_error_does_not_fail_watch_or_leak_exception(self) -> None:
+        self.watch()
+        with patch.object(
+            self.store,
+            "complete_scan_history",
+            side_effect=OSError("secret local path"),
+        ):
+            result = self.scanner([self.analyzed("isolated")]).run_once(
+                allow_network=True,
+                notify_dry_run=False,
+                with_ai=False,
+                send=False,
+                confirm_real_send=False,
+            )
+        item = result["results"][0]
+        self.assertEqual(item["status"], "ok")
+        self.assertEqual(
+            item["historical_baseline"]["status"], "local_error"
+        )
+        self.assertNotIn("secret local path", str(item))
+
     def test_incomplete_scan_skips_local_queue(self) -> None:
         self.watch()
         queue_store = Mock()

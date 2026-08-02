@@ -297,6 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch_list.add_argument("--status", default=None)
     watch_list.add_argument("--due-only", action="store_true")
     watch_list.add_argument("--limit", type=int, default=100)
+    watch_baseline = subparsers.add_parser("watch-baseline")
+    watch_baseline.add_argument("--token-key", required=True)
     watch_remove = subparsers.add_parser("watch-remove")
     watch_remove.add_argument("--token-key", required=True)
 
@@ -1441,6 +1443,7 @@ def main(
             "registry-disable",
             "watch-add",
             "watch-list",
+            "watch-baseline",
             "watch-remove",
             "bridge-once",
             "unresolved-summary",
@@ -1584,6 +1587,23 @@ def main(
                             "watch_items": items or [],
                             "database_writes": False,
                             "network_activity": False,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "watch-baseline":
+                item = store.latest_scan_baseline(args.token_key)
+                print(
+                    json.dumps(
+                        {
+                            "status": "ok" if item is not None else "not_found",
+                            "baseline": item,
+                            "database_writes": False,
+                            "network_activity": False,
+                            "telegram_calls": False,
+                            "ai_calls": False,
                         },
                         ensure_ascii=False,
                         sort_keys=True,
