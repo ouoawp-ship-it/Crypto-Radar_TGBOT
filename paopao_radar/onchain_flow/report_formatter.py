@@ -11,6 +11,104 @@ BIAS_LABELS = {
     "uncertain": "不确定",
 }
 
+CONFIDENCE_LABELS = {
+    "low": "低",
+    "medium": "中等",
+    "high": "高",
+}
+
+AI_STATUS_LABELS = {
+    "not_requested": "未请求",
+    "disabled": "未启用",
+    "available": "已生成",
+    "cached": "使用合规缓存",
+    "failed": "生成失败",
+}
+
+EVIDENCE_LABELS = {
+    "wallet_count_met": "参与的不同钱包数量达到规则门槛",
+    "transaction_count_met": "符合该行为的转账笔数达到规则门槛",
+    "token_amount_share_met": "该行为涉及的代币数量占比达到规则门槛",
+    "inflow_dominance_met": "流入交易所的方向占比达到规则门槛",
+    "outflow_dominance_met": "从交易所提出的方向占比达到规则门槛",
+    "inflow_transaction_count_met": "流入交易所的转账笔数达到规则门槛",
+    "outflow_transaction_count_met": "从交易所提出的转账笔数达到规则门槛",
+    "multiple_15m_buckets": "在多个 15 分钟子窗口中重复出现",
+    "multiple_or_repeated_counterparties": "涉及多个或重复出现的对手钱包",
+    "repeated_across_nested_windows": "在不同长度的时间窗口中重复出现",
+    "direction_token_amount_share_met": "该方向的代币数量占比达到规则门槛",
+    "opposite_cex_flow_material": "相反方向的交易所流量占比较高",
+    "cex_internal_activity_dominant": "交易所内部或跨交易所流转占比较高",
+}
+
+STRUCTURE_EVIDENCE_POINTS = {
+    "wallet_count_met": 30,
+    "transaction_count_met": 20,
+    "token_amount_share_met": 20,
+    "multiple_15m_buckets": 15,
+    "repeated_across_nested_windows": 15,
+}
+
+DIRECTION_EVIDENCE_POINTS = {
+    "inflow_dominance_met": 25,
+    "outflow_dominance_met": 25,
+    "inflow_transaction_count_met": 20,
+    "outflow_transaction_count_met": 20,
+    "multiple_15m_buckets": 20,
+    "multiple_or_repeated_counterparties": 15,
+    "repeated_across_nested_windows": 10,
+    "direction_token_amount_share_met": 10,
+}
+
+GROUP_TYPE_LABELS = {
+    "shared_target": (
+        "共同收款地址",
+        "多个钱包在窗口内把币转到同一个非交易所或身份未知地址",
+    ),
+    "shared_source": (
+        "共同付款地址",
+        "同一个非交易所或身份未知地址在窗口内向多个钱包转账",
+    ),
+    "synchronized_cex_inflow": (
+        "同步流入同一交易所",
+        "多个钱包在接近的时间向同一家交易所转入代币",
+    ),
+    "synchronized_cex_outflow": (
+        "同步从同一交易所提出",
+        "同一家交易所在接近的时间向多个钱包转出代币",
+    ),
+}
+
+GROUP_LEVEL_LABELS = {
+    "证据不足": "证据不足",
+    "弱关联": "弱关联候选",
+    "中等概率关联": "中等关联候选",
+    "高概率关联": "高关联候选",
+    "强关联候选": "强关联候选",
+}
+
+GROUP_EVIDENCE_POINTS = {
+    "repeated_shared_target": ("多个钱包共同转入同一地址", 30),
+    "repeated_shared_source": ("同一地址共同转出到多个钱包", 30),
+    "repeated_across_nested_windows": ("不同长度窗口中重复出现", 20),
+    "time_synchronized": ("转账时间接近", 15),
+    "amounts_similar": ("转账数量相近", 15),
+    "direct_token_transfer_between_members": ("成员钱包之间存在直接转账", 10),
+    "same_exchange_synchronized_flow": ("同步流向或来自同一交易所", 10),
+}
+
+FLOW_TYPE_LABELS = {
+    "inflow": "流入交易所",
+    "outflow": "从交易所提出",
+    "internal": "交易所内部流转",
+    "consolidation": "交易所归集",
+    "cross_cex": "交易所之间流转",
+    "non_cex": "非交易所地址间转账",
+    "unclassified": "尚未分类",
+    "mint": "铸造",
+    "burn": "销毁",
+}
+
 
 def _map(value: object) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
@@ -20,19 +118,45 @@ def _items(value: object) -> list[object]:
     return value if isinstance(value, list) else []
 
 
-def _short_address(value: object) -> str:
-    address = str(value or "")
-    if len(address) <= 14:
-        return address
-    return f"{address[:8]}…{address[-6:]}"
-
-
 def _lines(values: object, *, limit: int) -> list[str]:
     return [
         f"- {escape(str(item))}"
         for item in _items(values)[:limit]
         if str(item).strip()
     ]
+
+
+def _evidence_lines(
+    values: object,
+    *,
+    limit: int,
+    points: dict[str, int] | None = None,
+) -> list[str]:
+    result: list[str] = []
+    for item in _items(values)[:limit]:
+        code = str(item).strip()
+        if not code:
+            continue
+        label = EVIDENCE_LABELS.get(code, "其他已记录的规则证据")
+        score = (points or {}).get(code)
+        suffix = f"（+{score}分）" if score is not None else ""
+        result.append(f"- {escape(label)}{suffix}")
+    return result
+
+
+def _contract_line(value: object) -> str:
+    contract = str(value or "")
+    if (
+        len(contract) == 42
+        and contract.startswith("0x")
+        and all(character in "0123456789abcdefABCDEF" for character in contract[2:])
+    ):
+        safe_contract = escape(contract)
+        safe_url = escape(
+            f"https://basescan.org/token/{contract}", quote=True
+        )
+        return f'- 合约：<a href="{safe_url}">{safe_contract}</a>'
+    return f"- 合约：<code>{escape(contract or '-')}</code>"
 
 
 def format_token_report(payload: dict[str, object]) -> str:
@@ -44,7 +168,7 @@ def format_token_report(payload: dict[str, object]) -> str:
     flows = _map(summary.get("cex_flows"))
     primary = _map(summary.get("primary_behavior"))
     symbol = escape(str(token.get("symbol") or "UNKNOWN"))
-    contract = _short_address(token.get("contract"))
+    contract = token.get("contract")
     complete = bool(query.get("complete"))
     completeness = "数据完整" if complete else "⚠️ 数据不完整"
     lines = [
@@ -52,13 +176,19 @@ def format_token_report(payload: dict[str, object]) -> str:
         "",
         "<b>查询</b>",
         f"- Base · 最近 {escape(str(query.get('window') or '-'))} · {completeness}",
-        f"- 合约：<code>{escape(contract)}</code>",
+        _contract_line(contract),
         "",
         "<b>链上概览</b>",
-        f"- Transfer：{int(transfers.get('transfer_count') or 0)} 笔",
         (
-            f"- Token 总量：{escape(str(transfers.get('total_token_amount') or '0'))}"
+            "- Transfer（转账记录）："
+            f"{int(transfers.get('transfer_count') or 0)} 笔"
+            "（本窗口已读取的 ERC-20 转账笔数）"
         ),
+        (
+            "- 代币转账总量："
+            f"{escape(str(transfers.get('total_token_amount') or '0'))} {symbol}"
+        ),
+        "  说明：这是每笔转账数量的合计，不是成交额、净流入或买卖量。",
         (
             "- 流入交易所 / 从交易所提出："
             f"{escape(str(flows.get('gross_inflow_token') or '0'))} / "
@@ -78,13 +208,28 @@ def format_token_report(payload: dict[str, object]) -> str:
             "（评分不是概率）"
         ),
         (
-            f"- 证据强度：{escape(str(primary.get('confidence_level') or 'low'))}"
+            "- 证据强度："
+            f"{CONFIDENCE_LABELS.get(str(primary.get('confidence_level')), '低')}"
+            "（表示规则证据的多少和质量，不是成功概率）"
         ),
     ]
-    support = _lines(primary.get("supporting_evidence"), limit=4)
-    counter = _lines(primary.get("counter_evidence"), limit=3)
+    primary_type = str(primary.get("type") or "")
+    evidence_points = (
+        STRUCTURE_EVIDENCE_POINTS
+        if primary_type in {
+            "wallet_consolidation_candidate",
+            "fanout_candidate",
+        }
+        else DIRECTION_EVIDENCE_POINTS
+    )
+    support = _evidence_lines(
+        primary.get("supporting_evidence"),
+        limit=5,
+        points=evidence_points,
+    )
+    counter = _evidence_lines(primary.get("counter_evidence"), limit=3)
     if support:
-        lines.extend(["- 支持证据：", *support])
+        lines.extend(["- 支持证据（也是规则加分项）：", *support])
     if counter:
         lines.extend(["- 反证：", *counter])
 
@@ -96,12 +241,30 @@ def format_token_report(payload: dict[str, object]) -> str:
     lines.extend(["", "<b>钱包关联候选</b>"])
     if groups:
         for item in groups:
+            group_type = str(item.get("group_type") or "")
+            group_label, group_explanation = GROUP_TYPE_LABELS.get(
+                group_type,
+                ("钱包关联候选", "多个钱包出现可解释的共同链上活动"),
+            )
+            level = GROUP_LEVEL_LABELS.get(
+                str(item.get("level") or ""),
+                "证据不足",
+            )
             lines.append(
                 "- "
-                f"{escape(str(item.get('group_type') or '候选群组'))} · "
-                f"{escape(str(item.get('level') or '证据不足'))} · "
-                f"{int(item.get('score') or 0)}分"
+                f"{escape(group_label)} · {escape(level)} · "
+                f"{int(item.get('score') or 0)}分（规则分，不是概率）"
             )
+            lines.append(f"  含义：{escape(group_explanation)}。")
+            score_parts = [
+                f"{label} +{points}分"
+                for code in _items(item.get("supporting_evidence"))
+                if (detail := GROUP_EVIDENCE_POINTS.get(str(code)))
+                for label, points in [detail]
+            ]
+            if score_parts:
+                lines.append(f"  评分依据：{escape('；'.join(score_parts))}。")
+            lines.append("  注意：这只是关联线索，不能确认这些钱包属于同一主体。")
     else:
         lines.append("- 未形成达到门槛的钱包关联候选")
 
@@ -163,8 +326,9 @@ def format_token_report(payload: dict[str, object]) -> str:
         if invalidation:
             lines.extend(["- 失效条件：", *invalidation])
     else:
+        ai_status = str(ai.get("status") or "not_requested")
         lines.append(
-            f"- 未使用 AI（状态：{escape(str(ai.get('status') or 'not_requested'))}），"
+            f"- 未使用 AI（状态：{AI_STATUS_LABELS.get(ai_status, '不可用')}），"
             "以上为确定性规则摘要。"
         )
 
@@ -178,7 +342,8 @@ def format_token_report(payload: dict[str, object]) -> str:
         for index, item in enumerate(representatives, 1):
             url = escape(str(item.get("explorer_url") or ""), quote=True)
             amount = escape(str(item.get("amount") or "0"))
-            flow = escape(str(item.get("flow_type") or "unclassified"))
+            raw_flow = str(item.get("flow_type") or "unclassified")
+            flow = escape(FLOW_TYPE_LABELS.get(raw_flow, "尚未分类"))
             if url.startswith("https://basescan.org/tx/"):
                 lines.append(
                     f'- <a href="{url}">交易 {index}</a> · {amount} · {flow}'
