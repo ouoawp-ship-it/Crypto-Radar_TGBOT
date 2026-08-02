@@ -15,6 +15,7 @@ from paopao_radar.onchain_flow.config import (
     OAR_TELEGRAM_QUERY_ACK,
     OnchainSettings,
 )
+from paopao_radar.onchain_flow.automation_store import AutomationStoreError
 from paopao_radar.onchain_flow.telegram_query import (
     TelegramQueryError,
     TelegramQueryHttpClient,
@@ -45,14 +46,21 @@ class FakeGateway:
 class FakeAutomationStore:
     def __init__(self, status: str = "resolved") -> None:
         self.status = status
+        self.calls: list[str] = []
 
     def resolve_registry(self, symbol: str) -> dict[str, object]:
+        self.calls.append(symbol)
         if self.status == "resolved" and symbol == "CBDOGEUSDT":
             return {
                 "status": "resolved",
                 "token": {"contract_address": CONTRACT},
             }
         return {"status": self.status, "token": None}
+
+
+class FailingAutomationStore:
+    def resolve_registry(self, _symbol: str) -> dict[str, object]:
+        raise AutomationStoreError("database_unavailable", "private detail")
 
 
 class RejectRegistryAccess:
@@ -288,10 +296,11 @@ class TelegramGroupQueryTests(unittest.TestCase):
                 oar_telegram_query_max_per_hour=12,
             )
             gateway = FakeGateway()
+            automation_store = FakeAutomationStore()
             service = TelegramQueryService(
                 settings,
                 gateway=gateway,
-                automation_store=FakeAutomationStore(),
+                automation_store=automation_store,
                 report_factory=lambda _settings, _query: FakeReportService(),
                 clock=lambda: 2000.0,
             )
@@ -308,6 +317,7 @@ class TelegramGroupQueryTests(unittest.TestCase):
                 },
             })
             self.assertEqual(outcome, "query_completed")
+            self.assertEqual(automation_store.calls, ["CBDOGEUSDT"])
             self.assertEqual(len(gateway.calls), 1)
             call = gateway.calls[0]
             self.assertEqual(call["template_id"], "TG_ONCHAIN_QUERY")
@@ -315,6 +325,42 @@ class TelegramGroupQueryTests(unittest.TestCase):
             self.assertTrue(call["confirm_real_send"])
             self.assertEqual(call["reply_to_message_id"], 77)
             self.assertIn("未调用 AI", str(call["text"]))
+
+    def test_registry_error_returns_safe_reply_without_crashing_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = replace(
+                OnchainSettings(),
+                base_dir=root,
+                data_dir=root / "onchain",
+                oar_telegram_query_state_path=root / "onchain" / "state.json",
+                tg_chat_id="-100123",
+                tg_onchain_flow_topic_id="42",
+            )
+            gateway = FakeGateway()
+            service = TelegramQueryService(
+                settings,
+                gateway=gateway,
+                automation_store=FailingAutomationStore(),
+                clock=lambda: 2000.0,
+            )
+            service.bot_username = "paopao_bot"
+            outcome = service.process_update({
+                "update_id": 91,
+                "message": {
+                    "message_id": 92,
+                    "message_thread_id": 42,
+                    "date": 2000,
+                    "text": "@paopao_bot 查询 CBDOGE 15m",
+                    "chat": {"id": -100123},
+                    "from": {"id": 54321, "is_bot": False},
+                },
+            })
+            self.assertEqual(outcome, "query_rejected")
+            self.assertEqual(len(gateway.calls), 1)
+            reply = str(gateway.calls[0]["text"])
+            self.assertIn("Registry 暂时无法完成解析", reply)
+            self.assertNotIn("private detail", reply)
 
     def test_full_contract_query_does_not_guess_or_consult_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

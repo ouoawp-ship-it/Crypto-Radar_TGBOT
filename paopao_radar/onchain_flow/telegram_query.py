@@ -20,7 +20,7 @@ from paopao_radar.telegram import (
     classify_telegram_response,
 )
 
-from .automation_store import AutomationStore
+from .automation_store import AutomationStore, AutomationStoreError
 from .config import OAR_TELEGRAM_QUERY_ACK, OnchainSettings
 from .report import TokenReportService
 from .report_formatter import format_token_report
@@ -434,7 +434,14 @@ class TelegramQueryService:
                 if update_id < 0:
                     continue
                 next_offset = max(next_offset, update_id + 1)
-                outcome = self.process_update(update)
+                try:
+                    outcome = self.process_update(update)
+                except Exception:
+                    # A malformed or locally inconsistent update must not
+                    # terminate the long-running polling worker.  The raw
+                    # exception is deliberately not logged because it may
+                    # contain local paths or provider details.
+                    outcome = "query_update_failed"
                 processed += 1
                 queries += int(outcome == "query_completed")
                 self.state.save_offset(next_offset)
@@ -541,13 +548,23 @@ class TelegramQueryService:
     def _resolve_target(self, target: str) -> tuple[str, str]:
         if EVM_ADDRESS_RE.fullmatch(target):
             return target.lower(), ""
-        symbols = [target.upper()]
-        if not target.upper().endswith("USDT"):
-            symbols.append(f"{target.upper()}USDT")
+        normalized = target.upper()
+        # The Registry accepts market symbols (for example CBDOGEUSDT), while
+        # the public query syntax intentionally also accepts token symbols
+        # (CBDOGE).  Never submit the short token symbol to the strict Registry
+        # validator: normalize it deterministically first.
+        symbols = [
+            normalized if normalized.endswith("USDT") else f"{normalized}USDT"
+        ]
         resolved: list[str] = []
         blocked = ""
         for symbol in symbols:
-            outcome = self.automation_store.resolve_registry(symbol)
+            try:
+                outcome = self.automation_store.resolve_registry(symbol)
+            except AutomationStoreError as exc:
+                if exc.code == "invalid_symbol":
+                    continue
+                return "", "registry_resolution_failed"
             if outcome.get("status") == "resolved":
                 token = outcome.get("token")
                 if isinstance(token, dict):
@@ -607,6 +624,7 @@ class TelegramQueryService:
             "registry_symbol_not_found": "该 Symbol 尚未进入已验证 Registry，请改用完整合约地址。",
             "registry_not_verified": "该 Symbol 的合约尚未完成 Registry 验证。",
             "ambiguous_contract": "该 Symbol 对应多个合约，已拒绝猜测。",
+            "registry_resolution_failed": "Registry 暂时无法完成解析，请稍后重试。",
             "query_user_cooldown": "查询过于频繁，请稍后再试。",
             "query_hourly_limit": "本小时群内链上查询额度已用完。",
             "invalid_contract": "Base 合约地址格式无效。",
