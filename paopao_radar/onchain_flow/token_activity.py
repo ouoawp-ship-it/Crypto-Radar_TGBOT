@@ -5,6 +5,13 @@ from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .chain_capabilities import (
+    ChainCapabilityError,
+    EvmChainSpec,
+    resolve_chain_rpc_url,
+    resolve_evm_chain,
+    rpc_url_valid,
+)
 from .classifier import classify_transfer
 from .collectors.evm_http import (
     BaseHttpCollector,
@@ -25,8 +32,6 @@ from .collectors.evm_http import (
 )
 from .config import OnchainSettings
 from .constants import (
-    BASE_CHAIN_ID,
-    BASE_CHAIN_NAME,
     TOKEN_ACTIVITY_SCHEMA_VERSION,
 )
 from .labels import (
@@ -62,6 +67,11 @@ class BlockHeaderBudgetExceeded(RuntimeError):
 @dataclass(frozen=True)
 class TokenActivityQuery:
     chain: str
+    chain_id: int
+    chain_name: str
+    confirmation_depth: int
+    http_rpc_env: str
+    explorer_tx_url: str
     contract: str
     window: str
     window_seconds: int
@@ -88,10 +98,12 @@ class TokenActivityQuery:
         with_price: bool,
         min_usd: str | Decimal | None,
     ) -> "TokenActivityQuery":
-        if chain.strip().lower() != "base":
+        try:
+            chain_spec = resolve_evm_chain(settings, chain)
+        except ChainCapabilityError as exc:
             raise TokenActivityQueryError(
-                "wrong_chain", "OAR-P1 only supports Base"
-            )
+                exc.args[0], "requested EVM chain is not configured"
+            ) from exc
         try:
             normalized_contract = normalize_evm_address(contract)
         except LabelValidationError as exc:
@@ -160,7 +172,12 @@ class TokenActivityQuery:
                     "--min-usd must be a finite non-negative decimal",
                 )
         return cls(
-            chain="base",
+            chain=chain_spec.slug,
+            chain_id=chain_spec.chain_id,
+            chain_name=chain_spec.name,
+            confirmation_depth=chain_spec.confirmation_depth,
+            http_rpc_env=chain_spec.http_rpc_env,
+            explorer_tx_url=chain_spec.explorer_tx_url,
             contract=normalized_contract,
             window=window,
             window_seconds=window_seconds,
@@ -246,12 +263,20 @@ class TokenActivityQueryService:
         settings: OnchainSettings,
         rpc: Any,
         *,
+        chain_spec: EvmChainSpec | None = None,
         price_provider: PriceProvider | None = None,
         clock: Any = time.monotonic,
     ):
         self.settings = settings
         self.rpc = rpc
-        self.collector = BaseHttpCollector(rpc, settings)
+        self.chain_spec = chain_spec or resolve_evm_chain(settings, "base")
+        self.collector = BaseHttpCollector(
+            rpc,
+            settings,
+            chain_id=self.chain_spec.chain_id,
+            chain_name=self.chain_spec.name,
+            confirmation_depth=self.chain_spec.confirmation_depth,
+        )
         self.price_provider = price_provider
         self.clock = clock
 
@@ -261,12 +286,29 @@ class TokenActivityQueryService:
         settings: OnchainSettings,
         query: TokenActivityQuery,
     ) -> "TokenActivityQueryService":
-        if not settings.base_http_rpc_url:
+        try:
+            chain_spec = resolve_evm_chain(settings, query.chain)
+        except ChainCapabilityError as exc:
             raise TokenActivityQueryError(
-                "rpc_not_configured", "Base HTTP RPC is not configured"
+                exc.args[0], "requested EVM chain is not configured"
+            ) from exc
+        if chain_spec.chain_id != query.chain_id:
+            raise TokenActivityQueryError(
+                "chain_configuration_changed",
+                "chain configuration changed after query validation",
+            )
+        rpc_url = resolve_chain_rpc_url(settings, chain_spec)
+        if not rpc_url:
+            raise TokenActivityQueryError(
+                "rpc_not_configured", "EVM HTTP RPC is not configured"
+            )
+        if not rpc_url_valid(rpc_url):
+            raise TokenActivityQueryError(
+                "rpc_configuration_invalid",
+                "EVM HTTP RPC configuration is invalid",
             )
         rpc = JsonRpcClient(
-            settings.base_http_rpc_url,
+            rpc_url,
             timeout_sec=float(settings.rpc_timeout_sec),
             retry=settings.rpc_retry,
             backoff_sec=float(settings.rpc_backoff_sec),
@@ -279,6 +321,7 @@ class TokenActivityQueryService:
         return cls(
             settings,
             rpc,
+            chain_spec=chain_spec,
             price_provider=price_provider,
         )
 
@@ -290,7 +333,7 @@ class TokenActivityQueryService:
             chain_id = self.rpc.chain_id()
         except RpcAuthError as exc:
             raise TokenActivityQueryError(
-                "rpc_auth_failed", "Base RPC authentication failed"
+                "rpc_auth_failed", "EVM RPC authentication failed"
             ) from exc
         except RpcRequestBudgetError as exc:
             raise TokenActivityQueryError(
@@ -299,11 +342,11 @@ class TokenActivityQueryService:
             ) from exc
         except RpcError as exc:
             raise TokenActivityQueryError(
-                "rpc_unavailable", "Base RPC provider check failed"
+                "rpc_unavailable", "EVM RPC provider check failed"
             ) from exc
-        if chain_id != BASE_CHAIN_ID or chain_id != self.settings.base_chain_id:
+        if chain_id != query.chain_id or chain_id != self.chain_spec.chain_id:
             raise TokenActivityQueryError(
-                "wrong_chain", "configured RPC chain ID is not Base"
+                "wrong_chain", "configured RPC chain ID is incorrect"
             )
 
         metadata_resolver = TokenMetadataResolver(
@@ -313,7 +356,7 @@ class TokenActivityQueryService:
             metadata = metadata_resolver.resolve(chain_id, query.contract)
         except RpcAuthError as exc:
             raise TokenActivityQueryError(
-                "rpc_auth_failed", "Base RPC authentication failed"
+                "rpc_auth_failed", "EVM RPC authentication failed"
             ) from exc
         except RpcRequestBudgetError as exc:
             raise TokenActivityQueryError(
@@ -363,9 +406,9 @@ class TokenActivityQueryService:
             ) from exc
         except RpcError as exc:
             raise TokenActivityQueryError(
-                "rpc_unavailable", "could not read the Base head block"
+                "rpc_unavailable", "could not read the EVM head block"
             ) from exc
-        to_block = max(0, head - self.settings.base_confirmation_depth)
+        to_block = max(0, head - query.confirmation_depth)
         headers = BlockHeaderCache(
             self.rpc, query.max_unique_block_headers
         )
@@ -390,6 +433,7 @@ class TokenActivityQueryService:
 
         label_context = self._prepare_labels(
             labels,
+            chain_id=query.chain_id,
             file_status=labels_file_status,
             from_time=from_time,
             to_time=to_header.timestamp,
@@ -418,7 +462,7 @@ class TokenActivityQueryService:
             ) from exc
         except RpcAuthError as exc:
             raise TokenActivityQueryError(
-                "rpc_auth_failed", "Base RPC authentication failed"
+                "rpc_auth_failed", "EVM RPC authentication failed"
             ) from exc
         except RpcError as exc:
             raise TokenActivityQueryError(
@@ -487,6 +531,7 @@ class TokenActivityQueryService:
                 direction_registry,
                 labels_status=label_context.status,
                 price_status=price_status,
+                explorer_tx_url=query.explorer_tx_url,
             )
             for transfer in transfers
         ]
@@ -498,7 +543,7 @@ class TokenActivityQueryService:
             )
         elif label_context.status == "insufficient_cex_coverage":
             warnings.append(
-                "标签文件缺少查询窗口内有效的高置信度 Base CEX 标签；"
+                "标签文件缺少查询窗口内有效的高置信度当前链 CEX 标签；"
                 "地址身份仍显示，交易所方向分类不可用"
             )
         if query.with_price:
@@ -541,7 +586,7 @@ class TokenActivityQueryService:
             "truncated": truncated,
             "truncation_reason": truncation_reason,
             "query": {
-                "chain": BASE_CHAIN_NAME.lower(),
+                "chain": query.chain,
                 "chain_id": chain_id,
                 "contract": query.contract,
                 "window": query.window,
@@ -550,7 +595,7 @@ class TokenActivityQueryService:
                 "to_block": to_block,
                 "from_time": from_time,
                 "to_time": to_header.timestamp,
-                "confirmation_depth": self.settings.base_confirmation_depth,
+                "confirmation_depth": query.confirmation_depth,
                 "min_usd": (
                     self._decimal_string(query.min_usd)
                     if query.min_usd is not None
@@ -624,6 +669,7 @@ class TokenActivityQueryService:
         self,
         labels: list[AddressLabel],
         *,
+        chain_id: int,
         file_status: str,
         from_time: int,
         to_time: int,
@@ -631,7 +677,7 @@ class TokenActivityQueryService:
         if file_status == "missing":
             return TokenActivityLabelContext("missing", (), ())
         if any(
-            label.chain_id == BASE_CHAIN_ID
+            label.chain_id == chain_id
             and label.entity_type == "cex"
             and label.source.strip().lower() == "synthetic_fixture"
             for label in labels
@@ -651,7 +697,7 @@ class TokenActivityQueryService:
         direction_labels = tuple(
             label
             for label in labels
-            if label.chain_id == BASE_CHAIN_ID
+            if label.chain_id == chain_id
             and label.entity_type == "cex"
             and label.confidence >= self.settings.min_label_confidence
             and overlaps_query(label)
@@ -747,7 +793,8 @@ class TokenActivityQueryService:
                 transfer = normalize_transfer_log(
                     raw,
                     block_time=header.timestamp,
-                    chain_id=BASE_CHAIN_ID,
+                    chain_id=query.chain_id,
+                    chain_name=query.chain_name,
                 )
             except (LogValidationError, ValueError) as exc:
                 raise TokenActivityQueryError(
@@ -790,7 +837,7 @@ class TokenActivityQueryService:
             return None, "missing", "价格 Provider 未启用或未配置"
         try:
             quote = self.price_provider.quote_many(
-                BASE_CHAIN_ID, [query.contract]
+                query.chain_id, [query.contract]
             ).get(query.contract)
         except Exception:
             return None, "failed", "价格 Provider 查询失败"
@@ -815,6 +862,7 @@ class TokenActivityQueryService:
         *,
         labels_status: str,
         price_status: str,
+        explorer_tx_url: str,
     ) -> dict[str, object]:
         flow = classify_transfer(transfer, metadata, direction_registry)
         from_label = identity_registry.lookup(
@@ -881,7 +929,9 @@ class TokenActivityQueryService:
             "block_time_iso": self._utc_iso(transfer.block_time),
             "tx_hash": transfer.tx_hash,
             "log_index": transfer.log_index,
-            "explorer_url": f"https://basescan.org/tx/{transfer.tx_hash}",
+            "explorer_url": explorer_tx_url.replace(
+                "{tx_hash}", transfer.tx_hash
+            ),
             "token_contract": transfer.token_address,
             "from": self._address_payload(
                 transfer.from_address,

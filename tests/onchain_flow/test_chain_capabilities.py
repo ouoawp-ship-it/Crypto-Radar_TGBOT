@@ -46,6 +46,7 @@ class ChainCapabilityTests(unittest.TestCase):
                     "bootstrap_lookback_blocks": 300,
                     "reorg_lookback_blocks": 64,
                     "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
+                    "explorer_tx_url": "https://base.invalid/tx/{tx_hash}",
                 }
             ]
         )
@@ -78,6 +79,7 @@ class ChainCapabilityTests(unittest.TestCase):
                     "bootstrap_lookback_blocks": 512,
                     "reorg_lookback_blocks": 128,
                     "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                    "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
                 }
             ]
         )
@@ -90,11 +92,12 @@ class ChainCapabilityTests(unittest.TestCase):
         )
 
         chain = result["chains"][0]
+        self.assertEqual(chain["token_activity_status"], "ready_offline")
         self.assertEqual(
-            chain["status"], "runtime_adapter_not_implemented"
+            chain["watch_status"], "watch_adapter_not_implemented"
         )
         self.assertTrue(chain["activation_blocked"])
-        self.assertFalse(chain["token_activity_supported"])
+        self.assertTrue(chain["token_activity_supported"])
         self.assertFalse(chain["watch_supported"])
         self.assertNotIn("eth.invalid", json.dumps(result))
 
@@ -108,6 +111,7 @@ class ChainCapabilityTests(unittest.TestCase):
                     "bootstrap_lookback_blocks": 300,
                     "reorg_lookback_blocks": 64,
                     "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
+                    "explorer_tx_url": "https://base.invalid/tx/{tx_hash}",
                 },
                 {
                     "chain_id": 8453,
@@ -116,6 +120,7 @@ class ChainCapabilityTests(unittest.TestCase):
                     "bootstrap_lookback_blocks": 300,
                     "reorg_lookback_blocks": 64,
                     "http_rpc_env": "ONCHAIN_OTHER_HTTP_RPC_URL",
+                    "explorer_tx_url": "https://other.invalid/tx/{tx_hash}",
                 },
             ]
         )
@@ -136,6 +141,7 @@ class ChainCapabilityTests(unittest.TestCase):
                     "bootstrap_lookback_blocks": 512,
                     "reorg_lookback_blocks": 128,
                     "http_rpc_env": "SECRET",
+                    "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
                 }
             ]
         )

@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from paopao_radar.onchain_flow.chain_capabilities import resolve_evm_chain
 from paopao_radar.onchain_flow.cli import build_parser, main
 from paopao_radar.onchain_flow.collectors.base import BlockRange
 from paopao_radar.onchain_flow.collectors.evm_http import (
@@ -409,8 +410,8 @@ class CliAndValidationTests(TokenActivityTestCase):
         self.assertFalse(payload["telegram_calls"])
         service_factory.assert_not_called()
 
-    def test_non_base_chain_is_structurally_rejected(self) -> None:
-        with self.assertRaisesRegex(TokenActivityQueryError, "only supports Base"):
+    def test_unconfigured_chain_is_structurally_rejected(self) -> None:
+        with self.assertRaises(TokenActivityQueryError) as raised:
             TokenActivityQuery.create(
                 self.settings,
                 chain="ethereum",
@@ -422,6 +423,124 @@ class CliAndValidationTests(TokenActivityTestCase):
                 with_price=False,
                 min_usd=None,
             )
+        self.assertEqual(raised.exception.code, "chain_not_configured")
+
+    def test_configured_evm_chain_uses_chain_specific_facts(self) -> None:
+        chains = self.root / "chains.json"
+        chains.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": False,
+                            "confirmation_depth": CONFIRMATIONS,
+                            "bootstrap_lookback_blocks": 300,
+                            "reorg_lookback_blocks": 64,
+                            "http_rpc_env": (
+                                "ONCHAIN_ETHEREUM_HTTP_RPC_URL"
+                            ),
+                            "explorer_tx_url": (
+                                "https://etherscan.io/tx/{tx_hash}"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = replace(self.settings, chains_path=chains)
+        query = TokenActivityQuery.create(
+            settings,
+            chain="ethereum",
+            contract=TOKEN,
+            window="15m",
+            max_events=None,
+            max_rpc_requests=None,
+            top_n=None,
+            with_price=False,
+            min_usd=None,
+        )
+        rpc = FakeRpc(
+            [transfer_log(FINALIZED - 1, 0, WALLET_A, WALLET_B)],
+            chain_id=1,
+        )
+
+        result = TokenActivityQueryService(
+            settings,
+            rpc,
+            chain_spec=resolve_evm_chain(settings, "ethereum"),
+            clock=lambda: 100.0,
+        ).execute(query)
+
+        self.assertEqual(result["query"]["chain"], "ethereum")
+        self.assertEqual(result["query"]["chain_id"], 1)
+        self.assertEqual(result["query"]["confirmation_depth"], CONFIRMATIONS)
+        self.assertTrue(result["transfers"][0]["event_id"].startswith("1:"))
+        self.assertTrue(
+            result["transfers"][0]["explorer_url"].startswith(
+                "https://etherscan.io/tx/"
+            )
+        )
+
+    def test_non_base_rpc_is_resolved_from_private_environment_file(self) -> None:
+        chains = self.root / "chains.json"
+        chains.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": False,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": (
+                                "ONCHAIN_ETHEREUM_HTTP_RPC_URL"
+                            ),
+                            "explorer_tx_url": (
+                                "https://etherscan.io/tx/{tx_hash}"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.root / ".env.onchain").write_text(
+            "ONCHAIN_ETHEREUM_HTTP_RPC_URL=https://eth.invalid/v2/key\n",
+            encoding="utf-8",
+        )
+        settings = replace(self.settings, chains_path=chains)
+        query = TokenActivityQuery.create(
+            settings,
+            chain="ethereum",
+            contract=TOKEN,
+            window="15m",
+            max_events=None,
+            max_rpc_requests=None,
+            top_n=None,
+            with_price=False,
+            min_usd=None,
+        )
+
+        with patch(
+            "paopao_radar.onchain_flow.token_activity.JsonRpcClient"
+        ) as client:
+            service = TokenActivityQueryService.from_settings(
+                settings, query
+            )
+
+        self.assertEqual(
+            client.call_args.args[0], "https://eth.invalid/v2/key"
+        )
+        self.assertEqual(service.chain_spec.chain_id, 1)
 
     def test_invalid_contract_is_rejected_before_network(self) -> None:
         with self.assertRaises(TokenActivityQueryError) as raised:

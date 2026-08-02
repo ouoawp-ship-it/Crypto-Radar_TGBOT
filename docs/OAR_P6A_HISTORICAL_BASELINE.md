@@ -79,4 +79,6 @@ AI 仍只在显式请求且 `OAR_AI_ENABLE=true` 时调用。查询或分析不�
 
 `python onchain_main.py chain-readiness` 只读解析版本化链配置并输出脱敏能力真值表。它不连接 RPC、不创建数据库，也不调用 AI 或 Telegram。只有已经实现运行适配器、显式启用、RPC 已配置且 URL 结构合法的链，才会显示 `token_activity_supported=true` 和 `watch_supported=true`。
 
-当前生产运行适配器仍只有 Base。把其他 EVM 链写入配置文件不会自动获得运行能力；显式启用但尚无适配器时返回 `runtime_adapter_not_implemented` 和 `activation_blocked=true`。新增链必须后续分别完成确认深度、重组策略、Explorer、标签命名空间、RPC 预算和灰度验收，不能复用 Base 结论冒充已支持。
+Token Activity 已使用通用 EVM 查询适配器：链注册表必须提供唯一 Chain ID、slug、确认深度、回看范围、RPC 环境变量名和 Explorer 模板；对应专用 RPC 配置合法后，显式手工查询才会显示 `token_activity_supported=true`。RPC 值和 Host 不进入能力报告。
+
+长期 Registry / Watch 运行适配器当前仍只有 Base。把其他 EVM 链写入配置文件不会自动进入长期监控；显式启用时会返回 `watch_adapter_not_implemented` 和 `activation_blocked=true`。新增 Watch 链仍须分别完成标签命名空间、Registry 验证、重组策略、预算、恢复点和灰度验收，不能复用 Base 结论冒充已支持。
