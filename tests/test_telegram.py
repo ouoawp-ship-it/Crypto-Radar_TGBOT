@@ -29,7 +29,7 @@ class TelegramGatewayTests(unittest.TestCase):
     def test_topic_intro_versions_are_isolated_by_template(self) -> None:
         self.assertEqual(
             topic_intro_version("TG_ONCHAIN_FLOW_ALERT"),
-            "2026-08-02-oar-group-query-v1",
+            "2026-08-02-oar-group-query-v2",
         )
         for template_id in ("TG_FUNDING_ALERT", "TG_LAUNCH_ALERT"):
             with self.subTest(template_id=template_id):
@@ -111,7 +111,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 data["intros"]["TG_ONCHAIN_FLOW_ALERT:21"][
                     "intro_version"
                 ],
-                "2026-08-02-oar-group-query-v1",
+                "2026-08-02-oar-group-query-v2",
             )
 
     def test_detailed_delete_audits_history_and_releases_dedup(self) -> None:
@@ -883,6 +883,14 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("@Bot用户名 查询 0x完整Base合约地址 1h", intro)
             self.assertIn("/oar@Bot用户名 CBDOGE 4h", intro)
             self.assertIn("只查询本地已验证且唯一的 Registry 合约", intro)
+            self.assertIn("报告字段白话说明", intro)
+            self.assertIn("Transfer（转账记录）", intro)
+            self.assertIn("不是成交额、净流入或买卖量", intro)
+            self.assertIn("规则分数：报告会列出逐项加分依据", intro)
+            self.assertIn("共同收款地址", intro)
+            self.assertIn("不能确认属于同一主体", intro)
+            self.assertIn("尚未分类", intro)
+            self.assertIn("群内只读查询默认不调用 AI", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_summary_topic_intro_holds_static_legend(self) -> None:
