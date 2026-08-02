@@ -354,6 +354,8 @@ class BehaviorAnalyzer:
             else ""
         )
         limitations = list(BASE_LIMITATIONS)
+        if labels_status in {"missing", "insufficient_cex_coverage"}:
+            limitations.append(labels_status)
         price = activity.get("price")
         price_status = (
             str(price.get("status") or "")

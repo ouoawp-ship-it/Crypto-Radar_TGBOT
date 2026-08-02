@@ -44,3 +44,9 @@ python onchain_main.py watch-baseline --token-key <verified-token-key>
 ```
 
 该命令不访问 RPC、AI、Telegram、Dune 或 Arkham，也不写数据库。
+
+## 标签覆盖与动态 Watch 安全语义
+
+Token Activity 在缺少可用于方向分类的已审核 CEX 标签时继续保留 Transfer 事实，并将方向保持为 `unclassified`。结构化报告、AI 白名单上下文和中文卡片会明确显示 `insufficient_cex_coverage`；“流入/提出为 0”不再被表达成“确认没有交易所流向”。
+
+动态 Watchlist 已由 Signal Bridge 提供，但只接受主 BOT 中 `status=sent`、`sent=1`、结构化且质量就绪的真实发送信号。主 BOT Dry-run 记录继续被审计为 `ignored_not_sent`，不会创建 Watch 来源、不会触发链上扫描。这一门禁不得为扩大 Watchlist 而放宽。

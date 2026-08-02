@@ -79,6 +79,7 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
     query = _mapping(payload.get("query"))
     token = _mapping(payload.get("token"))
     summary = _mapping(payload.get("summary"))
+    labels = _mapping(payload.get("labels"))
     analysis = _mapping(payload.get("analysis"))
     primary = _mapping(analysis.get("primary_behavior"))
     window_name = str(query.get("window") or "")
@@ -177,6 +178,22 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
             ),
             "inflow_count": int(window.get("inflow_count") or 0),
             "outflow_count": int(window.get("outflow_count") or 0),
+        },
+        "label_coverage": {
+            "status": str(labels.get("status") or "missing"),
+            "identity_label_count": int(
+                labels.get("identity_label_count") or 0
+            ),
+            "classification_eligible_cex_count": int(
+                labels.get("classification_eligible_cex_count") or 0
+            ),
+            "unclassified_transfer_count": int(
+                summary.get("unclassified_count") or 0
+            ),
+            "cex_direction_observed": bool(
+                int(summary.get("inflow_count") or 0)
+                or int(summary.get("outflow_count") or 0)
+            ),
         },
         "primary_behavior": {
             "type": str(primary.get("type") or "insufficient_data"),

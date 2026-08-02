@@ -181,6 +181,54 @@ class OarP4ReportingTests(unittest.TestCase):
             report["report"]["rule_summary"]["linked_market_signals"], []
         )
 
+    def test_report_makes_cex_label_coverage_explicit(self) -> None:
+        report = TokenReportService(
+            self.settings, None
+        ).build_from_analysis(
+            self.analyzed,
+            with_ai=False,
+            linked_market_signals=[],
+        )
+        coverage = report["report"]["rule_summary"]["label_coverage"]
+        self.assertEqual(coverage["status"], "ok")
+        self.assertEqual(coverage["classification_eligible_cex_count"], 1)
+        self.assertIn("交易所标签覆盖：就绪", format_token_report(report))
+
+        insufficient = deepcopy(self.analyzed)
+        insufficient["labels"]["status"] = "insufficient_cex_coverage"
+        insufficient["labels"]["classification_eligible_cex_count"] = 0
+        insufficient["summary"]["inflow_count"] = 0
+        insufficient["summary"]["outflow_count"] = 0
+        insufficient_report = TokenReportService(
+            self.settings, None
+        ).build_from_analysis(
+            insufficient,
+            with_ai=False,
+            linked_market_signals=[],
+        )
+        text = format_token_report(insufficient_report)
+        self.assertIn("交易所标签覆盖：不足", text)
+        self.assertIn("0 流入/0 提出，不代表已经确认没有入所或提币", text)
+
+    def test_ai_context_contains_only_safe_label_coverage_counts(self) -> None:
+        payload = deepcopy(self.analyzed)
+        payload["labels"] = {
+            "status": "insufficient_cex_coverage",
+            "identity_label_count": 7,
+            "classification_eligible_cex_count": 0,
+            "private_path": "C:/secret/labels.csv",
+        }
+        context = build_ai_context(payload, max_chars=30000)
+        self.assertEqual(
+            context["label_coverage"],
+            {
+                "status": "insufficient_cex_coverage",
+                "identity_label_count": 7,
+                "classification_eligible_cex_count": 0,
+            },
+        )
+        self.assertNotIn("private_path", json.dumps(context))
+
     def test_automation_signal_links_stay_in_independent_store(self) -> None:
         report = TokenReportService(
             self.settings, None

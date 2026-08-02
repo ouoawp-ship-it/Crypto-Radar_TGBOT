@@ -166,6 +166,7 @@ def format_token_report(payload: dict[str, object]) -> str:
     query = _map(summary.get("query"))
     transfers = _map(summary.get("transfer_summary"))
     flows = _map(summary.get("cex_flows"))
+    label_coverage = _map(summary.get("label_coverage"))
     primary = _map(summary.get("primary_behavior"))
     symbol = escape(str(token.get("symbol") or "UNKNOWN"))
     contract = token.get("contract")
@@ -200,19 +201,38 @@ def format_token_report(payload: dict[str, object]) -> str:
             f"{int(transfers.get('unique_senders') or 0)} / "
             f"{int(transfers.get('unique_receivers') or 0)}"
         ),
-        "",
-        "<b>行为判断</b>",
-        f"- {escape(str(primary.get('label') or '数据不足'))}",
-        (
-            f"- 规则分数：{int(primary.get('score') or 0)}"
-            "（评分不是概率）"
-        ),
-        (
-            "- 证据强度："
-            f"{CONFIDENCE_LABELS.get(str(primary.get('confidence_level')), '低')}"
-            "（表示规则证据的多少和质量，不是成功概率）"
-        ),
     ]
+    label_status = str(label_coverage.get("status") or "missing")
+    if label_status == "ok":
+        lines.append(
+            "- 交易所标签覆盖：就绪"
+            "（可用于方向分类的已审核标签 "
+            f"{int(label_coverage.get('classification_eligible_cex_count') or 0)} 条）"
+        )
+    else:
+        lines.extend(
+            [
+                "- ⚠️ 交易所标签覆盖：不足",
+                "  说明：未分类转账可能包含尚未识别的交易所地址；"
+                "当前显示 0 流入/0 提出，不代表已经确认没有入所或提币。",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "<b>行为判断</b>",
+            f"- {escape(str(primary.get('label') or '数据不足'))}",
+            (
+                f"- 规则分数：{int(primary.get('score') or 0)}"
+                "（评分不是概率）"
+            ),
+            (
+                "- 证据强度："
+                f"{CONFIDENCE_LABELS.get(str(primary.get('confidence_level')), '低')}"
+                "（表示规则证据的多少和质量，不是成功概率）"
+            ),
+        ]
+    )
     primary_type = str(primary.get("type") or "")
     evidence_points = (
         STRUCTURE_EVIDENCE_POINTS
