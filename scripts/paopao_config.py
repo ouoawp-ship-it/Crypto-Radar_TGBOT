@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from paopao_radar.atomic_json import _file_lock
 from paopao_radar.onchain_flow.config import (
+    OAR_TELEGRAM_QUERY_ACK,
     OnchainSettings,
     SettingsValidationError,
 )
@@ -66,6 +67,14 @@ ALLOWLIST = {
     "DUNE_API_POLL_INTERVAL_SEC": "onchain",
     "DUNE_API_EXECUTION_TIMEOUT_SEC": "onchain",
     "DUNE_API_MAX_ROWS": "onchain",
+    "OAR_TELEGRAM_QUERY_ENABLE": "onchain",
+    "OAR_TELEGRAM_QUERY_ACK": "onchain",
+    "OAR_TELEGRAM_QUERY_POLL_TIMEOUT_SEC": "onchain",
+    "OAR_TELEGRAM_QUERY_COOLDOWN_SEC": "onchain",
+    "OAR_TELEGRAM_QUERY_MAX_PER_HOUR": "onchain",
+    "OAR_TELEGRAM_QUERY_MAX_EVENTS": "onchain",
+    "OAR_TELEGRAM_QUERY_MAX_RPC_REQUESTS": "onchain",
+    "OAR_TELEGRAM_QUERY_TOP_N": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -85,6 +94,7 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "MAIN_BOT_REAL_SEND_ACK",
     "ARKHAM_API_BASE_URL",
     "DUNE_API_BASE_URL",
+    "OAR_TELEGRAM_QUERY_ACK",
 }
 BOOLEAN_KEYS = {
     "OAR_AI_ENABLE",
@@ -92,6 +102,7 @@ BOOLEAN_KEYS = {
     "ONCHAIN_REAL_SEND",
     "OAR_WATCH_WITH_AI",
     "MAIN_BOT_REAL_SEND",
+    "OAR_TELEGRAM_QUERY_ENABLE",
 }
 INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
@@ -105,6 +116,12 @@ INTEGER_RANGES = {
     "DUNE_API_MAX_REQUESTS": (4, 40),
     "DUNE_API_EXECUTION_TIMEOUT_SEC": (5, 120),
     "DUNE_API_MAX_ROWS": (1, 500),
+    "OAR_TELEGRAM_QUERY_POLL_TIMEOUT_SEC": (1, 50),
+    "OAR_TELEGRAM_QUERY_COOLDOWN_SEC": (10, 3600),
+    "OAR_TELEGRAM_QUERY_MAX_PER_HOUR": (1, 60),
+    "OAR_TELEGRAM_QUERY_MAX_EVENTS": (1, 5000),
+    "OAR_TELEGRAM_QUERY_MAX_RPC_REQUESTS": (1, 256),
+    "OAR_TELEGRAM_QUERY_TOP_N": (1, 50),
 }
 DECIMAL_RANGES = {
     "DUNE_API_POLL_INTERVAL_SEC": (0.2, 10.0),
@@ -344,6 +361,39 @@ class ConfigManager:
             "validation": validation,
         }
 
+    def telegram_query(self, action: str) -> dict[str, object]:
+        if action == "enable":
+            values = {
+                "OAR_TELEGRAM_QUERY_ENABLE": "true",
+                "OAR_TELEGRAM_QUERY_ACK": OAR_TELEGRAM_QUERY_ACK,
+            }
+        elif action == "disable":
+            values = {
+                "OAR_TELEGRAM_QUERY_ENABLE": "false",
+                "OAR_TELEGRAM_QUERY_ACK": "",
+            }
+        else:
+            raise ConfigManagerError("unknown Telegram query action")
+        for key, value in values.items():
+            self._validate_value(key, value)
+        path = self.base_dir / ENV_FILES["onchain"]
+        backup, validation = self._write_values(path, values)
+        current = self.status()
+        return {
+            "status": "ok",
+            "action": action,
+            "backup_created": backup is not None,
+            "configuration": {
+                "OAR_TELEGRAM_QUERY_ENABLE": current[
+                    "OAR_TELEGRAM_QUERY_ENABLE"
+                ],
+                "OAR_TELEGRAM_QUERY_ACK": current[
+                    "OAR_TELEGRAM_QUERY_ACK"
+                ],
+            },
+            "validation": validation,
+        }
+
     def _write_values(
         self,
         path: Path,
@@ -533,6 +583,13 @@ class ConfigManager:
         ):
             raise ConfigManagerError(
                 "MAIN_BOT_REAL_SEND_ACK must be empty or the fixed phrase"
+            )
+        if (
+            key == "OAR_TELEGRAM_QUERY_ACK"
+            and value not in {"", OAR_TELEGRAM_QUERY_ACK}
+        ):
+            raise ConfigManagerError(
+                "OAR_TELEGRAM_QUERY_ACK must be empty or the fixed phrase"
             )
         if key == "OAR_AI_MAX_TOKENS":
             try:
@@ -785,6 +842,27 @@ class ConfigManager:
             raise ConfigManagerError(
                 "main_bot_dry_run_gate_inconsistent"
             )
+        telegram_query_enable = values.get(
+            "OAR_TELEGRAM_QUERY_ENABLE", "false"
+        ).strip().lower()
+        if telegram_query_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "OAR_TELEGRAM_QUERY_ENABLE must be true or false"
+            )
+        telegram_query_ack = values.get(
+            "OAR_TELEGRAM_QUERY_ACK", ""
+        ).strip()
+        if telegram_query_ack not in {"", OAR_TELEGRAM_QUERY_ACK}:
+            raise ConfigManagerError(
+                "OAR_TELEGRAM_QUERY_ACK must be empty or the fixed phrase"
+            )
+        if telegram_query_enable == "true" and not (
+            telegram_query_ack == OAR_TELEGRAM_QUERY_ACK
+            and token
+            and chat_id
+            and topic_id
+        ):
+            raise ConfigManagerError("telegram_query_gate_blocked")
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
@@ -822,6 +900,10 @@ class ConfigManager:
             "main_bot_real_send": main_bot_real_send == "true",
             "main_bot_real_send_ack": (
                 "configured" if main_bot_ack else "not_configured"
+            ),
+            "telegram_query_enabled": telegram_query_enable == "true",
+            "telegram_query_ack": (
+                "configured" if telegram_query_ack else "not_configured"
             ),
         }
 
@@ -946,6 +1028,11 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         choices=("dry-run", "real"),
     )
+    telegram_query = subparsers.add_parser("telegram-query")
+    telegram_query.add_argument(
+        "action",
+        choices=("enable", "disable"),
+    )
     return parser
 
 
@@ -976,6 +1063,12 @@ def main(argv: list[str] | None = None) -> int:
                     args.key,
                     "true" if args.command == "enable" else "false",
                 ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ))
+        elif args.command == "telegram-query":
+            print(json.dumps(
+                manager.telegram_query(args.action),
                 ensure_ascii=False,
                 sort_keys=True,
             ))

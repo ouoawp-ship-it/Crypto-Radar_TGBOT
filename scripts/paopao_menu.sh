@@ -5,6 +5,7 @@ APP_DIR="${PAOPAO_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 OAR_SERVICE_NAME="${OAR_SERVICE_NAME:-paopao-oar-watch}"
+OAR_QUERY_SERVICE_NAME="${OAR_QUERY_SERVICE_NAME:-paopao-oar-query}"
 HEALTH_SERVICE_NAME="${HEALTH_SERVICE_NAME:-paopao-health}"
 BACKUP_SERVICE_NAME="${BACKUP_SERVICE_NAME:-paopao-backup}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
@@ -1121,6 +1122,69 @@ print("Bot/群配置来源: 主 BOT 共享 .env.oi")
 ' 2>/dev/null || true
 }
 
+show_telegram_query_status() {
+  local config_json
+  config_json="$(run_config status --json 2>/dev/null || printf '{}')"
+  printf '%s' "$config_json" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    value = {}
+print("群内 @Bot 查询:", "enabled" if value.get("OAR_TELEGRAM_QUERY_ENABLE") else "disabled")
+print("查询 ACK:", value.get("OAR_TELEGRAM_QUERY_ACK") or "not_configured")
+' 2>/dev/null || true
+  printf '查询服务：%s\n' "$(service_state "$OAR_QUERY_SERVICE_NAME")"
+}
+
+telegram_query_menu() {
+  local choice
+  while true; do
+    menu_header
+    cat <<'EOF'
+群内 @Bot 链上异动查询
+1. 查看脱敏状态
+2. 启用并启动查询服务
+3. 停止并禁用查询服务
+4. 重启查询服务
+0. 返回
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1) show_telegram_query_status; pause_menu ;;
+      2)
+        if confirm_phrase "启用群内链上查询"; then
+          if run_config telegram-query enable &&
+            run_root bash "${APP_DIR}/scripts/install_oar_query.sh" &&
+            run_root systemctl enable --now "$OAR_QUERY_SERVICE_NAME"; then
+            printf '群内 @Bot 查询服务已启用。\n'
+          else
+            run_root systemctl disable --now "$OAR_QUERY_SERVICE_NAME" \
+              2>/dev/null || true
+            run_config telegram-query disable >/dev/null 2>&1 || true
+            printf '群内查询启用失败，未放宽任何发送门禁。\n' >&2
+          fi
+        fi
+        pause_menu
+        ;;
+      3)
+        run_root systemctl disable --now "$OAR_QUERY_SERVICE_NAME" 2>/dev/null || true
+        run_config telegram-query disable || true
+        printf '群内 @Bot 查询服务已停止并禁用。\n'
+        pause_menu
+        ;;
+      4)
+        if ! run_root systemctl restart "$OAR_QUERY_SERVICE_NAME"; then
+          printf '查询服务重启失败，请检查配置和服务日志。\n' >&2
+        fi
+        pause_menu
+        ;;
+      0) return ;;
+      *) printf '无效选项。\n' ;;
+    esac
+  done
+}
+
 telegram_menu() {
   local choice
   while true; do
@@ -1132,6 +1196,7 @@ Telegram 设置与测试
 3. 链上报告 Dry-run
 4. 主 BOT readiness
 5. 发送并置顶链上话题说明
+6. 群内 @Bot 链上异动查询
 0. 返回
 EOF
     IFS= read -r choice
@@ -1141,6 +1206,7 @@ EOF
       3) telegram_dry_run; pause_menu ;;
       4) run_main readiness; pause_menu ;;
       5) publish_telegram_topic_intro; pause_menu ;;
+      6) telegram_query_menu ;;
       0) return ;;
     esac
   done

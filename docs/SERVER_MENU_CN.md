@@ -179,10 +179,11 @@ Chat ID、Bot Token 或 Telegram API URL。本地私有历史的既有 Schema
 
 普通菜单只提供脱敏配置、链上 Topic 设置、规则报告 dry-run 和 readiness。Dry-run 不带 `--send` 或 `--confirm-real-send`。
 
-当前 Bot 是 outbound-only，不运行 `getUpdates`、webhook 或入站 Update
-队列。主雷达和链上活动雷达共用 `.env.oi` 中唯一的 `TG_BOT_TOKEN` 与
-`TG_CHAT_ID`；`.env.onchain` 只保存链上专用 Topic，不再拥有独立的 Bot
-或群配置。
+主雷达和自动链上提醒仍是 outbound-only。可选的
+`paopao-oar-query.service` 为群内显式查询提供唯一的 `getUpdates` Worker；
+默认关闭，不设置 webhook，也不改变主 BOT 或 OAR Watch。主雷达、链上活动
+雷达和查询 Worker 共用 `.env.oi` 中唯一的 `TG_BOT_TOKEN` 与 `TG_CHAT_ID`；
+`.env.onchain` 保存链上专用 Topic 和查询 Worker 的独立安全开关。
 
 进入“Telegram 设置与测试 → 自动识别群并创建/修复链上话题”后，程序会：
 
@@ -217,6 +218,27 @@ python onchain_main.py telegram-topic intro \
 ```
 
 代码仍保留现有真实发送双门禁；菜单不是绕过通道。
+
+### 群内 @Bot 链上异动查询
+
+进入“Telegram 设置与测试 → 群内 @Bot 链上异动查询”，输入完整确认短语
+`启用群内链上查询` 后，菜单才会原子保存开关、安装并启动独立查询服务。
+服务只接受共享群的“链上活动雷达”话题中的显式命令：
+
+```text
+@Bot用户名 查询 CBDOGE 15m
+@Bot用户名 查询 0x完整Base合约 1h
+/oar@Bot用户名 CBDOGE 4h
+```
+
+支持 `15m`、`1h`、`4h`。Symbol 只解析本地已验证且唯一 Primary 的
+Registry 记录；不存在或存在歧义时拒绝猜合约。完整合约只执行 Base
+只读 Token Activity 与规则分析，不调用 AI，不创建 Watch，不执行交易。
+查询按用户冷却并受全局小时预算约束，结果回复到原查询消息。Worker 只保存
+Telegram offset、脱敏用户 Hash 和有界时间戳，不保存入站正文或用户 ID。
+
+查询服务启动时会拒绝已配置 webhook 或第二个 `getUpdates` Worker，避免
+抢占更新。服务默认关闭；停用会同时停止 Worker、关闭配置开关并清空确认值。
 
 ## 更新、日志与备份
 

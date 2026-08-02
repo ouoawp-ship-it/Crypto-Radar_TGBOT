@@ -29,7 +29,7 @@ class TelegramGatewayTests(unittest.TestCase):
     def test_topic_intro_versions_are_isolated_by_template(self) -> None:
         self.assertEqual(
             topic_intro_version("TG_ONCHAIN_FLOW_ALERT"),
-            "2026-07-29-oar-p3-v1",
+            "2026-08-02-oar-group-query-v1",
         )
         for template_id in ("TG_FUNDING_ALERT", "TG_LAUNCH_ALERT"):
             with self.subTest(template_id=template_id):
@@ -111,7 +111,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 data["intros"]["TG_ONCHAIN_FLOW_ALERT:21"][
                     "intro_version"
                 ],
-                "2026-07-29-oar-p3-v1",
+                "2026-08-02-oar-group-query-v1",
             )
 
     def test_detailed_delete_audits_history_and_releases_dedup(self) -> None:
@@ -870,6 +870,20 @@ class TelegramGatewayTests(unittest.TestCase):
                     self.assertNotIn("交易所偏离", intro)
                     self.assertNotIn("回复上一条", intro)
                 self.assertLessEqual(len(plain_fallback(intro)), 4096)
+
+    def test_oar_intro_includes_group_query_usage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            intro = topic_intro_message(
+                "TG_ONCHAIN_FLOW_ALERT",
+                Settings(data_dir=Path(tmp)),
+            )
+
+            self.assertIn("群内查询使用方式", intro)
+            self.assertIn("@Bot用户名 查询 CBDOGE 15m", intro)
+            self.assertIn("@Bot用户名 查询 0x完整Base合约地址 1h", intro)
+            self.assertIn("/oar@Bot用户名 CBDOGE 4h", intro)
+            self.assertIn("只查询本地已验证且唯一的 Registry 合约", intro)
+            self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_summary_topic_intro_holds_static_legend(self) -> None:
         with TemporaryDirectory() as tmp:

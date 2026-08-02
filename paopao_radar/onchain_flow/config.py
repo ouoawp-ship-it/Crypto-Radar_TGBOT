@@ -33,6 +33,7 @@ from .constants import (
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+OAR_TELEGRAM_QUERY_ACK = "启用群内链上查询"
 
 
 class UnsafeOnchainPath(ValueError):
@@ -153,6 +154,9 @@ class OnchainSettings:
     )
     address_intelligence_path: Path = (
         BASE_DIR / "data" / "onchain" / "address_intelligence.json"
+    )
+    oar_telegram_query_state_path: Path = (
+        BASE_DIR / "data" / "onchain" / "telegram_query_state.json"
     )
     main_signal_db_path: Path = BASE_DIR / "data" / "signals.db"
     labels_path: Path = BASE_DIR / "config" / "onchain" / "cex_addresses.example.csv"
@@ -283,6 +287,14 @@ class OnchainSettings:
     oar_watch_max_rpc_requests_per_token: int = 100
     oar_watch_top_transfers: int = 20
     oar_watch_max_rpc_requests_per_cycle: int = 400
+    oar_telegram_query_enable: bool = False
+    oar_telegram_query_ack: str = ""
+    oar_telegram_query_poll_timeout_sec: int = 20
+    oar_telegram_query_cooldown_sec: int = 60
+    oar_telegram_query_max_per_hour: int = 12
+    oar_telegram_query_max_events: int = 500
+    oar_telegram_query_max_rpc_requests: int = 128
+    oar_telegram_query_top_n: int = 20
 
     def __post_init__(self) -> None:
         default_automation = (
@@ -311,6 +323,15 @@ class OnchainSettings:
                 self,
                 "address_intelligence_path",
                 self.data_dir / "address_intelligence.json",
+            )
+        default_telegram_query_state = (
+            BASE_DIR / "data" / "onchain" / "telegram_query_state.json"
+        )
+        if self.oar_telegram_query_state_path == default_telegram_query_state:
+            object.__setattr__(
+                self,
+                "oar_telegram_query_state_path",
+                self.data_dir / "telegram_query_state.json",
             )
         default_operator_prompt = (
             BASE_DIR
@@ -428,6 +449,14 @@ class OnchainSettings:
                 values.get(
                     "OAR_ADDRESS_INTELLIGENCE_FILE",
                     "address_intelligence.json",
+                ),
+            ),
+            oar_telegram_query_state_path=_resolve_data_file(
+                base_dir,
+                data_dir,
+                values.get(
+                    "OAR_TELEGRAM_QUERY_STATE_FILE",
+                    "telegram_query_state.json",
                 ),
             ),
             main_signal_db_path=_resolve_repo_file(
@@ -792,6 +821,30 @@ class OnchainSettings:
             oar_watch_max_rpc_requests_per_cycle=_int(
                 values, "OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE", 400
             ),
+            oar_telegram_query_enable=_bool(
+                values, "OAR_TELEGRAM_QUERY_ENABLE", False
+            ),
+            oar_telegram_query_ack=values.get(
+                "OAR_TELEGRAM_QUERY_ACK", ""
+            ).strip(),
+            oar_telegram_query_poll_timeout_sec=_int(
+                values, "OAR_TELEGRAM_QUERY_POLL_TIMEOUT_SEC", 20
+            ),
+            oar_telegram_query_cooldown_sec=_int(
+                values, "OAR_TELEGRAM_QUERY_COOLDOWN_SEC", 60
+            ),
+            oar_telegram_query_max_per_hour=_int(
+                values, "OAR_TELEGRAM_QUERY_MAX_PER_HOUR", 12
+            ),
+            oar_telegram_query_max_events=_int(
+                values, "OAR_TELEGRAM_QUERY_MAX_EVENTS", 500
+            ),
+            oar_telegram_query_max_rpc_requests=_int(
+                values, "OAR_TELEGRAM_QUERY_MAX_RPC_REQUESTS", 128
+            ),
+            oar_telegram_query_top_n=_int(
+                values, "OAR_TELEGRAM_QUERY_TOP_N", 20
+            ),
         )
 
     @property
@@ -807,6 +860,7 @@ class OnchainSettings:
             self.oar_automation_db_path,
             self.label_candidates_path,
             self.address_intelligence_path,
+            self.oar_telegram_query_state_path,
             self.oar_ai_operator_prompt_path,
         )
         if self.oar_ai_enable:
@@ -928,6 +982,12 @@ class OnchainSettings:
             "oar_watch_max_rpc_requests_per_token",
             "oar_watch_top_transfers",
             "oar_watch_max_rpc_requests_per_cycle",
+            "oar_telegram_query_poll_timeout_sec",
+            "oar_telegram_query_cooldown_sec",
+            "oar_telegram_query_max_per_hour",
+            "oar_telegram_query_max_events",
+            "oar_telegram_query_max_rpc_requests",
+            "oar_telegram_query_top_n",
         )
         for field_name in positive_ints:
             value = getattr(self, field_name)
@@ -1266,6 +1326,75 @@ class OnchainSettings:
                 "Token Activity limits"
             )
         for name, value, minimum, maximum in (
+            (
+                "OAR_TELEGRAM_QUERY_POLL_TIMEOUT_SEC",
+                self.oar_telegram_query_poll_timeout_sec,
+                1,
+                50,
+            ),
+            (
+                "OAR_TELEGRAM_QUERY_COOLDOWN_SEC",
+                self.oar_telegram_query_cooldown_sec,
+                10,
+                3600,
+            ),
+            (
+                "OAR_TELEGRAM_QUERY_MAX_PER_HOUR",
+                self.oar_telegram_query_max_per_hour,
+                1,
+                60,
+            ),
+            (
+                "OAR_TELEGRAM_QUERY_MAX_EVENTS",
+                self.oar_telegram_query_max_events,
+                1,
+                TOKEN_ACTIVITY_MAX_EVENTS_HARD,
+            ),
+            (
+                "OAR_TELEGRAM_QUERY_MAX_RPC_REQUESTS",
+                self.oar_telegram_query_max_rpc_requests,
+                1,
+                TOKEN_ACTIVITY_MAX_RPC_REQUESTS_HARD,
+            ),
+            (
+                "OAR_TELEGRAM_QUERY_TOP_N",
+                self.oar_telegram_query_top_n,
+                1,
+                TOKEN_ACTIVITY_TOP_N_HARD,
+            ),
+        ):
+            if value < minimum or value > maximum:
+                raise SettingsValidationError(
+                    f"{name} must be in [{minimum}, {maximum}]"
+                )
+        if self.oar_telegram_query_enable and (
+            self.oar_telegram_query_max_events
+            > self.token_activity_max_events
+            or self.oar_telegram_query_max_rpc_requests
+            > self.token_activity_max_rpc_requests
+            or self.oar_telegram_query_top_n > self.token_activity_top_n
+        ):
+            raise SettingsValidationError(
+                "Telegram query budgets cannot exceed the configured "
+                "Token Activity limits"
+            )
+        if self.oar_telegram_query_ack not in {
+            "",
+            OAR_TELEGRAM_QUERY_ACK,
+        }:
+            raise SettingsValidationError(
+                "OAR_TELEGRAM_QUERY_ACK must be empty or the fixed phrase"
+            )
+        if self.oar_telegram_query_enable and not (
+            self.oar_telegram_query_ack == OAR_TELEGRAM_QUERY_ACK
+            and self.tg_bot_token
+            and self.tg_chat_id
+            and self.tg_onchain_flow_topic_id
+        ):
+            raise SettingsValidationError(
+                "telegram_query_gate_blocked"
+            )
+        for name, value, minimum, maximum in (
             ("OAR_AI_TIMEOUT_SEC", self.oar_ai_timeout_sec, 5, 180),
             ("OAR_AI_MAX_RETRIES", self.oar_ai_max_retries, 0, 2),
             ("OAR_AI_MAX_TOKENS", self.oar_ai_max_tokens, 512, 32768),
@@ -1505,6 +1634,15 @@ class OnchainSettings:
                 "topic_id_configured": bool(self.tg_onchain_flow_topic_id),
                 "hourly_limit": self.tg_hourly_limit,
                 "cooldown_sec": self.alert_cooldown_sec,
+            },
+            "telegram_query": {
+                "enabled": self.oar_telegram_query_enable,
+                "ack_configured": bool(self.oar_telegram_query_ack),
+                "poll_timeout_sec": self.oar_telegram_query_poll_timeout_sec,
+                "cooldown_sec": self.oar_telegram_query_cooldown_sec,
+                "max_per_hour": self.oar_telegram_query_max_per_hour,
+                "state_file_exists": self.oar_telegram_query_state_path.exists(),
+                "network_calls_without_explicit_command": 0,
             },
             "token_activity": {
                 "max_window_hours": self.token_activity_max_window_hours,
