@@ -283,10 +283,14 @@ class OnchainSettings:
     oar_watch_notify_min_behavior_score: int = 55
     oar_watch_notify_min_wallet_score: int = 60
     oar_watch_notify_partial: bool = False
+    oar_watch_controlled_alert_enable: bool = False
     oar_watch_max_events_per_token: int = 1000
     oar_watch_max_rpc_requests_per_token: int = 100
     oar_watch_top_transfers: int = 20
     oar_watch_max_rpc_requests_per_cycle: int = 400
+    oar_watch_baseline_min_samples: int = 8
+    oar_watch_baseline_max_samples: int = 64
+    oar_watch_baseline_mad_multiplier: Decimal = Decimal("3.5")
     oar_telegram_query_enable: bool = False
     oar_telegram_query_ack: str = ""
     oar_telegram_query_poll_timeout_sec: int = 20
@@ -809,6 +813,9 @@ class OnchainSettings:
             oar_watch_notify_partial=_bool(
                 values, "OAR_WATCH_NOTIFY_PARTIAL", False
             ),
+            oar_watch_controlled_alert_enable=_bool(
+                values, "OAR_WATCH_CONTROLLED_ALERT_ENABLE", False
+            ),
             oar_watch_max_events_per_token=_int(
                 values, "OAR_WATCH_MAX_EVENTS_PER_TOKEN", 1000
             ),
@@ -820,6 +827,15 @@ class OnchainSettings:
             ),
             oar_watch_max_rpc_requests_per_cycle=_int(
                 values, "OAR_WATCH_MAX_RPC_REQUESTS_PER_CYCLE", 400
+            ),
+            oar_watch_baseline_min_samples=_int(
+                values, "OAR_WATCH_BASELINE_MIN_SAMPLES", 8
+            ),
+            oar_watch_baseline_max_samples=_int(
+                values, "OAR_WATCH_BASELINE_MAX_SAMPLES", 64
+            ),
+            oar_watch_baseline_mad_multiplier=_decimal(
+                values, "OAR_WATCH_BASELINE_MAD_MULTIPLIER", "3.5"
             ),
             oar_telegram_query_enable=_bool(
                 values, "OAR_TELEGRAM_QUERY_ENABLE", False
@@ -1273,6 +1289,18 @@ class OnchainSettings:
                 1,
                 TOKEN_ACTIVITY_TOP_N_HARD,
             ),
+            (
+                "OAR_WATCH_BASELINE_MIN_SAMPLES",
+                self.oar_watch_baseline_min_samples,
+                4,
+                100,
+            ),
+            (
+                "OAR_WATCH_BASELINE_MAX_SAMPLES",
+                self.oar_watch_baseline_max_samples,
+                8,
+                100,
+            ),
         ):
             if value < minimum or value > maximum:
                 raise SettingsValidationError(
@@ -1306,6 +1334,19 @@ class OnchainSettings:
         if self.oar_watch_query_window not in {"15m", "1h", "4h", "24h"}:
             raise SettingsValidationError(
                 "OAR_WATCH_QUERY_WINDOW must be 15m, 1h, 4h, or 24h"
+            )
+        if self.oar_watch_baseline_max_samples < (
+            self.oar_watch_baseline_min_samples
+        ):
+            raise SettingsValidationError(
+                "OAR_WATCH_BASELINE_MAX_SAMPLES cannot be lower than "
+                "OAR_WATCH_BASELINE_MIN_SAMPLES"
+            )
+        if not Decimal("1") <= self.oar_watch_baseline_mad_multiplier <= Decimal(
+            "10"
+        ):
+            raise SettingsValidationError(
+                "OAR_WATCH_BASELINE_MAD_MULTIPLIER must be in [1, 10]"
             )
         if self.oar_watch_max_rpc_requests_per_cycle < (
             self.oar_watch_max_rpc_requests_per_token
@@ -1767,6 +1808,15 @@ class OnchainSettings:
                 "watch_max_rpc_requests_per_cycle": (
                     self.oar_watch_max_rpc_requests_per_cycle
                 ),
+                "watch_baseline_min_samples": (
+                    self.oar_watch_baseline_min_samples
+                ),
+                "watch_baseline_max_samples": (
+                    self.oar_watch_baseline_max_samples
+                ),
+                "watch_baseline_mad_multiplier": str(
+                    self.oar_watch_baseline_mad_multiplier
+                ),
                 "notify_min_behavior_score": (
                     self.oar_watch_notify_min_behavior_score
                 ),
@@ -1774,5 +1824,8 @@ class OnchainSettings:
                     self.oar_watch_notify_min_wallet_score
                 ),
                 "notify_partial": self.oar_watch_notify_partial,
+                "controlled_alert_enable": (
+                    self.oar_watch_controlled_alert_enable
+                ),
             },
         }

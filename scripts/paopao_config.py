@@ -75,6 +75,10 @@ ALLOWLIST = {
     "OAR_TELEGRAM_QUERY_MAX_EVENTS": "onchain",
     "OAR_TELEGRAM_QUERY_MAX_RPC_REQUESTS": "onchain",
     "OAR_TELEGRAM_QUERY_TOP_N": "onchain",
+    "OAR_WATCH_BASELINE_MIN_SAMPLES": "onchain",
+    "OAR_WATCH_BASELINE_MAX_SAMPLES": "onchain",
+    "OAR_WATCH_BASELINE_MAD_MULTIPLIER": "onchain",
+    "OAR_WATCH_CONTROLLED_ALERT_ENABLE": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -103,6 +107,7 @@ BOOLEAN_KEYS = {
     "OAR_WATCH_WITH_AI",
     "MAIN_BOT_REAL_SEND",
     "OAR_TELEGRAM_QUERY_ENABLE",
+    "OAR_WATCH_CONTROLLED_ALERT_ENABLE",
 }
 INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
@@ -122,9 +127,12 @@ INTEGER_RANGES = {
     "OAR_TELEGRAM_QUERY_MAX_EVENTS": (1, 5000),
     "OAR_TELEGRAM_QUERY_MAX_RPC_REQUESTS": (1, 256),
     "OAR_TELEGRAM_QUERY_TOP_N": (1, 50),
+    "OAR_WATCH_BASELINE_MIN_SAMPLES": (4, 100),
+    "OAR_WATCH_BASELINE_MAX_SAMPLES": (8, 100),
 }
 DECIMAL_RANGES = {
     "DUNE_API_POLL_INTERVAL_SEC": (0.2, 10.0),
+    "OAR_WATCH_BASELINE_MAD_MULTIPLIER": (1.0, 10.0),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -220,6 +228,7 @@ class ConfigManager:
         effective_defaults = {
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
+            "OAR_WATCH_CONTROLLED_ALERT_ENABLE": "false",
         }
         return {
             key: _redacted(
@@ -775,6 +784,14 @@ class ConfigManager:
             raise ConfigManagerError(
                 "OAR_WATCH_WITH_AI must be true or false"
             )
+        controlled_alert_enable = values.get(
+            "OAR_WATCH_CONTROLLED_ALERT_ENABLE",
+            "false",
+        ).strip().lower()
+        if controlled_alert_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "OAR_WATCH_CONTROLLED_ALERT_ENABLE must be true or false"
+            )
         real_send = values.get(
             "ONCHAIN_REAL_SEND",
             "false",
@@ -892,6 +909,9 @@ class ConfigManager:
             ),
             "oar_watch_delivery_mode": delivery_mode,
             "oar_watch_with_ai": watch_with_ai == "true",
+            "oar_watch_controlled_alert_enable": (
+                controlled_alert_enable == "true"
+            ),
             "oar_watch_real_send": real_send == "true",
             "oar_watch_real_send_ack": (
                 "configured" if real_send_ack else "not_configured"

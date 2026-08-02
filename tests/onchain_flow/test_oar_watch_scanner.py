@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -140,6 +142,76 @@ class WatchScannerTests(unittest.TestCase):
             self.settings, StaticActivity(activity)
         ).execute(object())
 
+    def seed_low_baseline(self, token_key: str, count: int = 4) -> None:
+        with self.store.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO watch_scan_runs(
+                    scan_id, token_key, started_at, completed_at, status,
+                    activity_complete, analysis_complete, query_window,
+                    transfer_count, total_token_amount, unique_senders,
+                    unique_receivers, behavior_score,
+                    max_wallet_group_score, baseline_status, baseline_json
+                ) VALUES(?, ?, ?, ?, 'ok', 1, 1, '4h',
+                    2, '20', 2, 2, 10, 10, 'cold_start', ?)
+                """,
+                [
+                    (
+                        f"controlled-baseline-{index}",
+                        token_key,
+                        1500 + index,
+                        1500 + index,
+                        json.dumps(
+                            {
+                                "windows": {
+                                    name: {
+                                        "current": {
+                                            "transfer_count": "2",
+                                            "total_token_amount": "20",
+                                            "unique_senders": "2",
+                                            "unique_receivers": "2",
+                                            "inflow_count": "0",
+                                            "outflow_count": "0",
+                                            "unclassified_count": "2",
+                                            "active_15m_buckets": "1",
+                                        }
+                                    }
+                                    for name in ("15m", "1h", "4h")
+                                }
+                            }
+                        ),
+                    )
+                    for index in range(count)
+                ],
+            )
+            conn.commit()
+
+    def link_launch_signal(self, token_key: str) -> None:
+        self.store.process_bridge_signal(
+            {
+                "id": 1,
+                "public_ref": "launch:controlled",
+                "ts": 1900,
+                "module": "launch",
+                "symbol": "AAAUSDT",
+                "score": 82,
+                "stage": "active",
+                "severity": "high",
+                "excerpt": "market source",
+                "payload_hash": "f" * 64,
+            },
+            resolution={
+                "status": "resolved",
+                "token": self.store.get_registry(token_key),
+            },
+            source_ttl_sec=3600,
+            source_priority=90,
+            query_window="4h",
+            scan_interval_sec=900,
+            max_active_tokens=50,
+            now=1950,
+        )
+
     def scanner(
         self,
         payloads: list[dict[str, object]],
@@ -232,6 +304,97 @@ class WatchScannerTests(unittest.TestCase):
         queue_store.observe_complete_scan.assert_called_once()
         discover.assert_not_called()
 
+    def test_non_base_watch_uses_registry_chain_and_skips_base_label_queue(
+        self,
+    ) -> None:
+        chains_path = self.root / "chains.json"
+        chains_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": True,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                            "explorer_tx_url": "https://eth.invalid/tx/{tx_hash}",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = replace(self.settings, chains_path=chains_path)
+        item = self.store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="ethereum",
+            chain_id=1,
+            source="manual",
+            now=1000,
+        )
+        key = str(item["token_key"])
+        self.store.verify_registry(
+            key,
+            token_symbol="AAA",
+            token_name="AAA",
+            decimals=18,
+            metadata_hash="a" * 64,
+            verification_method="fixture",
+            set_primary=True,
+            now=1001,
+        )
+        self.store.add_manual_watch(
+            key,
+            ttl_sec=100000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        queue_store = Mock()
+        seen: list[tuple[str, int]] = []
+
+        def analysis_factory(current: object, query: object) -> StaticAnalysis:
+            del current
+            seen.append((str(getattr(query, "chain")), int(getattr(query, "chain_id"))))
+            return StaticAnalysis(self.analyzed("isolated"))
+
+        scanner = WatchScanner(
+            settings,
+            self.store,
+            bridge=self.bridge,
+            analysis_factory=analysis_factory,
+            address_intelligence_store=queue_store,
+            clock=lambda: 2000,
+            sleeper=lambda value: None,
+        )
+        result = scanner.run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        scanned = result["results"][0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(seen, [("ethereum", 1)])
+        self.assertEqual(
+            scanned["address_intelligence_queue_status"],
+            "skipped_chain_unsupported",
+        )
+        self.assertEqual(
+            scanned["address_intelligence_queue_error"],
+            "address_intelligence_chain_unsupported",
+        )
+        self.assertEqual(scanned["external_label_provider_calls"], 0)
+        queue_store.observe_complete_scan.assert_not_called()
+
     def test_local_queue_error_is_observable_without_failing_scan(
         self,
     ) -> None:
@@ -261,6 +424,136 @@ class WatchScannerTests(unittest.TestCase):
         )
         self.assertNotIn("secret path", str(item))
         self.assertEqual(item["external_label_provider_calls"], 0)
+
+    def test_complete_scans_build_and_persist_historical_baseline(self) -> None:
+        key = self.watch()
+        with self.store.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO watch_scan_runs(
+                    scan_id, token_key, started_at, completed_at, status,
+                    activity_complete, analysis_complete, query_window,
+                    transfer_count, total_token_amount, unique_senders,
+                    unique_receivers, behavior_score, max_wallet_group_score,
+                    baseline_status, baseline_json
+                ) VALUES(?, ?, ?, ?, 'ok', 1, 1, '4h', ?, ?, ?, ?, ?, ?, 'cold_start', ?)
+                """,
+                [
+                    (
+                        f"baseline-{index}", key, 1500 + index, 1500 + index,
+                        2, "20", 2, 2, 10, 10,
+                        json.dumps(
+                            {
+                                "windows": {
+                                    name: {
+                                        "current": {
+                                            "transfer_count": "2",
+                                            "total_token_amount": "20",
+                                            "unique_senders": "2",
+                                            "unique_receivers": "2",
+                                            "inflow_count": "0",
+                                            "outflow_count": "0",
+                                            "unclassified_count": "2",
+                                            "active_15m_buckets": "1",
+                                        }
+                                    }
+                                    for name in ("15m", "1h")
+                                }
+                            }
+                        ),
+                    )
+                    for index in range(4)
+                ],
+            )
+            conn.commit()
+        payload = self.analyzed("isolated")
+        payload["summary"].update(
+            {
+                "transfer_count": 20,
+                "total_token_amount": "200",
+                "unique_senders": 20,
+                "unique_receivers": 20,
+            }
+        )
+        for name in ("15m", "1h"):
+            payload["analysis"]["windows"][name].update(
+                {
+                    "transfer_count": 20,
+                    "total_token_amount": "200",
+                    "unique_senders": 20,
+                    "unique_receivers": 20,
+                    "unclassified_count": 20,
+                    "active_15m_buckets": 2,
+                }
+            )
+        settings = make_settings(
+            self.root,
+            oar_watch_baseline_min_samples=4,
+            oar_watch_baseline_max_samples=8,
+        )
+        result = self.scanner([payload], settings=settings).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        baseline = result["results"][0]["historical_baseline"]
+        self.assertEqual(baseline["status"], "ready")
+        self.assertTrue(baseline["anomaly"])
+        self.assertIn("transfer_count", baseline["anomalous_metrics"])
+        self.assertEqual(
+            baseline["anomalous_windows"], ["15m", "1h"]
+        )
+        self.assertTrue(baseline["multi_window_anomaly"])
+        persisted = self.store.latest_scan_baseline(key) or {}
+        self.assertEqual(persisted["baseline_status"], "ready")
+        self.assertTrue(persisted["baseline_anomaly"])
+        persisted_baseline = persisted["historical_baseline"]
+        preview = persisted_baseline["controlled_alert_preview"]
+        self.assertFalse(preview["would_alert"])
+        self.assertIn(
+            "existing_rule_gate_not_met", preview["block_reasons"]
+        )
+        self.assertIn(
+            "market_context_not_present", preview["block_reasons"]
+        )
+
+    def test_incomplete_scan_never_claims_historical_anomaly(self) -> None:
+        self.watch()
+        payload = self.analyzed("partial_input")
+        result = self.scanner([payload]).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+        baseline = result["results"][0]["historical_baseline"]
+        self.assertEqual(baseline["status"], "skipped_incomplete")
+        self.assertFalse(baseline["anomaly"])
+        self.assertEqual(baseline["windows"], {})
+
+    def test_baseline_local_error_does_not_fail_watch_or_leak_exception(self) -> None:
+        self.watch()
+        with patch.object(
+            self.store,
+            "complete_scan_history",
+            side_effect=OSError("secret local path"),
+        ):
+            result = self.scanner([self.analyzed("isolated")]).run_once(
+                allow_network=True,
+                notify_dry_run=False,
+                with_ai=False,
+                send=False,
+                confirm_real_send=False,
+            )
+        item = result["results"][0]
+        self.assertEqual(item["status"], "ok")
+        self.assertEqual(
+            item["historical_baseline"]["status"], "local_error"
+        )
+        self.assertNotIn("secret local path", str(item))
 
     def test_incomplete_scan_skips_local_queue(self) -> None:
         self.watch()
@@ -410,6 +703,95 @@ class WatchScannerTests(unittest.TestCase):
             notifier.calls[0]["linked_source_refs"], ["launch:1"]
         )
         self.assertTrue(result["ai_calls"])
+        convergence = result["results"][0]["market_convergence"]
+        self.assertEqual(
+            convergence["status"], "onchain_market_cooccurrence"
+        )
+        self.assertEqual(convergence["market_modules"], ["launch"])
+        self.assertFalse(convergence["notification_gate_changed"])
+        preview = result["results"][0]["controlled_alert_preview"]
+        self.assertFalse(preview["would_alert"])
+        self.assertIn(
+            "historical_baseline_not_ready", preview["block_reasons"]
+        )
+        self.assertFalse(preview["notification_gate_changed"])
+        self.assertEqual(preview["telegram_calls"], 0)
+
+    def test_controlled_alert_blocks_cold_start_before_report_or_ai(self) -> None:
+        self.watch()
+        settings = make_settings(
+            self.root,
+            oar_watch_controlled_alert_enable=True,
+        )
+        result = self.scanner(
+            [self.analyzed("accumulation")],
+            settings=settings,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=True,
+            with_ai=True,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        item = result["results"][0]
+        self.assertTrue(item["actionable"])
+        self.assertFalse(item["controlled_alert_eligible"])
+        self.assertFalse(item["notification_gate_met"])
+        self.assertEqual(
+            item["notification_reason"],
+            "controlled_alert_gate_not_met",
+        )
+        self.assertEqual(result["notifications_attempted"], 0)
+        self.assertFalse(result["ai_calls"])
+        self.assertEqual(result["controlled_alert_tokens"], 0)
+
+    def test_controlled_alert_allows_mature_convergent_anomaly(self) -> None:
+        key = self.watch()
+        self.seed_low_baseline(key)
+        self.link_launch_signal(key)
+        analyzed = self.analyzed("accumulation")
+        analyzed["summary"].update(
+            {
+                "transfer_count": 20,
+                "total_token_amount": "200",
+                "unique_senders": 20,
+                "unique_receivers": 20,
+            }
+        )
+        report = FakeReport()
+        notifier = FakeNotifier()
+        settings = make_settings(
+            self.root,
+            oar_watch_baseline_min_samples=4,
+            oar_watch_baseline_max_samples=8,
+            oar_watch_controlled_alert_enable=True,
+        )
+        result = self.scanner(
+            [analyzed],
+            report=report,
+            notifier=notifier,
+            settings=settings,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=True,
+            with_ai=True,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        item = result["results"][0]
+        self.assertTrue(item["actionable"])
+        self.assertTrue(item["controlled_alert_eligible"])
+        self.assertTrue(item["notification_gate_met"])
+        self.assertEqual(result["controlled_alert_tokens"], 1)
+        self.assertEqual(result["notifications_attempted"], 1)
+        self.assertTrue(result["ai_calls"])
+        self.assertEqual(report.calls, 1)
+        self.assertEqual(len(notifier.calls), 1)
+        preview = item["controlled_alert_preview"]
+        self.assertTrue(preview["enforced"])
+        self.assertTrue(preview["notification_gate_changed"])
 
     def test_actionable_observe_builds_report_without_gateway(self) -> None:
         self.watch()

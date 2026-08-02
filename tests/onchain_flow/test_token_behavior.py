@@ -271,6 +271,17 @@ class TokenBehaviorTests(unittest.TestCase):
             "accumulation_candidate",
             result["coexisting_behavior_types"],
         )
+        self.assertIn("missing", result["limitations"])
+
+    def test_insufficient_cex_coverage_is_an_explicit_limitation(self) -> None:
+        facts = fixture_case("accumulation")
+        facts["labels"]["status"] = "insufficient_cex_coverage"
+        result = self.analyzer.analyze(facts)
+        self.assertIn("insufficient_cex_coverage", result["limitations"])
+        self.assertNotIn(
+            "accumulation_candidate",
+            result["coexisting_behavior_types"],
+        )
 
     def test_wallet_consolidation_and_fanout_fixtures(self) -> None:
         consolidation = self.analyzer.analyze(

@@ -471,6 +471,25 @@ window_threshold = max(
 
 在历史样本不足时使用保守固定阈值，并标记 `baseline_status=cold_start`。
 
+### 10.3 Watch 完整扫描历史基线
+
+长期 Watch 只使用同一 `token_key`、同一查询窗口且链上查询与行为分析均完整的历史扫描建立本地基线。首阶段比较 Transfer 数、Token 总量、独立发送/接收钱包数、行为分和钱包组分，使用中位数与 MAD 抵抗极端值。
+
+- 少于 `OAR_WATCH_BASELINE_MIN_SAMPLES` 时输出 `cold_start`，不得宣称异常；
+- 历史最多保留 `OAR_WATCH_BASELINE_MAX_SAMPLES` 个样本参与计算；
+- 基线结果写入独立 OAR Automation 审计，不写主 `signals.db`；
+- 计算失败时输出固定 `historical_baseline_local_error`，Watch 扫描继续；
+- 这一阶段只提供诊断，不改变已有通知阈值和发送门禁；
+- 1h、4h、24h 查询分别保存其包含的嵌套窗口基线；至少两个窗口同时偏离时只标记 `multi_window_anomaly=true`，不自动发送；
+- Partial 扫描标记 `skipped_incomplete`，不参与异常结论或后续基线；
+- Watch 热路径仍不调用 Dune、Arkham 或其他外部标签 Provider。
+
+运维可离线读取最近一次结果：
+
+```text
+python onchain_main.py watch-baseline --token-key <verified-token-key>
+```
+
 ## 11. 多空倾向评分
 
 输出范围：`-100 ... +100`。

@@ -508,7 +508,7 @@ class TelegramQueryService:
             self._send_text(self._error_text(parsed.error), message_id, update_id)
             return "query_rejected"
 
-        contract, resolution_error = self._resolve_target(parsed.target)
+        chain, contract, resolution_error = self._resolve_target(parsed.target)
         if resolution_error:
             self._send_text(
                 self._error_text(resolution_error), message_id, update_id
@@ -518,7 +518,7 @@ class TelegramQueryService:
         try:
             query = TokenActivityQuery.create(
                 self.settings,
-                chain="base",
+                chain=chain,
                 contract=contract,
                 window=parsed.window,
                 max_events=self.settings.oar_telegram_query_max_events,
@@ -545,9 +545,9 @@ class TelegramQueryService:
         result = self._send_text(text_out, message_id, update_id)
         return "query_completed" if result.sent else "query_reply_failed"
 
-    def _resolve_target(self, target: str) -> tuple[str, str]:
+    def _resolve_target(self, target: str) -> tuple[str, str, str]:
         if EVM_ADDRESS_RE.fullmatch(target):
-            return target.lower(), ""
+            return "base", target.lower(), ""
         normalized = target.upper()
         # The Registry accepts market symbols (for example CBDOGEUSDT), while
         # the public query syntax intentionally also accepts token symbols
@@ -556,7 +556,7 @@ class TelegramQueryService:
         symbols = [
             normalized if normalized.endswith("USDT") else f"{normalized}USDT"
         ]
-        resolved: list[str] = []
+        resolved: list[tuple[str, str]] = []
         blocked = ""
         for symbol in symbols:
             try:
@@ -564,13 +564,18 @@ class TelegramQueryService:
             except AutomationStoreError as exc:
                 if exc.code == "invalid_symbol":
                     continue
-                return "", "registry_resolution_failed"
+                return "", "", "registry_resolution_failed"
             if outcome.get("status") == "resolved":
                 token = outcome.get("token")
                 if isinstance(token, dict):
                     contract = str(token.get("contract_address") or "")
                     if EVM_ADDRESS_RE.fullmatch(contract):
-                        resolved.append(contract.lower())
+                        resolved.append(
+                            (
+                                str(token.get("chain") or "base"),
+                                contract.lower(),
+                            )
+                        )
             elif outcome.get("status") in {
                 "registry_not_verified",
                 "ambiguous_contract",
@@ -578,10 +583,10 @@ class TelegramQueryService:
                 blocked = str(outcome.get("status"))
         unique = list(dict.fromkeys(resolved))
         if len(unique) == 1:
-            return unique[0], ""
+            return unique[0][0], unique[0][1], ""
         if len(unique) > 1:
-            return "", "ambiguous_contract"
-        return "", blocked or "registry_symbol_not_found"
+            return "", "", "ambiguous_contract"
+        return "", "", blocked or "registry_symbol_not_found"
 
     def _send_text(
         self,

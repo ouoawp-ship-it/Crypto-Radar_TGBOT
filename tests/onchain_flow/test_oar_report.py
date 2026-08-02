@@ -474,6 +474,70 @@ class OarReportTests(unittest.TestCase):
         self.assertEqual(formal["report"]["ai"]["status"], "available")
         self.assertEqual(formal_ai.restricted_inputs, [False])
 
+    def test_insufficient_cex_coverage_forces_cautious_ai(self) -> None:
+        payload = self.analyzed_case("accumulation")
+        payload["labels"] = {
+            "status": "insufficient_cex_coverage",
+            "identity_label_count": 0,
+            "classification_eligible_cex_count": 0,
+        }
+        fake = ConfiguredAi(
+            ai_output(bias="bullish", confidence="high")
+        )
+
+        result = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(payload),
+            ai_client=fake,
+            ai_cache=MemoryCache(),
+        ).execute(self.query, with_ai=True)
+
+        ai = result["report"]["ai"]
+        self.assertEqual(ai["status"], "invalid")
+        self.assertTrue(ai["restricted_input"])
+        self.assertEqual(
+            ai["restriction_reasons"], ["insufficient_cex_coverage"]
+        )
+        self.assertIn(
+            "insufficient_cex_coverage",
+            result["report"]["ai_context"]["data_limitations"],
+        )
+        self.assertEqual(fake.restricted_inputs, [True])
+
+    def test_unstructured_linked_market_direction_forces_cautious_ai(self) -> None:
+        payload = self.analyzed_case("accumulation")
+        fake = ConfiguredAi(
+            ai_output(bias="bearish", confidence="high")
+        )
+        service = TokenReportService(
+            self.ai_settings(),
+            StaticActivity(payload),
+            ai_client=fake,
+            ai_cache=MemoryCache(),
+        )
+
+        result = service.build_from_analysis(
+            payload,
+            with_ai=True,
+            linked_market_signals=[
+                {
+                    "public_ref": "funding:fixture",
+                    "module": "funding",
+                    "symbol": "AAAUSDT",
+                    "score": 80,
+                    "summary": "must-not-be-treated-as-direction",
+                }
+            ],
+        )
+
+        ai = result["report"]["ai"]
+        self.assertEqual(ai["status"], "invalid")
+        self.assertEqual(
+            ai["restriction_reasons"],
+            ["market_direction_not_structured"],
+        )
+        self.assertEqual(fake.restricted_inputs, [True])
+
     def test_restricted_input_rejects_stale_richer_cache(self) -> None:
         cache = MemoryCache()
         cache.result = ai_output(bias="bullish", confidence="high")

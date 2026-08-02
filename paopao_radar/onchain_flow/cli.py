@@ -27,6 +27,7 @@ from .address_intelligence import (
     PROVIDER_NAMES,
 )
 from .automation_store import AutomationStore, AutomationStoreError
+from .chain_capabilities import chain_capability_report, resolve_evm_chain
 from .collectors.replay import FixtureValidationError
 from .collectors.evm_http import RpcError
 from .collectors.evm_ws import WssError
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status")
+    subparsers.add_parser("chain-readiness")
     subparsers.add_parser("doctor")
     subparsers.add_parser("labels-check")
     subparsers.add_parser("db-check")
@@ -271,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     registry_add = subparsers.add_parser("registry-add")
     registry_add.add_argument("--market-symbol", required=True)
-    registry_add.add_argument("--chain", choices=("base",), required=True)
+    registry_add.add_argument("--chain", required=True)
     registry_add.add_argument("--contract", required=True)
     registry_add.add_argument("--source", default="manual")
     registry_add.add_argument("--note", default="")
@@ -297,6 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch_list.add_argument("--status", default=None)
     watch_list.add_argument("--due-only", action="store_true")
     watch_list.add_argument("--limit", type=int, default=100)
+    watch_baseline = subparsers.add_parser("watch-baseline")
+    watch_baseline.add_argument("--token-key", required=True)
     watch_remove = subparsers.add_parser("watch-remove")
     watch_remove.add_argument("--token-key", required=True)
 
@@ -1441,6 +1445,7 @@ def main(
             "registry-disable",
             "watch-add",
             "watch-list",
+            "watch-baseline",
             "watch-remove",
             "bridge-once",
             "unresolved-summary",
@@ -1450,9 +1455,12 @@ def main(
             settings.validate()
             store = AutomationStore.from_settings(settings)
             if args.command == "registry-add":
+                chain_spec = resolve_evm_chain(settings, args.chain)
                 item = store.add_registry(
                     market_symbol=args.market_symbol,
                     contract=args.contract,
+                    chain=chain_spec.slug,
+                    chain_id=chain_spec.chain_id,
                     source=args.source,
                     note=args.note,
                 )
@@ -1584,6 +1592,23 @@ def main(
                             "watch_items": items or [],
                             "database_writes": False,
                             "network_activity": False,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.command == "watch-baseline":
+                item = store.latest_scan_baseline(args.token_key)
+                print(
+                    json.dumps(
+                        {
+                            "status": "ok" if item is not None else "not_found",
+                            "baseline": item,
+                            "database_writes": False,
+                            "network_activity": False,
+                            "telegram_calls": False,
+                            "ai_calls": False,
                         },
                         ensure_ascii=False,
                         sort_keys=True,
@@ -1777,6 +1802,11 @@ def main(
             payload["runtime"] = read_runtime_status(
                 settings.runtime_status_path
             )
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "chain-readiness":
+            settings.validate()
+            payload = chain_capability_report(settings)
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "doctor":

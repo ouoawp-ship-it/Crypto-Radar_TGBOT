@@ -198,9 +198,11 @@ def build_ai_context(
     token = payload.get("token")
     query = payload.get("query")
     summary = payload.get("summary")
+    labels = payload.get("labels")
     analysis = payload.get("analysis")
     token_map = token if isinstance(token, dict) else {}
     query_map = query if isinstance(query, dict) else {}
+    labels_map = labels if isinstance(labels, dict) else {}
     analysis_map = analysis if isinstance(analysis, dict) else {}
     windows = analysis_map.get("windows")
     windows_map = windows if isinstance(windows, dict) else {}
@@ -262,6 +264,7 @@ def build_ai_context(
         limitations.add("query_incomplete")
     if not bool(analysis_map.get("complete")):
         limitations.add("analysis_incomplete")
+    limitations.update(_evidence(payload.get("ai_restriction_reasons")))
     linked_source = [
         item
         for item in (payload.get("linked_market_signals") or [])
@@ -328,6 +331,15 @@ def build_ai_context(
                 "unpriced_transfer_count",
             ),
         ),
+        "label_coverage": {
+            "status": _text(labels_map.get("status"), limit=40),
+            "identity_label_count": _integer(
+                labels_map.get("identity_label_count")
+            ),
+            "classification_eligible_cex_count": _integer(
+                labels_map.get("classification_eligible_cex_count")
+            ),
+        },
         "largest_transfers": sorted([
             _transfer(item)
             for item in (payload.get("largest_transfers") or [])

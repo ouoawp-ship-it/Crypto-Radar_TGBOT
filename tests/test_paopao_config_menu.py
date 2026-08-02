@@ -465,6 +465,63 @@ class ConfigManagerTests(unittest.TestCase):
                 with self.assertRaises(ConfigManagerError):
                     self.manager.set("ONCHAIN_CEX_LABELS_FILE", value)
 
+    def test_watch_baseline_settings_are_allowlisted_and_atomic(self) -> None:
+        self.assertEqual(
+            self.manager.set("OAR_WATCH_BASELINE_MIN_SAMPLES", "8")[
+                "status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set("OAR_WATCH_BASELINE_MAX_SAMPLES", "64")[
+                "status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set(
+                "OAR_WATCH_BASELINE_MAD_MULTIPLIER", "3.5"
+            )["status"],
+            "ok",
+        )
+        before = (self.root / ".env.onchain").read_text(encoding="utf-8")
+        with self.assertRaises(ConfigManagerError):
+            self.manager.set("OAR_WATCH_BASELINE_MIN_SAMPLES", "80")
+        self.assertEqual(
+            (self.root / ".env.onchain").read_text(encoding="utf-8"),
+            before,
+        )
+
+    def test_controlled_alert_gate_defaults_off_and_is_atomic(self) -> None:
+        self.assertEqual(
+            self.manager.status()["OAR_WATCH_CONTROLLED_ALERT_ENABLE"],
+            False,
+        )
+        result = self.manager.set(
+            "OAR_WATCH_CONTROLLED_ALERT_ENABLE", "true"
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(
+            result["validation"]["checks"][
+                "oar_watch_controlled_alert_enable"
+            ]
+        )
+        with self.assertRaises(ConfigManagerError):
+            self.manager.set(
+                "OAR_WATCH_CONTROLLED_ALERT_ENABLE", "enabled"
+            )
+
+    def test_watch_baseline_setting_ranges_are_enforced(self) -> None:
+        for key, value in (
+            ("OAR_WATCH_BASELINE_MIN_SAMPLES", "3"),
+            ("OAR_WATCH_BASELINE_MAX_SAMPLES", "101"),
+            ("OAR_WATCH_BASELINE_MAD_MULTIPLIER", "0.9"),
+            ("OAR_WATCH_BASELINE_MAD_MULTIPLIER", "10.1"),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(key, value)
+
     @unittest.skipIf(os.name == "nt", "symlink creation is restricted")
     def test_cex_labels_symlink_cannot_escape_project(self) -> None:
         outside = self.root.parent / f"{self.root.name}-outside-labels.csv"
@@ -549,6 +606,7 @@ class ChineseMenuTests(unittest.TestCase):
             "restart)",
             "doctor)",
             "readiness)",
+            "radar-status)",
             "stable-check)",
             "providers|provider-check)",
             "backup|database-backup)",
@@ -639,6 +697,15 @@ class ChineseMenuTests(unittest.TestCase):
         self.assertIn("run_flow_candidates --all", text)
         self.assertIn("查看清单不会访问网络", text)
 
+    def test_menu_exposes_local_four_radar_status(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        self.assertIn("四个市场雷达运行与推送状态", text)
+        self.assertIn("run_main radar-status", text)
+        self.assertIn(
+            "paopao radar-status   查看四个市场雷达运行与投递状态",
+            text,
+        )
+
     def test_menu_exposes_bounded_base_rpc_range_setting(self) -> None:
         text = MENU.read_text(encoding="utf-8")
         self.assertIn("设置 Base RPC 最大区块范围（高级）", text)
@@ -676,6 +743,10 @@ class ChineseMenuTests(unittest.TestCase):
             'confirm_phrase "启用链上DryRun"',
             'confirm_phrase "启用真实链上提醒"',
             'confirm_phrase "启用自动AI分析"',
+            "受控自动预警门禁",
+            "run_config enable OAR_WATCH_CONTROLLED_ALERT_ENABLE",
+            "run_config disable OAR_WATCH_CONTROLLED_ALERT_ENABLE",
+            'confirm_phrase "启用受控自动预警"',
         ):
             self.assertIn(expected, text)
 

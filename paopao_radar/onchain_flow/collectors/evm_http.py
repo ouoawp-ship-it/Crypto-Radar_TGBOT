@@ -466,6 +466,7 @@ def normalize_transfer_log(
     *,
     block_time: int,
     chain_id: int = BASE_CHAIN_ID,
+    chain_name: str = BASE_CHAIN_NAME,
 ) -> NormalizedTransfer:
     if transfer_log_shape(log) != "erc20":
         raise LogValidationError("Transfer log is not an ERC-20 shape")
@@ -489,7 +490,7 @@ def normalize_transfer_log(
         raise LogValidationError(str(exc)) from exc
     return NormalizedTransfer.create(
         chain_id=chain_id,
-        chain_name=BASE_CHAIN_NAME,
+        chain_name=chain_name,
         block_number=block_number,
         block_hash=block_hash,
         block_time=block_time,
@@ -506,23 +507,38 @@ def normalize_transfer_log(
 
 
 class BaseHttpCollector:
-    def __init__(self, client: JsonRpcClient, settings: OnchainSettings):
+    def __init__(
+        self,
+        client: JsonRpcClient,
+        settings: OnchainSettings,
+        *,
+        chain_id: int = BASE_CHAIN_ID,
+        chain_name: str = BASE_CHAIN_NAME,
+        confirmation_depth: int | None = None,
+    ):
         self.client = client
         self.settings = settings
+        self.chain_id = int(chain_id)
+        self.chain_name = str(chain_name)
+        self.confirmation_depth = int(
+            settings.base_confirmation_depth
+            if confirmation_depth is None
+            else confirmation_depth
+        )
 
     def provider_check(self) -> dict[str, object]:
         chain_id = self.client.chain_id()
-        if chain_id != BASE_CHAIN_ID or chain_id != self.settings.base_chain_id:
-            raise RpcResponseError("configured provider chain ID is not Base")
+        if chain_id != self.chain_id:
+            raise RpcResponseError("configured provider chain ID is incorrect")
         head = self.client.block_number()
-        target = max(0, head - self.settings.base_confirmation_depth)
+        target = max(0, head - self.confirmation_depth)
         block = self.client.get_block(target)
         block_hash = block.get("hash")
         if not isinstance(block_hash, str) or not HASH_RE.fullmatch(block_hash):
             raise RpcResponseError("provider block lookup returned no hash")
         return {
             "status": "ok",
-            "chain": BASE_CHAIN_NAME,
+            "chain": self.chain_name,
             "chain_id": chain_id,
             "latest_head": head,
             "target_finalized": target,
@@ -723,8 +739,8 @@ class BaseHttpCollector:
             str(log.get("transactionHash") or "").lower(),
         )
 
-    @staticmethod
     def _deduplicate_logs(
+        self,
         logs: Iterable[dict[str, object]],
         *,
         canonical_identity: bool = False,
@@ -745,9 +761,7 @@ class BaseHttpCollector:
                     except RpcResponseError:
                         malformed.append(log)
                         continue
-                key = (
-                    f"{BASE_CHAIN_ID}:{tx_hash.lower()}:{identity_index}"
-                )
+                key = f"{self.chain_id}:{tx_hash.lower()}:{identity_index}"
                 existing = deduplicated.get(key)
                 if existing is not None:
                     contents = (

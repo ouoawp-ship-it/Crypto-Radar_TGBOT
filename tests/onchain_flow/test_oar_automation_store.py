@@ -83,12 +83,61 @@ class AutomationStoreTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT value FROM automation_meta WHERE key='schema_version'"
             ).fetchone()
-        self.assertEqual(version[0], "2")
+        self.assertEqual(version[0], "3")
 
     def test_same_chain_contract_is_idempotent(self) -> None:
         self.add()
         self.add()
         self.assertEqual(len(self.store.list_registry() or []), 1)
+
+    def test_registry_keys_and_primary_resolution_are_chain_scoped(self) -> None:
+        base = self.store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="base",
+            chain_id=8453,
+            source="manual",
+            now=1000,
+        )
+        ethereum = self.store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="ethereum",
+            chain_id=1,
+            source="manual",
+            now=1000,
+        )
+        self.assertEqual(base["token_key"], f"8453:{CONTRACT_A}")
+        self.assertEqual(ethereum["token_key"], f"1:{CONTRACT_A}")
+        for item in (base, ethereum):
+            self.store.verify_registry(
+                str(item["token_key"]),
+                token_symbol="AAA",
+                token_name="AAA",
+                decimals=18,
+                metadata_hash="a" * 64,
+                verification_method="fixture",
+                set_primary=True,
+                now=1001,
+            )
+        self.assertEqual(
+            self.store.resolve_registry("AAAUSDT")["status"],
+            "ambiguous_contract",
+        )
+
+    def test_invalid_chain_identity_is_rejected_before_registry_write(self) -> None:
+        with self.assertRaisesRegex(AutomationStoreError, "positive integer"):
+            canonical_token_key("invalid", CONTRACT_A)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(AutomationStoreError, "canonical"):
+            self.store.add_registry(
+                market_symbol="AAAUSDT",
+                contract=CONTRACT_A,
+                chain="Ethereum Mainnet",
+                chain_id=1,
+                source="manual",
+                now=1000,
+            )
+        self.assertFalse(self.store.path.exists())
 
     def test_contract_cannot_be_reassigned_by_another_market_symbol(self) -> None:
         self.add(CONTRACT_A, "AAAUSDT")
@@ -640,7 +689,7 @@ class AutomationStoreTests(unittest.TestCase):
                 "SELECT status, resolved_at, resolved_token_key, "
                 "resolution_note FROM unresolved_signals"
             ).fetchone()
-        self.assertEqual(version, "2")
+        self.assertEqual(version, "3")
         self.assertEqual(row, ("open", None, None, ""))
 
     def test_schema_v1_to_v2_failure_rolls_back(self) -> None:
@@ -699,6 +748,65 @@ class AutomationStoreTests(unittest.TestCase):
             }
         self.assertEqual(version, "1")
         self.assertNotIn("status", columns)
+
+    def test_schema_v2_migrates_historical_baseline_columns(self) -> None:
+        other_path = self.root / "v2" / "oar_automation.db"
+        other_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(other_path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE automation_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO automation_meta VALUES('schema_version', '2');
+                CREATE TABLE watch_scan_runs(
+                    scan_id TEXT PRIMARY KEY,
+                    token_key TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    status TEXT NOT NULL,
+                    activity_complete INTEGER,
+                    analysis_complete INTEGER,
+                    analysis_status TEXT NOT NULL DEFAULT '',
+                    behavior_type TEXT NOT NULL DEFAULT '',
+                    behavior_score INTEGER,
+                    max_wallet_group_score INTEGER,
+                    transfer_count INTEGER,
+                    rpc_request_count INTEGER,
+                    context_hash TEXT NOT NULL DEFAULT '',
+                    notification_status TEXT NOT NULL DEFAULT '',
+                    notification_reason TEXT NOT NULL DEFAULT '',
+                    error_code TEXT NOT NULL DEFAULT '',
+                    source_refs_json TEXT NOT NULL DEFAULT '[]'
+                );
+                """
+            )
+            conn.commit()
+        store = AutomationStore(other_path, data_dir=self.root)
+        store.migrate()
+        with closing(sqlite3.connect(other_path)) as conn:
+            version = conn.execute(
+                "SELECT value FROM automation_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(watch_scan_runs)"
+                ).fetchall()
+            }
+        self.assertEqual(version, "3")
+        self.assertTrue(
+            {
+                "query_window",
+                "total_token_amount",
+                "unique_senders",
+                "unique_receivers",
+                "baseline_status",
+                "baseline_anomaly",
+                "baseline_json",
+            }.issubset(columns)
+        )
 
     def test_scan_audit_is_bounded_per_token(self) -> None:
         self.add()
@@ -796,6 +904,76 @@ class AutomationStoreTests(unittest.TestCase):
         )
         self.assertEqual(verified["status"], "verified")
         self.assertEqual(verified["token_symbol"], "BBB")
+
+    def test_registry_verifies_configured_non_base_chain(self) -> None:
+        chains_path = self.root / "chains.json"
+        chains_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "test-v1",
+                    "chains": [
+                        {
+                            "chain_id": 1,
+                            "slug": "ethereum",
+                            "name": "Ethereum",
+                            "enabled": True,
+                            "confirmation_depth": 64,
+                            "bootstrap_lookback_blocks": 512,
+                            "reorg_lookback_blocks": 128,
+                            "http_rpc_env": "ONCHAIN_ETHEREUM_HTTP_RPC_URL",
+                            "explorer_tx_url": (
+                                "https://etherscan.invalid/tx/{tx_hash}"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = make_settings(self.root, chains_path=chains_path)
+        store = AutomationStore.from_settings(settings)
+        pending = store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="ethereum",
+            chain_id=1,
+            source="manual",
+            now=1000,
+        )
+
+        class EthereumRpc:
+            @staticmethod
+            def chain_id() -> int:
+                return 1
+
+            @staticmethod
+            def get_code(address: str) -> str:
+                del address
+                return "0x6000"
+
+            @staticmethod
+            def eth_call(address: str, selector: str) -> str:
+                del address
+                if selector in {"0x313ce567", "0x18160ddd"}:
+                    value = 18 if selector == "0x313ce567" else 1000
+                    return f"0x{value:064x}"
+                text = b"AAA" if selector == "0x95d89b41" else b"Token"
+                return "0x" + text.ljust(32, b"\x00").hex()
+
+        verified = RegistryService(
+            settings, store, rpc=EthereumRpc()
+        ).verify(
+            str(pending["token_key"]),
+            allow_network=True,
+            set_primary=True,
+            accept_symbol_mismatch=False,
+        )
+        self.assertEqual(verified["chain"], "ethereum")
+        self.assertEqual(verified["chain_id"], 1)
+        self.assertEqual(
+            verified["verification_method"],
+            "ethereum_rpc_erc20_metadata",
+        )
 
     def test_registry_verify_without_network_does_not_touch_rpc(self) -> None:
         self.add()

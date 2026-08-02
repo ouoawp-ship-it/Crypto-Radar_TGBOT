@@ -52,33 +52,52 @@ def _canonical_hash(value: object) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def restricted_ai_input(payload: dict[str, object]) -> bool:
+def ai_restriction_reasons(payload: dict[str, object]) -> list[str]:
     analysis = _mapping(payload.get("analysis"))
     primary = _mapping(analysis.get("primary_behavior"))
-    return (
-        not bool(payload.get("complete"))
-        or not bool(analysis.get("complete"))
-        or str(analysis.get("status") or "")
-        in {
-            "partial_input",
-            "partial_analysis",
-            "insufficient_evidence",
-            "no_activity",
-        }
-        or str(primary.get("type") or "")
-        in {
-            "no_activity",
-            "isolated",
-            "inconclusive_activity",
-            "insufficient_data",
-        }
-    )
+    labels = _mapping(payload.get("labels"))
+    reasons: list[str] = []
+    if not bool(payload.get("complete")):
+        reasons.append("query_incomplete")
+    if not bool(analysis.get("complete")):
+        reasons.append("analysis_incomplete")
+    if str(analysis.get("status") or "") in {
+        "partial_input",
+        "partial_analysis",
+        "insufficient_evidence",
+        "no_activity",
+    }:
+        reasons.append("analysis_low_evidence")
+    if str(primary.get("type") or "") in {
+        "no_activity",
+        "isolated",
+        "inconclusive_activity",
+        "insufficient_data",
+    }:
+        reasons.append("behavior_low_evidence")
+    if (
+        str(labels.get("status") or "missing")
+        in {"missing", "insufficient_cex_coverage", "invalid"}
+        or int(labels.get("classification_eligible_cex_count") or 0) <= 0
+    ):
+        reasons.append("insufficient_cex_coverage")
+    if any(
+        isinstance(item, dict)
+        for item in _list(payload.get("linked_market_signals"))
+    ):
+        reasons.append("market_direction_not_structured")
+    return reasons
+
+
+def restricted_ai_input(payload: dict[str, object]) -> bool:
+    return bool(ai_restriction_reasons(payload))
 
 
 def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
     query = _mapping(payload.get("query"))
     token = _mapping(payload.get("token"))
     summary = _mapping(payload.get("summary"))
+    labels = _mapping(payload.get("labels"))
     analysis = _mapping(payload.get("analysis"))
     primary = _mapping(analysis.get("primary_behavior"))
     window_name = str(query.get("window") or "")
@@ -146,6 +165,7 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
         "token": {
             "chain": str(query.get("chain") or ""),
             "chain_id": query.get("chain_id"),
+            "chain_name": str(query.get("chain_name") or ""),
             "contract": str(
                 query.get("contract") or token.get("contract") or ""
             ),
@@ -177,6 +197,22 @@ def build_rule_summary(payload: dict[str, object]) -> dict[str, object]:
             ),
             "inflow_count": int(window.get("inflow_count") or 0),
             "outflow_count": int(window.get("outflow_count") or 0),
+        },
+        "label_coverage": {
+            "status": str(labels.get("status") or "missing"),
+            "identity_label_count": int(
+                labels.get("identity_label_count") or 0
+            ),
+            "classification_eligible_cex_count": int(
+                labels.get("classification_eligible_cex_count") or 0
+            ),
+            "unclassified_transfer_count": int(
+                summary.get("unclassified_count") or 0
+            ),
+            "cex_direction_observed": bool(
+                int(summary.get("inflow_count") or 0)
+                or int(summary.get("outflow_count") or 0)
+            ),
         },
         "primary_behavior": {
             "type": str(primary.get("type") or "insufficient_data"),
@@ -231,9 +267,12 @@ def build_rule_summary_text(summary: dict[str, object]) -> str:
     primary = _mapping(summary.get("primary_behavior"))
     groups = _list(summary.get("wallet_groups"))
     linked = _list(summary.get("linked_market_signals"))
+    chain_label = str(
+        token.get("chain_name") or token.get("chain") or "unknown"
+    )
     lines = [
         (
-            f"{token.get('symbol') or 'UNKNOWN'} / Base / "
+            f"{token.get('symbol') or 'UNKNOWN'} / {chain_label} / "
             f"{query.get('window') or '-'}："
             f"{'数据完整' if query.get('complete') else '数据不完整'}"
         ),
@@ -313,6 +352,8 @@ class TokenReportService:
         payload["linked_market_signals"] = list(
             linked_market_signals or []
         )
+        restriction_reasons = ai_restriction_reasons(payload)
+        payload["ai_restriction_reasons"] = restriction_reasons
         context = build_ai_context(
             payload,
             max_chars=self.settings.oar_ai_max_context_chars,
@@ -320,12 +361,14 @@ class TokenReportService:
         rule_summary = build_rule_summary(payload)
         rule_text = build_rule_summary_text(rule_summary)
         analysis = _mapping(payload.get("analysis"))
-        restricted_for_ai = restricted_ai_input(payload)
+        restricted_for_ai = bool(restriction_reasons)
         ai = self._ai_result(
             context,
             requested=with_ai,
             restricted_input=restricted_for_ai,
         )
+        ai["restricted_input"] = restricted_for_ai
+        ai["restriction_reasons"] = restriction_reasons
         content_basis = {
             "rule_summary": rule_summary,
             "ai_result": ai.get("result"),

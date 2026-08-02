@@ -13,6 +13,7 @@ from .automation_store import (
     canonical_market_symbol,
     stable_payload_hash,
 )
+from .chain_capabilities import ChainCapabilityError, resolve_evm_chain
 from .config import OnchainSettings
 from .labels import LabelValidationError, normalize_evm_address
 
@@ -607,7 +608,9 @@ class SignalBridge:
         contract = str(signal.get("candidate_contract") or "").lower()
         if not chain and not contract:
             return resolution
-        if chain != "base":
+        try:
+            chain_spec = resolve_evm_chain(self.settings, chain)
+        except ChainCapabilityError:
             return {"status": "unsupported_chain", "token": None}
         try:
             normalized_contract = normalize_evm_address(contract)
@@ -617,6 +620,8 @@ class SignalBridge:
             self.store.add_registry(
                 market_symbol=symbol,
                 contract=normalized_contract,
+                chain=chain_spec.slug,
+                chain_id=chain_spec.chain_id,
                 source=f"signal:{signal.get('module')}",
                 note="unverified structured signal candidate",
             )

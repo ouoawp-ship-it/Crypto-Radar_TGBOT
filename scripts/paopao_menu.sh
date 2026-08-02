@@ -191,6 +191,7 @@ Paopao Telegram Radar BOT-only 控制命令
   paopao restart        重启 BOT 与实时行情服务
   paopao doctor         输出环境诊断
   paopao readiness      检查真实推送门禁
+  paopao radar-status   查看四个市场雷达运行与投递状态
   paopao stable-check   执行 BOT 稳定性检查
   paopao providers      验收 CoinGlass/Coinalyze 数据源
   paopao backup         创建并恢复验证 SQLite 备份
@@ -420,6 +421,36 @@ EOF
   esac
 }
 
+watch_controlled_alert_menu() {
+  local choice
+  cat <<'EOF'
+受控自动预警门禁：
+1. 启用（历史异常 + 市场共振 + 原有规则同时满足）
+2. 禁用（保留原有规则门禁）
+0. 取消
+EOF
+  IFS= read -r choice
+  case "$choice" in
+    1)
+      confirm_phrase "启用受控自动预警" || return 0
+      if run_config enable OAR_WATCH_CONTROLLED_ALERT_ENABLE; then
+        printf '受控自动预警门禁已启用；重启 OAR Watch 后生效。\n'
+      else
+        printf '受控自动预警门禁保存失败。\n' >&2
+      fi
+      ;;
+    2)
+      if run_config disable OAR_WATCH_CONTROLLED_ALERT_ENABLE; then
+        printf '受控自动预警门禁已禁用；重启 OAR Watch 后生效。\n'
+      else
+        printf '受控自动预警门禁保存失败。\n' >&2
+      fi
+      ;;
+    0) return 0 ;;
+    *) printf '无效选项。\n' ;;
+  esac
+}
+
 watch_delivery_menu() {
   local choice
   while true; do
@@ -430,7 +461,8 @@ Watch 通知模式
 2. Telegram Dry-run
 3. Real，真实发送
 4. 自动 AI 开关
-5. 查看当前脱敏状态
+5. 受控自动预警门禁
+6. 查看当前脱敏状态
 0. 返回
 EOF
     IFS= read -r choice
@@ -464,7 +496,8 @@ EOF
         pause_menu
         ;;
       4) watch_ai_menu; pause_menu ;;
-      5) run_config status; pause_menu ;;
+      5) watch_controlled_alert_menu; pause_menu ;;
+      6) run_config status; pause_menu ;;
       0) return ;;
       *) printf '无效选项。\n' ;;
     esac
@@ -569,6 +602,7 @@ overview_menu() {
 7. OAR status
 8. OAR doctor
 9. 磁盘与内存
+10. 四个市场雷达运行与推送状态
 0. 返回
 EOF
     IFS= read -r choice
@@ -582,6 +616,7 @@ EOF
       7) run_onchain status; pause_menu ;;
       8) run_onchain doctor; pause_menu ;;
       9) system_resources; pause_menu ;;
+      10) run_main radar-status; pause_menu ;;
       0) return ;;
     esac
   done
@@ -1350,6 +1385,7 @@ case "$command" in
   restart) restart_services ;;
   doctor) run_main doctor "$@" ;;
   readiness) run_main readiness "$@" ;;
+  radar-status) run_main radar-status "$@" ;;
   stable-check) run_main stable-check "$@" ;;
   providers|provider-check) run_main provider-check "$@" ;;
   backup|database-backup) run_main database-backup "$@" ;;

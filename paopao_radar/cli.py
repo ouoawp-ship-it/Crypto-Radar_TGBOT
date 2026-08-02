@@ -40,6 +40,7 @@ from .market_cockpit import persist_flow_market_rows, persist_market_batch
 from .funding_alert import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts, legacy_state_report, migrate_legacy_state
 from .radar import RadarEngine, fmt_price
+from .runtime_diagnostics import build_market_radar_runtime_status
 from .signal_effectiveness import SignalOutcomeTracker
 from .signal_store import SignalEventStore
 from .storage import JsonStore
@@ -356,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "provider-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "provider-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "announcements-test", "flow-radar", "funding-alert", "market-stream", "runtime-status", "radar-status", "cleanup", "watchlist", "launch-history", "launch-report", "migrate-state", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；provider-check 验证 CoinGlass/Coinalyze；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -472,13 +473,32 @@ def write_runtime_status(
     **details: object,
 ) -> dict[str, object]:
     status_path = settings.runtime_status_path
-    payload: dict[str, object] = {
+    base_payload: dict[str, object] = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": mode,
         "status": status,
         "upstream_sources": UPSTREAM_SOURCE_METRICS.snapshot(),
     }
+    incoming_task = str(details.get("task") or "")
+    existing = store.load(status_path, {})
+    merge_loop = bool(
+        isinstance(existing, dict)
+        and str(existing.get("task") or "") == "loop"
+        and incoming_task == "loop"
+        and str(existing.get("mode") or "") in {"loop", "daemon"}
+        and mode in {"loop", "daemon"}
+    )
+    payload = dict(existing) if merge_loop else {}
+    payload.update(base_payload)
+    previous_diagnostics = payload.get("diagnostics")
+    incoming_diagnostics = details.get("diagnostics")
     payload.update(details)
+    if merge_loop and isinstance(previous_diagnostics, dict) and isinstance(
+        incoming_diagnostics, dict
+    ):
+        merged_diagnostics = dict(previous_diagnostics)
+        merged_diagnostics.update(incoming_diagnostics)
+        payload["diagnostics"] = merged_diagnostics
     try:
         store.save(status_path, payload)
     except Exception as exc:
@@ -500,6 +520,14 @@ def _load_runtime_status_or_empty(store: JsonStore, path: Path, label: str) -> d
 def print_runtime_status(settings: Settings, store: JsonStore) -> None:
     main_status = _load_runtime_status_or_empty(store, settings.runtime_status_path, "main")
     print(json.dumps({"main": main_status}, ensure_ascii=False, indent=2))
+
+
+def print_radar_status(settings: Settings, store: JsonStore) -> None:
+    print(json.dumps(
+        build_market_radar_runtime_status(settings, store),
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 def print_cleanup(settings: Settings, store: JsonStore, force: bool) -> None:
@@ -1117,16 +1145,20 @@ def save_observe_report(
 def run_once(args: argparse.Namespace) -> int:
     settings, store, engine, gateway = make_runtime_for_args(args)
     mode = command_mode(args)
+    runtime_task = "loop" if mode in {"loop", "daemon"} else "once"
     write_runtime_status(
         settings,
         store,
         mode,
         "running",
-        task="once",
+        task=runtime_task,
         real_send=bool(args.send and args.confirm_real_send),
         no_launch=bool(args.no_launch),
         no_announcements=bool(args.no_announcements),
         no_flow=bool(args.no_flow),
+        no_funding_alert=bool(
+            getattr(args, "no_funding_alert", False)
+        ),
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
@@ -1223,23 +1255,40 @@ def run_once(args: argparse.Namespace) -> int:
         diagnostics["signal_effectiveness"] = {"status": "failed", "error": type(exc).__name__}
 
     print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
+    runtime_details: dict[str, object] = {
+        "task": runtime_task,
+        "real_send": bool(args.send and args.confirm_real_send),
+        "summary_push": summary_push_status,
+        "summary_cycle_status": "ok",
+        "summary_error_code": "",
+        "radar_scan_limit": settings.radar_scan_limit,
+        "launch_scan_limit": settings.launch_scan_limit,
+        "flow_scan_limit": settings.flow_scan_limit,
+        "funding_alert_scan_limit": settings.funding_alert_scan_limit,
+        "last_error": "",
+        "announcement_pushes": announcement_pushes,
+        "diagnostics": diagnostics,
+    }
+    if not args.no_launch:
+        runtime_details["launch_pushes"] = launch_pushes
+        runtime_details["launch_cycle_status"] = "ok"
+        runtime_details["launch_error_code"] = ""
+    if not args.no_flow:
+        runtime_details["flow_push"] = flow_push_status
+        runtime_details["flow_cycle_status"] = "ok"
+        runtime_details["flow_error_code"] = ""
+    if not getattr(args, "no_funding_alert", False):
+        runtime_details["funding_alert_push"] = (
+            funding_alert_push_status
+        )
+        runtime_details["funding_alert_cycle_status"] = "ok"
+        runtime_details["funding_alert_error_code"] = ""
     write_runtime_status(
         settings,
         store,
         mode,
-        "completed",
-        task="once",
-        real_send=bool(args.send and args.confirm_real_send),
-        summary_push=summary_push_status,
-        flow_push=flow_push_status,
-        funding_alert_push=funding_alert_push_status,
-        radar_scan_limit=settings.radar_scan_limit,
-        launch_scan_limit=settings.launch_scan_limit,
-        flow_scan_limit=settings.flow_scan_limit,
-        funding_alert_scan_limit=settings.funding_alert_scan_limit,
-        launch_pushes=launch_pushes,
-        announcement_pushes=announcement_pushes,
-        diagnostics=diagnostics,
+        "running" if runtime_task == "loop" else "completed",
+        **runtime_details,
     )
     return 0
 
@@ -1263,6 +1312,11 @@ def run_loop(args: argparse.Namespace) -> int:
         delay_sec=settings.flow_close_delay_sec,
     )
     next_funding_alert = time.time()
+    heartbeat_interval_sec = max(
+        5,
+        min(60, settings.health_runtime_max_age_sec // 3),
+    )
+    next_heartbeat = time.time() + heartbeat_interval_sec
     write_runtime_status(
         settings,
         store,
@@ -1286,19 +1340,23 @@ def run_loop(args: argparse.Namespace) -> int:
         launch_scan_limit=settings.launch_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
         funding_alert_scan_limit=settings.funding_alert_scan_limit,
+        last_error="",
     )
     while True:
         now = time.time()
         cleanup_runtime_artifacts(settings, store)
         if now >= next_summary:
             summary_ok = True
-            summary_error = ""
+            summary_error_code = ""
             try:
                 run_once(argparse.Namespace(**{**vars(args), "no_launch": True, "no_flow": True}))
             except Exception as exc:
                 summary_ok = False
-                summary_error = f"{type(exc).__name__}: {exc}"
-                print(f"[loop] summary failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                summary_error_code = type(exc).__name__
+                print(
+                    f"[loop] summary failed: {summary_error_code}",
+                    file=sys.stderr,
+                )
             next_summary = next_closed_window_epoch(
                 time.time(),
                 interval_sec=summary_interval,
@@ -1313,7 +1371,9 @@ def run_loop(args: argparse.Namespace) -> int:
                 real_send=bool(args.send and args.confirm_real_send),
                 last_summary_at=timestamp_from_epoch(time.time()),
                 next_summary_at=timestamp_from_epoch(next_summary),
-                last_error=summary_error,
+                summary_cycle_status="ok" if summary_ok else "failed",
+                summary_error_code=summary_error_code,
+                last_error="",
                 no_launch=bool(args.no_launch),
                 no_flow=bool(args.no_flow),
             )
@@ -1322,7 +1382,7 @@ def run_loop(args: argparse.Namespace) -> int:
             and now >= next_flow
         ):
             flow_ok = True
-            flow_error = ""
+            flow_error_code = ""
             flow_diag: dict[str, object] = {}
             flow_push_status = "skipped"
             try:
@@ -1331,8 +1391,11 @@ def run_loop(args: argparse.Namespace) -> int:
                 print(json.dumps({"flow": flow_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
                 flow_ok = False
-                flow_error = f"{type(exc).__name__}: {exc}"
-                print(f"[loop] flow failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                flow_error_code = type(exc).__name__
+                print(
+                    f"[loop] flow failed: {flow_error_code}",
+                    file=sys.stderr,
+                )
             next_flow = next_closed_window_epoch(
                 time.time(),
                 interval_sec=settings.flow_interval_sec,
@@ -1348,12 +1411,14 @@ def run_loop(args: argparse.Namespace) -> int:
                 last_flow_at=timestamp_from_epoch(time.time()),
                 next_flow_at=timestamp_from_epoch(next_flow),
                 flow_push=flow_push_status,
+                flow_cycle_status="ok" if flow_ok else "failed",
+                flow_error_code=flow_error_code,
                 diagnostics={"flow": flow_diag},
-                last_error=flow_error,
+                last_error="",
             )
         if not getattr(args, "no_funding_alert", False) and now >= next_funding_alert:
             funding_ok = True
-            funding_error = ""
+            funding_error_code = ""
             funding_diag: dict[str, object] = {}
             funding_push_status = "skipped"
             try:
@@ -1362,8 +1427,12 @@ def run_loop(args: argparse.Namespace) -> int:
                 print(json.dumps({"funding_alert": funding_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
                 funding_ok = False
-                funding_error = f"{type(exc).__name__}: {exc}"
-                print(f"[loop] funding alert failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                funding_error_code = type(exc).__name__
+                print(
+                    "[loop] funding alert failed: "
+                    f"{funding_error_code}",
+                    file=sys.stderr,
+                )
             next_funding_alert = time.time() + max(60, settings.funding_alert_interval_sec)
             write_runtime_status(
                 settings,
@@ -1375,12 +1444,16 @@ def run_loop(args: argparse.Namespace) -> int:
                 last_funding_alert_at=timestamp_from_epoch(time.time()),
                 next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
                 funding_alert_push=funding_push_status,
+                funding_alert_cycle_status=(
+                    "ok" if funding_ok else "failed"
+                ),
+                funding_alert_error_code=funding_error_code,
                 diagnostics={"funding_alert": funding_diag},
-                last_error=funding_error,
+                last_error="",
             )
         if not args.no_launch and now >= next_launch:
             launch_ok = True
-            launch_error = ""
+            launch_error_code = ""
             launch_pushes: list[dict[str, str]] = []
             launch_diag: dict[str, object] = {}
             source: BinanceDataSource | None = None
@@ -1417,8 +1490,11 @@ def run_loop(args: argparse.Namespace) -> int:
                 print(json.dumps({"launch": launch_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
                 launch_ok = False
-                launch_error = f"{type(exc).__name__}: {exc}"
-                print(f"[loop] launch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                launch_error_code = type(exc).__name__
+                print(
+                    f"[loop] launch failed: {launch_error_code}",
+                    file=sys.stderr,
+                )
             finally:
                 if source is not None:
                     source.close()
@@ -1433,9 +1509,28 @@ def run_loop(args: argparse.Namespace) -> int:
                 last_launch_at=timestamp_from_epoch(time.time()),
                 next_launch_at=timestamp_from_epoch(next_launch),
                 launch_pushes=launch_pushes,
+                launch_cycle_status="ok" if launch_ok else "failed",
+                launch_error_code=launch_error_code,
                 diagnostics={"launch": launch_diag},
-                last_error=launch_error,
+                last_error="",
             )
+        if time.time() >= next_heartbeat:
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                no_launch=bool(args.no_launch),
+                no_flow=bool(args.no_flow),
+                no_funding_alert=bool(
+                    getattr(args, "no_funding_alert", False)
+                ),
+                heartbeat_interval_sec=heartbeat_interval_sec,
+                last_error="",
+            )
+            next_heartbeat = time.time() + heartbeat_interval_sec
         time.sleep(3)
 
 
@@ -1716,6 +1811,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
+        return 0
+    if args.command == "radar-status":
+        print_radar_status(settings, store)
         return 0
     if args.command == "watchlist":
         print_watchlist(settings, store, args.top)

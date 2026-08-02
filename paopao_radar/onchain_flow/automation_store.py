@@ -13,7 +13,6 @@ from urllib.parse import quote
 
 from .config import OnchainSettings
 from .constants import (
-    BASE_CHAIN_ID,
     OAR_AUTOMATION_SCHEMA_VERSION,
     OAR_WATCH_MAX_ACTIVE_TOKENS_HARD,
 )
@@ -21,7 +20,8 @@ from .labels import LabelValidationError, normalize_evm_address
 
 
 MARKET_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,24}USDT$")
-TOKEN_KEY_RE = re.compile(r"^8453:(0x[0-9a-f]{40})$")
+TOKEN_KEY_RE = re.compile(r"^([1-9]\d*):(0x[0-9a-f]{40})$")
+CHAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 REGISTRY_STATUSES = {"pending", "verified", "disabled", "rejected"}
 WATCH_STATUSES = {"active", "paused", "expired"}
 
@@ -43,9 +43,15 @@ def canonical_market_symbol(value: str) -> str:
 
 
 def canonical_token_key(chain_id: int, contract: str) -> str:
-    if int(chain_id) != BASE_CHAIN_ID:
+    try:
+        parsed_chain_id = int(chain_id)
+    except (TypeError, ValueError) as exc:
         raise AutomationStoreError(
-            "unsupported_chain", "OAR-P4 only supports Base"
+            "invalid_chain_id", "chain id must be a positive integer"
+        ) from exc
+    if isinstance(chain_id, bool) or parsed_chain_id <= 0:
+        raise AutomationStoreError(
+            "invalid_chain_id", "chain id must be a positive integer"
         )
     try:
         address = normalize_evm_address(contract)
@@ -53,7 +59,7 @@ def canonical_token_key(chain_id: int, contract: str) -> str:
         raise AutomationStoreError(
             "invalid_contract", "contract must be a 20-byte EVM address"
         ) from exc
-    return f"{BASE_CHAIN_ID}:{address}"
+    return f"{parsed_chain_id}:{address}"
 
 
 def parse_token_key(token_key: str) -> tuple[int, str]:
@@ -61,9 +67,9 @@ def parse_token_key(token_key: str) -> tuple[int, str]:
     if match is None:
         raise AutomationStoreError(
             "invalid_token_key",
-            "token key must be 8453:<lowercase EVM contract>",
+            "token key must be <chain_id>:<lowercase EVM contract>",
         )
-    return BASE_CHAIN_ID, match.group(1)
+    return int(match.group(1)), match.group(2)
 
 
 def stable_payload_hash(value: object) -> str:
@@ -80,6 +86,16 @@ def _json_list(value: object) -> str:
     items = value if isinstance(value, list) else []
     return json.dumps(
         items,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _json_dict(value: object) -> str:
+    item = value if isinstance(value, dict) else {}
+    return json.dumps(
+        item,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -164,6 +180,7 @@ class AutomationStore:
                 if current_version not in {
                     0,
                     1,
+                    2,
                     OAR_AUTOMATION_SCHEMA_VERSION,
                 }:
                     raise AutomationStoreError(
@@ -172,7 +189,11 @@ class AutomationStore:
                     )
                 if current_version == 1:
                     self._migrate_v1_to_v2(conn)
-                else:
+                    current_version = 2
+                if current_version == 2:
+                    self._create_schema(conn)
+                    self._migrate_v2_to_v3(conn)
+                if current_version in {0, OAR_AUTOMATION_SCHEMA_VERSION}:
                     self._create_schema(conn)
                 conn.execute(
                     "INSERT OR REPLACE INTO automation_meta(key, value) "
@@ -207,6 +228,30 @@ class AutomationStore:
             "CREATE INDEX IF NOT EXISTS idx_unresolved_open_symbol "
             "ON unresolved_signals(status, source_symbol, reason)"
         )
+
+    @staticmethod
+    def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+        additions = (
+            "query_window TEXT NOT NULL DEFAULT ''",
+            "total_token_amount TEXT NOT NULL DEFAULT ''",
+            "unique_senders INTEGER",
+            "unique_receivers INTEGER",
+            "baseline_status TEXT NOT NULL DEFAULT ''",
+            "baseline_anomaly INTEGER NOT NULL DEFAULT 0",
+            "baseline_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        existing = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(watch_scan_runs)"
+            ).fetchall()
+        }
+        for definition in additions:
+            name = definition.split()[0]
+            if name not in existing:
+                conn.execute(
+                    f"ALTER TABLE watch_scan_runs ADD COLUMN {definition}"
+                )
 
     @staticmethod
     def _create_schema(conn: sqlite3.Connection) -> None:
@@ -329,6 +374,13 @@ class AutomationStore:
                 max_wallet_group_score INTEGER,
                 transfer_count INTEGER,
                 rpc_request_count INTEGER,
+                query_window TEXT NOT NULL DEFAULT '',
+                total_token_amount TEXT NOT NULL DEFAULT '',
+                unique_senders INTEGER,
+                unique_receivers INTEGER,
+                baseline_status TEXT NOT NULL DEFAULT '',
+                baseline_anomaly INTEGER NOT NULL DEFAULT 0,
+                baseline_json TEXT NOT NULL DEFAULT '{}',
                 context_hash TEXT NOT NULL DEFAULT '',
                 notification_status TEXT NOT NULL DEFAULT '',
                 notification_reason TEXT NOT NULL DEFAULT '',
@@ -380,15 +432,22 @@ class AutomationStore:
         *,
         market_symbol: str,
         contract: str,
+        chain: str = "base",
+        chain_id: int = 8453,
         source: str,
         note: str = "",
         now: int | None = None,
     ) -> dict[str, object]:
-        self.migrate()
         timestamp = int(now if now is not None else self.clock())
         symbol = canonical_market_symbol(market_symbol)
-        token_key = canonical_token_key(BASE_CHAIN_ID, contract)
+        token_key = canonical_token_key(chain_id, contract)
+        normalized_chain = str(chain or "").strip().lower()
+        if CHAIN_SLUG_RE.fullmatch(normalized_chain) is None:
+            raise AutomationStoreError(
+                "invalid_chain", "chain must be a canonical EVM chain slug"
+            )
         _, address = parse_token_key(token_key)
+        self.migrate()
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
@@ -410,7 +469,7 @@ class AutomationStore:
                     token_key, chain, chain_id, contract_address,
                     market_symbol, status, source, verification_note,
                     created_at, updated_at
-                ) VALUES(?, 'base', ?, ?, ?, 'pending', ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
                 ON CONFLICT(token_key) DO UPDATE SET
                     source=excluded.source,
                     verification_note=excluded.verification_note,
@@ -418,7 +477,8 @@ class AutomationStore:
                 """,
                 (
                     token_key,
-                    BASE_CHAIN_ID,
+                    normalized_chain,
+                    int(chain_id),
                     address,
                     symbol,
                     str(source or "manual")[:80],
@@ -486,7 +546,7 @@ class AutomationStore:
         now: int | None = None,
     ) -> dict[str, object]:
         self.migrate()
-        parse_token_key(token_key)
+        chain_id, _contract = parse_token_key(token_key)
         if decimals < 0 or decimals > 36:
             raise AutomationStoreError(
                 "invalid_decimals", "verified decimals must be in [0, 36]"
@@ -513,7 +573,7 @@ class AutomationStore:
                     (
                         timestamp,
                         str(row["market_symbol"]),
-                        BASE_CHAIN_ID,
+                        chain_id,
                         token_key.lower(),
                     ),
                 )
@@ -611,10 +671,7 @@ class AutomationStore:
         primary = [row for row in rows if int(row["is_primary"]) == 1]
         if len(primary) != 1:
             return {"status": "ambiguous_contract", "token": None}
-        token = dict(primary[0])
-        if int(token["chain_id"]) != BASE_CHAIN_ID:
-            return {"status": "unsupported_chain", "token": None}
-        return {"status": "resolved", "token": token}
+        return {"status": "resolved", "token": dict(primary[0])}
 
     def add_manual_watch(
         self,
@@ -755,7 +812,8 @@ class AutomationStore:
             rows = conn.execute(
                 """
                 SELECT w.*, r.market_symbol, r.token_symbol,
-                       r.contract_address, r.status AS registry_status
+                       r.chain, r.chain_id, r.contract_address,
+                       r.status AS registry_status
                 FROM watch_items w
                 JOIN token_registry r ON r.token_key=w.token_key
                 """
@@ -1340,7 +1398,7 @@ class AutomationStore:
             rows = conn.execute(
                 """
                 SELECT w.*, r.market_symbol, r.token_symbol,
-                       r.contract_address, r.decimals
+                       r.chain, r.chain_id, r.contract_address, r.decimals
                 FROM watch_items w
                 JOIN token_registry r ON r.token_key=w.token_key
                 WHERE w.status='active'
@@ -1517,6 +1575,11 @@ class AutomationStore:
         max_wallet_group_score: int | None = None,
         transfer_count: int | None = None,
         rpc_request_count: int | None = None,
+        query_window: str = "",
+        total_token_amount: str = "",
+        unique_senders: int | None = None,
+        unique_receivers: int | None = None,
+        historical_baseline: dict[str, object] | None = None,
         context_hash: str = "",
         notification_status: str = "",
         notification_reason: str = "",
@@ -1531,6 +1594,11 @@ class AutomationStore:
         completed_at = int(now if now is not None else self.clock())
         scan_id = uuid.uuid4().hex
         failure = status in {"failed", "partial"}
+        baseline = (
+            historical_baseline
+            if isinstance(historical_baseline, dict)
+            else {}
+        )
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
@@ -1549,10 +1617,13 @@ class AutomationStore:
                     scan_id, token_key, started_at, completed_at, status,
                     activity_complete, analysis_complete, analysis_status,
                     behavior_type, behavior_score, max_wallet_group_score,
-                    transfer_count, rpc_request_count, context_hash,
+                    transfer_count, rpc_request_count, query_window,
+                    total_token_amount, unique_senders, unique_receivers,
+                    baseline_status, baseline_anomaly, baseline_json,
+                    context_hash,
                     notification_status, notification_reason, error_code,
                     source_refs_json
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scan_id,
@@ -1568,6 +1639,13 @@ class AutomationStore:
                     max_wallet_group_score,
                     transfer_count,
                     rpc_request_count,
+                    str(query_window or "")[:8],
+                    str(total_token_amount or "")[:160],
+                    unique_senders,
+                    unique_receivers,
+                    str(baseline.get("status") or "")[:24],
+                    int(bool(baseline.get("anomaly"))),
+                    _json_dict(baseline),
                     str(context_hash or "")[:64],
                     str(notification_status or "")[:40],
                     str(notification_reason or "")[:120],
@@ -1622,6 +1700,97 @@ class AutomationStore:
             self._trim_scan_audit(conn, token_key.lower())
             conn.commit()
         return scan_id
+
+    def complete_scan_history(
+        self,
+        token_key: str,
+        *,
+        query_window: str,
+        limit: int = 64,
+    ) -> list[dict[str, object]]:
+        parse_token_key(token_key)
+        bounded_limit = max(1, min(int(limit), 100))
+        with self.connect_existing() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT transfer_count, total_token_amount,
+                       unique_senders, unique_receivers,
+                       behavior_score, max_wallet_group_score,
+                       baseline_json
+                FROM watch_scan_runs
+                WHERE token_key=? AND query_window=? AND status='ok'
+                  AND activity_complete=1 AND analysis_complete=1
+                ORDER BY started_at DESC, scan_id DESC
+                LIMIT ?
+                """,
+                (token_key.lower(), str(query_window), bounded_limit),
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in reversed(rows):
+            item = dict(row)
+            try:
+                baseline = json.loads(str(item.pop("baseline_json") or "{}"))
+            except json.JSONDecodeError:
+                baseline = {}
+            windows = (
+                baseline.get("windows")
+                if isinstance(baseline, dict)
+                else {}
+            )
+            window_metrics: dict[str, object] = {}
+            if isinstance(windows, dict):
+                for name, value in windows.items():
+                    if not isinstance(value, dict):
+                        continue
+                    current = value.get("current")
+                    if isinstance(current, dict):
+                        window_metrics[str(name)] = current
+            item["window_metrics"] = window_metrics
+            result.append(item)
+        return result
+
+    def latest_scan_baseline(
+        self, token_key: str
+    ) -> dict[str, object] | None:
+        parse_token_key(token_key)
+        with self.connect_existing() as conn:
+            if conn is None:
+                return None
+            row = conn.execute(
+                """
+                SELECT scan_id, token_key, started_at, completed_at,
+                       query_window, baseline_status, baseline_anomaly,
+                       baseline_json
+                FROM watch_scan_runs
+                WHERE token_key=? AND baseline_status<>''
+                ORDER BY started_at DESC, scan_id DESC
+                LIMIT 1
+                """,
+                (token_key.lower(),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            baseline = json.loads(str(row["baseline_json"] or "{}"))
+        except json.JSONDecodeError:
+            baseline = {
+                "status": "local_error",
+                "error": "historical_baseline_invalid_audit",
+            }
+        return {
+            "scan_id": str(row["scan_id"]),
+            "token_key": str(row["token_key"]),
+            "started_at": int(row["started_at"]),
+            "completed_at": int(row["completed_at"] or 0),
+            "query_window": str(row["query_window"] or ""),
+            "baseline_status": str(row["baseline_status"] or ""),
+            "baseline_anomaly": bool(row["baseline_anomaly"]),
+            "historical_baseline": (
+                baseline if isinstance(baseline, dict) else {}
+            ),
+        }
 
     @staticmethod
     def _trim_scan_audit(

@@ -7,8 +7,18 @@ from typing import Any, Callable
 from .address_intelligence import AddressIntelligenceStore
 from .automation_store import AutomationStore, AutomationStoreError
 from .config import OnchainSettings
+from .market_convergence import evaluate_market_convergence
+from .controlled_alert_preview import evaluate_controlled_alert_preview
 from .report import TokenReportService
 from .report_notifier import ReportNotifier
+from .scan_baseline import (
+    HistoricalScanBaseline,
+    analyze_nested_windows,
+    baseline_local_error,
+    baseline_skipped_incomplete,
+    nested_window_metrics,
+    scan_metrics,
+)
 from .signal_bridge import SignalBridge
 from .token_activity import TokenActivityQuery, TokenActivityQueryError
 from .token_analysis import TokenAnalysisService
@@ -100,6 +110,7 @@ class WatchScanner:
             "deferred_token_keys": [],
             "cycle_budget_exhausted": False,
             "actionable_tokens": 0,
+            "controlled_alert_tokens": 0,
             "notifications_attempted": 0,
             "notifications_sent": 0,
             "partial_tokens": 0,
@@ -166,6 +177,10 @@ class WatchScanner:
             if token_result.get("actionable"):
                 result["actionable_tokens"] = (
                     int(result["actionable_tokens"]) + 1
+                )
+            if token_result.get("controlled_alert_eligible"):
+                result["controlled_alert_tokens"] = (
+                    int(result["controlled_alert_tokens"]) + 1
                 )
             if token_result.get("notification_attempted"):
                 result["notifications_attempted"] = (
@@ -254,7 +269,7 @@ class WatchScanner:
         try:
             query = TokenActivityQuery.create(
                 self.settings,
-                chain="base",
+                chain=str(item["chain"]),
                 contract=str(item["contract_address"]),
                 window=str(item["query_window"]),
                 max_events=self.settings.oar_watch_max_events_per_token,
@@ -324,7 +339,111 @@ class WatchScanner:
         context_hash = ""
         ai_calls = 0
         reported: dict[str, object] | None = None
-        if actionable:
+
+        activity_complete = bool(analyzed.get("complete"))
+        analysis_complete = bool(analysis.get("complete"))
+        scan_status = (
+            "ok"
+            if activity_complete and analysis_complete
+            else "partial"
+        )
+        partial_reason = ""
+        if scan_status == "partial":
+            partial_reason = str(
+                analyzed.get("truncation_reason")
+                or analysis.get("status")
+                or "partial_result"
+            )
+        summary = analyzed.get("summary")
+        summary = summary if isinstance(summary, dict) else {}
+        current_metrics = scan_metrics(
+            summary,
+            behavior_score=int(primary.get("score") or 0),
+            max_wallet_group_score=max_wallet_score,
+        )
+        baseline_analyzer = HistoricalScanBaseline(
+            min_samples=self.settings.oar_watch_baseline_min_samples,
+            max_samples=self.settings.oar_watch_baseline_max_samples,
+            mad_multiplier=(
+                self.settings.oar_watch_baseline_mad_multiplier
+            ),
+        )
+        if not (activity_complete and analysis_complete):
+            historical_baseline = baseline_skipped_incomplete(
+                min_samples=self.settings.oar_watch_baseline_min_samples,
+                max_samples=self.settings.oar_watch_baseline_max_samples,
+                mad_multiplier=(
+                    self.settings.oar_watch_baseline_mad_multiplier
+                ),
+            )
+        else:
+            try:
+                baseline_history = self.store.complete_scan_history(
+                    token_key,
+                    query_window=str(item["query_window"]),
+                    limit=self.settings.oar_watch_baseline_max_samples,
+                )
+                historical_baseline = baseline_analyzer.analyze(
+                    current_metrics,
+                    baseline_history,
+                )
+                nested = analyze_nested_windows(
+                    nested_window_metrics(analysis),
+                    baseline_history,
+                    min_samples=(
+                        self.settings.oar_watch_baseline_min_samples
+                    ),
+                    max_samples=(
+                        self.settings.oar_watch_baseline_max_samples
+                    ),
+                    mad_multiplier=(
+                        self.settings.oar_watch_baseline_mad_multiplier
+                    ),
+                )
+                historical_baseline.update(nested)
+            except Exception:
+                historical_baseline = baseline_local_error(
+                    min_samples=(
+                        self.settings.oar_watch_baseline_min_samples
+                    ),
+                    max_samples=(
+                        self.settings.oar_watch_baseline_max_samples
+                    ),
+                    mad_multiplier=(
+                        self.settings.oar_watch_baseline_mad_multiplier
+                    ),
+                )
+        market_convergence = evaluate_market_convergence(
+            linked,
+            historical_baseline,
+            onchain_actionable=actionable,
+            behavior_score=int(primary.get("score") or 0),
+            max_wallet_group_score=max_wallet_score,
+        )
+        historical_baseline["market_convergence"] = market_convergence
+        controlled_alert_preview = evaluate_controlled_alert_preview(
+            activity_complete=activity_complete,
+            analysis_complete=analysis_complete,
+            existing_rule_gate_met=actionable,
+            historical_baseline=historical_baseline,
+            market_convergence=market_convergence,
+            enforced=self.settings.oar_watch_controlled_alert_enable,
+        )
+        historical_baseline[
+            "controlled_alert_preview"
+        ] = controlled_alert_preview
+        controlled_alert_eligible = bool(
+            controlled_alert_preview.get("would_alert")
+        )
+        notification_gate_met = bool(
+            actionable
+            and (
+                controlled_alert_eligible
+                if self.settings.oar_watch_controlled_alert_enable
+                else True
+            )
+        )
+        if notification_gate_met:
             if not self._renew_lease(token_key, lease_owner):
                 return self._record_stale(
                     token_key,
@@ -346,7 +465,7 @@ class WatchScanner:
             ai = ai if isinstance(ai, dict) else {}
             ai_calls = int(ai.get("calls") or 0)
             context_hash = str(report.get("context_hash") or "")
-        if actionable and notify_requested and reported is not None:
+        if notification_gate_met and notify_requested and reported is not None:
             if not self._renew_lease(token_key, lease_owner):
                 return self._record_stale(
                     token_key,
@@ -372,25 +491,10 @@ class WatchScanner:
             )
             notification_status = str(notification.status)
             notification_reason = str(notification.reason)
-        elif actionable:
+        elif notification_gate_met:
             notification_reason = "observe_mode"
-
-        activity_complete = bool(analyzed.get("complete"))
-        analysis_complete = bool(analysis.get("complete"))
-        scan_status = (
-            "ok"
-            if activity_complete and analysis_complete
-            else "partial"
-        )
-        partial_reason = ""
-        if scan_status == "partial":
-            partial_reason = str(
-                analyzed.get("truncation_reason")
-                or analysis.get("status")
-                or "partial_result"
-            )
-        summary = analyzed.get("summary")
-        summary = summary if isinstance(summary, dict) else {}
+        elif actionable and self.settings.oar_watch_controlled_alert_enable:
+            notification_reason = "controlled_alert_gate_not_met"
         if not self._renew_lease(token_key, lease_owner):
             return self._record_stale(
                 token_key,
@@ -413,6 +517,13 @@ class WatchScanner:
             max_wallet_group_score=max_wallet_score,
             transfer_count=int(summary.get("transfer_count") or 0),
             rpc_request_count=rpc_count,
+            query_window=str(item["query_window"]),
+            total_token_amount=str(
+                current_metrics["total_token_amount"]
+            ),
+            unique_senders=int(current_metrics["unique_senders"]),
+            unique_receivers=int(current_metrics["unique_receivers"]),
+            historical_baseline=historical_baseline,
             context_hash=context_hash,
             notification_status=notification_status,
             notification_reason=notification_reason,
@@ -438,19 +549,26 @@ class WatchScanner:
         queue_status = "skipped_incomplete"
         queue_error = ""
         if activity_complete and analysis_complete:
-            try:
-                queue_result = (
-                    self.address_intelligence_store.observe_complete_scan(
-                        analyzed,
-                        observed_at=int(self.clock()),
+            if int(item["chain_id"]) != self.settings.base_chain_id:
+                # External label providers and their local candidate store are
+                # currently Base-scoped.  A non-Base Watch scan stays complete
+                # but cannot silently place addresses in the Base namespace.
+                queue_status = "skipped_chain_unsupported"
+                queue_error = "address_intelligence_chain_unsupported"
+            else:
+                try:
+                    queue_result = (
+                        self.address_intelligence_store.observe_complete_scan(
+                            analyzed,
+                            observed_at=int(self.clock()),
+                        )
                     )
-                )
-                queue_status = "ok"
-            except Exception:
-                # Local best-effort enrichment must never fail a scan or
-                # expose exception text, paths, or secrets.
-                queue_status = "local_error"
-                queue_error = "address_intelligence_local_error"
+                    queue_status = "ok"
+                except Exception:
+                    # Local best-effort enrichment must never fail a scan or
+                    # expose exception text, paths, or secrets.
+                    queue_status = "local_error"
+                    queue_error = "address_intelligence_local_error"
         return {
             "token_key": token_key,
             "status": scan_status,
@@ -461,14 +579,21 @@ class WatchScanner:
             "behavior_score": int(primary.get("score") or 0),
             "max_wallet_group_score": max_wallet_score,
             "actionable": actionable,
+            "controlled_alert_eligible": controlled_alert_eligible,
+            "notification_gate_met": notification_gate_met,
             "rpc_request_count": rpc_count,
             "rpc_budget_consumed": rpc_count,
-            "notification_attempted": bool(actionable and notify_requested),
+            "notification_attempted": bool(
+                notification_gate_met and notify_requested
+            ),
             "notification_status": notification_status,
             "notification_reason": notification_reason,
             "error": partial_reason,
             "ai_calls": ai_calls,
             "analysis_started": True,
+            "historical_baseline": historical_baseline,
+            "market_convergence": market_convergence,
+            "controlled_alert_preview": controlled_alert_preview,
             "unknown_addresses_queued": int(
                 queue_result.get("observed") or 0
             ),
