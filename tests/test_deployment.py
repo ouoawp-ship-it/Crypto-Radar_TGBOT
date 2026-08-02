@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import importlib.util
 import json
 import subprocess
@@ -511,6 +512,86 @@ class MainCommandTests(unittest.TestCase):
 
         self.assertEqual(payload["mode"], "test")
         self.assertEqual(saved["status"], "running")
+
+    def test_loop_runtime_status_merges_independent_radar_updates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            main.write_runtime_status(
+                settings,
+                store,
+                "loop",
+                "running",
+                task="loop",
+                last_summary_at="summary-time",
+                summary_push="dry_run",
+                diagnostics={"summary": {"status": "ok"}},
+            )
+            main.write_runtime_status(
+                settings,
+                store,
+                "loop",
+                "running",
+                task="loop",
+                last_launch_at="launch-time",
+                launch_pushes=[{"status": "dry_run"}],
+                diagnostics={"launch": {"status": "ok"}},
+            )
+            saved = store.load(settings.runtime_status_path, {})
+
+        self.assertEqual(saved["last_summary_at"], "summary-time")
+        self.assertEqual(saved["summary_push"], "dry_run")
+        self.assertEqual(saved["last_launch_at"], "launch-time")
+        self.assertEqual(saved["diagnostics"]["summary"]["status"], "ok")
+        self.assertEqual(saved["diagnostics"]["launch"]["status"], "ok")
+
+    def test_non_loop_runtime_write_does_not_inherit_loop_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            main.write_runtime_status(
+                settings,
+                store,
+                "loop",
+                "running",
+                task="loop",
+                last_summary_at="old",
+            )
+            main.write_runtime_status(
+                settings,
+                store,
+                "once",
+                "completed",
+                task="once",
+            )
+            saved = store.load(settings.runtime_status_path, {})
+
+        self.assertNotIn("last_summary_at", saved)
+
+    def test_radar_status_cli_is_local_and_redacted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, gateway = self.make_runtime(tmp)
+            store.save(settings.runtime_status_path, {
+                "updated_at": datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "mode": "loop",
+                "task": "loop",
+                "status": "running",
+                "real_send": False,
+                "diagnostics": {"secret": "must-not-appear"},
+            })
+            with patch.object(
+                main,
+                "make_runtime",
+                return_value=(settings, store, None, gateway),
+            ), redirect_stdout(StringIO()) as output:
+                code = main.main(["radar-status"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["telegram_http_policy"], "zero_by_dry_run")
+        self.assertFalse(payload["network_activity"])
+        self.assertNotIn("must-not-appear", output.getvalue())
 
     def test_make_runtime_for_args_applies_scan_limit_overrides(self) -> None:
         with TemporaryDirectory() as tmp:

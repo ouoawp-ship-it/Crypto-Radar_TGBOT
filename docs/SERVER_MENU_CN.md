@@ -46,6 +46,7 @@ pp
 paopao status
 paopao doctor
 paopao readiness
+paopao radar-status
 paopao stable-check
 paopao providers
 paopao backup
@@ -55,6 +56,8 @@ paopao update
 paopao version
 paopao flow-candidates --all
 ```
+
+`paopao radar-status` 只读取本地运行状态、启动观察历史、资金费率状态和资金流候选状态，不访问网络。它分别显示启动预警、资金摘要、资金费率警报和资金流雷达的最近运行、下次调度、候选数量、最近投递结果及投递门禁。`delivery_block_reason=main_bot_dry_run` 表示雷达仍在计算，但真实 Telegram 投递被安全模式阻止；此状态不是雷达停机。
 
 ## 五因子资金流雷达候选轮换
 

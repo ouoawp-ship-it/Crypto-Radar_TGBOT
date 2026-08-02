@@ -606,6 +606,7 @@ class ChineseMenuTests(unittest.TestCase):
             "restart)",
             "doctor)",
             "readiness)",
+            "radar-status)",
             "stable-check)",
             "providers|provider-check)",
             "backup|database-backup)",
@@ -695,6 +696,15 @@ class ChineseMenuTests(unittest.TestCase):
         self.assertIn("查看全市场完整候选清单", text)
         self.assertIn("run_flow_candidates --all", text)
         self.assertIn("查看清单不会访问网络", text)
+
+    def test_menu_exposes_local_four_radar_status(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+        self.assertIn("四个市场雷达运行与推送状态", text)
+        self.assertIn("run_main radar-status", text)
+        self.assertIn(
+            "paopao radar-status   查看四个市场雷达运行与投递状态",
+            text,
+        )
 
     def test_menu_exposes_bounded_base_rpc_range_setting(self) -> None:
         text = MENU.read_text(encoding="utf-8")

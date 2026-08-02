@@ -191,6 +191,7 @@ Paopao Telegram Radar BOT-only 控制命令
   paopao restart        重启 BOT 与实时行情服务
   paopao doctor         输出环境诊断
   paopao readiness      检查真实推送门禁
+  paopao radar-status   查看四个市场雷达运行与投递状态
   paopao stable-check   执行 BOT 稳定性检查
   paopao providers      验收 CoinGlass/Coinalyze 数据源
   paopao backup         创建并恢复验证 SQLite 备份
@@ -601,6 +602,7 @@ overview_menu() {
 7. OAR status
 8. OAR doctor
 9. 磁盘与内存
+10. 四个市场雷达运行与推送状态
 0. 返回
 EOF
     IFS= read -r choice
@@ -614,6 +616,7 @@ EOF
       7) run_onchain status; pause_menu ;;
       8) run_onchain doctor; pause_menu ;;
       9) system_resources; pause_menu ;;
+      10) run_main radar-status; pause_menu ;;
       0) return ;;
     esac
   done
@@ -1382,6 +1385,7 @@ case "$command" in
   restart) restart_services ;;
   doctor) run_main doctor "$@" ;;
   readiness) run_main readiness "$@" ;;
+  radar-status) run_main radar-status "$@" ;;
   stable-check) run_main stable-check "$@" ;;
   providers|provider-check) run_main provider-check "$@" ;;
   backup|database-backup) run_main database-backup "$@" ;;
