@@ -21,6 +21,7 @@ from .scan_baseline import (
     analyze_nested_windows,
     baseline_local_error,
     baseline_skipped_incomplete,
+    build_rolling_observation,
     nested_window_metrics,
     scan_metrics,
 )
@@ -394,6 +395,33 @@ class WatchScanner:
                 self.settings.oar_watch_baseline_mad_multiplier
             ),
         )
+        rolling_observation: dict[str, object] | None = None
+        rolling_snapshot: dict[str, object] = {
+            "status": "skipped_incomplete",
+            "source": "complete_watch_scans_v1",
+            "windows": {},
+            "coverage": {},
+            "network_activity": False,
+            "external_provider_calls": 0,
+        }
+        if activity_complete and analysis_complete:
+            try:
+                rolling_observation = build_rolling_observation(analyzed)
+                rolling_snapshot = self.store.rolling_window_snapshot(
+                    token_key,
+                    rolling_observation,
+                )
+            except Exception:
+                rolling_observation = None
+                rolling_snapshot = {
+                    "status": "local_error",
+                    "error": "rolling_window_baseline_local_error",
+                    "source": "complete_watch_scans_v1",
+                    "windows": {},
+                    "coverage": {},
+                    "network_activity": False,
+                    "external_provider_calls": 0,
+                }
         if not (activity_complete and analysis_complete):
             historical_baseline = baseline_skipped_incomplete(
                 min_samples=self.settings.oar_watch_baseline_min_samples,
@@ -413,8 +441,17 @@ class WatchScanner:
                     current_metrics,
                     baseline_history,
                 )
+                rolling_windows = rolling_snapshot.get("windows")
+                combined_windows = (
+                    dict(rolling_windows)
+                    if isinstance(rolling_windows, dict)
+                    else {}
+                )
+                # Native nested windows come from the current complete query
+                # and remain authoritative when already available.
+                combined_windows.update(nested_window_metrics(analysis))
                 nested = analyze_nested_windows(
-                    nested_window_metrics(analysis),
+                    combined_windows,
                     baseline_history,
                     min_samples=(
                         self.settings.oar_watch_baseline_min_samples
@@ -439,6 +476,18 @@ class WatchScanner:
                         self.settings.oar_watch_baseline_mad_multiplier
                     ),
                 )
+        historical_baseline["rolling_window_baseline"] = {
+            "status": str(rolling_snapshot.get("status") or "local_error"),
+            "error": str(rolling_snapshot.get("error") or ""),
+            "source": str(rolling_snapshot.get("source") or ""),
+            "coverage": (
+                rolling_snapshot.get("coverage")
+                if isinstance(rolling_snapshot.get("coverage"), dict)
+                else {}
+            ),
+            "network_activity": False,
+            "external_provider_calls": 0,
+        }
         historical_baseline["label_coverage"] = label_coverage_snapshot(
             summary,
             labels,
@@ -555,6 +604,7 @@ class WatchScanner:
             unique_senders=int(current_metrics["unique_senders"]),
             unique_receivers=int(current_metrics["unique_receivers"]),
             historical_baseline=historical_baseline,
+            rolling_observation=rolling_observation,
             context_hash=context_hash,
             notification_status=notification_status,
             notification_reason=notification_reason,

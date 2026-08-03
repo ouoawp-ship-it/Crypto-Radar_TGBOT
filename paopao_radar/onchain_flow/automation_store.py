@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
@@ -35,6 +36,27 @@ ADDRESS_QUEUE_AUDIT_ERRORS = {
     "",
     "address_intelligence_chain_unsupported",
     "address_intelligence_local_error",
+}
+ROLLING_WINDOW_SECONDS = {
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "4h": 4 * 60 * 60,
+    "24h": 24 * 60 * 60,
+}
+ROLLING_OBSERVATION_RETENTION_SEC = 25 * 60 * 60
+ROLLING_COVERAGE_ROWS_HARD = 2000
+ROLLING_EVENT_ROWS_HARD = 200000
+ROLLING_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+ROLLING_FLOW_TYPES = {
+    "mint",
+    "burn",
+    "non_cex",
+    "unclassified",
+    "inflow",
+    "outflow",
+    "internal",
+    "consolidation",
+    "cross_cex",
 }
 
 
@@ -195,6 +217,7 @@ class AutomationStore:
                     2,
                     3,
                     4,
+                    5,
                     OAR_AUTOMATION_SCHEMA_VERSION,
                 }:
                     raise AutomationStoreError(
@@ -216,6 +239,9 @@ class AutomationStore:
                     self._create_schema(conn)
                     self._migrate_v4_to_v5(conn)
                     current_version = 5
+                if current_version == 5:
+                    self._migrate_v5_to_v6(conn)
+                    current_version = 6
                 if current_version in {0, OAR_AUTOMATION_SCHEMA_VERSION}:
                     self._create_schema(conn)
                 conn.execute(
@@ -311,6 +337,43 @@ class AutomationStore:
                 "ALTER TABLE watch_sources ADD COLUMN "
                 "source_direction TEXT NOT NULL DEFAULT ''"
             )
+
+    @staticmethod
+    def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+        AutomationStore._create_rolling_schema(conn)
+
+    @staticmethod
+    def _create_rolling_schema(conn: sqlite3.Connection) -> None:
+        statements = (
+            """CREATE TABLE IF NOT EXISTS watch_scan_coverage (
+                scan_id TEXT PRIMARY KEY,
+                token_key TEXT NOT NULL,
+                from_time INTEGER NOT NULL,
+                to_time INTEGER NOT NULL,
+                event_count INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )""",
+            """CREATE INDEX IF NOT EXISTS idx_scan_coverage_token_time
+                ON watch_scan_coverage(token_key, to_time DESC, from_time)""",
+            """CREATE TABLE IF NOT EXISTS watch_scan_events (
+                token_key TEXT NOT NULL,
+                event_hash TEXT NOT NULL,
+                event_time INTEGER NOT NULL,
+                amount TEXT NOT NULL,
+                from_hash TEXT NOT NULL,
+                to_hash TEXT NOT NULL,
+                flow_type TEXT NOT NULL,
+                observation_count INTEGER NOT NULL DEFAULT 1,
+                first_scan_id TEXT NOT NULL,
+                last_scan_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(token_key, event_hash)
+            )""",
+            """CREATE INDEX IF NOT EXISTS idx_scan_events_token_time
+                ON watch_scan_events(token_key, event_time, event_hash)""",
+        )
+        for statement in statements:
+            conn.execute(statement)
 
     @staticmethod
     def _create_schema(conn: sqlite3.Connection) -> None:
@@ -460,6 +523,7 @@ class AutomationStore:
             sql = statement.strip()
             if sql:
                 conn.execute(sql)
+        AutomationStore._create_rolling_schema(conn)
 
     @staticmethod
     def _require_schema(conn: sqlite3.Connection) -> None:
@@ -1653,6 +1717,7 @@ class AutomationStore:
         unique_senders: int | None = None,
         unique_receivers: int | None = None,
         historical_baseline: dict[str, object] | None = None,
+        rolling_observation: dict[str, object] | None = None,
         context_hash: str = "",
         notification_status: str = "",
         notification_reason: str = "",
@@ -1743,6 +1808,19 @@ class AutomationStore:
                 self._trim_scan_audit(conn, token_key.lower())
                 conn.commit()
                 return "lease_lost"
+            if (
+                status == "ok"
+                and activity_complete is True
+                and analysis_complete is True
+                and isinstance(rolling_observation, dict)
+            ):
+                self._persist_rolling_observation(
+                    conn,
+                    scan_id=scan_id,
+                    token_key=token_key.lower(),
+                    observation=rolling_observation,
+                    now=completed_at,
+                )
             failures = (
                 int(current["consecutive_failures"] or 0) + 1
                 if failure
@@ -1758,7 +1836,10 @@ class AutomationStore:
                     else "active"
                 )
             else:
-                next_scan_at = completed_at + int(scan_interval_sec)
+                next_scan_at = max(
+                    completed_at,
+                    int(started_at) + int(scan_interval_sec),
+                )
                 watch_status = "active"
             changed = conn.execute(
                 """
@@ -1837,6 +1918,332 @@ class AutomationStore:
             ).rowcount
             conn.commit()
         return bool(changed)
+
+    @staticmethod
+    def _normalize_rolling_observation(
+        observation: dict[str, object],
+    ) -> tuple[int, int, list[dict[str, object]]]:
+        if int(observation.get("schema_version") or 0) != 1:
+            raise AutomationStoreError(
+                "rolling_observation_invalid",
+                "rolling observation schema is unsupported",
+            )
+        from_time = int(observation.get("from_time") or 0)
+        to_time = int(observation.get("to_time") or 0)
+        raw_events = observation.get("events")
+        if (
+            from_time <= 0
+            or to_time <= from_time
+            or not isinstance(raw_events, list)
+            or len(raw_events) > 5000
+            or int(observation.get("event_count") or 0) != len(raw_events)
+        ):
+            raise AutomationStoreError(
+                "rolling_observation_invalid",
+                "rolling observation range or event count is invalid",
+            )
+        events: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                raise AutomationStoreError(
+                    "rolling_observation_invalid",
+                    "rolling observation event is invalid",
+                )
+            event_hash = str(raw.get("event_hash") or "")
+            from_hash = str(raw.get("from_hash") or "")
+            to_hash = str(raw.get("to_hash") or "")
+            event_time = int(raw.get("event_time") or 0)
+            flow_type = str(raw.get("flow_type") or "")
+            try:
+                amount = Decimal(str(raw.get("amount") or "0"))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise AutomationStoreError(
+                    "rolling_observation_invalid",
+                    "rolling observation amount is invalid",
+                ) from exc
+            if (
+                event_hash in seen
+                or ROLLING_HASH_RE.fullmatch(event_hash) is None
+                or ROLLING_HASH_RE.fullmatch(from_hash) is None
+                or ROLLING_HASH_RE.fullmatch(to_hash) is None
+                or event_time < from_time
+                or event_time > to_time
+                or flow_type not in ROLLING_FLOW_TYPES
+                or not amount.is_finite()
+                or amount < 0
+            ):
+                raise AutomationStoreError(
+                    "rolling_observation_invalid",
+                    "rolling observation event fields are invalid",
+                )
+            seen.add(event_hash)
+            events.append(
+                {
+                    "event_hash": event_hash,
+                    "event_time": event_time,
+                    "amount": format(amount, "f"),
+                    "from_hash": from_hash,
+                    "to_hash": to_hash,
+                    "flow_type": flow_type,
+                }
+            )
+        return from_time, to_time, events
+
+    def rolling_window_snapshot(
+        self,
+        token_key: str,
+        observation: dict[str, object],
+    ) -> dict[str, object]:
+        """Aggregate private complete scans without external calls or writes."""
+
+        parse_token_key(token_key)
+        from_time, to_time, current_events = (
+            self._normalize_rolling_observation(observation)
+        )
+        self.migrate()
+        earliest = to_time - ROLLING_WINDOW_SECONDS["24h"]
+        with self.connect_existing() as conn:
+            if conn is None:
+                coverage_rows: list[sqlite3.Row] = []
+                event_rows: list[sqlite3.Row] = []
+            else:
+                coverage_rows = conn.execute(
+                    """
+                    SELECT from_time, to_time, event_count
+                    FROM watch_scan_coverage
+                    WHERE token_key=? AND to_time>=? AND from_time<=?
+                    ORDER BY from_time, to_time, scan_id
+                    LIMIT ?
+                    """,
+                    (
+                        token_key.lower(),
+                        earliest,
+                        to_time,
+                        ROLLING_COVERAGE_ROWS_HARD + 1,
+                    ),
+                ).fetchall()
+                event_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM watch_scan_events
+                        WHERE token_key=? AND event_time>=? AND event_time<=?
+                        """,
+                        (token_key.lower(), earliest, to_time),
+                    ).fetchone()[0]
+                )
+                if (
+                    len(coverage_rows) > ROLLING_COVERAGE_ROWS_HARD
+                    or event_count > ROLLING_EVENT_ROWS_HARD
+                ):
+                    raise AutomationStoreError(
+                        "rolling_observation_budget_exhausted",
+                        "rolling observation exceeded its local read budget",
+                    )
+                event_rows = conn.execute(
+                    """
+                    SELECT event_hash, event_time, amount, from_hash,
+                           to_hash, flow_type, observation_count
+                    FROM watch_scan_events
+                    WHERE token_key=? AND event_time>=? AND event_time<=?
+                    ORDER BY event_time, event_hash
+                    """,
+                    (token_key.lower(), earliest, to_time),
+                ).fetchall()
+        intervals = [
+            (
+                int(row["from_time"]),
+                int(row["to_time"]),
+                int(row["event_count"]),
+            )
+            for row in coverage_rows
+        ]
+        intervals.append((from_time, to_time, len(current_events)))
+        events = {
+            str(row["event_hash"]): {
+                "event_hash": str(row["event_hash"]),
+                "event_time": int(row["event_time"]),
+                "amount": str(row["amount"]),
+                "from_hash": str(row["from_hash"]),
+                "to_hash": str(row["to_hash"]),
+                "flow_type": str(row["flow_type"]),
+                "observation_count": int(row["observation_count"]),
+            }
+            for row in event_rows
+        }
+        for item in current_events:
+            event_hash = str(item["event_hash"])
+            previous = events.get(event_hash)
+            events[event_hash] = {
+                **item,
+                "observation_count": (
+                    int(previous.get("observation_count") or 0) + 1
+                    if isinstance(previous, dict)
+                    else 1
+                ),
+            }
+
+        windows: dict[str, dict[str, object]] = {}
+        coverage: dict[str, dict[str, object]] = {}
+        for name, seconds in ROLLING_WINDOW_SECONDS.items():
+            window_start = to_time - seconds
+            overlapping = sorted(
+                (
+                    max(window_start, start),
+                    min(to_time, end),
+                    count,
+                )
+                for start, end, count in intervals
+                if end >= window_start and start <= to_time
+            )
+            cursor = window_start
+            covered_seconds = 0
+            gap_detected = False
+            for start, end, _count in overlapping:
+                if end <= cursor:
+                    continue
+                if start > cursor:
+                    gap_detected = True
+                    cursor = start
+                covered_seconds += max(0, end - cursor)
+                cursor = end
+            covered_seconds = min(seconds, covered_seconds)
+            complete = bool(overlapping) and not gap_detected and cursor >= to_time
+            ratio = Decimal(covered_seconds) / Decimal(seconds)
+            relevant = [
+                item
+                for item in events.values()
+                if window_start <= int(item["event_time"]) <= to_time
+            ]
+            coverage[name] = {
+                "status": "complete" if complete else "collecting",
+                "required_seconds": seconds,
+                "covered_seconds": covered_seconds,
+                "coverage_ratio": format(ratio.quantize(Decimal("0.000001")), "f"),
+                "observation_count": len(overlapping),
+                "event_count": len(relevant) if complete else 0,
+                "deduplicated_event_count": sum(
+                    max(0, int(item.get("observation_count") or 1) - 1)
+                    for item in relevant
+                ),
+            }
+            if not complete:
+                continue
+            positive = [
+                item
+                for item in relevant
+                if Decimal(str(item["amount"])) > 0
+            ]
+            total_amount = sum(
+                (Decimal(str(item["amount"])) for item in positive),
+                Decimal("0"),
+            )
+            flow_counts = {
+                flow: sum(
+                    1
+                    for item in positive
+                    if str(item["flow_type"]) == flow
+                )
+                for flow in ("inflow", "outflow", "unclassified")
+            }
+            windows[name] = {
+                "transfer_count": len(relevant),
+                "total_token_amount": format(total_amount, "f"),
+                "unique_senders": len(
+                    {str(item["from_hash"]) for item in positive}
+                ),
+                "unique_receivers": len(
+                    {str(item["to_hash"]) for item in positive}
+                ),
+                "inflow_count": flow_counts["inflow"],
+                "outflow_count": flow_counts["outflow"],
+                "unclassified_count": flow_counts["unclassified"],
+                "active_15m_buckets": len(
+                    {
+                        int(item["event_time"]) // (15 * 60)
+                        for item in positive
+                    }
+                ),
+            }
+        return {
+            "status": "ok",
+            "source": "complete_watch_scans_v1",
+            "anchor_time": to_time,
+            "windows": windows,
+            "coverage": coverage,
+            "network_activity": False,
+            "external_provider_calls": 0,
+        }
+
+    def _persist_rolling_observation(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        scan_id: str,
+        token_key: str,
+        observation: dict[str, object],
+        now: int,
+    ) -> None:
+        from_time, to_time, events = self._normalize_rolling_observation(
+            observation
+        )
+        conn.execute(
+            """
+            INSERT INTO watch_scan_coverage(
+                scan_id, token_key, from_time, to_time, event_count, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scan_id,
+                token_key,
+                from_time,
+                to_time,
+                len(events),
+                now,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO watch_scan_events(
+                token_key, event_hash, event_time, amount, from_hash,
+                to_hash, flow_type, observation_count, first_scan_id,
+                last_scan_id, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(token_key, event_hash) DO UPDATE SET
+                event_time=excluded.event_time,
+                amount=excluded.amount,
+                from_hash=excluded.from_hash,
+                to_hash=excluded.to_hash,
+                flow_type=excluded.flow_type,
+                observation_count=watch_scan_events.observation_count + 1,
+                last_scan_id=excluded.last_scan_id,
+                updated_at=excluded.updated_at
+            """,
+            [
+                (
+                    token_key,
+                    str(item["event_hash"]),
+                    int(item["event_time"]),
+                    str(item["amount"]),
+                    str(item["from_hash"]),
+                    str(item["to_hash"]),
+                    str(item["flow_type"]),
+                    scan_id,
+                    scan_id,
+                    now,
+                )
+                for item in events
+            ],
+        )
+        cutoff = to_time - ROLLING_OBSERVATION_RETENTION_SEC
+        conn.execute(
+            "DELETE FROM watch_scan_coverage WHERE token_key=? AND to_time<?",
+            (token_key, cutoff),
+        )
+        conn.execute(
+            "DELETE FROM watch_scan_events WHERE token_key=? AND event_time<?",
+            (token_key, cutoff),
+        )
 
     def complete_scan_history(
         self,

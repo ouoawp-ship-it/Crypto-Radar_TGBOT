@@ -6,6 +6,7 @@ from decimal import Decimal
 from paopao_radar.onchain_flow.scan_baseline import (
     HistoricalScanBaseline,
     analyze_nested_windows,
+    build_rolling_observation,
     nested_window_metrics,
     scan_metrics,
 )
@@ -145,6 +146,67 @@ class HistoricalScanBaselineTests(unittest.TestCase):
         )
         self.assertEqual(result["15m"]["total_token_amount"], "4.2")
         self.assertNotIn("private_transfer_payload", result["15m"])
+
+    def test_rolling_observation_hashes_private_event_and_wallet_ids(self) -> None:
+        tx_hash = "0x" + "ab" * 32
+        sender = "0x" + "11" * 20
+        receiver = "0x" + "22" * 20
+        observation = build_rolling_observation(
+            {
+                "complete": True,
+                "query": {"from_time": 1000, "to_time": 1900},
+                "transfers": [
+                    {
+                        "event_id": f"8453:{tx_hash}:7",
+                        "tx_hash": tx_hash,
+                        "log_index": 7,
+                        "block_time": 1500,
+                        "amount": "12.5",
+                        "from": {"address": sender},
+                        "to": {"address": receiver},
+                        "flow_type": "inflow",
+                        "explorer_url": f"https://example.invalid/{tx_hash}",
+                    }
+                ],
+            }
+        )
+
+        rendered = str(observation).lower()
+        self.assertNotIn(tx_hash, rendered)
+        self.assertNotIn(sender, rendered)
+        self.assertNotIn(receiver, rendered)
+        self.assertNotIn("example.invalid", rendered)
+        event = observation["events"][0]
+        self.assertRegex(event["event_hash"], r"^[0-9a-f]{64}$")
+        self.assertRegex(event["from_hash"], r"^[0-9a-f]{64}$")
+        self.assertRegex(event["to_hash"], r"^[0-9a-f]{64}$")
+
+    def test_rolling_observation_rejects_incomplete_or_out_of_range(self) -> None:
+        with self.assertRaises(ValueError):
+            build_rolling_observation(
+                {
+                    "complete": False,
+                    "query": {"from_time": 1000, "to_time": 1900},
+                    "transfers": [],
+                }
+            )
+        with self.assertRaises(ValueError):
+            build_rolling_observation(
+                {
+                    "complete": True,
+                    "query": {"from_time": 1000, "to_time": 1900},
+                    "transfers": [
+                        {
+                            "event_id": "event",
+                            "block_time": 999,
+                            "amount": "1",
+                            "from": {"address": "0x" + "11" * 20},
+                            "to": {"address": "0x" + "22" * 20},
+                            "flow_type": "unclassified",
+                        }
+                    ],
+                }
+            )
 
 
 if __name__ == "__main__":

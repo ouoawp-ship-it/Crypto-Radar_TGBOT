@@ -814,11 +814,11 @@ class SignalBridgeTests(unittest.TestCase):
             max_consecutive_failures=10,
             now=5001,
         )
-        self.assertEqual(self.store.get_watch(key)["next_scan_at"], 5901)
+        self.assertEqual(self.store.get_watch(key)["next_scan_at"], 5900)
         SignalBridge(
             self.settings, self.store, clock=lambda: 5200
         ).run_once()
-        self.assertEqual(self.store.get_watch(key)["next_scan_at"], 5901)
+        self.assertEqual(self.store.get_watch(key)["next_scan_at"], 5900)
         insert_signal(
             self.signal_db,
             signal_id=1,
