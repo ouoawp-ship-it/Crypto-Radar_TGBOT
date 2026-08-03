@@ -88,6 +88,15 @@ def market_cap_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
             str(item.get("symbol") or ""),
         ),
     )
+    market_cap_sources = {
+        str(item.get("market_cap_source") or "")
+        for item in ranked
+    }
+    source_text = (
+        "来源: 本地市场快照（15分钟内）+ CoinPaprika 回补 | 排序: 流通市值降序"
+        if "coinpaprika_fallback" in market_cap_sources
+        else "来源: 本地市场快照（15分钟内） | 排序: 流通市值降序"
+    )
     lines = [
         tg_quote("📋 全市场候选 · 市值排行"),
         (
@@ -95,7 +104,7 @@ def market_cap_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
             f"待补全 {len(missing)}"
         ),
         (
-            "来源: 本地市场快照（15分钟内） | 排序: 流通市值降序"
+            source_text
             if ranked
             else "市值数据: 本地快照暂无可用值 | 缺失项不参与排名"
         ),
@@ -132,7 +141,7 @@ def market_cap_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
         lines.extend([
             "",
             f"❔ 市值待补全（{len(missing)}）",
-            "以下仅保留候选资格，不参与市值名次。",
+            "Binance 与 CoinPaprika 均未提供可靠流通市值；仅保留候选资格，不参与名次。",
             *compact_symbol_lines(
                 [str(item.get("symbol") or "") for item in missing],
                 per_line=4,
@@ -800,7 +809,10 @@ class FlowRadarEngine:
             delay_sec=self.settings.flow_close_delay_sec,
         )
         candidates = self._candidate_symbols(binance)
-        market_cap_status = self._enrich_cached_market_caps(candidates)
+        market_cap_status = self._enrich_cached_market_caps(
+            candidates,
+            fallback_source=binance,
+        )
         rotation_candidates, rotation_state = self._rotation_candidates(candidates)
         rows: list[dict[str, Any]] = []
         scanned_items: list[dict[str, Any]] = []
@@ -935,6 +947,7 @@ class FlowRadarEngine:
         candidates: list[dict[str, Any]],
         *,
         now_ts: int | None = None,
+        fallback_source: Any | None = None,
     ) -> dict[str, Any]:
         symbols = [
             str(item.get("symbol") or "")
@@ -948,43 +961,37 @@ class FlowRadarEngine:
                 "missing_count": 0,
                 "network_calls": 0,
             }
+        current_ts = int(now_ts or time.time())
         path = self.settings.market_snapshots_db_path
-        if not path.exists():
-            return {
-                "status": "not_available",
-                "known_count": 0,
-                "missing_count": len(symbols),
-                "network_calls": 0,
-            }
-        observed_after = int(now_ts or time.time()) - FLOW_MARKET_CAP_MAX_AGE_SEC
+        observed_after = current_ts - FLOW_MARKET_CAP_MAX_AGE_SEC
         placeholders = ",".join("?" for _symbol in symbols)
         conn: sqlite3.Connection | None = None
-        try:
-            uri = f"{path.resolve().as_uri()}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, timeout=0.2)
-            conn.execute("PRAGMA query_only = ON")
-            rows = conn.execute(
-                f"""
-                SELECT symbol, market_cap, observed_at
-                FROM market_snapshots
-                WHERE symbol IN ({placeholders})
-                  AND market_cap > 0
-                  AND observed_at >= ?
-                ORDER BY symbol, observed_at DESC
-                """,
-                (*symbols, observed_after),
-            ).fetchall()
-        except (OSError, sqlite3.Error):
-            return {
-                "status": "local_error",
-                "error": "market_cap_snapshot_read_failed",
-                "known_count": 0,
-                "missing_count": len(symbols),
-                "network_calls": 0,
-            }
-        finally:
-            if conn is not None:
-                conn.close()
+        rows: list[tuple[Any, Any, Any]] = []
+        local_status = "not_available"
+        local_error = ""
+        if path.exists():
+            try:
+                uri = f"{path.resolve().as_uri()}?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=0.2)
+                conn.execute("PRAGMA query_only = ON")
+                rows = conn.execute(
+                    f"""
+                    SELECT symbol, market_cap, observed_at
+                    FROM market_snapshots
+                    WHERE symbol IN ({placeholders})
+                      AND market_cap > 0
+                      AND observed_at >= ?
+                    ORDER BY symbol, observed_at DESC
+                    """,
+                    (*symbols, observed_after),
+                ).fetchall()
+                local_status = "ok"
+            except (OSError, sqlite3.Error):
+                local_status = "local_error"
+                local_error = "market_cap_snapshot_read_failed"
+            finally:
+                if conn is not None:
+                    conn.close()
         latest: dict[str, tuple[float, int]] = {}
         for symbol, market_cap, observed_at in rows:
             normalized = str(symbol or "")
@@ -1001,15 +1008,74 @@ class FlowRadarEngine:
             candidate["market_cap"] = snapshot[0]
             candidate["market_cap_source"] = "local_market_snapshot"
             candidate["market_cap_observed_at"] = snapshot[1]
-        known_count = len(latest)
-        return {
+
+        fallback_count = 0
+        network_calls = 0
+        fallback_status = "not_needed"
+        missing_candidates = [
+            item for item in candidates
+            if to_float(item.get("market_cap")) <= 0
+        ]
+        if (
+            missing_candidates
+            and fallback_source is not None
+            and hasattr(fallback_source, "coinpaprika_market_caps")
+        ):
+            network_calls = 1
+            try:
+                raw_fallback = fallback_source.coinpaprika_market_caps()
+                fallback = {
+                    str(key).upper(): to_float(value)
+                    for key, value in raw_fallback.items()
+                    if to_float(value) > 0
+                } if isinstance(raw_fallback, dict) else {}
+                fallback_status = "ok" if fallback else "empty"
+            except Exception:
+                fallback = {}
+                fallback_status = "failed"
+            for candidate in missing_candidates:
+                symbol = str(candidate.get("symbol") or "").upper()
+                coin = str(candidate.get("coin") or "").upper()
+                if not coin and symbol.endswith("USDT"):
+                    coin = symbol[:-4]
+                lookup_keys = [coin]
+                if coin.startswith("1000") and len(coin) > 4:
+                    lookup_keys.append(coin[4:])
+                value = next(
+                    (fallback[key] for key in lookup_keys if fallback.get(key, 0) > 0),
+                    0.0,
+                )
+                if value <= 0:
+                    continue
+                candidate["market_cap"] = value
+                candidate["market_cap_source"] = "coinpaprika_fallback"
+                candidate["market_cap_observed_at"] = current_ts
+                fallback_count += 1
+
+        known_count = sum(
+            1 for candidate in candidates
+            if to_float(candidate.get("market_cap")) > 0
+        )
+        result = {
             "status": "ok" if known_count == len(symbols) else "partial",
-            "source": "local_market_snapshot",
+            "source": (
+                "local_market_snapshot+coinpaprika"
+                if fallback_count
+                else "local_market_snapshot"
+            ),
             "max_age_sec": FLOW_MARKET_CAP_MAX_AGE_SEC,
             "known_count": known_count,
             "missing_count": len(symbols) - known_count,
-            "network_calls": 0,
+            "local_known_count": len(latest),
+            "fallback_known_count": fallback_count,
+            "fallback_status": fallback_status,
+            "network_calls": network_calls,
         }
+        if local_error:
+            result["local_error"] = local_error
+        if known_count == 0 and local_status in {"not_available", "local_error"}:
+            result["status"] = local_status
+        return result
 
     def _candidate_symbols(self, source: BinanceDataSource) -> list[dict[str, Any]]:
         valid_symbols = {item.get("symbol", "") for item in source.usdt_perp_symbols()}

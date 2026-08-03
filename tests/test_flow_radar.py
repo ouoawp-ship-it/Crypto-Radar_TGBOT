@@ -260,6 +260,20 @@ class FlowRadarTests(unittest.TestCase):
         self.assertLess(text.index("UNKNOWNAUSDT"), text.index("UNKNOWNBUSDT"))
         self.assertLessEqual(max(len(line) for line in lines), 80)
 
+    def test_market_cap_candidate_lines_disclose_fallback_and_missing_reason(self) -> None:
+        lines = market_cap_candidate_lines([
+            {
+                "symbol": "RECOVEREDUSDT",
+                "market_cap": 200_000_000,
+                "market_cap_source": "coinpaprika_fallback",
+            },
+            {"symbol": "MISSINGUSDT", "market_cap": None},
+        ])
+        text = "\n".join(lines)
+
+        self.assertIn("CoinPaprika 回补", text)
+        self.assertIn("Binance 与 CoinPaprika 均未提供可靠流通市值", text)
+
     def test_cached_market_caps_use_fresh_read_only_snapshots(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))
@@ -308,6 +322,83 @@ class FlowRadarTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM market_snapshots").fetchone()[0], 3)
             finally:
                 conn.close()
+
+    def test_cached_market_caps_use_one_bounded_fallback_for_missing_values(self) -> None:
+        class FallbackSource:
+            calls = 0
+
+            def coinpaprika_market_caps(self):
+                self.calls += 1
+                return {
+                    "EXACT": 300_000_000,
+                    "RATS": 50_000_000,
+                }
+
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            conn = sqlite3.connect(settings.market_snapshots_db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE market_snapshots (
+                        symbol TEXT NOT NULL,
+                        market_cap REAL,
+                        observed_at INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO market_snapshots VALUES (?, ?, ?)",
+                    ("LOCALUSDT", 2_000_000_000, 950),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            source = FallbackSource()
+            candidates = [
+                {"symbol": "LOCALUSDT", "coin": "LOCAL"},
+                {"symbol": "EXACTUSDT", "coin": "EXACT"},
+                {"symbol": "1000RATSUSDT", "coin": "1000RATS"},
+            ]
+
+            result = FlowRadarEngine(settings)._enrich_cached_market_caps(
+                candidates,
+                now_ts=1_000,
+                fallback_source=source,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["known_count"], 3)
+        self.assertEqual(result["local_known_count"], 1)
+        self.assertEqual(result["fallback_known_count"], 2)
+        self.assertEqual(result["fallback_status"], "ok")
+        self.assertEqual(result["network_calls"], 1)
+        self.assertEqual(source.calls, 1)
+        self.assertEqual(candidates[0]["market_cap_source"], "local_market_snapshot")
+        self.assertEqual(candidates[1]["market_cap"], 300_000_000)
+        self.assertEqual(candidates[1]["market_cap_source"], "coinpaprika_fallback")
+        self.assertEqual(candidates[2]["market_cap"], 50_000_000)
+
+    def test_market_cap_fallback_failure_is_safe_and_keeps_local_values(self) -> None:
+        class FailingSource:
+            def coinpaprika_market_caps(self):
+                raise RuntimeError("provider body must not escape")
+
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            candidates = [{"symbol": "MISSINGUSDT", "coin": "MISSING"}]
+
+            result = FlowRadarEngine(settings)._enrich_cached_market_caps(
+                candidates,
+                now_ts=1_000,
+                fallback_source=FailingSource(),
+            )
+
+        self.assertEqual(result["status"], "not_available")
+        self.assertEqual(result["fallback_status"], "failed")
+        self.assertEqual(result["network_calls"], 1)
+        self.assertNotIn("provider body", str(result))
+        self.assertIsNone(candidates[0]["market_cap"])
 
     def test_compact_symbol_lines_are_readable_and_bounded(self) -> None:
         symbols = [f"C{index}USDT" for index in range(25)]
