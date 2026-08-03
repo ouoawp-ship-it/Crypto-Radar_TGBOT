@@ -26,7 +26,7 @@ def tradingview_tv_url(coin_or_symbol: str) -> str:
 
 
 def telegram_coin_links(coin_or_symbol: str) -> str:
-    """Render CoinGlass, copyable pair text and a direct TradingView link."""
+    """Render explicit chart links around a copyable Binance pair."""
 
     symbol = binance_usdt_symbol(coin_or_symbol)
     coin = symbol[:-4] if symbol.endswith("USDT") else symbol
@@ -35,7 +35,8 @@ def telegram_coin_links(coin_or_symbol: str) -> str:
     coinglass_url = escape(coinglass_tv_url(symbol), quote=True)
     tradingview_url = escape(tradingview_tv_url(symbol), quote=True)
     return (
-        f'<a href="{coinglass_url}"><b>{safe_coin}</b></a>'
+        f'<b>{safe_coin}</b>'
+        f' · <a href="{tradingview_url}">TV</a>'
         f' · 📋 <code>{safe_symbol}</code>'
-        f' · <a href="{tradingview_url}"><b>TV</b></a>'
+        f' · <a href="{coinglass_url}">CG</a>'
     )

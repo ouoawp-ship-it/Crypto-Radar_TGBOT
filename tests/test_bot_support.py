@@ -46,7 +46,19 @@ class MarketLinksTests(unittest.TestCase):
         self.assertIn("<b>BTC</b>", links)
         self.assertIn("📋 <code>BTCUSDT</code>", links)
         self.assertIn('href="https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P"', links)
-        self.assertIn("<b>TV</b>", links)
+        self.assertIn(">TV</a>", links)
+        self.assertIn(">CG</a>", links)
+        self.assertNotIn("><b>BTC</b></a>", links)
+        self.assertLess(links.index(">TV</a>"), links.index("<code>BTCUSDT</code>"))
+        self.assertLess(links.index("<code>BTCUSDT</code>"), links.index(">CG</a>"))
+
+    def test_telegram_links_keep_unicode_coin_outside_anchors(self) -> None:
+        links = telegram_coin_links("币安人生USDT")
+
+        self.assertIn("<b>币安人生</b>", links)
+        self.assertIn("📋 <code>币安人生USDT</code>", links)
+        self.assertEqual(links.count("<a href="), 2)
+        self.assertNotIn("><b>币安人生</b></a>", links)
 
 
 if __name__ == "__main__":
