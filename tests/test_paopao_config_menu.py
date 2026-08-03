@@ -511,6 +511,37 @@ class ConfigManagerTests(unittest.TestCase):
                 "OAR_WATCH_CONTROLLED_ALERT_ENABLE", "enabled"
             )
 
+    def test_watch_rolling_coverage_cadence_is_atomic(self) -> None:
+        self.assertEqual(
+            self.manager.status()["OAR_WATCH_SCAN_INTERVAL_SEC"], "900"
+        )
+        self.assertEqual(
+            self.manager.status()["OAR_WATCH_QUERY_WINDOW"], "4h"
+        )
+        self.assertEqual(
+            self.manager.set("OAR_WATCH_SCAN_INTERVAL_SEC", "840")[
+                "status"
+            ],
+            "ok",
+        )
+        self.assertEqual(
+            self.manager.set("OAR_WATCH_QUERY_WINDOW", "15m")["status"],
+            "ok",
+        )
+        before = (self.root / ".env.onchain").read_text(encoding="utf-8")
+        with self.assertRaisesRegex(
+            ConfigManagerError, "oar_watch_rolling_coverage_inconsistent"
+        ):
+            self.manager.set("OAR_WATCH_SCAN_INTERVAL_SEC", "900")
+        self.assertEqual(
+            (self.root / ".env.onchain").read_text(encoding="utf-8"),
+            before,
+        )
+
+    def test_watch_query_window_enum_is_enforced(self) -> None:
+        with self.assertRaises(ConfigManagerError):
+            self.manager.set("OAR_WATCH_QUERY_WINDOW", "30m")
+
     def test_watch_baseline_setting_ranges_are_enforced(self) -> None:
         for key, value in (
             ("OAR_WATCH_BASELINE_MIN_SAMPLES", "3"),

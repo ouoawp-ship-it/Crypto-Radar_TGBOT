@@ -313,6 +313,89 @@ class WatchScannerTests(unittest.TestCase):
         queue_store.observe_complete_scan.assert_called_once()
         discover.assert_not_called()
 
+    def test_complete_watch_persists_private_rolling_observation_only(self) -> None:
+        key = self.watch()
+        payload = self.analyzed("isolated")
+        transfer = payload["transfers"][0]
+        raw_tx = str(transfer["tx_hash"]).lower()
+        raw_sender = str(transfer["from"]["address"]).lower()
+        queue_store = Mock()
+        queue_store.observe_complete_scan.return_value = {
+            "observed": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = self.scanner(
+            [payload],
+            address_store=queue_store,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        item = result["results"][0]
+        rolling = item["historical_baseline"]["rolling_window_baseline"]
+        self.assertEqual(rolling["status"], "ok")
+        self.assertFalse(rolling["network_activity"])
+        self.assertEqual(rolling["external_provider_calls"], 0)
+        self.assertEqual(item["external_label_provider_calls"], 0)
+        self.assertEqual(item["ai_calls"], 0)
+        with self.store.connect_existing() as conn:
+            coverage_count = conn.execute(
+                "SELECT COUNT(*) FROM watch_scan_coverage WHERE token_key=?",
+                (key,),
+            ).fetchone()[0]
+            event_rows = conn.execute(
+                "SELECT event_hash, from_hash, to_hash, amount, flow_type "
+                "FROM watch_scan_events WHERE token_key=?",
+                (key,),
+            ).fetchall()
+        self.assertEqual(coverage_count, 1)
+        self.assertGreater(len(event_rows), 0)
+        persisted = str([tuple(row) for row in event_rows]).lower()
+        self.assertNotIn(raw_tx, persisted)
+        self.assertNotIn(raw_sender, persisted)
+
+    def test_rolling_local_error_does_not_fail_complete_watch(self) -> None:
+        key = self.watch()
+        payload = self.analyzed("isolated")
+        payload["transfers"][0]["from"] = {}
+        queue_store = Mock()
+        queue_store.observe_complete_scan.return_value = {
+            "observed": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = self.scanner(
+            [payload],
+            address_store=queue_store,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        item = result["results"][0]
+        rolling = item["historical_baseline"]["rolling_window_baseline"]
+        self.assertEqual(item["status"], "ok")
+        self.assertEqual(rolling["status"], "local_error")
+        self.assertEqual(rolling["error"], "rolling_window_baseline_local_error")
+        self.assertNotIn("address", str(rolling))
+        with self.store.connect_existing() as conn:
+            coverage_count = conn.execute(
+                "SELECT COUNT(*) FROM watch_scan_coverage WHERE token_key=?",
+                (key,),
+            ).fetchone()[0]
+        self.assertEqual(coverage_count, 0)
+        self.assertEqual(item["external_label_provider_calls"], 0)
+
     def test_non_base_watch_uses_registry_chain_and_skips_base_label_queue(
         self,
     ) -> None:

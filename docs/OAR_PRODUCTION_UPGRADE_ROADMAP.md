@@ -71,6 +71,17 @@
 - 本地计算失败不影响扫描和 Lease 释放；
 - `watch-baseline` 为零网络、零 AI、零 Telegram 的只读命令。
 
+当长期 Watch 使用 15m 查询时，完整扫描会在独立 Automation DB 中记录有界的
+覆盖区间和匿名事件摘要。事件与钱包身份只保存 SHA-256，不保存钱包地址、交易哈希、
+RPC URL 或 Provider 原文；重叠查询按事件去重。只有本地覆盖区间连续完整时，才会生成
+1h、4h、24h 滚动事实并进入对应窗口基线，存在任何时间缺口时继续显示
+`collecting`，不得补齐或推断。该路径不增加 RPC、AI、Telegram、Dune 或 Arkham 调用。
+
+为消除执行耗时造成的调度漂移，成功扫描的下一次调度以扫描开始时间为基准；失败退避
+语义保持不变。配置必须满足
+`OAR_WATCH_SCAN_INTERVAL_SEC + OAR_WATCH_LIVE_POLL_SEC <= 查询窗口秒数`。
+15m 生产 Observe 推荐使用 `840 + 60 = 900`，保留一分钟轮询抖动预算。
+
 灰度：先积累至少配置要求的完整样本，仅观察 `anomaly` 与 `multi_window_anomaly`。
 
 回滚：关闭后续受控预警门禁；保留历史审计，不手工编辑 SQLite。

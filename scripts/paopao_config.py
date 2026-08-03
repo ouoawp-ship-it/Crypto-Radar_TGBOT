@@ -79,6 +79,8 @@ ALLOWLIST = {
     "OAR_WATCH_BASELINE_MAX_SAMPLES": "onchain",
     "OAR_WATCH_BASELINE_MAD_MULTIPLIER": "onchain",
     "OAR_WATCH_CONTROLLED_ALERT_ENABLE": "onchain",
+    "OAR_WATCH_SCAN_INTERVAL_SEC": "onchain",
+    "OAR_WATCH_QUERY_WINDOW": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -129,6 +131,7 @@ INTEGER_RANGES = {
     "OAR_TELEGRAM_QUERY_TOP_N": (1, 50),
     "OAR_WATCH_BASELINE_MIN_SAMPLES": (4, 100),
     "OAR_WATCH_BASELINE_MAX_SAMPLES": (8, 100),
+    "OAR_WATCH_SCAN_INTERVAL_SEC": (60, 86400),
 }
 DECIMAL_RANGES = {
     "DUNE_API_POLL_INTERVAL_SEC": (0.2, 10.0),
@@ -229,6 +232,8 @@ class ConfigManager:
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
             "OAR_WATCH_CONTROLLED_ALERT_ENABLE": "false",
+            "OAR_WATCH_SCAN_INTERVAL_SEC": "900",
+            "OAR_WATCH_QUERY_WINDOW": "4h",
         }
         return {
             key: _redacted(
@@ -574,6 +579,13 @@ class ConfigManager:
             "real",
         }:
             raise ConfigManagerError("invalid OAR watch delivery mode")
+        if key == "OAR_WATCH_QUERY_WINDOW" and value not in {
+            "15m",
+            "1h",
+            "4h",
+            "24h",
+        }:
+            raise ConfigManagerError("invalid OAR watch query window")
         if key == "MAIN_BOT_DELIVERY_MODE" and value not in {
             "dry_run",
             "real",
@@ -792,6 +804,35 @@ class ConfigManager:
             raise ConfigManagerError(
                 "OAR_WATCH_CONTROLLED_ALERT_ENABLE must be true or false"
             )
+        try:
+            watch_scan_interval = int(
+                values.get("OAR_WATCH_SCAN_INTERVAL_SEC", "900")
+            )
+            watch_live_poll = int(
+                values.get("OAR_WATCH_LIVE_POLL_SEC", "60")
+            )
+        except ValueError as exc:
+            raise ConfigManagerError(
+                "invalid OAR watch rolling coverage configuration"
+            ) from exc
+        watch_query_window = values.get(
+            "OAR_WATCH_QUERY_WINDOW", "4h"
+        ).strip()
+        watch_window_seconds = {
+            "15m": 15 * 60,
+            "1h": 60 * 60,
+            "4h": 4 * 60 * 60,
+            "24h": 24 * 60 * 60,
+        }
+        if watch_query_window not in watch_window_seconds:
+            raise ConfigManagerError("invalid OAR watch query window")
+        if (
+            watch_scan_interval + watch_live_poll
+            > watch_window_seconds[watch_query_window]
+        ):
+            raise ConfigManagerError(
+                "oar_watch_rolling_coverage_inconsistent"
+            )
         real_send = values.get(
             "ONCHAIN_REAL_SEND",
             "false",
@@ -912,6 +953,8 @@ class ConfigManager:
             "oar_watch_controlled_alert_enable": (
                 controlled_alert_enable == "true"
             ),
+            "oar_watch_scan_interval_sec": watch_scan_interval,
+            "oar_watch_query_window": watch_query_window,
             "oar_watch_real_send": real_send == "true",
             "oar_watch_real_send_ack": (
                 "configured" if real_send_ack else "not_configured"

@@ -70,6 +70,63 @@ class AutomationStoreTests(unittest.TestCase):
             now=1001,
         )
 
+    @staticmethod
+    def rolling_observation(
+        start: int,
+        end: int,
+        events: list[tuple[int, int, str, str]] | None = None,
+    ) -> dict[str, object]:
+        normalized = []
+        for identity, event_time, amount, flow_type in events or []:
+            normalized.append(
+                {
+                    "event_hash": f"{identity:064x}",
+                    "event_time": event_time,
+                    "amount": amount,
+                    "from_hash": f"{identity + 1000:064x}",
+                    "to_hash": f"{identity + 2000:064x}",
+                    "flow_type": flow_type,
+                }
+            )
+        return {
+            "schema_version": 1,
+            "from_time": start,
+            "to_time": end,
+            "event_count": len(normalized),
+            "events": normalized,
+        }
+
+    def persist_rolling_scan(
+        self,
+        token_key: str,
+        observation: dict[str, object],
+        *,
+        owner: str,
+    ) -> str:
+        to_time = int(observation["to_time"])
+        claimed = self.store.claim_due(
+            owner=owner,
+            limit=1,
+            lease_sec=600,
+            now=to_time,
+        )
+        self.assertEqual([item["token_key"] for item in claimed], [token_key])
+        return self.store.record_scan(
+            token_key,
+            lease_owner=owner,
+            started_at=to_time,
+            status="ok",
+            activity_complete=True,
+            analysis_complete=True,
+            query_window="15m",
+            historical_baseline={"status": "cold_start"},
+            rolling_observation=observation,
+            source_refs=[],
+            scan_interval_sec=60,
+            max_consecutive_failures=10,
+            now=to_time,
+        )
+
     def test_registry_is_versioned_and_token_key_is_canonical(self) -> None:
         item = self.store.add_registry(
             market_symbol="aaausdt",
@@ -83,7 +140,7 @@ class AutomationStoreTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT value FROM automation_meta WHERE key='schema_version'"
             ).fetchone()
-        self.assertEqual(version[0], "5")
+        self.assertEqual(version[0], "6")
 
     def test_same_chain_contract_is_idempotent(self) -> None:
         self.add()
@@ -689,7 +746,7 @@ class AutomationStoreTests(unittest.TestCase):
                 "SELECT status, resolved_at, resolved_token_key, "
                 "resolution_note FROM unresolved_signals"
             ).fetchone()
-        self.assertEqual(version, "5")
+        self.assertEqual(version, "6")
         self.assertEqual(row, ("open", None, None, ""))
 
     def test_schema_v1_to_v2_failure_rolls_back(self) -> None:
@@ -795,7 +852,7 @@ class AutomationStoreTests(unittest.TestCase):
                     "PRAGMA table_info(watch_scan_runs)"
                 ).fetchall()
             }
-        self.assertEqual(version, "5")
+        self.assertEqual(version, "6")
         self.assertTrue(
             {
                 "query_window",
@@ -870,7 +927,7 @@ class AutomationStoreTests(unittest.TestCase):
                 "unknown_addresses_queued, external_label_provider_calls "
                 "FROM watch_scan_runs WHERE scan_id='old'"
             ).fetchone()
-        self.assertEqual(version, "5")
+        self.assertEqual(version, "6")
         self.assertEqual(row, ("not_recorded", "", 0, 0))
 
     def test_schema_v4_migrates_watch_source_direction(self) -> None:
@@ -925,8 +982,188 @@ class AutomationStoreTests(unittest.TestCase):
                 "SELECT source_direction FROM watch_sources "
                 "WHERE source_public_ref='sig_old'"
             ).fetchone()
-        self.assertEqual(version, "5")
+        self.assertEqual(version, "6")
         self.assertEqual(row, ("",))
+
+    def test_schema_v5_migrates_private_rolling_tables(self) -> None:
+        other_path = self.root / "v5" / "oar_automation.db"
+        other_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(other_path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE automation_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO automation_meta VALUES('schema_version', '5');
+                """
+            )
+            conn.commit()
+        store = AutomationStore(other_path, data_dir=self.root)
+        store.migrate()
+        with closing(sqlite3.connect(other_path)) as conn:
+            version = conn.execute(
+                "SELECT value FROM automation_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        self.assertEqual(version, "6")
+        self.assertIn("watch_scan_coverage", tables)
+        self.assertIn("watch_scan_events", tables)
+
+    def test_rolling_windows_require_continuous_coverage_and_deduplicate(self) -> None:
+        self.add()
+        self.verify()
+        self.store.add_manual_watch(
+            self.key_a,
+            ttl_sec=100000,
+            priority=100,
+            query_window="15m",
+            scan_interval_sec=60,
+            now=1002,
+        )
+        observations = (
+            self.rolling_observation(
+                2000, 2900, [(1, 2880, "1", "inflow")]
+            ),
+            self.rolling_observation(
+                2840, 3740, [(1, 2880, "1", "inflow")]
+            ),
+            self.rolling_observation(
+                3680, 4580, [(2, 4000, "2", "unclassified")]
+            ),
+            self.rolling_observation(
+                4520, 5420, [(3, 5000, "3", "outflow")]
+            ),
+        )
+        for index, observation in enumerate(observations):
+            self.persist_rolling_scan(
+                self.key_a,
+                observation,
+                owner=f"rolling-{index}",
+            )
+        current = self.rolling_observation(
+            4700, 5600, [(4, 5500, "4", "unclassified")]
+        )
+
+        result = self.store.rolling_window_snapshot(self.key_a, current)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["coverage"]["1h"]["status"], "complete")
+        self.assertEqual(result["coverage"]["1h"]["covered_seconds"], 3600)
+        self.assertEqual(
+            result["coverage"]["1h"]["deduplicated_event_count"], 1
+        )
+        self.assertEqual(result["windows"]["1h"]["transfer_count"], 4)
+        self.assertEqual(result["windows"]["1h"]["total_token_amount"], "10")
+        self.assertEqual(result["windows"]["1h"]["inflow_count"], 1)
+        self.assertEqual(result["windows"]["1h"]["outflow_count"], 1)
+        self.assertEqual(result["windows"]["1h"]["unclassified_count"], 2)
+        self.assertEqual(result["coverage"]["4h"]["status"], "collecting")
+        self.assertNotIn("4h", result["windows"])
+        self.assertFalse(result["network_activity"])
+        self.assertEqual(result["external_provider_calls"], 0)
+
+    def test_rolling_window_gap_never_claims_complete(self) -> None:
+        self.add()
+        self.verify()
+        self.store.add_manual_watch(
+            self.key_a,
+            ttl_sec=100000,
+            priority=100,
+            query_window="15m",
+            scan_interval_sec=60,
+            now=1002,
+        )
+        for index, observation in enumerate(
+            (
+                self.rolling_observation(2000, 2900),
+                self.rolling_observation(3000, 3900),
+                self.rolling_observation(3900, 4800),
+            )
+        ):
+            self.persist_rolling_scan(
+                self.key_a,
+                observation,
+                owner=f"gap-{index}",
+            )
+        current = self.rolling_observation(4700, 5600)
+
+        result = self.store.rolling_window_snapshot(self.key_a, current)
+
+        self.assertEqual(result["coverage"]["1h"]["status"], "collecting")
+        self.assertLess(result["coverage"]["1h"]["covered_seconds"], 3600)
+        self.assertNotIn("1h", result["windows"])
+
+    def test_rolling_snapshot_supports_exact_complete_24h_coverage(self) -> None:
+        self.add()
+        self.verify()
+        self.store.migrate()
+        anchor = 100000
+        first = anchor - 24 * 60 * 60
+        with self.store.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO watch_scan_coverage(
+                    scan_id, token_key, from_time, to_time,
+                    event_count, created_at
+                ) VALUES(?, ?, ?, ?, 0, ?)
+                """,
+                [
+                    (
+                        f"coverage-{index}",
+                        self.key_a,
+                        first + index * 900,
+                        first + (index + 1) * 900,
+                        anchor,
+                    )
+                    for index in range(95)
+                ],
+            )
+            conn.commit()
+        current = self.rolling_observation(anchor - 900, anchor)
+
+        result = self.store.rolling_window_snapshot(self.key_a, current)
+
+        self.assertEqual(result["coverage"]["15m"]["status"], "complete")
+        self.assertEqual(result["coverage"]["1h"]["status"], "complete")
+        self.assertEqual(result["coverage"]["4h"]["status"], "complete")
+        self.assertEqual(result["coverage"]["24h"]["status"], "complete")
+        self.assertEqual(
+            result["coverage"]["24h"]["covered_seconds"], 24 * 60 * 60
+        )
+        self.assertEqual(result["windows"]["24h"]["transfer_count"], 0)
+
+    def test_success_schedule_uses_scan_start_to_avoid_duration_drift(self) -> None:
+        self.add()
+        self.verify()
+        self.store.add_manual_watch(
+            self.key_a,
+            ttl_sec=100000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        self.store.claim_due(owner="schedule", limit=1, lease_sec=600, now=2000)
+        self.store.record_scan(
+            self.key_a,
+            lease_owner="schedule",
+            started_at=2000,
+            status="ok",
+            activity_complete=True,
+            analysis_complete=True,
+            source_refs=[],
+            scan_interval_sec=900,
+            max_consecutive_failures=10,
+            now=2060,
+        )
+
+        self.assertEqual(self.store.get_watch(self.key_a)["next_scan_at"], 2900)
 
     def test_scan_side_effect_audit_is_fixed_and_readable(self) -> None:
         self.add()

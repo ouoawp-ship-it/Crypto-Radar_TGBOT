@@ -64,6 +64,21 @@ class OarP4ConfigTests(unittest.TestCase):
                 with self.assertRaises(SettingsValidationError):
                     settings.validate()
 
+    def test_rolling_coverage_requires_scan_overlap_budget(self) -> None:
+        invalid = make_settings(
+            self.root,
+            oar_watch_query_window="15m",
+            oar_watch_scan_interval_sec=900,
+            oar_watch_live_poll_sec=60,
+        )
+        with self.assertRaisesRegex(
+            SettingsValidationError,
+            "oar_watch_rolling_coverage_inconsistent",
+        ):
+            invalid.validate()
+        valid = replace(invalid, oar_watch_scan_interval_sec=840)
+        valid.validate()
+
     def test_automatic_query_budget_cannot_exceed_p1_limits(self) -> None:
         settings = make_settings(
             self.root,

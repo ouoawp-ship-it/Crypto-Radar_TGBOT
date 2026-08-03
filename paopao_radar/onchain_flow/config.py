@@ -34,6 +34,12 @@ from .constants import (
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 OAR_TELEGRAM_QUERY_ACK = "启用群内链上查询"
+OAR_WATCH_WINDOW_SECONDS = {
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "4h": 4 * 60 * 60,
+    "24h": 24 * 60 * 60,
+}
 
 
 class UnsafeOnchainPath(ValueError):
@@ -1331,9 +1337,17 @@ class OnchainSettings:
                 or value > 100
             ):
                 raise SettingsValidationError(f"{name} must be in [0, 100]")
-        if self.oar_watch_query_window not in {"15m", "1h", "4h", "24h"}:
+        if self.oar_watch_query_window not in OAR_WATCH_WINDOW_SECONDS:
             raise SettingsValidationError(
                 "OAR_WATCH_QUERY_WINDOW must be 15m, 1h, 4h, or 24h"
+            )
+        if (
+            self.oar_watch_scan_interval_sec
+            + self.oar_watch_live_poll_sec
+            > OAR_WATCH_WINDOW_SECONDS[self.oar_watch_query_window]
+        ):
+            raise SettingsValidationError(
+                "oar_watch_rolling_coverage_inconsistent"
             )
         if self.oar_watch_baseline_max_samples < (
             self.oar_watch_baseline_min_samples

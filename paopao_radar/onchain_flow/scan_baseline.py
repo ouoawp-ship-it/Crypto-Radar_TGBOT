@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from decimal import Decimal, InvalidOperation
 from statistics import median
 from typing import Mapping, Sequence
@@ -24,6 +25,24 @@ WINDOW_BASELINE_METRICS = (
     "active_15m_buckets",
 )
 WINDOW_ORDER = ("15m", "1h", "4h", "24h")
+WINDOW_SECONDS = {
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "4h": 4 * 60 * 60,
+    "24h": 24 * 60 * 60,
+}
+ROLLING_OBSERVATION_VERSION = 1
+ROLLING_FLOW_TYPES = {
+    "mint",
+    "burn",
+    "non_cex",
+    "unclassified",
+    "inflow",
+    "outflow",
+    "internal",
+    "consolidation",
+    "cross_cex",
+}
 
 
 def _decimal(value: object) -> Decimal:
@@ -39,6 +58,85 @@ def _decimal_text(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def _private_hash(kind: str, value: object) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        raise ValueError("rolling observation identity is missing")
+    return hashlib.sha256(f"{kind}:{raw}".encode("utf-8")).hexdigest()
+
+
+def build_rolling_observation(
+    activity: Mapping[str, object],
+) -> dict[str, object]:
+    """Build a private, address-free observation from one complete query.
+
+    The observation is intended only for the separate automation database.
+    Event and wallet identities are one-way hashes so query URLs, transaction
+    hashes, contracts, and wallet addresses never enter rolling diagnostics.
+    """
+
+    if not bool(activity.get("complete")):
+        raise ValueError("rolling observation requires a complete query")
+    query = activity.get("query")
+    if not isinstance(query, Mapping):
+        raise ValueError("rolling observation query is missing")
+    from_time = int(query.get("from_time") or 0)
+    to_time = int(query.get("to_time") or 0)
+    if from_time <= 0 or to_time <= from_time:
+        raise ValueError("rolling observation range is invalid")
+    transfers = activity.get("transfers")
+    if not isinstance(transfers, list):
+        raise ValueError("rolling observation transfers are missing")
+
+    events: dict[str, dict[str, object]] = {}
+    for record in transfers:
+        if not isinstance(record, Mapping):
+            raise ValueError("rolling observation transfer is invalid")
+        event_time = int(record.get("block_time") or 0)
+        if event_time < from_time or event_time > to_time:
+            raise ValueError("rolling observation event is outside the range")
+        try:
+            amount = Decimal(str(record.get("amount") or "0"))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("rolling observation amount is invalid") from exc
+        if not amount.is_finite() or amount < 0:
+            raise ValueError("rolling observation amount is invalid")
+        from_item = record.get("from")
+        to_item = record.get("to")
+        if not isinstance(from_item, Mapping) or not isinstance(to_item, Mapping):
+            raise ValueError("rolling observation wallet identity is missing")
+        event_identity = record.get("event_id")
+        if not event_identity:
+            tx_hash = str(record.get("tx_hash") or "").strip()
+            log_index = (
+                record.get("log_index")
+                if record.get("log_index") is not None
+                else ""
+            )
+            if not tx_hash or log_index == "":
+                raise ValueError("rolling observation event identity is missing")
+            event_identity = f"{tx_hash}:{log_index}"
+        event_hash = _private_hash("event", event_identity)
+        flow_type = str(record.get("flow_type") or "unclassified")
+        if flow_type not in ROLLING_FLOW_TYPES:
+            raise ValueError("rolling observation flow type is invalid")
+        events[event_hash] = {
+            "event_hash": event_hash,
+            "event_time": event_time,
+            "amount": _decimal_text(amount),
+            "from_hash": _private_hash("wallet", from_item.get("address")),
+            "to_hash": _private_hash("wallet", to_item.get("address")),
+            "flow_type": flow_type,
+        }
+    return {
+        "schema_version": ROLLING_OBSERVATION_VERSION,
+        "from_time": from_time,
+        "to_time": to_time,
+        "event_count": len(events),
+        "events": [events[key] for key in sorted(events)],
+    }
 
 
 def scan_metrics(
