@@ -255,7 +255,8 @@ class FlowRadarTests(unittest.TestCase):
         self.assertIn("🏛️ ≥ $10B（1）", text)
         self.assertIn("🔷 $1B–10B（1）", text)
         self.assertIn("🔹 $100M–1B（1）", text)
-        self.assertIn("▪️ < $100M（1）", text)
+        self.assertIn("▪️ &lt; $100M（1）", text)
+        self.assertNotIn("▪️ < $100M", text)
         self.assertLess(text.index("UNKNOWNAUSDT"), text.index("UNKNOWNBUSDT"))
         self.assertLessEqual(max(len(line) for line in lines), 80)
 

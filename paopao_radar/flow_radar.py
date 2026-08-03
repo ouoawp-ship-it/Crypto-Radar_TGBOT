@@ -116,7 +116,7 @@ def market_cap_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
         ]
         if not tier_rows:
             continue
-        lines.extend(["", f"{title}（{len(tier_rows)}）"])
+        lines.extend(["", f"{tg_escape(title)}（{len(tier_rows)}）"])
         entries = [
             (
                 f"{rank:03d} {tg_escape(item.get('symbol') or '')} "
