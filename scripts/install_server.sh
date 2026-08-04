@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${APP_DIR}/.env.oi"
+ENV_FILE="${APP_DIR}/config/.env.oi"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
 SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
@@ -37,12 +37,20 @@ install_os_packages() {
 }
 
 ensure_env_file() {
-  if [ ! -f "$ENV_FILE" ]; then
-    cp "${APP_DIR}/.env.oi.example" "$ENV_FILE"
-    chmod 600 "$ENV_FILE" || true
-    printf '已创建 %s，请填写 TG_BOT_TOKEN 和 TG_CHAT_ID 后重新执行安装。\n' "$ENV_FILE" >&2
+  set +e
+  "$PYTHON_BIN" "${APP_DIR}/scripts/migrate_config_layout.py" \
+    --base-dir "$APP_DIR" --owner-user "$SERVICE_USER"
+  local code=$?
+  set -e
+  [ "$code" -eq 0 ] || {
+    printf 'Please configure config/.env.oi before installing.\n' >&2
     exit 2
-  fi
+  }
+}
+
+finalize_env_layout() {
+  "$PYTHON_BIN" "${APP_DIR}/scripts/migrate_config_layout.py" \
+    --base-dir "$APP_DIR" --finalize --owner-user "$SERVICE_USER"
 }
 
 install_python_runtime() {
@@ -56,8 +64,8 @@ install_python_runtime() {
 run_checks() {
   cd "$APP_DIR"
   "${APP_DIR}/.venv/bin/python" -m compileall -q \
-    paopao_radar tests scripts main.py
-  "${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -p 'test_*.py'
+    radars shared runtime config tests scripts main.py
+  "${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -t . -p 'test_*.py'
 }
 
 validate_bot_config() {
@@ -65,8 +73,8 @@ validate_bot_config() {
   "${APP_DIR}/.venv/bin/python" main.py stable-check --no-save
   local code=$?
   set -e
-  if [ "$code" -eq 2 ]; then
-    printf 'Telegram 配置无效，请修正 .env.oi 后重新执行安装。\n' >&2
+  if [ "$code" -ne 0 ]; then
+    printf 'bot_config_validation_failed\n' >&2
     exit 2
   fi
 }
@@ -117,6 +125,7 @@ install_services() {
     SERVICE_USER="$SERVICE_USER" \
     RADAR_MEMORY_HIGH="$RADAR_MEMORY_HIGH" \
     RADAR_MEMORY_MAX="$RADAR_MEMORY_MAX" \
+    ALLOW_ENV_MIGRATION_TRANSITION=1 \
     START_MAIN_BOT=0 \
     bash "${APP_DIR}/scripts/install_main_bot_service.sh"
   write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
@@ -229,10 +238,12 @@ main() {
   ensure_env_file
   install_python_runtime
   cd "$APP_DIR"
-  "${APP_DIR}/.venv/bin/python" scripts/sync_env.py --env .env.oi --example .env.oi.example
+  "${APP_DIR}/.venv/bin/python" scripts/sync_env.py \
+    --env config/.env.oi --example config/.env.oi.example
   run_checks
   validate_bot_config
   install_services
+  finalize_env_layout
   install_shortcut
   log "安装完成。使用 paopao status 或 journalctl -u ${SERVICE_NAME} -f 查看运行状态。"
 }

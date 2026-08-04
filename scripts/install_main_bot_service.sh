@@ -33,9 +33,16 @@ validate_host() {
   [ -x "${APP_DIR}/scripts/run_main_bot.sh" ] || \
     fail "main_bot_runner_missing_or_not_executable"
   if [ -f "${APP_DIR}/.env.oi" ]; then
-    [ "$(stat -c '%a' "${APP_DIR}/.env.oi")" = "600" ] || \
-      fail "main_bot_env_permissions_must_be_600"
+    if [ "${ALLOW_ENV_MIGRATION_TRANSITION:-0}" != "1" ] || \
+       [ ! -f "${APP_DIR}/config/.env.oi" ] || \
+       [ ! -f "${APP_DIR}/config/.env.oi.migration-state.json" ]; then
+      fail "main_bot_env_migration_required"
+    fi
   fi
+  [ -f "${APP_DIR}/config/.env.oi" ] || fail "main_bot_env_missing"
+  [ ! -L "${APP_DIR}/config/.env.oi" ] || fail "main_bot_env_symlink_rejected"
+  [ "$(stat -c '%a' "${APP_DIR}/config/.env.oi")" = "600" ] || \
+    fail "main_bot_env_permissions_must_be_600"
 }
 
 render_unit() {
@@ -51,7 +58,7 @@ StartLimitBurst=20
 Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}
-EnvironmentFile=-${APP_DIR}/.env.oi
+EnvironmentFile=-${APP_DIR}/config/.env.oi
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=${APP_DIR}/scripts/run_main_bot.sh

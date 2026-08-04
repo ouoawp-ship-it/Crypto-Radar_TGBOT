@@ -1,0 +1,16 @@
+项目名称：Crypto-Radar_TGBOT
+
+这是一个共用同一 Telegram 机器人的五雷达项目：
+1. 启动预警
+2. 资金摘要
+3. 资金费率警报
+4. 五因子资金流
+5. 公告风险
+
+五个雷达的算法分别放在 radars 目录；行情、Telegram、数据保存等公共能力放在 shared；调度和运行状态放在 runtime；配置放在 config。
+
+程序入口：python main.py
+真实配置：config/.env.oi（不会上传 GitHub）
+配置示例：config/.env.oi.example
+
+默认使用安全模式。真实 Telegram 推送仍必须经过项目原有的双重确认门禁。

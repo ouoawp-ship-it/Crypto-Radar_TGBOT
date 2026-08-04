@@ -9,8 +9,8 @@ This repository is a production Telegram-only crypto signal bot. The existing `p
 Before declaring work complete, run:
 
 ```bash
-python -m compileall -q paopao_radar tests scripts main.py
-python -m unittest discover -s tests -p "test_*.py"
+python -m compileall -q radars shared runtime config tests scripts main.py
+python -m unittest discover -s tests -t . -p "test_*.py"
 git diff --check
 ```
 

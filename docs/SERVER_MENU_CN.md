@@ -1,11 +1,12 @@
 # FinalShell 中文运维菜单
 
-`paopao` 和 `pp` 是服务器中文运维入口。主项目现已只保留四个市场雷达：
+`paopao` 和 `pp` 是服务器中文运维入口。主项目现有五个独立市场雷达：
 
 - 启动预警；
 - 资金摘要；
 - 资金费率警报；
-- 五因子资金流雷达。
+- 五因子资金流雷达；
+- 公告风险。
 
 链上监控雷达已迁移到独立项目，不再由本仓库的菜单、服务或配置管理器维护。
 
@@ -26,16 +27,15 @@ pp
 3. 检查更新与版本；
 4. API、Token 与密钥；
 5. Telegram 设置与测试；
-6. 五因子资金流雷达候选清单；
-7. 数据库、备份与清理；
-8. 日志与故障诊断；
-9. 高级运维。
+6. 数据库、备份与清理；
+7. 日志与故障诊断；
+8. 高级运维。
 
 ## 服务
 
 主项目生产服务只有：
 
-- `paopao-radar.service`：四个市场雷达的扫描、评分和 Telegram 投递；
+- `paopao-radar.service`：五个市场雷达的独立调度和共享 Telegram 投递；
 - `paopao-market-stream.service`：实时成交与清算数据采集。
 
 主 BOT 默认使用安全 Dry-run：
@@ -58,16 +58,18 @@ paopao doctor
 paopao readiness
 paopao radar-status
 paopao stable-check
-paopao providers
 paopao backup
 paopao check-update
 paopao update
 paopao version
-paopao flow-candidates --all
 ```
 
-`paopao radar-status` 只读取本地状态，分别显示四个雷达的最近运行、下次调度、
+`paopao radar-status` 只读取本地状态，分别显示五个雷达的最近运行、下次调度、
 候选数量、最近投递结果和投递门禁，不访问网络。
+
+Telegram 话题和置顶说明仅允许手工创建或修复。普通雷达推送只复用已保存的
+专属话题；缺少路由时安全阻断，不会自动新建，也不会退回群主界面。菜单入口：
+“Telegram 设置与测试 → 手工创建/修复话题并置顶说明”。
 
 ## 配置安全
 
@@ -88,13 +90,8 @@ paopao flow-candidates --all
 ## 五因子资金流雷达
 
 候选池覆盖当前全部符合条件的 Binance USDT 永续合约，不受固定 60 个数量
-限制。每轮按预算深度扫描 24 个并确定性轮换；完整候选清单可通过：
-
-```bash
-paopao flow-candidates --all
-```
-
-Telegram 卡片继续展示本轮扫描、下一轮优先队列和按流通市值分层的完整候选。
+限制。每轮按预算深度扫描 24 个并确定性轮换；Telegram 卡片展示本轮扫描、
+下一轮优先队列和按流通市值分层的完整候选。
 
 ## 安装、更新与回滚
 

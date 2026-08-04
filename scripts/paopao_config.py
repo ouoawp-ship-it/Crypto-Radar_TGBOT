@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 
@@ -13,23 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from paopao_radar.atomic_json import _file_lock
+from shared.atomic_json import _file_lock
 ENV_FILES = {
-    "oi": ".env.oi",
+    "oi": "config/.env.oi",
 }
 ALLOWLIST = {
     "TG_BOT_TOKEN": "oi",
     "TG_CHAT_ID": "oi",
-    "COINGLASS_API_KEY": "oi",
-    "COINALYZE_API_KEY": "oi",
     "MAIN_BOT_DELIVERY_MODE": "oi",
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
-    "COINGLASS_API_KEY",
-    "COINALYZE_API_KEY",
 }
 SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
@@ -53,6 +50,28 @@ def _chmod_600(path: Path) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def _chmod_700(path: Path) -> None:
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+
+
+def _require_mode(path: Path, mode: int) -> None:
+    if os.name != "posix":
+        return
+    try:
+        actual = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        raise ConfigManagerError(
+            "configuration permissions validation failed"
+        ) from exc
+    if actual != mode:
+        raise ConfigManagerError(
+            "configuration permissions validation failed"
+        )
 
 
 def _parse_env(text: str) -> dict[str, str]:
@@ -109,10 +128,20 @@ class ConfigManager:
             raise ConfigManagerError("configuration key is not allowlisted")
         return self.base_dir / ENV_FILES[target]
 
+    def _require_current_layout(self) -> None:
+        if (self.base_dir / ".env.oi").exists():
+            raise ConfigManagerError("env_layout_migration_required")
+
     def _effective_values(self) -> dict[str, str]:
-        shared = self._read_env(ENV_FILES["oi"])
+        canonical = self.base_dir / ENV_FILES["oi"]
+        source = (
+            ENV_FILES["oi"]
+            if canonical.exists()
+            else ".env.oi"
+        )
+        shared = self._read_env(source)
         values = dict(shared)
-        if (self.base_dir / ENV_FILES["oi"]).exists():
+        if (self.base_dir / source).exists():
             values["TG_BOT_TOKEN"] = shared.get("TG_BOT_TOKEN", "")
             values["TG_CHAT_ID"] = shared.get("TG_CHAT_ID", "")
         return values
@@ -188,11 +217,14 @@ class ConfigManager:
         path: Path,
         values: dict[str, str],
     ) -> tuple[Path | None, dict[str, object]]:
+        self._require_current_layout()
         if path.is_symlink():
             raise ConfigManagerError(
                 "environment file must not be a symbolic link"
             )
         path.parent.mkdir(parents=True, exist_ok=True)
+        _chmod_700(path.parent)
+        _require_mode(path.parent, 0o700)
         with _file_lock(path):
             existed = path.exists()
             original = path.read_bytes() if existed else b""
@@ -208,7 +240,9 @@ class ConfigManager:
                 updated = _replace_value(updated, key, value)
             try:
                 self._atomic_write(path, updated)
-                validation = self.validate(path.name)
+                validation = self.validate(
+                    path.relative_to(self.base_dir).as_posix()
+                )
             except Exception:
                 if existed:
                     self._atomic_write(
@@ -220,6 +254,8 @@ class ConfigManager:
                 raise
             _chmod_600(path)
             _chmod_600(path.with_name(f"{path.name}.lock"))
+            _require_mode(path, 0o600)
+            _require_mode(path.with_name(f"{path.name}.lock"), 0o600)
         return backup, validation
 
     def validate(self, filename: str | None = None) -> dict[str, object]:
@@ -243,9 +279,10 @@ class ConfigManager:
         filename = ENV_FILES.get(target)
         if filename is None:
             raise ConfigManagerError("unknown environment file")
+        env_path = self.base_dir / filename
         records = []
         for path in sorted(
-            self.base_dir.glob(f"{filename}.bak.*"),
+            env_path.parent.glob(f"{env_path.name}.bak.*"),
             key=lambda item: item.name,
             reverse=True,
         )[:BACKUP_LIMIT]:
@@ -255,14 +292,15 @@ class ConfigManager:
         return records
 
     def rollback(self, target: str, version: str) -> dict[str, object]:
+        self._require_current_layout()
         filename = ENV_FILES.get(target)
         if filename is None:
             raise ConfigManagerError("unknown environment file")
         path = self.base_dir / filename
-        candidate = self.base_dir / version
+        candidate = path.parent / version
         if (
-            candidate.parent != self.base_dir
-            or not candidate.name.startswith(f"{filename}.bak.")
+            candidate.parent != path.parent
+            or not candidate.name.startswith(f"{path.name}.bak.")
             or not candidate.is_file()
             or candidate.is_symlink()
         ):
@@ -416,28 +454,40 @@ class ConfigManager:
         backup = path.with_name(f"{path.name}.bak.{stamp}")
         backup.write_bytes(content)
         _chmod_600(backup)
-        self._trim_backups(path.name)
+        self._trim_backups(path)
         return backup
 
-    def _trim_backups(self, filename: str) -> None:
-        if filename not in ENV_FILES.values():
+    def _trim_backups(self, path: Path) -> None:
+        try:
+            relative = path.relative_to(self.base_dir).as_posix()
+        except ValueError as exc:
+            raise ConfigManagerError(
+                "invalid environment backup target"
+            ) from exc
+        if relative not in ENV_FILES.values():
             raise ConfigManagerError("invalid environment backup target")
         backups = sorted(
-            self.base_dir.glob(f"{filename}.bak.*"),
+            path.parent.glob(f"{path.name}.bak.*"),
             key=lambda item: item.name,
             reverse=True,
         )
-        for path in backups[BACKUP_LIMIT:]:
+        for backup_path in backups[BACKUP_LIMIT:]:
             if (
-                path.parent == self.base_dir
-                and path.name.startswith(f"{filename}.bak.")
-                and path.is_file()
-                and not path.is_symlink()
+                backup_path.parent == (self.base_dir / relative).parent
+                and backup_path.name.startswith(
+                    f"{(self.base_dir / relative).name}.bak."
+                )
+                and backup_path.is_file()
+                and not backup_path.is_symlink()
             ):
-                path.unlink()
+                backup_path.unlink()
 
     def _atomic_write(self, path: Path, text: str) -> None:
         temporary_name = ""
+        ownership: tuple[int, int] | None = None
+        if path.exists() and hasattr(os, "chown"):
+            current = path.stat()
+            ownership = (current.st_uid, current.st_gid)
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -455,7 +505,10 @@ class ConfigManager:
             temporary = Path(temporary_name)
             _chmod_600(temporary)
             os.replace(temporary, path)
+            if ownership is not None:
+                os.chown(path, *ownership)
             _chmod_600(path)
+            _require_mode(path, 0o600)
         finally:
             if temporary_name:
                 Path(temporary_name).unlink(missing_ok=True)

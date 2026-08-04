@@ -13,6 +13,7 @@ RADAR_MEMORY_MAX="${RADAR_MEMORY_MAX:-650M}"
 MARKET_STREAM_MEMORY_HIGH="${MARKET_STREAM_MEMORY_HIGH:-128M}"
 MARKET_STREAM_MEMORY_MAX="${MARKET_STREAM_MEMORY_MAX:-256M}"
 AUTO_CONFIRM="${AUTO_CONFIRM:-0}"
+SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
 CHECK_ONLY=0
 
 run_root() {
@@ -68,7 +69,7 @@ StartLimitBurst=20
 Type=simple
 User=${service_user}
 WorkingDirectory=${APP_DIR}
-EnvironmentFile=-${APP_DIR}/.env.oi
+EnvironmentFile=-${APP_DIR}/config/.env.oi
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py ${command}
@@ -111,6 +112,7 @@ install_runtime_services() {
     SERVICE_USER="$service_user" \
     RADAR_MEMORY_HIGH="$RADAR_MEMORY_HIGH" \
     RADAR_MEMORY_MAX="$RADAR_MEMORY_MAX" \
+    ALLOW_ENV_MIGRATION_TRANSITION=1 \
     START_MAIN_BOT=0 \
     bash "${APP_DIR}/scripts/install_main_bot_service.sh"
   write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
@@ -123,7 +125,7 @@ After=${SERVICE_NAME}.service ${MARKET_STREAM_SERVICE_NAME}.service
 Type=oneshot
 User=${service_user}
 WorkingDirectory=${APP_DIR}
-EnvironmentFile=-${APP_DIR}/.env.oi
+EnvironmentFile=-${APP_DIR}/config/.env.oi
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/bin/bash ${APP_DIR}/scripts/systemd_health_check.sh ${APP_DIR}
 Nice=10
@@ -152,7 +154,7 @@ After=${SERVICE_NAME}.service ${MARKET_STREAM_SERVICE_NAME}.service
 Type=oneshot
 User=${service_user}
 WorkingDirectory=${APP_DIR}
-EnvironmentFile=-${APP_DIR}/.env.oi
+EnvironmentFile=-${APP_DIR}/config/.env.oi
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py database-backup
 Nice=10
@@ -180,10 +182,10 @@ EOF
 
 validate_runtime() {
   cd "$APP_DIR"
-  .venv/bin/python scripts/sync_env.py --env .env.oi --example .env.oi.example
+  .venv/bin/python scripts/sync_env.py --env config/.env.oi --example config/.env.oi.example
   .venv/bin/pip install -r requirements.lock
-  .venv/bin/python -m compileall -q paopao_radar tests scripts main.py
-  .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+  .venv/bin/python -m compileall -q radars shared runtime config tests scripts main.py
+  .venv/bin/python -m unittest discover -s tests -t . -p 'test_*.py'
 }
 
 run_stable_check() {
@@ -191,8 +193,8 @@ run_stable_check() {
   .venv/bin/python main.py stable-check --no-save
   local code=$?
   set -e
-  if [ "$code" -eq 2 ]; then
-    printf 'BOT 稳定性检查存在阻断项，更新终止。\n' >&2
+  if [ "$code" -ne 0 ]; then
+    printf 'bot_stable_check_failed\n' >&2
     exit 2
   fi
 }
@@ -229,8 +231,12 @@ fi
 if [ ! -x .venv/bin/python ]; then
   python3 -m venv .venv
 fi
+.venv/bin/python scripts/migrate_config_layout.py \
+  --base-dir "$APP_DIR" --owner-user "$SERVICE_USER"
 validate_runtime
 run_stable_check
 retire_legacy_services
 install_runtime_services
+.venv/bin/python scripts/migrate_config_layout.py \
+  --base-dir "$APP_DIR" --finalize --owner-user "$SERVICE_USER"
 printf 'BOT-only 更新完成: %s\n' "$(git rev-parse --short HEAD)"

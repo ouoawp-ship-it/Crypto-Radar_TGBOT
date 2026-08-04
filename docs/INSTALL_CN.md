@@ -5,8 +5,8 @@
 项目要求 Python 3.12，服务器不再需要 Node.js、Next.js、Playwright 或 Nginx。
 
 ```bash
-cp .env.oi.example .env.oi
-nano .env.oi
+cp config/.env.oi.example config/.env.oi
+nano config/.env.oi
 bash scripts/install_server.sh
 ```
 
@@ -20,19 +20,8 @@ MAIN_BOT_REAL_SEND=false
 MAIN_BOT_REAL_SEND_ACK=
 ```
 
-主 BOT 默认是 Dry-run。旧 `.env.oi` 没有这三个字段时，启动包装器也会
+主 BOT 默认是 Dry-run。旧配置文件没有这三个字段时，启动包装器也会
 安全按 `dry_run` 处理，不会自动进入真实发送。
-
-如需使用 CoinGlass/Coinalyze 只读诊断，再填写（方向信号不需要）：
-
-```dotenv
-COINGLASS_ENABLE=true
-COINGLASS_API_KEY=...
-COINALYZE_ENABLE=true
-COINALYZE_API_KEY=...
-```
-
-只启用其中一套不会阻止服务启动，但健康检查会报告降级；启用某数据源却未填写对应 Key 会被健康检查判定为配置失败。
 
 安装脚本会创建 `.venv`、安装锁定依赖、执行编译和单元测试，并安装以下 systemd 单元：
 
@@ -77,18 +66,28 @@ paopao restart
 paopao doctor
 paopao readiness
 paopao stable-check
-paopao providers
 paopao backup
 paopao telegram-test
 ```
 
-`paopao providers` 是只读验收，不发送 Telegram 消息，也不会在输出中泄露 API Key。`paopao backup` 会立即创建一次备份；也可用 `systemctl status paopao-backup.timer` 和 `journalctl -u paopao-backup` 检查自动备份。
+`paopao backup` 会立即创建一次备份；也可用 `systemctl status paopao-backup.timer` 和 `journalctl -u paopao-backup` 检查自动备份。
 
 `telegram-test` 默认 dry-run。真实测试需手动执行：
 
 ```bash
 .venv/bin/python main.py telegram-test --send --confirm-real-send
 ```
+
+普通推送不会自动创建话题或刷新置顶说明。需要创建/修复时，请使用中文菜单
+“Telegram 设置与测试 → 手工创建/修复话题并置顶说明”，或明确运行：
+
+```bash
+.venv/bin/python main.py telegram-topic-setup \
+  --topic-template TG_RADAR_SUMMARY \
+  --send --confirm-real-send
+```
+
+缺少某个核心雷达的专属话题时，真实推送会安全阻断，不会发到群主界面。
 
 ## 更新
 
@@ -98,6 +97,12 @@ bash scripts/update_server.sh --yes
 ```
 
 更新脚本只接受 fast-forward，遇到已跟踪文件本地修改或 Git 分叉会停止。更新通过 Python 编译和完整单元测试后，先同步安全默认配置并安装包装器 Unit，才会重启 BOT 服务；缺少新字段时重启进入 Dry-run。
+
+从旧目录升级时，脚本会先把根目录的 `.env.oi` 做哈希备份并复制到
+`config/.env.oi`。在新 systemd Unit 安装并成功重启前，旧文件仍会保留，避免
+升级中途失败导致服务丢失配置；全部完成后才删除旧副本。新旧文件内容不同会
+以 `env_path_conflict` 停止，绝不覆盖任意一份。回滚到旧版本时，应从
+`backups/config-migration-*` 中恢复 `legacy.env.oi` 到根目录并保持权限 600。
 
 从旧 Web 版本升级时，脚本会停用并删除 `paopao-frontend`、`paopao-web`、`paopao-ai` 三个旧 systemd 单元，并只删除本项目原先创建的 `/etc/nginx/conf.d/00-paoxx-frontend.conf`。其他 Nginx 配置不会被触碰。
 
