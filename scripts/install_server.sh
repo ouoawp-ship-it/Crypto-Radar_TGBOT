@@ -56,7 +56,7 @@ install_python_runtime() {
 run_checks() {
   cd "$APP_DIR"
   "${APP_DIR}/.venv/bin/python" -m compileall -q \
-    paopao_radar tests scripts main.py onchain_main.py
+    paopao_radar tests scripts main.py
   "${APP_DIR}/.venv/bin/python" -m unittest discover -s tests -p 'test_*.py'
 }
 

@@ -127,7 +127,7 @@ main.py live --send --confirm-real-send
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall -q paopao_radar tests scripts main.py onchain_main.py
+.\.venv\Scripts\python.exe -m compileall -q paopao_radar tests scripts main.py
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 ```
 
@@ -149,22 +149,5 @@ bash scripts/update_server.sh --yes
 默认保留 365 天信号效果样本（最多 20,000 条）和 7 天本机数据库备份。备份目录、保留天数与健康检查最大时效可通过 `.env.oi` 调整；本机备份不能替代后续需要单独配置的异机/对象存储灾备。
 
 更完整的模块边界见 [docs/BOT_ONLY_ARCHITECTURE.md](docs/BOT_ONLY_ARCHITECTURE.md)，安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
-
-Base ERC-20 合约的有界、只读主动查询见
-[docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md](docs/OAR_P1_TOKEN_ACTIVITY_QUERY.md)。
-基于完整查询事实的可解释行为与钱包候选群组分析见
-[docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md](docs/OAR_P2_BEHAVIOR_WALLET_ANALYSIS.md)。
-确定性规则报告、可选 AI 解读与链上独立 Telegram 卡片见
-[docs/OAR_P3_AI_TELEGRAM_REPORTING.md](docs/OAR_P3_AI_TELEGRAM_REPORTING.md)。
-已验证 Token Registry、主信号只读桥接与有界自动观察见
-[docs/OAR_P4_SIGNAL_WATCHLIST_AUTOMATION.md](docs/OAR_P4_SIGNAL_WATCHLIST_AUTOMATION.md)。
-DeepSeek V4 Pro Profile、分层业务提示词与安全 AI 诊断见
-[docs/OAR_DEEPSEEK_V4_PRO.md](docs/OAR_DEEPSEEK_V4_PRO.md)。
 FinalShell 的 `paopao` / `pp` 中文运维菜单见
 [docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。
-OAR Watch 的 Observe、Telegram Dry-run 与 Real 三种安全运行模式见
-[docs/OAR_P5D_WATCH_DELIVERY_MODE.md](docs/OAR_P5D_WATCH_DELIVERY_MODE.md)。
-Arkham 辅助、人工审核的 Base CEX 标签候选流程见
-[docs/OAR_P5D_ARKHAM_LABEL_REVIEW.md](docs/OAR_P5D_ARKHAM_LABEL_REVIEW.md)。
-通用地址 Provider、未知地址队列、Dune/OLI 导入与人工审核见
-[docs/OAR_P5E_ADDRESS_INTELLIGENCE.md](docs/OAR_P5E_ADDRESS_INTELLIGENCE.md)。

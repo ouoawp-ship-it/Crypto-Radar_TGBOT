@@ -246,13 +246,10 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
-    "TG_ONCHAIN_FLOW_ALERT": "链上活动雷达",
 }
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
-TOPIC_INTRO_VERSIONS = {
-    "TG_ONCHAIN_FLOW_ALERT": "2026-08-02-oar-group-query-v2",
-}
+TOPIC_INTRO_VERSIONS: dict[str, str] = {}
 
 
 def topic_intro_version(template_id: str) -> str:
@@ -480,36 +477,6 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- 资金费率只代表 Binance 合约市场的拥挤程度，不代表全市场，也不等于直接买卖方向。",
         "- 极端费率币种容易上下插针，必须结合价格、OI、主动成交和流动性确认；不构成投资建议。",
         ])
-    if template_id == "TG_ONCHAIN_FLOW_ALERT":
-        return "\n".join([
-        "📌 <b>链上活动雷达话题说明</b>",
-        "",
-        "这里推送 Base ERC-20 Token 的链上活动规则报告与可选 AI 解读。",
-        "链上资金流使用独立历史、outbox、冷却和小时配额，不占用主 BOT 推送额度。",
-        "",
-        "<b>群内查询使用方式</b>",
-        "请在本话题内直接发送以下任一格式：",
-        "<code>@Bot用户名 查询 CBDOGE 15m</code>",
-        "<code>@Bot用户名 查询 0x完整Base合约地址 1h</code>",
-        "<code>/oar@Bot用户名 CBDOGE 4h</code>",
-        "支持 15m、1h、4h。币种简称只查询本地已验证且唯一的 Registry 合约；无法唯一确认时请使用完整合约地址。",
-        "",
-        "<b>报告字段白话说明</b>",
-        "- 合约：显示完整 Base 合约，可点击跳转 BaseScan 核对。",
-        "- Transfer（转账记录）：查询窗口内读取到的 ERC-20 转账笔数。",
-        "- 代币转账总量：每笔转账数量相加；不是成交额、净流入或买卖量。",
-        "- 证据强度：低/中等/高表示规则证据的多少和质量，不是成功概率。",
-        "- 规则分数：报告会列出逐项加分依据；分数用于规则排序，不是涨跌概率。",
-        "- 共同收款地址：多个钱包把币转到同一个未知目标；共同付款地址则相反。两者都只是关联线索，不能确认属于同一主体。",
-        "- 尚未分类：当前生产标签不足以确认地址身份，不强行判断交易所方向。",
-        "",
-        "<b>阅读方式与限制</b>",
-        "1. 流入交易所代表潜在可售供应，从交易所流出代表潜在提币或积累。",
-        "2. 入所不等于已经卖出，提币不等于已经买入或必然上涨。",
-        "3. 行为和钱包关联均为可解释候选；方向评分不是概率，高分不等于已经确认同一主体。",
-        "4. 群内只读查询默认不调用 AI；AI 只解释确定性事实，失败时仍保留规则摘要。",
-        "5. 数据不完整时降低结论等级，不形成高确定性判断。",
-        ])
     if template_id == "TG_TEST_MESSAGE":
         return "\n".join([
         "📌 <b>测试消息话题说明</b>",
@@ -732,33 +699,6 @@ class TelegramGateway:
             signal_records=signal_records,
         )
 
-    def annotate_delivery_history(
-        self,
-        delivery_id: str,
-        *,
-        deleted_message_ids: list[int],
-        failed_delete_message_ids: list[int],
-    ) -> None:
-        normalized_deleted = sorted(
-            {int(item) for item in deleted_message_ids}
-        )
-        normalized_failed = sorted(
-            {int(item) for item in failed_delete_message_ids}
-        )
-
-        def update(history: Any) -> list[dict[str, Any]]:
-            records = history if isinstance(history, list) else []
-            for record in reversed(records):
-                if (
-                    isinstance(record, dict)
-                    and record.get("delivery_id") == delivery_id
-                ):
-                    record["oar_deleted_old_message_ids"] = normalized_deleted
-                    record["oar_failed_delete_message_ids"] = normalized_failed
-                    break
-            return records
-
-        self.store.update(self.settings.tg_push_history_path, update, [])
 
     @staticmethod
     def _photo_validation_error(photo: bytes, caption: str) -> str:
@@ -1114,8 +1054,6 @@ class TelegramGateway:
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
-            "TG_ONCHAIN_FLOW_ALERT": self.settings.tg_onchain_flow_topic_id,
-            "TG_ONCHAIN_QUERY": self.settings.tg_onchain_flow_topic_id,
         }
         return topic_routes.get(template_id, "")
 
@@ -1828,43 +1766,8 @@ class TelegramGateway:
         }
         if result.diagnostics is not None:
             record.update(result.diagnostics.audit_fields())
-        if template_id == "TG_ONCHAIN_FLOW_ALERT" and signal_records:
-            allowed = {
-                "oar_card_key",
-                "oar_content_hash",
-                "chain_id",
-                "contract",
-                "symbol",
-                "behavior_type",
-                "score",
-                "behavior_score",
-                "context_hash",
-                "analysis_status",
-                "analysis_complete",
-                "ai_status",
-                "linked_source_count",
-                "source_modules_text",
-            }
-            record["signal_records"] = [
-                {
-                    key: value
-                    for key, value in item.items()
-                    if key in allowed
-                    and (
-                        value is None
-                        or isinstance(value, (str, int, float, bool))
-                    )
-                }
-                for item in signal_records
-                if isinstance(item, dict)
-            ]
         history.append(record)
         self._append_history_record(record)
-        if template_id == "TG_ONCHAIN_QUERY":
-            # An operator-requested lookup is a reply, not a detected signal.
-            # Keep its dedicated Telegram audit while preventing Signal Bridge
-            # and OAR watch-source side effects.
-            return
         try:
             from .symbol_dossier import append_signal_events_from_push
 

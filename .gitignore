@@ -6,7 +6,6 @@ __pycache__/
 .env.*
 !.env.example
 !.env.oi.example
-!.env.onchain.example
 
 *.bak
 *.bak.*
@@ -34,6 +33,8 @@ data/charts/
 data/backups/
 # Bounded runtime history for opt-in accumulation quality diagnostics.
 /data/accumulation_quality_diagnostics.json
+# Historical chain-radar data stays archived on deployed hosts after the
+# source split. Keep it out of the market-radar repository and Git status.
 /data/onchain/
 /reports/onchain/
 /config/onchain/cex_addresses.local*.csv
