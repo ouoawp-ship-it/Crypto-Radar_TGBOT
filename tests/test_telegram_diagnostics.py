@@ -158,7 +158,7 @@ class TelegramSafeFallbackTests(unittest.TestCase):
             "tg_topic_routes_path": root / "routes.json",
             "tg_bot_token": "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
             "tg_chat_id": "-1001234567890",
-            "tg_onchain_flow_topic_id": "22",
+            "tg_flow_radar_topic_id": "22",
             "tg_use_topic": True,
             "tg_push_retry": 1,
             "tg_default_cooldown_sec": 0,
@@ -223,7 +223,7 @@ class TelegramSafeFallbackTests(unittest.TestCase):
             ):
                 result = gateway.send(
                     "message",
-                    "TG_ONCHAIN_FLOW_ALERT",
+                    "TG_FLOW_RADAR",
                     "safe-diagnostic",
                     send=True,
                     confirm_real_send=True,
@@ -269,11 +269,12 @@ class TelegramSafeFallbackTests(unittest.TestCase):
             responses = [
                 FakeResponse(200, message_id=15),
                 FakeResponse(400, description="message thread not found"),
+                FakeResponse(200, message_id=16),
             ]
             with patch("paopao_radar.telegram.requests.post", side_effect=responses):
                 result = gateway.send(
                     "123456789",
-                    "TG_ONCHAIN_FLOW_ALERT",
+                    "TG_FLOW_RADAR",
                     "partial-diagnostic",
                     send=True,
                     confirm_real_send=True,

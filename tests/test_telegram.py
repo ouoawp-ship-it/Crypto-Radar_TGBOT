@@ -27,92 +27,16 @@ CST = timezone(timedelta(hours=8))
 
 class TelegramGatewayTests(unittest.TestCase):
     def test_topic_intro_versions_are_isolated_by_template(self) -> None:
-        self.assertEqual(
-            topic_intro_version("TG_ONCHAIN_FLOW_ALERT"),
-            "2026-08-02-oar-group-query-v2",
-        )
-        for template_id in ("TG_FUNDING_ALERT", "TG_LAUNCH_ALERT"):
+        for template_id in (
+            "TG_FUNDING_ALERT",
+            "TG_LAUNCH_ALERT",
+            "TG_FLOW_RADAR",
+        ):
             with self.subTest(template_id=template_id):
                 self.assertEqual(
                     topic_intro_version(template_id),
                     DEFAULT_TOPIC_INTRO_VERSION,
                 )
-
-    def test_oar_intro_refresh_does_not_touch_core_intro_records(self) -> None:
-        with TemporaryDirectory() as tmp:
-            route_path = Path(tmp) / "topic_routes.json"
-            store = JsonStore(Path(tmp))
-            settings = Settings(
-                data_dir=Path(tmp),
-                tg_topic_routes_path=route_path,
-                tg_topic_intro_enable=True,
-                tg_topic_intro_pin=True,
-            )
-            funding_intro = topic_intro_message(
-                "TG_FUNDING_ALERT",
-                settings,
-            )
-            funding_record = {
-                "template_id": "TG_FUNDING_ALERT",
-                "topic_id": "12",
-                "message_id": 701,
-                "pinned": True,
-                "intro_version": DEFAULT_TOPIC_INTRO_VERSION,
-                "content_hash": intro_hash(funding_intro),
-            }
-            store.save(route_path, {
-                "intros": {
-                    "TG_ONCHAIN_FLOW_ALERT:21": {
-                        "template_id": "TG_ONCHAIN_FLOW_ALERT",
-                        "topic_id": "21",
-                        "message_id": 777,
-                        "pinned": True,
-                        "intro_version": topic_intro_version(
-                            "TG_ONCHAIN_FLOW_ALERT"
-                        ),
-                        "content_hash": "stale-oar-content",
-                    },
-                    "TG_FUNDING_ALERT:12": funding_record,
-                }
-            })
-            gateway = TelegramGateway(settings, store)
-
-            with (
-                patch.object(
-                    gateway,
-                    "_send_real_message_ids",
-                    return_value=(True, [778]),
-                ) as send_mock,
-                patch.object(
-                    gateway,
-                    "_pin_message",
-                    return_value=True,
-                ),
-                patch.object(
-                    gateway,
-                    "_delete_message",
-                    return_value=True,
-                ) as delete_mock,
-            ):
-                gateway._ensure_topic_intro(
-                    "TG_ONCHAIN_FLOW_ALERT",
-                    "21",
-                )
-                gateway._ensure_topic_intro("TG_FUNDING_ALERT", "12")
-
-            send_mock.assert_called_once()
-            delete_mock.assert_called_once_with(777)
-            data = store.load(route_path, {})
-            self.assertEqual(
-                data["intros"]["TG_FUNDING_ALERT:12"],
-                funding_record,
-            )
-            self.assertEqual(
-                data["intros"]["TG_ONCHAIN_FLOW_ALERT:21"][
-                    "intro_version"
-                ],
-                "2026-08-02-oar-group-query-v2",
-            )
 
     def test_detailed_delete_audits_history_and_releases_dedup(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -871,28 +795,6 @@ class TelegramGatewayTests(unittest.TestCase):
                     self.assertNotIn("回复上一条", intro)
                 self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
-    def test_oar_intro_includes_group_query_usage(self) -> None:
-        with TemporaryDirectory() as tmp:
-            intro = topic_intro_message(
-                "TG_ONCHAIN_FLOW_ALERT",
-                Settings(data_dir=Path(tmp)),
-            )
-
-            self.assertIn("群内查询使用方式", intro)
-            self.assertIn("@Bot用户名 查询 CBDOGE 15m", intro)
-            self.assertIn("@Bot用户名 查询 0x完整Base合约地址 1h", intro)
-            self.assertIn("/oar@Bot用户名 CBDOGE 4h", intro)
-            self.assertIn("只查询本地已验证且唯一的 Registry 合约", intro)
-            self.assertIn("报告字段白话说明", intro)
-            self.assertIn("Transfer（转账记录）", intro)
-            self.assertIn("不是成交额、净流入或买卖量", intro)
-            self.assertIn("规则分数：报告会列出逐项加分依据", intro)
-            self.assertIn("共同收款地址", intro)
-            self.assertIn("不能确认属于同一主体", intro)
-            self.assertIn("尚未分类", intro)
-            self.assertIn("群内只读查询默认不调用 AI", intro)
-            self.assertLessEqual(len(plain_fallback(intro)), 4096)
-
     def test_summary_topic_intro_holds_static_legend(self) -> None:
         with TemporaryDirectory() as tmp:
             intro = topic_intro_message(
@@ -1095,68 +997,6 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(history[0]["deleted_message_ids"], [101])
             self.assertTrue(history[0]["lifecycle_deleted"])
             self.assertNotIn("deleted_message_ids", history[1])
-
-    def test_intro_only_publish_keeps_dual_gate_and_sends_no_card(
-        self,
-    ) -> None:
-        with TemporaryDirectory() as tmp:
-            route_path = Path(tmp) / "topic_routes.json"
-            store = JsonStore(Path(tmp))
-            settings = Settings(
-                data_dir=Path(tmp),
-                tg_push_history_path=Path(tmp) / "push_history.json",
-                tg_topic_routes_path=route_path,
-                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                tg_chat_id="-1001234567890",
-                tg_onchain_flow_topic_id="22",
-                tg_use_topic=True,
-                tg_topic_intro_enable=True,
-                tg_topic_intro_pin=True,
-            )
-            gateway = TelegramGateway(settings, store)
-
-            with (
-                patch.object(
-                    gateway,
-                    "_send_real_message_ids",
-                    return_value=(True, [100]),
-                ) as send_mock,
-                patch.object(
-                    gateway,
-                    "_pin_message",
-                    return_value=True,
-                ) as pin_mock,
-            ):
-                blocked = gateway.publish_topic_intro(
-                    "TG_ONCHAIN_FLOW_ALERT",
-                    send=True,
-                    confirm_real_send=False,
-                )
-                sent = gateway.publish_topic_intro(
-                    "TG_ONCHAIN_FLOW_ALERT",
-                    send=True,
-                    confirm_real_send=True,
-                )
-                reused = gateway.publish_topic_intro(
-                    "TG_ONCHAIN_FLOW_ALERT",
-                    send=True,
-                    confirm_real_send=True,
-                )
-
-            self.assertEqual(blocked["status"], "blocked")
-            self.assertEqual(blocked["persistent_messages"], 0)
-            self.assertEqual(sent["status"], "ok")
-            self.assertEqual(sent["persistent_messages"], 1)
-            self.assertTrue(sent["intro_pinned"])
-            self.assertEqual(reused["status"], "ok")
-            self.assertEqual(reused["persistent_messages"], 0)
-            send_mock.assert_called_once()
-            pin_mock.assert_called_once_with(100)
-            self.assertIn(
-                "链上活动雷达话题说明",
-                send_mock.call_args.args[0],
-            )
-            self.assertFalse(settings.tg_push_history_path.exists())
 
     def test_summary_replacement_keeps_previous_when_new_delivery_fails(self) -> None:
         with TemporaryDirectory() as tmp:
