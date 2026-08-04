@@ -203,7 +203,7 @@ def build_market_radar_runtime_status(
     )
     runtime_active = bool(
         task == "loop"
-        and mode in {"loop", "daemon"}
+        and mode in {"loop", "daemon", "live"}
         and runtime_status in _RUNNING_STATUSES
         and heartbeat_fresh
     )

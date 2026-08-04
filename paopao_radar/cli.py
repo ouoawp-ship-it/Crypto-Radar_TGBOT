@@ -485,8 +485,8 @@ def write_runtime_status(
         isinstance(existing, dict)
         and str(existing.get("task") or "") == "loop"
         and incoming_task == "loop"
-        and str(existing.get("mode") or "") in {"loop", "daemon"}
-        and mode in {"loop", "daemon"}
+        and str(existing.get("mode") or "") in {"loop", "daemon", "live"}
+        and mode in {"loop", "daemon", "live"}
     )
     payload = dict(existing) if merge_loop else {}
     payload.update(base_payload)
@@ -1145,7 +1145,9 @@ def save_observe_report(
 def run_once(args: argparse.Namespace) -> int:
     settings, store, engine, gateway = make_runtime_for_args(args)
     mode = command_mode(args)
-    runtime_task = "loop" if mode in {"loop", "daemon"} else "once"
+    runtime_task = (
+        "loop" if mode in {"loop", "daemon", "live"} else "once"
+    )
     write_runtime_status(
         settings,
         store,

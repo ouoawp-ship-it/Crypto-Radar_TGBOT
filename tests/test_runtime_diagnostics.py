@@ -111,6 +111,36 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
             result["radars"]["funding_alert"]["candidate_count"], 2
         )
 
+    def test_live_real_send_loop_reports_running(self) -> None:
+        now = 2_000_000_000
+        stamp = datetime.fromtimestamp(now - 10).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with TemporaryDirectory() as tmp:
+            settings, store = self.runtime(Path(tmp))
+            store.save(settings.runtime_status_path, {
+                "updated_at": stamp,
+                "mode": "live",
+                "task": "loop",
+                "status": "running",
+                "real_send": True,
+                "last_summary_at": stamp,
+                "last_launch_at": stamp,
+                "last_flow_at": stamp,
+                "last_funding_alert_at": stamp,
+            })
+            result = build_market_radar_runtime_status(
+                settings, store, now=now
+            )
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["runtime_mode"], "live")
+        self.assertEqual(result["delivery_mode"], "real")
+        self.assertTrue(all(
+            item["state"] == "running"
+            for item in result["radars"].values()
+        ))
+
     def test_stale_heartbeat_does_not_claim_running(self) -> None:
         now = 2_000_000_000
         with TemporaryDirectory() as tmp:

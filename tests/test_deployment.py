@@ -544,6 +544,89 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(saved["diagnostics"]["summary"]["status"], "ok")
         self.assertEqual(saved["diagnostics"]["launch"]["status"], "ok")
 
+    def test_live_loop_heartbeat_preserves_radar_schedule_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            main.write_runtime_status(
+                settings,
+                store,
+                "live",
+                "running",
+                task="loop",
+                last_summary_at="summary-time",
+                next_summary_at="next-summary-time",
+            )
+            main.write_runtime_status(
+                settings,
+                store,
+                "live",
+                "running",
+                task="loop",
+                real_send=True,
+            )
+            saved = store.load(settings.runtime_status_path, {})
+
+        self.assertEqual(saved["last_summary_at"], "summary-time")
+        self.assertEqual(saved["next_summary_at"], "next-summary-time")
+        self.assertTrue(saved["real_send"])
+
+    def test_live_summary_run_preserves_loop_schedule_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings, store, _engine, _gateway = self.make_runtime(tmp)
+            store.save(settings.runtime_status_path, {
+                "mode": "live",
+                "task": "loop",
+                "status": "running",
+                "next_flow_at": "next-flow-time",
+                "next_funding_alert_at": "next-funding-time",
+            })
+            engine = MagicMock()
+            engine.run_once.return_value = {
+                "summary": {
+                    "text": "summary",
+                    "template_id": "TG_RADAR_SUMMARY",
+                    "dedup_key": "summary:test",
+                    "context_records": [],
+                },
+                "diagnostics": {},
+            }
+            gateway = MagicMock()
+            gateway.send.return_value.status = "sent"
+            gateway.send.return_value.reason = "ok"
+            args = argparse.Namespace(
+                command="live",
+                send=True,
+                confirm_real_send=True,
+                no_launch=True,
+                no_announcements=True,
+                no_flow=True,
+                no_funding_alert=True,
+            )
+            with (
+                patch.object(
+                    main,
+                    "make_runtime_for_args",
+                    return_value=(settings, store, engine, gateway),
+                ),
+                patch.object(
+                    main,
+                    "refresh_signal_effectiveness",
+                    return_value={"status": "ok"},
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                code = main.run_once(args)
+            saved = store.load(settings.runtime_status_path, {})
+
+        self.assertEqual(code, 0)
+        self.assertEqual(saved["mode"], "live")
+        self.assertEqual(saved["task"], "loop")
+        self.assertEqual(saved["status"], "running")
+        self.assertEqual(saved["next_flow_at"], "next-flow-time")
+        self.assertEqual(
+            saved["next_funding_alert_at"], "next-funding-time"
+        )
+
     def test_non_loop_runtime_write_does_not_inherit_loop_fields(self) -> None:
         with TemporaryDirectory() as tmp:
             settings, store, _engine, _gateway = self.make_runtime(tmp)
