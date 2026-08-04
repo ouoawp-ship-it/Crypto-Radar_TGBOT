@@ -184,3 +184,27 @@ class LabelRegistry:
         if label is None or not label.active_at(timestamp):
             return None
         return label
+
+
+class ApprovedAddressLabelRepository:
+    """Chain-scoped adapter exposing only reviewed production labels."""
+
+    def __init__(self, labels: list[AddressLabel] | tuple[AddressLabel, ...]):
+        self._registry = LabelRegistry(
+            [label for label in labels if is_approved_label(label)]
+        )
+
+    def labels_for(
+        self,
+        chain_id: int,
+        addresses: list[str] | tuple[str, ...],
+        *,
+        at: int,
+    ) -> dict[str, AddressLabel]:
+        result: dict[str, AddressLabel] = {}
+        for raw_address in addresses:
+            normalized = normalize_evm_address(raw_address)
+            label = self._registry.lookup(chain_id, normalized, at)
+            if label is not None:
+                result[normalized] = label
+        return result

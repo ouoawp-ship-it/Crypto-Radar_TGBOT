@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -1380,6 +1381,61 @@ class AutomationStoreTests(unittest.TestCase):
         self.assertEqual(
             verified["verification_method"],
             "ethereum_rpc_erc20_metadata",
+        )
+
+    def test_registry_verifies_bsc_through_generic_evm_service(self) -> None:
+        chains_path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "onchain"
+            / "chains.example.json"
+        )
+        settings = replace(
+            make_settings(self.root, chains_path=chains_path),
+            bsc_enable=True,
+            bsc_http_rpc_url="https://bsc.invalid/key",
+        )
+        bsc_store = AutomationStore.from_settings(settings)
+        pending = bsc_store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="bsc",
+            chain_id=56,
+            source="manual",
+            now=1000,
+        )
+
+        class BscRpc:
+            @staticmethod
+            def chain_id() -> int:
+                return 56
+
+            @staticmethod
+            def get_code(address: str) -> str:
+                del address
+                return "0x6000"
+
+            @staticmethod
+            def eth_call(address: str, selector: str) -> str:
+                del address
+                if selector in {"0x313ce567", "0x18160ddd"}:
+                    value = 18 if selector == "0x313ce567" else 1000
+                    return f"0x{value:064x}"
+                text = b"AAA" if selector == "0x95d89b41" else b"Token"
+                return "0x" + text.ljust(32, b"\x00").hex()
+
+        verified = RegistryService(
+            settings, bsc_store, rpc=BscRpc()
+        ).verify(
+            str(pending["token_key"]),
+            allow_network=True,
+            set_primary=True,
+            accept_symbol_mismatch=False,
+        )
+        self.assertEqual(verified["chain"], "bsc")
+        self.assertEqual(verified["chain_id"], 56)
+        self.assertEqual(
+            verified["verification_method"], "bsc_rpc_erc20_metadata"
         )
 
     def test_registry_verify_without_network_does_not_touch_rpc(self) -> None:

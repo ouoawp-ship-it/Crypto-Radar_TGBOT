@@ -451,10 +451,19 @@ class JsonRpcClient:
             raise RpcResponseError("eth_getCode returned malformed data")
         return result
 
-    def eth_call(self, address: str, data: str) -> str:
+    def eth_call(
+        self,
+        address: str,
+        data: str,
+        *,
+        block_tag: str = "latest",
+    ) -> str:
         result = self.call(
             "eth_call",
-            [{"to": normalize_evm_address(address), "data": data}, "latest"],
+            [
+                {"to": normalize_evm_address(address), "data": data},
+                block_tag,
+            ],
         )
         if not isinstance(result, str):
             raise RpcResponseError("eth_call returned malformed data")

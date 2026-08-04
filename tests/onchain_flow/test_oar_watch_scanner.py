@@ -478,7 +478,7 @@ class WatchScannerTests(unittest.TestCase):
         self.assertEqual(seen, [("ethereum", 1)])
         self.assertEqual(
             scanned["address_intelligence_queue_status"],
-            "skipped_chain_unsupported",
+            "skipped_incomplete",
         )
         self.assertEqual(
             scanned["address_intelligence_queue_error"],
@@ -567,6 +567,81 @@ class WatchScannerTests(unittest.TestCase):
         self.assertFalse(result["telegram_calls"])
         self.assertFalse(result["ai_calls"])
         analysis_factory.assert_not_called()
+        watch = self.store.get_watch(key) or {}
+        self.assertEqual(watch["lease_owner"], "")
+
+    def test_bsc_observe_reuses_watch_worker_without_external_providers(self) -> None:
+        chains_path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "onchain"
+            / "chains.example.json"
+        )
+        settings = replace(
+            self.settings,
+            chains_path=chains_path,
+            bsc_enable=True,
+            bsc_http_rpc_url="https://bsc.invalid/key",
+        )
+        item = self.store.add_registry(
+            market_symbol="AAAUSDT",
+            contract=CONTRACT_A,
+            chain="bsc",
+            chain_id=56,
+            source="manual",
+            now=1000,
+        )
+        key = str(item["token_key"])
+        self.store.verify_registry(
+            key,
+            token_symbol="AAA",
+            token_name="AAA",
+            decimals=18,
+            metadata_hash="a" * 64,
+            verification_method="fixture",
+            set_primary=True,
+            now=1001,
+        )
+        self.store.add_manual_watch(
+            key,
+            ttl_sec=100000,
+            priority=100,
+            query_window="4h",
+            scan_interval_sec=900,
+            now=1002,
+        )
+        seen: list[tuple[str, int]] = []
+
+        def analysis_factory(current: object, query: object) -> StaticAnalysis:
+            del current
+            seen.append(
+                (str(getattr(query, "chain")), int(getattr(query, "chain_id")))
+            )
+            return StaticAnalysis(self.analyzed("isolated"))
+
+        result = WatchScanner(
+            settings,
+            self.store,
+            bridge=self.bridge,
+            analysis_factory=analysis_factory,
+            clock=lambda: 2000,
+            sleeper=lambda value: None,
+        ).run_once(
+            allow_network=True,
+            notify_dry_run=False,
+            with_ai=False,
+            send=False,
+            confirm_real_send=False,
+        )
+
+        scanned = result["results"][0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(seen, [("bsc", 56)])
+        self.assertEqual(scanned["external_label_provider_calls"], 0)
+        self.assertFalse(result["telegram_calls"])
+        self.assertEqual(scanned["ai_calls"], 0)
+        self.assertTrue(result["network_activity"])
+        self.assertFalse(result["ai_calls"])
         watch = self.store.get_watch(key) or {}
         self.assertEqual(watch["lease_owner"], "")
 

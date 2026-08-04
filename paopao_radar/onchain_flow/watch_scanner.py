@@ -11,6 +11,7 @@ from .chain_capabilities import (
     resolve_watch_evm_chain,
 )
 from .config import OnchainSettings
+from .domain import SignalPolicy
 from .controlled_alert_preview import evaluate_controlled_alert_preview
 from .label_coverage import label_coverage_snapshot
 from .market_convergence import evaluate_market_convergence
@@ -26,16 +27,9 @@ from .scan_baseline import (
     scan_metrics,
 )
 from .signal_bridge import SignalBridge
+from .signal_policy import DefaultSignalPolicy
 from .token_activity import TokenActivityQuery, TokenActivityQueryError
 from .token_analysis import TokenAnalysisService
-
-
-ACTIONABLE_BEHAVIORS = {
-    "accumulation_candidate",
-    "distribution_candidate",
-    "wallet_consolidation_candidate",
-    "fanout_candidate",
-}
 
 
 class WatchScanner:
@@ -50,6 +44,7 @@ class WatchScanner:
         ] | None = None,
         report_factory: Callable[[OnchainSettings], Any] | None = None,
         notifier_factory: Callable[[OnchainSettings], Any] | None = None,
+        signal_policy: SignalPolicy | None = None,
         address_intelligence_store: Any | None = None,
         clock: Any = time.time,
         sleeper: Any = time.sleep,
@@ -68,6 +63,18 @@ class WatchScanner:
             )
         )
         self.notifier_factory = notifier_factory or ReportNotifier
+        self.signal_policy = signal_policy or DefaultSignalPolicy(
+            min_behavior_score=(
+                settings.oar_watch_notify_min_behavior_score
+            ),
+            min_wallet_score=settings.oar_watch_notify_min_wallet_score,
+            single_transfer_enabled=(
+                settings.oar_single_transfer_risk_enable
+            ),
+            min_single_transfer_score=(
+                settings.oar_single_transfer_min_score
+            ),
+        )
         self.address_intelligence_store = (
             address_intelligence_store
             if address_intelligence_store is not None
@@ -634,7 +641,9 @@ class WatchScanner:
                 # External label providers and their local candidate store are
                 # currently Base-scoped.  A non-Base Watch scan stays complete
                 # but cannot silently place addresses in the Base namespace.
-                queue_status = "skipped_chain_unsupported"
+                # Keep the production audit enum stable.  The fixed error code
+                # distinguishes this safe local skip from an incomplete scan.
+                queue_status = "skipped_incomplete"
                 queue_error = "address_intelligence_chain_unsupported"
             else:
                 try:
@@ -840,19 +849,22 @@ class WatchScanner:
     ) -> bool:
         analysis = payload.get("analysis")
         analysis = analysis if isinstance(analysis, dict) else {}
-        if not (
-            bool(payload.get("complete"))
-            and bool(analysis.get("complete"))
-            and analysis.get("status") == "ok"
-        ):
-            return False
-        return (
-            behavior_type in ACTIONABLE_BEHAVIORS
-            and behavior_score
-            >= self.settings.oar_watch_notify_min_behavior_score
-        ) or (
-            max_wallet_score
-            >= self.settings.oar_watch_notify_min_wallet_score
+        raw_signals = payload.get("single_transfer_risk")
+        risk = raw_signals if isinstance(raw_signals, dict) else {}
+        signal_rows = risk.get("signals")
+        signals = signal_rows if isinstance(signal_rows, list) else []
+        return bool(
+            self.signal_policy.actionable(
+                payload_complete=bool(payload.get("complete")),
+                analysis_complete=bool(analysis.get("complete")),
+                analysis_status=str(analysis.get("status") or ""),
+                behavior_type=behavior_type,
+                behavior_score=behavior_score,
+                max_wallet_score=max_wallet_score,
+                single_transfer_signals=[
+                    item for item in signals if isinstance(item, dict)
+                ],
+            )
         )
 
     @staticmethod

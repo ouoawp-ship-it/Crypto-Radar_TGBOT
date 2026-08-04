@@ -36,6 +36,20 @@ ALLOWLIST = {
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
     "ONCHAIN_BASE_HTTP_RPC_URL": "onchain",
+    "OAR_BSC_ENABLE": "onchain",
+    "OAR_BSC_HTTP_RPC_URL": "onchain",
+    "OAR_BSC_CONFIRMATION_DEPTH": "onchain",
+    "OAR_BSC_REORG_LOOKBACK_BLOCKS": "onchain",
+    "OAR_ETHEREUM_ENABLE": "onchain",
+    "OAR_ETHEREUM_HTTP_RPC_URL": "onchain",
+    "OAR_ARBITRUM_ENABLE": "onchain",
+    "OAR_ARBITRUM_HTTP_RPC_URL": "onchain",
+    "OAR_OPTIMISM_ENABLE": "onchain",
+    "OAR_OPTIMISM_HTTP_RPC_URL": "onchain",
+    "OAR_POLYGON_ENABLE": "onchain",
+    "OAR_POLYGON_HTTP_RPC_URL": "onchain",
+    "OAR_AVALANCHE_ENABLE": "onchain",
+    "OAR_AVALANCHE_HTTP_RPC_URL": "onchain",
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": "onchain",
     "ONCHAIN_CEX_LABELS_FILE": "onchain",
     "TG_ONCHAIN_FLOW_TOPIC_ID": "onchain",
@@ -81,6 +95,17 @@ ALLOWLIST = {
     "OAR_WATCH_CONTROLLED_ALERT_ENABLE": "onchain",
     "OAR_WATCH_SCAN_INTERVAL_SEC": "onchain",
     "OAR_WATCH_QUERY_WINDOW": "onchain",
+    "OAR_SINGLE_TRANSFER_RISK_ENABLE": "onchain",
+    "OAR_SINGLE_TRANSFER_MIN_SCORE": "onchain",
+    "OAR_SINGLE_TRANSFER_CRITICAL_SCORE": "onchain",
+    "OAR_SENDER_EXIT_HIGH": "onchain",
+    "OAR_SENDER_EXIT_NEAR_FULL": "onchain",
+    "OAR_SENDER_EXIT_FULL": "onchain",
+    "OAR_SUPPLY_SHARE_WATCH": "onchain",
+    "OAR_SUPPLY_SHARE_HIGH": "onchain",
+    "OAR_SINGLE_TRANSFER_MAX_BALANCE_CALLS": "onchain",
+    "OAR_SINGLE_TRANSFER_MAX_SUPPLY_CALLS": "onchain",
+    "OAR_SINGLE_TRANSFER_SNAPSHOT_TTL_SEC": "onchain",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -94,6 +119,12 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
     "TG_ONCHAIN_FLOW_TOPIC_ID",
     "ONCHAIN_BASE_HTTP_RPC_URL",
+    "OAR_BSC_HTTP_RPC_URL",
+    "OAR_ETHEREUM_HTTP_RPC_URL",
+    "OAR_ARBITRUM_HTTP_RPC_URL",
+    "OAR_OPTIMISM_HTTP_RPC_URL",
+    "OAR_POLYGON_HTTP_RPC_URL",
+    "OAR_AVALANCHE_HTTP_RPC_URL",
     "ONCHAIN_CEX_LABELS_FILE",
     "OAR_AI_BASE_URL",
     "OAR_WATCH_REAL_SEND_ACK",
@@ -110,6 +141,13 @@ BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
     "OAR_TELEGRAM_QUERY_ENABLE",
     "OAR_WATCH_CONTROLLED_ALERT_ENABLE",
+    "OAR_BSC_ENABLE",
+    "OAR_ETHEREUM_ENABLE",
+    "OAR_ARBITRUM_ENABLE",
+    "OAR_OPTIMISM_ENABLE",
+    "OAR_POLYGON_ENABLE",
+    "OAR_AVALANCHE_ENABLE",
+    "OAR_SINGLE_TRANSFER_RISK_ENABLE",
 }
 INTEGER_RANGES = {
     "ONCHAIN_RPC_MAX_BLOCK_RANGE": (1, 10000),
@@ -132,10 +170,22 @@ INTEGER_RANGES = {
     "OAR_WATCH_BASELINE_MIN_SAMPLES": (4, 100),
     "OAR_WATCH_BASELINE_MAX_SAMPLES": (8, 100),
     "OAR_WATCH_SCAN_INTERVAL_SEC": (60, 86400),
+    "OAR_BSC_CONFIRMATION_DEPTH": (1, 200),
+    "OAR_BSC_REORG_LOOKBACK_BLOCKS": (1, 1000),
+    "OAR_SINGLE_TRANSFER_MIN_SCORE": (0, 100),
+    "OAR_SINGLE_TRANSFER_CRITICAL_SCORE": (0, 100),
+    "OAR_SINGLE_TRANSFER_MAX_BALANCE_CALLS": (1, 100),
+    "OAR_SINGLE_TRANSFER_MAX_SUPPLY_CALLS": (1, 20),
+    "OAR_SINGLE_TRANSFER_SNAPSHOT_TTL_SEC": (30, 3600),
 }
 DECIMAL_RANGES = {
     "DUNE_API_POLL_INTERVAL_SEC": (0.2, 10.0),
     "OAR_WATCH_BASELINE_MAD_MULTIPLIER": (1.0, 10.0),
+    "OAR_SENDER_EXIT_HIGH": (0.01, 1.0),
+    "OAR_SENDER_EXIT_NEAR_FULL": (0.01, 1.0),
+    "OAR_SENDER_EXIT_FULL": (0.01, 1.0),
+    "OAR_SUPPLY_SHARE_WATCH": (0.000001, 1.0),
+    "OAR_SUPPLY_SHARE_HIGH": (0.000001, 1.0),
 }
 BACKUP_LIMIT = 30
 DEEPSEEK_V4_PRO_PROFILE = {
@@ -625,6 +675,12 @@ class ConfigManager:
                 )
         if key in {
             "ONCHAIN_BASE_HTTP_RPC_URL",
+            "OAR_BSC_HTTP_RPC_URL",
+            "OAR_ETHEREUM_HTTP_RPC_URL",
+            "OAR_ARBITRUM_HTTP_RPC_URL",
+            "OAR_OPTIMISM_HTTP_RPC_URL",
+            "OAR_POLYGON_HTTP_RPC_URL",
+            "OAR_AVALANCHE_HTTP_RPC_URL",
             "OAR_AI_BASE_URL",
             "ARKHAM_API_BASE_URL",
             "DUNE_API_BASE_URL",
@@ -674,6 +730,73 @@ class ConfigManager:
         ):
             raise ConfigManagerError(
                 "TG_ONCHAIN_FLOW_TOPIC_ID must be a positive integer"
+            )
+
+        for enable_key, rpc_key in (
+            ("OAR_ETHEREUM_ENABLE", "OAR_ETHEREUM_HTTP_RPC_URL"),
+            ("OAR_ARBITRUM_ENABLE", "OAR_ARBITRUM_HTTP_RPC_URL"),
+            ("OAR_OPTIMISM_ENABLE", "OAR_OPTIMISM_HTTP_RPC_URL"),
+            ("OAR_POLYGON_ENABLE", "OAR_POLYGON_HTTP_RPC_URL"),
+            ("OAR_AVALANCHE_ENABLE", "OAR_AVALANCHE_HTTP_RPC_URL"),
+        ):
+            enabled = (
+                values.get(enable_key, "false").strip().lower() == "true"
+            )
+            if enabled and not values.get(rpc_key, "").strip():
+                raise ConfigManagerError(
+                    "enabled EVM chain requires its HTTP RPC URL"
+                )
+
+        try:
+            single_min_score = int(
+                values.get("OAR_SINGLE_TRANSFER_MIN_SCORE", "60")
+            )
+            single_critical_score = int(
+                values.get("OAR_SINGLE_TRANSFER_CRITICAL_SCORE", "80")
+            )
+            exit_high = Decimal(
+                values.get("OAR_SENDER_EXIT_HIGH", "0.80")
+            )
+            exit_near_full = Decimal(
+                values.get("OAR_SENDER_EXIT_NEAR_FULL", "0.95")
+            )
+            exit_full = Decimal(
+                values.get("OAR_SENDER_EXIT_FULL", "0.99")
+            )
+            supply_watch = Decimal(
+                values.get("OAR_SUPPLY_SHARE_WATCH", "0.001")
+            )
+            supply_high = Decimal(
+                values.get("OAR_SUPPLY_SHARE_HIGH", "0.005")
+            )
+        except (InvalidOperation, ValueError) as exc:
+            raise ConfigManagerError(
+                "invalid single-transfer risk configuration"
+            ) from exc
+        if single_critical_score < single_min_score:
+            raise ConfigManagerError(
+                "single-transfer critical score cannot be lower than min score"
+            )
+        if not (
+            exit_high.is_finite()
+            and exit_near_full.is_finite()
+            and exit_full.is_finite()
+            and Decimal("0")
+            < exit_high
+            < exit_near_full
+            < exit_full
+            <= Decimal("1")
+        ):
+            raise ConfigManagerError(
+                "single-transfer exit thresholds must be strictly increasing"
+            )
+        if not (
+            supply_watch.is_finite()
+            and supply_high.is_finite()
+            and Decimal("0") < supply_watch < supply_high <= Decimal("1")
+        ):
+            raise ConfigManagerError(
+                "single-transfer supply thresholds must be increasing"
             )
 
         provider = values.get("OAR_AI_PROVIDER", "deepseek").strip().lower()

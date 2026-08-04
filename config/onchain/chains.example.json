@@ -1,5 +1,5 @@
 {
-  "schema_version": "p3.1-v1",
+  "schema_version": "oar-chain-registry-v2",
   "chains": [
     {
       "chain_id": 8453,
@@ -11,7 +11,116 @@
       "reorg_lookback_blocks": 64,
       "http_rpc_env": "ONCHAIN_BASE_HTTP_RPC_URL",
       "wss_rpc_env": "ONCHAIN_BASE_WSS_RPC_URL",
-      "explorer_tx_url": "https://basescan.org/tx/{tx_hash}"
+      "explorer_tx_url": "https://basescan.org/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0x4200000000000000000000000000000000000006",
+      "stablecoin_addresses": [],
+      "dex_contracts": {}
+    },
+    {
+      "chain_id": 56,
+      "slug": "bsc",
+      "name": "BSC",
+      "enabled": false,
+      "enable_env": "OAR_BSC_ENABLE",
+      "confirmation_depth": 15,
+      "bootstrap_lookback_blocks": 300,
+      "reorg_lookback_blocks": 64,
+      "http_rpc_env": "OAR_BSC_HTTP_RPC_URL",
+      "explorer_tx_url": "https://bscscan.com/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "stablecoin_addresses": [
+        "0x55d398326f99059ff775485246999027b3197955",
+        "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3"
+      ],
+      "dex_contracts": {
+        "pancakeswap_v2_factory": "0xca143ce32fe78f1f7019d7d551a6402fc5350c73",
+        "pancakeswap_v2_router": "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+        "pancakeswap_v3_factory": "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865",
+        "pancakeswap_v3_router": "0x1b81d678ffb9c0263b24a97847620c99d213eb14"
+      }
+    },
+    {
+      "chain_id": 1,
+      "slug": "ethereum",
+      "name": "Ethereum",
+      "enabled": false,
+      "enable_env": "OAR_ETHEREUM_ENABLE",
+      "confirmation_depth": 20,
+      "bootstrap_lookback_blocks": 300,
+      "reorg_lookback_blocks": 64,
+      "http_rpc_env": "OAR_ETHEREUM_HTTP_RPC_URL",
+      "explorer_tx_url": "https://etherscan.io/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "stablecoin_addresses": [],
+      "dex_contracts": {}
+    },
+    {
+      "chain_id": 42161,
+      "slug": "arbitrum",
+      "name": "Arbitrum One",
+      "enabled": false,
+      "enable_env": "OAR_ARBITRUM_ENABLE",
+      "confirmation_depth": 20,
+      "bootstrap_lookback_blocks": 300,
+      "reorg_lookback_blocks": 64,
+      "http_rpc_env": "OAR_ARBITRUM_HTTP_RPC_URL",
+      "explorer_tx_url": "https://arbiscan.io/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+      "stablecoin_addresses": [],
+      "dex_contracts": {}
+    },
+    {
+      "chain_id": 10,
+      "slug": "optimism",
+      "name": "OP Mainnet",
+      "enabled": false,
+      "enable_env": "OAR_OPTIMISM_ENABLE",
+      "confirmation_depth": 20,
+      "bootstrap_lookback_blocks": 300,
+      "reorg_lookback_blocks": 64,
+      "http_rpc_env": "OAR_OPTIMISM_HTTP_RPC_URL",
+      "explorer_tx_url": "https://explorer.optimism.io/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0x4200000000000000000000000000000000000006",
+      "stablecoin_addresses": [],
+      "dex_contracts": {}
+    },
+    {
+      "chain_id": 137,
+      "slug": "polygon",
+      "name": "Polygon PoS",
+      "enabled": false,
+      "enable_env": "OAR_POLYGON_ENABLE",
+      "confirmation_depth": 128,
+      "bootstrap_lookback_blocks": 512,
+      "reorg_lookback_blocks": 256,
+      "http_rpc_env": "OAR_POLYGON_HTTP_RPC_URL",
+      "explorer_tx_url": "https://polygonscan.com/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+      "stablecoin_addresses": [],
+      "dex_contracts": {}
+    },
+    {
+      "chain_id": 43114,
+      "slug": "avalanche",
+      "name": "Avalanche C-Chain",
+      "enabled": false,
+      "enable_env": "OAR_AVALANCHE_ENABLE",
+      "confirmation_depth": 20,
+      "bootstrap_lookback_blocks": 300,
+      "reorg_lookback_blocks": 64,
+      "http_rpc_env": "OAR_AVALANCHE_HTTP_RPC_URL",
+      "explorer_tx_url": "https://subnets.avax.network/c-chain/tx/{tx_hash}",
+      "rpc_request_budget": 256,
+      "wrapped_native_token": "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
+      "stablecoin_addresses": [],
+      "dex_contracts": {}
     }
   ]
 }

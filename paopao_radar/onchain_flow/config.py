@@ -188,6 +188,10 @@ class OnchainSettings:
     base_confirmation_depth: int = 20
     base_bootstrap_lookback_blocks: int = 300
     base_reorg_lookback_blocks: int = 64
+    bsc_enable: bool = False
+    bsc_http_rpc_url: str = ""
+    bsc_confirmation_depth: int = 15
+    bsc_reorg_lookback_blocks: int = 64
     rpc_timeout_sec: Decimal = Decimal("10")
     rpc_retry: int = 3
     rpc_backoff_sec: Decimal = Decimal("1")
@@ -243,6 +247,17 @@ class OnchainSettings:
     oar_max_analyzed_wallets: int = 100
     oar_max_wallet_groups: int = 20
     oar_max_source_event_ids: int = 50
+    oar_single_transfer_risk_enable: bool = False
+    oar_single_transfer_min_score: int = 60
+    oar_single_transfer_critical_score: int = 80
+    oar_sender_exit_high: Decimal = Decimal("0.80")
+    oar_sender_exit_near_full: Decimal = Decimal("0.95")
+    oar_sender_exit_full: Decimal = Decimal("0.99")
+    oar_supply_share_watch: Decimal = Decimal("0.001")
+    oar_supply_share_high: Decimal = Decimal("0.005")
+    oar_single_transfer_max_balance_calls: int = 20
+    oar_single_transfer_max_supply_calls: int = 5
+    oar_single_transfer_snapshot_ttl_sec: int = 300
     oar_ai_enable: bool = False
     oar_ai_provider: str = "deepseek"
     oar_ai_base_url: str = "https://api.deepseek.com"
@@ -538,6 +553,16 @@ class OnchainSettings:
             base_reorg_lookback_blocks=_int(
                 values, "ONCHAIN_BASE_REORG_LOOKBACK_BLOCKS", 64
             ),
+            bsc_enable=_bool(values, "OAR_BSC_ENABLE", False),
+            bsc_http_rpc_url=values.get(
+                "OAR_BSC_HTTP_RPC_URL", ""
+            ).strip(),
+            bsc_confirmation_depth=_int(
+                values, "OAR_BSC_CONFIRMATION_DEPTH", 15
+            ),
+            bsc_reorg_lookback_blocks=_int(
+                values, "OAR_BSC_REORG_LOOKBACK_BLOCKS", 64
+            ),
             rpc_timeout_sec=_decimal(
                 values, "ONCHAIN_RPC_TIMEOUT_SEC", "10"
             ),
@@ -697,6 +722,39 @@ class OnchainSettings:
             ),
             oar_max_source_event_ids=_int(
                 values, "OAR_MAX_SOURCE_EVENT_IDS", 50
+            ),
+            oar_single_transfer_risk_enable=_bool(
+                values, "OAR_SINGLE_TRANSFER_RISK_ENABLE", False
+            ),
+            oar_single_transfer_min_score=_int(
+                values, "OAR_SINGLE_TRANSFER_MIN_SCORE", 60
+            ),
+            oar_single_transfer_critical_score=_int(
+                values, "OAR_SINGLE_TRANSFER_CRITICAL_SCORE", 80
+            ),
+            oar_sender_exit_high=_decimal(
+                values, "OAR_SENDER_EXIT_HIGH", "0.80"
+            ),
+            oar_sender_exit_near_full=_decimal(
+                values, "OAR_SENDER_EXIT_NEAR_FULL", "0.95"
+            ),
+            oar_sender_exit_full=_decimal(
+                values, "OAR_SENDER_EXIT_FULL", "0.99"
+            ),
+            oar_supply_share_watch=_decimal(
+                values, "OAR_SUPPLY_SHARE_WATCH", "0.001"
+            ),
+            oar_supply_share_high=_decimal(
+                values, "OAR_SUPPLY_SHARE_HIGH", "0.005"
+            ),
+            oar_single_transfer_max_balance_calls=_int(
+                values, "OAR_SINGLE_TRANSFER_MAX_BALANCE_CALLS", 20
+            ),
+            oar_single_transfer_max_supply_calls=_int(
+                values, "OAR_SINGLE_TRANSFER_MAX_SUPPLY_CALLS", 5
+            ),
+            oar_single_transfer_snapshot_ttl_sec=_int(
+                values, "OAR_SINGLE_TRANSFER_SNAPSHOT_TTL_SEC", 300
             ),
             oar_ai_enable=_bool(values, "OAR_AI_ENABLE", False),
             oar_ai_provider=values.get(
@@ -949,6 +1007,8 @@ class OnchainSettings:
         if self.base_chain_id != 8453:
             raise SettingsValidationError("ONCHAIN_BASE_CHAIN_ID must be 8453")
         positive_ints = (
+            "bsc_confirmation_depth",
+            "bsc_reorg_lookback_blocks",
             "rpc_max_block_range",
             "rpc_min_block_range",
             "rpc_topic_address_batch",
@@ -982,6 +1042,9 @@ class OnchainSettings:
             "oar_max_analyzed_wallets",
             "oar_max_wallet_groups",
             "oar_max_source_event_ids",
+            "oar_single_transfer_max_balance_calls",
+            "oar_single_transfer_max_supply_calls",
+            "oar_single_transfer_snapshot_ttl_sec",
             "oar_ai_timeout_sec",
             "oar_ai_max_calls_per_hour",
             "oar_ai_cache_ttl_sec",
@@ -1040,6 +1103,75 @@ class OnchainSettings:
             raise SettingsValidationError(
                 "RPC timeout and poll interval must be positive"
             )
+        for name, value in (
+            ("OAR_SINGLE_TRANSFER_MIN_SCORE", self.oar_single_transfer_min_score),
+            (
+                "OAR_SINGLE_TRANSFER_CRITICAL_SCORE",
+                self.oar_single_transfer_critical_score,
+            ),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value > 100
+            ):
+                raise SettingsValidationError(f"{name} must be in [0, 100]")
+        if self.oar_single_transfer_critical_score < (
+            self.oar_single_transfer_min_score
+        ):
+            raise SettingsValidationError(
+                "OAR_SINGLE_TRANSFER_CRITICAL_SCORE cannot be lower than "
+                "OAR_SINGLE_TRANSFER_MIN_SCORE"
+            )
+        if not (
+            Decimal("0")
+            < self.oar_sender_exit_high
+            < self.oar_sender_exit_near_full
+            < self.oar_sender_exit_full
+            <= Decimal("1")
+        ):
+            raise SettingsValidationError(
+                "OAR sender exit thresholds must be strictly increasing in (0, 1]"
+            )
+        if not (
+            Decimal("0")
+            < self.oar_supply_share_watch
+            < self.oar_supply_share_high
+            <= Decimal("1")
+        ):
+            raise SettingsValidationError(
+                "OAR supply share thresholds must be increasing in (0, 1]"
+            )
+        if not 1 <= self.oar_single_transfer_max_balance_calls <= 100:
+            raise SettingsValidationError(
+                "OAR_SINGLE_TRANSFER_MAX_BALANCE_CALLS must be in [1, 100]"
+            )
+        if not 1 <= self.oar_single_transfer_max_supply_calls <= 20:
+            raise SettingsValidationError(
+                "OAR_SINGLE_TRANSFER_MAX_SUPPLY_CALLS must be in [1, 20]"
+            )
+        if not 30 <= self.oar_single_transfer_snapshot_ttl_sec <= 3600:
+            raise SettingsValidationError(
+                "OAR_SINGLE_TRANSFER_SNAPSHOT_TTL_SEC must be in [30, 3600]"
+            )
+        if self.bsc_enable and not self.bsc_http_rpc_url:
+            raise SettingsValidationError(
+                "enabled BSC requires OAR_BSC_HTTP_RPC_URL"
+            )
+        if self.bsc_http_rpc_url:
+            bsc_url = urlsplit(self.bsc_http_rpc_url)
+            if (
+                bsc_url.scheme.lower() not in {"http", "https"}
+                or not bsc_url.hostname
+                or bsc_url.username is not None
+                or bsc_url.password is not None
+                or bool(bsc_url.query)
+                or bool(bsc_url.fragment)
+            ):
+                raise SettingsValidationError(
+                    "OAR_BSC_HTTP_RPC_URL must be a credential-free HTTP(S) URL"
+                )
         if self.wss_reconnect_sec <= 0 or self.wss_idle_timeout_sec <= 0:
             raise SettingsValidationError(
                 "WSS reconnect and idle timeout must be positive"
@@ -1676,6 +1808,14 @@ class OnchainSettings:
                     self.base_wss_rpc_url
                 ),
             },
+            "bsc": {
+                "enabled": self.bsc_enable,
+                "chain_id": 56,
+                "confirmation_depth": self.bsc_confirmation_depth,
+                "reorg_lookback_blocks": self.bsc_reorg_lookback_blocks,
+                "http_rpc_configured": bool(self.bsc_http_rpc_url),
+                "default_safe_state": "disabled",
+            },
             "price": {
                 "enabled": self.price_enable,
                 "provider": self.price_provider,
@@ -1769,6 +1909,21 @@ class OnchainSettings:
                 "max_analyzed_wallets": self.oar_max_analyzed_wallets,
                 "max_wallet_groups": self.oar_max_wallet_groups,
                 "max_source_event_ids": self.oar_max_source_event_ids,
+                "single_transfer_risk_enabled": (
+                    self.oar_single_transfer_risk_enable
+                ),
+                "single_transfer_min_score": (
+                    self.oar_single_transfer_min_score
+                ),
+                "single_transfer_critical_score": (
+                    self.oar_single_transfer_critical_score
+                ),
+                "single_transfer_snapshot_balance_budget": (
+                    self.oar_single_transfer_max_balance_calls
+                ),
+                "single_transfer_snapshot_supply_budget": (
+                    self.oar_single_transfer_max_supply_calls
+                ),
             },
             "oar_reporting": {
                 "ai_enabled": self.oar_ai_enable,

@@ -372,7 +372,7 @@ class SignalBridgeTests(unittest.TestCase):
             ts=4500,
             payload={
                 "facts": {
-                    "chain": "ethereum",
+                    "chain": "fantom",
                     "contract": CONTRACT_A,
                 }
             },

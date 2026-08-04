@@ -114,3 +114,15 @@ def classify_transfer(
             metadata.price_observed_at if metadata is not None else 0
         ),
     )
+
+
+class ReviewedLabelTransferClassifier:
+    """Adapter boundary for the existing reviewed-label classification rules."""
+
+    def classify(
+        self,
+        transfer: NormalizedTransfer,
+        metadata: TokenMetadata | None,
+        registry: LabelRegistry,
+    ) -> ClassifiedFlow:
+        return classify_transfer(transfer, metadata, registry)

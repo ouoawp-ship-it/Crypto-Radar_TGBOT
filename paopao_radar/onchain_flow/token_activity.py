@@ -12,7 +12,7 @@ from .chain_capabilities import (
     resolve_evm_chain,
     rpc_url_valid,
 )
-from .classifier import classify_transfer
+from .classifier import ReviewedLabelTransferClassifier
 from .collectors.evm_http import (
     BaseHttpCollector,
     FinalizedRangeConsistencyError,
@@ -30,6 +30,7 @@ from .collectors.evm_http import (
     parse_hex_quantity,
     transfer_log_shape,
 )
+from .domain import TransferClassifier
 from .config import OnchainSettings
 from .constants import (
     TOKEN_ACTIVITY_SCHEMA_VERSION,
@@ -44,7 +45,13 @@ from .labels import (
 )
 from .models import AddressLabel, NormalizedTransfer, PriceQuote, TokenMetadata
 from .price_oracle import PriceProvider, build_price_provider
+from .single_transfer_risk import (
+    SingleTransferRiskEngine,
+    SingleTransferRiskThresholds,
+)
+from .single_transfer_service import SingleTransferRiskService
 from .token_metadata import TokenMetadataResolver
+from .token_snapshots import EvmTokenSnapshotProvider
 
 
 WINDOW_SECONDS = {
@@ -153,6 +160,11 @@ class TokenActivityQuery:
                     f"{name}_limit_exceeded",
                     f"{name} exceeds the configured hard limit",
                 )
+        if rpc_limit > chain_spec.rpc_request_budget:
+            raise TokenActivityQueryError(
+                "max_rpc_requests_chain_limit_exceeded",
+                "max_rpc_requests exceeds the configured chain budget",
+            )
         parsed_min_usd: Decimal | None = None
         if min_usd is not None:
             if not with_price:
@@ -266,6 +278,7 @@ class TokenActivityQueryService:
         *,
         chain_spec: EvmChainSpec | None = None,
         price_provider: PriceProvider | None = None,
+        transfer_classifier: TransferClassifier | None = None,
         clock: Any = time.monotonic,
     ):
         self.settings = settings
@@ -279,6 +292,9 @@ class TokenActivityQueryService:
             confirmation_depth=self.chain_spec.confirmation_depth,
         )
         self.price_provider = price_provider
+        self.transfer_classifier = (
+            transfer_classifier or ReviewedLabelTransferClassifier()
+        )
         self.clock = clock
 
     @classmethod
@@ -536,6 +552,7 @@ class TokenActivityQueryService:
             )
             for transfer in transfers
         ]
+        risk_records = list(records)
         usd_filter_applied = False
         warnings: list[str] = []
         if label_context.status == "missing":
@@ -578,6 +595,18 @@ class TokenActivityQueryService:
         )
         largest = self._largest(records, query.top_n, quote is not None)
         summary = self._summary(records)
+        risk_start = int(getattr(self.rpc, "request_count", price_end))
+        risk_result = self._single_transfer_risk(
+            transfers,
+            risk_records,
+            metadata=metadata,
+            query_complete=not truncated,
+            labels_status=label_context.status,
+        )
+        risk_end = int(getattr(self.rpc, "request_count", risk_start))
+        rpc_phase_requests["single_transfer_snapshots"] = max(
+            0, risk_end - risk_start
+        )
         status = "partial" if truncated else "ok"
         elapsed_ms = max(0, int((self.clock() - started) * 1000))
         return {
@@ -637,6 +666,7 @@ class TokenActivityQueryService:
             "summary": summary,
             "largest_transfers": largest,
             "transfers": records,
+            "single_transfer_risk": risk_result,
             "limits": {
                 "max_events": query.max_events,
                 "max_rpc_requests": query.max_rpc_requests,
@@ -655,6 +685,67 @@ class TokenActivityQueryService:
             },
             "warnings": warnings,
         }
+
+    def _single_transfer_risk(
+        self,
+        transfers: list[NormalizedTransfer],
+        records: list[dict[str, object]],
+        *,
+        metadata: TokenMetadata,
+        query_complete: bool,
+        labels_status: str,
+    ) -> dict[str, object]:
+        if not self.settings.oar_single_transfer_risk_enable:
+            return {
+                "status": "disabled",
+                "complete": True,
+                "signals": [],
+                "evaluated_transfers": 0,
+                "snapshot_rpc_calls": 0,
+                "score_semantics": "rule_score_not_probability",
+            }
+        if metadata.decimals is None:
+            return {
+                "status": "skipped_metadata_incomplete",
+                "complete": False,
+                "signals": [],
+                "evaluated_transfers": 0,
+                "snapshot_rpc_calls": 0,
+                "score_semantics": "rule_score_not_probability",
+            }
+        thresholds = SingleTransferRiskThresholds(
+            enabled=True,
+            min_score=self.settings.oar_single_transfer_min_score,
+            critical_score=(
+                self.settings.oar_single_transfer_critical_score
+            ),
+            exit_high=self.settings.oar_sender_exit_high,
+            exit_near_full=self.settings.oar_sender_exit_near_full,
+            exit_full=self.settings.oar_sender_exit_full,
+            supply_share_watch=self.settings.oar_supply_share_watch,
+            supply_share_high=self.settings.oar_supply_share_high,
+            min_usd=self.settings.single_large_floor_usd,
+        )
+        snapshots = EvmTokenSnapshotProvider(
+            self.rpc,
+            max_balance_calls=(
+                self.settings.oar_single_transfer_max_balance_calls
+            ),
+            max_supply_calls=(
+                self.settings.oar_single_transfer_max_supply_calls
+            ),
+            ttl_sec=self.settings.oar_single_transfer_snapshot_ttl_sec,
+            clock=self.clock,
+        )
+        return SingleTransferRiskService(
+            SingleTransferRiskEngine(thresholds), snapshots
+        ).evaluate(
+            transfers,
+            records,
+            decimals=metadata.decimals,
+            query_complete=query_complete,
+            labels_status=labels_status,
+        )
 
     def _load_labels(self) -> tuple[list[AddressLabel], str]:
         if not self.settings.labels_path.exists():
@@ -866,7 +957,9 @@ class TokenActivityQueryService:
         price_status: str,
         explorer_tx_url: str,
     ) -> dict[str, object]:
-        flow = classify_transfer(transfer, metadata, direction_registry)
+        flow = self.transfer_classifier.classify(
+            transfer, metadata, direction_registry
+        )
         from_label = identity_registry.lookup(
             transfer.chain_id, transfer.from_address, transfer.block_time
         )

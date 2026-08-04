@@ -212,6 +212,30 @@ class FakeRpc:
         ]
 
 
+class RiskRpc(FakeRpc):
+    def eth_call(
+        self,
+        _address: str,
+        selector: str,
+        *,
+        block_tag: str = "latest",
+    ) -> str:
+        self._hit()
+        if selector == DECIMALS_SELECTOR:
+            return uint256(self.decimals)
+        if selector == TOTAL_SUPPLY_SELECTOR:
+            return uint256(1_000_000_000)
+        if selector == SYMBOL_SELECTOR:
+            return bytes32_text("TST")
+        if selector == NAME_SELECTOR:
+            return abi_text("Test Token")
+        if selector.startswith("0x70a08231"):
+            return uint256(
+                1_000_000_000 if block_tag != hex(FINALIZED - 1) else 100_000_000
+            )
+        raise AssertionError(selector)
+
+
 class StaticProvider:
     def __init__(self, quote: PriceQuote | None):
         self.quote = quote
@@ -414,7 +438,7 @@ class CliAndValidationTests(TokenActivityTestCase):
         with self.assertRaises(TokenActivityQueryError) as raised:
             TokenActivityQuery.create(
                 self.settings,
-                chain="ethereum",
+                chain="fantom",
                 contract=TOKEN,
                 window="15m",
                 max_events=None,
@@ -484,6 +508,158 @@ class CliAndValidationTests(TokenActivityTestCase):
             result["transfers"][0]["explorer_url"].startswith(
                 "https://etherscan.io/tx/"
             )
+        )
+
+    def test_bsc_reuses_generic_token_activity_and_bscscan_links(self) -> None:
+        chains = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "onchain"
+            / "chains.example.json"
+        )
+        settings = replace(
+            self.settings,
+            chains_path=chains,
+            bsc_enable=True,
+            bsc_http_rpc_url="https://bsc.invalid/key",
+            bsc_confirmation_depth=15,
+        )
+        query = TokenActivityQuery.create(
+            settings,
+            chain="bsc",
+            contract=TOKEN,
+            window="15m",
+            max_events=None,
+            max_rpc_requests=None,
+            top_n=None,
+            with_price=False,
+            min_usd=None,
+        )
+        finalized = HEAD - 15
+        rpc = FakeRpc(
+            [transfer_log(finalized - 1, 0, WALLET_A, WALLET_B)],
+            chain_id=56,
+        )
+        result = TokenActivityQueryService(
+            settings,
+            rpc,
+            chain_spec=resolve_evm_chain(settings, "bsc"),
+            clock=lambda: 100.0,
+        ).execute(query)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["query"]["chain_id"], 56)
+        self.assertEqual(result["query"]["confirmation_depth"], 15)
+        self.assertTrue(result["transfers"][0]["event_id"].startswith("56:"))
+        self.assertTrue(
+            result["transfers"][0]["explorer_url"].startswith(
+                "https://bscscan.com/tx/"
+            )
+        )
+        self.assertEqual(
+            result["single_transfer_risk"]["status"], "disabled"
+        )
+
+    def test_repository_evm_chains_share_token_activity_domain_logic(self) -> None:
+        chains = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "onchain"
+            / "chains.example.json"
+        )
+        settings = replace(self.settings, chains_path=chains)
+        expected = {
+            "ethereum": (1, "https://etherscan.io/tx/"),
+            "arbitrum": (42161, "https://arbiscan.io/tx/"),
+            "optimism": (10, "https://explorer.optimism.io/tx/"),
+            "polygon": (137, "https://polygonscan.com/tx/"),
+            "avalanche": (
+                43114,
+                "https://subnets.avax.network/c-chain/tx/",
+            ),
+        }
+
+        for chain, (chain_id, explorer_prefix) in expected.items():
+            with self.subTest(chain=chain):
+                spec = resolve_evm_chain(settings, chain)
+                query = TokenActivityQuery.create(
+                    settings,
+                    chain=chain,
+                    contract=TOKEN,
+                    window="15m",
+                    max_events=None,
+                    max_rpc_requests=None,
+                    top_n=None,
+                    with_price=False,
+                    min_usd=None,
+                )
+                finalized = HEAD - spec.confirmation_depth
+                rpc = FakeRpc(
+                    [
+                        transfer_log(
+                            finalized - 1,
+                            0,
+                            WALLET_A,
+                            WALLET_B,
+                        )
+                    ],
+                    chain_id=chain_id,
+                )
+                result = TokenActivityQueryService(
+                    settings,
+                    rpc,
+                    chain_spec=spec,
+                    clock=lambda: 100.0,
+                ).execute(query)
+
+                self.assertTrue(result["complete"])
+                self.assertEqual(result["query"]["chain_id"], chain_id)
+                self.assertTrue(
+                    result["transfers"][0]["event_id"].startswith(
+                        f"{chain_id}:"
+                    )
+                )
+                self.assertTrue(
+                    result["transfers"][0]["explorer_url"].startswith(
+                        explorer_prefix
+                    )
+                )
+
+    def test_enabled_single_transfer_risk_uses_bounded_query_rpc(self) -> None:
+        log_block = FINALIZED - 1
+        rpc = RiskRpc(
+            [
+                transfer_log(
+                    log_block,
+                    0,
+                    WALLET_A,
+                    CEX_A_DEPOSIT,
+                    amount=900_000_000,
+                )
+            ]
+        )
+        settings = replace(
+            self.settings,
+            oar_single_transfer_risk_enable=True,
+            oar_single_transfer_max_balance_calls=2,
+            oar_single_transfer_max_supply_calls=1,
+        )
+        result = TokenActivityQueryService(
+            settings, rpc, clock=lambda: 100.0
+        ).execute(self.query(settings=settings))
+        risk = result["single_transfer_risk"]
+        self.assertEqual(risk["status"], "ok")
+        self.assertEqual(risk["evaluated_transfers"], 1)
+        self.assertTrue(risk["signals"])
+        self.assertEqual(
+            risk["signals"][0]["score_semantics"],
+            "rule_score_not_probability",
+        )
+        self.assertEqual(risk["snapshot_rpc_calls"], 3)
+        self.assertEqual(
+            result["diagnostics"]["rpc_phase_requests"][
+                "single_transfer_snapshots"
+            ],
+            3,
         )
 
     def test_non_base_rpc_is_resolved_from_private_environment_file(self) -> None:

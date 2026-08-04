@@ -175,7 +175,7 @@ class OarP4ReportingTests(unittest.TestCase):
         self.assertNotIn("shared_target", text)
         self.assertNotIn("not_requested", text)
 
-    def test_non_base_report_uses_chain_name_without_base_contract_link(self) -> None:
+    def test_ethereum_report_uses_chain_specific_contract_link(self) -> None:
         analyzed = deepcopy(self.analyzed)
         analyzed["query"].update(
             {
@@ -198,6 +198,75 @@ class OarP4ReportingTests(unittest.TestCase):
         self.assertNotIn(
             f"https://basescan.org/token/{token['contract']}", text
         )
+        self.assertIn(
+            f"https://etherscan.io/token/{token['contract']}", text
+        )
+
+    def test_bsc_report_uses_bscscan_contract_and_transaction_links(self) -> None:
+        analyzed = deepcopy(self.analyzed)
+        analyzed["query"].update(
+            {"chain": "bsc", "chain_id": 56, "chain_name": "BSC"}
+        )
+        for item in analyzed.get("largest_transfers", []):
+            item["explorer_url"] = (
+                "https://bscscan.com/tx/" + str(item["tx_hash"])
+            )
+        report = TokenReportService(self.settings, None).build_from_analysis(
+            analyzed,
+            with_ai=False,
+            linked_market_signals=[],
+        )
+        token = report["report"]["rule_summary"]["token"]
+        text = format_token_report(report)
+        self.assertIn(f"https://bscscan.com/token/{token['contract']}", text)
+        if analyzed.get("largest_transfers"):
+            self.assertIn("https://bscscan.com/tx/", text)
+
+    def test_additional_evm_reports_use_reviewed_explorer_hosts(self) -> None:
+        cases = (
+            (42161, "arbitrum", "Arbitrum One", "https://arbiscan.io"),
+            (
+                10,
+                "optimism",
+                "OP Mainnet",
+                "https://explorer.optimism.io",
+            ),
+            (137, "polygon", "Polygon PoS", "https://polygonscan.com"),
+            (
+                43114,
+                "avalanche",
+                "Avalanche C-Chain",
+                "https://subnets.avax.network/c-chain",
+            ),
+        )
+        for chain_id, chain, chain_name, explorer in cases:
+            with self.subTest(chain=chain):
+                analyzed = deepcopy(self.analyzed)
+                analyzed["query"].update(
+                    {
+                        "chain": chain,
+                        "chain_id": chain_id,
+                        "chain_name": chain_name,
+                    }
+                )
+                for item in analyzed.get("largest_transfers", []):
+                    item["explorer_url"] = (
+                        f"{explorer}/tx/" + str(item["tx_hash"])
+                    )
+                report = TokenReportService(
+                    self.settings, None
+                ).build_from_analysis(
+                    analyzed,
+                    with_ai=False,
+                    linked_market_signals=[],
+                )
+                token = report["report"]["rule_summary"]["token"]
+                text = format_token_report(report)
+                self.assertIn(
+                    f"{explorer}/token/{token['contract']}", text
+                )
+                if analyzed.get("largest_transfers"):
+                    self.assertIn(f"{explorer}/tx/", text)
 
     def test_manual_report_without_sources_remains_available(self) -> None:
         report = TokenReportService(

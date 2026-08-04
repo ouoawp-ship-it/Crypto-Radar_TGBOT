@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
 from .config import OnchainSettings, parse_env_file
+from .domain import ChainRef
 
 
-RPC_ENV_RE = re.compile(r"^ONCHAIN_[A-Z0-9_]+_HTTP_RPC_URL$")
+RPC_ENV_RE = re.compile(r"^(?:ONCHAIN|OAR)_[A-Z0-9_]+_HTTP_RPC_URL$")
 CHAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 class ChainCapabilityError(ValueError):
@@ -32,6 +35,20 @@ class EvmChainSpec:
     reorg_lookback_blocks: int
     http_rpc_env: str
     explorer_tx_url: str
+    enable_env: str = ""
+    rpc_request_budget: int = 256
+    wrapped_native_token: str = ""
+    stablecoin_addresses: tuple[str, ...] = ()
+    dex_contracts: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def chain_ref(self) -> ChainRef:
+        return ChainRef(
+            namespace="eip155",
+            reference=str(self.chain_id),
+            slug=self.slug,
+            family="evm",
+        )
 
     def transaction_url(self, tx_hash: str) -> str:
         return self.explorer_tx_url.replace("{tx_hash}", tx_hash)
@@ -87,6 +104,27 @@ def load_evm_chain_specs(path: Path) -> tuple[str, tuple[EvmChainSpec, ...]]:
             bootstrap_lookback = int(row["bootstrap_lookback_blocks"])
             reorg_lookback = int(row["reorg_lookback_blocks"])
             explorer_tx_url = str(row["explorer_tx_url"]).strip()
+            enable_env = str(row.get("enable_env") or "").strip()
+            rpc_request_budget = int(row.get("rpc_request_budget", 256))
+            wrapped_native_token = str(
+                row.get("wrapped_native_token") or ""
+            ).strip().lower()
+            stablecoin_addresses = tuple(
+                str(value).strip().lower()
+                for value in row.get("stablecoin_addresses", [])
+            )
+            raw_dex_contracts = row.get("dex_contracts", {})
+            if not isinstance(raw_dex_contracts, dict):
+                raise ValueError("dex contracts must be an object")
+            dex_contracts = tuple(
+                sorted(
+                    (
+                        str(name).strip(),
+                        str(address).strip().lower(),
+                    )
+                    for name, address in raw_dex_contracts.items()
+                )
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise ChainCapabilityError("chain_registry_invalid") from exc
         canonical_name = name.casefold()
@@ -99,6 +137,23 @@ def load_evm_chain_specs(path: Path) -> tuple[str, tuple[EvmChainSpec, ...]]:
             or bootstrap_lookback <= 0
             or reorg_lookback <= 0
             or not _explorer_valid(explorer_tx_url)
+            or (enable_env and not ENV_NAME_RE.fullmatch(enable_env))
+            or rpc_request_budget <= 0
+            or rpc_request_budget > 10000
+            or (
+                wrapped_native_token
+                and not EVM_ADDRESS_RE.fullmatch(wrapped_native_token)
+            )
+            or len(set(stablecoin_addresses)) != len(stablecoin_addresses)
+            or any(
+                not EVM_ADDRESS_RE.fullmatch(address)
+                for address in stablecoin_addresses
+            )
+            or any(
+                not name
+                or not EVM_ADDRESS_RE.fullmatch(address)
+                for name, address in dex_contracts
+            )
         ):
             raise ChainCapabilityError("chain_registry_invalid")
         if (
@@ -123,6 +178,11 @@ def load_evm_chain_specs(path: Path) -> tuple[str, tuple[EvmChainSpec, ...]]:
                 reorg_lookback_blocks=reorg_lookback,
                 http_rpc_env=rpc_env,
                 explorer_tx_url=explorer_tx_url,
+                enable_env=enable_env,
+                rpc_request_budget=rpc_request_budget,
+                wrapped_native_token=wrapped_native_token,
+                stablecoin_addresses=stablecoin_addresses,
+                dex_contracts=dex_contracts,
             )
         )
     return schema_version, tuple(specs)
@@ -139,18 +199,48 @@ def resolve_evm_chain(settings: OnchainSettings, chain: str) -> EvmChainSpec:
     ]
     if len(matches) != 1:
         raise ChainCapabilityError("chain_not_configured")
-    return matches[0]
+    return _apply_settings_overrides(settings, matches[0])
+
+
+def _apply_settings_overrides(
+    settings: OnchainSettings, spec: EvmChainSpec
+) -> EvmChainSpec:
+    if spec.chain_id == 56:
+        spec = replace(
+            spec,
+            confirmation_depth=settings.bsc_confirmation_depth,
+            reorg_lookback_blocks=settings.bsc_reorg_lookback_blocks,
+        )
+    return spec
 
 
 def chain_watch_enabled(
-    settings: OnchainSettings, spec: EvmChainSpec
+    settings: OnchainSettings,
+    spec: EvmChainSpec,
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> bool:
+    file_values = parse_env_file(settings.base_dir / ".env.onchain")
+    runtime_values = os.environ if environ is None else environ
+    configured_enable = False
+    if spec.enable_env:
+        raw_enable = runtime_values.get(spec.enable_env)
+        if raw_enable is None:
+            raw_enable = file_values.get(spec.enable_env, "")
+        configured_enable = str(raw_enable).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
     return bool(
         spec.enabled
         or (
             spec.chain_id == settings.base_chain_id
             and settings.base_enable
         )
+        or (spec.chain_id == 56 and settings.bsc_enable)
+        or configured_enable
     )
 
 
@@ -171,6 +261,8 @@ def resolve_chain_rpc_url(
 ) -> str:
     if spec.chain_id == settings.base_chain_id and settings.base_http_rpc_url:
         return settings.base_http_rpc_url
+    if spec.chain_id == 56 and settings.bsc_http_rpc_url:
+        return settings.bsc_http_rpc_url
     file_values = parse_env_file(settings.base_dir / ".env.onchain")
     runtime_values = os.environ if environ is None else environ
     return str(
@@ -199,10 +291,15 @@ def chain_capability_report(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    schema_version, specs = load_evm_chain_specs(settings.chains_path)
+    schema_version, loaded_specs = load_evm_chain_specs(settings.chains_path)
+    specs = tuple(
+        _apply_settings_overrides(settings, spec) for spec in loaded_specs
+    )
     capabilities: list[dict[str, object]] = []
     for spec in specs:
-        effective_enabled = chain_watch_enabled(settings, spec)
+        effective_enabled = chain_watch_enabled(
+            settings, spec, environ=environ
+        )
         rpc_value = resolve_chain_rpc_url(
             settings, spec, environ=environ
         )
@@ -226,6 +323,8 @@ def chain_capability_report(
         capabilities.append(
             {
                 "chain_id": spec.chain_id,
+                "chain_key": spec.chain_ref.key,
+                "chain_family": spec.chain_ref.family,
                 "slug": spec.slug,
                 "name": spec.name,
                 "configured_enabled": spec.enabled,
@@ -237,6 +336,12 @@ def chain_capability_report(
                     spec.bootstrap_lookback_blocks
                 ),
                 "reorg_lookback_blocks": spec.reorg_lookback_blocks,
+                "rpc_request_budget": spec.rpc_request_budget,
+                "wrapped_native_token_configured": bool(
+                    spec.wrapped_native_token
+                ),
+                "stablecoin_count": len(spec.stablecoin_addresses),
+                "dex_contract_count": len(spec.dex_contracts),
                 "rpc_configured": rpc_configured,
                 "rpc_configuration_valid": rpc_valid,
                 "token_activity_status": query_status,
@@ -249,16 +354,21 @@ def chain_capability_report(
             }
         )
 
-    ready_count = sum(
+    query_ready_count = sum(
         bool(item["token_activity_supported"]) for item in capabilities
+    )
+    watch_ready_count = sum(
+        bool(item["watch_supported"]) for item in capabilities
     )
     return {
         "status": "ok",
         "schema_version": schema_version,
         "core_available": bool(capabilities),
-        "multichain_runtime_ready": ready_count > 1,
+        "multichain_runtime_ready": watch_ready_count > 1,
         "configured_chain_count": len(capabilities),
-        "runtime_ready_chain_count": ready_count,
+        "runtime_ready_chain_count": watch_ready_count,
+        "query_ready_chain_count": query_ready_count,
+        "watch_ready_chain_count": watch_ready_count,
         "chains": capabilities,
         "network_activity": False,
         "database_writes": False,

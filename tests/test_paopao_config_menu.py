@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from paopao_radar.onchain_flow.config import OnchainSettings
+
 from scripts.paopao_config import (
     ConfigManager,
     ConfigManagerError,
@@ -186,6 +188,90 @@ class ConfigManagerTests(unittest.TestCase):
             "ONCHAIN_RPC_MAX_BLOCK_RANGE=10",
             (self.root / ".env.onchain").read_text(encoding="utf-8"),
         )
+
+    def test_p7_single_transfer_defaults_are_disabled_and_bounded(self) -> None:
+        settings = OnchainSettings.load(base_dir=self.root, environ={})
+        self.assertFalse(settings.oar_single_transfer_risk_enable)
+        self.assertEqual(settings.oar_single_transfer_min_score, 60)
+        self.assertEqual(settings.oar_single_transfer_critical_score, 80)
+        for key, value in (
+            ("OAR_SINGLE_TRANSFER_MIN_SCORE", "60"),
+            ("OAR_SINGLE_TRANSFER_CRITICAL_SCORE", "80"),
+            ("OAR_SENDER_EXIT_HIGH", "0.80"),
+            ("OAR_SENDER_EXIT_NEAR_FULL", "0.95"),
+            ("OAR_SENDER_EXIT_FULL", "0.99"),
+            ("OAR_SUPPLY_SHARE_WATCH", "0.001"),
+            ("OAR_SUPPLY_SHARE_HIGH", "0.005"),
+            ("OAR_SINGLE_TRANSFER_MAX_BALANCE_CALLS", "20"),
+            ("OAR_SINGLE_TRANSFER_MAX_SUPPLY_CALLS", "5"),
+            ("OAR_SINGLE_TRANSFER_SNAPSHOT_TTL_SEC", "300"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(self.manager.set(key, value)["status"], "ok")
+
+    def test_p7_threshold_combination_failure_rolls_back(self) -> None:
+        path = self.root / ".env.onchain"
+        path.write_text(
+            "OAR_SENDER_EXIT_HIGH=0.80\n"
+            "OAR_SENDER_EXIT_NEAR_FULL=0.95\n"
+            "OAR_SENDER_EXIT_FULL=0.99\n",
+            encoding="utf-8",
+        )
+        before = path.read_bytes()
+        with self.assertRaisesRegex(
+            ConfigManagerError, "strictly increasing"
+        ):
+            self.manager.set("OAR_SENDER_EXIT_HIGH", "0.96")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_bsc_configuration_is_optional_bounded_and_redacted(self) -> None:
+        self.assertEqual(
+            self.manager.set("OAR_BSC_HTTP_RPC_URL", "https://bsc.invalid/key")[
+                "value"
+            ],
+            "configured",
+        )
+        self.manager.set("OAR_BSC_CONFIRMATION_DEPTH", "15")
+        self.manager.set("OAR_BSC_REORG_LOOKBACK_BLOCKS", "64")
+        self.manager.set("OAR_BSC_ENABLE", "true")
+        serialized = json.dumps(self.manager.status())
+        self.assertNotIn("bsc.invalid", serialized)
+        self.assertNotIn("/key", serialized)
+
+        empty_root = self.root / "empty"
+        empty_root.mkdir()
+        manager = ConfigManager(empty_root)
+        with self.assertRaisesRegex(ConfigManagerError, "enabled BSC"):
+            manager.set("OAR_BSC_ENABLE", "true")
+        self.assertFalse((empty_root / ".env.onchain").exists())
+
+    def test_additional_evm_chains_are_optional_and_fail_closed(self) -> None:
+        pairs = (
+            ("OAR_ETHEREUM_ENABLE", "OAR_ETHEREUM_HTTP_RPC_URL"),
+            ("OAR_ARBITRUM_ENABLE", "OAR_ARBITRUM_HTTP_RPC_URL"),
+            ("OAR_OPTIMISM_ENABLE", "OAR_OPTIMISM_HTTP_RPC_URL"),
+            ("OAR_POLYGON_ENABLE", "OAR_POLYGON_HTTP_RPC_URL"),
+            ("OAR_AVALANCHE_ENABLE", "OAR_AVALANCHE_HTTP_RPC_URL"),
+        )
+        for enable_key, rpc_key in pairs:
+            with self.subTest(enable_key=enable_key):
+                empty_root = self.root / enable_key.lower()
+                empty_root.mkdir()
+                manager = ConfigManager(empty_root)
+                with self.assertRaisesRegex(
+                    ConfigManagerError,
+                    "enabled EVM chain requires",
+                ):
+                    manager.set(enable_key, "true")
+                self.assertFalse((empty_root / ".env.onchain").exists())
+
+                endpoint = f"https://{rpc_key.lower()}.invalid/private"
+                result = manager.set(rpc_key, endpoint)
+                self.assertEqual(result["value"], "configured")
+                manager.set(enable_key, "true")
+                serialized = json.dumps(manager.status())
+                self.assertNotIn(endpoint, serialized)
+                self.assertNotIn("/private", serialized)
 
     def test_arkham_configuration_is_allowlisted_bounded_and_redacted(
         self,

@@ -146,15 +146,25 @@ def _evidence_lines(
 
 def _contract_line(value: object, chain_id: object) -> str:
     contract = str(value or "")
+    explorer_hosts = {
+        "8453": "https://basescan.org/token/",
+        "56": "https://bscscan.com/token/",
+        "1": "https://etherscan.io/token/",
+        "42161": "https://arbiscan.io/token/",
+        "10": "https://explorer.optimism.io/token/",
+        "137": "https://polygonscan.com/token/",
+        "43114": "https://subnets.avax.network/c-chain/token/",
+    }
+    explorer_base = explorer_hosts.get(str(chain_id or "8453"))
     if (
-        str(chain_id or "8453") == "8453"
+        explorer_base is not None
         and len(contract) == 42
         and contract.startswith("0x")
         and all(character in "0123456789abcdefABCDEF" for character in contract[2:])
     ):
         safe_contract = escape(contract)
         safe_url = escape(
-            f"https://basescan.org/token/{contract}", quote=True
+            f"{explorer_base}{contract}", quote=True
         )
         return f'- 合约：<a href="{safe_url}">{safe_contract}</a>'
     return f"- 合约：<code>{escape(contract or '-')}</code>"
@@ -435,7 +445,17 @@ def format_token_report(payload: dict[str, object]) -> str:
             amount = escape(str(item.get("amount") or "0"))
             raw_flow = str(item.get("flow_type") or "unclassified")
             flow = escape(FLOW_TYPE_LABELS.get(raw_flow, "尚未分类"))
-            if url.startswith("https://basescan.org/tx/"):
+            if url.startswith(
+                (
+                    "https://basescan.org/tx/",
+                    "https://bscscan.com/tx/",
+                    "https://etherscan.io/tx/",
+                    "https://arbiscan.io/tx/",
+                    "https://explorer.optimism.io/tx/",
+                    "https://polygonscan.com/tx/",
+                    "https://subnets.avax.network/c-chain/tx/",
+                )
+            ):
                 lines.append(
                     f'- <a href="{url}">交易 {index}</a> · {amount} · {flow}'
                 )

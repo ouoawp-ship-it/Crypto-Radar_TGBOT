@@ -9,6 +9,7 @@ from .constants import (
     OAR_BEHAVIOR_ALGORITHM_VERSION,
     OAR_WALLET_GROUP_ALGORITHM_VERSION,
 )
+from .domain import BehaviorAnalysisEngine, ChainFactProvider
 from .token_activity import (
     TokenActivityQuery,
     TokenActivityQueryError,
@@ -21,12 +22,17 @@ class TokenAnalysisService:
     def __init__(
         self,
         settings: OnchainSettings,
-        activity_service: Any,
+        activity_service: ChainFactProvider,
+        *,
+        behavior_engine: BehaviorAnalysisEngine | None = None,
+        wallet_group_analyzer: Any | None = None,
     ):
         self.settings = settings
         self.activity_service = activity_service
-        self.behavior = BehaviorAnalyzer(settings)
-        self.wallet_groups = WalletGroupAnalyzer(settings)
+        self.behavior = behavior_engine or BehaviorAnalyzer(settings)
+        self.wallet_groups = wallet_group_analyzer or WalletGroupAnalyzer(
+            settings
+        )
 
     @classmethod
     def from_settings(

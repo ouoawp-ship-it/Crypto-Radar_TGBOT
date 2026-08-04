@@ -1,0 +1,58 @@
+{
+  "signal_types": [
+    "large_cex_inflow",
+    "large_cex_outflow",
+    "near_full_exit_to_cex",
+    "full_exit_to_cex",
+    "project_related_cex_inflow",
+    "unlock_related_cex_inflow",
+    "sustained_cex_net_flow",
+    "synchronized_cex_inflow",
+    "onchain_market_convergence",
+    "insufficient_data"
+  ],
+  "payload": {
+    "level": "important",
+    "observed_at": "2026-08-04T00:00:00Z",
+    "chain": {"name": "BSC", "chain_id": 56},
+    "token": {
+      "symbol": "TEST",
+      "contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "contract_url": "https://bscscan.com/token/0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "transfer": {
+      "amount_token": "950000",
+      "usd_value": "1500000",
+      "explorer_url": "https://bscscan.com/tx/0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "window_net_flow": "1200000",
+    "address_path": {
+      "source_address": "0x1111111111111111111111111111111111111111",
+      "destination_address": "0x2222222222222222222222222222222222222222",
+      "source_url": "https://bscscan.com/address/0x1111111111111111111111111111111111111111",
+      "destination_url": "https://bscscan.com/address/0x2222222222222222222222222222222222222222",
+      "source_role": "treasury",
+      "destination_role": "deposit",
+      "project_relationship": "reviewed_treasury"
+    },
+    "snapshot": {
+      "sender_balance_before": "1000000",
+      "sender_balance_after": "50000",
+      "sender_exit_ratio": "0.95",
+      "total_supply_share": "0.005",
+      "circulating_supply_share": null
+    },
+    "cex_label": {"status": "reviewed", "role": "deposit"},
+    "rule_score": 75,
+    "support_evidence": [
+      "complete_finalized_transfer",
+      "reviewed_cex_destination",
+      "sender_near_full_exit"
+    ],
+    "counter_evidence": ["same_window_cex_outflow"],
+    "data_completeness": "complete",
+    "identity_coverage": "reviewed",
+    "evidence_strength": "medium",
+    "limitations": ["circulating_supply_unavailable"]
+  }
+}

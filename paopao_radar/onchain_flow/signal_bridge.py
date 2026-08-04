@@ -16,6 +16,7 @@ from .automation_store import (
 )
 from .chain_capabilities import ChainCapabilityError, resolve_evm_chain
 from .config import OnchainSettings
+from .domain import MarketContextReader
 from .labels import LabelValidationError, normalize_evm_address
 
 
@@ -282,7 +283,7 @@ class SignalBridge:
         settings: OnchainSettings,
         store: AutomationStore,
         *,
-        reader: MainSignalReader | None = None,
+        reader: MarketContextReader | None = None,
         clock: Any = time.time,
     ):
         self.settings = settings

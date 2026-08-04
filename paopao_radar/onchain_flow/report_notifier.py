@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from paopao_radar.telegram import PushResult, TelegramGateway
+from paopao_radar.telegram import PushResult
 
 from .config import OnchainSettings
 from .constants import TEMPLATE_ID
+from .domain import NotificationGateway
 from .notifier import build_onchain_telegram_gateway
 from .report_formatter import format_token_report
 
@@ -19,7 +20,7 @@ class ReportNotifier:
         self,
         settings: OnchainSettings,
         *,
-        gateway: TelegramGateway | None = None,
+        gateway: NotificationGateway | None = None,
     ):
         settings.assert_safe_paths()
         self.settings = settings

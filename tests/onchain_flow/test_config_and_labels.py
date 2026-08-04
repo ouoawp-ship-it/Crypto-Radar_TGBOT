@@ -19,6 +19,8 @@ from paopao_radar.onchain_flow.config import (
     UnsafeOnchainPath,
 )
 from paopao_radar.onchain_flow.labels import (
+    ApprovedAddressLabelRepository,
+    LabelRegistry,
     LabelValidationError,
     load_labels_csv,
 )
@@ -254,6 +256,33 @@ class OnchainLabelTests(unittest.TestCase):
             self.assertEqual(
                 labels[0].address,
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+
+    def test_base_and_bsc_label_namespaces_do_not_cross_contaminate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "labels.csv"
+            address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            path.write_text(
+                "chain_id,address,entity_name,entity_type,address_type,source,"
+                "confidence,valid_from,valid_to\n"
+                f"8453,{address},Base Exchange,cex,hot,reviewed,0.95,,\n"
+                f"56,{address},BSC Exchange,cex,deposit,reviewed,0.95,,\n",
+                encoding="utf-8",
+            )
+            registry = LabelRegistry(load_labels_csv(path))
+            self.assertEqual(
+                registry.lookup(8453, address, 1).entity_name,
+                "Base Exchange",
+            )
+            self.assertEqual(
+                registry.lookup(56, address, 1).entity_name,
+                "BSC Exchange",
+            )
+            self.assertIsNone(registry.lookup(1, address, 1))
+            repository = ApprovedAddressLabelRepository(load_labels_csv(path))
+            self.assertEqual(
+                repository.labels_for(56, [address], at=1)[address].address_type,
+                "deposit",
             )
 
     def test_reviewed_labels_preserve_multiple_audit_sources(self) -> None:
