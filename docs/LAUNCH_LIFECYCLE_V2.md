@@ -79,55 +79,6 @@ Lifecycle V2 is required for durable monitoring. Without message-package V2 the
 detector runs in shadow mode and records state without sending structure-only
 Telegram updates.
 
-The implementation is original to this repository. Its transparent rule design
-was cross-checked against the MIT-licensed
-[`stockalgo/stolgo`](https://github.com/stockalgo/stolgo),
-[`coding-kitties/PyIndicators`](https://github.com/coding-kitties/PyIndicators),
-[`joshyattridge/smart-money-concepts`](https://github.com/joshyattridge/smart-money-concepts),
-and [`xgboosted/pandas-ta-classic`](https://github.com/xgboosted/pandas-ta-classic)
-projects; no external runtime dependency or copied source file is introduced.
-
-## Full closed-candle SMC V4
-
-`LAUNCH_SMC_V4_ENABLE=true` extends the price-action state with a deterministic
-SMC layer for active lifecycle symbols. It is separately gated and defaults to
-disabled. It reuses the symbol's existing Binance 15m kline request; no second
-scanner, service, database, or Telegram stream is created.
-
-The implementation covers:
-
-- confirmed `HH`, `HL`, `LH`, and `LL` swing structure;
-- close-confirmed `BOS`, `CHoCH`, and displacement-qualified `MSS`;
-- equal-high/equal-low buy-side and sell-side liquidity pools and wick sweeps;
-- three-candle fair value gaps with mitigation/fill state;
-- order blocks derived from a confirmed structure break;
-- breaker blocks after an order block is invalidated by a close;
-- mitigation events on the first valid OB or FVG revisit;
-- current dealing-range premium, equilibrium, and discount;
-- 4h/1h higher-timeframe bias and 15m execution alignment; and
-- the persistent sequence `sweep -> CHoCH/MSS -> displacement/FVG ->
-  OB/FVG retest -> BOS`.
-
-Anti-repaint rules are part of the data contract:
-
-- the Binance 15m parser accepts only candles closed before the requested
-  boundary;
-- a swing is not published until `LAUNCH_SMC_SWING_LENGTH` closed candles exist
-  on its right side;
-- BOS, CHoCH, MSS, order-block invalidation, and breaker creation require a
-  candle close, not an intrabar wick;
-- 1h and 4h candles are aggregated only when every constituent 15m candle is
-  present and the higher-timeframe candle is fully closed; and
-- event keys are persisted in the lifecycle price-action JSON, so rescanning
-  the same closed window is idempotent.
-
-The in-memory PNG uses the same state snapshot but presents it as a compact 1h
-structure chart. The 15m scanner and lifecycle trigger are unchanged. The
-image keeps only the four latest 1h swings, the latest structure break, the
-latest BSL/SSL, and at most one active FVG, order block, and breaker. Completed
-15m/1h/4h confirmation markers and lifecycle checkpoints remain visible.
-Mitigated or invalidated historical zones are omitted from the picture.
-
 ## Asset classification labels
 
 Launch candidates carry a display-only Binance instrument classification. The
@@ -141,22 +92,6 @@ changing the launch score, thresholds, lifecycle, or 15m trigger.
 The category and its source are included in the launch record. Telegram shows
 the Chinese category label, while the PNG uses a short ASCII category because
 the dependency-free chart font intentionally has no CJK glyph set.
-
-Safe defaults:
-
-```dotenv
-LAUNCH_SMC_V4_ENABLE=false
-LAUNCH_SMC_HISTORY_BARS=400
-LAUNCH_SMC_SWING_LENGTH=2
-LAUNCH_SMC_EQUAL_TOLERANCE_ATR=0.15
-LAUNCH_SMC_DISPLACEMENT_BODY_ATR=1.0
-LAUNCH_SMC_MAX_ZONE_AGE_BARS=96
-```
-
-The rule definitions were cross-checked against the MIT-licensed
-[`joshyattridge/smart-money-concepts`](https://github.com/joshyattridge/smart-money-concepts)
-indicator contract. The bot implementation is original, dependency-free, and
-uses stricter closed-candle confirmation for lifecycle monitoring.
 
 ## Rollout
 
@@ -182,7 +117,7 @@ launch-topic introduction so each symbol does not repeat boilerplate. After a
 price-action V3 event starts, the image uses fully closed Binance 1h candles as
 its main view. It retains the frozen 15m consolidation level and `15M BO`,
 `1H OK`, and `4H OK` close-confirmation markers, so the earlier 15m trigger is
-visible without filling the chart with all 15m SMC history. A long-wick
+visible without filling the chart with all 15m history. A long-wick
 re-entry is marked `SWEEP H` or `SWEEP L`; a body-close invalidation is marked
 `FAIL`.
 After a new package is sent and committed, the bot deletes older launch-topic signal

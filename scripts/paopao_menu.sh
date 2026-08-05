@@ -18,10 +18,6 @@ run_main() {
   (cd "$APP_DIR" && "$PYTHON_BIN" main.py "$@")
 }
 
-run_flow_candidates() {
-  (cd "$APP_DIR" && "$PYTHON_BIN" -m paopao_radar.flow_candidates "$@")
-}
-
 run_config() {
   (cd "$APP_DIR" && "$PYTHON_BIN" scripts/paopao_config.py "$@")
 }
@@ -137,13 +133,12 @@ overview_menu() {
     menu_header
     cat <<'EOF'
 总览与健康检查
-1. 服务与四雷达状态
+1. 服务与五雷达状态
 2. 主 BOT 状态
 3. 主 BOT Doctor
 4. 真实推送准备度
 5. 稳定性检查
-6. 数据 Provider 检查
-7. 磁盘与内存
+6. 磁盘与内存
 0. 返回
 EOF
     IFS= read -r choice
@@ -153,8 +148,7 @@ EOF
       3) run_main doctor; pause_menu ;;
       4) run_main readiness; pause_menu ;;
       5) run_main stable-check --json --no-save; pause_menu ;;
-      6) run_main provider-check; pause_menu ;;
-      7) df -h "$APP_DIR"; free -h 2>/dev/null || true; pause_menu ;;
+      6) df -h "$APP_DIR"; free -h 2>/dev/null || true; pause_menu ;;
       0) return ;;
     esac
   done
@@ -217,9 +211,6 @@ API、Token 与密钥
 1. 查看脱敏配置状态
 2. 设置 Telegram Bot Token
 3. 设置 Telegram Chat ID
-4. 设置 CoinGlass API Key
-5. 设置 Coinalyze API Key
-6. Provider 检查
 0. 返回
 EOF
     IFS= read -r choice
@@ -227,9 +218,6 @@ EOF
       1) run_config status; pause_menu ;;
       2) config_set TG_BOT_TOKEN; pause_menu ;;
       3) config_set TG_CHAT_ID; pause_menu ;;
-      4) config_set COINGLASS_API_KEY; pause_menu ;;
-      5) config_set COINALYZE_API_KEY; pause_menu ;;
-      6) run_main provider-check; pause_menu ;;
       0) return ;;
     esac
   done
@@ -242,34 +230,51 @@ telegram_menu() {
     cat <<'EOF'
 Telegram 设置与测试
 1. 查看共享 Telegram 脱敏状态
-2. 主 BOT readiness
+2. 手工创建/修复话题并置顶说明
+3. 主 BOT readiness
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
       1) run_config status; pause_menu ;;
-      2) run_main readiness; pause_menu ;;
+      2) telegram_topic_setup_menu ;;
+      3) run_main readiness; pause_menu ;;
       0) return ;;
     esac
   done
 }
 
-flow_radar_menu() {
-  local choice
+telegram_topic_setup_menu() {
+  local choice template
   while true; do
     menu_header
     cat <<'EOF'
-五因子资金流雷达
-1. 查看全市场完整候选清单
-2. 查看候选池状态 JSON
+手工话题与置顶说明
+1. 资金摘要
+2. 启动预警
+3. 公告风险
+4. 测试消息
+5. 资金流雷达
+6. 资金费率警报
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
-      1) run_flow_candidates --all; pause_menu ;;
-      2) run_flow_candidates --all --json; pause_menu ;;
+      1) template="TG_RADAR_SUMMARY" ;;
+      2) template="TG_LAUNCH_ALERT" ;;
+      3) template="TG_ANNOUNCEMENT_ALERT" ;;
+      4) template="TG_TEST_MESSAGE" ;;
+      5) template="TG_FLOW_RADAR" ;;
+      6) template="TG_FUNDING_ALERT" ;;
       0) return ;;
+      *) printf '无效选项。\n'; continue ;;
     esac
+    if confirm_phrase "创建并置顶话题说明"; then
+      run_main telegram-topic-setup \
+        --topic-template "$template" \
+        --send --confirm-real-send
+    fi
+    pause_menu
   done
 }
 
@@ -356,7 +361,6 @@ interactive_menu() {
 6. 数据库、备份与清理
 7. 日志与故障诊断
 8. 高级运维
-9. 五因子资金流雷达候选清单
 0. 退出
 EOF
     IFS= read -r choice
@@ -369,7 +373,6 @@ EOF
       6) data_menu ;;
       7) log_menu ;;
       8) advanced_menu ;;
-      9) flow_radar_menu ;;
       0) return ;;
       *) printf '无效选项。\n'; sleep 1 ;;
     esac
@@ -382,11 +385,9 @@ show_help() {
 
   menu                打开中文菜单
   status              服务状态
-  radar-status        四个雷达运行状态
+  radar-status        五个雷达运行状态
   doctor              主 BOT 诊断
   readiness           真实推送准备度
-  provider-check      数据 Provider 检查
-  flow-candidates     五因子资金流候选清单
   config-status       脱敏配置状态
   check-update        检查更新
   update              安全更新
@@ -409,10 +410,8 @@ case "$command" in
   readiness) run_main readiness "$@" ;;
   radar-status) run_main radar-status "$@" ;;
   stable-check) run_main stable-check "$@" ;;
-  providers|provider-check) run_main provider-check "$@" ;;
   backup|database-backup) run_main database-backup "$@" ;;
   telegram-test) run_main telegram-test "$@" ;;
-  flow-candidates) run_flow_candidates "$@" ;;
   cleanup) run_main cleanup --force-cleanup "$@" ;;
   check-update|check) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --check) ;;
   update) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --yes) ;;

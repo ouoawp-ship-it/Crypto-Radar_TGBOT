@@ -1,0 +1,4 @@
+真实配置文件：config/.env.oi
+空白配置示例：config/.env.oi.example
+
+真实 Token、Chat ID 和其他密钥不会上传 GitHub。服务器从旧版根目录迁移配置时，必须先备份并检查冲突，不能直接覆盖。

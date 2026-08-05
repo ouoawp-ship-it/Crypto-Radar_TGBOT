@@ -1,0 +1,3 @@
+测试按 radars、shared、runtime 和 config 分类。
+
+普通测试全部使用本地假数据，不调用真实 Telegram 或生产接口。

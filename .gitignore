@@ -14,6 +14,7 @@ __pycache__/
 crypto_monitor_merged.py
 
 /PROJECT_CURRENT_SUMMARY.md
+/backups/
 /UPGRADE_*.md
 /*_REPORT.md
 /*_SUMMARY.md
@@ -29,6 +30,7 @@ data/*.log
 data/*.lock
 data/*.tmp
 data/*.txt
+!data/数据文件说明.txt
 data/charts/
 data/backups/
 # Bounded runtime history for opt-in accumulation quality diagnostics.

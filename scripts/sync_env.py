@@ -2,8 +2,20 @@
 from __future__ import annotations
 
 import argparse
-import re
+from datetime import datetime, timezone
+import os
 from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared.atomic_json import _file_lock, _fsync_parent
 
 
 PRESERVE_KEYS = {
@@ -16,15 +28,63 @@ PRESERVE_KEYS = {
     "TG_FLOW_RADAR_TOPIC_ID",
     "TG_FUNDING_ALERT_TOPIC_ID",
     "TG_TEST_TOPIC_ID",
-    "COINGLASS_API_KEY",
-    "COINALYZE_API_KEY",
-    "SIGNAL_EVENTS_FILE",
     "SIGNAL_EVENTS_DB_FILE",
     "DATABASE_BACKUP_DIR",
     "TG_OUTBOX_FILE",
 }
 
 RETIRED_KEYS = {
+    "ACCUMULATION_QUALITY_V2_ENABLE",
+    "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID",
+    "TG_AUTO_CREATE_TOPICS",
+    "TG_TOPIC_INTRO_ENABLE",
+    "SIGNAL_EVENTS_FILE",
+    "REALTIME_BYBIT_ENABLE",
+    "REALTIME_OKX_ENABLE",
+    "BYBIT_PUBLIC_REST_URL",
+    "BYBIT_LINEAR_WS_URL",
+    "OKX_PUBLIC_REST_URL",
+    "OKX_PUBLIC_WS_URL",
+    "NEWS_EVENTS_DB_FILE",
+    "NEWS_EVENTS_RETENTION_DAYS",
+    "NEWS_EVENTS_LIMIT",
+    "COINGLASS_ENABLE",
+    "COINGLASS_API_KEY",
+    "COINGLASS_API_BASE_URL",
+    "COINGLASS_RATE_LIMIT_PER_MINUTE",
+    "COINALYZE_ENABLE",
+    "COINALYZE_API_KEY",
+    "COINALYZE_BASE_URL",
+    "COINALYZE_RATE_LIMIT_PER_MINUTE",
+    "COINALYZE_REQUEST_BUDGET",
+    "DERIVATIVES_VALIDATION_SYMBOL_LIMIT",
+    "HEAT_CONTEXT_ENABLE",
+    "HEAT_CONTEXT_CACHE_FILE",
+    "HEAT_CONTEXT_CACHE_TTL_SEC",
+    "HEAT_CONTEXT_TIMEOUT_SEC",
+    "HEAT_CONTEXT_CANDIDATE_LIMIT",
+    "HEAT_VOLUME_RATIO_MIN",
+    "COINGECKO_API_BASE_URL",
+    "BINANCE_SQUARE_HEAT_ENABLE",
+    "BINANCE_SQUARE_HEAT_CANDIDATE_LIMIT",
+    "FLOW_MODEL_COMPARISON_ENABLE",
+    "FLOW_MODEL_COMPARISON_FILE",
+    "FLOW_MODEL_COMPARISON_HISTORY_LIMIT",
+    "ANNOUNCEMENT_ENRICHMENT_ENABLE",
+    "ANNOUNCEMENT_ENRICHMENT_CACHE_FILE",
+    "ANNOUNCEMENT_ENRICHMENT_CACHE_TTL_SEC",
+    "ANNOUNCEMENT_ENRICHMENT_TIMEOUT_SEC",
+    "ANNOUNCEMENT_ENRICHMENT_CANDIDATE_LIMIT",
+    "ANNOUNCEMENT_ENRICHMENT_MAX_CONCURRENCY",
+    "FLOW_CANDIDATE_POOL",
+    "FUNDING_ALERT_REPLY_CHAIN_ENABLE",
+    "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE",
+    "LAUNCH_SMC_V4_ENABLE",
+    "LAUNCH_SMC_HISTORY_BARS",
+    "LAUNCH_SMC_SWING_LENGTH",
+    "LAUNCH_SMC_EQUAL_TOLERANCE_ATR",
+    "LAUNCH_SMC_DISPLACEMENT_BODY_ATR",
+    "LAUNCH_SMC_MAX_ZONE_AGE_BARS",
     "WEB_HOST",
     "WEB_PORT",
     "WEB_ADMIN_TOKEN",
@@ -112,6 +172,12 @@ RETIRED_KEYS = {
     "STRUCTURE_REVIEW_REPORT_FILE",
 }
 
+LEGACY_ALIASES = {
+    "TELEGRAM_ANNOUNCEMENT_ALERT_TOPIC_ID": (
+        "TG_ANNOUNCEMENT_ALERT_TOPIC_ID"
+    ),
+}
+
 MANAGED_MIGRATIONS = {
     "SIGNAL_EVENTS_LIMIT": {
         "old": {"", "5000"},
@@ -166,6 +232,75 @@ MANAGED_MIGRATIONS = {
 }
 
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+BACKUP_LIMIT = 30
+
+
+def _chmod_600(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _require_600(path: Path) -> None:
+    if os.name != "posix":
+        return
+    if stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise PermissionError("environment_permissions_update_failed")
+
+
+def _atomic_replace_bytes(path: Path, content: bytes) -> None:
+    temporary_name = ""
+    ownership: tuple[int, int] | None = None
+    if path.exists() and hasattr(os, "chown"):
+        stat = path.stat()
+        ownership = (stat.st_uid, stat.st_gid)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary = Path(temporary_name)
+        _chmod_600(temporary)
+        os.replace(temporary, path)
+        if ownership is not None:
+            os.chown(path, *ownership)
+        _require_600(path)
+        try:
+            _fsync_parent(path)
+        except OSError:
+            pass
+    finally:
+        if temporary_name:
+            try:
+                Path(temporary_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _backup(path: Path, content: bytes) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = path.with_name(f"{path.name}.bak.{stamp}")
+    _atomic_replace_bytes(backup, content)
+    if hasattr(os, "chown"):
+        current = path.stat()
+        os.chown(backup, current.st_uid, current.st_gid)
+    backups = sorted(
+        path.parent.glob(f"{path.name}.bak.*"),
+        key=lambda item: item.name,
+        reverse=True,
+    )
+    for expired in backups[BACKUP_LIMIT:]:
+        if expired.parent == path.parent and expired.is_file() and not expired.is_symlink():
+            expired.unlink()
+    return backup
 
 
 def split_env_line(line: str) -> tuple[str, str] | None:
@@ -192,6 +327,32 @@ def env_index(lines: list[str]) -> dict[str, int]:
     return result
 
 
+def migrate_legacy_aliases(
+    lines: list[str],
+) -> tuple[list[str], list[str]]:
+    index = env_index(lines)
+    updated: list[str] = []
+    for legacy_key, canonical_key in LEGACY_ALIASES.items():
+        legacy_position = index.get(legacy_key)
+        if legacy_position is None:
+            continue
+        parsed = split_env_line(lines[legacy_position])
+        legacy_value = clean_value(parsed[1] if parsed else "")
+        if not legacy_value:
+            continue
+        canonical_position = index.get(canonical_key)
+        if canonical_position is None:
+            lines.append(f"{canonical_key}={legacy_value}")
+            index[canonical_key] = len(lines) - 1
+            updated.append(canonical_key)
+            continue
+        canonical = split_env_line(lines[canonical_position])
+        if not clean_value(canonical[1] if canonical else ""):
+            lines[canonical_position] = f"{canonical_key}={legacy_value}"
+            updated.append(canonical_key)
+    return lines, updated
+
+
 def example_values(path: Path) -> list[tuple[str, str]]:
     values: list[tuple[str, str]] = []
     if not path.exists():
@@ -204,40 +365,63 @@ def example_values(path: Path) -> list[tuple[str, str]]:
 
 
 def sync_env(env_path: Path, example_path: Path) -> dict[str, list[str]]:
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    removed = [key for line in lines if (parsed := split_env_line(line)) and (key := parsed[0]) in RETIRED_KEYS]
-    lines = [line for line in lines if not ((parsed := split_env_line(line)) and parsed[0] in RETIRED_KEYS)]
-    index = env_index(lines)
-    added: list[str] = []
-    updated: list[str] = []
-    preserved: list[str] = []
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_lock(env_path):
+        existed = env_path.exists()
+        original = env_path.read_bytes() if existed else b""
+        lines = original.decode("utf-8").splitlines() if existed else []
+        lines, alias_updates = migrate_legacy_aliases(lines)
+        removed = [key for line in lines if (parsed := split_env_line(line)) and (key := parsed[0]) in RETIRED_KEYS]
+        lines = [line for line in lines if not ((parsed := split_env_line(line)) and parsed[0] in RETIRED_KEYS)]
+        index = env_index(lines)
+        added: list[str] = []
+        updated: list[str] = list(alias_updates)
+        preserved: list[str] = []
 
-    for key, value in example_values(example_path):
-        if key not in index:
-            lines.append(f"{key}={value}")
-            index[key] = len(lines) - 1
-            added.append(key)
+        for key, value in example_values(example_path):
+            if key not in index:
+                lines.append(f"{key}={value}")
+                index[key] = len(lines) - 1
+                added.append(key)
 
-    for key, rule in MANAGED_MIGRATIONS.items():
-        if key not in index:
-            continue
-        if key in PRESERVE_KEYS:
-            preserved.append(key)
-            continue
-        parsed = split_env_line(lines[index[key]])
-        current = clean_value(parsed[1] if parsed else "")
-        if current in rule["old"] and current != rule["new"]:
-            lines[index[key]] = f"{key}={rule['new']}"
-            updated.append(key)
+        for key, rule in MANAGED_MIGRATIONS.items():
+            if key not in index:
+                continue
+            if key in PRESERVE_KEYS:
+                preserved.append(key)
+                continue
+            parsed = split_env_line(lines[index[key]])
+            current = clean_value(parsed[1] if parsed else "")
+            if current in rule["old"] and current != rule["new"]:
+                lines[index[key]] = f"{key}={rule['new']}"
+                updated.append(key)
 
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        content = ("\n".join(lines) + "\n").encode("utf-8")
+        if content != original:
+            if existed:
+                _backup(env_path, original)
+            _atomic_replace_bytes(env_path, content)
+        _chmod_600(env_path)
+        _chmod_600(env_path.with_name(f"{env_path.name}.lock"))
+        _require_600(env_path)
+        _require_600(env_path.with_name(f"{env_path.name}.lock"))
     return {"added": added, "updated": updated, "preserved": preserved, "removed": removed}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Safely sync .env.oi with .env.oi.example")
-    parser.add_argument("--env", default=".env.oi", help="Path to real env file")
-    parser.add_argument("--example", default=".env.oi.example", help="Path to env template")
+    parser = argparse.ArgumentParser(
+        description="Safely sync config/.env.oi with its example"
+    )
+    parser.add_argument(
+        "--env",
+        default="config/.env.oi",
+        help="Path to real env file",
+    )
+    parser.add_argument(
+        "--example",
+        default="config/.env.oi.example",
+        help="Path to env template",
+    )
     args = parser.parse_args()
 
     result = sync_env(Path(args.env), Path(args.example))

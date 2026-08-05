@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from paopao_radar.cli import main
+from runtime.cli import main
 
 
 if __name__ == "__main__":

@@ -1,1 +1,0 @@
-"""Paopao crypto radar package."""
