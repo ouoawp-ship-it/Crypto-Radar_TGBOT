@@ -6,9 +6,59 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from .chart_font_zh import (
+    GLYPH_HEIGHT,
+    GLYPH_WIDTH,
+    glyph_alpha,
+    missing_glyphs,
+)
+
 
 CST = timezone(timedelta(hours=8))
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+CHART_CATEGORY_LABELS = {
+    "USD-M PERP": "永续合约",
+    "GOLD": "黄金",
+    "SILVER": "白银",
+    "PLATINUM": "铂金",
+    "PALLADIUM": "钯金",
+    "CRUDE OIL": "原油",
+    "NAT GAS": "天然气",
+    "COPPER": "铜",
+    "ETF INDEX": "指数基金",
+    "LEVERAGED ETF": "杠杆基金",
+    "EQUITY": "股票",
+    "TOKENIZED STOCK": "股票代币",
+    "STOCK TOKEN": "股票代币",
+    "ETF": "指数基金",
+    "COMMODITY": "大宗商品",
+    "FOREX": "外汇",
+    "CRYPTO INDEX": "加密指数",
+    "CRYPTO CORE": "核心主流",
+    "CRYPTO MAJOR": "主流加密",
+    "CRYPTO ALT": "山寨币",
+}
+
+CHART_STATUS_LABELS = {
+    "breakout_15m": "15分钟突破",
+    "confirmed_1h": "1小时确认",
+    "confirmed_4h": "4小时确认",
+    "sweep_high_15m": "扫高",
+    "sweep_low_15m": "扫低",
+    "false_breakout_15m": "15分钟假突破",
+    "failed_breakout_15m": "15分钟失效",
+    "false_breakout_1h": "1小时假突破",
+    "failed_breakout_1h": "1小时失效",
+    "false_breakout_4h": "4小时假突破",
+    "failed_breakout_4h": "4小时失效",
+}
+
+CHART_CONFIRMATION_LABELS = {
+    "15m": "15分钟突破",
+    "1h": "1小时确认",
+    "4h": "4小时确认",
+}
 
 FONT_5X7 = {
     " ": ("00000",) * 7,
@@ -69,6 +119,29 @@ class Canvas:
             return
         offset = (y * self.width + x) * 3
         self.pixels[offset:offset + 3] = bytes(color)
+
+    def alpha_pixel(
+        self,
+        x: int,
+        y: int,
+        color: tuple[int, int, int],
+        alpha: int,
+    ) -> None:
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return
+        safe_alpha = max(0, min(255, int(alpha)))
+        if safe_alpha == 0:
+            return
+        if safe_alpha == 255:
+            self.pixel(x, y, color)
+            return
+        offset = (y * self.width + x) * 3
+        inverse = 255 - safe_alpha
+        for channel, target in enumerate(color):
+            current = self.pixels[offset + channel]
+            self.pixels[offset + channel] = (
+                current * inverse + int(target) * safe_alpha + 127
+            ) // 255
 
     def line(
         self,
@@ -136,6 +209,51 @@ class Canvas:
                     )
             cursor += 6 * safe_scale
 
+    @staticmethod
+    def ui_text_width(value: str) -> int:
+        width = 0
+        for character in str(value or ""):
+            if character == " ":
+                width += 4
+                continue
+            glyph = glyph_alpha(character)
+            width += (glyph[1] if glyph is not None else 9) + 1
+        return max(0, width - 1)
+
+    def ui_text(
+        self,
+        x: int,
+        y: int,
+        value: str,
+        color: tuple[int, int, int],
+    ) -> None:
+        cursor = int(x)
+        for character in str(value or ""):
+            if character == " ":
+                cursor += 4
+                continue
+            glyph = glyph_alpha(character)
+            if glyph is None:
+                self.line(cursor, y + 2, cursor + 8, y + 2, color)
+                self.line(cursor, y + 12, cursor + 8, y + 12, color)
+                self.line(cursor, y + 2, cursor, y + 12, color)
+                self.line(cursor + 8, y + 2, cursor + 8, y + 12, color)
+                cursor += 10
+                continue
+            alpha, advance = glyph
+            for row in range(GLYPH_HEIGHT):
+                row_offset = row * GLYPH_WIDTH
+                for column in range(GLYPH_WIDTH):
+                    opacity = alpha[row_offset + column]
+                    if opacity:
+                        self.alpha_pixel(
+                            cursor + column,
+                            y + row,
+                            color,
+                            opacity,
+                        )
+            cursor += advance + 1
+
 
 def _number(value: Any) -> float:
     try:
@@ -143,6 +261,13 @@ def _number(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return result if result == result else 0.0
+
+
+def _chart_category_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    if raw and not missing_glyphs(raw):
+        return raw
+    return CHART_CATEGORY_LABELS.get(raw.upper(), "未分类")
 
 
 def _png_chunk(kind: bytes, payload: bytes) -> bytes:
@@ -231,38 +356,41 @@ def render_launch_chart_png(
     valid_box = box_high > 0 and box_low > 0 and box_high >= box_low
     canvas = Canvas(width, height, (9, 12, 16))
     canvas.rect(0, 0, width - 1, 55, (15, 20, 27))
-    canvas.text(24, 14, str(symbol or "UNKNOWN"), (232, 237, 243), scale=2)
-    canvas.text(210, 13, str(asset_category or "USD-M PERP")[:20], (105, 167, 255), scale=1)
-    canvas.text(210, 32, "1H STRUCT / 15M TRIGGER", (148, 163, 184), scale=1)
-    canvas.text(410, 13, f"CYCLE {max(1, int(cycle_no))}", (148, 163, 184), scale=1)
-    canvas.text(
-        500,
-        13,
-        f"EVENTS {len(checkpoints)}",
+    if symbol:
+        canvas.text(24, 14, str(symbol), (232, 237, 243), scale=2)
+    else:
+        canvas.ui_text(24, 12, "未知", (232, 237, 243))
+    canvas.ui_text(
+        210,
+        7,
+        _chart_category_label(asset_category or "USD-M PERP"),
+        (105, 167, 255),
+    )
+    canvas.ui_text(
+        210,
+        27,
+        "1小时结构 · 15分钟触发",
         (148, 163, 184),
-        scale=1,
+    )
+    canvas.ui_text(
+        410,
+        7,
+        f"第 {max(1, int(cycle_no))} 轮",
+        (148, 163, 184),
+    )
+    canvas.ui_text(
+        500,
+        7,
+        f"事件 {len(checkpoints)}",
+        (148, 163, 184),
     )
     status = str(price_action_state.get("status") or "")
-    status_labels = {
-        "breakout_15m": "15M BO",
-        "confirmed_1h": "1H OK",
-        "confirmed_4h": "4H OK",
-        "sweep_high_15m": "SWEEP H",
-        "sweep_low_15m": "SWEEP L",
-        "false_breakout_15m": "15M FALSE",
-        "failed_breakout_15m": "15M FAIL",
-        "false_breakout_1h": "1H FALSE",
-        "failed_breakout_1h": "1H FAIL",
-        "false_breakout_4h": "4H FALSE",
-        "failed_breakout_4h": "4H FAIL",
-    }
-    if status in status_labels:
-        canvas.text(
+    if status in CHART_STATUS_LABELS:
+        canvas.ui_text(
             410,
-            32,
-            f"PA {status_labels[status]}",
+            27,
+            f"形态 {CHART_STATUS_LABELS[status]}",
             (86, 205, 220),
-            scale=1,
         )
     plot_left = 54
     plot_right = width - 92
@@ -357,19 +485,24 @@ def render_launch_chart_png(
         canvas.line(box_x0, box_y0, box_x0, box_y1, box_border)
         canvas.line(box_x1, box_y0, box_x1, box_y1, box_border)
         box_label_y = min(box_y0, box_y1) + 3
+        box_label = "整理区间"
+        box_label_width = canvas.ui_text_width(box_label) + 8
+        box_label_x = min(
+            max(plot_left, box_x0 + 3),
+            plot_right - box_label_width,
+        )
         canvas.rect(
-            box_x0 + 3,
+            box_label_x,
             box_label_y,
-            box_x0 + 27,
-            box_label_y + 11,
+            box_label_x + box_label_width,
+            box_label_y + GLYPH_HEIGHT + 1,
             (20, 27, 36),
         )
-        canvas.text(
-            box_x0 + 6,
-            box_label_y + 2,
-            "BOX",
+        canvas.ui_text(
+            box_label_x + 4,
+            box_label_y + 1,
+            box_label,
             box_border,
-            scale=1,
         )
 
     for index, candle in enumerate(normalized):
@@ -404,10 +537,26 @@ def render_launch_chart_png(
         level_color = (86, 205, 220)
         for x in range(level_x0, plot_right + 1, 9):
             canvas.line(x, level_y, min(x + 5, plot_right), level_y, level_color)
-        label_x = max(level_x0 + 3, plot_right - 29)
-        label_y = min(max(price_top, level_y - 14), price_bottom - 12)
-        canvas.rect(label_x, label_y, label_x + 27, label_y + 11, (20, 27, 36))
-        canvas.text(label_x + 3, label_y + 2, "LVL", level_color, scale=1)
+        level_label = "关键位"
+        label_width = canvas.ui_text_width(level_label) + 8
+        label_x = plot_right - label_width
+        label_y = min(
+            max(price_top, level_y - GLYPH_HEIGHT - 3),
+            price_bottom - GLYPH_HEIGHT - 1,
+        )
+        canvas.rect(
+            label_x,
+            label_y,
+            label_x + label_width,
+            label_y + GLYPH_HEIGHT + 1,
+            (20, 27, 36),
+        )
+        canvas.ui_text(
+            label_x + 4,
+            label_y + 1,
+            level_label,
+            level_color,
+        )
 
     event_colors = {
         "primed": (73, 143, 255),
@@ -416,6 +565,7 @@ def render_launch_chart_png(
         "cooling": (148, 163, 184),
         "failed": (255, 92, 92),
     }
+    event_lane_right_edges = [plot_left - 8, plot_left - 8, plot_left - 8]
     for fallback_no, checkpoint in enumerate(checkpoints, start=1):
         event_no = int(_number(checkpoint.get("checkpoint_no"))) or fallback_no
         event_ts = int(_number(checkpoint.get("window_end_ts")))
@@ -429,41 +579,94 @@ def render_launch_chart_png(
         else:
             index = nearest_index(event_ts)
         x = x_positions[index]
-        for y in range(price_top, volume_bottom + 1, 5):
-            canvas.line(x, y, x, min(y + 2, volume_bottom), color)
-        label = f"E{event_no}{'<' if clipped else ''}"
-        label_width = len(label) * 12 + 10
-        label_x = min(max(plot_left, x - label_width // 2), plot_right - label_width)
-        label_y = price_top + 8 + ((event_no - 1) % 3) * 24
-        canvas.rect(label_x, label_y, label_x + label_width, label_y + 19, (20, 27, 36))
-        canvas.text(label_x + 5, label_y + 3, label, color, scale=2)
+        guide_color = tuple(
+            round(background + (channel - background) * 0.42)
+            for channel, background in zip(color, (9, 12, 16))
+        )
+        for y in range(price_top, volume_bottom + 1, 7):
+            canvas.line(x, y, x, min(y + 1, volume_bottom), guide_color)
+
+        # Compact numbered badges keep the event order without oversized
+        # labels obscuring nearby candles. A leading '<' still means the
+        # event happened before the visible chart window.
+        label = f"{'<' if clipped else ''}{event_no}"
+        text_width = len(label) * 6 - 1
+        label_width = max(15, text_width + 8)
+        label_height = 13
+        label_x = min(
+            max(plot_left, x - label_width // 2),
+            plot_right - label_width,
+        )
+        candidate_lanes = sorted(
+            range(len(event_lane_right_edges)),
+            key=lambda lane: (
+                event_lane_right_edges[lane] + 5 > label_x,
+                event_lane_right_edges[lane],
+                lane,
+            ),
+        )
+        lane = candidate_lanes[0]
+        event_lane_right_edges[lane] = label_x + label_width
+        label_y = price_top + 6 + lane * 17
+        canvas.rect(
+            label_x,
+            label_y,
+            label_x + label_width,
+            label_y + label_height,
+            color,
+        )
+        canvas.rect(
+            label_x + 1,
+            label_y + 1,
+            label_x + label_width - 1,
+            label_y + label_height - 1,
+            (15, 20, 27),
+        )
+        canvas.text(
+            label_x + (label_width - text_width) // 2,
+            label_y + 3,
+            label,
+            color,
+            scale=1,
+        )
 
     marker_specs: list[tuple[int, str, tuple[int, int, int]]] = []
+    marker_label_floor = price_top + 2
+    if checkpoints:
+        marker_label_floor = (
+            price_top
+            + 6
+            + (len(event_lane_right_edges) - 1) * 17
+            + 13
+            + 4
+        )
     confirmation_ends = price_action_state.get("confirmation_ends")
     if isinstance(confirmation_ends, Mapping):
-        for timeframe, label, color in (
-            ("15m", "15M BO", (42, 204, 150)),
-            ("1h", "1H OK", (79, 145, 255)),
-            ("4h", "4H OK", (207, 106, 255)),
+        for timeframe, color in (
+            ("15m", (42, 204, 150)),
+            ("1h", (79, 145, 255)),
+            ("4h", (207, 106, 255)),
         ):
             timestamp = int(_number(confirmation_ends.get(timeframe)))
             if timestamp > 0:
-                marker_specs.append((timestamp, label, color))
+                marker_specs.append(
+                    (timestamp, CHART_CONFIRMATION_LABELS[timeframe], color)
+                )
 
     terminal_label = ""
     terminal_color = (255, 159, 67)
     if status.startswith("sweep_high"):
-        terminal_label = "SWEEP H"
+        terminal_label = "扫高"
     elif status.startswith("sweep_low"):
-        terminal_label = "SWEEP L"
+        terminal_label = "扫低"
     elif status.startswith("false_breakout"):
         terminal_label = (
-            "SWEEP H"
+            "扫高"
             if price_action_state.get("direction") == "up"
-            else "SWEEP L"
+            else "扫低"
         )
     elif status.startswith("failed_breakout"):
-        terminal_label = "FAIL"
+        terminal_label = "失效"
         terminal_color = (255, 92, 92)
     if terminal_label:
         terminal_ts = int(
@@ -477,26 +680,33 @@ def render_launch_chart_png(
         index = nearest_index(timestamp)
         x = x_positions[index]
         anchor_y = price_y(normalized[index]["high"]) - 4
-        label_width = len(label) * 6 + 8
+        label_width = canvas.ui_text_width(label) + 8
+        label_height = GLYPH_HEIGHT + 2
         label_x = min(
             max(plot_left, x - label_width // 2),
             plot_right - label_width,
         )
         label_y = max(
-            price_top + 2,
-            anchor_y - 18 - (marker_no % 2) * 15,
+            marker_label_floor,
+            anchor_y - label_height - 6 - (marker_no % 2) * 19,
         )
-        canvas.line(x, anchor_y, x, label_y + 12, color)
+        label_y = min(label_y, price_bottom - label_height)
+        connector_y = (
+            label_y + label_height
+            if label_y + label_height <= anchor_y
+            else label_y
+        )
+        canvas.line(x, anchor_y, x, connector_y, color)
         canvas.line(x - 3, anchor_y - 4, x, anchor_y, color)
         canvas.line(x + 3, anchor_y - 4, x, anchor_y, color)
         canvas.rect(
             label_x,
             label_y,
             label_x + label_width,
-            label_y + 12,
+            label_y + label_height,
             (20, 27, 36),
         )
-        canvas.text(label_x + 4, label_y + 3, label, color, scale=1)
+        canvas.ui_text(label_x + 4, label_y + 1, label, color)
 
     last = normalized[-1]["close"]
     first = normalized[0]["open"]
@@ -524,13 +734,12 @@ def render_launch_chart_png(
         muted,
         scale=1,
     )
-    footer = "BINANCE CLOSED 1H / 15M TRIGGER"
-    canvas.text(
-        width // 2 - len(footer) * 3,
-        height - 30,
+    footer = "币安 · 1小时已收线 · 15分钟触发"
+    canvas.ui_text(
+        width // 2 - canvas.ui_text_width(footer) // 2,
+        height - 36,
         footer,
         (82, 94, 112),
-        scale=1,
     )
     return _encode_png(canvas)
 

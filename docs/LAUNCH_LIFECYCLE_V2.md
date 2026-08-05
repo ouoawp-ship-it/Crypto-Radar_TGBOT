@@ -89,9 +89,10 @@ their Binance theme metadata and are labelled as core, major, or altcoin by a
 small reviewed tier list. Unknown future metadata falls back safely without
 changing the launch score, thresholds, lifecycle, or 15m trigger.
 
-The category and its source are included in the launch record. Telegram shows
-the Chinese category label, while the PNG uses a short ASCII category because
-the dependency-free chart font intentionally has no CJK glyph set.
+The category and its source are included in the launch record. Telegram and
+the PNG both show compact Chinese labels. The chart bundles only the reviewed
+glyph subset it needs, so rendering remains deterministic and does not depend
+on Pillow or operating-system fonts.
 
 ## Rollout
 

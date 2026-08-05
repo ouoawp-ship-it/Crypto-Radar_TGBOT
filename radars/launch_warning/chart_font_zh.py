@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+import base64
+import zlib
+from typing import Final
+
+
+# Compact chart-only raster subset generated from Noto Sans SC at weight 500.
+# Noto Sans CJK is licensed under SIL Open Font License 1.1; see
+# licenses/NotoSansSC-OFL.txt. The full font is not shipped or needed at runtime.
+GLYPH_WIDTH: Final = 12
+GLYPH_HEIGHT: Final = 15
+GLYPH_ORDER: Final = (
+    "0123456789/\xb7\u672a\u77e5\u6c38\u7eed\u5408\u7ea6\u9ec4\u91d1\u767d\u94f6\u94c2\u94af\u539f\u6cb9\u5929\u7136\u6c14\u94dc\u6307\u6570\u57fa\u6760\u6746\u80a1\u7968\u4ee3\u5e01\u5927\u5b97\u5546\u54c1\u5916\u6c47\u52a0\u5bc6\u6838\u5fc3\u4e3b\u6d41\u5c71\u5be8\u5c0f\u65f6\u7ed3\u6784\u5206\u949f\u89e6\u53d1\u7b2c\u8f6e\u4e8b\u4ef6\u5f62\u6001\u7a81\u7834\u786e\u8ba4\u626b\u9ad8\u4f4e\u5047\u5931\u6548\u6574\u7406\u533a\u95f4\u5173\u952e\u4f4d\u5b89\u5df2\u6536\u7ebf"
+)
+GLYPH_ADVANCES: Final = bytes.fromhex(
+    "07070707070707070707050c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+)
+_GLYPH_ALPHA: Final = zlib.decompress(
+    base64.b85decode(
+        "c-p;N3tUX;`+sJdrcqN(88uO~3h6>6D}>0Ub&btEHe`hm8ykh#tPmSQ$huo=+Z93xv+kD=WreJ=Nr<8;A)f#9o^xiV-Ov91%FqA*"
+        "e3~=g&Uwx`@4V-EpZfu*1vNgcNii1iiE~}<FX5pTehJYJc-#qHU?|Et?2k>MKU#CRBf8Rl{^a@?2y^p=>l``X`Tk-"
+        "7+nuRMsRy5ydZeMP7Ka|vW9a+w*mV;6xe6E=ec~~<yY%Xc2M<M=Gdf?qBjW!t1Q?0+b!<~BBwA>Y{iAO8yl0KHaPX@hTG;<}gtMz"
+        "K=r^B!(4uJt71xII*kVO*uN`mAwTG-X7fJ<q84K*SyITeqZ_%G0{+8!4umBi`{JG<^d-"
+        "c3?l0R;`rl@ki4SZ^9P>i|(?Z2VJ6N*M?ar5%-"
+        "eFZGJv;?%+A759|9Cl{d#L3Ai0{xBkl41}4hCd0_d~`U?)m0~lJ~eo9%TKiwa8!5yd)M`c#-"
+        "IiFEv8S{JASdP+~^Zfl)@i(NO|^hyW$hivTS4dUn2#a^tjL95j>PvP1B1!&VO)6_zC`ay3?6EJnn*RU=&*NdglEQ82g^rEpXskm&"
+        "+O2r+Dbq*(UIRFwgIV_3rB0Ni#!tX!9W*bb9Zh!)s3J&%Pg}gDUK<!)>vp4tK{-"
+        "J!BY=_xf5V;W@rv>vQ(0M3_To82OH$H_7oNgZPcwNiWKIs1lyVqan7J&hWT1x<Qa2Cyn3k>X`n-kU!A#_Uo(;pLooD?v-"
+        "p5)Pu5egI{s1c6MA~;X@v~;S|LQ6ohg$mTwen3P2;XG4G6Ym)dwu&_(M4$GslQV{y#$XLCQzNO$||ptw+PrrI6Vv&@Uo<Fjr$sCb"
+        "~?9aux@Z5*!0`AQvh&eZRozDSSLyTJcFO}WxvhfDFS4#$^%4gX(+PW*R6dwYBIrwwVVEEGubHy$f{Esq_fYFV&^9cua%wMx;oFcN"
+        "2#vUMm9)kM>|Ln`J;A+6*~?mF%AvSp5z!ZnRr*KUjkHSnYZw2{h*4B!gJ#!il5gYY$`&6(tw-"
+        "z5_C{pOTCN+3o}H}SRW{5e`FzvFN$H{RVG1{i{3fd^n6ZqQ<@ioiSbVzLwp^p)&825xtka@P;OWd&dy@f*My50KYt)Xh5STn6~M;"
+        "Q1zRo&D~#vw)ZBGP?8$VMSUhmCV?5U2I^iP}so@tpE9oMX;MVW~(vd8K=I#c;8HY5W^WXzL^5*`0sC#i&8J8us&gfefQeJ`n%4Ss"
+        "*7=8u>6g;OaX)OIeQWfwJuE^Xkj1P?1<*>Ron;;YY;U*0nA8p*6z2<YjkS>F9hOkZ>zVNjX%9K^Q$6|*!|hSG<N#7qt+e31j`Gh!"
+        "xm23&5S;dZIH(ElkYJpQvrSzU(-4Zda>hk@p#SG&N)HQr~$yzdvt5dbDXx6Na{Fpi#&Io!*K(*2xs;v+G(Y}%8oSOicxa8VlnP-"
+        "Z&$wm6*robKNWzr-hu+e3bGwX|HdAdFyb+91$kVPCsV<Q!&2FY2Wd!7riq|Tr;;}?_a_cY3;F?E3gU1?x+<hKcY|?WIJs<1`dSkC"
+        "s*&GeIhw@|pr2Ja2pkLDL45e2RP^588Sfp+1*21&P0?rQ>!`kD@2qDwp+EpkJ5Eq?MqfGV{@d&=Dlj*m^AsGsISE|&?#1Mf(Hg^O"
+        "frYYPtD6Q)0;RWi0{VDwQG0t^1?ltyhVs@MwI(_zr<y+K$Z%L#B7J!5;}b$39t%X+z%44XuT%V?!G>VD<>~2Q`kH?Kv?X-oWf~-"
+        "H{`ZmUO%_<A?zcMM!bcrBWD@;)lXP6g8j`l9Wq3C_Iywa_w_8k&o~c%2v3lvqc)Es6CPR1H&||CCj?Ie}^4?aY$ILHrk~-ov;f-"
+        "ug!qlg((z)5E)axNZHw~E|=j%ThFW5Cl$6)N>=*X03r1qL*z$5ec<AwjkHF+v*IjXKLf3+h=3>zAMc#saA^mu(D@IN|<VpYV%1X8"
+        "Q&B-"
+        "njQsWeGo&pHWKP7erhOu+nn!jd%18z%5bWN2^5&V9TBlISZfLEUzrVKm7)svtovdT}#>;YM!6zk!)~1!}gWVr+cT95Ic*hY8{;U("
+        "dS^Afe}E`A@^~ud~YsdzYAF*}9NH58RX#BA=2Wm&;&Zab#p1Hz#ROFv!QJFB4&P8hB-"
+        "4?koXIWvJ+i!NI}AqbAOLOh`x|OyiXK2s|LdsGqbr0*?+6t_d-#!3SwsXQuI5LG^**PV}qc6}6!y#ZmAG%*{Q5YCNOH;5!rD-"
+        "FqO=^2Fc(Iv6Qn8jr+Dz=krEyJ9Zh$;Du1$IsBRqlGt2;L$n;t!8uBauKb^@;T^0@*i{^enkh^%fhke!@=C3Zo-_RTMP-"
+        "1l1o2)$ST@MA%(4t1DklB%dRwu^hf@|zO$}uYJ(X*dc+mG6ES>kvnw)lL|9z@Ep+fuVS7p#xL{kSmmw-"
+        "#^q?6my6IB125eA#@KK9_{<4wcov#i-"
+        "{TWs@AA7B6K{E3#`N&cl^0R>!(<OHBza`8kyCdv4t3)qlQJCencWrm58BbvtK!A8hHruZWW3s5_r$BLzj>q~%M;+dNfOzupT|S11"
+        "w>uH`Cu00$g5`CXXK#OjNJpiYl$4N@R#NgSe=Idd&v$qZ&#u?izA}oh>3?tf;ue0?19iN>-"
+        "RafHR<DL|%WCo~(sQHVE;5F8x1WsSV(*8g1Ek|jcuwQ5WVJNb4fHtquFtS~N(`G1;D`qgp|29_{Zzl+xy`9RK7Yu@7P9qd%ij2%#"
+        "X#(-G_v!${jR_q*5Vpw1AfGI;Qz|M%mdn9`P0i}K}8VEEN*WeZVXL!d6Gq+se%oQ8vP2Lc0+m$bSiCVhQ?-"
+        "Z>|8262M;16XbPdWFwyHHl1I1op2=^R&XWzeznkpKQ$3R#>+Y3t<PLLk&Gee5TQx^))oDpRUXS-"
+        "g*NAlXSnIM(oi&q|>ke#q*}Yc7wC$$H@f!d%+_R3UPn&d&j2X9>&B+RdiDqz8QeTYex*dNTqwx+2@x&M~LZw7A0SgCWO#e7c4A4Z"
+        "V{ev)OL^AFU5-=?ZIcOsADUT;j()3$E-!aeubK7W0uPJaY#2%9XVW-yx9cwqYlA1w^En6W5-"
+        "dY@){OGnP1SMfwH#{@BCHNWlkHKW`*X?97i$|Uu&ySRNdv{s_Vq85`yOc}uQcu)qH19INvlY8ea6kZN2-"
+        "ge=3}jf0jR32Pi}56UUY$+ql42lr2Jc5GYOgm$i8iSCRlc3&F=Z=4aPoYk8%$e{q}b|JRxt0}xEAB3xzkae5g_VUJP?h)JAn0b8-"
+        "cas!1*BB`1APtv^KeCRWF20CBToxkhBFXkgd37rHED#jlUa$G~gIwbnHF*%c<rA()t_7-"
+        "6=z(+*Ricp42G;Y27>FE+^xL$%x5Bv~5AjTyogRW#d#wDE1}N;y5CP6Ug|f)#_8UT^ksF4!=)`_z^S0huS1+mW5zk$b`E)Jtxg-N"
+        "xD2X*u!{g0HhH&7Sg5#9|mcCs=5cTj)t7`U5~^4IBgdXWJ1`}<RVwI_Bhr=8^uOqwV8lLxA5Q!0S`KkUfu$}*_%0@Jnjj4%&uQhM"
+        "uRQ8$KhUVBKr3Hm@%sw1_XqB8PJ-"
+        ";&M`5#JEkw>@?HUVFU1ga)s7QZV7mskw%Fa)1|+xe;Z<&~iXmt#?wlj=<hMg7QvrX&{3ZRE{{yZYh0z_iw83gz&akq0iO)l2P6ET"
+        "h7&m7x9ACw7DyCQVgL$tt-eG8zw`?Y*3fv7~I+_*5u?K=HNMI>qTCDaCLO)o3AM)Z%3w@4LGH>r*!c@UPa_b8w8y74aL<?nIOSo;"
+        "e`FV8VJh{X6QYW!CnF`WcjaeUqgoBY%X^%>DR4U0dRo^Kj_oq0wn$#*P<m479B&_0~<0tGB##47%wQk`&k$?nO5h2@Dg^<;YgEWY"
+        "oNJc<9`<5%=W*NC%q4Nq;#fwyytC$XgtMEZ}p@&wF8j0WAui>&=ODOyK!le<50o;&GZ$Ss}XbUD;*s`GyUf+2k7mj7)toMbq{D*%"
+        "IJMFNQ3=)6PCv7I4(BoDWGN`A0{CT6`q>X^b6$g|^wPLZbbWz=f!)xfMNwb%3K6s;~0W9JsFzdH@J`#{yDWqD5(tzTR?r3Z4Vb1K"
+        "kK=BOov0>&1v5C_ki?!IQ=(><jar!T6D_`a7@%Y<%{O#Eqd1;Q4fhoq9_$_TYFJ1ZO=n-"
+        "9}<i7nI!831DH5!)ZbGd{LPj^siCiBK;V4PUJfmt)F^DierWG^8F5Yei(!?c;l``J?R=mz3u=Gd92@ZyCFh4i_APAZh?l6jWuo<f"
+        "F2-"
+        "I&CROI@&gkBrySEQmQngimR+la7pS!5)1d3$8HKn&HG#hA<byWO8f{qAe@HG7u)<O_CkMKDGCrO>4MzYXsku77bZtwsu%nd<jWf$"
+        "R?p;b`(T^aK2?&<+GBKaxB48!to}1IyTPn9F|Ua``ww8$9cG&;pL0TAiW$vnc?`plt4-K9mZp3sM-"
+        "!Y%y1)$N~M{35g)1Th&UfCY=equCyx_2Pc{0VJjN=H$jC^PL^5NxHS*!IA6x_(#9~3hEXVi{T$4woBAiRxAU+n9Qxq!`*KW+ej??"
+        "LOgEu`CwgT?OF5QpEsf#Jzbl?hUohw_yw~s`K-"
+        "vG>9Rxs^KBH)lG%eV!F9(1nj13Ja{;a={Vq~MJ97Fh|`_q<fpN_($vyqi&bo8qC@-"
+        "Qx6Y7h!$bgZR6C*oDhd7%&0TUNH2MhYm~T=SuW9GO2OX)qQl>vC2h<_wUm2bf{{oUCzPqIe<M+^192$yU+gSm%?aTN1=Sm<4W}Hf"
+        "SfomcS6^5=c6xxnxZ7@YEkMb0lOE&;bQ_GbPZ0X2{<kZF8?CnTO%MZIr_dTHx5Qr+9+Nv<SZs^`@TQEbmw_Yq>=`PU}E{<u?q1R("
+        "*Yxoa+<(auhYD2Ne;a(5BFRp(s-GKjxfj0SN|I5JFWpt$}`0!S3MlA#DZIK=P>-"
+        "nK$Ow<&%thKdq?khhJPKBHkV17CpbcPDq{Uc?zTPU%^9xpXE=*<1(C2KmM8SD(+o@WzDmDrk$~gl*W!=y6UU@uRuA=Ac83JV(YV3"
+        "}qK?9B(n}Mt)Z!BRS>!;R$2}3T{pM?WCARm^z!oCMJtf|;FKkl=pvvgZHk<j_8=A3e8rvV{%gU(g@blYiZX-"
+        "2)8D5eZL~CyJ#E&s4O}^CQu8)7Q(3d7p<_qQH25}%+<;hIG%R=6IwZATgF{gMed)5b5trx6X(k{rH$YDd*?k}z0J9F6Poje2F!2z"
+        "2n6l3r5*7eX^#Frs;NR!tHuMV8n>uT9S-uAgt#-"
+        "OBv<qf_7N41*Eg{sv)f3F#tkd{LqrINJ}B>f}JSyLkjc)9L6X)rEMOY`eK$%9y7RKA~Eyc0ChEJ?E4-"
+        "=F++SAVjHcq!*Xh;%fiFDB-iIbwfkk@KW=G2)vih^;{~O}fC(nkIjKTavUE$}*^y6f+lp;u*Uq0=9hGr}q_xn>U5c8KNW6gdcevG"
+        "dkCD#8nfxU~s5(UhTcmf2p<A#IZ^qhYjYx*@tqW{~gxn<RMrfE`Y2hjpfq~W4Pe%9otINF?4F?tnf3TcTk>=>MT^}QpS<u{{E5i7"
+        "@dgGGr7)^B#hgFaa3yUN?tNnamKz$<B08eqx{NK+!kRr<a{Qd-"
+        "g|M?*0a9pET_at3z|b~sJGzhNwdU>6CSfVSC^><$<Nw@{Y<E>|NM8V=@aU(nFWU(IS20!!wzp*?cmT_ZvXb9%&F_f;a1oR=H!d`b"
+        "I-"
+        "0fe>qCHPWWSJp}l4kmbo#v^?#?mQ)_&+wPq2i_PGKhi9{^Ogg+m*3YanvKV)QNU|}$aTX=bSVNgSk$LF|M$5XFhf)2ybX9^BWe$N"
+        "2W9Fu=svqu&0uQVp#PUsE7>fd#eEUo=q2k+*pIjlr%aA$&z*0zRbw@p*2+{r7g=ZYB^De!cngN7$qGDFi80v<Uu>>R+zg#4efG%g"
+        "*2K^8GC5(q|?j|#E~n3qav5;o|dPB)T9*$X`Ut$7~aSjg)XcSE;7L^{0t84V%Ufz>3V@DZi%aEh!Kc2(~g)fAv2gkqWOfwnK5LG*"
+        "s4_!^!ZJ@nL9e#SUp$TswCc&`7nJ6723964=6@Z}ZsM^7)hrgaY^=sJiQA<lj&lq<?a0uIEoss9%6eK3se0LGDgCEof~e-"
+        "K^fSMoNdX+5d}S?p59^*>Cm><VAwkw8WX*{^!^n2|+6G<_~iHD!r>B-y>pcTj|~mY=+zxkx6Tb=y>|X1?OxV-kf;FP3rkFOM|>KY"
+        "V|+zSfNp)jEQO<qJWZGxtO+Tp{4BISR!P%B*2=aaRYLb2ZA)NyeN5R1QPNgZ}RR81%h>zdM7uH+i|@c>If0=&iaz-"
+        "W#?bsLjLsW9a}bj!8Gx<?3rgH9hNnZP-uXR<;Q~!NUUn2IphkXNB*v@HVejlS-"
+        "6jat(=KJ|rfU$O<W`Niv*+Nu}QCt^r@XNBh%rF?}!fqhTJYUHj@TBOvT<4(%uGi{d?-"
+        "2wyy@p=?U`iyq(p@N{}`*QSOGha1+}5cX;Yscns>vanwIyuS^)h<`aiv0`w!Y7BKf*u^%i8N<?}Hjq><x3z7;dnFUNz2z*nls~}f"
+        "Ail(UObt@*w13uZ?OjSf)!+N51>>T{09!A8)-e1r;?-aqs3&Psaj-v_&%CK=%ueRVV*a6t=4V^-"
+        "2O00qSsW(U_RZ}_h%a(KbH8L6GNVJPIFyM_1nR;9J~1B1KUK#X`+W=e{hYl*PO)exzeGQB+2bd)|3Vm8?5VugOdU9-"
+        "x`<r%U#1%|{@Sm*j_e1u;v0*KT!2-"
+        "6xxzP_$#!KW?P$uU9Z@Pp7e@`hLHcvY{GAZHpTe+BBCGsvS?$hH%F*I<n=Zs&Ek*mm1$H2*=S^!CGheWZxJ3l6uZL<@#U4dGbB$O"
+        "G^n=L4j`6%{D|0Jll^Mdj-eGlo-ThE6&Q{RI4aV&t!c5w*)KF$-"
+        "CTeKI<${L$V>qSo*&~dMjKnRpAu0SJi<CwcZ5*Iq5D~`GCr&;-"
+        "QsBWI3fRdK!qxQQy;>1dE>T?KWB6Zx=xWAd$%n094YBWaRWX}SxKgunlz+B>yJ4f%f^%tHjOI^=*<*Km8<<mxK1YD(aUO(bc9bLa"
+        "wY4<{B?b$E5=2-"
+        "60?&WM^{WkZxGrQg)>z0fDq&rY?2A0iD#1+is4`bpo0ixk{GjOqT1?sAredirn!BQ048En_LT^B)N#yc_QwfDmu;98IO~>Ht3`-"
+        "3Sjx2)J>lp_5&sR*W$~q7h4Z5?}6h>@kp;ohNBSrtvW3{DDFND4Vq8aztR$fC_T;M|K%DKftN!sG#X4r9+39H%Hh3SWOHQrY?+g_"
+        "4=b(BbTY@R6S%1SVa@*6)P&kh1fxP2akrNW|PmVPfSVA~I&$EAjfaT&+Hg%u9Y1@CF02KoopdYtm+dOW&}S2CHpaYjPsF!8tTVR&"
+        "yykAy*AT{vI{U9YLXZUzpw$3dIzZ9}K8<If#;&g^2pzvc8&fr`&g)s@TTtk_RYQWy3#dNP}&Li9zFW|s*#=iFb=1>#qFa_PFkyT;"
+        "UYifwtVE8#rQdR1;R9*e=bL^lo?PuVMVfCLRLFQt9e2d|fH#~m2d4#R`euj2NwT^QUOLxR#X(|&>V8cU;e!ucH@OngPTnv{^B<5l"
+        "K;5KXwAz2ckZ6wgusx^)!9Y<+aL$)KWRTx*|oH`Z_Tfo{@vf%-"
+        "A0ku@Npl2tg#e91~tbrl>RQ~yl9Z}IVAav1q5%;bmfPGeSocOpx929n&H;f{GbQpoEsMEC9(8nR>GMQ*=jAK{ajhFge#3*m=^;t8"
+        "`v0Xh@U#@4WQ3@k_l<(ZR(eCGx|2ZP!w>z-Vw{)W@lZck^iBn=;3dCX!3JqPCes9cPg3&b=O-8O)lR*-"
+        "wJkVUvRj@RKROcAgYPJgH2Msq`bq-"
+        "~Y;FRa$wkb=nUrO@mZ1vwp`8?HS~mmOQq1x%)#+N*8Z4Q&lr7o%Lt;V$_^Rf&+sM{P97M4$w$laYWKj}gm`<t4JAA2=q&cl$~)p@"
+        "qO>DHdLv5csuNY=jMYJ(UPu-"
+        "kvw$>SbApAD1(q$2XUMnZWv7ShGt4_=FNoV;g4JQl60E$a=)Jw5053zUWUJ?!(tm`ZF{Bf-i}aq&cGUtCJL9_Vg-acu%6M>)Kcz?"
+        "<3bWYch|!u-"
+        "`cD&%?DGWW6BHtLZa<1q<1uqBiGZ?iy1N=Tp*l>R>eFydR4*7r>CUyMOi`WrX1sHO;L&L712Al%`DxXUpYTBS=3ec%Gf#aQd9Xk="
+        "v;%%wu)mB569q4{__h$UhIHF^uJ7+~WLl{A%a#x2a)%Qa54Q`)CTG<sf@I3ZYQN)!0X407?q&Dd{3N_>*v1*(^%Xm^d>`(%84}C>"
+        "h1BY`^-"
+        "#E_!)I&g~z(r2{o<^VsOGlT&zHRYhqsBVoU2eDU*TRIkDQ)ew2?GqYbmBKOteq%=HDD<rwL@maRa6oU+PX;)Zr)l@$B1j#%t?g7-"
+        "DKY!;x>ns<5+Rj`N*U}d!zf0~9*YIus()d@MAep&#h7kn?l!-D}R()v(ES|)N+RiJ3Yd20qw%~-"
+        "kToQAva+rnj4PSjfJlyCRdrpIQZcN;l=*MgCpJq2GYPEfh;>J+uRAgqo>;~==KUcwzo4#MVX~K~QpZ`G`#xf5(g6zg+t|4+Aj$~b"
+        "t?1h8QFJ_iElb&L2heKYBfQW7<(z{hm0>3X<2kj~&_~Kw)(ggL{pgWVtm6PMLV=dR;9*BWoxUzAsgNkU3Ey}~e>#0We_8w;Dw|8Q"
+        "03AmiagF~c~5&MA0?;Ww(n1jEy>2PEsq-"
+        "&?Vn0d9qumx#xvV{?wK$r@jhA@=V&#bJkUJ#*wMk#fb4AvqlIAqG;EX?qy|3ZRka7rZc01Y)+2)Gzaic#sOrnM*Rw+=ub3)XX4U0"
+        "t8?FoCt@{kKWEe5nzJ+{B-"
+        "qWK`UhNx^S~JWQ?5#5}IC00t)TWcP9Jq;N!jkq1}aX=kqzky>p`0%Y>%L{7zSJF9}kvtka5mp_QDbkddu4pK|GfV*pcui#$8!Nw8"
+        "v8cqP!2nlz(&#Gx-nMy+sJMIRJRI(cPt(}k5TL0<;d|&3J*2c?{^D%P1DcN5Xq-"
+        "`uje+fDovDB^^k7cYBrT8~Y+WBAh*F2XG=Zvw376-"
+        "k}vib;%lF*)2)A;uir`(o+@gp`r2BDLmMuh%_6X_o*l{w4sYVL)Df6wV%Kz$+EhN?O1@C0qSwe9kJ?(->plKPwSWKp-uEsa2wP*%"
+        "WNXS{B_iKQeBA9on^`K(r>lr^g1haRS0jre%_qqqmLd3<lBMwt!cZb>C@aeNwiIt$z{-"
+        "c1SEVCRkAlyvhW9g7z;G4nR4Xvx|Q*&UAI<DgYCCg-eM7>vP``-"
+        "KwflQ@uvd3h95m#ywZ`8lpS?T+)76+IZqy}hzH&GV*d*YqMy8RxDjYL(#-33kP-*a;d|^Ig-C=fo1peqUA@Zh|4nf-"
+        "7ot8Xe90yQowXJYmKk^iWUGY?XEfWmCe-"
+        "R#M%;j1QB(It9J2^ZhW;u@n}r5^(*=qEi7J_7$EB6<@JAUmR5#*IFVxn(FZu;hAUXp0zh*%#h2YT*!`8d&Acqq4QhztClndDo318"
+        "XQfxAagBAvI+cE>S2hD)aM42qHH|fR5GfcfrknWHA@SS#Ht$+hGKs^Y%Hjla8vQfNRAAGZH{GIUwX0oe@5&OceAl(@`HUJpehg17"
+        "*5e4|3X%C4HS!)D)^I%2!t|Jo93`X#Y*5t>Lf&^{=Qa(0X$<v`bDd)EAC0QR(o<-"
+        "=<Eg7+G2g6GVng^qXF+#4qD06YF+3EN4d{I}4xhwU&W{A18S`VNv(z^_OhIsYc(*^-"
+        "Q~HLTMK9Sv(~359%@&BggnRXU95u3X0*_PaRj0tUqPnXMe@bSUVvkj9xgVr9C_}W4nnbVtJydmd3&K-"
+        "bg<$l@{GU=6|BP{7rqF}ln;<E98W*wMU1W0OD>y)Tr<I{r#^tzYrJwz>l~(y~EpYKbl7-==IaHGpc}A_G{5dYKZ|MBw-"
+        "m+ei_pavbnL1xa?~o{V^#H4jPu>61(EbN4P{@7"
+    )
+)
+_GLYPH_SIZE: Final = GLYPH_WIDTH * GLYPH_HEIGHT
+
+
+def glyph_alpha(character: str) -> tuple[memoryview, int] | None:
+    """Return one immutable grayscale glyph and its horizontal advance."""
+
+    candidate = str(character or "")[:1]
+    if not candidate:
+        return None
+    index = GLYPH_ORDER.find(candidate)
+    if index < 0:
+        return None
+    start = index * _GLYPH_SIZE
+    return (
+        memoryview(_GLYPH_ALPHA)[start:start + _GLYPH_SIZE],
+        int(GLYPH_ADVANCES[index]),
+    )
+
+
+def missing_glyphs(value: str) -> set[str]:
+    """Return non-space characters unavailable to the compact chart font."""
+
+    return {
+        character
+        for character in str(value or "")
+        if character != " " and character not in GLYPH_ORDER
+    }
+
+
+__all__ = [
+    "GLYPH_HEIGHT",
+    "GLYPH_WIDTH",
+    "glyph_alpha",
+    "missing_glyphs",
+]
