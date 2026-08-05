@@ -218,11 +218,16 @@ def _confirmation_1h(item: Mapping[str, Any], facts: Mapping[str, Any]) -> str:
     return "缺数据"
 
 
-def _evidence_text(values: object, labels: Mapping[str, str]) -> str:
+def _evidence_lines(
+    values: object,
+    labels: Mapping[str, str],
+    *,
+    empty_text: str,
+) -> list[str]:
     if not isinstance(values, (list, tuple)):
-        return "暂无"
+        return [f"• {empty_text}"]
     translated = [labels[str(value)] for value in values if str(value) in labels]
-    return "；".join(translated[:3]) or "暂无"
+    return [f"• {text}" for text in translated[:3]] or [f"• {empty_text}"]
 
 
 def _funding_text(item: Mapping[str, Any]) -> str:
@@ -265,7 +270,8 @@ def _outcome_lines(item: Mapping[str, Any]) -> list[str]:
     peak_key = str(lifecycle.get("peak_stage") or "idle")
     peak_label = _STAGES.get(peak_key, ("", "未知"))[1]
     lines = [
-        f"周期：{_duration_text(lifecycle.get('duration_sec'))}｜最高 {peak_label}"
+        f"本轮：已跟踪 {_duration_text(lifecycle.get('duration_sec'))}｜"
+        f"最高 {peak_label}"
     ]
     evaluation = _mapping(lifecycle.get("outcome_evaluation"))
     reliability = _mapping(evaluation.get("reliability"))
@@ -278,19 +284,19 @@ def _outcome_lines(item: Mapping[str, Any]) -> list[str]:
                 if reliability.get("aggregation_scope") == "asset_liquidity"
                 else "同规则"
             )
-            lines.append(
-                f"历史：{scope}{samples}轮｜确认率 "
-                f"{_pct(_metric(reliability, 'confirmed_rate_pct'))}｜"
-                f"跟随率 {_pct(_metric(reliability, 'followed_through_rate_pct'))}"
-            )
+            lines.extend([
+                f"历史：{scope} {samples}轮",
+                f"确认率 {_pct(_metric(reliability, 'confirmed_rate_pct'))}｜"
+                f"跟随率 {_pct(_metric(reliability, 'followed_through_rate_pct'))}",
+            ])
         else:
             lines.append(
-                f"历史：样本积累中 {samples}/{minimum}轮｜不自动修改参数"
+                f"历史：样本积累中 {samples}/{minimum}轮（不自动修改参数）"
             )
     progress = _mapping(evaluation.get("progress"))
     if str(lifecycle.get("cycle_status") or "") == "failed" and progress:
         lines.append(
-            "结案：最高/最低收盘变动 "
+            "结案：有利/不利收盘变动 "
             f"{_pct(_metric(progress, 'max_favorable_return_pct'))} / "
             f"{_pct(_metric(progress, 'max_adverse_return_pct'))}"
         )
@@ -331,10 +337,16 @@ def format_launch_fusion_package(item: Mapping[str, Any], settings: object) -> s
     spot_ratio = _optional_number(item.get("spot_active_ratio"))
     futures_ratio = _optional_number(item.get("futures_active_ratio"))
 
-    support = _evidence_text(
-        scoring.get("supporting_evidence"), _SUPPORT_TEXT
+    support_lines = _evidence_lines(
+        scoring.get("supporting_evidence"),
+        _SUPPORT_TEXT,
+        empty_text="暂无明确支持证据",
     )
-    counter = _evidence_text(scoring.get("counter_evidence"), _COUNTER_TEXT)
+    counter_lines = _evidence_lines(
+        scoring.get("counter_evidence"),
+        _COUNTER_TEXT,
+        empty_text="暂无明显反向证据",
+    )
     data_status = "完整" if str(facts.get("status") or "ok") == "ok" else "不完整"
     evidence_strength = _EVIDENCE_STRENGTH.get(
         str(item.get("evidence_strength") or ""),
@@ -345,27 +357,43 @@ def format_launch_fusion_package(item: Mapping[str, Any], settings: object) -> s
         "证据不足",
     )
 
+    outcome_lines = _outcome_lines(item)
+    outcome_section = (
+        ["", tg_bold("📍 跟踪结果"), *[f"• {line}" for line in outcome_lines]]
+        if outcome_lines
+        else []
+    )
     return "\n".join([
-        f"{icon} {tg_bold(stage_label)}｜{coin_link(dict(item))}",
-        f"品类：{category}｜第{appear_count}次｜规则分 {score}（不是概率）",
-        f"证据：{evidence_strength}｜路径：{trigger_path}",
-        f"路径：15m发现｜1h{_confirmation_1h(item, facts)}｜4h背景｜24h背景",
+        f"{icon} {tg_bold(stage_label)}",
+        coin_link(dict(item)),
+        f"{tg_bold('当前判断')}：{_CONCLUSIONS[stage]}",
+        f"规则分：{score}/100（不是概率）｜证据：{evidence_strength}",
+        f"触发：{trigger_path}｜1小时：{_confirmation_1h(item, facts)}",
+        f"品类：{category}｜本轮第{appear_count}次｜数据：{data_status}",
         "",
-        tg_bold("多周期（价格｜持仓量）"),
-        f"15m {_pct(price_15m)}｜{_pct(oi_15m)}",
-        f"1h  {_pct(price_1h)}｜{_pct(oi_1h)}",
-        f"4h  {_pct(price_4h)}｜{_pct(oi_4h)}",
-        f"24h 价格 {_pct(price_24h)}（滚动）｜持仓 {_oi_24h_text(oi_24h, facts.get('oi_24h_status') or item.get('oi_24h_status'))}（严格闭合）",
-        f"成交量：15m {_ratio(volume_ratio)}",
-        f"价量结构：{_quadrant_text(item, facts)}",
+        tg_bold("🔥 核心变化"),
+        f"• 15分钟：价格 {_pct(price_15m)}｜持仓 {_pct(oi_15m)}",
+        f"• 1小时：价格 {_pct(price_1h)}｜持仓 {_pct(oi_1h)}",
+        f"• 成交量：{_ratio(volume_ratio)}｜资金费率 {_funding_text(item)}",
         "",
-        f"{tg_bold('主动资金')}：现货 {_flow_text(spot_flow, spot_ratio, item.get('spot_active_status'))}｜合约 {_flow_text(futures_flow, futures_ratio, item.get('futures_active_status'))}",
-        f"资金费率：{_funding_text(item)}",
-        f"支持：{support}",
-        f"反证：{counter}",
-        *_outcome_lines(item),
-        f"数据：{data_status}｜缺失项不会按0计算",
-        f"结论：{_CONCLUSIONS[stage]}",
+        tg_bold("💰 主动资金"),
+        f"• 现货：{_flow_text(spot_flow, spot_ratio, item.get('spot_active_status'))}",
+        f"• 合约：{_flow_text(futures_flow, futures_ratio, item.get('futures_active_status'))}",
+        "",
+        tg_bold("✅ 支持证据"),
+        *support_lines,
+        "",
+        tg_bold("⚠️ 反向证据"),
+        *counter_lines,
+        "",
+        tg_bold("🔭 背景参考"),
+        f"• 4小时：价格 {_pct(price_4h)}｜持仓 {_pct(oi_4h)}",
+        f"• 24小时：价格 {_pct(price_24h)}（滚动）",
+        f"• 24小时持仓：{_oi_24h_text(oi_24h, facts.get('oi_24h_status') or item.get('oi_24h_status'))}（严格闭合）",
+        f"• 价量结构：{_quadrant_text(item, facts)}",
+        *outcome_section,
+        "",
+        f"{tg_bold('数据说明')}：缺失项不会按0计算。",
     ])
 
 
@@ -401,13 +429,17 @@ def format_launch_fusion_incomplete(item: Mapping[str, Any]) -> str:
     )
     reason = _ERROR_TEXT.get(error, "数据校验未通过")
     return "\n".join([
-        f"⚪ {tg_bold('启动数据不足')}｜{coin_link(dict(item))}",
-        "路径：15m发现暂停｜1h不升级｜4h/24h仅保留背景",
-        f"可用：{ready}",
-        f"缺失：{missing}",
-        f"原因：{reason}",
-        "处理：缺失项不会按0计算；等待完整收盘数据后再判断。",
-        "结论：本轮不升级，不形成高确定性判断。",
+        f"⚪ {tg_bold('启动数据不足')}",
+        coin_link(dict(item)),
+        f"{tg_bold('当前判断')}：本轮不升级，等待完整收盘数据。",
+        "确认：15分钟发现暂停｜1小时不升级",
+        "",
+        tg_bold("🧾 数据状态"),
+        f"• 已取得：{ready}",
+        f"• 缺少：{missing}",
+        f"• 原因：{reason}",
+        "",
+        "处理：缺失项不会按0计算，也不会形成高确定性判断。",
     ])
 
 

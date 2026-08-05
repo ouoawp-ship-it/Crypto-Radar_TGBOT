@@ -7,6 +7,7 @@ from radars.launch_warning.fusion_formatter import (
     format_launch_fusion_incomplete,
     format_launch_fusion_package,
 )
+from shared.telegram import plain_fallback
 
 
 class LaunchFusionFormatterTests(unittest.TestCase):
@@ -26,6 +27,7 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             "stage": "watching",
             "appear_count": 1,
             "asset_category_label": "山寨币",
+            "evidence_strength": "medium",
             "funding_available": True,
             "funding_pct": 0.0123,
             "spot_active_net_usd": 42_000,
@@ -49,6 +51,7 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             "launch_scoring": {
                 "score": 54,
                 "score_semantics": "rule_score_not_probability",
+                "trigger_path": "momentum",
                 "supporting_evidence": [
                     "price_momentum_met",
                     "open_interest_growth_met",
@@ -79,15 +82,17 @@ class LaunchFusionFormatterTests(unittest.TestCase):
 
     def test_formats_multiperiod_facts_and_telegram_links(self) -> None:
         text = format_launch_fusion_package(self.item(), self.settings)
-        self.assertIn("15m +3.60%｜+3.20%", text)
-        self.assertIn("1h  +4.20%｜+3.90%", text)
-        self.assertIn("4h  +5.80%｜+4.60%", text)
+        self.assertIn("• 15分钟：价格 +3.60%｜持仓 +3.20%", text)
+        self.assertIn("• 1小时：价格 +4.20%｜持仓 +3.90%", text)
+        self.assertIn("• 4小时：价格 +5.80%｜持仓 +4.60%", text)
         self.assertIn(
-            "24h 价格 +11.30%（滚动）｜持仓 +8.40%（严格闭合）",
+            "• 24小时：价格 +11.30%（滚动）",
             text,
         )
-        self.assertIn("15m发现｜1h待确认｜4h背景｜24h背景", text)
+        self.assertIn("• 24小时持仓：+8.40%（严格闭合）", text)
+        self.assertIn("触发：动量共振｜1小时：待确认", text)
         self.assertIn('<a href="https://www.tradingview.com/', text)
+        self.assertIn('<a href="https://www.coinglass.com/', text)
         self.assertIn("<code>DEMOUSDT</code>", text)
 
     def test_translates_evidence_and_never_exposes_fixed_codes(self) -> None:
@@ -107,8 +112,9 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             funding_pct=0.0,
         )
         text = format_launch_fusion_package(item, self.settings)
-        self.assertIn("现货 缺数据｜合约 缺数据", text)
-        self.assertIn("资金费率：缺数据", text)
+        self.assertIn("• 现货：缺数据", text)
+        self.assertIn("• 合约：缺数据", text)
+        self.assertIn("资金费率 缺数据", text)
         self.assertNotIn("现货 +$0", text)
         self.assertNotIn("合约 +$0", text)
         self.assertNotIn("资金费率：+0.0000%", text)
@@ -126,8 +132,8 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             self.settings,
         )
 
-        self.assertIn("现货 该币无币安现货对", text)
-        self.assertIn("合约 本窗口未完整", text)
+        self.assertIn("• 现货：该币无币安现货对", text)
+        self.assertIn("• 合约：本窗口未完整", text)
         self.assertNotIn("现货 +$0", text)
         self.assertNotIn("合约 +$0", text)
 
@@ -141,7 +147,7 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             self.settings,
         )
 
-        self.assertIn("持仓 历史不足（严格闭合）", text)
+        self.assertIn("• 24小时持仓：历史不足（严格闭合）", text)
         self.assertNotIn("持仓 +0.00%", text)
 
     def test_downward_one_hour_state_is_not_rendered_as_confirmed(self) -> None:
@@ -155,17 +161,32 @@ class LaunchFusionFormatterTests(unittest.TestCase):
 
         text = format_launch_fusion_package(item, self.settings)
 
-        self.assertIn("15m发现｜1h待确认", text)
-        self.assertNotIn("1h已确认", text)
+        self.assertIn("触发：动量共振｜1小时：待确认", text)
+        self.assertNotIn("1小时：已确认", text)
 
     def test_caption_is_compact_and_has_no_deterministic_promise_or_smc(self) -> None:
         text = format_launch_fusion_package(
             self.item(stage="launched", confirmation_1h=True), self.settings
         )
-        self.assertLessEqual(len(text), 1024)
-        self.assertIn("规则分 54（不是概率）", text)
+        self.assertLessEqual(len(plain_fallback(text)), 1024)
+        self.assertIn("规则分：54/100（不是概率）", text)
         for forbidden in ("必涨", "确定会涨", "稳赚", "庄家", "SMC"):
             self.assertNotIn(forbidden, text)
+
+    def test_mobile_sections_put_judgment_before_details(self) -> None:
+        text = format_launch_fusion_package(self.item(), self.settings)
+
+        expected = [
+            "<b>当前判断</b>",
+            "<b>🔥 核心变化</b>",
+            "<b>💰 主动资金</b>",
+            "<b>✅ 支持证据</b>",
+            "<b>⚠️ 反向证据</b>",
+            "<b>🔭 背景参考</b>",
+        ]
+        positions = [text.index(label) for label in expected]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("品类：山寨币｜本轮第1次｜数据：完整", text)
 
     def test_lifecycle_and_historical_results_are_reported_without_tuning(self) -> None:
         text = format_launch_fusion_package(
@@ -190,9 +211,10 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             self.settings,
         )
 
-        self.assertIn("周期：45分钟｜最高 启动确认", text)
-        self.assertIn("历史：同类同流动性24轮", text)
+        self.assertIn("• 本轮：已跟踪 45分钟｜最高 启动确认", text)
+        self.assertIn("• 历史：同类同流动性 24轮", text)
         self.assertIn("确认率 +62.50%", text)
+        self.assertLessEqual(len(plain_fallback(text)), 1024)
         self.assertIn("不自动修改参数", format_launch_fusion_package(
             self.item(
                 launch_lifecycle={
@@ -230,9 +252,9 @@ class LaunchFusionFormatterTests(unittest.TestCase):
             },
         }
         text = format_launch_fusion_incomplete(item)
-        self.assertIn("可用：价格", text)
-        self.assertIn("缺失：持仓量、成交量、主动资金", text)
-        self.assertIn("原因：持仓量窗口不连续", text)
+        self.assertIn("已取得：价格", text)
+        self.assertIn("缺少：持仓量、成交量、主动资金", text)
+        self.assertIn("• 原因：持仓量窗口不连续", text)
         self.assertIn("缺失项不会按0计算", text)
         self.assertNotIn("launch_market_facts_oi_gap", text)
         self.assertNotIn("SMC", text)
