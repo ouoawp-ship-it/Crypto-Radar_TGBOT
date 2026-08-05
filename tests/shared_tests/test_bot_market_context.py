@@ -5,7 +5,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
-from shared.bot_market_context import enrich_telegram_with_market_context
+from shared.bot_market_context import (
+    closed_market_contexts_for_symbols,
+    enrich_telegram_with_market_context,
+)
 from shared.market_cockpit import MarketSnapshotStore
 from shared.realtime_market import RealtimeFeatureStore
 
@@ -37,6 +40,53 @@ def feature_row(
 
 
 class BotMarketContextTests(unittest.TestCase):
+    def test_closed_market_context_keeps_active_flow_ratios(self) -> None:
+        with TemporaryDirectory() as tmp:
+            market_path = Path(tmp) / "market.db"
+            MarketSnapshotStore(market_path).append_many([
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": 300,
+                    "source": "binance_futures_batch",
+                    "window_sec": 900,
+                    "price": 100,
+                    "oi_usd": 1_000_000,
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": 1_200,
+                    "source": "binance_futures_batch",
+                    "window_sec": 900,
+                    "price": 101,
+                    "oi_usd": 1_050_000,
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": 1_200,
+                    "source": "market_flow_15m",
+                    "window_sec": 900,
+                    "spot_inflow_usd": 750,
+                    "spot_outflow_usd": 250,
+                    "spot_flow_usd": 500,
+                    "futures_inflow_usd": 400,
+                    "futures_outflow_usd": 600,
+                    "futures_flow_usd": -200,
+                },
+            ])
+
+            contexts = closed_market_contexts_for_symbols(
+                SimpleNamespace(market_snapshots_db_path=market_path),
+                ["BTCUSDT"],
+                now_ts=1_200,
+            )
+
+        self.assertAlmostEqual(contexts["BTCUSDT"]["spot_active_ratio"], 0.5)
+        self.assertAlmostEqual(
+            contexts["BTCUSDT"]["futures_active_ratio"],
+            -0.2,
+        )
+        self.assertEqual(contexts["BTCUSDT"]["window_end_ts"], 1_200)
+
     def test_appends_closed_window_market_facts_without_changing_trigger_copy(self) -> None:
         rows = [
             feature_row(

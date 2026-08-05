@@ -30,6 +30,12 @@ def snapshot(
     spot_active_net_usd: float | None = None,
     futures_active_net_usd: float | None = None,
     funds_direction: str = "unknown",
+    price_action_analysis: dict[str, object] | None = None,
+    asset_class: str = "altcoin",
+    liquidity_tier: str = "中流动性",
+    trigger_path: str = "momentum",
+    price_oi_quadrant: str = "price_up_oi_up",
+    counter_evidence: list[str] | None = None,
 ) -> dict[str, object]:
     return {
         "symbol": symbol,
@@ -54,6 +60,64 @@ def snapshot(
         "spot_active_net_usd": spot_active_net_usd,
         "futures_active_net_usd": futures_active_net_usd,
         "funds_direction": funds_direction,
+        "price_action_analysis": price_action_analysis,
+        "asset_class": asset_class,
+        "liquidity_tier": liquidity_tier,
+        "trigger_path": trigger_path,
+        "price_oi_quadrant": price_oi_quadrant,
+        "counter_evidence": list(counter_evidence or []),
+    }
+
+
+def price_action_breakout(window_end_ts: int) -> dict[str, object]:
+    return {
+        "data_status": "ready",
+        "lookback": 2,
+        "min_body_ratio": 0.45,
+        "wick_body_ratio": 1.5,
+        "timeframes": {
+            "15m": {
+                "data_status": "ready",
+                "event": "breakout_up",
+                "candle_end_ts": window_end_ts,
+                "box_high": 100.0,
+                "box_low": 95.0,
+            },
+            "1h": {"data_status": "insufficient_history"},
+        },
+    }
+
+
+def price_action_confirmed(window_end_ts: int) -> dict[str, object]:
+    return {
+        "data_status": "ready",
+        "lookback": 2,
+        "min_body_ratio": 0.45,
+        "wick_body_ratio": 1.5,
+        "timeframes": {
+            "15m": {
+                "data_status": "ready",
+                "event": "inside",
+                "candle_end_ts": window_end_ts,
+                "open": 102.0,
+                "high": 106.0,
+                "low": 101.0,
+                "close": 105.0,
+                "body_ratio": 0.6,
+            },
+            "1h": {
+                "data_status": "ready",
+                "event": "inside",
+                "candle_end_ts": window_end_ts,
+                "open": 100.0,
+                "high": 106.0,
+                "low": 99.0,
+                "close": 105.0,
+                "body_ratio": 0.7,
+                "upper_wick_body_ratio": 0.2,
+                "lower_wick_body_ratio": 0.2,
+            },
+        },
     }
 
 
@@ -106,6 +170,312 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertEqual(second["delta_from_first"]["score"], 15)
             self.assertEqual(duplicate["status"], "duplicate")
             self.assertEqual(len(store.list_observations(first["cycle_id"])), 2)
+
+    def test_fusion_score_cannot_replace_closed_one_hour_confirmation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                price_action_enabled=True,
+                launched_score=90,
+            )
+            opened = store.record_observation(
+                snapshot(
+                    window_end_ts=2700,
+                    score=95,
+                    price=103,
+                    oi=1_050,
+                    price_action_analysis=price_action_breakout(2700),
+                ),
+                stage="launched",
+                observed_at=2710,
+            )
+            confirmed = store.record_observation(
+                snapshot(
+                    window_end_ts=3600,
+                    score=85,
+                    price=105,
+                    oi=1_100,
+                    price_action_analysis=price_action_confirmed(3600),
+                ),
+                stage="breakout",
+                observed_at=3610,
+            )
+            accelerated = store.record_observation(
+                snapshot(
+                    window_end_ts=4500,
+                    score=95,
+                    price=108,
+                    oi=1_180,
+                    price_action_analysis=price_action_confirmed(3600),
+                ),
+                stage="launched",
+                observed_at=4510,
+            )
+
+            self.assertEqual(opened["current_stage"], "primed")
+            self.assertEqual(opened["confirmation_status"], "awaiting_1h")
+            self.assertEqual(confirmed["current_stage"], "breakout")
+            self.assertEqual(confirmed["confirmation_status"], "confirmed_1h")
+            self.assertEqual(accelerated["current_stage"], "launched")
+            self.assertEqual(accelerated["peak_stage"], "launched")
+
+    def test_legacy_cycle_keeps_legacy_semantics_after_fusion_is_enabled(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "signals.db"
+            legacy = LaunchLifecycleStore(db_path, fusion_enabled=False)
+            opened = legacy.record_observation(
+                snapshot(window_end_ts=900, score=80, price=100, oi=1_000),
+                stage="breakout",
+                observed_at=910,
+            )
+
+            fusion = LaunchLifecycleStore(db_path, fusion_enabled=True)
+            continued = fusion.record_observation(
+                snapshot(window_end_ts=1800, score=82, price=101, oi=1_020),
+                stage="breakout",
+                observed_at=1810,
+            )
+
+            self.assertEqual(opened["current_stage"], "breakout")
+            self.assertEqual(fusion.active_symbol_modes(), {"TESTUSDT": False})
+            self.assertEqual(continued["current_stage"], "breakout")
+            self.assertEqual(continued["confirmation_status"], "not_required")
+
+    def test_fusion_cycle_keeps_confirmation_gate_after_fusion_is_disabled(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "signals.db"
+            fusion = LaunchLifecycleStore(
+                db_path,
+                fusion_enabled=True,
+                price_action_enabled=True,
+                launched_score=90,
+            )
+            opened = fusion.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=95,
+                    price=100,
+                    oi=1_000,
+                    price_action_analysis=price_action_breakout(900),
+                ),
+                stage="launched",
+                observed_at=910,
+            )
+
+            legacy = LaunchLifecycleStore(
+                db_path,
+                fusion_enabled=False,
+                price_action_enabled=False,
+                launched_score=90,
+            )
+            waiting = legacy.record_observation(
+                snapshot(window_end_ts=1800, score=95, price=101, oi=1_020),
+                stage="launched",
+                observed_at=1810,
+            )
+            confirmed = legacy.record_observation(
+                snapshot(
+                    window_end_ts=2700,
+                    score=95,
+                    price=103,
+                    oi=1_060,
+                    price_action_analysis=price_action_confirmed(2700),
+                ),
+                stage="launched",
+                observed_at=2710,
+            )
+
+            self.assertEqual(opened["current_stage"], "primed")
+            self.assertEqual(legacy.active_symbol_modes(), {"TESTUSDT": True})
+            self.assertEqual(waiting["current_stage"], "primed")
+            self.assertEqual(waiting["confirmation_status"], "awaiting_1h")
+            self.assertEqual(confirmed["current_stage"], "launched")
+            self.assertEqual(confirmed["confirmation_status"], "confirmed_1h")
+
+    def test_blank_pre_fusion_rule_key_migrates_as_legacy(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "signals.db"
+            legacy = LaunchLifecycleStore(db_path, fusion_enabled=False)
+            opened = legacy.record_observation(
+                snapshot(window_end_ts=900, score=80, price=100, oi=1_000),
+                stage="breakout",
+                observed_at=910,
+            )
+            with legacy.connect() as conn:
+                conn.execute(
+                    "UPDATE launch_lifecycle_cycles SET outcome_rule_key = '' WHERE id = ?",
+                    (opened["cycle_id"],),
+                )
+
+            fusion = LaunchLifecycleStore(
+                db_path,
+                fusion_enabled=True,
+                outcome_enabled=True,
+            )
+            fusion.refresh_outcomes(evaluated_at=920)
+
+            self.assertEqual(fusion.active_symbol_modes(), {"TESTUSDT": False})
+            with fusion.connect() as conn:
+                rule_key = str(
+                    conn.execute(
+                        "SELECT outcome_rule_key FROM launch_lifecycle_cycles WHERE id = ?",
+                        (opened["cycle_id"],),
+                    ).fetchone()[0]
+                )
+            self.assertTrue(rule_key.endswith(":fusion=0"))
+
+    def test_fusion_unconfirmed_breakout_price_does_not_end_cycle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                price_action_enabled=True,
+            )
+            opened = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=80,
+                    price=105,
+                    oi=1_000,
+                    breakout=True,
+                    breakout_price=100,
+                ),
+                stage="breakout",
+                observed_at=910,
+            )
+            first = store.record_observation(
+                snapshot(window_end_ts=1800, score=70, price=99, oi=1_010),
+                stage="primed",
+                observed_at=1810,
+            )
+            second = store.record_observation(
+                snapshot(window_end_ts=2700, score=70, price=98, oi=1_020),
+                stage="primed",
+                observed_at=2710,
+            )
+
+            self.assertEqual(opened["current_stage"], "primed")
+            self.assertEqual(first["breakout_below_count"], 0)
+            self.assertEqual(second["cycle_status"], "active")
+
+    def test_fusion_same_stage_changes_are_throttled_for_thirty_minutes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+                fusion_enabled=True,
+                same_stage_min_interval_sec=1800,
+            )
+            first = store.record_observation(
+                snapshot(window_end_ts=900, score=60, price=100, oi=1_000),
+                stage="primed",
+                observed_at=910,
+            )
+            store.commit_package(
+                cycle_id=first["cycle_id"],
+                observation_id=first["observation_id"],
+                message_ids=[101],
+                checkpoint_reasons=["cycle_opened"],
+                published_at=920,
+            )
+            too_soon = store.record_observation(
+                snapshot(window_end_ts=1800, score=76, price=104, oi=1_070),
+                stage="breakout",
+                observed_at=1810,
+            )
+            after_interval = store.record_observation(
+                snapshot(window_end_ts=2700, score=77, price=105, oi=1_080),
+                stage="breakout",
+                observed_at=2710,
+            )
+
+            self.assertFalse(too_soon["publication"]["publish_required"])
+            self.assertTrue(after_interval["publication"]["publish_required"])
+            self.assertIn(
+                "score_delta",
+                after_interval["publication"]["checkpoint_reasons"],
+            )
+
+    def test_fusion_hard_counter_moves_active_cycle_to_risk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+                fusion_enabled=True,
+                outcome_enabled=True,
+            )
+
+            result = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=80,
+                    price=100,
+                    oi=1_000,
+                    counter_evidence=["price_down_oi_up"],
+                ),
+                stage="breakout",
+                observed_at=910,
+            )
+
+            self.assertEqual(result["cycle_status"], "active")
+            self.assertEqual(result["current_stage"], "risk")
+            self.assertFalse(result["outcome_evaluation"]["progress"]["confirmed"])
+
+    def test_fusion_quadrant_change_waits_for_same_stage_interval(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+                fusion_enabled=True,
+                same_stage_min_interval_sec=1800,
+            )
+            first = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=65,
+                    price=100,
+                    oi=1_000,
+                    price_oi_quadrant="price_up_oi_up",
+                ),
+                stage="primed",
+                observed_at=910,
+            )
+            store.commit_package(
+                cycle_id=first["cycle_id"],
+                observation_id=first["observation_id"],
+                message_ids=[101],
+                checkpoint_reasons=["cycle_opened"],
+                published_at=920,
+            )
+            too_soon = store.record_observation(
+                snapshot(
+                    window_end_ts=1800,
+                    score=65,
+                    price=100,
+                    oi=1_000,
+                    price_oi_quadrant="price_up_oi_down",
+                ),
+                stage="primed",
+                observed_at=1810,
+            )
+            after_interval = store.record_observation(
+                snapshot(
+                    window_end_ts=2700,
+                    score=65,
+                    price=100,
+                    oi=1_000,
+                    price_oi_quadrant="price_up_oi_down",
+                ),
+                stage="primed",
+                observed_at=2710,
+            )
+
+            self.assertFalse(too_soon["publication"]["publish_required"])
+            self.assertEqual(
+                after_interval["publication"]["checkpoint_reasons"],
+                ["quadrant_changed"],
+            )
 
     def test_lifecycle_tables_coexist_with_existing_signal_store(self) -> None:
         with TemporaryDirectory() as tmp:

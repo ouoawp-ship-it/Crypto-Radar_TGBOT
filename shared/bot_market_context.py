@@ -35,6 +35,14 @@ def _symbol(value: Any) -> str:
     return text if text.endswith("USDT") else f"{text}USDT"
 
 
+def _net_ratio(net: Any, gross: Any) -> float | None:
+    net_value = _number(net)
+    gross_value = _number(gross)
+    if net_value is None or gross_value is None or gross_value <= 0:
+        return None
+    return max(-1.0, min(1.0, net_value / gross_value))
+
+
 def build_bot_market_context(item: dict[str, Any]) -> dict[str, Any]:
     windows = item.get("windows") if isinstance(item.get("windows"), dict) else {}
     five_minute = windows.get("5m") if isinstance(windows.get("5m"), dict) else {}
@@ -146,12 +154,21 @@ def _load_market_contexts(
         return {
             _symbol(item.get("symbol") or item.get("coin")): {
                 "window_sec": BOT_MARKET_WINDOW_SEC,
+                "window_end_ts": int(_number(item.get("window_end_ts")) or 0),
                 "price": _number(item.get("price")),
                 "price_change_pct": _number(item.get("price_change_pct")),
                 "oi_usd": _number(item.get("oi_usd")),
                 "oi_change_pct": _number(item.get("oi_change_pct")),
                 "spot_flow_usd": _number(item.get("spot_flow_usd")),
                 "futures_flow_usd": _number(item.get("futures_flow_usd")),
+                "spot_active_ratio": _net_ratio(
+                    item.get("spot_flow_usd"),
+                    item.get("spot_volume_usd"),
+                ),
+                "futures_active_ratio": _net_ratio(
+                    item.get("futures_flow_usd"),
+                    item.get("futures_volume_usd"),
+                ),
                 "funding_pct": _number(item.get("funding_pct")),
                 "age_sec": int(_number(item.get("age_sec")) or 0),
                 "status": str(item.get("status") or "unavailable"),

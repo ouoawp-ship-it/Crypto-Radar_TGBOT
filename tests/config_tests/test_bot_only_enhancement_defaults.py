@@ -13,6 +13,9 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
         settings = Settings()
         self.assertFalse(settings.funding_flip_oi_enable)
         self.assertFalse(settings.launch_outcome_v2_enable)
+        self.assertFalse(settings.launch_fusion_enable)
+        self.assertEqual(settings.launch_same_stage_min_interval_sec, 1800)
+        self.assertFalse(settings.redacted_status()["launch"]["fusion_active"])
 
     def test_retired_configuration_is_absent_from_settings_and_status(self) -> None:
         settings = Settings()

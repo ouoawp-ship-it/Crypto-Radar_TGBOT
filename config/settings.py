@@ -260,6 +260,8 @@ class Settings:
     launch_outcome_v2_enable: bool = False
     launch_outcome_follow_through_pct: float = 3.0
     launch_outcome_min_samples: int = 20
+    launch_fusion_enable: bool = False
+    launch_same_stage_min_interval_sec: int = 30 * 60
     launch_package_score_delta: int = 15
     launch_package_price_delta_pct: float = 3.0
     launch_package_oi_delta_pct: float = 5.0
@@ -485,6 +487,11 @@ class Settings:
             launch_outcome_v2_enable=env_bool("LAUNCH_OUTCOME_V2_ENABLE", False),
             launch_outcome_follow_through_pct=env_float("LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT", 3.0),
             launch_outcome_min_samples=env_int("LAUNCH_OUTCOME_MIN_SAMPLES", 20),
+            launch_fusion_enable=env_bool("LAUNCH_FUSION_ENABLE", False),
+            launch_same_stage_min_interval_sec=env_int(
+                "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
+                30 * 60,
+            ),
             launch_package_score_delta=env_int("LAUNCH_PACKAGE_SCORE_DELTA", 15),
             launch_package_price_delta_pct=env_float("LAUNCH_PACKAGE_PRICE_DELTA_PCT", 3.0),
             launch_package_oi_delta_pct=env_float("LAUNCH_PACKAGE_OI_DELTA_PCT", 5.0),
@@ -650,6 +657,13 @@ class Settings:
                 "outcome_v2_enable": self.launch_outcome_v2_enable,
                 "outcome_follow_through_pct": self.launch_outcome_follow_through_pct,
                 "outcome_min_samples": self.launch_outcome_min_samples,
+                "fusion_enable": self.launch_fusion_enable,
+                "fusion_active": bool(
+                    self.launch_fusion_enable
+                    and self.launch_lifecycle_v2_enable
+                    and self.launch_message_package_v2_enable
+                ),
+                "same_stage_min_interval_sec": self.launch_same_stage_min_interval_sec,
                 "package_score_delta": self.launch_package_score_delta,
                 "package_price_delta_pct": self.launch_package_price_delta_pct,
                 "package_oi_delta_pct": self.launch_package_oi_delta_pct,

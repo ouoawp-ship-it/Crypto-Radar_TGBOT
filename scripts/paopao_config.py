@@ -24,6 +24,8 @@ ALLOWLIST = {
     "MAIN_BOT_DELIVERY_MODE": "oi",
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
+    "LAUNCH_FUSION_ENABLE": "oi",
+    "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "oi",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
@@ -34,8 +36,11 @@ SENSITIVE_KEYS = SECRET_KEYS | {
 }
 BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
+    "LAUNCH_FUSION_ENABLE",
 }
-INTEGER_RANGES: dict[str, tuple[int, int]] = {}
+INTEGER_RANGES: dict[str, tuple[int, int]] = {
+    "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": (900, 7200),
+}
 DECIMAL_RANGES: dict[str, tuple[float, float]] = {}
 BACKUP_LIMIT = 30
 MAIN_BOT_REAL_SEND_ACK_PHRASE = "发送真实主BOT提醒"
@@ -151,6 +156,8 @@ class ConfigManager:
         effective_defaults = {
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
+            "LAUNCH_FUSION_ENABLE": "false",
+            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "1800",
         }
         return {
             key: _redacted(
@@ -435,6 +442,32 @@ class ConfigManager:
             raise ConfigManagerError(
                 "main_bot_dry_run_gate_inconsistent"
             )
+        launch_fusion = values.get(
+            "LAUNCH_FUSION_ENABLE",
+            "false",
+        ).strip().lower()
+        if launch_fusion not in {"true", "false"}:
+            raise ConfigManagerError(
+                "LAUNCH_FUSION_ENABLE must be true or false"
+            )
+        raw_same_stage_interval = values.get(
+            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
+            "1800",
+        ).strip()
+        try:
+            same_stage_interval = int(raw_same_stage_interval)
+        except ValueError as exc:
+            raise ConfigManagerError(
+                "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC must be an integer"
+            ) from exc
+        minimum, maximum = INTEGER_RANGES[
+            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC"
+        ]
+        if not minimum <= same_stage_interval <= maximum:
+            raise ConfigManagerError(
+                "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC must be in "
+                f"[{minimum}, {maximum}]"
+            )
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
@@ -447,6 +480,8 @@ class ConfigManager:
             "main_bot_real_send_ack": (
                 "configured" if main_bot_ack else "not_configured"
             ),
+            "launch_fusion_enable": launch_fusion == "true",
+            "launch_same_stage_min_interval_sec": same_stage_interval,
         }
 
     def _backup(self, path: Path, content: bytes) -> Path:

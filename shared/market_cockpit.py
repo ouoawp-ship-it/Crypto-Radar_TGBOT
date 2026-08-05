@@ -1277,6 +1277,7 @@ def build_market_cockpit(
             status = "stale"
         assets.append({
             "symbol": symbol,
+            "window_end_ts": observed_at,
             "coin": symbol[:-4],
             "asset_type": _radar_asset_type(row, symbol),
             "price": price,

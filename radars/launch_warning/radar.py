@@ -3,8 +3,9 @@ from __future__ import annotations
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
+from math import isfinite
 from typing import Any, Callable, Optional
 
 from shared.asset_classification import classify_binance_instrument
@@ -15,8 +16,17 @@ from shared.binance_confirmation import (
 )
 from shared.binance_data import BinanceDataSource
 from .chart import render_launch_chart_png
+from .candidates import select_launch_candidates
+from .fusion_formatter import format_launch_fusion_package
 from .lifecycle import LaunchLifecycleStore
+from .market_facts import (
+    INTERVAL_MS,
+    OI_24H_REQUIRED_POINTS,
+    build_launch_market_facts,
+    closed_kline_active_flow,
+)
 from .price_action import analyze_launch_price_action, required_15m_kline_limit
+from .scoring import SCORE_SEMANTICS, score_launch_signal
 from shared.funding_presentation import funding_table
 from shared.time_windows import closed_window
 from ..common import (
@@ -45,7 +55,24 @@ from ..common import (
 )
 
 
+def _optional_finite(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) else None
+
+
 class LaunchWarningRadar(RadarComponent):
+    def _launch_fusion_active(self) -> bool:
+        return bool(
+            self.settings.launch_fusion_enable
+            and self.settings.launch_lifecycle_v2_enable
+            and self.settings.launch_message_package_v2_enable
+        )
+
     def _load_launch_announcement_evidence(
         self,
         *,
@@ -123,6 +150,7 @@ class LaunchWarningRadar(RadarComponent):
         }
 
     def build_launch_alerts(self, source: BinanceDataSource) -> dict[str, Any]:
+        fusion_active = self._launch_fusion_active()
         budget_cap = min(self.settings.oi_hist_budget, self.settings.kline_budget)
         if self.settings.launch_scan_limit <= 0 or budget_cap <= 0:
             return {
@@ -134,6 +162,11 @@ class LaunchWarningRadar(RadarComponent):
         if not isinstance(state, dict):
             state = {}
         now_ts = int(time.time())
+        launch_window = closed_window(
+            now=datetime.fromtimestamp(now_ts, timezone.utc),
+            interval_sec=15 * 60,
+            delay_sec=self.settings.launch_close_delay_sec,
+        )
         self._prune_launch_state(state, now_ts)
 
         lifecycle_store: LaunchLifecycleStore | None = None
@@ -169,8 +202,20 @@ class LaunchWarningRadar(RadarComponent):
                 ),
                 "tracked": 0,
             },
+            "fusion": {
+                "requested": bool(self.settings.launch_fusion_enable),
+                "active": fusion_active,
+                "status": (
+                    "active"
+                    if fusion_active
+                    else "misconfigured"
+                    if self.settings.launch_fusion_enable
+                    else "disabled"
+                ),
+            },
         }
         lifecycle_active_symbols: list[str] = []
+        lifecycle_active_modes: dict[str, bool] = {}
         if self.settings.launch_lifecycle_v2_enable:
             try:
                 lifecycle_store = LaunchLifecycleStore(
@@ -187,12 +232,20 @@ class LaunchWarningRadar(RadarComponent):
                     outcome_min_samples=self.settings.launch_outcome_min_samples,
                     breakout_score=self.settings.launch_breakout_score,
                     launched_score=self.settings.launch_launched_score,
-                    price_action_enabled=self.settings.launch_price_action_v3_enable,
+                    price_action_enabled=(
+                        self.settings.launch_price_action_v3_enable
+                        or fusion_active
+                    ),
+                    fusion_enabled=fusion_active,
+                    same_stage_min_interval_sec=(
+                        self.settings.launch_same_stage_min_interval_sec
+                    ),
                 )
-                lifecycle_active_symbols = lifecycle_store.list_active_symbols()
                 lifecycle_diagnostics["outcome_v2"] = lifecycle_store.refresh_outcomes(
                     evaluated_at=now_ts
                 )
+                lifecycle_active_symbols = lifecycle_store.list_active_symbols()
+                lifecycle_active_modes = lifecycle_store.active_symbol_modes()
                 lifecycle_diagnostics["status"] = (
                     "package_active"
                     if self.settings.launch_message_package_v2_enable
@@ -253,6 +306,19 @@ class LaunchWarningRadar(RadarComponent):
             quote_volume = to_float(ticker.get("quoteVolume"))
             if self._is_excluded_symbol(str(symbol or "")):
                 continue
+            candidate_fusion_active = lifecycle_active_modes.get(
+                str(symbol),
+                fusion_active,
+            )
+            if candidate_fusion_active:
+                if symbol_metadata and str(symbol).upper() not in symbol_metadata:
+                    continue
+                if (
+                    hasattr(source, "usdt_perp_symbols")
+                    and not symbol_metadata
+                    and symbol not in forced_symbol_order
+                ):
+                    continue
             if quote_volume < self.settings.radar_min_quote_volume and symbol not in forced_symbol_order:
                 continue
             coin = str(symbol).replace("USDT", "")
@@ -268,12 +334,15 @@ class LaunchWarningRadar(RadarComponent):
                 "symbol": symbol,
                 "coin": coin,
                 "quote_volume": quote_volume,
-                "price_24h": to_float(ticker.get("priceChangePercent")),
+                "price_24h": _optional_finite(
+                    ticker.get("priceChangePercent")
+                ),
                 "price": to_float(ticker.get("lastPrice")),
                 "funding_available": isinstance(premium, dict) and bool(premium),
                 "funding_pct": to_float(premium.get("lastFundingRate")) * 100 if isinstance(premium, dict) else 0.0,
                 "funding_next_time_ms": int(to_float(premium.get("nextFundingTime"))) if isinstance(premium, dict) else 0,
                 "launch_lifecycle_active": symbol in lifecycle_active_symbol_set,
+                "launch_fusion_cycle": candidate_fusion_active,
                 "mcap": mcap,
                 "mcap_source": "Binance" if mcap > 0 else "",
                 "market_cap_tier": market_cap_tier(mcap),
@@ -290,24 +359,57 @@ class LaunchWarningRadar(RadarComponent):
                     item["mcap"] = mcap
                     item["mcap_source"] = "CoinPaprika"
                     item["market_cap_tier"] = market_cap_tier(mcap)
-        candidates.sort(
-            key=lambda item: (
-                0 if item["symbol"] in forced_symbol_order else 1,
-                forced_symbol_order.get(item["symbol"], 0),
-                -item["quote_volume"],
+        candidate_limit = min(self.settings.launch_scan_limit, budget_cap)
+        if fusion_active:
+            selection = select_launch_candidates(
+                candidates,
+                active_symbols=forced_symbol_order,
+                limit=candidate_limit,
+                closed_window_end_ts=int(launch_window.end.timestamp()),
             )
-        )
-        candidates = candidates[: min(self.settings.launch_scan_limit, budget_cap)]
+            candidates = list(selection["selected"])
+            lifecycle_diagnostics["candidate_selection"] = selection["stats"]
+        else:
+            candidates.sort(
+                key=lambda item: (
+                    0 if item["symbol"] in forced_symbol_order else 1,
+                    forced_symbol_order.get(item["symbol"], 0),
+                    -item["quote_volume"],
+                )
+            )
+            candidates = candidates[:candidate_limit]
 
         alerts: list[dict[str, Any]] = []
         watchlist: list[dict[str, Any]] = []
 
         analyzed_items: list[dict[str, Any]] = []
+        analysis_skipped: dict[str, int] = {}
         for item in candidates:
-            analyzed = self._analyze_launch_symbol(source, item)
+            item_fusion_active = bool(item.get("launch_fusion_cycle"))
+            analyzed = (
+                self._analyze_launch_symbol(
+                    source,
+                    item,
+                    window=launch_window,
+                )
+                if item_fusion_active
+                else self._analyze_launch_symbol(source, item)
+            )
             if not analyzed:
                 continue
+            if str(analyzed.get("analysis_status") or "") == "invalid":
+                error = str(
+                    analyzed.get("analysis_error")
+                    or "launch_analysis_invalid"
+                )
+                analysis_skipped[error] = analysis_skipped.get(error, 0) + 1
+                continue
             analyzed_items.append(analyzed)
+        lifecycle_diagnostics["analysis_quality"] = {
+            "ready": len(analyzed_items),
+            "skipped": sum(analysis_skipped.values()),
+            "skipped_by_reason": analysis_skipped,
+        }
 
         accumulation_evidence = self._load_launch_accumulation_evidence(
             now_ts=now_ts,
@@ -336,17 +438,36 @@ class LaunchWarningRadar(RadarComponent):
         }
 
         for analyzed in analyzed_items:
-            apply_binance_confirmation(
-                analyzed,
-                {
+            facts = analyzed.get("market_facts")
+            if bool(analyzed.get("launch_fusion_cycle")) and isinstance(facts, dict):
+                checks = {
+                    "15m价格": facts.get("price_15m_pct") is not None,
+                    "1h价格": facts.get("price_1h_pct") is not None,
+                    "15m/1h OI": (
+                        facts.get("oi_15m_pct") is not None
+                        and facts.get("oi_1h_pct") is not None
+                    ),
+                    "成交量": facts.get("volume_ratio_15m") is not None,
+                    "时间轴对齐": (
+                        facts.get("status") == "ok"
+                        and int(facts.get("aligned_points") or 0) >= 17
+                    ),
+                }
+                confirmation_window = "严格闭合15m；1h/4h同序列推导"
+            else:
+                checks = {
                     "15m价格": True,
                     "1h价格": True,
                     "15m/1h OI": True,
                     "成交量": True,
                     "突破结构": True,
-                },
+                }
+                confirmation_window = "15m闭合窗口（1h=4根）"
+            apply_binance_confirmation(
+                analyzed,
+                checks,
                 scope="Binance USDⓈ-M Futures",
-                window="15m闭合窗口（1h=4根）",
+                window=confirmation_window,
                 observed_at=int(analyzed.get("window_end_ts") or now_ts),
             )
             price_action = analyzed.get("price_action_analysis")
@@ -356,13 +477,21 @@ class LaunchWarningRadar(RadarComponent):
             ):
                 lifecycle_diagnostics["price_action_v3"]["tracked"] += 1
 
-        if self.settings.launch_message_package_v2_enable and analyzed_items:
+        any_fusion_cycle = any(
+            bool(analyzed.get("launch_fusion_cycle"))
+            for analyzed in analyzed_items
+        )
+        if (
+            self.settings.launch_message_package_v2_enable
+            or any_fusion_cycle
+        ) and analyzed_items:
             from shared.bot_market_context import closed_market_contexts_for_symbols
 
             package_symbols = [
                 str(analyzed.get("symbol") or "")
                 for analyzed in analyzed_items
-                if int(to_float(analyzed.get("score"))) >= self.settings.launch_watch_score
+                if bool(analyzed.get("launch_fusion_cycle"))
+                or int(to_float(analyzed.get("score"))) >= self.settings.launch_watch_score
                 or str(analyzed.get("symbol") or "") in lifecycle_active_symbols
             ]
             market_contexts = closed_market_contexts_for_symbols(
@@ -374,12 +503,55 @@ class LaunchWarningRadar(RadarComponent):
                 market = market_contexts.get(str(analyzed.get("symbol") or ""))
                 if not isinstance(market, dict):
                     continue
-                analyzed["spot_active_net_usd"] = market.get("spot_flow_usd")
-                analyzed["futures_active_net_usd"] = market.get("futures_flow_usd")
+                if (
+                    bool(analyzed.get("launch_fusion_cycle"))
+                    and int(to_float(market.get("window_end_ts")))
+                    != int(launch_window.end.timestamp())
+                ):
+                    continue
+                if bool(analyzed.get("launch_fusion_cycle")):
+                    for side in ("spot", "futures"):
+                        market_flow = market.get(f"{side}_flow_usd")
+                        market_ratio = market.get(f"{side}_active_ratio")
+                        direct_status = str(
+                            analyzed.get(f"{side}_active_status") or ""
+                        )
+                        if (
+                            direct_status
+                            in {
+                                "binance_unavailable",
+                                "budget_exhausted",
+                                "window_incomplete",
+                            }
+                            and market_flow is not None
+                            and market_ratio is not None
+                        ):
+                            analyzed[f"{side}_active_net_usd"] = market_flow
+                            analyzed[f"{side}_active_ratio"] = market_ratio
+                            analyzed[f"{side}_active_status"] = "available"
+                else:
+                    analyzed["spot_active_net_usd"] = market.get(
+                        "spot_flow_usd"
+                    )
+                    analyzed["futures_active_net_usd"] = market.get(
+                        "futures_flow_usd"
+                    )
+                    analyzed["spot_active_ratio"] = market.get(
+                        "spot_active_ratio"
+                    )
+                    analyzed["futures_active_ratio"] = market.get(
+                        "futures_active_ratio"
+                    )
                 analyzed["funds_direction"] = launch_funds_direction(
-                    market.get("spot_flow_usd"),
-                    market.get("futures_flow_usd"),
+                    analyzed.get("spot_active_net_usd"),
+                    analyzed.get("futures_active_net_usd"),
                 )
+
+        if any_fusion_cycle:
+            for analyzed in analyzed_items:
+                if not bool(analyzed.get("launch_fusion_cycle")):
+                    continue
+                self._apply_launch_fusion_score(analyzed)
 
         if lifecycle_store is not None and analyzed_items:
             try:
@@ -734,7 +906,14 @@ class LaunchWarningRadar(RadarComponent):
             outcome_min_samples=self.settings.launch_outcome_min_samples,
             breakout_score=self.settings.launch_breakout_score,
             launched_score=self.settings.launch_launched_score,
-            price_action_enabled=self.settings.launch_price_action_v3_enable,
+            price_action_enabled=(
+                self.settings.launch_price_action_v3_enable
+                or self._launch_fusion_active()
+            ),
+            fusion_enabled=self._launch_fusion_active(),
+            same_stage_min_interval_sec=(
+                self.settings.launch_same_stage_min_interval_sec
+            ),
         )
 
     def cleanup_failed_launch_messages(
@@ -995,11 +1174,29 @@ class LaunchWarningRadar(RadarComponent):
             )
         return True
 
-    def _analyze_launch_symbol(self, source: BinanceDataSource, item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    def _analyze_launch_symbol(
+        self,
+        source: BinanceDataSource,
+        item: dict[str, Any],
+        *,
+        window: Any | None = None,
+    ) -> Optional[dict[str, Any]]:
         symbol = item["symbol"]
-        window = closed_window(interval_sec=15 * 60, delay_sec=self.settings.launch_close_delay_sec)
+        mode_marker = item.get("launch_fusion_cycle")
+        fusion_active = (
+            bool(mode_marker)
+            if isinstance(mode_marker, bool)
+            else self._launch_fusion_active()
+        )
+        window = window or closed_window(
+            interval_sec=15 * 60,
+            delay_sec=self.settings.launch_close_delay_sec,
+        )
         price_action_follow_up = bool(
-            self.settings.launch_price_action_v3_enable
+            (
+                self.settings.launch_price_action_v3_enable
+                or fusion_active
+            )
             and item.get("launch_lifecycle_active")
         )
         kline_limit = required_15m_kline_limit(
@@ -1014,56 +1211,133 @@ class LaunchWarningRadar(RadarComponent):
             start_time=max(0, window.end_ms - lookback_ms),
             end_time=window.end_ms - 1,
         )
+        oi_limit = OI_24H_REQUIRED_POINTS if fusion_active else 17
         oi_hist = source.open_interest_hist(
             symbol,
             period="15m",
-            limit=17,
-            start_time=max(0, window.end_ms - 17 * 15 * 60 * 1000),
+            limit=oi_limit,
+            start_time=max(0, window.end_ms - (oi_limit - 1) * INTERVAL_MS),
             end_time=window.end_ms,
         )
-        if len(klines) < 5 or len(oi_hist) < 5:
+        minimum_points = 17 if fusion_active else 5
+        if len(klines) < minimum_points or len(oi_hist) < minimum_points:
+            if fusion_active:
+                return {
+                    **item,
+                    "analysis_status": "invalid",
+                    "analysis_error": "launch_market_facts_insufficient_history",
+                    "window_end_ts": int(window.end.timestamp()),
+                }
             return None
 
-        scoring_klines = klines[-17:]
+        scoring_klines = sorted(
+            klines,
+            key=lambda row: int(to_float(row[0])) if len(row) > 0 else 0,
+        )[-17:]
         closes = [to_float(kline[4]) for kline in scoring_klines]
         highs = [to_float(kline[2]) for kline in scoring_klines]
         quote_volumes = [to_float(kline[7]) for kline in scoring_klines]
-        oi_values = [to_float(row.get("sumOpenInterestValue")) for row in oi_hist]
+        ordered_oi_hist = sorted(
+            oi_hist,
+            key=lambda row: int(to_float(row.get("timestamp"))),
+        )
+        oi_values = [
+            to_float(row.get("sumOpenInterestValue"))
+            for row in ordered_oi_hist[-17:]
+        ]
         if min(closes[-5:]) <= 0 or min(oi_values[-5:]) <= 0:
+            if fusion_active:
+                return {
+                    **item,
+                    "analysis_status": "invalid",
+                    "analysis_error": "launch_market_facts_input_invalid",
+                    "window_end_ts": int(window.end.timestamp()),
+                }
             return None
 
-        price_15m = pct(closes[-1], closes[-2])
-        price_1h = pct(closes[-1], closes[-5])
-        oi_15m = pct(oi_values[-1], oi_values[-2])
-        oi_1h = pct(oi_values[-1], oi_values[-5])
-        avg_volume = sum(quote_volumes[:-1]) / max(1, len(quote_volumes[:-1]))
-        volume_ratio = quote_volumes[-1] / avg_volume if avg_volume > 0 else 0
+        market_facts: dict[str, Any] | None = None
+        if fusion_active:
+            market_facts = build_launch_market_facts(
+                klines,
+                ordered_oi_hist[-17:],
+                window_end_ms=window.end_ms,
+                ticker_24h={
+                    "priceChangePercent": item.get("price_24h"),
+                },
+                oi_24h_rows=ordered_oi_hist,
+            )
+            if market_facts.get("status") != "ok":
+                return {
+                    **item,
+                    "analysis_status": "invalid",
+                    "analysis_error": str(
+                        market_facts.get("error")
+                        or "launch_market_facts_input_invalid"
+                    ),
+                    "window_end_ts": int(window.end.timestamp()),
+                }
+            price_15m = market_facts.get("price_15m_pct")
+            price_1h = market_facts.get("price_1h_pct")
+            oi_15m = market_facts.get("oi_15m_pct")
+            oi_1h = market_facts.get("oi_1h_pct")
+            volume_ratio = market_facts.get("volume_ratio_15m")
+        else:
+            price_15m = pct(closes[-1], closes[-2])
+            price_1h = pct(closes[-1], closes[-5])
+            oi_15m = pct(oi_values[-1], oi_values[-2])
+            oi_1h = pct(oi_values[-1], oi_values[-5])
+            avg_volume = sum(quote_volumes[:-1]) / max(1, len(quote_volumes[:-1]))
+            volume_ratio = quote_volumes[-1] / avg_volume if avg_volume > 0 else 0
         previous_high = max(highs[:-1])
         breakout = closes[-1] > previous_high if previous_high > 0 else False
 
         score = 0
         reasons: list[str] = []
-        if price_15m >= 4:
+        if not fusion_active and price_15m >= 4:
             score += 25
             reasons.append(f"15m价格 {price_15m:+.1f}%")
-        if price_1h >= 5:
+        if not fusion_active and price_1h >= 5:
             score += 15
             reasons.append(f"1h价格 {price_1h:+.1f}%")
-        if breakout:
+        if not fusion_active and breakout:
             score += 25
             reasons.append("突破近4h高点")
-        if volume_ratio >= 2:
+        if not fusion_active and volume_ratio >= 2:
             score += 20
             reasons.append(f"成交 {volume_ratio:.1f}x 均值")
-        if oi_15m >= 3:
+        if not fusion_active and oi_15m >= 3:
             score += 15
             reasons.append(f"15m OI {oi_15m:+.1f}%")
-        if oi_1h >= 6:
+        if not fusion_active and oi_1h >= 6:
             score += 15
             reasons.append(f"1h OI {oi_1h:+.1f}%")
-        if oi_1h >= 3 and abs(price_1h) <= 2:
+        if (
+            not fusion_active
+            and oi_1h >= 3
+            and abs(price_1h) <= 2
+        ):
             score += 15
             reasons.append("资金暗流但价格未大动")
+
+        recent_volatility_pct = (
+            market_facts.get("recent_volatility_pct")
+            if market_facts is not None
+            else None
+        )
+        preliminary_fusion: dict[str, Any] | None = None
+        if fusion_active:
+            preliminary_fusion = score_launch_signal({
+                "price_15m": price_15m,
+                "price_1h": price_1h,
+                "oi_15m": oi_15m,
+                "oi_1h": oi_1h,
+                "volume_ratio": volume_ratio,
+                "breakout": breakout,
+                "asset_subclass": item.get("asset_subclass"),
+                "liquidity_tier": item.get("liquidity_tier"),
+                "recent_volatility_pct": recent_volatility_pct,
+            })
+            score = int(preliminary_fusion.get("score") or 0)
 
         funding_pct = to_float(item.get("funding_pct"))
         next_funding_time_ms = int(to_float(item.get("funding_next_time_ms")))
@@ -1088,14 +1362,45 @@ class LaunchWarningRadar(RadarComponent):
 
         result = {
             **item,
+            "analysis_status": "ready",
             "score": score,
             "closed_price": closes[-1],
             "closed_oi_usd": oi_values[-1],
             "closed_quote_volume": quote_volumes[-1],
             "price_15m": price_15m,
             "price_1h": price_1h,
+            "price_4h": (
+                market_facts.get("price_4h_pct")
+                if market_facts is not None
+                else None
+            ),
+            "price_24h_semantics": (
+                market_facts.get("price_24h_semantics")
+                if market_facts is not None
+                else "rolling_24h_not_closed_window"
+            ),
             "oi_15m": oi_15m,
             "oi_1h": oi_1h,
+            "oi_4h": (
+                market_facts.get("oi_4h_pct")
+                if market_facts is not None
+                else None
+            ),
+            "oi_24h": (
+                market_facts.get("oi_24h_closed_pct")
+                if market_facts is not None
+                else None
+            ),
+            "oi_24h_status": (
+                str(market_facts.get("oi_24h_status") or "")
+                if market_facts is not None
+                else ""
+            ),
+            "oi_24h_semantics": (
+                str(market_facts.get("oi_24h_semantics") or "")
+                if market_facts is not None
+                else ""
+            ),
             "volume_ratio": volume_ratio,
             "breakout": breakout,
             "breakout_price": previous_high,
@@ -1103,9 +1408,47 @@ class LaunchWarningRadar(RadarComponent):
             "kline_points": len(klines),
             "oi_points": len(oi_hist),
             "window_end_ts": int(window.end.timestamp()),
+            "recent_volatility_pct": recent_volatility_pct,
+            "market_facts": market_facts,
+            "fusion_analysis": preliminary_fusion,
+            "price_oi_quadrant": (
+                str(
+                    (market_facts.get("quadrants") or {})
+                    .get("15m", {})
+                    .get("key", "")
+                )
+                if market_facts is not None
+                else ""
+            ),
+            "price_oi_quadrants": (
+                dict(market_facts.get("quadrants") or {})
+                if market_facts is not None
+                else {}
+            ),
             **funding_context,
         }
-        if self.settings.launch_price_action_v3_enable:
+        if fusion_active:
+            futures_active = closed_kline_active_flow(
+                scoring_klines[-1],
+                window_end_ms=window.end_ms,
+            )
+            spot_active = self._closed_spot_active_flow(
+                source,
+                symbol,
+                window_end_ms=window.end_ms,
+            )
+            result.update({
+                "futures_active_net_usd": futures_active["net_usd"],
+                "futures_active_ratio": futures_active["ratio"],
+                "futures_active_status": futures_active["status"],
+                "spot_active_net_usd": spot_active["net_usd"],
+                "spot_active_ratio": spot_active["ratio"],
+                "spot_active_status": spot_active["status"],
+            })
+        if (
+            self.settings.launch_price_action_v3_enable
+            or fusion_active
+        ):
             result["price_action_analysis"] = analyze_launch_price_action(
                 klines,
                 window_end_ms=window.end_ms,
@@ -1115,6 +1458,116 @@ class LaunchWarningRadar(RadarComponent):
                 wick_body_ratio=self.settings.launch_pa_wick_body_ratio,
             )
         return result
+
+    @staticmethod
+    def _closed_spot_active_flow(
+        source: BinanceDataSource,
+        symbol: str,
+        *,
+        window_end_ms: int,
+    ) -> dict[str, Any]:
+        unavailable = {
+            "status": "binance_unavailable",
+            "net_usd": None,
+            "gross_usd": None,
+            "ratio": None,
+        }
+        if not hasattr(source, "spot_klines"):
+            return unavailable
+        if hasattr(source, "spot_symbols"):
+            try:
+                spot_symbols = source.spot_symbols()
+            except Exception:
+                return unavailable
+            if spot_symbols is None:
+                return unavailable
+            if str(symbol).upper() not in spot_symbols:
+                return {**unavailable, "status": "spot_pair_not_listed"}
+        budget = getattr(source, "budget", None)
+        used = getattr(budget, "used", {}) if budget is not None else {}
+        limits = getattr(budget, "limits", {}) if budget is not None else {}
+        if (
+            "spot_klines" in limits
+            and int(used.get("spot_klines", 0))
+            >= int(limits.get("spot_klines", 0))
+        ):
+            return {**unavailable, "status": "budget_exhausted"}
+        try:
+            rows = source.spot_klines(
+                symbol,
+                interval="15m",
+                limit=1,
+                start_time=max(0, int(window_end_ms) - INTERVAL_MS),
+                end_time=int(window_end_ms) - 1,
+            )
+        except Exception:
+            return unavailable
+        if not isinstance(rows, list) or not rows:
+            return unavailable
+        return closed_kline_active_flow(rows[-1], window_end_ms=window_end_ms)
+
+    def _apply_launch_fusion_score(self, item: dict[str, Any]) -> None:
+        fusion = score_launch_signal({
+            "price_15m": item.get("price_15m"),
+            "price_1h": item.get("price_1h"),
+            "oi_15m": item.get("oi_15m"),
+            "oi_1h": item.get("oi_1h"),
+            "volume_ratio": item.get("volume_ratio"),
+            "breakout": item.get("breakout"),
+            "spot_active_ratio": item.get("spot_active_ratio"),
+            "futures_active_ratio": item.get("futures_active_ratio"),
+            "asset_subclass": item.get("asset_subclass"),
+            "liquidity_tier": item.get("liquidity_tier"),
+            "recent_volatility_pct": item.get("recent_volatility_pct"),
+        })
+        raw_score = min(100, int(fusion.get("score") or 0))
+        trigger_path = str(fusion.get("trigger_path") or "none")
+        effective_score = raw_score
+        policy_block_reason = ""
+        if (
+            trigger_path == "none"
+            and raw_score >= self.settings.launch_min_score_push
+        ):
+            effective_score = max(
+                0,
+                int(self.settings.launch_min_score_push) - 1,
+            )
+            policy_block_reason = "no_independent_evidence_path"
+
+        evidence_strength = (
+            "strong"
+            if raw_score >= self.settings.launch_breakout_score
+            else "medium"
+            if raw_score >= self.settings.launch_watch_score
+            else "low"
+        )
+        identity_coverage = (
+            "classified"
+            if str(item.get("asset_category_source") or "")
+            not in {"", "symbol_fallback"}
+            else "conservative_fallback"
+        )
+        item.update({
+            "score": effective_score,
+            "raw_rule_score": raw_score,
+            "score_semantics": SCORE_SEMANTICS,
+            "evidence_strength": evidence_strength,
+            "data_completeness": "complete",
+            "identity_coverage": identity_coverage,
+            "trigger_path": trigger_path,
+            "policy_block_reason": policy_block_reason,
+            "supporting_evidence": list(
+                fusion.get("supporting_evidence") or []
+            ),
+            "counter_evidence": list(fusion.get("counter_evidence") or []),
+            "fusion_analysis": fusion,
+            "reasons": list(fusion.get("supporting_evidence") or [])[:5],
+            "limitations": [
+                "rule_score_not_probability",
+                "rolling_24h_not_closed_window",
+                "active_flow_may_be_unavailable",
+            ],
+        })
 
     def _launch_funding_context(
         self,
@@ -1416,6 +1869,14 @@ class LaunchWarningRadar(RadarComponent):
         return ["", tg_quote("辅助证据"), *lines] if lines else []
 
     def _format_launch_package(self, item: dict[str, Any]) -> str:
+        mode_marker = item.get("launch_fusion_cycle")
+        fusion_active = (
+            bool(mode_marker)
+            if isinstance(mode_marker, bool)
+            else self._launch_fusion_active()
+        )
+        if fusion_active:
+            return format_launch_fusion_package(item, self.settings)
         lifecycle = item.get("launch_lifecycle")
         publication = item.get("launch_package")
         if not isinstance(lifecycle, dict) or not isinstance(publication, dict):
@@ -1459,6 +1920,8 @@ class LaunchWarningRadar(RadarComponent):
                 "funding_interval_changed": "资金费率结算周期变化",
                 "funds_divergence": "现货/合约主动成交方向背离",
                 "price_action_changed": "突破/假突破结构状态变化",
+                "confirmation_changed": "1小时确认状态变化",
+                "quadrant_changed": "价格与持仓结构变化",
                 "active_message_missing": "有效信号消息缺失，自动恢复",
             }.get(str(reason), str(reason))
             for reason in (publication.get("checkpoint_reasons") or [])
@@ -1744,6 +2207,14 @@ class LaunchWarningRadar(RadarComponent):
 
     @staticmethod
     def _launch_watch_record(item: dict[str, Any], now_ts: int) -> dict[str, Any]:
+        def optional_round(value: Any, digits: int = 4) -> float | None:
+            if value is None or value == "":
+                return None
+            try:
+                return round(float(value), digits)
+            except (TypeError, ValueError):
+                return None
+
         return {
             "ts": now_ts,
             "symbol": item["symbol"],
@@ -1754,8 +2225,18 @@ class LaunchWarningRadar(RadarComponent):
             "closed_quote_volume": round(to_float(item.get("closed_quote_volume")), 2),
             "price_15m": round(item["price_15m"], 4),
             "price_1h": round(item["price_1h"], 4),
+            "price_4h": optional_round(item.get("price_4h")),
+            "price_24h": optional_round(item.get("price_24h")),
+            "price_24h_semantics": str(
+                item.get("price_24h_semantics")
+                or "rolling_24h_not_closed_window"
+            ),
             "oi_15m": round(item["oi_15m"], 4),
             "oi_1h": round(item["oi_1h"], 4),
+            "oi_4h": optional_round(item.get("oi_4h")),
+            "oi_24h": optional_round(item.get("oi_24h")),
+            "oi_24h_status": str(item.get("oi_24h_status") or ""),
+            "oi_24h_semantics": str(item.get("oi_24h_semantics") or ""),
             "data_quality_status": str(item.get("data_quality_status") or "not_checked"),
             "data_quality_score": round(to_float(item.get("data_quality_score")), 2),
             "quality_gate": str(item.get("quality_gate") or "degraded"),
@@ -1778,6 +2259,56 @@ class LaunchWarningRadar(RadarComponent):
             "funding_interval_hours": int(to_float(item.get("funding_interval_hours"))),
             "funding_interval_transition": str(item.get("funding_interval_transition") or ""),
             "reasons": item.get("reasons", []),
+            "raw_rule_score": int(
+                item.get("raw_rule_score")
+                if item.get("raw_rule_score") is not None
+                else item.get("score") or 0
+            ),
+            "score_semantics": str(
+                item.get("score_semantics") or ""
+            ),
+            "evidence_strength": str(
+                item.get("evidence_strength") or ""
+            ),
+            "trigger_path": str(item.get("trigger_path") or ""),
+            "policy_block_reason": str(
+                item.get("policy_block_reason") or ""
+            ),
+            "price_oi_quadrant": str(
+                item.get("price_oi_quadrant") or ""
+            ),
+            "supporting_evidence": list(
+                item.get("supporting_evidence") or []
+            ),
+            "counter_evidence": list(item.get("counter_evidence") or []),
+            "lifecycle_stage": str(
+                (
+                    item.get("launch_lifecycle")
+                    if isinstance(item.get("launch_lifecycle"), dict)
+                    else {}
+                ).get("current_stage")
+                or ""
+            ),
+            "spot_active_net_usd": optional_round(
+                item.get("spot_active_net_usd"),
+                2,
+            ),
+            "futures_active_net_usd": optional_round(
+                item.get("futures_active_net_usd"),
+                2,
+            ),
+            "spot_active_ratio": optional_round(
+                item.get("spot_active_ratio"),
+                6,
+            ),
+            "futures_active_ratio": optional_round(
+                item.get("futures_active_ratio"),
+                6,
+            ),
+            "spot_active_status": str(item.get("spot_active_status") or ""),
+            "futures_active_status": str(
+                item.get("futures_active_status") or ""
+            ),
         }
 
     def _launch_history_record(
@@ -1789,7 +2320,9 @@ class LaunchWarningRadar(RadarComponent):
         sorted_items = sorted(watchlist, key=lambda item: item["score"], reverse=True)
         buckets = {"idle": 0, "watching": 0, "primed": 0, "breakout": 0, "launched": 0}
         for item in sorted_items:
-            stage = self._launch_stage(int(item.get("score", 0)))
+            stage = str(item.get("lifecycle_stage") or "")
+            if stage not in buckets:
+                stage = self._launch_stage(int(item.get("score", 0)))
             buckets[stage] = buckets.get(stage, 0) + 1
         return {
             "ts": now_ts,

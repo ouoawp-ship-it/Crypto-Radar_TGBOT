@@ -45,6 +45,11 @@ class ConfigManagerTests(unittest.TestCase):
             status["MAIN_BOT_REAL_SEND_ACK"], "not_configured"
         )
         self.assertEqual(status["TG_BOT_TOKEN"], "not_configured")
+        self.assertFalse(status["LAUNCH_FUSION_ENABLE"])
+        self.assertEqual(
+            status["LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC"],
+            "1800",
+        )
 
     def test_non_allowlisted_key_is_rejected(self) -> None:
         with self.assertRaises(ConfigManagerError):
@@ -172,6 +177,29 @@ class ConfigManagerTests(unittest.TestCase):
             self.manager.set("MAIN_BOT_REAL_SEND_ACK", "almost")
         with self.assertRaises(ConfigManagerError):
             self.manager.set("MAIN_BOT_REAL_SEND", "yes")
+
+    def test_launch_fusion_config_is_allowlisted_and_bounded(self) -> None:
+        enabled = self.manager.set("LAUNCH_FUSION_ENABLE", "true")
+        interval = self.manager.set(
+            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
+            "1800",
+        )
+
+        self.assertTrue(enabled["value"])
+        self.assertEqual(interval["value"], "1800")
+        checks = self.manager.validate()["checks"]
+        self.assertTrue(checks["launch_fusion_enable"])
+        self.assertEqual(
+            checks["launch_same_stage_min_interval_sec"],
+            1800,
+        )
+        for invalid in ("899", "7201", "not-a-number"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set(
+                        "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
+                        invalid,
+                    )
 
     @unittest.skipIf(os.name == "nt", "POSIX permission bits required")
     def test_environment_file_permission_is_600(self) -> None:
