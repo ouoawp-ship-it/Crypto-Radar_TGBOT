@@ -13,9 +13,10 @@ from .price_action import advance_price_action_state
 
 ACTIVE_STATUS = "active"
 FAILED_STATUS = "failed"
-OUTCOME_EVALUATION_VERSION = 1
+OUTCOME_EVALUATION_VERSION = 2
 STAGE_RANK = {
     "idle": 0,
+    "risk": 1,
     "watching": 1,
     "primed": 2,
     "breakout": 3,
@@ -75,6 +76,8 @@ class LaunchLifecycleStore:
     breakout_score: int = 75
     launched_score: int = 90
     price_action_enabled: bool = False
+    fusion_enabled: bool = False
+    same_stage_min_interval_sec: int = 30 * 60
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -89,6 +92,11 @@ class LaunchLifecycleStore:
             max(0.0, float(self.outcome_follow_through_pct)),
         )
         object.__setattr__(self, "outcome_min_samples", max(1, int(self.outcome_min_samples)))
+        object.__setattr__(
+            self,
+            "same_stage_min_interval_sec",
+            max(0, int(self.same_stage_min_interval_sec)),
+        )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -173,6 +181,11 @@ class LaunchLifecycleStore:
                 futures_active_net_usd REAL,
                 funds_direction TEXT NOT NULL DEFAULT 'unknown',
                 price_action_json TEXT NOT NULL DEFAULT '{}',
+                asset_class TEXT NOT NULL DEFAULT '',
+                liquidity_tier TEXT NOT NULL DEFAULT '',
+                trigger_path TEXT NOT NULL DEFAULT '',
+                confirmation_status TEXT NOT NULL DEFAULT 'not_required',
+                price_oi_quadrant TEXT NOT NULL DEFAULT 'unknown',
                 price_vs_first_pct REAL,
                 oi_vs_first_pct REAL,
                 funding_vs_first_pct_point REAL,
@@ -209,6 +222,9 @@ class LaunchLifecycleStore:
                 first_stage TEXT NOT NULL,
                 peak_stage TEXT NOT NULL,
                 failure_reason TEXT NOT NULL,
+                asset_class TEXT NOT NULL DEFAULT '',
+                liquidity_tier TEXT NOT NULL DEFAULT '',
+                trigger_path TEXT NOT NULL DEFAULT '',
                 entry_price REAL NOT NULL,
                 exit_price REAL NOT NULL,
                 max_close_price REAL NOT NULL,
@@ -244,6 +260,11 @@ class LaunchLifecycleStore:
             "futures_active_net_usd": "REAL",
             "funds_direction": "TEXT NOT NULL DEFAULT 'unknown'",
             "price_action_json": "TEXT NOT NULL DEFAULT '{}'",
+            "asset_class": "TEXT NOT NULL DEFAULT ''",
+            "liquidity_tier": "TEXT NOT NULL DEFAULT ''",
+            "trigger_path": "TEXT NOT NULL DEFAULT ''",
+            "confirmation_status": "TEXT NOT NULL DEFAULT 'not_required'",
+            "price_oi_quadrant": "TEXT NOT NULL DEFAULT 'unknown'",
             "checkpoint_no": "INTEGER",
             "checkpoint_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
             "published_at": "INTEGER",
@@ -257,6 +278,15 @@ class LaunchLifecycleStore:
             conn,
             "launch_lifecycle_observations",
             observation_columns,
+        )
+        LaunchLifecycleStore._ensure_columns(
+            conn,
+            "launch_lifecycle_outcomes",
+            {
+                "asset_class": "TEXT NOT NULL DEFAULT ''",
+                "liquidity_tier": "TEXT NOT NULL DEFAULT ''",
+                "trigger_path": "TEXT NOT NULL DEFAULT ''",
+            },
         )
         conn.execute(
             """
@@ -325,6 +355,29 @@ class LaunchLifecycleStore:
                 for row in conn.execute(sql, params).fetchall()
             ]
 
+    def active_symbol_modes(self, *, limit: int | None = None) -> dict[str, bool]:
+        """Return each active cycle's persisted analysis mode.
+
+        The mode is part of the cycle rule key so an operator toggle cannot make
+        an in-flight cycle switch scoring or confirmation semantics halfway.
+        """
+
+        sql = (
+            "SELECT symbol, outcome_rule_key FROM launch_lifecycle_cycles "
+            "WHERE status = ? ORDER BY last_window_end ASC, id ASC"
+        )
+        params: list[Any] = [ACTIVE_STATUS]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(0, int(limit)))
+        with self.connect() as conn:
+            return {
+                str(row["symbol"]): self._rule_uses_fusion(
+                    str(row["outcome_rule_key"] or "")
+                )
+                for row in conn.execute(sql, params).fetchall()
+            }
+
     def list_observations(self, cycle_id: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -359,7 +412,14 @@ class LaunchLifecycleStore:
             f":launched={self.launched_score}"
             f":invalid={self.invalid_windows_required}"
             f":follow={follow_through}"
+            f":fusion={int(self.fusion_enabled)}"
         )
+
+    @property
+    def legacy_outcome_rule_key(self) -> str:
+        """Rule key used for cycles created before fusion mode existed."""
+
+        return self.outcome_rule_key.rsplit(":fusion=", 1)[0] + ":fusion=0"
 
     @staticmethod
     def _rule_number(rule_key: str, name: str, fallback: float) -> float:
@@ -387,6 +447,72 @@ class LaunchLifecycleStore:
             return "breakout"
         return "launched"
 
+    def _rule_uses_fusion(self, rule_key: str) -> bool:
+        return self._rule_number(rule_key, "fusion", 0.0) >= 1.0
+
+    def _fusion_lifecycle_stage(
+        self,
+        score: int,
+        price_action: Mapping[str, Any] | None,
+        *,
+        rule_key: str | None = None,
+    ) -> str:
+        """Keep score discovery separate from closed-1h confirmation."""
+
+        active_rule = str(rule_key or self.outcome_rule_key)
+        watch_score = int(
+            self._rule_number(active_rule, "watch", self.watch_score)
+        )
+        start_score = int(
+            self._rule_number(active_rule, "start", self.start_score)
+        )
+        breakout_score = int(
+            self._rule_number(active_rule, "breakout", self.breakout_score)
+        )
+        launched_score = int(
+            self._rule_number(active_rule, "launched", self.launched_score)
+        )
+        if score < watch_score:
+            return "idle"
+        if score < start_score:
+            return "watching"
+        state = dict(price_action or {})
+        confirmed_up = (
+            str(state.get("status") or "") in {"confirmed_1h", "confirmed_4h"}
+            and str(state.get("direction") or "") == "up"
+        )
+        if not confirmed_up:
+            return "primed"
+        if score >= launched_score:
+            return "launched"
+        if score >= breakout_score:
+            return "breakout"
+        return "primed"
+
+    def _confirmation_status(
+        self,
+        score: int,
+        price_action: Mapping[str, Any] | None,
+        *,
+        fusion_enabled: bool,
+        rule_key: str,
+    ) -> str:
+        if not fusion_enabled:
+            return "not_required"
+        state = dict(price_action or {})
+        status = str(state.get("status") or "")
+        direction = str(state.get("direction") or "")
+        if status in {"confirmed_1h", "confirmed_4h"} and direction == "up":
+            return status
+        if status.startswith(("false_breakout_", "failed_breakout_")):
+            return "rejected"
+        start_score = int(
+            self._rule_number(rule_key, "start", self.start_score)
+        )
+        if score >= start_score:
+            return "awaiting_1h"
+        return "not_applicable"
+
     def refresh_outcomes(self, *, evaluated_at: int) -> dict[str, Any]:
         """Backfill completed lifecycle outcomes without counting message replacements."""
 
@@ -404,7 +530,7 @@ class LaunchLifecycleStore:
                 SET outcome_rule_key = ?
                 WHERE outcome_rule_key = ''
                 """,
-                (self.outcome_rule_key,),
+                (self.legacy_outcome_rule_key,),
             )
             rows = conn.execute(
                 """
@@ -494,12 +620,14 @@ class LaunchLifecycleStore:
             "follow",
             self.outcome_follow_through_pct,
         )
+        fusion_rule = self._rule_number(rule_key, "fusion", 0.0) >= 1.0
+        stage_column = "lifecycle_stage" if fusion_rule else "observed_stage"
 
         confirmed_at = next(
             (
                 int(row["window_end_ts"])
                 for row in observations
-                if STAGE_RANK.get(str(row["observed_stage"]), 0)
+                if STAGE_RANK.get(str(row[stage_column]), 0)
                 >= STAGE_RANK["breakout"]
             ),
             None,
@@ -508,7 +636,7 @@ class LaunchLifecycleStore:
             (
                 int(row["window_end_ts"])
                 for row in observations
-                if STAGE_RANK.get(str(row["observed_stage"]), 0)
+                if STAGE_RANK.get(str(row[stage_column]), 0)
                 >= STAGE_RANK["launched"]
             ),
             None,
@@ -531,9 +659,12 @@ class LaunchLifecycleStore:
                 int(cycle["last_window_end"]) - int(cycle["first_window_end"]),
             ),
             "observation_count": len(observations),
-            "first_stage": str(first["observed_stage"]),
+            "first_stage": str(first[stage_column]),
             "peak_stage": str(cycle["peak_stage"]),
             "failure_reason": str(cycle["end_reason"] or ""),
+            "asset_class": str(first["asset_class"] or ""),
+            "liquidity_tier": str(first["liquidity_tier"] or ""),
+            "trigger_path": str(first["trigger_path"] or ""),
             "entry_price": entry_price,
             "exit_price": _number(last["closed_price"]),
             "max_close_price": max_price,
@@ -577,6 +708,7 @@ class LaunchLifecycleStore:
                 cycle_id, evaluation_version, rule_key, symbol, cycle_no, status,
                 started_at, ended_at, duration_sec, observation_count,
                 first_stage, peak_stage, failure_reason,
+                asset_class, liquidity_tier, trigger_path,
                 entry_price, exit_price, max_close_price, min_close_price,
                 max_favorable_return_pct, max_adverse_return_pct, end_return_pct,
                 max_oi_increase_pct, max_oi_decrease_pct, peak_score,
@@ -586,6 +718,7 @@ class LaunchLifecycleStore:
             ) VALUES (
                 ?, ?, ?, ?, ?, 'evaluated',
                 ?, ?, ?, ?,
+                ?, ?, ?,
                 ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?,
@@ -607,6 +740,9 @@ class LaunchLifecycleStore:
                 first_stage = excluded.first_stage,
                 peak_stage = excluded.peak_stage,
                 failure_reason = excluded.failure_reason,
+                asset_class = excluded.asset_class,
+                liquidity_tier = excluded.liquidity_tier,
+                trigger_path = excluded.trigger_path,
                 entry_price = excluded.entry_price,
                 exit_price = excluded.exit_price,
                 max_close_price = excluded.max_close_price,
@@ -639,6 +775,9 @@ class LaunchLifecycleStore:
                 metrics["first_stage"],
                 metrics["peak_stage"],
                 metrics["failure_reason"],
+                metrics["asset_class"],
+                metrics["liquidity_tier"],
+                metrics["trigger_path"],
                 metrics["entry_price"],
                 metrics["exit_price"],
                 metrics["max_close_price"],
@@ -692,6 +831,9 @@ class LaunchLifecycleStore:
             "first_stage": str(row["first_stage"]),
             "peak_stage": str(row["peak_stage"]),
             "failure_reason": str(row["failure_reason"]),
+            "asset_class": str(row["asset_class"] or ""),
+            "liquidity_tier": str(row["liquidity_tier"] or ""),
+            "trigger_path": str(row["trigger_path"] or ""),
             "entry_price": _number(row["entry_price"]),
             "exit_price": _number(row["exit_price"]),
             "max_favorable_return_pct": _number(row["max_favorable_return_pct"]),
@@ -732,8 +874,10 @@ class LaunchLifecycleStore:
         cycle_id: int,
         symbol: str,
         rule_key: str,
+        asset_class: str = "",
+        liquidity_tier: str = "",
     ) -> dict[str, Any]:
-        rows = conn.execute(
+        global_rows = conn.execute(
             """
             SELECT confirmed, launched, followed_through,
                    max_favorable_return_pct, max_adverse_return_pct
@@ -743,6 +887,26 @@ class LaunchLifecycleStore:
             """,
             (str(rule_key), int(cycle_id)),
         ).fetchall()
+        cohort_rows: list[sqlite3.Row] = []
+        if asset_class and liquidity_tier:
+            cohort_rows = conn.execute(
+                """
+                SELECT confirmed, launched, followed_through,
+                       max_favorable_return_pct, max_adverse_return_pct
+                FROM launch_lifecycle_outcomes
+                WHERE rule_key = ? AND cycle_id != ?
+                  AND asset_class = ? AND liquidity_tier = ?
+                ORDER BY evaluated_at, cycle_id
+                """,
+                (
+                    str(rule_key),
+                    int(cycle_id),
+                    str(asset_class),
+                    str(liquidity_tier),
+                ),
+            ).fetchall()
+        cohort_ready = len(cohort_rows) >= self.outcome_min_samples
+        rows = cohort_rows if cohort_ready else global_rows
         samples = len(rows)
         confirmed_count = sum(int(row["confirmed"]) for row in rows)
         launched_count = sum(int(row["launched"]) for row in rows)
@@ -773,6 +937,18 @@ class LaunchLifecycleStore:
                 self.outcome_follow_through_pct,
             ),
             "rule_key": str(rule_key),
+            "aggregation_scope": "asset_liquidity" if cohort_ready else "same_rule_global",
+            "cohort_status": (
+                "used"
+                if cohort_ready
+                else "fallback_global"
+                if asset_class and liquidity_tier
+                else "unavailable"
+            ),
+            "cohort_asset_class": str(asset_class),
+            "cohort_liquidity_tier": str(liquidity_tier),
+            "cohort_completed_samples": len(cohort_rows),
+            "global_completed_samples": len(global_rows),
         }
         if rates_available:
             result.update({
@@ -840,6 +1016,8 @@ class LaunchLifecycleStore:
                 cycle_id=int(cycle["id"]),
                 symbol=str(cycle["symbol"]),
                 rule_key=str(cycle["outcome_rule_key"] or self.outcome_rule_key),
+                asset_class=str(metrics.get("asset_class") or "") if metrics else "",
+                liquidity_tier=str(metrics.get("liquidity_tier") or "") if metrics else "",
             ),
         }
 
@@ -1233,15 +1411,20 @@ class LaunchLifecycleStore:
             cycle = self._open_cycle(
                 conn,
                 symbol=symbol,
-                stage=self._stage_for_rule(
-                    score,
-                    self.outcome_rule_key,
+                stage=(
+                    self._fusion_lifecycle_stage(
+                        score,
+                        {},
+                        rule_key=self.outcome_rule_key,
+                    )
+                    if self.fusion_enabled
+                    else self._stage_for_rule(score, self.outcome_rule_key)
                 ),
                 window_end_ts=window_end_ts,
                 observed_at=int(observed_at),
                 breakout_price=(
                     _number(snapshot.get("breakout_price"))
-                    if bool(snapshot.get("breakout"))
+                    if bool(snapshot.get("breakout")) and not self.fusion_enabled
                     else None
                 ),
             )
@@ -1316,14 +1499,20 @@ class LaunchLifecycleStore:
         observation["id"] = int(cursor.lastrowid)
 
         observed_stage = str(stage or "idle")
+        lifecycle_stage = str(observation["lifecycle_stage"])
         previous_peak = str(cycle["peak_stage"] or "idle")
+        cycle_fusion_enabled = self._rule_uses_fusion(
+            str(cycle["outcome_rule_key"] or self.outcome_rule_key)
+        )
+        peak_candidate = (
+            lifecycle_stage if cycle_fusion_enabled else observed_stage
+        )
         peak_stage = (
-            observed_stage
-            if STAGE_RANK.get(observed_stage, 0) > STAGE_RANK.get(previous_peak, 0)
+            peak_candidate
+            if STAGE_RANK.get(peak_candidate, 0) > STAGE_RANK.get(previous_peak, 0)
             else previous_peak
         )
         lifecycle_status = str(observation["lifecycle_status"])
-        lifecycle_stage = str(observation["lifecycle_stage"])
         ended_at = window_end_ts if lifecycle_status == FAILED_STATUS else None
         conn.execute(
             """
@@ -1424,6 +1613,7 @@ class LaunchLifecycleStore:
         funding_interval_hours = int(_number(snapshot.get("funding_interval_hours")))
         funding_8h_pct = _funding_8h(funding_pct, funding_interval_hours)
         rule_key = str(cycle["outcome_rule_key"] or self.outcome_rule_key)
+        fusion_enabled = self._rule_uses_fusion(rule_key)
         watch_score = int(
             self._rule_number(rule_key, "watch", self.watch_score)
         )
@@ -1438,6 +1628,46 @@ class LaunchLifecycleStore:
             previous is None
             or window_end_ts - int(previous["window_end_ts"]) == self.window_sec
         )
+        previous_price_action = (
+            _json_object(previous["price_action_json"])
+            if previous is not None
+            else {}
+        )
+        price_action = (
+            advance_price_action_state(
+                previous_price_action,
+                snapshot.get("price_action_analysis"),
+            )
+            if self.price_action_enabled or fusion_enabled
+            else {}
+        )
+        confirmation_status = self._confirmation_status(
+            score,
+            price_action,
+            fusion_enabled=fusion_enabled,
+            rule_key=rule_key,
+        )
+        scored_stage = str(stage or "idle")
+        active_stage = (
+            self._fusion_lifecycle_stage(
+                score,
+                price_action,
+                rule_key=rule_key,
+            )
+            if fusion_enabled
+            else scored_stage
+        )
+        if fusion_enabled and score >= watch_score:
+            hard_counter = {
+                "price_up_oi_down",
+                "price_down_oi_up",
+                "active_selling_against_move",
+            }
+            if hard_counter.intersection(
+                str(value)
+                for value in (snapshot.get("counter_evidence") or [])
+            ):
+                active_stage = "risk"
 
         invalid_count = int(cycle["invalid_window_count"] or 0)
         if score < watch_score:
@@ -1447,8 +1677,20 @@ class LaunchLifecycleStore:
 
         cycle_breakout_price = _number(cycle["breakout_price"])
         snapshot_breakout_price = _number(snapshot.get("breakout_price"))
-        if cycle_breakout_price <= 0 and bool(snapshot.get("breakout")) and snapshot_breakout_price > 0:
-            cycle_breakout_price = snapshot_breakout_price
+        if cycle_breakout_price <= 0:
+            if fusion_enabled and confirmation_status in {
+                "confirmed_1h",
+                "confirmed_4h",
+            }:
+                confirmed_level = _number(price_action.get("level"))
+                if confirmed_level > 0:
+                    cycle_breakout_price = confirmed_level
+            elif (
+                not fusion_enabled
+                and bool(snapshot.get("breakout"))
+                and snapshot_breakout_price > 0
+            ):
+                cycle_breakout_price = snapshot_breakout_price
 
         breakout_below_count = int(cycle["breakout_below_count"] or 0)
         if cycle_breakout_price > 0 and closed_price < cycle_breakout_price:
@@ -1468,7 +1710,7 @@ class LaunchLifecycleStore:
             end_reason = "two_windows_below_watch_score"
         else:
             lifecycle_status = ACTIVE_STATUS
-            lifecycle_stage = "cooling" if score < watch_score else str(stage or "idle")
+            lifecycle_stage = "cooling" if score < watch_score else active_stage
             end_reason = ""
 
         first_row: Mapping[str, Any] = first if first is not None else {
@@ -1483,20 +1725,6 @@ class LaunchLifecycleStore:
         first_funding_8h = first_row["funding_8h_pct"]
         previous_funding_8h = previous_row["funding_8h_pct"]
         observation_no = int(previous["observation_no"]) + 1 if previous is not None else 1
-        previous_price_action = (
-            _json_object(previous["price_action_json"])
-            if previous is not None
-            else {}
-        )
-        price_action = (
-            advance_price_action_state(
-                previous_price_action,
-                snapshot.get("price_action_analysis"),
-            )
-            if self.price_action_enabled
-            else {}
-        )
-
         return {
             "cycle_id": int(cycle["id"]),
             "observation_no": observation_no,
@@ -1542,6 +1770,17 @@ class LaunchLifecycleStore:
             ),
             "funds_direction": str(snapshot.get("funds_direction") or "unknown"),
             "price_action_json": json.dumps(price_action, ensure_ascii=False),
+            "asset_class": str(
+                snapshot.get("asset_subclass")
+                or snapshot.get("asset_class")
+                or ""
+            ),
+            "liquidity_tier": str(snapshot.get("liquidity_tier") or ""),
+            "trigger_path": str(snapshot.get("trigger_path") or ""),
+            "confirmation_status": confirmation_status,
+            "price_oi_quadrant": str(
+                snapshot.get("price_oi_quadrant") or "unknown"
+            ),
             "price_vs_first_pct": _round_optional(
                 _percent_change(closed_price, _number(first_row["closed_price"]))
             ),
@@ -1644,6 +1883,12 @@ class LaunchLifecycleStore:
                 "score": int(observation["score_vs_previous"]),
             },
             "price_action": _json_object(observation.get("price_action_json")),
+            "confirmation_status": str(
+                observation.get("confirmation_status") or "not_required"
+            ),
+            "price_oi_quadrant": str(
+                observation.get("price_oi_quadrant") or "unknown"
+            ),
             "publication": publication,
             "outcome_evaluation": outcome_evaluation,
         }
@@ -1680,7 +1925,14 @@ class LaunchLifecycleStore:
         latest_message_ids = self._message_ids(
             cycle["latest_message_ids_json"]
         )
-        reasons = self._publication_reasons(current, last_published)
+        fusion_enabled = self._rule_uses_fusion(
+            str(cycle["outcome_rule_key"] or self.outcome_rule_key)
+        )
+        reasons = self._publication_reasons(
+            current,
+            last_published,
+            fusion_enabled=fusion_enabled,
+        )
         if (
             self.package_enabled
             and str(cycle["status"]) == ACTIVE_STATUS
@@ -1725,6 +1977,8 @@ class LaunchLifecycleStore:
         self,
         current: Mapping[str, Any],
         previous: sqlite3.Row | None,
+        *,
+        fusion_enabled: bool,
     ) -> list[str]:
         if not self.package_enabled:
             return []
@@ -1738,6 +1992,17 @@ class LaunchLifecycleStore:
         previous_stage = str(previous["lifecycle_stage"] or "idle")
         if current_stage != previous_stage:
             reasons.append("stage_changed")
+        current_confirmation = str(
+            current.get("confirmation_status") or "not_required"
+        )
+        previous_confirmation = str(
+            previous["confirmation_status"] or "not_required"
+        )
+        if (
+            current_confirmation in {"confirmed_1h", "confirmed_4h"}
+            and current_confirmation != previous_confirmation
+        ):
+            reasons.append("confirmation_changed")
         if abs(int(current.get("score") or 0) - int(previous["score"] or 0)) >= self.package_score_delta:
             reasons.append("score_delta")
         price_delta = _percent_change(
@@ -1764,6 +2029,18 @@ class LaunchLifecycleStore:
         previous_funds = str(previous["funds_direction"] or "unknown")
         if current_funds.startswith("divergence_") and current_funds != previous_funds:
             reasons.append("funds_divergence")
+        current_quadrant = str(
+            current.get("price_oi_quadrant") or "unknown"
+        )
+        previous_quadrant = str(
+            previous["price_oi_quadrant"] or "unknown"
+        )
+        if (
+            current_quadrant not in {"", "unknown"}
+            and previous_quadrant not in {"", "unknown"}
+            and current_quadrant != previous_quadrant
+        ):
+            reasons.append("quadrant_changed")
         current_price_action = _json_object(current.get("price_action_json"))
         previous_price_action = _json_object(previous["price_action_json"])
         if (
@@ -1773,6 +2050,23 @@ class LaunchLifecycleStore:
             != previous_price_action.get("event_key")
         ):
             reasons.append("price_action_changed")
+        if fusion_enabled and reasons:
+            immediate = {
+                "stage_changed",
+                "confirmation_changed",
+            }
+            price_action_status = str(current_price_action.get("status") or "")
+            if price_action_status.startswith(
+                ("false_breakout_", "failed_breakout_")
+            ):
+                immediate.add("price_action_changed")
+            if not immediate.intersection(reasons):
+                elapsed = (
+                    int(current.get("window_end_ts") or 0)
+                    - int(previous["window_end_ts"] or 0)
+                )
+                if elapsed < self.same_stage_min_interval_sec:
+                    return []
         return reasons
 
     @staticmethod
@@ -1807,6 +2101,15 @@ class LaunchLifecycleStore:
             ),
             "funds_direction": str(row["funds_direction"] or "unknown"),
             "price_action": _json_object(row["price_action_json"]),
+            "asset_class": str(row["asset_class"] or ""),
+            "liquidity_tier": str(row["liquidity_tier"] or ""),
+            "trigger_path": str(row["trigger_path"] or ""),
+            "confirmation_status": str(
+                row["confirmation_status"] or "not_required"
+            ),
+            "price_oi_quadrant": str(
+                row["price_oi_quadrant"] or "unknown"
+            ),
             "checkpoint_reasons": (
                 json.loads(str(row["checkpoint_reasons_json"] or "[]"))
                 if row["checkpoint_reasons_json"] is not None

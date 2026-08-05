@@ -795,6 +795,58 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("删除失败会在后续更新时自动重试", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
+    def test_launch_fusion_topic_intro_explains_new_confirmation_and_rotation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_fusion_enable=True,
+                launch_lifecycle_v2_enable=True,
+                launch_message_package_v2_enable=True,
+                launch_scan_limit=80,
+                launch_same_stage_min_interval_sec=1800,
+            )
+            intro = topic_intro_message(
+                "TG_LAUNCH_ALERT",
+                settings,
+            )
+
+            for phrase in (
+                "15分钟负责尽早发现",
+                "1小时负责独立确认",
+                "4小时提供趋势背景",
+                "24小时持仓量使用97个连续闭合15分钟点严格计算",
+                "同一证据不会重复加分",
+                "按高、中、低流动性轮换",
+                "规则分不是上涨概率",
+                "数据不完整只记录降级原因",
+                "新卡失败时保留旧卡",
+                "缺失显示“缺数据”",
+                "不会用0或旧窗口冒充完整数据",
+                "不自动交易",
+            ):
+                self.assertIn(phrase, intro)
+            self.assertNotIn("最高130分", intro)
+            self.assertLessEqual(len(plain_fallback(intro)), 4096)
+            self.assertNotEqual(
+                topic_intro_version("TG_LAUNCH_ALERT", settings),
+                DEFAULT_TOPIC_INTRO_VERSION,
+            )
+
+    def test_incomplete_launch_fusion_dependencies_keep_legacy_intro(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_fusion_enable=True,
+            )
+
+            intro = topic_intro_message("TG_LAUNCH_ALERT", settings)
+
+            self.assertIn("分数怎么计算（最高130分）", intro)
+            self.assertEqual(
+                topic_intro_version("TG_LAUNCH_ALERT", settings),
+                DEFAULT_TOPIC_INTRO_VERSION,
+            )
+
     def test_remaining_alert_topic_intros_hold_static_guidance(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))

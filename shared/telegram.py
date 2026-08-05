@@ -256,12 +256,24 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 )
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
+LAUNCH_FUSION_TOPIC_INTRO_VERSION = "2026-08-05-launch-fusion-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
 }
 
 
-def topic_intro_version(template_id: str) -> str:
+def topic_intro_version(
+    template_id: str,
+    settings: Settings | None = None,
+) -> str:
+    if (
+        template_id == "TG_LAUNCH_ALERT"
+        and settings is not None
+        and settings.launch_fusion_enable
+        and settings.launch_lifecycle_v2_enable
+        and settings.launch_message_package_v2_enable
+    ):
+        return LAUNCH_FUSION_TOPIC_INTRO_VERSION
     return TOPIC_INTRO_VERSIONS.get(
         template_id,
         DEFAULT_TOPIC_INTRO_VERSION,
@@ -328,6 +340,50 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "如果摘要因长度被拆成多条消息，会保留最新一轮的全部分段。",
         ])
     if template_id == "TG_LAUNCH_ALERT":
+        if (
+            settings.launch_fusion_enable
+            and settings.launch_lifecycle_v2_enable
+            and settings.launch_message_package_v2_enable
+        ):
+            return "\n".join([
+            "📌 <b>启动预警雷达使用说明</b>",
+            "",
+            "这里负责从全市场币安合约中寻找刚出现的启动异动，并持续跟踪到确认、降温或失效。同一币种同一轮只保留一张最新卡片，只有重要变化才更新。",
+            "",
+            "<b>新版运行逻辑</b>",
+            "1. 15分钟负责尽早发现；必须使用连续、完整收线且与持仓量时间严格对齐的数据。",
+            "2. 1小时负责独立确认；分数达到确认线但1小时未确认时，仍只显示“等待确认”。",
+            "3. 4小时提供趋势背景；24小时价格使用币安滚动行情，24小时持仓量使用97个连续闭合15分钟点严格计算。",
+            "4. 价格、持仓量、成交量、现货主动成交和合约主动成交分组计分，同一证据不会重复加分。",
+            "5. 不同资产类别、流动性和近期波动使用不同门槛；未知类别使用更保守门槛。",
+            "",
+            "<b>价格与持仓量怎么看</b>",
+            "- 价格涨、持仓增：可能有新增仓位推动。",
+            "- 价格涨、持仓减：更像空头回补，属于持续上涨的反证。",
+            "- 价格跌、持仓增：可能有新增空头推动。",
+            "- 价格跌、持仓减：更像多头止损或去杠杆。",
+            "以上都是候选解释，不是确定结论。",
+            "",
+            "<b>候选与推送</b>",
+            f"- 每轮最多扫描{settings.launch_scan_limit}个，但会保留活跃币并按高、中、低流动性轮换，避免小币长期排不到。",
+            f"- 规则分达到{settings.launch_min_score_push}分才开启一轮公开跟踪；规则分不是上涨概率。",
+            f"- 同一阶段的普通变化至少间隔{seconds_cn(settings.launch_same_stage_min_interval_sec)}才更新；确认、降温和失效会立即更新。",
+            "- 数据不完整只记录降级原因，不会升级阶段，也不会覆盖上一张完整卡片。",
+            "",
+            "<b>图表与生命周期</b>",
+            "- 主图使用已完整收线的1小时行情；15分钟只负责触发和早期观察。",
+            "- 图中的1、2、3…是本轮重要更新顺序；数字前带“<”表示事件早于当前图表范围。",
+            "- 连续两个完整窗口低于观察线，或确认后连续两次跌回有效突破位，本轮才结束。",
+            "- 新卡发送并保存成功后才删除旧卡；新卡失败时保留旧卡。",
+            "",
+            "<b>数据和链接</b>",
+            "- 价格、K线、持仓量和费率来自 Binance USDⓈ-M Futures；合约主动资金直接取同一闭合15分钟K线，现货主动资金对本轮候选有界补取同窗K线。",
+            "- 没有币安现货交易对、历史不足或币安接口暂不可用时，会写明原因；不会用0或旧窗口冒充完整数据。",
+            "- 点击币种打开 CoinGlass；点击代码复制交易对；点击 TV 打开 TradingView。",
+            "- 缺失显示“缺数据”，不会显示成0。历史结果只用于复盘，不会自动改参数。",
+            "",
+            "本雷达只做规则观察，不自动交易，不构成投资建议。",
+            ])
         return "\n".join([
         "📌 <b>启动预警使用说明</b>",
         "",
@@ -1165,7 +1221,7 @@ class TelegramGateway:
         if not intro:
             return False
         current_hash = intro_hash(intro)
-        current_version = topic_intro_version(template_id)
+        current_version = topic_intro_version(template_id, self.settings)
         intro_key = self._topic_intro_key(template_id, topic_id)
         record = self._topic_intro_record(intro_key)
         pin_requested = require_pin or self.settings.tg_topic_intro_pin
@@ -1242,7 +1298,7 @@ class TelegramGateway:
             "topic_id": topic_id,
             "message_id": message_id,
             "pinned": pinned,
-            "intro_version": topic_intro_version(template_id),
+            "intro_version": topic_intro_version(template_id, self.settings),
             "content_hash": content_hash,
             "sent_at": datetime.now(timezone.utc).isoformat(),
         }

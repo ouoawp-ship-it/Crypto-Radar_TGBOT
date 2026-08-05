@@ -22,6 +22,10 @@ def snapshot(
     score: int,
     price: float,
     oi: float,
+    asset_class: str = "",
+    liquidity_tier: str = "",
+    trigger_path: str = "",
+    price_action_analysis: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "symbol": symbol,
@@ -41,6 +45,10 @@ def snapshot(
         "data_quality_score": 100,
         "quality_gate": "allow",
         "primary_data_source": "binance_native",
+        "asset_class": asset_class,
+        "liquidity_tier": liquidity_tier,
+        "trigger_path": trigger_path,
+        "price_action_analysis": price_action_analysis,
     }
 
 
@@ -53,6 +61,10 @@ def record(
     price: float,
     oi: float,
     stage: str,
+    asset_class: str = "",
+    liquidity_tier: str = "",
+    trigger_path: str = "",
+    price_action_analysis: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return store.record_observation(
         snapshot(
@@ -61,6 +73,10 @@ def record(
             score=score,
             price=price,
             oi=oi,
+            asset_class=asset_class,
+            liquidity_tier=liquidity_tier,
+            trigger_path=trigger_path,
+            price_action_analysis=price_action_analysis,
         ),
         stage=stage,
         observed_at=window_end_ts + 10,
@@ -74,6 +90,8 @@ def finish_cycle(
     start: int,
     confirmed: bool,
     follow_through: bool,
+    asset_class: str = "",
+    liquidity_tier: str = "",
 ) -> dict[str, object]:
     record(
         store,
@@ -83,6 +101,8 @@ def finish_cycle(
         price=100,
         oi=1_000,
         stage="primed",
+        asset_class=asset_class,
+        liquidity_tier=liquidity_tier,
     )
     next_window = start + 900
     if confirmed:
@@ -94,6 +114,8 @@ def finish_cycle(
             price=104 if follow_through else 101,
             oi=1_100,
             stage="breakout",
+            asset_class=asset_class,
+            liquidity_tier=liquidity_tier,
         )
         next_window += 900
     record(
@@ -104,6 +126,8 @@ def finish_cycle(
         price=102 if follow_through else 99,
         oi=950,
         stage="idle",
+        asset_class=asset_class,
+        liquidity_tier=liquidity_tier,
     )
     return record(
         store,
@@ -113,7 +137,61 @@ def finish_cycle(
         price=101 if follow_through else 98,
         oi=900,
         stage="idle",
+        asset_class=asset_class,
+        liquidity_tier=liquidity_tier,
     )
+
+
+def price_action_breakout(window_end_ts: int) -> dict[str, object]:
+    return {
+        "data_status": "ready",
+        "lookback": 2,
+        "min_body_ratio": 0.45,
+        "wick_body_ratio": 1.5,
+        "timeframes": {
+            "15m": {
+                "data_status": "ready",
+                "event": "breakout_up",
+                "candle_end_ts": window_end_ts,
+                "box_high": 100.0,
+                "box_low": 95.0,
+            },
+            "1h": {"data_status": "insufficient_history"},
+        },
+    }
+
+
+def price_action_confirmed(window_end_ts: int) -> dict[str, object]:
+    return {
+        "data_status": "ready",
+        "lookback": 2,
+        "min_body_ratio": 0.45,
+        "wick_body_ratio": 1.5,
+        "timeframes": {
+            "15m": {
+                "data_status": "ready",
+                "event": "inside",
+                "candle_end_ts": window_end_ts,
+                "open": 102.0,
+                "high": 106.0,
+                "low": 101.0,
+                "close": 105.0,
+                "body_ratio": 0.6,
+            },
+            "1h": {
+                "data_status": "ready",
+                "event": "inside",
+                "candle_end_ts": window_end_ts,
+                "open": 100.0,
+                "high": 106.0,
+                "low": 99.0,
+                "close": 105.0,
+                "body_ratio": 0.7,
+                "upper_wick_body_ratio": 0.2,
+                "lower_wick_body_ratio": 0.2,
+            },
+        },
+    }
 
 
 class LaunchOutcomeTests(unittest.TestCase):
@@ -195,6 +273,236 @@ class LaunchOutcomeTests(unittest.TestCase):
                     ).fetchone()[0],
                     1,
                 )
+
+    def test_fusion_outcome_requires_independent_closed_one_hour_confirmation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                price_action_enabled=True,
+                outcome_enabled=True,
+            )
+            record(
+                store,
+                symbol="UNCONFIRMEDUSDT",
+                window_end_ts=900,
+                score=95,
+                price=100,
+                oi=1_000,
+                stage="launched",
+                price_action_analysis=price_action_breakout(900),
+            )
+            record(
+                store,
+                symbol="UNCONFIRMEDUSDT",
+                window_end_ts=1_800,
+                score=95,
+                price=104,
+                oi=1_100,
+                stage="launched",
+                price_action_analysis=price_action_breakout(900),
+            )
+            record(
+                store,
+                symbol="UNCONFIRMEDUSDT",
+                window_end_ts=2_700,
+                score=40,
+                price=102,
+                oi=1_050,
+                stage="idle",
+            )
+            unconfirmed = record(
+                store,
+                symbol="UNCONFIRMEDUSDT",
+                window_end_ts=3_600,
+                score=40,
+                price=101,
+                oi=1_000,
+                stage="idle",
+            )
+
+            record(
+                store,
+                symbol="CONFIRMEDUSDT",
+                window_end_ts=900,
+                score=95,
+                price=100,
+                oi=1_000,
+                stage="launched",
+                price_action_analysis=price_action_breakout(900),
+            )
+            record(
+                store,
+                symbol="CONFIRMEDUSDT",
+                window_end_ts=1_800,
+                score=95,
+                price=104,
+                oi=1_100,
+                stage="launched",
+                price_action_analysis=price_action_confirmed(1_800),
+            )
+            record(
+                store,
+                symbol="CONFIRMEDUSDT",
+                window_end_ts=2_700,
+                score=40,
+                price=102,
+                oi=1_050,
+                stage="idle",
+            )
+            confirmed = record(
+                store,
+                symbol="CONFIRMEDUSDT",
+                window_end_ts=3_600,
+                score=40,
+                price=101,
+                oi=1_000,
+                stage="idle",
+            )
+
+            self.assertFalse(
+                unconfirmed["outcome_evaluation"]["outcome"]["confirmed"]
+            )
+            self.assertIsNone(
+                unconfirmed["outcome_evaluation"]["outcome"]["confirmed_at"]
+            )
+            self.assertEqual(
+                unconfirmed["outcome_evaluation"]["outcome"]["first_stage"],
+                "primed",
+            )
+            self.assertTrue(
+                confirmed["outcome_evaluation"]["outcome"]["confirmed"]
+            )
+            self.assertEqual(
+                confirmed["outcome_evaluation"]["outcome"]["confirmed_at"],
+                1_800,
+            )
+
+    def test_reliability_uses_asset_liquidity_cohort_at_minimum_samples(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                outcome_enabled=True,
+                outcome_min_samples=2,
+            )
+            finish_cycle(
+                store,
+                symbol="ALTLOWAUSDT",
+                start=900,
+                confirmed=True,
+                follow_through=True,
+                asset_class="altcoin",
+                liquidity_tier="low",
+            )
+            finish_cycle(
+                store,
+                symbol="ALTLOWBUSDT",
+                start=900,
+                confirmed=False,
+                follow_through=False,
+                asset_class="altcoin",
+                liquidity_tier="low",
+            )
+            finish_cycle(
+                store,
+                symbol="COREHIGHUSDT",
+                start=900,
+                confirmed=False,
+                follow_through=False,
+                asset_class="core_crypto",
+                liquidity_tier="high",
+            )
+            current = record(
+                store,
+                symbol="CURRENTUSDT",
+                window_end_ts=5_400,
+                score=60,
+                price=100,
+                oi=1_000,
+                stage="primed",
+                asset_class="altcoin",
+                liquidity_tier="low",
+            )
+
+            reliability = current["outcome_evaluation"]["reliability"]
+            self.assertEqual(reliability["aggregation_scope"], "asset_liquidity")
+            self.assertEqual(reliability["cohort_status"], "used")
+            self.assertEqual(reliability["completed_samples"], 2)
+            self.assertEqual(reliability["global_completed_samples"], 3)
+            self.assertEqual(reliability["confirmed_rate_pct"], 50.0)
+
+    def test_reliability_marks_global_fallback_when_cohort_is_too_small(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                outcome_enabled=True,
+                outcome_min_samples=2,
+            )
+            finish_cycle(
+                store,
+                symbol="ALTLOWUSDT",
+                start=900,
+                confirmed=True,
+                follow_through=True,
+                asset_class="altcoin",
+                liquidity_tier="low",
+            )
+            finish_cycle(
+                store,
+                symbol="COREHIGHUSDT",
+                start=900,
+                confirmed=False,
+                follow_through=False,
+                asset_class="core_crypto",
+                liquidity_tier="high",
+            )
+            current = record(
+                store,
+                symbol="CURRENTUSDT",
+                window_end_ts=5_400,
+                score=60,
+                price=100,
+                oi=1_000,
+                stage="primed",
+                asset_class="altcoin",
+                liquidity_tier="low",
+            )
+
+            reliability = current["outcome_evaluation"]["reliability"]
+            self.assertEqual(reliability["aggregation_scope"], "same_rule_global")
+            self.assertEqual(reliability["cohort_status"], "fallback_global")
+            self.assertEqual(reliability["cohort_completed_samples"], 1)
+            self.assertEqual(reliability["completed_samples"], 2)
+            self.assertTrue(reliability["rates_available"])
+
+    def test_existing_outcome_table_receives_additive_cohort_columns(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "signals.db"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE launch_lifecycle_outcomes (
+                        cycle_id INTEGER PRIMARY KEY,
+                        rule_key TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        evaluated_at INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.commit()
+
+            store = LaunchLifecycleStore(db_path)
+            with store.connect() as conn:
+                columns = {
+                    str(row["name"])
+                    for row in conn.execute(
+                        "PRAGMA table_info(launch_lifecycle_outcomes)"
+                    ).fetchall()
+                }
+
+            self.assertTrue(
+                {"asset_class", "liquidity_tier", "trigger_path"}.issubset(columns)
+            )
 
     def test_reliability_hides_rates_until_same_rule_minimum_is_met(self) -> None:
         with TemporaryDirectory() as tmp:
