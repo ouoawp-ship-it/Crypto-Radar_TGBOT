@@ -138,6 +138,7 @@ def launch_payload() -> dict[str, object]:
         "symbol": "TESTUSDT",
         "stage": "breakout",
         "launch_message_package_v2": True,
+        "reply_to_message_id": 101,
         "launch_lifecycle": {
             "cycle_id": 7,
             "observation_id": 12,
@@ -150,7 +151,7 @@ def launch_payload() -> dict[str, object]:
 
 
 class LaunchMessagePackageTests(unittest.TestCase):
-    def test_failed_latest_package_is_retained_until_a_new_signal_replaces_it(self) -> None:
+    def test_failed_latest_package_is_retained_without_cleanup_requests(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             engine = FakeEngine(events)
@@ -178,13 +179,15 @@ class LaunchMessagePackageTests(unittest.TestCase):
             )
 
             self.assertEqual(pushes, [])
-            self.assertIn("latest_topic_messages", events)
+            self.assertNotIn("latest_topic_messages", events)
+            self.assertFalse(any(event.startswith("pending:") for event in events))
             self.assertNotIn("reason:launch_cycle_expired", events)
             self.assertNotIn("delete:[202]", events)
             self.assertFalse(any(event.startswith("complete:") for event in events))
-            self.assertEqual(cleanup["protected_latest_messages"], 1)
+            self.assertFalse(cleanup["enabled"])
+            self.assertEqual(cleanup["mode"], "retain_history_reply_chain")
 
-    def test_expired_package_cleanup_obeys_message_budget(self) -> None:
+    def test_expired_package_history_is_never_automatically_deleted(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             engine = FakeEngine(events)
@@ -208,15 +211,12 @@ class LaunchMessagePackageTests(unittest.TestCase):
             )
 
             self.assertEqual(pushes, [])
-            self.assertIn("reason:launch_cycle_expired", events)
-            self.assertIn(f"delete:{list(range(100, 120))}", events)
-            self.assertIn(
-                f"complete:7:{list(range(100, 120))}:[]:True",
-                events,
-            )
-            self.assertEqual(cleanup["deleted_messages"], 20)
+            self.assertFalse(any(event.startswith("pending:") for event in events))
+            self.assertFalse(any(event.startswith("delete:") for event in events))
+            self.assertFalse(any(event.startswith("complete:") for event in events))
+            self.assertEqual(cleanup["deleted_messages"], 0)
 
-    def test_new_message_is_committed_before_old_message_is_deleted(self) -> None:
+    def test_new_message_replies_then_commits_without_deleting_history(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             settings = Settings(
@@ -232,10 +232,13 @@ class LaunchMessagePackageTests(unittest.TestCase):
             )
 
             self.assertLess(events.index("send"), events.index("commit"))
-            self.assertLess(events.index("commit"), events.index("delete:[101]"))
-            self.assertIn("complete:7:[101]:[]:False", events)
+            self.assertFalse(any(event.startswith("delete:") for event in events))
+            self.assertFalse(any(event.startswith("complete:") for event in events))
             self.assertEqual(pushes[0]["status"], "sent")
-            self.assertEqual(cleanup["deleted_messages"], 1)
+            self.assertTrue(pushes[0]["reply_target_configured"])
+            self.assertTrue(pushes[0]["previous_messages_retained"])
+            self.assertNotIn("reply_to", pushes[0])
+            self.assertEqual(cleanup["deleted_messages"], 0)
 
     def test_send_failure_never_commits_or_deletes_old_package(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -257,7 +260,7 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertFalse(any(event.startswith("delete:") for event in events))
             self.assertEqual(pushes[0]["status"], "failed")
 
-    def test_new_package_only_deletes_previous_package_for_same_cycle(self) -> None:
+    def test_new_package_retains_previous_and_unrelated_topic_messages(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
             settings = Settings(
@@ -278,9 +281,9 @@ class LaunchMessagePackageTests(unittest.TestCase):
                 launch_payload(),
                 SimpleNamespace(send=True, confirm_real_send=True),
             )
-
-            self.assertLess(events.index("commit"), events.index("delete:[101]"))
-            self.assertIn("reason:launch_package_replaced", events)
+            self.assertIn("commit", events)
+            self.assertFalse(any(event.startswith("delete:") for event in events))
+            self.assertNotIn("reason:launch_package_replaced", events)
             self.assertNotIn("topic_candidates:[201]", events)
             self.assertNotIn("delete:[88, 89]", events)
             self.assertNotIn(
@@ -295,6 +298,49 @@ class LaunchMessagePackageTests(unittest.TestCase):
                 cleanup["topic_state_reconciliation"]["message_ids_removed"],
                 0,
             )
+            self.assertTrue(pushes[0]["previous_messages_retained"])
+
+    def test_first_package_is_standalone_and_followup_uses_reply_target(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+            )
+            first = launch_payload()
+            first["alerts"][0]["reply_to_message_id"] = 0  # type: ignore[index]
+            first_events: list[str] = []
+            first_gateway = FakeGateway(
+                first_events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            push_launch_messages(
+                settings,
+                FakeEngine(first_events),  # type: ignore[arg-type]
+                first_gateway,  # type: ignore[arg-type]
+                first,
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+            self.assertIsNone(
+                first_gateway.send_calls[0][1]["reply_to_message_id"]
+            )
+
+            followup_events: list[str] = []
+            followup_gateway = FakeGateway(
+                followup_events,
+                PushResult("sent", "telegram_api", True, [202]),
+            )
+            pushes, _cleanup = push_launch_messages(
+                settings,
+                FakeEngine(followup_events),  # type: ignore[arg-type]
+                followup_gateway,  # type: ignore[arg-type]
+                launch_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+            self.assertEqual(
+                followup_gateway.send_calls[0][1]["reply_to_message_id"],
+                101,
+            )
+            self.assertTrue(pushes[0]["reply_target_configured"])
 
     def test_partial_send_is_rolled_back_without_touching_old_package(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -377,6 +423,7 @@ class LaunchMessagePackageTests(unittest.TestCase):
             kwargs = gateway.send_calls[0][1]
             self.assertLessEqual(len(plain_fallback(text)), 1024)
             self.assertEqual(kwargs["photo"], b"\x89PNG\r\n\x1a\nchart")
+            self.assertEqual(kwargs["reply_to_message_id"], 101)
             self.assertFalse(kwargs["enrich_market_context"])
 
     def test_photo_failure_retains_old_package_without_sending_separate_text(self) -> None:

@@ -10,6 +10,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 ENV_FILE = CONFIG_DIR / ".env.oi"
 LEGACY_ENV_FILE = BASE_DIR / ".env.oi"
+AI_OPERATOR_PROMPT_FILE = CONFIG_DIR / ".launch_ai_prompt"
+AI_OPERATOR_PROMPT_MAX_CHARS = 3500
 
 
 def active_env_file() -> Path:
@@ -37,6 +39,21 @@ def load_env_file(path: Path | None = None) -> dict[str, str]:
         if current is None or (current.strip() == "" and value.strip()):
             os.environ[key] = value
     return env
+
+
+def load_ai_operator_prompt(path: Path | None = None) -> str:
+    prompt_path = path or AI_OPERATOR_PROMPT_FILE
+    try:
+        if not prompt_path.is_file() or prompt_path.is_symlink():
+            return ""
+        if os.name == "posix" and (prompt_path.stat().st_mode & 0o777) != 0o600:
+            return ""
+        prompt = prompt_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+    if not prompt or "\x00" in prompt or len(prompt) > AI_OPERATOR_PROMPT_MAX_CHARS:
+        return ""
+    return prompt
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -290,12 +307,13 @@ class Settings:
     ai_api_key: str = ""
     ai_base_url: str = ""
     ai_model: str = ""
+    ai_operator_prompt: str = ""
     ai_timeout_sec: int = 60
     launch_same_stage_min_interval_sec: int = 30 * 60
     launch_package_score_delta: int = 15
     launch_package_price_delta_pct: float = 3.0
     launch_package_oi_delta_pct: float = 5.0
-    launch_message_cleanup_enable: bool = True
+    launch_message_cleanup_enable: bool = False
     launch_message_cleanup_max_age_sec: int = 47 * 3600
     launch_message_cleanup_limit: int = 20
     launch_state_ttl_sec: int = 48 * 3600
@@ -585,9 +603,19 @@ class Settings:
                 "LAUNCH_AI_INTERPRETER_ENABLE",
                 False,
             ),
-            ai_api_key=os.getenv("AI_API_KEY", "").strip(),
-            ai_base_url=os.getenv("AI_BASE_URL", "").strip().rstrip("/"),
-            ai_model=os.getenv("AI_MODEL", "").strip(),
+            ai_api_key=file_env.get(
+                "AI_API_KEY",
+                os.getenv("AI_API_KEY", ""),
+            ).strip(),
+            ai_base_url=file_env.get(
+                "AI_BASE_URL",
+                os.getenv("AI_BASE_URL", ""),
+            ).strip().rstrip("/"),
+            ai_model=file_env.get(
+                "AI_MODEL",
+                os.getenv("AI_MODEL", ""),
+            ).strip(),
+            ai_operator_prompt=load_ai_operator_prompt(),
             ai_timeout_sec=env_bounded_int(
                 "AI_TIMEOUT_SEC",
                 60,
@@ -601,7 +629,7 @@ class Settings:
             launch_package_score_delta=env_int("LAUNCH_PACKAGE_SCORE_DELTA", 15),
             launch_package_price_delta_pct=env_float("LAUNCH_PACKAGE_PRICE_DELTA_PCT", 3.0),
             launch_package_oi_delta_pct=env_float("LAUNCH_PACKAGE_OI_DELTA_PCT", 5.0),
-            launch_message_cleanup_enable=env_bool("LAUNCH_MESSAGE_CLEANUP_ENABLE", True),
+            launch_message_cleanup_enable=env_bool("LAUNCH_MESSAGE_CLEANUP_ENABLE", False),
             launch_message_cleanup_max_age_sec=env_int("LAUNCH_MESSAGE_CLEANUP_MAX_AGE_SEC", 47 * 3600),
             launch_message_cleanup_limit=env_int("LAUNCH_MESSAGE_CLEANUP_LIMIT", 20),
             launch_state_ttl_sec=env_int("LAUNCH_STATE_TTL_SEC", 48 * 3600),

@@ -94,7 +94,7 @@ def _premium_basis_pct(premium: Any) -> float | None:
 
 
 class LaunchWarningRadar(RadarComponent):
-    _AI_CACHE_VERSION = "launch-ai-interpreter-v1"
+    _AI_CACHE_VERSION = "launch-ai-interpreter-v2"
 
     def _launch_fusion_active(self) -> bool:
         return bool(
@@ -734,6 +734,19 @@ class LaunchWarningRadar(RadarComponent):
                     if isinstance(previous_published, dict)
                     else "idle"
                 )
+                reply_message_ids = [
+                    int(message_id)
+                    for message_id in (
+                        publication.get("reply_message_ids") or []
+                    )
+                    if isinstance(message_id, int)
+                    or str(message_id).isdigit()
+                ]
+                reply_to_message_id = (
+                    reply_message_ids[0]
+                    if reply_message_ids
+                    else int(previous.get("last_message_id", 0) or 0)
+                )
                 record = {
                     **(previous if isinstance(previous, dict) else {}),
                     **analyzed,
@@ -743,7 +756,7 @@ class LaunchWarningRadar(RadarComponent):
                     "last_active_at": now_ts,
                     "appear_count": int(lifecycle.get("observation_no") or 1),
                     "previous_stage": previous_stage,
-                    "reply_to_message_id": 0,
+                    "reply_to_message_id": reply_to_message_id,
                     "launch_message_package_v2": True,
                     "launch_package": publication,
                 }
@@ -770,16 +783,17 @@ class LaunchWarningRadar(RadarComponent):
                 continue
 
             previous_stage = previous.get("stage", "idle")
-            if (
-                previous_stage == "failed"
-                and self.settings.launch_message_cleanup_enable
-                and not previous.get("message_cleanup_complete")
-            ):
-                previous["last_seen"] = now_ts
-                state[analyzed["symbol"]] = previous
-                continue
             if previous_stage == "failed":
-                previous = {}
+                reply_head = int(previous.get("last_message_id", 0) or 0)
+                previous = (
+                    {
+                        "last_message_id": reply_head,
+                        "last_message_ids": [reply_head],
+                        "message_ids": list(previous.get("message_ids") or []),
+                    }
+                    if reply_head > 0
+                    else {}
+                )
                 previous_stage = "idle"
             stage_changed = self._stage_rank(next_stage) > self._stage_rank(previous_stage)
             last_pushed = int(previous.get("last_pushed", 0) or 0)
@@ -1049,158 +1063,19 @@ class LaunchWarningRadar(RadarComponent):
         *,
         now_ts: int | None = None,
     ) -> dict[str, Any]:
-        """Delete expired per-symbol launch messages while retaining signal evidence."""
+        """Retain launch-topic history; kept as a compatibility no-op."""
 
-        result: dict[str, Any] = {
-            "enabled": bool(self.settings.launch_message_cleanup_enable),
+        return {
+            "enabled": False,
+            "mode": "retain_history_reply_chain",
             "failed_signals": 0,
             "candidate_messages": 0,
             "deleted_messages": 0,
             "undeletable_messages": 0,
             "failed_deletions": 0,
             "pending_signals": 0,
-            "dry_run": delete_messages is None,
+            "dry_run": True,
         }
-        if not self.settings.launch_message_cleanup_enable:
-            return result
-
-        state = self.store.load(self.settings.launch_state_path, {})
-        if not isinstance(state, dict):
-            return result
-
-        from shared.signal_store import SignalEventStore
-
-        event_store = SignalEventStore(self.settings.signal_events_db_path)
-        current_ts = int(now_ts or time.time())
-        max_age_sec = max(1, int(self.settings.launch_message_cleanup_max_age_sec))
-        delete_budget = max(0, int(self.settings.launch_message_cleanup_limit))
-        attempted_messages = 0
-        changed = False
-
-        for symbol, record in state.items():
-            if not isinstance(record, dict) or record.get("stage") != "failed":
-                continue
-            if record.get("launch_message_package_v2"):
-                continue
-            result["failed_signals"] += 1
-            cycle_started_at = int(
-                record.get("first_seen")
-                or record.get("last_pushed")
-                or record.get("failed_at")
-                or current_ts
-            )
-            candidates = event_store.launch_message_cleanup_candidates(
-                symbol=str(symbol),
-                cycle_started_at=cycle_started_at,
-                now_ts=current_ts,
-                max_age_sec=max_age_sec,
-            )
-            deletable_ids = {
-                int(message_id) for message_id in candidates["deletable_ids"]
-            }
-            undeletable_ids = {
-                int(message_id) for message_id in candidates["undeletable_ids"]
-            }
-            database_ids = deletable_ids | undeletable_ids
-
-            state_message_ids = {
-                int(message_id)
-                for key in ("message_ids", "last_message_ids")
-                for message_id in (record.get(key) or [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            }
-            last_message_id = record.get("last_message_id")
-            if isinstance(last_message_id, int) or str(last_message_id or "").isdigit():
-                state_message_ids.add(int(last_message_id))
-            completed_ids = {
-                int(message_id)
-                for key in ("deleted_message_ids", "undeletable_message_ids")
-                for message_id in (record.get(key) or [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            }
-            state_only_ids = state_message_ids - database_ids - completed_ids
-            sent_at = int(record.get("last_pushed", 0) or 0)
-            if sent_at >= current_ts - max_age_sec:
-                deletable_ids.update(state_only_ids)
-            else:
-                undeletable_ids.update(state_only_ids)
-
-            result["candidate_messages"] += len(deletable_ids) + len(undeletable_ids)
-            if undeletable_ids:
-                event_store.mark_launch_message_cleanup(
-                    symbol=str(symbol),
-                    cycle_started_at=cycle_started_at,
-                    message_ids=sorted(undeletable_ids),
-                    outcome="undeletable",
-                    now_ts=current_ts,
-                )
-                existing = {
-                    int(message_id)
-                    for message_id in (record.get("undeletable_message_ids") or [])
-                    if isinstance(message_id, int) or str(message_id).isdigit()
-                }
-                record["undeletable_message_ids"] = sorted(existing | undeletable_ids)
-                result["undeletable_messages"] += len(undeletable_ids)
-                changed = True
-
-            deleted_ids: set[int] = set()
-            failed_ids: set[int] = set()
-            available = max(0, delete_budget - attempted_messages)
-            attempt_ids = sorted(deletable_ids)[:available]
-            if delete_messages is not None and attempt_ids:
-                attempted_messages += len(attempt_ids)
-                delete_result = delete_messages(attempt_ids)
-                if isinstance(delete_result, dict):
-                    deleted_ids = {
-                        int(message_id)
-                        for message_id in (delete_result.get("deleted_ids") or [])
-                        if isinstance(message_id, int) or str(message_id).isdigit()
-                    } & set(attempt_ids)
-                    failed_ids = {
-                        int(message_id)
-                        for message_id in (delete_result.get("failed_ids") or [])
-                        if isinstance(message_id, int) or str(message_id).isdigit()
-                    } & set(attempt_ids)
-                else:
-                    deleted_ids = set(attempt_ids[:max(0, int(delete_result))])
-                    failed_ids = set(attempt_ids) - deleted_ids
-                failed_ids.update(set(attempt_ids) - deleted_ids)
-                if deleted_ids:
-                    event_store.mark_launch_message_cleanup(
-                        symbol=str(symbol),
-                        cycle_started_at=cycle_started_at,
-                        message_ids=sorted(deleted_ids),
-                        outcome="deleted",
-                        now_ts=current_ts,
-                    )
-                    existing = {
-                        int(message_id)
-                        for message_id in (record.get("deleted_message_ids") or [])
-                        if isinstance(message_id, int) or str(message_id).isdigit()
-                    }
-                    record["deleted_message_ids"] = sorted(existing | deleted_ids)
-                result["deleted_messages"] += len(deleted_ids)
-                result["failed_deletions"] += len(failed_ids)
-                record["last_delete_attempt"] = current_ts
-                changed = True
-
-            remaining_ids = deletable_ids - deleted_ids
-            if remaining_ids:
-                record["delete_pending"] = True
-                record["message_cleanup_complete"] = False
-                result["pending_signals"] += 1
-            else:
-                record["delete_pending"] = False
-                record["message_cleanup_complete"] = True
-                record["message_cleanup_completed_at"] = current_ts
-                record["last_message_id"] = 0
-                record["last_message_ids"] = []
-                record["message_ids"] = []
-            changed = True
-
-        if changed:
-            self.store.save(self.settings.launch_state_path, state)
-        return result
 
     def _attach_launch_chart(
         self,
@@ -1870,11 +1745,22 @@ class LaunchWarningRadar(RadarComponent):
         alert: dict[str, Any],
         *,
         model: str,
+        operator_prompt: str = "",
+        base_url: str = "",
     ) -> str:
         observation_id = self._directional_observation_id(alert)
         if observation_id <= 0:
             return ""
-        material = f"{observation_id}:{model}:{self._AI_CACHE_VERSION}"
+        prompt_hash = hashlib.sha256(
+            str(operator_prompt or "").encode("utf-8")
+        ).hexdigest()
+        endpoint_hash = hashlib.sha256(
+            str(base_url or "").encode("utf-8")
+        ).hexdigest()
+        material = (
+            f"{observation_id}:{model}:{endpoint_hash}:{prompt_hash}:"
+            f"{self._AI_CACHE_VERSION}"
+        )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -1971,11 +1857,19 @@ class LaunchWarningRadar(RadarComponent):
         api_key = str(getattr(self.settings, "ai_api_key", "") or "").strip()
         base_url = str(getattr(self.settings, "ai_base_url", "") or "").strip()
         model = str(getattr(self.settings, "ai_model", "") or "").strip()
+        operator_prompt = str(
+            getattr(self.settings, "ai_operator_prompt", "") or ""
+        ).strip()
         if not (api_key and base_url and model):
             return diagnostics
         uncached_alerts: list[dict[str, Any]] = []
         for alert in eligible_alerts:
-            cache_key = self._directional_ai_cache_key(alert, model=model)
+            cache_key = self._directional_ai_cache_key(
+                alert,
+                model=model,
+                operator_prompt=operator_prompt,
+                base_url=base_url,
+            )
             cached = alert.get("launch_ai_interpreter_cache")
             if (
                 cache_key
@@ -2007,6 +1901,7 @@ class LaunchWarningRadar(RadarComponent):
                 session=session,
                 timeout_sec=float(getattr(self.settings, "ai_timeout_sec", 60)),
                 max_retries=0,
+                operator_prompt=operator_prompt,
             )
         except (TypeError, ValueError):
             session.close()
@@ -2074,6 +1969,8 @@ class LaunchWarningRadar(RadarComponent):
                     cache_key=self._directional_ai_cache_key(
                         alert,
                         model=model,
+                        operator_prompt=operator_prompt,
+                        base_url=base_url,
                     ),
                 )
         finally:
@@ -2223,8 +2120,8 @@ class LaunchWarningRadar(RadarComponent):
             record["stage"] = "failed"
             record["failed_at"] = int(now_ts)
             record["fail_reason"] = str(fail_reason)
-            record["delete_pending"] = True
-            record["message_cleanup_complete"] = False
+            record.pop("delete_pending", None)
+            record["message_cleanup_complete"] = True
             return record
 
         if stage == "failed":
@@ -2774,13 +2671,6 @@ class LaunchWarningRadar(RadarComponent):
                 del state[symbol]
                 continue
             stage = str(record.get("stage") or "")
-            if (
-                stage == "failed"
-                and self.settings.launch_message_cleanup_enable
-                and not record.get("message_cleanup_complete")
-            ):
-                record["delete_pending"] = True
-                continue
             anchor = int(record.get("failed_at", last_seen) or last_seen) if stage == "failed" else last_seen
             age = now_ts - anchor
             ttl = self.settings.launch_failed_ttl_sec if stage == "failed" else self.settings.launch_state_ttl_sec

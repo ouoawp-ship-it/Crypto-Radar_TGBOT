@@ -121,11 +121,11 @@ its main view. It retains the frozen 15m consolidation level and `15M BO`,
 visible without filling the chart with all 15m history. A long-wick
 re-entry is marked `SWEEP H` or `SWEEP L`; a body-close invalidation is marked
 `FAIL`.
-After a new package is sent and committed, the bot deletes older launch-topic signal
-messages and keeps only the pinned introduction plus the latest package. Failed
-deletions remain discoverable in Telegram delivery history and are retried
-while they remain inside Telegram's deletion window. Older records are marked
-undeletable and no longer retried. P2.4 stores one outcome per completed
+After the first package is sent, later packages for the same symbol reply to
+the previous successful package. Successful launch-topic history is retained;
+the bot does not schedule old packages for deletion. If an operator manually
+removes the reply target, Telegram delivery falls back once to a standalone
+message and that new message becomes the next reply head. P2.4 stores one outcome per completed
 lifecycle, reports close-based favorable/adverse movement and stage timing, and
 keeps historical rates hidden until enough completed cycles exist under the
 same rule key.
@@ -140,7 +140,7 @@ LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT=3.0
 LAUNCH_OUTCOME_MIN_SAMPLES=20
 ```
 
-One lifecycle is one sample, regardless of how many Telegram replacement
+One lifecycle is one sample, regardless of how many Telegram reply-chain
 packages it publishes. Old `launch-package:*` deliveries are removed from the
 generic event-level outcome table so one cycle cannot be counted multiple
 times.

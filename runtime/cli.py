@@ -99,10 +99,10 @@ def push_launch_messages(
     launch: dict[str, object],
     args: argparse.Namespace,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    package_enabled = bool(settings.launch_message_package_v2_enable)
     real_send = bool(args.send and args.confirm_real_send)
     cleanup_diagnostics: dict[str, object] = {
-        "enabled": package_enabled,
+        "enabled": False,
+        "mode": "retain_history_reply_chain",
         "retried_packages": 0,
         "deleted_messages": 0,
         "failed_deletions": 0,
@@ -113,52 +113,6 @@ def push_launch_messages(
         "chart_failures": 0,
         "protected_latest_messages": 0,
     }
-    if package_enabled and real_send:
-        cleanup_budget = max(0, int(settings.launch_message_cleanup_limit))
-        attempted_cleanup_messages = 0
-        protected_latest_ids = set(gateway.latest_launch_topic_message_ids())
-        for pending in engine.pending_launch_package_cleanups(
-            limit=cleanup_budget
-        ):
-            available = max(0, cleanup_budget - attempted_cleanup_messages)
-            if available <= 0:
-                break
-            pending_message_ids = list(pending.get("message_ids") or [])
-            protected_pending_ids = (
-                protected_latest_ids.intersection(pending_message_ids)
-                if pending.get("expire_latest")
-                else set()
-            )
-            if protected_pending_ids:
-                cleanup_diagnostics["protected_latest_messages"] = int(
-                    cleanup_diagnostics["protected_latest_messages"]
-                ) + len(protected_pending_ids)
-                continue
-            message_ids = pending_message_ids[:available]
-            attempted_cleanup_messages += len(message_ids)
-            deletion = gateway.delete_messages_detailed(
-                message_ids,
-                reason=(
-                    "launch_cycle_expired"
-                    if pending.get("expire_latest")
-                    else "launch_package_replaced"
-                ),
-            )
-            engine.complete_launch_package_cleanup(
-                cycle_id=int(pending.get("cycle_id") or 0),
-                deleted_ids=list(deletion.get("deleted_ids") or []),
-                failed_ids=list(deletion.get("failed_ids") or []),
-                expire_latest=bool(pending.get("expire_latest")),
-            )
-            cleanup_diagnostics["retried_packages"] = int(
-                cleanup_diagnostics["retried_packages"]
-            ) + 1
-            cleanup_diagnostics["deleted_messages"] = int(
-                cleanup_diagnostics["deleted_messages"]
-            ) + len(deletion.get("deleted_ids") or [])
-            cleanup_diagnostics["failed_deletions"] = int(
-                cleanup_diagnostics["failed_deletions"]
-            ) + len(deletion.get("failed_ids") or [])
 
     messages = list(launch.get("messages") or [])
     alerts = list(launch.get("alerts") or [])
@@ -180,7 +134,9 @@ def push_launch_messages(
         push_record: dict[str, object] = {
             "symbol": str(alert.get("symbol", "")),
             "stage": str(alert.get("stage", "")),
-            "reply_to": "" if is_package else str(alert.get("reply_to_message_id") or ""),
+            "reply_target_configured": bool(
+                int(alert.get("reply_to_message_id", 0) or 0)
+            ),
             "package_v2": is_package,
             "chart_v2": chart_required,
         }
@@ -223,9 +179,7 @@ def push_launch_messages(
             cooldown_sec=0 if is_package else settings.launch_stage_cooldown_sec,
             parse_mode="HTML",
             reply_to_message_id=(
-                None
-                if is_package
-                else int(alert.get("reply_to_message_id", 0) or 0) or None
+                int(alert.get("reply_to_message_id", 0) or 0) or None
             ),
             signal_records=[signal_record],
             photo=chart_bytes if chart_required else None,
@@ -270,27 +224,7 @@ def push_launch_messages(
                     )
                     pushes.append(push_record)
                     continue
-                deletion = gateway.delete_messages_detailed(
-                    list(commit.get("delete_message_ids") or []),
-                    reason="launch_package_replaced",
-                )
-                engine.complete_launch_package_cleanup(
-                    cycle_id=int(commit.get("cycle_id") or 0),
-                    deleted_ids=list(deletion.get("deleted_ids") or []),
-                    failed_ids=list(deletion.get("failed_ids") or []),
-                )
-                push_record["replaced_message_count"] = len(
-                    deletion.get("deleted_ids") or []
-                )
-                push_record["replacement_delete_failures"] = len(
-                    deletion.get("failed_ids") or []
-                )
-                cleanup_diagnostics["deleted_messages"] = int(
-                    cleanup_diagnostics["deleted_messages"]
-                ) + len(deletion.get("deleted_ids") or [])
-                cleanup_diagnostics["failed_deletions"] = int(
-                    cleanup_diagnostics["failed_deletions"]
-                ) + len(deletion.get("failed_ids") or [])
+                push_record["previous_messages_retained"] = True
             sent_alerts.append(alert)
         elif is_package and push.message_ids and real_send:
             rollback = gateway.delete_messages_detailed(

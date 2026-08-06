@@ -53,6 +53,7 @@ SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
     "MAIN_BOT_REAL_SEND_ACK",
     "AI_BASE_URL",
+    "AI_MODEL",
 }
 BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
@@ -76,6 +77,8 @@ INTEGER_RANGES: dict[str, tuple[int, int]] = {
 DECIMAL_RANGES: dict[str, tuple[float, float]] = {}
 BACKUP_LIMIT = 30
 MAIN_BOT_REAL_SEND_ACK_PHRASE = "发送真实主BOT提醒"
+AI_OPERATOR_PROMPT_FILE = Path("config/.launch_ai_prompt")
+AI_OPERATOR_PROMPT_MAX_CHARS = 3500
 
 
 class ConfigManagerError(ValueError):
@@ -203,12 +206,80 @@ class ConfigManager:
             "AI_TIMEOUT_SEC": "60",
             "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "1800",
         }
-        return {
+        status = {
             key: _redacted(
                 key,
                 values.get(key, effective_defaults.get(key, "")),
             )
             for key in sorted(ALLOWLIST)
+        }
+        status["AI_OPERATOR_PROMPT"] = self.ai_prompt_status()
+        return status
+
+    def ai_prompt_status(self) -> str:
+        path = self.base_dir / AI_OPERATOR_PROMPT_FILE
+        if not path.is_file() or path.is_symlink():
+            return "default"
+        try:
+            if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) != 0o600:
+                return "invalid"
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return "invalid"
+        prompt = content.strip()
+        if not prompt:
+            return "default"
+        if "\x00" in prompt or len(prompt) > AI_OPERATOR_PROMPT_MAX_CHARS:
+            return "invalid"
+        return "configured"
+
+    def set_ai_prompt(self, value: str) -> dict[str, object]:
+        prompt = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not prompt:
+            raise ConfigManagerError("AI operator prompt must not be empty")
+        if "\x00" in prompt or len(prompt) > AI_OPERATOR_PROMPT_MAX_CHARS:
+            raise ConfigManagerError("AI operator prompt is invalid")
+        return self._write_ai_prompt(prompt + "\n", status="configured")
+
+    def clear_ai_prompt(self) -> dict[str, object]:
+        return self._write_ai_prompt("", status="default")
+
+    def _write_ai_prompt(
+        self,
+        content: str,
+        *,
+        status: str,
+    ) -> dict[str, object]:
+        self._require_current_layout()
+        path = self.base_dir / AI_OPERATOR_PROMPT_FILE
+        if path.is_symlink():
+            raise ConfigManagerError("AI operator prompt must not be a symbolic link")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _chmod_700(path.parent)
+        _require_mode(path.parent, 0o700)
+        with _file_lock(path):
+            existed = path.exists()
+            original = path.read_bytes() if existed else b""
+            backup = self._backup(path, original) if existed else None
+            try:
+                self._atomic_write(path, content)
+                saved = path.read_text(encoding="utf-8")
+                if saved != content:
+                    raise ConfigManagerError("AI operator prompt verification failed")
+            except Exception:
+                if existed:
+                    self._atomic_write_bytes(path, original)
+                else:
+                    path.unlink(missing_ok=True)
+                raise
+            _chmod_600(path)
+            _chmod_600(path.with_name(f"{path.name}.lock"))
+            _require_mode(path, 0o600)
+            _require_mode(path.with_name(f"{path.name}.lock"), 0o600)
+        return {
+            "status": "ok",
+            "value": status,
+            "backup_created": backup is not None,
         }
 
     def set(self, key: str, value: str) -> dict[str, object]:
@@ -428,6 +499,17 @@ class ConfigManager:
             )
         if key == "AI_BASE_URL" and value:
             self._validate_ai_base_url(value)
+        if key == "AI_API_KEY" and value:
+            if (
+                len(value) > 512
+                or len(value) < 8
+                or any(character.isspace() for character in value)
+                or any(ord(character) < 32 for character in value)
+            ):
+                raise ConfigManagerError("AI_API_KEY has an invalid format")
+        if key == "AI_MODEL" and value:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
+                raise ConfigManagerError("AI_MODEL has an invalid format")
         if key == "TG_PRIVATE_CONTROL_ADMIN_USER_ID" and value:
             self._validate_private_control_admin_id(value)
 
@@ -444,6 +526,12 @@ class ConfigManager:
 
     @staticmethod
     def _validate_ai_base_url(value: str) -> None:
+        if (
+            len(value) > 2048
+            or any(character.isspace() for character in value)
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ConfigManagerError("AI_BASE_URL must be a valid HTTPS URL")
         try:
             parsed = urlsplit(value)
             port = parsed.port
@@ -693,7 +781,10 @@ class ConfigManager:
             raise ConfigManagerError(
                 "invalid environment backup target"
             ) from exc
-        if relative not in ENV_FILES.values():
+        if relative not in {
+            *ENV_FILES.values(),
+            AI_OPERATOR_PROMPT_FILE.as_posix(),
+        }:
             raise ConfigManagerError("invalid environment backup target")
         backups = sorted(
             path.parent.glob(f"{path.name}.bak.*"),
@@ -729,6 +820,35 @@ class ConfigManager:
             ) as handle:
                 temporary_name = handle.name
                 handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary = Path(temporary_name)
+            _chmod_600(temporary)
+            os.replace(temporary, path)
+            if ownership is not None:
+                os.chown(path, *ownership)
+            _chmod_600(path)
+            _require_mode(path, 0o600)
+        finally:
+            if temporary_name:
+                Path(temporary_name).unlink(missing_ok=True)
+
+    def _atomic_write_bytes(self, path: Path, content: bytes) -> None:
+        temporary_name = ""
+        ownership: tuple[int, int] | None = None
+        if path.exists() and hasattr(os, "chown"):
+            current = path.stat()
+            ownership = (current.st_uid, current.st_gid)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=path.parent,
+                delete=False,
+            ) as handle:
+                temporary_name = handle.name
+                handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary = Path(temporary_name)

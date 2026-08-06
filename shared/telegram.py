@@ -257,7 +257,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 LAUNCH_FUSION_TOPIC_INTRO_VERSION = "2026-08-05-launch-fusion-v1"
-LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-05-launch-directional-v1"
+LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-06-launch-directional-thread-v3"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
 }
@@ -369,7 +369,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
             return "\n".join([
             "📌 <b>启动预警雷达使用说明</b>",
             "",
-            "这里负责从全市场币安合约中寻找刚出现的启动异动，并持续跟踪到确认、降温或失效。同一币种同一轮只保留一张最新卡片，只有重要变化才更新。",
+            "这里负责从全市场币安合约中寻找刚出现的启动异动，并持续跟踪到确认、降温或失效。第一次信号单独发送；同一币种后续更新会回复上一条，所有成功消息都保留。",
             "",
             "<b>新版运行逻辑</b>",
             "1. 15分钟负责尽早发现；必须使用连续、完整收线且与持仓量时间严格对齐的数据。",
@@ -395,7 +395,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
             "- 主图使用已完整收线的1小时行情；15分钟只负责触发和早期观察。",
             "- 图中的1、2、3…是本轮重要更新顺序；数字前带“<”表示事件早于当前图表范围。",
             "- 连续两个完整窗口低于观察线，或确认后连续两次跌回有效突破位，本轮才结束。",
-            "- 新卡发送并保存成功后才删除旧卡；新卡失败时保留旧卡。",
+            "- 新卡发送并保存成功后成为下一次回复目标；旧卡和完整跟踪过程不会自动删除。",
             "",
             "<b>数据和链接</b>",
             "- 价格、K线、持仓量和费率来自 Binance USDⓈ-M Futures；合约主动资金直接取同一闭合15分钟K线，现货主动资金对本轮候选有界补取同窗K线。",
@@ -408,7 +408,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         return "\n".join([
         "📌 <b>启动预警使用说明</b>",
         "",
-        "这里跟踪币种从“出现异动”到“确认启动”或“信号失效”的过程。每个尚未失效的币种各保留一条最新的“图表 + 说明”。同一币种出现重要更新时，只替换该币上一条消息，其他仍有效币种的消息不会删除。",
+        "这里跟踪币种从“出现异动”到“确认启动”或“信号失效”的过程。第一次信号单独发送；同一币种出现重要更新时，会直接回复该币上一条成功消息，形成完整跟踪链。",
         "",
         "<b>先看什么</b>",
         "1. 先看“当前阶段”，再看“相对首次”和“相对上次”，判断价格、OI、资金费率和主动成交是否继续增强。",
@@ -438,11 +438,11 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         f"- 所有判断只使用完整收线的 15 分钟K线，并在收线后延迟{seconds_cn(settings.launch_close_delay_sec)}读取，避免使用尚未结束的数据。",
         "- 同一根 15 分钟K线期间即使检查多次，未达到阶段变化或重要替换条件时也只会内部记录，不会重复推送。",
         "",
-        "<b>什么时候结束并替换</b>",
+        "<b>什么时候结束、消息如何保留</b>",
         "- 连续两根完整15分钟K线低于观察阈值，或连续两根收盘价跌破本轮有效突破位，本轮信号才会确认失效。",
-        "- 确认失效后会进入该币的失效清理；其他仍在监控中的币种不受影响。",
-        "- 新消息发送并保存成功后，才会删除同一币种的上一条消息。",
-        "- 删除失败会在后续更新时自动重试，优先保证每个有效币种的最新消息可见。",
+        "- 确认失效后本轮结束；历史信号和失效消息都继续保留。",
+        "- 新消息发送并保存成功后，会成为该币下一次更新的回复目标。",
+        "- 如果上一条被人工删除，机器人会安全改为独立发送，不影响新一轮跟踪。",
         "",
         "<b>数据来源</b>",
         "- K线、价格、OI和资金费率来自 Binance USDⓈ-M Futures 原生接口。",
@@ -716,6 +716,7 @@ class TelegramGateway:
                 caption=text,
                 parse_mode=parse_mode,
                 topic_id=topic_id,
+                reply_to_message_id=reply_to_message_id,
             )
         else:
             self._last_delivery_diagnostics = None
@@ -974,6 +975,7 @@ class TelegramGateway:
         caption: str,
         parse_mode: str,
         topic_id: str = "",
+        reply_to_message_id: int | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendPhoto"
         payload: dict[str, Any] = {
@@ -982,6 +984,10 @@ class TelegramGateway:
         }
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        reply_id = int(reply_to_message_id or 0)
+        if reply_id > 0:
+            payload["reply_to_message_id"] = reply_id
+            payload["allow_sending_without_reply"] = True
         if topic_id and (
             self.settings.tg_use_topic
             or str(self.settings.tg_chat_id).startswith("-100")
@@ -1005,46 +1011,42 @@ class TelegramGateway:
         self._last_delivery_diagnostics = diagnostics
         for attempt in range(1, self.settings.tg_push_retry + 1):
             try:
-                response = requests.post(
-                    url,
-                    data=payload,
-                    files={"photo": ("launch-chart.png", photo, "image/png")},
-                    timeout=self.settings.tg_push_timeout_sec,
-                )
-                self._record_http_response(diagnostics, response)
-                if diagnostics.telegram_error_class == "telegram_ok":
-                    message_ids: list[int] = []
-                    sent = self._append_message_id(response, message_ids)
-                    diagnostics.completed_chunks = 1 if sent else 0
-                    diagnostics.response_ok = sent
-                    if not sent:
-                        diagnostics.telegram_error_class = "telegram_http_error"
-                    return sent, message_ids
-                if (
-                    diagnostics.telegram_error_class == "telegram_parse_error"
-                    and payload.get("parse_mode")
-                    and not diagnostics.parse_fallback_used
-                ):
-                    fallback = dict(payload)
-                    fallback.pop("parse_mode", None)
-                    fallback["caption"] = plain_fallback(caption)[:1024]
-                    diagnostics.parse_fallback_used = True
+                while True:
                     response = requests.post(
                         url,
-                        data=fallback,
+                        data=dict(payload),
                         files={"photo": ("launch-chart.png", photo, "image/png")},
                         timeout=self.settings.tg_push_timeout_sec,
                     )
                     self._record_http_response(diagnostics, response)
                     if diagnostics.telegram_error_class == "telegram_ok":
-                        message_ids = []
+                        message_ids: list[int] = []
                         sent = self._append_message_id(response, message_ids)
                         diagnostics.completed_chunks = 1 if sent else 0
                         diagnostics.response_ok = sent
                         if not sent:
                             diagnostics.telegram_error_class = "telegram_http_error"
                         return sent, message_ids
-                    return False, []
+                    if (
+                        diagnostics.telegram_error_class
+                        == "telegram_reply_target_not_found"
+                        and payload.get("reply_to_message_id")
+                        and not diagnostics.reply_fallback_used
+                    ):
+                        payload.pop("reply_to_message_id", None)
+                        payload.pop("allow_sending_without_reply", None)
+                        diagnostics.reply_fallback_used = True
+                        continue
+                    if (
+                        diagnostics.telegram_error_class == "telegram_parse_error"
+                        and payload.get("parse_mode")
+                        and not diagnostics.parse_fallback_used
+                    ):
+                        payload.pop("parse_mode", None)
+                        payload["caption"] = plain_fallback(caption)[:1024]
+                        diagnostics.parse_fallback_used = True
+                        continue
+                    break
                 if diagnostics.telegram_error_class in {
                     "telegram_rate_limited",
                     "telegram_provider_unavailable",
