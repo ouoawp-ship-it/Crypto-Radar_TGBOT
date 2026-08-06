@@ -388,4 +388,18 @@ def runtime_health_checks(
     return checks
 
 
-__all__ = ["runtime_health_checks"]
+def lightweight_freshness_checks(
+    settings: Settings,
+    *,
+    now_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read only the two freshness sources used by private fault alerts."""
+
+    now = int(now_ts or time.time())
+    return [
+        _market_snapshot_check(settings, now),
+        _realtime_check(settings, now),
+    ]
+
+
+__all__ = ["lightweight_freshness_checks", "runtime_health_checks"]

@@ -46,6 +46,18 @@ _REQUEST_ACTIONS = {
     "关闭方向雷达": ("directional_off", "确认关闭方向雷达"),
     "开启AI解读": ("ai_on", "确认开启AI解读"),
     "关闭AI解读": ("ai_off", "确认关闭AI解读"),
+    "开启故障提醒": ("private_alert_on", "确认开启故障提醒"),
+    "关闭故障提醒": ("private_alert_off", "确认关闭故障提醒"),
+    "开启启动预警": ("launch_alert_on", "确认开启启动预警"),
+    "关闭启动预警": ("launch_alert_off", "确认关闭启动预警"),
+    "开启资金摘要": ("radar_summary_on", "确认开启资金摘要"),
+    "关闭资金摘要": ("radar_summary_off", "确认关闭资金摘要"),
+    "开启资金费率警报": ("funding_alert_on", "确认开启资金费率警报"),
+    "关闭资金费率警报": ("funding_alert_off", "确认关闭资金费率警报"),
+    "开启五因子资金流": ("flow_radar_on", "确认开启五因子资金流"),
+    "关闭五因子资金流": ("flow_radar_off", "确认关闭五因子资金流"),
+    "开启公告风险": ("announcement_risk_on", "确认开启公告风险"),
+    "关闭公告风险": ("announcement_risk_off", "确认关闭公告风险"),
 }
 _CONFIRM_ACTIONS = {
     phrase: action for action, phrase in _REQUEST_ACTIONS.values()
@@ -55,6 +67,42 @@ _CONFIG_ACTIONS = {
     "directional_off": ("LAUNCH_DIRECTIONAL_ENABLE", "false", "方向雷达已关闭。"),
     "ai_on": ("LAUNCH_AI_INTERPRETER_ENABLE", "true", "AI 解读员已开启。"),
     "ai_off": ("LAUNCH_AI_INTERPRETER_ENABLE", "false", "AI 解读员已关闭。"),
+    "private_alert_on": (
+        "TG_PRIVATE_CONTROL_ALERT_ENABLE",
+        "true",
+        "主动故障提醒已开启。",
+    ),
+    "private_alert_off": (
+        "TG_PRIVATE_CONTROL_ALERT_ENABLE",
+        "false",
+        "主动故障提醒已关闭。",
+    ),
+    "launch_alert_on": ("LAUNCH_ALERT_ENABLE", "true", "启动预警已开启。"),
+    "launch_alert_off": ("LAUNCH_ALERT_ENABLE", "false", "启动预警已关闭。"),
+    "radar_summary_on": ("RADAR_SUMMARY_ENABLE", "true", "资金摘要已开启。"),
+    "radar_summary_off": ("RADAR_SUMMARY_ENABLE", "false", "资金摘要已关闭。"),
+    "funding_alert_on": (
+        "FUNDING_ALERT_ENABLE",
+        "true",
+        "资金费率警报已开启。",
+    ),
+    "funding_alert_off": (
+        "FUNDING_ALERT_ENABLE",
+        "false",
+        "资金费率警报已关闭。",
+    ),
+    "flow_radar_on": ("FLOW_RADAR_ENABLE", "true", "五因子资金流已开启。"),
+    "flow_radar_off": ("FLOW_RADAR_ENABLE", "false", "五因子资金流已关闭。"),
+    "announcement_risk_on": (
+        "ANNOUNCEMENT_RISK_ENABLE",
+        "true",
+        "公告风险已开启。",
+    ),
+    "announcement_risk_off": (
+        "ANNOUNCEMENT_RISK_ENABLE",
+        "false",
+        "公告风险已关闭。",
+    ),
 }
 
 
@@ -74,6 +122,10 @@ class _PendingAction:
 
 def _empty_reader() -> Mapping[str, Any]:
     return {}
+
+
+def _empty_text_reader() -> str:
+    return ""
 
 
 def _configured(value: Any) -> bool:
@@ -114,6 +166,10 @@ class PrivateControlService:
         health_reader: Callable[[], Mapping[str, Any]] = _empty_reader,
         delivery_quota_reader: Callable[[], Mapping[str, Any]] = _empty_reader,
         topic_status_reader: Callable[[], Mapping[str, Any]] = _empty_reader,
+        recent_signals_reader: Callable[[], str] = _empty_text_reader,
+        push_records_reader: Callable[[], str] = _empty_text_reader,
+        unpublished_reasons_reader: Callable[[], str] = _empty_text_reader,
+        fault_explanations_reader: Callable[[], str] = _empty_text_reader,
         clock: Callable[[], float] = time.time,
         long_poll_sec: int = 25,
         http_timeout_sec: int = 35,
@@ -129,6 +185,10 @@ class PrivateControlService:
         self._health_reader = health_reader
         self._delivery_quota_reader = delivery_quota_reader
         self._topic_status_reader = topic_status_reader
+        self._recent_signals_reader = recent_signals_reader
+        self._push_records_reader = push_records_reader
+        self._unpublished_reasons_reader = unpublished_reasons_reader
+        self._fault_explanations_reader = fault_explanations_reader
         self._clock = clock
         self._long_poll_sec = max(1, min(int(long_poll_sec), 50))
         self._http_timeout_sec = max(
@@ -228,7 +288,7 @@ class PrivateControlService:
         if not command:
             return None
 
-        if command in {"/start", "/menu", "菜单", "帮助"}:
+        if command in {"/start", "/menu", "菜单", "帮助", "返回主菜单"}:
             return ControlReply(
                 self.menu_text(),
                 "menu",
@@ -244,6 +304,54 @@ class PrivateControlService:
             return ControlReply(self._topic_status_text(), "topic_status")
         if command == "开关状态":
             return ControlReply(self._switch_status_text(), "switch_status")
+        if command == "运行详情":
+            return ControlReply(
+                "📚 运行详情\n请选择要查看的本地记录。",
+                "runtime_details_menu",
+                self.runtime_details_keyboard(),
+            )
+        if command == "最近信号":
+            return ControlReply(
+                self._safe_text_view(
+                    self._recent_signals_reader,
+                    "📡 最近信号\n暂时无法读取。",
+                ),
+                "recent_signals",
+                self.runtime_details_keyboard(),
+            )
+        if command == "推送记录":
+            return ControlReply(
+                self._safe_text_view(
+                    self._push_records_reader,
+                    "📨 推送记录\n暂时无法读取。",
+                ),
+                "push_records",
+                self.runtime_details_keyboard(),
+            )
+        if command == "未推送原因":
+            return ControlReply(
+                self._safe_text_view(
+                    self._unpublished_reasons_reader,
+                    "⏸️ 未推送原因\n暂时无法读取。",
+                ),
+                "unpublished_reasons",
+                self.runtime_details_keyboard(),
+            )
+        if command == "故障说明":
+            return ControlReply(
+                self._safe_text_view(
+                    self._fault_explanations_reader,
+                    "🩺 中文故障说明\n暂时无法读取。",
+                ),
+                "fault_explanations",
+                self.runtime_details_keyboard(),
+            )
+        if command == "雷达开关":
+            return ControlReply(
+                self._radar_switches_text(),
+                "radar_switches_menu",
+                self.radar_switches_keyboard(),
+            )
         if command in _REQUEST_ACTIONS:
             action, confirmation = _REQUEST_ACTIONS[command]
             blocked = self._action_block_reason(action)
@@ -284,10 +392,13 @@ class PrivateControlService:
             "• 健康摘要\n"
             "• 发送额度\n"
             "• 话题配置\n"
+            "• 运行详情\n"
             "• 开关状态\n\n"
             "🎛️ 安全开关（需要二次确认）\n"
+            "• 雷达开关\n"
             "• 开启方向雷达 / 关闭方向雷达\n"
-            "• 开启AI解读 / 关闭AI解读\n\n"
+            "• 开启AI解读 / 关闭AI解读\n"
+            "• 开启故障提醒 / 关闭故障提醒\n\n"
             "这里只接受固定指令；不接收密钥，不执行服务器命令，也不能切换真实推送模式。"
         )
 
@@ -296,10 +407,31 @@ class PrivateControlService:
         return (
             ("五雷达状态", "健康摘要"),
             ("发送额度", "话题配置"),
+            ("运行详情", "雷达开关"),
             ("开关状态",),
             ("开启方向雷达", "关闭方向雷达"),
             ("开启AI解读", "关闭AI解读"),
+            ("开启故障提醒", "关闭故障提醒"),
             ("帮助",),
+        )
+
+    @staticmethod
+    def runtime_details_keyboard() -> tuple[tuple[str, ...], ...]:
+        return (
+            ("最近信号", "推送记录"),
+            ("未推送原因", "故障说明"),
+            ("返回主菜单",),
+        )
+
+    @staticmethod
+    def radar_switches_keyboard() -> tuple[tuple[str, ...], ...]:
+        return (
+            ("开启启动预警", "关闭启动预警"),
+            ("开启资金摘要", "关闭资金摘要"),
+            ("开启资金费率警报", "关闭资金费率警报"),
+            ("开启五因子资金流", "关闭五因子资金流"),
+            ("开启公告风险", "关闭公告风险"),
+            ("开关状态", "返回主菜单"),
         )
 
     def _authorized(self, message: Mapping[str, Any]) -> bool:
@@ -417,18 +549,52 @@ class PrivateControlService:
             )
         return None
 
+    @staticmethod
+    def _safe_text_view(reader: Callable[[], str], fallback: str) -> str:
+        try:
+            text = reader()
+        except Exception:
+            return fallback
+        if not isinstance(text, str) or not text.strip():
+            return fallback
+        return text.strip()[:3900]
+
+    def _radar_switches_text(self) -> str:
+        status = self._config_status()
+        if not status:
+            return "🎛️ 五雷达开关\n读取失败，配置没有改变。"
+        switches = (
+            ("LAUNCH_ALERT_ENABLE", "启动预警"),
+            ("RADAR_SUMMARY_ENABLE", "资金摘要"),
+            ("FUNDING_ALERT_ENABLE", "资金费率警报"),
+            ("FLOW_RADAR_ENABLE", "五因子资金流"),
+            ("ANNOUNCEMENT_RISK_ENABLE", "公告风险"),
+        )
+        lines = ["🎛️ 五雷达自动运行开关"]
+        lines.extend(
+            f"• {label}：{'已开启' if bool(status.get(key, True)) else '已关闭'}"
+            for key, label in switches
+        )
+        lines.append("修改需二次确认；不重启服务，也不会改变真实推送模式。")
+        return "\n".join(lines)
+
     def _switch_status_text(self) -> str:
         status = self._config_status()
         if not status:
             return "🎛️ 开关状态\n读取失败，配置没有改变。"
         directional = bool(status.get("LAUNCH_DIRECTIONAL_ENABLE", False))
         interpreter = bool(status.get("LAUNCH_AI_INTERPRETER_ENABLE", False))
+        fault_alerts = bool(
+            status.get("TG_PRIVATE_CONTROL_ALERT_ENABLE", False)
+        )
         return (
             "🎛️ 当前安全开关\n"
             f"• 方向雷达：{'已开启' if directional else '已关闭'}\n"
             f"• AI 解读员：{'已开启' if interpreter else '已关闭'}\n"
+            f"• 主动故障提醒：{'已开启' if fault_alerts else '已关闭'}\n"
             f"• AI 配置：{'完整' if self._ai_configuration_ready() else '未完整'}\n"
-            "• 真实推送：本控制菜单无权修改"
+            "• 真实推送：本控制菜单无权修改\n\n"
+            + self._radar_switches_text()
         )
 
     def _radar_status_text(self) -> str:
@@ -594,6 +760,15 @@ class PrivateControlService:
         }
         _, error = self._telegram_call("sendMessage", payload)
         return error
+
+    def send_private_alert(self, text: str) -> bool:
+        """Send a bounded alert only to the configured private administrator."""
+
+        if self._readiness_error() or not isinstance(text, str) or not text.strip():
+            return False
+        return not self._send_reply(
+            ControlReply(text.strip()[:3900], "proactive_fault_alert")
+        )
 
     def _telegram_call(
         self, method: str, payload: Mapping[str, Any]

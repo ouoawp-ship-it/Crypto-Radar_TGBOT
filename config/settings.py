@@ -120,6 +120,11 @@ class Settings:
     tg_private_control_state_path: Path = (
         BASE_DIR / "data" / "telegram_private_control_state.json"
     )
+    tg_private_control_alert_enable: bool = False
+    tg_private_control_alert_cooldown_sec: int = 3600
+    tg_private_control_alert_state_path: Path = (
+        BASE_DIR / "data" / "telegram_private_alert_state.json"
+    )
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_topic_intro_pin: bool = True
     tg_use_topic: bool = False
@@ -183,6 +188,7 @@ class Settings:
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
 
     radar_scan_limit: int = 120
+    radar_summary_enable: bool = True
     radar_min_quote_volume: float = 5_000_000
     radar_top_n: int = 8
     radar_summary_min_interval_sec: int = 6 * 3600
@@ -201,6 +207,7 @@ class Settings:
     accumulation_max_recent_price_gain_pct: float = 300.0
 
     flow_scan_limit: int = 24
+    flow_radar_enable: bool = True
     flow_candidate_state_path: Path = BASE_DIR / "data" / "flow_candidate_state.json"
     flow_top_n: int = 5
     flow_min_score: int = 60
@@ -249,6 +256,7 @@ class Settings:
     fuse_seconds: int = 15 * 60
 
     launch_scan_limit: int = 80
+    launch_alert_enable: bool = True
     launch_funding_exchanges: tuple[str, ...] = ("BINANCE",)
     launch_funding_history_limit: int = 4
     launch_state_path: Path = BASE_DIR / "data" / "launch_state.json"
@@ -294,6 +302,7 @@ class Settings:
     launch_failed_ttl_sec: int = 24 * 3600
 
     announcement_state_path: Path = BASE_DIR / "data" / "announcement_state.json"
+    announcement_risk_enable: bool = True
     announcement_page_size: int = 50
     announcement_only_today: bool = True
     announcement_default_ttl_days: int = 3
@@ -325,7 +334,31 @@ class Settings:
             value = file_env.get(name)
             if value is None:
                 return env_bool(name, default)
-            return value.strip().lower() in {"1", "true", "yes", "on"}
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError("invalid reloadable boolean configuration")
+
+        def reloadable_bounded_int(
+            name: str,
+            default: int,
+            minimum: int,
+            maximum: int,
+        ) -> int:
+            raw = file_env.get(name)
+            if raw is None:
+                return env_bounded_int(name, default, minimum, maximum)
+            try:
+                value = int(raw)
+            except ValueError as exc:
+                raise ValueError(
+                    "invalid reloadable integer configuration"
+                ) from exc
+            if not minimum <= value <= maximum:
+                raise ValueError("reloadable integer configuration out of range")
+            return value
 
         data_dir = BASE_DIR / "data"
         return cls(
@@ -350,6 +383,16 @@ class Settings:
                 "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
                 "",
             ).strip(),
+            tg_private_control_alert_enable=reloadable_bool(
+                "TG_PRIVATE_CONTROL_ALERT_ENABLE",
+                False,
+            ),
+            tg_private_control_alert_cooldown_sec=reloadable_bounded_int(
+                "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC",
+                3600,
+                300,
+                86400,
+            ),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_topic_intro_pin=env_bool("TG_TOPIC_INTRO_PIN", True),
             tg_use_topic=env_bool("TELEGRAM_USE_TOPIC", False),
@@ -416,6 +459,7 @@ class Settings:
             ).rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
+            radar_summary_enable=reloadable_bool("RADAR_SUMMARY_ENABLE", True),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
             radar_top_n=env_int("RADAR_TOP_N", 8),
             radar_summary_min_interval_sec=env_int("RADAR_SUMMARY_MIN_INTERVAL_SEC", 6 * 3600),
@@ -436,6 +480,7 @@ class Settings:
                 300.0,
             ),
             flow_scan_limit=env_int("FLOW_SCAN_LIMIT", 24),
+            flow_radar_enable=reloadable_bool("FLOW_RADAR_ENABLE", True),
             flow_candidate_state_path=data_path(
                 data_dir,
                 "FLOW_CANDIDATE_STATE_FILE",
@@ -453,7 +498,7 @@ class Settings:
             flow_price_flat_max_pct=env_float("FLOW_PRICE_FLAT_MAX_PCT", 1.5),
             flow_oi_build_min_pct=env_float("FLOW_OI_BUILD_MIN_PCT", 2.0),
             flow_oi_unwind_max_pct=env_float("FLOW_OI_UNWIND_MAX_PCT", -1.5),
-            funding_alert_enable=env_bool("FUNDING_ALERT_ENABLE", True),
+            funding_alert_enable=reloadable_bool("FUNDING_ALERT_ENABLE", True),
             funding_alert_interval_sec=env_int("FUNDING_ALERT_INTERVAL_SEC", 180),
             funding_alert_scan_limit=env_int("FUNDING_ALERT_SCAN_LIMIT", 120),
             funding_scan_concurrency=env_int("FUNDING_SCAN_CONCURRENCY", 8),
@@ -498,6 +543,7 @@ class Settings:
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
             fuse_seconds=env_int("DATA_SOURCE_FUSE_SECONDS", 15 * 60),
             launch_scan_limit=env_int("LAUNCH_SCAN_LIMIT", 80),
+            launch_alert_enable=reloadable_bool("LAUNCH_ALERT_ENABLE", True),
             launch_funding_exchanges=env_csv("LAUNCH_FUNDING_EXCHANGES", ("BINANCE",)),
             launch_funding_history_limit=env_int("LAUNCH_FUNDING_HISTORY_LIMIT", 4),
             launch_state_path=data_path(data_dir, "LAUNCH_STATE_FILE", "launch_state.json"),
@@ -561,6 +607,10 @@ class Settings:
             launch_state_ttl_sec=env_int("LAUNCH_STATE_TTL_SEC", 48 * 3600),
             launch_failed_ttl_sec=env_int("LAUNCH_FAILED_TTL_SEC", 24 * 3600),
             announcement_state_path=data_path(data_dir, "ANNOUNCEMENT_STATE_FILE", "announcement_state.json"),
+            announcement_risk_enable=reloadable_bool(
+                "ANNOUNCEMENT_RISK_ENABLE",
+                True,
+            ),
             announcement_page_size=env_int("ANNOUNCEMENT_PAGE_SIZE", 50),
             announcement_only_today=env_bool("ANNOUNCEMENT_ONLY_TODAY", True),
             announcement_default_ttl_days=env_int("ANNOUNCEMENT_DEFAULT_TTL_DAYS", 3),
@@ -591,6 +641,10 @@ class Settings:
                     "enabled": self.tg_private_control_enable,
                     "admin_configured": bool(
                         self.tg_private_control_admin_user_id
+                    ),
+                    "fault_alerts_enabled": self.tg_private_control_alert_enable,
+                    "fault_alert_cooldown_sec": (
+                        self.tg_private_control_alert_cooldown_sec
                     ),
                 },
                 "topic_management": "manual_only",
@@ -649,6 +703,7 @@ class Settings:
                 "funding_history": self.funding_history_budget,
             },
             "radar": {
+                "enabled": self.radar_summary_enable,
                 "scan_limit": self.radar_scan_limit,
                 "min_quote_volume": self.radar_min_quote_volume,
                 "top_n": self.radar_top_n,
@@ -657,6 +712,7 @@ class Settings:
                 "accumulation_quality_evidence": "launch_supporting_only",
             },
             "flow_radar": {
+                "enabled": self.flow_radar_enable,
                 "scan_limit": self.flow_scan_limit,
                 "candidate_pool": "unlimited",
                 "candidate_state_file": str(self.flow_candidate_state_path),
@@ -696,6 +752,7 @@ class Settings:
                 "flip_oi_state_file": str(self.funding_flip_oi_state_path),
             },
             "launch": {
+                "enabled": self.launch_alert_enable,
                 "scan_limit": self.launch_scan_limit,
                 "funding_exchanges": list(self.launch_funding_exchanges),
                 "funding_history_limit": self.launch_funding_history_limit,
@@ -754,6 +811,7 @@ class Settings:
                 "watch_history_limit": self.launch_watch_history_limit,
             },
             "announcement_risk": {
+                "enabled": self.announcement_risk_enable,
                 "page_size": self.announcement_page_size,
                 "standalone_push": True,
                 "launch_supporting_evidence": True,

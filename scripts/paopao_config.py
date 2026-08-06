@@ -24,10 +24,17 @@ ALLOWLIST = {
     "TG_CHAT_ID": "oi",
     "TG_PRIVATE_CONTROL_ENABLE": "oi",
     "TG_PRIVATE_CONTROL_ADMIN_USER_ID": "oi",
+    "TG_PRIVATE_CONTROL_ALERT_ENABLE": "oi",
+    "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": "oi",
     "MAIN_BOT_DELIVERY_MODE": "oi",
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
     "LAUNCH_FUSION_ENABLE": "oi",
+    "LAUNCH_ALERT_ENABLE": "oi",
+    "RADAR_SUMMARY_ENABLE": "oi",
+    "FUNDING_ALERT_ENABLE": "oi",
+    "FLOW_RADAR_ENABLE": "oi",
+    "ANNOUNCEMENT_RISK_ENABLE": "oi",
     "LAUNCH_DIRECTIONAL_ENABLE": "oi",
     "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "oi",
     "LAUNCH_AI_INTERPRETER_ENABLE": "oi",
@@ -50,6 +57,12 @@ SENSITIVE_KEYS = SECRET_KEYS | {
 BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
     "TG_PRIVATE_CONTROL_ENABLE",
+    "TG_PRIVATE_CONTROL_ALERT_ENABLE",
+    "LAUNCH_ALERT_ENABLE",
+    "RADAR_SUMMARY_ENABLE",
+    "FUNDING_ALERT_ENABLE",
+    "FLOW_RADAR_ENABLE",
+    "ANNOUNCEMENT_RISK_ENABLE",
     "LAUNCH_FUSION_ENABLE",
     "LAUNCH_DIRECTIONAL_ENABLE",
     "LAUNCH_AI_INTERPRETER_ENABLE",
@@ -58,6 +71,7 @@ INTEGER_RANGES: dict[str, tuple[int, int]] = {
     "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": (900, 7200),
     "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": (1, 6),
     "AI_TIMEOUT_SEC": (5, 180),
+    "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": (300, 86400),
 }
 DECIMAL_RANGES: dict[str, tuple[float, float]] = {}
 BACKUP_LIMIT = 30
@@ -175,6 +189,13 @@ class ConfigManager:
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
             "TG_PRIVATE_CONTROL_ENABLE": "false",
+            "TG_PRIVATE_CONTROL_ALERT_ENABLE": "false",
+            "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": "3600",
+            "LAUNCH_ALERT_ENABLE": "true",
+            "RADAR_SUMMARY_ENABLE": "true",
+            "FUNDING_ALERT_ENABLE": "true",
+            "FLOW_RADAR_ENABLE": "true",
+            "ANNOUNCEMENT_RISK_ENABLE": "true",
             "LAUNCH_FUSION_ENABLE": "false",
             "LAUNCH_DIRECTIONAL_ENABLE": "false",
             "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "6",
@@ -483,6 +504,31 @@ class ConfigManager:
                 "private_control_gate_blocked: configure Telegram Bot Token "
                 "and the private administrator ID first"
             )
+        private_alert_enable = values.get(
+            "TG_PRIVATE_CONTROL_ALERT_ENABLE",
+            "false",
+        ).strip().lower()
+        if private_alert_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "TG_PRIVATE_CONTROL_ALERT_ENABLE must be true or false"
+            )
+        if private_alert_enable == "true" and private_control_enable != "true":
+            raise ConfigManagerError(
+                "private_control_alert_gate_blocked: enable private control first"
+            )
+
+        radar_switches: dict[str, bool] = {}
+        for key in (
+            "LAUNCH_ALERT_ENABLE",
+            "RADAR_SUMMARY_ENABLE",
+            "FUNDING_ALERT_ENABLE",
+            "FLOW_RADAR_ENABLE",
+            "ANNOUNCEMENT_RISK_ENABLE",
+        ):
+            raw_switch = values.get(key, "true").strip().lower()
+            if raw_switch not in {"true", "false"}:
+                raise ConfigManagerError(f"{key} must be true or false")
+            radar_switches[key] = raw_switch == "true"
 
         main_bot_mode = values.get(
             "MAIN_BOT_DELIVERY_MODE",
@@ -569,6 +615,7 @@ class ConfigManager:
         for key, default in (
             ("LAUNCH_DIRECTIONAL_MAX_CANDIDATES", "6"),
             ("AI_TIMEOUT_SEC", "60"),
+            ("TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC", "3600"),
         ):
             raw_value = values.get(key, default).strip()
             try:
@@ -597,6 +644,16 @@ class ConfigManager:
             "telegram_private_control_admin": (
                 "configured" if private_control_admin else "not_configured"
             ),
+            "telegram_private_control_alert_enable": (
+                private_alert_enable == "true"
+            ),
+            "telegram_private_control_alert_cooldown_sec": bounded_integers[
+                "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC"
+            ],
+            "radar_switches": {
+                key: radar_switches[key]
+                for key in sorted(radar_switches)
+            },
             "main_bot_delivery_mode": main_bot_mode,
             "main_bot_real_send": main_bot_real_send == "true",
             "main_bot_real_send_ack": (
