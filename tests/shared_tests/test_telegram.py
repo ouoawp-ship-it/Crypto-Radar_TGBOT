@@ -706,6 +706,7 @@ class TelegramGatewayTests(unittest.TestCase):
                     cooldown_sec=0,
                     parse_mode="HTML",
                     photo=png,
+                    reply_to_message_id=111,
                     enrich_market_context=False,
                 )
 
@@ -716,12 +717,64 @@ class TelegramGatewayTests(unittest.TestCase):
             request = post_mock.call_args.kwargs
             self.assertEqual(request["data"]["caption"], caption)
             self.assertEqual(request["data"]["message_thread_id"], 12)
+            self.assertEqual(request["data"]["reply_to_message_id"], 111)
+            self.assertTrue(request["data"]["allow_sending_without_reply"])
             self.assertNotIn("show_caption_above_media", request["data"])
             self.assertEqual(request["files"]["photo"][1], png)
             self.assertEqual(request["files"]["photo"][2], "image/png")
             self.assertEqual(list(Path(tmp).glob("*.png")), [])
             history = JsonStore(Path(tmp)).load(settings.tg_push_history_path, [])
             self.assertEqual(history[-1]["message_ids"], [444])
+
+    def test_photo_sender_falls_back_once_when_reply_target_is_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_use_topic=True,
+                tg_push_retry=1,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            class Response400:
+                status_code = 400
+
+                @staticmethod
+                def json() -> dict[str, object]:
+                    return {
+                        "ok": False,
+                        "error_code": 400,
+                        "description": "Bad Request: reply message not found",
+                    }
+
+            class Response200:
+                status_code = 200
+
+                @staticmethod
+                def json() -> dict[str, object]:
+                    return {"result": {"message_id": 445}}
+
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=[Response400(), Response200()],
+            ) as post_mock:
+                ok, message_ids = gateway._send_real_photo_bytes(
+                    b"\x89PNG\r\n\x1a\nphoto",
+                    caption="launch",
+                    parse_mode="HTML",
+                    topic_id="12",
+                    reply_to_message_id=111,
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(message_ids, [445])
+            self.assertEqual(post_mock.call_count, 2)
+            first_payload = post_mock.call_args_list[0].kwargs["data"]
+            second_payload = post_mock.call_args_list[1].kwargs["data"]
+            self.assertEqual(first_payload["reply_to_message_id"], 111)
+            self.assertNotIn("reply_to_message_id", second_payload)
+            self.assertTrue(gateway._last_delivery_diagnostics.reply_fallback_used)
 
     def test_send_rejects_non_png_before_network(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -774,7 +827,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 Settings(data_dir=Path(tmp)),
             )
 
-            self.assertIn("每个尚未失效的币种各保留一条最新的“图表 + 说明”", intro)
+            self.assertIn("第一次信号单独发送", intro)
             self.assertIn("同一币种出现重要更新时", intro)
             self.assertNotIn("整个话题只保留本说明和最新一条", intro)
             self.assertIn("点击代码可复制交易对", intro)
@@ -789,10 +842,10 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertIn("资金费率极端或结算周期变化只作为拥挤风险提示", intro)
             self.assertIn("不是使用 3 分钟K线", intro)
             self.assertIn("所有判断只使用完整收线的 15 分钟K线", intro)
-            self.assertIn("确认失效后会进入该币的失效清理", intro)
-            self.assertIn("其他仍在监控中的币种不受影响", intro)
-            self.assertIn("才会删除同一币种的上一条消息", intro)
-            self.assertIn("删除失败会在后续更新时自动重试", intro)
+            self.assertIn("历史信号和失效消息都继续保留", intro)
+            self.assertIn("会成为该币下一次更新的回复目标", intro)
+            self.assertIn("上一条被人工删除", intro)
+            self.assertNotIn("删除同一币种的上一条消息", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_launch_fusion_topic_intro_explains_new_confirmation_and_rotation(self) -> None:
@@ -819,7 +872,8 @@ class TelegramGatewayTests(unittest.TestCase):
                 "按高、中、低流动性轮换",
                 "规则分不是上涨概率",
                 "数据不完整只记录降级原因",
-                "新卡失败时保留旧卡",
+                "所有成功消息都保留",
+                "不会自动删除",
                 "缺失显示“缺数据”",
                 "不会用0或旧窗口冒充完整数据",
                 "不自动交易",

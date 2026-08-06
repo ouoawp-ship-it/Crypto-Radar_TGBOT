@@ -1029,10 +1029,12 @@ class LaunchLifecycleStore:
         rule_key: str,
         asset_class: str = "",
         liquidity_tier: str = "",
+        trigger_path: str = "",
     ) -> dict[str, Any]:
+        direction = self._directional_side(trigger_path)
         global_rows = conn.execute(
             """
-            SELECT confirmed, launched, followed_through,
+            SELECT confirmed, launched, followed_through, trigger_path,
                    max_favorable_return_pct, max_adverse_return_pct
             FROM launch_lifecycle_outcomes
             WHERE rule_key = ? AND cycle_id != ?
@@ -1040,11 +1042,17 @@ class LaunchLifecycleStore:
             """,
             (str(rule_key), int(cycle_id)),
         ).fetchall()
+        if direction:
+            global_rows = [
+                row
+                for row in global_rows
+                if self._directional_side(row["trigger_path"]) == direction
+            ]
         cohort_rows: list[sqlite3.Row] = []
         if asset_class and liquidity_tier:
             cohort_rows = conn.execute(
                 """
-                SELECT confirmed, launched, followed_through,
+                SELECT confirmed, launched, followed_through, trigger_path,
                        max_favorable_return_pct, max_adverse_return_pct
                 FROM launch_lifecycle_outcomes
                 WHERE rule_key = ? AND cycle_id != ?
@@ -1058,6 +1066,12 @@ class LaunchLifecycleStore:
                     str(liquidity_tier),
                 ),
             ).fetchall()
+            if direction:
+                cohort_rows = [
+                    row
+                    for row in cohort_rows
+                    if self._directional_side(row["trigger_path"]) == direction
+                ]
         cohort_ready = len(cohort_rows) >= self.outcome_min_samples
         rows = cohort_rows if cohort_ready else global_rows
         samples = len(rows)
@@ -1065,16 +1079,34 @@ class LaunchLifecycleStore:
         launched_count = sum(int(row["launched"]) for row in rows)
         followed_count = sum(int(row["followed_through"]) for row in rows)
         rates_available = samples >= self.outcome_min_samples
-        symbol_samples = int(
-            conn.execute(
+        if direction:
+            symbol_samples = int(conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM launch_lifecycle_outcomes
+                WHERE rule_key = ? AND cycle_id != ? AND symbol = ?
+                  AND (
+                    LOWER(TRIM(trigger_path)) LIKE ?
+                    OR LOWER(TRIM(trigger_path)) LIKE ?
+                  )
+                """,
+                (
+                    str(rule_key),
+                    int(cycle_id),
+                    str(symbol),
+                    f"directional:{direction}%",
+                    f"{direction}%",
+                ),
+            ).fetchone()[0])
+        else:
+            symbol_samples = int(conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM launch_lifecycle_outcomes
                 WHERE rule_key = ? AND cycle_id != ? AND symbol = ?
                 """,
                 (str(rule_key), int(cycle_id), str(symbol)),
-            ).fetchone()[0]
-        )
+            ).fetchone()[0])
         result: dict[str, Any] = {
             "status": "review_ready" if rates_available else "accumulating",
             "completed_samples": samples,
@@ -1090,6 +1122,8 @@ class LaunchLifecycleStore:
                 self.outcome_follow_through_pct,
             ),
             "rule_key": str(rule_key),
+            "direction": direction,
+            "direction_filtered": bool(direction),
             "aggregation_scope": "asset_liquidity" if cohort_ready else "same_rule_global",
             "cohort_status": (
                 "used"
@@ -1171,6 +1205,7 @@ class LaunchLifecycleStore:
                 rule_key=str(cycle["outcome_rule_key"] or self.outcome_rule_key),
                 asset_class=str(metrics.get("asset_class") or "") if metrics else "",
                 liquidity_tier=str(metrics.get("liquidity_tier") or "") if metrics else "",
+                trigger_path=str(metrics.get("trigger_path") or "") if metrics else "",
             ),
         }
 
@@ -1181,51 +1216,10 @@ class LaunchLifecycleStore:
         now_ts: int | None = None,
         max_age_sec: int | None = None,
     ) -> list[dict[str, Any]]:
-        cutoff = (
-            max(0, int(now_ts or 0) - max(1, int(max_age_sec)))
-            if max_age_sec is not None
-            else 0
-        )
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, symbol, cycle_no, status, package_updated_at,
-                       latest_message_ids_json, cleanup_pending_message_ids_json
-                FROM launch_lifecycle_cycles
-                WHERE cleanup_pending_message_ids_json != '[]'
-                   OR (
-                       status = ?
-                       AND latest_message_ids_json != '[]'
-                       AND COALESCE(package_updated_at, 0) >= ?
-                   )
-                ORDER BY package_updated_at ASC, id ASC
-                LIMIT ?
-                """,
-                (FAILED_STATUS, cutoff, max(0, int(limit))),
-            ).fetchall()
-            result: list[dict[str, Any]] = []
-            for row in rows:
-                expire_latest = (
-                    str(row["status"]) == FAILED_STATUS
-                    and bool(self._message_ids(row["latest_message_ids_json"]))
-                    and int(row["package_updated_at"] or 0) >= cutoff
-                )
-                pending = self._message_ids(
-                    row["cleanup_pending_message_ids_json"]
-                )
-                latest = (
-                    self._message_ids(row["latest_message_ids_json"])
-                    if expire_latest
-                    else []
-                )
-                result.append({
-                    "cycle_id": int(row["id"]),
-                    "symbol": str(row["symbol"]),
-                    "cycle_no": int(row["cycle_no"]),
-                    "message_ids": list(dict.fromkeys([*pending, *latest])),
-                    "expire_latest": expire_latest,
-                })
-            return result
+        # Launch-topic history is intentionally retained.  The columns remain
+        # for backward-compatible reads of older databases, but no successful
+        # launch message is scheduled for automatic deletion anymore.
+        return []
 
     def commit_package(
         self,
@@ -1259,9 +1253,7 @@ class LaunchLifecycleStore:
                     "status": "idempotent",
                     "cycle_id": int(cycle_id),
                     "checkpoint_no": int(observation["checkpoint_no"]),
-                    "delete_message_ids": self._message_ids(
-                        cycle["cleanup_pending_message_ids_json"]
-                    ),
+                    "delete_message_ids": [],
                 }
 
             checkpoint_no = int(
@@ -1274,15 +1266,6 @@ class LaunchLifecycleStore:
                     (int(cycle_id),),
                 ).fetchone()[0]
             )
-            previous_ids = self._message_ids(cycle["latest_message_ids_json"])
-            pending_ids = self._message_ids(
-                cycle["cleanup_pending_message_ids_json"]
-            )
-            delete_ids = [
-                message_id
-                for message_id in dict.fromkeys([*pending_ids, *previous_ids])
-                if message_id not in normalized
-            ]
             reasons = [
                 str(reason)
                 for reason in checkpoint_reasons
@@ -1317,7 +1300,7 @@ class LaunchLifecycleStore:
                 (
                     int(observation_id),
                     json.dumps(normalized),
-                    json.dumps(delete_ids),
+                    "[]",
                     int(published_at),
                     int(published_at),
                     int(cycle_id),
@@ -1328,7 +1311,7 @@ class LaunchLifecycleStore:
                 "cycle_id": int(cycle_id),
                 "checkpoint_no": checkpoint_no,
                 "message_ids": normalized,
-                "delete_message_ids": delete_ids,
+                "delete_message_ids": [],
             }
 
     def complete_package_cleanup(
@@ -2163,6 +2146,23 @@ class LaunchLifecycleStore:
         latest_message_ids = self._message_ids(
             cycle["latest_message_ids_json"]
         )
+        reply_message_ids = list(latest_message_ids)
+        if not reply_message_ids:
+            previous_cycles = conn.execute(
+                """
+                SELECT latest_message_ids_json
+                FROM launch_lifecycle_cycles
+                WHERE symbol = ? AND id != ?
+                ORDER BY COALESCE(package_updated_at, updated_at) DESC, id DESC
+                """,
+                (str(cycle["symbol"]), int(cycle["id"])),
+            ).fetchall()
+            for previous_cycle in previous_cycles:
+                reply_message_ids = self._message_ids(
+                    previous_cycle["latest_message_ids_json"]
+                )
+                if reply_message_ids:
+                    break
         fusion_enabled = self._rule_uses_fusion(
             str(cycle["outcome_rule_key"] or self.outcome_rule_key)
         )
@@ -2206,6 +2206,7 @@ class LaunchLifecycleStore:
             "current": self._observation_summary(current),
             "checkpoints": checkpoint_items,
             "latest_message_ids": latest_message_ids,
+            "reply_message_ids": reply_message_ids,
             "cleanup_pending_message_ids": self._message_ids(
                 cycle["cleanup_pending_message_ids_json"]
             ),

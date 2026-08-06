@@ -375,7 +375,7 @@ private_control_menu() {
 0. 返回
 
 说明：这里只绑定管理员和管理独立服务。
-密钥、真实发送、部署回滚和完整诊断仍保留在 FinalShell。
+AI 解读配置可在管理员私聊中完成；真实发送、部署回滚和完整诊断仍保留在 FinalShell。
 EOF
     IFS= read -r choice
     case "$choice" in

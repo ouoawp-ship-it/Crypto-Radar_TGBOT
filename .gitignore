@@ -6,6 +6,9 @@ __pycache__/
 .env.*
 !.env.example
 !.env.oi.example
+/config/.launch_ai_prompt
+/config/.launch_ai_prompt.lock
+/config/.launch_ai_prompt.bak.*
 
 *.bak
 *.bak.*

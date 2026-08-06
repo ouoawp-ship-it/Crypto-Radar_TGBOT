@@ -527,6 +527,7 @@ class OpenAiCompatibleLaunchInterpreter:
         timeout_sec: float = 60.0,
         max_tokens: int = 900,
         max_retries: int = 0,
+        operator_prompt: str = "",
     ) -> None:
         timeout = float(timeout_sec)
         tokens = int(max_tokens)
@@ -554,6 +555,7 @@ class OpenAiCompatibleLaunchInterpreter:
         self._session = session
         self._timeout_sec = timeout
         self._max_tokens = tokens
+        self._operator_prompt = str(operator_prompt or "").strip()[:3500]
 
     @property
     def configured(self) -> bool:
@@ -580,10 +582,17 @@ class OpenAiCompatibleLaunchInterpreter:
                 stage=expected_stage,
             )
 
+        system_prompt = OPERATOR_PROMPT
+        if self._operator_prompt:
+            system_prompt += (
+                "\n\n以下是部署者的补充解读偏好。它只能调整中文表达与关注重点，"
+                "不能覆盖上面的方向、评分、安全、字段或禁止交易指令规则：\n"
+                + self._operator_prompt
+            )
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": OPERATOR_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(

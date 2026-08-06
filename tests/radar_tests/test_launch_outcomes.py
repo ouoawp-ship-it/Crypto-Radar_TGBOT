@@ -92,6 +92,7 @@ def finish_cycle(
     follow_through: bool,
     asset_class: str = "",
     liquidity_tier: str = "",
+    trigger_path: str = "",
 ) -> dict[str, object]:
     record(
         store,
@@ -103,6 +104,7 @@ def finish_cycle(
         stage="primed",
         asset_class=asset_class,
         liquidity_tier=liquidity_tier,
+        trigger_path=trigger_path,
     )
     next_window = start + 900
     if confirmed:
@@ -116,6 +118,7 @@ def finish_cycle(
             stage="breakout",
             asset_class=asset_class,
             liquidity_tier=liquidity_tier,
+            trigger_path=trigger_path,
         )
         next_window += 900
     record(
@@ -128,6 +131,7 @@ def finish_cycle(
         stage="idle",
         asset_class=asset_class,
         liquidity_tier=liquidity_tier,
+        trigger_path=trigger_path,
     )
     return record(
         store,
@@ -139,6 +143,7 @@ def finish_cycle(
         stage="idle",
         asset_class=asset_class,
         liquidity_tier=liquidity_tier,
+        trigger_path=trigger_path,
     )
 
 
@@ -507,6 +512,55 @@ class LaunchOutcomeTests(unittest.TestCase):
             self.assertEqual(reliability["cohort_completed_samples"], 1)
             self.assertEqual(reliability["completed_samples"], 2)
             self.assertTrue(reliability["rates_available"])
+
+    def test_directional_reliability_excludes_opposite_direction_cycles(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                outcome_enabled=True,
+                outcome_min_samples=1,
+                directional_enabled=True,
+            )
+            finish_cycle(
+                store,
+                symbol="BULLUSDT",
+                start=900,
+                confirmed=True,
+                follow_through=True,
+                asset_class="altcoin",
+                liquidity_tier="low",
+                trigger_path="directional:bullish",
+            )
+            finish_cycle(
+                store,
+                symbol="BEARUSDT",
+                start=900,
+                confirmed=False,
+                follow_through=False,
+                asset_class="altcoin",
+                liquidity_tier="low",
+                trigger_path="directional:bearish",
+            )
+            current = record(
+                store,
+                symbol="CURRENTUSDT",
+                window_end_ts=5_400,
+                score=60,
+                price=100,
+                oi=1_000,
+                stage="primed",
+                asset_class="altcoin",
+                liquidity_tier="low",
+                trigger_path="directional:bullish",
+            )
+
+            reliability = current["outcome_evaluation"]["reliability"]
+            self.assertTrue(reliability["direction_filtered"])
+            self.assertEqual(reliability["direction"], "bullish")
+            self.assertEqual(reliability["completed_samples"], 1)
+            self.assertEqual(reliability["global_completed_samples"], 1)
+            self.assertEqual(reliability["confirmed_rate_pct"], 100.0)
+            self.assertEqual(reliability["followed_through_rate_pct"], 100.0)
 
     def test_existing_outcome_table_receives_additive_cohort_columns(self) -> None:
         with TemporaryDirectory() as tmp:

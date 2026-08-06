@@ -52,6 +52,11 @@ _MENU_PREFIXES = (
     "🧩 ",
     "🧭 ",
     "🤖 ",
+    "🔑 ",
+    "🌐 ",
+    "🧠 ",
+    "📝 ",
+    "♻️ ",
     "🚨 ",
     "🔕 ",
     "✅ ",
@@ -70,6 +75,7 @@ _MENU_ALIASES = {
     "关闭方向": "关闭方向雷达",
     "开启AI": "开启AI解读",
     "关闭AI": "关闭AI解读",
+    "AI配置": "AI设置",
     "开启提醒": "开启故障提醒",
     "关闭提醒": "关闭故障提醒",
     "刷新菜单": "菜单",
@@ -91,6 +97,7 @@ _REQUEST_ACTIONS = {
     "关闭五因子资金流": ("flow_radar_off", "确认关闭五因子资金流"),
     "开启公告风险": ("announcement_risk_on", "确认开启公告风险"),
     "关闭公告风险": ("announcement_risk_off", "确认关闭公告风险"),
+    "恢复默认提示词": ("ai_prompt_default", "确认恢复默认AI提示词"),
 }
 _CONFIRM_ACTIONS = {
     phrase: action for action, phrase in _REQUEST_ACTIONS.values()
@@ -138,18 +145,33 @@ _CONFIG_ACTIONS = {
     ),
 }
 
+_AI_INPUT_REQUESTS = {
+    "设置AI密钥": ("api_key", "AI 密钥"),
+    "设置AI接口": ("base_url", "AI 接口地址"),
+    "设置AI模型": ("model", "AI 模型"),
+    "设置AI提示词": ("prompt", "AI 补充提示词"),
+}
+
 
 @dataclass(frozen=True)
 class ControlReply:
     text: str
     command: str
     keyboard: tuple[tuple[str, ...], ...] | None = None
+    delete_source_message: bool = False
 
 
 @dataclass(frozen=True)
 class _PendingAction:
     action: str
     confirmation: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class _PendingInput:
+    kind: str
+    label: str
     expires_at: float
 
 
@@ -216,6 +238,7 @@ class PrivateControlService:
         long_poll_sec: int = 25,
         http_timeout_sec: int = 35,
         confirmation_ttl_sec: int = 120,
+        input_ttl_sec: int = 300,
     ) -> None:
         self.enabled = bool(enabled)
         self._bot_token = str(bot_token).strip()
@@ -240,7 +263,9 @@ class PrivateControlService:
         self._confirmation_ttl_sec = max(
             30, min(int(confirmation_ttl_sec), 300)
         )
+        self._input_ttl_sec = max(60, min(int(input_ttl_sec), 600))
         self._pending: _PendingAction | None = None
+        self._pending_input: _PendingInput | None = None
 
     @staticmethod
     def _parse_admin_id(value: int | str | None) -> int | None:
@@ -261,6 +286,8 @@ class PrivateControlService:
             "accepted_updates": 0,
             "ignored_updates": 0,
             "replies_sent": 0,
+            "sensitive_messages_delete_attempted": 0,
+            "sensitive_messages_deleted": 0,
             "error": "",
         }
         if not self.enabled:
@@ -305,6 +332,32 @@ class PrivateControlService:
                 result["ignored_updates"] += 1
             else:
                 result["accepted_updates"] += 1
+                if reply.delete_source_message:
+                    message = update.get("message")
+                    message_id = (
+                        message.get("message_id")
+                        if isinstance(message, Mapping)
+                        else None
+                    )
+                    if type(message_id) is int and message_id > 0:
+                        result["sensitive_messages_delete_attempted"] += 1
+                        _payload, delete_error = self._telegram_call(
+                            "deleteMessage",
+                            {
+                                "chat_id": self._admin_user_id,
+                                "message_id": message_id,
+                            },
+                        )
+                        result["telegram_http_calls"] += 1
+                        if not delete_error:
+                            result["sensitive_messages_deleted"] += 1
+                        else:
+                            reply = ControlReply(
+                                reply.text
+                                + "\n⚠️ Telegram 未能自动删除刚才的输入，请你手动删除该条私聊消息。",
+                                reply.command,
+                                reply.keyboard,
+                            )
                 error = self._send_reply(reply)
                 result["telegram_http_calls"] += 1
                 if error:
@@ -327,15 +380,27 @@ class PrivateControlService:
         if not isinstance(text, str):
             return None
         command = _normalize_menu_command(text)
-        if not command:
-            return None
 
         if command in {"/start", "/menu", "菜单", "帮助", "返回主菜单"}:
+            self._pending = None
+            self._pending_input = None
             return ControlReply(
                 self.menu_text(),
                 "menu",
                 self.menu_keyboard(),
             )
+        if command == "取消":
+            self._pending = None
+            self._pending_input = None
+            return ControlReply(
+                "已取消，配置没有改变。",
+                "input_cancelled",
+                self.menu_keyboard(),
+            )
+        if self._pending_input is not None:
+            return self._consume_ai_input(text)
+        if not command:
+            return None
         if command == "五雷达状态":
             return ControlReply(self._radar_status_text(), "radar_status")
         if command == "健康摘要":
@@ -400,6 +465,44 @@ class PrivateControlService:
                 "feature_switches_menu",
                 self.feature_switches_keyboard(),
             )
+        if command == "AI设置":
+            return ControlReply(
+                self._ai_settings_text(),
+                "ai_settings_menu",
+                self.ai_settings_keyboard(),
+            )
+        if command == "AI状态":
+            return ControlReply(
+                self._ai_settings_text(),
+                "ai_settings_status",
+                self.ai_settings_keyboard(),
+            )
+        if command in _AI_INPUT_REQUESTS:
+            kind, label = _AI_INPUT_REQUESTS[command]
+            self._pending = None
+            self._pending_input = _PendingInput(
+                kind=kind,
+                label=label,
+                expires_at=self._clock() + self._input_ttl_sec,
+            )
+            warning = (
+                "\n⚠️ 密钥会先经过 Telegram 服务器；机器人保存后会尽力删除你的这条密钥消息。"
+                "如需最高私密性，请仍在 FinalShell 设置。"
+                if kind == "api_key"
+                else ""
+            )
+            prompt = (
+                "请在五分钟内发送补充提示词，可使用多行文字。它只调整白话表达，"
+                "不能覆盖方向、评分和安全规则。请勿在提示词中填写密钥或其他秘密，"
+                "因为该文字会随分析请求发送给 AI 接口。"
+                if kind == "prompt"
+                else f"请在五分钟内发送新的{label}。"
+            )
+            return ControlReply(
+                f"{prompt}{warning}\n不想修改请发送“取消”。",
+                "ai_input_required",
+                (("取消",),),
+            )
         if command in _REQUEST_ACTIONS:
             action, confirmation = _REQUEST_ACTIONS[command]
             blocked = self._action_block_reason(action)
@@ -416,13 +519,6 @@ class PrivateControlService:
                 "confirmation_required",
                 ((confirmation, "取消"),),
             )
-        if command == "取消":
-            self._pending = None
-            return ControlReply(
-                "已取消，配置没有改变。",
-                "confirmation_cancelled",
-                self.menu_keyboard(),
-            )
         if command in _CONFIRM_ACTIONS:
             return self._confirm_action(command)
 
@@ -437,9 +533,10 @@ class PrivateControlService:
             "🔐 泡泡雷达管理\n\n"
             "📊 查运行：雷达状态、系统健康\n"
             "📚 查记录：最近信号、推送结果、未推送原因\n"
-            "🎛️ 改开关：五个雷达、方向分析、AI 解读、故障提醒\n\n"
+            "🎛️ 改开关：五个雷达、方向分析、故障提醒\n"
+            "🤖 AI 设置：密钥、接口、模型、提示词和解读开关\n\n"
             "👇 直接点击下方按钮\n"
-            "🔒 密钥、服务器和真实推送只能在 FinalShell 设置"
+            "🔒 真实推送只能在 FinalShell 设置；服务器操作也不在私聊执行"
         )
 
     @staticmethod
@@ -449,6 +546,7 @@ class PrivateControlService:
             ("📚 运行记录", "📨 推送额度"),
             ("📌 话题状态", "⚙️ 开关总览"),
             ("🎛️ 五雷达开关", "🧩 功能开关"),
+            ("🤖 AI设置",),
             ("🏠 刷新菜单",),
         )
 
@@ -480,6 +578,17 @@ class PrivateControlService:
             ("⚙️ 开关总览", "🏠 返回主菜单"),
         )
 
+    @staticmethod
+    def ai_settings_keyboard() -> tuple[tuple[str, ...], ...]:
+        return (
+            ("🤖 AI状态",),
+            ("🔑 设置AI密钥", "🌐 设置AI接口"),
+            ("🧠 设置AI模型", "📝 设置AI提示词"),
+            ("♻️ 恢复默认提示词",),
+            ("✅ 开启AI解读", "⏸️ 关闭AI解读"),
+            ("🏠 返回主菜单",),
+        )
+
     def _authorized(self, message: Mapping[str, Any]) -> bool:
         if self._admin_user_id is None:
             return False
@@ -508,6 +617,55 @@ class PrivateControlService:
             and sender["id"] == self._admin_user_id
         )
 
+    def _consume_ai_input(self, value: str) -> ControlReply:
+        pending = self._pending_input
+        self._pending_input = None
+        if pending is None or self._clock() > pending.expires_at:
+            return ControlReply(
+                "输入已过期，配置没有改变。请重新进入 AI 设置。",
+                "input_expired",
+                self.ai_settings_keyboard(),
+                delete_source_message=True,
+            )
+        normalized = value.strip()
+        if not normalized:
+            return ControlReply(
+                f"{pending.label}不能为空，旧配置已保留。",
+                "configuration_update_failed",
+                self.ai_settings_keyboard(),
+                delete_source_message=True,
+            )
+        try:
+            if pending.kind == "api_key":
+                result = self._config_manager.set("AI_API_KEY", normalized)
+            elif pending.kind == "base_url":
+                result = self._config_manager.set("AI_BASE_URL", normalized)
+            elif pending.kind == "model":
+                result = self._config_manager.set("AI_MODEL", normalized)
+            elif pending.kind == "prompt":
+                result = self._config_manager.set_ai_prompt(value)
+            else:
+                result = {"status": "failed"}
+        except Exception:
+            result = {"status": "failed"}
+        if (
+            not isinstance(result, Mapping)
+            or result.get("status") != "ok"
+            or result.get("value") != "configured"
+        ):
+            return ControlReply(
+                f"{pending.label}保存失败，旧配置已保留。请检查格式后重试。",
+                "configuration_update_failed",
+                self.ai_settings_keyboard(),
+                delete_source_message=True,
+            )
+        return ControlReply(
+            f"{pending.label}：已配置。主 BOT 会在下一轮自动加载。",
+            "ai_configuration_updated",
+            self.ai_settings_keyboard(),
+            delete_source_message=True,
+        )
+
     def _confirm_action(self, confirmation: str) -> ControlReply:
         pending = self._pending
         self._pending = None
@@ -524,6 +682,22 @@ class PrivateControlService:
         blocked = self._action_block_reason(pending.action)
         if blocked:
             return blocked
+        if pending.action == "ai_prompt_default":
+            try:
+                result = self._config_manager.clear_ai_prompt()
+            except Exception:
+                result = {"status": "failed"}
+            if not isinstance(result, Mapping) or result.get("status") != "ok":
+                return ControlReply(
+                    "恢复默认提示词失败，原提示词已保留。",
+                    "configuration_update_failed",
+                    self.ai_settings_keyboard(),
+                )
+            return ControlReply(
+                "AI 补充提示词已恢复为系统默认。主 BOT 会在下一轮自动加载。",
+                "configuration_updated",
+                self.ai_settings_keyboard(),
+            )
         key, value, success_text = _CONFIG_ACTIONS[pending.action]
         try:
             result = self._config_manager.set(key, value)
@@ -589,9 +763,9 @@ class PrivateControlService:
             )
         if action == "ai_on" and not self._ai_configuration_ready():
             return ControlReply(
-                "AI 配置尚未完整，已拒绝开启。请先在 FinalShell 配置密钥、接口地址和模型。",
+                "AI 配置尚未完整，已拒绝开启。请先进入“AI设置”配置密钥、接口地址和模型。",
                 "ai_not_ready",
-                self.menu_keyboard(),
+                self.ai_settings_keyboard(),
             )
         return None
 
@@ -634,6 +808,26 @@ class PrivateControlService:
             f"• AI 解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n"
             f"• 故障提醒：{'已开启' if bool(status.get('TG_PRIVATE_CONTROL_ALERT_ENABLE', False)) else '已关闭'}\n\n"
             "点击下方按钮后，还要再次确认才会修改。"
+        )
+
+    def _ai_settings_text(self) -> str:
+        status = self._config_status()
+        if not status:
+            return "🤖 AI 设置\n读取失败，配置没有改变。"
+        prompt_status = str(status.get("AI_OPERATOR_PROMPT") or "default")
+        prompt_text = {
+            "configured": "自定义",
+            "invalid": "异常，已回退系统默认",
+        }.get(prompt_status, "系统默认")
+        return (
+            "🤖 AI 解读设置\n"
+            f"• 密钥：{'已配置' if _configured(status.get('AI_API_KEY')) else '未配置'}\n"
+            f"• 接口：{'已配置' if _configured(status.get('AI_BASE_URL')) else '未配置'}\n"
+            f"• 模型：{'已配置' if _configured(status.get('AI_MODEL')) else '未配置'}\n"
+            f"• 提示词：{prompt_text}\n"
+            f"• AI 解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n\n"
+            "AI 只做白话解读，不能改变方向、分数、失效位或安全规则。\n"
+            "开启和关闭仍需二次确认；这里不能切换真实推送模式。"
         )
 
     def _switch_status_text(self) -> str:

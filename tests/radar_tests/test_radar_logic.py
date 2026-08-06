@@ -902,7 +902,8 @@ class RadarScoringTests(unittest.TestCase):
             self.assertEqual(cooling["stage"], "cooling")
             self.assertEqual(failed["stage"], "cooling")
             self.assertEqual(expired["stage"], "failed")
-            self.assertTrue(expired["delete_pending"])
+            self.assertNotIn("delete_pending", expired)
+            self.assertTrue(expired["message_cleanup_complete"])
 
     def test_mark_launch_pushed_accumulates_cycle_message_ids(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -930,7 +931,7 @@ class RadarScoringTests(unittest.TestCase):
             self.assertEqual(state["TESTUSDT"]["message_ids"], [100, 101, 102])
             self.assertEqual(state["TESTUSDT"]["last_message_ids"], [101, 102])
 
-    def test_failed_launch_cleanup_deletes_telegram_messages_but_keeps_signal_sample(self) -> None:
+    def test_failed_launch_cleanup_is_noop_and_retains_history_and_signal_sample(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
                 data_dir=Path(tmp),
@@ -971,19 +972,17 @@ class RadarScoringTests(unittest.TestCase):
                 now_ts=2000,
             )
 
-            self.assertEqual(attempted, [101, 102])
-            self.assertEqual(cleanup["deleted_messages"], 2)
+            self.assertEqual(attempted, [])
+            self.assertFalse(cleanup["enabled"])
+            self.assertEqual(cleanup["mode"], "retain_history_reply_chain")
+            self.assertEqual(cleanup["deleted_messages"], 0)
             self.assertEqual(cleanup["pending_signals"], 0)
             state = store.load(settings.launch_state_path, {})
-            self.assertTrue(state["TESTUSDT"]["message_cleanup_complete"])
-            self.assertEqual(state["TESTUSDT"]["message_ids"], [])
+            self.assertEqual(state["TESTUSDT"]["message_ids"], [101, 102])
             sample = SignalEventStore(settings.signal_events_db_path).list_signals(limit=1)["items"][0]
             self.assertEqual(sample["status"], "sent")
             self.assertTrue(sample["sent"])
-            self.assertEqual(
-                sample["payload"]["telegram_cleanup"]["deleted_message_ids"],
-                [101, 102],
-            )
+            self.assertNotIn("telegram_cleanup", sample["payload"])
 
     def test_risk_announcement_is_supporting_evidence_only(self) -> None:
         with TemporaryDirectory() as tmp:

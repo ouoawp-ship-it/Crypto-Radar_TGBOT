@@ -849,7 +849,7 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertIn("stage_changed", significant["publication"]["checkpoint_reasons"])
             self.assertIn("score_delta", significant["publication"]["checkpoint_reasons"])
 
-    def test_package_commit_keeps_old_message_pending_until_delete_succeeds(self) -> None:
+    def test_package_commit_retains_old_message_as_reply_head_without_cleanup(self) -> None:
         with TemporaryDirectory() as tmp:
             store = LaunchLifecycleStore(
                 Path(tmp) / "signals.db",
@@ -872,6 +872,10 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
                 stage="breakout",
                 observed_at=1810,
             )
+            self.assertEqual(
+                second["publication"]["reply_message_ids"],
+                [101, 102],
+            )
             committed = store.commit_package(
                 cycle_id=second["cycle_id"],
                 observation_id=second["observation_id"],
@@ -879,26 +883,20 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
                 checkpoint_reasons=second["publication"]["checkpoint_reasons"],
                 published_at=1820,
             )
-            self.assertEqual(committed["delete_message_ids"], [101, 102])
-            pending = store.list_pending_cleanups()
-            self.assertEqual(pending[0]["message_ids"], [101, 102])
-
-            partial = store.complete_package_cleanup(
-                cycle_id=second["cycle_id"],
-                deleted_ids=[101],
-                failed_ids=[102],
-                updated_at=1830,
-            )
-            self.assertEqual(partial["status"], "pending")
-            self.assertEqual(partial["remaining_ids"], [102])
-            complete = store.complete_package_cleanup(
-                cycle_id=second["cycle_id"],
-                deleted_ids=[102],
-                failed_ids=[],
-                updated_at=1840,
-            )
-            self.assertEqual(complete["status"], "complete")
+            self.assertEqual(committed["delete_message_ids"], [])
             self.assertEqual(store.list_pending_cleanups(), [])
+            with store.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT latest_message_ids_json,
+                           cleanup_pending_message_ids_json
+                    FROM launch_lifecycle_cycles
+                    WHERE id = ?
+                    """,
+                    (first["cycle_id"],),
+                ).fetchone()
+            self.assertEqual(row["latest_message_ids_json"], "[201]")
+            self.assertEqual(row["cleanup_pending_message_ids_json"], "[]")
 
     def test_active_cycle_republishes_when_its_latest_message_was_deleted(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -935,7 +933,7 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
                 ["active_message_missing"],
             )
 
-    def test_failed_package_latest_message_becomes_cleanup_candidate(self) -> None:
+    def test_failed_package_history_is_retained_for_next_cycle_reply(self) -> None:
         with TemporaryDirectory() as tmp:
             store = LaunchLifecycleStore(
                 Path(tmp) / "signals.db",
@@ -966,22 +964,41 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             )
             self.assertEqual(failed["cycle_status"], "failed")
 
-            pending = store.list_pending_cleanups(
+            self.assertEqual(store.list_pending_cleanups(
                 now_ts=2800,
                 max_age_sec=47 * 3600,
+            ), [])
+            restarted = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+                invalid_windows_required=2,
             )
-            self.assertEqual(pending[0]["message_ids"], [101, 102])
-            self.assertTrue(pending[0]["expire_latest"])
+            next_cycle = restarted.record_observation(
+                snapshot(window_end_ts=3600, score=60, price=101, oi=1_010),
+                stage="primed",
+                observed_at=3610,
+            )
+            self.assertNotEqual(next_cycle["cycle_id"], first["cycle_id"])
+            self.assertEqual(
+                next_cycle["publication"]["reply_message_ids"],
+                [101, 102],
+            )
 
-            complete = store.complete_package_cleanup(
-                cycle_id=first["cycle_id"],
-                deleted_ids=[101, 102],
-                failed_ids=[],
-                updated_at=2810,
-                expire_latest=True,
+            other_symbol = restarted.record_observation(
+                snapshot(
+                    symbol="OTHERUSDT",
+                    window_end_ts=3600,
+                    score=60,
+                    price=10,
+                    oi=100,
+                ),
+                stage="primed",
+                observed_at=3610,
             )
-            self.assertEqual(complete["status"], "complete")
-            self.assertEqual(store.list_pending_cleanups(), [])
+            self.assertEqual(
+                other_symbol["publication"]["reply_message_ids"],
+                [],
+            )
 
     def test_topic_cleanup_reconciles_latest_and_pending_message_ids(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1020,7 +1037,7 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             )
 
             self.assertEqual(result["cycles_updated"], 1)
-            self.assertEqual(result["message_ids_removed"], 2)
+            self.assertEqual(result["message_ids_removed"], 1)
             with store.connect() as conn:
                 row = conn.execute(
                     """

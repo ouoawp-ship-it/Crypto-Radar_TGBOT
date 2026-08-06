@@ -231,7 +231,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
 
         self.assertEqual(diagnostics["calls"], 0)
         self.assertEqual(diagnostics["status"], "disabled")
-        self.assertIn("看涨观察", text)
+        self.assertIn("看涨候选｜证据增强，尚未确认", text)
 
     def test_directional_deep_analysis_failure_cannot_fall_back_to_legacy_card(self) -> None:
         for status in ("budget_deferred", "degraded", "local_error"):
@@ -272,7 +272,8 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         text = topic_intro_message("TG_LAUNCH_ALERT", settings)
 
         self.assertIn("AI只把已计算的数据和规则翻译成白话", text)
-        self.assertIn("看涨、看跌或继续观察", text)
+        self.assertIn("看涨、看跌、风险和数据可靠度分开显示", text)
+        self.assertIn("1小时现货/合约主动买卖", text)
         self.assertIn("directional", topic_intro_version("TG_LAUNCH_ALERT", settings))
 
     def test_ai_interpreter_runs_once_only_for_publishable_directional_alert(self) -> None:
@@ -418,7 +419,11 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
             },
         }
         first["launch_ai_interpreter_cache"] = {
-            "key": radar._directional_ai_cache_key(first, model="fake-model"),
+            "key": radar._directional_ai_cache_key(
+                first,
+                model="fake-model",
+                base_url="https://provider.invalid/v1",
+            ),
             "result": {
                 "status": "available",
                 "direction": "bullish",
@@ -456,6 +461,36 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertEqual(session.calls, 1)
         self.assertIn("ai_interpretation", first)
         self.assertIn("ai_interpretation", second)
+
+    def test_ai_cache_changes_when_endpoint_or_operator_prompt_changes(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(),
+            object(),  # type: ignore[arg-type]
+        )
+        alert = {
+            "launch_lifecycle": {"observation_id": 11},
+        }
+        original = radar._directional_ai_cache_key(
+            alert,
+            model="same-model",
+            base_url="https://provider-one.invalid/v1",
+            operator_prompt="简洁",
+        )
+        endpoint_changed = radar._directional_ai_cache_key(
+            alert,
+            model="same-model",
+            base_url="https://provider-two.invalid/v1",
+            operator_prompt="简洁",
+        )
+        prompt_changed = radar._directional_ai_cache_key(
+            alert,
+            model="same-model",
+            base_url="https://provider-one.invalid/v1",
+            operator_prompt="详细",
+        )
+
+        self.assertNotEqual(original, endpoint_changed)
+        self.assertNotEqual(original, prompt_changed)
 
 
 if __name__ == "__main__":
