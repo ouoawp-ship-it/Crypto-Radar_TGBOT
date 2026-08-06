@@ -115,6 +115,11 @@ class Settings:
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
     tg_funding_alert_topic_id: str = ""
+    tg_private_control_enable: bool = False
+    tg_private_control_admin_user_id: str = ""
+    tg_private_control_state_path: Path = (
+        BASE_DIR / "data" / "telegram_private_control_state.json"
+    )
     tg_topic_routes_path: Path = BASE_DIR / "data" / "tg_topic_routes.json"
     tg_topic_intro_pin: bool = True
     tg_use_topic: bool = False
@@ -314,7 +319,14 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
-        load_env_file()
+        file_env = load_env_file()
+
+        def reloadable_bool(name: str, default: bool) -> bool:
+            value = file_env.get(name)
+            if value is None:
+                return env_bool(name, default)
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+
         data_dir = BASE_DIR / "data"
         return cls(
             data_dir=data_dir,
@@ -330,6 +342,14 @@ class Settings:
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_funding_alert_topic_id=env_first("TG_FUNDING_ALERT_TOPIC_ID", "TELEGRAM_FUNDING_ALERT_TOPIC_ID"),
+            tg_private_control_enable=env_bool(
+                "TG_PRIVATE_CONTROL_ENABLE",
+                False,
+            ),
+            tg_private_control_admin_user_id=os.getenv(
+                "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
+                "",
+            ).strip(),
             tg_topic_routes_path=data_path(data_dir, "TG_TOPIC_ROUTES_FILE", "tg_topic_routes.json"),
             tg_topic_intro_pin=env_bool("TG_TOPIC_INTRO_PIN", True),
             tg_use_topic=env_bool("TELEGRAM_USE_TOPIC", False),
@@ -505,7 +525,7 @@ class Settings:
             launch_outcome_follow_through_pct=env_float("LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT", 3.0),
             launch_outcome_min_samples=env_int("LAUNCH_OUTCOME_MIN_SAMPLES", 20),
             launch_fusion_enable=env_bool("LAUNCH_FUSION_ENABLE", False),
-            launch_directional_enable=env_bool(
+            launch_directional_enable=reloadable_bool(
                 "LAUNCH_DIRECTIONAL_ENABLE",
                 False,
             ),
@@ -515,7 +535,7 @@ class Settings:
                 1,
                 6,
             ),
-            launch_ai_interpreter_enable=env_bool(
+            launch_ai_interpreter_enable=reloadable_bool(
                 "LAUNCH_AI_INTERPRETER_ENABLE",
                 False,
             ),
@@ -567,6 +587,12 @@ class Settings:
                     "funding_alert": bool(self.tg_funding_alert_topic_id),
                 },
                 "topic_routes_file": str(self.tg_topic_routes_path),
+                "private_control": {
+                    "enabled": self.tg_private_control_enable,
+                    "admin_configured": bool(
+                        self.tg_private_control_admin_user_id
+                    ),
+                },
                 "topic_management": "manual_only",
                 "topic_intro_pin": self.tg_topic_intro_pin,
                 "use_topic": self.tg_use_topic,

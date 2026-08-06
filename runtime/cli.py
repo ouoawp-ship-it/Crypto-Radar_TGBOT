@@ -40,6 +40,7 @@ from .health import runtime_health_checks
 from shared.market_cockpit import persist_flow_market_rows, persist_market_batch
 from radars.funding_alert.radar import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts
+from .cli_text import check_name_text, format_push_result_cn
 from radars.market_summary.radar import MarketSummaryRadar
 from .radar_engine import RadarEngine
 from .diagnostics import build_market_radar_runtime_status
@@ -189,10 +190,13 @@ def push_launch_messages(
             cleanup_diagnostics["chart_failures"] = int(
                 cleanup_diagnostics["chart_failures"]
             ) + 1
-            print(
-                f"launch_push[{idx}]: skipped "
-                f"({push_record['reason']}; old package retained)"
-            )
+            print(format_push_result_cn(
+                "启动预警推送",
+                "skipped",
+                str(push_record["reason"]),
+                index=idx,
+                note="旧卡片已保留",
+            ))
             pushes.append(push_record)
             continue
 
@@ -226,7 +230,12 @@ def push_launch_messages(
             photo=chart_bytes if chart_required else None,
             enrich_market_context=not is_package,
         )
-        print(f"launch_push[{idx}]: {push.status} ({push.reason})")
+        print(format_push_result_cn(
+            "启动预警推送",
+            push.status,
+            push.reason,
+            index=idx,
+        ))
         push_record["status"] = push.status
         push_record["reason"] = push.reason
         if push.status == "sent":
@@ -382,7 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "announcement-risk", "flow-radar", "funding-alert", "market-stream", "runtime-status", "radar-status", "cleanup", "watchlist", "launch-history", "launch-report", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "private-control", "announcement-risk", "flow-radar", "funding-alert", "market-stream", "runtime-status", "radar-status", "cleanup", "watchlist", "launch-history", "launch-report", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -552,6 +561,133 @@ def print_radar_status(settings: Settings, store: JsonStore) -> None:
         ensure_ascii=False,
         indent=2,
     ))
+
+
+def run_private_control(settings: Settings, store: JsonStore) -> int:
+    """Run the isolated, admin-only Telegram private control worker."""
+
+    if not settings.tg_private_control_enable:
+        print("private_control_disabled", file=sys.stderr)
+        return 2
+
+    try:
+        import fcntl
+        import requests
+        from runtime.private_control import PrivateControlService
+        from scripts.paopao_config import ConfigManager
+    except ImportError:
+        print("private_control_runtime_unavailable", file=sys.stderr)
+        return 2
+
+    lock_path = settings.data_dir / "telegram_private_control_worker.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        lock_path.chmod(0o600)
+        try:
+            fcntl.flock(
+                lock_handle.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except BlockingIOError:
+            print(
+                "private_control_worker_already_running",
+                file=sys.stderr,
+            )
+            return 2
+
+        gateway = TelegramGateway(settings, store)
+
+        def health_reader() -> dict[str, object]:
+            checks = runtime_health_checks(settings, store)
+            states = {
+                str(item.get("status") or "unknown")
+                for item in checks
+                if isinstance(item, dict)
+            }
+            overall = (
+                "failed"
+                if "fail" in states
+                else "degraded"
+                if states & {"warn", "warning", "degraded", "stale"}
+                else "ok"
+            )
+            return {"status": overall, "checks": checks}
+
+        def delivery_quota_reader() -> dict[str, object]:
+            records = store.load(settings.tg_push_history_path, [])
+            cutoff = int(time.time()) - 3600
+            used = sum(
+                1
+                for item in records
+                if isinstance(item, dict)
+                and item.get("status") == "sent"
+                and isinstance(item.get("ts"), (int, float))
+                and int(item["ts"]) >= cutoff
+            ) if isinstance(records, list) else 0
+            limit = max(0, int(settings.tg_global_hourly_limit))
+            return {
+                "limit": limit,
+                "used": used,
+                "remaining": max(0, limit - used),
+            }
+
+        def topic_status_reader() -> dict[str, object]:
+            templates = {
+                "launch_alert": "TG_LAUNCH_ALERT",
+                "radar_summary": "TG_RADAR_SUMMARY",
+                "funding_alert": "TG_FUNDING_ALERT",
+                "flow_radar": "TG_FLOW_RADAR",
+                "announcement_risk": "TG_ANNOUNCEMENT_ALERT",
+            }
+            return {
+                "bot": bool(settings.tg_bot_token),
+                "chat": bool(settings.tg_chat_id),
+                "topics": {
+                    key: gateway.topic_route_configured(template)
+                    for key, template in templates.items()
+                },
+            }
+
+        service = PrivateControlService(
+            enabled=settings.tg_private_control_enable,
+            bot_token=settings.tg_bot_token,
+            admin_user_id=settings.tg_private_control_admin_user_id,
+            offset_path=settings.tg_private_control_state_path,
+            config_manager=ConfigManager(settings.base_dir),
+            session=requests.Session(),
+            radar_status_reader=lambda: build_market_radar_runtime_status(
+                settings,
+                store,
+            ),
+            health_reader=health_reader,
+            delivery_quota_reader=delivery_quota_reader,
+            topic_status_reader=topic_status_reader,
+        )
+        permanent_errors = {
+            "private_control_bot_not_configured",
+            "private_control_admin_not_configured",
+            "private_control_transport_not_configured",
+            "telegram_auth_failed",
+            "telegram_forbidden",
+            "telegram_endpoint_not_found",
+            "telegram_polling_conflict",
+        }
+        while True:
+            result = service.poll_once()
+            status = result.get("status")
+            if status == "failed":
+                error = str(result.get("error") or "private_control_failed")
+                print(error, file=sys.stderr)
+                return 2 if error in permanent_errors else 1
+            if status == "disabled":
+                return 2
+    finally:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_handle.close()
 
 
 def print_cleanup(settings: Settings, store: JsonStore, force: bool) -> None:
@@ -769,9 +905,13 @@ def run_telegram_test(args: argparse.Namespace) -> int:
         checks = telegram_config_checks(settings)
         failed = [(name, message) for name, ok, message in checks if not ok]
         if failed:
-            print("telegram_test: blocked (invalid Telegram config)")
+            print(format_push_result_cn(
+                "Telegram 测试",
+                "blocked",
+                "invalid_telegram_config",
+            ))
             for name, message in failed:
-                print(f"- WAIT {name}: {message}")
+                print(f"- 待处理 {check_name_text(name)}：{message}")
             return 2
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = "\n".join([
@@ -790,7 +930,11 @@ def run_telegram_test(args: argparse.Namespace) -> int:
         daily_limit=None,
         parse_mode="",
     )
-    print(f"telegram_test: {result.status} ({result.reason})")
+    print(format_push_result_cn(
+        "Telegram 测试",
+        result.status,
+        result.reason,
+    ))
     if result.status == "blocked":
         return 2
     if result.status == "failed":
@@ -840,7 +984,12 @@ def deliver_announcement_risk(
             parse_mode="HTML",
             signal_records=[dict(alert)],
         )
-        print(f"announcement_risk_push[{index}]: {push.status} ({push.reason})")
+        print(format_push_result_cn(
+            "公告风险推送",
+            push.status,
+            push.reason,
+            index=index,
+        ))
         push_status = push.status
         pushes.append({"status": push.status, "reason": push.reason})
         if push.status == "sent":
@@ -910,7 +1059,11 @@ def push_market_summary(
         parse_mode="HTML",
         signal_records=list(summary.get("context_records") or []),
     )
-    print(f"summary_push: {push.status} ({push.reason})")
+    print(format_push_result_cn(
+        "资金摘要推送",
+        push.status,
+        push.reason,
+    ))
     return push.status, {
         "binance": diagnostics,
         "template_id": str(summary.get("template_id") or ""),
@@ -937,7 +1090,11 @@ def run_flow_radar(args: argparse.Namespace) -> int:
         parse_mode="HTML",
         signal_records=list(flow.get("items") or []),
     )
-    print(f"flow_push: {push.status} ({push.reason})")
+    print(format_push_result_cn(
+        "五因子资金流推送",
+        push.status,
+        push.reason,
+    ))
     print(json.dumps(flow["diagnostics"], ensure_ascii=False, indent=2))
     return 0 if push.status != "failed" else 1
 
@@ -960,7 +1117,11 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
         parse_mode="HTML",
         signal_records=list(flow.get("items") or []),
     )
-    print(f"flow_push: {push.status} ({push.reason})")
+    print(format_push_result_cn(
+        "五因子资金流推送",
+        push.status,
+        push.reason,
+    ))
     return push.status, flow["diagnostics"]
 
 
@@ -995,7 +1156,12 @@ def push_funding_alert(
             reply_to_message_id=int(alert.get("reply_to_message_id", 0) or 0) or None,
             signal_records=[alert],
         )
-        print(f"funding_alert_push[{idx}]: {push.status} ({push.reason})")
+        print(format_push_result_cn(
+            "资金费率警报推送",
+            push.status,
+            push.reason,
+            index=idx,
+        ))
         push_status = push.status
         if push.status == "sent":
             alert["message_ids"] = push.message_ids or []
@@ -1084,16 +1250,16 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
     passed = sum(1 for _name, ok, _message in checks if ok)
     print(f"真实推送准备度: {passed}/{len(checks)}")
     for name, ok, message in checks:
-        mark = "OK" if ok else "WAIT"
-        print(f"- {mark} {name}: {message}")
+        mark = "✅ 已通过" if ok else "⏳ 待处理"
+        print(f"- {mark} {check_name_text(name)}：{message}")
     print("")
     print(format_launch_report(settings, store, 100, 8, records=records))
     if passed == len(checks):
         print("")
-        print("下一步: 可以先运行 python main.py telegram-test --send --confirm-real-send 验证 Telegram。")
+        print("下一步：可以在中文菜单中执行一次真实 Telegram 测试。")
         return 0
     print("")
-    print("下一步: 先继续 dry-run observe，或补齐 Telegram 配置。")
+    print("下一步：继续使用安全演练模式观察，或补齐缺少的 Telegram 配置。")
     return 1
 
 
@@ -1103,7 +1269,7 @@ def require_real_send_gate(settings: Settings, store: JsonStore, args: argparse.
         return 2
     readiness = print_readiness(settings, store)
     if readiness != 0:
-        print("真实推送已阻止：readiness 未通过。")
+        print("真实推送已阻止：准备检查未通过。")
         return 2
     return 0
 
@@ -1399,7 +1565,11 @@ def run_once(
         parse_mode="HTML",
         signal_records=list(summary.get("context_records") or []),
     )
-    print(f"summary_push: {push.status} ({push.reason})")
+    print(format_push_result_cn(
+        "资金摘要推送",
+        push.status,
+        push.reason,
+    ))
     summary_push_status = push.status
 
     announcement_push_status = "skipped"
@@ -2077,6 +2247,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "about":
         print(PROJECT_ABOUT)
         return 0
+    if args.command == "private-control":
+        return run_private_control(settings, store)
     if args.command == "cleanup":
         print_cleanup(settings, store, force=args.force_cleanup)
         return 0

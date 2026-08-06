@@ -60,6 +60,24 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
         self.assertEqual(settings.launch_directional_max_candidates, 6)
         self.assertEqual(settings.ai_timeout_sec, 60)
 
+    def test_runtime_switches_reload_from_managed_file_values(self) -> None:
+        environment = {
+            "LAUNCH_DIRECTIONAL_ENABLE": "false",
+            "LAUNCH_AI_INTERPRETER_ENABLE": "false",
+        }
+        managed_values = {
+            "LAUNCH_DIRECTIONAL_ENABLE": "true",
+            "LAUNCH_AI_INTERPRETER_ENABLE": "true",
+        }
+        with patch.dict(os.environ, environment, clear=True), patch(
+            "config.settings.load_env_file",
+            return_value=managed_values,
+        ):
+            settings = Settings.load()
+
+        self.assertTrue(settings.launch_directional_enable)
+        self.assertTrue(settings.launch_ai_interpreter_enable)
+
 
 class LaunchDirectionalConfigManagerTests(unittest.TestCase):
     def setUp(self) -> None:

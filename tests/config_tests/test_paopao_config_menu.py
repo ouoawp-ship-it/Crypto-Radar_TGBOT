@@ -231,6 +231,20 @@ class MainOnlyMenuTests(unittest.TestCase):
         self.assertNotIn("read -s", text)
         self.assertNotIn("stty -echo", text)
 
+    def test_menu_uses_plain_chinese_for_common_runtime_states(self) -> None:
+        text = MENU.read_text(encoding="utf-8")
+
+        for expected in (
+            "主 BOT 自动诊断",
+            "市场数据服务最近日志",
+            "服务启动配置内容",
+            "运行中",
+            "安全演练（不发送）",
+        ):
+            self.assertIn(expected, text)
+        self.assertIn("stable-check --no-save", text)
+        self.assertNotIn("stable-check --json --no-save", text)
+
 
 if __name__ == "__main__":
     unittest.main()

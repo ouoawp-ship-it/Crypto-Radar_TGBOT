@@ -6,6 +6,7 @@ SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 HEALTH_SERVICE_NAME="${HEALTH_SERVICE_NAME:-paopao-health}"
 BACKUP_SERVICE_NAME="${BACKUP_SERVICE_NAME:-paopao-backup}"
+PRIVATE_CONTROL_SERVICE_NAME="${PRIVATE_CONTROL_SERVICE_NAME:-paopao-private-control}"
 PYTHON_BIN="${APP_DIR}/.venv/bin/python"
 [ -x "$PYTHON_BIN" ] || PYTHON_BIN="${PAOPAO_PYTHON_BIN:-python3}"
 UPDATE_SCRIPT="${PAOPAO_UPDATE_SCRIPT:-${APP_DIR}/scripts/update_server.sh}"
@@ -24,6 +25,25 @@ run_config() {
 
 service_state() {
   systemctl is-active "$1" 2>/dev/null || true
+}
+
+service_state_cn() {
+  case "$(service_state "$1")" in
+    active) printf '运行中\n' ;;
+    inactive) printf '已停止\n' ;;
+    failed) printf '运行失败\n' ;;
+    activating) printf '正在启动\n' ;;
+    deactivating) printf '正在停止\n' ;;
+    *) printf '状态未知\n' ;;
+  esac
+}
+
+main_bot_mode_cn() {
+  case "$1" in
+    real) printf '真实发送\n' ;;
+    dry_run) printf '安全演练（不发送）\n' ;;
+    *) printf '模式未知\n' ;;
+  esac
 }
 
 confirm_phrase() {
@@ -55,6 +75,44 @@ print(value.get("MAIN_BOT_DELIVERY_MODE") or "dry_run")
 ' || printf 'dry_run\n'
 }
 
+show_config_status_cn() {
+  run_config status --json 2>/dev/null | "$PYTHON_BIN" -c '
+import json, sys
+
+labels = {
+    "TG_BOT_TOKEN": "Telegram 机器人密钥",
+    "TG_CHAT_ID": "Telegram 目标群",
+    "TG_PRIVATE_CONTROL_ENABLE": "管理员私聊菜单",
+    "TG_PRIVATE_CONTROL_ADMIN_USER_ID": "私聊管理员",
+    "MAIN_BOT_DELIVERY_MODE": "主 BOT 发送模式",
+    "MAIN_BOT_REAL_SEND": "主 BOT 真实发送",
+    "MAIN_BOT_REAL_SEND_ACK": "主 BOT 真实发送确认",
+    "LAUNCH_FUSION_ENABLE": "启动预警融合版",
+    "LAUNCH_DIRECTIONAL_ENABLE": "多周期方向雷达",
+    "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "每轮深度候选数",
+    "LAUNCH_AI_INTERPRETER_ENABLE": "AI 白话解读",
+    "AI_API_KEY": "AI 密钥",
+    "AI_BASE_URL": "AI 接口地址",
+    "AI_MODEL": "AI 模型",
+    "AI_TIMEOUT_SEC": "AI 超时秒数",
+    "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "同阶段最短间隔秒数",
+}
+values = json.load(sys.stdin)
+translations = {
+    "configured": "已配置",
+    "not_configured": "未配置",
+    "dry_run": "安全演练（不发送）",
+    "real": "真实发送",
+}
+for key, value in values.items():
+    if isinstance(value, bool):
+        shown = "已开启" if value else "已关闭"
+    else:
+        shown = translations.get(str(value), str(value))
+    print(f"{labels.get(key, key)}：{shown}")
+'
+}
+
 show_status() {
   run_main status
   if command -v systemctl >/dev/null 2>&1; then
@@ -70,13 +128,48 @@ show_logs() {
 }
 
 show_version() {
-  printf 'Version: '
-  if [[ -f "${APP_DIR}/VERSION" ]]; then cat "${APP_DIR}/VERSION"; else printf 'unknown\n'; fi
+  printf '版本：'
+  if [[ -f "${APP_DIR}/VERSION" ]]; then cat "${APP_DIR}/VERSION"; else printf '未知\n'; fi
   (cd "$APP_DIR" && git rev-parse --short HEAD)
 }
 
 config_set() {
   run_config set "$1"
+}
+
+set_private_control_admin() {
+  local was_active=0
+  local was_enabled=0
+  local unit_present=0
+  if systemctl cat "$PRIVATE_CONTROL_SERVICE_NAME" >/dev/null 2>&1; then
+    unit_present=1
+    if [[ "$(service_state "$PRIVATE_CONTROL_SERVICE_NAME")" == "active" ]]; then
+      was_active=1
+    fi
+    if systemctl is-enabled --quiet "$PRIVATE_CONTROL_SERVICE_NAME" 2>/dev/null; then
+      was_enabled=1
+    fi
+    if ! run_root systemctl disable --now "$PRIVATE_CONTROL_SERVICE_NAME"; then
+      printf '无法安全停止并取消私聊菜单开机自启，管理员没有修改。\n' >&2
+      return 1
+    fi
+  fi
+  if ! config_set TG_PRIVATE_CONTROL_ADMIN_USER_ID; then
+    printf '管理员修改失败；为防止旧管理员继续操作，私聊菜单保持停止且不随开机启动。\n' >&2
+    return 1
+  fi
+  if [[ "$unit_present" == "1" && "$was_enabled" == "1" ]]; then
+    if ! run_root systemctl enable "$PRIVATE_CONTROL_SERVICE_NAME"; then
+      printf '管理员已修改，但私聊菜单无法恢复开机自启，请查看 FinalShell 日志。\n' >&2
+      return 1
+    fi
+  fi
+  if [[ "$was_active" == "1" ]]; then
+    if ! run_root systemctl start "$PRIVATE_CONTROL_SERVICE_NAME"; then
+      printf '管理员已修改，但私聊菜单启动失败，请查看 FinalShell 日志。\n' >&2
+      return 1
+    fi
+  fi
 }
 
 restart_main_services() {
@@ -88,7 +181,7 @@ restart_main_services() {
 restart_main_bot_from_menu() {
   local mode
   mode="$(main_bot_mode)"
-  printf '当前主 BOT 模式：%s\n' "$mode"
+  printf '当前主 BOT 模式：%s\n' "$(main_bot_mode_cn "$mode")"
   if [[ "$mode" == "real" ]]; then
     confirm_phrase "重启真实主BOT" || return 1
   else
@@ -119,7 +212,7 @@ EOF
         fi
         pause_menu
         ;;
-      3) run_config status; pause_menu ;;
+      3) show_config_status_cn; pause_menu ;;
       4) restart_main_bot_from_menu; pause_menu ;;
       5) confirm_phrase "停止主BOT" && run_root systemctl stop "$SERVICE_NAME"; pause_menu ;;
       0) return ;;
@@ -135,7 +228,7 @@ overview_menu() {
 总览与健康检查
 1. 服务与五雷达状态
 2. 主 BOT 状态
-3. 主 BOT Doctor
+3. 主 BOT 自动诊断
 4. 真实推送准备度
 5. 稳定性检查
 6. 磁盘与内存
@@ -147,7 +240,7 @@ EOF
       2) run_main status; pause_menu ;;
       3) run_main doctor; pause_menu ;;
       4) run_main readiness; pause_menu ;;
-      5) run_main stable-check --json --no-save; pause_menu ;;
+      5) run_main stable-check --no-save; pause_menu ;;
       6) df -h "$APP_DIR"; free -h 2>/dev/null || true; pause_menu ;;
       0) return ;;
     esac
@@ -161,7 +254,7 @@ service_menu() {
     cat <<'EOF'
 服务管理
 1. 服务状态
-2. 重启主 BOT 与 Market Stream
+2. 重启主 BOT 与市场数据服务
 3. 停止主 BOT
 4. 主 BOT 运行模式
 5. 服务资源状态
@@ -222,7 +315,7 @@ API、Token 与密钥
 EOF
     IFS= read -r choice
     case "$choice" in
-      1) run_config status; pause_menu ;;
+      1) show_config_status_cn; pause_menu ;;
       2) config_set TG_BOT_TOKEN; pause_menu ;;
       3) config_set TG_CHAT_ID; pause_menu ;;
       4) config_set AI_API_KEY; pause_menu ;;
@@ -245,14 +338,71 @@ telegram_menu() {
 Telegram 设置与测试
 1. 查看共享 Telegram 脱敏状态
 2. 手工创建/修复话题并置顶说明
-3. 主 BOT readiness
+3. 管理员私聊菜单（第一版）
+4. 主 BOT readiness
 0. 返回
 EOF
     IFS= read -r choice
     case "$choice" in
-      1) run_config status; pause_menu ;;
+      1) show_config_status_cn; pause_menu ;;
       2) telegram_topic_setup_menu ;;
-      3) run_main readiness; pause_menu ;;
+      3) private_control_menu ;;
+      4) run_main readiness; pause_menu ;;
+      0) return ;;
+    esac
+  done
+}
+
+private_control_menu() {
+  local choice
+  while true; do
+    menu_header
+    cat <<'EOF'
+管理员私聊菜单（第一版）
+1. 查看脱敏配置与服务状态
+2. 设置管理员 Telegram User ID
+3. 开启并启动私聊菜单
+4. 停止并关闭私聊菜单
+5. 重启私聊菜单服务
+6. 查看私聊菜单日志
+0. 返回
+
+说明：这里只绑定管理员和管理独立服务。
+密钥、真实发送、部署回滚和完整诊断仍保留在 FinalShell。
+EOF
+    IFS= read -r choice
+    case "$choice" in
+      1)
+        show_config_status_cn
+        printf '私聊菜单服务：%s\n' "$(service_state_cn "$PRIVATE_CONTROL_SERVICE_NAME")"
+        pause_menu
+        ;;
+      2) set_private_control_admin || true; pause_menu ;;
+      3)
+        if confirm_phrase "启用管理员私聊菜单"; then
+          if run_config enable TG_PRIVATE_CONTROL_ENABLE; then
+            run_root systemctl enable --now "$PRIVATE_CONTROL_SERVICE_NAME"
+            run_root systemctl --no-pager --full status "$PRIVATE_CONTROL_SERVICE_NAME" || true
+          fi
+        fi
+        pause_menu
+        ;;
+      4)
+        if confirm_phrase "关闭管理员私聊菜单"; then
+          run_root systemctl disable --now "$PRIVATE_CONTROL_SERVICE_NAME" || true
+          run_config disable TG_PRIVATE_CONTROL_ENABLE
+        fi
+        pause_menu
+        ;;
+      5)
+        confirm_phrase "重启管理员私聊菜单" && \
+          run_root systemctl restart "$PRIVATE_CONTROL_SERVICE_NAME"
+        pause_menu
+        ;;
+      6)
+        run_root journalctl -u "$PRIVATE_CONTROL_SERVICE_NAME" -n 200 --no-pager
+        pause_menu
+        ;;
       0) return ;;
     esac
   done
@@ -321,7 +471,7 @@ log_menu() {
 日志与故障诊断
 1. 主 BOT 最近日志
 2. 主 BOT 跟随日志
-3. Market Stream 最近日志
+3. 市场数据服务最近日志
 4. 两个服务错误日志
 0. 返回
 EOF
@@ -345,7 +495,7 @@ advanced_menu() {
 1. 配置校验
 2. 配置回滚列表
 3. 真实 Telegram 测试
-4. systemd Unit 内容
+4. 服务启动配置内容
 0. 返回
 EOF
     IFS= read -r choice
@@ -363,9 +513,9 @@ interactive_menu() {
   local choice
   while true; do
     menu_header
-    printf '主 BOT: %s | Market Stream: %s\n\n' \
-      "$(service_state "$SERVICE_NAME")" \
-      "$(service_state "$MARKET_STREAM_SERVICE_NAME")"
+    printf '主 BOT：%s | 市场数据服务：%s\n\n' \
+      "$(service_state_cn "$SERVICE_NAME")" \
+      "$(service_state_cn "$MARKET_STREAM_SERVICE_NAME")"
     cat <<'EOF'
 1. 总览与健康检查
 2. 服务管理
@@ -430,7 +580,13 @@ case "$command" in
   check-update|check) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --check) ;;
   update) (cd "$APP_DIR" && bash "$UPDATE_SCRIPT" --yes) ;;
   version) show_version ;;
-  config-status) run_config status "$@" ;;
+  config-status)
+    if [[ "${1:-}" == "--json" ]]; then
+      run_config status "$@"
+    else
+      show_config_status_cn
+    fi
+    ;;
   help|-h|--help) show_help ;;
   *) printf '未知命令: %s\n\n' "$command" >&2; show_help; exit 2 ;;
 esac
