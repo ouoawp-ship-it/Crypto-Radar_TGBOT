@@ -187,10 +187,34 @@ class PrivateControlTests(unittest.TestCase):
         self.assertEqual(get_payload["timeout"], 25)
         reply = session.calls[2]["json"]["text"]
         keyboard = session.calls[2]["json"]["reply_markup"]["keyboard"]
-        self.assertIn("管理员私聊菜单", reply)
-        self.assertIn("五雷达状态", reply)
-        self.assertIn("不能切换真实推送模式", reply)
-        self.assertIn(["五雷达状态", "健康摘要"], keyboard)
+        self.assertIn("泡泡雷达管理", reply)
+        self.assertIn("查运行", reply)
+        self.assertIn("真实推送只能在 FinalShell 设置", reply)
+        self.assertIn(["📡 雷达状态", "🩺 系统健康"], keyboard)
+
+    def test_emoji_menu_buttons_keep_fixed_command_semantics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = FakeConfigManager()
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                manager=manager,
+            )
+
+            status = service.handle_update(update(1, "📡 雷达状态"))
+            feature_menu = service.handle_update(update(2, "🧩 功能开关"))
+            first = service.handle_update(update(3, "🧭 开启方向"))
+            second = service.handle_update(update(4, "确认开启方向雷达"))
+
+        self.assertEqual(status.command, "radar_status")
+        self.assertEqual(feature_menu.command, "feature_switches_menu")
+        self.assertIn("方向分析", feature_menu.text)
+        self.assertIn("确认开启方向雷达", first.text)
+        self.assertEqual(second.command, "configuration_updated")
+        self.assertEqual(
+            manager.set_calls,
+            [("LAUNCH_DIRECTIONAL_ENABLE", "true")],
+        )
 
     def test_group_other_user_bot_and_forward_are_ignored(self) -> None:
         with TemporaryDirectory() as tmp:

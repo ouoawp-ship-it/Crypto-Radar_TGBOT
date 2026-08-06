@@ -41,6 +41,39 @@ _DELIVERY_LABELS = {
     "observe": "只观察",
     "real": "真实推送",
 }
+_MENU_PREFIXES = (
+    "📡 ",
+    "🩺 ",
+    "📚 ",
+    "📨 ",
+    "📌 ",
+    "⚙️ ",
+    "🎛️ ",
+    "🧩 ",
+    "🧭 ",
+    "🤖 ",
+    "🚨 ",
+    "🔕 ",
+    "✅ ",
+    "⏸️ ",
+    "🏠 ",
+)
+_MENU_ALIASES = {
+    "雷达状态": "五雷达状态",
+    "系统健康": "健康摘要",
+    "运行记录": "运行详情",
+    "推送额度": "发送额度",
+    "话题状态": "话题配置",
+    "开关总览": "开关状态",
+    "五雷达开关": "雷达开关",
+    "开启方向": "开启方向雷达",
+    "关闭方向": "关闭方向雷达",
+    "开启AI": "开启AI解读",
+    "关闭AI": "关闭AI解读",
+    "开启提醒": "开启故障提醒",
+    "关闭提醒": "关闭故障提醒",
+    "刷新菜单": "菜单",
+}
 _REQUEST_ACTIONS = {
     "开启方向雷达": ("directional_on", "确认开启方向雷达"),
     "关闭方向雷达": ("directional_off", "确认关闭方向雷达"),
@@ -148,6 +181,15 @@ def _safe_integer(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number >= 0 else None
+
+
+def _normalize_menu_command(value: str) -> str:
+    command = value.strip()
+    for prefix in _MENU_PREFIXES:
+        if command.startswith(prefix):
+            command = command.removeprefix(prefix).strip()
+            break
+    return _MENU_ALIASES.get(command, command)
 
 
 class PrivateControlService:
@@ -284,7 +326,7 @@ class PrivateControlService:
         text = message.get("text")
         if not isinstance(text, str):
             return None
-        command = text.strip()
+        command = _normalize_menu_command(text)
         if not command:
             return None
 
@@ -352,6 +394,12 @@ class PrivateControlService:
                 "radar_switches_menu",
                 self.radar_switches_keyboard(),
             )
+        if command == "功能开关":
+            return ControlReply(
+                self._feature_switches_text(),
+                "feature_switches_menu",
+                self.feature_switches_keyboard(),
+            )
         if command in _REQUEST_ACTIONS:
             action, confirmation = _REQUEST_ACTIONS[command]
             blocked = self._action_block_reason(action)
@@ -386,52 +434,50 @@ class PrivateControlService:
     @staticmethod
     def menu_text() -> str:
         return (
-            "🔐 泡泡雷达 · 管理员私聊菜单\n\n"
-            "📊 只读查看\n"
-            "• 五雷达状态\n"
-            "• 健康摘要\n"
-            "• 发送额度\n"
-            "• 话题配置\n"
-            "• 运行详情\n"
-            "• 开关状态\n\n"
-            "🎛️ 安全开关（需要二次确认）\n"
-            "• 雷达开关\n"
-            "• 开启方向雷达 / 关闭方向雷达\n"
-            "• 开启AI解读 / 关闭AI解读\n"
-            "• 开启故障提醒 / 关闭故障提醒\n\n"
-            "这里只接受固定指令；不接收密钥，不执行服务器命令，也不能切换真实推送模式。"
+            "🔐 泡泡雷达管理\n\n"
+            "📊 查运行：雷达状态、系统健康\n"
+            "📚 查记录：最近信号、推送结果、未推送原因\n"
+            "🎛️ 改开关：五个雷达、方向分析、AI 解读、故障提醒\n\n"
+            "👇 直接点击下方按钮\n"
+            "🔒 密钥、服务器和真实推送只能在 FinalShell 设置"
         )
 
     @staticmethod
     def menu_keyboard() -> tuple[tuple[str, ...], ...]:
         return (
-            ("五雷达状态", "健康摘要"),
-            ("发送额度", "话题配置"),
-            ("运行详情", "雷达开关"),
-            ("开关状态",),
-            ("开启方向雷达", "关闭方向雷达"),
-            ("开启AI解读", "关闭AI解读"),
-            ("开启故障提醒", "关闭故障提醒"),
-            ("帮助",),
+            ("📡 雷达状态", "🩺 系统健康"),
+            ("📚 运行记录", "📨 推送额度"),
+            ("📌 话题状态", "⚙️ 开关总览"),
+            ("🎛️ 五雷达开关", "🧩 功能开关"),
+            ("🏠 刷新菜单",),
         )
 
     @staticmethod
     def runtime_details_keyboard() -> tuple[tuple[str, ...], ...]:
         return (
-            ("最近信号", "推送记录"),
-            ("未推送原因", "故障说明"),
-            ("返回主菜单",),
+            ("📡 最近信号", "📨 推送记录"),
+            ("⏸️ 未推送原因", "🩺 故障说明"),
+            ("🏠 返回主菜单",),
         )
 
     @staticmethod
     def radar_switches_keyboard() -> tuple[tuple[str, ...], ...]:
         return (
-            ("开启启动预警", "关闭启动预警"),
-            ("开启资金摘要", "关闭资金摘要"),
-            ("开启资金费率警报", "关闭资金费率警报"),
-            ("开启五因子资金流", "关闭五因子资金流"),
-            ("开启公告风险", "关闭公告风险"),
-            ("开关状态", "返回主菜单"),
+            ("✅ 开启启动预警", "⏸️ 关闭启动预警"),
+            ("✅ 开启资金摘要", "⏸️ 关闭资金摘要"),
+            ("✅ 开启资金费率警报", "⏸️ 关闭资金费率警报"),
+            ("✅ 开启五因子资金流", "⏸️ 关闭五因子资金流"),
+            ("✅ 开启公告风险", "⏸️ 关闭公告风险"),
+            ("⚙️ 开关总览", "🏠 返回主菜单"),
+        )
+
+    @staticmethod
+    def feature_switches_keyboard() -> tuple[tuple[str, ...], ...]:
+        return (
+            ("🧭 开启方向", "🧭 关闭方向"),
+            ("🤖 开启AI", "🤖 关闭AI"),
+            ("🚨 开启提醒", "🔕 关闭提醒"),
+            ("⚙️ 开关总览", "🏠 返回主菜单"),
         )
 
     def _authorized(self, message: Mapping[str, Any]) -> bool:
@@ -577,6 +623,18 @@ class PrivateControlService:
         )
         lines.append("修改需二次确认；不重启服务，也不会改变真实推送模式。")
         return "\n".join(lines)
+
+    def _feature_switches_text(self) -> str:
+        status = self._config_status()
+        if not status:
+            return "🧩 辅助功能开关\n读取失败，配置没有改变。"
+        return (
+            "🧩 辅助功能开关\n"
+            f"• 方向分析：{'已开启' if bool(status.get('LAUNCH_DIRECTIONAL_ENABLE', False)) else '已关闭'}\n"
+            f"• AI 解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n"
+            f"• 故障提醒：{'已开启' if bool(status.get('TG_PRIVATE_CONTROL_ALERT_ENABLE', False)) else '已关闭'}\n\n"
+            "点击下方按钮后，还要再次确认才会修改。"
+        )
 
     def _switch_status_text(self) -> str:
         status = self._config_status()
