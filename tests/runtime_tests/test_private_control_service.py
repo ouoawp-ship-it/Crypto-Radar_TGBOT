@@ -171,7 +171,7 @@ class PrivateControlUnitTests(unittest.TestCase):
         text = MENU.read_text(encoding="utf-8")
 
         for expected in (
-            "管理员私聊菜单（第一版）",
+            "管理员私聊菜单",
             "config_set TG_PRIVATE_CONTROL_ADMIN_USER_ID",
             "set_private_control_admin",
             "run_config enable TG_PRIVATE_CONTROL_ENABLE",

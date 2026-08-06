@@ -84,10 +84,17 @@ labels = {
     "TG_CHAT_ID": "Telegram 目标群",
     "TG_PRIVATE_CONTROL_ENABLE": "管理员私聊菜单",
     "TG_PRIVATE_CONTROL_ADMIN_USER_ID": "私聊管理员",
+    "TG_PRIVATE_CONTROL_ALERT_ENABLE": "私聊主动故障提醒",
+    "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": "故障提醒冷却秒数",
     "MAIN_BOT_DELIVERY_MODE": "主 BOT 发送模式",
     "MAIN_BOT_REAL_SEND": "主 BOT 真实发送",
     "MAIN_BOT_REAL_SEND_ACK": "主 BOT 真实发送确认",
     "LAUNCH_FUSION_ENABLE": "启动预警融合版",
+    "LAUNCH_ALERT_ENABLE": "启动预警自动运行",
+    "RADAR_SUMMARY_ENABLE": "资金摘要自动运行",
+    "FUNDING_ALERT_ENABLE": "资金费率警报自动运行",
+    "FLOW_RADAR_ENABLE": "五因子资金流自动运行",
+    "ANNOUNCEMENT_RISK_ENABLE": "公告风险自动运行",
     "LAUNCH_DIRECTIONAL_ENABLE": "多周期方向雷达",
     "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "每轮深度候选数",
     "LAUNCH_AI_INTERPRETER_ENABLE": "AI 白话解读",
@@ -338,7 +345,7 @@ telegram_menu() {
 Telegram 设置与测试
 1. 查看共享 Telegram 脱敏状态
 2. 手工创建/修复话题并置顶说明
-3. 管理员私聊菜单（第一版）
+3. 管理员私聊菜单
 4. 主 BOT readiness
 0. 返回
 EOF
@@ -358,7 +365,7 @@ private_control_menu() {
   while true; do
     menu_header
     cat <<'EOF'
-管理员私聊菜单（第一版）
+管理员私聊菜单
 1. 查看脱敏配置与服务状态
 2. 设置管理员 Telegram User ID
 3. 开启并启动私聊菜单

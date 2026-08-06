@@ -145,3 +145,6 @@ FinalShell 的 `paopao` / `pp` 中文运维菜单见
 [docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。
 管理员私聊菜单见
 [docs/TELEGRAM_PRIVATE_CONTROL.md](docs/TELEGRAM_PRIVATE_CONTROL.md)。
+私聊菜单可只读查看最近信号、推送记录和中文故障说明；主动故障提醒默认关闭。
+五个雷达可分别经二次确认暂停或恢复自动调度，公共市场快照和主进程不会随单个
+雷达关闭，真实 Telegram 推送门禁也不能由私聊菜单修改。

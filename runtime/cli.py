@@ -27,6 +27,7 @@ import sys
 import time
 from pathlib import Path
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -36,7 +37,7 @@ from .database_backup import backup_databases
 from shared.binance_data import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from radars.capital_flow.radar import FlowRadarEngine
 from radars.announcement_risk.radar import AnnouncementRiskRadar
-from .health import runtime_health_checks
+from .health import lightweight_freshness_checks, runtime_health_checks
 from shared.market_cockpit import persist_flow_market_rows, persist_market_batch
 from radars.funding_alert.radar import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts
@@ -451,6 +452,76 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     return replace(settings, **updates)
 
 
+def effective_radar_switches(
+    settings: Settings,
+    args: argparse.Namespace,
+) -> dict[str, bool]:
+    """Return hot-reloadable automatic radar switches.
+
+    Existing ``--no-*`` process flags remain the stronger override.  These
+    switches govern only the long-running automatic scheduler; explicit
+    one-shot maintenance commands keep their existing semantics.
+    """
+
+    return {
+        "launch_alert": bool(
+            settings.launch_alert_enable and not bool(args.no_launch)
+        ),
+        "radar_summary": bool(settings.radar_summary_enable),
+        "funding_alert": bool(
+            settings.funding_alert_enable
+            and not bool(getattr(args, "no_funding_alert", False))
+        ),
+        "flow_radar": bool(
+            settings.flow_radar_enable and not bool(args.no_flow)
+        ),
+        "announcement_risk": bool(
+            settings.announcement_risk_enable
+            and not bool(args.no_announcements)
+        ),
+    }
+
+
+def radar_runtime_flags(switches: dict[str, bool]) -> dict[str, bool]:
+    return {
+        "no_launch": not switches["launch_alert"],
+        "no_summary": not switches["radar_summary"],
+        "no_funding_alert": not switches["funding_alert"],
+        "no_flow": not switches["flow_radar"],
+        "no_announcements": not switches["announcement_risk"],
+    }
+
+
+def reload_loop_settings(
+    current: Settings,
+    args: argparse.Namespace,
+) -> tuple[Settings, str]:
+    """Reload file-backed controls without terminating the shared process."""
+
+    try:
+        return apply_cli_overrides(Settings.load(), args), ""
+    except (OSError, TypeError, ValueError):
+        return current, "settings_reload_failed"
+
+
+def last_known_settings_reader(
+    initial: Settings,
+) -> Callable[[], Settings]:
+    """Return a loader that never falls back past its latest valid result."""
+
+    last_known = initial
+
+    def read() -> Settings:
+        nonlocal last_known
+        try:
+            last_known = Settings.load()
+        except (OSError, TypeError, ValueError):
+            pass
+        return last_known
+
+    return read
+
+
 def make_runtime_for_args(args: argparse.Namespace) -> tuple[Settings, JsonStore, RadarEngine, TelegramGateway]:
     settings, store, engine, gateway = make_runtime()
     updated = apply_cli_overrides(settings, args)
@@ -460,6 +531,13 @@ def make_runtime_for_args(args: argparse.Namespace) -> tuple[Settings, JsonStore
     engine = RadarEngine(updated, store)
     gateway = TelegramGateway(updated, store)
     return updated, store, engine, gateway
+
+
+def make_runtime_from_settings(
+    settings: Settings,
+) -> tuple[JsonStore, RadarEngine, TelegramGateway]:
+    store = JsonStore(settings.data_dir)
+    return store, RadarEngine(settings, store), TelegramGateway(settings, store)
 
 
 def state_paths(settings: Settings) -> list[Path]:
@@ -573,7 +651,14 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
     try:
         import fcntl
         import requests
+        from runtime.private_alerts import PrivateAlertEvaluator
         from runtime.private_control import PrivateControlService
+        from runtime.private_control_views import (
+            render_fault_explanations,
+            render_push_records,
+            render_recent_signals,
+            render_unpublished_reasons,
+        )
         from scripts.paopao_config import ConfigManager
     except ImportError:
         print("private_control_runtime_unavailable", file=sys.stderr)
@@ -596,10 +681,14 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             )
             return 2
 
-        gateway = TelegramGateway(settings, store)
+        current_settings = last_known_settings_reader(settings)
 
         def health_reader() -> dict[str, object]:
-            checks = runtime_health_checks(settings, store)
+            active_settings = current_settings()
+            checks = runtime_health_checks(
+                active_settings,
+                JsonStore(active_settings.data_dir),
+            )
             states = {
                 str(item.get("status") or "unknown")
                 for item in checks
@@ -615,7 +704,12 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             return {"status": overall, "checks": checks}
 
         def delivery_quota_reader() -> dict[str, object]:
-            records = store.load(settings.tg_push_history_path, [])
+            active_settings = current_settings()
+            active_store = JsonStore(active_settings.data_dir)
+            records = active_store.load(
+                active_settings.tg_push_history_path,
+                [],
+            )
             cutoff = int(time.time()) - 3600
             used = sum(
                 1
@@ -625,7 +719,7 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
                 and isinstance(item.get("ts"), (int, float))
                 and int(item["ts"]) >= cutoff
             ) if isinstance(records, list) else 0
-            limit = max(0, int(settings.tg_global_hourly_limit))
+            limit = max(0, int(active_settings.tg_global_hourly_limit))
             return {
                 "limit": limit,
                 "used": used,
@@ -633,6 +727,9 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             }
 
         def topic_status_reader() -> dict[str, object]:
+            active_settings = current_settings()
+            active_store = JsonStore(active_settings.data_dir)
+            gateway = TelegramGateway(active_settings, active_store)
             templates = {
                 "launch_alert": "TG_LAUNCH_ALERT",
                 "radar_summary": "TG_RADAR_SUMMARY",
@@ -641,13 +738,42 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
                 "announcement_risk": "TG_ANNOUNCEMENT_ALERT",
             }
             return {
-                "bot": bool(settings.tg_bot_token),
-                "chat": bool(settings.tg_chat_id),
+                "bot": bool(active_settings.tg_bot_token),
+                "chat": bool(active_settings.tg_chat_id),
                 "topics": {
                     key: gateway.topic_route_configured(template)
                     for key, template in templates.items()
                 },
             }
+
+        def radar_status_reader() -> dict[str, object]:
+            active_settings = current_settings()
+            return build_market_radar_runtime_status(
+                active_settings,
+                JsonStore(active_settings.data_dir),
+            )
+
+        def data_freshness_reader() -> dict[str, object]:
+            return {
+                "checks": lightweight_freshness_checks(current_settings())
+            }
+
+        def recent_signals_reader() -> str:
+            return render_recent_signals(current_settings().signal_events_db_path)
+
+        def push_records_reader() -> str:
+            return render_push_records(current_settings().tg_push_history_path)
+
+        def unpublished_reasons_reader() -> str:
+            return render_unpublished_reasons(
+                current_settings().tg_push_history_path
+            )
+
+        def fault_explanations_reader() -> str:
+            return render_fault_explanations(
+                health_reader(),
+                radar_status_reader(),
+            )
 
         service = PrivateControlService(
             enabled=settings.tg_private_control_enable,
@@ -656,13 +782,14 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             offset_path=settings.tg_private_control_state_path,
             config_manager=ConfigManager(settings.base_dir),
             session=requests.Session(),
-            radar_status_reader=lambda: build_market_radar_runtime_status(
-                settings,
-                store,
-            ),
+            radar_status_reader=radar_status_reader,
             health_reader=health_reader,
             delivery_quota_reader=delivery_quota_reader,
             topic_status_reader=topic_status_reader,
+            recent_signals_reader=recent_signals_reader,
+            push_records_reader=push_records_reader,
+            unpublished_reasons_reader=unpublished_reasons_reader,
+            fault_explanations_reader=fault_explanations_reader,
         )
         permanent_errors = {
             "private_control_bot_not_configured",
@@ -673,6 +800,7 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             "telegram_endpoint_not_found",
             "telegram_polling_conflict",
         }
+        next_private_alert_check = 0.0
         while True:
             result = service.poll_once()
             status = result.get("status")
@@ -682,6 +810,32 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
                 return 2 if error in permanent_errors else 1
             if status == "disabled":
                 return 2
+            now = time.time()
+            if now >= next_private_alert_check:
+                active_settings = current_settings()
+                alert_result = PrivateAlertEvaluator(
+                    enabled=active_settings.tg_private_control_alert_enable,
+                    state_path=(
+                        active_settings.tg_private_control_alert_state_path
+                    ),
+                    sender=service.send_private_alert,
+                    radar_status_reader=radar_status_reader,
+                    data_freshness_reader=data_freshness_reader,
+                    delivery_quota_reader=delivery_quota_reader,
+                    cooldown_sec=(
+                        active_settings.tg_private_control_alert_cooldown_sec
+                    ),
+                ).run_once()
+                if alert_result.get("status") in {
+                    "state_unavailable",
+                    "send_failed",
+                    "send_failed_state_unavailable",
+                }:
+                    print(
+                        "private_fault_alert_failed",
+                        file=sys.stderr,
+                    )
+                next_private_alert_check = now + 60
     finally:
         try:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
@@ -1512,6 +1666,29 @@ def save_observe_report(
     return report_path
 
 
+def refresh_shared_market_snapshot(
+    settings: Settings,
+    *,
+    source: BinanceDataSource | None = None,
+) -> dict[str, object]:
+    """Refresh the shared market fact store independently of radar switches."""
+
+    owned_source = source is None
+    try:
+        if source is None:
+            source = BinanceDataSource(settings)
+        result = persist_market_batch(settings, source=source)
+        return dict(result) if isinstance(result, dict) else {"status": "ok"}
+    except Exception:
+        return {
+            "status": "failed",
+            "error": "market_snapshot_refresh_failed",
+        }
+    finally:
+        if owned_source and source is not None:
+            source.close()
+
+
 def run_once(
     args: argparse.Namespace,
     *,
@@ -1664,6 +1841,8 @@ def run_once(
 
 def run_loop(args: argparse.Namespace) -> int:
     settings, store, _engine, _gateway = make_runtime_for_args(args)
+    switches = effective_radar_switches(settings, args)
+    runtime_flags = radar_runtime_flags(switches)
     mode = command_mode(args)
     summary_interval = max(
         60,
@@ -1677,6 +1856,7 @@ def run_loop(args: argparse.Namespace) -> int:
     announcement_interval = summary_interval
     next_announcement = next_summary
     next_launch = 0.0
+    next_market_snapshot = 0.0
     next_signal_effectiveness = load_signal_effectiveness_next_run_at(
         settings,
         store,
@@ -1711,10 +1891,9 @@ def run_loop(args: argparse.Namespace) -> int:
         next_announcement_at=timestamp_from_epoch(next_announcement),
         next_flow_at=timestamp_from_epoch(next_flow),
         next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
-        no_launch=bool(args.no_launch),
-        no_announcements=bool(args.no_announcements),
-        no_flow=bool(args.no_flow),
-        no_funding_alert=bool(getattr(args, "no_funding_alert", False)),
+        next_launch_at="",
+        next_market_snapshot_at="",
+        **runtime_flags,
         radar_scan_limit=settings.radar_scan_limit,
         launch_scan_limit=settings.launch_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
@@ -1723,6 +1902,9 @@ def run_loop(args: argparse.Namespace) -> int:
     )
     while True:
         now = time.time()
+        settings, settings_reload_error = reload_loop_settings(settings, args)
+        switches = effective_radar_switches(settings, args)
+        runtime_flags = radar_runtime_flags(switches)
         cleanup_runtime_artifacts(settings, store)
         effectiveness_result, next_signal_effectiveness = (
             refresh_signal_effectiveness_if_due(
@@ -1734,13 +1916,55 @@ def run_loop(args: argparse.Namespace) -> int:
         )
         if effectiveness_result is not None:
             signal_effectiveness_diag = effectiveness_result
-        if now >= next_summary:
+        snapshot_due = now >= next_market_snapshot
+        if snapshot_due and (
+            not switches["launch_alert"] or now < next_launch
+        ):
+            market_snapshot_diag = refresh_shared_market_snapshot(settings)
+            next_market_snapshot = time.time() + max(
+                60,
+                int(settings.market_snapshot_interval_sec),
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_market_snapshot_at=timestamp_from_epoch(
+                    next_market_snapshot
+                ),
+                diagnostics={"market_snapshot": market_snapshot_diag},
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if not switches["radar_summary"] and now >= next_summary:
+            next_summary = next_closed_window_epoch(
+                time.time(),
+                interval_sec=summary_interval,
+                delay_sec=settings.radar_summary_close_delay_sec,
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_summary_at=timestamp_from_epoch(next_summary),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if switches["radar_summary"] and now >= next_summary:
             summary_ok = True
             summary_error_code = ""
             summary_diag: dict[str, Any] = {}
             summary_push_status = "skipped"
             try:
-                settings, store, _engine, gateway = make_runtime_for_args(args)
+                store, _engine, gateway = make_runtime_from_settings(settings)
                 summary_push_status, summary_diag = push_market_summary(
                     settings,
                     store,
@@ -1778,16 +2002,34 @@ def run_loop(args: argparse.Namespace) -> int:
                 summary_push=summary_push_status,
                 diagnostics={"radar_summary": summary_diag},
                 last_error="",
-                no_launch=bool(args.no_launch),
-                no_flow=bool(args.no_flow),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
             )
-        if not args.no_announcements and now >= next_announcement:
+        if not switches["announcement_risk"] and now >= next_announcement:
+            next_announcement = next_closed_window_epoch(
+                time.time(),
+                interval_sec=announcement_interval,
+                delay_sec=settings.radar_summary_close_delay_sec,
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_announcement_at=timestamp_from_epoch(next_announcement),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if switches["announcement_risk"] and now >= next_announcement:
             announcement_ok = True
             announcement_error_code = ""
             announcement_diag: dict[str, Any] = {}
             announcement_push_status = "skipped"
             try:
-                settings, store, _engine, gateway = make_runtime_for_args(args)
+                store, _engine, gateway = make_runtime_from_settings(settings)
                 announcement_push_status, announcement_diag = push_announcement_risk(
                     settings,
                     store,
@@ -1838,18 +2080,37 @@ def run_loop(args: argparse.Namespace) -> int:
                 ),
                 announcement_risk_error_code=announcement_error_code,
                 diagnostics={"announcement_risk": announcement_diag},
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
                 last_error="",
             )
-        if (
-            not args.no_flow
-            and now >= next_flow
-        ):
+        if not switches["flow_radar"] and now >= next_flow:
+            next_flow = next_closed_window_epoch(
+                time.time(),
+                interval_sec=settings.flow_interval_sec,
+                delay_sec=settings.flow_close_delay_sec,
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_flow_at=timestamp_from_epoch(next_flow),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if switches["flow_radar"] and now >= next_flow:
             flow_ok = True
             flow_error_code = ""
             flow_diag: dict[str, object] = {}
             flow_push_status = "skipped"
             try:
-                settings, _store, _engine, gateway = make_runtime_for_args(args)
+                _local_store, _engine, gateway = make_runtime_from_settings(
+                    settings
+                )
                 flow_push_status, flow_diag = push_flow_radar(settings, gateway, args)
                 print(json.dumps({"flow": flow_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
@@ -1877,15 +2138,36 @@ def run_loop(args: argparse.Namespace) -> int:
                 flow_cycle_status="ok" if flow_ok else "failed",
                 flow_error_code=flow_error_code,
                 diagnostics={"flow": flow_diag},
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
                 last_error="",
             )
-        if not getattr(args, "no_funding_alert", False) and now >= next_funding_alert:
+        if not switches["funding_alert"] and now >= next_funding_alert:
+            next_funding_alert = time.time() + max(
+                60,
+                settings.funding_alert_interval_sec,
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_funding_alert_at=timestamp_from_epoch(
+                    next_funding_alert
+                ),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if switches["funding_alert"] and now >= next_funding_alert:
             funding_ok = True
             funding_error_code = ""
             funding_diag: dict[str, object] = {}
             funding_push_status = "skipped"
             try:
-                settings, store, _engine, gateway = make_runtime_for_args(args)
+                store, _engine, gateway = make_runtime_from_settings(settings)
                 funding_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
                 print(json.dumps({"funding_alert": funding_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
@@ -1912,16 +2194,34 @@ def run_loop(args: argparse.Namespace) -> int:
                 ),
                 funding_alert_error_code=funding_error_code,
                 diagnostics={"funding_alert": funding_diag},
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
                 last_error="",
             )
-        if not args.no_launch and now >= next_launch:
+        if not switches["launch_alert"] and now >= next_launch:
+            next_launch = time.time() + max(60, args.launch_interval)
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_launch_at=timestamp_from_epoch(next_launch),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if switches["launch_alert"] and now >= next_launch:
             launch_ok = True
             launch_error_code = ""
             launch_pushes: list[dict[str, str]] = []
             launch_diag: dict[str, object] = {}
             source: BinanceDataSource | None = None
             try:
-                settings, _store, engine, gateway = make_runtime_for_args(args)
+                _local_store, engine, gateway = make_runtime_from_settings(
+                    settings
+                )
                 source = BinanceDataSource(settings)
                 launch = engine.build_launch_alerts(source)
                 launch_diag.update(launch_runtime_diagnostics(launch))
@@ -1933,10 +2233,15 @@ def run_loop(args: argparse.Namespace) -> int:
                 launch_diag["lifecycle_cleanup"] = engine.cleanup_failed_launch_messages(
                     launch_delete_callback
                 )
-                try:
-                    launch_diag["market_snapshot"] = persist_market_batch(settings, source=source)
-                except Exception as exc:
-                    launch_diag["market_snapshot"] = {"status": "failed", "error": type(exc).__name__}
+                if snapshot_due:
+                    launch_diag["market_snapshot"] = refresh_shared_market_snapshot(
+                        settings,
+                        source=source,
+                    )
+                    next_market_snapshot = time.time() + max(
+                        60,
+                        int(settings.market_snapshot_interval_sec),
+                    )
                 launch_diag["signal_effectiveness"] = dict(
                     signal_effectiveness_diag
                 )
@@ -1970,10 +2275,17 @@ def run_loop(args: argparse.Namespace) -> int:
                 real_send=bool(args.send and args.confirm_real_send),
                 last_launch_at=timestamp_from_epoch(time.time()),
                 next_launch_at=timestamp_from_epoch(next_launch),
+                next_market_snapshot_at=(
+                    timestamp_from_epoch(next_market_snapshot)
+                    if next_market_snapshot > 0
+                    else ""
+                ),
                 launch_pushes=launch_pushes,
                 launch_cycle_status="ok" if launch_ok else "failed",
                 launch_error_code=launch_error_code,
                 diagnostics={"launch": launch_diag},
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
                 last_error="",
             )
         if time.time() >= next_heartbeat:
@@ -1984,11 +2296,8 @@ def run_loop(args: argparse.Namespace) -> int:
                 "running",
                 task="loop",
                 real_send=bool(args.send and args.confirm_real_send),
-                no_launch=bool(args.no_launch),
-                no_flow=bool(args.no_flow),
-                no_funding_alert=bool(
-                    getattr(args, "no_funding_alert", False)
-                ),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
                 heartbeat_interval_sec=heartbeat_interval_sec,
                 last_error="",
             )

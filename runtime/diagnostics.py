@@ -121,6 +121,7 @@ def _radar_state(
     real_send: bool,
     current_ts: int,
     schedule_grace_sec: int,
+    disabled_reason: str = "disabled_by_runtime_flag",
 ) -> dict[str, object]:
     last_run_ts = _timestamp(last_run_at)
     next_run_ts = _timestamp(next_run_at)
@@ -136,7 +137,7 @@ def _radar_state(
         safe_cycle_status = "failed"
     if not enabled:
         state = "disabled"
-        reason = "disabled_by_runtime_flag"
+        reason = disabled_reason
     elif not runtime_active:
         state = "not_running"
         reason = "main_bot_runtime_not_active"
@@ -237,7 +238,15 @@ def build_market_radar_runtime_status(
 
     radars = {
         "launch_alert": _radar_state(
-            enabled=not bool(runtime.get("no_launch")),
+            enabled=bool(
+                settings.launch_alert_enable
+                and not bool(runtime.get("no_launch"))
+            ),
+            disabled_reason=(
+                "disabled_by_config"
+                if not settings.launch_alert_enable
+                else "disabled_by_runtime_flag"
+            ),
             runtime_active=runtime_active,
             runtime_status=runtime_status,
             failure_status="launch_failed",
@@ -259,7 +268,15 @@ def build_market_radar_runtime_status(
             schedule_grace_sec=schedule_grace_sec,
         ),
         "radar_summary": _radar_state(
-            enabled=True,
+            enabled=bool(
+                settings.radar_summary_enable
+                and not bool(runtime.get("no_summary"))
+            ),
+            disabled_reason=(
+                "disabled_by_config"
+                if not settings.radar_summary_enable
+                else "disabled_by_runtime_flag"
+            ),
             runtime_active=runtime_active,
             runtime_status=runtime_status,
             failure_status="summary_failed",
@@ -277,7 +294,15 @@ def build_market_radar_runtime_status(
             schedule_grace_sec=schedule_grace_sec,
         ),
         "announcement_risk": _radar_state(
-            enabled=not bool(runtime.get("no_announcements")),
+            enabled=bool(
+                settings.announcement_risk_enable
+                and not bool(runtime.get("no_announcements"))
+            ),
+            disabled_reason=(
+                "disabled_by_config"
+                if not settings.announcement_risk_enable
+                else "disabled_by_runtime_flag"
+            ),
             runtime_active=runtime_active,
             runtime_status=runtime_status,
             failure_status="announcement_risk_failed",
@@ -299,7 +324,15 @@ def build_market_radar_runtime_status(
             schedule_grace_sec=schedule_grace_sec,
         ),
         "funding_alert": _radar_state(
-            enabled=not bool(runtime.get("no_funding_alert")),
+            enabled=bool(
+                settings.funding_alert_enable
+                and not bool(runtime.get("no_funding_alert"))
+            ),
+            disabled_reason=(
+                "disabled_by_config"
+                if not settings.funding_alert_enable
+                else "disabled_by_runtime_flag"
+            ),
             runtime_active=runtime_active,
             runtime_status=runtime_status,
             failure_status="funding_alert_failed",
@@ -320,7 +353,15 @@ def build_market_radar_runtime_status(
             schedule_grace_sec=schedule_grace_sec,
         ),
         "flow_radar": _radar_state(
-            enabled=not bool(runtime.get("no_flow")),
+            enabled=bool(
+                settings.flow_radar_enable
+                and not bool(runtime.get("no_flow"))
+            ),
+            disabled_reason=(
+                "disabled_by_config"
+                if not settings.flow_radar_enable
+                else "disabled_by_runtime_flag"
+            ),
             runtime_active=runtime_active,
             runtime_status=runtime_status,
             failure_status="flow_failed",
@@ -349,7 +390,7 @@ def build_market_radar_runtime_status(
     elif not runtime_active:
         overall_status = "not_running"
         overall_reason = "main_bot_loop_not_active"
-    elif runtime_status.endswith("_failed") or any(
+    elif any(
         item.get("state") in {"degraded", "stale"}
         for item in radars.values()
     ):

@@ -55,6 +55,12 @@ class FakeConfigManager:
             "LAUNCH_FUSION_ENABLE": fusion_enabled,
             "LAUNCH_DIRECTIONAL_ENABLE": directional_enabled,
             "LAUNCH_AI_INTERPRETER_ENABLE": False,
+            "TG_PRIVATE_CONTROL_ALERT_ENABLE": False,
+            "LAUNCH_ALERT_ENABLE": True,
+            "RADAR_SUMMARY_ENABLE": True,
+            "FUNDING_ALERT_ENABLE": True,
+            "FLOW_RADAR_ENABLE": True,
+            "ANNOUNCEMENT_RISK_ENABLE": True,
             "AI_API_KEY": "configured" if ai_ready else "not_configured",
             "AI_BASE_URL": "configured" if ai_ready else "not_configured",
             "AI_MODEL": "fake-model" if ai_ready else "not_configured",
@@ -334,6 +340,87 @@ class PrivateControlTests(unittest.TestCase):
         )
         self.assertTrue(all("REAL" not in key for key, _ in manager.set_calls))
 
+    def test_runtime_detail_views_are_fixed_bounded_readers(self) -> None:
+        secret = "123456:private-secret"
+        calls: list[str] = []
+
+        def reader(name: str) -> object:
+            def load() -> str:
+                calls.append(name)
+                return f"{name}：本地只读结果"
+
+            return load
+
+        with TemporaryDirectory() as tmp:
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                recent_signals_reader=reader("最近信号"),
+                push_records_reader=reader("推送记录"),
+                unpublished_reasons_reader=reader("未推送原因"),
+                fault_explanations_reader=reader("故障说明"),
+            )
+            menu = service.handle_update(update(1, "运行详情"))
+            replies = [
+                service.handle_update(update(index, command))
+                for index, command in enumerate(
+                    ("最近信号", "推送记录", "未推送原因", "故障说明"),
+                    start=2,
+                )
+            ]
+
+        self.assertEqual(menu.command, "runtime_details_menu")
+        self.assertEqual(
+            calls,
+            ["最近信号", "推送记录", "未推送原因", "故障说明"],
+        )
+        self.assertNotIn(secret, "\n".join(reply.text for reply in replies))
+
+    def test_each_radar_switch_requires_exact_confirmation(self) -> None:
+        cases = (
+            ("关闭启动预警", "确认关闭启动预警", "LAUNCH_ALERT_ENABLE"),
+            ("关闭资金摘要", "确认关闭资金摘要", "RADAR_SUMMARY_ENABLE"),
+            (
+                "关闭资金费率警报",
+                "确认关闭资金费率警报",
+                "FUNDING_ALERT_ENABLE",
+            ),
+            ("关闭五因子资金流", "确认关闭五因子资金流", "FLOW_RADAR_ENABLE"),
+            ("关闭公告风险", "确认关闭公告风险", "ANNOUNCEMENT_RISK_ENABLE"),
+        )
+        for request, confirmation, key in cases:
+            with self.subTest(key=key), TemporaryDirectory() as tmp:
+                manager = FakeConfigManager()
+                service = self.service(
+                    Path(tmp),
+                    session=FakeSession(),
+                    manager=manager,
+                )
+                first = service.handle_update(update(1, request))
+                self.assertEqual(manager.set_calls, [])
+                second = service.handle_update(update(2, confirmation))
+                self.assertEqual(first.command, "confirmation_required")
+                self.assertEqual(second.command, "configuration_updated")
+                self.assertEqual(manager.set_calls, [(key, "false")])
+
+    def test_fault_alert_toggle_cannot_change_real_send(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = FakeConfigManager()
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                manager=manager,
+            )
+            service.handle_update(update(1, "开启故障提醒"))
+            reply = service.handle_update(update(2, "确认开启故障提醒"))
+
+        self.assertEqual(reply.command, "configuration_updated")
+        self.assertEqual(
+            manager.set_calls,
+            [("TG_PRIVATE_CONTROL_ALERT_ENABLE", "true")],
+        )
+        self.assertTrue(all("REAL" not in key for key, _ in manager.set_calls))
+
     def test_ai_enable_requires_directional_radar_first(self) -> None:
         with TemporaryDirectory() as tmp:
             manager = FakeConfigManager(ai_ready=True)
@@ -379,6 +466,21 @@ class PrivateControlTests(unittest.TestCase):
         self.assertEqual(len(session.calls), 1)
         self.assertNotIn(BOT_TOKEN, json.dumps(result))
         self.assertNotIn("contains secret response", json.dumps(result))
+
+    def test_proactive_alert_targets_only_private_admin_without_topic(self) -> None:
+        with TemporaryDirectory() as tmp:
+            session = FakeSession(
+                FakeResponse(body={"ok": True, "result": {"message_id": 9}})
+            )
+            service = self.service(Path(tmp), session=session)
+
+            sent = service.send_private_alert("固定中文故障提醒")
+
+        self.assertTrue(sent)
+        payload = session.calls[0]["json"]
+        self.assertEqual(payload["chat_id"], ADMIN_ID)
+        self.assertNotIn("message_thread_id", payload)
+        self.assertNotIn("reply_to_message_id", payload)
 
     def test_http_and_invalid_json_errors_are_sanitized(self) -> None:
         cases = (
