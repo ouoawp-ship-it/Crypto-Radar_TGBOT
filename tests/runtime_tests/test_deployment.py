@@ -17,7 +17,7 @@ import runtime.cli as main
 from config import Settings
 from runtime.radar_engine import RadarEngine
 from shared.storage import JsonStore
-from shared.telegram import TelegramGateway
+from shared.telegram import PushResult, TelegramGateway
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -520,7 +520,7 @@ class LaunchReportTests(unittest.TestCase):
 
             self.assertEqual(code, 1)
             text = output.getvalue()
-            self.assertIn("WAIT telegram_topic_funding_alert", text)
+            self.assertIn("⏳ 待处理 资金费率警报专属话题", text)
             self.assertIn("资金费率警报专属话题未配置", text)
             self.assertNotIn("telegram_topic_test_message", text)
 
@@ -594,7 +594,11 @@ class MainCommandTests(unittest.TestCase):
                     code = main.main(["telegram-test"])
 
         self.assertEqual(code, 0)
-        self.assertIn("telegram_test: dry_run", output.getvalue())
+        self.assertIn(
+            "Telegram 测试：安全演练，未发送真实消息",
+            output.getvalue(),
+        )
+        self.assertNotIn("send_flag_not_set", output.getvalue())
 
     def test_telegram_test_blocks_real_send_without_confirmation(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -603,7 +607,38 @@ class MainCommandTests(unittest.TestCase):
                     code = main.main(["telegram-test", "--send"])
 
         self.assertEqual(code, 2)
-        self.assertIn("telegram_test: blocked", output.getvalue())
+        self.assertIn("Telegram 测试：已阻止", output.getvalue())
+        self.assertIn("未完成真实发送的第二重确认", output.getvalue())
+        self.assertNotIn("missing_confirm_real_send", output.getvalue())
+
+    def test_telegram_test_translates_hourly_limit_without_changing_code(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = self.make_runtime(tmp, configured=True)
+            gateway = runtime[3]
+            result = PushResult(
+                "skipped",
+                "global_hourly_limit",
+                False,
+            )
+            with (
+                patch.object(main, "make_runtime", return_value=runtime),
+                patch.object(
+                    gateway,
+                    "send",
+                    return_value=result,
+                ),
+                redirect_stdout(StringIO()) as output,
+            ):
+                code = main.main(
+                    ["telegram-test", "--send", "--confirm-real-send"]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertIn("Telegram 测试：已跳过", output.getvalue())
+        self.assertIn("本小时发送额度已用完", output.getvalue())
+        self.assertNotIn("global_hourly_limit", output.getvalue())
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.reason, "global_hourly_limit")
 
     def test_telegram_topic_setup_cli_requires_both_real_send_flags(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -650,7 +685,7 @@ class MainCommandTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertIn("真实推送准备度", output.getvalue())
-        self.assertIn("WAIT", output.getvalue())
+        self.assertIn("⏳ 待处理", output.getvalue())
 
     def test_live_bootstrap_refreshes_stale_snapshot_without_telegram(self) -> None:
         with TemporaryDirectory() as tmp:

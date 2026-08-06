@@ -22,6 +22,8 @@ ENV_FILES = {
 ALLOWLIST = {
     "TG_BOT_TOKEN": "oi",
     "TG_CHAT_ID": "oi",
+    "TG_PRIVATE_CONTROL_ENABLE": "oi",
+    "TG_PRIVATE_CONTROL_ADMIN_USER_ID": "oi",
     "MAIN_BOT_DELIVERY_MODE": "oi",
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
@@ -41,11 +43,13 @@ SECRET_KEYS = {
 }
 SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
+    "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
     "MAIN_BOT_REAL_SEND_ACK",
     "AI_BASE_URL",
 }
 BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
+    "TG_PRIVATE_CONTROL_ENABLE",
     "LAUNCH_FUSION_ENABLE",
     "LAUNCH_DIRECTIONAL_ENABLE",
     "LAUNCH_AI_INTERPRETER_ENABLE",
@@ -170,6 +174,7 @@ class ConfigManager:
         effective_defaults = {
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
+            "TG_PRIVATE_CONTROL_ENABLE": "false",
             "LAUNCH_FUSION_ENABLE": "false",
             "LAUNCH_DIRECTIONAL_ENABLE": "false",
             "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "6",
@@ -402,6 +407,19 @@ class ConfigManager:
             )
         if key == "AI_BASE_URL" and value:
             self._validate_ai_base_url(value)
+        if key == "TG_PRIVATE_CONTROL_ADMIN_USER_ID" and value:
+            self._validate_private_control_admin_id(value)
+
+    @staticmethod
+    def _validate_private_control_admin_id(value: str) -> None:
+        if not re.fullmatch(r"[1-9]\d{0,18}", value):
+            raise ConfigManagerError(
+                "TG_PRIVATE_CONTROL_ADMIN_USER_ID must be a positive integer"
+            )
+        if int(value) > 9_223_372_036_854_775_807:
+            raise ConfigManagerError(
+                "TG_PRIVATE_CONTROL_ADMIN_USER_ID is out of range"
+            )
 
     @staticmethod
     def _validate_ai_base_url(value: str) -> None:
@@ -443,6 +461,28 @@ class ConfigManager:
                 raise ConfigManagerError(
                     "TG_CHAT_ID must be a non-zero signed integer"
                 )
+
+        private_control_admin = values.get(
+            "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
+            "",
+        ).strip()
+        if private_control_admin:
+            self._validate_private_control_admin_id(private_control_admin)
+        private_control_enable = values.get(
+            "TG_PRIVATE_CONTROL_ENABLE",
+            "false",
+        ).strip().lower()
+        if private_control_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "TG_PRIVATE_CONTROL_ENABLE must be true or false"
+            )
+        if private_control_enable == "true" and not (
+            token and private_control_admin
+        ):
+            raise ConfigManagerError(
+                "private_control_gate_blocked: configure Telegram Bot Token "
+                "and the private administrator ID first"
+            )
 
         main_bot_mode = values.get(
             "MAIN_BOT_DELIVERY_MODE",
@@ -550,6 +590,12 @@ class ConfigManager:
             ),
             "telegram_chat_id": (
                 "configured" if chat_id else "not_configured"
+            ),
+            "telegram_private_control_enable": (
+                private_control_enable == "true"
+            ),
+            "telegram_private_control_admin": (
+                "configured" if private_control_admin else "not_configured"
             ),
             "main_bot_delivery_mode": main_bot_mode,
             "main_bot_real_send": main_bot_real_send == "true",

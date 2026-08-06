@@ -83,6 +83,7 @@ python main.py stable-check
 python main.py database-backup
 python main.py telegram-test
 python main.py telegram-topic-setup --topic-template TG_RADAR_SUMMARY --send --confirm-real-send
+python main.py private-control
 python main.py once
 python main.py announcement-risk
 python main.py flow-radar
@@ -133,6 +134,7 @@ bash scripts/update_server.sh --yes
 
 - `paopao-radar.service`：扫描、评分与 Telegram Dry-run/Real 安全运行。
 - `paopao-market-stream.service`：实时成交和清算采集。
+- `paopao-private-control.service`：可选的管理员私聊菜单，默认关闭且独立运行。
 - `paopao-health.timer`：定时执行 BOT、数据库、行情新鲜度和信号结果追踪健康检查。
 - `paopao-backup.timer`：每天创建活动 SQLite 数据库的一致性备份，并实际恢复到内存验证可用性。
 
@@ -141,3 +143,5 @@ bash scripts/update_server.sh --yes
 更完整的模块边界见 [docs/BOT_ONLY_ARCHITECTURE.md](docs/BOT_ONLY_ARCHITECTURE.md)，安装说明见 [docs/INSTALL_CN.md](docs/INSTALL_CN.md)。
 FinalShell 的 `paopao` / `pp` 中文运维菜单见
 [docs/SERVER_MENU_CN.md](docs/SERVER_MENU_CN.md)。
+管理员私聊菜单见
+[docs/TELEGRAM_PRIVATE_CONTROL.md](docs/TELEGRAM_PRIVATE_CONTROL.md)。

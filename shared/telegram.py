@@ -652,21 +652,21 @@ class TelegramGateway:
             return result
 
         if not send:
-            print("\n========== TELEGRAM DRY-RUN ==========")
-            print(f"template_id: {template_id}")
-            print(f"dedup_key: {dedup_key}")
+            print("\n========== TELEGRAM 安全演练 ==========")
+            print(f"消息模板：{template_id}")
+            print(f"防重复标识：{dedup_key}")
             print(
-                "topic_configured: "
-                f"{str(bool(topic_id)).lower()}"
+                "话题已配置："
+                f"{'是' if topic_id else '否'}"
             )
             print(
-                "reply_target_configured: "
-                f"{str(bool(reply_to_message_id)).lower()}"
+                "回复目标已配置："
+                f"{'是' if reply_to_message_id else '否'}"
             )
             if photo is not None:
-                print(f"photo_bytes: {len(photo)}")
+                print(f"图片大小（字节）：{len(photo)}")
             print(text)
-            print("========== END DRY-RUN ==============\n")
+            print("========== 安全演练结束 ==============\n")
             result = PushResult("dry_run", "send_flag_not_set", False)
             self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result

@@ -8,6 +8,7 @@ SERVICE_NAME="${SERVICE_NAME:-paopao-radar}"
 MARKET_STREAM_SERVICE_NAME="${MARKET_STREAM_SERVICE_NAME:-paopao-market-stream}"
 HEALTH_SERVICE_NAME="${HEALTH_SERVICE_NAME:-paopao-health}"
 BACKUP_SERVICE_NAME="${BACKUP_SERVICE_NAME:-paopao-backup}"
+PRIVATE_CONTROL_SERVICE_NAME="${PRIVATE_CONTROL_SERVICE_NAME:-paopao-private-control}"
 RADAR_MEMORY_HIGH="${RADAR_MEMORY_HIGH:-450M}"
 RADAR_MEMORY_MAX="${RADAR_MEMORY_MAX:-650M}"
 MARKET_STREAM_MEMORY_HIGH="${MARKET_STREAM_MEMORY_HIGH:-128M}"
@@ -107,6 +108,10 @@ retire_legacy_services() {
 install_runtime_services() {
   command -v systemctl >/dev/null 2>&1 || return 0
   local service_user="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
+  local private_control_was_active=0
+  if systemctl is-active --quiet "$PRIVATE_CONTROL_SERVICE_NAME" 2>/dev/null; then
+    private_control_was_active=1
+  fi
   PAOPAO_APP_DIR="$APP_DIR" \
     MAIN_BOT_SERVICE_NAME="$SERVICE_NAME" \
     SERVICE_USER="$service_user" \
@@ -115,6 +120,11 @@ install_runtime_services() {
     ALLOW_ENV_MIGRATION_TRANSITION=1 \
     START_MAIN_BOT=0 \
     bash "${APP_DIR}/scripts/install_main_bot_service.sh"
+  PAOPAO_APP_DIR="$APP_DIR" \
+    SERVICE_USER="$service_user" \
+    START_PRIVATE_CONTROL=0 \
+    ENABLE_PRIVATE_CONTROL=0 \
+    bash "${APP_DIR}/scripts/install_private_control_service.sh"
   write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
   run_root tee "/etc/systemd/system/${HEALTH_SERVICE_NAME}.service" >/dev/null <<EOF
 [Unit]
@@ -178,6 +188,9 @@ EOF
   run_root systemctl daemon-reload
   run_root systemctl enable "$SERVICE_NAME" "$MARKET_STREAM_SERVICE_NAME" "${HEALTH_SERVICE_NAME}.timer" "${BACKUP_SERVICE_NAME}.timer"
   run_root systemctl restart "$MARKET_STREAM_SERVICE_NAME" "$SERVICE_NAME" "${HEALTH_SERVICE_NAME}.timer" "${BACKUP_SERVICE_NAME}.timer"
+  if [ "$private_control_was_active" = "1" ]; then
+    run_root systemctl restart "$PRIVATE_CONTROL_SERVICE_NAME"
+  fi
 }
 
 validate_runtime() {

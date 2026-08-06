@@ -128,6 +128,11 @@ install_services() {
     ALLOW_ENV_MIGRATION_TRANSITION=1 \
     START_MAIN_BOT=0 \
     bash "${APP_DIR}/scripts/install_main_bot_service.sh"
+  PAOPAO_APP_DIR="$APP_DIR" \
+    SERVICE_USER="$SERVICE_USER" \
+    START_PRIVATE_CONTROL=0 \
+    ENABLE_PRIVATE_CONTROL=0 \
+    bash "${APP_DIR}/scripts/install_private_control_service.sh"
   write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
 
   run_root tee "/etc/systemd/system/${CLEANUP_SERVICE_NAME}.service" >/dev/null <<EOF
