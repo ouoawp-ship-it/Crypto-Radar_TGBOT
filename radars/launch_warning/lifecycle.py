@@ -77,6 +77,7 @@ class LaunchLifecycleStore:
     launched_score: int = 90
     price_action_enabled: bool = False
     fusion_enabled: bool = False
+    directional_enabled: bool = False
     same_stage_min_interval_sec: int = 30 * 60
 
     def __post_init__(self) -> None:
@@ -378,6 +379,52 @@ class LaunchLifecycleStore:
                 for row in conn.execute(sql, params).fetchall()
             }
 
+    def active_symbol_profiles(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return persisted scoring mode and locked side for active cycles."""
+
+        sql = """
+            SELECT cycle.symbol,
+                   cycle.outcome_rule_key,
+                   first_observation.trigger_path
+            FROM launch_lifecycle_cycles AS cycle
+            LEFT JOIN launch_lifecycle_observations AS first_observation
+              ON first_observation.id = (
+                SELECT observation.id
+                FROM launch_lifecycle_observations AS observation
+                WHERE observation.cycle_id = cycle.id
+                ORDER BY observation.observation_no ASC
+                LIMIT 1
+              )
+            WHERE cycle.status = ?
+            ORDER BY cycle.last_window_end ASC, cycle.id ASC
+        """
+        params: list[Any] = [ACTIVE_STATUS]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(0, int(limit)))
+        with self.connect() as conn:
+            profiles: dict[str, dict[str, Any]] = {}
+            for row in conn.execute(sql, params).fetchall():
+                rule_key = str(row["outcome_rule_key"] or "")
+                trigger_path = str(row["trigger_path"] or "")
+                direction = (
+                    "bullish"
+                    if trigger_path.startswith("directional:bullish")
+                    else "bearish"
+                    if trigger_path.startswith("directional:bearish")
+                    else ""
+                )
+                profiles[str(row["symbol"])] = {
+                    "fusion": self._rule_uses_fusion(rule_key),
+                    "directional": self._rule_uses_directional(rule_key),
+                    "direction": direction,
+                }
+            return profiles
+
     def list_observations(self, cycle_id: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -412,6 +459,7 @@ class LaunchLifecycleStore:
             f":launched={self.launched_score}"
             f":invalid={self.invalid_windows_required}"
             f":follow={follow_through}"
+            f":directional={int(self.directional_enabled)}"
             f":fusion={int(self.fusion_enabled)}"
         )
 
@@ -419,7 +467,12 @@ class LaunchLifecycleStore:
     def legacy_outcome_rule_key(self) -> str:
         """Rule key used for cycles created before fusion mode existed."""
 
-        return self.outcome_rule_key.rsplit(":fusion=", 1)[0] + ":fusion=0"
+        parts = [
+            part
+            for part in self.outcome_rule_key.split(":")
+            if not part.startswith(("fusion=", "directional="))
+        ]
+        return ":".join(parts) + ":directional=0:fusion=0"
 
     @staticmethod
     def _rule_number(rule_key: str, name: str, fallback: float) -> float:
@@ -449,6 +502,92 @@ class LaunchLifecycleStore:
 
     def _rule_uses_fusion(self, rule_key: str) -> bool:
         return self._rule_number(rule_key, "fusion", 0.0) >= 1.0
+
+    def _rule_uses_directional(self, rule_key: str) -> bool:
+        return self._rule_number(rule_key, "directional", 0.0) >= 1.0
+
+    @staticmethod
+    def _directional_side(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized.startswith("directional:"):
+            normalized = normalized.split(":", 1)[1]
+        if normalized.startswith("bullish"):
+            return "bullish"
+        if normalized.startswith("bearish"):
+            return "bearish"
+        return ""
+
+    @staticmethod
+    def _directional_is_divergence_watch(value: Any) -> bool:
+        normalized = str(value or "").strip().lower()
+        if normalized.startswith("directional:"):
+            normalized = normalized.split(":", 1)[1]
+        return normalized in {
+            "bullish_divergence_watch",
+            "bearish_divergence_watch",
+        }
+
+    def _directional_lifecycle_stage(
+        self,
+        score: int,
+        signal: Mapping[str, Any] | None,
+        *,
+        rule_key: str,
+        locked_direction: str,
+    ) -> str:
+        watch_score = int(self._rule_number(rule_key, "watch", self.watch_score))
+        start_score = int(self._rule_number(rule_key, "start", self.start_score))
+        breakout_score = int(
+            self._rule_number(rule_key, "breakout", self.breakout_score)
+        )
+        launched_score = int(
+            self._rule_number(rule_key, "launched", self.launched_score)
+        )
+        if score < watch_score:
+            return "idle"
+        if score < start_score:
+            return "watching"
+        state = dict(signal or {})
+        current_direction = self._directional_side(state.get("direction"))
+        gates = state.get("hard_gates")
+        gates = gates if isinstance(gates, Mapping) else {}
+        confirmed = bool(
+            locked_direction
+            and current_direction == locked_direction
+            and gates.get(f"{locked_direction}_passed") is True
+        )
+        if not confirmed:
+            return "primed"
+        if score >= launched_score:
+            return "launched"
+        if score >= breakout_score:
+            return "breakout"
+        return "primed"
+
+    def _directional_confirmation_status(
+        self,
+        score: int,
+        signal: Mapping[str, Any] | None,
+        *,
+        rule_key: str,
+        locked_direction: str,
+    ) -> str:
+        state = dict(signal or {})
+        current_direction = self._directional_side(state.get("direction"))
+        if locked_direction and current_direction and current_direction != locked_direction:
+            return "direction_changed"
+        gates = state.get("hard_gates")
+        gates = gates if isinstance(gates, Mapping) else {}
+        if (
+            locked_direction
+            and current_direction == locked_direction
+            and gates.get(f"{locked_direction}_passed") is True
+        ):
+            return "directional_confirmed"
+        start_score = int(self._rule_number(rule_key, "start", self.start_score))
+        if score >= start_score:
+            return "awaiting_directional_confirmation"
+        return "not_applicable"
 
     def _fusion_lifecycle_stage(
         self,
@@ -641,9 +780,23 @@ class LaunchLifecycleStore:
             ),
             None,
         )
-        max_favorable = _percent_change(max_price, entry_price) or 0.0
-        max_adverse = _percent_change(min_price, entry_price) or 0.0
-        end_return = _percent_change(_number(last["closed_price"]), entry_price) or 0.0
+        trigger_path = str(first["trigger_path"] or "")
+        bearish_cycle = trigger_path.startswith("directional:bearish")
+        if bearish_cycle:
+            max_favorable = -(
+                _percent_change(min_price, entry_price) or 0.0
+            )
+            max_adverse = -(
+                _percent_change(max_price, entry_price) or 0.0
+            )
+            end_return = -(
+                _percent_change(_number(last["closed_price"]), entry_price)
+                or 0.0
+            )
+        else:
+            max_favorable = _percent_change(max_price, entry_price) or 0.0
+            max_adverse = _percent_change(min_price, entry_price) or 0.0
+            end_return = _percent_change(_number(last["closed_price"]), entry_price) or 0.0
         max_oi_increase = _percent_change(max_oi, entry_oi) or 0.0
         max_oi_decrease = _percent_change(min_oi, entry_oi) or 0.0
         return {
@@ -664,7 +817,7 @@ class LaunchLifecycleStore:
             "failure_reason": str(cycle["end_reason"] or ""),
             "asset_class": str(first["asset_class"] or ""),
             "liquidity_tier": str(first["liquidity_tier"] or ""),
-            "trigger_path": str(first["trigger_path"] or ""),
+            "trigger_path": trigger_path,
             "entry_price": entry_price,
             "exit_price": _number(last["closed_price"]),
             "max_close_price": max_price,
@@ -1402,17 +1555,47 @@ class LaunchLifecycleStore:
                     "reason": "stale_window",
                     "symbol": symbol,
                 }
-            if score < self.start_score:
+            opening_trigger = snapshot.get("trigger_path")
+            divergence_risk_watch = bool(
+                self.directional_enabled
+                and self._directional_is_divergence_watch(opening_trigger)
+            )
+            minimum_open_score = (
+                self.watch_score if divergence_risk_watch else self.start_score
+            )
+            if score < minimum_open_score:
                 return {
                     "status": "ignored",
-                    "reason": "below_start_score",
+                    "reason": (
+                        "below_watch_score"
+                        if divergence_risk_watch
+                        else "below_start_score"
+                    ),
+                    "symbol": symbol,
+                }
+            opening_direction = self._directional_side(
+                opening_trigger
+            )
+            if self.directional_enabled and not opening_direction:
+                return {
+                    "status": "ignored",
+                    "reason": "directional_side_not_actionable",
                     "symbol": symbol,
                 }
             cycle = self._open_cycle(
                 conn,
                 symbol=symbol,
                 stage=(
-                    self._fusion_lifecycle_stage(
+                    self._directional_lifecycle_stage(
+                        score,
+                        snapshot.get("directional_readiness")
+                        if isinstance(snapshot.get("directional_readiness"), Mapping)
+                        else {},
+                        rule_key=self.outcome_rule_key,
+                        locked_direction=opening_direction,
+                    )
+                    if self.directional_enabled
+                    else self._fusion_lifecycle_stage(
                         score,
                         {},
                         rule_key=self.outcome_rule_key,
@@ -1614,6 +1797,17 @@ class LaunchLifecycleStore:
         funding_8h_pct = _funding_8h(funding_pct, funding_interval_hours)
         rule_key = str(cycle["outcome_rule_key"] or self.outcome_rule_key)
         fusion_enabled = self._rule_uses_fusion(rule_key)
+        directional_enabled = self._rule_uses_directional(rule_key)
+        current_direction = self._directional_side(snapshot.get("trigger_path"))
+        locked_direction = self._directional_side(
+            first["trigger_path"] if first is not None else snapshot.get("trigger_path")
+        )
+        directional_signal = snapshot.get("directional_readiness")
+        directional_signal = (
+            directional_signal
+            if isinstance(directional_signal, Mapping)
+            else {}
+        )
         watch_score = int(
             self._rule_number(rule_key, "watch", self.watch_score)
         )
@@ -1641,15 +1835,31 @@ class LaunchLifecycleStore:
             if self.price_action_enabled or fusion_enabled
             else {}
         )
-        confirmation_status = self._confirmation_status(
-            score,
-            price_action,
-            fusion_enabled=fusion_enabled,
-            rule_key=rule_key,
+        confirmation_status = (
+            self._directional_confirmation_status(
+                score,
+                directional_signal,
+                rule_key=rule_key,
+                locked_direction=locked_direction,
+            )
+            if directional_enabled
+            else self._confirmation_status(
+                score,
+                price_action,
+                fusion_enabled=fusion_enabled,
+                rule_key=rule_key,
+            )
         )
         scored_stage = str(stage or "idle")
         active_stage = (
-            self._fusion_lifecycle_stage(
+            self._directional_lifecycle_stage(
+                score,
+                directional_signal,
+                rule_key=rule_key,
+                locked_direction=locked_direction,
+            )
+            if directional_enabled
+            else self._fusion_lifecycle_stage(
                 score,
                 price_action,
                 rule_key=rule_key,
@@ -1657,7 +1867,7 @@ class LaunchLifecycleStore:
             if fusion_enabled
             else scored_stage
         )
-        if fusion_enabled and score >= watch_score:
+        if fusion_enabled and not directional_enabled and score >= watch_score:
             hard_counter = {
                 "price_up_oi_down",
                 "price_down_oi_up",
@@ -1678,7 +1888,11 @@ class LaunchLifecycleStore:
         cycle_breakout_price = _number(cycle["breakout_price"])
         snapshot_breakout_price = _number(snapshot.get("breakout_price"))
         if cycle_breakout_price <= 0:
-            if fusion_enabled and confirmation_status in {
+            if directional_enabled:
+                invalidation_price = _number(snapshot.get("invalidation_price"))
+                if invalidation_price > 0:
+                    cycle_breakout_price = invalidation_price
+            elif fusion_enabled and confirmation_status in {
                 "confirmed_1h",
                 "confirmed_4h",
             }:
@@ -1693,17 +1907,41 @@ class LaunchLifecycleStore:
                 cycle_breakout_price = snapshot_breakout_price
 
         breakout_below_count = int(cycle["breakout_below_count"] or 0)
-        if cycle_breakout_price > 0 and closed_price < cycle_breakout_price:
+        if directional_enabled and locked_direction == "bearish":
+            invalidation_breached = (
+                cycle_breakout_price > 0 and closed_price > cycle_breakout_price
+            )
+        else:
+            invalidation_breached = (
+                cycle_breakout_price > 0 and closed_price < cycle_breakout_price
+            )
+        if invalidation_breached:
             breakout_below_count = breakout_below_count + 1 if is_consecutive else 1
         else:
             breakout_below_count = 0
 
         failed_by_score = invalid_count >= invalid_windows_required
         failed_by_breakout = breakout_below_count >= invalid_windows_required
-        if failed_by_breakout:
+        direction_changed = bool(
+            directional_enabled
+            and locked_direction
+            and current_direction
+            and current_direction != locked_direction
+        )
+        if direction_changed:
             lifecycle_status = FAILED_STATUS
             lifecycle_stage = FAILED_STATUS
-            end_reason = "two_closes_below_breakout"
+            end_reason = "direction_changed"
+        elif failed_by_breakout:
+            lifecycle_status = FAILED_STATUS
+            lifecycle_stage = FAILED_STATUS
+            end_reason = (
+                "two_closes_above_invalidation"
+                if directional_enabled and locked_direction == "bearish"
+                else "two_closes_below_invalidation"
+                if directional_enabled
+                else "two_closes_below_breakout"
+            )
         elif failed_by_score:
             lifecycle_status = FAILED_STATUS
             lifecycle_stage = FAILED_STATUS
@@ -1999,7 +2237,11 @@ class LaunchLifecycleStore:
             previous["confirmation_status"] or "not_required"
         )
         if (
-            current_confirmation in {"confirmed_1h", "confirmed_4h"}
+            current_confirmation in {
+                "confirmed_1h",
+                "confirmed_4h",
+                "directional_confirmed",
+            }
             and current_confirmation != previous_confirmation
         ):
             reasons.append("confirmation_changed")
@@ -2041,6 +2283,16 @@ class LaunchLifecycleStore:
             and current_quadrant != previous_quadrant
         ):
             reasons.append("quadrant_changed")
+        current_trigger = str(current.get("trigger_path") or "")
+        previous_trigger = str(previous["trigger_path"] or "")
+        current_side = self._directional_side(current_trigger)
+        previous_side = self._directional_side(previous_trigger)
+        if (
+            current_side
+            and previous_side
+            and current_side != previous_side
+        ):
+            reasons.append("direction_changed")
         current_price_action = _json_object(current.get("price_action_json"))
         previous_price_action = _json_object(previous["price_action_json"])
         if (
@@ -2054,6 +2306,7 @@ class LaunchLifecycleStore:
             immediate = {
                 "stage_changed",
                 "confirmation_changed",
+                "direction_changed",
             }
             price_action_status = str(current_price_action.get("status") or "")
             if price_action_status.startswith(

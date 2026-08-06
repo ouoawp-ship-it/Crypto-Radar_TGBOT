@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from html import escape
 from math import isfinite
 from typing import Any, Callable, Optional
+
+import requests
 
 from shared.asset_classification import classify_binance_instrument
 from shared.binance_confirmation import (
@@ -16,7 +20,16 @@ from shared.binance_confirmation import (
 )
 from shared.binance_data import BinanceDataSource
 from .chart import render_launch_chart_png
+from .ai_interpreter import OpenAiCompatibleLaunchInterpreter
 from .candidates import select_launch_candidates
+from .directional_formatter import format_launch_directional_signal
+from .directional_model import evaluate_directional_readiness
+from .directional_runtime import (
+    active_flow_window,
+    build_directional_facts,
+    build_trade_plans,
+    select_directional_candidates,
+)
 from .fusion_formatter import format_launch_fusion_package
 from .lifecycle import LaunchLifecycleStore
 from .market_facts import (
@@ -24,6 +37,11 @@ from .market_facts import (
     OI_24H_REQUIRED_POINTS,
     build_launch_market_facts,
     closed_kline_active_flow,
+)
+from .multi_timeframe import (
+    TIMEFRAME_INTERVAL_MS,
+    analyze_multi_timeframe,
+    expand_timeframe_klines,
 )
 from .price_action import analyze_launch_price_action, required_15m_kline_limit
 from .scoring import SCORE_SEMANTICS, score_launch_signal
@@ -65,12 +83,30 @@ def _optional_finite(value: Any) -> float | None:
     return parsed if isfinite(parsed) else None
 
 
+def _premium_basis_pct(premium: Any) -> float | None:
+    if not isinstance(premium, dict):
+        return None
+    mark = _optional_finite(premium.get("markPrice"))
+    index = _optional_finite(premium.get("indexPrice"))
+    if mark is None or index is None or index <= 0:
+        return None
+    return (mark / index - 1.0) * 100.0
+
+
 class LaunchWarningRadar(RadarComponent):
+    _AI_CACHE_VERSION = "launch-ai-interpreter-v1"
+
     def _launch_fusion_active(self) -> bool:
         return bool(
             self.settings.launch_fusion_enable
             and self.settings.launch_lifecycle_v2_enable
             and self.settings.launch_message_package_v2_enable
+        )
+
+    def _launch_directional_active(self) -> bool:
+        return bool(
+            getattr(self.settings, "launch_directional_enable", False)
+            and self._launch_fusion_active()
         )
 
     def _load_launch_announcement_evidence(
@@ -213,9 +249,28 @@ class LaunchWarningRadar(RadarComponent):
                     else "disabled"
                 ),
             },
+            "directional": {
+                "requested": bool(
+                    getattr(self.settings, "launch_directional_enable", False)
+                ),
+                "active": self._launch_directional_active(),
+                "status": (
+                    "active"
+                    if self._launch_directional_active()
+                    else "misconfigured"
+                    if getattr(self.settings, "launch_directional_enable", False)
+                    else "disabled"
+                ),
+                "selected": 0,
+                "ready": 0,
+                "degraded": 0,
+                "publish_skipped": 0,
+                "network_calls": 0,
+            },
         }
         lifecycle_active_symbols: list[str] = []
         lifecycle_active_modes: dict[str, bool] = {}
+        lifecycle_active_profiles: dict[str, dict[str, Any]] = {}
         if self.settings.launch_lifecycle_v2_enable:
             try:
                 lifecycle_store = LaunchLifecycleStore(
@@ -237,6 +292,7 @@ class LaunchWarningRadar(RadarComponent):
                         or fusion_active
                     ),
                     fusion_enabled=fusion_active,
+                    directional_enabled=self._launch_directional_active(),
                     same_stage_min_interval_sec=(
                         self.settings.launch_same_stage_min_interval_sec
                     ),
@@ -246,6 +302,7 @@ class LaunchWarningRadar(RadarComponent):
                 )
                 lifecycle_active_symbols = lifecycle_store.list_active_symbols()
                 lifecycle_active_modes = lifecycle_store.active_symbol_modes()
+                lifecycle_active_profiles = lifecycle_store.active_symbol_profiles()
                 lifecycle_diagnostics["status"] = (
                     "package_active"
                     if self.settings.launch_message_package_v2_enable
@@ -310,6 +367,12 @@ class LaunchWarningRadar(RadarComponent):
                 str(symbol),
                 fusion_active,
             )
+            active_profile = lifecycle_active_profiles.get(str(symbol), {})
+            candidate_directional_active = bool(
+                active_profile.get("directional")
+                if active_profile
+                else self._launch_directional_active()
+            )
             if candidate_fusion_active:
                 if symbol_metadata and str(symbol).upper() not in symbol_metadata:
                     continue
@@ -341,8 +404,13 @@ class LaunchWarningRadar(RadarComponent):
                 "funding_available": isinstance(premium, dict) and bool(premium),
                 "funding_pct": to_float(premium.get("lastFundingRate")) * 100 if isinstance(premium, dict) else 0.0,
                 "funding_next_time_ms": int(to_float(premium.get("nextFundingTime"))) if isinstance(premium, dict) else 0,
+                "basis_pct": _premium_basis_pct(premium),
                 "launch_lifecycle_active": symbol in lifecycle_active_symbol_set,
                 "launch_fusion_cycle": candidate_fusion_active,
+                "launch_directional_cycle": candidate_directional_active,
+                "launch_directional_locked_side": str(
+                    active_profile.get("direction") or ""
+                ),
                 "mcap": mcap,
                 "mcap_source": "Binance" if mcap > 0 else "",
                 "market_cap_tier": market_cap_tier(mcap),
@@ -553,18 +621,63 @@ class LaunchWarningRadar(RadarComponent):
                     continue
                 self._apply_launch_fusion_score(analyzed)
 
+        any_directional_cycle = any(
+            bool(item.get("launch_directional_cycle"))
+            for item in analyzed_items
+        )
+        if (
+            self._launch_directional_active() or any_directional_cycle
+        ) and analyzed_items:
+            directional_diagnostics = self._enrich_directional_candidates(
+                source,
+                analyzed_items,
+                window_end_ms=launch_window.end_ms,
+            )
+            lifecycle_diagnostics["directional"].update(
+                directional_diagnostics
+            )
+
         if lifecycle_store is not None and analyzed_items:
             try:
+                lifecycle_items = [
+                    analyzed
+                    for analyzed in analyzed_items
+                    if self._directional_candidate_publishable(analyzed)
+                ]
                 lifecycle_results = lifecycle_store.record_observations([
                     (
                         analyzed,
                         self._launch_stage(int(analyzed["score"])),
                         now_ts,
                     )
-                    for analyzed in analyzed_items
+                    for analyzed in lifecycle_items
                 ])
-                for analyzed, lifecycle in zip(analyzed_items, lifecycle_results):
+                for analyzed, lifecycle in zip(lifecycle_items, lifecycle_results):
                     analyzed["launch_lifecycle"] = lifecycle
+                    if (
+                        bool(analyzed.get("launch_directional_cycle"))
+                        and str(lifecycle.get("cycle_status") or "") == "failed"
+                    ):
+                        analyzed["directional_cycle_invalidated"] = {
+                            "reason": str(
+                                lifecycle.get("end_reason")
+                                or "directional_cycle_failed"
+                            ),
+                            "previous_direction": str(
+                                analyzed.get("launch_directional_locked_side") or ""
+                            ),
+                            "next_direction": str(
+                                (
+                                    analyzed.get("directional_readiness")
+                                    if isinstance(
+                                        analyzed.get("directional_readiness"), dict
+                                    )
+                                    else {}
+                                ).get("direction")
+                                or ""
+                            ),
+                            "semantics": "close_old_cycle_before_new_direction",
+                        }
                     lifecycle_status = str(lifecycle.get("status") or "")
                     if lifecycle_status in {"opened", "active", "failed"}:
                         lifecycle_diagnostics["recorded"] += 1
@@ -590,6 +703,17 @@ class LaunchWarningRadar(RadarComponent):
             observed_symbols.add(str(analyzed["symbol"]))
             next_stage = self._launch_stage(analyzed["score"])
             watchlist.append(self._launch_watch_record(analyzed, now_ts))
+            if not self._directional_candidate_publishable(analyzed):
+                lifecycle_diagnostics["directional"]["publish_skipped"] = (
+                    int(
+                        lifecycle_diagnostics["directional"].get(
+                            "publish_skipped",
+                            0,
+                        )
+                    )
+                    + 1
+                )
+                continue
             previous = state.get(analyzed["symbol"], {})
             lifecycle = analyzed.get("launch_lifecycle")
             publication = (
@@ -727,6 +851,7 @@ class LaunchWarningRadar(RadarComponent):
                     chart_diagnostics["ready"] += 1
                 else:
                     chart_diagnostics["unavailable"] += 1
+        ai_diagnostics = self._interpret_directional_alerts(alerts)
         messages = [self._format_launch_alert(alert) for alert in alerts]
         return {
             "template_id": "TG_LAUNCH_ALERT",
@@ -737,6 +862,7 @@ class LaunchWarningRadar(RadarComponent):
                 "binance_confirmation": confirmation_summary(analyzed_items),
                 "lifecycle_v2": lifecycle_diagnostics,
                 "chart_v2": chart_diagnostics,
+                "ai_interpreter": ai_diagnostics,
             },
         }
 
@@ -911,6 +1037,7 @@ class LaunchWarningRadar(RadarComponent):
                 or self._launch_fusion_active()
             ),
             fusion_enabled=self._launch_fusion_active(),
+            directional_enabled=self._launch_directional_active(),
             same_stage_min_interval_sec=(
                 self.settings.launch_same_stage_min_interval_sec
             ),
@@ -1465,6 +1592,7 @@ class LaunchWarningRadar(RadarComponent):
         symbol: str,
         *,
         window_end_ms: int,
+        periods: int = 1,
     ) -> dict[str, Any]:
         unavailable = {
             "status": "binance_unavailable",
@@ -1493,18 +1621,464 @@ class LaunchWarningRadar(RadarComponent):
         ):
             return {**unavailable, "status": "budget_exhausted"}
         try:
+            requested_periods = max(1, min(4, int(periods)))
             rows = source.spot_klines(
                 symbol,
                 interval="15m",
-                limit=1,
-                start_time=max(0, int(window_end_ms) - INTERVAL_MS),
+                limit=requested_periods,
+                start_time=max(
+                    0,
+                    int(window_end_ms) - requested_periods * INTERVAL_MS,
+                ),
                 end_time=int(window_end_ms) - 1,
             )
         except Exception:
             return unavailable
         if not isinstance(rows, list) or not rows:
             return unavailable
+        if requested_periods > 1:
+            return active_flow_window(
+                rows,
+                interval_ms=INTERVAL_MS,
+                window_end_ms=int(window_end_ms),
+                periods=requested_periods,
+            )
         return closed_kline_active_flow(rows[-1], window_end_ms=window_end_ms)
+
+    def _enrich_directional_candidates(
+        self,
+        source: BinanceDataSource,
+        items: list[dict[str, Any]],
+        *,
+        window_end_ms: int,
+    ) -> dict[str, Any]:
+        budget = getattr(source, "budget", None)
+        used = getattr(budget, "used", {}) if budget is not None else {}
+        limits = getattr(budget, "limits", {}) if budget is not None else {}
+        remaining_kline_calls = max(
+            0,
+            int(limits.get("klines", 0)) - int(used.get("klines", 0)),
+        )
+        configured_limit = max(
+            0,
+            int(getattr(self.settings, "launch_directional_max_candidates", 6)),
+        )
+        directional_items = [
+            item
+            for item in items
+            if bool(item.get("launch_directional_cycle", True))
+        ]
+        selected_symbols = set(select_directional_candidates(
+            directional_items,
+            limit=min(configured_limit, remaining_kline_calls // 5),
+        ))
+        diagnostics = {
+            "selected": len(selected_symbols),
+            "ready": 0,
+            "degraded": 0,
+            "network_calls": 0,
+            "selection_semantics": "bounded_after_existing_15m_discovery",
+        }
+        for item in items:
+            symbol = str(item.get("symbol") or "").upper()
+            if not bool(item.get("launch_directional_cycle", True)):
+                item["directional_analysis_status"] = "legacy_cycle"
+                continue
+            if symbol not in selected_symbols:
+                item["directional_analysis_status"] = "budget_deferred"
+                continue
+            before_futures = int(used.get("klines", 0))
+            before_spot = int(used.get("spot_klines", 0))
+            try:
+                base_rows = {
+                    timeframe: source.klines(
+                        symbol,
+                        interval=timeframe,
+                        limit=limit,
+                        end_time=int(window_end_ms) - 1,
+                    )
+                    for timeframe, limit in {
+                        "5m": 40,
+                        "15m": 40,
+                        "1h": 70,
+                        "4h": 100,
+                        "1d": 230,
+                    }.items()
+                }
+                expanded = expand_timeframe_klines(
+                    base_rows,
+                    window_end_ms=int(window_end_ms),
+                )
+                multi = analyze_multi_timeframe(
+                    expanded,
+                    window_end_ms=int(window_end_ms),
+                    rolling_24h={
+                        "price_change_pct": item.get("price_24h"),
+                        "oi_change_pct": item.get("oi_24h"),
+                        "semantics": "background_only",
+                    },
+                )
+                futures_flow = active_flow_window(
+                    base_rows.get("15m", []),
+                    interval_ms=TIMEFRAME_INTERVAL_MS["15m"],
+                    window_end_ms=int(window_end_ms),
+                    periods=4,
+                )
+                spot_flow = self._closed_spot_active_flow(
+                    source,
+                    symbol,
+                    window_end_ms=int(window_end_ms),
+                    periods=4,
+                )
+                trade_plans = build_trade_plans(multi)
+                directional_facts = build_directional_facts(
+                    item,
+                    multi,
+                    spot_flow=spot_flow,
+                    futures_flow=futures_flow,
+                    trade_plans=trade_plans,
+                )
+                signal = evaluate_directional_readiness(directional_facts)
+            except Exception:
+                item.update({
+                    "directional_analysis_status": "local_error",
+                    "directional_analysis_error": "launch_directional_analysis_failed",
+                })
+                diagnostics["degraded"] += 1
+                continue
+            finally:
+                diagnostics["network_calls"] += max(
+                    0,
+                    int(used.get("klines", 0)) - before_futures,
+                ) + max(
+                    0,
+                    int(used.get("spot_klines", 0)) - before_spot,
+                )
+
+            direction = str(signal.get("direction") or "none")
+            plan_key = (
+                "bearish"
+                if direction.startswith("bearish")
+                else "bullish"
+                if direction.startswith("bullish")
+                else ""
+            )
+            plan = trade_plans.get(plan_key, {}) if plan_key else {}
+            item.update({
+                "directional_analysis_status": (
+                    "ready"
+                    if signal.get("data_complete") or signal.get("observation_ready")
+                    else "degraded"
+                ),
+                "multi_timeframe": multi,
+                "directional_trade_plans": trade_plans,
+                "directional_facts": directional_facts,
+                "directional_readiness": signal,
+                "launch_directional_readiness": signal,
+                "spot_cvd_1h": spot_flow,
+                "futures_cvd_1h": futures_flow,
+            })
+            if plan.get("status") == "available":
+                item.update({
+                    "entry_zone": plan.get("entry_zone"),
+                    "invalidation_price": plan.get("invalidation_price"),
+                    "targets": list(plan.get("targets") or []),
+                    "risk_reward_ratio": plan.get("risk_reward_ratio"),
+                })
+            if signal.get("data_complete") or signal.get("observation_ready"):
+                old_score = int(to_float(item.get("score")))
+                locked_side = str(
+                    item.get("launch_directional_locked_side") or ""
+                )
+                current_side = (
+                    "bearish"
+                    if direction
+                    in {
+                        "bearish",
+                        "bearish_candidate",
+                        "bearish_divergence_watch",
+                    }
+                    else "bullish"
+                    if direction
+                    in {
+                        "bullish",
+                        "bullish_candidate",
+                        "bullish_divergence_watch",
+                    }
+                    else ""
+                )
+                active_side = current_side or locked_side
+                evidence = signal.get("evidence")
+                evidence = evidence if isinstance(evidence, dict) else {}
+                if active_side:
+                    new_score = int(
+                        to_float(signal.get(f"{active_side}_readiness"))
+                    )
+                    item.update({
+                        "discovery_score": old_score,
+                        "score": new_score,
+                        "raw_rule_score": new_score,
+                        "score_semantics": "rule_readiness_not_probability",
+                        "trigger_path": (
+                            f"directional:{direction}"
+                            if current_side
+                            else f"directional:{locked_side}"
+                        ),
+                        "supporting_evidence": list(evidence.get(active_side) or []),
+                        "counter_evidence": list(
+                            evidence.get(
+                                "bullish" if active_side == "bearish" else "bearish"
+                            )
+                            or []
+                        ),
+                        "limitations": list(signal.get("limitations") or []),
+                        "evidence_strength": (
+                            "strong"
+                            if new_score >= 80
+                            else "medium"
+                            if new_score >= 60
+                            else "low"
+                        ),
+                    })
+                diagnostics["ready"] += 1
+            else:
+                diagnostics["degraded"] += 1
+        return diagnostics
+
+    @staticmethod
+    def _directional_candidate_publishable(item: Mapping[str, Any]) -> bool:
+        """Prevent a directional candidate from falling back to legacy cards."""
+
+        if not bool(item.get("launch_directional_cycle")):
+            return True
+        return bool(
+            str(item.get("directional_analysis_status") or "") == "ready"
+            and str(item.get("trigger_path") or "").startswith(
+                ("directional:bullish", "directional:bearish")
+            )
+        )
+
+    @staticmethod
+    def _directional_observation_id(alert: dict[str, Any]) -> int:
+        lifecycle = alert.get("launch_lifecycle")
+        if not isinstance(lifecycle, dict):
+            return 0
+        return int(to_float(lifecycle.get("observation_id")))
+
+    def _directional_ai_cache_key(
+        self,
+        alert: dict[str, Any],
+        *,
+        model: str,
+    ) -> str:
+        observation_id = self._directional_observation_id(alert)
+        if observation_id <= 0:
+            return ""
+        material = f"{observation_id}:{model}:{self._AI_CACHE_VERSION}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _apply_directional_ai_result(
+        alert: dict[str, Any],
+        result: dict[str, Any],
+    ) -> bool:
+        alert["ai_interpreter"] = dict(result)
+        alert["ai_interpretation_status"] = str(
+            result.get("status") or "invalid_ai_output"
+        )
+        if result.get("status") != "available":
+            alert.pop("ai_interpretation", None)
+            return False
+        parts = [str(result.get("summary") or "").strip()]
+        risks = [
+            str(value).strip()
+            for value in (result.get("risk_notes") or [])[:2]
+            if str(value).strip()
+        ]
+        waits = [
+            str(value).strip()
+            for value in (result.get("wait_for") or [])[:2]
+            if str(value).strip()
+        ]
+        if risks:
+            parts.append(f"风险：{'；'.join(risks)}")
+        if waits:
+            parts.append(f"等待：{'；'.join(waits)}")
+        alert["ai_interpretation"] = " ".join(
+            part for part in parts if part
+        )[:600]
+        return True
+
+    def _persist_directional_ai_cache(
+        self,
+        alert: dict[str, Any],
+        *,
+        cache_key: str,
+    ) -> None:
+        if not cache_key:
+            return
+        if not hasattr(self.store, "load") or not hasattr(self.store, "save"):
+            return
+        state = self.store.load(self.settings.launch_state_path, {})
+        if not isinstance(state, dict):
+            return
+        symbol = str(alert.get("symbol") or "")
+        record = state.get(symbol)
+        result = alert.get("ai_interpreter")
+        if not isinstance(record, dict) or not isinstance(result, dict):
+            return
+        record["launch_ai_interpreter_cache"] = {
+            "key": cache_key,
+            "result": dict(result),
+            "interpretation": str(alert.get("ai_interpretation") or "")[:600],
+        }
+        compacted, _ = compact_launch_state_records(state)
+        self.store.save(self.settings.launch_state_path, compacted)
+
+    def _interpret_directional_alerts(
+        self,
+        alerts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        enabled = bool(
+            self._launch_directional_active()
+            and getattr(self.settings, "launch_ai_interpreter_enable", False)
+        )
+        diagnostics = {
+            "enabled": enabled,
+            "status": "disabled" if not enabled else "not_configured",
+            "eligible": 0,
+            "calls": 0,
+            "cached": 0,
+            "deferred": 0,
+            "max_calls_per_cycle": 1,
+            "available": 0,
+            "degraded": 0,
+            "semantics": "ai_interprets_rules_and_never_changes_them",
+        }
+        if not enabled:
+            return diagnostics
+        eligible_alerts = [
+            alert
+            for alert in alerts
+            if isinstance(alert.get("directional_readiness"), dict)
+            and bool(alert["directional_readiness"].get("data_complete"))
+            and not alert.get("directional_cycle_invalidated")
+        ]
+        diagnostics["eligible"] = len(eligible_alerts)
+        if not eligible_alerts:
+            diagnostics["status"] = "no_eligible_alert"
+            return diagnostics
+        api_key = str(getattr(self.settings, "ai_api_key", "") or "").strip()
+        base_url = str(getattr(self.settings, "ai_base_url", "") or "").strip()
+        model = str(getattr(self.settings, "ai_model", "") or "").strip()
+        if not (api_key and base_url and model):
+            return diagnostics
+        uncached_alerts: list[dict[str, Any]] = []
+        for alert in eligible_alerts:
+            cache_key = self._directional_ai_cache_key(alert, model=model)
+            cached = alert.get("launch_ai_interpreter_cache")
+            if (
+                cache_key
+                and isinstance(cached, dict)
+                and cached.get("key") == cache_key
+                and isinstance(cached.get("result"), dict)
+            ):
+                if self._apply_directional_ai_result(
+                    alert,
+                    dict(cached["result"]),
+                ):
+                    diagnostics["available"] += 1
+                else:
+                    diagnostics["degraded"] += 1
+                diagnostics["cached"] += 1
+                continue
+            uncached_alerts.append(alert)
+        diagnostics["deferred"] = max(0, len(uncached_alerts) - 1)
+        if not uncached_alerts:
+            diagnostics["status"] = "cached"
+            return diagnostics
+        first_alert = uncached_alerts[0]
+        session = requests.Session()
+        try:
+            interpreter = OpenAiCompatibleLaunchInterpreter(
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                session=session,
+                timeout_sec=float(getattr(self.settings, "ai_timeout_sec", 60)),
+                max_retries=0,
+            )
+        except (TypeError, ValueError):
+            session.close()
+            diagnostics["status"] = "invalid_configuration"
+            return diagnostics
+        diagnostics["status"] = "ok"
+        try:
+            for alert in [first_alert]:
+                signal = alert.get("directional_readiness")
+                if not isinstance(signal, dict) or not signal.get("data_complete"):
+                    continue
+                plan = {
+                    "status": "available",
+                    "entry_zone_low": (
+                        (alert.get("entry_zone") or {}).get("low")
+                        if isinstance(alert.get("entry_zone"), dict)
+                        else None
+                    ),
+                    "entry_zone_high": (
+                        (alert.get("entry_zone") or {}).get("high")
+                        if isinstance(alert.get("entry_zone"), dict)
+                        else None
+                    ),
+                    "invalidation_price": alert.get("invalidation_price"),
+                    "targets": list(alert.get("targets") or []),
+                    "risk_reward_ratio": alert.get("risk_reward_ratio"),
+                }
+                result = interpreter.interpret(
+                    {
+                        **alert,
+                        "rule_result": signal,
+                        "plan": plan,
+                    },
+                    enabled=True,
+                )
+                diagnostics["calls"] += 1
+                alert["ai_interpreter"] = result
+                alert["ai_interpretation_status"] = str(
+                    result.get("status") or "invalid_ai_output"
+                )
+                if result.get("status") == "available":
+                    interpretation_parts = [str(result.get("summary") or "").strip()]
+                    risks = [
+                        str(value).strip()
+                        for value in (result.get("risk_notes") or [])[:2]
+                        if str(value).strip()
+                    ]
+                    waits = [
+                        str(value).strip()
+                        for value in (result.get("wait_for") or [])[:2]
+                        if str(value).strip()
+                    ]
+                    if risks:
+                        interpretation_parts.append(f"风险：{'；'.join(risks)}")
+                    if waits:
+                        interpretation_parts.append(f"等待：{'；'.join(waits)}")
+                    alert["ai_interpretation"] = " ".join(
+                        part for part in interpretation_parts if part
+                    )[:600]
+                    diagnostics["available"] += 1
+                else:
+                    diagnostics["degraded"] += 1
+                self._persist_directional_ai_cache(
+                    alert,
+                    cache_key=self._directional_ai_cache_key(
+                        alert,
+                        model=model,
+                    ),
+                )
+        finally:
+            session.close()
+        return diagnostics
 
     def _apply_launch_fusion_score(self, item: dict[str, Any]) -> None:
         fusion = score_launch_signal({
@@ -1869,6 +2443,14 @@ class LaunchWarningRadar(RadarComponent):
         return ["", tg_quote("辅助证据"), *lines] if lines else []
 
     def _format_launch_package(self, item: dict[str, Any]) -> str:
+        if (
+            (
+                self._launch_directional_active()
+                or bool(item.get("launch_directional_cycle"))
+            )
+            and isinstance(item.get("directional_readiness"), dict)
+        ):
+            return format_launch_directional_signal(item)
         mode_marker = item.get("launch_fusion_cycle")
         fusion_active = (
             bool(mode_marker)
@@ -2256,6 +2838,7 @@ class LaunchWarningRadar(RadarComponent):
             "asset_category_source": str(item.get("asset_category_source") or ""),
             "funding_available": bool(item.get("funding_available")),
             "funding_pct": round(to_float(item.get("funding_pct")), 6),
+            "basis_pct": optional_round(item.get("basis_pct"), 6),
             "funding_interval_hours": int(to_float(item.get("funding_interval_hours"))),
             "funding_interval_transition": str(item.get("funding_interval_transition") or ""),
             "reasons": item.get("reasons", []),
@@ -2308,6 +2891,41 @@ class LaunchWarningRadar(RadarComponent):
             "spot_active_status": str(item.get("spot_active_status") or ""),
             "futures_active_status": str(
                 item.get("futures_active_status") or ""
+            ),
+            "directional_analysis_status": str(
+                item.get("directional_analysis_status") or "disabled"
+            ),
+            "directional_status": str(
+                (
+                    item.get("directional_readiness")
+                    if isinstance(item.get("directional_readiness"), dict)
+                    else {}
+                ).get("status")
+                or ""
+            ),
+            "directional_direction": str(
+                (
+                    item.get("directional_readiness")
+                    if isinstance(item.get("directional_readiness"), dict)
+                    else {}
+                ).get("direction")
+                or ""
+            ),
+            "bullish_readiness": optional_round(
+                (
+                    item.get("directional_readiness")
+                    if isinstance(item.get("directional_readiness"), dict)
+                    else {}
+                ).get("bullish_readiness"),
+                2,
+            ),
+            "bearish_readiness": optional_round(
+                (
+                    item.get("directional_readiness")
+                    if isinstance(item.get("directional_readiness"), dict)
+                    else {}
+                ).get("bearish_readiness"),
+                2,
             ),
         }
 

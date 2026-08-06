@@ -211,6 +211,13 @@ API、Token 与密钥
 1. 查看脱敏配置状态
 2. 设置 Telegram Bot Token
 3. 设置 Telegram Chat ID
+4. 设置 AI API Key
+5. 设置 AI 接口地址
+6. 设置 AI 模型
+7. 设置 AI 超时秒数
+8. 设置多周期方向雷达开关
+9. 设置 AI 白话解读开关
+10. 设置每轮深度候选数量
 0. 返回
 EOF
     IFS= read -r choice
@@ -218,6 +225,13 @@ EOF
       1) run_config status; pause_menu ;;
       2) config_set TG_BOT_TOKEN; pause_menu ;;
       3) config_set TG_CHAT_ID; pause_menu ;;
+      4) config_set AI_API_KEY; pause_menu ;;
+      5) config_set AI_BASE_URL; pause_menu ;;
+      6) config_set AI_MODEL; pause_menu ;;
+      7) config_set AI_TIMEOUT_SEC; pause_menu ;;
+      8) config_set LAUNCH_DIRECTIONAL_ENABLE; pause_menu ;;
+      9) config_set LAUNCH_AI_INTERPRETER_ENABLE; pause_menu ;;
+      10) config_set LAUNCH_DIRECTIONAL_MAX_CANDIDATES; pause_menu ;;
       0) return ;;
     esac
   done

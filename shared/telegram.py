@@ -257,6 +257,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 LAUNCH_FUSION_TOPIC_INTRO_VERSION = "2026-08-05-launch-fusion-v1"
+LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-05-launch-directional-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
 }
@@ -266,6 +267,15 @@ def topic_intro_version(
     template_id: str,
     settings: Settings | None = None,
 ) -> str:
+    if (
+        template_id == "TG_LAUNCH_ALERT"
+        and settings is not None
+        and getattr(settings, "launch_directional_enable", False)
+        and settings.launch_fusion_enable
+        and settings.launch_lifecycle_v2_enable
+        and settings.launch_message_package_v2_enable
+    ):
+        return LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION
     if (
         template_id == "TG_LAUNCH_ALERT"
         and settings is not None
@@ -340,6 +350,17 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "如果摘要因长度被拆成多条消息，会保留最新一轮的全部分段。",
         ])
     if template_id == "TG_LAUNCH_ALERT":
+        if (
+            getattr(settings, "launch_directional_enable", False)
+            and settings.launch_fusion_enable
+            and settings.launch_lifecycle_v2_enable
+            and settings.launch_message_package_v2_enable
+        ):
+            from radars.launch_warning.directional_formatter import (
+                launch_directional_topic_intro,
+            )
+
+            return launch_directional_topic_intro()
         if (
             settings.launch_fusion_enable
             and settings.launch_lifecycle_v2_enable

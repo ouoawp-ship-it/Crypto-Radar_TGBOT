@@ -56,6 +56,16 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_bounded_int(
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = env_int(name, default)
+    return value if minimum <= value <= maximum else default
+
+
 def env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value.strip() == "":
@@ -261,6 +271,13 @@ class Settings:
     launch_outcome_follow_through_pct: float = 3.0
     launch_outcome_min_samples: int = 20
     launch_fusion_enable: bool = False
+    launch_directional_enable: bool = False
+    launch_directional_max_candidates: int = 6
+    launch_ai_interpreter_enable: bool = False
+    ai_api_key: str = ""
+    ai_base_url: str = ""
+    ai_model: str = ""
+    ai_timeout_sec: int = 60
     launch_same_stage_min_interval_sec: int = 30 * 60
     launch_package_score_delta: int = 15
     launch_package_price_delta_pct: float = 3.0
@@ -488,6 +505,29 @@ class Settings:
             launch_outcome_follow_through_pct=env_float("LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT", 3.0),
             launch_outcome_min_samples=env_int("LAUNCH_OUTCOME_MIN_SAMPLES", 20),
             launch_fusion_enable=env_bool("LAUNCH_FUSION_ENABLE", False),
+            launch_directional_enable=env_bool(
+                "LAUNCH_DIRECTIONAL_ENABLE",
+                False,
+            ),
+            launch_directional_max_candidates=env_bounded_int(
+                "LAUNCH_DIRECTIONAL_MAX_CANDIDATES",
+                6,
+                1,
+                6,
+            ),
+            launch_ai_interpreter_enable=env_bool(
+                "LAUNCH_AI_INTERPRETER_ENABLE",
+                False,
+            ),
+            ai_api_key=os.getenv("AI_API_KEY", "").strip(),
+            ai_base_url=os.getenv("AI_BASE_URL", "").strip().rstrip("/"),
+            ai_model=os.getenv("AI_MODEL", "").strip(),
+            ai_timeout_sec=env_bounded_int(
+                "AI_TIMEOUT_SEC",
+                60,
+                5,
+                180,
+            ),
             launch_same_stage_min_interval_sec=env_int(
                 "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
                 30 * 60,
@@ -663,6 +703,19 @@ class Settings:
                     and self.launch_lifecycle_v2_enable
                     and self.launch_message_package_v2_enable
                 ),
+                "directional_enable": self.launch_directional_enable,
+                "directional_max_candidates": self.launch_directional_max_candidates,
+                "directional_active": bool(
+                    self.launch_directional_enable
+                    and self.launch_fusion_enable
+                    and self.launch_lifecycle_v2_enable
+                    and self.launch_message_package_v2_enable
+                ),
+                "ai_interpreter_enable": self.launch_ai_interpreter_enable,
+                "ai_interpreter_configured": bool(
+                    self.ai_api_key and self.ai_base_url and self.ai_model
+                ),
+                "ai_timeout_sec": self.ai_timeout_sec,
                 "same_stage_min_interval_sec": self.launch_same_stage_min_interval_sec,
                 "package_score_delta": self.launch_package_score_delta,
                 "package_price_delta_pct": self.launch_package_price_delta_pct,

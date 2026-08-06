@@ -9,6 +9,7 @@ import re
 import stat
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -25,21 +26,34 @@ ALLOWLIST = {
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
     "LAUNCH_FUSION_ENABLE": "oi",
+    "LAUNCH_DIRECTIONAL_ENABLE": "oi",
+    "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "oi",
+    "LAUNCH_AI_INTERPRETER_ENABLE": "oi",
+    "AI_API_KEY": "oi",
+    "AI_BASE_URL": "oi",
+    "AI_MODEL": "oi",
+    "AI_TIMEOUT_SEC": "oi",
     "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "oi",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
+    "AI_API_KEY",
 }
 SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
     "MAIN_BOT_REAL_SEND_ACK",
+    "AI_BASE_URL",
 }
 BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
     "LAUNCH_FUSION_ENABLE",
+    "LAUNCH_DIRECTIONAL_ENABLE",
+    "LAUNCH_AI_INTERPRETER_ENABLE",
 }
 INTEGER_RANGES: dict[str, tuple[int, int]] = {
     "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": (900, 7200),
+    "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": (1, 6),
+    "AI_TIMEOUT_SEC": (5, 180),
 }
 DECIMAL_RANGES: dict[str, tuple[float, float]] = {}
 BACKUP_LIMIT = 30
@@ -157,6 +171,10 @@ class ConfigManager:
             "MAIN_BOT_DELIVERY_MODE": "dry_run",
             "MAIN_BOT_REAL_SEND": "false",
             "LAUNCH_FUSION_ENABLE": "false",
+            "LAUNCH_DIRECTIONAL_ENABLE": "false",
+            "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "6",
+            "LAUNCH_AI_INTERPRETER_ENABLE": "false",
+            "AI_TIMEOUT_SEC": "60",
             "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "1800",
         }
         return {
@@ -382,6 +400,29 @@ class ConfigManager:
             raise ConfigManagerError(
                 "MAIN_BOT_REAL_SEND_ACK must be empty or the fixed phrase"
             )
+        if key == "AI_BASE_URL" and value:
+            self._validate_ai_base_url(value)
+
+    @staticmethod
+    def _validate_ai_base_url(value: str) -> None:
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as exc:
+            raise ConfigManagerError("AI_BASE_URL must be a valid HTTPS URL") from exc
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or port is not None and not 1 <= port <= 65535
+        ):
+            raise ConfigManagerError(
+                "AI_BASE_URL must use HTTPS without credentials, query, or fragment"
+            )
+
     def _read_env(self, filename: str) -> dict[str, str]:
         path = self.base_dir / filename
         if not path.exists():
@@ -468,6 +509,41 @@ class ConfigManager:
                 "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC must be in "
                 f"[{minimum}, {maximum}]"
             )
+        directional_enable = values.get(
+            "LAUNCH_DIRECTIONAL_ENABLE",
+            "false",
+        ).strip().lower()
+        if directional_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "LAUNCH_DIRECTIONAL_ENABLE must be true or false"
+            )
+        ai_interpreter_enable = values.get(
+            "LAUNCH_AI_INTERPRETER_ENABLE",
+            "false",
+        ).strip().lower()
+        if ai_interpreter_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "LAUNCH_AI_INTERPRETER_ENABLE must be true or false"
+            )
+        bounded_integers: dict[str, int] = {}
+        for key, default in (
+            ("LAUNCH_DIRECTIONAL_MAX_CANDIDATES", "6"),
+            ("AI_TIMEOUT_SEC", "60"),
+        ):
+            raw_value = values.get(key, default).strip()
+            try:
+                amount = int(raw_value)
+            except ValueError as exc:
+                raise ConfigManagerError(f"{key} must be an integer") from exc
+            minimum, maximum = INTEGER_RANGES[key]
+            if not minimum <= amount <= maximum:
+                raise ConfigManagerError(
+                    f"{key} must be in [{minimum}, {maximum}]"
+                )
+            bounded_integers[key] = amount
+        ai_base_url = values.get("AI_BASE_URL", "").strip()
+        if ai_base_url:
+            self._validate_ai_base_url(ai_base_url)
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
@@ -481,6 +557,21 @@ class ConfigManager:
                 "configured" if main_bot_ack else "not_configured"
             ),
             "launch_fusion_enable": launch_fusion == "true",
+            "launch_directional_enable": directional_enable == "true",
+            "launch_directional_max_candidates": bounded_integers[
+                "LAUNCH_DIRECTIONAL_MAX_CANDIDATES"
+            ],
+            "launch_ai_interpreter_enable": ai_interpreter_enable == "true",
+            "ai_api_key": (
+                "configured" if values.get("AI_API_KEY", "").strip()
+                else "not_configured"
+            ),
+            "ai_base_url": "configured" if ai_base_url else "not_configured",
+            "ai_model": (
+                "configured" if values.get("AI_MODEL", "").strip()
+                else "not_configured"
+            ),
+            "ai_timeout_sec": bounded_integers["AI_TIMEOUT_SEC"],
             "launch_same_stage_min_interval_sec": same_stage_interval,
         }
 
