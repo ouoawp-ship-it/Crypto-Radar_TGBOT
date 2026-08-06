@@ -195,6 +195,39 @@ def price_action_confirmed(window_end_ts: int) -> dict[str, object]:
 
 
 class LaunchOutcomeTests(unittest.TestCase):
+    def test_bearish_directional_cycle_normalizes_favorable_return(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                outcome_enabled=True,
+                invalid_windows_required=2,
+            )
+            result: dict[str, object] = {}
+            for window, score, price in (
+                (900, 70, 100.0),
+                (1800, 70, 90.0),
+                (2700, 0, 92.0),
+                (3600, 0, 90.0),
+            ):
+                result = record(
+                    store,
+                    symbol="BEARUSDT",
+                    window_end_ts=window,
+                    score=score,
+                    price=price,
+                    oi=1_000,
+                    stage="primed" if score else "idle",
+                    trigger_path="directional:bearish",
+                )
+
+            evaluation = result["outcome_evaluation"]
+            assert isinstance(evaluation, dict)
+            outcome = evaluation["outcome"]
+            assert isinstance(outcome, dict)
+            self.assertAlmostEqual(outcome["max_favorable_return_pct"], 10.0)
+            self.assertAlmostEqual(outcome["max_adverse_return_pct"], 0.0)
+            self.assertAlmostEqual(outcome["end_return_pct"], 10.0)
+
     def test_completed_cycle_is_one_exact_idempotent_outcome(self) -> None:
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "signals.db"

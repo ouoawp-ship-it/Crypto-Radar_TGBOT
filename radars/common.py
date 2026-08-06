@@ -52,6 +52,11 @@ _LAUNCH_STATE_TRANSIENT_KEYS = frozenset({
     "launch_lifecycle",
     "launch_package",
     "price_action_analysis",
+    "multi_timeframe",
+    "directional_trade_plans",
+    "directional_facts",
+    "spot_cvd_1h",
+    "futures_cvd_1h",
 })
 _LAUNCH_END_REASON_TEXT = {
     "two_windows_below_watch_score": (
@@ -60,6 +65,9 @@ _LAUNCH_END_REASON_TEXT = {
     "two_closes_below_breakout": (
         "连续两根15分钟K线收盘跌破本轮有效突破位，本轮启动跟踪结束"
     ),
+    "two_closes_below_invalidation": "连续两个完整窗口收盘跌破看涨失效位，本轮观察结束",
+    "two_closes_above_invalidation": "连续两个完整窗口收盘升破看跌失效位，本轮观察结束",
+    "direction_changed": "完整数据转为相反方向，先结束旧方向周期",
 }
 
 

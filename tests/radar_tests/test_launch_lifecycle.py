@@ -36,6 +36,8 @@ def snapshot(
     trigger_path: str = "momentum",
     price_oi_quadrant: str = "price_up_oi_up",
     counter_evidence: list[str] | None = None,
+    directional_readiness: dict[str, object] | None = None,
+    invalidation_price: float | None = None,
 ) -> dict[str, object]:
     return {
         "symbol": symbol,
@@ -66,6 +68,20 @@ def snapshot(
         "trigger_path": trigger_path,
         "price_oi_quadrant": price_oi_quadrant,
         "counter_evidence": list(counter_evidence or []),
+        "directional_readiness": directional_readiness,
+        "invalidation_price": invalidation_price,
+    }
+
+
+def directional_signal(direction: str, *, confirmed: bool = True) -> dict[str, object]:
+    return {
+        "status": "confirmed" if confirmed else "candidate",
+        "direction": direction,
+        "data_complete": True,
+        "hard_gates": {
+            "bullish_passed": confirmed and direction.startswith("bullish"),
+            "bearish_passed": confirmed and direction.startswith("bearish"),
+        },
     }
 
 
@@ -219,6 +235,178 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertEqual(confirmed["confirmation_status"], "confirmed_1h")
             self.assertEqual(accelerated["current_stage"], "launched")
             self.assertEqual(accelerated["peak_stage"], "launched")
+
+    def test_directional_bearish_cycle_confirms_and_invalidates_above_level(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                directional_enabled=True,
+                invalid_windows_required=2,
+            )
+            opened = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=80,
+                    price=100,
+                    oi=1_000,
+                    trigger_path="directional:bearish",
+                    directional_readiness=directional_signal("bearish"),
+                    invalidation_price=105,
+                ),
+                stage="breakout",
+                observed_at=910,
+            )
+            first_breach = store.record_observation(
+                snapshot(
+                    window_end_ts=1800,
+                    score=80,
+                    price=106,
+                    oi=1_020,
+                    trigger_path="directional:bearish",
+                    directional_readiness=directional_signal("bearish"),
+                    invalidation_price=105,
+                ),
+                stage="breakout",
+                observed_at=1810,
+            )
+            failed = store.record_observation(
+                snapshot(
+                    window_end_ts=2700,
+                    score=80,
+                    price=107,
+                    oi=1_030,
+                    trigger_path="directional:bearish",
+                    directional_readiness=directional_signal("bearish"),
+                    invalidation_price=105,
+                ),
+                stage="breakout",
+                observed_at=2710,
+            )
+
+            self.assertEqual(opened["current_stage"], "breakout")
+            self.assertEqual(opened["confirmation_status"], "directional_confirmed")
+            self.assertEqual(first_breach["cycle_status"], "active")
+            self.assertEqual(failed["cycle_status"], "failed")
+            self.assertEqual(failed["end_reason"], "two_closes_above_invalidation")
+
+    def test_directional_bullish_cycle_invalidates_below_level(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                directional_enabled=True,
+                invalid_windows_required=2,
+            )
+            for window, price in ((900, 100), (1800, 94), (2700, 93)):
+                result = store.record_observation(
+                    snapshot(
+                        window_end_ts=window,
+                        score=80,
+                        price=price,
+                        oi=1_000,
+                        trigger_path="directional:bullish",
+                        directional_readiness=directional_signal("bullish"),
+                        invalidation_price=95,
+                    ),
+                    stage="breakout",
+                    observed_at=window + 10,
+                )
+
+            self.assertEqual(result["cycle_status"], "failed")
+            self.assertEqual(result["end_reason"], "two_closes_below_invalidation")
+
+    def test_direction_change_closes_old_cycle_before_new_side_opens(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                directional_enabled=True,
+            )
+            first = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=80,
+                    price=100,
+                    oi=1_000,
+                    trigger_path="directional:bullish",
+                    directional_readiness=directional_signal("bullish"),
+                    invalidation_price=95,
+                ),
+                stage="breakout",
+                observed_at=910,
+            )
+            flipped = store.record_observation(
+                snapshot(
+                    window_end_ts=1800,
+                    score=80,
+                    price=99,
+                    oi=1_050,
+                    trigger_path="directional:bearish",
+                    directional_readiness=directional_signal("bearish"),
+                    invalidation_price=104,
+                ),
+                stage="breakout",
+                observed_at=1810,
+            )
+            reopened = store.record_observation(
+                snapshot(
+                    window_end_ts=2700,
+                    score=80,
+                    price=98,
+                    oi=1_080,
+                    trigger_path="directional:bearish",
+                    directional_readiness=directional_signal("bearish"),
+                    invalidation_price=104,
+                ),
+                stage="breakout",
+                observed_at=2710,
+            )
+
+            self.assertEqual(first["cycle_no"], 1)
+            self.assertEqual(flipped["cycle_status"], "failed")
+            self.assertEqual(flipped["end_reason"], "direction_changed")
+            self.assertEqual(reopened["status"], "opened")
+            self.assertEqual(reopened["cycle_no"], 2)
+            profile = store.active_symbol_profiles()["TESTUSDT"]
+            self.assertTrue(profile["directional"])
+            self.assertEqual(profile["direction"], "bearish")
+
+    def test_divergence_risk_watch_can_open_below_direction_confirmation_score(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                fusion_enabled=True,
+                directional_enabled=True,
+                package_enabled=True,
+                watch_score=45,
+                start_score=60,
+            )
+
+            opened = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=59,
+                    price=100,
+                    oi=1_000,
+                    trigger_path="directional:bearish_divergence_watch",
+                    directional_readiness=directional_signal(
+                        "bearish_divergence_watch",
+                        confirmed=False,
+                    ),
+                ),
+                stage="watching",
+                observed_at=910,
+            )
+
+            self.assertEqual(opened["status"], "opened")
+            self.assertEqual(opened["current_stage"], "watching")
+            self.assertEqual(opened["confirmation_status"], "not_applicable")
+            self.assertTrue(opened["publication"]["publish_required"])
+            self.assertIn(
+                "cycle_opened",
+                opened["publication"]["checkpoint_reasons"],
+            )
 
     def test_legacy_cycle_keeps_legacy_semantics_after_fusion_is_enabled(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -888,6 +1076,51 @@ class LaunchLifecycleStoreTests(unittest.TestCase):
             self.assertEqual(
                 divergence["publication"]["checkpoint_reasons"],
                 ["funds_divergence"],
+            )
+
+    def test_direction_change_is_an_immediate_package_trigger(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = LaunchLifecycleStore(
+                Path(tmp) / "signals.db",
+                package_enabled=True,
+                fusion_enabled=True,
+                same_stage_min_interval_sec=1800,
+            )
+            opened = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=75,
+                    price=100,
+                    oi=1_000,
+                    trigger_path="directional:bullish",
+                ),
+                stage="breakout",
+                observed_at=910,
+            )
+            store.commit_package(
+                cycle_id=int(opened["cycle_id"]),
+                observation_id=int(opened["observation_id"]),
+                message_ids=[101],
+                checkpoint_reasons=["cycle_opened"],
+                published_at=920,
+            )
+
+            changed = store.record_observation(
+                snapshot(
+                    window_end_ts=1800,
+                    score=75,
+                    price=100,
+                    oi=1_000,
+                    trigger_path="directional:bearish",
+                ),
+                stage="breakout",
+                observed_at=1810,
+            )
+
+            self.assertTrue(changed["publication"]["publish_required"])
+            self.assertIn(
+                "direction_changed",
+                changed["publication"]["checkpoint_reasons"],
             )
 
     def test_existing_p21_tables_receive_additive_package_columns(self) -> None:
