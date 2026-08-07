@@ -11,9 +11,16 @@ from shared.telegram import PushResult, plain_fallback
 
 
 class FakeEngine:
-    def __init__(self, events: list[str], *, commit_status: str = "committed") -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        commit_status: str = "committed",
+        commit_exception: Exception | None = None,
+    ) -> None:
         self.events = events
         self.commit_status = commit_status
+        self.commit_exception = commit_exception
         self.pending_cleanups: list[dict[str, object]] = []
 
     def pending_launch_package_cleanups(self, *, limit: int) -> list[dict[str, object]]:
@@ -27,6 +34,8 @@ class FakeEngine:
     ) -> dict[str, object]:
         self.events.append("commit")
         self.events.append(f"commit_ids:{message_ids}")
+        if self.commit_exception is not None:
+            raise self.commit_exception
         return {
             "status": self.commit_status,
             "cycle_id": 7,
@@ -384,6 +393,36 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertIn("delete:[201]", events)
             self.assertNotIn("delete:[101]", events)
             self.assertEqual(pushes[0]["status"], "package_commit_failed")
+
+    def test_commit_exception_rolls_back_new_message_and_keeps_old_package(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+            )
+            pushes, _cleanup = push_launch_messages(
+                settings,
+                FakeEngine(
+                    events,
+                    commit_exception=OSError("private database path"),
+                ),  # type: ignore[arg-type]
+                FakeGateway(
+                    events,
+                    PushResult("sent", "telegram_api", True, [201]),
+                ),  # type: ignore[arg-type]
+                launch_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertIn("commit", events)
+            self.assertIn("reason:launch_package_commit_exception_rollback", events)
+            self.assertIn("delete:[201]", events)
+            self.assertNotIn("delete:[101]", events)
+            self.assertEqual(pushes[0]["status"], "package_commit_failed")
+            self.assertEqual(pushes[0]["package_commit"], "local_error")
+            self.assertEqual(pushes[0]["package_commit_error"], "OSError")
+            self.assertNotIn("private database path", str(pushes[0]))
 
     def test_chart_and_text_are_committed_as_one_photo_caption_message(self) -> None:
         with TemporaryDirectory() as tmp:

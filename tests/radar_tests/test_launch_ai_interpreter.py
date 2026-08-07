@@ -347,6 +347,25 @@ class LaunchAiInterpreterTests(unittest.TestCase):
                 self.assertEqual(result["summary"], "")
                 self.assertNotIn(text, encoded)
 
+    def test_policy_rejects_urls_and_credential_markers_from_ai_output(self) -> None:
+        forbidden = (
+            "详情见 https://private.invalid/path",
+            "Authorization Bearer must-not-leak",
+            "请检查 api_key 配置",
+            "RPC_URL 当前不可用",
+        )
+        for text in forbidden:
+            with self.subTest(text=text):
+                result = client(
+                    FakeSession(
+                        successful_response(available_output(summary=text))
+                    )
+                ).interpret(source(), enabled=True)
+                encoded = json.dumps(result, ensure_ascii=False)
+                self.assertEqual(result["status"], "ai_policy_violation")
+                self.assertEqual(result["summary"], "")
+                self.assertNotIn(text, encoded)
+
     def test_policy_rejects_numbers_prices_and_percentages(self) -> None:
         cases = (
             {"summary": "规则准备度达到八十分"},

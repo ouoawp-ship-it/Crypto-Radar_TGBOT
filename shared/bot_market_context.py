@@ -278,7 +278,7 @@ def _context_lines(context: dict[str, Any]) -> list[str]:
     if cvd is not None:
         parts.append(f"5m合约主动净占比 {cvd:+.2f}%")
     if surge.get("triggered"):
-        parts.append(f"Surge {_direction_label(surge.get('direction'))} {float(surge.get('score') or 0):.1f}")
+        parts.append(f"启动加速 {_direction_label(surge.get('direction'))} {float(surge.get('score') or 0):.1f}")
     elif ambush.get("triggered"):
         parts.append(f"埋伏 {_direction_label(ambush.get('direction'))} {float(ambush.get('score') or 0):.1f}")
     active = int(_number(resonance.get("active_count")) or 0)

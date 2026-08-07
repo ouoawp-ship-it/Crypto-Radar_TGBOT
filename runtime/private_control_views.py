@@ -38,12 +38,13 @@ _STATUS_LABELS = {
     "blocked": "已阻止",
     "failed": "发送失败",
     "partial": "部分成功",
+    "uncertain": "投递结果待确认",
     "no_candidates": "本轮无候选",
     "no_new_alerts": "本轮无新提醒",
     "not_requested": "本轮未请求推送",
 }
 _UNPUBLISHED_STATUSES = frozenset(
-    {"dry_run", "skipped", "blocked", "failed", "partial"}
+    {"dry_run", "skipped", "blocked", "failed", "partial", "uncertain"}
 )
 _REASON_LABELS = {
     "telegram_api": "Telegram 已接收消息",
@@ -58,6 +59,7 @@ _REASON_LABELS = {
     "telegram_not_configured": "Telegram 机器人或目标群配置不完整",
     "telegram_topic_not_configured": "对应的 Telegram 话题尚未配置",
     "delivery_quarantine": "上一轮投递尚未安全收口",
+    "telegram_delivery_uncertain": "Telegram 是否已收到本次消息暂时无法确认；为避免重复发送，系统已停止重试",
     "invalid_telegram_config": "Telegram 配置无效或不完整",
     "invalid_png": "图片格式无效",
     "photo_too_large": "图片大小超过 Telegram 限制",

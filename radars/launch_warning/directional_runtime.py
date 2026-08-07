@@ -20,23 +20,38 @@ def select_directional_candidates(
     *,
     limit: int,
 ) -> list[str]:
-    """Choose a bounded deep-analysis set without changing 15m discovery."""
+    """Choose a bounded deep-analysis set without changing 15m discovery.
 
-    ranked: list[tuple[int, float, str]] = []
+    The caller supplies active lifecycle items from oldest ``last_window_end``
+    to newest.  Preserve that order so an intense active symbol cannot occupy a
+    deep-analysis slot forever while an older, quieter cycle is never checked.
+    New candidates remain ordered by their current evidence strength.
+    """
+
+    active_symbols: list[str] = []
+    new_candidates: list[tuple[float, str]] = []
+    seen: set[str] = set()
     for item in items:
         symbol = str(item.get("symbol") or "").strip().upper()
-        if not symbol:
+        if not symbol or symbol in seen:
             continue
-        active = 1 if item.get("launch_lifecycle_active") else 0
+        seen.add(symbol)
+        if item.get("launch_lifecycle_active"):
+            active_symbols.append(symbol)
+            continue
         score = _finite(item.get("score")) or 0.0
         price = abs(_finite(item.get("price_1h")) or 0.0)
         oi = abs(_finite(item.get("oi_1h")) or 0.0)
         spot = abs(_finite(item.get("spot_active_ratio")) or 0.0) * 100.0
         futures = abs(_finite(item.get("futures_active_ratio")) or 0.0) * 100.0
         priority = max(score, price * 8.0 + oi * 5.0 + spot + futures)
-        ranked.append((active, priority, symbol))
-    ranked.sort(key=lambda row: (-row[0], -row[1], row[2]))
-    return [symbol for _active, _priority, symbol in ranked[: max(0, int(limit))]]
+        new_candidates.append((priority, symbol))
+    new_candidates.sort(key=lambda row: (-row[0], row[1]))
+    ordered = [
+        *active_symbols,
+        *(symbol for _priority, symbol in new_candidates),
+    ]
+    return ordered[: max(0, int(limit))]
 
 
 def active_flow_window(
