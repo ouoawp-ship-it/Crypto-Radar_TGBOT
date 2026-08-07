@@ -19,6 +19,8 @@ VALUATION_BARS = 72
 ATR_PERIOD = 200
 ATR_MIN_PERIODS = 30
 HIGH_VOLATILITY_MULTIPLIER = 2.0
+SESSION_GAP_MIN_HOURS = 8
+SESSION_GAP_MAX_HOURS = 96
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,11 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _normalize(candles: Sequence[Mapping[str, Any]]) -> list[_Candle]:
+def _normalize(
+    candles: Sequence[Mapping[str, Any]],
+    *,
+    allow_session_gaps: bool,
+) -> list[_Candle]:
     normalized: list[_Candle] = []
     for item in candles:
         if not isinstance(item, Mapping):
@@ -77,7 +83,20 @@ def _normalize(candles: Sequence[Mapping[str, Any]]) -> list[_Candle]:
     for previous, current in zip(normalized, normalized[1:]):
         if current.close_ts == previous.close_ts:
             raise ValueError("smc_overlay_candle_duplicate")
-        if current.close_ts - previous.close_ts != HOUR_SEC:
+        delta = current.close_ts - previous.close_ts
+        if delta % HOUR_SEC:
+            raise ValueError("smc_overlay_candle_cadence_invalid")
+        delta_hours = delta // HOUR_SEC
+        if delta_hours == 1:
+            continue
+        # Only explicitly identified session-based products may bridge a
+        # plausible overnight/weekend closure. Small holes are treated as
+        # missing data, and very long gaps cannot masquerade as current SMC.
+        if (
+            not allow_session_gaps
+            or delta_hours < SESSION_GAP_MIN_HOURS
+            or delta_hours > SESSION_GAP_MAX_HOURS
+        ):
             raise ValueError("smc_overlay_candle_gap")
     return normalized
 
@@ -271,10 +290,19 @@ def _valuation(candles: Sequence[_Candle]) -> dict[str, Any]:
     }
 
 
-def build_smc_overlay(candles: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Build deterministic SMC drawing facts from closed, continuous 1h candles."""
+def build_smc_overlay(
+    candles: Sequence[Mapping[str, Any]],
+    *,
+    allow_session_gaps: bool = False,
+) -> dict[str, Any]:
+    """Build deterministic SMC drawing facts from closed hourly candles."""
 
-    normalized = _normalize(candles)
+    normalized = _normalize(candles, allow_session_gaps=allow_session_gaps)
+    gap_hours = [
+        (current.close_ts - previous.close_ts) // HOUR_SEC - 1
+        for previous, current in zip(normalized, normalized[1:])
+        if current.close_ts - previous.close_ts > HOUR_SEC
+    ]
     pivots = _confirmed_pivots(normalized)
     events = _structure_events(normalized, pivots)
     valuation = _valuation(normalized)
@@ -291,6 +319,11 @@ def build_smc_overlay(candles: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         ),
         "timeframe": "1h",
         "closed_candles": len(normalized),
+        "continuity": {
+            "session_gap_count": len(gap_hours),
+            "missing_session_hours": sum(gap_hours),
+            "largest_gap_hours": max(gap_hours, default=0),
+        },
         "pivot_lengths": {"internal": INTERNAL_SIZE, "swing": SWING_SIZE},
         "pivots": [{
             "kind": pivot.kind,

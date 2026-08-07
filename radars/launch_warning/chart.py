@@ -15,6 +15,16 @@ from .chart_font_zh import (
 from .smc_overlay import build_smc_overlay
 
 
+_SESSION_BASED_ASSET_CATEGORIES = frozenset({
+    "EQUITY",
+    "ETF",
+    "ETF INDEX",
+    "LEVERAGED ETF",
+    "STOCK TOKEN",
+    "TOKENIZED STOCK",
+})
+
+
 CST = timezone(timedelta(hours=8))
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -388,7 +398,28 @@ def render_launch_chart_png(
 
     # Only the most recent 288 closed hourly bars are drawn. Extra prehistory
     # may still be supplied so delayed pivots are confirmed without repainting.
-    overlay = build_smc_overlay(normalized)
+    try:
+        overlay = build_smc_overlay(
+            normalized,
+            allow_session_gaps=(
+                str(asset_category or "").strip().upper()
+                in _SESSION_BASED_ASSET_CATEGORIES
+            ),
+        )
+    except ValueError as exc:
+        if str(exc) not in {
+            "smc_overlay_candle_cadence_invalid",
+            "smc_overlay_candle_gap",
+        }:
+            raise
+        # A data hole must not suppress the whole launch update. Keep the raw
+        # closed-candle chart, but fail closed on derived SMC layers.
+        overlay = {
+            "status": "degraded_discontinuous_input",
+            "structure_events": [],
+            "active_order_blocks": [],
+            "valuation": {"data_status": "insufficient_history", "zones": {}},
+        }
     visible = normalized[-288:]
     first_close_ts = visible[0]["close_ts"]
     last_close_ts = visible[-1]["close_ts"]
@@ -398,6 +429,9 @@ def render_launch_chart_png(
     grid = (202, 207, 214)
     plot_left = 10
     plot_right = width - 72
+    context_width = max(112, round((plot_right - plot_left) * 0.16))
+    candle_right = plot_right - context_width
+    context_left = candle_right + 8
     price_top = 50
     price_bottom = height - 35
 
@@ -472,7 +506,7 @@ def render_launch_chart_png(
         return price_top + round(ratio * (price_bottom - price_top))
 
     candle_count = len(visible)
-    slot = (plot_right - plot_left) / max(1, candle_count)
+    slot = (candle_right - plot_left) / max(1, candle_count)
     body_half = max(1, min(4, int(slot * 0.34)))
     x_positions = [
         plot_left + round((index + 0.5) * slot)
@@ -491,27 +525,11 @@ def render_launch_chart_png(
             ),
         )
 
-    # Active order blocks extend right, matching the approved clean reference.
-    block_specs = sorted(
-        blocks,
-        key=lambda item: int(_number(item.get("origin_ts"))),
-    )[-5:]
-    for block in block_specs:
-        origin_ts = int(_number(block.get("origin_ts")))
-        x0 = x_positions[nearest_index(max(first_close_ts, origin_ts))]
-        y0 = price_y(_number(block.get("zone_high")))
-        y1 = price_y(_number(block.get("zone_low")))
-        bearish = str(block.get("direction") or "") == "bearish"
-        fill = (249, 209, 219) if bearish else (199, 235, 226)
-        border = (237, 130, 157) if bearish else (80, 183, 160)
-        canvas.rect(x0, min(y0, y1), plot_right, max(y0, y1), fill)
-        canvas.line(x0, min(y0, y1), plot_right, min(y0, y1), border)
-
-    # The current 72-hour range is a context band, not another signal.
+    # The latest 72-hour valuation is shown in a reserved non-time context
+    # panel to the right of the last candle. It never paints historical bars.
     zones = valuation.get("zones")
     if isinstance(zones, Mapping) and valuation.get("data_status") == "complete":
-        zone_start_ts = int(_number(valuation.get("start_ts")))
-        zone_x0 = x_positions[nearest_index(max(first_close_ts, zone_start_ts))]
+        zone_x0 = context_left
         for key, fill, text_color, label in (
             ("high", (255, 244, 184), (221, 177, 14), "高估"),
             ("mid", (229, 232, 236), (119, 126, 136), "中间价"),
@@ -533,6 +551,23 @@ def render_launch_chart_png(
             )
             label_y = (y0 + y1 - GLYPH_HEIGHT) // 2
             canvas.ui_text(label_x, label_y, label, text_color)
+
+    # Active order blocks extend to the current candle edge, but never enter
+    # the independent valuation panel on the right.
+    block_specs = sorted(
+        blocks,
+        key=lambda item: int(_number(item.get("origin_ts"))),
+    )[-5:]
+    for block in block_specs:
+        origin_ts = int(_number(block.get("origin_ts")))
+        x0 = x_positions[nearest_index(max(first_close_ts, origin_ts))]
+        y0 = price_y(_number(block.get("zone_high")))
+        y1 = price_y(_number(block.get("zone_low")))
+        bearish = str(block.get("direction") or "") == "bearish"
+        fill = (249, 209, 219) if bearish else (199, 235, 226)
+        border = (237, 130, 157) if bearish else (80, 183, 160)
+        canvas.rect(x0, min(y0, y1), candle_right, max(y0, y1), fill)
+        canvas.line(x0, min(y0, y1), candle_right, min(y0, y1), border)
 
     for index, candle in enumerate(visible):
         x = x_positions[index]
@@ -614,7 +649,7 @@ def render_launch_chart_png(
     last_time = datetime.fromtimestamp(last_close_ts, CST)
     canvas.text(plot_left, height - 18, first_time.strftime("%m-%d %H:%M"), muted, scale=1)
     canvas.text(
-        plot_right - 66,
+        candle_right - 66,
         height - 18,
         last_time.strftime("%m-%d %H:%M"),
         muted,
