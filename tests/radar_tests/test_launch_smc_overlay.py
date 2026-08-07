@@ -229,10 +229,36 @@ class LaunchSmcOverlayTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(rows, original)
 
-    def test_rejects_gapped_hourly_input(self) -> None:
-        rows = [candle(0), candle(2)]
+    def test_accepts_closed_market_session_gaps_and_reports_them(self) -> None:
+        rows = [candle(0), candle(8), candle(32)]
 
+        result = build_smc_overlay(rows, allow_session_gaps=True)
+
+        self.assertEqual(result["continuity"], {
+            "session_gap_count": 2,
+            "missing_session_hours": 30,
+            "largest_gap_hours": 23,
+        })
+
+    def test_default_policy_rejects_gap_and_session_policy_stays_bounded(self) -> None:
         with self.assertRaisesRegex(ValueError, "candle_gap"):
+            build_smc_overlay([candle(0), candle(8)])
+        with self.assertRaisesRegex(ValueError, "candle_gap"):
+            build_smc_overlay(
+                [candle(0), candle(2)],
+                allow_session_gaps=True,
+            )
+        with self.assertRaisesRegex(ValueError, "candle_gap"):
+            build_smc_overlay(
+                [candle(0), candle(168)],
+                allow_session_gaps=True,
+            )
+
+    def test_rejects_non_hourly_timestamp_cadence(self) -> None:
+        rows = [candle(0), candle(1)]
+        rows[1]["close_ts"] = int(rows[1]["close_ts"]) + 60
+
+        with self.assertRaisesRegex(ValueError, "cadence_invalid"):
             build_smc_overlay(rows)
 
 

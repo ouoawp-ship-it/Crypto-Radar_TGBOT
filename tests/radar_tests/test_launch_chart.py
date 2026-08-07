@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 import unittest
 import zlib
+from unittest.mock import patch
 
 from radars.launch_warning.chart import (
     CHART_CATEGORY_LABELS,
@@ -74,6 +75,17 @@ def decode_rgb_rows(png: bytes) -> tuple[int, int, bytes]:
 def rgb_pixel(raw: bytes, width: int, x: int, y: int) -> bytes:
     offset = y * (1 + width * 3) + 1 + x * 3
     return raw[offset:offset + 3]
+
+
+def color_x_positions(raw: bytes, width: int, height: int, color: bytes) -> list[int]:
+    positions: list[int] = []
+    for y in range(height):
+        row_start = y * (1 + width * 3) + 1
+        for x in range(width):
+            offset = row_start + x * 3
+            if raw[offset:offset + 3] == color:
+                positions.append(x)
+    return positions
 
 
 class LaunchChartTests(unittest.TestCase):
@@ -153,6 +165,112 @@ class LaunchChartTests(unittest.TestCase):
         )
 
         self.assertEqual(decode_rgb_rows(result)[:2], (1600, 850))
+
+    def test_current_valuation_context_is_not_backpainted_over_history(self) -> None:
+        result = render_launch_chart_png(
+            symbol="TESTUSDT",
+            candles=sample_candles(328),
+            checkpoints=[],
+            cycle_no=1,
+            width=1600,
+            height=850,
+        )
+        width, height, raw = decode_rgb_rows(result)
+        high_band_x = color_x_positions(
+            raw,
+            width,
+            height,
+            bytes((255, 244, 184)),
+        )
+
+        self.assertTrue(high_band_x)
+        plot_right = 1600 - 72
+        context_width = max(112, round((plot_right - 10) * 0.16))
+        candle_right = plot_right - context_width
+        self.assertGreater(min(high_band_x), candle_right)
+
+    def test_crypto_data_gap_keeps_raw_chart_and_drops_derived_overlay(self) -> None:
+        rows = sample_candles()
+        rows.pop(40)
+
+        result = render_launch_chart_png(
+            symbol="TESTUSDT",
+            candles=rows,
+            checkpoints=[],
+            cycle_no=1,
+            asset_category="CRYPTO ALT",
+        )
+
+        width, height, raw = decode_rgb_rows(result)
+        self.assertEqual((width, height), (960, 540))
+        self.assertNotIn(bytes((255, 244, 184)), raw)
+
+    def test_session_based_asset_keeps_bounded_closed_market_gap_overlay(self) -> None:
+        rows = sample_candles()
+        del rows[40:48]
+
+        result = render_launch_chart_png(
+            symbol="TESTUSDT",
+            candles=rows,
+            checkpoints=[],
+            cycle_no=1,
+            asset_category="TOKENIZED STOCK",
+        )
+
+        self.assertIn(bytes((255, 244, 184)), decode_rgb_rows(result)[2])
+
+    def test_leveraged_etf_uses_session_gap_policy(self) -> None:
+        rows = sample_candles()
+        del rows[40:48]
+
+        result = render_launch_chart_png(
+            symbol="SOXLUSDT",
+            candles=rows,
+            checkpoints=[],
+            cycle_no=1,
+            asset_category="LEVERAGED ETF",
+        )
+
+        self.assertIn(bytes((255, 244, 184)), decode_rgb_rows(result)[2])
+
+    def test_order_block_remains_visible_above_overlapping_valuation_band(self) -> None:
+        rows = sample_candles(328)
+        overlay = {
+            "structure_events": [],
+            "active_order_blocks": [{
+                "direction": "bullish",
+                "zone_low": 100.2,
+                "zone_high": 100.8,
+                "origin_ts": rows[100]["close_ts"],
+            }],
+            "valuation": {
+                "data_status": "complete",
+                "range_low": 100.0,
+                "range_high": 110.0,
+                "zones": {
+                    "low": {"low": 100.0, "high": 100.8},
+                    "mid": {"low": 104.75, "high": 105.25},
+                    "high": {"low": 109.0, "high": 110.0},
+                },
+            },
+        }
+        with patch(
+            "radars.launch_warning.chart.build_smc_overlay",
+            return_value=overlay,
+        ):
+            result = render_launch_chart_png(
+                symbol="TESTUSDT",
+                candles=rows,
+                checkpoints=[],
+                cycle_no=1,
+                width=1600,
+                height=850,
+            )
+
+        raw = decode_rgb_rows(result)[2]
+        self.assertIn(bytes((199, 235, 226)), raw)
+        self.assertIn(bytes((255, 244, 184)), raw)
+        self.assertIn(bytes((221, 177, 14)), raw)
 
     def test_renders_confirmed_structure_and_active_order_block_layers(self) -> None:
         result = render_launch_chart_png(
