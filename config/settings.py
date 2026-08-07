@@ -118,6 +118,12 @@ def data_path(data_dir: Path, env_name: str, default_name: str) -> Path:
     return data_dir / path
 
 
+def project_path(env_name: str, default_name: str) -> Path:
+    value = os.getenv(env_name, default_name)
+    path = Path(value)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
 @dataclass(frozen=True)
 class Settings:
     base_dir: Path = BASE_DIR
@@ -203,6 +209,36 @@ class Settings:
     binance_spot_base_url: str = "https://api.binance.com"
     binance_futures_ws_url: str = "wss://fstream.binance.com/market/ws"
     excluded_base_assets: tuple[str, ...] = ("XAU", "XAG")
+
+    altcoin_contract_anomaly_enable: bool = False
+    altcoin_contract_anomaly_cmc_api_key: str = ""
+    altcoin_contract_anomaly_cmc_connect_timeout_sec: int = 5
+    altcoin_contract_anomaly_cmc_read_timeout_sec: int = 15
+    altcoin_contract_anomaly_cmc_retry: int = 2
+    altcoin_contract_anomaly_cmc_backoff_base_sec: float = 0.5
+    altcoin_contract_anomaly_cmc_min_request_interval_sec: float = 2.0
+    altcoin_contract_anomaly_cmc_batch_size: int = 100
+    altcoin_contract_anomaly_cmc_cache_ttl_sec: int = 300
+    altcoin_contract_anomaly_cmc_max_data_age_sec: int = 900
+    altcoin_contract_anomaly_cmc_cache_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_cmc_cache.json"
+    )
+    altcoin_contract_anomaly_candidate_snapshot_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_candidate_pool.json"
+    )
+    altcoin_contract_anomaly_mapping_overrides_path: Path = (
+        BASE_DIR / "config" / "altcoin_contract_anomaly_overrides.json"
+    )
+    altcoin_contract_anomaly_market_cap_max_usd: float = 30_000_000
+    altcoin_contract_anomaly_short_squeeze_min_oi_market_cap_ratio: float = 0.20
+    altcoin_contract_anomaly_short_squeeze_max_funding_rate: float = 0.0
+    altcoin_contract_anomaly_high_leverage_min_oi_market_cap_ratio: float = 0.50
+    altcoin_contract_anomaly_candidate_refresh_sec: int = 300
+    altcoin_contract_anomaly_binance_oi_max_age_sec: int = 600
+    altcoin_contract_anomaly_funding_max_age_sec: int = 600
+    altcoin_contract_anomaly_telegram_preview_page_chars: int = 3800
+    altcoin_contract_anomaly_oi_workers: int = 8
+    altcoin_contract_anomaly_oi_request_budget: int = 600
 
     radar_scan_limit: int = 120
     radar_summary_enable: bool = True
@@ -476,6 +512,124 @@ class Settings:
                 "BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/market/ws"
             ).rstrip("/"),
             excluded_base_assets=env_csv("EXCLUDED_BASE_ASSETS", ("XAU", "XAG")),
+            altcoin_contract_anomaly_enable=env_bool(
+                "ALTCOIN_CONTRACT_ANOMALY_ENABLE",
+                False,
+            ),
+            altcoin_contract_anomaly_cmc_api_key=os.getenv(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_API_KEY",
+                "",
+            ).strip(),
+            altcoin_contract_anomaly_cmc_connect_timeout_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_CONNECT_TIMEOUT_SEC",
+                5,
+                1,
+                120,
+            ),
+            altcoin_contract_anomaly_cmc_read_timeout_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_READ_TIMEOUT_SEC",
+                15,
+                1,
+                180,
+            ),
+            altcoin_contract_anomaly_cmc_retry=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_RETRY",
+                2,
+                0,
+                5,
+            ),
+            altcoin_contract_anomaly_cmc_backoff_base_sec=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_BACKOFF_BASE_SEC",
+                0.5,
+            ),
+            altcoin_contract_anomaly_cmc_min_request_interval_sec=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_MIN_REQUEST_INTERVAL_SEC",
+                2.0,
+            ),
+            altcoin_contract_anomaly_cmc_batch_size=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_BATCH_SIZE",
+                100,
+                1,
+                100,
+            ),
+            altcoin_contract_anomaly_cmc_cache_ttl_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_CACHE_TTL_SEC",
+                300,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_cmc_max_data_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_MAX_DATA_AGE_SEC",
+                900,
+                1,
+                604_800,
+            ),
+            altcoin_contract_anomaly_cmc_cache_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_CMC_CACHE_FILE",
+                "altcoin_contract_anomaly_cmc_cache.json",
+            ),
+            altcoin_contract_anomaly_candidate_snapshot_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_CANDIDATE_SNAPSHOT_FILE",
+                "altcoin_contract_anomaly_candidate_pool.json",
+            ),
+            altcoin_contract_anomaly_mapping_overrides_path=project_path(
+                "ALTCOIN_CONTRACT_ANOMALY_MAPPING_OVERRIDES_FILE",
+                "config/altcoin_contract_anomaly_overrides.json",
+            ),
+            altcoin_contract_anomaly_market_cap_max_usd=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_MARKET_CAP_MAX_USD",
+                30_000_000,
+            ),
+            altcoin_contract_anomaly_short_squeeze_min_oi_market_cap_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_SHORT_SQUEEZE_MIN_OI_MARKET_CAP_RATIO",
+                0.20,
+            ),
+            altcoin_contract_anomaly_short_squeeze_max_funding_rate=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_SHORT_SQUEEZE_MAX_FUNDING_RATE",
+                0.0,
+            ),
+            altcoin_contract_anomaly_high_leverage_min_oi_market_cap_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_HIGH_LEVERAGE_MIN_OI_MARKET_CAP_RATIO",
+                0.50,
+            ),
+            altcoin_contract_anomaly_candidate_refresh_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_CANDIDATE_REFRESH_SEC",
+                300,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_binance_oi_max_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_BINANCE_OI_MAX_AGE_SEC",
+                600,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_funding_max_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_AGE_SEC",
+                600,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_telegram_preview_page_chars=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_TELEGRAM_PREVIEW_PAGE_CHARS",
+                3800,
+                512,
+                4096,
+            ),
+            altcoin_contract_anomaly_oi_workers=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_OI_WORKERS",
+                8,
+                1,
+                16,
+            ),
+            altcoin_contract_anomaly_oi_request_budget=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_OI_REQUEST_BUDGET",
+                600,
+                1,
+                5_000,
+            ),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_summary_enable=reloadable_bool("RADAR_SUMMARY_ENABLE", True),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
@@ -720,6 +874,66 @@ class Settings:
                 "retry": self.http_retry,
                 "cache_enable": self.http_cache_enable,
                 "cache_ttl_sec": self.http_cache_ttl_sec,
+            },
+            "altcoin_contract_anomaly": {
+                "enabled": self.altcoin_contract_anomaly_enable,
+                "cmc_api_key_configured": bool(
+                    self.altcoin_contract_anomaly_cmc_api_key
+                ),
+                "cmc_connect_timeout_sec": (
+                    self.altcoin_contract_anomaly_cmc_connect_timeout_sec
+                ),
+                "cmc_read_timeout_sec": (
+                    self.altcoin_contract_anomaly_cmc_read_timeout_sec
+                ),
+                "cmc_retry": self.altcoin_contract_anomaly_cmc_retry,
+                "cmc_backoff_base_sec": (
+                    self.altcoin_contract_anomaly_cmc_backoff_base_sec
+                ),
+                "cmc_min_request_interval_sec": (
+                    self.altcoin_contract_anomaly_cmc_min_request_interval_sec
+                ),
+                "cmc_batch_size": self.altcoin_contract_anomaly_cmc_batch_size,
+                "cmc_cache_ttl_sec": (
+                    self.altcoin_contract_anomaly_cmc_cache_ttl_sec
+                ),
+                "cmc_max_data_age_sec": (
+                    self.altcoin_contract_anomaly_cmc_max_data_age_sec
+                ),
+                "cmc_cache_file": str(
+                    self.altcoin_contract_anomaly_cmc_cache_path
+                ),
+                "candidate_snapshot_file": str(
+                    self.altcoin_contract_anomaly_candidate_snapshot_path
+                ),
+                "mapping_overrides_file": str(
+                    self.altcoin_contract_anomaly_mapping_overrides_path
+                ),
+                "candidate_refresh_sec": (
+                    self.altcoin_contract_anomaly_candidate_refresh_sec
+                ),
+                "market_cap_max_usd": (
+                    self.altcoin_contract_anomaly_market_cap_max_usd
+                ),
+                "short_squeeze_min_oi_market_cap_ratio": (
+                    self.altcoin_contract_anomaly_short_squeeze_min_oi_market_cap_ratio
+                ),
+                "short_squeeze_max_funding_rate": (
+                    self.altcoin_contract_anomaly_short_squeeze_max_funding_rate
+                ),
+                "high_leverage_min_oi_market_cap_ratio": (
+                    self.altcoin_contract_anomaly_high_leverage_min_oi_market_cap_ratio
+                ),
+                "binance_oi_max_age_sec": (
+                    self.altcoin_contract_anomaly_binance_oi_max_age_sec
+                ),
+                "funding_max_age_sec": (
+                    self.altcoin_contract_anomaly_funding_max_age_sec
+                ),
+                "oi_workers": self.altcoin_contract_anomaly_oi_workers,
+                "oi_request_budget": (
+                    self.altcoin_contract_anomaly_oi_request_budget
+                ),
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),

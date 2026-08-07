@@ -4,7 +4,7 @@ import re
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from math import ceil
+from math import ceil, isfinite
 from threading import RLock
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode
@@ -420,11 +420,15 @@ class HttpClient:
 
 
 class BinanceDataSource:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, oi_hist_budget: int | None = None):
         self.settings = settings
         self.quality = DataQuality()
         self.budget = RequestBudget({
-            "open_interest_hist": settings.oi_hist_budget,
+            "open_interest_hist": (
+                settings.oi_hist_budget
+                if oi_hist_budget is None
+                else max(0, int(oi_hist_budget))
+            ),
             "klines": settings.kline_budget,
             "spot_klines": settings.kline_budget,
             "funding_history": settings.funding_history_budget,
@@ -609,25 +613,83 @@ class BinanceDataSource:
         return data if isinstance(data, list) else []
 
     def market_caps(self) -> dict[str, float]:
-        url = "https://www.binance.com/bapi/composite/v1/public/marketing/symbol/list"
-        data = self.http.get_json(url, cache_key="binance:marketing-symbol-list", quality_key="marketCaps")
         result: dict[str, float] = {}
-        if not isinstance(data, dict):
-            return result
-        raw_items = data.get("data") or data.get("symbols") or []
-        if isinstance(raw_items, dict):
-            raw_items = raw_items.get("list") or raw_items.get("symbols") or []
-        for item in raw_items if isinstance(raw_items, list) else []:
-            if not isinstance(item, dict):
-                continue
-            symbol = str(item.get("symbol") or item.get("baseAsset") or "").upper().replace("USDT", "")
-            value = item.get("marketCap") or item.get("marketCapUsd") or item.get("circulatingMarketCap")
+        for item in self.marketing_symbols():
+            symbol = str(item.get("base_asset") or "").upper()
+            value = item.get("market_cap_usd")
             try:
                 cap = float(value)
             except (TypeError, ValueError):
                 continue
             if symbol and cap > 0:
                 result[symbol] = cap
+        return result
+
+    def marketing_symbols(self) -> list[dict[str, Any]]:
+        """Return identity metadata without treating Binance market cap as canonical.
+
+        ``cmc_id`` and ``mapper_name`` are retained as mapping evidence for the
+        official CoinMarketCap adapter. Existing callers of :meth:`market_caps`
+        keep their historical flattened interface.
+        """
+
+        url = "https://www.binance.com/bapi/composite/v1/public/marketing/symbol/list"
+        data = self.http.get_json(
+            url,
+            cache_key="binance:marketing-symbol-list",
+            quality_key="marketCaps",
+        )
+        if not isinstance(data, dict):
+            return []
+        raw_items = data.get("data") or data.get("symbols") or []
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("list") or raw_items.get("symbols") or []
+        result: list[dict[str, Any]] = []
+        for item in raw_items if isinstance(raw_items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            base_asset = str(item.get("baseAsset") or "").strip().upper()
+            if not base_asset and symbol.endswith("USDT"):
+                base_asset = symbol[:-4]
+            if not symbol and base_asset:
+                symbol = f"{base_asset}USDT"
+            cmc_id: int | None
+            try:
+                parsed_id = int(item.get("cmcUniqueId") or item.get("cmcId") or 0)
+                cmc_id = parsed_id if parsed_id > 0 else None
+            except (TypeError, ValueError):
+                cmc_id = None
+            value = item.get("marketCap") or item.get("marketCapUsd") or item.get("circulatingMarketCap")
+            try:
+                cap = float(value)
+            except (TypeError, ValueError):
+                cap = None
+            platform = item.get("platform") if isinstance(item.get("platform"), dict) else {}
+            token_address = str(
+                item.get("tokenAddress")
+                or item.get("contractAddress")
+                or platform.get("token_address")
+                or ""
+            ).strip()
+            if not symbol or not base_asset:
+                continue
+            result.append({
+                "symbol": symbol,
+                "base_asset": base_asset,
+                "cmc_id": cmc_id,
+                "mapper_name": str(item.get("mapperName") or "").strip().upper(),
+                "name": str(item.get("fullName") or item.get("name") or "").strip(),
+                "slug": str(item.get("slug") or "").strip().lower(),
+                "token_address": token_address,
+                "platform_name": str(platform.get("name") or "").strip(),
+                "platform_symbol": str(platform.get("symbol") or "").strip().upper(),
+                "platform_slug": str(platform.get("slug") or "").strip().lower(),
+                "market_cap_usd": (
+                    cap if cap is not None and isfinite(cap) and cap > 0 else None
+                ),
+            })
+        result.sort(key=lambda row: str(row["symbol"]))
         return result
 
     def coinpaprika_market_caps(self) -> dict[str, float]:

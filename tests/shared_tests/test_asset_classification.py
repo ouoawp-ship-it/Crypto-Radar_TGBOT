@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from shared.asset_classification import classify_binance_instrument
+from shared.asset_classification import (
+    classify_binance_instrument,
+    is_stable_crypto_asset,
+)
 from config import Settings
 from runtime.radar_engine import RadarEngine
 from shared.storage import JsonStore
@@ -50,6 +53,19 @@ class AssetClassificationTests(unittest.TestCase):
         self.assertIn("主流加密", solana["asset_category_label"])
         self.assertEqual(alt["asset_subclass"], "altcoin")
         self.assertEqual(alt["asset_theme_tags"], ["AI", "Meme"])
+
+    def test_reviewed_stablecoin_registry_is_central_and_non_disruptive(self) -> None:
+        for base_asset in ("USDC", "FDUSD", "USDE", "DAI", "TUSD"):
+            with self.subTest(base_asset=base_asset):
+                self.assertTrue(is_stable_crypto_asset(base_asset))
+                result = classify_binance_instrument(
+                    f"{base_asset}USDT",
+                    {"baseAsset": base_asset},
+                )
+
+                self.assertEqual(result["asset_family"], "crypto")
+                self.assertEqual(result["asset_class"], "crypto")
+                self.assertEqual(result["asset_subclass"], "altcoin")
 
     def test_exchange_metadata_can_identify_new_tradfi_or_tokenized_products(self) -> None:
         stock = classify_binance_instrument(
