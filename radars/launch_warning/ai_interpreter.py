@@ -33,6 +33,8 @@ OPERATOR_PROMPT = """
 只输出一个 JSON 对象，不要 Markdown，不要输出推理过程。
 字段必须恰好为：status、direction、stage、summary、supporting_evidence、counter_evidence、risk_notes、wait_for、limitations。
 status 必须为 available；direction 和 stage 必须原样复制规则结果；summary 是简短中文；其余五项必须是中文字符串数组。不得增加其他字段。
+为了避免输出被截断，必须保持紧凑：summary 不超过一百二十个汉字；其余每个数组最多两项，
+每项不超过六十个汉字；不要重复输入数据，不要写前言、结尾或思考过程。
 """.strip()
 
 OUTPUT_FIELDS = (
@@ -525,7 +527,7 @@ class OpenAiCompatibleLaunchInterpreter:
         model: str = "",
         session: Any | None = None,
         timeout_sec: float = 60.0,
-        max_tokens: int = 900,
+        max_tokens: int = 2048,
         max_retries: int = 0,
         operator_prompt: str = "",
     ) -> None:

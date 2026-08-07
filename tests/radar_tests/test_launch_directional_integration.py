@@ -209,6 +209,8 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         ai_diagnostics = radar._interpret_directional_alerts([item])
         self.assertEqual(ai_diagnostics["calls"], 0)
         self.assertEqual(ai_diagnostics["status"], "no_eligible_alert")
+        self.assertEqual(item["ai_interpretation_status"], "not_eligible")
+        self.assertEqual(item["ai_interpretation_source"], "none")
 
     def test_ai_disabled_makes_zero_requests_and_rule_card_still_formats(self) -> None:
         radar = LaunchWarningRadar(
@@ -231,7 +233,9 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
 
         self.assertEqual(diagnostics["calls"], 0)
         self.assertEqual(diagnostics["status"], "disabled")
+        self.assertEqual(alert["ai_interpretation_status"], "disabled")
         self.assertIn("看涨候选｜证据增强，尚未确认", text)
+        self.assertIn("AI参与</b>：未开启", text)
 
     def test_directional_deep_analysis_failure_cannot_fall_back_to_legacy_card(self) -> None:
         for status in ("budget_deferred", "degraded", "local_error"):
@@ -307,6 +311,8 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertEqual(session.calls, 1)
         self.assertEqual(diagnostics["calls"], 1)
         self.assertEqual(diagnostics["available"], 1)
+        self.assertEqual(alert["ai_interpretation_status"], "available")
+        self.assertEqual(alert["ai_interpretation_source"], "provider")
         self.assertIn("风险：不要追涨", alert["ai_interpretation"])
         self.assertIn("等待：回踩后保持结构", alert["ai_interpretation"])
 
@@ -360,6 +366,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
             self.assertEqual(second["calls"], 0)
             self.assertEqual(second["cached"], 1)
             self.assertEqual(second_session.calls, 0)
+            self.assertEqual(retry_alert["ai_interpretation_source"], "cache")
             self.assertNotIn("reasoning_content", cached_record)
 
     def test_ai_interpreter_makes_at_most_one_request_per_cycle(self) -> None:
@@ -396,6 +403,33 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertEqual(result["calls"], 1)
         self.assertEqual(result["eligible"], 2)
         self.assertEqual(result["deferred"], 1)
+        self.assertEqual(alerts[0]["ai_interpretation_status"], "available")
+        self.assertEqual(
+            alerts[1]["ai_interpretation_status"],
+            "deferred_cycle_limit",
+        )
+
+    def test_enabled_but_missing_configuration_is_visible_without_network(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(launch_ai_interpreter_enable=True),
+            object(),  # type: ignore[arg-type]
+        )
+        alert = {
+            "symbol": "DEMOUSDT",
+            "directional_readiness": {
+                "status": "多头候选",
+                "direction": "bullish_candidate",
+                "data_complete": True,
+            },
+        }
+
+        with patch("radars.launch_warning.radar.requests.Session") as session:
+            result = radar._interpret_directional_alerts([alert])
+
+        self.assertEqual(result["calls"], 0)
+        self.assertEqual(alert["ai_interpretation_status"], "not_configured")
+        self.assertEqual(alert["ai_interpretation_source"], "none")
+        session.assert_not_called()
 
     def test_cached_first_alert_does_not_starve_next_uncached_alert(self) -> None:
         radar = LaunchWarningRadar(
@@ -491,6 +525,88 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
 
         self.assertNotEqual(original, endpoint_changed)
         self.assertNotEqual(original, prompt_changed)
+
+    def test_previous_success_cache_is_reused_but_previous_truncation_retries_once(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(
+                launch_ai_interpreter_enable=True,
+                ai_api_key="fake-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+            ),
+            object(),  # type: ignore[arg-type]
+        )
+
+        def alert_with(status: str) -> dict[str, object]:
+            alert: dict[str, object] = {
+                "symbol": f"{status.upper()}USDT",
+                "launch_lifecycle": {"observation_id": 91},
+                "directional_readiness": {
+                    "status": "多头确认",
+                    "direction": "bullish",
+                    "data_complete": True,
+                },
+            }
+            result: dict[str, object] = {
+                "status": status,
+                "direction": "bullish",
+                "stage": "多头确认",
+                "summary": "规则证据偏多，仍需等待结构确认。" if status == "available" else "",
+                "supporting_evidence": [],
+                "counter_evidence": [],
+                "risk_notes": [],
+                "wait_for": [],
+                "limitations": [],
+            }
+            alert["launch_ai_interpreter_cache"] = {
+                "key": radar._directional_ai_cache_key(
+                    alert,
+                    model="fake-model",
+                    base_url="https://provider.invalid/v1",
+                    cache_version=radar._PREVIOUS_AI_CACHE_VERSION,
+                ),
+                "result": result,
+            }
+            return alert
+
+        previous_success = alert_with("available")
+        success_session = FakeAiSession()
+        with patch(
+            "radars.launch_warning.radar.requests.Session",
+            return_value=success_session,
+        ):
+            reused = radar._interpret_directional_alerts([previous_success])
+
+        self.assertEqual(reused["calls"], 0)
+        self.assertEqual(reused["cached"], 1)
+        self.assertEqual(success_session.calls, 0)
+        self.assertEqual(previous_success["ai_interpretation_source"], "cache")
+
+        previous_truncation = alert_with("ai_output_truncated")
+        retry_session = FakeAiSession()
+        with patch(
+            "radars.launch_warning.radar.requests.Session",
+            return_value=retry_session,
+        ):
+            retried = radar._interpret_directional_alerts([previous_truncation])
+
+        self.assertEqual(retried["calls"], 1)
+        self.assertEqual(retried["cached"], 0)
+        self.assertEqual(retry_session.calls, 1)
+        self.assertEqual(previous_truncation["ai_interpretation_status"], "available")
+
+        previous_timeout = alert_with("ai_timeout")
+        timeout_session = FakeAiSession()
+        with patch(
+            "radars.launch_warning.radar.requests.Session",
+            return_value=timeout_session,
+        ):
+            timeout_reused = radar._interpret_directional_alerts([previous_timeout])
+
+        self.assertEqual(timeout_reused["calls"], 0)
+        self.assertEqual(timeout_reused["cached"], 1)
+        self.assertEqual(timeout_session.calls, 0)
+        self.assertEqual(previous_timeout["ai_interpretation_status"], "ai_timeout")
 
 
 if __name__ == "__main__":

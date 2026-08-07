@@ -94,7 +94,8 @@ def _premium_basis_pct(premium: Any) -> float | None:
 
 
 class LaunchWarningRadar(RadarComponent):
-    _AI_CACHE_VERSION = "launch-ai-interpreter-v2"
+    _AI_CACHE_VERSION = "launch-ai-interpreter-v3"
+    _PREVIOUS_AI_CACHE_VERSION = "launch-ai-interpreter-v2"
 
     def _launch_fusion_active(self) -> bool:
         return bool(
@@ -1750,6 +1751,7 @@ class LaunchWarningRadar(RadarComponent):
         model: str,
         operator_prompt: str = "",
         base_url: str = "",
+        cache_version: str = "",
     ) -> str:
         observation_id = self._directional_observation_id(alert)
         if observation_id <= 0:
@@ -1762,7 +1764,7 @@ class LaunchWarningRadar(RadarComponent):
         ).hexdigest()
         material = (
             f"{observation_id}:{model}:{endpoint_hash}:{prompt_hash}:"
-            f"{self._AI_CACHE_VERSION}"
+            f"{cache_version or self._AI_CACHE_VERSION}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -1770,11 +1772,14 @@ class LaunchWarningRadar(RadarComponent):
     def _apply_directional_ai_result(
         alert: dict[str, Any],
         result: dict[str, Any],
+        *,
+        source: str,
     ) -> bool:
         alert["ai_interpreter"] = dict(result)
         alert["ai_interpretation_status"] = str(
             result.get("status") or "invalid_ai_output"
         )
+        alert["ai_interpretation_source"] = source
         if result.get("status") != "available":
             alert.pop("ai_interpretation", None)
             return False
@@ -1844,6 +1849,11 @@ class LaunchWarningRadar(RadarComponent):
             "degraded": 0,
             "semantics": "ai_interprets_rules_and_never_changes_them",
         }
+        default_status = "disabled" if not enabled else "not_eligible"
+        for alert in alerts:
+            alert["ai_interpretation_status"] = default_status
+            alert["ai_interpretation_source"] = "none"
+            alert.pop("ai_interpretation", None)
         if not enabled:
             return diagnostics
         eligible_alerts = [
@@ -1857,6 +1867,8 @@ class LaunchWarningRadar(RadarComponent):
         if not eligible_alerts:
             diagnostics["status"] = "no_eligible_alert"
             return diagnostics
+        for alert in eligible_alerts:
+            alert["ai_interpretation_status"] = "not_configured"
         api_key = str(getattr(self.settings, "ai_api_key", "") or "").strip()
         base_url = str(getattr(self.settings, "ai_base_url", "") or "").strip()
         model = str(getattr(self.settings, "ai_model", "") or "").strip()
@@ -1874,23 +1886,55 @@ class LaunchWarningRadar(RadarComponent):
                 base_url=base_url,
             )
             cached = alert.get("launch_ai_interpreter_cache")
+            cached_result = (
+                dict(cached["result"])
+                if isinstance(cached, dict)
+                and isinstance(cached.get("result"), dict)
+                else None
+            )
+            previous_cache_key = self._directional_ai_cache_key(
+                alert,
+                model=model,
+                operator_prompt=operator_prompt,
+                base_url=base_url,
+                cache_version=self._PREVIOUS_AI_CACHE_VERSION,
+            )
+            previous_cache_match = bool(
+                cached_result
+                and cached.get("key") == previous_cache_key
+            )
+            reusable_previous_result = bool(
+                previous_cache_match
+                and cached_result.get("status") != "ai_output_truncated"
+            )
             if (
                 cache_key
                 and isinstance(cached, dict)
-                and cached.get("key") == cache_key
-                and isinstance(cached.get("result"), dict)
+                and cached_result is not None
+                and (
+                    cached.get("key") == cache_key
+                    or reusable_previous_result
+                )
             ):
                 if self._apply_directional_ai_result(
                     alert,
-                    dict(cached["result"]),
+                    cached_result,
+                    source="cache",
                 ):
                     diagnostics["available"] += 1
                 else:
                     diagnostics["degraded"] += 1
                 diagnostics["cached"] += 1
+                if reusable_previous_result:
+                    self._persist_directional_ai_cache(
+                        alert,
+                        cache_key=cache_key,
+                    )
                 continue
             uncached_alerts.append(alert)
         diagnostics["deferred"] = max(0, len(uncached_alerts) - 1)
+        for alert in uncached_alerts[1:]:
+            alert["ai_interpretation_status"] = "deferred_cycle_limit"
         if not uncached_alerts:
             diagnostics["status"] = "cached"
             return diagnostics
@@ -1909,6 +1953,7 @@ class LaunchWarningRadar(RadarComponent):
         except (TypeError, ValueError):
             session.close()
             diagnostics["status"] = "invalid_configuration"
+            first_alert["ai_interpretation_status"] = "invalid_configuration"
             return diagnostics
         diagnostics["status"] = "ok"
         try:
@@ -1941,29 +1986,11 @@ class LaunchWarningRadar(RadarComponent):
                     enabled=True,
                 )
                 diagnostics["calls"] += 1
-                alert["ai_interpreter"] = result
-                alert["ai_interpretation_status"] = str(
-                    result.get("status") or "invalid_ai_output"
-                )
-                if result.get("status") == "available":
-                    interpretation_parts = [str(result.get("summary") or "").strip()]
-                    risks = [
-                        str(value).strip()
-                        for value in (result.get("risk_notes") or [])[:2]
-                        if str(value).strip()
-                    ]
-                    waits = [
-                        str(value).strip()
-                        for value in (result.get("wait_for") or [])[:2]
-                        if str(value).strip()
-                    ]
-                    if risks:
-                        interpretation_parts.append(f"风险：{'；'.join(risks)}")
-                    if waits:
-                        interpretation_parts.append(f"等待：{'；'.join(waits)}")
-                    alert["ai_interpretation"] = " ".join(
-                        part for part in interpretation_parts if part
-                    )[:600]
+                if self._apply_directional_ai_result(
+                    alert,
+                    result,
+                    source="provider",
+                ):
                     diagnostics["available"] += 1
                 else:
                     diagnostics["degraded"] += 1

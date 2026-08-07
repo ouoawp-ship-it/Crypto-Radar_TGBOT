@@ -197,6 +197,35 @@ _FLOW_STATUS_TEXT = {
     "": "缺数据",
 }
 
+_AI_STATUS_TEXT = {
+    "disabled": "未开启，本卡片全部为规则结论",
+    "not_requested": "未调用，本卡片全部为规则结论",
+    "not_eligible": "未调用（数据或信号未达到解读条件）",
+    "not_configured": "未调用（密钥、接口或模型配置不完整）",
+    "deferred_cycle_limit": "本轮顺延（每轮最多解读一个信号）",
+    "invalid_configuration": "未调用（AI配置无效），已使用规则结论",
+    "ai_output_truncated": "已调用，但输出被截断；已使用规则结论",
+    "ai_empty_content": "已调用，但没有返回可用正文；已使用规则结论",
+    "invalid_ai_output": "已调用，但结果格式未通过校验；已使用规则结论",
+    "ai_rule_conflict": "已调用，但结果与规则方向冲突；已使用规则结论",
+    "ai_policy_violation": "已调用，但结果未通过安全校验；已使用规则结论",
+    "ai_timeout": "调用超时；已使用规则结论",
+    "ai_rate_limited": "服务限流；已使用规则结论",
+    "ai_auth_failed": "鉴权失败；已使用规则结论",
+    "ai_insufficient_balance": "服务额度不足；已使用规则结论",
+    "ai_endpoint_not_found": "接口不可用；已使用规则结论",
+    "ai_invalid_request": "请求不兼容；已使用规则结论",
+    "ai_invalid_parameters": "参数不兼容；已使用规则结论",
+    "ai_provider_unavailable": "服务暂不可用；已使用规则结论",
+    "ai_dns_failed": "网络解析失败；已使用规则结论",
+    "ai_tls_failed": "安全连接失败；已使用规则结论",
+    "ai_connection_failed": "网络连接失败；已使用规则结论",
+    "ai_client_unavailable": "本地客户端不可用；已使用规则结论",
+    "ai_redirect_rejected": "接口重定向被拒绝；已使用规则结论",
+    "ai_http_error": "接口请求失败；已使用规则结论",
+    "ai_client_error": "本地调用失败；已使用规则结论",
+}
+
 _LIFECYCLE_STAGE_TEXT = {
     "idle": "观察",
     "watching": "观察",
@@ -781,6 +810,34 @@ def _optional_section(title: str, lines: list[str]) -> list[str]:
     return ["", tg_bold(title), *lines]
 
 
+def _ai_participation_lines(item: Mapping[str, Any]) -> list[str]:
+    ai_text = _short(item.get("ai_interpretation"), limit=160)
+    status = _short(item.get("ai_interpretation_status"), limit=64)
+    source = _short(item.get("ai_interpretation_source"), limit=16)
+    if not status and ai_text:
+        status = "available"
+    if status == "available" and ai_text:
+        origin = (
+            "已完成（复用已校验结果）"
+            if source == "cache"
+            else "已完成（本轮调用）"
+            if source == "provider"
+            else "已完成"
+        )
+        return [
+            f"{tg_bold('🤖 AI参与')}：{origin}",
+            f"{tg_bold('AI白话解读')}：{tg_escape(ai_text)}",
+            "• 只有上一行解读由AI生成；方向、分数和失效位仍由规则决定。",
+        ]
+    if status == "available":
+        status = "invalid_ai_output"
+    detail = _AI_STATUS_TEXT.get(
+        status,
+        "未调用（当前卡片没有可用AI结果）",
+    )
+    return [f"{tg_bold('🤖 AI参与')}：{tg_escape(detail)}"]
+
+
 def _visible_length(text: str) -> int:
     return len(unescape(re.sub(r"<[^>]*>", "", text)))
 
@@ -825,6 +882,7 @@ def _invalidated_cycle_card(
         f"品类：{tg_escape(category)}",
         "",
         f"{tg_bold('失效原因')}：{tg_escape(reason_text)}",
+        *_ai_participation_lines(item),
     ]
     if reason == "direction_changed":
         lines.extend([
@@ -862,6 +920,7 @@ def _invalidated_cycle_card(
             f"品类：{tg_escape(category)}",
             "",
             f"{tg_bold('失效原因')}：{tg_escape(reason_text)}",
+            *_ai_participation_lines(item),
             "• 卡片内容异常或过长，已安全精简；旧观察计划停止沿用。",
         ],
     )
@@ -957,6 +1016,7 @@ def format_launch_directional_signal(
         f"品类：{tg_escape(category)}",
         "",
         f"{tg_bold('当前结论')}：{tg_escape(_summary(signal))}",
+        *_ai_participation_lines(item),
         "",
         tg_bold("📊 信号强度"),
         *_score_lines(signal, direction),
@@ -1007,14 +1067,7 @@ def format_launch_directional_signal(
         counter = evidence.get("bearish", signal.get("counter_evidence"))
     if divergence_watch:
         support = signal.get("divergence_evidence") or support
-    sections: list[list[str]] = []
-    ai_text = _short(item.get("ai_interpretation"), limit=160)
-    if ai_text:
-        sections.append(_optional_section(
-            "🤖 AI白话解读",
-            [f"• {tg_escape(ai_text)}", "• AI不改变方向、分数和失效位"],
-        ))
-    sections.extend([
+    sections: list[list[str]] = [
         _optional_section("🧭 多周期", _timeframe_lines(item)),
         _optional_section("🔭 背景与规模", [
             *_background_lines(item),
@@ -1029,7 +1082,7 @@ def format_launch_directional_signal(
             _translated_lines(counter, empty="暂无明显反向证据", limit=1),
         ),
         _optional_section("⏱️ 生命周期", _lifecycle_lines(item)),
-    ])
+    ]
     limitations = signal.get("limitations")
     limitation_lines = _translated_lines(
         limitations,
@@ -1060,6 +1113,7 @@ def format_launch_directional_signal(
             f"品类：{tg_escape(category)}",
             "",
             f"{tg_bold('当前结论')}：{tg_escape(_summary(signal))}",
+            *_ai_participation_lines(item),
             "• 卡片内容异常或过长，已安全精简；等待下一完整窗口。",
             "• 规则分不是概率，不执行交易。",
         ],
@@ -1120,7 +1174,9 @@ def launch_directional_topic_intro() -> str:
         "• 确认率和跟随率只是规则历史记录，不是胜率，也不会自动修改参数。",
         "",
         "<b>🤖 AI做什么</b>",
-        "AI只把已计算的数据和规则翻译成白话；不改方向、不改分数、不改失效位。同一个观察最多调用一次，重复生成时复用已校验结果；AI失败也不影响规则卡片。",
+        "• 每张卡都会明确显示AI是已完成、复用缓存、本轮顺延、未调用还是调用失败。",
+        "• AI只把已计算的数据和规则翻译成白话；只有“AI白话解读”后面的文字由AI生成，其他数据和结论都来自确定性规则。",
+        "• AI不改方向、不改分数、不改失效位。输出被截断或调用失败时会显示中文原因并使用规则结论；同一版本的同一个观察最多调用一次，仅旧版已截断结果在本次升级后允许一次修复尝试。",
         "",
         "<b>🛡️ 重要边界</b>",
         "• 规则分不是涨跌概率；观察区、失效位和目标也不是交易指令。",
