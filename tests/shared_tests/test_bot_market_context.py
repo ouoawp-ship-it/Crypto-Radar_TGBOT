@@ -110,7 +110,7 @@ class BotMarketContextTests(unittest.TestCase):
         self.assertTrue(text.startswith("🚀 原启动预警"))
         self.assertIn("BOT Binance 原生数据确认", text)
         self.assertIn("5m合约主动净占比", text)
-        self.assertIn("Surge 偏多", text)
+        self.assertIn("启动加速 偏多", text)
         self.assertIn("五窗", text)
         self.assertIn("24h 异动", text)
         self.assertNotIn("来源: Binance Spot + Binance USDⓈ-M Futures", text)

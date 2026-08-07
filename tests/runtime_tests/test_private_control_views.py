@@ -213,6 +213,7 @@ class PrivateControlViewsTests(unittest.TestCase):
             ("blocked", "telegram_topic_not_configured"),
             ("failed", "telegram_api_failed"),
             ("partial", SECRET),
+            ("uncertain", "telegram_delivery_uncertain"),
         ]
         source = [
             {
@@ -236,11 +237,12 @@ class PrivateControlViewsTests(unittest.TestCase):
         text = render_unpublished_reasons(source)
 
         rows = [line for line in text.splitlines() if line.startswith("• ")]
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         self.assertNotIn("发送成功", text)
         self.assertIn("安全演练", text)
         self.assertIn("同类内容仍在防重复冷却期内", text)
         self.assertIn("对应的 Telegram 话题尚未配置", text)
+        self.assertIn("系统已停止重试", text)
         self.assertIn("详细原因已保留在内部运行记录中", text)
         self.assertNotIn(SECRET, text)
 

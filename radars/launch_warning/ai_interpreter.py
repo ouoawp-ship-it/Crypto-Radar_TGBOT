@@ -18,7 +18,7 @@ OPERATOR_PROMPT = """
 2. 不得重新计分，不得改写规则分、入场观察区、失效位、目标位或收益风险比。
 3. 不得补造缺失数据，不得猜测庄家、机构或未审核的现实身份。
 4. 必须同时说明支持证据、反向证据、当前风险、需要等待的确认和限制。
-5. 分数是规则准备度，不是涨跌概率。禁止使用“确定会涨”、“确定会跌”、“立即买入”、“立即卖出”等确定性措辞。
+5. 发现分只衡量异动强弱，方向证据分只比较多空证据；两者都不是涨跌概率，也不能判断是否适合追价。禁止使用“确定会涨”、“确定会跌”、“立即买入”、“立即卖出”等确定性措辞。
 6. 你只负责白话解释，不得输出开仓、加仓、满仓或建议买卖等交易指令，也不得输出任何数字、价位或百分比。
 
 市场语义必须按以下边界解释：
@@ -306,6 +306,7 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
     multi_timeframe = _first_mapping(source, "multi_timeframe", "timeframe_analysis")
     structure = _first_mapping(source, "structure", "price_action", "smc")
     plan = _first_mapping(source, "plan", "trade_plan", "execution_plan")
+    phase = _first_mapping(source, "launch_phase")
     completeness = _first_mapping(source, "completeness", "data_completeness")
     lookups = (source, rule, market)
 
@@ -317,6 +318,9 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
             "direction",
             "stage",
             "score_semantics",
+            "bullish_evidence_score",
+            "bearish_evidence_score",
+            "evidence_score_semantics",
             "bullish_readiness",
             "bearish_readiness",
             "bullish_raw_score",
@@ -337,7 +341,18 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
     rule_context["evidence"] = _pick_evidence(rule.get("evidence"))
 
     return {
+        "discovery_score": _safe_scalar(source.get("discovery_score")),
         "rule_result": rule_context,
+        "launch_phase": _pick(
+            phase,
+            (
+                "timing_stage",
+                "execution_status",
+                "position_status",
+                "primary_block_reason",
+                "evidence_score",
+            ),
+        ),
         "smc_filter": _smc_filter_context(source),
         "multi_timeframe": _multi_timeframe_context(multi_timeframe),
         "price_open_interest": _values_from(
@@ -438,6 +453,8 @@ def _expected_rule_values(context: Mapping[str, Any]) -> tuple[str, str]:
 
 def _ai_output_policy_safe(text: str) -> bool:
     normalized = text.strip().lower()
+    if any(marker in normalized for marker in _FORBIDDEN_TEXT):
+        return False
     if any(phrase in normalized for phrase in _FORBIDDEN_AI_OUTPUT_PHRASES):
         return False
     if _TRADE_INSTRUCTION_PATTERN.search(normalized):

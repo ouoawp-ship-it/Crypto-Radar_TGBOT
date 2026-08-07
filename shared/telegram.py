@@ -233,6 +233,24 @@ def classify_telegram_network_error(exc: BaseException) -> str:
     return "telegram_http_error"
 
 
+def _telegram_delivery_is_uncertain(exc: BaseException) -> bool:
+    """Return whether Telegram may have accepted a request without replying."""
+
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return False
+    network_error = classify_telegram_network_error(exc)
+    if network_error in {"telegram_dns_failed", "telegram_tls_failed"}:
+        return False
+    return isinstance(
+        exc,
+        (
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+        ),
+    )
+
+
 def plain_fallback(text: str) -> str:
     without_tags = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"[*_`]", "", unescape(without_tags))
@@ -257,7 +275,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 LAUNCH_FUSION_TOPIC_INTRO_VERSION = "2026-08-05-launch-fusion-v1"
-LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-07-launch-directional-ai-status-v4"
+LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-08-launch-evidence-stage-v6"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
 }
@@ -726,13 +744,22 @@ class TelegramGateway:
                 topic_id=topic_id,
                 reply_to_message_id=reply_to_message_id,
             )
-        reason = (
-            "telegram_photo_api" if ok else "telegram_photo_api_failed"
-        ) if photo is not None else (
-            "telegram_api" if ok else "telegram_api_failed"
+        delivery_uncertain = bool(
+            not ok
+            and self._last_delivery_diagnostics is not None
+            and self._last_delivery_diagnostics.telegram_error_class
+            == "telegram_delivery_uncertain"
         )
+        if delivery_uncertain:
+            reason = "telegram_delivery_uncertain"
+        elif photo is not None:
+            reason = "telegram_photo_api" if ok else "telegram_photo_api_failed"
+        else:
+            reason = "telegram_api" if ok else "telegram_api_failed"
+        result_status = "sent" if ok else "partial" if message_ids else "failed"
+        outbox_status = "uncertain" if delivery_uncertain else result_status
         result = PushResult(
-            "sent" if ok else "partial" if message_ids else "failed",
+            result_status,
             reason,
             ok,
             message_ids,
@@ -741,7 +768,7 @@ class TelegramGateway:
         )
         self._finish_delivery(
             delivery_id,
-            status="sent" if ok else "partial" if message_ids else "failed",
+            status=outbox_status,
             message_ids=message_ids,
             diagnostics=result.diagnostics,
         )
@@ -802,6 +829,9 @@ class TelegramGateway:
             for item in reversed(records):
                 if item.get("dedup_key") != dedup_key:
                     continue
+                if item.get("status") == "uncertain":
+                    reserved["ok"] = False
+                    return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
                 updated_at = int(item.get("updated_at", item.get("ts", 0)) or 0)
                 if updated_at < quarantine_cutoff:
                     break
@@ -954,8 +984,14 @@ class TelegramGateway:
                     diagnostics.telegram_error_code = None
                     diagnostics.retry_after_sec = None
                     diagnostics.network_error_class = classify_telegram_network_error(exc)
-                    diagnostics.telegram_error_class = diagnostics.network_error_class
+                    diagnostics.telegram_error_class = (
+                        "telegram_delivery_uncertain"
+                        if _telegram_delivery_is_uncertain(exc)
+                        else diagnostics.network_error_class
+                    )
                     diagnostics.response_ok = False
+                    if diagnostics.telegram_error_class == "telegram_delivery_uncertain":
+                        break
                     if attempt < self.settings.tg_push_retry:
                         time.sleep(min(5, attempt))
                         continue
@@ -1061,8 +1097,14 @@ class TelegramGateway:
                 diagnostics.telegram_error_code = None
                 diagnostics.retry_after_sec = None
                 diagnostics.network_error_class = classify_telegram_network_error(exc)
-                diagnostics.telegram_error_class = diagnostics.network_error_class
+                diagnostics.telegram_error_class = (
+                    "telegram_delivery_uncertain"
+                    if _telegram_delivery_is_uncertain(exc)
+                    else diagnostics.network_error_class
+                )
                 diagnostics.response_ok = False
+                if diagnostics.telegram_error_class == "telegram_delivery_uncertain":
+                    break
                 if attempt < self.settings.tg_push_retry:
                     time.sleep(min(5, attempt))
         return False, []

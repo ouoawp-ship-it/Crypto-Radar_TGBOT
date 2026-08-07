@@ -826,7 +826,7 @@ class PrivateControlService:
             f"• 模型：{'已配置' if _configured(status.get('AI_MODEL')) else '未配置'}\n"
             f"• 提示词：{prompt_text}\n"
             f"• AI 解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n\n"
-            "AI 只做白话解读，不能改变方向、分数、失效位或安全规则。\n"
+            "AI 只做白话解读，不能改变方向、发现分、方向证据分、行情阶段、失效位或安全规则。\n"
             "开启和关闭仍需二次确认；这里不能切换真实推送模式。"
         )
 
