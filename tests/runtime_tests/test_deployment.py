@@ -486,6 +486,58 @@ class LaunchReportTests(unittest.TestCase):
             self.assertIn("当前独立有效候选 2 / 2", output.getvalue())
             self.assertIn("dry-run 会重复记录", output.getvalue())
 
+    def test_readiness_reports_excess_candidate_pressure_without_blocking_startup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / "launch_state.json"
+            history_path = root / "launch_watch_history.json"
+            settings = Settings(
+                base_dir=root,
+                data_dir=root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_launch_alert_topic_id="12",
+                tg_announcement_alert_topic_id="15",
+                tg_flow_radar_topic_id="13",
+                tg_topic_routes_path=root / "topic_routes.json",
+                launch_state_path=state_path,
+                launch_watch_history_path=history_path,
+                launch_message_package_v2_enable=True,
+                launch_min_score_push=60,
+            )
+            store = JsonStore(root)
+            store.save(state_path, {
+                "BTCUSDT": {"stage": "primed", "score": 60},
+                "ETHUSDT": {"stage": "breakout", "score": 75},
+                "SOLUSDT": {"stage": "launched", "score": 90},
+            })
+            store.save(history_path, [
+                {
+                    "alert_count": 3,
+                    "scanned": 80,
+                    "top_score": 90,
+                    "buckets": {"primed": 1, "breakout": 1, "launched": 1},
+                    "top_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+                }
+                for _ in range(5)
+            ])
+            store.save(settings.tg_topic_routes_path, {
+                "routes": {
+                    "TG_FUNDING_ALERT": {"topic_id": "14"},
+                }
+            })
+
+            with patch.object(main, "runtime_health_checks", return_value=[]):
+                with redirect_stdout(StringIO()) as output:
+                    code = main.print_readiness(settings, store)
+
+            self.assertEqual(code, 0)
+            text = output.getvalue()
+            self.assertIn("⚠️ 仅提醒 启动候选压力", text)
+            self.assertIn("当前独立有效候选 3 / 2", text)
+            self.assertIn("运行时仍受单轮与每小时发送额度限制", text)
+
     def test_readiness_fails_when_a_production_topic_is_missing(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

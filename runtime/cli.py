@@ -1333,7 +1333,7 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
         if item.get("name") != "runtime_status"
     ]
     health_failures = [item for item in runtime_health if item.get("status") == "fail"]
-    checks = [
+    blocking_checks = [
         *telegram_config_checks(settings),
         *telegram_topic_route_checks(settings, store),
         (
@@ -1344,21 +1344,21 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
             else "；".join(str(item.get("detail") or "") for item in health_failures),
         ),
         ("observe_history", record_count >= 5, f"启动观察历史 {record_count} 轮"),
-        (
-            "launch_alert_pressure",
-            pressure_ok,
-            pressure_message,
-        ),
         ("history_file", settings.launch_watch_history_path.exists(), "启动观察历史文件存在" if settings.launch_watch_history_path.exists() else "启动观察历史文件不存在"),
     ]
-    passed = sum(1 for _name, ok, _message in checks if ok)
-    print(f"真实推送准备度: {passed}/{len(checks)}")
-    for name, ok, message in checks:
+    passed = sum(1 for _name, ok, _message in blocking_checks if ok)
+    print(f"真实推送准备度: {passed}/{len(blocking_checks)}")
+    for name, ok, message in blocking_checks:
         mark = "✅ 已通过" if ok else "⏳ 待处理"
         print(f"- {mark} {check_name_text(name)}：{message}")
+    pressure_mark = "✅ 正常" if pressure_ok else "⚠️ 仅提醒"
+    print(
+        f"- {pressure_mark} {check_name_text('launch_alert_pressure')}："
+        f"{pressure_message}；运行时仍受单轮与每小时发送额度限制"
+    )
     print("")
     print(format_launch_report(settings, store, 100, 8, records=records))
-    if passed == len(checks):
+    if passed == len(blocking_checks):
         print("")
         print("下一步：可以在中文菜单中执行一次真实 Telegram 测试。")
         return 0
