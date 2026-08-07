@@ -77,6 +77,14 @@ class LaunchDirectionalRuntimeTests(unittest.TestCase):
 
         self.assertEqual(selected, ["ACTIVEUSDT", "FLOWUSDT", "STRONGUSDT"])
 
+    def test_new_candidate_selection_prefers_discovery_score_over_legacy_score(self) -> None:
+        selected = select_directional_candidates([
+            {"symbol": "CANONICALUSDT", "discovery_score": 90, "score": 1},
+            {"symbol": "LEGACYUSDT", "score": 80},
+        ], limit=1)
+
+        self.assertEqual(selected, ["CANONICALUSDT"])
+
     def test_active_flow_requires_one_exact_closed_window(self) -> None:
         interval = 15 * 60 * 1000
         end = 4 * interval

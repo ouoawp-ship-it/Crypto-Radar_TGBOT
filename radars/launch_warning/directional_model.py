@@ -5,8 +5,8 @@ from collections.abc import Mapping
 from typing import Any
 
 
-MODEL_VERSION = "launch_directional_readiness_v1"
-SCORE_SEMANTICS = "rule_readiness_not_probability"
+MODEL_VERSION = "launch_directional_evidence_v2"
+SCORE_SEMANTICS = "rule_score_not_probability"
 MIN_RISK_REWARD_RATIO = 2.0
 
 STATUS_BULLISH_CONFIRMED = "多头确认"
@@ -611,13 +611,13 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
         "status": status,
         "direction": direction,
         "score_semantics": SCORE_SEMANTICS,
-        "bullish_readiness": bullish_score,
-        "bearish_readiness": bearish_score,
-        # Compatibility: readiness keys remain for stored history and existing
-        # formatters.  New phase-aware consumers should use evidence_score.
         "bullish_evidence_score": bullish_score,
         "bearish_evidence_score": bearish_score,
-        "evidence_score_semantics": "rule_score_not_probability",
+        "evidence_score_semantics": SCORE_SEMANTICS,
+        # Compatibility aliases for stored history and older integrations.
+        # They are intentionally not the canonical contract anymore.
+        "bullish_readiness": bullish_score,
+        "bearish_readiness": bearish_score,
         "bullish_raw_score": bullish_raw,
         "bearish_raw_score": bearish_raw,
         "group_caps": dict(_GROUP_CAPS),
@@ -679,7 +679,7 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
         "missing_fields": missing_fields,
         "observation_missing_fields": observation_missing_fields,
         "limitations": [
-            "rule_readiness_not_probability",
+            "rule_score_not_probability",
             "open_interest_does_not_identify_long_or_short_by_itself",
             "cvd_is_aggressive_trade_imbalance_not_capital_inflow",
             "funding_and_basis_are_crowding_risk_not_direction_proof",

@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -68,8 +68,8 @@ PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 
 推送内容：
 - 资金雷达汇总：负费率榜、综合榜、埋伏榜、动量池、新币池、值得关注、图例、数据质量。
-- 启动雷达提醒：币种、阶段、分数、价格变化、OI 变化、成交量放大、触发原因。
-- 启动预警辅助证据：最近的 Binance 官方公告与吸筹质量，不改变原触发分数。
+- 启动雷达提醒：币种、发现分、方向证据分、行情阶段、执行状态和已收盘数据。
+- 启动预警辅助证据：最近的 Binance 官方公告与吸筹质量，不改变发现分或方向证据分。
 - Telegram 测试消息：只在手动执行 telegram-test --send --confirm-real-send 时发送。
 
 默认周期：
@@ -205,10 +205,30 @@ def push_launch_messages(
                 ) + 1
             alert["message_ids"] = new_message_ids
             if is_package:
-                commit = engine.commit_launch_package(
-                    alert,
-                    new_message_ids,
-                )
+                try:
+                    commit = engine.commit_launch_package(
+                        alert,
+                        new_message_ids,
+                    )
+                except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                    # Telegram has already accepted the new card. Remove only
+                    # that card when local lifecycle persistence fails, so the
+                    # previous reply chain remains authoritative.
+                    rollback = gateway.delete_messages_detailed(
+                        new_message_ids,
+                        reason="launch_package_commit_exception_rollback",
+                    )
+                    push_record["status"] = "package_commit_failed"
+                    push_record["package_commit"] = "local_error"
+                    push_record["package_commit_error"] = type(exc).__name__
+                    push_record["rollback_deleted"] = len(
+                        rollback.get("deleted_ids") or []
+                    )
+                    push_record["rollback_failures"] = len(
+                        rollback.get("failed_ids") or []
+                    )
+                    pushes.append(push_record)
+                    continue
                 push_record["package_commit"] = str(commit.get("status") or "")
                 if commit.get("status") not in {"committed", "idempotent"}:
                     rollback = gateway.delete_messages_detailed(
@@ -1280,6 +1300,29 @@ def launch_alert_pressure_within_limit(total_alerts: int, records: int) -> bool:
     return max(0, int(total_alerts)) <= max(1, max(0, int(records)) * 2)
 
 
+def _launch_metric(
+    record: Mapping[str, object],
+    canonical_key: str,
+    legacy_key: str,
+) -> int:
+    value = record.get(canonical_key) if canonical_key in record else None
+    if canonical_key not in record:
+        value = record.get(legacy_key)
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _optional_launch_metric(
+    record: Mapping[str, object],
+    canonical_key: str,
+    legacy_key: str = "",
+) -> int | None:
+    if canonical_key in record:
+        value = record.get(canonical_key)
+    else:
+        value = record.get(legacy_key) if legacy_key else None
+    return int(value) if isinstance(value, (int, float)) else None
+
+
 def current_launch_alert_candidate_count(
     settings: Settings,
     store: JsonStore,
@@ -1292,13 +1335,14 @@ def current_launch_alert_candidate_count(
     if not isinstance(state, dict):
         return None
     actionable_stages = {"primed", "breakout", "launched"}
+
     return sum(
         1
         for record in state.values()
         if isinstance(record, dict)
         and str(record.get("stage") or "") in actionable_stages
-        and isinstance(record.get("score"), (int, float))
-        and int(record["score"]) >= settings.launch_min_score_push
+        and _launch_metric(record, "evidence_score", "score")
+        >= settings.launch_min_score_push
     )
 
 
@@ -1430,9 +1474,19 @@ def print_watchlist(settings: Settings, store: JsonStore, top_n: int) -> None:
     print(f"启动候选观察表 | 更新时间: {data.get('updated_at', 'unknown')} | 数量: {data.get('count', len(items))}")
     for idx, item in enumerate(items[:max(1, top_n)], start=1):
         reasons = "；".join(item.get("reasons") or []) or "无触发项"
+        discovery_score = _launch_metric(item, "discovery_score", "score")
+        evidence_score = _optional_launch_metric(
+            item,
+            "evidence_score",
+            "score",
+        )
+        evidence_text = str(evidence_score) if evidence_score is not None else "待确认"
+        timing_stage = str(item.get("timing_stage") or "待确认")
+        execution_status = str(item.get("execution_status") or "待确认")
         print(
             f"{idx:02d}. {item.get('symbol', ''):<12} "
-            f"{int(item.get('score', 0)):>3}分 | "
+            f"发现{discovery_score:>3} | 证据{evidence_text:>3} | "
+            f"阶段{timing_stage} | 执行{execution_status} | "
             f"15m价{float(item.get('price_15m', 0)):+.2f}% | "
             f"1h价{float(item.get('price_1h', 0)):+.2f}% | "
             f"15m OI{float(item.get('oi_15m', 0)):+.2f}% | "
@@ -1453,10 +1507,19 @@ def print_launch_history(settings: Settings, store: JsonStore, top_n: int) -> No
             continue
         buckets = record.get("buckets") if isinstance(record.get("buckets"), dict) else {}
         top_symbols = ", ".join(record.get("top_symbols", [])[:5]) if isinstance(record.get("top_symbols"), list) else ""
+        if "top_discovery_score" in record or "top_evidence_score" in record:
+            discovery = _optional_launch_metric(record, "top_discovery_score")
+            evidence = _optional_launch_metric(record, "top_evidence_score")
+            score_text = (
+                f"最高发现分{discovery if discovery is not None else '待确认'} | "
+                f"最高证据分{evidence if evidence is not None else '待确认'}"
+            )
+        else:
+            score_text = f"旧版分数{int(record.get('top_score', 0) or 0)}"
         print(
             f"{idx:02d}. {record.get('updated_at', 'unknown')} | "
             f"扫描{int(record.get('scanned', 0))} | "
-            f"最高{int(record.get('top_score', 0))}分 | "
+            f"{score_text} | "
             f"推送候选{int(record.get('alert_count', 0))} | "
             f"观察{int(buckets.get('watching', 0))}/预警{int(buckets.get('primed', 0))}/确认{int(buckets.get('breakout', 0))}/瞬间{int(buckets.get('launched', 0))} | "
             f"{top_symbols}"
@@ -1465,7 +1528,26 @@ def print_launch_history(settings: Settings, store: JsonStore, top_n: int) -> No
 
 def build_launch_report(records: list[dict[str, object]], settings: Settings) -> dict[str, object]:
     valid = [record for record in records if isinstance(record, dict)]
-    top_scores = [int(record.get("top_score", 0) or 0) for record in valid]
+    top_evidence_scores = [
+        value
+        for record in valid
+        if (
+            value := _optional_launch_metric(record, "top_evidence_score")
+        ) is not None
+    ]
+    top_discovery_scores = [
+        value
+        for record in valid
+        if (
+            value := _optional_launch_metric(record, "top_discovery_score")
+        ) is not None
+    ]
+    legacy_top_scores = [
+        int(record.get("top_score", 0) or 0)
+        for record in valid
+        if "top_discovery_score" not in record
+        and "top_evidence_score" not in record
+    ]
     total_scanned = sum(int(record.get("scanned", 0) or 0) for record in valid)
     total_alerts = sum(int(record.get("alert_count", 0) or 0) for record in valid)
     bucket_totals: Counter[str] = Counter()
@@ -1482,8 +1564,21 @@ def build_launch_report(records: list[dict[str, object]], settings: Settings) ->
                 if symbol and not is_excluded_symbol(str(symbol), settings)
             )
 
-    max_top_score = max(top_scores) if top_scores else 0
-    avg_top_score = round(sum(top_scores) / len(top_scores), 2) if top_scores else 0
+    effective_top_scores = top_evidence_scores or legacy_top_scores
+    max_top_score = max(effective_top_scores) if effective_top_scores else 0
+    avg_top_score = (
+        round(sum(effective_top_scores) / len(effective_top_scores), 2)
+        if effective_top_scores
+        else 0
+    )
+    max_top_discovery_score = (
+        max(top_discovery_scores) if top_discovery_scores else None
+    )
+    avg_top_discovery_score = (
+        round(sum(top_discovery_scores) / len(top_discovery_scores), 2)
+        if top_discovery_scores
+        else None
+    )
     suggestion = "样本不足，先继续 dry-run。"
     if len(valid) >= 5:
         active_count = (
@@ -1507,6 +1602,16 @@ def build_launch_report(records: list[dict[str, object]], settings: Settings) ->
         "total_alerts": total_alerts,
         "max_top_score": max_top_score,
         "avg_top_score": avg_top_score,
+        "max_top_discovery_score": max_top_discovery_score,
+        "avg_top_discovery_score": avg_top_discovery_score,
+        "evidence_score_records": len(top_evidence_scores),
+        "legacy_score_records": len(legacy_top_scores),
+        "max_legacy_top_score": max(legacy_top_scores) if legacy_top_scores else None,
+        "avg_legacy_top_score": (
+            round(sum(legacy_top_scores) / len(legacy_top_scores), 2)
+            if legacy_top_scores
+            else None
+        ),
         "buckets": dict(bucket_totals),
         "top_symbols": symbol_counts.most_common(10),
         "suggestion": suggestion,
@@ -1545,15 +1650,31 @@ def format_launch_report(
     lines = [
         f"启动历史分析 | 最近{report['records']}轮",
         f"扫描合计: {report['total_scanned']} | 推送候选: {report['total_alerts']}",
-        f"最高分: {report['max_top_score']} | 平均最高分: {report['avg_top_score']}",
+    ]
+    if report.get("max_top_discovery_score") is not None:
+        lines.append(
+            f"最高发现分: {report['max_top_discovery_score']} | "
+            f"平均最高发现分: {report['avg_top_discovery_score']}"
+        )
+    if int(report.get("evidence_score_records") or 0) > 0:
+        lines.append(
+            f"最高方向证据分: {report['max_top_score']} | "
+            f"平均最高方向证据分: {report['avg_top_score']}"
+        )
+    if int(report.get("legacy_score_records") or 0) > 0:
+        lines.append(
+            f"旧版分数（语义无法回填）: 最高{report['max_legacy_top_score']} | "
+            f"平均{report['avg_legacy_top_score']}"
+        )
+    lines.append(
         (
             "阶段合计: "
             f"观察{int(buckets.get('watching', 0))} / "
             f"预警{int(buckets.get('primed', 0))} / "
             f"确认{int(buckets.get('breakout', 0))} / "
             f"瞬间{int(buckets.get('launched', 0))}"
-        ),
-    ]
+        )
+    )
     symbols = report["top_symbols"] if isinstance(report["top_symbols"], list) else []
     if symbols:
         shown = "，".join(f"{symbol}({count})" for symbol, count in symbols[:max(1, top_n)])

@@ -39,7 +39,9 @@ def select_directional_candidates(
         if item.get("launch_lifecycle_active"):
             active_symbols.append(symbol)
             continue
-        score = _finite(item.get("score")) or 0.0
+        score = _finite(item.get("discovery_score"))
+        if score is None:
+            score = _finite(item.get("score")) or 0.0
         price = abs(_finite(item.get("price_1h")) or 0.0)
         oi = abs(_finite(item.get("oi_1h")) or 0.0)
         spot = abs(_finite(item.get("spot_active_ratio")) or 0.0) * 100.0

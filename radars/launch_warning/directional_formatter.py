@@ -100,7 +100,8 @@ _EVIDENCE_TEXT = {
 }
 
 _LIMITATION_TEXT = {
-    "rule_readiness_not_probability": "准备度是规则分，不是涨跌概率",
+    "rule_readiness_not_probability": "旧版准备度只是规则分，不是涨跌概率",
+    "rule_score_not_probability": "方向证据分不是涨跌概率",
     "open_interest_does_not_identify_long_or_short_by_itself": "持仓量单独不能区分新增多头还是空头",
     "cvd_is_aggressive_trade_imbalance_not_capital_inflow": "主动买卖差代表成交主导方，不等于真实资金流入流出",
     "funding_and_basis_are_crowding_risk_not_direction_proof": "资金费率和基差只衡量拥挤，不能单独证明方向",
@@ -421,11 +422,21 @@ def _active_side(signal: Mapping[str, Any], direction: str) -> str:
         return "bearish"
     if direction.startswith("bullish"):
         return "bullish"
-    bullish = _finite(signal.get("bullish_readiness"))
-    bearish = _finite(signal.get("bearish_readiness"))
+    bullish = _side_evidence_score(signal, "bullish")
+    bearish = _side_evidence_score(signal, "bearish")
     if bullish is None and bearish is None:
         return ""
     return "bearish" if (bearish or 0.0) > (bullish or 0.0) else "bullish"
+
+
+def _side_evidence_score(
+    signal: Mapping[str, Any],
+    side: str,
+) -> float | None:
+    canonical = signal.get(f"{side}_evidence_score")
+    if canonical is not None:
+        return _finite(canonical)
+    return _finite(signal.get(f"{side}_readiness"))
 
 
 def _headline(signal: Mapping[str, Any], direction: str) -> tuple[str, str, str]:
@@ -445,10 +456,10 @@ def _summary(signal: Mapping[str, Any]) -> str:
 
 
 def _score_lines(signal: Mapping[str, Any], direction: str) -> list[str]:
-    bullish = _finite(signal.get("bullish_readiness"))
-    bearish = _finite(signal.get("bearish_readiness"))
+    bullish = _side_evidence_score(signal, "bullish")
+    bearish = _side_evidence_score(signal, "bearish")
     if bullish is None and bearish is None:
-        return ["• 多空准备度：待确认（规则分，不是概率）"]
+        return ["• 多空证据分：待确认（不是涨跌概率）"]
     bullish_text = str(int(round(bullish))) if bullish is not None else "待确认"
     bearish_text = str(int(round(bearish))) if bearish is not None else "待确认"
     comparison = f"• 看涨 {bullish_text}｜看跌 {bearish_text}"
@@ -456,7 +467,7 @@ def _score_lines(signal: Mapping[str, Any], direction: str) -> list[str]:
         lead = abs(int(round(bullish)) - int(round(bearish)))
         leading = "看涨" if bullish >= bearish else "看跌"
         comparison += f"｜{leading}领先 {lead}"
-    lines = [comparison, "• 规则分不是概率"]
+    lines = [comparison, "• 证据分不是涨跌概率"]
     side = _active_side(signal, direction)
     groups = _mapping(signal.get(f"{side}_group_scores")) if side else {}
     caps = _mapping(signal.get("group_caps"))
@@ -479,7 +490,7 @@ def _score_lines(signal: Mapping[str, Any], direction: str) -> list[str]:
     if side:
         raw = _finite(signal.get(f"{side}_raw_score"))
         adjustment = _finite(_mapping(signal.get("risk_adjustments")).get(side))
-        final = _finite(signal.get(f"{side}_readiness"))
+        final = _side_evidence_score(signal, side)
         if raw is not None and adjustment is not None and final is not None:
             lines.append(
                 f"• 当前方向：原始 {int(round(raw))}｜拥挤 {int(round(adjustment or 0)):+d}｜"
@@ -669,13 +680,18 @@ def _lifecycle_lines(item: Mapping[str, Any]) -> list[str]:
         f"持续 {_duration(lifecycle.get('duration_sec'))}｜最高 {peak}",
     ]
     delta = _mapping(lifecycle.get("delta_from_first"))
+    score_delta_value = (
+        delta.get("evidence_score")
+        if delta.get("evidence_score") is not None
+        else delta.get("score")
+    )
     delta_values = (
         _finite(delta.get("price_pct")),
         _finite(delta.get("oi_pct")),
-        _finite(delta.get("score")),
+        _finite(score_delta_value),
     )
     if any(value is not None for value in delta_values):
-        score_delta = _finite(delta.get("score"))
+        score_delta = _finite(score_delta_value)
         score_text = (
             f"{int(round(score_delta)):+d}分"
             if score_delta is not None
@@ -683,7 +699,7 @@ def _lifecycle_lines(item: Mapping[str, Any]) -> list[str]:
         )
         lines.append(
             f"• 较首次：价格 {_pct(delta.get('price_pct'))}｜持仓量 {_pct(delta.get('oi_pct'))}｜"
-            f"准备度 {score_text}"
+            f"证据分 {score_text}"
         )
     outcome = _mapping(lifecycle.get("outcome_evaluation"))
     reliability = _mapping(outcome.get("reliability"))
@@ -998,12 +1014,23 @@ def _compact_market_lines(item: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _compact_score_lines(signal: Mapping[str, Any], direction: str) -> list[str]:
+def _compact_score_lines(
+    signal: Mapping[str, Any],
+    direction: str,
+    *,
+    discovery_score: object = None,
+) -> list[str]:
     score_lines = _score_lines(signal, direction)
     comparison = score_lines[0] if score_lines else "• 多空证据分：待确认"
     comparison = comparison.replace("看涨 ", "看涨 ").replace("看跌 ", "看跌 ")
     component = next((line for line in score_lines if line.startswith("• 构成：")), "")
-    return [comparison, *([component] if component else [])]
+    discovery = _finite(discovery_score)
+    discovery_line = (
+        f"• 发现分 {int(round(discovery))}/100｜只负责发现异动"
+        if discovery is not None
+        else "• 发现分：待确认｜只负责发现异动"
+    )
+    return [discovery_line, comparison, *([component] if component else [])]
 
 
 def _data_status_line(item: Mapping[str, Any], signal: Mapping[str, Any]) -> str:
@@ -1348,7 +1375,7 @@ def _signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
 def _smc_filter_lines(item: Mapping[str, Any]) -> list[str]:
     result = item.get("smc_filter")
     if not isinstance(result, Mapping):
-        return [f"{tg_bold('🧭 SMC二次过滤')}：数据不足｜不参与主标题和方向评分"]
+        return [f"{tg_bold('🧭 SMC二次过滤')}：数据不足｜不改发现分和方向证据分"]
     status = str(result.get("status") or "insufficient")
     status_text = {
         "supportive": "同向支持",
@@ -1372,7 +1399,8 @@ def _smc_filter_lines(item: Mapping[str, Any]) -> list[str]:
     )
     return [
         f"{tg_bold('🧭 SMC二次过滤')}：{tg_escape(status_text)}｜"
-        f"1小时{tg_escape(one_hour)}｜4小时{tg_escape(four_hour)}（只过滤，不改主方向和分数）"
+        f"1小时{tg_escape(one_hour)}｜4小时{tg_escape(four_hour)}"
+        "（只过滤，不改发现分和方向证据分）"
     ]
 
 
@@ -1415,7 +1443,7 @@ def _invalidated_cycle_card(
         "direction_changed": "新一轮完整数据转为相反方向",
         "two_closes_below_invalidation": "连续两个完整窗口收盘跌破看涨失效位",
         "two_closes_above_invalidation": "连续两个完整窗口收盘升破看跌失效位",
-        "two_windows_below_watch_score": "连续两个完整窗口准备度低于观察门槛",
+        "two_windows_below_watch_score": "连续两个完整窗口证据分低于观察门槛",
     }.get(reason, "原方向继续成立的条件已经不足")
     phase = _launch_phase(item)
     score_direction = "bullish" if previous == "bullish" else "bearish" if previous == "bearish" else _direction_key(signal)
@@ -1429,8 +1457,12 @@ def _invalidated_cycle_card(
         tg_bold("🔥 核心数据"),
         *_compact_market_lines(item),
         "",
-        tg_bold("📊 方向证据分（规则分，不是概率）"),
-        *_compact_score_lines(signal, score_direction),
+        tg_bold("📊 发现分与方向证据分（都不是概率）"),
+        *_compact_score_lines(
+            signal,
+            score_direction,
+            discovery_score=item.get("discovery_score"),
+        ),
         "",
         tg_bold("🚦 行情位置与时机"),
         *_position_timing_lines(phase, "invalidated", previous),
@@ -1452,7 +1484,7 @@ def _invalidated_cycle_card(
         _compact_lifecycle_line(item),
         *_compact_ai_lines(item),
         "",
-        "规则分不是概率｜缺失不按0｜仅作观察，不构成投资建议。",
+        "发现分/证据分都不是概率｜缺失不按0｜仅作观察，不构成投资建议。",
     ])
     max_chars = max(512, min(1024, int(max_chars)))
     return _bounded_card(
@@ -1465,13 +1497,17 @@ def _invalidated_cycle_card(
             "",
             f"{tg_bold('失效原因')}：{tg_escape(reason_text)}",
             *_compact_market_lines(item),
-            *_compact_score_lines(signal, score_direction)[:1],
+            *_compact_score_lines(
+                signal,
+                score_direction,
+                discovery_score=item.get("discovery_score"),
+            )[:2],
             f"• 唯一主要阻断：{tg_escape(reason_text)}",
             _data_status_line(item, signal),
             *_smc_filter_lines(item),
             _compact_lifecycle_line(item),
             *_compact_ai_lines(item),
-            "规则分不是概率｜缺失不按0｜仅作观察，不构成投资建议。",
+            "发现分/证据分都不是概率｜缺失不按0｜仅作观察，不构成投资建议。",
         ],
     )
 
@@ -1515,11 +1551,16 @@ def format_launch_directional_signal(
     category, category_risk = _asset_profile(item, signal)
     category = _short(item.get("asset_category_label"), limit=80) or category
 
-    score_lines = _compact_score_lines(signal, direction)
+    score_lines = _compact_score_lines(
+        signal,
+        direction,
+        discovery_score=item.get("discovery_score"),
+    )
     market_lines = _market_strength_lines(item, signal)
     core_market = market_lines[:4]
     threshold_lines = market_lines[4:5]
     plan_lines = _compact_plan_lines(item, signal, phase, side, stage)
+    crowding = _crowding_text(item, signal)
     if not plan_lines:
         if direction in {"bullish_divergence_watch", "bearish_divergence_watch"}:
             plan_lines = [
@@ -1544,7 +1585,7 @@ def format_launch_directional_signal(
         "",
         f"{tg_bold('当前结论')}：{tg_escape(conclusion)}",
         "",
-        tg_bold("📊 方向证据（规则分，不是概率）"),
+        tg_bold("📊 发现分与方向证据分（都不是概率）"),
         *score_lines,
     ]
     if core_market:
@@ -1556,6 +1597,11 @@ def format_launch_directional_signal(
         f"• 主要阻断：{tg_escape(_primary_block_reason(item, signal, phase, side, stage))}",
         _data_status_line(item, signal),
         *_data_quality_lines(item, signal)[1:],
+        *(
+            [f"• 拥挤参考：{tg_escape(crowding)}"]
+            if crowding != "待确认"
+            else []
+        ),
         *_smc_filter_lines(item),
         "",
         *plan_lines,
@@ -1564,7 +1610,7 @@ def format_launch_directional_signal(
 
     ai_lines = _compact_ai_lines(item)
     lifecycle_line = _compact_lifecycle_line(item)
-    footer = "规则分不是概率｜不追涨不追空｜仅作观察，不构成投资建议。"
+    footer = "发现分/证据分都不是概率｜不追涨不追空｜仅作观察，不构成投资建议。"
     required_tail = ["", *ai_lines, lifecycle_line, footer]
 
     optional_sections: list[list[str]] = []
@@ -1574,9 +1620,6 @@ def format_launch_directional_signal(
     gate_lines = _gate_lines(signal, direction)
     if gate_lines:
         optional_sections.append(gate_lines)
-    crowding = _crowding_text(item, signal)
-    if crowding != "待确认":
-        optional_sections.append([f"• 拥挤参考：{tg_escape(crowding)}"])
     if threshold_lines:
         optional_sections.append(threshold_lines)
     lifecycle_details = _lifecycle_lines(item)[1:]
@@ -1604,12 +1647,17 @@ def format_launch_directional_signal(
         required_head[1],
         f"品类：{tg_escape(_short(category, limit=32))}",
         f"{tg_bold('当前结论')}：{tg_escape(_short(conclusion, limit=72))}",
-        tg_bold("📊 方向证据（规则分，不是概率）"),
-        *score_lines[:1],
+        tg_bold("📊 发现分与方向证据分（都不是概率）"),
+        *score_lines[:2],
         *core_market[:2],
         tg_bold("🚦 位置、阶段与执行"),
         *_position_timing_lines(phase, stage, side),
         f"• 主要阻断：{tg_escape(_short(_primary_block_reason(item, signal, phase, side, stage), limit=48))}",
+        *(
+            [f"• 拥挤参考：{tg_escape(crowding)}"]
+            if crowding != "待确认"
+            else []
+        ),
         *_smc_filter_lines(item),
         *_compact_evidence_lines(signal, direction),
         *required_tail,
@@ -1636,10 +1684,11 @@ def launch_directional_topic_intro() -> str:
         "• 1小时现货/合约主动买卖、价格、持仓量和成交量共同核对；更大周期只提供方向背景。",
         "• 每次只使用已经收盘的数据；缺失项不按0补，也不会拿旧窗口冒充当前窗口。",
         "",
-        "<b>🧱 卡片分成三层，不能混着看</b>",
-        "1. 方向证据：看涨和看跌分开打规则分；分数表示证据多少，不是上涨或下跌概率。",
-        "2. 行情阶段：区分初步发现、形成中、确认、延续、拥挤、衰竭、失效，以及72小时内所处位置。",
-        "3. 执行状态：明确写出等待确认、等待回踩/反弹、数据不足，或高位不追涨、低位不追空。",
+        "<b>🧱 卡片分成四层，不能混着看</b>",
+        "1. 发现分：只负责衡量15分钟异动有多明显，用来找币和排序，不代表方向。",
+        "2. 方向证据分：看涨和看跌分开计算；只表示哪边证据更多，不是上涨或下跌概率。",
+        "3. 行情阶段：区分初步发现、形成中、确认、延续、拥挤、衰竭、失效，以及72小时内所处位置。",
+        "4. 执行状态：明确写出等待确认、等待回踩/反弹、数据不足，或高位不追涨、低位不追空。",
         "看涨、看跌、风险和数据可靠度分开显示，避免把方向证据误读成进场概率。",
         "方向证据强，不代表当前位置适合追；阶段和执行门禁会单独拦截。",
         "",
@@ -1659,11 +1708,11 @@ def launch_directional_topic_intro() -> str:
         "",
         "<b>🧭 SMC只做二次过滤</b>",
         "• SMC读取已收线的1小时和4小时结构，用来过滤明显反向的假启动。",
-        "• 它不会接管卡片主标题，不改15分钟发现方向，也不改规则分。",
+        "• 它不会接管卡片主标题，不改15分钟发现结果，也不改发现分或方向证据分。",
         "• 中性、冲突或数据不足会单独写在“SMC二次过滤”一行，不能伪装成主信号状态。",
         "",
         "<b>🤖 AI只负责白话解读</b>",
-        "• AI只把已计算的数据和规则翻译成白话，不能改方向、分数、阶段、观察区或失效位。",
+        "• AI只把已计算的数据和规则翻译成白话，不能改方向、发现分、方向证据分、阶段、观察区或失效位。",
         "• 只有“AI白话解读”一行由AI生成；卡片会明确显示本轮调用、复用结果、未调用或失败原因。",
         "• 延伸不追价、时机未到、SMC不支持或数据不足时不调用AI，规则卡片照常可读。",
         "",
@@ -1675,7 +1724,7 @@ def launch_directional_topic_intro() -> str:
         "<b>🛡️ 重要边界</b>",
         "• 主流币、山寨币、股票/指数代币和大宗商品代币使用不同风险提醒。",
         "• 没有同名现货对时只做合约观察，不确认方向，也不调用AI。",
-        "• 规则分不是概率；观察区、失效和目标不是交易指令；不自动交易，不构成投资建议。",
+        "• 发现分和方向证据分都不是概率；观察区、失效和目标不是交易指令；不自动交易，不构成投资建议。",
     ])
 
 

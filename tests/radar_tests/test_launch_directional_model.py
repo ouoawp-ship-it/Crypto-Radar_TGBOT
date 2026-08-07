@@ -77,6 +77,8 @@ class LaunchDirectionalModelTests(unittest.TestCase):
         self.assertEqual(
             result["evidence_score_semantics"], "rule_score_not_probability"
         )
+        self.assertIn("rule_score_not_probability", result["limitations"])
+        self.assertNotIn("rule_readiness_not_probability", result["limitations"])
 
     def test_production_chinese_liquidity_tier_is_accepted(self) -> None:
         result = evaluate_directional_readiness(_facts(

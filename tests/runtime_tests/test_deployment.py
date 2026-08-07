@@ -213,6 +213,32 @@ class EnvSyncTests(unittest.TestCase):
                 env.read_text(encoding="utf-8"),
             )
 
+    def test_sync_preserves_launch_ai_provider_configuration(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "AI_API_KEY=private-test-key\n"
+                "AI_BASE_URL=https://example.invalid/v1\n"
+                "AI_MODEL=example-model\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "AI_API_KEY=\nAI_BASE_URL=\nAI_MODEL=\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("AI_API_KEY=private-test-key", text)
+        self.assertIn("AI_BASE_URL=https://example.invalid/v1", text)
+        self.assertIn("AI_MODEL=example-model", text)
+        self.assertNotIn("AI_API_KEY", result["removed"])
+        self.assertNotIn("AI_BASE_URL", result["removed"])
+        self.assertNotIn("AI_MODEL", result["removed"])
+
     def test_sync_backs_up_and_atomically_replaces_environment_file(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:
@@ -415,6 +441,11 @@ class LaunchReportTests(unittest.TestCase):
                 "ETHUSDT": {"stage": "breakout", "score": 75},
                 "SOLUSDT": {"stage": "watching", "score": 55},
                 "XRPUSDT": {"stage": "cooling", "score": 80},
+                "ADAUSDT": {
+                    "stage": "primed",
+                    "score": 99,
+                    "evidence_score": 0,
+                },
             })
 
             self.assertEqual(
@@ -582,6 +613,8 @@ class LaunchReportTests(unittest.TestCase):
             [
                 {
                     "top_score": 20,
+                    "top_discovery_score": 70,
+                    "top_evidence_score": 20,
                     "scanned": 2,
                     "alert_count": 0,
                     "buckets": {"idle": 2, "watching": 0},
@@ -589,6 +622,8 @@ class LaunchReportTests(unittest.TestCase):
                 },
                 {
                     "top_score": 60,
+                    "top_discovery_score": 80,
+                    "top_evidence_score": 60,
                     "scanned": 2,
                     "alert_count": 1,
                     "buckets": {"idle": 1, "primed": 1},
@@ -603,6 +638,8 @@ class LaunchReportTests(unittest.TestCase):
         self.assertEqual(report["total_alerts"], 1)
         self.assertEqual(report["max_top_score"], 60)
         self.assertEqual(report["avg_top_score"], 40)
+        self.assertEqual(report["max_top_discovery_score"], 80)
+        self.assertEqual(report["avg_top_discovery_score"], 75)
         self.assertEqual(report["buckets"]["primed"], 1)
         self.assertEqual(report["top_symbols"][0], ("BTCUSDT", 2))
 
@@ -614,6 +651,31 @@ class LaunchReportTests(unittest.TestCase):
         )
 
         self.assertEqual(report["top_symbols"], [("BTCUSDT", 1)])
+
+    def test_legacy_launch_score_is_not_guessed_as_two_new_score_types(self) -> None:
+        settings = Settings(base_dir=Path("."), data_dir=Path("data"))
+        records = [{
+            "top_score": 77,
+            "scanned": 1,
+            "alert_count": 0,
+            "buckets": {},
+            "top_symbols": ["BTCUSDT"],
+        }]
+
+        report = main.build_launch_report(records, settings)
+        text = main.format_launch_report(
+            settings,
+            JsonStore(Path("data")),
+            1,
+            5,
+            records=records,
+        )
+
+        self.assertIsNone(report["max_top_discovery_score"])
+        self.assertEqual(report["legacy_score_records"], 1)
+        self.assertIn("旧版分数（语义无法回填）", text)
+        self.assertNotIn("最高发现分", text)
+        self.assertNotIn("最高方向证据分", text)
 
 
 class MainCommandTests(unittest.TestCase):

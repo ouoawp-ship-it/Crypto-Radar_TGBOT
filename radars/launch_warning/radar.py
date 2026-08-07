@@ -570,7 +570,7 @@ class LaunchWarningRadar(RadarComponent):
                 str(analyzed.get("symbol") or "")
                 for analyzed in analyzed_items
                 if bool(analyzed.get("launch_fusion_cycle"))
-                or int(to_float(analyzed.get("score"))) >= self.settings.launch_watch_score
+                or self._discovery_score(analyzed) >= self.settings.launch_watch_score
                 or str(analyzed.get("symbol") or "") in lifecycle_active_symbols
             ]
             market_contexts = closed_market_contexts_for_symbols(
@@ -658,7 +658,7 @@ class LaunchWarningRadar(RadarComponent):
                 lifecycle_results = lifecycle_store.record_observations([
                     (
                         analyzed,
-                        self._launch_stage(int(analyzed["score"])),
+                        self._launch_stage(self._evidence_score(analyzed)),
                         now_ts,
                     )
                     for analyzed in lifecycle_items
@@ -712,7 +712,12 @@ class LaunchWarningRadar(RadarComponent):
         observed_symbols: set[str] = set()
         for analyzed in analyzed_items:
             observed_symbols.add(str(analyzed["symbol"]))
-            next_stage = self._launch_stage(analyzed["score"])
+            optional_evidence = self._optional_evidence_score(analyzed)
+            next_stage = (
+                self._launch_stage(optional_evidence)
+                if optional_evidence is not None
+                else "idle"
+            )
             watchlist.append(self._launch_watch_record(analyzed, now_ts))
             if not self._directional_candidate_publishable(analyzed):
                 lifecycle_diagnostics["directional"]["publish_skipped"] = (
@@ -840,7 +845,8 @@ class LaunchWarningRadar(RadarComponent):
             if (
                 stage_changed
                 and cooldown_ok
-                and analyzed["score"] >= self.settings.launch_min_score_push
+                and self._evidence_score(analyzed)
+                >= self.settings.launch_min_score_push
             ):
                 if self._smc_filter_publishable(record):
                     alerts.append(record)
@@ -874,7 +880,12 @@ class LaunchWarningRadar(RadarComponent):
         self.store.save(self.settings.launch_watchlist_path, {
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "count": len(watchlist),
-            "items": sorted(watchlist, key=lambda item: item["score"], reverse=True)[:30],
+            "score_contract_version": 2,
+            "items": sorted(
+                watchlist,
+                key=LaunchWarningRadar._discovery_score,
+                reverse=True,
+            )[:30],
         })
         self.store.append_record(
             self.settings.launch_watch_history_path,
@@ -1414,6 +1425,7 @@ class LaunchWarningRadar(RadarComponent):
         result = {
             **item,
             "analysis_status": "ready",
+            "discovery_score": score,
             "score": score,
             "closed_price": closes[-1],
             "closed_oi_usd": oi_values[-1],
@@ -1831,7 +1843,7 @@ class LaunchWarningRadar(RadarComponent):
                     "risk_reward_ratio": plan.get("risk_reward_ratio"),
                 })
             if signal.get("data_complete") or signal.get("observation_ready"):
-                old_score = int(to_float(item.get("score")))
+                discovery_score = self._discovery_score(item)
                 locked_side = str(
                     item.get("launch_directional_locked_side") or ""
                 )
@@ -1857,10 +1869,28 @@ class LaunchWarningRadar(RadarComponent):
                 evidence = evidence if isinstance(evidence, dict) else {}
                 if active_side:
                     new_score = int(
-                        to_float(signal.get(f"{active_side}_readiness"))
+                        to_float(
+                            signal.get(f"{active_side}_evidence_score")
+                            if signal.get(f"{active_side}_evidence_score") is not None
+                            else signal.get(f"{active_side}_readiness")
+                        )
                     )
                     item.update({
-                        "discovery_score": old_score,
+                        "discovery_score": discovery_score,
+                        "bullish_evidence_score": int(
+                            to_float(
+                                signal.get("bullish_evidence_score")
+                                if signal.get("bullish_evidence_score") is not None
+                                else signal.get("bullish_readiness")
+                            )
+                        ),
+                        "bearish_evidence_score": int(
+                            to_float(
+                                signal.get("bearish_evidence_score")
+                                if signal.get("bearish_evidence_score") is not None
+                                else signal.get("bearish_readiness")
+                            )
+                        ),
                         "score": new_score,
                         "raw_rule_score": new_score,
                         "evidence_score": new_score,
@@ -2367,6 +2397,8 @@ class LaunchWarningRadar(RadarComponent):
             else "conservative_fallback"
         )
         item.update({
+            "discovery_score": effective_score,
+            "discovery_raw_score": raw_score,
             "score": effective_score,
             "raw_rule_score": raw_score,
             "score_semantics": SCORE_SEMANTICS,
@@ -2427,6 +2459,45 @@ class LaunchWarningRadar(RadarComponent):
         elif len(points) == 1 and next_funding_time_ms > points[-1]:
             context["funding_interval_hours"] = funding_interval_hours(next_funding_time_ms - points[-1])
         return context
+
+    @staticmethod
+    def _discovery_score(item: Mapping[str, Any]) -> int:
+        value = item.get("discovery_score")
+        if value is None:
+            value = item.get("score")
+        return int(to_float(value))
+
+    @staticmethod
+    def _optional_evidence_score(item: Mapping[str, Any]) -> int | None:
+        value = item.get("evidence_score")
+        if value is not None:
+            return int(to_float(value))
+        signal = item.get("directional_readiness")
+        if isinstance(signal, Mapping):
+            direction = str(signal.get("direction") or "")
+            side = (
+                "bearish"
+                if direction.startswith("bearish")
+                else "bullish"
+                if direction.startswith("bullish")
+                else ""
+            )
+            if side:
+                canonical = signal.get(f"{side}_evidence_score")
+                legacy = signal.get(f"{side}_readiness")
+                return int(to_float(canonical if canonical is not None else legacy))
+        analysis_status = str(item.get("directional_analysis_status") or "")
+        directional_context = bool(item.get("launch_directional_cycle")) or (
+            analysis_status not in {"", "disabled", "legacy_cycle"}
+        )
+        if directional_context:
+            return None
+        return LaunchWarningRadar._discovery_score(item)
+
+    @staticmethod
+    def _evidence_score(item: Mapping[str, Any]) -> int:
+        value = LaunchWarningRadar._optional_evidence_score(item)
+        return value if value is not None else 0
 
     def _launch_stage(self, score: int) -> str:
         return self.launch_stage_for_score(
@@ -3040,12 +3111,28 @@ class LaunchWarningRadar(RadarComponent):
             if isinstance(item.get("launch_phase"), Mapping)
             else {}
         )
+        directional = (
+            item.get("directional_readiness")
+            if isinstance(item.get("directional_readiness"), Mapping)
+            else {}
+        )
+        bullish_evidence = directional.get("bullish_evidence_score")
+        if bullish_evidence is None:
+            bullish_evidence = directional.get("bullish_readiness")
+        bearish_evidence = directional.get("bearish_evidence_score")
+        if bearish_evidence is None:
+            bearish_evidence = directional.get("bearish_readiness")
 
         return {
             "ts": now_ts,
             "symbol": item["symbol"],
             "coin": item["coin"],
             "score": item["score"],
+            "discovery_score": LaunchWarningRadar._discovery_score(item),
+            "score_contract_version": 2,
+            "evidence_score": LaunchWarningRadar._optional_evidence_score(item),
+            "bullish_evidence_score": optional_round(bullish_evidence, 2),
+            "bearish_evidence_score": optional_round(bearish_evidence, 2),
             "closed_price": round(to_float(item.get("closed_price")), 12),
             "closed_oi_usd": round(to_float(item.get("closed_oi_usd")), 2),
             "closed_quote_volume": round(to_float(item.get("closed_quote_volume")), 2),
@@ -3140,35 +3227,17 @@ class LaunchWarningRadar(RadarComponent):
                 item.get("directional_analysis_status") or "disabled"
             ),
             "directional_status": str(
-                (
-                    item.get("directional_readiness")
-                    if isinstance(item.get("directional_readiness"), dict)
-                    else {}
-                ).get("status")
-                or ""
+                directional.get("status") or ""
             ),
             "directional_direction": str(
-                (
-                    item.get("directional_readiness")
-                    if isinstance(item.get("directional_readiness"), dict)
-                    else {}
-                ).get("direction")
-                or ""
+                directional.get("direction") or ""
             ),
             "bullish_readiness": optional_round(
-                (
-                    item.get("directional_readiness")
-                    if isinstance(item.get("directional_readiness"), dict)
-                    else {}
-                ).get("bullish_readiness"),
+                directional.get("bullish_readiness"),
                 2,
             ),
             "bearish_readiness": optional_round(
-                (
-                    item.get("directional_readiness")
-                    if isinstance(item.get("directional_readiness"), dict)
-                    else {}
-                ).get("bearish_readiness"),
+                directional.get("bearish_readiness"),
                 2,
             ),
             "smc_filter_status": str(
@@ -3222,19 +3291,40 @@ class LaunchWarningRadar(RadarComponent):
         alerts: list[dict[str, Any]],
         now_ts: int,
     ) -> dict[str, Any]:
-        sorted_items = sorted(watchlist, key=lambda item: item["score"], reverse=True)
+        sorted_items = sorted(
+            watchlist,
+            key=lambda item: (
+                LaunchWarningRadar._optional_evidence_score(item) is not None,
+                LaunchWarningRadar._optional_evidence_score(item) or 0,
+                LaunchWarningRadar._discovery_score(item),
+            ),
+            reverse=True,
+        )
+        valid_evidence_scores = [
+            score
+            for item in watchlist
+            if (score := LaunchWarningRadar._optional_evidence_score(item))
+            is not None
+        ]
         buckets = {"idle": 0, "watching": 0, "primed": 0, "breakout": 0, "launched": 0}
         for item in sorted_items:
             stage = str(item.get("lifecycle_stage") or "")
             if stage not in buckets:
-                stage = self._launch_stage(int(item.get("score", 0)))
+                evidence = LaunchWarningRadar._optional_evidence_score(item)
+                stage = self._launch_stage(evidence) if evidence is not None else "idle"
             buckets[stage] = buckets.get(stage, 0) + 1
         return {
             "ts": now_ts,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "scanned": len(watchlist),
             "alert_count": len(alerts),
-            "top_score": int(sorted_items[0]["score"]) if sorted_items else 0,
+            "score_contract_version": 2,
+            "top_score": max(valid_evidence_scores, default=0),
+            "top_evidence_score": max(valid_evidence_scores, default=None),
+            "top_discovery_score": max(
+                (int(item.get("discovery_score") or 0) for item in watchlist),
+                default=0,
+            ),
             "buckets": buckets,
             "top_symbols": [item["symbol"] for item in sorted_items[:8]],
             "items": sorted_items[:10],

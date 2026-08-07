@@ -60,11 +60,14 @@ class LaunchScoringTests(unittest.TestCase):
         })
 
         self.assertEqual(result["score"], 100)
+        self.assertEqual(result["discovery_score"], 100)
+        self.assertEqual(result["discovery_score"], result["score"])
         self.assertEqual(
             result["group_scores"],
             {"price": 25, "open_interest": 25, "volume": 20, "structure": 15, "active_funds": 15},
         )
         self.assertEqual(result["score_semantics"], SCORE_SEMANTICS)
+        self.assertEqual(result["discovery_score_semantics"], SCORE_SEMANTICS)
 
     def test_multiple_timeframes_do_not_double_count_a_group(self) -> None:
         both = score_launch_signal({

@@ -151,7 +151,11 @@ class LaunchSignalPhaseTests(unittest.TestCase):
             with self.subTest(bearish=bearish):
                 facts = _facts(bearish=bearish)
                 signal = evaluate_directional_readiness(facts)
-                score_key = "bearish_readiness" if bearish else "bullish_readiness"
+                score_key = (
+                    "bearish_evidence_score"
+                    if bearish
+                    else "bullish_evidence_score"
+                )
                 before = signal[score_key]
 
                 result = classify_launch_phase(
@@ -167,6 +171,7 @@ class LaunchSignalPhaseTests(unittest.TestCase):
                 self.assertTrue(result["ai_eligible"])
                 self.assertTrue(result["plan_eligible"])
                 self.assertEqual(result["score_effect"], "none")
+                self.assertEqual(result["evidence_score"], before)
                 self.assertEqual(result["directional_score"], before)
                 self.assertEqual(signal[score_key], before)
 

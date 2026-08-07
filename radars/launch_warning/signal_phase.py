@@ -430,9 +430,11 @@ def classify_launch_phase(
         "plan_eligible": plan_eligible,
         "reason_codes": reasons,
         "score_effect": SCORE_EFFECT,
+        "evidence_score": score,
+        # Compatibility alias for the first phase schema.
         "directional_score": score,
         "directional_gates_passed": directional_gates_passed,
-        "semantics": "phase_and_execution_do_not_change_directional_score",
+        "semantics": "phase_and_execution_do_not_change_evidence_score",
     }
 
 

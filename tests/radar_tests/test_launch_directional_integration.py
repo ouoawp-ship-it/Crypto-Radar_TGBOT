@@ -178,7 +178,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertEqual(item["multi_timeframe"]["status"], "ok")
         self.assertEqual(
             item["directional_readiness"]["score_semantics"],
-            "rule_readiness_not_probability",
+            "rule_score_not_probability",
         )
         self.assertEqual(item["discovery_score"], 80)
         self.assertIn(item["smc_filter"]["status"], {
@@ -724,6 +724,8 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
             "symbol": "DEMOUSDT",
             "coin": "DEMO",
             "score": 72,
+            "discovery_score": 91,
+            "evidence_score": 0,
             "closed_price": 1.0,
             "closed_oi_usd": 2_000_000.0,
             "closed_quote_volume": 3_000_000.0,
@@ -749,6 +751,8 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         record = LaunchWarningRadar._launch_watch_record(item, 123)
 
         self.assertEqual(record["timing_stage"], "extended_no_chase")
+        self.assertEqual(record["discovery_score"], 91)
+        self.assertEqual(record["evidence_score"], 0)
         self.assertEqual(record["execution_status"], "blocked_extension")
         self.assertEqual(record["position_status"], "high_extended")
         self.assertEqual(
@@ -760,6 +764,24 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertNotIn("reason_codes", record)
         self.assertNotIn("provider_error", record)
         self.assertNotIn("secret-provider-error-body", str(record))
+
+        deferred_item = dict(item)
+        deferred_item.pop("evidence_score")
+        deferred_item.update({
+            "launch_directional_cycle": True,
+            "directional_analysis_status": "budget_deferred",
+        })
+        deferred_record = LaunchWarningRadar._launch_watch_record(
+            deferred_item,
+            124,
+        )
+        self.assertEqual(deferred_record["discovery_score"], 91)
+        self.assertIsNone(deferred_record["evidence_score"])
+
+        radar = LaunchWarningRadar(self.settings(), object())  # type: ignore[arg-type]
+        history = radar._launch_history_record([deferred_record], [], 124)
+        self.assertEqual(history["top_discovery_score"], 91)
+        self.assertIsNone(history["top_evidence_score"])
 
     def test_directional_topic_intro_replaces_old_fusion_intro(self) -> None:
         settings = self.settings()

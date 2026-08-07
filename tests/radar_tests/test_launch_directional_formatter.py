@@ -14,6 +14,7 @@ def _item(**changes: object) -> dict[str, object]:
     item: dict[str, object] = {
         "symbol": "DEMOUSDT",
         "coin": "DEMO",
+        "discovery_score": 80,
         "asset_category": "altcoin",
         "entry_zone": {"low": 1.02, "high": 1.06},
         "invalidation_price": 0.98,
@@ -232,7 +233,8 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         expected = [
             "看涨条件满足｜等待回踩确认",
             "<b>当前结论</b>",
-            "<b>📊 方向证据（规则分，不是概率）</b>",
+            "<b>📊 发现分与方向证据分（都不是概率）</b>",
+            "发现分 80/100｜只负责发现异动",
             "看涨 88｜看跌 19｜看涨领先 69",
             "构成：价与持仓 30/30｜主动买卖 23/25｜结构 22/25｜执行 18/20",
             "<b>🔥 已收盘数据</b>",
@@ -248,7 +250,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         ]
         positions = [text.index(value) for value in expected]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("规则分不是概率", text)
+        self.assertIn("发现分/证据分都不是概率", text)
         self.assertNotIn("price_oi_participation", text)
         self.assertNotIn("entry_5m_aligned", text)
 
@@ -317,7 +319,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         self.assertIn("1小时：价格 -4.90%｜持仓量 +5.70%", text)
         self.assertIn("现货1小时：-$66K｜主动占比 -17.2%", text)
         self.assertIn("合约1小时：-$181K｜主动占比 -14.6%", text)
-        self.assertIn("未过：5分钟入场确认未通过", text)
+        self.assertIn("主要阻断：5分钟入场确认未通过", text)
         self.assertNotIn("观察区：0.94", text)
 
     def test_asset_profiles_have_distinct_plain_language_risks(self) -> None:
@@ -507,7 +509,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         })
 
         self.assertIn("数据不足｜本轮不确认方向", text)
-        self.assertIn("多空准备度：待确认", text)
+        self.assertIn("多空证据分：待确认", text)
         self.assertIn("1小时：价格 缺数据｜持仓量 缺数据", text)
         self.assertIn("现货1小时：Binance数据暂不可用", text)
         self.assertIn("合约1小时：窗口不完整", text)
@@ -656,7 +658,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         cases = {
             "two_closes_below_invalidation": "跌破看涨失效位",
             "two_closes_above_invalidation": "升破看跌失效位",
-            "two_windows_below_watch_score": "准备度低于观察门槛",
+            "two_windows_below_watch_score": "证据分低于观察门槛",
         }
         for reason, expected in cases.items():
             with self.subTest(reason=reason):
@@ -848,7 +850,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         })
 
         self.assertIn("第4轮｜第6次完整观察｜持续 1小时15分", accumulating)
-        self.assertIn("较首次：价格 +3.60%｜持仓量 +5.80%｜准备度 +12分", accumulating)
+        self.assertIn("较首次：价格 +3.60%｜持仓量 +5.80%｜证据分 +12分", accumulating)
         self.assertIn("同方向样本：积累中 8/20（不展示胜率）", accumulating)
         self.assertNotIn("确认率", accumulating)
         self.assertNotIn("跟随率", accumulating)
@@ -937,7 +939,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         self.assertIn("SMC二次过滤</b>：同向支持", supportive)
         self.assertIn("1小时偏多｜4小时中性", supportive)
         self.assertIn("📍 观察计划", supportive)
-        self.assertIn("只过滤，不改主方向和分数", supportive)
+        self.assertIn("只过滤，不改发现分和方向证据分", supportive)
 
         item["smc_filter"] = {
             "status": "neutral",
@@ -965,7 +967,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
 
         self.assertIn("SMC二次过滤</b>：数据不足", text)
         self.assertIn("看涨候选｜证据增强，尚未确认", text)
-        self.assertIn("不改主方向和分数", text)
+        self.assertIn("不改发现分和方向证据分", text)
         self.assertNotIn("高周期冲突", text)
 
     def test_bullish_high_extension_is_tracking_not_a_fresh_candidate(self) -> None:
@@ -1107,7 +1109,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         self.assertLessEqual(len(plain_fallback(text)), 512)
         self.assertIn("AI参与", text)
         self.assertIn("生命周期", text)
-        self.assertIn("规则分不是概率", text)
+        self.assertIn("发现分/证据分都不是概率", text)
         self.assertIn("不构成投资建议", text)
 
     def test_topic_intro_is_detailed_plain_chinese_and_sets_ai_boundary(self) -> None:
@@ -1116,7 +1118,8 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         for expected in (
             "提前发现可能启动或转弱的币，并持续跟踪",
             "15分钟继续使用原规则发现第一批异动",
-            "方向证据：看涨和看跌分开打规则分",
+            "发现分：只负责衡量15分钟异动有多明显",
+            "方向证据分：看涨和看跌分开计算",
             "行情阶段：区分初步发现、形成中、确认、延续",
             "执行状态：明确写出等待确认",
             "方向证据强，不代表当前位置适合追",
@@ -1129,7 +1132,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             "不会接管卡片主标题",
             "AI只负责白话解读",
             "只有“AI白话解读”一行由AI生成",
-            "不能改方向、分数、阶段、观察区或失效位",
+            "不能改方向、发现分、方向证据分、阶段、观察区或失效位",
             "延伸不追价、时机未到、SMC不支持或数据不足时不调用AI",
             "首次预警单独发送",
             "历史消息不自动删除",
