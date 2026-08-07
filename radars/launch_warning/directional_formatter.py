@@ -201,6 +201,9 @@ _AI_STATUS_TEXT = {
     "disabled": "未开启，本卡片全部为规则结论",
     "not_requested": "未调用，本卡片全部为规则结论",
     "not_eligible": "未调用（数据或信号未达到解读条件）",
+    "not_eligible_smc_conflict": "未调用（1小时与4小时结构均反向）",
+    "not_eligible_smc_neutral": "未调用（高周期结构尚未形成一致支持）",
+    "not_eligible_smc_insufficient": "未调用（高周期闭合数据不足）",
     "not_configured": "未调用（密钥、接口或模型配置不完整）",
     "deferred_cycle_limit": "本轮顺延（每轮最多解读一个信号）",
     "invalid_configuration": "未调用（AI配置无效），已使用规则结论",
@@ -347,7 +350,7 @@ def _score_lines(signal: Mapping[str, Any], direction: str) -> list[str]:
         lead = abs(int(round(bullish)) - int(round(bearish)))
         leading = "看涨" if bullish >= bearish else "看跌"
         comparison += f"｜{leading}领先 {lead}"
-    lines = [comparison]
+    lines = [comparison, "• 规则分不是概率"]
     side = _active_side(signal, direction)
     groups = _mapping(signal.get(f"{side}_group_scores")) if side else {}
     caps = _mapping(signal.get("group_caps"))
@@ -806,6 +809,45 @@ def _signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return item
 
 
+def _smc_filter_lines(item: Mapping[str, Any]) -> list[str]:
+    result = item.get("smc_filter")
+    if not isinstance(result, Mapping):
+        return []
+    status = str(result.get("status") or "insufficient")
+    status_text = {
+        "supportive": "同向支持",
+        "neutral": "中性观察",
+        "conflicting": "高周期冲突",
+        "insufficient": "数据不足",
+    }.get(status, "数据不足")
+    structure_text = {
+        "bullish": "偏多",
+        "bearish": "偏空",
+        "neutral": "中性",
+        "unavailable": "不可用",
+    }
+    one_hour = structure_text.get(
+        str(result.get("one_hour_structure") or "unavailable"),
+        "不可用",
+    )
+    four_hour = structure_text.get(
+        str(result.get("four_hour_structure") or "unavailable"),
+        "不可用",
+    )
+    explanation = {
+        "supportive": "至少一个高周期同向，且没有确认的反向结构。",
+        "neutral": "高周期没有形成一致结论，本轮只按观察处理。",
+        "conflicting": "1小时和4小时均明确反向；新周期首条强提醒会被拦截。",
+        "insufficient": "闭合历史不足或不连续；不参与拦截，也不调用AI。",
+    }.get(status, "高周期数据不可用于确定性过滤。")
+    return [
+        f"{tg_bold('🧭 SMC二次过滤')}：{tg_escape(status_text)}",
+        f"• 1小时：{tg_escape(one_hour)}｜4小时：{tg_escape(four_hour)}",
+        f"• {tg_escape(explanation)}",
+        "• SMC不修改15分钟触发、方向和规则分。",
+    ]
+
+
 def _optional_section(title: str, lines: list[str]) -> list[str]:
     return ["", tg_bold(title), *lines]
 
@@ -946,6 +988,22 @@ def format_launch_directional_signal(
         )
     direction = _direction_key(signal)
     icon, headline, subtitle = _headline(signal, direction)
+    smc_filter = item.get("smc_filter")
+    smc_status = (
+        str(smc_filter.get("status") or "")
+        if isinstance(smc_filter, Mapping)
+        else ""
+    )
+    display_summary = _summary(signal)
+    if smc_status == "neutral":
+        icon, headline, subtitle = "🟡", "方向观察", "高周期暂未一致"
+        display_summary = "15分钟候选仍保留，但高周期暂未一致，不作为强信号。"
+    elif smc_status == "insufficient":
+        icon, headline, subtitle = "🟡", "方向观察", "高周期数据不足"
+        display_summary = "高周期闭合数据不足，本轮只保留规则观察。"
+    elif smc_status == "conflicting":
+        icon, headline, subtitle = "🟠", "结构冲突", "仅保留已有周期跟踪"
+        display_summary = "1小时和4小时均明确反向；新周期强提醒会被拦截。"
     status = str(signal.get("status") or "").strip()
     category, category_risk = _asset_profile(item, signal)
     category = _short(item.get("asset_category_label"), limit=80) or category
@@ -995,6 +1053,10 @@ def format_launch_directional_signal(
         and all(value is True for value in active_gates.values())
         and hard_gates.get(f"{active_side}_passed") is True
     )
+    smc_supportive = bool(
+        isinstance(smc_filter, Mapping)
+        and str(smc_filter.get("status") or "") == "supportive"
+    )
     plan_available = bool(
         status in {"多头确认", "空头确认"}
         and active_side == confirmed_side
@@ -1002,6 +1064,7 @@ def format_launch_directional_signal(
         and not futures_only
         and signal.get("data_complete") is True
         and hard_gates_passed
+        and smc_supportive
         and entry != "待确认"
         and invalidation != "待确认"
         and targets != "待确认"
@@ -1015,7 +1078,8 @@ def format_launch_directional_signal(
         _instrument_line(item),
         f"品类：{tg_escape(category)}",
         "",
-        f"{tg_bold('当前结论')}：{tg_escape(_summary(signal))}",
+        f"{tg_bold('当前结论')}：{tg_escape(display_summary)}",
+        *_smc_filter_lines(item),
         *_ai_participation_lines(item),
         "",
         tg_bold("📊 信号强度"),
@@ -1112,7 +1176,8 @@ def format_launch_directional_signal(
             lines[1],
             f"品类：{tg_escape(category)}",
             "",
-            f"{tg_bold('当前结论')}：{tg_escape(_summary(signal))}",
+            f"{tg_bold('当前结论')}：{tg_escape(display_summary)}",
+            *_smc_filter_lines(item),
             *_ai_participation_lines(item),
             "• 卡片内容异常或过长，已安全精简；等待下一完整窗口。",
             "• 规则分不是概率，不执行交易。",
@@ -1142,6 +1207,12 @@ def launch_directional_topic_intro() -> str:
         "• 15分钟：保留现有异动触发。",
         "• 5分钟：只优化入场时机，不能推翻大周期。",
         "• 滚动24小时只是背景，不与日线重复计分。",
+        "",
+        "<b>🧭 SMC二次过滤怎么用</b>",
+        "• 15分钟仍负责发现异动；SMC只读取已收线的1小时和4小时结构，负责过滤高周期明确反向的假启动。",
+        "• 同向支持：至少一个高周期同向且没有反向结构；中性观察：周期结论混合；数据不足：历史缺口或闭合K线不足。",
+        "• 只有1小时和4小时都完整、都明确反向时，才拦截尚未发布的新周期首条强提醒。已有周期的失效与安全更新不会被拦截。",
+        "• SMC不加分、不扣分、不改变15分钟方向；数据不足不会被误写成冲突。",
         "",
         "<b>📊 分数怎么来</b>",
         "• 四组规则分：价格与持仓30分、主动买卖25分、多周期结构25分、执行质量20分。",
@@ -1177,6 +1248,7 @@ def launch_directional_topic_intro() -> str:
         "• 每张卡都会明确显示AI是已完成、复用缓存、本轮顺延、未调用还是调用失败。",
         "• AI只把已计算的数据和规则翻译成白话；只有“AI白话解读”后面的文字由AI生成，其他数据和结论都来自确定性规则。",
         "• AI不改方向、不改分数、不改失效位。输出被截断或调用失败时会显示中文原因并使用规则结论；同一版本的同一个观察最多调用一次，仅旧版已截断结果在本次升级后允许一次修复尝试。",
+        "• 只有SMC二次过滤通过且其他数据完整时才调用AI；中性、冲突或数据不足均保持AI零调用。",
         "",
         "<b>🛡️ 重要边界</b>",
         "• 规则分不是涨跌概率；观察区、失效位和目标也不是交易指令。",

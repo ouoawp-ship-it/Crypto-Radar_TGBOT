@@ -19,7 +19,7 @@ from shared.binance_confirmation import (
     confirmation_text,
 )
 from shared.binance_data import BinanceDataSource
-from .chart import render_launch_chart_png
+from .chart import DISPLAY_CANDLE_LIMIT, render_launch_chart_png
 from .ai_interpreter import OpenAiCompatibleLaunchInterpreter
 from .candidates import select_launch_candidates
 from .directional_formatter import format_launch_directional_signal
@@ -45,6 +45,11 @@ from .multi_timeframe import (
 )
 from .price_action import analyze_launch_price_action, required_15m_kline_limit
 from .scoring import SCORE_SEMANTICS, score_launch_signal
+from .smc_filter import (
+    closed_candles_from_binance,
+    evaluate_smc_filter,
+    insufficient_smc_filter,
+)
 from shared.funding_presentation import funding_table
 from shared.time_windows import closed_window
 from ..common import (
@@ -94,8 +99,9 @@ def _premium_basis_pct(premium: Any) -> float | None:
 
 
 class LaunchWarningRadar(RadarComponent):
-    _AI_CACHE_VERSION = "launch-ai-interpreter-v3"
-    _PREVIOUS_AI_CACHE_VERSION = "launch-ai-interpreter-v2"
+    _AI_CACHE_VERSION = "launch-ai-interpreter-v4"
+    _PREVIOUS_AI_CACHE_VERSION = "launch-ai-interpreter-v3"
+    _LEGACY_AI_CACHE_VERSIONS = ("launch-ai-interpreter-v2",)
 
     def _launch_fusion_active(self) -> bool:
         return bool(
@@ -769,8 +775,22 @@ class LaunchWarningRadar(RadarComponent):
                 else:
                     record.pop("failed_at", None)
                     record.pop("fail_reason", None)
+                    # The state record is reused across cycles so a terminal
+                    # marker from the closed cycle must not turn the new
+                    # active cycle into a terminal-only update.
+                    record.pop("directional_cycle_invalidated", None)
                 if publication.get("publish_required"):
-                    alerts.append(record)
+                    if self._smc_filter_publishable(record):
+                        alerts.append(record)
+                    else:
+                        lifecycle_diagnostics["directional"][
+                            "smc_publish_blocked"
+                        ] = int(
+                            lifecycle_diagnostics["directional"].get(
+                                "smc_publish_blocked",
+                                0,
+                            )
+                        ) + 1
                 state[analyzed["symbol"]] = record
                 continue
             if next_stage == "idle":
@@ -813,8 +833,24 @@ class LaunchWarningRadar(RadarComponent):
             }
             for lifecycle_key in ("cooling_at", "failed_at", "fail_reason", "delete_pending"):
                 record.pop(lifecycle_key, None)
-            if stage_changed and cooldown_ok and analyzed["score"] >= self.settings.launch_min_score_push:
-                alerts.append(record)
+            if (
+                stage_changed
+                and cooldown_ok
+                and analyzed["score"] >= self.settings.launch_min_score_push
+            ):
+                if self._smc_filter_publishable(record):
+                    alerts.append(record)
+                else:
+                    record["smc_filter_blocked_stage"] = next_stage
+                    record["stage"] = previous_stage
+                    lifecycle_diagnostics["directional"][
+                        "smc_publish_blocked"
+                    ] = int(
+                        lifecycle_diagnostics["directional"].get(
+                            "smc_publish_blocked",
+                            0,
+                        )
+                    ) + 1
             state[analyzed["symbol"]] = record
 
         if analyzed_items and lifecycle_store is None:
@@ -1157,9 +1193,14 @@ class LaunchWarningRadar(RadarComponent):
                 checkpoints=checkpoints,
                 cycle_no=int(lifecycle.get("cycle_no") or 1),
                 price_action=chart_price_action,
+                smc_filter=(
+                    dict(alert["smc_filter"])
+                    if isinstance(alert.get("smc_filter"), Mapping)
+                    else None
+                ),
                 asset_category=str(alert.get("asset_category_short") or ""),
-                width=1600,
-                height=850,
+                width=1080,
+                height=720,
             )
         except Exception as exc:
             alert["chart_status"] = "unavailable"
@@ -1168,7 +1209,7 @@ class LaunchWarningRadar(RadarComponent):
 
         alert["chart_png_bytes"] = image
         alert["chart_status"] = "ready"
-        alert["chart_candle_count"] = min(len(candles), 288)
+        alert["chart_candle_count"] = min(len(candles), DISPLAY_CANDLE_LIMIT)
         alert["chart_source_candle_count"] = len(candles)
         alert["chart_checkpoint_count"] = len(checkpoints)
         alert["chart_generated_in_memory"] = True
@@ -1557,6 +1598,11 @@ class LaunchWarningRadar(RadarComponent):
             "degraded": 0,
             "network_calls": 0,
             "selection_semantics": "bounded_after_existing_15m_discovery",
+            "smc_supportive": 0,
+            "smc_neutral": 0,
+            "smc_conflicting": 0,
+            "smc_insufficient": 0,
+            "smc_publish_blocked": 0,
         }
         for item in items:
             symbol = str(item.get("symbol") or "").upper()
@@ -1579,7 +1625,7 @@ class LaunchWarningRadar(RadarComponent):
                     for timeframe, limit in {
                         "5m": 40,
                         "15m": 40,
-                        "1h": 70,
+                        "1h": 120,
                         "4h": 100,
                         "1d": 230,
                     }.items()
@@ -1634,6 +1680,27 @@ class LaunchWarningRadar(RadarComponent):
                     int(used.get("spot_klines", 0)) - before_spot,
                 )
 
+            try:
+                smc_filter = evaluate_smc_filter(
+                    signal=signal,
+                    one_hour_candles=closed_candles_from_binance(
+                        base_rows.get("1h", []),
+                        window_end_ms=int(window_end_ms),
+                        interval_ms=TIMEFRAME_INTERVAL_MS["1h"],
+                    ),
+                    four_hour_candles=closed_candles_from_binance(
+                        base_rows.get("4h", []),
+                        window_end_ms=int(window_end_ms),
+                        interval_ms=TIMEFRAME_INTERVAL_MS["4h"],
+                    ),
+                    window_end_ms=int(window_end_ms),
+                )
+            except Exception:
+                smc_filter = insufficient_smc_filter(
+                    signal=signal,
+                    reason="smc_filter_local_error",
+                )
+
             direction = str(signal.get("direction") or "none")
             plan_key = (
                 "bearish"
@@ -1656,7 +1723,12 @@ class LaunchWarningRadar(RadarComponent):
                 "launch_directional_readiness": signal,
                 "spot_cvd_1h": spot_flow,
                 "futures_cvd_1h": futures_flow,
+                "smc_filter": smc_filter,
             })
+            smc_status = str(smc_filter.get("status") or "insufficient")
+            diagnostic_key = f"smc_{smc_status}"
+            if diagnostic_key in diagnostics:
+                diagnostics[diagnostic_key] += 1
             if plan.get("status") == "available":
                 item.update({
                     "entry_zone": plan.get("entry_zone"),
@@ -1735,6 +1807,58 @@ class LaunchWarningRadar(RadarComponent):
             and str(item.get("trigger_path") or "").startswith(
                 ("directional:bullish", "directional:bearish")
             )
+        )
+
+    @staticmethod
+    def _smc_filter_publishable(item: Mapping[str, Any]) -> bool:
+        """Block only explicit conflict; unavailable structure fails open."""
+
+        if not bool(item.get("launch_directional_cycle")):
+            return True
+        lifecycle = item.get("launch_lifecycle")
+        terminal_update = bool(
+            isinstance(item.get("directional_cycle_invalidated"), Mapping)
+            or (
+                isinstance(lifecycle, Mapping)
+                and str(lifecycle.get("cycle_status") or "") == "failed"
+            )
+        )
+        smc_filter = item.get("smc_filter")
+        publication = item.get("launch_package")
+        previous_published = (
+            publication.get("previous_published")
+            if isinstance(publication, Mapping)
+            else None
+        )
+        package_enabled = bool(
+            isinstance(publication, Mapping) and publication.get("enabled")
+        )
+        current_cycle_published = bool(
+            isinstance(previous_published, Mapping) and previous_published
+        )
+        if package_enabled:
+            # Package-v2 publication metadata is scoped to the current cycle.
+            # A top-level message id can belong to a closed older cycle and
+            # must not turn a conflicting new first card into an update.
+            if terminal_update:
+                return current_cycle_published
+            if not isinstance(smc_filter, Mapping):
+                return True
+            return bool(
+                not smc_filter.get("blocks_publication")
+                or current_cycle_published
+            )
+        has_reply_target = bool(
+            int(to_float(item.get("reply_to_message_id"))) > 0
+            or int(to_float(item.get("last_message_id"))) > 0
+        )
+        if terminal_update:
+            return has_reply_target
+        if not isinstance(smc_filter, Mapping):
+            return True
+        return bool(
+            not smc_filter.get("blocks_publication")
+            or has_reply_target
         )
 
     @staticmethod
@@ -1856,11 +1980,39 @@ class LaunchWarningRadar(RadarComponent):
             alert.pop("ai_interpretation", None)
         if not enabled:
             return diagnostics
+        for alert in alerts:
+            smc_filter = alert.get("smc_filter")
+            directional = alert.get("directional_readiness")
+            if (
+                not isinstance(directional, Mapping)
+                or not bool(directional.get("data_complete"))
+                or alert.get("directional_cycle_invalidated")
+            ):
+                continue
+            if not isinstance(smc_filter, Mapping):
+                alert["ai_interpretation_status"] = (
+                    "not_eligible_smc_insufficient"
+                )
+                continue
+            smc_status = str(smc_filter.get("status") or "insufficient")
+            if smc_status != "supportive":
+                alert["ai_interpretation_status"] = {
+                    "conflicting": "not_eligible_smc_conflict",
+                    "neutral": "not_eligible_smc_neutral",
+                    "insufficient": "not_eligible_smc_insufficient",
+                }.get(smc_status, "not_eligible_smc_insufficient")
+                continue
+            if smc_filter.get("ai_eligible") is not True:
+                alert["ai_interpretation_status"] = "not_eligible"
         eligible_alerts = [
             alert
             for alert in alerts
             if isinstance(alert.get("directional_readiness"), dict)
             and bool(alert["directional_readiness"].get("data_complete"))
+            and isinstance(alert.get("smc_filter"), Mapping)
+            and str(alert["smc_filter"].get("status") or "")
+            == "supportive"
+            and alert["smc_filter"].get("ai_eligible") is True
             and not alert.get("directional_cycle_invalidated")
         ]
         diagnostics["eligible"] = len(eligible_alerts)
@@ -1892,16 +2044,22 @@ class LaunchWarningRadar(RadarComponent):
                 and isinstance(cached.get("result"), dict)
                 else None
             )
-            previous_cache_key = self._directional_ai_cache_key(
-                alert,
-                model=model,
-                operator_prompt=operator_prompt,
-                base_url=base_url,
-                cache_version=self._PREVIOUS_AI_CACHE_VERSION,
-            )
+            previous_cache_keys = {
+                self._directional_ai_cache_key(
+                    alert,
+                    model=model,
+                    operator_prompt=operator_prompt,
+                    base_url=base_url,
+                    cache_version=cache_version,
+                )
+                for cache_version in (
+                    self._PREVIOUS_AI_CACHE_VERSION,
+                    *self._LEGACY_AI_CACHE_VERSIONS,
+                )
+            }
             previous_cache_match = bool(
                 cached_result
-                and cached.get("key") == previous_cache_key
+                and cached.get("key") in previous_cache_keys
             )
             reusable_previous_result = bool(
                 previous_cache_match
@@ -2846,6 +3004,37 @@ class LaunchWarningRadar(RadarComponent):
                     else {}
                 ).get("bearish_readiness"),
                 2,
+            ),
+            "smc_filter_status": str(
+                (
+                    item.get("smc_filter")
+                    if isinstance(item.get("smc_filter"), dict)
+                    else {}
+                ).get("status")
+                or ""
+            ),
+            "smc_one_hour_structure": str(
+                (
+                    item.get("smc_filter")
+                    if isinstance(item.get("smc_filter"), dict)
+                    else {}
+                ).get("one_hour_structure")
+                or ""
+            ),
+            "smc_four_hour_structure": str(
+                (
+                    item.get("smc_filter")
+                    if isinstance(item.get("smc_filter"), dict)
+                    else {}
+                ).get("four_hour_structure")
+                or ""
+            ),
+            "smc_publish_blocked": bool(
+                (
+                    item.get("smc_filter")
+                    if isinstance(item.get("smc_filter"), dict)
+                    else {}
+                ).get("blocks_publication")
             ),
         }
 

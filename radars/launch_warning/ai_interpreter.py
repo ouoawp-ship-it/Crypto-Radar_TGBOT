@@ -261,6 +261,36 @@ def _values_from(
     return result
 
 
+def _smc_filter_context(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Return only the reviewed, bounded SMC confirmation summary."""
+
+    smc_filter = _first_mapping(source, "smc_filter")
+    if not smc_filter:
+        return {}
+    return {
+        **_pick(
+            smc_filter,
+            (
+                "version",
+                "status",
+                "signal_direction",
+                "one_hour_structure",
+                "four_hour_structure",
+                "data_complete",
+                "blocks_publication",
+                "ai_eligible",
+                "score_adjustment",
+                "semantics",
+            ),
+        ),
+        "opposing_zone_timeframes": _safe_list(
+            smc_filter.get("opposing_zone_timeframes"),
+            limit=2,
+        ),
+        "reasons": _safe_list(smc_filter.get("reasons"), limit=6),
+    }
+
+
 def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
     """Build a bounded, content-only context without credentials or raw series."""
 
@@ -308,6 +338,7 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
 
     return {
         "rule_result": rule_context,
+        "smc_filter": _smc_filter_context(source),
         "multi_timeframe": _multi_timeframe_context(multi_timeframe),
         "price_open_interest": _values_from(
             lookups,

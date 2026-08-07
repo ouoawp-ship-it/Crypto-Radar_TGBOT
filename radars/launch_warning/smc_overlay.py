@@ -1,6 +1,6 @@
-"""Independent, closed-candle SMC facts used only by the launch chart.
+"""Independent, closed-candle SMC facts for charting and confirmation.
 
-This module does not participate in the 15-minute alert trigger or score.
+This module never changes the 15-minute discovery trigger or rule score.
 """
 
 from __future__ import annotations
@@ -14,7 +14,10 @@ from typing import Any
 OVERLAY_VERSION = 1
 HOUR_SEC = 60 * 60
 INTERNAL_SIZE = 5
-SWING_SIZE = 20
+# The supplied Pine indicator uses five bars for internal structure and a
+# default swing lookback of fifty bars.  Keep those delayed-confirmation
+# semantics instead of shortening the swing purely to make charts busier.
+SWING_SIZE = 50
 VALUATION_BARS = 72
 ATR_PERIOD = 200
 ATR_MIN_PERIODS = 30
@@ -54,6 +57,7 @@ def _normalize(
     candles: Sequence[Mapping[str, Any]],
     *,
     allow_session_gaps: bool,
+    interval_sec: int,
 ) -> list[_Candle]:
     normalized: list[_Candle] = []
     for item in candles:
@@ -84,10 +88,10 @@ def _normalize(
         if current.close_ts == previous.close_ts:
             raise ValueError("smc_overlay_candle_duplicate")
         delta = current.close_ts - previous.close_ts
-        if delta % HOUR_SEC:
+        if delta % interval_sec:
             raise ValueError("smc_overlay_candle_cadence_invalid")
         delta_hours = delta // HOUR_SEC
-        if delta_hours == 1:
+        if delta == interval_sec:
             continue
         # Only explicitly identified session-based products may bridge a
         # plausible overnight/weekend closure. Small holes are treated as
@@ -237,6 +241,7 @@ def _active_order_blocks(
         if invalidated:
             continue
         block = {
+            "kind": str(event.get("kind") or ""),
             "direction": direction,
             "side": "demand" if direction == "bullish" else "supply",
             "zone_low": source.low,
@@ -253,11 +258,15 @@ def _active_order_blocks(
     )
 
 
-def _valuation(candles: Sequence[_Candle]) -> dict[str, Any]:
+def _valuation(
+    candles: Sequence[_Candle],
+    *,
+    requested_bars: int,
+) -> dict[str, Any]:
     if not candles:
         return {
             "data_status": "insufficient_history",
-            "requested_bars": VALUATION_BARS,
+            "requested_bars": requested_bars,
             "window_bars": 0,
             "start_ts": None,
             "end_ts": None,
@@ -266,13 +275,13 @@ def _valuation(candles: Sequence[_Candle]) -> dict[str, Any]:
             "midpoint": None,
             "zones": {},
         }
-    window = list(candles[-VALUATION_BARS:])
+    window = list(candles[-requested_bars:])
     range_low = min(candle.low for candle in window)
     range_high = max(candle.high for candle in window)
     span = range_high - range_low
     return {
-        "data_status": "complete" if len(window) == VALUATION_BARS else "insufficient_history",
-        "requested_bars": VALUATION_BARS,
+        "data_status": "complete" if len(window) == requested_bars else "insufficient_history",
+        "requested_bars": requested_bars,
         "window_bars": len(window),
         "start_ts": window[0].close_ts,
         "end_ts": window[-1].close_ts,
@@ -294,18 +303,37 @@ def build_smc_overlay(
     candles: Sequence[Mapping[str, Any]],
     *,
     allow_session_gaps: bool = False,
+    timeframe: str = "1h",
+    interval_sec: int = HOUR_SEC,
+    valuation_bars: int = VALUATION_BARS,
 ) -> dict[str, Any]:
-    """Build deterministic SMC drawing facts from closed hourly candles."""
+    """Build deterministic SMC facts from one closed candle time series."""
 
-    normalized = _normalize(candles, allow_session_gaps=allow_session_gaps)
+    if timeframe not in {"1h", "4h"}:
+        raise ValueError("smc_overlay_timeframe_invalid")
+    expected_interval = HOUR_SEC if timeframe == "1h" else 4 * HOUR_SEC
+    if interval_sec != expected_interval:
+        raise ValueError("smc_overlay_interval_invalid")
+    if not 30 <= int(valuation_bars) <= 200:
+        raise ValueError("smc_overlay_valuation_bars_invalid")
+
+    normalized = _normalize(
+        candles,
+        allow_session_gaps=allow_session_gaps,
+        interval_sec=interval_sec,
+    )
     gap_hours = [
-        (current.close_ts - previous.close_ts) // HOUR_SEC - 1
+        (
+            current.close_ts
+            - previous.close_ts
+            - interval_sec
+        ) // HOUR_SEC
         for previous, current in zip(normalized, normalized[1:])
-        if current.close_ts - previous.close_ts > HOUR_SEC
+        if current.close_ts - previous.close_ts > interval_sec
     ]
     pivots = _confirmed_pivots(normalized)
     events = _structure_events(normalized, pivots)
-    valuation = _valuation(normalized)
+    valuation = _valuation(normalized, requested_bars=int(valuation_bars))
     public_events = [
         {key: value for key, value in event.items() if not key.startswith("_")}
         for event in events
@@ -317,7 +345,7 @@ def build_smc_overlay(
             if valuation["data_status"] == "complete"
             else "insufficient_history"
         ),
-        "timeframe": "1h",
+        "timeframe": timeframe,
         "closed_candles": len(normalized),
         "continuity": {
             "session_gap_count": len(gap_hours),
@@ -343,4 +371,9 @@ def build_smc_overlay(
     }
 
 
-__all__ = ["build_smc_overlay"]
+__all__ = [
+    "HOUR_SEC",
+    "INTERNAL_SIZE",
+    "SWING_SIZE",
+    "build_smc_overlay",
+]

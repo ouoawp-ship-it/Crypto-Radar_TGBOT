@@ -1317,9 +1317,17 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
 
             self.assertTrue(ready)
             self.assertTrue(alert["chart_png_bytes"].startswith(PNG_SIGNATURE))
+            self.assertEqual(
+                int.from_bytes(alert["chart_png_bytes"][16:20], "big"),
+                1080,
+            )
+            self.assertEqual(
+                int.from_bytes(alert["chart_png_bytes"][20:24], "big"),
+                720,
+            )
             self.assertTrue(alert["chart_generated_in_memory"])
             self.assertEqual(alert["chart_checkpoint_count"], 2)
-            self.assertEqual(alert["chart_candle_count"], 288)
+            self.assertEqual(alert["chart_candle_count"], 120)
             self.assertEqual(alert["chart_source_candle_count"], 328)
             self.assertEqual(alert["chart_timeframe"], "1h")
             self.assertEqual(alert["chart_trigger_timeframe"], "15m")
