@@ -16,6 +16,7 @@ STATUS_SHORT_COVERING = "挤空反弹"
 STATUS_ACCUMULATION = "潜伏积累"
 STATUS_BEARISH_CONFIRMED = "空头确认"
 STATUS_BEARISH_CANDIDATE = "空头候选"
+STATUS_BEARISH_OVERHEATED = "空头拥挤"
 STATUS_LONG_LIQUIDATION = "多头踩踏"
 STATUS_DISTRIBUTION = "派发风险"
 STATUS_CONFLICT = "冲突等待"
@@ -504,6 +505,20 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
     bullish_gate_passed = all(bullish_gates.values())
     bearish_gate_passed = all(bearish_gates.values())
     bullish_overheated = funding_pct >= 0.05 and basis_pct >= 0.30
+    bearish_overheated = funding_pct <= -0.05 and basis_pct <= -0.30
+    evidence_leader = (
+        "bullish"
+        if bullish_score > bearish_score
+        else "bearish"
+        if bearish_score > bullish_score
+        else "none"
+    )
+    bullish_candidate_ready = (
+        bullish_score >= 45 and bullish_score >= bearish_score + 10
+    )
+    bearish_candidate_ready = (
+        bearish_score >= 45 and bearish_score >= bullish_score + 10
+    )
 
     if not data_complete and not observation_ready:
         status = STATUS_INSUFFICIENT
@@ -535,10 +550,16 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
         else:
             status = STATUS_CONFLICT
             direction = "none"
-    elif participation_pattern == "short_covering":
+    elif (
+        participation_pattern == "short_covering"
+        and evidence_leader == "bullish"
+    ):
         status = STATUS_SHORT_COVERING
         direction = "bullish_rebound_only"
-    elif participation_pattern == "long_liquidation":
+    elif (
+        participation_pattern == "long_liquidation"
+        and evidence_leader == "bearish"
+    ):
         status = STATUS_LONG_LIQUIDATION
         direction = "bearish_deleveraging_only"
     elif (
@@ -563,16 +584,22 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
     elif bullish_overheated and bullish_raw >= 60 and bullish_raw > bearish_raw:
         status = STATUS_LEVERAGE_OVERHEATED
         direction = "bullish_overheated"
+    elif bearish_overheated and bearish_raw >= 60 and bearish_raw > bullish_raw:
+        status = STATUS_BEARISH_OVERHEATED
+        # Keep the public direction within the existing formatter contract.
+        # The dedicated crowding_state below carries the symmetric risk
+        # meaning until delivery adopts a specific short-crowding headline.
+        direction = "bearish_candidate"
     elif bullish_gate_passed and bullish_score >= 70 and bullish_score >= bearish_score + 15:
         status = STATUS_BULLISH_CONFIRMED
         direction = "bullish"
     elif bearish_gate_passed and bearish_score >= 70 and bearish_score >= bullish_score + 15:
         status = STATUS_BEARISH_CONFIRMED
         direction = "bearish"
-    elif bullish_score >= 45 and bullish_score >= bearish_score + 10:
+    elif bullish_candidate_ready:
         status = STATUS_BULLISH_CANDIDATE
         direction = "bullish_candidate"
-    elif bearish_score >= 45 and bearish_score >= bullish_score + 10:
+    elif bearish_candidate_ready:
         status = STATUS_BEARISH_CANDIDATE
         direction = "bearish_candidate"
     else:
@@ -586,6 +613,11 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
         "score_semantics": SCORE_SEMANTICS,
         "bullish_readiness": bullish_score,
         "bearish_readiness": bearish_score,
+        # Compatibility: readiness keys remain for stored history and existing
+        # formatters.  New phase-aware consumers should use evidence_score.
+        "bullish_evidence_score": bullish_score,
+        "bearish_evidence_score": bearish_score,
+        "evidence_score_semantics": "rule_score_not_probability",
         "bullish_raw_score": bullish_raw,
         "bearish_raw_score": bearish_raw,
         "group_caps": dict(_GROUP_CAPS),
@@ -610,6 +642,15 @@ def evaluate_directional_readiness(facts: Mapping[str, Any]) -> dict[str, Any]:
             "bearish": bearish_evidence,
         },
         "participation_pattern": participation_pattern,
+        "move_mechanism": participation_pattern,
+        "evidence_leader": evidence_leader,
+        "crowding_state": (
+            "long_side_overcrowded"
+            if bullish_overheated and bullish_raw > bearish_raw
+            else "short_side_overcrowded"
+            if bearish_overheated and bearish_raw > bullish_raw
+            else "none"
+        ),
         "divergence_status": divergence_status,
         "divergence_evidence": divergence_evidence,
         "divergence_semantics": (

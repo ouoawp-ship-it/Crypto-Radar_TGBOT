@@ -24,6 +24,10 @@ from .ai_interpreter import OpenAiCompatibleLaunchInterpreter
 from .candidates import select_launch_candidates
 from .directional_formatter import format_launch_directional_signal
 from .directional_model import evaluate_directional_readiness
+from .signal_phase import (
+    build_one_hour_phase_summary,
+    classify_launch_phase,
+)
 from .directional_runtime import (
     active_flow_window,
     build_directional_facts,
@@ -649,7 +653,7 @@ class LaunchWarningRadar(RadarComponent):
                 lifecycle_items = [
                     analyzed
                     for analyzed in analyzed_items
-                    if self._directional_candidate_publishable(analyzed)
+                    if self._directional_candidate_trackable(analyzed)
                 ]
                 lifecycle_results = lifecycle_store.record_observations([
                     (
@@ -1603,6 +1607,11 @@ class LaunchWarningRadar(RadarComponent):
             "smc_conflicting": 0,
             "smc_insufficient": 0,
             "smc_publish_blocked": 0,
+            "phase_forming": 0,
+            "phase_confirmed": 0,
+            "phase_extended_no_chase": 0,
+            "phase_insufficient": 0,
+            "phase_publish_blocked": 0,
         }
         for item in items:
             symbol = str(item.get("symbol") or "").upper()
@@ -1663,6 +1672,38 @@ class LaunchWarningRadar(RadarComponent):
                     futures_flow=futures_flow,
                     trade_plans=trade_plans,
                 )
+                flow_states: list[str] = []
+                for flow, minimum_net in (
+                    (spot_flow, self.settings.flow_spot_net_min_usd),
+                    (futures_flow, self.settings.flow_futures_net_min_usd),
+                ):
+                    flow_status = str(flow.get("status") or "")
+                    flow_net = _optional_finite(flow.get("net_usd"))
+                    flow_gross = _optional_finite(flow.get("gross_usd"))
+                    if flow_status not in {"available", "no_trades"}:
+                        flow_states.append("insufficient")
+                    elif (
+                        flow_net is not None
+                        and flow_gross is not None
+                        and flow_gross >= float(minimum_net)
+                        and abs(flow_net) >= float(minimum_net)
+                    ):
+                        flow_states.append("sufficient")
+                    else:
+                        flow_states.append("low")
+                directional_facts.update({
+                    "spot_cvd_net_usd": spot_flow.get("net_usd"),
+                    "spot_cvd_gross_usd": spot_flow.get("gross_usd"),
+                    "futures_cvd_net_usd": futures_flow.get("net_usd"),
+                    "futures_cvd_gross_usd": futures_flow.get("gross_usd"),
+                    "active_flow_scale_status": (
+                        "insufficient"
+                        if "insufficient" in flow_states
+                        else "sufficient"
+                        if flow_states == ["sufficient", "sufficient"]
+                        else "low"
+                    ),
+                })
                 signal = evaluate_directional_readiness(directional_facts)
             except Exception:
                 item.update({
@@ -1679,6 +1720,49 @@ class LaunchWarningRadar(RadarComponent):
                     0,
                     int(used.get("spot_klines", 0)) - before_spot,
                 )
+
+            try:
+                one_hour_summary = build_one_hour_phase_summary(
+                    base_rows.get("1h", []),
+                    window_end_ms=int(window_end_ms),
+                    interval_ms=TIMEFRAME_INTERVAL_MS["1h"],
+                )
+                frames = multi.get("timeframes")
+                frames = frames if isinstance(frames, Mapping) else {}
+                one_hour_frame = frames.get("1h")
+                one_hour_frame = (
+                    one_hour_frame
+                    if isinstance(one_hour_frame, Mapping)
+                    else {}
+                )
+                one_hour_summary.update({
+                    "bullish_reference_price": one_hour_frame.get(
+                        "reference_high"
+                    ),
+                    "bearish_reference_price": one_hour_frame.get(
+                        "reference_low"
+                    ),
+                })
+                launch_phase = classify_launch_phase(
+                    directional_facts,
+                    one_hour_summary,
+                    directional_signal=signal,
+                )
+            except Exception:
+                launch_phase = classify_launch_phase(
+                    directional_facts,
+                    {},
+                    directional_signal=signal,
+                )
+                launch_phase.update({
+                    "timing_stage": "insufficient",
+                    "execution_status": "blocked_data",
+                    "primary_block_reason": "phase_local_error",
+                    "initial_alert_eligible": False,
+                    "plan_eligible": False,
+                    "ai_eligible": False,
+                    "reason_codes": ["phase_local_error"],
+                })
 
             try:
                 smc_filter = evaluate_smc_filter(
@@ -1724,12 +1808,22 @@ class LaunchWarningRadar(RadarComponent):
                 "spot_cvd_1h": spot_flow,
                 "futures_cvd_1h": futures_flow,
                 "smc_filter": smc_filter,
+                "launch_phase": launch_phase,
             })
+            phase_status = str(
+                launch_phase.get("timing_stage") or "insufficient"
+            )
+            phase_key = f"phase_{phase_status}"
+            if phase_key in diagnostics:
+                diagnostics[phase_key] += 1
             smc_status = str(smc_filter.get("status") or "insufficient")
             diagnostic_key = f"smc_{smc_status}"
             if diagnostic_key in diagnostics:
                 diagnostics[diagnostic_key] += 1
-            if plan.get("status") == "available":
+            if (
+                plan.get("status") == "available"
+                and launch_phase.get("plan_eligible") is True
+            ):
                 item.update({
                     "entry_zone": plan.get("entry_zone"),
                     "invalidation_price": plan.get("invalidation_price"),
@@ -1769,7 +1863,8 @@ class LaunchWarningRadar(RadarComponent):
                         "discovery_score": old_score,
                         "score": new_score,
                         "raw_rule_score": new_score,
-                        "score_semantics": "rule_readiness_not_probability",
+                        "evidence_score": new_score,
+                        "score_semantics": "rule_score_not_probability",
                         "trigger_path": (
                             f"directional:{direction}"
                             if current_side
@@ -1798,7 +1893,34 @@ class LaunchWarningRadar(RadarComponent):
 
     @staticmethod
     def _directional_candidate_publishable(item: Mapping[str, Any]) -> bool:
-        """Prevent a directional candidate from falling back to legacy cards."""
+        """Publish only timely first alerts while retaining active updates."""
+
+        if not bool(item.get("launch_directional_cycle")):
+            return True
+        if not LaunchWarningRadar._directional_candidate_trackable(item):
+            return False
+        phase = item.get("launch_phase")
+        if not isinstance(phase, Mapping):
+            return False
+        lifecycle = item.get("launch_lifecycle")
+        publication = (
+            lifecycle.get("publication")
+            if isinstance(lifecycle, Mapping)
+            and isinstance(lifecycle.get("publication"), Mapping)
+            else item.get("launch_package")
+        )
+        previous_published = (
+            publication.get("previous_published")
+            if isinstance(publication, Mapping)
+            else None
+        )
+        if isinstance(previous_published, Mapping) and bool(previous_published):
+            return True
+        return phase.get("initial_alert_eligible") is True
+
+    @staticmethod
+    def _directional_candidate_trackable(item: Mapping[str, Any]) -> bool:
+        """Keep complete directional facts in bounded lifecycle tracking."""
 
         if not bool(item.get("launch_directional_cycle")):
             return True
@@ -1988,6 +2110,42 @@ class LaunchWarningRadar(RadarComponent):
                 or not bool(directional.get("data_complete"))
                 or alert.get("directional_cycle_invalidated")
             ):
+                alert["ai_interpretation_status"] = (
+                    "not_eligible_directional_incomplete"
+                )
+                continue
+            launch_phase = alert.get("launch_phase")
+            if not isinstance(launch_phase, Mapping):
+                alert["ai_interpretation_status"] = (
+                    "not_eligible_phase_missing"
+                )
+                continue
+            if launch_phase.get("ai_eligible") is not True:
+                timing_stage = str(
+                    launch_phase.get("timing_stage") or "insufficient"
+                )
+                execution_status = str(
+                    launch_phase.get("execution_status") or "blocked_data"
+                )
+                alert["ai_interpretation_status"] = (
+                    "not_eligible_phase_extended"
+                    if (
+                        timing_stage == "extended_no_chase"
+                        or execution_status == "blocked_extension"
+                    )
+                    else "not_eligible_phase_low_volume"
+                    if execution_status == "blocked_volume"
+                    else "not_eligible_phase_low_flow_scale"
+                    if execution_status == "blocked_flow_scale"
+                    else "not_eligible_phase_crowding"
+                    if execution_status == "blocked_crowding"
+                    else "not_eligible_phase_insufficient"
+                    if (
+                        timing_stage == "insufficient"
+                        or execution_status == "blocked_data"
+                    )
+                    else "not_eligible_phase_timing"
+                )
                 continue
             if not isinstance(smc_filter, Mapping):
                 alert["ai_interpretation_status"] = (
@@ -2009,6 +2167,8 @@ class LaunchWarningRadar(RadarComponent):
             for alert in alerts
             if isinstance(alert.get("directional_readiness"), dict)
             and bool(alert["directional_readiness"].get("data_complete"))
+            and isinstance(alert.get("launch_phase"), Mapping)
+            and alert["launch_phase"].get("ai_eligible") is True
             and isinstance(alert.get("smc_filter"), Mapping)
             and str(alert["smc_filter"].get("status") or "")
             == "supportive"
@@ -2590,7 +2750,7 @@ class LaunchWarningRadar(RadarComponent):
                 "confirmation_changed": "1小时确认状态变化",
                 "quadrant_changed": "价格与持仓结构变化",
                 "active_message_missing": "有效信号消息缺失，自动恢复",
-            }.get(str(reason), str(reason))
+            }.get(str(reason), "其他状态变化")
             for reason in (publication.get("checkpoint_reasons") or [])
         ]
 
@@ -2875,6 +3035,12 @@ class LaunchWarningRadar(RadarComponent):
             except (TypeError, ValueError):
                 return None
 
+        launch_phase = (
+            item.get("launch_phase")
+            if isinstance(item.get("launch_phase"), Mapping)
+            else {}
+        )
+
         return {
             "ts": now_ts,
             "symbol": item["symbol"],
@@ -3035,6 +3201,18 @@ class LaunchWarningRadar(RadarComponent):
                     if isinstance(item.get("smc_filter"), dict)
                     else {}
                 ).get("blocks_publication")
+            ),
+            "timing_stage": str(
+                launch_phase.get("timing_stage") or ""
+            ),
+            "execution_status": str(
+                launch_phase.get("execution_status") or ""
+            ),
+            "position_status": str(
+                launch_phase.get("position_status") or ""
+            ),
+            "primary_block_reason": str(
+                launch_phase.get("primary_block_reason") or ""
             ),
         }
 

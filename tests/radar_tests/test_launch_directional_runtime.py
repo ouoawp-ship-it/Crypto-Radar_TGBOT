@@ -21,6 +21,62 @@ class LaunchDirectionalRuntimeTests(unittest.TestCase):
         self.assertEqual(selected[0], "BBBUSDT")
         self.assertEqual(len(selected), 2)
 
+    def test_active_selection_preserves_oldest_lifecycle_order(self) -> None:
+        selected = select_directional_candidates([
+            {
+                "symbol": "OLDESTUSDT",
+                "score": 1,
+                "launch_lifecycle_active": True,
+            },
+            {
+                "symbol": "MIDDLEUSDT",
+                "score": 2,
+                "launch_lifecycle_active": True,
+            },
+            {
+                "symbol": "NEWESTUSDT",
+                "score": 100,
+                "price_1h": 25,
+                "launch_lifecycle_active": True,
+            },
+        ], limit=2)
+
+        self.assertEqual(selected, ["OLDESTUSDT", "MIDDLEUSDT"])
+
+    def test_active_cycles_rotate_fairly_and_can_reach_failure_observations(self) -> None:
+        symbols = [f"ACTIVE{index}USDT" for index in range(7)]
+        last_complete_window = {symbol: 0 for symbol in symbols}
+        invalid_observations = {symbol: 0 for symbol in symbols}
+
+        for window in range(1, 9):
+            oldest_first = sorted(
+                symbols,
+                key=lambda symbol: (last_complete_window[symbol], symbol),
+            )
+            selected = select_directional_candidates([
+                {
+                    "symbol": symbol,
+                    "score": 100 if symbol == "ACTIVE0USDT" else 1,
+                    "launch_lifecycle_active": True,
+                }
+                for symbol in oldest_first
+            ], limit=2)
+            for symbol in selected:
+                last_complete_window[symbol] = window
+                invalid_observations[symbol] += 1
+
+        self.assertTrue(all(count >= 2 for count in invalid_observations.values()))
+
+    def test_new_candidates_still_use_current_strength_after_active_slots(self) -> None:
+        selected = select_directional_candidates([
+            {"symbol": "ACTIVEUSDT", "launch_lifecycle_active": True},
+            {"symbol": "WEAKUSDT", "score": 20},
+            {"symbol": "STRONGUSDT", "score": 90},
+            {"symbol": "FLOWUSDT", "spot_active_ratio": 0.95},
+        ], limit=3)
+
+        self.assertEqual(selected, ["ACTIVEUSDT", "FLOWUSDT", "STRONGUSDT"])
+
     def test_active_flow_requires_one_exact_closed_window(self) -> None:
         interval = 15 * 60 * 1000
         end = 4 * interval

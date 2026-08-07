@@ -68,6 +68,15 @@ class LaunchDirectionalModelTests(unittest.TestCase):
         self.assertEqual(result["direction"], "bullish")
         self.assertTrue(result["hard_gates"]["bullish_passed"])
         self.assertEqual(result["score_semantics"], SCORE_SEMANTICS)
+        self.assertEqual(
+            result["bullish_evidence_score"], result["bullish_readiness"]
+        )
+        self.assertEqual(
+            result["bearish_evidence_score"], result["bearish_readiness"]
+        )
+        self.assertEqual(
+            result["evidence_score_semantics"], "rule_score_not_probability"
+        )
 
     def test_production_chinese_liquidity_tier_is_accepted(self) -> None:
         result = evaluate_directional_readiness(_facts(
@@ -184,6 +193,46 @@ class LaunchDirectionalModelTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "多头踩踏")
         self.assertEqual(result["direction"], "bearish_deleveraging_only")
+
+    def test_short_covering_is_mechanism_and_cannot_override_bearish_leader(self) -> None:
+        result = evaluate_directional_readiness(_bearish_facts(
+            price_change_pct=3.2,
+            oi_change_pct=-3.5,
+        ))
+
+        self.assertEqual(result["status"], "空头确认")
+        self.assertEqual(result["direction"], "bearish")
+        self.assertEqual(result["move_mechanism"], "short_covering")
+        self.assertEqual(result["evidence_leader"], "bearish")
+        self.assertGreater(
+            result["bearish_readiness"], result["bullish_readiness"]
+        )
+
+    def test_long_liquidation_is_mechanism_and_cannot_override_bullish_leader(self) -> None:
+        result = evaluate_directional_readiness(_facts(
+            price_change_pct=-3.2,
+            oi_change_pct=-3.5,
+        ))
+
+        self.assertEqual(result["status"], "多头确认")
+        self.assertEqual(result["direction"], "bullish")
+        self.assertEqual(result["move_mechanism"], "long_liquidation")
+        self.assertEqual(result["evidence_leader"], "bullish")
+        self.assertGreater(
+            result["bullish_readiness"], result["bearish_readiness"]
+        )
+
+    def test_short_side_overcrowding_is_mirrored_and_not_bearish_confirmation(self) -> None:
+        result = evaluate_directional_readiness(_bearish_facts(
+            funding_rate_pct=-0.12,
+            basis_pct=-0.60,
+        ))
+
+        self.assertEqual(result["status"], "空头拥挤")
+        self.assertEqual(result["direction"], "bearish_candidate")
+        self.assertEqual(result["crowding_state"], "short_side_overcrowded")
+        self.assertNotEqual(result["status"], "空头确认")
+        self.assertLess(result["risk_adjustments"]["bearish"], 0)
 
     def test_quiet_price_oi_build_with_spot_buying_is_accumulation(self) -> None:
         result = evaluate_directional_readiness(_facts(

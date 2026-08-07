@@ -261,6 +261,140 @@ class TelegramSafeFallbackTests(unittest.TestCase):
             self.assertEqual(diagnostics.http_attempts, 2)  # type: ignore[union-attr]
             self.assertEqual(diagnostics.completed_chunks, 1)  # type: ignore[union-attr]
 
+    def test_read_timeout_is_uncertain_not_retried_and_quarantined(self) -> None:
+        secret = "PRIVATE_TIMEOUT_DETAIL"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gateway = self.make_gateway(root, tg_push_retry=3)
+            responses = [
+                requests.exceptions.ReadTimeout(secret),
+                FakeResponse(200, message_id=99),
+            ]
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=responses,
+            ) as request:
+                first = gateway.send(
+                    "message",
+                    "TG_FLOW_RADAR",
+                    "uncertain-delivery",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+                second = gateway.send(
+                    "message",
+                    "TG_FLOW_RADAR",
+                    "uncertain-delivery",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                )
+
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(first.status, "failed")
+            self.assertEqual(first.reason, "telegram_delivery_uncertain")
+            self.assertEqual(
+                first.diagnostics.telegram_error_class,  # type: ignore[union-attr]
+                "telegram_delivery_uncertain",
+            )
+            self.assertEqual(
+                first.diagnostics.network_error_class,  # type: ignore[union-attr]
+                "telegram_timeout",
+            )
+            self.assertEqual(first.diagnostics.http_attempts, 1)  # type: ignore[union-attr]
+            self.assertEqual(second.status, "skipped")
+            self.assertEqual(second.reason, "delivery_quarantine")
+            outbox = JsonStore(root).load(root / "outbox.json", [])
+            self.assertEqual(outbox[-1]["status"], "uncertain")
+            self.assertEqual(
+                outbox[-1]["telegram_error_class"],
+                "telegram_delivery_uncertain",
+            )
+            history = JsonStore(root).load(root / "history.json", [])
+            self.assertEqual(
+                history[-2]["telegram_error_class"],
+                "telegram_delivery_uncertain",
+            )
+            serialized = json.dumps(first.diagnostics.public_dict())  # type: ignore[union-attr]
+            serialized += (root / "history.json").read_text(encoding="utf-8")
+            serialized += (root / "outbox.json").read_text(encoding="utf-8")
+            self.assertNotIn(secret, serialized)
+
+    def test_connection_drop_is_uncertain_and_not_retried(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = self.make_gateway(Path(tmp), tg_push_retry=3)
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=requests.exceptions.ConnectionError("private"),
+            ) as request:
+                ok, ids = gateway._send_real_message_ids(
+                    "message",
+                    parse_mode="HTML",
+                    topic_id="22",
+                )
+
+            self.assertFalse(ok)
+            self.assertEqual(ids, [])
+            self.assertEqual(request.call_count, 1)
+            diagnostics = gateway._last_delivery_diagnostics
+            self.assertEqual(
+                diagnostics.telegram_error_class,  # type: ignore[union-attr]
+                "telegram_delivery_uncertain",
+            )
+            self.assertEqual(diagnostics.http_attempts, 1)  # type: ignore[union-attr]
+
+    def test_connect_timeout_keeps_existing_bounded_retry(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = self.make_gateway(Path(tmp), tg_push_retry=2)
+            responses = [
+                requests.exceptions.ConnectTimeout("private"),
+                FakeResponse(200, message_id=17),
+            ]
+            with (
+                patch("shared.telegram.requests.post", side_effect=responses) as request,
+                patch("shared.telegram.time.sleep"),
+            ):
+                ok, ids = gateway._send_real_message_ids(
+                    "message",
+                    parse_mode="HTML",
+                    topic_id="22",
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(ids, [17])
+            self.assertEqual(request.call_count, 2)
+            diagnostics = gateway._last_delivery_diagnostics
+            self.assertEqual(diagnostics.http_attempts, 2)  # type: ignore[union-attr]
+            self.assertEqual(
+                diagnostics.telegram_error_class,  # type: ignore[union-attr]
+                "telegram_ok",
+            )
+
+    def test_photo_read_timeout_is_uncertain_and_not_retried(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = self.make_gateway(Path(tmp), tg_push_retry=3)
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=requests.exceptions.ReadTimeout("private"),
+            ) as request:
+                ok, ids = gateway._send_real_photo_bytes(
+                    b"\x89PNG\r\n\x1a\nchart",
+                    caption="message",
+                    parse_mode="HTML",
+                    topic_id="22",
+                )
+
+            self.assertFalse(ok)
+            self.assertEqual(ids, [])
+            self.assertEqual(request.call_count, 1)
+            diagnostics = gateway._last_delivery_diagnostics
+            self.assertEqual(
+                diagnostics.telegram_error_class,  # type: ignore[union-attr]
+                "telegram_delivery_uncertain",
+            )
+            self.assertEqual(diagnostics.http_attempts, 1)  # type: ignore[union-attr]
+
     def test_partial_delivery_persists_safe_audit_fields(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

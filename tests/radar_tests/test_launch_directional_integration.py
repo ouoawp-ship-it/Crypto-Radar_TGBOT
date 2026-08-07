@@ -125,6 +125,17 @@ def _supportive_smc_filter() -> dict[str, object]:
     }
 
 
+def _eligible_launch_phase() -> dict[str, object]:
+    return {
+        "timing_stage": "confirmed",
+        "execution_status": "retest_ready",
+        "position_status": "middle",
+        "primary_block_reason": "none",
+        "initial_alert_eligible": True,
+        "ai_eligible": True,
+    }
+
+
 class LaunchDirectionalIntegrationTests(unittest.TestCase):
     def settings(self, **changes: object) -> Settings:
         values = {
@@ -223,7 +234,10 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         ai_diagnostics = radar._interpret_directional_alerts([item])
         self.assertEqual(ai_diagnostics["calls"], 0)
         self.assertEqual(ai_diagnostics["status"], "no_eligible_alert")
-        self.assertEqual(item["ai_interpretation_status"], "not_eligible")
+        self.assertEqual(
+            item["ai_interpretation_status"],
+            "not_eligible_directional_incomplete",
+        )
         self.assertEqual(item["ai_interpretation_source"], "none")
 
     def test_ai_disabled_makes_zero_requests_and_rule_card_still_formats(self) -> None:
@@ -274,6 +288,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "launch_directional_cycle": True,
                 "directional_analysis_status": "ready",
                 "trigger_path": "directional:bearish_divergence_watch",
+                "launch_phase": _eligible_launch_phase(),
             })
         )
 
@@ -432,6 +447,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "blocks_publication": False,
                     "ai_eligible": True,
                 },
+                "launch_phase": _eligible_launch_phase(),
             })
             return {
                 "selected": 1,
@@ -546,6 +562,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "direction": "bullish",
                 "data_complete": True,
             },
+            "launch_phase": _eligible_launch_phase(),
             "smc_filter": {
                 "status": "conflicting",
                 "ai_eligible": False,
@@ -592,6 +609,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "direction": "bullish",
                 "data_complete": True,
             },
+            "launch_phase": _eligible_launch_phase(),
         }
         missing = dict(base)
         forged = {
@@ -617,6 +635,132 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         )
         session.assert_not_called()
 
+    def test_non_eligible_phase_never_reads_cache_or_creates_session(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(
+                launch_ai_interpreter_enable=True,
+                ai_api_key="fake-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+            ),
+            object(),  # type: ignore[arg-type]
+        )
+        directional = {
+            "status": "多头确认",
+            "direction": "bullish",
+            "data_complete": True,
+        }
+        cached = {
+            "key": "must-not-be-read",
+            "result": {
+                "status": "available",
+                "summary": "旧解读不得复用",
+            },
+        }
+        alerts = [
+            {
+                "symbol": "MISSINGUSDT",
+                "directional_readiness": directional,
+                "smc_filter": _supportive_smc_filter(),
+                "launch_ai_interpreter_cache": cached,
+            },
+            {
+                "symbol": "EXTENDEDUSDT",
+                "directional_readiness": directional,
+                "launch_phase": {
+                    "timing_stage": "extended_no_chase",
+                    "execution_status": "blocked_extension",
+                    "ai_eligible": False,
+                },
+                "smc_filter": _supportive_smc_filter(),
+                "launch_ai_interpreter_cache": cached,
+            },
+            {
+                "symbol": "INSUFFICIENTUSDT",
+                "directional_readiness": directional,
+                "launch_phase": {
+                    "timing_stage": "insufficient",
+                    "execution_status": "blocked_data",
+                    "ai_eligible": False,
+                },
+                "smc_filter": _supportive_smc_filter(),
+                "launch_ai_interpreter_cache": cached,
+            },
+            {
+                "symbol": "LOWVOLUMEUSDT",
+                "directional_readiness": directional,
+                "launch_phase": {
+                    "timing_stage": "forming",
+                    "execution_status": "blocked_volume",
+                    "ai_eligible": False,
+                },
+                "smc_filter": _supportive_smc_filter(),
+                "launch_ai_interpreter_cache": cached,
+            },
+        ]
+
+        with patch("radars.launch_warning.radar.requests.Session") as session:
+            result = radar._interpret_directional_alerts(alerts)
+
+        self.assertEqual(result["calls"], 0)
+        self.assertEqual(result["cached"], 0)
+        self.assertEqual(result["eligible"], 0)
+        self.assertEqual(result["status"], "no_eligible_alert")
+        self.assertEqual(
+            [item["ai_interpretation_status"] for item in alerts],
+            [
+                "not_eligible_phase_missing",
+                "not_eligible_phase_extended",
+                "not_eligible_phase_insufficient",
+                "not_eligible_phase_low_volume",
+            ],
+        )
+        for item in alerts:
+            self.assertNotIn("ai_interpretation", item)
+        session.assert_not_called()
+
+    def test_watch_record_persists_only_safe_phase_summary(self) -> None:
+        item = {
+            "symbol": "DEMOUSDT",
+            "coin": "DEMO",
+            "score": 72,
+            "closed_price": 1.0,
+            "closed_oi_usd": 2_000_000.0,
+            "closed_quote_volume": 3_000_000.0,
+            "price_15m": 1.5,
+            "price_1h": 3.0,
+            "oi_15m": 2.0,
+            "oi_1h": 4.0,
+            "volume_ratio": 1.2,
+            "breakout": True,
+            "quote_volume": 4_000_000.0,
+            "mcap": 20_000_000.0,
+            "launch_phase": {
+                "timing_stage": "extended_no_chase",
+                "execution_status": "blocked_extension",
+                "position_status": "high_extended",
+                "primary_block_reason": "bullish_72h_high_extended",
+                "one_hour_rows": [["must-not-persist"]],
+                "reason_codes": ["must-not-persist"],
+                "provider_error": "secret-provider-error-body",
+            },
+        }
+
+        record = LaunchWarningRadar._launch_watch_record(item, 123)
+
+        self.assertEqual(record["timing_stage"], "extended_no_chase")
+        self.assertEqual(record["execution_status"], "blocked_extension")
+        self.assertEqual(record["position_status"], "high_extended")
+        self.assertEqual(
+            record["primary_block_reason"],
+            "bullish_72h_high_extended",
+        )
+        self.assertNotIn("launch_phase", record)
+        self.assertNotIn("one_hour_rows", record)
+        self.assertNotIn("reason_codes", record)
+        self.assertNotIn("provider_error", record)
+        self.assertNotIn("secret-provider-error-body", str(record))
+
     def test_directional_topic_intro_replaces_old_fusion_intro(self) -> None:
         settings = self.settings()
 
@@ -625,7 +769,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertIn("AI只把已计算的数据和规则翻译成白话", text)
         self.assertIn("看涨、看跌、风险和数据可靠度分开显示", text)
         self.assertIn("1小时现货/合约主动买卖", text)
-        self.assertIn("directional", topic_intro_version("TG_LAUNCH_ALERT", settings))
+        self.assertIn("launch", topic_intro_version("TG_LAUNCH_ALERT", settings))
 
     def test_ai_interpreter_runs_once_only_for_publishable_directional_alert(self) -> None:
         radar = LaunchWarningRadar(
@@ -646,6 +790,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "bearish_readiness": 15,
                 "data_complete": True,
             },
+            "launch_phase": _eligible_launch_phase(),
             "smc_filter": _supportive_smc_filter(),
         }
         session = FakeAiSession()
@@ -688,6 +833,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "bearish_readiness": 15,
                     "data_complete": True,
                 },
+                "launch_phase": _eligible_launch_phase(),
                 "smc_filter": _supportive_smc_filter(),
             }
             first_session = FakeAiSession()
@@ -738,6 +884,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "bearish_readiness": 15,
                     "data_complete": True,
                 },
+                "launch_phase": _eligible_launch_phase(),
                 "smc_filter": _supportive_smc_filter(),
             }
             for symbol in ("ONEUSDT", "TWOUSDT")
@@ -771,6 +918,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "direction": "bullish_candidate",
                 "data_complete": True,
             },
+            "launch_phase": _eligible_launch_phase(),
             "smc_filter": _supportive_smc_filter(),
         }
 
@@ -802,6 +950,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "bearish_readiness": 15,
                 "data_complete": True,
             },
+            "launch_phase": _eligible_launch_phase(),
             "smc_filter": _supportive_smc_filter(),
         }
         first["launch_ai_interpreter_cache"] = {
@@ -832,6 +981,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "bearish_readiness": 15,
                 "data_complete": True,
             },
+            "launch_phase": _eligible_launch_phase(),
             "smc_filter": _supportive_smc_filter(),
         }
         session = FakeAiSession()
@@ -899,6 +1049,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "direction": "bullish",
                     "data_complete": True,
                 },
+                "launch_phase": _eligible_launch_phase(),
                 "smc_filter": _supportive_smc_filter(),
             }
             result: dict[str, object] = {

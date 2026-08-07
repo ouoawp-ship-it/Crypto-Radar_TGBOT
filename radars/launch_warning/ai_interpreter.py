@@ -438,6 +438,8 @@ def _expected_rule_values(context: Mapping[str, Any]) -> tuple[str, str]:
 
 def _ai_output_policy_safe(text: str) -> bool:
     normalized = text.strip().lower()
+    if any(marker in normalized for marker in _FORBIDDEN_TEXT):
+        return False
     if any(phrase in normalized for phrase in _FORBIDDEN_AI_OUTPUT_PHRASES):
         return False
     if _TRADE_INSTRUCTION_PATTERN.search(normalized):

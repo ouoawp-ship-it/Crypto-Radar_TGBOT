@@ -8,6 +8,7 @@ _PUSH_STATUS_TEXT = {
     "blocked": "已阻止",
     "failed": "发送失败",
     "partial": "部分消息发送成功",
+    "uncertain": "投递结果待确认",
 }
 
 _PUSH_REASON_TEXT = {
@@ -23,6 +24,7 @@ _PUSH_REASON_TEXT = {
     "telegram_not_configured": "Telegram 机器人或群配置不完整",
     "telegram_topic_not_configured": "对应的 Telegram 话题尚未配置",
     "delivery_quarantine": "上一次投递尚未安全收口，为避免重复发送已暂停",
+    "telegram_delivery_uncertain": "Telegram 是否已收到本次消息暂时无法确认；为避免重复发送，系统已停止重试",
     "invalid_telegram_config": "Telegram 配置无效或不完整",
     "invalid_png": "图片格式无效",
     "photo_too_large": "图片大小超过 Telegram 限制",

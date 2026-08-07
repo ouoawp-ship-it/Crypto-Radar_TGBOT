@@ -27,6 +27,7 @@ class PushResultChineseTextTests(unittest.TestCase):
             "blocked": "已阻止",
             "failed": "发送失败",
             "partial": "部分消息发送成功",
+            "uncertain": "投递结果待确认",
         }
 
         for status, label in expected.items():
@@ -44,6 +45,7 @@ class PushResultChineseTextTests(unittest.TestCase):
             "telegram_topic_not_configured": "话题尚未配置",
             "telegram_api_failed": "接口调用失败",
             "delivery_quarantine": "尚未安全收口",
+            "telegram_delivery_uncertain": "停止重试",
         }
 
         for reason, expected_text in cases.items():
