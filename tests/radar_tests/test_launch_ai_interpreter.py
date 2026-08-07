@@ -87,6 +87,22 @@ def source(**rule_overrides: object) -> dict[str, object]:
             "supporting_evidence": ["breakout_retest"],
             "provider_payload": "must-not-leak",
         },
+        "smc_filter": {
+            "version": 1,
+            "status": "supportive",
+            "signal_direction": "bullish",
+            "one_hour_structure": "bullish",
+            "four_hour_structure": "bullish",
+            "data_complete": True,
+            "blocks_publication": False,
+            "ai_eligible": True,
+            "score_adjustment": 0,
+            "semantics": "higher_timeframe_filter_not_score_or_probability",
+            "opposing_zone_timeframes": [],
+            "reasons": ["1h_structure_aligned", "4h_structure_aligned"],
+            "provider_error": "must-not-leak",
+            "raw_klines": [["must-not-leak"]],
+        },
         "plan": {
             "status": "waiting_retest",
             "entry_zone_low": 100,
@@ -185,6 +201,7 @@ class LaunchAiInterpreterTests(unittest.TestCase):
             set(context),
             {
                 "rule_result",
+                "smc_filter",
                 "multi_timeframe",
                 "price_open_interest",
                 "active_flow",
@@ -199,8 +216,14 @@ class LaunchAiInterpreterTests(unittest.TestCase):
         self.assertNotIn("raw_klines", encoded)
         self.assertNotIn("raw_candles", encoded)
         self.assertNotIn("provider_payload", encoded)
+        self.assertNotIn("provider_error", encoded)
         self.assertNotIn("secret_group", encoded)
         self.assertEqual(context["plan"]["targets"], [106, 110])
+        self.assertEqual(context["smc_filter"]["status"], "supportive")
+        self.assertEqual(
+            context["smc_filter"]["four_hour_structure"],
+            "bullish",
+        )
 
     def test_disabled_or_unconfigured_returns_not_requested_without_network(self) -> None:
         session = FakeSession(successful_response())

@@ -45,6 +45,12 @@ def _item(**changes: object) -> dict[str, object]:
         "quote_volume": 86_000_000,
         "closed_oi_usd": 24_000_000,
         "liquidity_tier": "中流动性",
+        "smc_filter": {
+            "status": "supportive",
+            "one_hour_structure": "bullish",
+            "four_hour_structure": "bullish",
+            "ai_eligible": True,
+        },
         "data_confirmation": {
             "status": "confirmed",
             "ready_count": 9,
@@ -357,6 +363,11 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             "symbol": "DEMOUSDT",
             "asset_category": "altcoin",
             "directional_readiness": signal,
+            "smc_filter": {
+                "status": "supportive",
+                "one_hour_structure": "bullish",
+                "four_hour_structure": "bullish",
+            },
             "entry_zone": "<b>1 & 2</b>",
             "invalidation_price": 0.98,
             "targets": [1.22, 1.35],
@@ -867,6 +878,57 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         )
         self.assertEqual(item, before)
 
+    def test_smc_filter_is_visible_and_only_supportive_allows_plan(self) -> None:
+        item = _item()
+        signal = copy.deepcopy(item["directional_readiness"])
+        signal["status"] = "多头确认"
+        signal["hard_gates"]["bullish_passed"] = True
+        for key in signal["hard_gates"]["bullish"]:
+            signal["hard_gates"]["bullish"][key] = True
+        item["directional_readiness"] = signal
+        item["smc_filter"] = {
+            "status": "supportive",
+            "one_hour_structure": "bullish",
+            "four_hour_structure": "neutral",
+        }
+
+        supportive = format_launch_directional_signal(item)
+
+        self.assertIn("SMC二次过滤</b>：同向支持", supportive)
+        self.assertIn("1小时：偏多｜4小时：中性", supportive)
+        self.assertIn("📍 观察计划", supportive)
+        self.assertIn("SMC不修改15分钟触发、方向和规则分", supportive)
+
+        item["smc_filter"] = {
+            "status": "neutral",
+            "one_hour_structure": "bullish",
+            "four_hour_structure": "bearish",
+        }
+        neutral = format_launch_directional_signal(item)
+        self.assertIn("方向观察｜高周期暂未一致", neutral)
+        self.assertIn("不作为强信号", neutral)
+        self.assertIn("SMC二次过滤</b>：中性观察", neutral)
+        self.assertNotIn("📍 观察计划", neutral)
+        self.assertIn("⏳ 观察条件", neutral)
+
+        missing = _item()
+        missing["directional_readiness"] = signal
+        missing.pop("smc_filter")
+        missing_text = format_launch_directional_signal(missing)
+        self.assertNotIn("📍 观察计划", missing_text)
+
+    def test_smc_insufficient_cannot_be_presented_as_conflict(self) -> None:
+        text = format_launch_directional_signal(_item(smc_filter={
+            "status": "insufficient",
+            "one_hour_structure": "unavailable",
+            "four_hour_structure": "unavailable",
+        }))
+
+        self.assertIn("SMC二次过滤</b>：数据不足", text)
+        self.assertIn("方向观察｜高周期数据不足", text)
+        self.assertIn("不参与拦截，也不调用AI", text)
+        self.assertNotIn("高周期冲突", text)
+
     def test_topic_intro_is_detailed_plain_chinese_and_sets_ai_boundary(self) -> None:
         text = launch_directional_topic_intro()
 
@@ -878,6 +940,8 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             "15分钟：保留现有异动触发",
             "5分钟：只优化入场时机",
             "滚动24小时只是背景",
+            "只有1小时和4小时都完整、都明确反向时",
+            "SMC不加分、不扣分、不改变15分钟方向",
             "数据缺失不会按0计算",
             "历史统计严格区分看涨和看跌",
             "第一次信号单独发送",
@@ -891,6 +955,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             "不改方向、不改分数、不改失效位",
             "同一版本的同一个观察最多调用一次",
             "仅旧版已截断结果在本次升级后允许一次修复尝试",
+            "中性、冲突或数据不足均保持AI零调用",
             "没有同名现货对时只做合约观察",
             "山寨币、股票/指数代币及大宗商品代币",
         ):

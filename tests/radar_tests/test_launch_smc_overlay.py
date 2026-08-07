@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from radars.launch_warning.smc_overlay import build_smc_overlay
+from radars.launch_warning.smc_overlay import SWING_SIZE, build_smc_overlay
 
 
 HOUR = 60 * 60
@@ -58,7 +58,10 @@ class LaunchSmcOverlayTests(unittest.TestCase):
         self.assertEqual(internal["origin_ts"], rows[0]["close_ts"])
         self.assertEqual(internal["confirmed_at_ts"], rows[5]["close_ts"])
         self.assertEqual(swing["origin_ts"], rows[0]["close_ts"])
-        self.assertEqual(swing["confirmed_at_ts"], rows[20]["close_ts"])
+        self.assertEqual(
+            swing["confirmed_at_ts"],
+            rows[SWING_SIZE]["close_ts"],
+        )
 
     def test_future_bars_do_not_revoke_an_already_confirmed_pivot(self) -> None:
         prefix = [candle(index) for index in range(6)]
