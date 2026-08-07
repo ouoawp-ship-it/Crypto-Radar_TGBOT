@@ -20,6 +20,27 @@ LARGE_CRYPTO = frozenset({
     "XLM",
     "XRP",
 })
+STABLE_CRYPTO = frozenset({
+    "BUSD",
+    "DAI",
+    "EURC",
+    "EURI",
+    "FDUSD",
+    "PYUSD",
+    "RLUSD",
+    "TUSD",
+    "USDC",
+    "USDE",
+    "USDP",
+    "USDS",
+    "USDT",
+    "USD1",
+    "USTC",
+})
+
+
+def is_stable_crypto_asset(base_asset: str) -> bool:
+    return str(base_asset or "").strip().upper() in STABLE_CRYPTO
 
 THEME_LABELS = {
     "AI": "AI",
@@ -219,4 +240,10 @@ def classify_binance_instrument(
     }
 
 
-__all__ = ["classify_binance_instrument"]
+__all__ = [
+    "CORE_CRYPTO",
+    "LARGE_CRYPTO",
+    "STABLE_CRYPTO",
+    "classify_binance_instrument",
+    "is_stable_crypto_asset",
+]

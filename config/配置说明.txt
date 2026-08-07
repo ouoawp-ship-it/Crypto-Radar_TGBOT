@@ -2,3 +2,5 @@
 空白配置示例：config/.env.oi.example
 
 真实 Token、Chat ID 和其他密钥不会上传 GitHub。服务器从旧版根目录迁移配置时，必须先备份并检查冲突，不能直接覆盖。
+
+山寨合约异动雷达的 CMC Key 只填写在真实配置文件中；示例文件必须保持空值。在线一次性扫描还必须显式设置 ALTCOIN_CONTRACT_ANOMALY_ENABLE=true；默认 false 不访问 CMC。P1 一次性命令和缓存降级说明见 docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md。

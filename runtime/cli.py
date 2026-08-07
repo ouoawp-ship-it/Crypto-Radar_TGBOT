@@ -326,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "private-control", "announcement-risk", "flow-radar", "funding-alert", "market-stream", "runtime-status", "radar-status", "cleanup", "watchlist", "launch-history", "launch-report", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "market-stream", "runtime-status", "radar-status", "cleanup", "watchlist", "launch-history", "launch-report", "once", "trial", "observe", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -354,8 +354,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-announcements", action="store_true", help="本轮不运行公告风险雷达")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
     parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
-    parser.add_argument("--json", action="store_true", help="用于 stable-check：输出完整 JSON 快照")
+    parser.add_argument("--json", action="store_true", help="为支持的命令输出完整 JSON")
     parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="用于 altcoin-anomaly：仅使用本地缓存，不访问网络",
+    )
+    parser.add_argument(
+        "--preview-telegram",
+        action="store_true",
+        help="用于 altcoin-anomaly：输出 Telegram 分页预览，不发送消息",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="用于 altcoin-anomaly：另存机器可读 JSON 到指定文件",
+    )
     return parser
 
 
@@ -2485,6 +2501,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "stable-check":
         return print_stable_check(as_json=args.json, save=not args.no_save)
+    if args.command == "altcoin-anomaly":
+        from radars.altcoin_contract_anomaly.cli import run_altcoin_anomaly_cli
+
+        return run_altcoin_anomaly_cli(args, settings=Settings.load())
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":

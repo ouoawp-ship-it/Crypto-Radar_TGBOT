@@ -232,6 +232,42 @@ class MarketCapSourceTests(unittest.TestCase):
         self.assertTrue(get_json.call_args.args[0].endswith("/api/v3/exchangeInfo"))
         self.assertEqual(source.budget.used.get("spot_klines", 0), 0)
 
+    def test_binance_marketing_metadata_retains_identity_and_market_caps_compatibility(self) -> None:
+        payload = {
+            "data": [{
+                "symbol": "1000PEPEUSDT",
+                "baseAsset": "1000PEPE",
+                "cmcUniqueId": "24478",
+                "mapperName": "PEPE",
+                "fullName": "Pepe",
+                "slug": "pepe",
+                "tokenAddress": "0x1234",
+                "marketCap": "12345678.5",
+            }]
+        }
+        with TemporaryDirectory() as tmp:
+            source = BinanceDataSource(Settings(data_dir=Path(tmp)))
+            with patch.object(source.http, "get_json", return_value=payload) as get_json:
+                metadata = source.marketing_symbols()
+                legacy_caps = source.market_caps()
+            source.close()
+
+        self.assertEqual(metadata, [{
+            "symbol": "1000PEPEUSDT",
+            "base_asset": "1000PEPE",
+            "cmc_id": 24478,
+            "mapper_name": "PEPE",
+            "name": "Pepe",
+            "slug": "pepe",
+            "token_address": "0x1234",
+            "platform_name": "",
+            "platform_symbol": "",
+            "platform_slug": "",
+            "market_cap_usd": 12_345_678.5,
+        }])
+        self.assertEqual(legacy_caps, {"1000PEPE": 12_345_678.5})
+        self.assertEqual(get_json.call_count, 2)
+
     def test_coinpaprika_market_caps_parse_usd_quotes_and_prefer_better_rank(self) -> None:
         with TemporaryDirectory() as tmp:
             source = BinanceDataSource(Settings(data_dir=Path(tmp)))
