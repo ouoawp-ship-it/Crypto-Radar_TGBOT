@@ -12,6 +12,7 @@ from .chart_font_zh import (
     glyph_alpha,
     missing_glyphs,
 )
+from .smc_overlay import build_smc_overlay
 
 
 CST = timezone(timedelta(hours=8))
@@ -294,6 +295,57 @@ def _encode_png(canvas: Canvas) -> bytes:
     ])
 
 
+def _format_price(value: float) -> str:
+    magnitude = abs(float(value))
+    if magnitude >= 1_000:
+        return f"{value:.1f}"
+    if magnitude >= 100:
+        return f"{value:.2f}"
+    if magnitude >= 1:
+        return f"{value:.4f}"
+    if magnitude >= 0.01:
+        return f"{value:.5f}"
+    return f"{value:.7f}"
+
+
+def _dotted_horizontal(
+    canvas: Canvas,
+    x0: int,
+    x1: int,
+    y: int,
+    color: tuple[int, int, int],
+    *,
+    dot: int = 1,
+    gap: int = 4,
+) -> None:
+    for x in range(x0, x1 + 1, max(1, dot + gap)):
+        canvas.line(x, y, min(x + dot, x1), y, color)
+
+
+def _dotted_vertical(
+    canvas: Canvas,
+    x: int,
+    y0: int,
+    y1: int,
+    color: tuple[int, int, int],
+    *,
+    dot: int = 1,
+    gap: int = 4,
+) -> None:
+    for y in range(y0, y1 + 1, max(1, dot + gap)):
+        canvas.line(x, y, x, min(y + dot, y1), color)
+
+
+def _structure_label(event: Mapping[str, Any]) -> str:
+    if str(event.get("event") or "") == "continuation":
+        return "顺势突破"
+    return (
+        "结构转多"
+        if str(event.get("direction") or "") == "bullish"
+        else "结构转空"
+    )
+
+
 def render_launch_chart_png(
     *,
     symbol: str,
@@ -305,7 +357,7 @@ def render_launch_chart_png(
     width: int = 960,
     height: int = 540,
 ) -> bytes:
-    """Render a compact Binance 1h structure chart entirely in memory."""
+    """Render a closed-candle Binance 1h SMC reference chart in memory."""
 
     normalized = sorted(
         [
@@ -334,109 +386,98 @@ def render_launch_chart_png(
     if not (480 <= width <= 1600 and 320 <= height <= 1000):
         raise ValueError("unsupported chart dimensions")
 
-    price_action_state = (
-        dict(price_action)
-        if isinstance(price_action, Mapping) and price_action.get("enabled")
-        else {}
-    )
-    price_action_frames = price_action_state.get("timeframes")
-    frame_15m = (
-        price_action_frames.get("15m")
-        if isinstance(price_action_frames, Mapping)
-        and isinstance(price_action_frames.get("15m"), Mapping)
-        else {}
-    )
-    box_high = _number(price_action_state.get("box_high"))
-    box_low = _number(price_action_state.get("box_low"))
-    if box_high <= 0:
-        box_high = _number(frame_15m.get("box_high"))
-    if box_low <= 0:
-        box_low = _number(frame_15m.get("box_low"))
-    level = _number(price_action_state.get("level"))
-    valid_box = box_high > 0 and box_low > 0 and box_high >= box_low
-    canvas = Canvas(width, height, (9, 12, 16))
-    canvas.rect(0, 0, width - 1, 55, (15, 20, 27))
-    if symbol:
-        canvas.text(24, 14, str(symbol), (232, 237, 243), scale=2)
-    else:
-        canvas.ui_text(24, 12, "未知", (232, 237, 243))
+    # Only the most recent 288 closed hourly bars are drawn. Extra prehistory
+    # may still be supplied so delayed pivots are confirmed without repainting.
+    overlay = build_smc_overlay(normalized)
+    visible = normalized[-288:]
+    first_close_ts = visible[0]["close_ts"]
+    last_close_ts = visible[-1]["close_ts"]
+    canvas = Canvas(width, height, (255, 255, 255))
+    ink = (35, 39, 45)
+    muted = (91, 99, 110)
+    grid = (202, 207, 214)
+    plot_left = 10
+    plot_right = width - 72
+    price_top = 50
+    price_bottom = height - 35
+
+    # Header deliberately stays compact on Telegram mobile previews.
+    header_symbol = str(symbol or "UNKNOWN").upper()
+    canvas.text(10, 10, f"{header_symbol}.P", ink, scale=1)
+    category_x = min(width - 280, 16 + len(header_symbol) * 6)
     canvas.ui_text(
-        210,
-        7,
-        _chart_category_label(asset_category or "USD-M PERP"),
-        (105, 167, 255),
+        category_x,
+        6,
+        f"· {_chart_category_label(asset_category or 'USD-M PERP')} · 1小时 · 币安",
+        ink,
     )
-    canvas.ui_text(
-        210,
-        27,
-        "1小时结构 · 15分钟触发",
-        (148, 163, 184),
+    latest = visible[-1]
+    candle_change = (
+        (latest["close"] / latest["open"] - 1.0) * 100.0
+        if latest["open"] > 0
+        else 0.0
     )
-    canvas.ui_text(
-        410,
-        7,
-        f"第 {max(1, int(cycle_no))} 轮",
-        (148, 163, 184),
+    change_color = (11, 158, 132) if candle_change >= 0 else (243, 55, 76)
+    header_stats = (
+        f"开 {_format_price(latest['open'])}  高 {_format_price(latest['high'])}  "
+        f"低 {_format_price(latest['low'])}  收 {_format_price(latest['close'])}  "
+        f"{candle_change:+.2f}%"
     )
-    canvas.ui_text(
-        500,
-        7,
-        f"事件 {len(checkpoints)}",
-        (148, 163, 184),
-    )
-    status = str(price_action_state.get("status") or "")
-    if status in CHART_STATUS_LABELS:
-        canvas.ui_text(
-            410,
-            27,
-            f"形态 {CHART_STATUS_LABELS[status]}",
-            (86, 205, 220),
-        )
-    plot_left = 54
-    plot_right = width - 92
-    price_top = 76
-    price_bottom = height - 130
-    volume_top = height - 106
-    volume_bottom = height - 50
-    grid = (31, 39, 49)
-    muted = (116, 129, 148)
+    stats_x = min(max(310, width // 3), max(310, width - 360))
+    canvas.ui_text(stats_x, 6, header_stats, change_color)
+    canvas.ui_text(10, 25, "真实数据 · 仅使用已收线K线", muted)
+
     for index in range(6):
         y = price_top + round((price_bottom - price_top) * index / 5)
-        canvas.line(plot_left, y, plot_right, y, grid)
-    for index in range(7):
-        x = plot_left + round((plot_right - plot_left) * index / 6)
-        canvas.line(x, price_top, x, volume_bottom, grid)
+        _dotted_horizontal(canvas, plot_left, plot_right, y, grid)
+    for index in range(9):
+        x = plot_left + round((plot_right - plot_left) * index / 8)
+        _dotted_vertical(canvas, x, price_top, price_bottom, grid)
 
-    overlay_prices = [
-        value
-        for value in (box_high, box_low, level)
-        if value > 0
+    blocks = [
+        item
+        for item in overlay.get("active_order_blocks", [])
+        if isinstance(item, Mapping)
+        and first_close_ts <= int(_number(item.get("origin_ts"))) <= last_close_ts
+        and _number(item.get("zone_high")) > _number(item.get("zone_low")) > 0
+        and (
+            _number(item.get("zone_high")) - _number(item.get("zone_low"))
+        ) / (
+            (_number(item.get("zone_high")) + _number(item.get("zone_low")))
+            / 2.0
+        ) <= 0.055
     ]
-    lowest = min(
-        [item["low"] for item in normalized] + overlay_prices
-    )
-    highest = max(
-        [item["high"] for item in normalized] + overlay_prices
-    )
+    valuation = overlay.get("valuation")
+    valuation = valuation if isinstance(valuation, Mapping) else {}
+    overlay_prices: list[float] = []
+    for block in blocks:
+        overlay_prices.extend([
+            _number(block.get("zone_low")),
+            _number(block.get("zone_high")),
+        ])
+    overlay_prices.extend([
+        _number(valuation.get("range_low")),
+        _number(valuation.get("range_high")),
+    ])
+    overlay_prices = [value for value in overlay_prices if value > 0]
+    lowest = min([item["low"] for item in visible] + overlay_prices)
+    highest = max([item["high"] for item in visible] + overlay_prices)
     span = max(highest - lowest, highest * 0.001)
-    lowest -= span * 0.08
-    highest += span * 0.08
+    lowest -= span * 0.06
+    highest += span * 0.06
     span = highest - lowest
 
     def price_y(value: float) -> int:
         ratio = (highest - value) / span
         return price_top + round(ratio * (price_bottom - price_top))
 
-    candle_count = len(normalized)
+    candle_count = len(visible)
     slot = (plot_right - plot_left) / max(1, candle_count)
-    body_half = max(1, min(4, int(slot * 0.32)))
-    max_volume = max(item["quote_volume"] for item in normalized) or 1.0
+    body_half = max(1, min(4, int(slot * 0.34)))
     x_positions = [
         plot_left + round((index + 0.5) * slot)
         for index in range(candle_count)
     ]
-    first_close_ts = normalized[0]["close_ts"]
-    last_close_ts = normalized[-1]["close_ts"]
 
     def nearest_index(timestamp: int) -> int:
         if timestamp <= first_close_ts:
@@ -446,69 +487,57 @@ def render_launch_chart_png(
         return min(
             range(candle_count),
             key=lambda position: abs(
-                normalized[position]["close_ts"] - timestamp
+                visible[position]["close_ts"] - timestamp
             ),
         )
 
-    trigger_end_ts = int(
-        _number(price_action_state.get("trigger_window_end_ts"))
-    )
-    box_start_ts = int(_number(price_action_state.get("box_start_ts")))
-    box_end_ts = int(_number(price_action_state.get("box_end_ts")))
-    if trigger_end_ts > 0:
-        lookback = max(
-            2,
-            int(_number(price_action_state.get("lookback")) or 16),
-        )
-        if box_start_ts <= 0:
-            box_start_ts = trigger_end_ts - lookback * 15 * 60
-        if box_end_ts <= 0:
-            box_end_ts = trigger_end_ts - 15 * 60
+    # Active order blocks extend right, matching the approved clean reference.
+    block_specs = sorted(
+        blocks,
+        key=lambda item: int(_number(item.get("origin_ts"))),
+    )[-5:]
+    for block in block_specs:
+        origin_ts = int(_number(block.get("origin_ts")))
+        x0 = x_positions[nearest_index(max(first_close_ts, origin_ts))]
+        y0 = price_y(_number(block.get("zone_high")))
+        y1 = price_y(_number(block.get("zone_low")))
+        bearish = str(block.get("direction") or "") == "bearish"
+        fill = (249, 209, 219) if bearish else (199, 235, 226)
+        border = (237, 130, 157) if bearish else (80, 183, 160)
+        canvas.rect(x0, min(y0, y1), plot_right, max(y0, y1), fill)
+        canvas.line(x0, min(y0, y1), plot_right, min(y0, y1), border)
 
-    if (
-        valid_box
-        and box_start_ts > 0
-        and box_end_ts >= box_start_ts
-        and box_start_ts <= last_close_ts
-        and box_end_ts >= first_close_ts
-    ):
-        box_x0 = x_positions[nearest_index(max(box_start_ts, first_close_ts))]
-        box_x1 = x_positions[nearest_index(min(box_end_ts, last_close_ts))]
-        box_y0 = price_y(box_high)
-        box_y1 = price_y(box_low)
-        box_fill = (18, 34, 49)
-        box_border = (60, 101, 139)
-        for y in range(min(box_y0, box_y1) + 2, max(box_y0, box_y1), 4):
-            canvas.line(box_x0 + 1, y, box_x1 - 1, y, box_fill)
-        canvas.line(box_x0, box_y0, box_x1, box_y0, box_border)
-        canvas.line(box_x0, box_y1, box_x1, box_y1, box_border)
-        canvas.line(box_x0, box_y0, box_x0, box_y1, box_border)
-        canvas.line(box_x1, box_y0, box_x1, box_y1, box_border)
-        box_label_y = min(box_y0, box_y1) + 3
-        box_label = "整理区间"
-        box_label_width = canvas.ui_text_width(box_label) + 8
-        box_label_x = min(
-            max(plot_left, box_x0 + 3),
-            plot_right - box_label_width,
-        )
-        canvas.rect(
-            box_label_x,
-            box_label_y,
-            box_label_x + box_label_width,
-            box_label_y + GLYPH_HEIGHT + 1,
-            (20, 27, 36),
-        )
-        canvas.ui_text(
-            box_label_x + 4,
-            box_label_y + 1,
-            box_label,
-            box_border,
-        )
+    # The current 72-hour range is a context band, not another signal.
+    zones = valuation.get("zones")
+    if isinstance(zones, Mapping) and valuation.get("data_status") == "complete":
+        zone_start_ts = int(_number(valuation.get("start_ts")))
+        zone_x0 = x_positions[nearest_index(max(first_close_ts, zone_start_ts))]
+        for key, fill, text_color, label in (
+            ("high", (255, 244, 184), (221, 177, 14), "高估"),
+            ("mid", (229, 232, 236), (119, 126, 136), "中间价"),
+            ("low", (207, 222, 253), (65, 126, 220), "低估"),
+        ):
+            zone = zones.get(key)
+            if not isinstance(zone, Mapping):
+                continue
+            zone_low = _number(zone.get("low"))
+            zone_high = _number(zone.get("high"))
+            if zone_high <= zone_low:
+                continue
+            y0 = price_y(zone_high)
+            y1 = price_y(zone_low)
+            canvas.rect(zone_x0, min(y0, y1), plot_right, max(y0, y1), fill)
+            label_x = zone_x0 + max(
+                4,
+                (plot_right - zone_x0 - canvas.ui_text_width(label)) // 2,
+            )
+            label_y = (y0 + y1 - GLYPH_HEIGHT) // 2
+            canvas.ui_text(label_x, label_y, label, text_color)
 
-    for index, candle in enumerate(normalized):
+    for index, candle in enumerate(visible):
         x = x_positions[index]
         up = candle["close"] >= candle["open"]
-        color = (35, 196, 131) if up else (239, 83, 80)
+        color = (24, 183, 164) if up else (255, 64, 82)
         canvas.line(x, price_y(candle["high"]), x, price_y(candle["low"]), color)
         open_y = price_y(candle["open"])
         close_y = price_y(candle["close"])
@@ -516,230 +545,80 @@ def render_launch_chart_png(
             x - body_half,
             min(open_y, close_y),
             x + body_half,
-            max(open_y, close_y) or min(open_y, close_y) + 1,
+            max(min(open_y, close_y) + 1, max(open_y, close_y)),
             color,
         )
-        volume_height = round(
-            candle["quote_volume"] / max_volume * (volume_bottom - volume_top)
-        )
-        canvas.rect(
-            x - body_half,
-            volume_bottom - volume_height,
-            x + body_half,
-            volume_bottom,
-            (28, 112, 82) if up else (116, 49, 53),
-        )
 
-    if level > 0:
-        level_y = price_y(level)
-        level_start_ts = box_start_ts or trigger_end_ts or first_close_ts
-        level_x0 = x_positions[nearest_index(max(level_start_ts, first_close_ts))]
-        level_color = (86, 205, 220)
-        for x in range(level_x0, plot_right + 1, 9):
-            canvas.line(x, level_y, min(x + 5, plot_right), level_y, level_color)
-        level_label = "关键位"
-        label_width = canvas.ui_text_width(level_label) + 8
-        label_x = plot_right - label_width
-        label_y = min(
-            max(price_top, level_y - GLYPH_HEIGHT - 3),
-            price_bottom - GLYPH_HEIGHT - 1,
+    # Show only major swing structure. Consecutive same-direction events are
+    # compressed to their first/last member to avoid the old label clutter.
+    raw_events = [
+        item
+        for item in overlay.get("structure_events", [])
+        if isinstance(item, Mapping)
+        and str(item.get("kind") or "") == "swing"
+        and int(_number(item.get("origin_ts"))) >= first_close_ts
+        and int(_number(item.get("broken_at_ts"))) >= first_close_ts
+    ]
+    compressed: list[Mapping[str, Any]] = []
+    run: list[Mapping[str, Any]] = []
+    for event in raw_events:
+        if run and event.get("direction") != run[-1].get("direction"):
+            compressed.append(run[0])
+            if len(run) > 1:
+                compressed.append(run[-1])
+            run = []
+        run.append(event)
+    if run:
+        compressed.append(run[0])
+        if len(run) > 1:
+            compressed.append(run[-1])
+    for event in compressed[-4:]:
+        origin_ts = int(_number(event.get("origin_ts")))
+        broken_ts = int(_number(event.get("broken_at_ts")))
+        x0 = x_positions[nearest_index(origin_ts)]
+        x1 = x_positions[nearest_index(broken_ts)]
+        y = price_y(_number(event.get("level")))
+        bullish = str(event.get("direction") or "") == "bullish"
+        color = (5, 151, 126) if bullish else (236, 70, 109)
+        canvas.line(x0, y, x1, y, color)
+        label = _structure_label(event)
+        label_x = max(
+            plot_left,
+            min((x0 + x1 - canvas.ui_text_width(label)) // 2, plot_right - 60),
         )
-        canvas.rect(
-            label_x,
-            label_y,
-            label_x + label_width,
-            label_y + GLYPH_HEIGHT + 1,
-            (20, 27, 36),
-        )
-        canvas.ui_text(
-            label_x + 4,
-            label_y + 1,
-            level_label,
-            level_color,
-        )
+        label_y = y - GLYPH_HEIGHT - 2 if bullish else y + 2
+        canvas.ui_text(label_x, label_y, label, color)
 
-    event_colors = {
-        "primed": (73, 143, 255),
-        "breakout": (246, 189, 22),
-        "launched": (207, 106, 255),
-        "cooling": (148, 163, 184),
-        "failed": (255, 92, 92),
-    }
-    event_lane_right_edges = [plot_left - 8, plot_left - 8, plot_left - 8]
-    for fallback_no, checkpoint in enumerate(checkpoints, start=1):
-        event_no = int(_number(checkpoint.get("checkpoint_no"))) or fallback_no
-        event_ts = int(_number(checkpoint.get("window_end_ts")))
-        stage = str(checkpoint.get("stage") or "")
-        color = event_colors.get(stage, (73, 143, 255))
-        clipped = event_ts < first_close_ts
-        if event_ts <= first_close_ts:
-            index = 0
-        elif event_ts >= last_close_ts:
-            index = candle_count - 1
-        else:
-            index = nearest_index(event_ts)
-        x = x_positions[index]
-        guide_color = tuple(
-            round(background + (channel - background) * 0.42)
-            for channel, background in zip(color, (9, 12, 16))
-        )
-        for y in range(price_top, volume_bottom + 1, 7):
-            canvas.line(x, y, x, min(y + 1, volume_bottom), guide_color)
-
-        # Compact numbered badges keep the event order without oversized
-        # labels obscuring nearby candles. A leading '<' still means the
-        # event happened before the visible chart window.
-        label = f"{'<' if clipped else ''}{event_no}"
-        text_width = len(label) * 6 - 1
-        label_width = max(15, text_width + 8)
-        label_height = 13
-        label_x = min(
-            max(plot_left, x - label_width // 2),
-            plot_right - label_width,
-        )
-        candidate_lanes = sorted(
-            range(len(event_lane_right_edges)),
-            key=lambda lane: (
-                event_lane_right_edges[lane] + 5 > label_x,
-                event_lane_right_edges[lane],
-                lane,
-            ),
-        )
-        lane = candidate_lanes[0]
-        event_lane_right_edges[lane] = label_x + label_width
-        label_y = price_top + 6 + lane * 17
-        canvas.rect(
-            label_x,
-            label_y,
-            label_x + label_width,
-            label_y + label_height,
-            color,
-        )
-        canvas.rect(
-            label_x + 1,
-            label_y + 1,
-            label_x + label_width - 1,
-            label_y + label_height - 1,
-            (15, 20, 27),
-        )
-        canvas.text(
-            label_x + (label_width - text_width) // 2,
-            label_y + 3,
-            label,
-            color,
-            scale=1,
-        )
-
-    marker_specs: list[tuple[int, str, tuple[int, int, int]]] = []
-    marker_label_floor = price_top + 2
-    if checkpoints:
-        marker_label_floor = (
-            price_top
-            + 6
-            + (len(event_lane_right_edges) - 1) * 17
-            + 13
-            + 4
-        )
-    confirmation_ends = price_action_state.get("confirmation_ends")
-    if isinstance(confirmation_ends, Mapping):
-        for timeframe, color in (
-            ("15m", (42, 204, 150)),
-            ("1h", (79, 145, 255)),
-            ("4h", (207, 106, 255)),
-        ):
-            timestamp = int(_number(confirmation_ends.get(timeframe)))
-            if timestamp > 0:
-                marker_specs.append(
-                    (timestamp, CHART_CONFIRMATION_LABELS[timeframe], color)
-                )
-
-    terminal_label = ""
-    terminal_color = (255, 159, 67)
-    if status.startswith("sweep_high"):
-        terminal_label = "扫高"
-    elif status.startswith("sweep_low"):
-        terminal_label = "扫低"
-    elif status.startswith("false_breakout"):
-        terminal_label = (
-            "扫高"
-            if price_action_state.get("direction") == "up"
-            else "扫低"
-        )
-    elif status.startswith("failed_breakout"):
-        terminal_label = "失效"
-        terminal_color = (255, 92, 92)
-    if terminal_label:
-        terminal_ts = int(
-            _number(price_action_state.get("event_window_end_ts"))
-            or trigger_end_ts
-        )
-        if terminal_ts > 0:
-            marker_specs.append((terminal_ts, terminal_label, terminal_color))
-
-    for marker_no, (timestamp, label, color) in enumerate(marker_specs):
-        index = nearest_index(timestamp)
-        x = x_positions[index]
-        anchor_y = price_y(normalized[index]["high"]) - 4
-        label_width = canvas.ui_text_width(label) + 8
-        label_height = GLYPH_HEIGHT + 2
-        label_x = min(
-            max(plot_left, x - label_width // 2),
-            plot_right - label_width,
-        )
-        label_y = max(
-            marker_label_floor,
-            anchor_y - label_height - 6 - (marker_no % 2) * 19,
-        )
-        label_y = min(label_y, price_bottom - label_height)
-        connector_y = (
-            label_y + label_height
-            if label_y + label_height <= anchor_y
-            else label_y
-        )
-        canvas.line(x, anchor_y, x, connector_y, color)
-        canvas.line(x - 3, anchor_y - 4, x, anchor_y, color)
-        canvas.line(x + 3, anchor_y - 4, x, anchor_y, color)
-        canvas.rect(
-            label_x,
-            label_y,
-            label_x + label_width,
-            label_y + label_height,
-            (20, 27, 36),
-        )
-        canvas.ui_text(label_x + 4, label_y + 1, label, color)
-
-    last = normalized[-1]["close"]
-    first = normalized[0]["open"]
-    change = (last / first - 1.0) * 100.0 if first > 0 else 0.0
-    last_color = (35, 196, 131) if change >= 0 else (239, 83, 80)
-    canvas.text(
-        width - 265,
-        18,
-        f"{last:.6G} {change:+.2F}%",
-        last_color,
-        scale=2,
+    current_price = latest["close"]
+    current_y = price_y(current_price)
+    _dotted_horizontal(canvas, plot_left, plot_right, current_y, change_color)
+    price_label = _format_price(current_price)
+    time_label = datetime.fromtimestamp(last_close_ts, CST).strftime("%H:%M")
+    label_width = max(54, max(len(price_label), len(time_label)) * 6 + 8)
+    canvas.rect(
+        plot_right,
+        current_y - 11,
+        min(width - 1, plot_right + label_width),
+        current_y + 12,
+        change_color,
     )
+    canvas.text(plot_right + 4, current_y - 8, price_label, (255, 255, 255), scale=1)
+    canvas.text(plot_right + 4, current_y + 2, time_label, (255, 255, 255), scale=1)
+
     for index in range(6):
         value = highest - span * index / 5
         y = price_top + round((price_bottom - price_top) * index / 5) - 5
-        canvas.text(plot_right + 10, y, f"{value:.5G}", muted, scale=1)
+        canvas.text(plot_right + 5, y, _format_price(value), ink, scale=1)
 
     first_time = datetime.fromtimestamp(first_close_ts, CST)
     last_time = datetime.fromtimestamp(last_close_ts, CST)
-    canvas.text(plot_left, height - 30, first_time.strftime("%m-%d %H:%M"), muted, scale=1)
+    canvas.text(plot_left, height - 18, first_time.strftime("%m-%d %H:%M"), muted, scale=1)
     canvas.text(
         plot_right - 66,
-        height - 30,
+        height - 18,
         last_time.strftime("%m-%d %H:%M"),
         muted,
         scale=1,
-    )
-    footer = "币安 · 1小时已收线 · 15分钟触发"
-    canvas.ui_text(
-        width // 2 - canvas.ui_text_width(footer) // 2,
-        height - 36,
-        footer,
-        (82, 94, 112),
     )
     return _encode_png(canvas)
 

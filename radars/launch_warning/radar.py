@@ -1096,20 +1096,20 @@ class LaunchWarningRadar(RadarComponent):
             alert["chart_error"] = "invalid_chart_window"
             return False
         interval_sec = 60 * 60
-        requested_start = min(
+        requested_visible_start = min(
             first_window_end - 16 * interval_sec,
-            current_window_end - 72 * interval_sec,
+            current_window_end - 288 * interval_sec,
         )
         start_ts = max(
             0,
-            requested_start,
-            current_window_end - 240 * interval_sec,
+            requested_visible_start - 40 * interval_sec,
+            current_window_end - 360 * interval_sec,
         )
         candle_count = max(
-            72,
+            328,
             (current_window_end - start_ts + interval_sec - 1) // interval_sec,
         )
-        candle_count = min(240, candle_count)
+        candle_count = min(360, candle_count)
         try:
             rows = source.klines(
                 str(alert.get("symbol") or ""),
@@ -1157,6 +1157,8 @@ class LaunchWarningRadar(RadarComponent):
                 cycle_no=int(lifecycle.get("cycle_no") or 1),
                 price_action=chart_price_action,
                 asset_category=str(alert.get("asset_category_short") or ""),
+                width=1600,
+                height=850,
             )
         except Exception as exc:
             alert["chart_status"] = "unavailable"
@@ -1165,7 +1167,8 @@ class LaunchWarningRadar(RadarComponent):
 
         alert["chart_png_bytes"] = image
         alert["chart_status"] = "ready"
-        alert["chart_candle_count"] = len(candles)
+        alert["chart_candle_count"] = min(len(candles), 288)
+        alert["chart_source_candle_count"] = len(candles)
         alert["chart_checkpoint_count"] = len(checkpoints)
         alert["chart_generated_in_memory"] = True
         alert["chart_timeframe"] = "1h"

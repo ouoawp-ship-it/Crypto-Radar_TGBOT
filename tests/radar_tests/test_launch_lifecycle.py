@@ -1264,7 +1264,7 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
                         [
                             last_closed_boundary - (limit - index) * 3_600_000,
                             "100",
-                            "102",
+                            str(102 + index * 0.1),
                             "99",
                             str(100 + index * 0.1),
                             "10",
@@ -1319,13 +1319,14 @@ class LaunchLifecycleRadarIntegrationTests(unittest.TestCase):
             self.assertTrue(alert["chart_png_bytes"].startswith(PNG_SIGNATURE))
             self.assertTrue(alert["chart_generated_in_memory"])
             self.assertEqual(alert["chart_checkpoint_count"], 2)
-            self.assertEqual(alert["chart_candle_count"], 72)
+            self.assertEqual(alert["chart_candle_count"], 288)
+            self.assertEqual(alert["chart_source_candle_count"], 328)
             self.assertEqual(alert["chart_timeframe"], "1h")
             self.assertEqual(alert["chart_trigger_timeframe"], "15m")
             self.assertEqual(alert["chart_price_action_status"], "confirmed_1h")
             self.assertEqual(captured["interval"], "1h")
-            self.assertGreaterEqual(captured["limit"], 72)
-            self.assertLessEqual(captured["limit"], 240)
+            self.assertGreaterEqual(captured["limit"], 328)
+            self.assertLessEqual(captured["limit"], 360)
             self.assertEqual(captured["end_time"], 1_700_100_000_000 - 1)
             self.assertEqual(list(Path(tmp).rglob("*.png")), [])
 
