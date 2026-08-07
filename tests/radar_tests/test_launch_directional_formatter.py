@@ -374,6 +374,58 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         self.assertIn("&lt;b&gt;1 &amp; 2&lt;/b&gt;", plan_text)
         self.assertIn("&lt;script&gt;bad()&lt;/script&gt; &amp; still text", ai_text)
 
+    def test_ai_participation_and_generated_text_are_explicit(self) -> None:
+        live = format_launch_directional_signal(_item(
+            ai_interpretation_status="available",
+            ai_interpretation_source="provider",
+            ai_interpretation="规则证据偏多，但仍要等待结构保持。",
+        ))
+        cached = format_launch_directional_signal(_item(
+            ai_interpretation_status="available",
+            ai_interpretation_source="cache",
+            ai_interpretation="复用已校验的白话解读。",
+        ))
+
+        self.assertIn("AI参与</b>：已完成（本轮调用）", live)
+        self.assertIn("AI白话解读</b>：规则证据偏多", live)
+        self.assertIn("只有上一行解读由AI生成", live)
+        self.assertIn("AI参与</b>：已完成（复用已校验结果）", cached)
+
+    def test_ai_failure_and_deferred_status_never_disappear(self) -> None:
+        truncated = format_launch_directional_signal(_item(
+            ai_interpretation_status="ai_output_truncated",
+            ai_interpretation_source="provider",
+        ))
+        deferred = format_launch_directional_signal(_item(
+            ai_interpretation_status="deferred_cycle_limit",
+        ))
+
+        self.assertIn("已调用，但输出被截断", truncated)
+        self.assertNotIn("AI白话解读</b>", truncated)
+        self.assertIn("本轮顺延（每轮最多解读一个信号）", deferred)
+
+    def test_ai_status_survives_caption_pressure_and_invalidation(self) -> None:
+        pressured = format_launch_directional_signal(
+            _item(
+                symbol=f"{'X' * 24}USDT",
+                asset_category_label="很长的品类说明" * 30,
+                ai_interpretation_status="ai_timeout",
+            ),
+            max_chars=512,
+        )
+        invalidated = format_launch_directional_signal(_item(
+            ai_interpretation_status="not_eligible",
+            directional_cycle_invalidated={
+                "reason": "direction_changed",
+                "previous_direction": "bullish",
+            },
+        ))
+
+        self.assertIn("AI参与", pressured)
+        self.assertIn("调用超时", pressured)
+        self.assertLessEqual(len(plain_fallback(pressured)), 512)
+        self.assertIn("AI参与</b>：未调用", invalidated)
+
     def test_missing_fields_are_explicit_and_never_filled_with_zero(self) -> None:
         text = format_launch_directional_signal({
             "symbol": "DEMOUSDT",
@@ -833,8 +885,12 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             "上一条被人工删除",
             "样本不足时只显示积累进度",
             "AI只把已计算的数据和规则翻译成白话",
+            "每张卡都会明确显示AI",
+            "只有“AI白话解读”后面的文字由AI生成",
+            "输出被截断或调用失败时会显示中文原因",
             "不改方向、不改分数、不改失效位",
-            "同一个观察最多调用一次",
+            "同一版本的同一个观察最多调用一次",
+            "仅旧版已截断结果在本次升级后允许一次修复尝试",
             "没有同名现货对时只做合约观察",
             "山寨币、股票/指数代币及大宗商品代币",
         ):
