@@ -1,4 +1,35 @@
 {
-  "overrides": [],
+  "overrides": [
+    {
+      "binance_symbol": "AIGENSYNUSDT",
+      "cmc_id": 39883,
+      "normalized_asset": "AIGENSYN",
+      "note": "2026-08-08: Binance cmcUniqueId=39883; CMC active map name=Gensyn, symbol=AI, slug=gensyn."
+    },
+    {
+      "binance_symbol": "BEAMXUSDT",
+      "cmc_id": 28298,
+      "normalized_asset": "BEAMX",
+      "note": "2026-08-08: Binance cmcUniqueId=28298; CMC active map name=Beam, symbol=BEAM, slug=onbeam."
+    },
+    {
+      "binance_symbol": "BROCCOLI714USDT",
+      "cmc_id": 35749,
+      "normalized_asset": "BROCCOLI714",
+      "note": "2026-08-08: Binance cmcUniqueId=35749; CMC active map name=CZ's Dog, symbol=BROCCOLI, slug=broccoli-714."
+    },
+    {
+      "binance_symbol": "RONINUSDT",
+      "cmc_id": 14101,
+      "normalized_asset": "RONIN",
+      "note": "2026-08-08: Binance cmcUniqueId=14101; CMC active map name=Ronin, symbol=RON, slug=ronin."
+    },
+    {
+      "binance_symbol": "VELODROMEUSDT",
+      "cmc_id": 20435,
+      "normalized_asset": "VELODROME",
+      "note": "2026-08-08: Binance cmcUniqueId=20435; CMC active map name=Velodrome Finance, symbol=VELO, slug=velodrome-finance."
+    }
+  ],
   "schema_version": 1
 }

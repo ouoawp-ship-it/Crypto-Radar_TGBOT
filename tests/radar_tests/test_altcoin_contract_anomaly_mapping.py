@@ -38,6 +38,42 @@ class ContractAssetNormalizationTests(unittest.TestCase):
 
 
 class CmcIdentityResolverTests(unittest.TestCase):
+    def test_reviewed_production_alias_overrides_resolve_by_active_cmc_id(self) -> None:
+        aliases = {
+            "AIGENSYNUSDT": ("AIGENSYN", 39883, "AI"),
+            "BEAMXUSDT": ("BEAMX", 28298, "BEAM"),
+            "BROCCOLI714USDT": ("BROCCOLI714", 35749, "BROCCOLI"),
+            "RONINUSDT": ("RONIN", 14101, "RON"),
+            "VELODROMEUSDT": ("VELODROME", 20435, "VELO"),
+        }
+        override_path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "altcoin_contract_anomaly_overrides.json"
+        )
+        overrides = load_mapping_overrides(override_path)
+        resolver = CmcIdentityResolver([
+            cmc_entry(cmc_id, cmc_symbol)
+            for _normalized, cmc_id, cmc_symbol in aliases.values()
+        ])
+
+        self.assertEqual(set(overrides), set(aliases))
+        for binance_symbol, (normalized, cmc_id, _cmc_symbol) in aliases.items():
+            with self.subTest(binance_symbol=binance_symbol):
+                self.assertIn("Binance cmcUniqueId", overrides[binance_symbol]["note"])
+                record = CmcIdentityResolver(
+                    resolver.entries,
+                    overrides={binance_symbol: overrides[binance_symbol]},
+                ).resolve_one({
+                    "symbol": binance_symbol,
+                    "baseAsset": normalized,
+                })
+
+                self.assertTrue(record.is_formal)
+                self.assertEqual(record.mapping_method, "verified_override")
+                self.assertEqual(record.cmc_id, cmc_id)
+                self.assertEqual(record.normalized_asset, normalized)
+
     def test_manual_override_is_loaded_and_wins_as_formal_identity(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "mapping-overrides.json"
