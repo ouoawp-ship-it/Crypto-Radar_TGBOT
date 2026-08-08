@@ -96,6 +96,18 @@ bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes
 ```
 
+上述入口继续用于 `main` 的普通 fast-forward 维护。正式生产发布只允许使用已
+通过 Tag CI 的 annotated Tag，并使用独立入口：
+
+```bash
+bash scripts/deploy_tag.sh --check-tag v2.0.1
+bash scripts/deploy_tag.sh --tag v2.0.1 --yes
+```
+
+该入口会在停服后备份私有配置、运行状态、数据库和 systemd 定义；部署失败
+自动回滚。它不会打印或用示例值覆盖服务器密钥。完整门禁和人工回滚命令见
+[山寨合约异动雷达生产运行与发布手册](ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md)。
+
 更新脚本只接受 fast-forward，遇到已跟踪文件本地修改或 Git 分叉会停止。更新通过 Python 编译和完整单元测试后，先同步安全默认配置并安装包装器 Unit，才会重启 BOT 服务；缺少新字段时重启进入 Dry-run。
 
 从旧目录升级时，脚本会先把根目录的 `.env.oi` 做哈希备份并复制到

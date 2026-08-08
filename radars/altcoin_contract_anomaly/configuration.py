@@ -48,6 +48,11 @@ def validate_output_path(settings: Any, output_path: str | Path | None) -> None:
         )
 
 
+def _preview_runtime_path(path: str | Path) -> Path:
+    value = Path(path)
+    return value.with_name(f"{value.stem}.preview{value.suffix}")
+
+
 _INTEGER_ENV_RANGES = {
     "ALTCOIN_CONTRACT_ANOMALY_CMC_CONNECT_TIMEOUT_SEC": (1, 120),
     "ALTCOIN_CONTRACT_ANOMALY_CMC_READ_TIMEOUT_SEC": (1, 180),
@@ -78,6 +83,15 @@ _INTEGER_ENV_RANGES = {
     "ALTCOIN_CONTRACT_ANOMALY_VOLUME_MIN_SAMPLES": (1, 1_000),
     "ALTCOIN_CONTRACT_ANOMALY_WEAKENING_WINDOWS": (1, 100),
     "ALTCOIN_CONTRACT_ANOMALY_SMOKE_DURATION_SEC": (30, 3_600),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_MANIFEST_REFRESH_SEC": (300, 86_400),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_MANIFEST_RETRY_SEC": (10, 3_600),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_MANIFEST_MAX_AGE_SEC": (300, 86_400),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_COOLDOWN_SEC": (60, 604_800),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_HOURLY_LIMIT": (1, 1_000),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_DAILY_LIMIT": (1, 10_000),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_QUEUE_SIZE": (1, 10_000),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_STATUS_INTERVAL_SEC": (5, 3_600),
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_OI_BUDGET_WINDOW_SEC": (300, 86_400),
 }
 _FLOAT_ENV_RANGES = {
     "ALTCOIN_CONTRACT_ANOMALY_CMC_BACKOFF_BASE_SEC": (0.0, 60.0),
@@ -104,7 +118,12 @@ _FLOAT_ENV_RANGES = {
 _BOOLEAN_ENV_NAMES = (
     "ALTCOIN_CONTRACT_ANOMALY_ENABLE",
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_ENABLE",
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_ENABLE",
+    "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_SEND_ENABLE",
 )
+
+
+ALTCOIN_PRODUCTION_SEND_CONFIRMATION = "ENABLE_ALTCOIN_ANOMALY_REAL_SEND"
 
 
 def _validate_raw_environment() -> None:
@@ -509,9 +528,254 @@ class AltcoinAnomalyConfig:
             raise AltcoinAnomalyConfigError("候选清单新鲜度不能短于P2 Smoke时长")
 
 
+@dataclass(frozen=True)
+class AltcoinAnomalyProductionConfig:
+    """Validated, fail-closed production-only settings.
+
+    P2 remains a bounded dry-run.  This model is intentionally separate so a
+    long-running controller can only be built after an explicit production
+    preflight.
+    """
+
+    enabled: bool
+    send_enabled: bool
+    send_confirmed: bool
+    topic_id: str
+    manifest_refresh_sec: int
+    manifest_retry_sec: int
+    manifest_max_age_sec: int
+    cooldown_sec: int
+    hourly_limit: int
+    daily_limit: int
+    queue_size: int
+    status_interval_sec: int
+    oi_budget_window_sec: int
+    observation_state_path: Path
+    observation_event_path: Path
+    state_path: Path
+    outbox_path: Path
+    preview_state_path: Path
+    preview_outbox_path: Path
+    status_path: Path
+    realtime_lock_path: Path
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Any,
+        *,
+        real_send_requested: bool = False,
+    ) -> "AltcoinAnomalyProductionConfig":
+        _validate_raw_environment()
+        state_path = Path(settings.altcoin_contract_anomaly_production_state_path)
+        outbox_path = Path(settings.altcoin_contract_anomaly_production_outbox_path)
+        config = cls(
+            enabled=bool(settings.altcoin_contract_anomaly_production_enable),
+            send_enabled=bool(
+                settings.altcoin_contract_anomaly_production_send_enable
+            ),
+            send_confirmed=(
+                str(
+                    settings.altcoin_contract_anomaly_production_send_confirm
+                    or ""
+                ).strip()
+                == ALTCOIN_PRODUCTION_SEND_CONFIRMATION
+            ),
+            topic_id=str(
+                getattr(settings, "tg_altcoin_contract_anomaly_topic_id", "")
+                or ""
+            ).strip(),
+            manifest_refresh_sec=int(
+                settings.altcoin_contract_anomaly_production_manifest_refresh_sec
+            ),
+            manifest_retry_sec=int(
+                settings.altcoin_contract_anomaly_production_manifest_retry_sec
+            ),
+            manifest_max_age_sec=int(
+                settings.altcoin_contract_anomaly_production_manifest_max_age_sec
+            ),
+            cooldown_sec=int(
+                settings.altcoin_contract_anomaly_production_cooldown_sec
+            ),
+            hourly_limit=int(
+                settings.altcoin_contract_anomaly_production_hourly_limit
+            ),
+            daily_limit=int(
+                settings.altcoin_contract_anomaly_production_daily_limit
+            ),
+            queue_size=int(settings.altcoin_contract_anomaly_production_queue_size),
+            status_interval_sec=int(
+                settings.altcoin_contract_anomaly_production_status_interval_sec
+            ),
+            oi_budget_window_sec=int(
+                settings.altcoin_contract_anomaly_production_oi_budget_window_sec
+            ),
+            observation_state_path=Path(
+                settings.altcoin_contract_anomaly_production_observation_state_path
+            ),
+            observation_event_path=Path(
+                settings.altcoin_contract_anomaly_production_observation_event_path
+            ),
+            state_path=state_path,
+            outbox_path=outbox_path,
+            preview_state_path=_preview_runtime_path(state_path),
+            preview_outbox_path=_preview_runtime_path(outbox_path),
+            status_path=Path(settings.altcoin_contract_anomaly_production_status_path),
+            realtime_lock_path=Path(
+                settings.altcoin_contract_anomaly_realtime_lock_path
+            ),
+        )
+        config.validate(settings, real_send_requested=real_send_requested)
+        return config
+
+    def validate(self, settings: Any, *, real_send_requested: bool = False) -> None:
+        if not self.enabled:
+            raise AltcoinAnomalyConfigError("山寨合约异动生产模式未启用")
+        if not bool(settings.altcoin_contract_anomaly_enable):
+            raise AltcoinAnomalyConfigError("山寨合约异动候选扫描未启用")
+        if not bool(settings.altcoin_contract_anomaly_realtime_enable):
+            raise AltcoinAnomalyConfigError("山寨合约异动实时确认未启用")
+        if not str(settings.altcoin_contract_anomaly_cmc_api_key or "").strip():
+            raise AltcoinAnomalyConfigError("CMC API Key未配置")
+        if self.manifest_refresh_sec >= self.manifest_max_age_sec:
+            raise AltcoinAnomalyConfigError("生产候选刷新间隔必须短于最大允许年龄")
+        if self.manifest_retry_sec >= self.manifest_refresh_sec:
+            raise AltcoinAnomalyConfigError("生产候选重试间隔必须短于正常刷新间隔")
+        if min(
+            self.cooldown_sec,
+            self.hourly_limit,
+            self.daily_limit,
+            self.queue_size,
+            self.status_interval_sec,
+            self.oi_budget_window_sec,
+        ) <= 0:
+            raise AltcoinAnomalyConfigError("生产冷却、频率、队列和状态间隔必须为正数")
+        if self.oi_budget_window_sec % 300 != 0:
+            raise AltcoinAnomalyConfigError(
+                "production OI budget window must align to five minutes"
+            )
+
+        path_specs = (
+            (
+                "altcoin_contract_anomaly_production_observation_state_path",
+                "生产观察状态文件",
+                self.observation_state_path,
+                ".json",
+            ),
+            (
+                "altcoin_contract_anomaly_production_observation_event_path",
+                "生产观察事件文件",
+                self.observation_event_path,
+                ".jsonl",
+            ),
+            (
+                "altcoin_contract_anomaly_production_state_path",
+                "生产发送状态文件",
+                self.state_path,
+                ".json",
+            ),
+            (
+                "altcoin_contract_anomaly_production_outbox_path",
+                "生产发送WAL文件",
+                self.outbox_path,
+                ".json",
+            ),
+            (
+                "__altcoin_contract_anomaly_production_preview_state_path__",
+                "鐢熶骇棰勮鐘舵€佹枃浠?",
+                self.preview_state_path,
+                ".json",
+            ),
+            (
+                "__altcoin_contract_anomaly_production_preview_outbox_path__",
+                "鐢熶骇棰勮WAL鏂囦欢",
+                self.preview_outbox_path,
+                ".json",
+            ),
+            (
+                "altcoin_contract_anomaly_production_status_path",
+                "生产健康状态文件",
+                self.status_path,
+                ".json",
+            ),
+            (
+                "altcoin_contract_anomaly_realtime_lock_path",
+                "实时进程锁文件",
+                self.realtime_lock_path,
+                ".lock",
+            ),
+        )
+        owned_paths: list[Path] = []
+        for _, _, path, suffix in path_specs:
+            owned_paths.append(path.resolve(strict=False))
+            if suffix in {".json", ".jsonl"}:
+                owned_paths.append(
+                    path.with_name(f"{path.name}.lock").resolve(strict=False)
+                )
+        resolved_paths = owned_paths
+        if len(set(resolved_paths)) != len(resolved_paths):
+            raise AltcoinAnomalyConfigError("生产状态、事件、WAL、健康和锁路径必须相互隔离")
+        protected = protected_runtime_paths(settings)
+        data_root = Path(settings.data_dir).resolve(strict=False)
+        for own_field, label, path, suffix in path_specs:
+            if path.suffix.lower() != suffix:
+                raise AltcoinAnomalyConfigError(f"{label}必须使用{suffix}后缀")
+            resolved = path.resolve(strict=False)
+            try:
+                resolved.relative_to(data_root)
+            except ValueError as exc:
+                raise AltcoinAnomalyConfigError(
+                    f"{label}必须位于运行数据目录内"
+                ) from exc
+            conflicts = tuple(
+                name
+                for name in protected.get(resolved, ())
+                if name != own_field
+            )
+            if conflicts:
+                raise AltcoinAnomalyConfigError(
+                    f"{label}不能与现有运行路径冲突：{'、'.join(conflicts)}"
+                )
+
+            if suffix in {".json", ".jsonl"}:
+                lock_path = path.with_name(f"{path.name}.lock").resolve(strict=False)
+                lock_conflicts = tuple(
+                    name
+                    for name in protected.get(lock_path, ())
+                    if name != f"{own_field}.lock"
+                )
+                if lock_conflicts:
+                    raise AltcoinAnomalyConfigError(
+                        "production derived lock path conflicts with runtime path: "
+                        + ",".join(lock_conflicts)
+                    )
+
+        if self.send_enabled or real_send_requested:
+            if not self.send_enabled:
+                raise AltcoinAnomalyConfigError("生产Telegram真实发送开关未启用")
+            if not self.send_confirmed:
+                raise AltcoinAnomalyConfigError("生产Telegram真实发送确认短语无效")
+            if not str(getattr(settings, "tg_bot_token", "") or "").strip():
+                raise AltcoinAnomalyConfigError("Telegram Bot Token未配置")
+            if not str(getattr(settings, "tg_chat_id", "") or "").strip():
+                raise AltcoinAnomalyConfigError("Telegram Chat ID未配置")
+            if not self.topic_id:
+                raise AltcoinAnomalyConfigError("山寨合约异动Topic ID未配置")
+            try:
+                parsed_topic = int(self.topic_id)
+            except ValueError as exc:
+                raise AltcoinAnomalyConfigError(
+                    "山寨合约异动Topic ID格式无效"
+                ) from exc
+            if parsed_topic <= 0:
+                raise AltcoinAnomalyConfigError("山寨合约异动Topic ID格式无效")
+
+
 __all__ = [
     "AltcoinAnomalyConfig",
     "AltcoinAnomalyConfigError",
+    "AltcoinAnomalyProductionConfig",
+    "ALTCOIN_PRODUCTION_SEND_CONFIRMATION",
     "protected_runtime_paths",
     "validate_output_path",
 ]

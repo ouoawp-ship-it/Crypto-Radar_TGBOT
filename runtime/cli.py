@@ -426,6 +426,26 @@ def telegram_topic_route_checks(
             if configured
             else f"{topic_name}专属话题未配置",
         ))
+    if (
+        bool(getattr(settings, "altcoin_contract_anomaly_production_enable", False))
+        and bool(
+            getattr(
+                settings,
+                "altcoin_contract_anomaly_production_send_enable",
+                False,
+            )
+        )
+    ):
+        template_id = "TG_ALTCOIN_CONTRACT_ANOMALY"
+        configured = gateway.topic_route_configured(template_id)
+        topic_name = TOPIC_TEMPLATE_NAMES.get(template_id, "山寨合约异动")
+        checks.append((
+            "telegram_topic_altcoin_contract_anomaly",
+            configured,
+            f"{topic_name}专属话题已配置"
+            if configured
+            else f"{topic_name}专属话题未配置",
+        ))
     return checks
 
 
@@ -463,6 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
     parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
     parser.add_argument("--stream-duration-minutes", type=float, default=0, help="用于 market-stream 本地验收；0 表示常驻运行")
+    parser.add_argument(
+        "--altcoin-production",
+        action="store_true",
+        help="仅用于 market-stream：显式启用山寨合约异动生产控制器",
+    )
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数")
     parser.add_argument("--launch-interval", type=int, default=180, help="loop/daemon 的启动雷达间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
@@ -1136,6 +1161,14 @@ def print_stable_check(as_json: bool = False, save: bool = True) -> int:
 
 def run_telegram_test(args: argparse.Namespace) -> int:
     settings, _store, _engine, gateway = make_runtime()
+    requested_template = str(args.topic_template or "").strip()
+    if requested_template not in {"", "TG_ALTCOIN_CONTRACT_ANOMALY"}:
+        print(format_push_result_cn(
+            "Telegram 验收测试",
+            "blocked",
+            "unsupported_test_topic",
+        ))
+        return 2
     if args.send and args.confirm_real_send:
         checks = telegram_config_checks(settings)
         failed = [(name, message) for name, ok, message in checks if not ok]
@@ -1149,21 +1182,40 @@ def run_telegram_test(args: argparse.Namespace) -> int:
                 print(f"- 待处理 {check_name_text(name)}：{message}")
             return 2
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    text = "\n".join([
-        "🧪 泡泡抓币 Telegram 测试",
-        f"时间: {now}",
-        "用途: 验证 bot token / chat id / topic 配置",
-        "说明: 这不是交易信号",
-    ])
+    altcoin_topic_test = requested_template == "TG_ALTCOIN_CONTRACT_ANOMALY"
+    template_id = (
+        "TG_ALTCOIN_CONTRACT_ANOMALY"
+        if altcoin_topic_test
+        else "TG_TEST_MESSAGE"
+    )
+    text = "\n".join(
+        [
+            "🧪【山寨合约异动｜验收测试】",
+            f"时间：{now}",
+            "用途：验证人工预建固定话题的路由与发送权限。",
+            "说明：这不是交易信号，不代表任何市场判断。",
+        ]
+        if altcoin_topic_test
+        else [
+            "🧪 泡泡抓币 Telegram 测试",
+            f"时间: {now}",
+            "用途: 验证 bot token / chat id / topic 配置",
+            "说明: 这不是交易信号",
+        ]
+    )
     result = gateway.send(
         text,
-        "TG_TEST_MESSAGE",
-        f"telegram-test:{datetime.now().strftime('%Y%m%d%H%M')}",
+        template_id,
+        (
+            "altcoin-contract-anomaly:acceptance-test:"
+            if altcoin_topic_test
+            else "telegram-test:"
+        ) + datetime.now().strftime("%Y%m%d%H%M"),
         send=args.send,
         confirm_real_send=args.confirm_real_send,
         cooldown_sec=0,
         daily_limit=None,
-        parse_mode="",
+        parse_mode="HTML" if altcoin_topic_test else "",
     )
     print(format_push_result_cn(
         "Telegram 测试",
@@ -2731,12 +2783,57 @@ def main(argv: list[str] | None = None) -> int:
     configure_console_encoding()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.altcoin_production and args.command != "market-stream":
+        print(json.dumps({
+            "status": "blocked",
+            "reason": "altcoin_production_requires_market_stream",
+        }, ensure_ascii=False))
+        return 2
     if args.command == "stable-check":
         return print_stable_check(as_json=args.json, save=not args.no_save)
     if args.command == "altcoin-anomaly":
         from radars.altcoin_contract_anomaly.cli import run_altcoin_anomaly_cli
 
         return run_altcoin_anomaly_cli(args, settings=Settings.load())
+    if args.command == "market-stream":
+        settings = Settings.load()
+        if bool(args.send) != bool(args.confirm_real_send):
+            print(json.dumps({
+                "service": "binance_realtime_market",
+                "failures": ["telegram_real_send_dual_gate_required"],
+            }, ensure_ascii=False))
+            return 2
+        duration_sec = max(
+            0.0,
+            float(args.stream_duration_minutes or 0),
+        ) * 60
+        if args.altcoin_production:
+            from radars.altcoin_contract_anomaly.production_runtime import (
+                run_altcoin_production_service,
+            )
+
+            return run_altcoin_production_service(
+                settings,
+                duration_sec=duration_sec,
+                real_send_requested=bool(args.send and args.confirm_real_send),
+            )
+
+        if args.send or args.confirm_real_send:
+            print(json.dumps({
+                "service": "binance_realtime_market",
+                "failures": ["telegram_send_requires_altcoin_production"],
+            }, ensure_ascii=False))
+            return 2
+        from shared.process_lock import ProcessFileLock
+        from shared.realtime_market import run_realtime_market_service
+
+        return run_realtime_market_service(
+            settings,
+            duration_sec=duration_sec,
+            process_lock=ProcessFileLock(
+                settings.altcoin_contract_anomaly_realtime_lock_path
+            ),
+        )
     settings, store, _engine, _gateway = make_runtime()
 
     if args.command == "about":
@@ -2781,13 +2878,6 @@ def main(argv: list[str] | None = None) -> int:
             if gate != 0:
                 return gate
         return run_funding_alert(args)
-    if args.command == "market-stream":
-        from shared.realtime_market import run_realtime_market_service
-
-        return run_realtime_market_service(
-            settings,
-            duration_sec=max(0.0, float(args.stream_duration_minutes or 0)) * 60,
-        )
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

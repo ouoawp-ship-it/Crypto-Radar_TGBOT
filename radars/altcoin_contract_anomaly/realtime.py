@@ -642,6 +642,7 @@ class CandidateOiSampler:
         market_store: MarketSnapshotStore,
         samples: Mapping[str, list[Mapping[str, Any]]] | None = None,
         source_factory: Callable[..., Any] | None = None,
+        budget_window_sec: int = 0,
     ) -> None:
         self.settings = settings
         self.market_store = market_store
@@ -655,6 +656,12 @@ class CandidateOiSampler:
         self.last_refresh_at = 0.0
         self._last_requested_boundary: dict[str, tuple[str, int]] = {}
         self._rate_limit_latched = False
+        self._rate_limit_latched_until = 0.0
+        self._rate_limit_latch_resets = 0
+        self._budget_window_sec = max(0, int(budget_window_sec))
+        self._budget_window_started_at = 0
+        self._budget_window_used = 0
+        self._budget_window_resets = 0
         budget_limit = max(1, int(getattr(
             settings,
             "altcoin_contract_anomaly_realtime_oi_request_budget",
@@ -668,13 +675,61 @@ class CandidateOiSampler:
             "failures": 0,
             "budget_used": 0,
             "budget_limit": budget_limit,
+            "budget_mode": (
+                "window" if self._budget_window_sec else "bounded_session"
+            ),
+            "budget_window_sec": self._budget_window_sec,
+            "budget_window_started_at": None,
+            "budget_window_used": 0,
+            "budget_window_resets": 0,
             "budget_exhausted": 0,
             "rate_limit_blocked": 0,
+            "rate_limit_latched": False,
+            "rate_limit_latched_until": None,
+            "rate_limit_latch_resets": 0,
             "http_429": 0,
             "http_418": 0,
             "refresh_rounds": 0,
             "last_round": {},
         }
+
+    def _advance_budget_window(self, now_ts: float) -> None:
+        if self._budget_window_sec <= 0:
+            self.last_stats["budget_window_used"] = int(
+                self.last_stats.get("budget_used") or 0
+            )
+            return
+        window_start = int(now_ts // self._budget_window_sec) * self._budget_window_sec
+        if self._budget_window_started_at <= 0:
+            self._budget_window_started_at = window_start
+        elif window_start > self._budget_window_started_at:
+            self._budget_window_started_at = window_start
+            self._budget_window_used = 0
+            self._budget_window_resets += 1
+        self.last_stats.update({
+            "budget_window_started_at": _iso(self._budget_window_started_at),
+            "budget_window_used": self._budget_window_used,
+            "budget_window_resets": self._budget_window_resets,
+        })
+
+    def _advance_rate_limit_fuse(self, now_ts: float) -> None:
+        if (
+            self._rate_limit_latched
+            and self._rate_limit_latched_until > 0
+            and now_ts >= self._rate_limit_latched_until
+        ):
+            self._rate_limit_latched = False
+            self._rate_limit_latched_until = 0.0
+            self._rate_limit_latch_resets += 1
+        self.last_stats.update({
+            "rate_limit_latched": self._rate_limit_latched,
+            "rate_limit_latched_until": (
+                _iso(self._rate_limit_latched_until)
+                if self._rate_limit_latched_until > 0
+                else None
+            ),
+            "rate_limit_latch_resets": self._rate_limit_latch_resets,
+        })
 
     def _add_sample(self, symbol: str, sample: Mapping[str, Any]) -> None:
         raw_value = sample.get("oi_value_usd")
@@ -789,6 +844,26 @@ class CandidateOiSampler:
                 return self.source_factory(budget)
             except TypeError:
                 return self.source_factory()
+
+    def _request_priority(
+        self,
+        symbol: str,
+        *,
+        subscription_epoch: str,
+    ) -> tuple[int, int, str]:
+        successful_boundaries = [
+            int(row.get("observed_at") or 0)
+            for row in self.samples.get(symbol, [])
+            if row.get("exact_5m")
+            and (
+                not subscription_epoch
+                or str(row.get("subscription_epoch") or "")
+                == subscription_epoch
+            )
+        ]
+        if not successful_boundaries:
+            return 0, 0, symbol
+        return 1, max(successful_boundaries), symbol
 
     @staticmethod
     def _close_source(source: Any) -> None:
@@ -917,6 +992,8 @@ class CandidateOiSampler:
             )
             for symbol in candidates
         }
+        self._advance_budget_window(now_ts)
+        self._advance_rate_limit_fuse(now_ts)
         self.last_stats["candidate_count"] = len(candidates)
         due: list[str] = []
         for symbol in candidates:
@@ -952,10 +1029,19 @@ class CandidateOiSampler:
             for symbol in due
         )
         budget_limit = int(self.last_stats.get("budget_limit") or 0)
-        used_before = int(self.last_stats.get("budget_used") or 0)
-        remaining = max(0, budget_limit - used_before)
+        total_used_before = int(self.last_stats.get("budget_used") or 0)
+        budget_used_before = (
+            self._budget_window_used
+            if self._budget_window_sec > 0
+            else total_used_before
+        )
+        remaining = max(0, budget_limit - budget_used_before)
         budget_exhausted = max(0, len(due) - remaining)
         rate_limit_blocked = min(len(due), remaining) if self._rate_limit_latched else 0
+        due.sort(key=lambda symbol: self._request_priority(
+            symbol,
+            subscription_epoch=str(epochs[symbol].get("epoch_id") or ""),
+        ))
         requestable = [] if self._rate_limit_latched else due[:remaining]
         workers = max(1, min(16, int(getattr(
             self.settings,
@@ -1064,15 +1150,29 @@ class CandidateOiSampler:
             http_418 = sum("418" in warning for warning in warnings)
         if http_429 or http_418:
             self._rate_limit_latched = True
-        for symbol in due:
+            fuse_seconds = max(1, int(getattr(
+                self.settings,
+                "fuse_seconds",
+                15 * 60,
+            ) or 15 * 60))
+            self._rate_limit_latched_until = max(
+                self._rate_limit_latched_until,
+                now_ts + fuse_seconds,
+            )
+        for symbol in requestable:
             self._last_requested_boundary[symbol] = (
                 str(epochs[symbol].get("epoch_id") or ""),
                 boundaries[symbol],
             )
+        requested_set = set(requestable)
         round_stats = {
             "target_boundaries": {
                 symbol: boundaries[symbol] for symbol in due
             },
+            "request_order": list(requestable),
+            "deferred_symbols": [
+                symbol for symbol in due if symbol not in requested_set
+            ],
             "requests": len(requestable),
             "cache_hits": cache_hits,
             "successes": successes,
@@ -1081,7 +1181,22 @@ class CandidateOiSampler:
             "rate_limit_blocked": rate_limit_blocked,
             "http_429": http_429,
             "http_418": http_418,
+            "rate_limit_latched": self._rate_limit_latched,
+            "rate_limit_latched_until": (
+                _iso(self._rate_limit_latched_until)
+                if self._rate_limit_latched_until > 0
+                else None
+            ),
+            "budget_window_started_at": (
+                _iso(self._budget_window_started_at)
+                if self._budget_window_sec > 0
+                else None
+            ),
+            "budget_window_used_before": budget_used_before,
+            "budget_window_used_after": budget_used_before + len(requestable),
         }
+        if self._budget_window_sec > 0:
+            self._budget_window_used += len(requestable)
         self.last_stats = {
             "candidate_count": len(candidates),
             "requests": int(self.last_stats.get("requests") or 0) + len(requestable),
@@ -1093,8 +1208,23 @@ class CandidateOiSampler:
                 + budget_exhausted
                 + rate_limit_blocked
             ),
-            "budget_used": used_before + len(requestable),
+            "budget_used": total_used_before + len(requestable),
             "budget_limit": budget_limit,
+            "budget_mode": (
+                "window" if self._budget_window_sec else "bounded_session"
+            ),
+            "budget_window_sec": self._budget_window_sec,
+            "budget_window_started_at": (
+                _iso(self._budget_window_started_at)
+                if self._budget_window_sec > 0
+                else None
+            ),
+            "budget_window_used": (
+                self._budget_window_used
+                if self._budget_window_sec > 0
+                else total_used_before + len(requestable)
+            ),
+            "budget_window_resets": self._budget_window_resets,
             "budget_exhausted": (
                 int(self.last_stats.get("budget_exhausted") or 0)
                 + budget_exhausted
@@ -1103,6 +1233,13 @@ class CandidateOiSampler:
                 int(self.last_stats.get("rate_limit_blocked") or 0)
                 + rate_limit_blocked
             ),
+            "rate_limit_latched": self._rate_limit_latched,
+            "rate_limit_latched_until": (
+                _iso(self._rate_limit_latched_until)
+                if self._rate_limit_latched_until > 0
+                else None
+            ),
+            "rate_limit_latch_resets": self._rate_limit_latch_resets,
             "http_429": int(self.last_stats.get("http_429") or 0) + http_429,
             "http_418": int(self.last_stats.get("http_418") or 0) + http_418,
             "refresh_rounds": int(self.last_stats.get("refresh_rounds") or 0) + 1,
@@ -1138,6 +1275,7 @@ class AltcoinRealtimeController:
         source_factory: Callable[..., Any] | None = None,
         observation_state: RealtimeObservationState | None = None,
         manifest_consumer: CandidateManifestConsumer | None = None,
+        oi_budget_window_sec: int = 0,
     ) -> None:
         self.settings = settings
         state_path = Path(getattr(
@@ -1164,6 +1302,7 @@ class AltcoinRealtimeController:
             market_store=market_store or MarketSnapshotStore(settings.market_snapshots_db_path),
             samples=self.state_store.oi_samples,
             source_factory=source_factory,
+            budget_window_sec=oi_budget_window_sec,
         )
         self.mark_price_book = mark_price_book or MarkPriceBook()
         self._symbol_states = self.state_store.symbol_states
@@ -1318,27 +1457,67 @@ class AltcoinRealtimeController:
             return result
         current = self.manifest_consumer.last_valid
         invalidation_events: list[dict[str, Any]] = []
+        pending_symbol_states = copy.deepcopy(self._symbol_states)
         if previous is not None and current is not None and result.get("changed"):
             for symbol, old_row in previous.candidates.items():
                 current_tags = set((current.candidates.get(symbol) or {}).get("candidate_tags") or [])
                 old_tags = set(old_row.get("candidate_tags") or [])
                 if symbol not in current.candidates or not old_tags.issubset(current_tags):
-                    event = self._manifest_invalidation_event(
+                    invalidation_events.append(self._manifest_invalidation_event(
                         old=previous,
                         new=current,
                         symbol=symbol,
                         now_ts=now,
-                    )
-                    if self._record_event(event):
-                        invalidation_events.append(event)
-                    self._symbol_states.pop(symbol, None)
-        if current is not None:
-            self.state_store.update(
+                    ))
+                    pending_symbol_states.pop(symbol, None)
+        if current is None:
+            return {**result, "events": []}
+
+        # The manifest transition and all of its invalidation events are one
+        # recoverable unit. Production observation state admits the complete
+        # batch to its WAL before this call advances last_valid_manifest.
+        try:
+            newly_appended = set(self.state_store.record_event_batch(
+                invalidation_events,
                 last_valid_manifest=current.summary(),
-                symbol_states=self._symbol_states,
+                symbol_states=pending_symbol_states,
                 oi_samples=self.oi_sampler.samples,
+            ))
+        except Exception as exc:
+            # CandidateManifestConsumer.poll() has already moved last_valid in
+            # memory. Roll it back so the same deterministic transition is
+            # retried on the next poll after a WAL/disk failure.
+            self.manifest_consumer.last_valid = previous
+            self.manifest_consumer.event_ready = False
+            self.manifest_consumer.last_error = (
+                f"manifest_transition_persist_failed:{type(exc).__name__}"
             )
-        return {**result, "events": invalidation_events}
+            self._manifest_event_ready = False
+            self._stats["manifest_failures"] += 1
+            self._stats["last_error"] = self.manifest_consumer.last_error
+            return {
+                "status": "manifest_degraded",
+                "reason": self.manifest_consumer.last_error,
+                "changed": False,
+                "retained_candidate_count": len(previous.symbols) if previous else 0,
+                "events": [],
+            }
+
+        self._symbol_states = pending_symbol_states
+        self._stats["last_error"] = ""
+        emitted = [
+            event for event in invalidation_events
+            if str(event.get("event_id") or "") in newly_appended
+        ]
+        for event in emitted:
+            self._recent_events.append(event)
+            event_type = str(event["event_type"])
+            self._stats["events"][event_type] = int(
+                self._stats["events"].get(event_type, 0)
+            ) + 1
+            self._stats["last_event_at"] = event["observed_at"]
+        self._recent_events = self._recent_events[-200:]
+        return {**result, "events": emitted}
 
     @staticmethod
     def _payload_symbol(payload: Mapping[str, Any] | MarkPriceUpdate) -> str:
@@ -1555,15 +1734,34 @@ class AltcoinRealtimeController:
         }
 
     @staticmethod
-    def _factor_values(features: Mapping[str, Any], mark: Mapping[str, Any], oi: Mapping[str, Any]) -> dict[str, Any]:
+    def _factor_values(
+        candidate: Mapping[str, Any],
+        features: Mapping[str, Any],
+        mark: Mapping[str, Any],
+        oi: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        market_cap_usd = _number(candidate.get("market_cap_usd"), minimum=0.0)
+        oi_value_usd = _number(oi.get("oi_value_usd"), minimum=0.0)
+        oi_market_cap_ratio = (
+            oi_value_usd / market_cap_usd
+            if oi_value_usd is not None
+            and market_cap_usd is not None
+            and market_cap_usd > 0
+            else None
+        )
         return json_safe({
             **{key: value for key, value in features.items() if key not in {"missing_fields", "stale_fields"}},
+            # Keep the displayed trio internally coherent: the current closed
+            # OI point divided by the trusted market cap carried by this exact
+            # manifest, never the older P1 ratio snapshot.
+            "market_cap_usd": market_cap_usd,
+            "oi_value_usd": oi_value_usd,
+            "oi_market_cap_ratio": oi_market_cap_ratio,
             "mark_price": mark.get("mark_price"),
             "funding_rate": mark.get("funding_rate"),
             "funding_rate_start_5m": mark.get("funding_rate_start_5m"),
             "funding_rate_end_5m": mark.get("funding_rate_end_5m"),
             "funding_rate_change_5m": mark.get("funding_rate_change_5m"),
-            "oi_value_usd": oi.get("oi_value_usd"),
             "oi_change_5m": oi.get("oi_change_5m"),
         })
 
@@ -1664,7 +1862,7 @@ class AltcoinRealtimeController:
             "candidate_tags": list(candidate.get("candidate_tags") or []),
             "matched_candidate_rules": list(candidate.get("matched_rules") or []),
             "confirmed_factor_families": families,
-            "factor_values": self._factor_values(features, mark, oi),
+            "factor_values": self._factor_values(candidate, features, mark, oi),
             "factor_thresholds": dict(thresholds),
             "source_timestamps": {
                 **dict(features.get("source_timestamps") or {}),
@@ -2198,10 +2396,19 @@ def run_realtime_confirmation_session(
             store=feature_store,
             realtime_controller=controller,
         )
+        from shared.process_lock import ProcessFileLock
+
         raw = run_realtime_market_session(
             settings,
             duration_sec=duration_sec,
             service=service,
+            process_lock=ProcessFileLock(
+                getattr(
+                    settings,
+                    "altcoin_contract_anomaly_realtime_lock_path",
+                    settings.data_dir / "altcoin_contract_anomaly_realtime.lock",
+                )
+            ),
         )
     stats = dict(raw.get("stats") or {})
     failures = [str(value) for value in raw.get("failures") or []]

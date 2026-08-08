@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -773,6 +773,163 @@ class OiSamplerTests(unittest.TestCase):
         self.assertEqual(sampler.last_stats["last_round"]["requests"], 0)
         self.assertEqual(sampler.last_stats["last_round"]["budget_exhausted"], 1)
 
+    def test_production_budget_rolls_each_five_minutes_and_preserves_totals(self) -> None:
+        boundary = NOW // 300 * 300
+
+        class RollingOiSource:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, int]] = []
+                self.quality = DataQuality()
+
+            def open_interest_hist(
+                self,
+                symbol,
+                period="5m",
+                limit=2,
+                *,
+                end_time,
+            ):
+                del period, limit
+                target = int(end_time // 1_000)
+                self.calls.append((symbol, target))
+                return [
+                    {
+                        "sumOpenInterestValue": "100",
+                        "timestamp": (target - 300) * 1_000,
+                    },
+                    {
+                        "sumOpenInterestValue": "110",
+                        "timestamp": target * 1_000,
+                    },
+                ]
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        source = RollingOiSource()
+        candidates = [f"T{index:03d}USDT" for index in range(51)]
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(
+                    Path(tmp),
+                    altcoin_contract_anomaly_realtime_oi_request_budget=50,
+                ),
+                market_store=FakeMarketStore(),
+                source_factory=lambda *_args: source,
+                budget_window_sec=300,
+            )
+            first = sampler.refresh(candidates, now_ts=boundary + 1)
+            self.assertNotIn("T050USDT", sampler._last_requested_boundary)
+            second = sampler.refresh(candidates, now_ts=boundary + 301)
+
+        self.assertEqual(len(source.calls), 100)
+        self.assertEqual(sum(row[1] == boundary for row in source.calls), 50)
+        self.assertEqual(sum(row[1] == boundary + 300 for row in source.calls), 50)
+        self.assertEqual(
+            sum(value["data_quality"] == "complete" for value in first.values()),
+            50,
+        )
+        self.assertEqual(
+            sum(value["data_quality"] == "complete" for value in second.values()),
+            50,
+        )
+        self.assertEqual(first["T050USDT"]["data_quality"], "partial")
+        self.assertEqual(second["T050USDT"]["data_quality"], "complete")
+        self.assertEqual(second["T049USDT"]["data_quality"], "partial")
+        stats = sampler.last_stats
+        self.assertEqual(stats["budget_mode"], "window")
+        self.assertEqual(stats["budget_window_sec"], 300)
+        self.assertEqual(stats["budget_window_used"], 50)
+        self.assertEqual(stats["budget_window_resets"], 1)
+        self.assertEqual(stats["budget_used"], 100)
+        self.assertEqual(stats["requests"], 100)
+        self.assertEqual(stats["successes"], 100)
+        self.assertEqual(stats["budget_exhausted"], 2)
+        self.assertEqual(stats["last_round"]["budget_window_used_before"], 0)
+        self.assertEqual(stats["last_round"]["budget_window_used_after"], 50)
+        self.assertEqual(stats["last_round"]["request_order"][0], "T050USDT")
+        self.assertEqual(stats["last_round"]["deferred_symbols"], ["T049USDT"])
+
+    def test_production_rate_limit_fuse_blocks_then_recovers_after_deadline(self) -> None:
+        boundary = NOW // 300 * 300
+        calls: list[tuple[str, int]] = []
+        source_number = 0
+
+        class RecoveringSource:
+            def __init__(self, *, rate_limited: bool) -> None:
+                self.rate_limited = rate_limited
+                self.quality = DataQuality()
+
+            def open_interest_hist(self, symbol, period="5m", limit=2, **kwargs):
+                del period, limit
+                target = int(kwargs["end_time"] // 1_000)
+                calls.append((symbol, target))
+                if self.rate_limited:
+                    self.quality.fail("open_interest_hist", "status=418")
+                    return []
+                return [
+                    {
+                        "sumOpenInterestValue": "100",
+                        "timestamp": (target - 300) * 1_000,
+                    },
+                    {
+                        "sumOpenInterestValue": "110",
+                        "timestamp": target * 1_000,
+                    },
+                ]
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        def source_factory(*_args):
+            nonlocal source_number
+            source_number += 1
+            return RecoveringSource(rate_limited=source_number == 1)
+
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(
+                    Path(tmp),
+                    altcoin_contract_anomaly_realtime_oi_request_budget=50,
+                    fuse_seconds=600,
+                ),
+                market_store=FakeMarketStore(),
+                source_factory=source_factory,
+                budget_window_sec=300,
+            )
+            sampler.refresh(["TESTUSDT"], now_ts=boundary + 1)
+            same_window = sampler.refresh(
+                ["TESTUSDT", "OTHERUSDT"],
+                now_ts=boundary + 2,
+            )
+            next_window = sampler.refresh(
+                ["TESTUSDT", "OTHERUSDT"],
+                now_ts=boundary + 301,
+            )
+            recovered = sampler.refresh(
+                ["TESTUSDT", "OTHERUSDT"],
+                now_ts=boundary + 601,
+            )
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], ("TESTUSDT", boundary))
+        self.assertEqual(
+            {symbol for symbol, target in calls[1:] if target == boundary + 600},
+            {"TESTUSDT", "OTHERUSDT"},
+        )
+        self.assertTrue(all(row["data_quality"] == "partial" for row in same_window.values()))
+        self.assertTrue(all(row["data_quality"] == "partial" for row in next_window.values()))
+        self.assertTrue(all(row["data_quality"] == "complete" for row in recovered.values()))
+        self.assertEqual(sampler.last_stats["budget_window_resets"], 2)
+        self.assertEqual(sampler.last_stats["budget_used"], 3)
+        self.assertEqual(sampler.last_stats["http_418"], 1)
+        self.assertEqual(sampler.last_stats["rate_limit_blocked"], 3)
+        self.assertEqual(sampler.last_stats["rate_limit_latch_resets"], 1)
+        self.assertFalse(sampler.last_stats["rate_limit_latched"])
+        self.assertIsNone(sampler.last_stats["rate_limit_latched_until"])
+
     def test_rate_limit_latch_is_not_reported_as_budget_exhaustion(self) -> None:
         boundary = NOW // 300 * 300
 
@@ -1137,6 +1294,15 @@ class DryRunEventTests(unittest.TestCase):
         self.assertEqual(fuel_events[0]["schema_version"], P2_SCHEMA_VERSION)
         self.assertEqual(fuel_events[0]["rules_version"], P2_RULES_VERSION)
         self.assertEqual(len(fuel_events[0]["confirmed_factor_families"]), len(set(fuel_events[0]["confirmed_factor_families"])))
+        # The manifest's P1 OI ratio is 30%, while this closed realtime OI
+        # point is $1M against the current $20M market cap.  Production must
+        # carry the coherent current trio and never reuse the old 30% ratio.
+        self.assertEqual(fuel_events[0]["factor_values"]["market_cap_usd"], 20_000_000.0)
+        self.assertEqual(fuel_events[0]["factor_values"]["oi_value_usd"], 1_000_000.0)
+        self.assertAlmostEqual(
+            fuel_events[0]["factor_values"]["oi_market_cap_ratio"],
+            0.05,
+        )
 
         squeeze_feature = feature(
             price_change_1m=0.02,
@@ -1366,6 +1532,72 @@ class DryRunEventTests(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in valid["events"]], ["candidate_condition_invalidated"])
         self.assertEqual(valid["events"][0]["confirmed_factor_families"], [])
 
+    def test_manifest_invalidation_retries_after_wal_failure_without_duplicates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configured = settings(root)
+            store = CandidatePoolStore(root / "pool.json")
+            first = pool([candidate()])
+            store.save(first)
+            controller = AltcoinRealtimeController(
+                configured,
+                feature_store=FakeFeatureStore([]),
+                market_store=FakeMarketStore(),
+            )
+            controller.poll_manifest(now_ts=NOW)
+            old_hash = controller.manifest_consumer.last_valid.candidate_pool_hash
+
+            store.save(pool(
+                [candidate(ratio=0.10, observed_at=NOW + 60)],
+                generated_at=NOW + 60,
+                previous=first,
+            ))
+            real_record_batch = controller.state_store.record_event_batch
+            attempts = 0
+
+            def fail_first_wal_admission(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("simulated production WAL failure")
+                return real_record_batch(*args, **kwargs)
+
+            with patch.object(
+                controller.state_store,
+                "record_event_batch",
+                side_effect=fail_first_wal_admission,
+            ):
+                failed = controller.poll_manifest(now_ts=NOW + 60)
+                self.assertEqual(failed["status"], "manifest_degraded")
+                self.assertEqual(failed["events"], [])
+                self.assertEqual(
+                    controller.manifest_consumer.last_valid.candidate_pool_hash,
+                    old_hash,
+                )
+
+                retried = controller.poll_manifest(now_ts=NOW + 61)
+                duplicate = controller.poll_manifest(now_ts=NOW + 62)
+
+            records = [
+                json.loads(line)
+                for line in (root / "p2-events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(attempts, 3)
+        self.assertEqual(retried["status"], "valid_changed")
+        self.assertEqual(
+            [event["event_type"] for event in retried["events"]],
+            ["candidate_condition_invalidated"],
+        )
+        self.assertEqual(duplicate["status"], "valid_unchanged")
+        self.assertEqual(duplicate["events"], [])
+        self.assertEqual(controller.stats()["last_error"], "")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len({record["event_id"] for record in records}), 1)
+
     def test_stale_websocket_blocks_all_confirmation_events(self) -> None:
         with TemporaryDirectory() as tmp:
             controller = controller_for(Path(tmp), candidate(), feature())
@@ -1543,6 +1775,7 @@ class DryRunEventTests(unittest.TestCase):
                     runtime_settings,
                     duration_sec=30,
                     service=service_type.return_value,
+                    process_lock=ANY,
                 )
                 return result
 
