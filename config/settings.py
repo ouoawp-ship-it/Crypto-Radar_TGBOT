@@ -130,6 +130,7 @@ class Settings:
     data_dir: Path = BASE_DIR / "data"
 
     tg_bot_token: str = ""
+    tg_bot_username: str = ""
     tg_chat_id: str = ""
     tg_topic_id: str = ""
     tg_radar_summary_topic_id: str = ""
@@ -377,11 +378,13 @@ class Settings:
     launch_directional_enable: bool = False
     launch_directional_max_candidates: int = 6
     launch_ai_interpreter_enable: bool = False
+    launch_ai_auto_enable: bool = False
     ai_api_key: str = ""
     ai_base_url: str = ""
     ai_model: str = ""
     ai_operator_prompt: str = ""
     ai_timeout_sec: int = 60
+    ai_on_demand_daily_limit: int = 20
     launch_same_stage_min_interval_sec: int = 30 * 60
     launch_package_score_delta: int = 15
     launch_package_price_delta_pct: float = 3.0
@@ -455,6 +458,10 @@ class Settings:
         return cls(
             data_dir=data_dir,
             tg_bot_token=os.getenv("TG_BOT_TOKEN", ""),
+            tg_bot_username=file_env.get(
+                "TG_BOT_USERNAME",
+                os.getenv("TG_BOT_USERNAME", ""),
+            ).strip().lstrip("@"),
             tg_chat_id=os.getenv("TG_CHAT_ID", ""),
             tg_topic_id=env_first("TG_TOPIC_ID", "TELEGRAM_MESSAGE_THREAD_ID"),
             tg_radar_summary_topic_id=env_first("TG_RADAR_SUMMARY_TOPIC_ID", "TELEGRAM_RADAR_SUMMARY_TOPIC_ID"),
@@ -962,6 +969,10 @@ class Settings:
                 "LAUNCH_AI_INTERPRETER_ENABLE",
                 False,
             ),
+            launch_ai_auto_enable=reloadable_bool(
+                "LAUNCH_AI_AUTO_ENABLE",
+                False,
+            ),
             ai_api_key=file_env.get(
                 "AI_API_KEY",
                 os.getenv("AI_API_KEY", ""),
@@ -980,6 +991,12 @@ class Settings:
                 60,
                 5,
                 180,
+            ),
+            ai_on_demand_daily_limit=reloadable_bounded_int(
+                "AI_ON_DEMAND_DAILY_LIMIT",
+                20,
+                1,
+                100,
             ),
             launch_same_stage_min_interval_sec=env_int(
                 "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
@@ -1013,6 +1030,7 @@ class Settings:
             "env_file_exists": active_env_file().exists(),
             "telegram": {
                 "bot_token_configured": bool(self.tg_bot_token),
+                "bot_username_configured": bool(self.tg_bot_username),
                 "chat_id_configured": bool(self.tg_chat_id),
                 "topic_id_configured": bool(self.tg_topic_id),
                 "topic_routes_configured": {
@@ -1039,6 +1057,12 @@ class Settings:
                 "use_topic": self.tg_use_topic,
                 "outbox_file": str(self.tg_outbox_path),
                 "outbox_quarantine_sec": self.tg_outbox_quarantine_sec,
+            },
+            "launch_ai": {
+                "interpreter_enabled": self.launch_ai_interpreter_enable,
+                "automatic_enabled": self.launch_ai_auto_enable,
+                "on_demand_enabled": self.launch_ai_interpreter_enable,
+                "on_demand_daily_limit": self.ai_on_demand_daily_limit,
             },
             "bot_data": {
                 "signal_events_db_file": str(self.signal_events_db_path),

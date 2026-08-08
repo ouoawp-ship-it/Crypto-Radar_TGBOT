@@ -14,6 +14,7 @@ def _item(**changes: object) -> dict[str, object]:
     item: dict[str, object] = {
         "symbol": "DEMOUSDT",
         "coin": "DEMO",
+        "discovery_score": 80,
         "asset_category": "altcoin",
         "entry_zone": {"low": 1.02, "high": 1.06},
         "invalidation_price": 0.98,
@@ -161,6 +162,27 @@ def _item(**changes: object) -> dict[str, object]:
     return item
 
 
+def _phase(
+    *,
+    bias: str = "bullish",
+    timing_stage: str = "forming",
+    execution_status: str = "wait_confirmation",
+    position_status: str = "middle",
+    volume_status: str = "normal",
+    primary_block_reason: str = "directional_hard_gates_incomplete",
+    plan_eligible: bool = False,
+) -> dict[str, object]:
+    return {
+        "bias": bias,
+        "timing_stage": timing_stage,
+        "execution_status": execution_status,
+        "position_status": position_status,
+        "volume_status": volume_status,
+        "primary_block_reason": primary_block_reason,
+        "plan_eligible": plan_eligible,
+    }
+
+
 class LaunchDirectionalFormatterTests(unittest.TestCase):
     def test_every_directional_status_has_a_plain_chinese_headline(self) -> None:
         cases = {
@@ -211,25 +233,24 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         expected = [
             "看涨条件满足｜等待回踩确认",
             "<b>当前结论</b>",
-            "<b>📊 信号强度</b>",
+            "<b>📊 发现分与方向证据分（都不是概率）</b>",
+            "发现分 80/100｜只负责发现异动",
             "看涨 88｜看跌 19｜看涨领先 69",
             "构成：价与持仓 30/30｜主动买卖 23/25｜结构 22/25｜执行 18/20",
-            "当前方向：原始 93｜拥挤 -5｜最终 88",
-            "<b>🔥 实际数据</b>",
+            "<b>🔥 已收盘数据</b>",
             "1小时：价格 +4.80%｜持仓量 +6.20%",
             "现货1小时：+$92K｜主动占比 +18.4%",
             "合约1小时：+$214K｜主动占比 +12.1%",
             "15分钟发现：价格 +1.40%｜持仓量 +2.10%｜成交量 1.80倍",
-            "本品类门槛：价格±2.0%｜持仓+2.5%｜主动占比±8.0%",
-            "<b>🚦 可靠度与风险</b>",
-            "确认门槛：13/13｜全部通过",
+            "<b>🚦 位置、阶段与执行</b>",
             "<b>📍 观察计划</b>",
             "观察区：1.02–1.06｜失效参考：0.98",
             "目标参考：1.22 / 1.35｜收益风险参考：2.40",
+            "确认门槛：13/13｜全部通过",
         ]
         positions = [text.index(value) for value in expected]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("规则分不是概率", text)
+        self.assertIn("发现分/证据分都不是概率", text)
         self.assertNotIn("price_oi_participation", text)
         self.assertNotIn("entry_5m_aligned", text)
 
@@ -298,7 +319,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         self.assertIn("1小时：价格 -4.90%｜持仓量 +5.70%", text)
         self.assertIn("现货1小时：-$66K｜主动占比 -17.2%", text)
         self.assertIn("合约1小时：-$181K｜主动占比 -14.6%", text)
-        self.assertIn("未过：5分钟入场确认未通过", text)
+        self.assertIn("主要阻断：5分钟入场确认未通过", text)
         self.assertNotIn("观察区：0.94", text)
 
     def test_asset_profiles_have_distinct_plain_language_risks(self) -> None:
@@ -345,6 +366,26 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         self.assertIn("向上扫过流动性后回落", text)
         for code in ("BOS_up", "CHoCH_up", "unknown_rule_code", "sweep_high"):
             self.assertNotIn(code, text)
+
+    def test_unknown_evidence_and_block_reason_are_not_echoed(self) -> None:
+        item = _item()
+        signal = copy.deepcopy(item["directional_readiness"])
+        assert isinstance(signal, dict)
+        signal["evidence"] = {
+            "bullish": ["未知证据 https://private.invalid/path"],
+            "bearish": [],
+        }
+        item["directional_readiness"] = signal
+        item["launch_phase"] = _phase(
+            primary_block_reason="内部路径 C:\\private\\secret"
+        )
+
+        text = format_launch_directional_signal(item)
+
+        self.assertIn("其他规则证据已记录", text)
+        self.assertIn("其他关键条件尚未通过", text)
+        self.assertNotIn("private.invalid", text)
+        self.assertNotIn("C:\\private", text)
 
     def test_user_controlled_text_is_html_escaped(self) -> None:
         signal = {
@@ -399,7 +440,8 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
 
         self.assertIn("AI参与</b>：已完成（本轮调用）", live)
         self.assertIn("AI白话解读</b>：规则证据偏多", live)
-        self.assertIn("只有上一行解读由AI生成", live)
+        self.assertIn("仅本行由AI生成；规则结论不变", live)
+        self.assertLess(live.index("🔥 已收盘数据"), live.index("AI参与"))
         self.assertIn("AI参与</b>：已完成（复用已校验结果）", cached)
 
     def test_ai_failure_and_deferred_status_never_disappear(self) -> None:
@@ -467,7 +509,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         })
 
         self.assertIn("数据不足｜本轮不确认方向", text)
-        self.assertIn("多空准备度：待确认", text)
+        self.assertIn("多空证据分：待确认", text)
         self.assertIn("1小时：价格 缺数据｜持仓量 缺数据", text)
         self.assertIn("现货1小时：Binance数据暂不可用", text)
         self.assertIn("合约1小时：窗口不完整", text)
@@ -510,7 +552,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         ))
 
         crowding_line = next(
-            line for line in text.splitlines() if line.startswith("• 拥挤：")
+            line for line in text.splitlines() if line.startswith("• 拥挤参考：")
         )
         self.assertIn("资金费率 -0.1000%", crowding_line)
         self.assertNotIn("当前方向偏拥挤", crowding_line)
@@ -534,8 +576,8 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             risk_reward_ratio=0.5,
         ))
 
-        self.assertIn("看涨条件满足", text)
-        self.assertIn("尚未满足完整确认", text)
+        self.assertIn("确认信息冲突｜本轮降级观察", text)
+        self.assertIn("已安全降级", text)
         self.assertNotIn("<b>📍 观察计划</b>", text)
         self.assertNotIn("目标参考：", text)
 
@@ -557,8 +599,8 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         ))
 
         self.assertIn("假强背离｜价格在涨，主动买盘没有跟上", text)
-        self.assertIn("背离风险观察", text)
-        self.assertIn("尚未确认反转", text)
+        self.assertIn("📌 当前处理", text)
+        self.assertIn("背离尚未确认反转", text)
         self.assertIn("现货和合约主动成交都偏卖出", text)
         self.assertNotIn("观察区：", text)
         self.assertNotIn("收益风险参考：", text)
@@ -587,7 +629,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
 
         self.assertIn("仅合约观察", text)
         self.assertIn("现货1小时：没有同名现货对", text)
-        self.assertIn("不确认看涨或看跌，也不调用AI", text)
+        self.assertIn("不确认方向、不生成计划，也不调用AI", text)
         self.assertNotIn("观察区：", text)
 
     def test_direction_flip_closes_old_cycle_without_presenting_new_trade_plan(self) -> None:
@@ -616,7 +658,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         cases = {
             "two_closes_below_invalidation": "跌破看涨失效位",
             "two_closes_above_invalidation": "升破看跌失效位",
-            "two_windows_below_watch_score": "准备度低于观察门槛",
+            "two_windows_below_watch_score": "证据分低于观察门槛",
         }
         for reason, expected in cases.items():
             with self.subTest(reason=reason):
@@ -808,7 +850,7 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         })
 
         self.assertIn("第4轮｜第6次完整观察｜持续 1小时15分", accumulating)
-        self.assertIn("较首次：价格 +3.60%｜持仓量 +5.80%｜准备度 +12分", accumulating)
+        self.assertIn("较首次：价格 +3.60%｜持仓量 +5.80%｜证据分 +12分", accumulating)
         self.assertIn("同方向样本：积累中 8/20（不展示胜率）", accumulating)
         self.assertNotIn("确认率", accumulating)
         self.assertNotIn("跟随率", accumulating)
@@ -895,9 +937,9 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         supportive = format_launch_directional_signal(item)
 
         self.assertIn("SMC二次过滤</b>：同向支持", supportive)
-        self.assertIn("1小时：偏多｜4小时：中性", supportive)
+        self.assertIn("1小时偏多｜4小时中性", supportive)
         self.assertIn("📍 观察计划", supportive)
-        self.assertIn("SMC不修改15分钟触发、方向和规则分", supportive)
+        self.assertIn("只过滤，不改发现分和方向证据分", supportive)
 
         item["smc_filter"] = {
             "status": "neutral",
@@ -905,11 +947,10 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
             "four_hour_structure": "bearish",
         }
         neutral = format_launch_directional_signal(item)
-        self.assertIn("方向观察｜高周期暂未一致", neutral)
-        self.assertIn("不作为强信号", neutral)
+        self.assertIn("看涨条件满足｜等待回踩确认", neutral)
         self.assertIn("SMC二次过滤</b>：中性观察", neutral)
         self.assertNotIn("📍 观察计划", neutral)
-        self.assertIn("⏳ 观察条件", neutral)
+        self.assertIn("📌 当前处理", neutral)
 
         missing = _item()
         missing["directional_readiness"] = signal
@@ -925,39 +966,183 @@ class LaunchDirectionalFormatterTests(unittest.TestCase):
         }))
 
         self.assertIn("SMC二次过滤</b>：数据不足", text)
-        self.assertIn("方向观察｜高周期数据不足", text)
-        self.assertIn("不参与拦截，也不调用AI", text)
+        self.assertIn("看涨候选｜证据增强，尚未确认", text)
+        self.assertIn("不改发现分和方向证据分", text)
         self.assertNotIn("高周期冲突", text)
+
+    def test_bullish_high_extension_is_tracking_not_a_fresh_candidate(self) -> None:
+        text = format_launch_directional_signal(_item(
+            launch_phase=_phase(
+                bias="bullish",
+                timing_stage="extended_no_chase",
+                execution_status="blocked_extension",
+                position_status="high_extended",
+                volume_status="sufficient",
+                primary_block_reason="bullish_72h_high_extended",
+            ),
+            smc_filter={
+                "status": "conflicting",
+                "one_hour_structure": "bearish",
+                "four_hour_structure": "bearish",
+            },
+        ))
+
+        self.assertIn("上涨已延伸｜高位不追涨", text)
+        self.assertIn("72小时位置：高位延伸｜成交量：达到确认要求", text)
+        self.assertIn("SMC二次过滤</b>：高周期冲突", text)
+        self.assertNotIn("看涨候选", text)
+        self.assertNotIn("📍 观察计划", text)
+        for code in (
+            "extended_no_chase",
+            "blocked_extension",
+            "high_extended",
+            "bullish_72h_high_extended",
+        ):
+            self.assertNotIn(code, text)
+
+    def test_bearish_low_extension_is_tracking_not_a_fresh_candidate(self) -> None:
+        item = _item(
+            price_15m=-0.31,
+            oi_15m=0.01,
+            price_1h=-1.05,
+            oi_1h=0.04,
+            spot_cvd_1h={"status": "available", "net_usd": -103_000, "ratio": -0.108},
+            futures_cvd_1h={"status": "available", "net_usd": -1_000_000, "ratio": -0.229},
+            launch_phase=_phase(
+                bias="bearish",
+                timing_stage="extended_no_chase",
+                execution_status="blocked_extension",
+                position_status="low_extended",
+                volume_status="low",
+                primary_block_reason="bearish_72h_low_extended",
+            ),
+        )
+        signal = copy.deepcopy(item["directional_readiness"])
+        assert isinstance(signal, dict)
+        signal.update({
+            "status": "空头候选",
+            "direction": "bearish",
+            "bullish_readiness": 10,
+            "bearish_readiness": 60,
+            "bearish_raw_score": 60,
+            "risk_adjustments": {"bullish": 0, "bearish": 0},
+            "hard_gates": {
+                "bearish": {"complete_data": True, "entry_5m_aligned": False},
+                "bearish_passed": False,
+            },
+            "evidence": {
+                "bullish": [],
+                "bearish": ["spot_cvd_selling", "futures_cvd_selling"],
+            },
+        })
+        signal["bearish_group_scores"] = {
+            "price_oi_participation": 0,
+            "active_funds": 25,
+            "structure": 25,
+            "execution_quality": 10,
+        }
+        item["directional_readiness"] = signal
+
+        text = format_launch_directional_signal(item)
+
+        self.assertIn("下跌已延伸｜低位不追空", text)
+        self.assertIn("72小时位置：低位延伸｜成交量：缩量", text)
+        self.assertNotIn("看跌候选", text)
+        self.assertNotIn("📍 观察计划", text)
+
+    def test_lifecycle_stage_owns_title_and_smc_stays_secondary(self) -> None:
+        cases = {
+            "launched": "看涨加速",
+            "risk": "看涨结构转弱",
+            "cooling": "看涨降温",
+        }
+        for current_stage, expected in cases.items():
+            with self.subTest(current_stage=current_stage):
+                item = _item(
+                    launch_phase=_phase(),
+                    smc_filter={
+                        "status": "neutral",
+                        "one_hour_structure": "bullish",
+                        "four_hour_structure": "bearish",
+                    },
+                )
+                lifecycle = copy.deepcopy(item["launch_lifecycle"])
+                assert isinstance(lifecycle, dict)
+                lifecycle["current_stage"] = current_stage
+                item["launch_lifecycle"] = lifecycle
+
+                text = format_launch_directional_signal(item)
+
+                self.assertIn(expected, text.splitlines()[0])
+                self.assertIn("SMC二次过滤</b>：中性观察", text)
+
+    def test_phase_and_ai_internal_status_codes_are_never_exposed(self) -> None:
+        statuses = {
+            "not_eligible_directional_incomplete": "方向判断所需数据不完整",
+            "not_eligible_phase_missing": "位置与时机检查不可用",
+            "not_eligible_phase_low_volume": "1小时成交量未达到确认要求",
+            "not_eligible_phase_low_flow_scale": "主动买卖规模未达到确认要求",
+            "not_eligible_phase_crowding": "同方向已经过度拥挤",
+        }
+        for status, expected in statuses.items():
+            with self.subTest(status=status):
+                text = format_launch_directional_signal(_item(
+                    launch_phase=_phase(),
+                    ai_interpretation_status=status,
+                ))
+                self.assertIn(expected, text)
+                self.assertNotIn(status, text)
+
+    def test_caption_pressure_keeps_lifecycle_ai_and_fixed_footer(self) -> None:
+        text = format_launch_directional_signal(
+            _item(
+                symbol=f"{'LONG' * 20}USDT",
+                asset_category_label="超长品类" * 30,
+                launch_phase=_phase(),
+                ai_interpretation_status="available",
+                ai_interpretation_source="provider",
+                ai_interpretation="已核对规则事实。" * 100,
+            ),
+            max_chars=512,
+        )
+
+        self.assertLessEqual(len(plain_fallback(text)), 512)
+        self.assertIn("AI参与", text)
+        self.assertIn("生命周期", text)
+        self.assertIn("发现分/证据分都不是概率", text)
+        self.assertIn("不构成投资建议", text)
 
     def test_topic_intro_is_detailed_plain_chinese_and_sets_ai_boundary(self) -> None:
         text = launch_directional_topic_intro()
 
         for expected in (
-            "信号强度：看涨和看跌分别打分",
-            "实际数据：显示1小时价格与持仓变化",
-            "四组规则分：价格与持仓30分、主动买卖25分、多周期结构25分、执行质量20分",
-            "1周/1天：过滤大方向",
-            "15分钟：保留现有异动触发",
-            "5分钟：只优化入场时机",
-            "滚动24小时只是背景",
-            "只有1小时和4小时都完整、都明确反向时",
-            "SMC不加分、不扣分、不改变15分钟方向",
-            "数据缺失不会按0计算",
-            "历史统计严格区分看涨和看跌",
-            "第一次信号单独发送",
-            "历史卡片不自动删除",
-            "上一条被人工删除",
-            "样本不足时只显示积累进度",
+            "提前发现可能启动或转弱的币，并持续跟踪",
+            "15分钟继续使用原规则发现第一批异动",
+            "发现分：只负责衡量15分钟异动有多明显",
+            "方向证据分：看涨和看跌分开计算",
+            "行情阶段：区分初步发现、形成中、确认、延续",
+            "执行状态：明确写出等待确认",
+            "方向证据强，不代表当前位置适合追",
+            "上涨已延伸",
+            "下跌已延伸",
+            "确认信息冲突",
+            "主动买卖只表示成交主导方",
+            "缺失项不按0补",
+            "SMC只做二次过滤",
+            "不会接管卡片主标题",
+            "AI改为需要时主动解读",
+            "雷达扫描默认不调用AI",
+            "点击消息下方“AI解读这条信号”",
+            "读取这张卡片发出当时的安全快照",
+            "同一快照、模型和提示词重复点击会复用",
+            "每日调用还有独立上限",
             "AI只把已计算的数据和规则翻译成白话",
-            "每张卡都会明确显示AI",
-            "只有“AI白话解读”后面的文字由AI生成",
-            "输出被截断或调用失败时会显示中文原因",
-            "不改方向、不改分数、不改失效位",
-            "同一版本的同一个观察最多调用一次",
-            "仅旧版已截断结果在本次升级后允许一次修复尝试",
-            "中性、冲突或数据不足均保持AI零调用",
+            "不能改方向、发现分、方向证据分、阶段、观察区或失效位",
+            "首次预警单独发送",
+            "历史消息不自动删除",
+            "上一条被人工删除",
             "没有同名现货对时只做合约观察",
-            "山寨币、股票/指数代币及大宗商品代币",
+            "主流币、山寨币、股票/指数代币和大宗商品代币",
         ):
             self.assertIn(expected, text)
         self.assertNotIn("AI决定", text)

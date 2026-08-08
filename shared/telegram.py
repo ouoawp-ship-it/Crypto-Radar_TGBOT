@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import socket
 import sys
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import requests
 
@@ -21,6 +23,75 @@ from .time_windows import CST
 
 
 MAX_TELEGRAM_HISTORY_ITEMS = 1000
+AI_INTERPRET_URL_BUTTON_TEXT = "🤖 AI 解读这条信号"
+MAX_TELEGRAM_URL_BUTTON_TEXT_CHARS = 64
+MAX_TELEGRAM_URL_BUTTON_URL_CHARS = 256
+MAX_TELEGRAM_START_PARAMETER_CHARS = 64
+_TELEGRAM_BOT_USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
+_TELEGRAM_START_PARAMETER = re.compile(
+    rf"[A-Za-z0-9_-]{{1,{MAX_TELEGRAM_START_PARAMETER_CHARS}}}"
+)
+
+
+@dataclass(frozen=True)
+class TelegramUrlButton:
+    """One bounded Telegram private-chat deep-link button."""
+
+    text: str
+    url: str
+
+
+def _telegram_url_button_markup(
+    button: TelegramUrlButton | None,
+) -> dict[str, Any] | None:
+    if button is None:
+        return None
+    if not isinstance(button, TelegramUrlButton):
+        raise ValueError("invalid_telegram_url_button")
+    text = button.text
+    url = button.url
+    if (
+        not isinstance(text, str)
+        or text != AI_INTERPRET_URL_BUTTON_TEXT
+        or not text
+        or text != text.strip()
+        or len(text) > MAX_TELEGRAM_URL_BUTTON_TEXT_CHARS
+        or any(ord(char) < 32 or ord(char) == 127 for char in text)
+    ):
+        raise ValueError("invalid_telegram_url_button")
+    if (
+        not isinstance(url, str)
+        or not url
+        or url != url.strip()
+        or len(url) > MAX_TELEGRAM_URL_BUTTON_URL_CHARS
+        or not url.startswith("https://t.me/")
+    ):
+        raise ValueError("invalid_telegram_url_button")
+    try:
+        parsed = urlsplit(url)
+        query = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    except (TypeError, ValueError):
+        raise ValueError("invalid_telegram_url_button") from None
+    username = parsed.path.removeprefix("/")
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "t.me"
+        or parsed.fragment
+        or "/" in username
+        or not _TELEGRAM_BOT_USERNAME.fullmatch(username)
+        or not username.lower().endswith("bot")
+        or len(query) != 1
+        or query[0][0] != "start"
+        or not _TELEGRAM_START_PARAMETER.fullmatch(query[0][1])
+    ):
+        raise ValueError("invalid_telegram_url_button")
+    return {
+        "inline_keyboard": [[{"text": text, "url": url}]],
+    }
 
 
 @dataclass
@@ -83,6 +154,8 @@ class PushResult:
     message_ids: list[int] | None = None
     delivery_id: str = ""
     diagnostics: TelegramDeliveryDiagnostics | None = None
+    signal_store_written: bool | None = None
+    ai_snapshot_ready: bool | None = None
 
 
 def utc_ts() -> int:
@@ -233,6 +306,24 @@ def classify_telegram_network_error(exc: BaseException) -> str:
     return "telegram_http_error"
 
 
+def _telegram_delivery_is_uncertain(exc: BaseException) -> bool:
+    """Return whether Telegram may have accepted a request without replying."""
+
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return False
+    network_error = classify_telegram_network_error(exc)
+    if network_error in {"telegram_dns_failed", "telegram_tls_failed"}:
+        return False
+    return isinstance(
+        exc,
+        (
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+        ),
+    )
+
+
 def plain_fallback(text: str) -> str:
     without_tags = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"[*_`]", "", unescape(without_tags))
@@ -257,7 +348,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 LAUNCH_FUSION_TOPIC_INTRO_VERSION = "2026-08-05-launch-fusion-v1"
-LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-07-launch-directional-ai-status-v4"
+LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-08-launch-evidence-stage-v6"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
 }
@@ -593,7 +684,30 @@ class TelegramGateway:
         signal_records: list[dict[str, Any]] | None = None,
         photo: bytes | None = None,
         enrich_market_context: bool = True,
+        url_button: TelegramUrlButton | None = None,
     ) -> PushResult:
+        try:
+            _telegram_url_button_markup(url_button)
+        except ValueError:
+            history = self._load_history()
+            topic_id = self._topic_id_for_template(template_id)
+            result = PushResult(
+                "failed",
+                "invalid_telegram_url_button",
+                False,
+                [],
+            )
+            self._record(
+                history,
+                template_id,
+                dedup_key,
+                result,
+                text,
+                topic_id=topic_id,
+                reply_to_message_id=reply_to_message_id,
+                signal_records=signal_records,
+            )
+            return result
         if (
             template_id == "TG_FUNDING_ALERT"
             and signal_records
@@ -638,7 +752,16 @@ class TelegramGateway:
         duplicate = self._recent_match(history, dedup_key, cooldown)
         if duplicate:
             result = PushResult("skipped", "dedup_cooldown", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+            self._record(
+                history,
+                template_id,
+                dedup_key,
+                result,
+                text,
+                topic_id=topic_id,
+                reply_to_message_id=reply_to_message_id,
+                signal_records=signal_records,
+            )
             return result
 
         if daily_limit is not None and daily_limit >= 0 and self._daily_sent_count(history, template_id, now) >= daily_limit:
@@ -717,6 +840,7 @@ class TelegramGateway:
                 parse_mode=parse_mode,
                 topic_id=topic_id,
                 reply_to_message_id=reply_to_message_id,
+                url_button=url_button,
             )
         else:
             self._last_delivery_diagnostics = None
@@ -725,27 +849,54 @@ class TelegramGateway:
                 parse_mode=parse_mode,
                 topic_id=topic_id,
                 reply_to_message_id=reply_to_message_id,
+                url_button=url_button,
             )
-        reason = (
-            "telegram_photo_api" if ok else "telegram_photo_api_failed"
-        ) if photo is not None else (
-            "telegram_api" if ok else "telegram_api_failed"
+        delivery_uncertain = bool(
+            not ok
+            and self._last_delivery_diagnostics is not None
+            and self._last_delivery_diagnostics.telegram_error_class
+            == "telegram_delivery_uncertain"
         )
+        if delivery_uncertain:
+            reason = "telegram_delivery_uncertain"
+        elif photo is not None:
+            reason = "telegram_photo_api" if ok else "telegram_photo_api_failed"
+        else:
+            reason = "telegram_api" if ok else "telegram_api_failed"
+        result_status = "sent" if ok else "partial" if message_ids else "failed"
+        outbox_status = "uncertain" if delivery_uncertain else result_status
         result = PushResult(
-            "sent" if ok else "partial" if message_ids else "failed",
+            result_status,
             reason,
             ok,
             message_ids,
             delivery_id,
             self._last_delivery_diagnostics,
         )
-        self._finish_delivery(
-            delivery_id,
-            status="sent" if ok else "partial" if message_ids else "failed",
-            message_ids=message_ids,
-            diagnostics=result.diagnostics,
-        )
-        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+        try:
+            self._finish_delivery(
+                delivery_id,
+                status=outbox_status,
+                message_ids=message_ids,
+                diagnostics=result.diagnostics,
+            )
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+        except Exception as exc:
+            # Telegram has already accepted these message ids.  Return them to
+            # the caller so it can roll back the new card instead of turning a
+            # local ledger failure into an untracked delivery.
+            result.signal_store_written = False
+            if any(
+                isinstance(item, dict) and "ai_context_snapshot" in item
+                for item in (signal_records or [])
+            ):
+                result.ai_snapshot_ready = False
+            print(
+                "[telegram] post-delivery local persistence failed "
+                f"error={type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return result
         if template_id == "TG_FUNDING_ALERT" and signal_records:
             if result.sent:
                 for record in signal_records:
@@ -802,6 +953,9 @@ class TelegramGateway:
             for item in reversed(records):
                 if item.get("dedup_key") != dedup_key:
                     continue
+                if item.get("status") == "uncertain":
+                    reserved["ok"] = False
+                    return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
                 updated_at = int(item.get("updated_at", item.get("ts", 0)) or 0)
                 if updated_at < quarantine_cutoff:
                     break
@@ -856,6 +1010,7 @@ class TelegramGateway:
         parse_mode: str,
         topic_id: str = "",
         reply_to_message_id: int | None = None,
+        url_button: TelegramUrlButton | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendMessage"
         message_ids: list[int] = []
@@ -874,6 +1029,11 @@ class TelegramGateway:
             max_chunk_chars=size_diagnostics["max_chunk_chars"],
         )
         self._last_delivery_diagnostics = diagnostics
+        try:
+            button_markup = _telegram_url_button_markup(url_button)
+        except ValueError:
+            diagnostics.telegram_error_class = "telegram_bad_request"
+            return False, []
         if not chunks:
             diagnostics.telegram_error_class = "telegram_bad_request"
             return False, []
@@ -894,6 +1054,8 @@ class TelegramGateway:
                     payload["message_thread_id"] = int(topic_id)
                 except ValueError:
                     pass
+            if button_markup is not None and idx == len(chunks) - 1:
+                payload["reply_markup"] = button_markup
             sent = False
             for attempt in range(1, self.settings.tg_push_retry + 1):
                 try:
@@ -954,8 +1116,14 @@ class TelegramGateway:
                     diagnostics.telegram_error_code = None
                     diagnostics.retry_after_sec = None
                     diagnostics.network_error_class = classify_telegram_network_error(exc)
-                    diagnostics.telegram_error_class = diagnostics.network_error_class
+                    diagnostics.telegram_error_class = (
+                        "telegram_delivery_uncertain"
+                        if _telegram_delivery_is_uncertain(exc)
+                        else diagnostics.network_error_class
+                    )
                     diagnostics.response_ok = False
+                    if diagnostics.telegram_error_class == "telegram_delivery_uncertain":
+                        break
                     if attempt < self.settings.tg_push_retry:
                         time.sleep(min(5, attempt))
                         continue
@@ -976,6 +1144,7 @@ class TelegramGateway:
         parse_mode: str,
         topic_id: str = "",
         reply_to_message_id: int | None = None,
+        url_button: TelegramUrlButton | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendPhoto"
         payload: dict[str, Any] = {
@@ -1009,6 +1178,17 @@ class TelegramGateway:
             max_chunk_chars=len(caption),
         )
         self._last_delivery_diagnostics = diagnostics
+        try:
+            button_markup = _telegram_url_button_markup(url_button)
+        except ValueError:
+            diagnostics.telegram_error_class = "telegram_bad_request"
+            return False, []
+        if button_markup is not None:
+            payload["reply_markup"] = json.dumps(
+                button_markup,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         for attempt in range(1, self.settings.tg_push_retry + 1):
             try:
                 while True:
@@ -1061,8 +1241,14 @@ class TelegramGateway:
                 diagnostics.telegram_error_code = None
                 diagnostics.retry_after_sec = None
                 diagnostics.network_error_class = classify_telegram_network_error(exc)
-                diagnostics.telegram_error_class = diagnostics.network_error_class
+                diagnostics.telegram_error_class = (
+                    "telegram_delivery_uncertain"
+                    if _telegram_delivery_is_uncertain(exc)
+                    else diagnostics.network_error_class
+                )
                 diagnostics.response_ok = False
+                if diagnostics.telegram_error_class == "telegram_delivery_uncertain":
+                    break
                 if attempt < self.settings.tg_push_retry:
                     time.sleep(min(5, attempt))
         return False, []
@@ -1799,9 +1985,13 @@ class TelegramGateway:
         history.append(record)
         self._append_history_record(record)
         try:
-            from .signal_store import append_from_push as append_signal_store_from_push
+            from .signal_store import (
+                SignalEventStore,
+                append_from_push as append_signal_store_from_push,
+                signal_public_ref,
+            )
 
-            append_signal_store_from_push(
+            written = append_signal_store_from_push(
                 self.settings,
                 template_id=template_id,
                 dedup_key=dedup_key,
@@ -1814,7 +2004,39 @@ class TelegramGateway:
                 reply_to_message_id=reply_to_message_id,
                 structured_records=signal_records,
             )
+            result.signal_store_written = written > 0
+            ai_snapshot_records = [
+                item
+                for item in (signal_records or [])
+                if isinstance(item, dict) and "ai_context_snapshot" in item
+            ]
+            if ai_snapshot_records:
+                signal_store = SignalEventStore(
+                    getattr(
+                        self.settings,
+                        "signal_events_db_path",
+                    )
+                )
+                result.ai_snapshot_ready = bool(
+                    written > 0
+                    and all(
+                        signal_store.load_ai_context_snapshot(
+                            signal_public_ref(
+                                dedup_key,
+                                str(item.get("symbol") or ""),
+                            )
+                        ).get("status")
+                        == "ready"
+                        for item in ai_snapshot_records
+                    )
+                )
         except Exception as exc:
+            result.signal_store_written = False
+            if any(
+                isinstance(item, dict) and "ai_context_snapshot" in item
+                for item in (signal_records or [])
+            ):
+                result.ai_snapshot_ready = False
             print(f"[telegram] signal store write failed {type(exc).__name__}: {exc}", file=sys.stderr)
 
     @staticmethod

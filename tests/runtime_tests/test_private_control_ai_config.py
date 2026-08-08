@@ -51,6 +51,7 @@ class FakeConfigManager:
             "LAUNCH_FUSION_ENABLE": True,
             "LAUNCH_DIRECTIONAL_ENABLE": True,
             "LAUNCH_AI_INTERPRETER_ENABLE": False,
+            "TG_BOT_USERNAME": "VIPpao_bot",
             "AI_API_KEY": "not_configured",
             "AI_BASE_URL": "not_configured",
             "AI_MODEL": "not_configured",
@@ -133,6 +134,7 @@ class PrivateControlAiConfigTests(unittest.TestCase):
     def test_ai_submenu_is_redacted_and_exposes_all_requested_actions(self) -> None:
         manager = FakeConfigManager()
         manager.values.update(
+            TG_BOT_USERNAME="VIPpao_bot",
             AI_API_KEY="configured",
             AI_BASE_URL="configured",
             AI_MODEL="configured",
@@ -152,15 +154,69 @@ class PrivateControlAiConfigTests(unittest.TestCase):
         self.assertIn("提示词", reply.text)
         keyboard = self._keyboard_text(reply)
         for action in (
+            "设置机器人用户名",
             "设置AI密钥",
             "设置AI接口",
             "设置AI模型",
             "设置AI提示词",
             "恢复默认提示词",
-            "开启AI",
-            "关闭AI",
+            "开启按需AI",
+            "关闭按需AI",
         ):
             self.assertIn(action, keyboard)
+
+    def test_public_bot_username_can_be_set_without_echoing_private_values(self) -> None:
+        manager = FakeConfigManager()
+        with TemporaryDirectory() as tmp:
+            service = self.service(Path(tmp), manager=manager)
+            request = service.handle_update(update(1, "设置机器人用户名"))
+            reply = service.handle_update(update(2, "@VIPpao_bot"))
+
+        self.assertEqual(request.command, "ai_input_required")
+        self.assertEqual(reply.command, "ai_configuration_updated")
+        self.assertEqual(
+            manager.set_calls,
+            [("TG_BOT_USERNAME", "VIPpao_bot")],
+        )
+        self.assertNotIn("VIPpao_bot", reply.text)
+
+    def test_ai_status_explains_on_demand_mode_and_button_readiness(self) -> None:
+        manager = FakeConfigManager()
+        manager.values.update(
+            TG_BOT_USERNAME="VIPpao_bot",
+            TG_PRIVATE_CONTROL_ENABLE=True,
+            TG_PRIVATE_CONTROL_ADMIN_USER_ID="configured",
+            LAUNCH_AI_INTERPRETER_ENABLE=True,
+            LAUNCH_AI_AUTO_ENABLE=False,
+            AI_ON_DEMAND_DAILY_LIMIT="20",
+            AI_API_KEY="configured",
+            AI_BASE_URL="configured",
+            AI_MODEL="configured",
+        )
+        with TemporaryDirectory() as tmp:
+            reply = self.service(Path(tmp), manager=manager).handle_update(
+                update(1, "AI状态")
+            )
+
+        self.assertIn("按需解读：已开启", reply.text)
+        self.assertIn("自动逐条解读：已关闭（推荐）", reply.text)
+        self.assertIn("信号按钮：可用", reply.text)
+        self.assertIn("每日真实调用上限：20 次", reply.text)
+
+    def test_ai_status_does_not_treat_invalid_admin_as_button_ready(self) -> None:
+        manager = FakeConfigManager()
+        manager.values.update(
+            TG_BOT_USERNAME="VIPpao_bot",
+            TG_PRIVATE_CONTROL_ENABLE=True,
+            TG_PRIVATE_CONTROL_ADMIN_USER_ID="invalid",
+        )
+        with TemporaryDirectory() as tmp:
+            reply = self.service(Path(tmp), manager=manager).handle_update(
+                update(1, "AI状态")
+            )
+
+        self.assertIn("信号按钮：尚未完整配置", reply.text)
+        self.assertNotIn("信号按钮：可用", reply.text)
 
     def test_invalid_prompt_status_is_shown_as_safe_default_fallback(self) -> None:
         manager = FakeConfigManager()

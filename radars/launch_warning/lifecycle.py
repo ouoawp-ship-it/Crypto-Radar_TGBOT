@@ -31,6 +31,20 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+def _snapshot_evidence_score(snapshot: Mapping[str, Any]) -> int:
+    """Return the canonical directional evidence score for lifecycle use.
+
+    The physical ``score`` column remains as a backwards-compatible storage
+    projection. New snapshots explicitly provide ``evidence_score`` so the
+    lifecycle cannot accidentally consume the earlier discovery score.
+    """
+
+    value = snapshot.get("evidence_score")
+    if value is None:
+        value = snapshot.get("score")
+    return int(_number(value))
+
+
 def _percent_change(current: float, base: float) -> float | None:
     if base <= 0:
         return None
@@ -1490,7 +1504,7 @@ class LaunchLifecycleStore:
     ) -> dict[str, Any]:
         symbol = str(snapshot.get("symbol") or "").upper()
         window_end_ts = int(_number(snapshot.get("window_end_ts")))
-        score = int(_number(snapshot.get("score")))
+        score = _snapshot_evidence_score(snapshot)
         closed_price = _number(snapshot.get("closed_price"))
         closed_oi_usd = _number(snapshot.get("closed_oi_usd"))
         quality_gate = str(snapshot.get("quality_gate") or "block")
@@ -1772,7 +1786,7 @@ class LaunchLifecycleStore:
         previous: sqlite3.Row | None,
     ) -> dict[str, Any]:
         window_end_ts = int(_number(snapshot.get("window_end_ts")))
-        score = int(_number(snapshot.get("score")))
+        score = _snapshot_evidence_score(snapshot)
         closed_price = _number(snapshot.get("closed_price"))
         closed_oi_usd = _number(snapshot.get("closed_oi_usd"))
         funding_pct = _number(snapshot.get("funding_pct"))
@@ -2078,6 +2092,7 @@ class LaunchLifecycleStore:
             "current_stage": str(cycle["current_stage"]),
             "peak_stage": str(cycle["peak_stage"]),
             "observation_no": int(observation["observation_no"]),
+            "evidence_score": int(observation["score"]),
             "first_window_end": int(cycle["first_window_end"]),
             "window_end_ts": int(observation["window_end_ts"]),
             "duration_sec": max(
@@ -2094,6 +2109,7 @@ class LaunchLifecycleStore:
                 "funding_8h_pct_point": observation["funding_8h_vs_first_pct_point"],
                 "funding_interval_hours": int(observation["funding_interval_vs_first_hours"]),
                 "score": int(observation["score_vs_first"]),
+                "evidence_score": int(observation["score_vs_first"]),
             },
             "delta_from_previous": {
                 "price_pct": observation["price_vs_previous_pct"],
@@ -2102,6 +2118,7 @@ class LaunchLifecycleStore:
                 "funding_8h_pct_point": observation["funding_8h_vs_previous_pct_point"],
                 "funding_interval_hours": int(observation["funding_interval_vs_previous_hours"]),
                 "score": int(observation["score_vs_previous"]),
+                "evidence_score": int(observation["score_vs_previous"]),
             },
             "price_action": _json_object(observation.get("price_action_json")),
             "confirmation_status": str(
@@ -2339,6 +2356,7 @@ class LaunchLifecycleStore:
             "stage": str(row["lifecycle_stage"]),
             "status": str(row["lifecycle_status"]),
             "score": int(row["score"]),
+            "evidence_score": int(row["score"]),
             "price": _number(row["closed_price"]),
             "oi_usd": _number(row["closed_oi_usd"]),
             "funding_pct": _number(row["funding_pct"]),

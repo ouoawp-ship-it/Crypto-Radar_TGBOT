@@ -20,6 +20,7 @@ def snapshot(
     symbol: str = "TESTUSDT",
     window_end_ts: int,
     score: int,
+    evidence_score: int | None = None,
     price: float,
     oi: float,
     funding_pct: float = -0.1,
@@ -39,7 +40,7 @@ def snapshot(
     directional_readiness: dict[str, object] | None = None,
     invalidation_price: float | None = None,
 ) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "symbol": symbol,
         "window_end_ts": window_end_ts,
         "score": score,
@@ -71,6 +72,9 @@ def snapshot(
         "directional_readiness": directional_readiness,
         "invalidation_price": invalidation_price,
     }
+    if evidence_score is not None:
+        result["evidence_score"] = evidence_score
+    return result
 
 
 def directional_signal(direction: str, *, confirmed: bool = True) -> dict[str, object]:
@@ -140,6 +144,26 @@ def price_action_confirmed(window_end_ts: int) -> dict[str, object]:
 class LaunchLifecycleStoreTests(unittest.TestCase):
     def make_store(self, root: str) -> LaunchLifecycleStore:
         return LaunchLifecycleStore(Path(root) / "signals.db")
+
+    def test_lifecycle_uses_canonical_evidence_score_before_legacy_score(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = self.make_store(tmp)
+
+            result = store.record_observation(
+                snapshot(
+                    window_end_ts=900,
+                    score=5,
+                    evidence_score=75,
+                    price=100,
+                    oi=1_000,
+                ),
+                stage="breakout",
+                observed_at=910,
+            )
+
+            self.assertEqual(result["status"], "opened")
+            self.assertEqual(result["evidence_score"], 75)
+            self.assertEqual(result["publication"]["current"]["evidence_score"], 75)
 
     def test_records_exact_first_and_previous_deltas_idempotently(self) -> None:
         with TemporaryDirectory() as tmp:

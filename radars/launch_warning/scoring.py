@@ -293,14 +293,20 @@ def score_launch_signal(facts: Mapping[str, Any]) -> dict[str, Any]:
         else:
             trigger_path = "none"
 
+    discovery_score = min(100, sum(group_scores.values()))
     return {
-        "score": min(100, sum(group_scores.values())),
+        "discovery_score": discovery_score,
+        # Compatibility for old callers and stored history. New discovery
+        # consumers must use ``discovery_score`` so it cannot be confused with
+        # the later bullish/bearish evidence score.
+        "score": discovery_score,
         "group_scores": group_scores,
         "threshold_profile": profile,
         "supporting_evidence": supporting_evidence,
         "counter_evidence": counter_evidence,
         "trigger_path": trigger_path,
         "score_semantics": SCORE_SEMANTICS,
+        "discovery_score_semantics": SCORE_SEMANTICS,
         "historical_calibration": "report_only_not_applied",
         "data_availability": {
             "price": price_15m is not None or price_1h is not None,

@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from runtime.cli import push_launch_messages
 from config import Settings
-from shared.telegram import PushResult, plain_fallback
+from shared.storage import JsonStore
+from shared.telegram import PushResult, TelegramGateway, plain_fallback
+from shared.signal_store import signal_public_ref
 
 
 class FakeEngine:
-    def __init__(self, events: list[str], *, commit_status: str = "committed") -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        commit_status: str = "committed",
+        commit_exception: Exception | None = None,
+    ) -> None:
         self.events = events
         self.commit_status = commit_status
+        self.commit_exception = commit_exception
         self.pending_cleanups: list[dict[str, object]] = []
 
     def pending_launch_package_cleanups(self, *, limit: int) -> list[dict[str, object]]:
@@ -27,6 +39,8 @@ class FakeEngine:
     ) -> dict[str, object]:
         self.events.append("commit")
         self.events.append(f"commit_ids:{message_ids}")
+        if self.commit_exception is not None:
+            raise self.commit_exception
         return {
             "status": self.commit_status,
             "cycle_id": 7,
@@ -150,7 +164,228 @@ def launch_payload() -> dict[str, object]:
     return {"messages": ["message"], "alerts": [alert]}
 
 
+def launch_ai_payload() -> dict[str, object]:
+    payload = launch_payload()
+    alert = payload["alerts"][0]
+    alert.update({
+        "discovery_score": 72,
+        "directional_readiness": {
+            "status": "多头候选",
+            "direction": "bullish",
+            "stage": "forming",
+            "data_complete": True,
+            "bullish_evidence_score": 81,
+            "bearish_evidence_score": 10,
+        },
+        "launch_phase": {
+            "timing_stage": "forming",
+            "execution_status": "wait_confirmation",
+        },
+    })
+    return payload
+
+
 class LaunchMessagePackageTests(unittest.TestCase):
+    def test_ai_on_demand_button_uses_opaque_ref_and_stores_snapshot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+                launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=False,
+                ai_api_key="fake-private-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="123",
+            )
+
+            push_launch_messages(
+                settings,
+                FakeEngine(events),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                launch_ai_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            kwargs = gateway.send_calls[0][1]
+            button = kwargs["url_button"]
+            expected_ref = signal_public_ref(
+                "launch-package:7:12",
+                "TESTUSDT",
+            )
+            self.assertEqual(
+                button.url,
+                f"https://t.me/VIPpao_bot?start=ai_{expected_ref}",
+            )
+            record = kwargs["signal_records"][0]
+            self.assertEqual(
+                record["ai_context_snapshot"]["rule_result"]["direction"],
+                "bullish",
+            )
+            self.assertNotIn("fake-private-key", str(record))
+            self.assertNotIn("provider.invalid", str(record))
+
+    def test_invalid_private_admin_id_omits_button_without_blocking_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+                launch_ai_interpreter_enable=True,
+                ai_api_key="fake-private-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="not-a-user-id",
+            )
+
+            pushes, _cleanup = push_launch_messages(
+                settings,
+                FakeEngine(events),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                launch_ai_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertEqual(pushes[0]["status"], "sent")
+            self.assertIsNone(gateway.send_calls[0][1]["url_button"])
+
+    def test_button_message_is_rolled_back_when_ai_snapshot_was_not_saved(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            result = PushResult("sent", "telegram_api", True, [201])
+            result.signal_store_written = True
+            result.ai_snapshot_ready = False
+            gateway = FakeGateway(events, result)
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+                launch_ai_interpreter_enable=True,
+                ai_api_key="fake-private-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="123",
+            )
+
+            pushes, _cleanup = push_launch_messages(
+                settings,
+                FakeEngine(events),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                launch_ai_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertEqual(pushes[0]["status"], "ai_snapshot_persist_failed")
+            self.assertIn("reason:launch_ai_snapshot_persist_rollback", events)
+            self.assertIn("delete:[201]", events)
+            self.assertNotIn("commit", events)
+
+    def test_post_delivery_ledger_failure_returns_ids_for_ai_card_rollback(self) -> None:
+        for failure_point in ("_finish_delivery", "_append_history_record"):
+            with (
+                self.subTest(failure_point=failure_point),
+                TemporaryDirectory() as tmp,
+            ):
+                events: list[str] = []
+                settings = Settings(
+                    data_dir=Path(tmp),
+                    launch_message_package_v2_enable=True,
+                    launch_ai_interpreter_enable=True,
+                    ai_api_key="fake-private-key",
+                    ai_base_url="https://provider.invalid/v1",
+                    ai_model="fake-model",
+                    tg_bot_username="VIPpao_bot",
+                    tg_private_control_enable=True,
+                    tg_private_control_admin_user_id="123",
+                    tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    tg_chat_id="-1001234567890",
+                    tg_launch_alert_topic_id="12",
+                    tg_default_cooldown_sec=0,
+                )
+                gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+                engine = FakeEngine(events)
+
+                with (
+                    redirect_stderr(StringIO()),
+                    patch.object(
+                        gateway,
+                        "_send_real_message_ids",
+                        return_value=(True, [201]),
+                    ),
+                    patch.object(
+                        gateway,
+                        failure_point,
+                        side_effect=OSError("local ledger unavailable"),
+                    ),
+                    patch.object(
+                        gateway,
+                        "delete_messages_detailed",
+                        return_value={"deleted_ids": [201], "failed_ids": []},
+                    ) as delete_mock,
+                ):
+                    pushes, _cleanup = push_launch_messages(
+                        settings,
+                        engine,  # type: ignore[arg-type]
+                        gateway,
+                        launch_ai_payload(),
+                        SimpleNamespace(send=True, confirm_real_send=True),
+                    )
+
+                self.assertEqual(pushes[0]["status"], "ai_snapshot_persist_failed")
+                delete_mock.assert_called_once_with(
+                    [201],
+                    reason="launch_ai_snapshot_persist_rollback",
+                )
+                self.assertNotIn("commit", events)
+
+    def test_ai_snapshot_is_safe_when_button_route_is_not_ready(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+                launch_ai_interpreter_enable=True,
+                ai_api_key="fake-private-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id=123,
+            )
+
+            push_launch_messages(
+                settings,
+                FakeEngine(events),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                launch_ai_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            kwargs = gateway.send_calls[0][1]
+            self.assertIsNone(kwargs["url_button"])
+            self.assertIn(
+                "ai_context_snapshot",
+                kwargs["signal_records"][0],
+            )
+
     def test_failed_latest_package_is_retained_without_cleanup_requests(self) -> None:
         with TemporaryDirectory() as tmp:
             events: list[str] = []
@@ -384,6 +619,36 @@ class LaunchMessagePackageTests(unittest.TestCase):
             self.assertIn("delete:[201]", events)
             self.assertNotIn("delete:[101]", events)
             self.assertEqual(pushes[0]["status"], "package_commit_failed")
+
+    def test_commit_exception_rolls_back_new_message_and_keeps_old_package(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+            )
+            pushes, _cleanup = push_launch_messages(
+                settings,
+                FakeEngine(
+                    events,
+                    commit_exception=OSError("private database path"),
+                ),  # type: ignore[arg-type]
+                FakeGateway(
+                    events,
+                    PushResult("sent", "telegram_api", True, [201]),
+                ),  # type: ignore[arg-type]
+                launch_payload(),
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            self.assertIn("commit", events)
+            self.assertIn("reason:launch_package_commit_exception_rollback", events)
+            self.assertIn("delete:[201]", events)
+            self.assertNotIn("delete:[101]", events)
+            self.assertEqual(pushes[0]["status"], "package_commit_failed")
+            self.assertEqual(pushes[0]["package_commit"], "local_error")
+            self.assertEqual(pushes[0]["package_commit_error"], "OSError")
+            self.assertNotIn("private database path", str(pushes[0]))
 
     def test_chart_and_text_are_committed_as_one_photo_caption_message(self) -> None:
         with TemporaryDirectory() as tmp:

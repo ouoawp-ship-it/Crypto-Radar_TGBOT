@@ -18,7 +18,10 @@ def source(**rule_overrides: object) -> dict[str, object]:
         "status": "多头确认",
         "direction": "bullish",
         "stage": "等待回踩",
-        "score_semantics": "rule_readiness_not_probability",
+        "score_semantics": "rule_score_not_probability",
+        "bullish_evidence_score": 78,
+        "bearish_evidence_score": 21,
+        "evidence_score_semantics": "rule_score_not_probability",
         "bullish_readiness": 78,
         "bearish_readiness": 21,
         "bullish_group_scores": {
@@ -38,6 +41,15 @@ def source(**rule_overrides: object) -> dict[str, object]:
     }
     rule.update(rule_overrides)
     return {
+        "discovery_score": 64,
+        "launch_phase": {
+            "timing_stage": "confirmed",
+            "execution_status": "retest_ready",
+            "position_status": "middle",
+            "primary_block_reason": "none",
+            "evidence_score": 78,
+            "raw_candles": ["must_not_escape"],
+        },
         "rule_result": rule,
         "market_facts": {
             "price_15m_pct": 2.4,
@@ -189,7 +201,7 @@ class LaunchAiInterpreterTests(unittest.TestCase):
     def test_prompt_keeps_ai_as_interpreter_and_encodes_market_semantics(self) -> None:
         self.assertIn("解读员", OPERATOR_PROMPT)
         self.assertIn("不得改变方向", OPERATOR_PROMPT)
-        self.assertIn("规则准备度", OPERATOR_PROMPT)
+        self.assertIn("方向证据分", OPERATOR_PROMPT)
         self.assertIn("持仓量下降", OPERATOR_PROMPT)
         self.assertIn("CVD 背离", OPERATOR_PROMPT)
 
@@ -200,7 +212,9 @@ class LaunchAiInterpreterTests(unittest.TestCase):
         self.assertEqual(
             set(context),
             {
+                "discovery_score",
                 "rule_result",
+                "launch_phase",
                 "smc_filter",
                 "multi_timeframe",
                 "price_open_interest",
@@ -213,6 +227,7 @@ class LaunchAiInterpreterTests(unittest.TestCase):
         )
         self.assertNotIn("secret", encoded.lower())
         self.assertNotIn("private.invalid", encoded)
+        self.assertNotIn("raw_candles", encoded)
         self.assertNotIn("raw_klines", encoded)
         self.assertNotIn("raw_candles", encoded)
         self.assertNotIn("provider_payload", encoded)
@@ -340,6 +355,25 @@ class LaunchAiInterpreterTests(unittest.TestCase):
                 result = client(
                     FakeSession(
                         successful_response(available_output(**{field: [text]}))
+                    )
+                ).interpret(source(), enabled=True)
+                encoded = json.dumps(result, ensure_ascii=False)
+                self.assertEqual(result["status"], "ai_policy_violation")
+                self.assertEqual(result["summary"], "")
+                self.assertNotIn(text, encoded)
+
+    def test_policy_rejects_urls_and_credential_markers_from_ai_output(self) -> None:
+        forbidden = (
+            "详情见 https://private.invalid/path",
+            "Authorization Bearer must-not-leak",
+            "请检查 api_key 配置",
+            "RPC_URL 当前不可用",
+        )
+        for text in forbidden:
+            with self.subTest(text=text):
+                result = client(
+                    FakeSession(
+                        successful_response(available_output(summary=text))
                     )
                 ).interpret(source(), enabled=True)
                 encoded = json.dumps(result, ensure_ascii=False)
