@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ EXIT_OK = 0
 EXIT_INTERNAL_ERROR = 1
 EXIT_CONFIG_ERROR = 2
 EXIT_DATA_UNAVAILABLE = 3
+EXIT_INTERRUPTED = 130
 
 
 def _safe_error(prefix: str, detail: str = "") -> None:
@@ -26,9 +28,84 @@ def _safe_error(prefix: str, detail: str = "") -> None:
     print(f"{prefix}{suffix}", file=sys.stderr)
 
 
+def _realtime_duration(args: Any) -> int | None:
+    value = getattr(args, "realtime_duration_sec", None)
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 30 <= value <= 3_600
+    ):
+        raise AltcoinAnomalyConfigError("P2 Dry-run时长必须在30到3600秒之间")
+    conflicts = (
+        ("cache_only", "--cache-only"),
+        ("preview_telegram", "--preview-telegram"),
+        ("send", "--send"),
+        ("confirm_real_send", "--confirm-real-send"),
+    )
+    selected = [
+        flag
+        for attribute, flag in conflicts
+        if bool(getattr(args, attribute, False))
+    ]
+    if selected:
+        raise AltcoinAnomalyConfigError(
+            "P2实时确认Dry-run不能与以下参数同时使用：" + "、".join(selected)
+        )
+    return value
+
+
+def _emit_realtime_result(args: Any, result: dict[str, Any]) -> None:
+    machine_output = json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    )
+    output_path = getattr(args, "output", None)
+    if output_path:
+        atomic_write_text(Path(output_path), machine_output + "\n")
+    print(machine_output)
+
+
 def run_altcoin_anomaly_cli(args: Any, *, settings: Settings) -> int:
     cache_only = bool(getattr(args, "cache_only", False))
     try:
+        realtime_duration_sec = _realtime_duration(args)
+        if realtime_duration_sec is not None:
+            realtime_config = AltcoinAnomalyConfig.from_settings(
+                settings,
+                realtime=True,
+            )
+            if realtime_duration_sec > realtime_config.manifest_max_age_sec:
+                raise AltcoinAnomalyConfigError(
+                    "P2 Dry-run时长不能超过候选Manifest最大允许年龄"
+                )
+            from .realtime import run_realtime_confirmation_session
+
+            result = run_realtime_confirmation_session(
+                settings,
+                duration_sec=realtime_duration_sec,
+            )
+            if not isinstance(result, dict):
+                raise ValueError("P2实时确认返回值必须是字典")
+            exit_code = result.get("exit_code", EXIT_OK)
+            if (
+                isinstance(exit_code, bool)
+                or not isinstance(exit_code, int)
+                or exit_code not in {
+                    EXIT_OK,
+                    EXIT_INTERNAL_ERROR,
+                    EXIT_CONFIG_ERROR,
+                    EXIT_DATA_UNAVAILABLE,
+                    EXIT_INTERRUPTED,
+                }
+            ):
+                raise ValueError("P2实时确认返回了无效退出码")
+            _emit_realtime_result(args, result)
+            return exit_code
         config = AltcoinAnomalyConfig.from_settings(settings, cache_only=cache_only)
         pool = (
             load_cached_pool(settings)
@@ -79,6 +156,17 @@ def run_altcoin_anomaly_cli(args: Any, *, settings: Settings) -> int:
     except (OSError, ValueError) as exc:
         _safe_error("候选池处理失败", type(exc).__name__)
         return EXIT_INTERNAL_ERROR
+    except KeyboardInterrupt:
+        if getattr(args, "realtime_duration_sec", None) is None:
+            raise
+        interrupted = {
+            "schema_version": 1,
+            "module": "altcoin_contract_anomaly",
+            "mode": "realtime_confirmation_dry_run",
+            "status": "interrupted",
+        }
+        _emit_realtime_result(args, interrupted)
+        return EXIT_INTERRUPTED
     except Exception as exc:  # pragma: no cover - final process safety boundary
         _safe_error("候选池内部错误", type(exc).__name__)
         return EXIT_INTERNAL_ERROR
@@ -88,6 +176,7 @@ __all__ = [
     "EXIT_CONFIG_ERROR",
     "EXIT_DATA_UNAVAILABLE",
     "EXIT_INTERNAL_ERROR",
+    "EXIT_INTERRUPTED",
     "EXIT_OK",
     "run_altcoin_anomaly_cli",
 ]

@@ -372,6 +372,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="用于 altcoin-anomaly：另存机器可读 JSON 到指定文件",
     )
+    parser.add_argument(
+        "--realtime-duration-sec",
+        type=int,
+        default=None,
+        help="用于 altcoin-anomaly：运行30到3600秒的P2实时确认Dry-run",
+    )
     return parser
 
 

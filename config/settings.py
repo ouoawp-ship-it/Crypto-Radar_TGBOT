@@ -239,6 +239,42 @@ class Settings:
     altcoin_contract_anomaly_telegram_preview_page_chars: int = 3800
     altcoin_contract_anomaly_oi_workers: int = 8
     altcoin_contract_anomaly_oi_request_budget: int = 600
+    altcoin_contract_anomaly_realtime_enable: bool = False
+    altcoin_contract_anomaly_manifest_poll_sec: int = 5
+    altcoin_contract_anomaly_manifest_max_age_sec: int = 1200
+    altcoin_contract_anomaly_subscription_batch_size: int = 50
+    altcoin_contract_anomaly_subscription_min_interval_sec: float = 1.0
+    altcoin_contract_anomaly_subscription_ack_timeout_sec: int = 10
+    altcoin_contract_anomaly_max_streams: int = 300
+    altcoin_contract_anomaly_realtime_data_max_age_sec: int = 120
+    altcoin_contract_anomaly_oi_refresh_sec: int = 300
+    altcoin_contract_anomaly_realtime_oi_max_age_sec: int = 600
+    altcoin_contract_anomaly_realtime_oi_workers: int = 4
+    altcoin_contract_anomaly_realtime_oi_request_budget: int = 50
+    altcoin_contract_anomaly_feature_1m_window_sec: int = 60
+    altcoin_contract_anomaly_feature_5m_window_sec: int = 300
+    altcoin_contract_anomaly_volume_baseline_buckets: int = 10
+    altcoin_contract_anomaly_volume_min_samples: int = 8
+    altcoin_contract_anomaly_volume_min_coverage: float = 0.8
+    altcoin_contract_anomaly_price_1m_move_ratio: float = 0.01
+    altcoin_contract_anomaly_price_5m_move_ratio: float = 0.02
+    altcoin_contract_anomaly_volume_expansion_ratio: float = 2.0
+    altcoin_contract_anomaly_aggressive_buy_ratio: float = 0.60
+    altcoin_contract_anomaly_aggressive_sell_ratio: float = 0.40
+    altcoin_contract_anomaly_open_interest_move_ratio: float = 0.03
+    altcoin_contract_anomaly_funding_positive_rate: float = 0.0005
+    altcoin_contract_anomaly_funding_change_ratio: float = 0.0001
+    altcoin_contract_anomaly_liquidation_min_usd: float = 100_000
+    altcoin_contract_anomaly_price_stall_ratio: float = 0.003
+    altcoin_contract_anomaly_weakening_volume_ratio: float = 1.2
+    altcoin_contract_anomaly_weakening_windows: int = 2
+    altcoin_contract_anomaly_realtime_state_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_p2_state.json"
+    )
+    altcoin_contract_anomaly_realtime_event_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_p2_events.jsonl"
+    )
+    altcoin_contract_anomaly_smoke_duration_sec: int = 900
 
     radar_scan_limit: int = 120
     radar_summary_enable: bool = True
@@ -630,6 +666,168 @@ class Settings:
                 1,
                 5_000,
             ),
+            altcoin_contract_anomaly_realtime_enable=env_bool(
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_ENABLE",
+                False,
+            ),
+            altcoin_contract_anomaly_manifest_poll_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_MANIFEST_POLL_SEC",
+                5,
+                1,
+                3_600,
+            ),
+            altcoin_contract_anomaly_manifest_max_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_MANIFEST_MAX_AGE_SEC",
+                1200,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_subscription_batch_size=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_BATCH_SIZE",
+                50,
+                1,
+                200,
+            ),
+            altcoin_contract_anomaly_subscription_min_interval_sec=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_MIN_INTERVAL_SEC",
+                1.0,
+            ),
+            altcoin_contract_anomaly_subscription_ack_timeout_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC",
+                10,
+                1,
+                120,
+            ),
+            altcoin_contract_anomaly_max_streams=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS",
+                300,
+                1,
+                1_024,
+            ),
+            altcoin_contract_anomaly_realtime_data_max_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_DATA_MAX_AGE_SEC",
+                120,
+                1,
+                3_600,
+            ),
+            altcoin_contract_anomaly_oi_refresh_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC",
+                300,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_realtime_oi_max_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC",
+                600,
+                1,
+                86_400,
+            ),
+            altcoin_contract_anomaly_realtime_oi_workers=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_WORKERS",
+                4,
+                1,
+                16,
+            ),
+            altcoin_contract_anomaly_realtime_oi_request_budget=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_REQUEST_BUDGET",
+                50,
+                1,
+                5_000,
+            ),
+            altcoin_contract_anomaly_feature_1m_window_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_FEATURE_1M_WINDOW_SEC",
+                60,
+                1,
+                3_600,
+            ),
+            altcoin_contract_anomaly_feature_5m_window_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_FEATURE_5M_WINDOW_SEC",
+                300,
+                1,
+                3_600,
+            ),
+            altcoin_contract_anomaly_volume_baseline_buckets=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_VOLUME_BASELINE_BUCKETS",
+                10,
+                2,
+                1_000,
+            ),
+            altcoin_contract_anomaly_volume_min_samples=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_VOLUME_MIN_SAMPLES",
+                8,
+                1,
+                1_000,
+            ),
+            altcoin_contract_anomaly_volume_min_coverage=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_VOLUME_MIN_COVERAGE",
+                0.8,
+            ),
+            altcoin_contract_anomaly_price_1m_move_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_PRICE_1M_MOVE_RATIO",
+                0.01,
+            ),
+            altcoin_contract_anomaly_price_5m_move_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_PRICE_5M_MOVE_RATIO",
+                0.02,
+            ),
+            altcoin_contract_anomaly_volume_expansion_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_VOLUME_EXPANSION_RATIO",
+                2.0,
+            ),
+            altcoin_contract_anomaly_aggressive_buy_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_AGGRESSIVE_BUY_RATIO",
+                0.60,
+            ),
+            altcoin_contract_anomaly_aggressive_sell_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_AGGRESSIVE_SELL_RATIO",
+                0.40,
+            ),
+            altcoin_contract_anomaly_open_interest_move_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_OPEN_INTEREST_MOVE_RATIO",
+                0.03,
+            ),
+            altcoin_contract_anomaly_funding_positive_rate=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_FUNDING_POSITIVE_RATE",
+                0.0005,
+            ),
+            altcoin_contract_anomaly_funding_change_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_FUNDING_CHANGE_RATIO",
+                0.0001,
+            ),
+            altcoin_contract_anomaly_liquidation_min_usd=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_LIQUIDATION_MIN_USD",
+                100_000,
+            ),
+            altcoin_contract_anomaly_price_stall_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_PRICE_STALL_RATIO",
+                0.003,
+            ),
+            altcoin_contract_anomaly_weakening_volume_ratio=env_float(
+                "ALTCOIN_CONTRACT_ANOMALY_WEAKENING_VOLUME_RATIO",
+                1.2,
+            ),
+            altcoin_contract_anomaly_weakening_windows=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_WEAKENING_WINDOWS",
+                2,
+                1,
+                100,
+            ),
+            altcoin_contract_anomaly_realtime_state_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_STATE_FILE",
+                "altcoin_contract_anomaly_p2_state.json",
+            ),
+            altcoin_contract_anomaly_realtime_event_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_EVENT_FILE",
+                "altcoin_contract_anomaly_p2_events.jsonl",
+            ),
+            altcoin_contract_anomaly_smoke_duration_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_SMOKE_DURATION_SEC",
+                900,
+                30,
+                3_600,
+            ),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_summary_enable=reloadable_bool("RADAR_SUMMARY_ENABLE", True),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
@@ -934,6 +1132,92 @@ class Settings:
                 "oi_request_budget": (
                     self.altcoin_contract_anomaly_oi_request_budget
                 ),
+                "realtime": {
+                    "enabled": self.altcoin_contract_anomaly_realtime_enable,
+                    "manifest_poll_sec": self.altcoin_contract_anomaly_manifest_poll_sec,
+                    "manifest_max_age_sec": self.altcoin_contract_anomaly_manifest_max_age_sec,
+                    "subscription_batch_size": (
+                        self.altcoin_contract_anomaly_subscription_batch_size
+                    ),
+                    "subscription_min_interval_sec": (
+                        self.altcoin_contract_anomaly_subscription_min_interval_sec
+                    ),
+                    "subscription_ack_timeout_sec": (
+                        self.altcoin_contract_anomaly_subscription_ack_timeout_sec
+                    ),
+                    "max_streams": self.altcoin_contract_anomaly_max_streams,
+                    "data_max_age_sec": (
+                        self.altcoin_contract_anomaly_realtime_data_max_age_sec
+                    ),
+                    "oi_refresh_sec": self.altcoin_contract_anomaly_oi_refresh_sec,
+                    "oi_max_age_sec": (
+                        self.altcoin_contract_anomaly_realtime_oi_max_age_sec
+                    ),
+                    "oi_workers": self.altcoin_contract_anomaly_realtime_oi_workers,
+                    "oi_request_budget": (
+                        self.altcoin_contract_anomaly_realtime_oi_request_budget
+                    ),
+                    "feature_1m_window_sec": (
+                        self.altcoin_contract_anomaly_feature_1m_window_sec
+                    ),
+                    "feature_5m_window_sec": (
+                        self.altcoin_contract_anomaly_feature_5m_window_sec
+                    ),
+                    "volume_baseline_buckets": (
+                        self.altcoin_contract_anomaly_volume_baseline_buckets
+                    ),
+                    "volume_min_samples": (
+                        self.altcoin_contract_anomaly_volume_min_samples
+                    ),
+                    "volume_min_coverage": (
+                        self.altcoin_contract_anomaly_volume_min_coverage
+                    ),
+                    "price_1m_move_ratio": (
+                        self.altcoin_contract_anomaly_price_1m_move_ratio
+                    ),
+                    "price_5m_move_ratio": (
+                        self.altcoin_contract_anomaly_price_5m_move_ratio
+                    ),
+                    "volume_expansion_ratio": (
+                        self.altcoin_contract_anomaly_volume_expansion_ratio
+                    ),
+                    "aggressive_buy_ratio": (
+                        self.altcoin_contract_anomaly_aggressive_buy_ratio
+                    ),
+                    "aggressive_sell_ratio": (
+                        self.altcoin_contract_anomaly_aggressive_sell_ratio
+                    ),
+                    "open_interest_move_ratio": (
+                        self.altcoin_contract_anomaly_open_interest_move_ratio
+                    ),
+                    "funding_positive_rate": (
+                        self.altcoin_contract_anomaly_funding_positive_rate
+                    ),
+                    "funding_change_ratio": (
+                        self.altcoin_contract_anomaly_funding_change_ratio
+                    ),
+                    "liquidation_min_usd": (
+                        self.altcoin_contract_anomaly_liquidation_min_usd
+                    ),
+                    "price_stall_ratio": (
+                        self.altcoin_contract_anomaly_price_stall_ratio
+                    ),
+                    "weakening_volume_ratio": (
+                        self.altcoin_contract_anomaly_weakening_volume_ratio
+                    ),
+                    "weakening_windows": (
+                        self.altcoin_contract_anomaly_weakening_windows
+                    ),
+                    "state_file": str(
+                        self.altcoin_contract_anomaly_realtime_state_path
+                    ),
+                    "event_file": str(
+                        self.altcoin_contract_anomaly_realtime_event_path
+                    ),
+                    "smoke_duration_sec": (
+                        self.altcoin_contract_anomaly_smoke_duration_sec
+                    ),
+                },
             },
             "filters": {
                 "excluded_base_assets": list(self.excluded_base_assets),

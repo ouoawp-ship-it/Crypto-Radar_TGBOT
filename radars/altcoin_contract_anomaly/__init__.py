@@ -1,7 +1,7 @@
-"""P1 candidate discovery for 山寨合约异动雷达.
+"""P1 candidate discovery and bounded P2 confirmation for 山寨合约异动雷达.
 
-This package is intentionally one-shot and dry-run only. It is not registered
-with the production radar loop or Telegram delivery gateway.
+P1 remains one-shot; P2 is an explicitly bounded realtime Dry-run. Neither is
+registered with the production radar loop or Telegram delivery gateway.
 """
 
 from .models import CandidateSnapshot, MappingRecord
