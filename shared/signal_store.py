@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import re
+import secrets
 import sqlite3
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,7 +20,11 @@ from .signal_text import clean_signal_text, extract_symbols_from_text, signal_ev
 
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
-SIGNAL_STORE_SCHEMA_VERSION = 6
+SIGNAL_STORE_SCHEMA_VERSION = 7
+AI_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
+AI_CONTEXT_SNAPSHOT_MAX_BYTES = 16 * 1024
+AI_RESULT_MAX_BYTES = 16 * 1024
+AI_TRANSIENT_STATE_MAX_SEC = 5 * 60
 ACTIVE_SIGNAL_MODULES = (
     "funding",
     "flow",
@@ -39,6 +46,13 @@ SIGNAL_STORE_REQUIRED_OBJECTS = {
     "ux_signals_dedup_symbol": "index",
     "idx_signal_outcomes_due": "index",
     "idx_signal_outcomes_signal": "index",
+    "signal_ai_snapshots": "table",
+    "signal_ai_cache": "table",
+    "signal_ai_audit": "table",
+    "idx_signal_ai_snapshots_public_ref": "index",
+    "idx_signal_ai_cache_signal": "index",
+    "idx_signal_ai_audit_public_ref": "index",
+    "idx_signal_ai_audit_ts": "index",
 }
 SIGNAL_DECISION_COLUMNS = (
     "id",
@@ -147,6 +161,84 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "module", "template_id",
 })
 
+AI_RESULT_FIELDS = (
+    "status",
+    "direction",
+    "stage",
+    "summary",
+    "supporting_evidence",
+    "counter_evidence",
+    "risk_notes",
+    "wait_for",
+    "limitations",
+)
+AI_RESULT_LIST_FIELDS = AI_RESULT_FIELDS[4:]
+AI_CONTEXT_FIELDS = frozenset({
+    "discovery_score",
+    "rule_result",
+    "launch_phase",
+    "smc_filter",
+    "multi_timeframe",
+    "price_open_interest",
+    "active_flow",
+    "funding_basis",
+    "structure",
+    "plan",
+    "completeness",
+})
+AI_CONTEXT_MAPPING_FIELDS = AI_CONTEXT_FIELDS - {"discovery_score"}
+_AI_FORBIDDEN_KEY_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bot_token",
+    "credential",
+    "password",
+    "provider_body",
+    "raw_response",
+    "reasoning",
+    "rpc_url",
+    "secret",
+)
+_AI_FORBIDDEN_TEXT_MARKERS = (
+    "http://",
+    "https://",
+    "authorization",
+    "bearer ",
+    "api_key",
+    "bot_token",
+)
+_AI_HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
+_AI_CACHE_KEY_PATTERN = re.compile(r"aic_[0-9a-f]{64}")
+_AI_PUBLIC_REF_PATTERN = re.compile(r"sig_[0-9a-f]{20}")
+_AI_SAFE_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")
+_AI_SAFE_MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}")
+_AI_ALLOWED_ERROR_CODES = frozenset({
+    "ai_auth_failed",
+    "ai_client_error",
+    "ai_client_unavailable",
+    "ai_connection_failed",
+    "ai_dns_failed",
+    "ai_empty_content",
+    "ai_endpoint_not_found",
+    "ai_http_error",
+    "ai_insufficient_balance",
+    "ai_invalid_parameters",
+    "ai_invalid_request",
+    "ai_output_truncated",
+    "ai_policy_violation",
+    "ai_provider_unavailable",
+    "ai_rate_limited",
+    "ai_redirect_rejected",
+    "ai_request_failed",
+    "ai_rule_conflict",
+    "ai_timeout",
+    "ai_tls_failed",
+    "invalid_ai_output",
+    "invalid_ai_result",
+    "invalid_configuration",
+})
+
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -157,6 +249,200 @@ def _safe_json_loads(value: str, default: Any) -> Any:
         return json.loads(value)
     except Exception:
         return default
+
+
+def _ai_value_is_sensitive(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return True
+            normalized_key = key.strip().lower().replace("-", "_")
+            if any(marker in normalized_key for marker in _AI_FORBIDDEN_KEY_MARKERS):
+                return True
+            if _ai_value_is_sensitive(item):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(_ai_value_is_sensitive(item) for item in value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        return any(marker in lowered for marker in _AI_FORBIDDEN_TEXT_MARKERS)
+    return False
+
+
+def _normalize_ai_json_object(
+    value: object,
+    *,
+    max_bytes: int,
+) -> tuple[dict[str, Any] | None, str, str]:
+    if not isinstance(value, dict) or not value or _ai_value_is_sensitive(value):
+        return None, "", "snapshot_invalid"
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (OverflowError, RecursionError, TypeError, ValueError):
+        return None, "", "snapshot_invalid"
+    if len(encoded.encode("utf-8")) > max(1, int(max_bytes)):
+        return None, "", "snapshot_too_large"
+    decoded = _safe_json_loads(encoded, None)
+    if not isinstance(decoded, dict) or not decoded:
+        return None, "", "snapshot_invalid"
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return decoded, digest, "ready"
+
+
+def _normalize_ai_success_result(
+    value: object,
+) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(value, dict) or set(value) != set(AI_RESULT_FIELDS):
+        return None, "invalid_ai_result"
+    if value.get("status") != "available" or _ai_value_is_sensitive(value):
+        return None, "invalid_ai_result"
+    for key in ("direction", "stage"):
+        item = value.get(key)
+        if not isinstance(item, str) or not item.strip() or len(item) > 64:
+            return None, "invalid_ai_result"
+    summary = value.get("summary")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 600:
+        return None, "invalid_ai_result"
+    normalized: dict[str, Any] = {
+        "status": "available",
+        "direction": str(value["direction"]).strip(),
+        "stage": str(value["stage"]).strip(),
+        "summary": summary.strip(),
+    }
+    for key in AI_RESULT_LIST_FIELDS:
+        items = value.get(key)
+        if (
+            not isinstance(items, list)
+            or len(items) > 8
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                or len(item) > 240
+                for item in items
+            )
+        ):
+            return None, "invalid_ai_result"
+        normalized[key] = [str(item).strip() for item in items]
+    normalized_value, _digest, status = _normalize_ai_json_object(
+        normalized,
+        max_bytes=AI_RESULT_MAX_BYTES,
+    )
+    if status != "ready":
+        return None, "invalid_ai_result"
+    return normalized_value, "ready"
+
+
+def _normalize_ai_context_snapshot(
+    value: object,
+) -> tuple[dict[str, Any] | None, str, str]:
+    normalized, context_hash, status = _normalize_ai_json_object(
+        value,
+        max_bytes=AI_CONTEXT_SNAPSHOT_MAX_BYTES,
+    )
+    if status != "ready" or normalized is None:
+        return None, "", status
+    if set(normalized) != AI_CONTEXT_FIELDS or any(
+        not isinstance(normalized.get(key), dict)
+        for key in AI_CONTEXT_MAPPING_FIELDS
+    ):
+        return None, "", "snapshot_invalid"
+    discovery_score = normalized.get("discovery_score")
+    if (
+        isinstance(discovery_score, bool)
+        or (
+            discovery_score is not None
+            and not isinstance(discovery_score, (int, float))
+        )
+        or (
+            isinstance(discovery_score, float)
+            and not math.isfinite(discovery_score)
+        )
+    ):
+        return None, "", "snapshot_invalid"
+    rule = normalized.get("rule_result")
+    direction = rule.get("direction") if isinstance(rule, dict) else None
+    stage = (
+        rule.get("stage") or rule.get("status")
+        if isinstance(rule, dict)
+        else None
+    )
+    if (
+        not isinstance(direction, str)
+        or not direction.strip()
+        or len(direction) > 64
+        or not isinstance(stage, str)
+        or not stage.strip()
+        or len(stage) > 64
+    ):
+        return None, "", "snapshot_invalid"
+    return normalized, context_hash, "ready"
+
+
+def build_ai_cache_key(
+    *,
+    context_hash: str,
+    model: str,
+    endpoint_hash: str,
+    prompt_hash: str,
+    policy_version: str,
+) -> str:
+    """Build a cache key from reviewed hashes without accepting endpoints or secrets."""
+
+    normalized_context_hash = str(context_hash or "").strip().lower()
+    normalized_endpoint_hash = str(endpoint_hash or "").strip().lower()
+    normalized_prompt_hash = str(prompt_hash or "").strip().lower()
+    normalized_model = str(model or "").strip()
+    normalized_policy = str(policy_version or "").strip()
+    if not all(
+        _AI_HASH_PATTERN.fullmatch(value)
+        for value in (
+            normalized_context_hash,
+            normalized_endpoint_hash,
+            normalized_prompt_hash,
+        )
+    ):
+        raise ValueError("ai_cache_hash_invalid")
+    if not _AI_SAFE_MODEL_PATTERN.fullmatch(normalized_model):
+        raise ValueError("ai_cache_model_invalid")
+    if not _AI_SAFE_VERSION_PATTERN.fullmatch(normalized_policy):
+        raise ValueError("ai_cache_policy_version_invalid")
+    material = _json_dumps(
+        {
+            "context_hash": normalized_context_hash,
+            "endpoint_hash": normalized_endpoint_hash,
+            "model": normalized_model,
+            "policy_version": normalized_policy,
+            "prompt_hash": normalized_prompt_hash,
+        }
+    )
+    return f"aic_{hashlib.sha256(material.encode('utf-8')).hexdigest()}"
+
+
+def _safe_ai_error_code(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in _AI_ALLOWED_ERROR_CODES else "ai_request_failed"
+
+
+def _ai_result_matches_context(
+    result: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> bool:
+    rule = context.get("rule_result")
+    if not isinstance(rule, Mapping):
+        return False
+    expected_direction = str(rule.get("direction") or "none")[:64]
+    expected_stage = str(rule.get("stage") or rule.get("status") or "unknown")[:64]
+    return (
+        result.get("direction") == expected_direction
+        and result.get("stage") == expected_stage
+    )
 
 
 def _utc_time_text(ts: int) -> str:
@@ -403,6 +689,7 @@ class SignalEventStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_signals_dedup_symbol ON signals(dedup_key, symbol)"
         )
         self._ensure_outcome_schema(conn)
+        self._ensure_ai_schema(conn)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS signal_store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
@@ -450,6 +737,78 @@ class SignalEventStore:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal ON signal_outcomes(signal_id)"
+        )
+
+    @staticmethod
+    def _ensure_ai_schema(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_ai_snapshots (
+                signal_id INTEGER PRIMARY KEY,
+                public_ref TEXT NOT NULL UNIQUE,
+                schema_version INTEGER NOT NULL,
+                context_hash TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(signal_id) REFERENCES signals(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_ai_cache (
+                cache_key TEXT PRIMARY KEY,
+                signal_id INTEGER NOT NULL,
+                context_hash TEXT NOT NULL,
+                model TEXT NOT NULL,
+                endpoint_hash TEXT NOT NULL,
+                prompt_hash TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                state TEXT NOT NULL,
+                lease_id TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error_code TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                started_at INTEGER NOT NULL DEFAULT 0,
+                in_flight_until INTEGER NOT NULL DEFAULT 0,
+                cooldown_until INTEGER NOT NULL DEFAULT 0,
+                completed_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(signal_id) REFERENCES signals(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_ai_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                public_ref TEXT NOT NULL,
+                cache_key TEXT NOT NULL,
+                lease_id TEXT NOT NULL DEFAULT '',
+                event TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_code TEXT NOT NULL DEFAULT '',
+                ts INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_ai_snapshots_public_ref "
+            "ON signal_ai_snapshots(public_ref)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_ai_cache_signal "
+            "ON signal_ai_cache(signal_id, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_ai_audit_public_ref "
+            "ON signal_ai_audit(public_ref, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_ai_audit_ts "
+            "ON signal_ai_audit(ts DESC)"
         )
 
     @staticmethod
@@ -606,6 +965,26 @@ class SignalEventStore:
                 if module in {"flow", "launch", "funding"}:
                     facts.setdefault("evaluation_eligible", True)
                 payload["facts"] = facts
+            ai_snapshot: dict[str, Any] | None = None
+            ai_context_hash = ""
+            ai_snapshot_status = "snapshot_missing"
+            if "ai_context_snapshot" in record:
+                if module != "launch":
+                    ai_snapshot_status = "snapshot_ignored_module"
+                else:
+                    (
+                        ai_snapshot,
+                        ai_context_hash,
+                        ai_snapshot_status,
+                    ) = _normalize_ai_context_snapshot(
+                        record.get("ai_context_snapshot")
+                    )
+                payload["ai_context_snapshot_status"] = ai_snapshot_status
+                if ai_context_hash:
+                    payload["ai_context_hash"] = ai_context_hash
+                    payload["ai_context_snapshot_schema_version"] = (
+                        AI_CONTEXT_SNAPSHOT_SCHEMA_VERSION
+                    )
             quality_status = "ready" if structured_mode and normalized_symbol else "degraded"
             rows.append(
                 {
@@ -633,6 +1012,9 @@ class SignalEventStore:
                     "error": "" if str(status or "").lower() not in {"failed", "blocked"} else clean_excerpt[:300],
                     "ingest_mode": "structured" if structured_mode else "text_fallback",
                     "quality_status": quality_status,
+                    "_ai_context_snapshot": ai_snapshot,
+                    "_ai_context_hash": ai_context_hash,
+                    "_ai_snapshot_supplied": "ai_context_snapshot" in record,
                 }
             )
         with self.connect() as conn:
@@ -674,7 +1056,706 @@ class SignalEventStore:
                     """,
                     row,
                 )
+                signal = conn.execute(
+                    "SELECT id, public_ref FROM signals WHERE dedup_key = ? AND symbol = ?",
+                    (row["dedup_key"], row["symbol"]),
+                ).fetchone()
+                if signal is None or row["module"] != "launch":
+                    continue
+                signal_id = int(signal["id"])
+                snapshot = row.get("_ai_context_snapshot")
+                context_hash = str(row.get("_ai_context_hash") or "")
+                if isinstance(snapshot, dict) and context_hash:
+                    conn.execute(
+                        """
+                        INSERT INTO signal_ai_snapshots (
+                            signal_id, public_ref, schema_version, context_hash,
+                            context_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(signal_id) DO UPDATE SET
+                            public_ref=excluded.public_ref,
+                            schema_version=excluded.schema_version,
+                            context_hash=excluded.context_hash,
+                            context_json=excluded.context_json,
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            signal_id,
+                            str(signal["public_ref"]),
+                            AI_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+                            context_hash,
+                            _json_dumps(snapshot),
+                            now,
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        "DELETE FROM signal_ai_cache WHERE signal_id = ? AND context_hash != ?",
+                        (signal_id, context_hash),
+                    )
+                elif bool(row.get("_ai_snapshot_supplied")):
+                    conn.execute(
+                        "DELETE FROM signal_ai_snapshots WHERE signal_id = ?",
+                        (signal_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM signal_ai_cache WHERE signal_id = ?",
+                        (signal_id,),
+                    )
         return len(rows)
+
+    @staticmethod
+    def _load_ai_context_snapshot_conn(
+        conn: sqlite3.Connection,
+        public_ref: str,
+    ) -> dict[str, Any]:
+        normalized_ref = str(public_ref or "").strip()
+        if not _AI_PUBLIC_REF_PATTERN.fullmatch(normalized_ref):
+            return {"status": "invalid_public_ref"}
+        row = conn.execute(
+            """
+            SELECT
+                signals.id AS signal_id,
+                signals.public_ref,
+                signals.symbol,
+                signals.ts AS signal_ts,
+                signals.stage,
+                signal_ai_snapshots.schema_version,
+                signal_ai_snapshots.context_hash,
+                signal_ai_snapshots.context_json,
+                signal_ai_snapshots.created_at,
+                signal_ai_snapshots.updated_at
+            FROM signals
+            LEFT JOIN signal_ai_snapshots
+              ON signal_ai_snapshots.signal_id = signals.id
+            WHERE signals.public_ref = ?
+              AND signals.module = 'launch'
+              AND signals.sent = 1
+              AND signals.status = 'sent'
+              AND signals.quality_status = 'ready'
+            LIMIT 1
+            """,
+            (normalized_ref,),
+        ).fetchone()
+        if row is None:
+            return {"status": "signal_unavailable", "public_ref": normalized_ref}
+        raw_symbol = str(row["symbol"] or "").strip().upper()
+        symbol = (
+            raw_symbol
+            if re.fullmatch(r"[A-Z0-9]{2,24}USDT", raw_symbol)
+            else ""
+        )
+        stage_value = clean_signal_text(str(row["stage"] or "")).replace(
+            "\x00",
+            "",
+        )[:80]
+        signal_meta = {
+            "public_ref": normalized_ref,
+            "symbol": symbol,
+            "signal_ts": max(0, int(row["signal_ts"] or 0)),
+            "stage": "" if _ai_value_is_sensitive(stage_value) else stage_value,
+        }
+        if row["context_json"] is None:
+            return {"status": "snapshot_missing", **signal_meta}
+        if int(row["schema_version"] or 0) != AI_CONTEXT_SNAPSHOT_SCHEMA_VERSION:
+            return {"status": "snapshot_invalid", **signal_meta}
+        raw_context = _safe_json_loads(str(row["context_json"] or ""), None)
+        context, context_hash, status = _normalize_ai_context_snapshot(raw_context)
+        stored_hash = str(row["context_hash"] or "").strip().lower()
+        if (
+            status != "ready"
+            or context is None
+            or not _AI_HASH_PATTERN.fullmatch(stored_hash)
+            or context_hash != stored_hash
+        ):
+            return {"status": "snapshot_invalid", **signal_meta}
+        return {
+            "status": "ready",
+            **signal_meta,
+            "context_hash": context_hash,
+            "snapshot": context,
+            "captured_at": int(row["created_at"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+            "_signal_id": int(row["signal_id"]),
+        }
+
+    def load_ai_context_snapshot(self, public_ref: str) -> dict[str, Any]:
+        """Load one immutable prompt-ready snapshot by its opaque public reference."""
+
+        with self.connect() as conn:
+            result = self._load_ai_context_snapshot_conn(conn, public_ref)
+        result.pop("_signal_id", None)
+        return result
+
+    @staticmethod
+    def _append_ai_audit(
+        conn: sqlite3.Connection,
+        *,
+        signal_id: int,
+        public_ref: str,
+        cache_key: str,
+        lease_id: str,
+        event: str,
+        status: str,
+        error_code: str = "",
+        ts: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO signal_ai_audit (
+                signal_id, public_ref, cache_key, lease_id,
+                event, status, error_code, ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(signal_id),
+                str(public_ref),
+                str(cache_key),
+                str(lease_id),
+                str(event)[:40],
+                str(status)[:40],
+                _safe_ai_error_code(error_code) if error_code else "",
+                int(ts),
+            ),
+        )
+
+    @staticmethod
+    def _ai_daily_quota_conn(
+        conn: sqlite3.Connection,
+        *,
+        now_ts: int,
+        daily_limit: int | None,
+    ) -> dict[str, Any]:
+        day_start = max(0, int(now_ts) - (int(now_ts) % 86400))
+        day_end = day_start + 86400
+        used = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM signal_ai_audit
+                WHERE event = 'reserved' AND ts >= ? AND ts < ?
+                """,
+                (day_start, day_end),
+            ).fetchone()[0]
+        )
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "utc_day_start": day_start,
+            "utc_day_end": day_end,
+            "provider_reserved": used,
+        }
+        if daily_limit is not None:
+            limit = int(daily_limit)
+            payload.update(
+                daily_limit=limit,
+                remaining=max(0, limit - used),
+                exhausted=used >= limit,
+            )
+        return payload
+
+    def ai_daily_quota(
+        self,
+        *,
+        now_ts: int | None = None,
+        daily_limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Report provider reservations for the current UTC day."""
+
+        now = int(time.time() if now_ts is None else now_ts)
+        normalized_limit: int | None = None
+        if daily_limit is not None:
+            normalized_limit = int(daily_limit)
+            if not 0 <= normalized_limit <= 100_000:
+                raise ValueError("ai_daily_limit_invalid")
+        with self.connect() as conn:
+            return self._ai_daily_quota_conn(
+                conn,
+                now_ts=now,
+                daily_limit=normalized_limit,
+            )
+
+    def reserve_ai_interpretation(
+        self,
+        public_ref: str,
+        *,
+        model: str,
+        endpoint_hash: str,
+        prompt_hash: str,
+        policy_version: str,
+        now_ts: int | None = None,
+        in_flight_ttl_sec: int = 120,
+        daily_limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return cached success or atomically reserve one provider request."""
+
+        now = int(time.time() if now_ts is None else now_ts)
+        lease_ttl = max(
+            1,
+            min(AI_TRANSIENT_STATE_MAX_SEC, int(in_flight_ttl_sec)),
+        )
+        normalized_daily_limit: int | None = None
+        if daily_limit is not None:
+            normalized_daily_limit = int(daily_limit)
+            if not 0 <= normalized_daily_limit <= 100_000:
+                raise ValueError("ai_daily_limit_invalid")
+        with self.connect() as conn:
+            if normalized_daily_limit is not None:
+                if conn.in_transaction:
+                    conn.commit()
+                conn.execute("BEGIN IMMEDIATE")
+            snapshot = self._load_ai_context_snapshot_conn(conn, public_ref)
+            if snapshot.get("status") != "ready":
+                snapshot.pop("_signal_id", None)
+                return snapshot
+            signal_id = int(snapshot["_signal_id"])
+            normalized_ref = str(snapshot["public_ref"])
+            context_hash = str(snapshot["context_hash"])
+            cache_key = build_ai_cache_key(
+                context_hash=context_hash,
+                model=model,
+                endpoint_hash=endpoint_hash,
+                prompt_hash=prompt_hash,
+                policy_version=policy_version,
+            )
+            normalized_model = str(model).strip()
+            normalized_endpoint_hash = str(endpoint_hash).strip().lower()
+            normalized_prompt_hash = str(prompt_hash).strip().lower()
+            normalized_policy = str(policy_version).strip()
+            signal_meta = {
+                "public_ref": normalized_ref,
+                "symbol": str(snapshot.get("symbol") or ""),
+                "signal_ts": int(snapshot.get("signal_ts") or 0),
+                "stage": str(snapshot.get("stage") or ""),
+            }
+
+            def quota_rejection() -> dict[str, Any] | None:
+                if normalized_daily_limit is None:
+                    return None
+                quota = self._ai_daily_quota_conn(
+                    conn,
+                    now_ts=now,
+                    daily_limit=normalized_daily_limit,
+                )
+                if not quota.get("exhausted"):
+                    return None
+                self._append_ai_audit(
+                    conn,
+                    signal_id=signal_id,
+                    public_ref=normalized_ref,
+                    cache_key=cache_key,
+                    lease_id="",
+                    event="quota_rejected",
+                    status="quota_exhausted",
+                    ts=now,
+                )
+                return {
+                    "status": "quota_exhausted",
+                    "source": "quota",
+                    **signal_meta,
+                    "cache_key": cache_key,
+                    "daily_limit": normalized_daily_limit,
+                    "provider_reserved": int(quota["provider_reserved"]),
+                    "remaining": 0,
+                }
+
+            for _attempt in range(3):
+                row = conn.execute(
+                    "SELECT * FROM signal_ai_cache WHERE cache_key = ?",
+                    (cache_key,),
+                ).fetchone()
+                if row is None:
+                    rejected = quota_rejection()
+                    if rejected is not None:
+                        return rejected
+                    lease_id = secrets.token_hex(16)
+                    inserted = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO signal_ai_cache (
+                            cache_key, signal_id, context_hash, model,
+                            endpoint_hash, prompt_hash, policy_version,
+                            state, lease_id, result_json, error_code,
+                            attempts, started_at, in_flight_until,
+                            cooldown_until, completed_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'in_flight', ?, '{}', '', 1, ?, ?, 0, 0, ?)
+                        """,
+                        (
+                            cache_key,
+                            signal_id,
+                            context_hash,
+                            normalized_model,
+                            normalized_endpoint_hash,
+                            normalized_prompt_hash,
+                            normalized_policy,
+                            lease_id,
+                            now,
+                            now + lease_ttl,
+                            now,
+                        ),
+                    ).rowcount
+                    if inserted:
+                        self._append_ai_audit(
+                            conn,
+                            signal_id=signal_id,
+                            public_ref=normalized_ref,
+                            cache_key=cache_key,
+                            lease_id=lease_id,
+                            event="reserved",
+                            status="in_flight",
+                            ts=now,
+                        )
+                        return {
+                            "status": "reserved",
+                            "source": "provider",
+                            **signal_meta,
+                            "cache_key": cache_key,
+                            "lease_id": lease_id,
+                            "context_hash": context_hash,
+                            "snapshot": snapshot["snapshot"],
+                            "in_flight_until": now + lease_ttl,
+                        }
+                    continue
+                state = str(row["state"] or "")
+                if state == "available":
+                    cached_result, result_status = _normalize_ai_success_result(
+                        _safe_json_loads(str(row["result_json"] or "{}"), None)
+                    )
+                    if (
+                        result_status == "ready"
+                        and cached_result is not None
+                        and _ai_result_matches_context(
+                            cached_result,
+                            snapshot["snapshot"],
+                        )
+                    ):
+                        self._append_ai_audit(
+                            conn,
+                            signal_id=signal_id,
+                            public_ref=normalized_ref,
+                            cache_key=cache_key,
+                            lease_id="",
+                            event="cache_hit",
+                            status="available",
+                            ts=now,
+                        )
+                        return {
+                            "status": "available",
+                            "source": "cache",
+                            **signal_meta,
+                            "cache_key": cache_key,
+                            "context_hash": context_hash,
+                            "result": cached_result,
+                        }
+                elif state == "in_flight" and int(row["in_flight_until"] or 0) > now:
+                    retry_after = int(row["in_flight_until"]) - now
+                    self._append_ai_audit(
+                        conn,
+                        signal_id=signal_id,
+                        public_ref=normalized_ref,
+                        cache_key=cache_key,
+                        lease_id="",
+                        event="deduplicated",
+                        status="in_flight",
+                        ts=now,
+                    )
+                    return {
+                        "status": "in_flight",
+                        "source": "singleflight",
+                        **signal_meta,
+                        "cache_key": cache_key,
+                        "retry_after": retry_after,
+                    }
+                elif state == "cooldown" and int(row["cooldown_until"] or 0) > now:
+                    retry_after = int(row["cooldown_until"]) - now
+                    error_code = _safe_ai_error_code(row["error_code"])
+                    self._append_ai_audit(
+                        conn,
+                        signal_id=signal_id,
+                        public_ref=normalized_ref,
+                        cache_key=cache_key,
+                        lease_id="",
+                        event="cooldown_hit",
+                        status="cooldown",
+                        error_code=error_code,
+                        ts=now,
+                    )
+                    return {
+                        "status": "cooldown",
+                        "source": "cooldown",
+                        **signal_meta,
+                        "cache_key": cache_key,
+                        "error_code": error_code,
+                        "retry_after": retry_after,
+                    }
+
+                rejected = quota_rejection()
+                if rejected is not None:
+                    return rejected
+                lease_id = secrets.token_hex(16)
+                previous_state = state
+                previous_updated_at = int(row["updated_at"] or 0)
+                previous_lease_id = str(row["lease_id"] or "")
+                updated = conn.execute(
+                    """
+                    UPDATE signal_ai_cache
+                    SET signal_id = ?, state = 'in_flight', lease_id = ?,
+                        result_json = '{}', error_code = '',
+                        attempts = attempts + 1, started_at = ?,
+                        in_flight_until = ?, cooldown_until = 0,
+                        completed_at = 0, updated_at = ?
+                    WHERE cache_key = ?
+                      AND state = ?
+                      AND updated_at = ?
+                      AND lease_id = ?
+                    """,
+                    (
+                        signal_id,
+                        lease_id,
+                        now,
+                        now + lease_ttl,
+                        now,
+                        cache_key,
+                        previous_state,
+                        previous_updated_at,
+                        previous_lease_id,
+                    ),
+                ).rowcount
+                if updated:
+                    self._append_ai_audit(
+                        conn,
+                        signal_id=signal_id,
+                        public_ref=normalized_ref,
+                        cache_key=cache_key,
+                        lease_id=lease_id,
+                        event="reserved",
+                        status="in_flight",
+                        ts=now,
+                    )
+                    return {
+                        "status": "reserved",
+                        "source": "provider",
+                        **signal_meta,
+                        "cache_key": cache_key,
+                        "lease_id": lease_id,
+                        "context_hash": context_hash,
+                        "snapshot": snapshot["snapshot"],
+                        "in_flight_until": now + lease_ttl,
+                    }
+            return {
+                "status": "in_flight",
+                "source": "singleflight",
+                **signal_meta,
+                "cache_key": cache_key,
+                "retry_after": 1,
+            }
+
+    def cache_ai_success(
+        self,
+        cache_key: str,
+        lease_id: str,
+        result: Mapping[str, Any],
+        *,
+        now_ts: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist only a validated, policy-safe successful interpretation."""
+
+        normalized_cache_key = str(cache_key or "").strip()
+        normalized_lease_id = str(lease_id or "").strip().lower()
+        if not _AI_CACHE_KEY_PATTERN.fullmatch(normalized_cache_key):
+            return {"status": "invalid_cache_key"}
+        if not re.fullmatch(r"[0-9a-f]{32}", normalized_lease_id):
+            return {"status": "invalid_lease_id"}
+        normalized_result, result_status = _normalize_ai_success_result(result)
+        if result_status != "ready" or normalized_result is None:
+            failed = self.cache_ai_failure(
+                normalized_cache_key,
+                normalized_lease_id,
+                "invalid_ai_result",
+                cooldown_sec=60,
+                now_ts=now_ts,
+            )
+            return {
+                "status": "invalid_ai_result",
+                "stored": False,
+                "cooldown": failed.get("status") == "cooldown",
+            }
+        now = int(time.time() if now_ts is None else now_ts)
+        with self.connect() as conn:
+            context_row = conn.execute(
+                """
+                SELECT
+                    signal_ai_cache.context_hash AS cache_context_hash,
+                    signal_ai_snapshots.context_hash AS snapshot_context_hash,
+                    signal_ai_snapshots.context_json
+                FROM signal_ai_cache
+                JOIN signal_ai_snapshots
+                  ON signal_ai_snapshots.signal_id = signal_ai_cache.signal_id
+                WHERE signal_ai_cache.cache_key = ?
+                  AND signal_ai_cache.state = 'in_flight'
+                  AND signal_ai_cache.lease_id = ?
+                """,
+                (normalized_cache_key, normalized_lease_id),
+            ).fetchone()
+        if context_row is None:
+            return {"status": "stale_request", "stored": False}
+        raw_context = _safe_json_loads(str(context_row["context_json"] or ""), None)
+        context, context_hash, context_status = _normalize_ai_context_snapshot(
+            raw_context
+        )
+        if (
+            context_status != "ready"
+            or context is None
+            or context_hash != str(context_row["cache_context_hash"] or "")
+            or context_hash != str(context_row["snapshot_context_hash"] or "")
+            or not _ai_result_matches_context(normalized_result, context)
+        ):
+            failed = self.cache_ai_failure(
+                normalized_cache_key,
+                normalized_lease_id,
+                "ai_rule_conflict",
+                cooldown_sec=60,
+                now_ts=now,
+            )
+            return {
+                "status": "ai_rule_conflict",
+                "stored": False,
+                "cooldown": failed.get("status") == "cooldown",
+            }
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT signal_ai_cache.signal_id, signals.public_ref
+                FROM signal_ai_cache
+                JOIN signals ON signals.id = signal_ai_cache.signal_id
+                WHERE signal_ai_cache.cache_key = ?
+                """,
+                (normalized_cache_key,),
+            ).fetchone()
+            if row is None:
+                return {"status": "stale_request", "stored": False}
+            updated = conn.execute(
+                """
+                UPDATE signal_ai_cache
+                SET state = 'available', lease_id = '', result_json = ?,
+                    error_code = '', in_flight_until = 0,
+                    cooldown_until = 0, completed_at = ?, updated_at = ?
+                WHERE cache_key = ? AND state = 'in_flight' AND lease_id = ?
+                """,
+                (
+                    _json_dumps(normalized_result),
+                    now,
+                    now,
+                    normalized_cache_key,
+                    normalized_lease_id,
+                ),
+            ).rowcount
+            if not updated:
+                return {"status": "stale_request", "stored": False}
+            self._append_ai_audit(
+                conn,
+                signal_id=int(row["signal_id"]),
+                public_ref=str(row["public_ref"]),
+                cache_key=normalized_cache_key,
+                lease_id=normalized_lease_id,
+                event="completed",
+                status="available",
+                ts=now,
+            )
+        return {"status": "available", "stored": True}
+
+    def cache_ai_failure(
+        self,
+        cache_key: str,
+        lease_id: str,
+        error_code: str,
+        *,
+        cooldown_sec: int = 60,
+        now_ts: int | None = None,
+    ) -> dict[str, Any]:
+        """Store only a bounded error code and a short retry cooldown."""
+
+        normalized_cache_key = str(cache_key or "").strip()
+        normalized_lease_id = str(lease_id or "").strip().lower()
+        if not _AI_CACHE_KEY_PATTERN.fullmatch(normalized_cache_key):
+            return {"status": "invalid_cache_key", "stored": False}
+        if not re.fullmatch(r"[0-9a-f]{32}", normalized_lease_id):
+            return {"status": "invalid_lease_id", "stored": False}
+        safe_error = _safe_ai_error_code(error_code)
+        cooldown = max(
+            1,
+            min(AI_TRANSIENT_STATE_MAX_SEC, int(cooldown_sec)),
+        )
+        now = int(time.time() if now_ts is None else now_ts)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT signal_ai_cache.signal_id, signals.public_ref
+                FROM signal_ai_cache
+                JOIN signals ON signals.id = signal_ai_cache.signal_id
+                WHERE signal_ai_cache.cache_key = ?
+                """,
+                (normalized_cache_key,),
+            ).fetchone()
+            if row is None:
+                return {"status": "stale_request", "stored": False}
+            updated = conn.execute(
+                """
+                UPDATE signal_ai_cache
+                SET state = 'cooldown', lease_id = '', result_json = '{}',
+                    error_code = ?, in_flight_until = 0,
+                    cooldown_until = ?, completed_at = ?, updated_at = ?
+                WHERE cache_key = ? AND state = 'in_flight' AND lease_id = ?
+                """,
+                (
+                    safe_error,
+                    now + cooldown,
+                    now,
+                    now,
+                    normalized_cache_key,
+                    normalized_lease_id,
+                ),
+            ).rowcount
+            if not updated:
+                return {"status": "stale_request", "stored": False}
+            self._append_ai_audit(
+                conn,
+                signal_id=int(row["signal_id"]),
+                public_ref=str(row["public_ref"]),
+                cache_key=normalized_cache_key,
+                lease_id=normalized_lease_id,
+                event="failed",
+                status="cooldown",
+                error_code=safe_error,
+                ts=now,
+            )
+        return {
+            "status": "cooldown",
+            "stored": True,
+            "error_code": safe_error,
+            "retry_after": cooldown,
+        }
+
+    def list_ai_interpretation_audit(
+        self,
+        public_ref: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        normalized_ref = str(public_ref or "").strip()
+        if not _AI_PUBLIC_REF_PATTERN.fullmatch(normalized_ref):
+            return []
+        row_limit = _limit(limit, 50, 200)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT public_ref, event, status, error_code, ts
+                FROM signal_ai_audit
+                WHERE public_ref = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (normalized_ref, row_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def launch_message_cleanup_candidates(
         self,
@@ -808,6 +1889,11 @@ class SignalEventStore:
         row_limit = max(1, int(max_rows))
         launch_cycles_expired = 0
         with self.connect() as conn:
+            audit_expired_cursor = conn.execute(
+                "DELETE FROM signal_ai_audit WHERE ts < ?",
+                (cutoff,),
+            )
+            audit_expired = max(0, int(audit_expired_cursor.rowcount))
             before = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
             expired_cursor = conn.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
             expired = max(0, int(expired_cursor.rowcount))
@@ -854,6 +1940,7 @@ class SignalEventStore:
             "expired": expired,
             "overflow": overflow,
             "launch_cycles_expired": launch_cycles_expired,
+            "ai_audit_expired": audit_expired,
             "checkpoint_pages": checkpointed,
         }
 

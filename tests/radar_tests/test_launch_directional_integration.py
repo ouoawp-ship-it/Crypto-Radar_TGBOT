@@ -193,9 +193,13 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id=123,
             ),
             object(),  # type: ignore[arg-type]
         )
@@ -549,9 +553,13 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="123",
             ),
             object(),  # type: ignore[arg-type]
         )
@@ -584,6 +592,41 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         )
         self.assertNotIn("ai_interpretation", alert)
         session.assert_not_called()
+
+    def test_on_demand_mode_reports_missing_private_button_route(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(
+                launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=False,
+                ai_api_key="fake-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="",
+            ),
+            object(),  # type: ignore[arg-type]
+        )
+        alert = {
+            "symbol": "DEMOUSDT",
+            "directional_readiness": {
+                "status": "多头确认",
+                "direction": "bullish",
+                "data_complete": True,
+            },
+        }
+
+        with patch("radars.launch_warning.radar.requests.Session") as session:
+            diagnostics = radar._interpret_directional_alerts([alert])
+
+        self.assertEqual(
+            diagnostics["status"],
+            "on_demand_route_not_configured",
+        )
+        self.assertFalse(diagnostics["on_demand_available"])
+        self.assertEqual(
+            alert["ai_interpretation_status"],
+            "on_demand_route_not_configured",
+        )
+        session.assert_not_called()
         self.assertTrue(
             LaunchWarningRadar._directional_candidate_publishable({
                 "launch_directional_cycle": False,
@@ -596,6 +639,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
@@ -639,6 +683,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
@@ -797,6 +842,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
@@ -831,12 +877,49 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertIn("风险：不要追涨", alert["ai_interpretation"])
         self.assertIn("等待：回踩后保持结构", alert["ai_interpretation"])
 
+    def test_on_demand_mode_never_calls_ai_during_radar_scan(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(
+                launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=False,
+                ai_api_key="fake-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="123",
+            ),
+            object(),  # type: ignore[arg-type]
+        )
+        alert = {
+            "symbol": "DEMOUSDT",
+            "directional_readiness": {
+                "status": "多头确认",
+                "direction": "bullish",
+                "data_complete": True,
+            },
+            "launch_phase": _eligible_launch_phase(),
+            "smc_filter": _supportive_smc_filter(),
+        }
+
+        with patch("radars.launch_warning.radar.requests.Session") as session:
+            diagnostics = radar._interpret_directional_alerts([alert])
+
+        self.assertEqual(diagnostics["status"], "on_demand")
+        self.assertTrue(diagnostics["on_demand_available"])
+        self.assertEqual(diagnostics["calls"], 0)
+        self.assertEqual(alert["ai_interpretation_status"], "on_demand")
+        self.assertEqual(alert["ai_interpretation_source"], "none")
+        self.assertNotIn("ai_interpretation", alert)
+        session.assert_not_called()
+
 
     def test_same_observation_uses_safe_ai_cache_without_second_request(self) -> None:
         with TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "launch_state.json"
             settings = self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
@@ -890,6 +973,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
@@ -930,7 +1014,10 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
 
     def test_enabled_but_missing_configuration_is_visible_without_network(self) -> None:
         radar = LaunchWarningRadar(
-            self.settings(launch_ai_interpreter_enable=True),
+            self.settings(
+                launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
+            ),
             object(),  # type: ignore[arg-type]
         )
         alert = {
@@ -956,6 +1043,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",
@@ -1055,6 +1143,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         radar = LaunchWarningRadar(
             self.settings(
                 launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=True,
                 ai_api_key="fake-key",
                 ai_base_url="https://provider.invalid/v1",
                 ai_model="fake-model",

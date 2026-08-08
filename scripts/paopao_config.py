@@ -21,6 +21,7 @@ ENV_FILES = {
 }
 ALLOWLIST = {
     "TG_BOT_TOKEN": "oi",
+    "TG_BOT_USERNAME": "oi",
     "TG_CHAT_ID": "oi",
     "TG_PRIVATE_CONTROL_ENABLE": "oi",
     "TG_PRIVATE_CONTROL_ADMIN_USER_ID": "oi",
@@ -38,10 +39,12 @@ ALLOWLIST = {
     "LAUNCH_DIRECTIONAL_ENABLE": "oi",
     "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "oi",
     "LAUNCH_AI_INTERPRETER_ENABLE": "oi",
+    "LAUNCH_AI_AUTO_ENABLE": "oi",
     "AI_API_KEY": "oi",
     "AI_BASE_URL": "oi",
     "AI_MODEL": "oi",
     "AI_TIMEOUT_SEC": "oi",
+    "AI_ON_DEMAND_DAILY_LIMIT": "oi",
     "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "oi",
 }
 SECRET_KEYS = {
@@ -67,11 +70,13 @@ BOOLEAN_KEYS = {
     "LAUNCH_FUSION_ENABLE",
     "LAUNCH_DIRECTIONAL_ENABLE",
     "LAUNCH_AI_INTERPRETER_ENABLE",
+    "LAUNCH_AI_AUTO_ENABLE",
 }
 INTEGER_RANGES: dict[str, tuple[int, int]] = {
     "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": (900, 7200),
     "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": (1, 6),
     "AI_TIMEOUT_SEC": (5, 180),
+    "AI_ON_DEMAND_DAILY_LIMIT": (1, 100),
     "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": (300, 86400),
 }
 DECIMAL_RANGES: dict[str, tuple[float, float]] = {}
@@ -203,7 +208,9 @@ class ConfigManager:
             "LAUNCH_DIRECTIONAL_ENABLE": "false",
             "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "6",
             "LAUNCH_AI_INTERPRETER_ENABLE": "false",
+            "LAUNCH_AI_AUTO_ENABLE": "false",
             "AI_TIMEOUT_SEC": "60",
+            "AI_ON_DEMAND_DAILY_LIMIT": "20",
             "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "1800",
         }
         status = {
@@ -213,6 +220,19 @@ class ConfigManager:
             )
             for key in sorted(ALLOWLIST)
         }
+        private_admin = values.get(
+            "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
+            "",
+        ).strip()
+        if private_admin:
+            try:
+                self._validate_private_control_admin_id(private_admin)
+            except ConfigManagerError:
+                status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"] = "invalid"
+            else:
+                status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"] = "configured"
+        else:
+            status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"] = "not_configured"
         status["AI_OPERATOR_PROMPT"] = self.ai_prompt_status()
         return status
 
@@ -510,12 +530,20 @@ class ConfigManager:
         if key == "AI_MODEL" and value:
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
                 raise ConfigManagerError("AI_MODEL has an invalid format")
+        if key == "TG_BOT_USERNAME" and value:
+            if (
+                not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", value)
+                or not value.lower().endswith("bot")
+            ):
+                raise ConfigManagerError(
+                    "TG_BOT_USERNAME must be a Telegram username without @"
+                )
         if key == "TG_PRIVATE_CONTROL_ADMIN_USER_ID" and value:
             self._validate_private_control_admin_id(value)
 
     @staticmethod
     def _validate_private_control_admin_id(value: str) -> None:
-        if not re.fullmatch(r"[1-9]\d{0,18}", value):
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", value):
             raise ConfigManagerError(
                 "TG_PRIVATE_CONTROL_ADMIN_USER_ID must be a positive integer"
             )
@@ -570,6 +598,17 @@ class ConfigManager:
                 raise ConfigManagerError(
                     "TG_CHAT_ID must be a non-zero signed integer"
                 )
+
+        bot_username = values.get("TG_BOT_USERNAME", "").strip()
+        if bot_username and (
+            not re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_]{4,31}", bot_username
+            )
+            or not bot_username.lower().endswith("bot")
+        ):
+            raise ConfigManagerError(
+                "TG_BOT_USERNAME must be a Telegram username without @"
+            )
 
         private_control_admin = values.get(
             "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
@@ -699,10 +738,23 @@ class ConfigManager:
             raise ConfigManagerError(
                 "LAUNCH_AI_INTERPRETER_ENABLE must be true or false"
             )
+        ai_auto_enable = values.get(
+            "LAUNCH_AI_AUTO_ENABLE",
+            "false",
+        ).strip().lower()
+        if ai_auto_enable not in {"true", "false"}:
+            raise ConfigManagerError(
+                "LAUNCH_AI_AUTO_ENABLE must be true or false"
+            )
+        if ai_auto_enable == "true" and ai_interpreter_enable != "true":
+            raise ConfigManagerError(
+                "launch_ai_auto_gate_blocked: enable the AI interpreter first"
+            )
         bounded_integers: dict[str, int] = {}
         for key, default in (
             ("LAUNCH_DIRECTIONAL_MAX_CANDIDATES", "6"),
             ("AI_TIMEOUT_SEC", "60"),
+            ("AI_ON_DEMAND_DAILY_LIMIT", "20"),
             ("TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC", "3600"),
         ):
             raw_value = values.get(key, default).strip()
@@ -722,6 +774,9 @@ class ConfigManager:
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
+            ),
+            "telegram_bot_username": (
+                "configured" if bot_username else "not_configured"
             ),
             "telegram_chat_id": (
                 "configured" if chat_id else "not_configured"
@@ -753,6 +808,7 @@ class ConfigManager:
                 "LAUNCH_DIRECTIONAL_MAX_CANDIDATES"
             ],
             "launch_ai_interpreter_enable": ai_interpreter_enable == "true",
+            "launch_ai_auto_enable": ai_auto_enable == "true",
             "ai_api_key": (
                 "configured" if values.get("AI_API_KEY", "").strip()
                 else "not_configured"
@@ -763,6 +819,9 @@ class ConfigManager:
                 else "not_configured"
             ),
             "ai_timeout_sec": bounded_integers["AI_TIMEOUT_SEC"],
+            "ai_on_demand_daily_limit": bounded_integers[
+                "AI_ON_DEMAND_DAILY_LIMIT"
+            ],
             "launch_same_stage_min_interval_sec": same_stage_interval,
         }
 
