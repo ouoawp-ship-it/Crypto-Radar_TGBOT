@@ -85,6 +85,27 @@ class AltcoinAnomalyFinalDeploymentTests(unittest.TestCase):
         self.assertIn("READINESS_REQUIRED_SUCCESSES", deploy)
         self.assertIn("release_readiness_timeout", deploy)
 
+    def test_release_success_restores_previous_unit_policy(self) -> None:
+        deploy = self.read("scripts/deploy_tag.sh")
+
+        self.assertIn("PYTHON_BIN=python3 AUTO_START=0", deploy)
+        restore_index = deploy.index(
+            'restore_unit_activity "$CREATED_BACKUP/unit-state.tsv"'
+        )
+        verify_index = deploy.index(
+            'verify_unit_activity "$CREATED_BACKUP/unit-state.tsv"'
+        )
+        readiness_index = deploy.index(
+            'if full_runtime_was_active "$CREATED_BACKUP/unit-state.tsv"'
+        )
+        self.assertLess(restore_index, verify_index)
+        self.assertLess(verify_index, readiness_index)
+        self.assertIn("unit_enabled_state_mismatch", deploy)
+        self.assertIn(
+            "release_readiness_skipped=services_previously_inactive",
+            deploy,
+        )
+
     def test_release_tag_push_runs_the_same_ci_suite(self) -> None:
         workflow = self.read(".github/workflows/tests.yml")
 

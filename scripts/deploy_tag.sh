@@ -227,7 +227,7 @@ restore_unit_activity() {
     if [ "$enabled" = "1" ]; then
       run_root systemctl enable "$unit" >/dev/null || failed=1
     else
-      run_root systemctl disable "$unit" >/dev/null 2>&1 || true
+      run_root systemctl disable "$unit" >/dev/null 2>&1 || failed=1
     fi
     if [ "$active" = "1" ]; then
       run_root systemctl restart "$unit" || failed=1
@@ -238,25 +238,32 @@ restore_unit_activity() {
   return "$failed"
 }
 
-restart_if_previously_active() {
-  local state_file="$1" wanted="$2" unit active _enabled
-  while IFS=$'\t' read -r unit active _enabled; do
-    if [ "$unit" = "$wanted" ] && [ "$active" = "1" ]; then
-      run_root systemctl restart "$unit"
-      return
-    fi
-  done <"$state_file"
-}
-
 verify_unit_activity() {
-  local state_file="$1" unit active _enabled
-  while IFS=$'\t' read -r unit active _enabled; do
+  local state_file="$1" unit active enabled
+  while IFS=$'\t' read -r unit active enabled; do
+    if [ "$enabled" = "1" ]; then
+      run_root systemctl is-enabled --quiet "$unit" || \
+        fail "unit_enabled_state_mismatch"
+    elif run_root systemctl is-enabled --quiet "$unit"; then
+      fail "unit_enabled_state_mismatch"
+    fi
     if [ "$active" = "1" ]; then
       run_root systemctl is-active --quiet "$unit"
     elif run_root systemctl is-active --quiet "$unit"; then
       fail "rollback_unit_activity_mismatch"
     fi
   done <"$state_file"
+}
+
+full_runtime_was_active() {
+  local state_file="$1" unit active _enabled main_active=0 market_active=0
+  while IFS=$'\t' read -r unit active _enabled; do
+    case "$unit" in
+      "${SERVICE_NAME}.service") main_active="$active" ;;
+      "${MARKET_STREAM_SERVICE_NAME}.service") market_active="$active" ;;
+    esac
+  done <"$state_file"
+  [ "$main_active" = "1" ] && [ "$market_active" = "1" ]
 }
 
 backup_runtime() {
@@ -443,11 +450,15 @@ deploy_tag() {
   git -C "$APP_DIR" checkout --detach "$commit"
   [ "$(tr -d '\r\n' <"$APP_DIR/VERSION")" = "$tag" ] || \
     fail "checked_out_version_mismatch"
-  PYTHON_BIN=python3 AUTO_START=1 INSTALL_PP_SHORTCUT=0 \
+  PYTHON_BIN=python3 AUTO_START=0 INSTALL_PP_SHORTCUT=0 \
     bash "$APP_DIR/scripts/install_server.sh"
-  restart_if_previously_active \
-    "$CREATED_BACKUP/unit-state.tsv" "${PRIVATE_CONTROL_SERVICE_NAME}.service"
-  wait_for_deployed_runtime
+  restore_unit_activity "$CREATED_BACKUP/unit-state.tsv"
+  verify_unit_activity "$CREATED_BACKUP/unit-state.tsv"
+  if full_runtime_was_active "$CREATED_BACKUP/unit-state.tsv"; then
+    wait_for_deployed_runtime
+  else
+    printf 'release_readiness_skipped=services_previously_inactive\n'
+  fi
   ROLLBACK_READY=0
   printf 'deployed_tag=%s\n' "$tag"
   printf 'deployed_commit=%s\n' "$commit"
