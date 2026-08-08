@@ -56,9 +56,9 @@ found. A valid breakout requires:
 
 It then evaluates only completed higher-timeframe candles against that frozen
 level. The current chain is `15m -> 1h -> 4h`. A wick through the level followed
-by a close back inside is classified as a liquidity sweep when wick/body is at
-least `LAUNCH_PA_WICK_BODY_RATIO`; a close back inside without the required wick
-is a failed breakout, not a sweep.
+by a close back inside is classified as a long-wick rejection when wick/body is
+at least `LAUNCH_PA_WICK_BODY_RATIO`; a close back inside without the required
+wick is a failed breakout.
 
 Price-action state changes are lifecycle package checkpoints, so a confirmed
 breakout or false breakout updates the existing symbol package instead of
@@ -116,11 +116,10 @@ is one photo message whose caption contains the dynamic lifecycle text, links,
 and copyable symbol. Static chart/data/lifecycle guidance lives in the pinned
 launch-topic introduction so each symbol does not repeat boilerplate. After a
 price-action V3 event starts, the image uses fully closed Binance 1h candles as
-its main view. It retains the frozen 15m consolidation level and `15M BO`,
-`1H OK`, and `4H OK` close-confirmation markers, so the earlier 15m trigger is
-visible without filling the chart with all 15m history. A long-wick
-re-entry is marked `SWEEP H` or `SWEEP L`; a body-close invalidation is marked
-`FAIL`.
+its main view. It retains the frozen 15m consolidation area and key level, a
+Chinese current-status label, and numbered lifecycle events, so the earlier
+15m trigger remains visible without filling the chart with all 15m history.
+Long-wick rejections and failed breakouts are described by that status label.
 After the first package is sent, later packages for the same symbol reply to
 the previous successful package. Successful launch-topic history is retained;
 the bot does not schedule old packages for deletion. If an operator manually

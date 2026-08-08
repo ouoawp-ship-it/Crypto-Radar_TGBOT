@@ -77,7 +77,6 @@ class FakeStore:
                     "timing_stage": "forming",
                     "execution_status": "wait_confirmation",
                 },
-                "smc_filter": {},
                 "multi_timeframe": {},
                 "structure": {},
                 "plan": {},

@@ -126,6 +126,22 @@ class LaunchMultiTimeframeTests(unittest.TestCase):
         self.assertEqual(frame["last_closed_end_ms"], 6 * interval_ms)
         self.assertNotEqual(frame["reference_high"], 510)
 
+    def test_recent_closed_candle_gap_cannot_vote(self) -> None:
+        timeframe = "15m"
+        interval_ms = TIMEFRAME_INTERVAL_MS[timeframe]
+        rows = rising_rows(timeframe, count=5)
+        rows.append(kline(6 * interval_ms, interval_ms, 106, 108, 105, 107))
+
+        result = analyze_multi_timeframe(
+            {timeframe: rows},
+            window_end_ms=7 * interval_ms,
+        )
+        frame = result["timeframes"][timeframe]
+
+        self.assertEqual(frame["data_status"], "gap")
+        self.assertEqual(frame["direction"], "neutral")
+        self.assertEqual(frame["vote"], 0)
+
     def test_clock_is_injected_when_boundary_is_not_supplied(self) -> None:
         interval_ms = TIMEFRAME_INTERVAL_MS["5m"]
         calls = 0
@@ -196,7 +212,7 @@ class LaunchMultiTimeframeTests(unittest.TestCase):
             bullish_background["rolling_24h_background"]["counts_toward_vote"]
         )
 
-    def test_reports_hh_hl_and_bos_without_identity_inference(self) -> None:
+    def test_reports_bullish_closed_candle_trend_without_identity_inference(self) -> None:
         timeframe = "1h"
         interval_ms = TIMEFRAME_INTERVAL_MS[timeframe]
         rows = rising_rows(timeframe, count=6)
@@ -210,56 +226,56 @@ class LaunchMultiTimeframeTests(unittest.TestCase):
 
         self.assertEqual(frame["structure"]["high"], "HH")
         self.assertEqual(frame["structure"]["low"], "HL")
-        self.assertEqual(frame["structure_event"], "BOS_up")
+        self.assertEqual(frame["direction"], "bullish")
+        self.assertEqual(frame["vote"], 1)
         self.assertEqual(frame["identity_inference"], "not_performed")
 
-    def test_reports_choch_after_bearish_prior_structure_breaks_up(self) -> None:
+    def test_reports_bearish_closed_candle_trend(self) -> None:
         timeframe = "1h"
         interval_ms = TIMEFRAME_INTERVAL_MS[timeframe]
         rows = falling_rows(timeframe, count=6)
-        rows[-1] = kline(5 * interval_ms, interval_ms, 105, 116, 104, 115)
 
         result = analyze_multi_timeframe(
             {timeframe: rows},
             window_end_ms=6 * interval_ms,
         )
+        frame = result["timeframes"][timeframe]
 
-        self.assertEqual(
-            result["timeframes"][timeframe]["structure_event"],
-            "CHoCH_up",
-        )
+        self.assertEqual(frame["structure"]["high"], "LH")
+        self.assertEqual(frame["structure"]["low"], "LL")
+        self.assertEqual(frame["direction"], "bearish")
+        self.assertEqual(frame["vote"], -1)
 
-    def test_reports_liquidity_sweep_and_fvg(self) -> None:
+    def test_intrabar_pin_does_not_override_closed_candle_trend(self) -> None:
         timeframe = "15m"
         interval_ms = TIMEFRAME_INTERVAL_MS[timeframe]
-        sweep_rows = [
-            kline(index * interval_ms, interval_ms, 100, 102, 99, 101)
-            for index in range(5)
-        ]
-        sweep_rows.append(kline(5 * interval_ms, interval_ms, 101, 105, 100, 101.5))
-        fvg_rows = [
-            kline(0, interval_ms, 100, 101, 99, 100),
-            kline(interval_ms, interval_ms, 101, 105, 100, 104),
-            kline(2 * interval_ms, interval_ms, 104, 106, 102, 105),
-            kline(3 * interval_ms, interval_ms, 105, 107, 103, 106),
-            kline(4 * interval_ms, interval_ms, 106, 108, 104, 107),
-            kline(5 * interval_ms, interval_ms, 107, 109, 105, 108),
-        ]
+        rows = rising_rows(timeframe, count=6)
+        rows[-1] = kline(5 * interval_ms, interval_ms, 105, 120, 104, 106.5)
 
-        sweep = analyze_multi_timeframe(
-            {timeframe: sweep_rows},
+        result = analyze_multi_timeframe(
+            {timeframe: rows},
             window_end_ms=6 * interval_ms,
         )
-        fvg = analyze_multi_timeframe(
-            {timeframe: fvg_rows},
-            window_end_ms=6 * interval_ms,
-        )
+        frame = result["timeframes"][timeframe]
 
-        self.assertEqual(
-            sweep["timeframes"][timeframe]["liquidity_sweep"],
-            "high",
-        )
-        self.assertEqual(fvg["timeframes"][timeframe]["fvg"]["status"], "bullish")
+        self.assertEqual(frame["direction"], "bullish")
+        self.assertEqual({
+            "timeframe",
+            "interval_ms",
+            "closed_candles",
+            "excluded_unclosed_candles",
+            "invalid_rows",
+            "direction",
+            "vote",
+            "structure",
+            "data_status",
+            "last_closed_end_ms",
+            "last_close",
+            "atr",
+            "reference_high",
+            "reference_low",
+            "identity_inference",
+        }, set(frame))
 
     def test_insufficient_history_degrades_explicitly_and_cannot_vote(self) -> None:
         timeframe = "5m"

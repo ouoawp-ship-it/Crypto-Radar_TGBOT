@@ -13,8 +13,10 @@ from radars.launch_warning.chart_font_zh import (
 
 
 FORMAL_CHART_TEXT = (
-    "开收量结构转空多顺势高估中间价低估已收线"
+    "开高低收成交量已收线"
     "币安永续合约小时真实数据"
+    "最近根参考上方插针下方整理关键位"
+    "突破确认假失效形态轮事件分钟触发"
 )
 EXISTING_RUNTIME_COPY = "仅使用已收线K线未分类"
 NUMERIC_CHART_TEXT = "开 0.05062 +1.23% 20:00"

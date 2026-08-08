@@ -17,6 +17,7 @@ OPERATOR_PROMPT = """
 1. 必须原样复制 direction 和 stage，不得改变方向或阶段。
 2. 不得重新计分，不得改写规则分、入场观察区、失效位、目标位或收益风险比。
 3. 不得补造缺失数据，不得猜测庄家、机构或未审核的现实身份。
+若 data_complete=false 或 completeness 显示缺项，只能解释已有事实和缺口，不得确认多空方向或生成执行计划。
 4. 必须同时说明支持证据、反向证据、当前风险、需要等待的确认和限制。
 5. 发现分只衡量异动强弱，方向证据分只比较多空证据；两者都不是涨跌概率，也不能判断是否适合追价。禁止使用“确定会涨”、“确定会跌”、“立即买入”、“立即卖出”等确定性措辞。
 6. 你只负责白话解释，不得输出开仓、加仓、满仓或建议买卖等交易指令，也不得输出任何数字、价位或百分比。
@@ -200,20 +201,16 @@ def _multi_timeframe_context(value: object) -> dict[str, Any]:
         if not frame:
             continue
         structure = _mapping(frame.get("structure"))
-        fvg = _mapping(frame.get("fvg"))
         safe_frames[timeframe] = {
             **_pick(
                 frame,
                 (
                     "data_status",
                     "direction",
-                    "structure_event",
-                    "liquidity_sweep",
                     "last_closed_end_ms",
                 ),
             ),
             "structure": _pick(structure, ("high", "low", "bias", "source")),
-            "fvg": _pick(fvg, ("status", "zone_low", "zone_high")),
         }
     safe_groups = {
         key: _pick(
@@ -261,36 +258,6 @@ def _values_from(
     return result
 
 
-def _smc_filter_context(source: Mapping[str, Any]) -> dict[str, Any]:
-    """Return only the reviewed, bounded SMC confirmation summary."""
-
-    smc_filter = _first_mapping(source, "smc_filter")
-    if not smc_filter:
-        return {}
-    return {
-        **_pick(
-            smc_filter,
-            (
-                "version",
-                "status",
-                "signal_direction",
-                "one_hour_structure",
-                "four_hour_structure",
-                "data_complete",
-                "blocks_publication",
-                "ai_eligible",
-                "score_adjustment",
-                "semantics",
-            ),
-        ),
-        "opposing_zone_timeframes": _safe_list(
-            smc_filter.get("opposing_zone_timeframes"),
-            limit=2,
-        ),
-        "reasons": _safe_list(smc_filter.get("reasons"), limit=6),
-    }
-
-
 def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
     """Build a bounded, content-only context without credentials or raw series."""
 
@@ -304,7 +271,7 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
     ) or source
     market = _first_mapping(source, "market_facts", "launch_market_facts")
     multi_timeframe = _first_mapping(source, "multi_timeframe", "timeframe_analysis")
-    structure = _first_mapping(source, "structure", "price_action", "smc")
+    structure = _first_mapping(source, "structure", "price_action")
     plan = _first_mapping(source, "plan", "trade_plan", "execution_plan")
     phase = _first_mapping(source, "launch_phase")
     completeness = _first_mapping(source, "completeness", "data_completeness")
@@ -353,7 +320,6 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
                 "evidence_score",
             ),
         ),
-        "smc_filter": _smc_filter_context(source),
         "multi_timeframe": _multi_timeframe_context(multi_timeframe),
         "price_open_interest": _values_from(
             lookups,
@@ -395,16 +361,12 @@ def build_launch_ai_context(source: Mapping[str, Any]) -> dict[str, Any]:
                     "status",
                     "direction",
                     "data_status",
-                    "structure_event",
-                    "liquidity_sweep",
-                    "premium_discount",
+                    "bias",
+                    "reference_high",
+                    "reference_low",
                     "retest_status",
                 ),
             ),
-            "supporting_evidence": _safe_list(
-                structure.get("supporting_evidence")
-            ),
-            "counter_evidence": _safe_list(structure.get("counter_evidence")),
         },
         "plan": {
             **_pick(

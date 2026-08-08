@@ -70,9 +70,7 @@ def source(**rule_overrides: object) -> dict[str, object]:
                 "1h": {
                     "data_status": "ready",
                     "direction": "bullish",
-                    "structure_event": "BOS_up",
                     "structure": {"high": "HH", "low": "HL", "bias": "bullish"},
-                    "fvg": {"status": "bullish", "zone_low": 100, "zone_high": 101},
                     "raw_candles": [[1, 2, 3]],
                 }
             },
@@ -93,27 +91,14 @@ def source(**rule_overrides: object) -> dict[str, object]:
             },
         },
         "structure": {
+            "status": "ready",
             "direction": "bullish",
-            "structure_event": "BOS_up",
-            "liquidity_sweep": "low",
-            "supporting_evidence": ["breakout_retest"],
+            "data_status": "ready",
+            "bias": "bullish",
+            "reference_high": 105,
+            "reference_low": 98,
+            "retest_status": "waiting",
             "provider_payload": "must-not-leak",
-        },
-        "smc_filter": {
-            "version": 1,
-            "status": "supportive",
-            "signal_direction": "bullish",
-            "one_hour_structure": "bullish",
-            "four_hour_structure": "bullish",
-            "data_complete": True,
-            "blocks_publication": False,
-            "ai_eligible": True,
-            "score_adjustment": 0,
-            "semantics": "higher_timeframe_filter_not_score_or_probability",
-            "opposing_zone_timeframes": [],
-            "reasons": ["1h_structure_aligned", "4h_structure_aligned"],
-            "provider_error": "must-not-leak",
-            "raw_klines": [["must-not-leak"]],
         },
         "plan": {
             "status": "waiting_retest",
@@ -204,6 +189,8 @@ class LaunchAiInterpreterTests(unittest.TestCase):
         self.assertIn("方向证据分", OPERATOR_PROMPT)
         self.assertIn("持仓量下降", OPERATOR_PROMPT)
         self.assertIn("CVD 背离", OPERATOR_PROMPT)
+        self.assertIn("data_complete=false", OPERATOR_PROMPT)
+        self.assertIn("不得确认多空方向或生成执行计划", OPERATOR_PROMPT)
 
     def test_context_is_bounded_and_whitelisted(self) -> None:
         context = build_launch_ai_context(source())
@@ -215,7 +202,6 @@ class LaunchAiInterpreterTests(unittest.TestCase):
                 "discovery_score",
                 "rule_result",
                 "launch_phase",
-                "smc_filter",
                 "multi_timeframe",
                 "price_open_interest",
                 "active_flow",
@@ -234,10 +220,25 @@ class LaunchAiInterpreterTests(unittest.TestCase):
         self.assertNotIn("provider_error", encoded)
         self.assertNotIn("secret_group", encoded)
         self.assertEqual(context["plan"]["targets"], [106, 110])
-        self.assertEqual(context["smc_filter"]["status"], "supportive")
         self.assertEqual(
-            context["smc_filter"]["four_hour_structure"],
-            "bullish",
+            set(context["multi_timeframe"]["timeframes"]["1h"]),
+            {"data_status", "direction", "structure"},
+        )
+        self.assertEqual(
+            context["multi_timeframe"]["timeframes"]["1h"]["structure"],
+            {"high": "HH", "low": "HL", "bias": "bullish"},
+        )
+        self.assertEqual(
+            context["structure"],
+            {
+                "status": "ready",
+                "direction": "bullish",
+                "data_status": "ready",
+                "bias": "bullish",
+                "reference_high": 105,
+                "reference_low": 98,
+                "retest_status": "waiting",
+            },
         )
 
     def test_disabled_or_unconfigured_returns_not_requested_without_network(self) -> None:
@@ -319,6 +320,45 @@ class LaunchAiInterpreterTests(unittest.TestCase):
                 self.assertEqual(result["direction"], "bullish")
                 self.assertEqual(result["stage"], "等待回踩")
                 self.assertEqual(result["summary"], "")
+
+    def test_incomplete_context_cannot_be_promoted_or_gain_execution_plan(self) -> None:
+        incomplete = source(
+            status="冲突等待",
+            direction="none",
+            stage="数据不足",
+            data_complete=False,
+            missing_fields=["position_context"],
+        )
+        context = build_launch_ai_context(incomplete)
+
+        promoted = client(
+            FakeSession(
+                successful_response(
+                    available_output(direction="bullish", stage="数据不足")
+                )
+            )
+        ).interpret(incomplete, enabled=True)
+        with_plan = client(
+            FakeSession(
+                successful_response(
+                    available_output(
+                        direction="none",
+                        stage="数据不足",
+                        execution_plan="wait",
+                    )
+                )
+            )
+        ).interpret(incomplete, enabled=True)
+
+        self.assertFalse(context["completeness"]["rule_data_complete"])
+        self.assertEqual(
+            context["completeness"]["rule_missing_fields"],
+            ["position_context"],
+        )
+        self.assertEqual(promoted["status"], "ai_rule_conflict")
+        self.assertEqual(promoted["direction"], "none")
+        self.assertEqual(promoted["stage"], "数据不足")
+        self.assertEqual(with_plan["status"], "invalid_ai_output")
 
     def test_policy_rejects_trade_instructions_and_deterministic_claims(self) -> None:
         forbidden = (

@@ -121,11 +121,15 @@ def launch_ai_on_demand_attachment(
     except (TypeError, ValueError):
         return None, None
     rule_result = snapshot.get("rule_result")
+    rule_stage = (
+        rule_result.get("stage") or rule_result.get("status")
+        if isinstance(rule_result, Mapping)
+        else ""
+    )
     if (
         not isinstance(rule_result, Mapping)
         or not str(rule_result.get("direction") or "").strip()
-        or not str(rule_result.get("stage") or "").strip()
-        or rule_result.get("data_complete") is not True
+        or not str(rule_stage or "").strip()
     ):
         return None, None
 

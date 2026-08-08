@@ -31,7 +31,6 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
             "binance_square_heat_enable",
             "announcement_enrichment_enable",
             "flow_model_comparison_enable",
-            "launch_smc_v4_enable",
             "accumulation_quality_v2_enable",
             "tg_auto_create_topics",
             "tg_topic_intro_enable",
@@ -49,7 +48,6 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
         self.assertNotIn("enrichment_enable", status["announcement_risk"])
         self.assertTrue(status["announcement_risk"]["standalone_push"])
         self.assertTrue(status["announcement_risk"]["launch_supporting_evidence"])
-        self.assertNotIn("smc_v4_enable", status["launch"])
 
     def test_custom_data_directory_contains_every_default_runtime_path(self) -> None:
         with TemporaryDirectory() as tmp:
