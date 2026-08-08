@@ -9,7 +9,8 @@ P2 为 `altcoin_contract_anomaly` 增加动态候选清单消费和多因子实�
 - 不注册主 BOT 调度，不修改 `paopao-radar.service` 或其他 systemd 单元。
 - 不启用 CoinGlass；全市场 OI 字段继续保持与 Binance 单交易所 OI 分离。
 - 只消费已经通过 P1 校验并持久化的候选 Manifest；P2 命令本身不请求 CMC，也不要求 CMC Key。在线刷新 Manifest 应先独立执行 P1 扫描。
-- 复用项目现有 Binance 实时连接管理能力；单个进程中仍只有一个 `WebSocketApp`、一套连接生命周期和一份 `!forceOrder@arr`。
+- 复用项目现有 Binance 实时连接管理能力；单个 P2 进程中仍只有一个 `WebSocketApp`、一套连接生命周期和一份 `!forceOrder@arr`。
+- P2 controller 只能由本页的受限命令在全部配置、路径和 Manifest 剩余寿命检查通过后显式注入。普通 `market-stream` 即使两个开关均为 `true` 也始终保持 legacy 采集，不构造 P2 controller，不写 P2 状态或事件。
 - 不接受永久运行参数。每次启动都必须指定 30 到 3600 秒的运行时长。
 - `--send`、`--confirm-real-send`、`--cache-only` 和 `--preview-telegram` 均不能与 P2 模式同时使用。
 
@@ -37,6 +38,8 @@ ALTCOIN_CONTRACT_ANOMALY_REALTIME_EVENT_FILE=altcoin_contract_anomaly_p2_events.
 
 相对路径统一解析到项目数据目录，不能把两个文件配置成同一路径。状态文件是原子更新的 JSON；事件文件是只追加的 JSONL，每行一个结构化事件。
 
+P2.1 将观察状态 Schema 升级为 v2、事件规则升级为 `altcoin_contract_anomaly.p2.v2`。旧 v1 临时观察游标和 OI 样本不会与新口径混用；已落盘事件 ID 仍从 JSONL 恢复，用于幂等抑制。一个闭合窗口的多条事件全部先可靠写入，再原子推进窗口游标，进程在中途退出后可以补写剩余事件而不重复已写事件。
+
 ## 人工 Dry-run
 
 运行 15 分钟并在标准输出获得一份 JSON：
@@ -55,6 +58,8 @@ python main.py altcoin-anomaly \
 ```
 
 P2 的标准输出只保留最终 JSON；诊断信息进入标准错误。JSON 禁止 NaN 和无穷值，不包含 Token、Chat ID、话题 ID、API Key、私有地址或原始供应商响应。
+
+`--output` 会在网络和状态初始化前与所有已配置的 JSON、JSONL、SQLite 运行路径做规范化冲突检查，不能覆盖 P1 Manifest、CMC 缓存、人工映射表、P2 状态/事件或其他共享运行数据。
 
 ## 停止和退出码
 
@@ -75,22 +80,28 @@ P2 的标准输出只保留最终 JSON；诊断信息进入标准错误。JSON �
 - `MANIFEST_POLL_SEC=5`、`MANIFEST_MAX_AGE_SEC=1200`；
 - `SUBSCRIPTION_BATCH_SIZE=50`、`SUBSCRIPTION_MIN_INTERVAL_SEC=1.0`；
 - `SUBSCRIPTION_ACK_TIMEOUT_SEC=10`、`MAX_STREAMS=300`；
-- `REALTIME_DATA_MAX_AGE_SEC=120`。
+- `REALTIME_DATA_MAX_AGE_SEC=120`、`FUNDING_MAX_GAP_SEC=15`。
 
 实时 OI：
 
-- `OI_REFRESH_SEC=300`、`REALTIME_OI_MAX_AGE_SEC=600`；
+- `OI_REFRESH_SEC=300`（P2.1 固定按新闭合 5 分钟边界刷新，不接受其他值）、`REALTIME_OI_MAX_AGE_SEC=600`；
 - `REALTIME_OI_WORKERS=4`、`REALTIME_OI_REQUEST_BUDGET=50`。
+
+OI 只针对当前候选，并在每个新的闭合 5 分钟边界请求一次；同一边界不重复请求。变化起止点必须精确对应当前边界并同属当前候选订阅代次。请求预算是整个 bounded session 的累计预算，不会随轮次重置；最终 JSON 同时给出累计统计、刷新轮数和最后一轮统计。预算耗尽或 429/418 后旧 OI 不会冒充当前完整数据。
 
 特征窗口和数据完整度：
 
 - `FEATURE_1M_WINDOW_SEC=60`、`FEATURE_5M_WINDOW_SEC=300`；
-- `VOLUME_BASELINE_BUCKETS=10`、`VOLUME_MIN_SAMPLES=8`；
+- `VOLUME_BASELINE_BUCKETS=5`、`VOLUME_MIN_SAMPLES=4`；
 - `VOLUME_MIN_COVERAGE=0.8`。
 
-这组三项是为 12 到 15 分钟冷启动 Smoke 设置的影子初值：最多检查前 10 个闭合 1 分钟桶，其中至少 8 个有效桶即可形成基线，避免短时验收因基线永远不完整而出现假 0。它尚未经历史回测或生产影子数据校准，P2 验收结果只能用于检查数据链路，不能据此认定阈值已经适合生产。
+这组三项是为 12 到 15 分钟冷启动 Smoke 设置的影子初值：检查前 5 个闭合 1 分钟桶，其中至少 4 个真实有效桶才能形成基线；缺失分钟仍不会补 0。该口径可在候选订阅新代次建立后，用第一个完整 5 分钟窗口留下的真实闭合桶形成下一轮基线，避免短时验收因基线永远不完整而出现假 0。它尚未经历史回测或生产影子数据校准，P2 验收结果只能用于检查数据链路，不能据此认定阈值已经适合生产。
 
 现有共享实时库固定写入 60 秒桶，因此 P2 当前只接受 `60/300` 这一组窗口值；保留集中配置键是为了明确数据契约，不能把它们改成共享存储尚不支持的任意周期。
+
+每个候选在订阅 ACK 后建立独立 subscription epoch。remove→readd、连接重建都会创建新代次；闭合成交桶、markPrice、资金费率窗口和 OI 两点都必须属于当前代次。其他币种的新行情只能维持连接级健康，不能替当前候选通过数据新鲜度门禁。
+
+资金费率变化采用闭合 5 分钟净变化，保存窗口起止费率和两个 Binance 上游时间点，不再使用相邻 markPrice tick 的瞬时差。窗口内变化后出现多个同值 tick 不会抹掉变化；下一完整无变化窗口会回到 0。端点缺失、跨订阅代次或 tick 间隔超过 `FUNDING_MAX_GAP_SEC` 时标记不完整并禁止事件。
 
 实时确认阈值：
 

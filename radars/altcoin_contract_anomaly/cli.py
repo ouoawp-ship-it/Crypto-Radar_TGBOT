@@ -9,7 +9,11 @@ from config import Settings
 from shared.atomic_json import atomic_write_text
 from shared.cmc_data import CmcClientError
 
-from .configuration import AltcoinAnomalyConfig, AltcoinAnomalyConfigError
+from .configuration import (
+    AltcoinAnomalyConfig,
+    AltcoinAnomalyConfigError,
+    validate_output_path,
+)
 from .formatter import render_console, render_json, render_telegram_preview
 from .mapping import MappingConfigError
 from .radar import AltcoinAnomalyDataUnavailable, load_cached_pool, scan_candidate_pool
@@ -73,6 +77,7 @@ def _emit_realtime_result(args: Any, result: dict[str, Any]) -> None:
 def run_altcoin_anomaly_cli(args: Any, *, settings: Settings) -> int:
     cache_only = bool(getattr(args, "cache_only", False))
     try:
+        validate_output_path(settings, getattr(args, "output", None))
         realtime_duration_sec = _realtime_duration(args)
         if realtime_duration_sec is not None:
             realtime_config = AltcoinAnomalyConfig.from_settings(

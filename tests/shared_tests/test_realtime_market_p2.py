@@ -19,6 +19,7 @@ from shared.realtime_market import (
     build_binance_subscription_plan,
     parse_binance_mark_price_update,
     run_realtime_market_session,
+    run_realtime_market_service,
 )
 
 
@@ -134,6 +135,27 @@ class BinanceSubscriptionPlanTests(unittest.TestCase):
         self.assertTrue(first.capacity_degraded)
         self.assertTrue(first.candidate_capacity_degraded)
 
+    def test_omitted_candidate_still_competes_in_base_priority_order(self) -> None:
+        plan = build_binance_subscription_plan(
+            ["ZZZUSDT", "LOWUSDT"],
+            ["AAAUSDT", "ZZZUSDT"],
+            max_streams=4,
+        )
+
+        self.assertEqual(plan.candidate_symbols, ("AAAUSDT",))
+        self.assertEqual(plan.omitted_candidate_symbols, ("ZZZUSDT",))
+        self.assertEqual(plan.base_symbols, ("ZZZUSDT",))
+        self.assertEqual(plan.omitted_base_symbols, ("LOWUSDT",))
+        self.assertEqual(
+            plan.subscriptions,
+            (
+                "aaausdt@aggTrade",
+                "zzzusdt@aggTrade",
+                "aaausdt@markPrice",
+                "!forceOrder@arr",
+            ),
+        )
+
     def test_base_priority_uses_input_volume_order_and_streams_are_deduplicated(self) -> None:
         plan = build_binance_subscription_plan(
             ["HIGHUSDT", "LOWUSDT", "HIGHUSDT", "BTCUSD", ""],
@@ -238,31 +260,37 @@ class MarkPriceUpdateTests(unittest.TestCase):
         self.assertEqual(book.stats()["duplicate_updates"], 1)
         self.assertEqual(book.stats()["out_of_order_updates"], 1)
 
-    def test_funding_change_requires_a_new_upstream_time_and_changed_rate(self) -> None:
+    def test_funding_change_is_derived_from_a_closed_window_not_the_latest_tick(self) -> None:
         book = MarkPriceBook()
         first = parse_binance_mark_price_update(self.payload())
-        same_rate = parse_binance_mark_price_update(self.payload(
-            price="50001",
-            event_time=1_700_000_001_000,
-        ))
         changed_rate = parse_binance_mark_price_update(self.payload(
+            price="50001",
+            funding="-0.00025",
+            event_time=1_700_000_120_000,
+        ))
+        trailing_equal_rate = parse_binance_mark_price_update(self.payload(
             price="50002",
             funding="-0.00025",
-            event_time=1_700_000_002_000,
+            event_time=1_700_000_300_000,
         ))
 
-        self.assertTrue(book.update(first))
-        self.assertIsNone(book.funding_rate_change("BTCUSDT"))
-        self.assertTrue(book.update(same_rate))
-        self.assertEqual(book.funding_rate_change("BTCUSDT"), 0.0)
-        self.assertFalse(book.snapshot("BTCUSDT")["funding_rate_changed"])
-        self.assertTrue(book.update(changed_rate))
-        self.assertAlmostEqual(book.funding_rate_change("BTCUSDT"), -0.00015)
-        self.assertAlmostEqual(book.snapshot("BTCUSDT")["funding_rate_change"], -0.00015)
-        self.assertTrue(book.snapshot("BTCUSDT")["funding_rate_changed"])
+        self.assertTrue(book.update(first, subscription_epoch="epoch-1"))
+        self.assertTrue(book.update(changed_rate, subscription_epoch="epoch-1"))
+        self.assertTrue(book.update(trailing_equal_rate, subscription_epoch="epoch-1"))
+        row = book.snapshot_window(
+            "BTCUSDT",
+            window_end_ms=1_700_000_300_000,
+            subscription_epoch="epoch-1",
+            epoch_started_ms=1_700_000_000_000,
+            max_gap_ms=180_000,
+        )
+
+        self.assertEqual(row["funding_window_quality"], "complete")
+        self.assertAlmostEqual(row["funding_rate_change_5m"], -0.00015)
+        self.assertTrue(row["funding_rate_changed_5m"])
         self.assertEqual(
-            book.snapshot("BTCUSDT")["funding_previous_event_time_ms"],
-            same_rate.event_time_ms,
+            row["funding_window_start_event_time_ms"],
+            first.event_time_ms,
         )
 
     def test_book_revalidates_manually_constructed_updates(self) -> None:
@@ -457,6 +485,73 @@ class BinanceRealtimeMarketP2ServiceTests(unittest.TestCase):
         self.assertEqual(payload["method"], "SUBSCRIBE")
         self.assertEqual(payload["params"], ["btcusdt@aggTrade", "!forceOrder@arr"])
         self.assertNotIn("altcoin_contract_anomaly_realtime_enabled", service.stats())
+
+    def test_legacy_service_never_auto_enables_p2_when_both_gates_are_true(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = p2_settings(tmp)
+            with patch(
+                "radars.altcoin_contract_anomaly.realtime.AltcoinRealtimeController"
+            ) as controller_class:
+                service = BinanceRealtimeMarketService(settings)
+
+            ws = Mock()
+            service._on_open(ws, ["btcusdt@aggTrade", "!forceOrder@arr"])
+            payload = json.loads(ws.send.call_args.args[0])
+
+        controller_class.assert_not_called()
+        self.assertFalse(service._p2_enabled)
+        self.assertIsNone(service._p2_controller)
+        self.assertEqual(payload["params"], ["btcusdt@aggTrade", "!forceOrder@arr"])
+        self.assertNotIn("altcoin_contract_anomaly_realtime_enabled", service.stats())
+
+    def test_unbounded_market_stream_runner_stays_legacy_with_both_gates_true(self) -> None:
+        observed_services: list[BinanceRealtimeMarketService] = []
+
+        def stop_immediately(
+            service: BinanceRealtimeMarketService,
+            stop: threading.Event,
+        ) -> None:
+            observed_services.append(service)
+            stop.set()
+
+        with TemporaryDirectory() as tmp:
+            settings = p2_settings(tmp)
+            with patch.object(
+                BinanceRealtimeMarketService,
+                "run",
+                autospec=True,
+                side_effect=stop_immediately,
+            ), patch(
+                "radars.altcoin_contract_anomaly.realtime.AltcoinRealtimeController"
+            ) as controller_class:
+                code = run_realtime_market_service(settings, duration_sec=0)
+
+        self.assertEqual(code, 0)
+        controller_class.assert_not_called()
+        self.assertEqual(len(observed_services), 1)
+        self.assertFalse(observed_services[0]._p2_enabled)
+        self.assertIsNone(observed_services[0]._p2_controller)
+
+    def test_explicit_controller_requires_both_gates_before_state_initialization(self) -> None:
+        for disabled_gate in (
+            "altcoin_contract_anomaly_enable",
+            "altcoin_contract_anomaly_realtime_enable",
+        ):
+            with self.subTest(disabled_gate=disabled_gate), TemporaryDirectory() as tmp:
+                settings = p2_settings(tmp)
+                setattr(settings, disabled_gate, False)
+                controller = FakeRealtimeController()
+                websocket_factory = Mock()
+                with patch("shared.realtime_market.RealtimeFeatureStore") as store_type:
+                    with self.assertRaisesRegex(ValueError, "explicit P2 controller"):
+                        BinanceRealtimeMarketService(
+                            settings,
+                            realtime_controller=controller,
+                            websocket_app_factory=websocket_factory,
+                        )
+
+                store_type.assert_not_called()
+                websocket_factory.assert_not_called()
 
     def test_p2_open_uses_ack_driven_plan_on_the_existing_socket(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -673,7 +768,9 @@ class BinanceRealtimeMarketP2ServiceTests(unittest.TestCase):
                 {},
             ))
             stop = threading.Event()
-            timer = threading.Timer(2.4, stop.set)
+            # Allow three one-second service ticks so slower CI workers still
+            # observe both halves of the unsubscribe/subscribe delta.
+            timer = threading.Timer(3.4, stop.set)
             timer.start()
             try:
                 service.run(stop)
@@ -778,6 +875,39 @@ class BinanceRealtimeMarketP2ServiceTests(unittest.TestCase):
         self.assertEqual(result["stats"]["agg_trade_messages"], 3)
         self.assertEqual(result["events"][0]["event_id"], "event-1")
         self.assertGreaterEqual(result["duration_sec_actual"], 0.01)
+
+    def test_bounded_session_reports_live_end_health_before_intentional_shutdown(self) -> None:
+        class CoverageService:
+            def __init__(self) -> None:
+                self.stop: threading.Event | None = None
+
+            def run(self, stop: threading.Event) -> None:
+                self.stop = stop
+                stop.wait()
+
+            def stats(self) -> dict[str, object]:
+                return {
+                    "candidate_coverage_complete": bool(
+                        self.stop is not None and not self.stop.is_set()
+                    ),
+                    "feature_evaluations": int(
+                        self.stop is not None and self.stop.is_set()
+                    ),
+                }
+
+            @staticmethod
+            def recent_events() -> list[dict[str, object]]:
+                return []
+
+        result = run_realtime_market_session(
+            SimpleNamespace(),
+            duration_sec=0.02,
+            service=CoverageService(),
+        )
+
+        self.assertTrue(result["stats"]["candidate_coverage_complete"])
+        self.assertTrue(result["stats"]["candidate_coverage_complete_at_stop"])
+        self.assertEqual(result["stats"]["feature_evaluations"], 1)
 
     def test_bounded_session_sanitizes_worker_failure_and_rejects_bad_duration(self) -> None:
         class FailingService:

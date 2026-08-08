@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import copy
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +14,7 @@ from config import Settings
 from shared.binance_data import BinanceDataSource
 from shared.market_cockpit import MarketSnapshotStore
 from shared.realtime_market import (
+    BinanceRealtimeMarketService,
     MarkPriceBook,
     MarkPriceUpdate,
     RealtimeFeatureStore,
@@ -27,8 +29,8 @@ from .state import CandidatePoolStore, CandidateStateError
 from .realtime_state import RealtimeObservationState, deterministic_event_id
 
 
-P2_SCHEMA_VERSION = 1
-P2_RULES_VERSION = "altcoin_contract_anomaly.p2.v1"
+P2_SCHEMA_VERSION = 2
+P2_RULES_VERSION = "altcoin_contract_anomaly.p2.v2"
 P2_CLOCK_SKEW_TOLERANCE_SEC = 5.0
 EVENT_NAMES_CN = {
     "short_fuel_building": "空头燃料堆积",
@@ -314,12 +316,8 @@ class CandidateManifestConsumer:
         }
 
 
-class CandidateMarkPriceBook:
-    """Fallback mark/funding book used until or unless shared injects one."""
-
-    def __init__(self) -> None:
-        self._rows: dict[str, dict[str, Any]] = {}
-        self._lock = threading.RLock()
+class CandidateMarkPriceBook(MarkPriceBook):
+    """Compatibility parser around the shared closed-window mark book."""
 
     @staticmethod
     def _normalize(payload: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -345,6 +343,7 @@ class CandidateMarkPriceBook:
             or mark <= 0
             or funding is None
             or event_ts is None
+            or next_ts is None
         ):
             return None
         return {
@@ -352,38 +351,30 @@ class CandidateMarkPriceBook:
             "mark_price": mark,
             "funding_rate": funding,
             "event_time_ms": int(event_ts * 1000),
-            "next_funding_time_ms": int(next_ts * 1000) if next_ts is not None else None,
+            "next_funding_time_ms": int(next_ts * 1000),
             "source": str(source.get("source") or "binance_mark_price_stream"),
         }
 
-    def apply(self, payload: Mapping[str, Any]) -> bool:
+    def apply(
+        self,
+        payload: Mapping[str, Any] | MarkPriceUpdate,
+        *,
+        subscription_epoch: str = "",
+    ) -> bool:
+        if isinstance(payload, MarkPriceUpdate):
+            return self.update(payload, subscription_epoch=subscription_epoch)
         row = self._normalize(payload)
         if row is None:
             return False
-        symbol = str(row["symbol"])
-        with self._lock:
-            current = self._rows.get(symbol)
-            if current is not None:
-                current_ms = int(current["event_time_ms"])
-                incoming_ms = int(row["event_time_ms"])
-                if incoming_ms < current_ms:
-                    return False
-                if incoming_ms == current_ms:
-                    return row == current and False
-                row["previous_funding_rate"] = current.get("funding_rate")
-                row["previous_event_time_ms"] = current.get("event_time_ms")
-                row["funding_rate_change"] = float(row["funding_rate"]) - float(current["funding_rate"])
-            else:
-                row["previous_funding_rate"] = None
-                row["previous_event_time_ms"] = None
-                row["funding_rate_change"] = None
-            self._rows[symbol] = row
-            return True
-
-    def snapshot(self, symbol: str) -> dict[str, Any] | None:
-        with self._lock:
-            row = self._rows.get(str(symbol).upper())
-            return dict(row) if row is not None else None
+        update = MarkPriceUpdate(
+            symbol=str(row["symbol"]),
+            mark_price=float(row["mark_price"]),
+            funding_rate=float(row["funding_rate"]),
+            next_funding_time_ms=int(row["next_funding_time_ms"]),
+            event_time_ms=int(row["event_time_ms"]),
+            source=str(row.get("source") or "binance_ws_mark_price"),
+        )
+        return self.update(update, subscription_epoch=subscription_epoch)
 
 
 class ClosedRealtimeFeatureBuilder:
@@ -422,7 +413,13 @@ class ClosedRealtimeFeatureBuilder:
             and _number(row.get("cvd_usd")) is not None
         )
 
-    def build_many(self, symbols: Iterable[str], *, now_ts: float) -> dict[str, dict[str, Any]]:
+    def build_many(
+        self,
+        symbols: Iterable[str],
+        *,
+        now_ts: float,
+        candidate_epochs: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         one_sec = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_feature_1m_window_sec",
@@ -476,12 +473,19 @@ class ClosedRealtimeFeatureBuilder:
         output: dict[str, dict[str, Any]] = {}
         for symbol in sorted(wanted):
             by_start = grouped.get(symbol) or {}
-            starts = sorted(by_start)
+            epoch = dict((candidate_epochs or {}).get(symbol) or {})
+            cutoff_ms = int(epoch.get("eligible_1m_bucket_start_ms") or 0)
+            starts = sorted(
+                start for start in by_start
+                if not cutoff_ms or start * 1_000 >= cutoff_ms
+            )
             missing: list[str] = []
             stale: list[str] = []
             if not starts:
                 output[symbol] = {
                     "symbol": symbol,
+                    "subscription_epoch": str(epoch.get("epoch_id") or ""),
+                    "candidate_epoch_activated_at_ms": epoch.get("activated_at_ms"),
                     "data_quality": "insufficient_history",
                     "missing_fields": ["closed_1m", "closed_5m", "volume_baseline"],
                     "stale_fields": [],
@@ -496,7 +500,12 @@ class ClosedRealtimeFeatureBuilder:
                 missing.append("closed_1m")
 
             five_starts = [latest_start - one_sec * index for index in reversed(range(expected_five))]
-            five_rows = [by_start.get(start) for start in five_starts]
+            five_rows = [
+                by_start.get(start)
+                if not cutoff_ms or start * 1_000 >= cutoff_ms
+                else None
+                for start in five_starts
+            ]
             if (
                 expected_five != 5
                 or any(row is None or not self._valid_trade_row(row) for row in five_rows)
@@ -509,6 +518,8 @@ class ClosedRealtimeFeatureBuilder:
             baseline_starts = [latest_start - one_sec * index for index in range(baseline_count, 0, -1)]
             baseline_volumes = []
             for start in baseline_starts:
+                if cutoff_ms and start * 1_000 < cutoff_ms:
+                    continue
                 row = by_start.get(start)
                 if row is None or not self._valid_trade_row(row):
                     continue
@@ -558,6 +569,8 @@ class ClosedRealtimeFeatureBuilder:
                 missing.append("volume_baseline")
             output[symbol] = json_safe({
                 "symbol": symbol,
+                "subscription_epoch": str(epoch.get("epoch_id") or ""),
+                "candidate_epoch_activated_at_ms": epoch.get("activated_at_ms"),
                 "window_start": _iso(latest_start),
                 "window_end": _iso(latest_start + one_sec),
                 "price_change_1m": price_1m,
@@ -640,6 +653,13 @@ class CandidateOiSampler:
                 if isinstance(item, Mapping):
                     self._add_sample(normalized_symbol, item)
         self.last_refresh_at = 0.0
+        self._last_requested_boundary: dict[str, tuple[str, int]] = {}
+        self._rate_limit_latched = False
+        budget_limit = max(1, int(getattr(
+            settings,
+            "altcoin_contract_anomaly_realtime_oi_request_budget",
+            100,
+        ) or 100))
         self.last_stats: dict[str, Any] = {
             "candidate_count": 0,
             "requests": 0,
@@ -647,10 +667,13 @@ class CandidateOiSampler:
             "successes": 0,
             "failures": 0,
             "budget_used": 0,
-            "budget_limit": 0,
+            "budget_limit": budget_limit,
             "budget_exhausted": 0,
+            "rate_limit_blocked": 0,
             "http_429": 0,
             "http_418": 0,
+            "refresh_rounds": 0,
+            "last_round": {},
         }
 
     def _add_sample(self, symbol: str, sample: Mapping[str, Any]) -> None:
@@ -685,6 +708,7 @@ class CandidateOiSampler:
             "oi_value_usd": value,
             "source": source,
             "exact_5m": exact_5m,
+            "subscription_epoch": str(sample.get("subscription_epoch") or ""),
         }
         rows = self.samples.setdefault(symbol, [])
         rows = [row for row in rows if int(row.get("observed_at") or 0) != int(observed_at)]
@@ -692,7 +716,14 @@ class CandidateOiSampler:
         rows.sort(key=lambda row: int(row.get("observed_at") or 0))
         self.samples[symbol] = rows[-12:]
 
-    def _cached_from_market_store(self, symbol: str, *, now_ts: float, max_age: int) -> bool:
+    def _cached_from_market_store(
+        self,
+        symbol: str,
+        *,
+        now_ts: float,
+        max_age: int,
+        subscription_epoch: str = "",
+    ) -> bool:
         try:
             points = self.market_store.symbol_series(
                 symbol,
@@ -714,25 +745,38 @@ class CandidateOiSampler:
                 "oi_value_usd": point.get("oi_usd"),
                 "source": "+".join(sources),
                 "exact_5m": False,
+                "subscription_epoch": subscription_epoch,
             })
             hit = True
         return hit
 
-    def _exact_pair(self, symbol: str, *, now_ts: float, max_age: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def _exact_pair(
+        self,
+        symbol: str,
+        *,
+        target_boundary: int,
+        subscription_epoch: str = "",
+        eligible_boundary: int = 0,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         rows = [
             row for row in self.samples.get(symbol, [])
             if row.get("exact_5m")
-            and 0 <= now_ts - int(row.get("observed_at") or 0) <= max_age + 300
+            and int(row.get("observed_at") or 0) in {
+                int(target_boundary) - 300,
+                int(target_boundary),
+            }
+            and (
+                not subscription_epoch
+                or str(row.get("subscription_epoch") or "") == subscription_epoch
+            )
+            and int(row.get("observed_at") or 0) >= int(eligible_boundary or 0)
         ]
         rows.sort(key=lambda row: int(row.get("observed_at") or 0))
-        for index in range(len(rows) - 1, 0, -1):
-            previous, current = rows[index - 1], rows[index]
-            current_age = now_ts - int(current["observed_at"])
-            if (
-                0 <= current_age <= max_age
-                and int(current["observed_at"]) - int(previous["observed_at"]) == 300
-            ):
-                return previous, current
+        if len(rows) == 2 and (
+            int(rows[0]["observed_at"]) == int(target_boundary) - 300
+            and int(rows[1]["observed_at"]) == int(target_boundary)
+        ):
+            return rows[0], rows[1]
         return None
 
     def _make_source(self, budget: int) -> Any:
@@ -753,22 +797,75 @@ class CandidateOiSampler:
         elif hasattr(source, "http") and hasattr(source.http, "close"):
             source.http.close()
 
-    def _value(self, symbol: str, *, now_ts: float, max_age: int) -> dict[str, Any]:
-        pair = self._exact_pair(symbol, now_ts=now_ts, max_age=max_age)
+    def _value(
+        self,
+        symbol: str,
+        *,
+        now_ts: float,
+        max_age: int,
+        target_boundary: int | None = None,
+        subscription_epoch: str = "",
+        eligible_boundary: int = 0,
+    ) -> dict[str, Any]:
+        target_boundary = int(
+            target_boundary
+            if target_boundary is not None
+            else int(now_ts // 300) * 300
+        )
+        pair = self._exact_pair(
+            symbol,
+            target_boundary=target_boundary,
+            subscription_epoch=subscription_epoch,
+            eligible_boundary=eligible_boundary,
+        )
+        if pair is not None:
+            pair_age = now_ts - int(pair[1].get("observed_at") or 0)
+            if not -P2_CLOCK_SKEW_TOLERANCE_SEC <= pair_age <= max_age:
+                return json_safe({
+                    "symbol": symbol,
+                    "subscription_epoch": subscription_epoch,
+                    "target_boundary": _iso(target_boundary),
+                    "oi_value_usd": pair[1].get("oi_value_usd"),
+                    "oi_change_5m": None,
+                    "updated_at": _iso(pair[1].get("observed_at")),
+                    "data_age_sec": max(0.0, pair_age),
+                    "source": pair[1].get("source"),
+                    "change_source": None,
+                    "change_start_at": _iso(pair[0].get("observed_at")),
+                    "change_end_at": _iso(pair[1].get("observed_at")),
+                    "data_quality": "stale",
+                    "missing_fields": [],
+                    "stale_fields": ["oi_value_usd", "oi_change_5m"],
+                })
         rows = [
             row for row in self.samples.get(symbol, [])
             if 0 <= now_ts - int(row.get("observed_at") or 0) <= max_age
+            and int(row.get("observed_at") or 0) <= target_boundary
+            and (
+                not subscription_epoch
+                or str(row.get("subscription_epoch") or "") == subscription_epoch
+            )
         ]
-        current = max(rows, key=lambda row: int(row.get("observed_at") or 0)) if rows else None
+        current = pair[1] if pair else (
+            max(rows, key=lambda row: int(row.get("observed_at") or 0)) if rows else None
+        )
         if current is None:
             return {
                 "symbol": symbol,
+                "subscription_epoch": subscription_epoch,
+                "target_boundary": _iso(target_boundary),
                 "data_quality": "partial",
-                "missing_fields": ["oi_value_usd", "oi_change_5m"],
+                "missing_fields": [
+                    "oi_value_usd",
+                    "oi_change_5m",
+                    "oi_window_mismatch",
+                ],
             }
         change = _ratio(pair[1]["oi_value_usd"], pair[0]["oi_value_usd"]) if pair else None
         return json_safe({
             "symbol": symbol,
+            "subscription_epoch": subscription_epoch,
+            "target_boundary": _iso(target_boundary),
             "oi_value_usd": current["oi_value_usd"],
             "oi_change_5m": change,
             "updated_at": _iso(current["observed_at"]),
@@ -778,65 +875,132 @@ class CandidateOiSampler:
             "change_start_at": _iso(pair[0]["observed_at"]) if pair else None,
             "change_end_at": _iso(pair[1]["observed_at"]) if pair else None,
             "data_quality": "complete" if pair and change is not None else "partial",
-            "missing_fields": [] if pair and change is not None else ["oi_change_5m"],
+            "missing_fields": [] if pair and change is not None else ["oi_change_5m", "oi_window_mismatch"],
         })
 
-    def refresh(self, symbols: Iterable[str], *, now_ts: float) -> dict[str, dict[str, Any]]:
-        candidates = tuple(sorted({str(symbol).upper() for symbol in symbols if str(symbol).upper().endswith("USDT")}))
+    def refresh(
+        self,
+        symbols: Iterable[str],
+        *,
+        now_ts: float,
+        target_boundaries: Mapping[str, int] | None = None,
+        candidate_epochs: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        candidates = tuple(sorted({
+            str(symbol).upper()
+            for symbol in symbols
+            if str(symbol).upper().endswith("USDT")
+        }))
         self.samples = {symbol: self.samples.get(symbol, []) for symbol in candidates}
+        self._last_requested_boundary = {
+            symbol: value
+            for symbol, value in self._last_requested_boundary.items()
+            if symbol in candidates
+        }
         max_age = max(300, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_oi_max_age_sec",
             900,
         ) or 900))
-        refresh_sec = max(60, int(getattr(
-            self.settings,
-            "altcoin_contract_anomaly_oi_refresh_sec",
-            300,
-        ) or 300))
-        if self.last_refresh_at and now_ts - self.last_refresh_at < refresh_sec:
-            return {symbol: self._value(symbol, now_ts=now_ts, max_age=max_age) for symbol in candidates}
+        default_boundary = int(now_ts // 300) * 300
+        boundaries = {
+            symbol: int((target_boundaries or {}).get(symbol, default_boundary))
+            for symbol in candidates
+        }
+        epochs = {
+            symbol: dict((candidate_epochs or {}).get(symbol) or {})
+            for symbol in candidates
+        }
+        eligible_boundaries = {
+            symbol: int(
+                int(epochs[symbol].get("eligible_5m_boundary_ms") or 0) / 1_000
+            )
+            for symbol in candidates
+        }
+        self.last_stats["candidate_count"] = len(candidates)
+        due: list[str] = []
+        for symbol in candidates:
+            if boundaries[symbol] < eligible_boundaries[symbol]:
+                continue
+            epoch_id = str(epochs[symbol].get("epoch_id") or "")
+            request_key = (epoch_id, boundaries[symbol])
+            if self._last_requested_boundary.get(symbol) != request_key:
+                due.append(symbol)
+        if not due:
+            return {
+                symbol: self._value(
+                    symbol,
+                    now_ts=now_ts,
+                    max_age=max_age,
+                    target_boundary=boundaries[symbol],
+                    subscription_epoch=str(epochs[symbol].get("epoch_id") or ""),
+                    eligible_boundary=int(
+                        int(epochs[symbol].get("eligible_5m_boundary_ms") or 0)
+                        / 1_000
+                    ),
+                )
+                for symbol in candidates
+            }
 
         cache_hits = sum(
-            self._cached_from_market_store(symbol, now_ts=now_ts, max_age=max_age)
-            for symbol in candidates
+            self._cached_from_market_store(
+                symbol,
+                now_ts=now_ts,
+                max_age=max_age,
+                subscription_epoch=str(epochs[symbol].get("epoch_id") or ""),
+            )
+            for symbol in due
         )
-        pending_targets = [
-            symbol
-            for symbol in candidates
-            if self._exact_pair(symbol, now_ts=now_ts, max_age=max_age) is None
-        ]
-        budget = max(1, int(getattr(
-            self.settings,
-            "altcoin_contract_anomaly_realtime_oi_request_budget",
-            100,
-        ) or 100))
+        budget_limit = int(self.last_stats.get("budget_limit") or 0)
+        used_before = int(self.last_stats.get("budget_used") or 0)
+        remaining = max(0, budget_limit - used_before)
+        budget_exhausted = max(0, len(due) - remaining)
+        rate_limit_blocked = min(len(due), remaining) if self._rate_limit_latched else 0
+        requestable = [] if self._rate_limit_latched else due[:remaining]
         workers = max(1, min(16, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_oi_workers",
             4,
         ) or 4)))
-        targets = pending_targets[:budget]
-        budget_exhausted = max(0, len(pending_targets) - len(targets))
-        source = self._make_source(budget) if targets else None
+        source = self._make_source(len(requestable)) if requestable else None
         successes = 0
         failures = 0
         try:
             if source is not None:
                 def fetch(symbol: str) -> tuple[str, list[dict[str, Any]]]:
-                    rows = source.open_interest_hist(symbol, period="5m", limit=2)
+                    target = boundaries[symbol]
+                    try:
+                        rows = source.open_interest_hist(
+                            symbol,
+                            period="5m",
+                            limit=2,
+                            end_time=target * 1_000,
+                        )
+                    except TypeError:
+                        rows = source.open_interest_hist(symbol, period="5m", limit=2)
                     return symbol, rows if isinstance(rows, list) else []
 
-                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="altcoin-p2-oi") as executor:
-                    futures = {executor.submit(fetch, symbol): symbol for symbol in targets}
+                with ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix="altcoin-p2-oi",
+                ) as executor:
+                    futures = {
+                        executor.submit(fetch, symbol): symbol
+                        for symbol in requestable
+                    }
                     for future in as_completed(futures):
                         symbol = futures[future]
+                        target = boundaries[symbol]
+                        epoch_id = str(epochs[symbol].get("epoch_id") or "")
+                        eligible_boundary = int(
+                            int(epochs[symbol].get("eligible_5m_boundary_ms") or 0)
+                            / 1_000
+                        )
                         try:
                             _returned, rows = future.result()
                         except Exception:
                             rows = []
-                        accepted = 0
-                        closed_boundary = int(now_ts // 300) * 300
+                        accepted_boundaries: set[int] = set()
                         for row in rows:
                             if not isinstance(row, Mapping):
                                 continue
@@ -845,16 +1009,20 @@ class CandidateOiSampler:
                             if timestamp is None or value is None:
                                 continue
                             bucket = int(timestamp // 300) * 300
-                            if bucket > closed_boundary:
+                            if (
+                                bucket not in {target - 300, target}
+                                or bucket < eligible_boundary
+                            ):
                                 continue
                             self._add_sample(symbol, {
                                 "observed_at": bucket,
                                 "oi_value_usd": value,
                                 "source": "binance_open_interest_hist.sumOpenInterestValue",
                                 "exact_5m": True,
+                                "subscription_epoch": epoch_id,
                             })
-                            accepted += 1
-                        if accepted:
+                            accepted_boundaries.add(bucket)
+                        if target in accepted_boundaries:
                             successes += 1
                         else:
                             failures += 1
@@ -863,26 +1031,98 @@ class CandidateOiSampler:
                 self._close_source(source)
 
         warnings: list[str] = []
-        budget_snapshot: Mapping[str, Any] = {}
+        failure_reasons: dict[str, dict[str, int]] = {}
         if source is not None and hasattr(source, "quality"):
             quality = source.quality.snapshot()
             warnings = [str(value) for value in quality.get("warnings") or []]
-        if source is not None and hasattr(source, "budget"):
-            budget_snapshot = source.budget.snapshot().get("open_interest_hist", {})
-        self.last_stats = {
-            "candidate_count": len(candidates),
-            "requests": len(targets),
+            raw_reasons = quality.get("failure_reasons")
+            if isinstance(raw_reasons, Mapping):
+                failure_reasons = {
+                    str(key): {
+                        str(reason): int(count)
+                        for reason, count in dict(value).items()
+                        if isinstance(count, int) and not isinstance(count, bool)
+                    }
+                    for key, value in raw_reasons.items()
+                    if isinstance(value, Mapping)
+                }
+        if failure_reasons:
+            http_429 = sum(
+                count
+                for reasons in failure_reasons.values()
+                for reason, count in reasons.items()
+                if reason == "status=429"
+            )
+            http_418 = sum(
+                count
+                for reasons in failure_reasons.values()
+                for reason, count in reasons.items()
+                if reason == "status=418"
+            )
+        else:
+            http_429 = sum("429" in warning for warning in warnings)
+            http_418 = sum("418" in warning for warning in warnings)
+        if http_429 or http_418:
+            self._rate_limit_latched = True
+        for symbol in due:
+            self._last_requested_boundary[symbol] = (
+                str(epochs[symbol].get("epoch_id") or ""),
+                boundaries[symbol],
+            )
+        round_stats = {
+            "target_boundaries": {
+                symbol: boundaries[symbol] for symbol in due
+            },
+            "requests": len(requestable),
             "cache_hits": cache_hits,
             "successes": successes,
-            "failures": failures + budget_exhausted,
-            "budget_used": int(budget_snapshot.get("used") or len(targets)),
-            "budget_limit": int(budget_snapshot.get("limit") or budget),
+            "failures": failures + budget_exhausted + rate_limit_blocked,
             "budget_exhausted": budget_exhausted,
-            "http_429": sum("429" in warning for warning in warnings),
-            "http_418": sum("418" in warning for warning in warnings),
+            "rate_limit_blocked": rate_limit_blocked,
+            "http_429": http_429,
+            "http_418": http_418,
+        }
+        self.last_stats = {
+            "candidate_count": len(candidates),
+            "requests": int(self.last_stats.get("requests") or 0) + len(requestable),
+            "cache_hits": int(self.last_stats.get("cache_hits") or 0) + cache_hits,
+            "successes": int(self.last_stats.get("successes") or 0) + successes,
+            "failures": (
+                int(self.last_stats.get("failures") or 0)
+                + failures
+                + budget_exhausted
+                + rate_limit_blocked
+            ),
+            "budget_used": used_before + len(requestable),
+            "budget_limit": budget_limit,
+            "budget_exhausted": (
+                int(self.last_stats.get("budget_exhausted") or 0)
+                + budget_exhausted
+            ),
+            "rate_limit_blocked": (
+                int(self.last_stats.get("rate_limit_blocked") or 0)
+                + rate_limit_blocked
+            ),
+            "http_429": int(self.last_stats.get("http_429") or 0) + http_429,
+            "http_418": int(self.last_stats.get("http_418") or 0) + http_418,
+            "refresh_rounds": int(self.last_stats.get("refresh_rounds") or 0) + 1,
+            "last_round": round_stats,
         }
         self.last_refresh_at = now_ts
-        return {symbol: self._value(symbol, now_ts=now_ts, max_age=max_age) for symbol in candidates}
+        return {
+            symbol: self._value(
+                symbol,
+                now_ts=now_ts,
+                max_age=max_age,
+                target_boundary=boundaries[symbol],
+                subscription_epoch=str(epochs[symbol].get("epoch_id") or ""),
+                eligible_boundary=int(
+                    int(epochs[symbol].get("eligible_5m_boundary_ms") or 0)
+                    / 1_000
+                ),
+            )
+            for symbol in candidates
+        }
 
 
 class AltcoinRealtimeController:
@@ -937,6 +1177,11 @@ class AltcoinRealtimeController:
             "last_evaluation_candidate_count": 0,
             "last_evaluation_complete_count": 0,
             "last_evaluation_complete_ratio": 1.0,
+            "last_evaluation_epoch_complete_count": 0,
+            "last_evaluation_funding_complete_count": 0,
+            "aligned_evaluation_rounds": 0,
+            "non_aligned_evaluation_skips": 0,
+            "last_aligned_evaluation_at": "",
             "data_quality_skips": 0,
             "data_quality_skip_reasons": {},
             "mark_price_messages": 0,
@@ -1052,6 +1297,8 @@ class AltcoinRealtimeController:
             "missing_factors": [],
             "stale_factors": [],
             "subscription_generation": 0,
+            "candidate_subscription_epoch": "",
+            "candidate_epoch_activated_at": "",
             "dry_run": True,
         }
 
@@ -1140,7 +1387,12 @@ class AltcoinRealtimeController:
             source=str(source.get("source") or "binance_ws_mark_price"),
         )
 
-    def handle_mark_price(self, update: Mapping[str, Any] | MarkPriceUpdate) -> bool:
+    def handle_mark_price(
+        self,
+        update: Mapping[str, Any] | MarkPriceUpdate,
+        *,
+        subscription_epoch: str = "",
+    ) -> bool:
         symbol = self._payload_symbol(update)
         if symbol not in set(self.candidate_symbols):
             self._stats["mark_price_rejected"] += 1
@@ -1148,10 +1400,16 @@ class AltcoinRealtimeController:
         try:
             apply_method = getattr(self.mark_price_book, "apply", None)
             if callable(apply_method):
-                accepted = bool(apply_method(update))
+                accepted = bool(apply_method(
+                    update,
+                    subscription_epoch=subscription_epoch,
+                ))
             else:
                 parsed = self._shared_mark_update(update)
-                accepted = bool(self.mark_price_book.update(parsed))
+                accepted = bool(self.mark_price_book.update(
+                    parsed,
+                    subscription_epoch=subscription_epoch,
+                ))
         except (AttributeError, TypeError, ValueError):
             accepted = False
         if accepted:
@@ -1160,7 +1418,36 @@ class AltcoinRealtimeController:
             self._stats["mark_price_rejected"] += 1
         return accepted
 
-    def _mark_snapshot(self, symbol: str) -> dict[str, Any] | None:
+    def _mark_snapshot(
+        self,
+        symbol: str,
+        *,
+        feature: Mapping[str, Any],
+        epoch: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        timestamps = dict(feature.get("source_timestamps") or {})
+        window_start = _epoch_seconds(timestamps.get("closed_5m_start"))
+        window_end = _epoch_seconds(timestamps.get("closed_5m_end"))
+        snapshot_window = getattr(self.mark_price_book, "snapshot_window", None)
+        if callable(snapshot_window) and window_start is not None and window_end is not None:
+            max_gap_sec = max(1, int(getattr(
+                self.settings,
+                "altcoin_contract_anomaly_funding_max_gap_sec",
+                15,
+            ) or 15))
+            try:
+                value = snapshot_window(
+                    symbol,
+                    window_end_ms=int(window_end * 1_000),
+                    window_sec=int(round(window_end - window_start)),
+                    subscription_epoch=str(epoch.get("epoch_id") or ""),
+                    epoch_started_ms=int(epoch.get("activated_at_ms") or 0),
+                    max_gap_ms=max_gap_sec * 1_000,
+                )
+            except (KeyError, TypeError, ValueError):
+                value = None
+            if isinstance(value, Mapping):
+                return dict(value)
         for name in ("snapshot", "get", "latest"):
             method = getattr(self.mark_price_book, name, None)
             if not callable(method):
@@ -1178,16 +1465,17 @@ class AltcoinRealtimeController:
         status: Mapping[str, Any],
         *,
         now_ts: float,
-    ) -> tuple[bool, str, int]:
+    ) -> tuple[bool, str, int, dict[str, dict[str, Any]]]:
+        generation = int(status.get("subscription_generation") or 0)
         if status.get("candidate_capacity_degraded"):
-            return False, "capacity_degraded", int(status.get("subscription_generation") or 0)
+            return False, "capacity_degraded", generation, {}
         if status.get("manifest_degraded"):
-            return False, "manifest_degraded", int(status.get("subscription_generation") or 0)
+            return False, "manifest_degraded", generation, {}
         connected = status.get("connected")
         if connected is None:
             connected = str(status.get("connection_state") or "").lower() in {"connected", "ready"}
         if not connected:
-            return False, "subscription_degraded", int(status.get("subscription_generation") or 0)
+            return False, "subscription_degraded", generation, {}
         last_receive = _epoch_seconds(status.get("last_receive_ms", status.get("last_receive_at")))
         max_age = max(1, int(getattr(
             self.settings,
@@ -1199,7 +1487,7 @@ class AltcoinRealtimeController:
             or now_ts - last_receive > max_age
             or last_receive - now_ts > P2_CLOCK_SKEW_TOLERANCE_SEC
         ):
-            return False, "stale", int(status.get("subscription_generation") or 0)
+            return False, "stale", generation, {}
         active = status.get("active_candidate_symbols", status.get("candidate_symbols_active"))
         active_symbols = {
             str(value).upper() for value in active or []
@@ -1221,8 +1509,32 @@ class AltcoinRealtimeController:
         if force_order is None:
             force_order = "!forceorder@arr" in streams
         if not covered or not force_order:
-            return False, "subscription_degraded", int(status.get("subscription_generation") or 0)
-        return True, "complete", int(status.get("subscription_generation") or 0)
+            return False, "subscription_degraded", generation, {}
+        raw_epochs = status.get("candidate_epochs")
+        if not isinstance(raw_epochs, Mapping):
+            return False, "subscription_degraded", generation, {}
+        epochs: dict[str, dict[str, Any]] = {}
+        for symbol in self.candidate_symbols:
+            row = raw_epochs.get(symbol)
+            if not isinstance(row, Mapping):
+                return False, "subscription_degraded", generation, {}
+            epoch_id = str(row.get("epoch_id") or "")
+            activated_at_ms = row.get("activated_at_ms")
+            eligible_1m = row.get("eligible_1m_bucket_start_ms")
+            eligible_5m = row.get("eligible_5m_boundary_ms")
+            if (
+                not epoch_id
+                or isinstance(activated_at_ms, bool)
+                or not isinstance(activated_at_ms, int)
+                or activated_at_ms <= 0
+                or isinstance(eligible_1m, bool)
+                or not isinstance(eligible_1m, int)
+                or isinstance(eligible_5m, bool)
+                or not isinstance(eligible_5m, int)
+            ):
+                return False, "subscription_degraded", generation, {}
+            epochs[symbol] = dict(row)
+        return True, "complete", generation, epochs
 
     def _thresholds(self) -> dict[str, float]:
         def value(name: str, default: float) -> float:
@@ -1248,7 +1560,9 @@ class AltcoinRealtimeController:
             **{key: value for key, value in features.items() if key not in {"missing_fields", "stale_fields"}},
             "mark_price": mark.get("mark_price"),
             "funding_rate": mark.get("funding_rate"),
-            "funding_rate_change": mark.get("funding_rate_change"),
+            "funding_rate_start_5m": mark.get("funding_rate_start_5m"),
+            "funding_rate_end_5m": mark.get("funding_rate_end_5m"),
+            "funding_rate_change_5m": mark.get("funding_rate_change_5m"),
             "oi_value_usd": oi.get("oi_value_usd"),
             "oi_change_5m": oi.get("oi_change_5m"),
         })
@@ -1268,7 +1582,7 @@ class AltcoinRealtimeController:
         cvd = float(features["cvd_5m_usd"])
         oi_change = float(oi["oi_change_5m"])
         funding = float(mark["funding_rate"])
-        funding_change = float(mark["funding_rate_change"])
+        funding_change = float(mark["funding_rate_change_5m"])
         short_liq = float(features["short_liquidation_5m_usd"])
         long_liq = float(features["long_liquidation_5m_usd"])
         price_up = p1 >= thresholds["price_1m_move_ratio"] or p5 >= thresholds["price_5m_move_ratio"]
@@ -1318,6 +1632,7 @@ class AltcoinRealtimeController:
         thresholds: Mapping[str, float],
         now_ts: float,
         subscription_generation: int,
+        candidate_epoch: Mapping[str, Any],
     ) -> dict[str, Any]:
         manifest = self.manifest_consumer.last_valid
         if manifest is None:
@@ -1354,10 +1669,12 @@ class AltcoinRealtimeController:
             "source_timestamps": {
                 **dict(features.get("source_timestamps") or {}),
                 "mark_price": _iso(mark.get("event_time_ms")),
-                "funding_previous": _iso(mark.get(
-                    "previous_event_time_ms",
-                    mark.get("funding_previous_event_time_ms"),
-                )),
+                "funding_change_start_5m": _iso(
+                    mark.get("funding_window_start_event_time_ms")
+                ),
+                "funding_change_end_5m": _iso(
+                    mark.get("funding_window_end_event_time_ms")
+                ),
                 "oi_change_start": oi.get("change_start_at"),
                 "oi_change_end": oi.get("change_end_at"),
             },
@@ -1365,6 +1682,8 @@ class AltcoinRealtimeController:
             "missing_factors": [],
             "stale_factors": [],
             "subscription_generation": subscription_generation,
+            "candidate_subscription_epoch": str(candidate_epoch.get("epoch_id") or ""),
+            "candidate_epoch_activated_at": _iso(candidate_epoch.get("activated_at_ms")),
             "dry_run": True,
         })
 
@@ -1378,11 +1697,13 @@ class AltcoinRealtimeController:
         oi: Mapping[str, Any],
         now_ts: float,
         generation: int,
+        candidate_epoch: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         manifest = self.manifest_consumer.last_valid
         evaluation_key = (
             f"{manifest.candidate_snapshot_hash if manifest else ''}:"
-            f"{features.get('window_end') or ''}"
+            f"{features.get('window_end') or ''}:"
+            f"{candidate_epoch.get('epoch_id') or ''}"
         )
         symbol_state = self._symbol_states.setdefault(symbol, {})
         if symbol_state.get("last_evaluation_key") == evaluation_key:
@@ -1486,6 +1807,7 @@ class AltcoinRealtimeController:
                 thresholds=thresholds,
                 now_ts=now_ts,
                 subscription_generation=generation,
+                candidate_epoch=candidate_epoch,
             )
             for event_type, direction, families in matched
         ]
@@ -1537,6 +1859,7 @@ class AltcoinRealtimeController:
                     thresholds=thresholds,
                     now_ts=now_ts,
                     subscription_generation=generation,
+                    candidate_epoch=candidate_epoch,
                 )
                 event["factor_values"]["weakened_factor_families"] = sorted(
                     set(weakened), key=FACTOR_FAMILIES.index
@@ -1554,8 +1877,16 @@ class AltcoinRealtimeController:
         now = float(now_ts if now_ts is not None else time.time())
         self._last_now_ts = now
         candidate_count = len(self.candidate_symbols)
+        evaluation_boundary = int(now // 60) * 60
+        if candidate_count and evaluation_boundary % 300 != 0:
+            self._stats["non_aligned_evaluation_skips"] += candidate_count
+            return []
+        self._stats["aligned_evaluation_rounds"] += 1
+        self._stats["last_aligned_evaluation_at"] = _iso(evaluation_boundary)
         self._stats["last_evaluation_candidate_count"] = candidate_count
         self._stats["last_evaluation_complete_count"] = 0
+        self._stats["last_evaluation_epoch_complete_count"] = 0
+        self._stats["last_evaluation_funding_complete_count"] = 0
         self._stats["last_evaluation_complete_ratio"] = (
             1.0 if candidate_count == 0 else 0.0
         )
@@ -1567,7 +1898,10 @@ class AltcoinRealtimeController:
             self._stats["data_quality_skips"] += candidate_count
             self._record_skip("manifest_degraded", count=candidate_count)
             return []
-        ready, quality, generation = self._subscription_gate(subscription_status, now_ts=now)
+        ready, quality, generation, candidate_epochs = self._subscription_gate(
+            subscription_status,
+            now_ts=now,
+        )
         if not ready:
             self._stats["data_quality_skips"] += candidate_count
             subscription_reason = {
@@ -1581,9 +1915,26 @@ class AltcoinRealtimeController:
         manifest = self.manifest_consumer.last_valid
         if manifest is None:
             return []
-        features = self.feature_builder.build_many(manifest.symbols, now_ts=now)
-        oi_values = self.oi_sampler.refresh(manifest.symbols, now_ts=now)
-        emitted: list[dict[str, Any]] = []
+        features = self.feature_builder.build_many(
+            manifest.symbols,
+            now_ts=now,
+            candidate_epochs=candidate_epochs,
+        )
+        target_boundaries = {}
+        for symbol, feature in features.items():
+            end_ts = _epoch_seconds(
+                dict(feature.get("source_timestamps") or {}).get("closed_5m_end")
+            )
+            if end_ts is not None:
+                target_boundaries[symbol] = int(end_ts // 300) * 300
+        oi_values = self.oi_sampler.refresh(
+            manifest.symbols,
+            now_ts=now,
+            target_boundaries=target_boundaries,
+            candidate_epochs=candidate_epochs,
+        )
+        pending_events: list[dict[str, Any]] = []
+        pending_symbol_states = copy.deepcopy(self._symbol_states)
         max_age = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_data_max_age_sec",
@@ -1593,12 +1944,50 @@ class AltcoinRealtimeController:
             self._stats["feature_evaluations"] += 1
             feature = features.get(symbol) or {}
             oi = oi_values.get(symbol) or {}
-            mark = self._mark_snapshot(symbol) or {}
+            epoch = candidate_epochs.get(symbol) or {}
+            epoch_id = str(epoch.get("epoch_id") or "")
+            mark = self._mark_snapshot(
+                symbol,
+                feature=feature,
+                epoch=epoch,
+            ) or {}
             mark_ts = _epoch_seconds(mark.get("event_time_ms", mark.get("event_time")))
             mark_age = now - mark_ts if mark_ts is not None else None
             mark_fresh = (
                 mark_age is not None
                 and -P2_CLOCK_SKEW_TOLERANCE_SEC <= mark_age <= max_age
+            )
+            activated_ms = int(epoch.get("activated_at_ms") or 0)
+            last_trade_ms = int(epoch.get("last_agg_trade_event_ms") or 0)
+            last_mark_ms = int(epoch.get("last_mark_price_event_ms") or 0)
+            per_symbol_market_fresh = bool(
+                epoch_id
+                and last_trade_ms >= activated_ms > 0
+                and last_mark_ms >= activated_ms
+                and -P2_CLOCK_SKEW_TOLERANCE_SEC
+                <= now - last_trade_ms / 1_000.0
+                <= max_age
+                and -P2_CLOCK_SKEW_TOLERANCE_SEC
+                <= now - last_mark_ms / 1_000.0
+                <= max_age
+            )
+            if per_symbol_market_fresh:
+                self._stats["last_evaluation_epoch_complete_count"] += 1
+            if (
+                mark.get("subscription_epoch") == epoch_id
+                and mark.get("funding_window_quality") == "complete"
+                and _number(mark.get("funding_rate_change_5m")) is not None
+            ):
+                self._stats["last_evaluation_funding_complete_count"] += 1
+            feature_5m_end = _epoch_seconds(
+                dict(feature.get("source_timestamps") or {}).get("closed_5m_end")
+            )
+            oi_change_end = _epoch_seconds(oi.get("change_end_at"))
+            oi_window_matches = bool(
+                feature_5m_end is not None
+                and int(feature_5m_end) % 300 == 0
+                and oi_change_end is not None
+                and int(oi_change_end) == int(feature_5m_end)
             )
             required_feature_values = (
                 "price_change_1m", "price_change_5m", "volume_anomaly_multiple",
@@ -1607,10 +1996,16 @@ class AltcoinRealtimeController:
             )
             complete = (
                 feature.get("data_quality") == "complete"
+                and feature.get("subscription_epoch") == epoch_id
                 and oi.get("data_quality") == "complete"
+                and oi.get("subscription_epoch") == epoch_id
+                and oi_window_matches
                 and mark_fresh
+                and per_symbol_market_fresh
+                and mark.get("subscription_epoch") == epoch_id
+                and mark.get("funding_window_quality") == "complete"
                 and _number(mark.get("funding_rate")) is not None
-                and _number(mark.get("funding_rate_change")) is not None
+                and _number(mark.get("funding_rate_change_5m")) is not None
                 and all(_number(feature.get(key)) is not None for key in required_feature_values)
                 and _number(oi.get("oi_change_5m")) is not None
             )
@@ -1626,11 +2021,14 @@ class AltcoinRealtimeController:
                     reasons.add("feature_invalid")
                 if not mark:
                     reasons.add("mark_missing")
-                elif not mark_fresh:
+                elif not mark_fresh or not per_symbol_market_fresh:
                     reasons.add("mark_stale")
                 if _number(mark.get("funding_rate")) is None:
                     reasons.add("funding_missing")
-                if _number(mark.get("funding_rate_change")) is None:
+                if (
+                    _number(mark.get("funding_rate_change_5m")) is None
+                    or mark.get("funding_window_quality") != "complete"
+                ):
                     reasons.add("funding_change_missing")
                 oi_quality = str(oi.get("data_quality") or "")
                 if not oi:
@@ -1639,13 +2037,24 @@ class AltcoinRealtimeController:
                     reasons.add("oi_stale")
                 elif oi_quality != "complete" or _number(oi.get("oi_change_5m")) is None:
                     reasons.add("oi_insufficient_history")
+                elif not oi_window_matches:
+                    reasons.add("oi_insufficient_history")
                 if any(_number(feature.get(key)) is None for key in required_feature_values):
                     reasons.add("feature_invalid")
                 for reason in sorted(reasons or {"feature_invalid"}):
                     self._record_skip(reason)
                 continue
             self._stats["last_evaluation_complete_count"] += 1
-            for event in self._candidate_events(
+            old_state = copy.deepcopy(self._symbol_states.get(symbol) or {})
+            if str(old_state.get("subscription_epoch") or "") != epoch_id:
+                working_state = {
+                    "subscription_epoch": epoch_id,
+                    "subscription_epoch_activated_at": _iso(activated_ms),
+                }
+            else:
+                working_state = copy.deepcopy(old_state)
+            self._symbol_states[symbol] = working_state
+            events = self._candidate_events(
                 symbol=symbol,
                 candidate=manifest.candidates[symbol],
                 features=feature,
@@ -1653,19 +2062,40 @@ class AltcoinRealtimeController:
                 oi=oi,
                 now_ts=now,
                 generation=generation,
-            ):
-                if self._record_event(event):
-                    emitted.append(event)
+                candidate_epoch=epoch,
+            )
+            pending_symbol_states[symbol] = copy.deepcopy(
+                self._symbol_states.get(symbol) or {}
+            )
+            if old_state:
+                self._symbol_states[symbol] = old_state
+            else:
+                self._symbol_states.pop(symbol, None)
+            pending_events.extend(events)
         self._stats["last_evaluation_complete_ratio"] = (
             self._stats["last_evaluation_complete_count"] / candidate_count
             if candidate_count
             else 1.0
         )
-        self.state_store.update(
+        newly_appended = set(self.state_store.record_event_batch(
+            pending_events,
             last_valid_manifest=manifest.summary(),
-            symbol_states=self._symbol_states,
+            symbol_states=pending_symbol_states,
             oi_samples=self.oi_sampler.samples,
-        )
+        ))
+        self._symbol_states = pending_symbol_states
+        emitted = [
+            event for event in pending_events
+            if str(event.get("event_id") or "") in newly_appended
+        ]
+        for event in emitted:
+            self._recent_events.append(event)
+            event_type = str(event["event_type"])
+            self._stats["events"][event_type] = int(
+                self._stats["events"].get(event_type, 0)
+            ) + 1
+            self._stats["last_event_at"] = event["observed_at"]
+        self._recent_events = self._recent_events[-200:]
         return emitted
 
     def stats(self) -> dict[str, Any]:
@@ -1698,6 +2128,9 @@ def run_realtime_confirmation_session(
 ) -> dict[str, Any]:
     """Run the one existing Binance market connection as a bounded P2 dry-run."""
 
+    from .configuration import AltcoinAnomalyConfig
+
+    AltcoinAnomalyConfig.from_settings(settings, realtime=True)
     preflight_now = time.time()
     manifest_consumer = CandidateManifestConsumer(settings)
     preflight = manifest_consumer.poll(now_ts=preflight_now)
@@ -1751,7 +2184,25 @@ def run_realtime_confirmation_session(
             },
         }
     else:
-        raw = run_realtime_market_session(settings, duration_sec=duration_sec)
+        # P2 is injected only after every bounded-session preflight succeeds.
+        # The ordinary market-stream constructor therefore remains permanently
+        # legacy, regardless of environment switches.
+        feature_store = RealtimeFeatureStore(settings.realtime_features_db_path)
+        controller = AltcoinRealtimeController(
+            settings,
+            feature_store=feature_store,
+            manifest_consumer=manifest_consumer,
+        )
+        service = BinanceRealtimeMarketService(
+            settings,
+            store=feature_store,
+            realtime_controller=controller,
+        )
+        raw = run_realtime_market_session(
+            settings,
+            duration_sec=duration_sec,
+            service=service,
+        )
     stats = dict(raw.get("stats") or {})
     failures = [str(value) for value in raw.get("failures") or []]
     evaluation_errors = int(stats.get("evaluation_errors") or 0)
@@ -1779,6 +2230,12 @@ def run_realtime_confirmation_session(
     )
     last_evaluation_complete_count = int(
         stats.get("last_evaluation_complete_count") or 0
+    )
+    last_evaluation_epoch_complete_count = int(
+        stats.get("last_evaluation_epoch_complete_count") or 0
+    )
+    last_evaluation_funding_complete_count = int(
+        stats.get("last_evaluation_funding_complete_count") or 0
     )
     evaluation_complete_coverage = _number(
         stats.get("last_evaluation_complete_ratio"),
@@ -1814,6 +2271,8 @@ def run_realtime_confirmation_session(
         or evaluation_complete_coverage < 1.0
         or last_evaluation_candidate_count != candidate_count
         or last_evaluation_complete_count != candidate_count
+        or last_evaluation_epoch_complete_count != candidate_count
+        or last_evaluation_funding_complete_count != candidate_count
     ):
         status = "data_unavailable"
         exit_code = 3
@@ -1836,6 +2295,10 @@ def run_realtime_confirmation_session(
             or last_evaluation_complete_count != candidate_count
         ):
             failures.append("candidate_confirmation_data_incomplete")
+        if last_evaluation_epoch_complete_count != candidate_count:
+            failures.append("candidate_subscription_epoch_incomplete")
+        if last_evaluation_funding_complete_count != candidate_count:
+            failures.append("candidate_funding_window_incomplete")
     else:
         status = "completed"
 
@@ -1849,6 +2312,7 @@ def run_realtime_confirmation_session(
     ]
     return json_safe({
         "schema_version": P2_SCHEMA_VERSION,
+        "rules_version": P2_RULES_VERSION,
         "module": "altcoin_contract_anomaly",
         "mode": "realtime_confirmation_dry_run",
         "status": status,
@@ -1870,6 +2334,10 @@ def run_realtime_confirmation_session(
             "pending_subscribe_count": int(stats.get("pending_subscribe_count") or 0),
             "pending_unsubscribe_count": int(stats.get("pending_unsubscribe_count") or 0),
             "candidate_coverage_complete": candidate_coverage_complete,
+            "candidate_epoch_count": int(stats.get("candidate_epoch_count") or 0),
+            "candidate_epoch_coverage_ratio": stats.get(
+                "candidate_epoch_coverage_ratio"
+            ),
             "mark_price_subscription_coverage_ratio": stats.get("mark_price_coverage_ratio"),
             "mark_price_data_coverage_ratio": mark_price_data_coverage,
             "force_order_subscription_count": int(
@@ -1895,6 +2363,12 @@ def run_realtime_confirmation_session(
             "last_evaluation_candidate_count": last_evaluation_candidate_count,
             "last_evaluation_complete_count": last_evaluation_complete_count,
             "last_evaluation_complete_ratio": evaluation_complete_coverage,
+            "last_evaluation_epoch_complete_count": (
+                last_evaluation_epoch_complete_count
+            ),
+            "last_evaluation_funding_complete_count": (
+                last_evaluation_funding_complete_count
+            ),
             "skip_count": int(stats.get("data_quality_skips") or 0),
             "skip_reasons": dict(stats.get("data_quality_skip_reasons") or {}),
             "evaluation_errors": evaluation_errors,
@@ -1908,8 +2382,13 @@ def run_realtime_confirmation_session(
                 "budget_used": int(stats.get("oi_budget_used") or 0),
                 "budget_limit": int(stats.get("oi_budget_limit") or 0),
                 "budget_exhausted": int(stats.get("oi_budget_exhausted") or 0),
+                "rate_limit_blocked": int(
+                    stats.get("oi_rate_limit_blocked") or 0
+                ),
                 "http_429": int(stats.get("oi_http_429") or 0),
                 "http_418": int(stats.get("oi_http_418") or 0),
+                "refresh_rounds": int(stats.get("oi_refresh_rounds") or 0),
+                "last_round": dict(stats.get("oi_last_round") or {}),
             },
         },
         "failures": failures,

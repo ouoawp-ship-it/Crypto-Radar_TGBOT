@@ -247,14 +247,15 @@ class Settings:
     altcoin_contract_anomaly_subscription_ack_timeout_sec: int = 10
     altcoin_contract_anomaly_max_streams: int = 300
     altcoin_contract_anomaly_realtime_data_max_age_sec: int = 120
+    altcoin_contract_anomaly_funding_max_gap_sec: int = 15
     altcoin_contract_anomaly_oi_refresh_sec: int = 300
     altcoin_contract_anomaly_realtime_oi_max_age_sec: int = 600
     altcoin_contract_anomaly_realtime_oi_workers: int = 4
     altcoin_contract_anomaly_realtime_oi_request_budget: int = 50
     altcoin_contract_anomaly_feature_1m_window_sec: int = 60
     altcoin_contract_anomaly_feature_5m_window_sec: int = 300
-    altcoin_contract_anomaly_volume_baseline_buckets: int = 10
-    altcoin_contract_anomaly_volume_min_samples: int = 8
+    altcoin_contract_anomaly_volume_baseline_buckets: int = 5
+    altcoin_contract_anomaly_volume_min_samples: int = 4
     altcoin_contract_anomaly_volume_min_coverage: float = 0.8
     altcoin_contract_anomaly_price_1m_move_ratio: float = 0.01
     altcoin_contract_anomaly_price_5m_move_ratio: float = 0.02
@@ -694,7 +695,7 @@ class Settings:
             ),
             altcoin_contract_anomaly_subscription_ack_timeout_sec=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC",
-                10,
+                5,
                 1,
                 120,
             ),
@@ -710,11 +711,17 @@ class Settings:
                 1,
                 3_600,
             ),
+            altcoin_contract_anomaly_funding_max_gap_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC",
+                15,
+                1,
+                300,
+            ),
             altcoin_contract_anomaly_oi_refresh_sec=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC",
                 300,
-                1,
-                86_400,
+                300,
+                300,
             ),
             altcoin_contract_anomaly_realtime_oi_max_age_sec=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC",
@@ -754,7 +761,7 @@ class Settings:
             ),
             altcoin_contract_anomaly_volume_min_samples=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_VOLUME_MIN_SAMPLES",
-                8,
+                4,
                 1,
                 1_000,
             ),
@@ -1148,6 +1155,9 @@ class Settings:
                     "max_streams": self.altcoin_contract_anomaly_max_streams,
                     "data_max_age_sec": (
                         self.altcoin_contract_anomaly_realtime_data_max_age_sec
+                    ),
+                    "funding_max_gap_sec": (
+                        self.altcoin_contract_anomaly_funding_max_gap_sec
                     ),
                     "oi_refresh_sec": self.altcoin_contract_anomaly_oi_refresh_sec,
                     "oi_max_age_sec": (

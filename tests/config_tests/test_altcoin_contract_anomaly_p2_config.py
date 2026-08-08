@@ -24,6 +24,7 @@ P2_ENV_NAMES = (
     "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC",
     "ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS",
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_DATA_MAX_AGE_SEC",
+    "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC",
     "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC",
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC",
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_WORKERS",
@@ -64,14 +65,15 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
             "subscription_ack_timeout_sec": 10,
             "max_streams": 300,
             "realtime_data_max_age_sec": 120,
+            "funding_max_gap_sec": 15,
             "oi_refresh_sec": 300,
             "realtime_oi_max_age_sec": 600,
             "realtime_oi_workers": 4,
             "realtime_oi_request_budget": 50,
             "feature_1m_window_sec": 60,
             "feature_5m_window_sec": 300,
-            "volume_baseline_buckets": 10,
-            "volume_min_samples": 8,
+            "volume_baseline_buckets": 5,
+            "volume_min_samples": 4,
             "volume_min_coverage": 0.8,
             "price_1m_move_ratio": 0.01,
             "price_5m_move_ratio": 0.02,
@@ -114,7 +116,8 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
             "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC": "20",
             "ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS": "200",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_DATA_MAX_AGE_SEC": "90",
-            "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC": "180",
+            "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC": "20",
+            "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC": "300",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC": "720",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_WORKERS": "3",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_REQUEST_BUDGET": "40",
@@ -150,6 +153,7 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
         self.assertEqual(config.manifest_poll_sec, 7)
         self.assertEqual(config.subscription_min_interval_sec, 0.5)
         self.assertEqual(config.max_streams, 200)
+        self.assertEqual(config.funding_max_gap_sec, 20)
         self.assertEqual(config.feature_1m_window_sec, 60)
         self.assertEqual(config.feature_5m_window_sec, 300)
         self.assertEqual(config.volume_min_samples, 12)
@@ -170,11 +174,11 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(required, 8)
+        self.assertEqual(required, 4)
         self.assertLessEqual(
             settings.altcoin_contract_anomaly_volume_baseline_buckets,
-            11,
-            "12分钟冷启动至少应能形成完整的前置闭合桶窗口",
+            5,
+            "12到15分钟冷启动至少应能形成当前订阅代次的前置闭合桶窗口",
         )
 
     def test_realtime_gate_and_raw_values_are_strict(self) -> None:
@@ -188,6 +192,7 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
         invalid_values = (
             ("ALTCOIN_CONTRACT_ANOMALY_REALTIME_ENABLE", "maybe"),
             ("ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS", "0"),
+            ("ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC", "180"),
             ("ALTCOIN_CONTRACT_ANOMALY_VOLUME_MIN_COVERAGE", "nan"),
         )
         for name, value in invalid_values:

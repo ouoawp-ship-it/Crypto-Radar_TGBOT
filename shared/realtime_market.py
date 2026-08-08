@@ -171,9 +171,7 @@ def build_binance_subscription_plan(
     selected_base_only: list[str] = []
     omitted_base: list[str] = []
     for symbol in requested_base:
-        if symbol in requested_candidate_set:
-            if symbol in omitted_candidates:
-                omitted_base.append(symbol)
+        if symbol in selected_candidates:
             continue
         if remaining >= 1:
             selected_base_only.append(symbol)
@@ -229,6 +227,7 @@ class SubscriptionAck:
     method: str = ""
     streams: tuple[str, ...] = ()
     error: str = ""
+    generation: int = 0
 
 
 class SubscriptionLedger:
@@ -252,6 +251,7 @@ class SubscriptionLedger:
         )
         self._desired: set[str] = set(self._protected)
         self._active: set[str] = set()
+        self._stale_actual: set[str] = set()
         self._pending: dict[int, SubscriptionCommand] = {}
         self._completed_ids: set[int] = set()
         self._completed_order: deque[int] = deque()
@@ -266,6 +266,7 @@ class SubscriptionLedger:
         self._duplicate_acks = 0
         self._unknown_acks = 0
         self._invalid_acks = 0
+        self._stale_acks = 0
         self._lock = threading.RLock()
 
     @property
@@ -331,10 +332,23 @@ class SubscriptionLedger:
             for request_id in tuple(self._pending):
                 self._remember_completed(request_id)
             self._active.clear()
+            self._stale_actual.clear()
             self._pending.clear()
             self._generation += 1
             self._last_command_monotonic = None
             return self._generation
+
+    def invalidate_active(self, streams: Iterable[Any]) -> tuple[str, ...]:
+        """Require a fresh ACK for streams whose candidate epoch was retired."""
+
+        normalized = {
+            stream for value in streams if (stream := _subscription_stream(value))
+        }
+        with self._lock:
+            invalidated = tuple(sorted(self._active & normalized))
+            self._active.difference_update(invalidated)
+            self._stale_actual.update(invalidated)
+            return invalidated
 
     def next_command(self, *, now_monotonic: float | None = None) -> SubscriptionCommand | None:
         now = self._clock() if now_monotonic is None else float(now_monotonic)
@@ -357,13 +371,18 @@ class SubscriptionLedger:
                 for stream in command.streams
             }
             unsubscribe = sorted(
-                self._active - self._desired - pending_unsubscribe - set(self._protected)
+                (self._active | self._stale_actual)
+                - self._desired
+                - pending_unsubscribe
+                - set(self._protected)
             )
             if unsubscribe:
                 method = "UNSUBSCRIBE"
                 selected = tuple(unsubscribe[: self.batch_size])
             else:
-                subscribe = sorted(self._desired - self._active - pending_subscribe)
+                subscribe = sorted(
+                    self._desired - self._active - pending_subscribe
+                )
                 if not subscribe:
                     return None
                 method = "SUBSCRIBE"
@@ -406,14 +425,27 @@ class SubscriptionLedger:
                 and "code" not in payload
             )
             if success:
-                if command.method == "SUBSCRIBE":
+                stale_generation = command.generation != self._generation
+                if stale_generation:
+                    if command.method == "SUBSCRIBE":
+                        self._stale_actual.update(command.streams)
+                    else:
+                        self._stale_actual.difference_update(command.streams)
+                        self._active.difference_update(command.streams)
+                        self._active.update(self._protected & set(command.streams))
+                    self._stale_acks += 1
+                    status = "stale"
+                elif command.method == "SUBSCRIBE":
                     self._active.update(command.streams)
+                    self._stale_actual.difference_update(command.streams)
                     self._subscribe_success += 1
+                    status = "success"
                 else:
                     self._active.difference_update(command.streams)
+                    self._stale_actual.difference_update(command.streams)
                     self._active.update(self._protected & set(command.streams))
                     self._unsubscribe_success += 1
-                status = "success"
+                    status = "success"
                 error = ""
             else:
                 if command.method == "SUBSCRIBE":
@@ -431,6 +463,7 @@ class SubscriptionLedger:
                 method=command.method,
                 streams=command.streams,
                 error=error,
+                generation=command.generation,
             )
 
     def mark_send_failed(self, request_id: int, error: Any = "send_failed") -> SubscriptionAck:
@@ -449,6 +482,7 @@ class SubscriptionLedger:
                 method=command.method,
                 streams=command.streams,
                 error=f"{type(error).__name__}: {error}"[:300],
+                generation=command.generation,
             )
 
     def expire_timeouts(
@@ -489,6 +523,7 @@ class SubscriptionLedger:
             return {
                 "desired_subscription_count": len(self._desired),
                 "active_subscription_count": len(self._active),
+                "stale_actual_subscription_count": len(self._stale_actual),
                 "pending_subscribe_count": pending_subscribe,
                 "pending_unsubscribe_count": pending_unsubscribe,
                 "pending_request_count": len(self._pending),
@@ -500,6 +535,7 @@ class SubscriptionLedger:
                 "duplicate_acks": self._duplicate_acks,
                 "unknown_acks": self._unknown_acks,
                 "invalid_acks": self._invalid_acks,
+                "stale_acks": self._stale_acks,
                 "subscription_generation": self._generation,
             }
 
@@ -669,19 +705,25 @@ def parse_binance_mark_price_update(payload: Any) -> MarkPriceUpdate | None:
 
 
 class MarkPriceBook:
-    """Keeps the newest mark price per symbol and auditable funding deltas."""
+    """Bounded mark/funding history with closed-window funding deltas."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_history_per_symbol: int = 2_048) -> None:
         self._latest: dict[str, MarkPriceUpdate] = {}
-        self._funding_changes: dict[str, float | None] = {}
-        self._funding_previous_event_times: dict[str, int | None] = {}
+        self._latest_epochs: dict[str, str] = {}
+        self._history: dict[str, deque[tuple[MarkPriceUpdate, str]]] = {}
+        self._max_history_per_symbol = max(16, int(max_history_per_symbol))
         self._accepted_updates = 0
         self._duplicate_updates = 0
         self._out_of_order_updates = 0
         self._invalid_updates = 0
         self._lock = threading.RLock()
 
-    def update(self, value: MarkPriceUpdate | None) -> bool:
+    def update(
+        self,
+        value: MarkPriceUpdate | None,
+        *,
+        subscription_epoch: str = "",
+    ) -> bool:
         if not self._valid(value):
             with self._lock:
                 self._invalid_updates += 1
@@ -695,16 +737,14 @@ class MarkPriceBook:
                 else:
                     self._out_of_order_updates += 1
                 return False
-            funding_change = (
-                value.funding_rate - previous.funding_rate
-                if previous is not None
-                else None
-            )
             self._latest[value.symbol] = value
-            self._funding_changes[value.symbol] = funding_change
-            self._funding_previous_event_times[value.symbol] = (
-                previous.event_time_ms if previous is not None else None
+            epoch = str(subscription_epoch or "")
+            self._latest_epochs[value.symbol] = epoch
+            history = self._history.setdefault(
+                value.symbol,
+                deque(maxlen=self._max_history_per_symbol),
             )
+            history.append((value, epoch))
             self._accepted_updates += 1
             return True
 
@@ -712,11 +752,6 @@ class MarkPriceBook:
         normalized = _subscription_symbol(symbol)
         with self._lock:
             return self._latest.get(normalized)
-
-    def funding_rate_change(self, symbol: str) -> float | None:
-        normalized = _subscription_symbol(symbol)
-        with self._lock:
-            return self._funding_changes.get(normalized)
 
     def snapshot(self, symbol: str) -> dict[str, Any] | None:
         normalized = _subscription_symbol(symbol)
@@ -728,20 +763,114 @@ class MarkPriceBook:
                 "symbol": update.symbol,
                 "mark_price": update.mark_price,
                 "funding_rate": update.funding_rate,
-                "funding_rate_change": self._funding_changes.get(normalized),
-                "funding_rate_changed": bool(self._funding_changes.get(normalized)),
-                "funding_previous_event_time_ms": self._funding_previous_event_times.get(normalized),
                 "next_funding_time_ms": update.next_funding_time_ms,
                 "event_time_ms": update.event_time_ms,
+                "subscription_epoch": self._latest_epochs.get(normalized, ""),
                 "exchange": update.exchange,
                 "market": update.market,
                 "source": update.source,
             }
 
+    def snapshot_window(
+        self,
+        symbol: str,
+        *,
+        window_end_ms: int,
+        window_sec: int = 300,
+        subscription_epoch: str = "",
+        epoch_started_ms: int = 0,
+        max_gap_ms: int = 15_000,
+    ) -> dict[str, Any] | None:
+        """Return one complete, closed funding window or an explicit partial row."""
+
+        normalized = _subscription_symbol(symbol)
+        end_ms = int(window_end_ms)
+        duration_ms = max(1, int(window_sec)) * 1_000
+        start_ms = end_ms - duration_ms
+        safe_gap = max(1, int(max_gap_ms))
+        wanted_epoch = str(subscription_epoch or "")
+        with self._lock:
+            history = list(self._history.get(normalized, ()))
+        eligible = [
+            (update, epoch)
+            for update, epoch in history
+            if (not wanted_epoch or epoch == wanted_epoch)
+            and update.event_time_ms >= max(1, int(epoch_started_ms or 0))
+            and start_ms - safe_gap <= update.event_time_ms <= end_ms
+        ]
+        eligible.sort(key=lambda item: item[0].event_time_ms)
+
+        start_candidates = [item for item in eligible if item[0].event_time_ms <= start_ms]
+        if start_candidates:
+            start_item = start_candidates[-1]
+        else:
+            after_start = [item for item in eligible if item[0].event_time_ms > start_ms]
+            start_item = after_start[0] if after_start else None
+        end_candidates = [item for item in eligible if item[0].event_time_ms <= end_ms]
+        end_item = end_candidates[-1] if end_candidates else None
+
+        quality = "complete"
+        if start_item is None or end_item is None:
+            quality = "insufficient_history"
+        elif (
+            abs(start_item[0].event_time_ms - start_ms) > safe_gap
+            or end_ms - end_item[0].event_time_ms > safe_gap
+            or end_item[0].event_time_ms <= start_item[0].event_time_ms
+        ):
+            quality = "insufficient_history"
+        else:
+            sequence = [
+                item
+                for item in eligible
+                if start_item[0].event_time_ms <= item[0].event_time_ms <= end_item[0].event_time_ms
+            ]
+            if any(
+                current[0].event_time_ms - previous[0].event_time_ms > safe_gap
+                for previous, current in zip(sequence, sequence[1:])
+            ):
+                quality = "stale"
+
+        endpoint = end_item[0] if end_item is not None else None
+        output: dict[str, Any] = {
+            "symbol": normalized,
+            "mark_price": endpoint.mark_price if endpoint is not None else None,
+            "funding_rate": endpoint.funding_rate if endpoint is not None else None,
+            "funding_rate_start_5m": None,
+            "funding_rate_end_5m": endpoint.funding_rate if endpoint is not None else None,
+            "funding_rate_change_5m": None,
+            "funding_rate_changed_5m": False,
+            "funding_window_start_ms": start_ms,
+            "funding_window_end_ms": end_ms,
+            "funding_window_start_event_time_ms": (
+                start_item[0].event_time_ms if start_item is not None else None
+            ),
+            "funding_window_end_event_time_ms": (
+                endpoint.event_time_ms if endpoint is not None else None
+            ),
+            "funding_window_quality": quality,
+            "next_funding_time_ms": (
+                endpoint.next_funding_time_ms if endpoint is not None else None
+            ),
+            "event_time_ms": endpoint.event_time_ms if endpoint is not None else None,
+            "subscription_epoch": wanted_epoch,
+            "exchange": endpoint.exchange if endpoint is not None else "binance",
+            "market": endpoint.market if endpoint is not None else "futures",
+            "source": endpoint.source if endpoint is not None else "binance_ws_mark_price",
+        }
+        if quality == "complete" and start_item is not None and endpoint is not None:
+            change = endpoint.funding_rate - start_item[0].funding_rate
+            output.update({
+                "funding_rate_start_5m": start_item[0].funding_rate,
+                "funding_rate_change_5m": change,
+                "funding_rate_changed_5m": change != 0,
+            })
+        return output
+
     def stats(self) -> dict[str, int]:
         with self._lock:
             return {
                 "symbol_count": len(self._latest),
+                "history_entry_count": sum(len(rows) for rows in self._history.values()),
                 "accepted_updates": self._accepted_updates,
                 "duplicate_updates": self._duplicate_updates,
                 "out_of_order_updates": self._out_of_order_updates,
@@ -1282,6 +1411,16 @@ class BinanceRealtimeMarketService:
         realtime_controller: Any = None,
     ):
         self.settings = settings
+        p2_gate_enabled = bool(
+            getattr(settings, "altcoin_contract_anomaly_enable", False)
+            and getattr(settings, "altcoin_contract_anomaly_realtime_enable", False)
+        )
+        if realtime_controller is not None and not p2_gate_enabled:
+            raise ValueError("explicit P2 controller requires both feature gates")
+        # P2 is deliberately an explicit bounded-session dependency.  The
+        # long-running market-stream service must stay on its legacy path even
+        # when both environment switches happen to be enabled.
+        self._p2_enabled = realtime_controller is not None
         self.store = store or RealtimeFeatureStore(settings.realtime_features_db_path)
         self.pipeline = RealtimeMarketPipeline(
             self.store,
@@ -1305,11 +1444,7 @@ class BinanceRealtimeMarketService:
         self._connection_cache_until = 0.0
         self._connected = threading.Event()
         self._last_receive_mono = 0.0
-        self._p2_enabled = bool(
-            getattr(settings, "altcoin_contract_anomaly_enable", False)
-            and getattr(settings, "altcoin_contract_anomaly_realtime_enable", False)
-        )
-        self._p2_controller: Any = None
+        self._p2_controller: Any = realtime_controller if self._p2_enabled else None
         self._p2_ledger: SubscriptionLedger | None = None
         self._p2_mark_prices: MarkPriceBook | None = None
         self._p2_plan: BinanceSubscriptionPlan | None = None
@@ -1325,16 +1460,14 @@ class BinanceRealtimeMarketService:
         self._p2_mark_price_messages = 0
         self._p2_mark_price_rejected = 0
         self._p2_mark_price_symbols: set[str] = set()
+        self._p2_candidate_epochs: dict[str, dict[str, Any]] = {}
+        self._p2_epoch_counter = 0
+        self._p2_session_token = f"{time.time_ns():x}"
         self._p2_metrics_lock = threading.RLock()
         self._p2_closed_buckets = 0
         self._p2_evaluation_errors = 0
         self._p2_runner_shutdown_timeouts = 0
         if self._p2_enabled:
-            if realtime_controller is None:
-                from radars.altcoin_contract_anomaly.realtime import AltcoinRealtimeController
-
-                realtime_controller = AltcoinRealtimeController(settings, feature_store=self.store)
-            self._p2_controller = realtime_controller
             self._p2_ledger = SubscriptionLedger(
                 batch_size=int(getattr(
                     settings,
@@ -1352,7 +1485,10 @@ class BinanceRealtimeMarketService:
                     10,
                 ) or 10),
             )
-            self._p2_mark_prices = MarkPriceBook()
+            candidate_book = getattr(self._p2_controller, "mark_price_book", None)
+            self._p2_mark_prices = (
+                candidate_book if isinstance(candidate_book, MarkPriceBook) else MarkPriceBook()
+            )
 
     def _factory(self) -> Any:
         if self.websocket_app_factory is not None:
@@ -1394,6 +1530,7 @@ class BinanceRealtimeMarketService:
         self._p2_base_symbols = tuple(
             symbol for value in base_symbols if (symbol := _subscription_symbol(value))
         )
+        previous_candidates = set(self._p2_plan.candidate_symbols) if self._p2_plan else set()
         plan = build_binance_subscription_plan(
             self._p2_base_symbols,
             tuple(getattr(self._p2_controller, "candidate_symbols", ()) or ()),
@@ -1405,7 +1542,67 @@ class BinanceRealtimeMarketService:
         )
         self._p2_plan = plan
         self._p2_ledger.set_desired(plan.subscriptions)
+        current_candidates = set(plan.candidate_symbols)
+        removed = previous_candidates - current_candidates
+        with self._p2_metrics_lock:
+            for symbol in removed:
+                self._p2_candidate_epochs.pop(symbol, None)
+        reintroduced = current_candidates - previous_candidates
+        if reintroduced:
+            self._p2_ledger.invalidate_active(
+                stream
+                for symbol in reintroduced
+                for stream in (
+                    f"{symbol.lower()}@aggTrade",
+                    f"{symbol.lower()}@markPrice",
+                )
+            )
+        self._refresh_candidate_epochs(now_ms=int(time.time() * 1000))
         return plan
+
+    def _refresh_candidate_epochs(self, *, now_ms: int) -> None:
+        if not self._p2_enabled or self._p2_ledger is None:
+            return
+        requested = set(self._p2_plan.candidate_symbols) if self._p2_plan else set()
+        active = set(self._p2_ledger.active_subscriptions)
+        force_active = "!forceOrder@arr" in active
+        with self._p2_metrics_lock:
+            for symbol in tuple(self._p2_candidate_epochs):
+                streams_ready = (
+                    f"{symbol.lower()}@aggTrade" in active
+                    and f"{symbol.lower()}@markPrice" in active
+                    and force_active
+                )
+                if symbol not in requested or not streams_ready:
+                    self._p2_candidate_epochs.pop(symbol, None)
+            if not force_active:
+                return
+            clock_skew_ms = 5_000
+            for symbol in sorted(requested):
+                if symbol in self._p2_candidate_epochs:
+                    continue
+                if not (
+                    f"{symbol.lower()}@aggTrade" in active
+                    and f"{symbol.lower()}@markPrice" in active
+                ):
+                    continue
+                self._p2_epoch_counter += 1
+                activated = max(1, int(now_ms))
+                safe_after = activated + clock_skew_ms
+                eligible_1m = ((safe_after + 59_999) // 60_000) * 60_000
+                eligible_5m = ((safe_after + 299_999) // 300_000) * 300_000
+                self._p2_candidate_epochs[symbol] = {
+                    "epoch_id": (
+                        f"{self._p2_session_token}:"
+                        f"{self._p2_ledger.generation}:{self._p2_epoch_counter}"
+                    ),
+                    "activated_at_ms": activated,
+                    "eligible_1m_bucket_start_ms": eligible_1m,
+                    "eligible_5m_boundary_ms": eligible_5m,
+                    "subscription_generation": self._p2_ledger.generation,
+                    "last_agg_trade_event_ms": 0,
+                    "last_mark_price_event_ms": 0,
+                }
 
     def _poll_p2_manifest(
         self,
@@ -1478,11 +1675,35 @@ class BinanceRealtimeMarketService:
             return None
         return command
 
-    def _record_p2_market_data(self, event_time_ms: int) -> None:
+    def _record_p2_market_data(
+        self,
+        event_time_ms: int,
+        *,
+        symbol: str = "",
+        event_kind: str = "",
+    ) -> None:
         if not self._p2_enabled or event_time_ms <= self._p2_last_market_receive_ms:
+            pass
+        else:
+            self._p2_last_market_receive_ms = int(event_time_ms)
+            self._p2_last_market_receive_mono = time.monotonic()
+        normalized = _subscription_symbol(symbol)
+        if not normalized:
             return
-        self._p2_last_market_receive_ms = int(event_time_ms)
-        self._p2_last_market_receive_mono = time.monotonic()
+        with self._p2_metrics_lock:
+            epoch = self._p2_candidate_epochs.get(normalized)
+            if not epoch or int(event_time_ms) < int(epoch["activated_at_ms"]):
+                return
+            if event_kind == "trade":
+                epoch["last_agg_trade_event_ms"] = max(
+                    int(epoch.get("last_agg_trade_event_ms") or 0),
+                    int(event_time_ms),
+                )
+            elif event_kind == "mark_price":
+                epoch["last_mark_price_event_ms"] = max(
+                    int(epoch.get("last_mark_price_event_ms") or 0),
+                    int(event_time_ms),
+                )
 
     def _p2_subscription_status(self) -> dict[str, Any]:
         if not self._p2_enabled or self._p2_ledger is None:
@@ -1508,9 +1729,18 @@ class BinanceRealtimeMarketService:
         capacity_degraded = bool(
             self._p2_plan and self._p2_plan.capacity_degraded
         )
+        with self._p2_metrics_lock:
+            candidate_epochs = {
+                symbol: dict(value)
+                for symbol, value in self._p2_candidate_epochs.items()
+                if symbol in requested_candidates
+            }
         candidate_coverage_complete = (
-            not candidate_capacity_degraded
+            self._connected.is_set()
+            and not candidate_capacity_degraded
+            and force_active
             and set(requested_candidates).issubset(active_candidates)
+            and set(requested_candidates).issubset(candidate_epochs)
         )
         manifest_ready = bool(
             getattr(self._p2_controller, "manifest_event_ready", False)
@@ -1523,6 +1753,7 @@ class BinanceRealtimeMarketService:
             "last_market_receive_ms": self._p2_last_market_receive_ms,
             "active_subscriptions": sorted(active),
             "active_candidate_symbols": sorted(active_candidates),
+            "candidate_epochs": candidate_epochs,
             "candidate_coverage_complete": candidate_coverage_complete,
             "force_order_active": force_active,
             "capacity_degraded": capacity_degraded,
@@ -1562,6 +1793,10 @@ class BinanceRealtimeMarketService:
             ack = self._p2_ledger.handle_ack(payload)
             if ack.status == "success":
                 self.subscription_acks += 1
+                self._refresh_candidate_epochs(now_ms=int(time.time() * 1000))
+            elif ack.status == "stale":
+                self.last_error = "subscription_ack:stale_generation"
+                self._refresh_candidate_epochs(now_ms=int(time.time() * 1000))
             elif ack.status == "failure":
                 self.last_error = "subscription_ack:failure"
             return True
@@ -1587,6 +1822,8 @@ class BinanceRealtimeMarketService:
         if self._p2_enabled and self._p2_ledger is not None:
             self._p2_last_market_receive_ms = 0
             self._p2_last_market_receive_mono = time.monotonic()
+            with self._p2_metrics_lock:
+                self._p2_candidate_epochs.clear()
             self._p2_ledger.reset_connection()
             self._send_next_p2_control(ws)
             return
@@ -1612,23 +1849,44 @@ class BinanceRealtimeMarketService:
             mark_price = parse_binance_mark_price_update(control)
             if mark_price is not None:
                 self._p2_mark_price_messages += 1
-                if self._p2_mark_prices.update(mark_price):
-                    self._record_p2_market_data(mark_price.event_time_ms)
+                with self._p2_metrics_lock:
+                    epoch = dict(self._p2_candidate_epochs.get(mark_price.symbol) or {})
+                if (
+                    not epoch
+                    or mark_price.event_time_ms
+                    <= int(epoch.get("last_mark_price_event_ms") or 0)
+                ):
+                    self._p2_mark_price_rejected += 1
+                    return
+                try:
+                    try:
+                        accepted = bool(self._p2_controller.handle_mark_price(
+                            mark_price,
+                            subscription_epoch=str(epoch.get("epoch_id") or ""),
+                        ))
+                    except TypeError:
+                        accepted = bool(self._p2_controller.handle_mark_price(mark_price))
+                except Exception as exc:
+                    accepted = False
+                    self.last_error = f"mark_price:{type(exc).__name__}"
+                if accepted:
+                    self._record_p2_market_data(
+                        mark_price.event_time_ms,
+                        symbol=mark_price.symbol,
+                        event_kind="mark_price",
+                    )
                     with self._p2_metrics_lock:
                         self._p2_mark_price_symbols.add(mark_price.symbol)
-                    try:
-                        accepted = bool(self._p2_controller.handle_mark_price(mark_price))
-                    except Exception as exc:
-                        accepted = False
-                        self.last_error = f"mark_price:{type(exc).__name__}"
-                    if not accepted:
-                        self._p2_mark_price_rejected += 1
                 else:
                     self._p2_mark_price_rejected += 1
                 return
         for event in self._events_from_payload(control):
             if self._p2_enabled:
-                self._record_p2_market_data(event.event_time_ms)
+                self._record_p2_market_data(
+                    event.event_time_ms,
+                    symbol=event.symbol,
+                    event_kind=event.event_type,
+                )
                 if event.event_type == "trade":
                     self._p2_agg_trade_messages += 1
                 elif event.event_type == "liquidation":
@@ -1695,7 +1953,22 @@ class BinanceRealtimeMarketService:
             manifest_age = None
         with self._p2_metrics_lock:
             mark_price_data_symbols = sorted(
-                set(requested_candidates) & self._p2_mark_price_symbols
+                symbol
+                for symbol in requested_candidates
+                if (
+                    symbol in self._p2_candidate_epochs
+                    and int(
+                        self._p2_candidate_epochs[symbol].get(
+                            "last_mark_price_event_ms"
+                        )
+                        or 0
+                    )
+                    >= int(
+                        self._p2_candidate_epochs[symbol].get("activated_at_ms")
+                        or 0
+                    )
+                    > 0
+                )
             )
         output.update({
             "last_error": self.last_error,
@@ -1724,6 +1997,7 @@ class BinanceRealtimeMarketService:
             "unsubscribe_failure": int(ledger_stats["unsubscribe_failure"]),
             "ack_timeouts": int(ledger_stats["ack_timeouts"]),
             "subscription_generation": int(ledger_stats["subscription_generation"]),
+            "candidate_epochs": subscription_status.get("candidate_epochs", {}),
             "capacity_degraded": bool(subscription_status.get("capacity_degraded")),
             "candidate_capacity_degraded": bool(
                 subscription_status.get("candidate_capacity_degraded")
@@ -1737,6 +2011,14 @@ class BinanceRealtimeMarketService:
                 subscription_status.get("candidate_coverage_complete")
             ),
             "active_candidate_count": len(active_candidates),
+            "candidate_epoch_count": len(
+                subscription_status.get("candidate_epochs") or {}
+            ),
+            "candidate_epoch_coverage_ratio": (
+                len(subscription_status.get("candidate_epochs") or {})
+                / len(requested_candidates)
+                if requested_candidates else 1.0
+            ),
             "mark_price_coverage_ratio": (
                 len(active_candidates) / len(requested_candidates)
                 if requested_candidates else 1.0
@@ -1764,6 +2046,21 @@ class BinanceRealtimeMarketService:
             "last_evaluation_complete_count": int(
                 controller_stats.get("last_evaluation_complete_count") or 0
             ),
+            "last_evaluation_epoch_complete_count": int(
+                controller_stats.get("last_evaluation_epoch_complete_count") or 0
+            ),
+            "last_evaluation_funding_complete_count": int(
+                controller_stats.get("last_evaluation_funding_complete_count") or 0
+            ),
+            "aligned_evaluation_rounds": int(
+                controller_stats.get("aligned_evaluation_rounds") or 0
+            ),
+            "non_aligned_evaluation_skips": int(
+                controller_stats.get("non_aligned_evaluation_skips") or 0
+            ),
+            "last_aligned_evaluation_at": str(
+                controller_stats.get("last_aligned_evaluation_at") or ""
+            ),
             "last_evaluation_complete_ratio": _number(
                 controller_stats.get("last_evaluation_complete_ratio")
             ),
@@ -1782,8 +2079,13 @@ class BinanceRealtimeMarketService:
             "oi_budget_used": int(oi_stats.get("budget_used") or 0),
             "oi_budget_limit": int(oi_stats.get("budget_limit") or 0),
             "oi_budget_exhausted": int(oi_stats.get("budget_exhausted") or 0),
+            "oi_rate_limit_blocked": int(
+                oi_stats.get("rate_limit_blocked") or 0
+            ),
             "oi_http_429": int(oi_stats.get("http_429") or 0),
             "oi_http_418": int(oi_stats.get("http_418") or 0),
+            "oi_refresh_rounds": int(oi_stats.get("refresh_rounds") or 0),
+            "oi_last_round": dict(oi_stats.get("last_round") or {}),
         })
         return output
 
@@ -1948,8 +2250,16 @@ def run_realtime_market_session(
     stop = threading.Event()
     failures: list[str] = []
     interrupted = False
+    live_stats: dict[str, Any] | None = None
     started_at = time.time()
     started_mono = time.monotonic()
+
+    def capture_live_stats() -> dict[str, Any] | None:
+        try:
+            value = market_service.stats()
+        except Exception:
+            return None
+        return dict(value) if isinstance(value, Mapping) else None
 
     def run_service() -> None:
         try:
@@ -1974,16 +2284,20 @@ def run_realtime_market_session(
         while worker.is_alive() and not stop.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                live_stats = capture_live_stats()
                 stop.set()
                 break
             stop.wait(min(0.25, remaining))
     except KeyboardInterrupt:
         interrupted = True
+        live_stats = capture_live_stats()
         stop.set()
     except Exception as exc:
         failures.append(f"binance_realtime_market:session:{type(exc).__name__}")
         stop.set()
     finally:
+        if live_stats is None and worker_started and worker.is_alive():
+            live_stats = capture_live_stats()
         stop.set()
         if worker_started:
             worker.join(timeout=15)
@@ -1991,10 +2305,35 @@ def run_realtime_market_session(
             failures.append("binance_realtime_market:shutdown_timeout")
     ended_at = time.time()
     try:
-        stats = market_service.stats()
+        shutdown_stats = market_service.stats()
     except Exception as exc:
-        stats = {}
+        shutdown_stats = {}
         failures.append(f"binance_realtime_market:stats:{type(exc).__name__}")
+    # Post-shutdown counters are authoritative because the service may finish
+    # one final flush/evaluation after the deadline snapshot. Only connection
+    # health is taken from immediately before the intentional close.
+    stats = dict(shutdown_stats)
+    if live_stats is not None:
+        health_keys = (
+            "connection_state",
+            "candidate_coverage_complete",
+            "active_candidate_count",
+            "candidate_epoch_count",
+            "candidate_epoch_coverage_ratio",
+            "mark_price_coverage_ratio",
+            "mark_price_data_symbol_count",
+            "mark_price_data_coverage_ratio",
+            "force_order_active",
+            "active_stream_count",
+            "last_market_receive_ms",
+        )
+        for key in health_keys:
+            if key in live_stats:
+                stats[key] = live_stats[key]
+        stats["connection_state_at_stop"] = live_stats.get("connection_state")
+        stats["candidate_coverage_complete_at_stop"] = bool(
+            live_stats.get("candidate_coverage_complete")
+        )
     try:
         events = market_service.recent_events()
     except Exception as exc:

@@ -12,7 +12,7 @@ from shared.storage import JsonStore
 from .models import json_safe
 
 
-OBSERVATION_SCHEMA_VERSION = 1
+OBSERVATION_SCHEMA_VERSION = 2
 OBSERVATION_MODULE = "altcoin_contract_anomaly.p2"
 MAX_EMITTED_EVENT_IDS = 4_000
 
@@ -171,20 +171,50 @@ class RealtimeObservationState:
         symbol_states: Mapping[str, Mapping[str, Any]] | None = None,
         oi_samples: Mapping[str, list[Mapping[str, Any]]] | None = None,
     ) -> bool:
-        event_id = str(event.get("event_id") or "")
-        if not event_id:
-            raise ValueError("dry-run event_id is required")
+        return bool(self.record_event_batch(
+            [event],
+            symbol_states=symbol_states,
+            oi_samples=oi_samples,
+        ))
+
+    def record_event_batch(
+        self,
+        events: list[Mapping[str, Any]],
+        *,
+        last_valid_manifest: Mapping[str, Any] | None = None,
+        symbol_states: Mapping[str, Mapping[str, Any]] | None = None,
+        oi_samples: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    ) -> list[str]:
+        """Append an event batch before atomically advancing evaluation state."""
+
+        normalized: list[tuple[str, dict[str, Any]]] = []
+        for event in events:
+            event_id = str(event.get("event_id") or "")
+            if not event_id:
+                raise ValueError("dry-run event_id is required")
+            normalized.append((event_id, json_safe(dict(event))))
+        newly_appended: list[str] = []
         with self._lock:
             emitted = list(self._state.get("emitted_event_ids") or [])
-            if event_id in emitted:
-                return False
-            append_jsonl(
-                self.event_path,
-                json_safe(dict(event)),
-                max_lines=MAX_EMITTED_EVENT_IDS,
-            )
-            emitted.append(event_id)
-            self._state["emitted_event_ids"] = emitted[-MAX_EMITTED_EVENT_IDS:]
+            emitted_set = set(emitted)
+            for event_id, event in normalized:
+                if event_id in emitted_set:
+                    continue
+                append_jsonl(
+                    self.event_path,
+                    event,
+                    max_lines=MAX_EMITTED_EVENT_IDS,
+                )
+                # Keep the in-process WAL view current even if a later append
+                # fails. A restart recovers the same ID from the durable JSONL.
+                emitted.append(event_id)
+                emitted_set.add(event_id)
+                self._state["emitted_event_ids"] = emitted[-MAX_EMITTED_EVENT_IDS:]
+                newly_appended.append(event_id)
+            if last_valid_manifest is not None:
+                self._state["last_valid_manifest"] = json_safe(
+                    dict(last_valid_manifest)
+                )
             if symbol_states is not None:
                 self._state["symbol_states"] = json_safe({
                     str(symbol): dict(value) for symbol, value in symbol_states.items()
@@ -195,8 +225,7 @@ class RealtimeObservationState:
                     for symbol, values in oi_samples.items()
                 })
             self.store.save(self.state_path, json_safe(self._state))
-            return True
-
+        return newly_appended
 
 __all__ = [
     "OBSERVATION_MODULE",

@@ -11,6 +11,43 @@ class AltcoinAnomalyConfigError(ValueError):
     pass
 
 
+def protected_runtime_paths(settings: Any) -> dict[Path, tuple[str, ...]]:
+    """Return every configured runtime file path keyed by its canonical path."""
+
+    discovered: dict[Path, list[str]] = {}
+    for name, value in vars(settings).items():
+        if not name.endswith("_path") or not isinstance(value, Path):
+            continue
+        resolved = value.resolve(strict=False)
+        discovered.setdefault(resolved, []).append(name)
+        if value.suffix.lower() in {".json", ".jsonl"}:
+            lock_path = value.with_name(f"{value.name}.lock").resolve(strict=False)
+            discovered.setdefault(lock_path, []).append(f"{name}.lock")
+        if value.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            for sidecar_suffix in ("-wal", "-shm", "-journal"):
+                sidecar = Path(f"{value}{sidecar_suffix}").resolve(strict=False)
+                discovered.setdefault(sidecar, []).append(
+                    f"{name}{sidecar_suffix}"
+                )
+    return {
+        path: tuple(sorted(names))
+        for path, names in discovered.items()
+    }
+
+
+def validate_output_path(settings: Any, output_path: str | Path | None) -> None:
+    """Fail before network/state startup when an audit output aliases state."""
+
+    if output_path is None:
+        return
+    resolved = Path(output_path).resolve(strict=False)
+    conflicts = protected_runtime_paths(settings).get(resolved)
+    if conflicts:
+        raise AltcoinAnomalyConfigError(
+            "--output不能覆盖运行数据路径：" + "、".join(conflicts)
+        )
+
+
 _INTEGER_ENV_RANGES = {
     "ALTCOIN_CONTRACT_ANOMALY_CMC_CONNECT_TIMEOUT_SEC": (1, 120),
     "ALTCOIN_CONTRACT_ANOMALY_CMC_READ_TIMEOUT_SEC": (1, 180),
@@ -30,7 +67,8 @@ _INTEGER_ENV_RANGES = {
     "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC": (1, 120),
     "ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS": (1, 1_024),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_DATA_MAX_AGE_SEC": (1, 3_600),
-    "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC": (1, 86_400),
+    "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC": (1, 300),
+    "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC": (300, 300),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC": (1, 86_400),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_WORKERS": (1, 16),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_REQUEST_BUDGET": (1, 5_000),
@@ -139,6 +177,7 @@ class AltcoinAnomalyConfig:
     subscription_ack_timeout_sec: int
     max_streams: int
     realtime_data_max_age_sec: int
+    funding_max_gap_sec: int
     oi_refresh_sec: int
     realtime_oi_max_age_sec: int
     realtime_oi_workers: int
@@ -231,6 +270,9 @@ class AltcoinAnomalyConfig:
             realtime_data_max_age_sec=int(
                 settings.altcoin_contract_anomaly_realtime_data_max_age_sec
             ),
+            funding_max_gap_sec=int(
+                settings.altcoin_contract_anomaly_funding_max_gap_sec
+            ),
             oi_refresh_sec=int(
                 settings.altcoin_contract_anomaly_oi_refresh_sec
             ),
@@ -305,24 +347,24 @@ class AltcoinAnomalyConfig:
             ),
         )
         if realtime or config.realtime_enabled:
-            protected_paths: dict[Path, str] = {}
-            for name, value in vars(settings).items():
-                if name in {
-                    "base_dir",
-                    "data_dir",
-                    "altcoin_contract_anomaly_realtime_state_path",
-                    "altcoin_contract_anomaly_realtime_event_path",
-                } or not isinstance(value, Path):
-                    continue
-                protected_paths[value.resolve(strict=False)] = name
+            protected_paths = protected_runtime_paths(settings)
             for label, path in (
                 ("P2状态文件", config.realtime_state_path),
                 ("P2事件文件", config.realtime_event_path),
             ):
-                conflict = protected_paths.get(path.resolve(strict=False))
+                own_field = (
+                    "altcoin_contract_anomaly_realtime_state_path"
+                    if label == "P2状态文件"
+                    else "altcoin_contract_anomaly_realtime_event_path"
+                )
+                conflict = tuple(
+                    name
+                    for name in protected_paths.get(path.resolve(strict=False), ())
+                    if name != own_field
+                )
                 if conflict:
                     raise AltcoinAnomalyConfigError(
-                        f"{label}不能与现有运行路径冲突：{conflict}"
+                        f"{label}不能与现有运行路径冲突：{'、'.join(conflict)}"
                     )
         config.validate(cache_only=cache_only, realtime=realtime)
         return config
@@ -415,7 +457,9 @@ class AltcoinAnomalyConfig:
             raise AltcoinAnomalyConfigError("实时订阅流数量超出范围")
         if not 1 <= self.realtime_data_max_age_sec <= 3_600:
             raise AltcoinAnomalyConfigError("实时数据新鲜度超出范围")
-        if not 1 <= self.oi_refresh_sec <= self.realtime_oi_max_age_sec <= 86_400:
+        if not 1 <= self.funding_max_gap_sec <= 300:
+            raise AltcoinAnomalyConfigError("资金费率窗口最大间隔超出范围")
+        if self.oi_refresh_sec != 300 or not 300 <= self.realtime_oi_max_age_sec <= 86_400:
             raise AltcoinAnomalyConfigError("实时OI刷新或新鲜度配置无效")
         if not 1 <= self.realtime_oi_workers <= 16:
             raise AltcoinAnomalyConfigError("实时OI并发必须在1到16之间")
@@ -465,4 +509,9 @@ class AltcoinAnomalyConfig:
             raise AltcoinAnomalyConfigError("候选清单新鲜度不能短于P2 Smoke时长")
 
 
-__all__ = ["AltcoinAnomalyConfig", "AltcoinAnomalyConfigError"]
+__all__ = [
+    "AltcoinAnomalyConfig",
+    "AltcoinAnomalyConfigError",
+    "protected_runtime_paths",
+    "validate_output_path",
+]

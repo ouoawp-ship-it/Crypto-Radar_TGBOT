@@ -14,8 +14,14 @@ from radars.altcoin_contract_anomaly.realtime import (
     CandidateMarkPriceBook,
     CandidateOiSampler,
     ClosedRealtimeFeatureBuilder,
+    P2_RULES_VERSION,
+    P2_SCHEMA_VERSION,
     ValidatedCandidateManifest,
     run_realtime_confirmation_session,
+)
+from radars.altcoin_contract_anomaly.realtime_state import (
+    OBSERVATION_MODULE,
+    RealtimeObservationState,
 )
 from radars.altcoin_contract_anomaly.rules import (
     HIGH_LEVERAGE_CANDIDATE,
@@ -423,7 +429,7 @@ class OiSamplerTests(unittest.TestCase):
         self.assertEqual(value["data_quality"], "partial")
         self.assertIsNone(value["oi_change_5m"])
 
-    def test_oi_delta_uses_fresh_current_point_and_one_adjacent_baseline(self) -> None:
+    def test_oi_delta_requires_pair_for_the_requested_closed_boundary(self) -> None:
         boundary = NOW // 300 * 300
         source = FakeOiSource({
             "TESTUSDT": [
@@ -440,17 +446,53 @@ class OiSamplerTests(unittest.TestCase):
                 market_store=FakeMarketStore(),
                 source_factory=lambda *_args: source,
             )
-            fresh = sampler.refresh(["TESTUSDT"], now_ts=boundary + 600)["TESTUSDT"]
-            stale = sampler._value(
-                "TESTUSDT",
-                now_ts=boundary + 601,
-                max_age=600,
-            )
+            fresh = sampler.refresh(["TESTUSDT"], now_ts=boundary + 1)["TESTUSDT"]
+            next_boundary = sampler.refresh(
+                ["TESTUSDT"], now_ts=boundary + 301
+            )["TESTUSDT"]
 
         self.assertEqual(fresh["data_quality"], "complete")
         self.assertAlmostEqual(fresh["oi_change_5m"], 0.10)
-        self.assertEqual(fresh["data_age_sec"], 600.0)
-        self.assertEqual(stale["data_quality"], "partial")
+        self.assertEqual(fresh["data_age_sec"], 1.0)
+        self.assertEqual(next_boundary["data_quality"], "partial")
+        self.assertIsNone(next_boundary["oi_change_5m"])
+
+    def test_exact_oi_pair_cannot_bypass_configured_freshness(self) -> None:
+        boundary = NOW // 300 * 300
+        sampler = CandidateOiSampler(
+            settings(
+                Path("unused"),
+                altcoin_contract_anomaly_realtime_oi_max_age_sec=300,
+            ),
+            market_store=FakeMarketStore(),
+            samples={
+                "TESTUSDT": [
+                    {
+                        "observed_at": boundary - 300,
+                        "oi_value_usd": 100.0,
+                        "source": "binance_open_interest_hist.sumOpenInterestValue",
+                        "exact_5m": True,
+                    },
+                    {
+                        "observed_at": boundary,
+                        "oi_value_usd": 110.0,
+                        "source": "binance_open_interest_hist.sumOpenInterestValue",
+                        "exact_5m": True,
+                    },
+                ],
+            },
+        )
+
+        value = sampler._value(
+            "TESTUSDT",
+            now_ts=boundary + 301,
+            max_age=300,
+            target_boundary=boundary,
+        )
+
+        self.assertEqual(value["data_quality"], "stale")
+        self.assertIsNone(value["oi_change_5m"])
+        self.assertIn("oi_change_5m", value["stale_fields"])
 
     def test_market_cache_rejects_non_binance_and_mixed_oi_sources(self) -> None:
         boundary = NOW // 300 * 300
@@ -629,21 +671,201 @@ class OiSamplerTests(unittest.TestCase):
         self.assertEqual(sampler.last_stats["budget_exhausted"], 1)
         self.assertEqual(sampler.last_stats["failures"], 1)
 
+    def test_epoch_before_first_eligible_oi_boundary_does_not_spend_budget(self) -> None:
+        boundary = NOW // 300 * 300
+        eligible = boundary + 300
+        source = FakeOiSource({})
+        epoch = {
+            "TESTUSDT": {
+                "epoch_id": "session:1:1",
+                "eligible_5m_boundary_ms": eligible * 1_000,
+            }
+        }
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(Path(tmp)),
+                market_store=FakeMarketStore(),
+                source_factory=lambda *_args: source,
+            )
+            value = sampler.refresh(
+                ["TESTUSDT"],
+                now_ts=boundary + 1,
+                target_boundaries={"TESTUSDT": boundary},
+                candidate_epochs=epoch,
+            )["TESTUSDT"]
+
+        self.assertEqual(source.calls, [])
+        self.assertEqual(sampler.last_stats["requests"], 0)
+        self.assertEqual(sampler.last_stats["budget_used"], 0)
+        self.assertEqual(value["data_quality"], "partial")
+
+    def test_refreshes_each_closed_five_minute_boundary_with_session_cumulative_budget(self) -> None:
+        boundary = NOW // 300 * 300
+
+        class BoundaryOiSource(FakeOiSource):
+            def __init__(self) -> None:
+                super().__init__({})
+
+            def open_interest_hist(self, symbol, period="5m", limit=2):
+                call_index = len(self.calls)
+                self.calls.append(symbol)
+                self.budget.consume("open_interest_hist")
+                current_boundary = boundary + call_index * 300
+                previous_value = 100.0 * (1.10 ** call_index)
+                current_value = previous_value * 1.10
+                return [
+                    {
+                        "sumOpenInterestValue": str(previous_value),
+                        "timestamp": (current_boundary - 300) * 1000,
+                    },
+                    {
+                        "sumOpenInterestValue": str(current_value),
+                        "timestamp": current_boundary * 1000,
+                    },
+                ]
+
+        source = BoundaryOiSource()
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(
+                    Path(tmp),
+                    altcoin_contract_anomaly_realtime_oi_request_budget=3,
+                    altcoin_contract_anomaly_realtime_oi_max_age_sec=900,
+                ),
+                market_store=FakeMarketStore(),
+                source_factory=lambda *_args: source,
+            )
+
+            first = sampler.refresh(["TESTUSDT"], now_ts=boundary + 1)["TESTUSDT"]
+            second = sampler.refresh(["TESTUSDT"], now_ts=boundary + 301)["TESTUSDT"]
+            third = sampler.refresh(["TESTUSDT"], now_ts=boundary + 601)["TESTUSDT"]
+
+            self.assertEqual(source.calls, ["TESTUSDT"] * 3)
+            for value in (first, second, third):
+                self.assertEqual(value["data_quality"], "complete")
+                self.assertAlmostEqual(value["oi_change_5m"], 0.10)
+
+            cumulative = sampler.last_stats
+            self.assertEqual(cumulative["refresh_rounds"], 3)
+            self.assertEqual(cumulative["requests"], 3)
+            self.assertEqual(cumulative["successes"], 3)
+            self.assertEqual(cumulative["failures"], 0)
+            self.assertEqual(cumulative["budget_used"], 3)
+            self.assertEqual(cumulative["budget_limit"], 3)
+            self.assertEqual(cumulative["http_429"], 0)
+            self.assertEqual(cumulative["http_418"], 0)
+            self.assertEqual(cumulative["last_round"]["requests"], 1)
+            self.assertEqual(cumulative["last_round"]["successes"], 1)
+
+            # A new closed boundary cannot reuse the preceding pair once the
+            # bounded session has spent its request budget.
+            exhausted = sampler.refresh(
+                ["TESTUSDT"], now_ts=boundary + 901
+            )["TESTUSDT"]
+
+        self.assertEqual(source.calls, ["TESTUSDT"] * 3)
+        self.assertEqual(exhausted["data_quality"], "partial")
+        self.assertIsNone(exhausted.get("oi_change_5m"))
+        self.assertEqual(sampler.last_stats["requests"], 3)
+        self.assertEqual(sampler.last_stats["budget_used"], 3)
+        self.assertEqual(sampler.last_stats["budget_exhausted"], 1)
+        self.assertEqual(sampler.last_stats["failures"], 1)
+        self.assertEqual(sampler.last_stats["last_round"]["requests"], 0)
+        self.assertEqual(sampler.last_stats["last_round"]["budget_exhausted"], 1)
+
+    def test_rate_limit_latch_is_not_reported_as_budget_exhaustion(self) -> None:
+        boundary = NOW // 300 * 300
+
+        class RateLimitedSource(FakeOiSource):
+            def open_interest_hist(self, symbol, period="5m", limit=2, **_kwargs):
+                self.calls.append(symbol)
+                self.budget.consume("open_interest_hist")
+                self.quality.fail("open_interest_hist", "status=429")
+                return []
+
+        source = RateLimitedSource({})
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(
+                    Path(tmp),
+                    altcoin_contract_anomaly_realtime_oi_request_budget=3,
+                ),
+                market_store=FakeMarketStore(),
+                source_factory=lambda *_args: source,
+            )
+            first = sampler.refresh(["TESTUSDT"], now_ts=boundary + 1)
+            second = sampler.refresh(["TESTUSDT"], now_ts=boundary + 301)
+
+        self.assertEqual(source.calls, ["TESTUSDT"])
+        self.assertEqual(first["TESTUSDT"]["data_quality"], "partial")
+        self.assertEqual(second["TESTUSDT"]["data_quality"], "partial")
+        self.assertEqual(sampler.last_stats["requests"], 1)
+        self.assertEqual(sampler.last_stats["budget_used"], 1)
+        self.assertEqual(sampler.last_stats["budget_exhausted"], 0)
+        self.assertEqual(sampler.last_stats["rate_limit_blocked"], 1)
+        self.assertEqual(sampler.last_stats["last_round"]["rate_limit_blocked"], 1)
+
+    def test_rate_limit_status_counts_are_not_truncated_by_warning_cap(self) -> None:
+        boundary = NOW // 300 * 300
+
+        class ConcurrentRateLimitedSource(FakeOiSource):
+            def open_interest_hist(self, symbol, period="5m", limit=2, **_kwargs):
+                self.calls.append(symbol)
+                self.quality.fail("openInterestHist", "status=429")
+                return []
+
+        source = ConcurrentRateLimitedSource({})
+        candidates = [f"T{index:03d}USDT" for index in range(16)]
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(
+                    Path(tmp),
+                    altcoin_contract_anomaly_realtime_oi_workers=16,
+                    altcoin_contract_anomaly_realtime_oi_request_budget=20,
+                ),
+                market_store=FakeMarketStore(),
+                source_factory=lambda *_args: source,
+            )
+            sampler.refresh(candidates, now_ts=boundary + 1)
+
+        self.assertEqual(len(source.calls), 16)
+        self.assertEqual(len(source.quality.snapshot()["warnings"]), 12)
+        self.assertEqual(sampler.last_stats["requests"], 16)
+        self.assertEqual(sampler.last_stats["http_429"], 16)
+
+    def test_candidate_count_updates_even_without_a_refresh_round(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sampler = CandidateOiSampler(
+                settings(Path(tmp)),
+                market_store=FakeMarketStore(),
+            )
+            values = sampler.refresh([], now_ts=NOW)
+
+        self.assertEqual(values, {})
+        self.assertEqual(sampler.last_stats["candidate_count"], 0)
+
 
 class MarkPriceBookTests(unittest.TestCase):
     def test_rejects_duplicate_and_old_updates_and_uses_distinct_upstream_times(self) -> None:
         book = CandidateMarkPriceBook()
-        first = {"e": "markPriceUpdate", "s": "TESTUSDT", "p": "1", "r": "-0.001", "E": 1_000, "T": 2_000}
-        second = {"e": "markPriceUpdate", "s": "TESTUSDT", "p": "1.1", "r": "-0.0012", "E": 2_000, "T": 3_000}
+        first = {"e": "markPriceUpdate", "s": "TESTUSDT", "p": "1", "r": "-0.001", "E": 1_000, "T": 900_000}
+        second = {"e": "markPriceUpdate", "s": "TESTUSDT", "p": "1.1", "r": "-0.0012", "E": 301_000, "T": 900_000}
 
-        self.assertTrue(book.apply(first))
-        self.assertFalse(book.apply(first))
-        self.assertTrue(book.apply(second))
-        self.assertFalse(book.apply({**first, "E": 1_500}))
-        row = book.snapshot("TESTUSDT")
+        self.assertTrue(book.apply(first, subscription_epoch="epoch-1"))
+        self.assertFalse(book.apply(first, subscription_epoch="epoch-1"))
+        self.assertTrue(book.apply(second, subscription_epoch="epoch-1"))
+        self.assertFalse(book.apply({**first, "E": 1_500}, subscription_epoch="epoch-1"))
+        row = book.snapshot_window(
+            "TESTUSDT",
+            window_end_ms=301_000,
+            window_sec=300,
+            subscription_epoch="epoch-1",
+            epoch_started_ms=1_000,
+            max_gap_ms=300_000,
+        )
 
-        self.assertAlmostEqual(row["funding_rate_change"], -0.0002)
-        self.assertEqual(row["previous_event_time_ms"], 1_000)
+        self.assertAlmostEqual(row["funding_rate_change_5m"], -0.0002)
+        self.assertEqual(row["funding_window_start_event_time_ms"], 1_000)
 
     def test_controller_accepts_normalized_snapshot_from_shared_mark_book(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -671,21 +893,37 @@ class MarkPriceBookTests(unittest.TestCase):
                 "event_time_ms": (NOW + 1) * 1_000,
             }
 
-            self.assertTrue(controller.handle_mark_price(first))
-            self.assertTrue(controller.handle_mark_price(second))
+            self.assertTrue(controller.handle_mark_price(first, subscription_epoch="epoch-1"))
+            self.assertTrue(controller.handle_mark_price(second, subscription_epoch="epoch-1"))
             self.assertFalse(controller.handle_mark_price(first))
-            row = controller.mark_price_book.snapshot("TESTUSDT")
+            row = controller.mark_price_book.snapshot_window(
+                "TESTUSDT",
+                window_end_ms=(NOW + 1) * 1_000,
+                window_sec=1,
+                subscription_epoch="epoch-1",
+                epoch_started_ms=NOW * 1_000,
+                max_gap_ms=1_000,
+            )
 
-        self.assertAlmostEqual(row["funding_rate_change"], -0.0002)
-        self.assertEqual(row["funding_previous_event_time_ms"], NOW * 1_000)
+        self.assertAlmostEqual(row["funding_rate_change_5m"], -0.0002)
+        self.assertEqual(row["funding_window_start_event_time_ms"], NOW * 1_000)
 
 
 class StaticFeatureBuilder:
     def __init__(self, row):
         self.row = row
 
-    def build_many(self, symbols, *, now_ts):
-        return {symbol: dict(self.row) for symbol in symbols}
+    def build_many(self, symbols, *, now_ts, candidate_epochs=None):
+        epochs = candidate_epochs or {}
+        return {
+            symbol: {
+                **dict(self.row),
+                "subscription_epoch": str(
+                    dict(epochs.get(symbol) or {}).get("epoch_id") or ""
+                ),
+            }
+            for symbol in symbols
+        }
 
 
 class StaticOiSampler:
@@ -694,7 +932,15 @@ class StaticOiSampler:
         self.samples = {}
         self.last_stats = {"requests": 0, "cache_hits": 1}
 
-    def refresh(self, symbols, *, now_ts):
+    def refresh(
+        self,
+        symbols,
+        *,
+        now_ts,
+        target_boundaries=None,
+        candidate_epochs=None,
+    ):
+        epochs = candidate_epochs or {}
         return {symbol: {
             "symbol": symbol,
             "oi_value_usd": 1_000_000,
@@ -702,6 +948,9 @@ class StaticOiSampler:
             "updated_at": iso(int(now_ts)),
             "change_start_at": iso(int(now_ts) - 300),
             "change_end_at": iso(int(now_ts)),
+            "subscription_epoch": str(
+                dict(epochs.get(symbol) or {}).get("epoch_id") or ""
+            ),
             "data_quality": "complete",
             "missing_fields": [],
         } for symbol in symbols}
@@ -713,13 +962,35 @@ class StaticMarkBook:
             "symbol": "TESTUSDT",
             "mark_price": 1.0,
             "funding_rate": funding,
-            "funding_rate_change": change,
+            "funding_rate_start_5m": funding - change,
+            "funding_rate_end_5m": funding,
+            "funding_rate_change_5m": change,
+            "funding_rate_changed_5m": bool(change),
+            "funding_window_quality": "complete",
             "event_time_ms": now * 1000,
-            "funding_previous_event_time_ms": (now - 1) * 1000,
+            "funding_window_start_event_time_ms": (now - 300) * 1000,
+            "funding_window_end_event_time_ms": now * 1000,
         }
 
     def snapshot(self, _symbol):
         return dict(self.row)
+
+    def snapshot_window(
+        self,
+        _symbol,
+        *,
+        window_end_ms,
+        window_sec,
+        subscription_epoch,
+        epoch_started_ms,
+        max_gap_ms,
+    ):
+        return {
+            **dict(self.row),
+            "subscription_epoch": subscription_epoch,
+            "funding_window_start_ms": window_end_ms - window_sec * 1000,
+            "funding_window_end_ms": window_end_ms,
+        }
 
 
 def feature(**overrides):
@@ -740,13 +1011,18 @@ def feature(**overrides):
         "data_quality": "complete",
         "missing_fields": [],
         "stale_fields": [],
-        "source_timestamps": {"closed_1m_end": iso(NOW)},
+        "source_timestamps": {
+            "closed_1m_end": iso(NOW),
+            "closed_5m_start": iso(NOW - 300),
+            "closed_5m_end": iso(NOW),
+        },
     }
     values.update(overrides)
     return values
 
 
 def subscription(now=NOW):
+    activated_at_ms = (now - 600) * 1000
     return {
         "connected": True,
         "last_receive_ms": now * 1000,
@@ -754,6 +1030,17 @@ def subscription(now=NOW):
         "candidate_coverage_complete": True,
         "force_order_active": True,
         "subscription_generation": 3,
+        "candidate_epochs": {
+            "TESTUSDT": {
+                "epoch_id": "test-session:3:1",
+                "activated_at_ms": activated_at_ms,
+                "eligible_1m_bucket_start_ms": activated_at_ms,
+                "eligible_5m_boundary_ms": activated_at_ms,
+                "subscription_generation": 3,
+                "last_agg_trade_event_ms": now * 1000,
+                "last_mark_price_event_ms": now * 1000,
+            }
+        },
     }
 
 
@@ -772,6 +1059,37 @@ def controller_for(root: Path, row: CandidateSnapshot, feature_row, mark=None, o
     controller.feature_builder = StaticFeatureBuilder(feature_row)
     controller.oi_sampler = StaticOiSampler(oi_change)
     return controller
+
+
+class ObservationStateVersionTests(unittest.TestCase):
+    def test_schema_v1_state_is_reset_but_durable_event_ids_are_recovered(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / "state.json"
+            event_path = root / "events.jsonl"
+            state_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "module": OBSERVATION_MODULE,
+                    "last_valid_manifest": {"candidate_pool_hash": "old"},
+                    "symbol_states": {"TESTUSDT": {"last_evaluation_key": "old"}},
+                    "oi_samples": {"TESTUSDT": [{"oi_value_usd": 1}]},
+                    "emitted_event_ids": ["state-only-id"],
+                }),
+                encoding="utf-8",
+            )
+            event_path.write_text(
+                json.dumps({"event_id": "durable-jsonl-id"}) + "\n",
+                encoding="utf-8",
+            )
+
+            state = RealtimeObservationState(state_path, event_path)
+
+        self.assertIsNone(state.last_valid_manifest)
+        self.assertEqual(state.symbol_states, {})
+        self.assertEqual(state.oi_samples, {})
+        self.assertFalse(state.has_event("state-only-id"))
+        self.assertTrue(state.has_event("durable-jsonl-id"))
 
 
 class DryRunEventTests(unittest.TestCase):
@@ -809,6 +1127,8 @@ class DryRunEventTests(unittest.TestCase):
             fuel = controller_for(Path(tmp), candidate(), feature())
             fuel_events = fuel.evaluate(subscription(), now_ts=NOW)
         self.assertEqual([event["event_type"] for event in fuel_events], ["short_fuel_building"])
+        self.assertEqual(fuel_events[0]["schema_version"], P2_SCHEMA_VERSION)
+        self.assertEqual(fuel_events[0]["rules_version"], P2_RULES_VERSION)
         self.assertEqual(len(fuel_events[0]["confirmed_factor_families"]), len(set(fuel_events[0]["confirmed_factor_families"])))
 
         squeeze_feature = feature(
@@ -875,6 +1195,90 @@ class DryRunEventTests(unittest.TestCase):
         self.assertEqual(crowd["direction"], "down")
         self.assertGreaterEqual(len(crowd["confirmed_factor_families"]), 3)
 
+    def test_multi_event_window_recovers_after_first_append_without_duplicate(self) -> None:
+        dual_event_feature = feature(
+            price_change_1m=0.02,
+            price_change_5m=0.03,
+            aggressive_buy_ratio_5m=0.70,
+            aggressive_sell_ratio_5m=0.30,
+            cvd_5m_usd=200,
+            short_liquidation_5m_usd=200_000,
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configured = settings(root)
+            first_controller = controller_for(
+                root,
+                candidate(ratio=0.60),
+                dual_event_feature,
+                oi_change=-0.05,
+            )
+
+            from radars.altcoin_contract_anomaly import realtime_state
+
+            real_append = realtime_state.append_jsonl
+            append_calls = 0
+
+            def crash_before_second_append(*args, **kwargs):
+                nonlocal append_calls
+                append_calls += 1
+                if append_calls == 2:
+                    raise RuntimeError("simulated crash after first event append")
+                return real_append(*args, **kwargs)
+
+            with patch(
+                "radars.altcoin_contract_anomaly.realtime_state.append_jsonl",
+                side_effect=crash_before_second_append,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                    first_controller.evaluate(subscription(), now_ts=NOW)
+
+            event_path = root / "p2-events.jsonl"
+            first_records = [
+                json.loads(line)
+                for line in event_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(first_records), 1)
+
+            # Reconstruct both the persistent state and controller. The JSONL
+            # recovers the first event ID, while the evaluation key must remain
+            # uncommitted so the missing event is generated and appended.
+            rebuilt = AltcoinRealtimeController(
+                configured,
+                feature_store=FakeFeatureStore([]),
+                market_store=FakeMarketStore(),
+                mark_price_book=StaticMarkBook(),
+            )
+            poll_result = rebuilt.poll_manifest(now_ts=NOW)
+            self.assertEqual(poll_result["status"], "valid_unchanged")
+            rebuilt.feature_builder = StaticFeatureBuilder(dual_event_feature)
+            rebuilt.oi_sampler = StaticOiSampler(-0.05)
+
+            recovered_events = rebuilt.evaluate(subscription(), now_ts=NOW)
+            duplicate = rebuilt.evaluate(subscription(), now_ts=NOW)
+            final_records = [
+                json.loads(line)
+                for line in event_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(len(recovered_events), 1)
+        self.assertEqual(duplicate, [])
+        self.assertEqual(len(final_records), 2)
+        self.assertEqual(
+            len({record["event_id"] for record in final_records}),
+            2,
+        )
+        self.assertEqual(
+            {record["event_type"] for record in final_records},
+            {"short_squeeze_ignition", "high_leverage_anomaly"},
+        )
+        self.assertNotEqual(
+            recovered_events[0]["event_id"],
+            first_records[0]["event_id"],
+        )
+
     def test_weakening_requires_prior_confirmation_two_closed_windows_and_is_restart_idempotent(self) -> None:
         ignition = feature(
             price_change_1m=0.02,
@@ -893,15 +1297,35 @@ class DryRunEventTests(unittest.TestCase):
             root = Path(tmp)
             controller = controller_for(root, candidate(), ignition, oi_change=-0.05)
             controller.evaluate(subscription(), now_ts=NOW)
-            controller.feature_builder.row = {**neutral, "window_start": iso(NOW), "window_end": iso(NOW + 60)}
+            first_end = NOW + 300
+            controller.feature_builder.row = {
+                **neutral,
+                "window_start": iso(first_end - 300),
+                "window_end": iso(first_end),
+                "source_timestamps": {
+                    "closed_1m_end": iso(first_end),
+                    "closed_5m_start": iso(first_end - 300),
+                    "closed_5m_end": iso(first_end),
+                },
+            }
             controller.oi_sampler.change = 0.0
-            controller.mark_price_book.row["event_time_ms"] = (NOW + 60) * 1000
-            controller.mark_price_book.row["funding_rate_change"] = 0.0
-            first = controller.evaluate(subscription(NOW + 60), now_ts=NOW + 60)
-            same_window = controller.evaluate(subscription(NOW + 60), now_ts=NOW + 60)
-            controller.feature_builder.row = {**neutral, "window_start": iso(NOW + 60), "window_end": iso(NOW + 120)}
-            controller.mark_price_book.row["event_time_ms"] = (NOW + 120) * 1000
-            second = controller.evaluate(subscription(NOW + 120), now_ts=NOW + 120)
+            controller.mark_price_book.row["event_time_ms"] = first_end * 1000
+            controller.mark_price_book.row["funding_rate_change_5m"] = 0.0
+            first = controller.evaluate(subscription(first_end), now_ts=first_end)
+            same_window = controller.evaluate(subscription(first_end), now_ts=first_end)
+            second_end = first_end + 300
+            controller.feature_builder.row = {
+                **neutral,
+                "window_start": iso(second_end - 300),
+                "window_end": iso(second_end),
+                "source_timestamps": {
+                    "closed_1m_end": iso(second_end),
+                    "closed_5m_start": iso(second_end - 300),
+                    "closed_5m_end": iso(second_end),
+                },
+            }
+            controller.mark_price_book.row["event_time_ms"] = second_end * 1000
+            second = controller.evaluate(subscription(second_end), now_ts=second_end)
 
         self.assertEqual(first, [])
         self.assertEqual(same_window, [])
@@ -945,6 +1369,43 @@ class DryRunEventTests(unittest.TestCase):
         self.assertGreater(stats["data_quality_skips"], 0)
         self.assertEqual(stats["data_quality_skip_reasons"]["websocket_stale"], 1)
         self.assertEqual(stats["manifest_age_sec"], 0.0)
+
+    def test_current_epoch_requires_candidate_data_not_only_other_symbol_freshness(self) -> None:
+        with TemporaryDirectory() as tmp:
+            controller = controller_for(Path(tmp), candidate(), feature())
+            other_symbol_only = subscription()
+            other_symbol_only["candidate_epochs"]["TESTUSDT"].update({
+                "last_agg_trade_event_ms": 0,
+                "last_mark_price_event_ms": 0,
+            })
+
+            blocked = controller.evaluate(other_symbol_only, now_ts=NOW)
+            accepted = controller.evaluate(subscription(), now_ts=NOW)
+
+        self.assertEqual(blocked, [])
+        self.assertEqual(
+            [event["event_type"] for event in accepted],
+            ["short_fuel_building"],
+        )
+        self.assertEqual(
+            accepted[0]["candidate_subscription_epoch"],
+            "test-session:3:1",
+        )
+
+    def test_non_aligned_minute_does_not_erase_latest_complete_smoke_evaluation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            controller = controller_for(Path(tmp), candidate(), feature())
+            controller.evaluate(subscription(), now_ts=NOW)
+            aligned = controller.stats()
+
+            events = controller.evaluate(subscription(NOW + 60), now_ts=NOW + 60)
+            after = controller.stats()
+
+        self.assertEqual(events, [])
+        self.assertEqual(aligned["last_evaluation_complete_count"], 1)
+        self.assertEqual(after["last_evaluation_complete_count"], 1)
+        self.assertEqual(after["aligned_evaluation_rounds"], 1)
+        self.assertEqual(after["non_aligned_evaluation_skips"], 1)
 
     def test_base_capacity_trim_does_not_block_complete_candidate_coverage(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -990,8 +1451,28 @@ class DryRunEventTests(unittest.TestCase):
                 "last_evaluation_candidate_count": 1,
                 "last_evaluation_complete_count": 1,
                 "last_evaluation_complete_ratio": 1.0,
+                "last_evaluation_epoch_complete_count": 1,
+                "last_evaluation_funding_complete_count": 1,
                 "force_order_subscription_count": 1,
                 "event_counts": {"short_squeeze_ignition": 0},
+                "oi_candidate_count": 1,
+                "oi_requests": 3,
+                "oi_cache_hits": 1,
+                "oi_successes": 2,
+                "oi_failures": 1,
+                "oi_budget_used": 3,
+                "oi_budget_limit": 50,
+                "oi_budget_exhausted": 0,
+                "oi_rate_limit_blocked": 1,
+                "oi_http_429": 1,
+                "oi_http_418": 0,
+                "oi_refresh_rounds": 2,
+                "oi_last_round": {
+                    "requests": 0,
+                    "successes": 0,
+                    "failures": 1,
+                    "rate_limit_blocked": 1,
+                },
             },
         }
         manifest = ValidatedCandidateManifest(
@@ -1015,21 +1496,69 @@ class DryRunEventTests(unittest.TestCase):
                 patch(
                     "radars.altcoin_contract_anomaly.realtime.run_realtime_market_session",
                     return_value=service_payload,
-                ),
+                ) as market_session,
+                patch(
+                    "radars.altcoin_contract_anomaly.realtime.RealtimeFeatureStore"
+                ) as feature_store_type,
+                patch(
+                    "radars.altcoin_contract_anomaly.realtime.AltcoinRealtimeController"
+                ) as controller_type,
+                patch(
+                    "radars.altcoin_contract_anomaly.realtime.BinanceRealtimeMarketService"
+                ) as service_type,
             ):
                 consumer_type.return_value.poll.return_value = {
                     "status": "valid_changed"
                 }
                 consumer_type.return_value.last_valid = manifest
-                return run_realtime_confirmation_session(Settings(), duration_sec=30)
+                runtime_settings = Settings(
+                    altcoin_contract_anomaly_enable=True,
+                    altcoin_contract_anomaly_realtime_enable=True,
+                )
+                result = run_realtime_confirmation_session(
+                    runtime_settings,
+                    duration_sec=30,
+                )
+                feature_store_type.assert_called_once_with(
+                    runtime_settings.realtime_features_db_path
+                )
+                controller_type.assert_called_once_with(
+                    runtime_settings,
+                    feature_store=feature_store_type.return_value,
+                    manifest_consumer=consumer_type.return_value,
+                )
+                service_type.assert_called_once_with(
+                    runtime_settings,
+                    store=feature_store_type.return_value,
+                    realtime_controller=controller_type.return_value,
+                )
+                market_session.assert_called_once_with(
+                    runtime_settings,
+                    duration_sec=30,
+                    service=service_type.return_value,
+                )
+                return result
 
         result = run(service_result)
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["schema_version"], P2_SCHEMA_VERSION)
+        self.assertEqual(result["rules_version"], P2_RULES_VERSION)
         self.assertEqual(result["candidate_pool_hash"], "pool-hash")
         self.assertEqual(result["subscriptions"]["force_order_subscription_count"], 1)
         self.assertFalse(result["telegram"]["enabled"])
+        self.assertEqual(result["data_quality"]["oi"]["requests"], 3)
+        self.assertEqual(result["data_quality"]["oi"]["successes"], 2)
+        self.assertEqual(result["data_quality"]["oi"]["failures"], 1)
+        self.assertEqual(result["data_quality"]["oi"]["budget_used"], 3)
+        self.assertEqual(result["data_quality"]["oi"]["http_429"], 1)
+        self.assertEqual(result["data_quality"]["oi"]["http_418"], 0)
+        self.assertEqual(result["data_quality"]["oi"]["refresh_rounds"], 2)
+        self.assertEqual(
+            result["data_quality"]["oi"]["last_round"]["rate_limit_blocked"],
+            1,
+        )
 
         unavailable = {
             **service_result,
@@ -1087,18 +1616,67 @@ class DryRunEventTests(unittest.TestCase):
             patch(
                 "radars.altcoin_contract_anomaly.realtime.run_realtime_market_session"
             ) as market_session,
+            patch(
+                "radars.altcoin_contract_anomaly.realtime.RealtimeFeatureStore"
+            ) as feature_store_type,
+            patch(
+                "radars.altcoin_contract_anomaly.realtime.BinanceRealtimeMarketService"
+            ) as service_type,
         ):
             consumer_type.return_value.poll.return_value = {
                 "status": "valid_changed"
             }
             consumer_type.return_value.last_valid = manifest
-            result = run_realtime_confirmation_session(Settings(), duration_sec=30)
+            result = run_realtime_confirmation_session(
+                Settings(
+                    altcoin_contract_anomaly_enable=True,
+                    altcoin_contract_anomaly_realtime_enable=True,
+                ),
+                duration_sec=30,
+            )
 
         market_session.assert_not_called()
+        feature_store_type.assert_not_called()
+        service_type.assert_not_called()
         self.assertEqual(result["status"], "data_unavailable")
         self.assertEqual(result["exit_code"], 3)
         self.assertIn("candidate_manifest_lifetime_insufficient", result["failures"])
         self.assertEqual(result["elapsed_duration_sec"], 0.0)
+
+    def test_bounded_session_rejects_stale_manifest_before_state_or_websocket(self) -> None:
+        with (
+            TemporaryDirectory() as tmp,
+            patch(
+                "radars.altcoin_contract_anomaly.realtime.CandidateManifestConsumer"
+            ) as consumer_type,
+            patch(
+                "radars.altcoin_contract_anomaly.realtime.RealtimeFeatureStore"
+            ) as feature_store_type,
+            patch(
+                "radars.altcoin_contract_anomaly.realtime.BinanceRealtimeMarketService"
+            ) as service_type,
+            patch(
+                "radars.altcoin_contract_anomaly.realtime.run_realtime_market_session"
+            ) as market_session,
+        ):
+            consumer_type.return_value.poll.return_value = {
+                "status": "degraded",
+                "reason": "manifest_stale",
+            }
+            consumer_type.return_value.last_valid = None
+            result = run_realtime_confirmation_session(
+                settings(
+                    Path(tmp),
+                    altcoin_contract_anomaly_enable=True,
+                ),
+                duration_sec=30,
+            )
+
+        feature_store_type.assert_not_called()
+        service_type.assert_not_called()
+        market_session.assert_not_called()
+        self.assertEqual(result["status"], "data_unavailable")
+        self.assertIn("manifest_stale", result["failures"])
 
 
 if __name__ == "__main__":

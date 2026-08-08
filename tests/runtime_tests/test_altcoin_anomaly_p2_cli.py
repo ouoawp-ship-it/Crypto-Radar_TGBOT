@@ -176,6 +176,119 @@ class AltcoinAnomalyP2BusinessCliTests(unittest.TestCase):
         self.assertIn("P2实时确认未启用", stderr.getvalue())
         run.assert_not_called()
 
+    def test_realtime_output_rejects_every_configured_runtime_path_before_runner(self) -> None:
+        settings = self.settings()
+        protected = [
+            (name, value)
+            for name, value in vars(settings).items()
+            if name.endswith("_path") and isinstance(value, Path)
+        ]
+        self.assertGreaterEqual(len(protected), 10)
+        run = Mock(return_value={})
+        module = self.fake_realtime_module(run)
+        with patch.dict(os.environ, {}, clear=True), patch.dict(
+            sys.modules,
+            {"radars.altcoin_contract_anomaly.realtime": module},
+        ), patch.object(anomaly_cli, "atomic_write_text") as writer, patch.object(
+            anomaly_cli,
+            "scan_candidate_pool",
+        ) as scan:
+            for name, protected_path in protected:
+                with self.subTest(path_field=name), redirect_stderr(StringIO()):
+                    code = anomaly_cli.run_altcoin_anomaly_cli(
+                        self.args(output=protected_path),
+                        settings=settings,
+                    )
+                self.assertEqual(code, anomaly_cli.EXIT_CONFIG_ERROR)
+
+        run.assert_not_called()
+        writer.assert_not_called()
+        scan.assert_not_called()
+
+    def test_realtime_output_path_alias_is_compared_after_resolution(self) -> None:
+        with TemporaryDirectory() as tmp:
+            protected_path = Path(tmp) / "runtime" / "events.jsonl"
+            settings = self.settings(
+                altcoin_contract_anomaly_realtime_event_path=protected_path,
+            )
+            alias = protected_path.parent / "unused" / ".." / protected_path.name
+            run = Mock(return_value={})
+            module = self.fake_realtime_module(run)
+            with patch.dict(os.environ, {}, clear=True), patch.dict(
+                sys.modules,
+                {"radars.altcoin_contract_anomaly.realtime": module},
+            ), patch.object(anomaly_cli, "atomic_write_text") as writer, redirect_stderr(
+                StringIO()
+            ):
+                code = anomaly_cli.run_altcoin_anomaly_cli(
+                    self.args(output=alias),
+                    settings=settings,
+                )
+
+        self.assertEqual(code, anomaly_cli.EXIT_CONFIG_ERROR)
+        run.assert_not_called()
+        writer.assert_not_called()
+
+    def test_realtime_output_rejects_sqlite_sidecars_before_runner(self) -> None:
+        settings = self.settings()
+        database_paths = [
+            value
+            for name, value in vars(settings).items()
+            if name.endswith("_path")
+            and isinstance(value, Path)
+            and value.suffix.lower() in {".db", ".sqlite", ".sqlite3"}
+        ]
+        self.assertTrue(database_paths)
+        run = Mock(return_value={})
+        module = self.fake_realtime_module(run)
+        with patch.dict(os.environ, {}, clear=True), patch.dict(
+            sys.modules,
+            {"radars.altcoin_contract_anomaly.realtime": module},
+        ), patch.object(anomaly_cli, "atomic_write_text") as writer, redirect_stderr(
+            StringIO()
+        ):
+            for database_path in database_paths:
+                for suffix in ("-wal", "-shm", "-journal"):
+                    with self.subTest(database=database_path, suffix=suffix):
+                        code = anomaly_cli.run_altcoin_anomaly_cli(
+                            self.args(output=Path(f"{database_path}{suffix}")),
+                            settings=settings,
+                        )
+                        self.assertEqual(code, anomaly_cli.EXIT_CONFIG_ERROR)
+
+        run.assert_not_called()
+        writer.assert_not_called()
+
+    def test_realtime_output_rejects_atomic_json_lock_paths_before_runner(self) -> None:
+        settings = self.settings()
+        json_paths = [
+            value
+            for name, value in vars(settings).items()
+            if name.endswith("_path")
+            and isinstance(value, Path)
+            and value.suffix.lower() in {".json", ".jsonl"}
+        ]
+        self.assertTrue(json_paths)
+        run = Mock(return_value={})
+        module = self.fake_realtime_module(run)
+        with patch.dict(os.environ, {}, clear=True), patch.dict(
+            sys.modules,
+            {"radars.altcoin_contract_anomaly.realtime": module},
+        ), patch.object(anomaly_cli, "atomic_write_text") as writer, redirect_stderr(
+            StringIO()
+        ):
+            for json_path in json_paths:
+                with self.subTest(path=json_path):
+                    lock_path = json_path.with_name(f"{json_path.name}.lock")
+                    code = anomaly_cli.run_altcoin_anomaly_cli(
+                        self.args(output=lock_path),
+                        settings=settings,
+                    )
+                    self.assertEqual(code, anomaly_cli.EXIT_CONFIG_ERROR)
+
+        run.assert_not_called()
+        writer.assert_not_called()
+
     def test_keyboard_interrupt_produces_final_json_and_exit_130(self) -> None:
         run = Mock(side_effect=KeyboardInterrupt)
         module = self.fake_realtime_module(run)
