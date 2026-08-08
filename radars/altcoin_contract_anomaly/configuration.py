@@ -67,7 +67,7 @@ _INTEGER_ENV_RANGES = {
     "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC": (1, 120),
     "ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS": (1, 1_024),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_DATA_MAX_AGE_SEC": (1, 3_600),
-    "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC": (1, 300),
+    "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC": (1, 30),
     "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC": (300, 300),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC": (1, 86_400),
     "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_WORKERS": (1, 16),
@@ -457,7 +457,7 @@ class AltcoinAnomalyConfig:
             raise AltcoinAnomalyConfigError("实时订阅流数量超出范围")
         if not 1 <= self.realtime_data_max_age_sec <= 3_600:
             raise AltcoinAnomalyConfigError("实时数据新鲜度超出范围")
-        if not 1 <= self.funding_max_gap_sec <= 300:
+        if not 1 <= self.funding_max_gap_sec <= 30:
             raise AltcoinAnomalyConfigError("资金费率窗口最大间隔超出范围")
         if self.oi_refresh_sec != 300 or not 300 <= self.realtime_oi_max_age_sec <= 86_400:
             raise AltcoinAnomalyConfigError("实时OI刷新或新鲜度配置无效")

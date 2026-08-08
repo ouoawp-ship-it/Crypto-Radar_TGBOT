@@ -829,6 +829,8 @@ class MarkPriceBook:
                 for previous, current in zip(sequence, sequence[1:])
             ):
                 quality = "stale"
+        if quality == "complete" and safe_gap >= duration_ms:
+            quality = "stale"
 
         endpoint = end_item[0] if end_item is not None else None
         output: dict[str, Any] = {

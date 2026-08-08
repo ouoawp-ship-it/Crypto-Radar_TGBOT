@@ -80,7 +80,6 @@ class ClosedFundingWindowTests(unittest.TestCase):
             window_sec=300,
             subscription_epoch="epoch-1",
             epoch_started_ms=BASE_MS,
-            max_gap_ms=15_000,
         )
 
         self.assertEqual(row["funding_window_quality"], "complete")
@@ -90,6 +89,28 @@ class ClosedFundingWindowTests(unittest.TestCase):
         self.assertTrue(row["funding_rate_changed_5m"])
         self.assertEqual(row["funding_window_start_event_time_ms"], BASE_MS)
         self.assertEqual(row["funding_window_end_event_time_ms"], BASE_MS + 300_000)
+
+    def test_gap_limit_equal_to_window_duration_cannot_make_two_endpoints_complete(self) -> None:
+        book = MarkPriceBook()
+        for offset in (0, 300):
+            self.assertTrue(
+                book.update(
+                    update(offset, -0.0001 if offset == 0 else -0.0003),
+                    subscription_epoch="epoch-1",
+                )
+            )
+
+        row = book.snapshot_window(
+            "TESTUSDT",
+            window_end_ms=BASE_MS + 300_000,
+            window_sec=300,
+            subscription_epoch="epoch-1",
+            epoch_started_ms=BASE_MS,
+            max_gap_ms=300_000,
+        )
+
+        self.assertEqual(row["funding_window_quality"], "stale")
+        self.assertIsNone(row["funding_rate_change_5m"])
 
     def test_next_complete_unchanged_window_returns_zero_then_later_increase_is_positive(self) -> None:
         book = MarkPriceBook()

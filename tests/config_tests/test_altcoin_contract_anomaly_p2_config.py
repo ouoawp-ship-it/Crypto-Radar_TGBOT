@@ -116,7 +116,7 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
             "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC": "20",
             "ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS": "200",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_DATA_MAX_AGE_SEC": "90",
-            "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC": "20",
+            "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC": "30",
             "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC": "300",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_MAX_AGE_SEC": "720",
             "ALTCOIN_CONTRACT_ANOMALY_REALTIME_OI_WORKERS": "3",
@@ -153,7 +153,7 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
         self.assertEqual(config.manifest_poll_sec, 7)
         self.assertEqual(config.subscription_min_interval_sec, 0.5)
         self.assertEqual(config.max_streams, 200)
-        self.assertEqual(config.funding_max_gap_sec, 20)
+        self.assertEqual(config.funding_max_gap_sec, 30)
         self.assertEqual(config.feature_1m_window_sec, 60)
         self.assertEqual(config.feature_5m_window_sec, 300)
         self.assertEqual(config.volume_min_samples, 12)
@@ -192,6 +192,8 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
         invalid_values = (
             ("ALTCOIN_CONTRACT_ANOMALY_REALTIME_ENABLE", "maybe"),
             ("ALTCOIN_CONTRACT_ANOMALY_MAX_STREAMS", "0"),
+            ("ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC", "31"),
+            ("ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC", "300"),
             ("ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC", "180"),
             ("ALTCOIN_CONTRACT_ANOMALY_VOLUME_MIN_COVERAGE", "nan"),
         )
@@ -205,6 +207,25 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
                     AltcoinAnomalyConfig.from_settings(base)
             self.assertIn(name, str(caught.exception))
             self.assertNotIn(value, str(caught.exception))
+
+    def test_funding_gap_accepts_15_and_30_seconds_but_rejects_larger_values(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            for value in (15, 30):
+                with self.subTest(valid=value):
+                    config = AltcoinAnomalyConfig.from_settings(
+                        Settings(altcoin_contract_anomaly_funding_max_gap_sec=value),
+                        cache_only=True,
+                    )
+                    self.assertEqual(config.funding_max_gap_sec, value)
+
+            for value in (31, 300):
+                with self.subTest(invalid=value), self.assertRaises(
+                    AltcoinAnomalyConfigError
+                ):
+                    AltcoinAnomalyConfig.from_settings(
+                        Settings(altcoin_contract_anomaly_funding_max_gap_sec=value),
+                        cache_only=True,
+                    )
 
     def test_realtime_mode_consumes_manifest_without_requiring_cmc_key(self) -> None:
         settings = Settings(

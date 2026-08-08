@@ -846,7 +846,7 @@ class OiSamplerTests(unittest.TestCase):
 
 
 class MarkPriceBookTests(unittest.TestCase):
-    def test_rejects_duplicate_and_old_updates_and_uses_distinct_upstream_times(self) -> None:
+    def test_rejects_duplicate_old_updates_and_sparse_funding_window(self) -> None:
         book = CandidateMarkPriceBook()
         first = {"e": "markPriceUpdate", "s": "TESTUSDT", "p": "1", "r": "-0.001", "E": 1_000, "T": 900_000}
         second = {"e": "markPriceUpdate", "s": "TESTUSDT", "p": "1.1", "r": "-0.0012", "E": 301_000, "T": 900_000}
@@ -864,7 +864,8 @@ class MarkPriceBookTests(unittest.TestCase):
             max_gap_ms=300_000,
         )
 
-        self.assertAlmostEqual(row["funding_rate_change_5m"], -0.0002)
+        self.assertEqual(row["funding_window_quality"], "stale")
+        self.assertIsNone(row["funding_rate_change_5m"])
         self.assertEqual(row["funding_window_start_event_time_ms"], 1_000)
 
     def test_controller_accepts_normalized_snapshot_from_shared_mark_book(self) -> None:
@@ -887,6 +888,11 @@ class MarkPriceBookTests(unittest.TestCase):
                 "market": "futures",
                 "source": "binance_ws_mark_price",
             }
+            middle = {
+                **first,
+                "funding_rate": -0.0011,
+                "event_time_ms": (NOW * 1_000) + 500,
+            }
             second = {
                 **first,
                 "funding_rate": -0.0012,
@@ -894,6 +900,7 @@ class MarkPriceBookTests(unittest.TestCase):
             }
 
             self.assertTrue(controller.handle_mark_price(first, subscription_epoch="epoch-1"))
+            self.assertTrue(controller.handle_mark_price(middle, subscription_epoch="epoch-1"))
             self.assertTrue(controller.handle_mark_price(second, subscription_epoch="epoch-1"))
             self.assertFalse(controller.handle_mark_price(first))
             row = controller.mark_price_book.snapshot_window(
@@ -902,7 +909,7 @@ class MarkPriceBookTests(unittest.TestCase):
                 window_sec=1,
                 subscription_epoch="epoch-1",
                 epoch_started_ms=NOW * 1_000,
-                max_gap_ms=1_000,
+                max_gap_ms=500,
             )
 
         self.assertAlmostEqual(row["funding_rate_change_5m"], -0.0002)

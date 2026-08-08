@@ -715,7 +715,7 @@ class Settings:
                 "ALTCOIN_CONTRACT_ANOMALY_FUNDING_MAX_GAP_SEC",
                 15,
                 1,
-                300,
+                30,
             ),
             altcoin_contract_anomaly_oi_refresh_sec=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_OI_REFRESH_SEC",

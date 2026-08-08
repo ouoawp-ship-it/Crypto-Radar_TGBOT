@@ -176,6 +176,26 @@ class AltcoinAnomalyP2BusinessCliTests(unittest.TestCase):
         self.assertIn("P2实时确认未启用", stderr.getvalue())
         run.assert_not_called()
 
+    def test_invalid_funding_gap_is_rejected_before_realtime_initialization(self) -> None:
+        run = Mock(return_value={})
+        module = self.fake_realtime_module(run)
+        with patch.dict(os.environ, {}, clear=True), patch.dict(
+            sys.modules,
+            {"radars.altcoin_contract_anomaly.realtime": module},
+        ), patch.object(anomaly_cli, "scan_candidate_pool") as scan:
+            for value in (31, 300):
+                with self.subTest(value=value), redirect_stderr(StringIO()):
+                    code = anomaly_cli.run_altcoin_anomaly_cli(
+                        self.args(),
+                        settings=self.settings(
+                            altcoin_contract_anomaly_funding_max_gap_sec=value,
+                        ),
+                    )
+                self.assertEqual(code, anomaly_cli.EXIT_CONFIG_ERROR)
+
+        run.assert_not_called()
+        scan.assert_not_called()
+
     def test_realtime_output_rejects_every_configured_runtime_path_before_runner(self) -> None:
         settings = self.settings()
         protected = [

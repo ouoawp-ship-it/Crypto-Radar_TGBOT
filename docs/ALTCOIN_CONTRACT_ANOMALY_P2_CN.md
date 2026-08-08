@@ -80,7 +80,7 @@ P2 的标准输出只保留最终 JSON；诊断信息进入标准错误。JSON �
 - `MANIFEST_POLL_SEC=5`、`MANIFEST_MAX_AGE_SEC=1200`；
 - `SUBSCRIPTION_BATCH_SIZE=50`、`SUBSCRIPTION_MIN_INTERVAL_SEC=1.0`；
 - `SUBSCRIPTION_ACK_TIMEOUT_SEC=10`、`MAX_STREAMS=300`；
-- `REALTIME_DATA_MAX_AGE_SEC=120`、`FUNDING_MAX_GAP_SEC=15`。
+- `REALTIME_DATA_MAX_AGE_SEC=120`、`FUNDING_MAX_GAP_SEC=15`（合法范围 1～30 秒）。
 
 实时 OI：
 
@@ -101,7 +101,7 @@ OI 只针对当前候选，并在每个新的闭合 5 分钟边界请求一次�
 
 每个候选在订阅 ACK 后建立独立 subscription epoch。remove→readd、连接重建都会创建新代次；闭合成交桶、markPrice、资金费率窗口和 OI 两点都必须属于当前代次。其他币种的新行情只能维持连接级健康，不能替当前候选通过数据新鲜度门禁。
 
-资金费率变化采用闭合 5 分钟净变化，保存窗口起止费率和两个 Binance 上游时间点，不再使用相邻 markPrice tick 的瞬时差。窗口内变化后出现多个同值 tick 不会抹掉变化；下一完整无变化窗口会回到 0。端点缺失、跨订阅代次或 tick 间隔超过 `FUNDING_MAX_GAP_SEC` 时标记不完整并禁止事件。
+资金费率变化采用闭合 5 分钟净变化，保存窗口起止费率和两个 Binance 上游时间点，不再使用相邻 markPrice tick 的瞬时差。窗口内变化后出现多个同值 tick 不会抹掉变化；下一完整无变化窗口会回到 0。端点缺失、跨订阅代次或 tick 间隔超过 `FUNDING_MAX_GAP_SEC` 时标记不完整并禁止事件。P2.2 将该间隔限制为 1～30 秒；底层窗口函数还会独立拒绝“大于等于整个窗口时长”的间隔，避免绕过集中配置后仅凭起止两条 tick 把中间断流误判为完整。
 
 实时确认阈值：
 
