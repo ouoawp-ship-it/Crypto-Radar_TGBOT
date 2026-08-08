@@ -58,6 +58,7 @@ class RequestBudget:
 class DataQuality:
     warnings: list[str] = field(default_factory=list)
     failures: dict[str, int] = field(default_factory=dict)
+    failure_reasons: dict[str, dict[str, int]] = field(default_factory=dict)
     successes: dict[str, int] = field(default_factory=dict)
     fused: dict[str, float] = field(default_factory=dict)
     _lock: RLock = field(default_factory=RLock, repr=False)
@@ -69,6 +70,8 @@ class DataQuality:
     def fail(self, key: str, reason: str) -> None:
         with self._lock:
             self.failures[key] = self.failures.get(key, 0) + 1
+            reasons = self.failure_reasons.setdefault(key, {})
+            reasons[reason] = reasons.get(reason, 0) + 1
             if len(self.warnings) < 12:
                 self.warnings.append(f"{key}: {reason}")
 
@@ -77,6 +80,10 @@ class DataQuality:
             return {
                 "successes": dict(self.successes),
                 "failures": dict(self.failures),
+                "failure_reasons": {
+                    key: dict(value)
+                    for key, value in self.failure_reasons.items()
+                },
                 "warnings": list(self.warnings),
                 "fused": {key: int(until - time.time()) for key, until in self.fused.items() if until > time.time()},
             }

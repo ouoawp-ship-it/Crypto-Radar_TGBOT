@@ -9,7 +9,7 @@
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
 - 公告风险：独立解析 Binance 官方上新、下架和活动公告；同时只作为启动预警辅助证据，不参与启动打分。
-- 山寨合约异动雷达 P1：按可信 CMC-ID、Binance 单交易所 OI/市值和资金费率生成一次性候选池、JSON 与 Telegram 文本预览；默认不调度、不发送。
+- 山寨合约异动雷达：P1 按可信 CMC-ID、Binance 单交易所 OI/市值和资金费率生成一次性候选池；P2 仅提供受限时长的实时确认 Dry-run。两阶段均默认不调度、不发送 Telegram。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
 - 启动信号生命周期：15分钟完整收线负责触发，1小时主图负责看结构；启动预警从观察、预警、确认、启动进入降温期。第一次信号单独发送，同币后续更新回复上一条成功消息，历史卡片不自动删除。每个完整周期只计一个结果样本，记录最高/最低收盘变动、OI 区间、阶段耗时和结束收益；同口径样本不足 20 轮时不展示比例。
 - 按需 AI 解读：雷达扫描默认零 AI 调用；管理员需要时点击启动信号下方按钮，机器人只读取该信号发送时的安全快照并在私聊返回解读。重复点击优先复用缓存，AI 不改规则方向、证据分、阶段或失效位。
@@ -20,7 +20,7 @@
 ## 项目目录
 
 ```text
-radars/   五个生产雷达及默认关闭的一次性候选模块
+radars/   五个生产雷达及默认关闭的山寨合约异动候选/确认模块
 shared/   Telegram、行情访问、存储等公共能力
 runtime/  调度、健康检查、备份和运维命令
 config/   配置读取、真实配置和配置示例
@@ -91,6 +91,7 @@ python main.py announcement-risk
 python main.py flow-radar
 python main.py funding-alert
 python main.py altcoin-anomaly --preview-telegram
+python main.py altcoin-anomaly --realtime-duration-sec 900 --json
 python main.py signal-effectiveness
 python main.py market-stream
 python main.py loop
@@ -120,6 +121,8 @@ main.py live --send --confirm-real-send
 
 山寨合约异动雷达 P1 的 CMC 配置、离线缓存、人工映射覆盖、退出码和安全边界见
 [docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md)。
+P2 的受限时长 Dry-run、实时阈值、停止方式及生产隔离边界见
+[docs/ALTCOIN_CONTRACT_ANOMALY_P2_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_P2_CN.md)。
 
 ## 测试
 
