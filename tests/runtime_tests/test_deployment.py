@@ -166,12 +166,6 @@ class EnvSyncTests(unittest.TestCase):
             "FLOW_CANDIDATE_POOL": "60",
             "FUNDING_ALERT_REPLY_CHAIN_ENABLE": "true",
             "LAUNCH_MULTI_EXCHANGE_FUNDING_ENABLE": "false",
-            "LAUNCH_SMC_V4_ENABLE": "true",
-            "LAUNCH_SMC_HISTORY_BARS": "400",
-            "LAUNCH_SMC_SWING_LENGTH": "2",
-            "LAUNCH_SMC_EQUAL_TOLERANCE_ATR": "0.15",
-            "LAUNCH_SMC_DISPLACEMENT_BODY_ATR": "1.0",
-            "LAUNCH_SMC_MAX_ZONE_AGE_BARS": "96",
         }
         with TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env.oi"

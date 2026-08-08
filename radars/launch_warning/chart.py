@@ -12,17 +12,6 @@ from .chart_font_zh import (
     glyph_alpha,
     missing_glyphs,
 )
-from .smc_overlay import build_smc_overlay
-
-
-_SESSION_BASED_ASSET_CATEGORIES = frozenset({
-    "EQUITY",
-    "ETF",
-    "ETF INDEX",
-    "LEVERAGED ETF",
-    "STOCK TOKEN",
-    "TOKENIZED STOCK",
-})
 
 
 CST = timezone(timedelta(hours=8))
@@ -55,8 +44,8 @@ CHART_STATUS_LABELS = {
     "breakout_15m": "15分钟突破",
     "confirmed_1h": "1小时确认",
     "confirmed_4h": "4小时确认",
-    "sweep_high_15m": "扫高",
-    "sweep_low_15m": "扫低",
+    "sweep_high_15m": "上方插针",
+    "sweep_low_15m": "下方插针",
     "false_breakout_15m": "15分钟假突破",
     "failed_breakout_15m": "15分钟失效",
     "false_breakout_1h": "1小时假突破",
@@ -80,29 +69,14 @@ CHART_COLORS = {
     "muted": (132, 146, 166),
     "rising": (35, 196, 131),
     "falling": (239, 83, 80),
-    "structure_bull": (48, 205, 167),
-    "structure_bear": (255, 92, 125),
-    "demand_fill": (18, 55, 48),
-    "demand_border": (62, 190, 157),
-    "supply_fill": (62, 29, 39),
-    "supply_border": (238, 102, 137),
-    "valuation_high": (67, 56, 21),
-    "valuation_high_text": (247, 202, 64),
-    "valuation_mid": (43, 49, 59),
-    "valuation_mid_text": (184, 193, 207),
-    "valuation_low": (27, 45, 72),
-    "valuation_low_text": (105, 167, 255),
+    "accent": (86, 205, 220),
 }
 
 
-# Rendering limits are intentionally strict.  The full closed-candle history
-# still feeds the SMC state machine, while the Telegram image only shows the
-# most useful context for rejecting false starts.
+# Rendering limits are intentionally strict so candles remain readable on
+# Telegram. The chart is presentation-only and never changes signal scoring.
 DISPLAY_CANDLE_LIMIT = 120
-MAX_DISPLAY_BLOCKS = 2
-MAX_STRUCTURE_EVENTS = 2
 MAX_EVENT_BADGES = 3
-MAX_BLOCK_DISTANCE_RATIO = 0.35
 
 FONT_5X7 = {
     " ": ("00000",) * 7,
@@ -378,7 +352,7 @@ def _format_volume(value: float) -> str:
 
 
 def _footer_text(candle_count: int) -> str:
-    return f"币安 · 最近{max(0, int(candle_count))}根1小时K线 · SMC仅作过滤"
+    return f"币安 · 最近{max(0, int(candle_count))}根1小时已收线K线"
 
 
 def _dotted_horizontal(
@@ -409,207 +383,6 @@ def _dotted_vertical(
         canvas.line(x, y, x, min(y + dot, y1), color)
 
 
-def _block_side(block: Mapping[str, Any]) -> str:
-    side = str(block.get("side") or "").strip().lower()
-    if side in {"supply", "demand"}:
-        return side
-    direction = str(block.get("direction") or "").strip().lower()
-    if direction == "bearish":
-        return "supply"
-    if direction == "bullish":
-        return "demand"
-    return ""
-
-
-def _zone_overlap_ratio(first: Mapping[str, Any], second: Mapping[str, Any]) -> float:
-    first_low = _number(first.get("zone_low"))
-    first_high = _number(first.get("zone_high"))
-    second_low = _number(second.get("zone_low"))
-    second_high = _number(second.get("zone_high"))
-    intersection = max(0.0, min(first_high, second_high) - max(first_low, second_low))
-    smaller = min(first_high - first_low, second_high - second_low)
-    return intersection / smaller if smaller > 0 else 0.0
-
-
-def _block_distance(block: Mapping[str, Any], current_price: float) -> float:
-    low = _number(block.get("zone_low"))
-    high = _number(block.get("zone_high"))
-    if low <= current_price <= high:
-        return 0.0
-    if current_price <= 0:
-        return float("inf")
-    if _block_side(block) == "supply":
-        return max(low - current_price, 0.0) / current_price
-    return max(current_price - high, 0.0) / current_price
-
-
-def _select_display_blocks(
-    blocks: list[Mapping[str, Any]],
-    *,
-    current_price: float,
-    last_close_ts: int,
-) -> list[Mapping[str, Any]]:
-    """Select nearby confirmed zones without letting hidden zones move scale."""
-
-    valid: list[Mapping[str, Any]] = []
-    for block in blocks:
-        if not isinstance(block, Mapping):
-            continue
-        broken_at = int(_number(block.get("broken_at_ts")))
-        low = _number(block.get("zone_low"))
-        high = _number(block.get("zone_high"))
-        midpoint = (low + high) / 2.0
-        if not (0 < broken_at <= last_close_ts and high > low > 0 and midpoint > 0):
-            continue
-        if (high - low) / midpoint > 0.08 or not _block_side(block):
-            continue
-        if _block_distance(block, current_price) <= MAX_BLOCK_DISTANCE_RATIO:
-            valid.append(block)
-
-    selected: list[Mapping[str, Any]] = []
-    for side in ("supply", "demand"):
-        ranked = sorted(
-            (block for block in valid if _block_side(block) == side),
-            key=lambda block: (
-                _block_distance(block, current_price),
-                -int(_number(block.get("broken_at_ts"))),
-                _number(block.get("zone_high")) - _number(block.get("zone_low")),
-                _number(block.get("zone_low")),
-                _number(block.get("zone_high")),
-            ),
-        )
-        kept: list[Mapping[str, Any]] = []
-        for block in ranked:
-            if any(_zone_overlap_ratio(block, other) >= 0.60 for other in kept):
-                continue
-            kept.append(block)
-            if len(kept) == MAX_DISPLAY_BLOCKS // 2:
-                break
-        selected.extend(kept)
-
-    return sorted(
-        selected,
-        key=lambda block: (
-            int(_number(block.get("broken_at_ts"))),
-            _block_side(block),
-            _number(block.get("zone_low")),
-        ),
-    )
-
-
-def _select_structure_events(
-    events: list[Mapping[str, Any]],
-    *,
-    first_close_ts: int,
-    last_close_ts: int,
-) -> list[Mapping[str, Any]]:
-    """Keep only the latest explainable swing structure transitions."""
-
-    valid = sorted(
-        (
-            event
-            for event in events
-            if isinstance(event, Mapping)
-            and str(event.get("kind") or "") == "swing"
-            and _number(event.get("level")) > 0
-            and 0 < int(_number(event.get("confirmed_at_ts")))
-            <= int(_number(event.get("broken_at_ts")))
-            <= last_close_ts
-            and int(_number(event.get("broken_at_ts"))) >= first_close_ts
-        ),
-        key=lambda event: (
-            int(_number(event.get("broken_at_ts"))),
-            int(_number(event.get("confirmed_at_ts"))),
-        ),
-    )
-    compressed: list[Mapping[str, Any]] = []
-    run: list[Mapping[str, Any]] = []
-    for event in valid:
-        if run and event.get("direction") != run[-1].get("direction"):
-            compressed.append(run[0])
-            if len(run) > 1:
-                compressed.append(run[-1])
-            run = []
-        run.append(event)
-    if run:
-        compressed.append(run[0])
-        if len(run) > 1:
-            compressed.append(run[-1])
-    return compressed[-MAX_STRUCTURE_EVENTS:]
-
-
-def _smc_alignment_label(
-    overlay: Mapping[str, Any],
-    price_action: Mapping[str, Any],
-    *,
-    last_close_ts: int,
-) -> str:
-    if overlay.get("status") == "degraded_discontinuous_input":
-        return "SMC参考：暂停"
-    trigger_direction = str(price_action.get("direction") or "").strip().lower()
-    events = [
-        event
-        for event in overlay.get("structure_events", [])
-        if isinstance(event, Mapping)
-        and str(event.get("kind") or "") == "swing"
-        and _number(event.get("level")) > 0
-        and 0 < int(_number(event.get("confirmed_at_ts")))
-        <= int(_number(event.get("broken_at_ts")))
-        <= last_close_ts
-        and str(event.get("direction") or "") in {"bullish", "bearish"}
-    ]
-    if trigger_direction not in {"up", "down"} or not events:
-        return "SMC参考：中性"
-    latest = max(events, key=lambda event: int(_number(event.get("broken_at_ts"))))
-    aligned = (
-        trigger_direction == "up" and latest.get("direction") == "bullish"
-    ) or (
-        trigger_direction == "down" and latest.get("direction") == "bearish"
-    )
-    return "SMC参考：同向" if aligned else "SMC参考：冲突"
-
-
-def _smc_filter_header(
-    smc_filter: Mapping[str, Any] | None,
-    *,
-    fallback: str,
-) -> tuple[str, tuple[int, int, int]]:
-    if not isinstance(smc_filter, Mapping):
-        return fallback, (86, 205, 220)
-    status = str(smc_filter.get("status") or "insufficient")
-    status_text = {
-        "supportive": "同向支持",
-        "neutral": "中性观察",
-        "conflicting": "高周期冲突",
-        "insufficient": "数据不足",
-    }.get(status, "数据不足")
-    status_color = {
-        "supportive": (42, 204, 150),
-        "neutral": CHART_COLORS["muted"],
-        "conflicting": (255, 159, 67),
-        "insufficient": CHART_COLORS["valuation_high_text"],
-    }.get(status, CHART_COLORS["valuation_high_text"])
-    structure_text = {
-        "bullish": "偏多",
-        "bearish": "偏空",
-        "neutral": "中性",
-        "unavailable": "缺数据",
-    }
-    one_hour = structure_text.get(
-        str(smc_filter.get("one_hour_structure") or "unavailable"),
-        "缺数据",
-    )
-    four_hour = structure_text.get(
-        str(smc_filter.get("four_hour_structure") or "unavailable"),
-        "缺数据",
-    )
-    return (
-        f"结构过滤：{status_text} · "
-        f"1小时{one_hour}/4小时{four_hour}",
-        status_color,
-    )
-
-
 def render_launch_chart_png(
     *,
     symbol: str,
@@ -617,12 +390,11 @@ def render_launch_chart_png(
     checkpoints: list[Mapping[str, Any]],
     cycle_no: int,
     price_action: Mapping[str, Any] | None = None,
-    smc_filter: Mapping[str, Any] | None = None,
     asset_category: str = "",
     width: int = 960,
     height: int = 540,
 ) -> bytes:
-    """Render a closed-candle Binance 1h SMC reference chart in memory."""
+    """Render a compact closed-candle Binance 1h chart in memory."""
 
     normalized = sorted(
         [
@@ -651,30 +423,9 @@ def render_launch_chart_png(
     if not (480 <= width <= 1600 and 320 <= height <= 1000):
         raise ValueError("unsupported chart dimensions")
 
-    # Extra prehistory confirms delayed pivots.  The image deliberately shows
-    # fewer bars so Telegram users can read the candles instead of seeing a
-    # compressed line.  Nothing in this layer affects alert scoring.
-    try:
-        overlay = build_smc_overlay(
-            normalized,
-            allow_session_gaps=(
-                str(asset_category or "").strip().upper()
-                in _SESSION_BASED_ASSET_CATEGORIES
-            ),
-        )
-    except ValueError as exc:
-        if str(exc) not in {
-            "smc_overlay_candle_cadence_invalid",
-            "smc_overlay_candle_gap",
-        }:
-            raise
-        overlay = {
-            "status": "degraded_discontinuous_input",
-            "structure_events": [],
-            "active_order_blocks": [],
-            "valuation": {"data_status": "insufficient_history", "zones": {}},
-        }
-
+    # The image deliberately shows fewer bars so Telegram users can read the
+    # candles instead of seeing a compressed line. Nothing here changes the
+    # discovery score or directional evidence score.
     visible = normalized[-DISPLAY_CANDLE_LIMIT:]
     first_close_ts = visible[0]["close_ts"]
     last_close_ts = visible[-1]["close_ts"]
@@ -732,13 +483,7 @@ def render_launch_chart_png(
     canvas.rect(0, event_top, width - 1, event_bottom, colors["panel"])
     plot_left = 52 if spacious_layout else 44
     plot_right = width - (70 if spacious_layout else 62)
-    context_width = (
-        max(76, round((plot_right - plot_left) * 0.16))
-        if compact_header
-        else max(104, round((plot_right - plot_left) * 0.12))
-    )
-    candle_right = plot_right - context_width - 10
-    context_left = candle_right + 10
+    candle_right = plot_right
     price_top = event_bottom + 8
     volume_bottom = height - 56
     volume_top = height - (112 if height >= 500 else 100)
@@ -759,17 +504,7 @@ def render_launch_chart_png(
     header_symbol = str(symbol or "UNKNOWN").upper()[:(12 if compact_header else 18)]
     status = str(price_action_state.get("status") or "")
     status_label = CHART_STATUS_LABELS.get(status)
-    if overlay.get("status") == "degraded_discontinuous_input":
-        status_label = "结构暂停 · K线不连续"
-    smc_alignment_text = _smc_alignment_label(
-        overlay,
-        price_action_state,
-        last_close_ts=last_close_ts,
-    )
-    smc_header_text, smc_header_color = _smc_filter_header(
-        smc_filter,
-        fallback=smc_alignment_text,
-    )
+    data_header_text = "1小时已收线 · 15分钟触发参考"
     current_text = f"{_format_price(latest['close'])} {candle_change:+.2f}%"
     ohlc_text = (
         f"开 {_format_price(latest['open'])}  高 {_format_price(latest['high'])}  "
@@ -789,7 +524,7 @@ def render_launch_chart_png(
             min(width // 3, 30 + symbol_width),
             16,
             category_label,
-            colors["valuation_low_text"],
+            colors["accent"],
         )
         current_width = len(current_text) * 12
         canvas.text(
@@ -806,12 +541,11 @@ def render_launch_chart_png(
         canvas.ui_text(20, 48, state_text, colors["muted"])
         detail_text = f"{ohlc_text}  成交量 {_format_volume(latest['quote_volume'])}  · 已收线"
         canvas.ui_text(20, 72, detail_text, change_color)
-        filter_text = smc_header_text
         canvas.ui_text(
-            width - canvas.ui_text_width(filter_text) - 20,
+            width - canvas.ui_text_width(data_header_text) - 20,
             48,
-            filter_text,
-            smc_header_color,
+            data_header_text,
+            colors["accent"],
         )
     elif compact_header:
         canvas.text(16, 8, header_symbol, colors["ink"], scale=1)
@@ -827,12 +561,12 @@ def render_launch_chart_png(
             change_color,
             scale=1,
         )
-        canvas.ui_text(16, 25, category_label, colors["valuation_low_text"])
+        canvas.ui_text(16, 25, category_label, colors["accent"])
         cycle_x = max(102, 28 + canvas.ui_text_width(category_label))
         canvas.ui_text(cycle_x, 25, f"第 {max(1, int(cycle_no))} 轮", colors["muted"])
         event_x = cycle_x + 92
         canvas.ui_text(event_x, 25, f"事件 {checkpoint_count}", colors["muted"])
-        canvas.ui_text(16, 44, smc_header_text, smc_header_color)
+        canvas.ui_text(16, 44, data_header_text, colors["accent"])
         if status_label:
             status_text = f"形态 {status_label}"
             status_x = width - canvas.ui_text_width(status_text) - 12
@@ -847,8 +581,8 @@ def render_launch_chart_png(
     else:
         canvas.text(24, 14, header_symbol, colors["ink"], scale=2)
         meta_x = max(190, min(250, width // 6))
-        canvas.ui_text(meta_x, 7, category_label, colors["valuation_low_text"])
-        canvas.ui_text(meta_x, 27, "1小时结构 · 15分钟触发", colors["muted"])
+        canvas.ui_text(meta_x, 7, category_label, colors["accent"])
+        canvas.ui_text(meta_x, 27, data_header_text, colors["muted"])
         cycle_x = meta_x + 220
         canvas.ui_text(
             cycle_x,
@@ -872,12 +606,10 @@ def render_launch_chart_png(
             change_color,
             scale=2,
         )
-        canvas.ui_text(24, 47, f"真实数据 · {smc_header_text}", smc_header_color)
+        canvas.ui_text(24, 47, "真实数据 · 仅使用已收线K线", colors["accent"])
         ohlc_x = max(300, width - canvas.ui_text_width(ohlc_text) - 20)
         canvas.ui_text(ohlc_x, 47, ohlc_text, change_color)
 
-    canvas.rect(context_left, price_top, plot_right, price_bottom, colors["panel"])
-    canvas.line(context_left - 5, price_top, context_left - 5, price_bottom, colors["grid"])
     for index in range(5):
         y = price_top + round((price_bottom - price_top) * index / 4)
         canvas.line(plot_left, y, plot_right, y, colors["grid"])
@@ -886,31 +618,14 @@ def render_launch_chart_png(
         x = plot_left + round((candle_right - plot_left) * index / (grid_columns - 1))
         canvas.line(x, price_top, x, volume_bottom, colors["grid"])
 
-    blocks = [
-        item
-        for item in overlay.get("active_order_blocks", [])
-        if isinstance(item, Mapping)
-    ]
-    block_specs = _select_display_blocks(
-        blocks,
-        current_price=latest["close"],
-        last_close_ts=last_close_ts,
-    )
-    valuation = overlay.get("valuation")
-    valuation = valuation if isinstance(valuation, Mapping) else {}
-    overlay_prices: list[float] = []
-    for block in block_specs:
-        overlay_prices.extend([
-            _number(block.get("zone_low")),
-            _number(block.get("zone_high")),
-        ])
+    reference_prices: list[float] = []
     if trigger_visible:
-        overlay_prices.extend([box_low, box_high])
+        reference_prices.extend([box_low, box_high])
     if key_level_visible:
-        overlay_prices.append(key_level)
-    overlay_prices = [value for value in overlay_prices if value > 0]
-    lowest = min([item["low"] for item in visible] + overlay_prices)
-    highest = max([item["high"] for item in visible] + overlay_prices)
+        reference_prices.append(key_level)
+    reference_prices = [value for value in reference_prices if value > 0]
+    lowest = min([item["low"] for item in visible] + reference_prices)
+    highest = max([item["high"] for item in visible] + reference_prices)
     span = max(highest - lowest, highest * 0.001)
     lowest -= span * 0.07
     highest += span * 0.07
@@ -938,61 +653,6 @@ def render_launch_chart_png(
             range(candle_count),
             key=lambda position: abs(visible[position]["close_ts"] - timestamp),
         )
-
-    # Current 72-hour position bands live in a separate right-side context
-    # panel. They never repaint across historical candles.
-    context_title = "72H位置"
-    canvas.ui_text(
-        context_left + max(
-            2,
-            (plot_right - context_left - canvas.ui_text_width(context_title)) // 2,
-        ),
-        event_top + 6,
-        context_title,
-        colors["muted"],
-    )
-    zones = valuation.get("zones")
-    if isinstance(zones, Mapping) and valuation.get("data_status") == "complete":
-        for key, fill, text_color, label in (
-            (
-                "high",
-                colors["valuation_high"],
-                colors["valuation_high_text"],
-                "高位",
-            ),
-            (
-                "mid",
-                colors["valuation_mid"],
-                colors["valuation_mid_text"],
-                "中位",
-            ),
-            (
-                "low",
-                colors["valuation_low"],
-                colors["valuation_low_text"],
-                "低位",
-            ),
-        ):
-            zone = zones.get(key)
-            if not isinstance(zone, Mapping):
-                continue
-            zone_low = _number(zone.get("low"))
-            zone_high = _number(zone.get("high"))
-            if zone_high <= zone_low:
-                continue
-            y0 = price_y(zone_high)
-            y1 = price_y(zone_low)
-            band_top = max(price_top, min(y0, y1))
-            band_bottom = min(price_bottom, max(y0, y1))
-            if band_bottom < band_top:
-                continue
-            canvas.rect(context_left, band_top, plot_right, band_bottom, fill)
-            label_x = context_left + max(
-                4,
-                (plot_right - context_left - canvas.ui_text_width(label)) // 2,
-            )
-            label_y = (band_top + band_bottom - GLYPH_HEIGHT) // 2
-            canvas.ui_text(label_x, label_y, label, text_color)
 
     trigger_label_spec: tuple[int, int, int, int] | None = None
     if trigger_visible:
@@ -1035,48 +695,6 @@ def render_launch_chart_png(
     marker_specs = sorted(marker_specs, key=lambda item: item["timestamp"])[
         -MAX_EVENT_BADGES:
     ]
-
-    # A block becomes drawable only when its confirming structure break is
-    # known. Starting at the source candle would visually backpaint history.
-    nearest_labeled_blocks: set[int] = set()
-    for side in ("supply", "demand"):
-        candidates = [block for block in block_specs if _block_side(block) == side]
-        if candidates:
-            nearest_labeled_blocks.add(id(min(
-                candidates,
-                key=lambda block: (
-                    _block_distance(block, latest["close"]),
-                    -int(_number(block.get("broken_at_ts"))),
-                ),
-            )))
-    block_label_specs: list[
-        tuple[int, int, int, str, tuple[int, int, int]]
-    ] = []
-    for block in block_specs:
-        known_ts = int(
-            _number(block.get("broken_at_ts"))
-            or _number(block.get("confirmed_at_ts"))
-        )
-        x0 = x_positions[nearest_index(max(first_close_ts, known_ts))]
-        y0 = price_y(_number(block.get("zone_high")))
-        y1 = price_y(_number(block.get("zone_low")))
-        bearish = str(block.get("direction") or "") == "bearish"
-        fill = colors["supply_fill"] if bearish else colors["demand_fill"]
-        border = colors["supply_border"] if bearish else colors["demand_border"]
-        label = (
-            ("供给区" if bearish else "需求区")
-            if id(block) in nearest_labeled_blocks
-            else ""
-        )
-        canvas.alpha_rect(
-            x0,
-            min(y0, y1),
-            candle_right,
-            max(y0, y1),
-            fill,
-            78,
-        )
-        block_label_specs.append((x0, y0, y1, label, border))
 
     if trigger_label_spec is not None:
         box_x0, box_x1, box_y0, box_y1 = trigger_label_spec
@@ -1129,51 +747,11 @@ def render_launch_chart_png(
             (28, 112, 82) if up else (116, 49, 53),
         )
 
-    # Borders and trigger facts are redrawn after candles so translucent SMC
-    # fills cannot hide the original 15-minute trigger context.
+    # Trigger facts are redrawn after candles so the original 15-minute
+    # context stays readable.
     protected_x = x_positions[max(0, candle_count - 12)]
-    for x0, y0, y1, label, border in block_label_specs:
-        canvas.line(x0, min(y0, y1), candle_right, min(y0, y1), border)
-        canvas.line(x0, max(y0, y1), candle_right, max(y0, y1), border)
-        if not label:
-            continue
-        label_width = canvas.ui_text_width(label)
-        label_x = min(max(x0 + 5, plot_left), protected_x - label_width - 5)
-        if label_x < plot_left:
-            continue
-        label_y = max(price_top, min(y0, y1) + 2)
-        canvas.ui_text(label_x, label_y, label, border)
-
-    # Confirmed swing levels start at pivot confirmation, never at the older
-    # origin candle. Text stays in the header verdict to avoid chart clutter.
-    structure_specs = _select_structure_events(
-        [
-            item
-            for item in overlay.get("structure_events", [])
-            if isinstance(item, Mapping)
-        ],
-        first_close_ts=first_close_ts,
-        last_close_ts=last_close_ts,
-    )
-    for event in structure_specs:
-        confirmed_ts = int(_number(event.get("confirmed_at_ts")))
-        broken_ts = int(_number(event.get("broken_at_ts")))
-        x0 = x_positions[nearest_index(max(first_close_ts, confirmed_ts))]
-        x1 = x_positions[nearest_index(broken_ts)]
-        y = price_y(_number(event.get("level")))
-        bullish = str(event.get("direction") or "") == "bullish"
-        color = (
-            colors["structure_bull"]
-            if bullish
-            else colors["structure_bear"]
-        )
-        if str(event.get("event") or "") == "continuation":
-            _dotted_horizontal(canvas, x0, x1, y, color, dot=4, gap=4)
-        else:
-            canvas.line(x0, y, x1, y, color)
-
-    # The original 15-minute trigger facts stay above the slower 1-hour SMC
-    # reference layer when both share the same price.
+    # The original 15-minute trigger facts stay above the candles when both
+    # share the same price.
     if trigger_label_spec is not None:
         box_x0, box_x1, box_y0, box_y1 = trigger_label_spec
         box_border = (60, 135, 181)
@@ -1271,7 +849,7 @@ def render_launch_chart_png(
     )
 
     # The live price badge is always the final visual layer so axis labels or
-    # SMC annotations cannot obscure it.
+    # other annotations cannot obscure it.
     current_price = latest["close"]
     current_y = price_y(current_price)
     _dotted_horizontal(canvas, plot_left, plot_right, current_y, change_color)
@@ -1293,9 +871,7 @@ def render_launch_chart_png(
 __all__ = [
     "CHART_COLORS",
     "DISPLAY_CANDLE_LIMIT",
-    "MAX_DISPLAY_BLOCKS",
     "MAX_EVENT_BADGES",
-    "MAX_STRUCTURE_EVENTS",
     "PNG_SIGNATURE",
     "render_launch_chart_png",
 ]

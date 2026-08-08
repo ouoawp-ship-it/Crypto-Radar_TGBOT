@@ -53,7 +53,6 @@ class SignalEventStoreTests(unittest.TestCase):
                 "timing_stage": "forming",
                 "execution_status": "wait_confirmation",
             },
-            "smc_filter": {},
             "multi_timeframe": {},
             "price_open_interest": {"price_1h_pct": 2.5, "oi_1h_pct": 3.0},
             "active_flow": {"spot_active_ratio": 0.2},
@@ -221,6 +220,10 @@ class SignalEventStoreTests(unittest.TestCase):
             loaded = store.load_ai_context_snapshot(public_ref)
             numeric = store.load_ai_context_snapshot("1")
             detail = store.signal_detail(public_ref) or {}
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                snapshot_schema_version = conn.execute(
+                    "SELECT schema_version FROM signal_ai_snapshots"
+                ).fetchone()[0]
 
         self.assertEqual(loaded["status"], "ready")
         self.assertEqual(loaded["public_ref"], public_ref)
@@ -228,15 +231,87 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(loaded["signal_ts"], 1_000)
         self.assertEqual(loaded["stage"], "forming")
         self.assertEqual(loaded["snapshot"], context)
+        self.assertEqual(snapshot_schema_version, 2)
         self.assertRegex(str(loaded["context_hash"]), r"^[0-9a-f]{64}$")
         self.assertEqual(numeric, {"status": "invalid_public_ref"})
         self.assertEqual(
             detail["payload"]["ai_context_snapshot_status"],
             "ready",
         )
+        self.assertEqual(
+            detail["payload"]["ai_context_snapshot_schema_version"],
+            2,
+        )
         self.assertNotIn("text_html", loaded)
         self.assertNotIn("topic_id", loaded)
         self.assertNotIn("message_ids", loaded)
+
+    def test_previous_ai_snapshot_schema_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:previous-schema",
+                status="sent",
+                sent=True,
+                text="BTCUSDT launch signal",
+                ts=1_000,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "stage": "forming",
+                    "ai_context_snapshot": self.ai_context(),
+                }],
+            )
+            with store.connect() as conn:
+                conn.execute(
+                    "UPDATE signal_ai_snapshots SET schema_version = 1"
+                )
+            loaded = store.load_ai_context_snapshot(
+                signal_public_ref(
+                    "launch:ai:previous-schema",
+                    "BTCUSDT",
+                )
+            )
+
+        self.assertEqual(loaded["status"], "snapshot_invalid")
+        self.assertNotIn("snapshot", loaded)
+
+    def test_incomplete_ai_snapshot_remains_available_for_on_demand_explanation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            context = self.ai_context(direction="none", stage="数据不足")
+            context["rule_result"]["status"] = "冲突等待"
+            context["rule_result"]["data_complete"] = False
+            context["rule_result"]["missing_fields"] = ["position_context"]
+            append_from_push(
+                settings,
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:incomplete",
+                status="sent",
+                sent=True,
+                text="BTCUSDT incomplete launch signal",
+                ts=1_000,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "stage": "数据不足",
+                    "ai_context_snapshot": context,
+                }],
+            )
+            loaded = SignalEventStore(
+                settings.signal_events_db_path
+            ).load_ai_context_snapshot(
+                signal_public_ref("launch:ai:incomplete", "BTCUSDT")
+            )
+
+        self.assertEqual(loaded["status"], "ready")
+        self.assertFalse(
+            loaded["snapshot"]["rule_result"]["data_complete"]
+        )
+        self.assertEqual(
+            loaded["snapshot"]["rule_result"]["missing_fields"],
+            ["position_context"],
+        )
 
     def test_ai_snapshot_rejects_oversize_secrets_and_reasoning_without_blocking_signal(self) -> None:
         with TemporaryDirectory() as tmp:

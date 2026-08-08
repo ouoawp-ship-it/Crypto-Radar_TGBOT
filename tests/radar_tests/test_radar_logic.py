@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from config import Settings
 from radars.common import (
     CST,
+    _LAUNCH_LEGACY_CLEANUP_KEYS,
     compact_launch_state_records,
     funding_interval_transition,
     score_funding,
@@ -84,6 +85,10 @@ class LaunchPersistenceTests(unittest.TestCase):
                     "stage": "breakout",
                     "score": 75,
                     "message_ids": [123],
+                    **{
+                        key: {"legacy": True}
+                        for key in _LAUNCH_LEGACY_CLEANUP_KEYS
+                    },
                     "launch_lifecycle": {"cycle_id": 1},
                     "launch_package": {"checkpoints": [1, 2]},
                     "price_action_analysis": {"details": {"large": "x" * 1000}},
@@ -100,6 +105,9 @@ class LaunchPersistenceTests(unittest.TestCase):
                 "score": 75,
                 "message_ids": [123],
             },
+        )
+        self.assertTrue(
+            _LAUNCH_LEGACY_CLEANUP_KEYS.isdisjoint(compacted["TESTUSDT"])
         )
 
 

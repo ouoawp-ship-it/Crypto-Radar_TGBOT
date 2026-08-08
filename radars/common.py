@@ -58,6 +58,13 @@ _LAUNCH_STATE_TRANSIENT_KEYS = frozenset({
     "spot_cvd_1h",
     "futures_cvd_1h",
 })
+# One-release cleanup tombstones for state written before the secondary filter
+# was removed.  They are only popped during compaction and are never read,
+# emitted, or used by current business logic.
+_LAUNCH_LEGACY_CLEANUP_KEYS = frozenset({
+    "smc_filter",
+    "smc_filter_blocked_stage",
+})
 _LAUNCH_END_REASON_TEXT = {
     "two_windows_below_watch_score": (
         "连续两个15分钟闭合窗口低于观察阈值，本轮启动跟踪结束"
@@ -82,11 +89,11 @@ def compact_launch_state_records(
         if not isinstance(value, dict):
             compacted[symbol] = value
             continue
-        record = {
-            key: item
-            for key, item in value.items()
-            if key not in _LAUNCH_STATE_TRANSIENT_KEYS
-        }
+        record = dict(value)
+        for key in _LAUNCH_STATE_TRANSIENT_KEYS:
+            record.pop(key, None)
+        for key in _LAUNCH_LEGACY_CLEANUP_KEYS:
+            record.pop(key, None)
         if len(record) != len(value):
             changed += 1
         compacted[symbol] = record

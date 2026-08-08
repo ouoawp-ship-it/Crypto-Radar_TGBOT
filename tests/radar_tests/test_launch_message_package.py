@@ -172,7 +172,6 @@ def launch_ai_payload() -> dict[str, object]:
         "directional_readiness": {
             "status": "多头候选",
             "direction": "bullish",
-            "stage": "forming",
             "data_complete": True,
             "bullish_evidence_score": 81,
             "bearish_evidence_score": 10,
@@ -229,8 +228,89 @@ class LaunchMessagePackageTests(unittest.TestCase):
                 record["ai_context_snapshot"]["rule_result"]["direction"],
                 "bullish",
             )
+            self.assertEqual(
+                record["ai_context_snapshot"]["rule_result"]["status"],
+                "多头候选",
+            )
+            self.assertNotIn(
+                "stage",
+                record["ai_context_snapshot"]["rule_result"],
+            )
             self.assertNotIn("fake-private-key", str(record))
             self.assertNotIn("provider.invalid", str(record))
+
+    def test_incomplete_directional_data_keeps_on_demand_button_and_snapshot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            events: list[str] = []
+            gateway = FakeGateway(
+                events,
+                PushResult("sent", "telegram_api", True, [201]),
+            )
+            settings = Settings(
+                data_dir=Path(tmp),
+                launch_message_package_v2_enable=True,
+                launch_ai_interpreter_enable=True,
+                ai_api_key="fake-private-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="123",
+            )
+            payload = launch_ai_payload()
+            payload["alerts"][0]["directional_readiness"]["data_complete"] = False
+
+            push_launch_messages(
+                settings,
+                FakeEngine(events),  # type: ignore[arg-type]
+                gateway,  # type: ignore[arg-type]
+                payload,
+                SimpleNamespace(send=True, confirm_real_send=True),
+            )
+
+            kwargs = gateway.send_calls[0][1]
+            self.assertIsNotNone(kwargs["url_button"])
+            self.assertFalse(
+                kwargs["signal_records"][0]["ai_context_snapshot"]
+                ["rule_result"]["data_complete"]
+            )
+
+    def test_missing_direction_or_status_omits_button_and_snapshot(self) -> None:
+        for missing_key in ("direction", "status"):
+            with self.subTest(missing_key=missing_key), TemporaryDirectory() as tmp:
+                events: list[str] = []
+                gateway = FakeGateway(
+                    events,
+                    PushResult("sent", "telegram_api", True, [201]),
+                )
+                settings = Settings(
+                    data_dir=Path(tmp),
+                    launch_message_package_v2_enable=True,
+                    launch_ai_interpreter_enable=True,
+                    ai_api_key="fake-private-key",
+                    ai_base_url="https://provider.invalid/v1",
+                    ai_model="fake-model",
+                    tg_bot_username="VIPpao_bot",
+                    tg_private_control_enable=True,
+                    tg_private_control_admin_user_id="123",
+                )
+                payload = launch_ai_payload()
+                del payload["alerts"][0]["directional_readiness"][missing_key]
+
+                push_launch_messages(
+                    settings,
+                    FakeEngine(events),  # type: ignore[arg-type]
+                    gateway,  # type: ignore[arg-type]
+                    payload,
+                    SimpleNamespace(send=True, confirm_real_send=True),
+                )
+
+                kwargs = gateway.send_calls[0][1]
+                self.assertIsNone(kwargs["url_button"])
+                self.assertNotIn(
+                    "ai_context_snapshot",
+                    kwargs["signal_records"][0],
+                )
 
     def test_invalid_private_admin_id_omits_button_without_blocking_signal(self) -> None:
         with TemporaryDirectory() as tmp:

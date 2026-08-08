@@ -15,7 +15,7 @@ from shared.signal_store import SignalEventStore
 from .ai_interpreter import OPERATOR_PROMPT, OpenAiCompatibleLaunchInterpreter
 
 
-AI_ON_DEMAND_POLICY_VERSION = "launch-ai-on-demand-v1"
+AI_ON_DEMAND_POLICY_VERSION = "launch-ai-on-demand-v2"
 AI_ON_DEMAND_MAX_SIGNAL_AGE_SEC = 7 * 24 * 3600
 _PUBLIC_REF_PATTERN = re.compile(r"sig_[0-9a-f]{20}")
 _BOT_USERNAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
@@ -80,7 +80,6 @@ def _prebuilt_snapshot_source(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "discovery_score": snapshot.get("discovery_score"),
         "rule_result": snapshot.get("rule_result"),
         "launch_phase": snapshot.get("launch_phase"),
-        "smc_filter": snapshot.get("smc_filter"),
         "multi_timeframe": snapshot.get("multi_timeframe"),
         "structure": snapshot.get("structure"),
         "plan": snapshot.get("plan"),

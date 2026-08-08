@@ -164,13 +164,13 @@ class LaunchFusionFormatterTests(unittest.TestCase):
         self.assertIn("触发：动量共振｜1小时：待确认", text)
         self.assertNotIn("1小时：已确认", text)
 
-    def test_caption_is_compact_and_has_no_deterministic_promise_or_smc(self) -> None:
+    def test_caption_is_compact_and_has_no_deterministic_promise(self) -> None:
         text = format_launch_fusion_package(
             self.item(stage="launched", confirmation_1h=True), self.settings
         )
         self.assertLessEqual(len(plain_fallback(text)), 1024)
         self.assertIn("规则分：54/100（不是概率）", text)
-        for forbidden in ("必涨", "确定会涨", "稳赚", "庄家", "SMC"):
+        for forbidden in ("必涨", "确定会涨", "稳赚", "庄家"):
             self.assertNotIn(forbidden, text)
 
     def test_mobile_sections_put_judgment_before_details(self) -> None:
@@ -257,7 +257,6 @@ class LaunchFusionFormatterTests(unittest.TestCase):
         self.assertIn("• 原因：持仓量窗口不连续", text)
         self.assertIn("缺失项不会按0计算", text)
         self.assertNotIn("launch_market_facts_oi_gap", text)
-        self.assertNotIn("SMC", text)
         self.assertLessEqual(len(text), 1024)
 
 

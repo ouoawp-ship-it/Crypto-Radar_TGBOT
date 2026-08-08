@@ -118,13 +118,6 @@ class FakeAiSession:
         pass
 
 
-def _supportive_smc_filter() -> dict[str, object]:
-    return {
-        "status": "supportive",
-        "ai_eligible": True,
-    }
-
-
 def _eligible_launch_phase() -> dict[str, object]:
     return {
         "timing_stage": "confirmed",
@@ -181,13 +174,8 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
             "rule_score_not_probability",
         )
         self.assertEqual(item["discovery_score"], 80)
-        self.assertIn(item["smc_filter"]["status"], {
-            "supportive",
-            "neutral",
-            "conflicting",
-            "insufficient",
-        })
-        self.assertEqual(item["smc_filter"]["score_adjustment"], 0)
+        self.assertIn("launch_phase", item)
+        self.assertNotIn("secondary_filter", item)
 
     def test_futures_only_pair_is_visible_but_never_complete_or_ai_eligible(self) -> None:
         radar = LaunchWarningRadar(
@@ -296,48 +284,39 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
             })
         )
 
-    def test_smc_conflict_blocks_only_a_new_first_publication(self) -> None:
-        first = {
+    def test_publication_depends_only_on_phase_and_current_lifecycle(self) -> None:
+        base = {
             "launch_directional_cycle": True,
-            "smc_filter": {"blocks_publication": True},
+            "directional_analysis_status": "ready",
+            "trigger_path": "directional:bullish_candidate",
+        }
+        first_ready = {
+            **base,
+            "launch_phase": _eligible_launch_phase(),
+        }
+        first_blocked = {
+            **base,
+            "launch_phase": {
+                **_eligible_launch_phase(),
+                "initial_alert_eligible": False,
+            },
         }
         existing = {
-            **first,
+            **first_blocked,
             "launch_package": {
                 "enabled": True,
                 "previous_published": {"observation_id": 10},
             },
         }
-        stale_previous_cycle_message = {
-            **first,
-            "last_message_id": 99,
-            "reply_to_message_id": 99,
-            "launch_package": {
-                "enabled": True,
-                "previous_published": {},
-            },
-        }
-        invalidated = {
-            **existing,
-            "directional_cycle_invalidated": {"reason": "direction_changed"},
-        }
-        unpublished_invalidated = {
-            **stale_previous_cycle_message,
-            "directional_cycle_invalidated": {"reason": "direction_changed"},
-        }
 
-        self.assertFalse(LaunchWarningRadar._smc_filter_publishable(first))
-        self.assertTrue(LaunchWarningRadar._smc_filter_publishable(existing))
-        self.assertFalse(
-            LaunchWarningRadar._smc_filter_publishable(
-                stale_previous_cycle_message
-            )
+        self.assertTrue(
+            LaunchWarningRadar._directional_candidate_publishable(first_ready)
         )
-        self.assertTrue(LaunchWarningRadar._smc_filter_publishable(invalidated))
         self.assertFalse(
-            LaunchWarningRadar._smc_filter_publishable(
-                unpublished_invalidated
-            )
+            LaunchWarningRadar._directional_candidate_publishable(first_blocked)
+        )
+        self.assertTrue(
+            LaunchWarningRadar._directional_candidate_publishable(existing)
         )
 
     def test_new_cycle_clears_previous_directional_invalidation_before_publish(self) -> None:
@@ -446,11 +425,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "direction": "bullish_candidate",
                     "data_complete": True,
                 },
-                "smc_filter": {
-                    "status": "supportive",
-                    "blocks_publication": False,
-                    "ai_eligible": True,
-                },
                 "launch_phase": _eligible_launch_phase(),
             })
             return {
@@ -508,91 +482,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 saved["DEMOUSDT"],
             )
 
-    def test_smc_internal_error_fails_open_without_losing_directional_result(self) -> None:
-        radar = LaunchWarningRadar(self.settings(), object())  # type: ignore[arg-type]
-        source = FakeSource()
-        monday_boundary = 4 * INTERVALS["1d"] + 35 * 7 * INTERVALS["1d"]
-        item = {
-            "symbol": "DEMOUSDT",
-            "coin": "DEMO",
-            "score": 80,
-            "price_1h": 3.2,
-            "oi_1h": 3.5,
-            "price_24h": 8.0,
-            "oi_24h": 7.0,
-            "funding_available": True,
-            "funding_pct": 0.01,
-            "basis_pct": 0.08,
-            "liquidity_tier": "中流动性",
-            "asset_subclass": "altcoin",
-        }
-
-        with patch(
-            "radars.launch_warning.radar.evaluate_smc_filter",
-            side_effect=RuntimeError("provider-secret-detail"),
-        ):
-            diagnostics = radar._enrich_directional_candidates(
-                source,
-                [item],
-                window_end_ms=monday_boundary,
-            )
-
-        self.assertEqual(item["directional_analysis_status"], "ready")
-        self.assertIn("directional_readiness", item)
-        self.assertEqual(item["smc_filter"]["status"], "insufficient")
-        self.assertEqual(
-            item["smc_filter"]["reasons"],
-            ["smc_filter_local_error"],
-        )
-        self.assertFalse(item["smc_filter"]["blocks_publication"])
-        self.assertFalse(item["smc_filter"]["ai_eligible"])
-        self.assertEqual(diagnostics["network_calls"], 6)
-        self.assertNotIn("provider-secret-detail", str(item))
-
-    def test_smc_non_supportive_card_never_calls_or_reuses_ai(self) -> None:
-        radar = LaunchWarningRadar(
-            self.settings(
-                launch_ai_interpreter_enable=True,
-                launch_ai_auto_enable=True,
-                ai_api_key="fake-key",
-                ai_base_url="https://provider.invalid/v1",
-                ai_model="fake-model",
-                tg_bot_username="VIPpao_bot",
-                tg_private_control_enable=True,
-                tg_private_control_admin_user_id="123",
-            ),
-            object(),  # type: ignore[arg-type]
-        )
-        alert = {
-            "symbol": "DEMOUSDT",
-            "directional_readiness": {
-                "status": "多头确认",
-                "direction": "bullish",
-                "data_complete": True,
-            },
-            "launch_phase": _eligible_launch_phase(),
-            "smc_filter": {
-                "status": "conflicting",
-                "ai_eligible": False,
-            },
-            "launch_ai_interpreter_cache": {
-                "key": "must-not-be-read",
-                "result": {"status": "available", "summary": "旧解读"},
-            },
-        }
-
-        with patch("radars.launch_warning.radar.requests.Session") as session:
-            result = radar._interpret_directional_alerts([alert])
-
-        self.assertEqual(result["calls"], 0)
-        self.assertEqual(result["cached"], 0)
-        self.assertEqual(
-            alert["ai_interpretation_status"],
-            "not_eligible_smc_conflict",
-        )
-        self.assertNotIn("ai_interpretation", alert)
-        session.assert_not_called()
-
     def test_on_demand_mode_reports_missing_private_button_route(self) -> None:
         radar = LaunchWarningRadar(
             self.settings(
@@ -607,6 +496,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         )
         alert = {
             "symbol": "DEMOUSDT",
+            "launch_message_package_v2": True,
             "directional_readiness": {
                 "status": "多头确认",
                 "direction": "bullish",
@@ -624,7 +514,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertFalse(diagnostics["on_demand_available"])
         self.assertEqual(
             alert["ai_interpretation_status"],
-            "on_demand_route_not_configured",
+            "private_control_not_ready",
         )
         session.assert_not_called()
         self.assertTrue(
@@ -634,50 +524,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "trigger_path": "momentum",
             })
         )
-
-    def test_missing_or_forged_smc_filter_never_calls_ai(self) -> None:
-        radar = LaunchWarningRadar(
-            self.settings(
-                launch_ai_interpreter_enable=True,
-                launch_ai_auto_enable=True,
-                ai_api_key="fake-key",
-                ai_base_url="https://provider.invalid/v1",
-                ai_model="fake-model",
-            ),
-            object(),  # type: ignore[arg-type]
-        )
-        base = {
-            "symbol": "DEMOUSDT",
-            "directional_readiness": {
-                "status": "多头确认",
-                "direction": "bullish",
-                "data_complete": True,
-            },
-            "launch_phase": _eligible_launch_phase(),
-        }
-        missing = dict(base)
-        forged = {
-            **base,
-            "smc_filter": {
-                "status": "neutral",
-                "ai_eligible": True,
-            },
-        }
-
-        with patch("radars.launch_warning.radar.requests.Session") as session:
-            result = radar._interpret_directional_alerts([missing, forged])
-
-        self.assertEqual(result["calls"], 0)
-        self.assertEqual(result["cached"], 0)
-        self.assertEqual(
-            missing["ai_interpretation_status"],
-            "not_eligible_smc_insufficient",
-        )
-        self.assertEqual(
-            forged["ai_interpretation_status"],
-            "not_eligible_smc_neutral",
-        )
-        session.assert_not_called()
 
     def test_non_eligible_phase_never_reads_cache_or_creates_session(self) -> None:
         radar = LaunchWarningRadar(
@@ -706,7 +552,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
             {
                 "symbol": "MISSINGUSDT",
                 "directional_readiness": directional,
-                "smc_filter": _supportive_smc_filter(),
                 "launch_ai_interpreter_cache": cached,
             },
             {
@@ -717,7 +562,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "execution_status": "blocked_extension",
                     "ai_eligible": False,
                 },
-                "smc_filter": _supportive_smc_filter(),
                 "launch_ai_interpreter_cache": cached,
             },
             {
@@ -728,7 +572,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "execution_status": "blocked_data",
                     "ai_eligible": False,
                 },
-                "smc_filter": _supportive_smc_filter(),
                 "launch_ai_interpreter_cache": cached,
             },
             {
@@ -739,7 +582,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "execution_status": "blocked_volume",
                     "ai_eligible": False,
                 },
-                "smc_filter": _supportive_smc_filter(),
                 "launch_ai_interpreter_cache": cached,
             },
         ]
@@ -851,6 +693,7 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         )
         alert = {
             "symbol": "DEMOUSDT",
+            "launch_message_package_v2": True,
             "directional_readiness": {
                 "status": "多头确认",
                 "direction": "bullish",
@@ -859,7 +702,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "data_complete": True,
             },
             "launch_phase": _eligible_launch_phase(),
-            "smc_filter": _supportive_smc_filter(),
         }
         session = FakeAiSession()
 
@@ -893,13 +735,13 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         )
         alert = {
             "symbol": "DEMOUSDT",
+            "launch_message_package_v2": True,
             "directional_readiness": {
                 "status": "多头确认",
                 "direction": "bullish",
                 "data_complete": True,
             },
             "launch_phase": _eligible_launch_phase(),
-            "smc_filter": _supportive_smc_filter(),
         }
 
         with patch("radars.launch_warning.radar.requests.Session") as session:
@@ -911,6 +753,44 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
         self.assertEqual(alert["ai_interpretation_status"], "on_demand")
         self.assertEqual(alert["ai_interpretation_source"], "none")
         self.assertNotIn("ai_interpretation", alert)
+        session.assert_not_called()
+
+    def test_on_demand_button_status_allows_incomplete_structured_card(self) -> None:
+        radar = LaunchWarningRadar(
+            self.settings(
+                launch_ai_interpreter_enable=True,
+                launch_ai_auto_enable=False,
+                ai_api_key="fake-key",
+                ai_base_url="https://provider.invalid/v1",
+                ai_model="fake-model",
+                tg_bot_username="VIPpao_bot",
+                tg_private_control_enable=True,
+                tg_private_control_admin_user_id="123",
+            ),
+            object(),  # type: ignore[arg-type]
+        )
+        alert = {
+            "symbol": "DEMOUSDT",
+            "launch_message_package_v2": True,
+            "directional_readiness": {
+                "status": "数据不足",
+                "direction": "none",
+                "data_complete": False,
+                "missing_fields": ["spot_cvd_ratio"],
+            },
+            "launch_phase": {
+                "timing_stage": "insufficient",
+                "execution_status": "blocked_data",
+            },
+        }
+
+        with patch("radars.launch_warning.radar.requests.Session") as session:
+            diagnostics = radar._interpret_directional_alerts([alert])
+
+        self.assertEqual(diagnostics["status"], "on_demand")
+        self.assertTrue(alert["ai_on_demand_ready"])
+        self.assertEqual(alert["ai_interpretation_status"], "on_demand")
+        self.assertEqual(diagnostics["calls"], 0)
         session.assert_not_called()
 
 
@@ -939,7 +819,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "data_complete": True,
                 },
                 "launch_phase": _eligible_launch_phase(),
-                "smc_filter": _supportive_smc_filter(),
             }
             first_session = FakeAiSession()
             with patch(
@@ -991,7 +870,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "data_complete": True,
                 },
                 "launch_phase": _eligible_launch_phase(),
-                "smc_filter": _supportive_smc_filter(),
             }
             for symbol in ("ONEUSDT", "TWOUSDT")
         ]
@@ -1028,7 +906,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "data_complete": True,
             },
             "launch_phase": _eligible_launch_phase(),
-            "smc_filter": _supportive_smc_filter(),
         }
 
         with patch("radars.launch_warning.radar.requests.Session") as session:
@@ -1061,7 +938,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "data_complete": True,
             },
             "launch_phase": _eligible_launch_phase(),
-            "smc_filter": _supportive_smc_filter(),
         }
         first["launch_ai_interpreter_cache"] = {
             "key": radar._directional_ai_cache_key(
@@ -1092,7 +968,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                 "data_complete": True,
             },
             "launch_phase": _eligible_launch_phase(),
-            "smc_filter": _supportive_smc_filter(),
         }
         session = FakeAiSession()
 
@@ -1161,7 +1036,6 @@ class LaunchDirectionalIntegrationTests(unittest.TestCase):
                     "data_complete": True,
                 },
                 "launch_phase": _eligible_launch_phase(),
-                "smc_filter": _supportive_smc_filter(),
             }
             result: dict[str, object] = {
                 "status": status,

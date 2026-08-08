@@ -21,7 +21,7 @@ from .signal_text import clean_signal_text, extract_symbols_from_text, signal_ev
 
 DEFAULT_SIGNAL_DB_PATH = BASE_DIR / "data" / "signals.db"
 SIGNAL_STORE_SCHEMA_VERSION = 7
-AI_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
+AI_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 2
 AI_CONTEXT_SNAPSHOT_MAX_BYTES = 16 * 1024
 AI_RESULT_MAX_BYTES = 16 * 1024
 AI_TRANSIENT_STATE_MAX_SEC = 5 * 60
@@ -177,7 +177,6 @@ AI_CONTEXT_FIELDS = frozenset({
     "discovery_score",
     "rule_result",
     "launch_phase",
-    "smc_filter",
     "multi_timeframe",
     "price_open_interest",
     "active_flow",
