@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from config import Settings
-from shared.signal_store import SignalEventStore, append_from_push, signal_public_ref
+from shared.signal_store import (
+    SignalEventStore,
+    append_from_push,
+    build_ai_cache_key,
+    signal_public_ref,
+)
 
 
 class CountingSignalEventStore(SignalEventStore):
@@ -30,6 +38,49 @@ class SignalEventStoreTests(unittest.TestCase):
             signal_events_db_path=Path(tmp) / "signals.db",
         )
 
+    @staticmethod
+    def ai_context(*, direction: str = "bullish", stage: str = "forming") -> dict[str, object]:
+        return {
+            "discovery_score": 72,
+            "rule_result": {
+                "status": "ready",
+                "direction": direction,
+                "stage": stage,
+                "score_semantics": "evidence_not_probability",
+                "data_complete": True,
+            },
+            "launch_phase": {
+                "timing_stage": "forming",
+                "execution_status": "wait_confirmation",
+            },
+            "smc_filter": {},
+            "multi_timeframe": {},
+            "price_open_interest": {"price_1h_pct": 2.5, "oi_1h_pct": 3.0},
+            "active_flow": {"spot_active_ratio": 0.2},
+            "funding_basis": {},
+            "structure": {},
+            "plan": {},
+            "completeness": {},
+        }
+
+    @staticmethod
+    def ai_result(*, direction: str = "bullish", stage: str = "forming") -> dict[str, object]:
+        return {
+            "status": "available",
+            "direction": direction,
+            "stage": stage,
+            "summary": "规则证据偏强，但仍需等待阶段确认。",
+            "supporting_evidence": ["价格与持仓同向"],
+            "counter_evidence": ["上方仍有压力"],
+            "risk_notes": ["不要追涨"],
+            "wait_for": ["等待结构保持"],
+            "limitations": ["证据分不是概率"],
+        }
+
+    @staticmethod
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
     def test_init_creates_table_indexes_and_compat_view(self) -> None:
         with TemporaryDirectory() as tmp:
             store = SignalEventStore(Path(tmp) / "signals.db")
@@ -50,6 +101,11 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(objects["idx_signals_module_ts"], "index")
         self.assertEqual(objects["idx_signals_template_ts"], "index")
         self.assertEqual(objects["ux_signals_dedup_symbol"], "index")
+        self.assertEqual(objects["signal_ai_snapshots"], "table")
+        self.assertEqual(objects["signal_ai_cache"], "table")
+        self.assertEqual(objects["signal_ai_audit"], "table")
+        self.assertEqual(objects["idx_signal_ai_snapshots_public_ref"], "index")
+        self.assertEqual(objects["idx_signal_ai_cache_signal"], "index")
 
     def test_append_from_push_extracts_multiple_symbols(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -141,6 +197,453 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(by_symbol["BTCUSDT"]["quality_status"], "ready")
         self.assertEqual(by_symbol["BTCUSDT"]["payload"]["facts"]["price"], 100.5)
         self.assertTrue(by_symbol["BTCUSDT"]["payload"]["facts"]["evaluation_eligible"])
+
+    def test_launch_ai_snapshot_is_bounded_and_loaded_only_by_public_ref(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            context = self.ai_context()
+            append_from_push(
+                settings,
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:snapshot",
+                status="sent",
+                sent=True,
+                text="BTCUSDT launch signal",
+                ts=1_000,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "stage": "forming",
+                    "ai_context_snapshot": context,
+                }],
+            )
+            store = SignalEventStore(settings.signal_events_db_path)
+            public_ref = signal_public_ref("launch:ai:snapshot", "BTCUSDT")
+            loaded = store.load_ai_context_snapshot(public_ref)
+            numeric = store.load_ai_context_snapshot("1")
+            detail = store.signal_detail(public_ref) or {}
+
+        self.assertEqual(loaded["status"], "ready")
+        self.assertEqual(loaded["public_ref"], public_ref)
+        self.assertEqual(loaded["symbol"], "BTCUSDT")
+        self.assertEqual(loaded["signal_ts"], 1_000)
+        self.assertEqual(loaded["stage"], "forming")
+        self.assertEqual(loaded["snapshot"], context)
+        self.assertRegex(str(loaded["context_hash"]), r"^[0-9a-f]{64}$")
+        self.assertEqual(numeric, {"status": "invalid_public_ref"})
+        self.assertEqual(
+            detail["payload"]["ai_context_snapshot_status"],
+            "ready",
+        )
+        self.assertNotIn("text_html", loaded)
+        self.assertNotIn("topic_id", loaded)
+        self.assertNotIn("message_ids", loaded)
+
+    def test_ai_snapshot_rejects_oversize_secrets_and_reasoning_without_blocking_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            records = (
+                (
+                    "oversize",
+                    {"rule_result": {"direction": "bullish", "blob": "x" * 17_000}},
+                    "snapshot_too_large",
+                ),
+                (
+                    "secret",
+                    {"rule_result": {"direction": "bullish"}, "api_key": "private-value"},
+                    "snapshot_invalid",
+                ),
+                (
+                    "reasoning",
+                    {"rule_result": {"direction": "bullish"}, "reasoning_content": "hidden"},
+                    "snapshot_invalid",
+                ),
+            )
+            store = SignalEventStore(settings.signal_events_db_path)
+            for index, (name, context, _expected) in enumerate(records, 1):
+                store.append_from_push(
+                    template_id="TG_LAUNCH_ALERT",
+                    dedup_key=f"launch:ai:{name}",
+                    status="sent",
+                    sent=True,
+                    text=f"BTCUSDT {name}",
+                    ts=1_000 + index,
+                    structured_records=[{
+                        "symbol": "BTCUSDT",
+                        "ai_context_snapshot": context,
+                    }],
+                )
+
+            statuses = []
+            for name, _context, expected in records:
+                public_ref = signal_public_ref(f"launch:ai:{name}", "BTCUSDT")
+                statuses.append(store.load_ai_context_snapshot(public_ref)["status"])
+                item = store.signal_detail(public_ref) or {}
+                self.assertEqual(
+                    item["payload"]["ai_context_snapshot_status"],
+                    expected,
+                )
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                snapshot_count = conn.execute(
+                    "SELECT COUNT(*) FROM signal_ai_snapshots"
+                ).fetchone()[0]
+                database_text = " ".join(
+                    str(value)
+                    for row in conn.execute(
+                        "SELECT context_json FROM signal_ai_snapshots"
+                    ).fetchall()
+                    for value in row
+                )
+
+        self.assertEqual(statuses, ["snapshot_missing"] * 3)
+        self.assertEqual(snapshot_count, 0)
+        self.assertNotIn("private-value", database_text)
+        self.assertNotIn("hidden", database_text)
+
+    def test_ai_snapshot_loader_requires_sent_ready_launch_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            cases = (
+                ("TG_FLOW_RADAR", "flow", "sent", True),
+                ("TG_LAUNCH_ALERT", "dry", "dry_run", False),
+                ("TG_LAUNCH_ALERT", "blocked", "blocked", False),
+                ("TG_LAUNCH_ALERT", "degraded", "sent", True),
+            )
+            refs = []
+            for index, (template_id, name, status, sent) in enumerate(cases, 1):
+                dedup_key = f"strict:{name}"
+                store.append_from_push(
+                    template_id=template_id,
+                    dedup_key=dedup_key,
+                    status=status,
+                    sent=sent,
+                    text=f"BTCUSDT {name}",
+                    ts=1_000 + index,
+                    structured_records=[{
+                        "symbol": "BTCUSDT",
+                        "ai_context_snapshot": self.ai_context(),
+                    }],
+                )
+                refs.append(signal_public_ref(dedup_key, "BTCUSDT"))
+            with store.connect() as conn:
+                conn.execute(
+                    "UPDATE signals SET quality_status = 'degraded' WHERE dedup_key = 'strict:degraded'"
+                )
+            statuses = [store.load_ai_context_snapshot(ref)["status"] for ref in refs]
+
+        self.assertEqual(statuses, ["signal_unavailable"] * 4)
+
+    def test_schema_six_migrates_additively_and_old_signal_reports_snapshot_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="legacy:ai:missing",
+                status="sent",
+                sent=True,
+                text="BTCUSDT legacy",
+                ts=1_000,
+                structured_records=[{"symbol": "BTCUSDT", "stage": "watch"}],
+            )
+            with store.connect() as conn:
+                conn.execute("DROP TABLE signal_ai_audit")
+                conn.execute("DROP TABLE signal_ai_cache")
+                conn.execute("DROP TABLE signal_ai_snapshots")
+                conn.execute(
+                    "UPDATE signal_store_meta SET value = '6' WHERE key = 'schema_version'"
+                )
+            public_ref = signal_public_ref("legacy:ai:missing", "BTCUSDT")
+            loaded = store.load_ai_context_snapshot(public_ref)
+            detail = store.signal_detail(public_ref) or {}
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                version = conn.execute(
+                    "SELECT value FROM signal_store_meta WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                ai_tables = conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'signal_ai_%'"
+                ).fetchone()[0]
+
+        self.assertEqual(loaded["status"], "snapshot_missing")
+        self.assertEqual(loaded["symbol"], "BTCUSDT")
+        self.assertEqual(loaded["signal_ts"], 1_000)
+        self.assertEqual(loaded["stage"], "watch")
+        self.assertEqual(detail["symbol"], "BTCUSDT")
+        self.assertEqual(version, "7")
+        self.assertEqual(ai_tables, 3)
+
+    def test_ai_cache_key_uses_only_all_reviewed_components(self) -> None:
+        values = {
+            "context_hash": self.digest("context"),
+            "model": "provider/model-v1",
+            "endpoint_hash": self.digest("endpoint"),
+            "prompt_hash": self.digest("prompt"),
+            "policy_version": "launch-ai-v1",
+        }
+        keys = {build_ai_cache_key(**values)}
+        changes = {
+            "context_hash": self.digest("context-2"),
+            "model": "provider/model-v2",
+            "endpoint_hash": self.digest("endpoint-2"),
+            "prompt_hash": self.digest("prompt-2"),
+            "policy_version": "launch-ai-v2",
+        }
+        for field, changed in changes.items():
+            keys.add(build_ai_cache_key(**{**values, field: changed}))
+
+        self.assertEqual(len(keys), 6)
+        self.assertTrue(all(key.startswith("aic_") for key in keys))
+        with self.assertRaisesRegex(ValueError, "ai_cache_hash_invalid"):
+            build_ai_cache_key(**{**values, "endpoint_hash": "https://private.invalid"})
+
+    def test_ai_cache_singleflight_success_and_audit_do_not_charge_cache_hits(self) -> None:
+        now = 1_700_000_000
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:cache",
+                status="sent",
+                sent=True,
+                text="BTCUSDT cache",
+                ts=now - 60,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "stage": "forming",
+                    "ai_context_snapshot": self.ai_context(),
+                }],
+            )
+            public_ref = signal_public_ref("launch:ai:cache", "BTCUSDT")
+            request = {
+                "model": "provider/model-v1",
+                "endpoint_hash": self.digest("endpoint"),
+                "prompt_hash": self.digest("prompt"),
+                "policy_version": "launch-ai-v1",
+                "daily_limit": 1,
+            }
+            first = store.reserve_ai_interpretation(public_ref, now_ts=now, **request)
+            duplicate = store.reserve_ai_interpretation(
+                public_ref,
+                now_ts=now + 1,
+                **request,
+            )
+            completed = store.cache_ai_success(
+                str(first["cache_key"]),
+                str(first["lease_id"]),
+                self.ai_result(),
+                now_ts=now + 2,
+            )
+            cached = store.reserve_ai_interpretation(
+                public_ref,
+                now_ts=now + 3,
+                **request,
+            )
+            quota = store.ai_daily_quota(now_ts=now + 3, daily_limit=1)
+            audit = store.list_ai_interpretation_audit(public_ref)
+
+        self.assertEqual(first["status"], "reserved")
+        self.assertEqual(first["symbol"], "BTCUSDT")
+        self.assertEqual(first["signal_ts"], now - 60)
+        self.assertEqual(first["stage"], "forming")
+        self.assertEqual(duplicate["status"], "in_flight")
+        self.assertEqual(completed, {"status": "available", "stored": True})
+        self.assertEqual(cached["status"], "available")
+        self.assertEqual(cached["source"], "cache")
+        self.assertEqual(cached["result"], self.ai_result())
+        self.assertEqual(quota["provider_reserved"], 1)
+        self.assertTrue(quota["exhausted"])
+        self.assertEqual(
+            [item["event"] for item in audit],
+            ["cache_hit", "completed", "deduplicated", "reserved"],
+        )
+
+    def test_ai_failure_is_short_safe_cooldown_and_stale_lease_cannot_complete(self) -> None:
+        now = 1_700_000_000
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:failure",
+                status="sent",
+                sent=True,
+                text="BTCUSDT failure",
+                ts=now - 60,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "ai_context_snapshot": self.ai_context(),
+                }],
+            )
+            public_ref = signal_public_ref("launch:ai:failure", "BTCUSDT")
+            request = {
+                "model": "provider/model-v1",
+                "endpoint_hash": self.digest("endpoint"),
+                "prompt_hash": self.digest("prompt"),
+                "policy_version": "launch-ai-v1",
+            }
+            first = store.reserve_ai_interpretation(public_ref, now_ts=now, **request)
+            failure = store.cache_ai_failure(
+                str(first["cache_key"]),
+                str(first["lease_id"]),
+                "provider body https://private.invalid secret",
+                cooldown_sec=999,
+                now_ts=now + 1,
+            )
+            cooling = store.reserve_ai_interpretation(
+                public_ref,
+                now_ts=now + 2,
+                **request,
+            )
+            second = store.reserve_ai_interpretation(
+                public_ref,
+                now_ts=now + 302,
+                **request,
+            )
+            stale = store.cache_ai_success(
+                str(first["cache_key"]),
+                str(first["lease_id"]),
+                self.ai_result(),
+                now_ts=now + 303,
+            )
+            invalid_result = {**self.ai_result(), "reasoning_content": "private chain"}
+            invalid = store.cache_ai_success(
+                str(second["cache_key"]),
+                str(second["lease_id"]),
+                invalid_result,
+                now_ts=now + 304,
+            )
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                state, result_json, error_code, cooldown_until = conn.execute(
+                    "SELECT state, result_json, error_code, cooldown_until FROM signal_ai_cache"
+                ).fetchone()
+                raw_database = " ".join(
+                    str(value)
+                    for table in ("signal_ai_cache", "signal_ai_audit")
+                    for row in conn.execute(f"SELECT * FROM {table}").fetchall()
+                    for value in row
+                )
+
+        self.assertEqual(failure["status"], "cooldown")
+        self.assertEqual(failure["error_code"], "ai_request_failed")
+        self.assertEqual(failure["retry_after"], 300)
+        self.assertEqual(cooling["status"], "cooldown")
+        self.assertEqual(cooling["error_code"], "ai_request_failed")
+        self.assertEqual(second["status"], "reserved")
+        self.assertEqual(stale, {"status": "stale_request", "stored": False})
+        self.assertEqual(invalid["status"], "invalid_ai_result")
+        self.assertEqual(state, "cooldown")
+        self.assertEqual(json.loads(result_json), {})
+        self.assertEqual(error_code, "invalid_ai_result")
+        self.assertEqual(cooldown_until, now + 364)
+        self.assertNotIn("private.invalid", raw_database)
+        self.assertNotIn("private chain", raw_database)
+
+    def test_ai_success_must_preserve_snapshot_direction_and_stage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:conflict",
+                status="sent",
+                sent=True,
+                text="BTCUSDT conflict",
+                ts=1_000,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "ai_context_snapshot": self.ai_context(),
+                }],
+            )
+            public_ref = signal_public_ref("launch:ai:conflict", "BTCUSDT")
+            reserved = store.reserve_ai_interpretation(
+                public_ref,
+                model="provider/model-v1",
+                endpoint_hash=self.digest("endpoint"),
+                prompt_hash=self.digest("prompt"),
+                policy_version="launch-ai-v1",
+                now_ts=1_100,
+            )
+            conflict = store.cache_ai_success(
+                str(reserved["cache_key"]),
+                str(reserved["lease_id"]),
+                self.ai_result(direction="bearish"),
+                now_ts=1_101,
+            )
+            with closing(sqlite3.connect(settings.signal_events_db_path)) as conn:
+                state, result_json, error_code = conn.execute(
+                    "SELECT state, result_json, error_code FROM signal_ai_cache"
+                ).fetchone()
+
+        self.assertEqual(conflict["status"], "ai_rule_conflict")
+        self.assertFalse(conflict["stored"])
+        self.assertEqual(state, "cooldown")
+        self.assertEqual(json.loads(result_json), {})
+        self.assertEqual(error_code, "ai_rule_conflict")
+
+    def test_ai_daily_limit_is_atomic_and_cache_hit_bypasses_exhaustion(self) -> None:
+        now = 1_700_000_000
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            store = SignalEventStore(settings.signal_events_db_path)
+            store.append_from_push(
+                template_id="TG_LAUNCH_ALERT",
+                dedup_key="launch:ai:quota",
+                status="sent",
+                sent=True,
+                text="BTCUSDT quota",
+                ts=now - 60,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "ai_context_snapshot": self.ai_context(),
+                }],
+            )
+            public_ref = signal_public_ref("launch:ai:quota", "BTCUSDT")
+            endpoint_hash = self.digest("endpoint")
+            prompt_hash = self.digest("prompt")
+
+            def reserve(model: str) -> tuple[str, dict[str, object]]:
+                return model, store.reserve_ai_interpretation(
+                    public_ref,
+                    model=model,
+                    endpoint_hash=endpoint_hash,
+                    prompt_hash=prompt_hash,
+                    policy_version="launch-ai-v1",
+                    daily_limit=1,
+                    now_ts=now,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(reserve, ("provider/model-a", "provider/model-b")))
+            statuses = {str(result["status"]) for _model, result in results}
+            reserved_model, reserved = next(
+                (model, result)
+                for model, result in results
+                if result["status"] == "reserved"
+            )
+            store.cache_ai_success(
+                str(reserved["cache_key"]),
+                str(reserved["lease_id"]),
+                self.ai_result(),
+                now_ts=now + 1,
+            )
+            cached = reserve(reserved_model)[1]
+            quota = store.ai_daily_quota(now_ts=now + 1, daily_limit=1)
+            audit = store.list_ai_interpretation_audit(public_ref)
+
+        self.assertEqual(statuses, {"reserved", "quota_exhausted"})
+        self.assertEqual(cached["status"], "available")
+        self.assertEqual(cached["source"], "cache")
+        self.assertEqual(quota["provider_reserved"], 1)
+        self.assertEqual(quota["remaining"], 0)
+        self.assertEqual(
+            sum(item["event"] == "reserved" for item in audit),
+            1,
+        )
+        self.assertEqual(
+            sum(item["event"] == "quota_rejected" for item in audit),
+            1,
+        )
 
     def test_repair_legacy_signals_is_auditable_and_backed_up(self) -> None:
         with TemporaryDirectory() as tmp:

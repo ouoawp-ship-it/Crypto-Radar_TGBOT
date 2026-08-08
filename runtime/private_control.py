@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Mapping
 
+from radars.launch_warning.ai_on_demand import positive_telegram_user_id
 from shared.atomic_json import locked_read_json, locked_write_json
 
 
@@ -75,6 +77,8 @@ _MENU_ALIASES = {
     "关闭方向": "关闭方向雷达",
     "开启AI": "开启AI解读",
     "关闭AI": "关闭AI解读",
+    "开启按需AI": "开启AI解读",
+    "关闭按需AI": "关闭AI解读",
     "AI配置": "AI设置",
     "开启提醒": "开启故障提醒",
     "关闭提醒": "关闭故障提醒",
@@ -105,8 +109,8 @@ _CONFIRM_ACTIONS = {
 _CONFIG_ACTIONS = {
     "directional_on": ("LAUNCH_DIRECTIONAL_ENABLE", "true", "方向雷达已开启。"),
     "directional_off": ("LAUNCH_DIRECTIONAL_ENABLE", "false", "方向雷达已关闭。"),
-    "ai_on": ("LAUNCH_AI_INTERPRETER_ENABLE", "true", "AI 解读员已开启。"),
-    "ai_off": ("LAUNCH_AI_INTERPRETER_ENABLE", "false", "AI 解读员已关闭。"),
+    "ai_on": ("LAUNCH_AI_INTERPRETER_ENABLE", "true", "按需 AI 解读已开启。"),
+    "ai_off": ("LAUNCH_AI_INTERPRETER_ENABLE", "false", "按需 AI 解读已关闭。"),
     "private_alert_on": (
         "TG_PRIVATE_CONTROL_ALERT_ENABLE",
         "true",
@@ -146,10 +150,45 @@ _CONFIG_ACTIONS = {
 }
 
 _AI_INPUT_REQUESTS = {
+    "设置机器人用户名": ("bot_username", "机器人公开用户名"),
     "设置AI密钥": ("api_key", "AI 密钥"),
     "设置AI接口": ("base_url", "AI 接口地址"),
     "设置AI模型": ("model", "AI 模型"),
     "设置AI提示词": ("prompt", "AI 补充提示词"),
+}
+
+_AI_ON_DEMAND_START_PATTERN = re.compile(
+    r"/start ai_(?P<public_ref>sig_[0-9a-f]{20})"
+)
+_TG_BOT_USERNAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
+_AI_ON_DEMAND_TEXT_LIMIT = 3400
+_AI_ON_DEMAND_STATUS_TEXT = {
+    "processing": "⏳ AI 解读处理中，请稍候。",
+    "completed": "✅ AI 解读完成。",
+    "cached": "♻️ 已返回缓存的 AI 解读。",
+    "disabled": "⏸️ 主动 AI 解读未开启。",
+    "not_configured": "⚙️ AI 解读尚未配置。",
+    "signal_unavailable": "⌛ 信号记录已过期或缺失，请查看最新信号。",
+    "rate_limited": "⏱️ AI 解读请求太快，请稍后再试。",
+    "quota_exhausted": "🚫 AI 解读额度已耗尽，请稍后再试。",
+    "timeout": "⌛ AI 解读请求超时，请稍后再试。",
+    "security_failed": "🔒 AI 解读安全校验失败。",
+}
+_AI_ON_DEMAND_STATUS_COMMAND = {
+    "processing": "ai_on_demand_processing",
+    "completed": "ai_on_demand_completed",
+    "cached": "ai_on_demand_cached",
+    "disabled": "ai_on_demand_disabled",
+    "not_configured": "ai_on_demand_not_configured",
+    "signal_unavailable": "ai_on_demand_signal_unavailable",
+    "rate_limited": "ai_on_demand_rate_limited",
+    "quota_exhausted": "ai_on_demand_quota_exhausted",
+    "timeout": "ai_on_demand_timeout",
+    "security_failed": "ai_on_demand_security_failed",
+}
+_AI_ON_DEMAND_STATUS_ALIASES = {
+    "not_found": "signal_unavailable",
+    "expired": "signal_unavailable",
 }
 
 
@@ -195,6 +234,14 @@ def _configured(value: Any) -> bool:
     }
 
 
+def _configured_bot_username(value: Any) -> bool:
+    username = str(value or "").strip().lstrip("@")
+    return bool(
+        _TG_BOT_USERNAME_PATTERN.fullmatch(username)
+        and username.lower().endswith("bot")
+    )
+
+
 def _safe_integer(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
@@ -234,6 +281,7 @@ class PrivateControlService:
         push_records_reader: Callable[[], str] = _empty_text_reader,
         unpublished_reasons_reader: Callable[[], str] = _empty_text_reader,
         fault_explanations_reader: Callable[[], str] = _empty_text_reader,
+        ai_on_demand_requester: Callable[[str], Mapping[str, Any]] | None = None,
         clock: Callable[[], float] = time.time,
         long_poll_sec: int = 25,
         http_timeout_sec: int = 35,
@@ -254,6 +302,7 @@ class PrivateControlService:
         self._push_records_reader = push_records_reader
         self._unpublished_reasons_reader = unpublished_reasons_reader
         self._fault_explanations_reader = fault_explanations_reader
+        self._ai_on_demand_requester = ai_on_demand_requester
         self._clock = clock
         self._long_poll_sec = max(1, min(int(long_poll_sec), 50))
         self._http_timeout_sec = max(
@@ -269,13 +318,7 @@ class PrivateControlService:
 
     @staticmethod
     def _parse_admin_id(value: int | str | None) -> int | None:
-        if isinstance(value, bool) or value is None:
-            return None
-        text = str(value).strip()
-        if not text.isdecimal():
-            return None
-        number = int(text)
-        return number if number > 0 else None
+        return positive_telegram_user_id(value)
 
     def poll_once(self) -> dict[str, Any]:
         result = {
@@ -327,6 +370,27 @@ class PrivateControlService:
             if type(update_id) is not int or update_id < 0:
                 result["ignored_updates"] += 1
                 continue
+            message = update.get("message")
+            ai_start_match = None
+            if (
+                self._ai_on_demand_requester is not None
+                and isinstance(message, Mapping)
+                and self._authorized(message)
+                and isinstance(message.get("text"), str)
+            ):
+                ai_start_match = _AI_ON_DEMAND_START_PATTERN.fullmatch(
+                    str(message["text"]).strip()
+                )
+            if ai_start_match is not None:
+                interim_error = self._send_reply(
+                    self._ai_on_demand_reply("processing")
+                )
+                result["telegram_http_calls"] += 1
+                if interim_error:
+                    self._save_offset(update_id + 1)
+                    result.update(status="failed", error=interim_error)
+                    return result
+                result["replies_sent"] += 1
             reply = self.handle_update(update)
             if reply is None:
                 result["ignored_updates"] += 1
@@ -379,8 +443,26 @@ class PrivateControlService:
         text = message.get("text")
         if not isinstance(text, str):
             return None
+        start_command = text.strip()
         command = _normalize_menu_command(text)
 
+        ai_on_demand_match = _AI_ON_DEMAND_START_PATTERN.fullmatch(
+            start_command
+        )
+        if ai_on_demand_match is not None:
+            self._pending = None
+            self._pending_input = None
+            return self._request_ai_on_demand(
+                ai_on_demand_match.group("public_ref")
+            )
+        if start_command.startswith("/start") and start_command != "/start":
+            self._pending = None
+            self._pending_input = None
+            return self._ai_on_demand_reply("security_failed")
+        if command.startswith("/start") and command != "/start":
+            self._pending = None
+            self._pending_input = None
+            return self._ai_on_demand_reply("security_failed")
         if command in {"/start", "/menu", "菜单", "帮助", "返回主菜单"}:
             self._pending = None
             self._pending_input = None
@@ -527,6 +609,54 @@ class PrivateControlService:
             "unsupported",
         )
 
+    def _request_ai_on_demand(self, public_ref: str) -> ControlReply:
+        requester = self._ai_on_demand_requester
+        if requester is None:
+            return self._ai_on_demand_reply("disabled")
+        try:
+            result = requester(public_ref)
+        except Exception as exc:
+            status = (
+                "timeout"
+                if "timeout" in exc.__class__.__name__.lower()
+                else "security_failed"
+            )
+            return self._ai_on_demand_reply(status)
+        if not isinstance(result, Mapping):
+            return self._ai_on_demand_reply("security_failed")
+        raw_status = result.get("status")
+        if not isinstance(raw_status, str):
+            return self._ai_on_demand_reply("security_failed")
+        status = _AI_ON_DEMAND_STATUS_ALIASES.get(raw_status, raw_status)
+        if status not in _AI_ON_DEMAND_STATUS_TEXT:
+            return self._ai_on_demand_reply("security_failed")
+        if status not in {"completed", "cached"}:
+            return self._ai_on_demand_reply(status)
+        interpretation = result.get("text")
+        if not isinstance(interpretation, str) or not interpretation.strip():
+            return self._ai_on_demand_reply("security_failed")
+        return self._ai_on_demand_reply(
+            status,
+            interpretation=interpretation.strip()[:_AI_ON_DEMAND_TEXT_LIMIT],
+        )
+
+    @staticmethod
+    def _ai_on_demand_reply(
+        status: str,
+        *,
+        interpretation: str = "",
+    ) -> ControlReply:
+        safe_status = (
+            status if status in _AI_ON_DEMAND_STATUS_TEXT else "security_failed"
+        )
+        text = _AI_ON_DEMAND_STATUS_TEXT[safe_status]
+        if safe_status in {"completed", "cached"} and interpretation:
+            text = f"{text}\n\n{interpretation}"
+        return ControlReply(
+            text,
+            _AI_ON_DEMAND_STATUS_COMMAND[safe_status],
+        )
+
     @staticmethod
     def menu_text() -> str:
         return (
@@ -534,7 +664,7 @@ class PrivateControlService:
             "📊 查运行：雷达状态、系统健康\n"
             "📚 查记录：最近信号、推送结果、未推送原因\n"
             "🎛️ 改开关：五个雷达、方向分析、故障提醒\n"
-            "🤖 AI 设置：密钥、接口、模型、提示词和解读开关\n\n"
+            "🤖 AI 设置：按需解读、密钥、接口、模型和提示词\n\n"
             "👇 直接点击下方按钮\n"
             "🔒 真实推送只能在 FinalShell 设置；服务器操作也不在私聊执行"
         )
@@ -582,10 +712,11 @@ class PrivateControlService:
     def ai_settings_keyboard() -> tuple[tuple[str, ...], ...]:
         return (
             ("🤖 AI状态",),
+            ("🤖 设置机器人用户名",),
             ("🔑 设置AI密钥", "🌐 设置AI接口"),
             ("🧠 设置AI模型", "📝 设置AI提示词"),
             ("♻️ 恢复默认提示词",),
-            ("✅ 开启AI解读", "⏸️ 关闭AI解读"),
+            ("✅ 开启按需AI", "⏸️ 关闭按需AI"),
             ("🏠 返回主菜单",),
         )
 
@@ -636,7 +767,12 @@ class PrivateControlService:
                 delete_source_message=True,
             )
         try:
-            if pending.kind == "api_key":
+            if pending.kind == "bot_username":
+                result = self._config_manager.set(
+                    "TG_BOT_USERNAME",
+                    normalized.lstrip("@"),
+                )
+            elif pending.kind == "api_key":
                 result = self._config_manager.set("AI_API_KEY", normalized)
             elif pending.kind == "base_url":
                 result = self._config_manager.set("AI_BASE_URL", normalized)
@@ -648,10 +784,17 @@ class PrivateControlService:
                 result = {"status": "failed"}
         except Exception:
             result = {"status": "failed"}
+        configured_value = result.get("value") if isinstance(result, Mapping) else None
+        value_ready = (
+            isinstance(configured_value, str)
+            and configured_value not in {"", "not_configured"}
+            if pending.kind == "bot_username"
+            else configured_value == "configured"
+        )
         if (
             not isinstance(result, Mapping)
             or result.get("status") != "ok"
-            or result.get("value") != "configured"
+            or not value_ready
         ):
             return ControlReply(
                 f"{pending.label}保存失败，旧配置已保留。请检查格式后重试。",
@@ -767,6 +910,14 @@ class PrivateControlService:
                 "ai_not_ready",
                 self.ai_settings_keyboard(),
             )
+        if action == "ai_on" and not _configured_bot_username(
+            status.get("TG_BOT_USERNAME")
+        ):
+            return ControlReply(
+                "信号按钮尚未就绪。请先在“AI设置”中填写机器人公开用户名。",
+                "ai_button_route_not_ready",
+                self.ai_settings_keyboard(),
+            )
         return None
 
     @staticmethod
@@ -805,7 +956,8 @@ class PrivateControlService:
         return (
             "🧩 辅助功能开关\n"
             f"• 方向分析：{'已开启' if bool(status.get('LAUNCH_DIRECTIONAL_ENABLE', False)) else '已关闭'}\n"
-            f"• AI 解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n"
+            f"• 按需 AI：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n"
+            f"• 自动逐条 AI：{'已开启' if bool(status.get('LAUNCH_AI_AUTO_ENABLE', False)) else '已关闭（推荐）'}\n"
             f"• 故障提醒：{'已开启' if bool(status.get('TG_PRIVATE_CONTROL_ALERT_ENABLE', False)) else '已关闭'}\n\n"
             "点击下方按钮后，还要再次确认才会修改。"
         )
@@ -820,14 +972,17 @@ class PrivateControlService:
             "invalid": "异常，已回退系统默认",
         }.get(prompt_status, "系统默认")
         return (
-            "🤖 AI 解读设置\n"
+            "🤖 按需 AI 解读设置\n"
             f"• 密钥：{'已配置' if _configured(status.get('AI_API_KEY')) else '未配置'}\n"
             f"• 接口：{'已配置' if _configured(status.get('AI_BASE_URL')) else '未配置'}\n"
             f"• 模型：{'已配置' if _configured(status.get('AI_MODEL')) else '未配置'}\n"
             f"• 提示词：{prompt_text}\n"
-            f"• AI 解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n\n"
+            f"• 按需解读：{'已开启' if bool(status.get('LAUNCH_AI_INTERPRETER_ENABLE', False)) else '已关闭'}\n"
+            f"• 自动逐条解读：{'已开启' if bool(status.get('LAUNCH_AI_AUTO_ENABLE', False)) else '已关闭（推荐）'}\n"
+            f"• 信号按钮：{'可用' if _configured_bot_username(status.get('TG_BOT_USERNAME')) and bool(status.get('TG_PRIVATE_CONTROL_ENABLE', False)) and _configured(status.get('TG_PRIVATE_CONTROL_ADMIN_USER_ID')) else '尚未完整配置'}\n"
+            f"• 每日真实调用上限：{status.get('AI_ON_DEMAND_DAILY_LIMIT', 20)} 次\n\n"
             "AI 只做白话解读，不能改变方向、发现分、方向证据分、行情阶段、失效位或安全规则。\n"
-            "开启和关闭仍需二次确认；这里不能切换真实推送模式。"
+            "雷达默认不自动调用；需要时点击信号下方按钮。开启和关闭仍需二次确认。"
         )
 
     def _switch_status_text(self) -> str:
@@ -842,7 +997,8 @@ class PrivateControlService:
         return (
             "🎛️ 当前安全开关\n"
             f"• 方向雷达：{'已开启' if directional else '已关闭'}\n"
-            f"• AI 解读员：{'已开启' if interpreter else '已关闭'}\n"
+            f"• 按需 AI 解读：{'已开启' if interpreter else '已关闭'}\n"
+            f"• 自动逐条 AI：{'已开启' if bool(status.get('LAUNCH_AI_AUTO_ENABLE', False)) else '已关闭'}\n"
             f"• 主动故障提醒：{'已开启' if fault_alerts else '已关闭'}\n"
             f"• AI 配置：{'完整' if self._ai_configuration_ready() else '未完整'}\n"
             "• 真实推送：本控制菜单无权修改\n\n"

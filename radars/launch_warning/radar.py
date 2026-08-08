@@ -21,6 +21,10 @@ from shared.binance_confirmation import (
 from shared.binance_data import BinanceDataSource
 from .chart import DISPLAY_CANDLE_LIMIT, render_launch_chart_png
 from .ai_interpreter import OpenAiCompatibleLaunchInterpreter
+from .ai_on_demand import (
+    positive_telegram_user_id,
+    telegram_bot_username_configured,
+)
 from .candidates import select_launch_candidates
 from .directional_formatter import format_launch_directional_signal
 from .directional_model import evaluate_directional_readiness
@@ -2109,13 +2113,50 @@ class LaunchWarningRadar(RadarComponent):
         self,
         alerts: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        enabled = bool(
+        interpreter_enabled = bool(
             self._launch_directional_active()
             and getattr(self.settings, "launch_ai_interpreter_enable", False)
         )
+        automatic_enabled = bool(
+            interpreter_enabled
+            and getattr(self.settings, "launch_ai_auto_enable", False)
+        )
+        ai_configured = bool(
+            str(getattr(self.settings, "ai_api_key", "") or "").strip()
+            and str(getattr(self.settings, "ai_base_url", "") or "").strip()
+            and str(getattr(self.settings, "ai_model", "") or "").strip()
+        )
+        bot_username = str(
+            getattr(self.settings, "tg_bot_username", "") or ""
+        ).strip().lstrip("@")
+        private_admin_user_id = positive_telegram_user_id(
+            getattr(self.settings, "tg_private_control_admin_user_id", None)
+        )
+        on_demand_route_ready = bool(
+            getattr(self.settings, "tg_private_control_enable", False)
+            and private_admin_user_id is not None
+            and telegram_bot_username_configured(bot_username)
+        )
+        on_demand_available = bool(
+            interpreter_enabled and ai_configured and on_demand_route_ready
+        )
+        on_demand_status = (
+            "on_demand"
+            if on_demand_available
+            else "not_configured"
+            if not ai_configured
+            else "on_demand_route_not_configured"
+        )
         diagnostics = {
-            "enabled": enabled,
-            "status": "disabled" if not enabled else "not_configured",
+            "enabled": automatic_enabled,
+            "on_demand_available": on_demand_available,
+            "status": (
+                "disabled"
+                if not interpreter_enabled
+                else on_demand_status
+                if not automatic_enabled
+                else "not_configured"
+            ),
             "eligible": 0,
             "calls": 0,
             "cached": 0,
@@ -2125,12 +2166,18 @@ class LaunchWarningRadar(RadarComponent):
             "degraded": 0,
             "semantics": "ai_interprets_rules_and_never_changes_them",
         }
-        default_status = "disabled" if not enabled else "not_eligible"
+        default_status = (
+            "disabled"
+            if not interpreter_enabled
+            else on_demand_status
+            if not automatic_enabled
+            else "not_eligible"
+        )
         for alert in alerts:
             alert["ai_interpretation_status"] = default_status
             alert["ai_interpretation_source"] = "none"
             alert.pop("ai_interpretation", None)
-        if not enabled:
+        if not automatic_enabled:
             return diagnostics
         for alert in alerts:
             smc_filter = alert.get("smc_filter")

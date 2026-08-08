@@ -17,6 +17,9 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
         self.assertFalse(settings.launch_directional_enable)
         self.assertEqual(settings.launch_directional_max_candidates, 6)
         self.assertFalse(settings.launch_ai_interpreter_enable)
+        self.assertFalse(settings.launch_ai_auto_enable)
+        self.assertEqual(settings.ai_on_demand_daily_limit, 20)
+        self.assertEqual(settings.tg_bot_username, "")
         self.assertEqual(settings.ai_api_key, "")
         self.assertEqual(settings.ai_base_url, "")
         self.assertEqual(settings.ai_model, "")
@@ -27,6 +30,9 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
             "LAUNCH_DIRECTIONAL_ENABLE": "true",
             "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "4",
             "LAUNCH_AI_INTERPRETER_ENABLE": "true",
+            "LAUNCH_AI_AUTO_ENABLE": "true",
+            "AI_ON_DEMAND_DAILY_LIMIT": "12",
+            "TG_BOT_USERNAME": "VIPpao_bot",
             "AI_API_KEY": "fake-ai-secret",
             "AI_BASE_URL": "https://ai.example.test/v1/",
             "AI_MODEL": "fake-model",
@@ -41,6 +47,9 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
         self.assertTrue(settings.launch_directional_enable)
         self.assertEqual(settings.launch_directional_max_candidates, 4)
         self.assertTrue(settings.launch_ai_interpreter_enable)
+        self.assertTrue(settings.launch_ai_auto_enable)
+        self.assertEqual(settings.ai_on_demand_daily_limit, 12)
+        self.assertEqual(settings.tg_bot_username, "VIPpao_bot")
         self.assertEqual(settings.ai_api_key, "fake-ai-secret")
         self.assertEqual(settings.ai_base_url, "https://ai.example.test/v1")
         self.assertEqual(settings.ai_model, "fake-model")
@@ -50,6 +59,7 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
         values = {
             "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "7",
             "AI_TIMEOUT_SEC": "181",
+            "AI_ON_DEMAND_DAILY_LIMIT": "0",
         }
         with patch.dict(os.environ, values, clear=True), patch(
             "config.settings.load_env_file",
@@ -59,15 +69,19 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.launch_directional_max_candidates, 6)
         self.assertEqual(settings.ai_timeout_sec, 60)
+        self.assertEqual(settings.ai_on_demand_daily_limit, 20)
 
     def test_runtime_switches_reload_from_managed_file_values(self) -> None:
         environment = {
             "LAUNCH_DIRECTIONAL_ENABLE": "false",
             "LAUNCH_AI_INTERPRETER_ENABLE": "false",
+            "LAUNCH_AI_AUTO_ENABLE": "false",
         }
         managed_values = {
             "LAUNCH_DIRECTIONAL_ENABLE": "true",
             "LAUNCH_AI_INTERPRETER_ENABLE": "true",
+            "LAUNCH_AI_AUTO_ENABLE": "true",
+            "TG_BOT_USERNAME": "ManagedPao_bot",
         }
         with patch.dict(os.environ, environment, clear=True), patch(
             "config.settings.load_env_file",
@@ -77,6 +91,8 @@ class LaunchDirectionalSettingsTests(unittest.TestCase):
 
         self.assertTrue(settings.launch_directional_enable)
         self.assertTrue(settings.launch_ai_interpreter_enable)
+        self.assertTrue(settings.launch_ai_auto_enable)
+        self.assertEqual(settings.tg_bot_username, "ManagedPao_bot")
 
 
 class LaunchDirectionalConfigManagerTests(unittest.TestCase):
@@ -95,6 +111,9 @@ class LaunchDirectionalConfigManagerTests(unittest.TestCase):
         self.assertFalse(status["LAUNCH_DIRECTIONAL_ENABLE"])
         self.assertEqual(status["LAUNCH_DIRECTIONAL_MAX_CANDIDATES"], "6")
         self.assertFalse(status["LAUNCH_AI_INTERPRETER_ENABLE"])
+        self.assertFalse(status["LAUNCH_AI_AUTO_ENABLE"])
+        self.assertEqual(status["AI_ON_DEMAND_DAILY_LIMIT"], "20")
+        self.assertEqual(status["TG_BOT_USERNAME"], "not_configured")
         self.assertEqual(status["AI_API_KEY"], "not_configured")
         self.assertEqual(status["AI_BASE_URL"], "not_configured")
         self.assertEqual(status["AI_MODEL"], "not_configured")
@@ -105,6 +124,9 @@ class LaunchDirectionalConfigManagerTests(unittest.TestCase):
             "LAUNCH_DIRECTIONAL_ENABLE": "true",
             "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "6",
             "LAUNCH_AI_INTERPRETER_ENABLE": "true",
+            "LAUNCH_AI_AUTO_ENABLE": "true",
+            "AI_ON_DEMAND_DAILY_LIMIT": "20",
+            "TG_BOT_USERNAME": "VIPpao_bot",
             "AI_API_KEY": "fake-ai-secret",
             "AI_BASE_URL": "https://ai.example.test/v1",
             "AI_MODEL": "fake-model",
@@ -123,6 +145,9 @@ class LaunchDirectionalConfigManagerTests(unittest.TestCase):
         self.assertTrue(checks["launch_directional_enable"])
         self.assertEqual(checks["launch_directional_max_candidates"], 6)
         self.assertTrue(checks["launch_ai_interpreter_enable"])
+        self.assertTrue(checks["launch_ai_auto_enable"])
+        self.assertEqual(checks["ai_on_demand_daily_limit"], 20)
+        self.assertEqual(checks["telegram_bot_username"], "configured")
         self.assertEqual(checks["ai_api_key"], "configured")
         self.assertEqual(checks["ai_base_url"], "configured")
         self.assertEqual(checks["ai_model"], "configured")
@@ -134,11 +159,27 @@ class LaunchDirectionalConfigManagerTests(unittest.TestCase):
             ("LAUNCH_DIRECTIONAL_MAX_CANDIDATES", "7"),
             ("AI_TIMEOUT_SEC", "4"),
             ("AI_TIMEOUT_SEC", "181"),
+            ("AI_ON_DEMAND_DAILY_LIMIT", "0"),
+            ("AI_ON_DEMAND_DAILY_LIMIT", "101"),
         )
         for key, value in cases:
             with self.subTest(key=key, value=value):
                 with self.assertRaises(ConfigManagerError):
                     self.manager.set(key, value)
+
+    def test_bot_username_is_public_but_strictly_validated(self) -> None:
+        result = self.manager.set("TG_BOT_USERNAME", "VIPpao_bot")
+        self.assertEqual(result["value"], "VIPpao_bot")
+        for value in (
+            "@VIPpao_bot",
+            "bad name",
+            "valid_user",
+            "x",
+            "https://t.me/bot",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ConfigManagerError):
+                    self.manager.set("TG_BOT_USERNAME", value)
 
     def test_ai_base_url_requires_safe_https_endpoint(self) -> None:
         invalid_values = (

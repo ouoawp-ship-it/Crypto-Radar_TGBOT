@@ -12,6 +12,8 @@ from runtime.private_control import PrivateControlService
 
 ADMIN_ID = 123456
 BOT_TOKEN = "123456:fake-control-token"
+PUBLIC_REF = "sig_0123456789abcdefabcd"
+AI_DEEP_LINK_COMMAND = f"/start ai_{PUBLIC_REF}"
 
 
 class FakeResponse:
@@ -55,6 +57,7 @@ class FakeConfigManager:
             "LAUNCH_FUSION_ENABLE": fusion_enabled,
             "LAUNCH_DIRECTIONAL_ENABLE": directional_enabled,
             "LAUNCH_AI_INTERPRETER_ENABLE": False,
+            "TG_BOT_USERNAME": "VIPpao_bot",
             "TG_PRIVATE_CONTROL_ALERT_ENABLE": False,
             "LAUNCH_ALERT_ENABLE": True,
             "RADAR_SUMMARY_ENABLE": True,
@@ -192,6 +195,42 @@ class PrivateControlTests(unittest.TestCase):
         self.assertIn("真实推送只能在 FinalShell 设置", reply)
         self.assertIn(["📡 雷达状态", "🩺 系统健康"], keyboard)
 
+    def test_string_admin_id_is_bounded_and_invalid_values_are_ignored(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid = PrivateControlService(
+                enabled=True,
+                bot_token=BOT_TOKEN,
+                admin_user_id=str(ADMIN_ID),
+                offset_path=root / "valid.json",
+                config_manager=FakeConfigManager(),
+                session=FakeSession(),
+            )
+            too_large = PrivateControlService(
+                enabled=True,
+                bot_token=BOT_TOKEN,
+                admin_user_id="9223372036854775808",
+                offset_path=root / "large.json",
+                config_manager=FakeConfigManager(),
+                session=FakeSession(),
+            )
+            very_long = PrivateControlService(
+                enabled=True,
+                bot_token=BOT_TOKEN,
+                admin_user_id="9" * 5_000,
+                offset_path=root / "long.json",
+                config_manager=FakeConfigManager(),
+                session=FakeSession(),
+            )
+
+            valid_reply = valid.handle_update(update(1, "/start"))
+            too_large_reply = too_large.handle_update(update(2, "/start"))
+            very_long_reply = very_long.handle_update(update(3, "/start"))
+
+        self.assertEqual(valid_reply.command, "menu")
+        self.assertIsNone(too_large_reply)
+        self.assertIsNone(very_long_reply)
+
     def test_emoji_menu_buttons_keep_fixed_command_semantics(self) -> None:
         with TemporaryDirectory() as tmp:
             manager = FakeConfigManager()
@@ -230,6 +269,284 @@ class PrivateControlTests(unittest.TestCase):
             replies = [service.handle_update(item) for item in cases]
 
         self.assertEqual(replies, [None] * len(cases))
+
+    def test_admin_ai_deep_link_calls_only_injected_requester(self) -> None:
+        calls: list[str] = []
+
+        def requester(public_ref: str) -> dict[str, object]:
+            calls.append(public_ref)
+            return {
+                "status": "completed",
+                "text": "规则证据偏多，但当前阶段仍不适合追涨。",
+                "private_error": "must-not-be-returned",
+            }
+
+        with TemporaryDirectory() as tmp:
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                ai_on_demand_requester=requester,
+            )
+            reply = service.handle_update(update(1, AI_DEEP_LINK_COMMAND))
+
+        self.assertEqual(calls, [PUBLIC_REF])
+        self.assertEqual(reply.command, "ai_on_demand_completed")
+        self.assertEqual(
+            reply.text,
+            "✅ AI 解读完成。\n\n规则证据偏多，但当前阶段仍不适合追涨。",
+        )
+        self.assertNotIn("must-not-be-returned", reply.text)
+
+    def test_ai_deep_link_sends_processing_before_synchronous_interpretation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = FakeSession(
+                FakeResponse(),
+                FakeResponse(body={"ok": True, "result": [
+                    update(1, AI_DEEP_LINK_COMMAND),
+                ]}),
+                FakeResponse(body={"ok": True, "result": {"message_id": 8}}),
+                FakeResponse(body={"ok": True, "result": {"message_id": 9}}),
+            )
+            requester_calls: list[str] = []
+
+            def requester(public_ref: str) -> dict[str, object]:
+                requester_calls.append(public_ref)
+                self.assertEqual(len(session.calls), 3)
+                self.assertIn("处理中", session.calls[2]["json"]["text"])
+                return {
+                    "status": "completed",
+                    "text": "这是基于信号快照生成的按需解读。",
+                }
+
+            service = self.service(
+                root,
+                session=session,
+                ai_on_demand_requester=requester,
+            )
+            self.initialize(service)
+            result = service.poll_once()
+
+        self.assertEqual(requester_calls, [PUBLIC_REF])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["accepted_updates"], 1)
+        self.assertEqual(result["replies_sent"], 2)
+        self.assertEqual(result["telegram_http_calls"], 3)
+        self.assertIn("AI 解读完成", session.calls[3]["json"]["text"])
+
+    def test_ai_deep_link_requires_private_admin_and_rejects_forward(self) -> None:
+        calls: list[str] = []
+
+        def requester(public_ref: str) -> dict[str, str]:
+            calls.append(public_ref)
+            return {"status": "processing"}
+
+        with TemporaryDirectory() as tmp:
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                ai_on_demand_requester=requester,
+            )
+            cases = (
+                update(1, AI_DEEP_LINK_COMMAND, chat_type="supergroup"),
+                update(2, AI_DEEP_LINK_COMMAND, chat_id=999),
+                update(3, AI_DEEP_LINK_COMMAND, sender_id=999),
+                update(4, AI_DEEP_LINK_COMMAND, is_bot=True),
+                update(5, AI_DEEP_LINK_COMMAND, forwarded=True),
+            )
+            replies = [service.handle_update(item) for item in cases]
+
+        self.assertEqual(replies, [None] * len(cases))
+        self.assertEqual(calls, [])
+
+    def test_ai_deep_link_is_strict_and_plain_start_stays_compatible(self) -> None:
+        calls: list[str] = []
+
+        def requester(public_ref: str) -> dict[str, str]:
+            calls.append(public_ref)
+            return {"status": "processing"}
+
+        malformed = (
+            "/start ai_sig_0123456789abcdefabc",
+            "/start ai_sig_0123456789abcdefabcde",
+            "/start ai_sig_0123456789ABCDEFABCD",
+            "/start ai_sig_0123456789abcdefabcg",
+            f"{AI_DEEP_LINK_COMMAND} extra",
+            "/start arbitrary-text",
+            "/start\tai_sig_0123456789abcdefabcd",
+            "🤖 /start ai_sig_0123456789abcdefabcd",
+            "/starter ai_sig_0123456789abcdefabcd",
+        )
+        with TemporaryDirectory() as tmp:
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                ai_on_demand_requester=requester,
+            )
+            rejected = [
+                service.handle_update(update(index, command))
+                for index, command in enumerate(malformed, start=1)
+            ]
+            menu = service.handle_update(update(99, "/start"))
+
+        self.assertEqual(calls, [])
+        self.assertTrue(
+            all(
+                reply.command == "ai_on_demand_security_failed"
+                and reply.text == "🔒 AI 解读安全校验失败。"
+                for reply in rejected
+            )
+        )
+        self.assertEqual(menu.command, "menu")
+        self.assertIn("泡泡雷达管理", menu.text)
+
+    def test_ai_deep_link_preempts_and_clears_pending_ai_secret_input(self) -> None:
+        manager = FakeConfigManager()
+        with TemporaryDirectory() as tmp:
+            service = self.service(
+                Path(tmp),
+                session=FakeSession(),
+                manager=manager,
+                ai_on_demand_requester=lambda _public_ref: {
+                    "status": "processing"
+                },
+            )
+            pending = service.handle_update(update(1, "设置AI密钥"))
+            deep_link = service.handle_update(update(2, AI_DEEP_LINK_COMMAND))
+            later_text = service.handle_update(update(3, "sk-must-not-be-saved"))
+
+        self.assertEqual(pending.command, "ai_input_required")
+        self.assertEqual(deep_link.command, "ai_on_demand_processing")
+        self.assertEqual(later_text.command, "unsupported")
+        self.assertEqual(manager.set_calls, [])
+
+    def test_ai_deep_link_statuses_have_fixed_sanitized_chinese_replies(self) -> None:
+        cases = (
+            (
+                {"status": "processing"},
+                "ai_on_demand_processing",
+                "⏳ AI 解读处理中，请稍候。",
+            ),
+            (
+                {"status": "cached", "text": "缓存内容"},
+                "ai_on_demand_cached",
+                "♻️ 已返回缓存的 AI 解读。\n\n缓存内容",
+            ),
+            (
+                {"status": "disabled"},
+                "ai_on_demand_disabled",
+                "⏸️ 主动 AI 解读未开启。",
+            ),
+            (
+                {"status": "not_configured"},
+                "ai_on_demand_not_configured",
+                "⚙️ AI 解读尚未配置。",
+            ),
+            (
+                {"status": "not_found"},
+                "ai_on_demand_signal_unavailable",
+                "⌛ 信号记录已过期或缺失，请查看最新信号。",
+            ),
+            (
+                {"status": "expired"},
+                "ai_on_demand_signal_unavailable",
+                "⌛ 信号记录已过期或缺失，请查看最新信号。",
+            ),
+            (
+                {"status": "rate_limited"},
+                "ai_on_demand_rate_limited",
+                "⏱️ AI 解读请求太快，请稍后再试。",
+            ),
+            (
+                {"status": "quota_exhausted"},
+                "ai_on_demand_quota_exhausted",
+                "🚫 AI 解读额度已耗尽，请稍后再试。",
+            ),
+            (
+                {"status": "timeout"},
+                "ai_on_demand_timeout",
+                "⌛ AI 解读请求超时，请稍后再试。",
+            ),
+            (
+                {"status": "security_failed"},
+                "ai_on_demand_security_failed",
+                "🔒 AI 解读安全校验失败。",
+            ),
+        )
+        for result, expected_command, expected_text in cases:
+            with self.subTest(status=result["status"]), TemporaryDirectory() as tmp:
+                service = self.service(
+                    Path(tmp),
+                    session=FakeSession(),
+                    ai_on_demand_requester=lambda _ref, value=result: value,
+                )
+                reply = service.handle_update(update(1, AI_DEEP_LINK_COMMAND))
+
+                self.assertEqual(reply.command, expected_command)
+                self.assertEqual(reply.text, expected_text)
+
+    def test_ai_deep_link_defaults_off_and_sanitizes_invalid_requester_results(self) -> None:
+        with TemporaryDirectory() as tmp:
+            disabled = self.service(
+                Path(tmp),
+                session=FakeSession(),
+            ).handle_update(update(1, AI_DEEP_LINK_COMMAND))
+
+        self.assertEqual(disabled.command, "ai_on_demand_disabled")
+        self.assertEqual(disabled.text, "⏸️ 主动 AI 解读未开启。")
+
+        invalid_results = (
+            None,
+            "completed",
+            {},
+            {"status": "unknown", "error": "secret provider body"},
+            {"status": "completed", "text": ""},
+            {"status": "cached", "text": 123},
+        )
+        for result in invalid_results:
+            with self.subTest(result=result), TemporaryDirectory() as tmp:
+                service = self.service(
+                    Path(tmp),
+                    session=FakeSession(),
+                    ai_on_demand_requester=lambda _ref, value=result: value,
+                )
+                reply = service.handle_update(update(1, AI_DEEP_LINK_COMMAND))
+
+                self.assertEqual(reply.command, "ai_on_demand_security_failed")
+                self.assertEqual(reply.text, "🔒 AI 解读安全校验失败。")
+                self.assertNotIn("secret provider body", reply.text)
+
+    def test_ai_deep_link_requester_exceptions_are_sanitized(self) -> None:
+        def timed_out(_public_ref: str) -> dict[str, object]:
+            raise TimeoutError("secret timeout body")
+
+        def failed(_public_ref: str) -> dict[str, object]:
+            raise RuntimeError("secret provider body")
+
+        cases = (
+            (
+                timed_out,
+                "ai_on_demand_timeout",
+                "⌛ AI 解读请求超时，请稍后再试。",
+            ),
+            (
+                failed,
+                "ai_on_demand_security_failed",
+                "🔒 AI 解读安全校验失败。",
+            ),
+        )
+        for requester, expected_command, expected_text in cases:
+            with self.subTest(command=expected_command), TemporaryDirectory() as tmp:
+                service = self.service(
+                    Path(tmp),
+                    session=FakeSession(),
+                    ai_on_demand_requester=requester,
+                )
+                reply = service.handle_update(update(1, AI_DEEP_LINK_COMMAND))
+
+                self.assertEqual(reply.command, expected_command)
+                self.assertEqual(reply.text, expected_text)
+                self.assertNotIn("secret", reply.text)
 
     def test_read_only_summaries_are_bounded_and_redacted(self) -> None:
         secret = "987654321:secret-token"

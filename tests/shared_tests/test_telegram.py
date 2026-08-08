@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -12,8 +13,10 @@ from config import Settings
 from shared.signal_store import SignalEventStore
 from shared.storage import JsonStore
 from shared.telegram import (
+    AI_INTERPRET_URL_BUTTON_TEXT,
     DEFAULT_TOPIC_INTRO_VERSION,
     TelegramGateway,
+    TelegramUrlButton,
     intro_hash,
     plain_fallback,
     topic_intro_message,
@@ -23,6 +26,25 @@ from shared.telegram import (
 
 
 CST = timezone(timedelta(hours=8))
+
+
+class FakeTelegramResponse:
+    status_code = 200
+
+    def __init__(self, message_id: int):
+        self._message_id = message_id
+
+    def json(self) -> dict[str, object]:
+        return {"ok": True, "result": {"message_id": self._message_id}}
+
+
+class FakeTelegramSession:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def post(self, url: str, **kwargs: object) -> FakeTelegramResponse:
+        self.calls.append({"url": url, **kwargs})
+        return FakeTelegramResponse(700 + len(self.calls))
 
 
 class TelegramGatewayTests(unittest.TestCase):
@@ -139,6 +161,7 @@ class TelegramGatewayTests(unittest.TestCase):
             history = JsonStore(Path(tmp)).load(history_path, [])
 
         self.assertEqual(result.status, "dry_run")
+        self.assertFalse(result.signal_store_written)
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["dedup_key"], "launch:store-failure")
 
@@ -621,6 +644,314 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(first_payload["message_thread_id"], 12)
             self.assertNotIn("reply_to_message_id", second_payload)
 
+    def test_url_button_is_attached_only_to_last_text_chunk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_push_split_limit=10,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+            button = TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/paopao_radar_bot?start=ai_sig_0123456789abcdef",
+            )
+
+            with (
+                patch("shared.telegram.requests.post", side_effect=session.post),
+                patch("shared.telegram.time.sleep"),
+            ):
+                ok, message_ids = gateway._send_real_message_ids(
+                    "first line\nsecond line",
+                    parse_mode="HTML",
+                    url_button=button,
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(message_ids, [701, 702, 703])
+            payloads = [call["json"] for call in session.calls]
+            self.assertNotIn("reply_markup", payloads[0])
+            self.assertNotIn("reply_markup", payloads[1])
+            self.assertEqual(
+                payloads[2]["reply_markup"],
+                {
+                    "inline_keyboard": [[{
+                        "text": AI_INTERPRET_URL_BUTTON_TEXT,
+                        "url": button.url,
+                    }]],
+                },
+            )
+
+    def test_send_forwards_one_valid_url_button_without_audit_payload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_default_cooldown_sec=0,
+            )
+            store = JsonStore(Path(tmp))
+            gateway = TelegramGateway(settings, store)
+            session = FakeTelegramSession()
+            button = TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/paopao_radar_bot?start=ai_sig_0123456789abcdef",
+            )
+
+            with (
+                patch("shared.telegram.requests.post", side_effect=session.post),
+                patch("shared.telegram.time.sleep"),
+            ):
+                result = gateway.send(
+                    "launch",
+                    "TEST_TEMPLATE",
+                    "button:real-send",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    url_button=button,
+                )
+
+            history = store.load(history_path, [])
+            outbox = store.load(settings.tg_outbox_path, [])
+            self.assertTrue(result.sent)
+            self.assertEqual(result.message_ids, [701])
+            self.assertIn("reply_markup", session.calls[0]["json"])
+            self.assertEqual(history[-1]["delivery_id"], result.delivery_id)
+            self.assertEqual(outbox[-1]["delivery_id"], result.delivery_id)
+            self.assertNotIn(button.url, json.dumps(history, ensure_ascii=False))
+            self.assertNotIn(button.url, json.dumps(outbox, ensure_ascii=False))
+
+    def test_sent_ai_button_reports_snapshot_not_ready_when_snapshot_is_invalid(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                signal_events_db_path=Path(tmp) / "signals.db",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_launch_alert_topic_id="12",
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+            button = TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/paopao_radar_bot?start=ai_sig_0123456789abcdefabcd",
+            )
+
+            with (
+                patch("shared.telegram.requests.post", side_effect=session.post),
+                patch("shared.telegram.time.sleep"),
+            ):
+                result = gateway.send(
+                    "launch",
+                    "TG_LAUNCH_ALERT",
+                    "launch:invalid-ai-snapshot",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    url_button=button,
+                    signal_records=[{
+                        "symbol": "TESTUSDT",
+                        "stage": "forming",
+                        "ai_context_snapshot": {},
+                    }],
+                )
+
+            self.assertTrue(result.sent)
+            self.assertTrue(result.signal_store_written)
+            self.assertFalse(result.ai_snapshot_ready)
+
+    def test_photo_url_button_uses_compact_inline_markup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+            button = TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/paopao_radar_bot?start=ai_sig_0123456789abcdef",
+            )
+
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=session.post,
+            ):
+                ok, message_ids = gateway._send_real_photo_bytes(
+                    b"\x89PNG\r\n\x1a\nphoto",
+                    caption="launch",
+                    parse_mode="HTML",
+                    url_button=button,
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(message_ids, [701])
+            self.assertEqual(
+                session.calls[0]["data"]["reply_markup"],
+                json.dumps(
+                    {
+                        "inline_keyboard": [[{
+                            "text": AI_INTERPRET_URL_BUTTON_TEXT,
+                            "url": button.url,
+                        }]],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+
+    def test_no_url_button_preserves_text_request_payload_bytes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=session.post,
+            ):
+                ok, _message_ids = gateway._send_real_message_ids(
+                    "unchanged",
+                    parse_mode="HTML",
+                )
+
+            expected = {
+                "chat_id": "-1001234567890",
+                "text": "unchanged",
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            actual = session.calls[0]["json"]
+            self.assertTrue(ok)
+            self.assertEqual(actual, expected)
+            self.assertEqual(
+                json.dumps(actual, separators=(",", ":")).encode("utf-8"),
+                json.dumps(expected, separators=(",", ":")).encode("utf-8"),
+            )
+
+    def test_invalid_url_button_fails_closed_without_network_or_leak(self) -> None:
+        secret = "private-deep-link-secret"
+        invalid_buttons = (
+            TelegramUrlButton(
+                "wrong label",
+                "https://t.me/paopao_radar_bot?start=ai_sig_valid",
+            ),
+            TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT * 20,
+                "https://t.me/paopao_radar_bot?start=ai_sig_valid",
+            ),
+            TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                f"http://t.me/paopao_radar_bot?start={secret}",
+            ),
+            TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                f"https://t.me.evil.example/paopao_radar_bot?start={secret}",
+            ),
+            TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/paopao_radar_bot?start=" + ("a" * 65),
+            ),
+            TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/" + ("a" * 260),
+            ),
+        )
+        with TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "push_history.json"
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=history_path,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_default_cooldown_sec=0,
+            )
+            store = JsonStore(Path(tmp))
+            gateway = TelegramGateway(settings, store)
+            session = FakeTelegramSession()
+
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=session.post,
+            ):
+                for index, button in enumerate(invalid_buttons):
+                    with self.subTest(index=index):
+                        result = gateway.send(
+                            "launch",
+                            "TEST_TEMPLATE",
+                            f"invalid-button:{index}",
+                            send=True,
+                            confirm_real_send=True,
+                            cooldown_sec=0,
+                            url_button=button,
+                        )
+                        self.assertEqual(result.status, "failed")
+                        self.assertEqual(
+                            result.reason,
+                            "invalid_telegram_url_button",
+                        )
+
+            history = store.load(history_path, [])
+            self.assertEqual(session.calls, [])
+            self.assertEqual(len(history), len(invalid_buttons))
+            self.assertNotIn(secret, json.dumps(history, ensure_ascii=False))
+
+    def test_url_button_respects_dry_run_and_confirmation_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+            button = TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                "https://t.me/paopao_radar_bot?start=ai_sig_0123456789abcdef",
+            )
+
+            with (
+                redirect_stdout(StringIO()),
+                patch("shared.telegram.requests.post", side_effect=session.post),
+            ):
+                dry_run = gateway.send(
+                    "launch",
+                    "TEST_TEMPLATE",
+                    "button:dry-run",
+                    send=False,
+                    confirm_real_send=False,
+                    cooldown_sec=0,
+                    url_button=button,
+                )
+                blocked = gateway.send(
+                    "launch",
+                    "TEST_TEMPLATE",
+                    "button:blocked",
+                    send=True,
+                    confirm_real_send=False,
+                    cooldown_sec=0,
+                    url_button=button,
+                )
+
+            self.assertEqual(dry_run.status, "dry_run")
+            self.assertEqual(blocked.status, "blocked")
+            self.assertEqual(blocked.reason, "missing_confirm_real_send")
+            self.assertEqual(session.calls, [])
+
     def test_real_sender_falls_back_when_reply_target_invalid(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
@@ -720,6 +1051,7 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(request["data"]["reply_to_message_id"], 111)
             self.assertTrue(request["data"]["allow_sending_without_reply"])
             self.assertNotIn("show_caption_above_media", request["data"])
+            self.assertNotIn("reply_markup", request["data"])
             self.assertEqual(request["files"]["photo"][1], png)
             self.assertEqual(request["files"]["photo"][2], "image/png")
             self.assertEqual(list(Path(tmp).glob("*.png")), [])

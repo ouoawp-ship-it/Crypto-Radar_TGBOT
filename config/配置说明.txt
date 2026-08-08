@@ -3,4 +3,6 @@
 
 真实 Token、Chat ID 和其他密钥不会上传 GitHub。服务器从旧版根目录迁移配置时，必须先备份并检查冲突，不能直接覆盖。
 
+启动预警 AI 默认采用按需模式：配置 TG_BOT_USERNAME（不带 @）、管理员私聊、AI 密钥、接口和模型后，信号下方才显示“AI解读这条信号”。LAUNCH_AI_AUTO_ENABLE 默认 false，扫描阶段不会逐条调用 AI；AI_ON_DEMAND_DAILY_LIMIT 默认 20，只统计真正取得服务商调用资格的请求，缓存命中不计入。
+
 山寨合约异动雷达的 CMC Key 只填写在真实配置文件中；示例文件必须保持空值。在线一次性扫描还必须显式设置 ALTCOIN_CONTRACT_ANOMALY_ENABLE=true；默认 false 不访问 CMC。P1 一次性命令和缓存降级说明见 docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md。

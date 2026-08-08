@@ -200,6 +200,8 @@ _FLOW_STATUS_TEXT = {
 
 _AI_STATUS_TEXT = {
     "disabled": "未开启，本卡片全部为规则结论",
+    "on_demand": "未自动调用；需要时点击消息下方“AI解读”",
+    "on_demand_route_not_configured": "未自动调用（私聊按钮尚未配置完整）",
     "not_requested": "未调用，本卡片全部为规则结论",
     "not_eligible": "未调用（数据或信号未达到解读条件）",
     "not_eligible_smc_conflict": "未调用（1小时与4小时结构均反向）",
@@ -1177,6 +1179,10 @@ def _compact_ai_lines(item: Mapping[str, Any]) -> list[str]:
     source = _short(item.get("ai_interpretation_source"), limit=16)
     if not status and ai_text:
         status = "available"
+    if status == "on_demand":
+        return [
+            f"{tg_bold('🤖 AI按需解读')}：需要时点击消息下方按钮；本卡片仍是规则结论"
+        ]
     if status == "available" and ai_text:
         origin = (
             "已完成（复用已校验结果）"
@@ -1711,10 +1717,11 @@ def launch_directional_topic_intro() -> str:
         "• 它不会接管卡片主标题，不改15分钟发现结果，也不改发现分或方向证据分。",
         "• 中性、冲突或数据不足会单独写在“SMC二次过滤”一行，不能伪装成主信号状态。",
         "",
-        "<b>🤖 AI只负责白话解读</b>",
+        "<b>🤖 AI改为需要时主动解读</b>",
+        "• 雷达扫描默认不调用AI；先发送确定性规则卡片，需要时再点击消息下方“AI解读这条信号”。",
+        "• 按钮只对已绑定的管理员私聊生效，并读取这张卡片发出当时的安全快照，不会拿后来的行情冒充当时数据。",
+        "• 同一快照、模型和提示词重复点击会复用已通过校验的结果，不重复产生AI调用；每日调用还有独立上限。",
         "• AI只把已计算的数据和规则翻译成白话，不能改方向、发现分、方向证据分、阶段、观察区或失效位。",
-        "• 只有“AI白话解读”一行由AI生成；卡片会明确显示本轮调用、复用结果、未调用或失败原因。",
-        "• 延伸不追价、时机未到、SMC不支持或数据不足时不调用AI，规则卡片照常可读。",
         "",
         "<b>⏱️ 同币种如何持续跟踪</b>",
         "• 首次预警单独发送；同一币种同一轮的后续变化会回复上一条成功消息。",

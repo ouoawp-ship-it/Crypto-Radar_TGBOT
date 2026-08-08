@@ -43,15 +43,23 @@ from radars.funding_alert.radar import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts
 from .cli_text import check_name_text, format_push_result_cn
 from radars.market_summary.radar import MarketSummaryRadar
+from radars.launch_warning.ai_interpreter import build_launch_ai_context
+from radars.launch_warning.ai_on_demand import (
+    LaunchAiOnDemandService,
+    build_launch_ai_deep_link,
+    positive_telegram_user_id,
+)
 from .radar_engine import RadarEngine
 from .diagnostics import build_market_radar_runtime_status
 from .signal_effectiveness import SignalOutcomeTracker
-from shared.signal_store import SignalEventStore
+from shared.signal_store import SignalEventStore, signal_public_ref
 from shared.storage import JsonStore
 from shared.telegram import (
+    AI_INTERPRET_URL_BUTTON_TEXT,
     PRODUCTION_TOPIC_TEMPLATE_IDS,
     TOPIC_TEMPLATE_NAMES,
     TelegramGateway,
+    TelegramUrlButton,
 )
 from shared.time_windows import next_closed_window_epoch
 
@@ -90,6 +98,65 @@ PLACEHOLDER_WORDS = ("your", "token", "chat_id", "bot_token", "填写", "填入"
 def launch_runtime_diagnostics(launch: dict[str, object]) -> dict[str, object]:
     diagnostics = launch.get("diagnostics")
     return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def launch_ai_on_demand_attachment(
+    settings: Settings,
+    alert: Mapping[str, object],
+    dedup_key: str,
+) -> tuple[dict[str, Any] | None, TelegramUrlButton | None]:
+    """Build one immutable AI snapshot and its private-chat button.
+
+    The snapshot is stored with the signal.  The button contains only the
+    public bot username and an opaque signal reference; it never embeds signal
+    facts, credentials, chat identifiers, or provider configuration.
+    """
+
+    if not bool(getattr(settings, "launch_ai_interpreter_enable", False)):
+        return None, None
+    if not bool(alert.get("launch_message_package_v2")):
+        return None, None
+    try:
+        snapshot = build_launch_ai_context(alert)
+    except (TypeError, ValueError):
+        return None, None
+    rule_result = snapshot.get("rule_result")
+    if (
+        not isinstance(rule_result, Mapping)
+        or not str(rule_result.get("direction") or "").strip()
+        or not str(rule_result.get("stage") or "").strip()
+        or rule_result.get("data_complete") is not True
+    ):
+        return None, None
+
+    button: TelegramUrlButton | None = None
+    ai_configured = bool(
+        str(getattr(settings, "ai_api_key", "")).strip()
+        and str(getattr(settings, "ai_base_url", "")).strip()
+        and str(getattr(settings, "ai_model", "")).strip()
+    )
+    private_admin_user_id = positive_telegram_user_id(
+        getattr(settings, "tg_private_control_admin_user_id", None)
+    )
+    private_control_ready = bool(
+        getattr(settings, "tg_private_control_enable", False)
+        and private_admin_user_id is not None
+    )
+    if ai_configured and private_control_ready:
+        public_ref = signal_public_ref(
+            dedup_key,
+            str(alert.get("symbol") or ""),
+        )
+        deep_link = build_launch_ai_deep_link(
+            str(getattr(settings, "tg_bot_username", "")),
+            public_ref,
+        )
+        if deep_link:
+            button = TelegramUrlButton(
+                AI_INTERPRET_URL_BUTTON_TEXT,
+                deep_link,
+            )
+    return snapshot, button
 
 
 def push_launch_messages(
@@ -170,6 +237,13 @@ def push_launch_messages(
                 "launch_cycle_no": int(lifecycle.get("cycle_no") or 0),
                 "launch_observation_id": int(lifecycle.get("observation_id") or 0),
             })
+        ai_snapshot, ai_button = launch_ai_on_demand_attachment(
+            settings,
+            alert,
+            dedup_key,
+        )
+        if ai_snapshot is not None:
+            signal_record["ai_context_snapshot"] = ai_snapshot
         push = gateway.send(
             str(message),
             "TG_LAUNCH_ALERT",
@@ -184,6 +258,7 @@ def push_launch_messages(
             signal_records=[signal_record],
             photo=chart_bytes if chart_required else None,
             enrich_market_context=not is_package,
+            url_button=ai_button,
         )
         print(format_push_result_cn(
             "启动预警推送",
@@ -195,6 +270,26 @@ def push_launch_messages(
         push_record["reason"] = push.reason
         if push.status == "sent":
             new_message_ids = list(push.message_ids or [])
+            if ai_button is not None and (
+                push.signal_store_written is False
+                or push.ai_snapshot_ready is False
+            ):
+                rollback = gateway.delete_messages_detailed(
+                    new_message_ids,
+                    reason="launch_ai_snapshot_persist_rollback",
+                )
+                push_record["status"] = "ai_snapshot_persist_failed"
+                push_record["reason"] = "ai_snapshot_persist_failed"
+                push_record["rollback_deleted"] = len(
+                    rollback.get("deleted_ids") or []
+                )
+                push_record["rollback_failures"] = len(
+                    rollback.get("failed_ids") or []
+                )
+                if chart_required:
+                    alert.pop("chart_png_bytes", None)
+                pushes.append(push_record)
+                continue
             if chart_required:
                 alert.pop("chart_png_bytes", None)
                 chart_bytes = None
@@ -652,6 +747,11 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             return 2
 
         current_settings = last_known_settings_reader(settings)
+        ai_on_demand_service = LaunchAiOnDemandService(
+            settings_reader=current_settings,
+            signal_store=SignalEventStore(settings.signal_events_db_path),
+            session=requests.Session(),
+        )
 
         def health_reader() -> dict[str, object]:
             active_settings = current_settings()
@@ -760,6 +860,7 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
             push_records_reader=push_records_reader,
             unpublished_reasons_reader=unpublished_reasons_reader,
             fault_explanations_reader=fault_explanations_reader,
+            ai_on_demand_requester=ai_on_demand_service.request,
         )
         permanent_errors = {
             "private_control_bot_not_configured",
