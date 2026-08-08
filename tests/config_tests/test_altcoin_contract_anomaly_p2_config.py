@@ -51,45 +51,47 @@ P2_ENV_NAMES = (
     "ALTCOIN_CONTRACT_ANOMALY_SMOKE_DURATION_SEC",
 )
 
+P2_SCALAR_DEFAULTS = {
+    "realtime_enable": False,
+    "manifest_poll_sec": 5,
+    "manifest_max_age_sec": 1200,
+    "subscription_batch_size": 50,
+    "subscription_min_interval_sec": 1.0,
+    "subscription_ack_timeout_sec": 10,
+    "max_streams": 300,
+    "realtime_data_max_age_sec": 120,
+    "funding_max_gap_sec": 15,
+    "oi_refresh_sec": 300,
+    "realtime_oi_max_age_sec": 600,
+    "realtime_oi_workers": 4,
+    "realtime_oi_request_budget": 50,
+    "feature_1m_window_sec": 60,
+    "feature_5m_window_sec": 300,
+    "volume_baseline_buckets": 5,
+    "volume_min_samples": 4,
+    "volume_min_coverage": 0.8,
+    "price_1m_move_ratio": 0.01,
+    "price_5m_move_ratio": 0.02,
+    "volume_expansion_ratio": 2.0,
+    "aggressive_buy_ratio": 0.60,
+    "aggressive_sell_ratio": 0.40,
+    "open_interest_move_ratio": 0.03,
+    "funding_positive_rate": 0.0005,
+    "funding_change_ratio": 0.0001,
+    "liquidation_min_usd": 100_000,
+    "price_stall_ratio": 0.003,
+    "weakening_volume_ratio": 1.2,
+    "weakening_windows": 2,
+    "smoke_duration_sec": 900,
+}
+
 
 class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
     def test_defaults_are_complete_disabled_and_isolated(self) -> None:
         settings = Settings()
 
         self.assertFalse(settings.altcoin_contract_anomaly_realtime_enable)
-        expected = {
-            "manifest_poll_sec": 5,
-            "manifest_max_age_sec": 1200,
-            "subscription_batch_size": 50,
-            "subscription_min_interval_sec": 1.0,
-            "subscription_ack_timeout_sec": 10,
-            "max_streams": 300,
-            "realtime_data_max_age_sec": 120,
-            "funding_max_gap_sec": 15,
-            "oi_refresh_sec": 300,
-            "realtime_oi_max_age_sec": 600,
-            "realtime_oi_workers": 4,
-            "realtime_oi_request_budget": 50,
-            "feature_1m_window_sec": 60,
-            "feature_5m_window_sec": 300,
-            "volume_baseline_buckets": 5,
-            "volume_min_samples": 4,
-            "volume_min_coverage": 0.8,
-            "price_1m_move_ratio": 0.01,
-            "price_5m_move_ratio": 0.02,
-            "volume_expansion_ratio": 2.0,
-            "aggressive_buy_ratio": 0.60,
-            "aggressive_sell_ratio": 0.40,
-            "open_interest_move_ratio": 0.03,
-            "funding_positive_rate": 0.0005,
-            "funding_change_ratio": 0.0001,
-            "liquidation_min_usd": 100_000,
-            "price_stall_ratio": 0.003,
-            "weakening_volume_ratio": 1.2,
-            "weakening_windows": 2,
-            "smoke_duration_sec": 900,
-        }
-        for suffix, value in expected.items():
+        for suffix, value in P2_SCALAR_DEFAULTS.items():
             self.assertEqual(
                 getattr(settings, f"altcoin_contract_anomaly_{suffix}"),
                 value,
@@ -103,6 +105,30 @@ class AltcoinContractAnomalyP2ConfigTests(unittest.TestCase):
             settings.altcoin_contract_anomaly_realtime_event_path,
             BASE_DIR / "data" / "altcoin_contract_anomaly_p2_events.jsonl",
         )
+
+    def test_settings_load_uses_the_same_p2_scalar_defaults_as_settings(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "config.settings.load_env_file",
+            return_value={},
+        ):
+            loaded = Settings.load()
+        defaults = Settings()
+
+        for suffix, expected_value in P2_SCALAR_DEFAULTS.items():
+            with self.subTest(suffix=suffix):
+                field = f"altcoin_contract_anomaly_{suffix}"
+                self.assertEqual(getattr(defaults, field), expected_value)
+                self.assertEqual(getattr(loaded, field), expected_value)
+                self.assertEqual(getattr(loaded, field), getattr(defaults, field))
+
+        required_samples = max(
+            loaded.altcoin_contract_anomaly_volume_min_samples,
+            ceil(
+                loaded.altcoin_contract_anomaly_volume_baseline_buckets
+                * loaded.altcoin_contract_anomaly_volume_min_coverage
+            ),
+        )
+        self.assertEqual(required_samples, 4)
 
     def test_all_environment_values_load_through_central_settings(self) -> None:
         values = {

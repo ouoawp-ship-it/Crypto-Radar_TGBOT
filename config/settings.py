@@ -702,7 +702,7 @@ class Settings:
             ),
             altcoin_contract_anomaly_subscription_ack_timeout_sec=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_SUBSCRIPTION_ACK_TIMEOUT_SEC",
-                5,
+                10,
                 1,
                 120,
             ),
@@ -762,7 +762,7 @@ class Settings:
             ),
             altcoin_contract_anomaly_volume_baseline_buckets=env_bounded_int(
                 "ALTCOIN_CONTRACT_ANOMALY_VOLUME_BASELINE_BUCKETS",
-                10,
+                5,
                 2,
                 1_000,
             ),

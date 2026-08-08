@@ -184,8 +184,8 @@ class CandidateManifestConsumer:
         max_age = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_manifest_max_age_sec",
-            900,
-        ) or 900))
+            1200,
+        ) or 1200))
         if (
             generated_ts is None
             or now_ts - generated_ts > max_age
@@ -434,13 +434,13 @@ class ClosedRealtimeFeatureBuilder:
         baseline_count = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_volume_baseline_buckets",
-            10,
-        ) or 10))
+            5,
+        ) or 5))
         min_samples = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_volume_min_samples",
-            5,
-        ) or 5))
+            4,
+        ) or 4))
         min_coverage = float(getattr(
             self.settings,
             "altcoin_contract_anomaly_volume_min_coverage",
@@ -449,8 +449,8 @@ class ClosedRealtimeFeatureBuilder:
         max_age = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_data_max_age_sec",
-            180,
-        ) or 180))
+            120,
+        ) or 120))
         history_sec = (baseline_count + max(5, expected_five) + 3) * one_sec
         rows = self.store.recent_rows(now_ts=int(now_ts), window_sec=history_sec)
         wanted = {str(symbol).upper() for symbol in symbols}
@@ -658,8 +658,8 @@ class CandidateOiSampler:
         budget_limit = max(1, int(getattr(
             settings,
             "altcoin_contract_anomaly_realtime_oi_request_budget",
-            100,
-        ) or 100))
+            50,
+        ) or 50))
         self.last_stats: dict[str, Any] = {
             "candidate_count": 0,
             "requests": 0,
@@ -900,8 +900,8 @@ class CandidateOiSampler:
         max_age = max(300, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_oi_max_age_sec",
-            900,
-        ) or 900))
+            600,
+        ) or 600))
         default_boundary = int(now_ts // 300) * 300
         boundaries = {
             symbol: int((target_boundaries or {}).get(symbol, default_boundary))
@@ -1480,8 +1480,8 @@ class AltcoinRealtimeController:
         max_age = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_data_max_age_sec",
-            180,
-        ) or 180))
+            120,
+        ) or 120))
         if (
             last_receive is None
             or now_ts - last_receive > max_age
@@ -1938,8 +1938,8 @@ class AltcoinRealtimeController:
         max_age = max(1, int(getattr(
             self.settings,
             "altcoin_contract_anomaly_realtime_data_max_age_sec",
-            180,
-        ) or 180))
+            120,
+        ) or 120))
         for symbol in manifest.symbols:
             self._stats["feature_evaluations"] += 1
             feature = features.get(symbol) or {}
@@ -2142,9 +2142,9 @@ def run_realtime_confirmation_session(
             getattr(
                 settings,
                 "altcoin_contract_anomaly_manifest_max_age_sec",
-                900,
+                1200,
             )
-            or 900
+            or 1200
         ),
     )
     remaining_manifest_lifetime = (
