@@ -13,9 +13,10 @@ GLYPH_HEIGHT = 15
 FONT_SIZE = 12
 FONT_WEIGHT = 500
 
-# This is the immutable glyph order introduced with chart_font_zh.py in
-# bc6b2621edc512f6a1c41c54fbe78f1bb8fe1b07. New glyphs are appended so
-# existing indexes and raster bytes remain stable.
+# This is the immutable base glyph order introduced with chart_font_zh.py in
+# bc6b2621edc512f6a1c41c54fbe78f1bb8fe1b07. Runtime-only additions are built
+# from the current chart copy while this base and its raster fingerprint stay
+# stable.
 BASE_GLYPH_ORDER = (
     "0123456789/\xb7未知永续合约黄金白银铂钯原油天然气铜指数基杠杆股票代币大宗商品外汇加密核心主流山寨小时结构分钟触发第轮事件形态突破确认扫高低假失效整理区间关键位安已收线"
 )
@@ -23,10 +24,10 @@ BASE_GLYPH_ORDER = (
 # Formal chart copy requested by the product plus existing runtime fallback
 # copy. Sorting only the missing characters keeps subsequent generations stable.
 REQUIRED_CHART_TEXT = (
-    "开收量结构转空多顺势高估中间价低估已收线"
+    "开高低收成交量已收线"
     "币安永续合约小时真实数据仅使用K线未分类"
-    "供给区需求区结构暂停不连续"
-    "成交量最近根天仅作过滤位置参考同向支持冲突中性观察暂停通过数据不足高周期结构小时偏多偏空缺SMCH"
+    "最近根参考上方插针下方整理关键位"
+    "突破确认假失效形态轮事件分钟触发"
     "开 0.05062 +1.23% 20:00"
     ".:%+-"
 )

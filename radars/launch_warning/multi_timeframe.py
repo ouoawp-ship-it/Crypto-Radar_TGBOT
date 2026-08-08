@@ -177,77 +177,6 @@ def _structure(candles: Sequence[ClosedCandle]) -> dict[str, str]:
     }
 
 
-def _prior_bias(candles: Sequence[ClosedCandle]) -> str:
-    prior = candles[:-1]
-    if len(prior) < 2:
-        return "neutral"
-    high_up = prior[-1].high > prior[-2].high
-    low_up = prior[-1].low > prior[-2].low
-    if high_up and low_up:
-        return "bullish"
-    if not high_up and not low_up:
-        return "bearish"
-    return "mixed"
-
-
-def _break_or_change(
-    candles: Sequence[ClosedCandle],
-    *,
-    reference_high: float,
-    reference_low: float,
-) -> str:
-    close = candles[-1].close
-    prior_bias = _prior_bias(candles)
-    if close > reference_high:
-        return "CHoCH_up" if prior_bias == "bearish" else "BOS_up"
-    if close < reference_low:
-        return "CHoCH_down" if prior_bias == "bullish" else "BOS_down"
-    return "none"
-
-
-def _liquidity_sweep(
-    current: ClosedCandle,
-    *,
-    reference_high: float,
-    reference_low: float,
-) -> str:
-    swept_high = current.high > reference_high and current.close <= reference_high
-    swept_low = current.low < reference_low and current.close >= reference_low
-    if swept_high and swept_low:
-        return "both"
-    if swept_high:
-        return "high"
-    if swept_low:
-        return "low"
-    return "none"
-
-
-def _latest_fvg(candles: Sequence[ClosedCandle]) -> dict[str, Any]:
-    for index in range(len(candles) - 1, 1, -1):
-        first = candles[index - 2]
-        third = candles[index]
-        if third.low > first.high:
-            return {
-                "status": "bullish",
-                "zone_low": first.high,
-                "zone_high": third.low,
-                "candle_end_ms": third.close_time_ms + 1,
-            }
-        if third.high < first.low:
-            return {
-                "status": "bearish",
-                "zone_low": third.high,
-                "zone_high": first.low,
-                "candle_end_ms": third.close_time_ms + 1,
-            }
-    return {
-        "status": "none",
-        "zone_low": None,
-        "zone_high": None,
-        "candle_end_ms": None,
-    }
-
-
 def _average_true_range(candles: Sequence[ClosedCandle], period: int = 14) -> float | None:
     recent = list(candles[-(period + 1):])
     if len(recent) < 2:
@@ -263,26 +192,11 @@ def _average_true_range(candles: Sequence[ClosedCandle], period: int = 14) -> fl
     return sum(ranges) / len(ranges) if ranges else None
 
 
-def _direction(
-    structure: Mapping[str, str],
-    structure_event: str,
-    liquidity_sweep: str,
-) -> str:
-    if structure_event.endswith("_up"):
-        return "bullish"
-    if structure_event.endswith("_down"):
-        return "bearish"
+def _direction(structure: Mapping[str, str]) -> str:
+    """Return the ordinary trend derived from closed candles."""
+
     bias = str(structure.get("bias") or "mixed")
-    sweep_direction = (
-        "bearish" if liquidity_sweep == "high"
-        else "bullish" if liquidity_sweep == "low"
-        else "mixed"
-    )
-    if sweep_direction != "mixed" and bias not in {"mixed", sweep_direction}:
-        return "mixed"
-    if sweep_direction != "mixed":
-        return sweep_direction
-    return bias
+    return bias if bias in {"bullish", "bearish"} else "mixed"
 
 
 def _frame(
@@ -311,14 +225,6 @@ def _frame(
             "bias": "neutral",
             "source": "insufficient_history",
         },
-        "structure_event": "none",
-        "liquidity_sweep": "none",
-        "fvg": {
-            "status": "none",
-            "zone_low": None,
-            "zone_high": None,
-            "candle_end_ms": None,
-        },
     }
     if len(candles) < MINIMUM_CLOSED_CANDLES:
         return {**common, "data_status": "insufficient_history"}
@@ -334,17 +240,7 @@ def _frame(
     reference_high = max(candle.high for candle in reference)
     reference_low = min(candle.low for candle in reference)
     structure = _structure(candles)
-    structure_event = _break_or_change(
-        candles,
-        reference_high=reference_high,
-        reference_low=reference_low,
-    )
-    liquidity_sweep = _liquidity_sweep(
-        current,
-        reference_high=reference_high,
-        reference_low=reference_low,
-    )
-    direction = _direction(structure, structure_event, liquidity_sweep)
+    direction = _direction(structure)
     return {
         **common,
         "data_status": "ready" if invalid_rows == 0 else "degraded",
@@ -354,9 +250,6 @@ def _frame(
         "reference_high": reference_high,
         "reference_low": reference_low,
         "structure": structure,
-        "structure_event": structure_event,
-        "liquidity_sweep": liquidity_sweep,
-        "fvg": _latest_fvg(candles),
         "direction": direction,
         "vote": 1 if direction == "bullish" else -1 if direction == "bearish" else 0,
         "identity_inference": "not_performed",

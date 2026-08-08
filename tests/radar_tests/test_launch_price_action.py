@@ -169,7 +169,7 @@ class LaunchPriceActionTests(unittest.TestCase):
         self.assertEqual(frame["box_high"], 102.0)
         self.assertGreater(frame["body_ratio"], 0.45)
 
-    def test_detects_long_upper_wick_liquidity_sweep(self) -> None:
+    def test_detects_long_upper_wick_rejection(self) -> None:
         rows = [
             kline(index * INTERVAL_MS, 100.0, 102.0, 99.0, 101.0)
             for index in range(16)
