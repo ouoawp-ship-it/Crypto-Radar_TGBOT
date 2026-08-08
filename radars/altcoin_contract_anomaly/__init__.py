@@ -1,7 +1,7 @@
-"""P1 candidate discovery and bounded P2 confirmation for 山寨合约异动雷达.
+"""山寨合约异动雷达的候选、实时确认与显式生产运行能力。
 
-P1 remains one-shot; P2 is an explicitly bounded realtime Dry-run. Neither is
-registered with the production radar loop or Telegram delivery gateway.
+P1 remains one-shot and P2 remains a bounded Dry-run.  Final production is a
+separate, default-off injection into the existing market-stream process.
 """
 
 from .models import CandidateSnapshot, MappingRecord

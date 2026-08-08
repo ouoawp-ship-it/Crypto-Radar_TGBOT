@@ -139,6 +139,7 @@ class Settings:
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
     tg_funding_alert_topic_id: str = ""
+    tg_altcoin_contract_anomaly_topic_id: str = ""
     tg_private_control_enable: bool = False
     tg_private_control_admin_user_id: str = ""
     tg_private_control_state_path: Path = (
@@ -277,6 +278,36 @@ class Settings:
         BASE_DIR / "data" / "altcoin_contract_anomaly_p2_events.jsonl"
     )
     altcoin_contract_anomaly_smoke_duration_sec: int = 900
+    altcoin_contract_anomaly_production_enable: bool = False
+    altcoin_contract_anomaly_production_send_enable: bool = False
+    altcoin_contract_anomaly_production_send_confirm: str = ""
+    altcoin_contract_anomaly_production_manifest_refresh_sec: int = 1800
+    altcoin_contract_anomaly_production_manifest_retry_sec: int = 60
+    altcoin_contract_anomaly_production_manifest_max_age_sec: int = 2400
+    altcoin_contract_anomaly_production_cooldown_sec: int = 3600
+    altcoin_contract_anomaly_production_hourly_limit: int = 20
+    altcoin_contract_anomaly_production_daily_limit: int = 50
+    altcoin_contract_anomaly_production_queue_size: int = 256
+    altcoin_contract_anomaly_production_status_interval_sec: int = 30
+    altcoin_contract_anomaly_production_oi_budget_window_sec: int = 300
+    altcoin_contract_anomaly_production_observation_state_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_production_observation_state.json"
+    )
+    altcoin_contract_anomaly_production_observation_event_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_production_observation_events.jsonl"
+    )
+    altcoin_contract_anomaly_production_state_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_production_state.json"
+    )
+    altcoin_contract_anomaly_production_outbox_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_production_outbox.json"
+    )
+    altcoin_contract_anomaly_production_status_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_production_status.json"
+    )
+    altcoin_contract_anomaly_realtime_lock_path: Path = (
+        BASE_DIR / "data" / "altcoin_contract_anomaly_realtime.lock"
+    )
 
     radar_scan_limit: int = 120
     radar_summary_enable: bool = True
@@ -473,6 +504,10 @@ class Settings:
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_funding_alert_topic_id=env_first("TG_FUNDING_ALERT_TOPIC_ID", "TELEGRAM_FUNDING_ALERT_TOPIC_ID"),
+            tg_altcoin_contract_anomaly_topic_id=env_first(
+                "TG_ALTCOIN_CONTRACT_ANOMALY_TOPIC_ID",
+                "TELEGRAM_ALTCOIN_CONTRACT_ANOMALY_TOPIC_ID",
+            ),
             tg_private_control_enable=env_bool(
                 "TG_PRIVATE_CONTROL_ENABLE",
                 False,
@@ -842,6 +877,102 @@ class Settings:
                 30,
                 3_600,
             ),
+            altcoin_contract_anomaly_production_enable=env_bool(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_ENABLE",
+                False,
+            ),
+            altcoin_contract_anomaly_production_send_enable=env_bool(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_SEND_ENABLE",
+                False,
+            ),
+            altcoin_contract_anomaly_production_send_confirm=os.getenv(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_SEND_CONFIRM",
+                "",
+            ).strip(),
+            altcoin_contract_anomaly_production_manifest_refresh_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_MANIFEST_REFRESH_SEC",
+                1800,
+                300,
+                86_400,
+            ),
+            altcoin_contract_anomaly_production_manifest_retry_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_MANIFEST_RETRY_SEC",
+                60,
+                10,
+                3_600,
+            ),
+            altcoin_contract_anomaly_production_manifest_max_age_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_MANIFEST_MAX_AGE_SEC",
+                2400,
+                300,
+                86_400,
+            ),
+            altcoin_contract_anomaly_production_cooldown_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_COOLDOWN_SEC",
+                3600,
+                60,
+                604_800,
+            ),
+            altcoin_contract_anomaly_production_hourly_limit=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_HOURLY_LIMIT",
+                20,
+                1,
+                1_000,
+            ),
+            altcoin_contract_anomaly_production_daily_limit=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_DAILY_LIMIT",
+                50,
+                1,
+                10_000,
+            ),
+            altcoin_contract_anomaly_production_queue_size=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_QUEUE_SIZE",
+                256,
+                1,
+                10_000,
+            ),
+            altcoin_contract_anomaly_production_status_interval_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_STATUS_INTERVAL_SEC",
+                30,
+                5,
+                3_600,
+            ),
+            altcoin_contract_anomaly_production_oi_budget_window_sec=env_bounded_int(
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_OI_BUDGET_WINDOW_SEC",
+                300,
+                300,
+                86_400,
+            ),
+            altcoin_contract_anomaly_production_observation_state_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_OBSERVATION_STATE_FILE",
+                "altcoin_contract_anomaly_production_observation_state.json",
+            ),
+            altcoin_contract_anomaly_production_observation_event_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_OBSERVATION_EVENT_FILE",
+                "altcoin_contract_anomaly_production_observation_events.jsonl",
+            ),
+            altcoin_contract_anomaly_production_state_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_STATE_FILE",
+                "altcoin_contract_anomaly_production_state.json",
+            ),
+            altcoin_contract_anomaly_production_outbox_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_OUTBOX_FILE",
+                "altcoin_contract_anomaly_production_outbox.json",
+            ),
+            altcoin_contract_anomaly_production_status_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_PRODUCTION_STATUS_FILE",
+                "altcoin_contract_anomaly_production_status.json",
+            ),
+            altcoin_contract_anomaly_realtime_lock_path=data_path(
+                data_dir,
+                "ALTCOIN_CONTRACT_ANOMALY_REALTIME_LOCK_FILE",
+                "altcoin_contract_anomaly_realtime.lock",
+            ),
             radar_scan_limit=env_int("RADAR_SCAN_LIMIT", env_int("BN_SCAN_LIMIT", 120)),
             radar_summary_enable=reloadable_bool("RADAR_SUMMARY_ENABLE", True),
             radar_min_quote_volume=env_float("RADAR_MIN_QUOTE_VOLUME", env_float("BN_MIN_QUOTE_VOLUME", 5_000_000)),
@@ -1040,6 +1171,9 @@ class Settings:
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
                     "funding_alert": bool(self.tg_funding_alert_topic_id),
+                    "altcoin_contract_anomaly": bool(
+                        self.tg_altcoin_contract_anomaly_topic_id
+                    ),
                 },
                 "topic_routes_file": str(self.tg_topic_routes_path),
                 "private_control": {
@@ -1250,6 +1384,63 @@ class Settings:
                     ),
                     "smoke_duration_sec": (
                         self.altcoin_contract_anomaly_smoke_duration_sec
+                    ),
+                },
+                "production": {
+                    "enabled": self.altcoin_contract_anomaly_production_enable,
+                    "send_enabled": (
+                        self.altcoin_contract_anomaly_production_send_enable
+                    ),
+                    "send_confirm_configured": bool(
+                        self.altcoin_contract_anomaly_production_send_confirm
+                    ),
+                    "topic_configured": bool(
+                        self.tg_altcoin_contract_anomaly_topic_id
+                    ),
+                    "manifest_refresh_sec": (
+                        self.altcoin_contract_anomaly_production_manifest_refresh_sec
+                    ),
+                    "manifest_retry_sec": (
+                        self.altcoin_contract_anomaly_production_manifest_retry_sec
+                    ),
+                    "manifest_max_age_sec": (
+                        self.altcoin_contract_anomaly_production_manifest_max_age_sec
+                    ),
+                    "cooldown_sec": (
+                        self.altcoin_contract_anomaly_production_cooldown_sec
+                    ),
+                    "hourly_limit": (
+                        self.altcoin_contract_anomaly_production_hourly_limit
+                    ),
+                    "daily_limit": (
+                        self.altcoin_contract_anomaly_production_daily_limit
+                    ),
+                    "queue_size": (
+                        self.altcoin_contract_anomaly_production_queue_size
+                    ),
+                    "status_interval_sec": (
+                        self.altcoin_contract_anomaly_production_status_interval_sec
+                    ),
+                    "oi_budget_window_sec": (
+                        self.altcoin_contract_anomaly_production_oi_budget_window_sec
+                    ),
+                    "observation_state_file": str(
+                        self.altcoin_contract_anomaly_production_observation_state_path
+                    ),
+                    "observation_event_file": str(
+                        self.altcoin_contract_anomaly_production_observation_event_path
+                    ),
+                    "state_file": str(
+                        self.altcoin_contract_anomaly_production_state_path
+                    ),
+                    "outbox_file": str(
+                        self.altcoin_contract_anomaly_production_outbox_path
+                    ),
+                    "status_file": str(
+                        self.altcoin_contract_anomaly_production_status_path
+                    ),
+                    "realtime_lock_file": str(
+                        self.altcoin_contract_anomaly_realtime_lock_path
                     ),
                 },
             },

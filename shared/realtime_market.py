@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
+from shared.process_lock import ProcessFileLock
+
 
 REALTIME_FEATURE_SCHEMA_VERSION = 2
 
@@ -1411,6 +1413,7 @@ class BinanceRealtimeMarketService:
         store: RealtimeFeatureStore | None = None,
         websocket_app_factory: Any = None,
         realtime_controller: Any = None,
+        event_sink: Any = None,
     ):
         self.settings = settings
         p2_gate_enabled = bool(
@@ -1419,6 +1422,10 @@ class BinanceRealtimeMarketService:
         )
         if realtime_controller is not None and not p2_gate_enabled:
             raise ValueError("explicit P2 controller requires both feature gates")
+        if event_sink is not None and realtime_controller is None:
+            raise ValueError("explicit realtime event sink requires a controller")
+        if event_sink is not None and not callable(getattr(event_sink, "submit", None)):
+            raise ValueError("explicit realtime event sink requires submit(events)")
         # P2 is deliberately an explicit bounded-session dependency.  The
         # long-running market-stream service must stay on its legacy path even
         # when both environment switches happen to be enabled.
@@ -1447,6 +1454,14 @@ class BinanceRealtimeMarketService:
         self._connected = threading.Event()
         self._last_receive_mono = 0.0
         self._p2_controller: Any = realtime_controller if self._p2_enabled else None
+        self._p2_event_sink: Any = event_sink if self._p2_enabled else None
+        self._p2_event_sink_started = False
+        self._p2_event_sink_ready = False
+        self._p2_event_sink_batches = 0
+        self._p2_event_sink_events = 0
+        self._p2_event_sink_failures = 0
+        self._p2_event_sink_rejections = 0
+        self._p2_event_sink_last_error = ""
         self._p2_ledger: SubscriptionLedger | None = None
         self._p2_mark_prices: MarkPriceBook | None = None
         self._p2_plan: BinanceSubscriptionPlan | None = None
@@ -1771,6 +1786,14 @@ class BinanceRealtimeMarketService:
             return []
         interval = max(1, int(getattr(self.settings, "realtime_market_bucket_sec", 60) or 60))
         self._p2_next_evaluate_mono = now_monotonic + interval
+        # Production events are committed by the controller before evaluate()
+        # returns.  Never advance that state when the durable sink failed to
+        # start, otherwise the notification could be lost permanently.
+        if self._p2_event_sink is not None and not self._p2_event_sink_ready:
+            self._p2_event_sink_rejections += 1
+            self._p2_event_sink_last_error = "evaluate:sink_not_ready"
+            self.last_error = "altcoin_event_sink:evaluate:sink_not_ready"
+            return []
         try:
             events = self._p2_controller.evaluate(
                 self._p2_subscription_status(),
@@ -1781,6 +1804,58 @@ class BinanceRealtimeMarketService:
             self._p2_evaluation_errors += 1
             self.last_error = f"altcoin_evaluate:{type(exc).__name__}"
             return []
+
+    def _start_p2_event_sink(self) -> None:
+        if self._p2_event_sink is None or self._p2_event_sink_started:
+            return
+        starter = getattr(self._p2_event_sink, "start", None)
+        try:
+            if callable(starter):
+                starter()
+        except Exception as exc:
+            self._p2_event_sink_failures += 1
+            self._p2_event_sink_last_error = f"start:{type(exc).__name__}"
+            self.last_error = f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+            self._p2_event_sink_ready = False
+            return
+        self._p2_event_sink_started = True
+        self._p2_event_sink_ready = True
+
+    def _stop_p2_event_sink(self) -> None:
+        if self._p2_event_sink is None:
+            return
+        stopper = getattr(self._p2_event_sink, "stop", None)
+        try:
+            if self._p2_event_sink_started and callable(stopper):
+                stopper()
+        except Exception as exc:
+            self._p2_event_sink_failures += 1
+            self._p2_event_sink_last_error = f"stop:{type(exc).__name__}"
+            self.last_error = f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+        finally:
+            self._p2_event_sink_started = False
+            self._p2_event_sink_ready = False
+
+    def _submit_p2_events(self, events: list[dict[str, Any]]) -> None:
+        if not events or self._p2_event_sink is None or not self._p2_event_sink_ready:
+            return
+        batch = [dict(event) for event in events]
+        try:
+            # submit() must durably admit the batch without performing
+            # Telegram or any other network delivery inline.
+            accepted = self._p2_event_sink.submit(batch)
+        except Exception as exc:
+            self._p2_event_sink_failures += 1
+            self._p2_event_sink_last_error = f"submit:{type(exc).__name__}"
+            self.last_error = f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+            return
+        if accepted is False:
+            self._p2_event_sink_rejections += 1
+            self._p2_event_sink_last_error = "submit:rejected"
+            self.last_error = "altcoin_event_sink:submit:rejected"
+            return
+        self._p2_event_sink_batches += 1
+        self._p2_event_sink_events += len(batch)
 
     def _subscription_payload(self, subscriptions: list[Any]) -> dict[str, Any]:
         payload = {"method": "SUBSCRIBE", "params": subscriptions, "id": self._subscription_id}
@@ -1953,6 +2028,20 @@ class BinanceRealtimeMarketService:
         manifest_age = _number(controller_stats.get("manifest_age_sec"))
         if manifest_age is not None and manifest_age < 0:
             manifest_age = None
+        event_sink_stats: dict[str, Any] = {}
+        if self._p2_event_sink is not None:
+            sink_stats_method = getattr(self._p2_event_sink, "stats", None)
+            if callable(sink_stats_method):
+                try:
+                    raw_sink_stats = sink_stats_method()
+                    if isinstance(raw_sink_stats, Mapping):
+                        event_sink_stats = dict(raw_sink_stats)
+                except Exception as exc:
+                    self._p2_event_sink_failures += 1
+                    self._p2_event_sink_last_error = f"stats:{type(exc).__name__}"
+                    self.last_error = (
+                        f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+                    )
         with self._p2_metrics_lock:
             mark_price_data_symbols = sorted(
                 symbol
@@ -2073,6 +2162,14 @@ class BinanceRealtimeMarketService:
             "last_event_at": str(controller_stats.get("last_event_at") or ""),
             "evaluation_errors": self._p2_evaluation_errors,
             "runner_shutdown_timeouts": self._p2_runner_shutdown_timeouts,
+            "event_sink_configured": self._p2_event_sink is not None,
+            "event_sink_ready": self._p2_event_sink_ready,
+            "event_sink_batches": self._p2_event_sink_batches,
+            "event_sink_events": self._p2_event_sink_events,
+            "event_sink_failures": self._p2_event_sink_failures,
+            "event_sink_rejections": self._p2_event_sink_rejections,
+            "event_sink_last_error": self._p2_event_sink_last_error,
+            "event_sink": event_sink_stats,
             "oi_candidate_count": int(oi_stats.get("candidate_count") or 0),
             "oi_requests": int(oi_stats.get("requests") or 0),
             "oi_cache_hits": int(oi_stats.get("cache_hits") or 0),
@@ -2080,9 +2177,31 @@ class BinanceRealtimeMarketService:
             "oi_failures": int(oi_stats.get("failures") or 0),
             "oi_budget_used": int(oi_stats.get("budget_used") or 0),
             "oi_budget_limit": int(oi_stats.get("budget_limit") or 0),
+            "oi_budget_mode": str(oi_stats.get("budget_mode") or ""),
+            "oi_budget_window_sec": int(
+                oi_stats.get("budget_window_sec") or 0
+            ),
+            "oi_budget_window_started_at": str(
+                oi_stats.get("budget_window_started_at") or ""
+            ),
+            "oi_budget_window_used": int(
+                oi_stats.get("budget_window_used") or 0
+            ),
+            "oi_budget_window_resets": int(
+                oi_stats.get("budget_window_resets") or 0
+            ),
             "oi_budget_exhausted": int(oi_stats.get("budget_exhausted") or 0),
             "oi_rate_limit_blocked": int(
                 oi_stats.get("rate_limit_blocked") or 0
+            ),
+            "oi_rate_limit_latched": bool(
+                oi_stats.get("rate_limit_latched")
+            ),
+            "oi_rate_limit_latched_until": str(
+                oi_stats.get("rate_limit_latched_until") or ""
+            ),
+            "oi_rate_limit_latch_resets": int(
+                oi_stats.get("rate_limit_latch_resets") or 0
             ),
             "oi_http_429": int(oi_stats.get("http_429") or 0),
             "oi_http_418": int(oi_stats.get("http_418") or 0),
@@ -2101,6 +2220,13 @@ class BinanceRealtimeMarketService:
             return []
 
     def run(self, stop_event: threading.Event | None = None) -> None:
+        self._start_p2_event_sink()
+        try:
+            self._run_market_loop(stop_event)
+        finally:
+            self._stop_p2_event_sink()
+
+    def _run_market_loop(self, stop_event: threading.Event | None = None) -> None:
         stop = stop_event or threading.Event()
         reconnect_delay = max(1, int(getattr(self.settings, "realtime_market_reconnect_sec", 5) or 5))
         flush_interval = max(1, int(getattr(self.settings, "realtime_market_flush_interval_sec", 1) or 1))
@@ -2172,7 +2298,8 @@ class BinanceRealtimeMarketService:
                         now_monotonic=now_mono,
                     )
                     self._send_next_p2_control(ws, now_monotonic=now_mono)
-                    self._evaluate_p2(now_ts=now, now_monotonic=now_mono)
+                    events = self._evaluate_p2(now_ts=now, now_monotonic=now_mono)
+                    self._submit_p2_events(events)
                 keepalive = self._keepalive_payload()
                 if (
                     keepalive is not None
@@ -2237,7 +2364,7 @@ class BinanceRealtimeMarketService:
                 stop.wait(reconnect_delay)
 
 
-def run_realtime_market_session(
+def _run_realtime_market_session_unlocked(
     settings: Any,
     *,
     duration_sec: float,
@@ -2328,6 +2455,7 @@ def run_realtime_market_session(
             "force_order_active",
             "active_stream_count",
             "last_market_receive_ms",
+            "event_sink_ready",
         )
         for key in health_keys:
             if key in live_stats:
@@ -2356,8 +2484,50 @@ def run_realtime_market_session(
     }
 
 
-def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> int:
-    services = [BinanceRealtimeMarketService(settings)]
+def run_realtime_market_session(
+    settings: Any,
+    *,
+    duration_sec: float,
+    service: BinanceRealtimeMarketService | None = None,
+    process_lock: ProcessFileLock | None = None,
+) -> dict[str, Any]:
+    duration = float(duration_sec)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("duration_sec must be a finite positive number")
+    release_process_lock = bool(process_lock is not None and not process_lock.acquired)
+    if process_lock is not None and not process_lock.acquire():
+        now = time.time()
+        timestamp = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
+        return {
+            "schema_version": 1,
+            "dry_run": True,
+            "started_at": timestamp,
+            "ended_at": timestamp,
+            "duration_sec_requested": duration,
+            "duration_sec_actual": 0.0,
+            "interrupted": False,
+            "ok": False,
+            "failures": ["realtime_process_lock:busy"],
+            "stats": {},
+            "events": [],
+        }
+    try:
+        return _run_realtime_market_session_unlocked(
+            settings,
+            duration_sec=duration,
+            service=service,
+        )
+    finally:
+        if process_lock is not None and release_process_lock:
+            process_lock.release()
+
+
+def _run_realtime_market_service_unlocked(
+    market_service: BinanceRealtimeMarketService,
+    *,
+    duration_sec: float,
+) -> int:
+    services = [market_service]
     stop = threading.Event()
     failures: list[str] = []
     deadline = time.monotonic() + max(0.0, float(duration_sec or 0)) if duration_sec else 0.0
@@ -2404,6 +2574,45 @@ def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> in
             "exchanges": exchange_stats,
         }, ensure_ascii=False))
     return 1 if failures else 0
+
+
+def run_realtime_market_service(
+    settings: Any,
+    *,
+    duration_sec: float = 0,
+    service: BinanceRealtimeMarketService | None = None,
+    realtime_controller: Any = None,
+    event_sink: Any = None,
+    process_lock: ProcessFileLock | None = None,
+) -> int:
+    if service is not None and (realtime_controller is not None or event_sink is not None):
+        raise ValueError("service cannot be combined with controller or event sink injection")
+    release_process_lock = bool(process_lock is not None and not process_lock.acquired)
+    if process_lock is not None and not process_lock.acquire():
+        print(json.dumps({
+            "service": "binance_realtime_market",
+            "failures": ["realtime_process_lock:busy"],
+            "exchanges": [],
+        }, ensure_ascii=False))
+        return 1
+    try:
+        market_service = service
+        if market_service is None:
+            if realtime_controller is None and event_sink is None:
+                market_service = BinanceRealtimeMarketService(settings)
+            else:
+                market_service = BinanceRealtimeMarketService(
+                    settings,
+                    realtime_controller=realtime_controller,
+                    event_sink=event_sink,
+                )
+        return _run_realtime_market_service_unlocked(
+            market_service,
+            duration_sec=duration_sec,
+        )
+    finally:
+        if process_lock is not None and release_process_lock:
+            process_lock.release()
 
 
 __all__ = [

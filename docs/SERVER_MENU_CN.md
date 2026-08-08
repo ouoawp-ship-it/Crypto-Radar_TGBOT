@@ -136,5 +136,9 @@ bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes
 ```
 
+正式版本不得由菜单或普通分支更新代替 Tag 发布。确认对应 Tag 的 GitHub
+Actions 成功后，使用 `scripts/deploy_tag.sh --check-tag/--tag`；部署备份和
+回滚方法见 `docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md`。
+
 更新前会执行工作树、分支和版本门禁。生产数据库、日志、真实配置和历史备份
 不会进入 Git。链上历史数据在服务器上只做归档保留，不再由主项目写入。

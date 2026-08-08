@@ -1,6 +1,6 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.0.0` 已移除公开网站、后台管理、用户系统、独立 AI 助手和全部 Web 部署依赖，恢复为小而稳定的 BOT 运行时。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.0.1` 延续 BOT-only 运行时，并为山寨合约异动雷达补齐默认关闭、可恢复的生产运行与正式 Tag 发布边界。
 
 ## 核心功能
 
@@ -9,7 +9,7 @@
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
 - 公告风险：独立解析 Binance 官方上新、下架和活动公告；同时只作为启动预警辅助证据，不参与启动打分。
-- 山寨合约异动雷达：P1 按可信 CMC-ID、Binance 单交易所 OI/市值和资金费率生成一次性候选池；P2 仅提供受限时长的实时确认 Dry-run。两阶段均默认不调度、不发送 Telegram。
+- 山寨合约异动雷达：P1 按可信 CMC-ID、Binance 单交易所 OI/市值和资金费率生成候选池；P2 在现有唯一 WebSocket 内完成多因子确认；Final 以独立开关提供候选自动刷新、固定话题、幂等冷却和重启恢复。生产与真实发送均默认关闭。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
 - 启动信号生命周期：15分钟完整收线负责触发，1小时主图负责看结构；启动预警从观察、预警、确认、启动进入降温期。第一次信号单独发送，同币后续更新回复上一条成功消息，历史卡片不自动删除。每个完整周期只计一个结果样本，记录最高/最低收盘变动、OI 区间、阶段耗时和结束收益；同口径样本不足 20 轮时不展示比例。
 - 按需 AI 解读：雷达扫描默认零 AI 调用；管理员需要时点击启动信号下方按钮，机器人只读取该信号发送时的安全快照并在私聊返回解读。重复点击优先复用缓存，AI 不改规则方向、证据分、阶段或失效位。
@@ -123,6 +123,8 @@ main.py live --send --confirm-real-send
 [docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md)。
 P2 的受限时长 Dry-run、实时阈值、停止方式及生产隔离边界见
 [docs/ALTCOIN_CONTRACT_ANOMALY_P2_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_P2_CN.md)。
+Final 的生产开关、固定话题、消息语义、systemd、正式 Tag 发布与回滚见
+[docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md)。
 
 ## 测试
 
@@ -137,6 +139,9 @@ P2 的受限时长 Dry-run、实时阈值、停止方式及生产隔离边界见
 bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes
+# 正式生产版本只从通过 CI 的 annotated Tag 部署：
+bash scripts/deploy_tag.sh --check-tag v2.0.1
+bash scripts/deploy_tag.sh --tag v2.0.1 --yes
 ```
 
 生产环境仅保留：
