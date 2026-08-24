@@ -443,11 +443,12 @@ class TelegramSafeFallbackTests(unittest.TestCase):
                 self.assertEqual(gateway._create_forum_topic("safe"), "")
                 self.assertFalse(gateway._rename_forum_topic("1", "safe"))
                 self.assertFalse(gateway._pin_message(1))
+                self.assertFalse(gateway._unpin_message(1))
                 self.assertFalse(gateway._delete_message(1))
             output = stderr.getvalue()
             self.assertNotIn(secret, output)
             self.assertNotIn("Bad Request", output)
-            self.assertEqual(output.count("telegram_chat_not_found"), 4)
+            self.assertEqual(output.count("telegram_chat_not_found"), 5)
 
     def test_topic_rename_treats_already_current_name_as_success(self) -> None:
         with TemporaryDirectory() as tmp:

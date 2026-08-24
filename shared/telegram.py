@@ -1429,7 +1429,8 @@ class TelegramGateway:
             return False
         self._save_topic_intro_record(intro_key, template_id, topic_id, message_id, pinned, current_hash)
         if previous_message_id > 0 and previous_message_id != message_id:
-            self._delete_message(previous_message_id)
+            if not self._delete_message(previous_message_id):
+                self._unpin_message(previous_message_id)
         return True
 
     @staticmethod
@@ -1494,6 +1495,35 @@ class TelegramGateway:
             error_class, _error_code, _retry_after = classify_telegram_response(response)
             print(
                 "[telegram] pinChatMessage failed "
+                f"status={response.status_code} error={error_class}",
+                file=sys.stderr,
+            )
+            return False
+        return True
+
+    def _unpin_message(self, message_id: int) -> bool:
+        url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/unpinChatMessage"
+        payload: dict[str, Any] = {
+            "chat_id": self.settings.tg_chat_id,
+            "message_id": message_id,
+        }
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                timeout=self.settings.tg_push_timeout_sec,
+            )
+        except requests.exceptions.RequestException as exc:
+            print(
+                "[telegram] unpinChatMessage failed "
+                f"error={classify_telegram_network_error(exc)}",
+                file=sys.stderr,
+            )
+            return False
+        if response.status_code != 200:
+            error_class, _error_code, _retry_after = classify_telegram_response(response)
+            print(
+                "[telegram] unpinChatMessage failed "
                 f"status={response.status_code} error={error_class}",
                 file=sys.stderr,
             )

@@ -1860,6 +1860,56 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(record["message_id"], 99)
             self.assertEqual(record["intro_version"], "old")
 
+    def test_topic_intro_unpins_previous_message_when_it_is_too_old_to_delete(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            store.save(route_path, {
+                "intros": {
+                    "TG_RADAR_SUMMARY:11": {
+                        "template_id": "TG_RADAR_SUMMARY",
+                        "topic_id": "11",
+                        "message_id": 99,
+                        "pinned": True,
+                        "intro_version": "old",
+                        "content_hash": "old",
+                    }
+                }
+            })
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_topic_routes_path=route_path,
+                tg_radar_summary_topic_id="11",
+                tg_topic_intro_pin=True,
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(
+                    gateway,
+                    "_send_real_message_ids",
+                    return_value=(True, [100]),
+                ),
+                patch.object(gateway, "_pin_message", return_value=True),
+                patch.object(gateway, "_delete_message", return_value=False),
+                patch.object(
+                    gateway,
+                    "_unpin_message",
+                    return_value=True,
+                ) as unpin_mock,
+            ):
+                refreshed = gateway._ensure_topic_intro(
+                    "TG_RADAR_SUMMARY",
+                    "11",
+                    require_pin=True,
+                )
+
+            self.assertTrue(refreshed)
+            unpin_mock.assert_called_once_with(99)
+            record = store.load(route_path, {})["intros"]["TG_RADAR_SUMMARY:11"]
+            self.assertEqual(record["message_id"], 100)
+            self.assertTrue(record["pinned"])
+
     def test_topic_setup_republishes_corrupt_current_intro_record(self) -> None:
         with TemporaryDirectory() as tmp:
             route_path = Path(tmp) / "topic_routes.json"
