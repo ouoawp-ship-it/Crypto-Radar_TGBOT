@@ -873,10 +873,10 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
     lines = [
         f"{meta['icon']} {meta['title']} (第{count}次) {meta['icon']}",
         "",
-        f"{base}/USDT ({base}) {meta['color']} {meta['direction']} "
+        f"<b>{base}/USDT</b> (<code>{base}</code>) {meta['color']} {meta['direction']} "
         f"{abs(trigger_metric or 0.0):.2f}% {meta['arrow']}",
         "",
-        f"🔗 <a href='{tv_url}'>𝑻𝒓𝒂𝒅𝒊𝒏𝒈𝑽𝒊𝒆𝒘</a> | <a href='{cg_url}'>𝑪𝒐𝒊𝒏𝒈𝒍𝒂𝒔𝒔</a> | 📋<code>{base}</code>",
+        f"🔗 <a href='{tv_url}'>𝑻𝒓𝒂𝒅𝒊𝒏𝒈𝑽𝒊𝒆𝒘</a> | <a href='{cg_url}'>𝑪𝒐𝒊𝒏𝒈𝒍𝒂𝒔𝒔</a>",
         "",
         f"⏰ 提醒时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} (UTC+8)",
         "━━━━━━━━━━━━━━━━━━━━",

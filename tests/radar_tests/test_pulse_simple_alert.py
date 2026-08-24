@@ -160,7 +160,11 @@ class FormatCardTests(unittest.TestCase):
         self.assertIn("数据来源: 币安 Binance", text)
         self.assertIn("tradingview.com/chart", text)
         self.assertIn("coinglass.com/tv/zh", text)
-        self.assertIn("<code>CETUS</code>", text)
+        self.assertIn(
+            "<b>CETUS/USDT</b> (<code>CETUS</code>) 🟢 上涨 31.11% ↗️",
+            text,
+        )
+        self.assertNotIn("📋<code>CETUS</code>", text)
 
 
     def test_card_marks_missing_spot(self) -> None:
