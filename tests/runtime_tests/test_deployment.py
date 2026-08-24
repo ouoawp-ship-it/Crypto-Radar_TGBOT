@@ -399,6 +399,8 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("git pull --ff-only", script)
         self.assertIn("python -m unittest discover", script)
         self.assertIn("main.py stable-check", script)
+        self.assertIn('if [ "$code" -ge 2 ]', script)
+        self.assertIn("bot_stable_check_attention_non_blocking", script)
         self.assertIn("retire_legacy_services", script)
 
     def test_update_script_reexecutes_after_pull_to_load_new_deployment_logic(self) -> None:

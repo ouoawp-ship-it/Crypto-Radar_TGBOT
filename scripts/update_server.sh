@@ -172,9 +172,12 @@ run_stable_check() {
   .venv/bin/python main.py stable-check --no-save
   local code=$?
   set -e
-  if [ "$code" -ne 0 ]; then
+  if [ "$code" -ge 2 ]; then
     printf 'bot_stable_check_failed\n' >&2
     exit 2
+  fi
+  if [ "$code" -eq 1 ]; then
+    printf 'bot_stable_check_attention_non_blocking\n' >&2
   fi
 }
 
