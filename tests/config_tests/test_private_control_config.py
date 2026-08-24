@@ -117,6 +117,22 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         self.assertTrue(status["FLOW_RADAR_ENABLE"])
         self.assertTrue(status["ANNOUNCEMENT_RISK_ENABLE"])
 
+    def test_admin_status_marks_invalid_value_without_exposing_it(self) -> None:
+        invalid = "not-a-private-admin"
+        path = self.root / "config" / ".env.oi"
+        path.write_text(
+            f"TG_PRIVATE_CONTROL_ADMIN_USER_ID={invalid}\n",
+            encoding="utf-8",
+        )
+
+        status = self.manager.status()
+
+        self.assertEqual(
+            status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"],
+            "invalid",
+        )
+        self.assertNotIn(invalid, str(status))
+
     def test_enable_requires_bot_token_and_admin(self) -> None:
         with self.assertRaisesRegex(
             ConfigManagerError,
@@ -129,7 +145,16 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         )
 
     def test_admin_id_must_be_a_positive_bounded_integer(self) -> None:
-        for value in ("0", "-1", "+1", "abc", "1.5", "9" * 20):
+        for value in (
+            "0",
+            "001",
+            "-1",
+            "+1",
+            "abc",
+            "1.5",
+            "1٢",
+            "9" * 20,
+        ):
             with self.subTest(value=value):
                 with self.assertRaises(ConfigManagerError):
                     self.manager.set(
@@ -153,6 +178,10 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         )
 
         self.assertEqual(result["value"], "configured")
+        self.assertEqual(
+            self.manager.status()["TG_PRIVATE_CONTROL_ADMIN_USER_ID"],
+            "configured",
+        )
         self.assertNotIn("123456789", str(result))
         self.assertTrue(enabled["value"])
         self.assertTrue(alerts["value"])

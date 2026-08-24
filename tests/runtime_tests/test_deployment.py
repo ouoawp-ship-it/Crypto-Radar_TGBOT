@@ -40,6 +40,8 @@ class GitIgnoreHardeningTests(unittest.TestCase):
         self.assertTrue(is_ignored("runtime-config.bak"))
         self.assertTrue(is_ignored("data/tg_push_history.json.lock"))
         self.assertTrue(is_ignored("data/backups/20260723T033000Z/manifest.json"))
+        self.assertTrue(is_ignored("data/altcoin/state/production.json"))
+        self.assertTrue(is_ignored("data/altcoin/db/realtime.db-wal"))
 
     def test_example_env_files_remain_trackable(self) -> None:
         self.assertFalse(is_ignored(".env.oi.example"))
@@ -153,6 +155,13 @@ class EnvSyncTests(unittest.TestCase):
             "LAUNCH_SMC_EQUAL_TOLERANCE_ATR": "0.15",
             "LAUNCH_SMC_DISPLACEMENT_BODY_ATR": "1.0",
             "LAUNCH_SMC_MAX_ZONE_AGE_BARS": "96",
+            "LAUNCH_AI_AUTO_ENABLE": "false",
+            "TG_BOT_USERNAME": "legacy_bot",
+            "AI_API_KEY": "legacy-secret",
+            "AI_BASE_URL": "https://example.invalid/v1",
+            "AI_MODEL": "legacy-model",
+            "AI_OPERATOR_PROMPT": "legacy prompt",
+            "AI_ON_DEMAND_DAILY_LIMIT": "20",
         }
         with TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env.oi"
@@ -327,7 +336,14 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         main_runner = (
             ROOT / "scripts" / "run_main_bot.sh"
         ).read_text(encoding="utf-8")
+        market_stream_installer = (
+            ROOT / "scripts" / "install_market_stream_service.sh"
+        ).read_text(encoding="utf-8")
+        market_stream_runner = (
+            ROOT / "scripts" / "run_market_stream.sh"
+        ).read_text(encoding="utf-8")
         combined = install + "\n" + update
+        service_installers = main_installer + "\n" + market_stream_installer
 
         self.assertIn("install_main_bot_service.sh", combined)
         self.assertNotIn(
@@ -343,16 +359,20 @@ class BotOnlyDeploymentTests(unittest.TestCase):
             'args+=("live" "--send" "--confirm-real-send")',
             main_runner,
         )
-        self.assertIn('"market-stream"', combined)
-        self.assertIn("main.py ${command}", combined)
+        self.assertIn("install_market_stream_service.sh", combined)
+        self.assertIn(
+            "ExecStart=${APP_DIR}/scripts/run_market_stream.sh",
+            market_stream_installer,
+        )
+        self.assertIn('"${APP_DIR}/main.py" market-stream', market_stream_runner)
         self.assertIn("paopao-radar", combined)
         self.assertIn("paopao-market-stream", combined)
         self.assertIn("paopao-health", combined)
         self.assertIn("paopao-backup", combined)
         self.assertIn("database-backup", combined)
-        self.assertIn("MemoryHigh=", combined)
-        self.assertIn("MemoryMax=", combined)
-        self.assertIn("LimitNOFILE=65536", combined)
+        self.assertIn("MemoryHigh=", service_installers)
+        self.assertIn("MemoryMax=", service_installers)
+        self.assertIn("LimitNOFILE=65536", service_installers)
         self.assertIn("systemd_health_check.sh", combined)
         self.assertIn("OnUnitActiveSec=5min", combined)
         self.assertIn("OnCalendar=*-*-* 03:30:00 UTC", combined)

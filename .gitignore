@@ -25,6 +25,7 @@ crypto_monitor_merged.py
 /*_SUMMARY.txt
 
 data/*.json
+data/*.jsonl
 data/*.db
 data/*.db-*
 data/*.sqlite
@@ -33,6 +34,16 @@ data/*.log
 data/*.lock
 data/*.tmp
 data/*.txt
+data/**/*.json
+data/**/*.jsonl
+data/**/*.db
+data/**/*.db-*
+data/**/*.sqlite
+data/**/*.sqlite-*
+data/**/*.log
+data/**/*.lock
+data/**/*.tmp
+data/**/*.txt
 !data/数据文件说明.txt
 data/charts/
 data/backups/

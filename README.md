@@ -1,6 +1,6 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.0.0` 已移除公开网站、后台管理、用户系统、独立 AI 助手和全部 Web 部署依赖，恢复为小而稳定的 BOT 运行时。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.0.1` 延续 BOT-only 运行时，并为山寨合约异动雷达补齐默认关闭、可恢复的生产运行与正式 Tag 发布边界。
 
 ## 核心功能
 
@@ -9,7 +9,7 @@
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
 - 公告风险：独立解析并推送 Binance 官方上新、下架和活动公告，不参与脉冲雷达分类。
-- 山寨合约异动雷达 P1：按可信 CMC-ID、Binance 单交易所 OI/市值和资金费率生成一次性候选池、JSON 与 Telegram 文本预览；默认不调度、不发送。
+- 山寨合约异动雷达：P1 生成候选池，P2 在现有唯一 WebSocket 内做多因子确认，Final 提供可恢复的生产运行；生产调度和真实发送均默认关闭。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
 - 脉冲跟随与复盘：同币首次触发立即发送，2 小时内只在强度升级或分类反转时再发，最多 3 次；15 分钟信号回填 1h/4h 结果，2 小时背离回填 2h 结果并回复原卡片。
 - 推送安全：默认 dry-run，真实发送必须同时提供 `--send --confirm-real-send`，并经过 readiness 门禁、去重、冷却、限流和重试。
@@ -19,7 +19,7 @@
 ## 项目目录
 
 ```text
-radars/   五个生产雷达及默认关闭的一次性候选模块
+radars/   五个生产雷达及默认关闭的山寨合约异动候选/确认模块
 shared/   Telegram、行情访问、存储等公共能力
 runtime/  调度、健康检查、备份和运维命令
 config/   配置读取、真实配置和配置示例
@@ -79,6 +79,7 @@ python main.py announcement-risk
 python main.py flow-radar
 python main.py funding-alert
 python main.py altcoin-anomaly --preview-telegram
+python main.py altcoin-anomaly --realtime-duration-sec 900 --json
 python main.py signal-effectiveness
 python main.py market-stream
 python main.py loop
@@ -108,6 +109,10 @@ main.py live --send --confirm-real-send
 
 山寨合约异动雷达 P1 的 CMC 配置、离线缓存、人工映射覆盖、退出码和安全边界见
 [docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_P1_CN.md)。
+P2 的受限时长 Dry-run、实时阈值、停止方式及生产隔离边界见
+[docs/ALTCOIN_CONTRACT_ANOMALY_P2_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_P2_CN.md)。
+Final 的生产开关、固定话题、消息语义、systemd、正式 Tag 发布与回滚见
+[docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md](docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md)。
 
 ## 测试
 
@@ -122,6 +127,9 @@ main.py live --send --confirm-real-send
 bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes
+# 正式生产版本只从通过 CI 的 annotated Tag 部署：
+bash scripts/deploy_tag.sh --check-tag v2.0.1
+bash scripts/deploy_tag.sh --tag v2.0.1 --yes
 ```
 
 生产环境仅保留：

@@ -5,6 +5,7 @@ import os
 import sqlite3
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -183,6 +184,365 @@ class RuntimeHealthTests(unittest.TestCase):
         backup = next(item for item in checks if item["name"] == "database_backup")
         self.assertEqual(backup["status"], "ok")
         self.assertEqual(backup["metrics"]["age_sec"], 60)
+
+    def test_altcoin_production_health_is_conditional_and_fail_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            base = self.make_settings(root)
+            store = JsonStore(root)
+
+            disabled_checks = runtime_health_checks(base, store, now_ts=now)
+            self.assertNotIn(
+                "altcoin_contract_anomaly_production",
+                {item["name"] for item in disabled_checks},
+            )
+
+            enabled = replace(
+                base,
+                altcoin_contract_anomaly_production_enable=True,
+                altcoin_contract_anomaly_production_status_path=(
+                    root / "altcoin-production-status.json"
+                ),
+            )
+            enabled_checks = runtime_health_checks(enabled, store, now_ts=now)
+
+        item = next(
+            check
+            for check in enabled_checks
+            if check["name"] == "altcoin_contract_anomaly_production"
+        )
+        self.assertEqual(item["status"], "fail")
+
+    def test_altcoin_production_health_requires_fresh_manifest_and_route(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                altcoin_contract_anomaly_production_enable=True,
+                altcoin_contract_anomaly_production_send_enable=True,
+                altcoin_contract_anomaly_production_status_path=(
+                    root / "altcoin-production-status.json"
+                ),
+            )
+            store = JsonStore(root)
+            payload = {
+                "module": "altcoin_contract_anomaly",
+                "mode": "production",
+                "status": "running",
+                "running": True,
+                "process_lock_acquired": True,
+                "manifest": {
+                    "valid": True,
+                    "age_sec": 30,
+                    "candidate_count": 3,
+                },
+                "service": {
+                    "connection_state": "connected",
+                    "candidate_coverage_complete": True,
+                    "force_order_active": True,
+                    "accepted_events": 1,
+                    "event_sink_ready": True,
+                    "mark_price_data_coverage_ratio": 1.0,
+                    "aligned_evaluation_rounds": 2,
+                    "last_evaluation_candidate_count": 3,
+                    "last_evaluation_complete_count": 3,
+                    "last_evaluation_epoch_complete_count": 3,
+                    "last_evaluation_funding_complete_count": 3,
+                },
+                "refresh": {"successes": 1, "running": True},
+                "processor": {
+                    "running": True,
+                    "stop_timed_out": False,
+                    "pending_batches": 0,
+                    "last_error_class": "",
+                },
+                "telegram": {
+                    "route_configured": True,
+                    "real_send_enabled": True,
+                },
+            }
+            store.save(settings.altcoin_contract_anomaly_production_status_path, payload)
+            os.utime(
+                settings.altcoin_contract_anomaly_production_status_path,
+                (now - 10, now - 10),
+            )
+
+            ready = runtime_health_checks(settings, store, now_ts=now)
+            payload["processor"]["quarantined_batches"] = 1
+            payload["processor"]["quarantined_symbols"] = 1
+            store.save(settings.altcoin_contract_anomaly_production_status_path, payload)
+            os.utime(
+                settings.altcoin_contract_anomaly_production_status_path,
+                (now - 10, now - 10),
+            )
+            quarantined = runtime_health_checks(settings, store, now_ts=now)
+            payload["processor"]["quarantined_batches"] = 0
+            payload["processor"]["quarantined_symbols"] = 0
+            processing_failures = {}
+            for metric in (
+                "evaluation_errors",
+                "event_sink_failures",
+                "event_sink_rejections",
+            ):
+                payload["service"][metric] = 1
+                store.save(
+                    settings.altcoin_contract_anomaly_production_status_path,
+                    payload,
+                )
+                os.utime(
+                    settings.altcoin_contract_anomaly_production_status_path,
+                    (now - 10, now - 10),
+                )
+                processing_failures[metric] = runtime_health_checks(
+                    settings,
+                    store,
+                    now_ts=now,
+                )
+                payload["service"][metric] = 0
+            payload["manifest"]["age_sec"] = 3_000
+            payload["telegram"]["route_configured"] = False
+            store.save(settings.altcoin_contract_anomaly_production_status_path, payload)
+            os.utime(
+                settings.altcoin_contract_anomaly_production_status_path,
+                (now - 10, now - 10),
+            )
+            blocked = runtime_health_checks(settings, store, now_ts=now)
+
+        ready_item = next(
+            item
+            for item in ready
+            if item["name"] == "altcoin_contract_anomaly_production"
+        )
+        blocked_item = next(
+            item
+            for item in blocked
+            if item["name"] == "altcoin_contract_anomaly_production"
+        )
+        quarantined_item = next(
+            item
+            for item in quarantined
+            if item["name"] == "altcoin_contract_anomaly_production"
+        )
+        self.assertEqual(ready_item["status"], "ok")
+        self.assertEqual(quarantined_item["status"], "fail")
+        self.assertEqual(
+            quarantined_item["metrics"]["quarantined_symbols"],
+            1,
+        )
+        self.assertEqual(
+            quarantined_item["metrics"]["quarantined_batches"],
+            1,
+        )
+        for metric, checks in processing_failures.items():
+            item = next(
+                check
+                for check in checks
+                if check["name"] == "altcoin_contract_anomaly_production"
+            )
+            self.assertEqual(item["status"], "fail")
+            self.assertEqual(item["metrics"][metric], 1)
+        self.assertEqual(blocked_item["status"], "fail")
+
+        self.assertTrue(ready_item["metrics"]["candidate_data_ready"])
+
+    def test_altcoin_preview_wal_admission_failure_blocks_readiness(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                altcoin_contract_anomaly_production_enable=True,
+                # Preview mode still needs a durable production WAL.  Real
+                # Telegram being disabled must not hide an admission failure.
+                altcoin_contract_anomaly_production_send_enable=False,
+                altcoin_contract_anomaly_production_status_path=(
+                    root / "altcoin-production-status.json"
+                ),
+            )
+            store = JsonStore(root)
+            payload = {
+                "module": "altcoin_contract_anomaly",
+                "mode": "production",
+                "status": "running",
+                "running": True,
+                "process_lock_acquired": True,
+                "manifest": {
+                    "valid": True,
+                    "age_sec": 30,
+                    "candidate_count": 0,
+                },
+                "service": {
+                    "connection_state": "connected",
+                    "candidate_coverage_complete": True,
+                    "force_order_active": True,
+                    "accepted_events": 1,
+                    "event_sink_ready": True,
+                    "evaluation_errors": 1,
+                    "event_sink_failures": 1,
+                    "event_sink_rejections": 1,
+                },
+                "refresh": {"successes": 1, "running": True},
+                "processor": {
+                    "running": True,
+                    "stop_timed_out": False,
+                    "pending_batches": 0,
+                    "queue_rejections": 1,
+                    "quarantined_batches": 0,
+                    "quarantined_symbols": 0,
+                    "last_error_class": "",
+                },
+                "telegram": {
+                    "route_configured": False,
+                    "real_send_enabled": False,
+                },
+            }
+            store.save(settings.altcoin_contract_anomaly_production_status_path, payload)
+            os.utime(
+                settings.altcoin_contract_anomaly_production_status_path,
+                (now - 10, now - 10),
+            )
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        item = next(
+            check
+            for check in checks
+            if check["name"] == "altcoin_contract_anomaly_production"
+        )
+        self.assertEqual(item["status"], "fail")
+        self.assertEqual(item["metrics"]["evaluation_errors"], 1)
+        self.assertEqual(item["metrics"]["event_sink_failures"], 1)
+        self.assertEqual(item["metrics"]["event_sink_rejections"], 1)
+        self.assertEqual(item["metrics"]["queue_rejections"], 1)
+        self.assertFalse(item["metrics"]["real_send_enabled"])
+
+    def test_altcoin_production_health_rejects_incomplete_candidate_features(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                altcoin_contract_anomaly_production_enable=True,
+                altcoin_contract_anomaly_production_status_path=(
+                    root / "altcoin-production-status.json"
+                ),
+            )
+            store = JsonStore(root)
+            payload = {
+                "module": "altcoin_contract_anomaly",
+                "mode": "production",
+                "status": "running",
+                "running": True,
+                "process_lock_acquired": True,
+                "manifest": {
+                    "valid": True,
+                    "age_sec": 30,
+                    "candidate_count": 2,
+                },
+                "service": {
+                    "connection_state": "connected",
+                    "candidate_coverage_complete": True,
+                    "force_order_active": True,
+                    "accepted_events": 10,
+                    "event_sink_ready": True,
+                    "mark_price_data_coverage_ratio": 1.0,
+                    "aligned_evaluation_rounds": 1,
+                    "last_evaluation_candidate_count": 2,
+                    "last_evaluation_complete_count": 1,
+                    "last_evaluation_epoch_complete_count": 2,
+                    "last_evaluation_funding_complete_count": 2,
+                },
+                "refresh": {"successes": 1, "running": True},
+                "processor": {
+                    "running": True,
+                    "stop_timed_out": False,
+                    "pending_batches": 0,
+                    "last_error_class": "",
+                },
+                "telegram": {
+                    "route_configured": False,
+                    "real_send_enabled": False,
+                },
+            }
+            store.save(settings.altcoin_contract_anomaly_production_status_path, payload)
+            os.utime(
+                settings.altcoin_contract_anomaly_production_status_path,
+                (now - 10, now - 10),
+            )
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        item = next(
+            check
+            for check in checks
+            if check["name"] == "altcoin_contract_anomaly_production"
+        )
+        self.assertEqual(item["status"], "fail")
+        self.assertFalse(item["metrics"]["candidate_data_ready"])
+        self.assertEqual(item["metrics"]["complete_candidate_count"], 1)
+
+    def test_altcoin_production_health_rejects_disconnected_zero_candidate_stream(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                altcoin_contract_anomaly_production_enable=True,
+                altcoin_contract_anomaly_production_status_path=(
+                    root / "altcoin-production-status.json"
+                ),
+            )
+            store = JsonStore(root)
+            payload = {
+                "module": "altcoin_contract_anomaly",
+                "mode": "production",
+                "status": "running",
+                "running": True,
+                "process_lock_acquired": True,
+                "manifest": {
+                    "valid": True,
+                    "age_sec": 30,
+                    "candidate_count": 0,
+                },
+                "service": {
+                    "connection_state": "disconnected",
+                    "candidate_coverage_complete": False,
+                    "force_order_active": False,
+                    "accepted_events": 0,
+                    "event_sink_ready": True,
+                },
+                "refresh": {"successes": 1, "running": True},
+                "processor": {
+                    "running": True,
+                    "stop_timed_out": False,
+                    "pending_batches": 0,
+                    "last_error_class": "",
+                },
+                "telegram": {
+                    "route_configured": False,
+                    "real_send_enabled": False,
+                },
+            }
+            store.save(settings.altcoin_contract_anomaly_production_status_path, payload)
+            os.utime(
+                settings.altcoin_contract_anomaly_production_status_path,
+                (now - 10, now - 10),
+            )
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        item = next(
+            check
+            for check in checks
+            if check["name"] == "altcoin_contract_anomaly_production"
+        )
+        self.assertEqual(item["status"], "fail")
+        self.assertTrue(item["metrics"]["process_lock_acquired"])
+        self.assertEqual(item["metrics"]["connection_state"], "disconnected")
+        self.assertFalse(item["metrics"]["force_order_active"])
+        self.assertEqual(item["metrics"]["accepted_events"], 0)
 
 
 if __name__ == "__main__":

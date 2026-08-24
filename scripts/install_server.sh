@@ -70,52 +70,13 @@ run_checks() {
 
 validate_bot_config() {
   set +e
-  "${APP_DIR}/.venv/bin/python" main.py stable-check --no-save
+  "${APP_DIR}/.venv/bin/python" scripts/validate_runtime_config.py
   local code=$?
   set -e
   if [ "$code" -ne 0 ]; then
     printf 'bot_config_validation_failed\n' >&2
     exit 2
   fi
-}
-
-write_service() {
-  local name="$1"
-  local description="$2"
-  local command="$3"
-  local memory_high="$4"
-  local memory_max="$5"
-  run_root tee "/etc/systemd/system/${name}.service" >/dev/null <<EOF
-[Unit]
-Description=${description}
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=20
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-WorkingDirectory=${APP_DIR}
-EnvironmentFile=-${ENV_FILE}
-Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py ${command}
-Restart=always
-RestartSec=10
-MemoryHigh=${memory_high}
-MemoryMax=${memory_max}
-LimitNOFILE=65536
-TasksMax=256
-TimeoutStopSec=30
-OOMPolicy=stop
-NoNewPrivileges=true
-PrivateTmp=true
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-EOF
 }
 
 install_services() {
@@ -133,7 +94,13 @@ install_services() {
     START_PRIVATE_CONTROL=0 \
     ENABLE_PRIVATE_CONTROL=0 \
     bash "${APP_DIR}/scripts/install_private_control_service.sh"
-  write_service "$MARKET_STREAM_SERVICE_NAME" "Paopao Realtime Market Stream" "market-stream" "$MARKET_STREAM_MEMORY_HIGH" "$MARKET_STREAM_MEMORY_MAX"
+  PAOPAO_APP_DIR="$APP_DIR" \
+    MARKET_STREAM_SERVICE_NAME="$MARKET_STREAM_SERVICE_NAME" \
+    SERVICE_USER="$SERVICE_USER" \
+    MARKET_STREAM_MEMORY_HIGH="$MARKET_STREAM_MEMORY_HIGH" \
+    MARKET_STREAM_MEMORY_MAX="$MARKET_STREAM_MEMORY_MAX" \
+    START_MARKET_STREAM=0 \
+    bash "${APP_DIR}/scripts/install_market_stream_service.sh"
 
   run_root tee "/etc/systemd/system/${CLEANUP_SERVICE_NAME}.service" >/dev/null <<EOF
 [Unit]

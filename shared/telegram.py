@@ -83,6 +83,7 @@ class PushResult:
     message_ids: list[int] | None = None
     delivery_id: str = ""
     diagnostics: TelegramDeliveryDiagnostics | None = None
+    signal_store_written: bool | None = None
 
 
 def utc_ts() -> int:
@@ -263,7 +264,12 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
+    "TG_ALTCOIN_CONTRACT_ANOMALY": "山寨合约异动",
 }
+
+PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS = frozenset({
+    "TG_ALTCOIN_CONTRACT_ANOMALY",
+})
 
 PRODUCTION_TOPIC_TEMPLATE_IDS = (
     "TG_RADAR_SUMMARY",
@@ -277,6 +283,7 @@ DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
     "TG_LAUNCH_ALERT": "2026-08-24-pulse-radar-v1",
+    "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
 
@@ -306,6 +313,27 @@ def intro_hash(text: str) -> str:
 
 
 def topic_intro_message(template_id: str, settings: Settings) -> str:
+    if template_id == "TG_ALTCOIN_CONTRACT_ANOMALY":
+        return "\n".join([
+            "【山寨合约异动｜说明】",
+            "",
+            "候选依据：",
+            "市值、Binance OI/市值、资金费率等基础条件，用于决定监控哪些合约。",
+            "",
+            "实时确认因子共6类：",
+            "1. 价格动量",
+            "2. 成交量放大",
+            "3. 主动买卖与CVD",
+            "4. OI变化",
+            "5. 资金费率变化",
+            "6. 多空爆仓",
+            "",
+            "“实时确认：3项”表示当前有3类独立证据达到阈值，",
+            "不代表综合分数、成功率或涨跌概率。",
+            "",
+            "候选依据与实时确认分开展示。",
+            "所有信号均附带数据时间和完整度。",
+        ])
     if template_id == "TG_RADAR_SUMMARY":
         daily = settings.radar_summary_max_daily_push
         daily_text = "不限制" if daily < 0 else f"每天最多{daily}次"
@@ -498,6 +526,7 @@ class TelegramGateway:
         self.settings = settings
         self.store = store
         self._last_delivery_diagnostics: TelegramDeliveryDiagnostics | None = None
+        self._last_delivery_reservation_reason = ""
 
     def send(
         self,
@@ -559,7 +588,16 @@ class TelegramGateway:
         duplicate = self._recent_match(history, dedup_key, cooldown)
         if duplicate:
             result = PushResult("skipped", "dedup_cooldown", False)
-            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+            self._record(
+                history,
+                template_id,
+                dedup_key,
+                result,
+                text,
+                topic_id=topic_id,
+                reply_to_message_id=reply_to_message_id,
+                signal_records=signal_records,
+            )
             return result
 
         if daily_limit is not None and daily_limit >= 0 and self._daily_sent_count(history, template_id, now) >= daily_limit:
@@ -615,6 +653,29 @@ class TelegramGateway:
                 signal_records=signal_records,
             )
             return result
+        force_topic = template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
+        if force_topic:
+            try:
+                thread_id = int(topic_id)
+            except (TypeError, ValueError):
+                thread_id = 0
+            if thread_id <= 0:
+                result = PushResult(
+                    "blocked",
+                    "telegram_topic_not_preconfigured",
+                    False,
+                )
+                self._record(
+                    history,
+                    template_id,
+                    dedup_key,
+                    result,
+                    text,
+                    topic_id="",
+                    reply_to_message_id=reply_to_message_id,
+                    signal_records=signal_records,
+                )
+                return result
         delivery_id = self._begin_delivery(
             template_id=template_id,
             dedup_key=dedup_key,
@@ -627,7 +688,11 @@ class TelegramGateway:
             now=now,
         )
         if not delivery_id:
-            result = PushResult("skipped", "delivery_quarantine", False)
+            result = PushResult(
+                "skipped",
+                self._last_delivery_reservation_reason or "delivery_quarantine",
+                False,
+            )
             self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
             return result
         if photo is not None:
@@ -637,6 +702,7 @@ class TelegramGateway:
                 caption=text,
                 parse_mode=parse_mode,
                 topic_id=topic_id,
+                force_topic=force_topic,
                 reply_to_message_id=reply_to_message_id,
             )
         else:
@@ -645,6 +711,7 @@ class TelegramGateway:
                 text,
                 parse_mode=parse_mode,
                 topic_id=topic_id,
+                force_topic=force_topic,
                 reply_to_message_id=reply_to_message_id,
             )
         delivery_uncertain = bool(
@@ -669,13 +736,25 @@ class TelegramGateway:
             delivery_id,
             self._last_delivery_diagnostics,
         )
-        self._finish_delivery(
-            delivery_id,
-            status=outbox_status,
-            message_ids=message_ids,
-            diagnostics=result.diagnostics,
-        )
-        self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+        try:
+            self._finish_delivery(
+                delivery_id,
+                status=outbox_status,
+                message_ids=message_ids,
+                diagnostics=result.diagnostics,
+            )
+            self._record(history, template_id, dedup_key, result, text, topic_id=topic_id, reply_to_message_id=reply_to_message_id, signal_records=signal_records)
+        except Exception as exc:
+            # Telegram has already accepted these message ids.  Return them to
+            # the caller so it can roll back the new card instead of turning a
+            # local ledger failure into an untracked delivery.
+            result.signal_store_written = False
+            print(
+                "[telegram] post-delivery local persistence failed "
+                f"error={type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return result
         if template_id == "TG_FUNDING_ALERT" and signal_records:
             if result.sent:
                 for record in signal_records:
@@ -720,7 +799,7 @@ class TelegramGateway:
         now: int,
     ) -> str:
         delivery_id = uuid.uuid4().hex
-        reserved = {"ok": True}
+        reserved = {"ok": True, "reason": ""}
         retention_cutoff = now - max(1, int(self.settings.tg_outbox_retention_days)) * 86400
         quarantine_cutoff = now - max(60, int(self.settings.tg_outbox_quarantine_sec))
 
@@ -732,14 +811,34 @@ class TelegramGateway:
             for item in reversed(records):
                 if item.get("dedup_key") != dedup_key:
                     continue
-                if item.get("status") == "uncertain":
+                status = str(item.get("status") or "")
+                if (
+                    template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
+                    and status == "sent"
+                ):
                     reserved["ok"] = False
+                    reserved["reason"] = "dedup_cooldown"
+                    return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
+                if status == "uncertain":
+                    reserved["ok"] = False
+                    reserved["reason"] = "delivery_quarantine"
+                    return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
+                if (
+                    template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
+                    and status in {"pending", "partial"}
+                ):
+                    # After a crash the provider side effect is unknowable.
+                    # Keep the production delivery pending for manual recovery
+                    # instead of ever risking a duplicate fixed-topic message.
+                    reserved["ok"] = False
+                    reserved["reason"] = "delivery_quarantine"
                     return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
                 updated_at = int(item.get("updated_at", item.get("ts", 0)) or 0)
                 if updated_at < quarantine_cutoff:
                     break
-                if item.get("status") in {"pending", "partial", "sent"}:
+                if status in {"pending", "partial", "sent"}:
                     reserved["ok"] = False
+                    reserved["reason"] = "delivery_quarantine"
                     return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
             records.append({
                 "delivery_id": delivery_id,
@@ -756,6 +855,7 @@ class TelegramGateway:
             return records[-MAX_TELEGRAM_HISTORY_ITEMS:]
 
         self.store.update(self.settings.tg_outbox_path, reserve, [])
+        self._last_delivery_reservation_reason = str(reserved.get("reason") or "")
         return delivery_id if reserved["ok"] else ""
 
     def _finish_delivery(
@@ -788,6 +888,7 @@ class TelegramGateway:
         text: str,
         parse_mode: str,
         topic_id: str = "",
+        force_topic: bool = False,
         reply_to_message_id: int | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendMessage"
@@ -821,12 +922,22 @@ class TelegramGateway:
                 payload["reply_to_message_id"] = reply_id
                 payload["allow_sending_without_reply"] = True
             if topic_id and (
-                self.settings.tg_use_topic or str(self.settings.tg_chat_id).startswith("-100")
+                force_topic
+                or self.settings.tg_use_topic
+                or str(self.settings.tg_chat_id).startswith("-100")
             ):
                 try:
-                    payload["message_thread_id"] = int(topic_id)
+                    thread_id = int(topic_id)
                 except ValueError:
-                    pass
+                    if force_topic:
+                        diagnostics.telegram_error_class = "telegram_bad_request"
+                        return False, []
+                else:
+                    if thread_id <= 0 and force_topic:
+                        diagnostics.telegram_error_class = "telegram_bad_request"
+                        return False, []
+                    if thread_id > 0:
+                        payload["message_thread_id"] = thread_id
             sent = False
             for attempt in range(1, self.settings.tg_push_retry + 1):
                 try:
@@ -914,6 +1025,7 @@ class TelegramGateway:
         caption: str,
         parse_mode: str,
         topic_id: str = "",
+        force_topic: bool = False,
         reply_to_message_id: int | None = None,
     ) -> tuple[bool, list[int]]:
         url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/sendPhoto"
@@ -928,13 +1040,20 @@ class TelegramGateway:
             payload["reply_to_message_id"] = reply_id
             payload["allow_sending_without_reply"] = True
         if topic_id and (
-            self.settings.tg_use_topic
+            force_topic
+            or self.settings.tg_use_topic
             or str(self.settings.tg_chat_id).startswith("-100")
         ):
             try:
-                payload["message_thread_id"] = int(topic_id)
+                thread_id = int(topic_id)
             except ValueError:
-                pass
+                if force_topic:
+                    return False, []
+            else:
+                if thread_id <= 0 and force_topic:
+                    return False, []
+                if thread_id > 0:
+                    payload["message_thread_id"] = thread_id
         size_diagnostics = telegram_chunk_diagnostics(
             caption,
             max(1, len(caption) or 1),
@@ -1041,6 +1160,8 @@ class TelegramGateway:
         diagnostics.response_ok = error_class == "telegram_ok"
 
     def _topic_id_for_template(self, template_id: str) -> str:
+        if template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS:
+            return self._configured_topic_id_for_template(template_id)
         routed = (
             self._configured_topic_id_for_template(template_id)
             or self._saved_topic_id_for_template(template_id)
@@ -1062,6 +1183,11 @@ class TelegramGateway:
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
+            "TG_ALTCOIN_CONTRACT_ANOMALY": str(getattr(
+                self.settings,
+                "tg_altcoin_contract_anomaly_topic_id",
+                "",
+            ) or "").strip(),
         }
         return topic_routes.get(template_id, "")
 
@@ -1087,6 +1213,15 @@ class TelegramGateway:
             return {"status": "blocked", "reason": "missing_confirm_real_send"}
         if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
             return {"status": "blocked", "reason": "telegram_not_configured"}
+
+        if (
+            template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
+            and not self._configured_topic_id_for_template(template_id)
+        ):
+            return {
+                "status": "blocked",
+                "reason": "telegram_topic_not_preconfigured",
+            }
 
         topic_id = self._topic_id_for_template(template_id)
         topic_status = "reused"
@@ -1123,6 +1258,8 @@ class TelegramGateway:
         return str(record.get("topic_id") or "")
 
     def _create_and_save_topic(self, template_id: str) -> str:
+        if template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS:
+            return ""
         name = TOPIC_TEMPLATE_NAMES.get(template_id)
         if not name:
             return ""
@@ -1185,6 +1322,11 @@ class TelegramGateway:
         *,
         require_pin: bool = False,
     ) -> bool:
+        if (
+            template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
+            and topic_id != self._configured_topic_id_for_template(template_id)
+        ):
+            return False
         intro = topic_intro_message(template_id, self.settings)
         if not intro:
             return False
@@ -1219,7 +1361,12 @@ class TelegramGateway:
                         return False
                 return True
             previous_message_id = message_id
-        ok, message_ids = self._send_real_message_ids(intro, parse_mode="HTML", topic_id=topic_id)
+        ok, message_ids = self._send_real_message_ids(
+            intro,
+            parse_mode="HTML",
+            topic_id=topic_id,
+            force_topic=template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS,
+        )
         if not ok or not message_ids:
             return False
         message_id = message_ids[0]
@@ -1629,7 +1776,7 @@ class TelegramGateway:
         try:
             from .signal_store import append_from_push as append_signal_store_from_push
 
-            append_signal_store_from_push(
+            written = append_signal_store_from_push(
                 self.settings,
                 template_id=template_id,
                 dedup_key=dedup_key,
@@ -1642,7 +1789,9 @@ class TelegramGateway:
                 reply_to_message_id=reply_to_message_id,
                 structured_records=signal_records,
             )
+            result.signal_store_written = written > 0
         except Exception as exc:
+            result.signal_store_written = False
             print(f"[telegram] signal store write failed {type(exc).__name__}: {exc}", file=sys.stderr)
 
     @staticmethod

@@ -159,6 +159,190 @@ def _realtime_check(settings: Settings, now: int) -> dict[str, Any]:
     )
 
 
+def _altcoin_production_check(
+    settings: Settings,
+    store: JsonStore,
+    now: int,
+) -> dict[str, Any]:
+    path = settings.altcoin_contract_anomaly_production_status_path
+    if not path.exists():
+        return _check(
+            "altcoin_contract_anomaly_production",
+            "fail",
+            "山寨合约异动生产状态尚未生成",
+        )
+    try:
+        modified_at = int(path.stat().st_mtime)
+    except OSError as exc:
+        return _check(
+            "altcoin_contract_anomaly_production",
+            "fail",
+            f"山寨合约异动生产状态无法读取：{type(exc).__name__}",
+        )
+    payload = store.load(path, {})
+    age = max(0, now - modified_at)
+    status_max_age = max(
+        60,
+        int(settings.altcoin_contract_anomaly_production_status_interval_sec) * 3,
+    )
+    if not isinstance(payload, dict):
+        return _check(
+            "altcoin_contract_anomaly_production",
+            "fail",
+            "山寨合约异动生产状态格式无效",
+            age_sec=age,
+        )
+    if age > status_max_age:
+        return _check(
+            "altcoin_contract_anomaly_production",
+            "fail",
+            "山寨合约异动生产状态已过期",
+            age_sec=age,
+            max_age_sec=status_max_age,
+        )
+    if (
+        payload.get("module") != "altcoin_contract_anomaly"
+        or payload.get("mode") != "production"
+        or payload.get("running") is not True
+    ):
+        return _check(
+            "altcoin_contract_anomaly_production",
+            "fail",
+            "山寨合约异动生产控制器未处于运行状态",
+            age_sec=age,
+            state=str(payload.get("status") or "invalid")[:80],
+        )
+    manifest = payload.get("manifest")
+    service = payload.get("service")
+    refresh = payload.get("refresh")
+    processor = payload.get("processor")
+    telegram = payload.get("telegram")
+    if not all(
+        isinstance(value, dict)
+        for value in (manifest, service, refresh, processor, telegram)
+    ):
+        return _check(
+            "altcoin_contract_anomaly_production",
+            "fail",
+            "山寨合约异动生产状态缺少关键指标",
+            age_sec=age,
+        )
+    manifest_age = manifest.get("age_sec")
+    candidate_count = int(manifest.get("candidate_count") or 0)
+    manifest_ready = (
+        isinstance(manifest_age, (int, float))
+        and not isinstance(manifest_age, bool)
+        and 0 <= float(manifest_age)
+        <= int(settings.altcoin_contract_anomaly_production_manifest_max_age_sec)
+        and bool(manifest.get("valid"))
+    )
+    connected = str(service.get("connection_state") or "") == "connected"
+    force_order_ready = bool(service.get("force_order_active"))
+    market_data_ready = int(service.get("accepted_events") or 0) > 0
+    coverage_ready = bool(service.get("candidate_coverage_complete"))
+    process_lock_ready = payload.get("process_lock_acquired") is True
+    event_sink_ready = bool(service.get("event_sink_ready"))
+    if candidate_count > 0:
+        candidate_data_ready = (
+            float(service.get("mark_price_data_coverage_ratio") or 0.0) >= 1.0
+            and int(service.get("aligned_evaluation_rounds") or 0) > 0
+            and int(service.get("last_evaluation_candidate_count") or 0)
+            == candidate_count
+            and int(service.get("last_evaluation_complete_count") or 0)
+            == candidate_count
+            and int(service.get("last_evaluation_epoch_complete_count") or 0)
+            == candidate_count
+            and int(service.get("last_evaluation_funding_complete_count") or 0)
+            == candidate_count
+        )
+    else:
+        candidate_data_ready = True
+    refresh_successes = int(
+        refresh.get("refresh_successes", refresh.get("successes")) or 0
+    )
+    refresh_ready = (
+        refresh_successes > 0
+        and bool(refresh.get("running"))
+        and not bool(refresh.get("stop_timed_out"))
+    )
+    evaluation_errors = int(service.get("evaluation_errors") or 0)
+    event_sink_failures = int(service.get("event_sink_failures") or 0)
+    event_sink_rejections = int(service.get("event_sink_rejections") or 0)
+    service_processing_ready = (
+        evaluation_errors == 0
+        and event_sink_failures == 0
+        and event_sink_rejections == 0
+    )
+    quarantined_batches = int(processor.get("quarantined_batches") or 0)
+    quarantined_symbols = int(processor.get("quarantined_symbols") or 0)
+    queue_rejections = int(processor.get("queue_rejections") or 0)
+    processor_ready = (
+        bool(processor.get("running"))
+        and not bool(processor.get("stop_timed_out"))
+        and quarantined_batches == 0
+        and quarantined_symbols == 0
+        and queue_rejections == 0
+    )
+    topic_ready = bool(telegram.get("route_configured"))
+    send_enabled = bool(settings.altcoin_contract_anomaly_production_send_enable)
+    send_ready = not send_enabled or (
+        topic_ready and bool(telegram.get("real_send_enabled"))
+        and not str(processor.get("last_error_class") or "")
+    )
+    healthy = (
+        manifest_ready
+        and process_lock_ready
+        and connected
+        and force_order_ready
+        and market_data_ready
+        and coverage_ready
+        and event_sink_ready
+        and candidate_data_ready
+        and service_processing_ready
+        and refresh_ready
+        and processor_ready
+        and send_ready
+    )
+    return _check(
+        "altcoin_contract_anomaly_production",
+        "ok" if healthy else "fail",
+        "山寨合约异动生产链路正常"
+        if healthy
+        else "山寨合约异动生产链路未通过就绪门禁",
+        age_sec=age,
+        manifest_age_sec=manifest_age,
+        candidate_count=candidate_count,
+        candidate_coverage_complete=coverage_ready,
+        process_lock_acquired=process_lock_ready,
+        connection_state=str(service.get("connection_state") or "unknown")[:40],
+        force_order_active=force_order_ready,
+        accepted_events=int(service.get("accepted_events") or 0),
+        event_sink_ready=event_sink_ready,
+        evaluation_errors=evaluation_errors,
+        event_sink_failures=event_sink_failures,
+        event_sink_rejections=event_sink_rejections,
+        candidate_data_ready=candidate_data_ready,
+        mark_price_data_coverage_ratio=service.get(
+            "mark_price_data_coverage_ratio"
+        ),
+        aligned_evaluation_rounds=int(
+            service.get("aligned_evaluation_rounds") or 0
+        ),
+        complete_candidate_count=int(
+            service.get("last_evaluation_complete_count") or 0
+        ),
+        refresh_successes=refresh_successes,
+        refresh_running=bool(refresh.get("running")),
+        processor_running=bool(processor.get("running")),
+        pending_batches=int(processor.get("pending_batches") or 0),
+        quarantined_batches=quarantined_batches,
+        quarantined_symbols=quarantined_symbols,
+        queue_rejections=queue_rejections,
+        telegram_route_configured=topic_ready,
+        real_send_enabled=bool(telegram.get("real_send_enabled")),
+    )
+
+
 def _disk_check(settings: Settings) -> dict[str, Any]:
     target = settings.data_dir if settings.data_dir.exists() else settings.base_dir
     free_mb = int(shutil.disk_usage(target).free / 1024 / 1024)
@@ -354,6 +538,8 @@ def runtime_health_checks(
     upstream = runtime.get("upstream_sources") if isinstance(runtime, dict) else None
     if isinstance(upstream, dict) and upstream.get("status") == "degraded":
         checks.append(_check("upstream_sources", "warn", "上游接口最近一次观测存在降级", snapshot=upstream))
+    if settings.altcoin_contract_anomaly_production_enable:
+        checks.append(_altcoin_production_check(settings, store, now))
     return checks
 
 

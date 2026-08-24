@@ -186,6 +186,19 @@ class ConfigManager:
             )
             for key in sorted(ALLOWLIST)
         }
+        private_admin = values.get(
+            "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
+            "",
+        ).strip()
+        if private_admin:
+            try:
+                self._validate_private_control_admin_id(private_admin)
+            except ConfigManagerError:
+                status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"] = "invalid"
+            else:
+                status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"] = "configured"
+        else:
+            status["TG_PRIVATE_CONTROL_ADMIN_USER_ID"] = "not_configured"
         return status
 
     def set(self, key: str, value: str) -> dict[str, object]:
@@ -408,7 +421,7 @@ class ConfigManager:
 
     @staticmethod
     def _validate_private_control_admin_id(value: str) -> None:
-        if not re.fullmatch(r"[1-9]\d{0,18}", value):
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", value):
             raise ConfigManagerError(
                 "TG_PRIVATE_CONTROL_ADMIN_USER_ID must be a positive integer"
             )

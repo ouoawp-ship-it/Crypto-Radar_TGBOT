@@ -14,6 +14,9 @@ from shared.storage import JsonStore
 from shared.telegram import (
     DEFAULT_TOPIC_INTRO_VERSION,
     TOPIC_INTRO_VERSIONS,
+    PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS,
+    PRODUCTION_TOPIC_TEMPLATE_IDS,
+    TOPIC_TEMPLATE_NAMES,
     TelegramGateway,
     intro_hash,
     plain_fallback,
@@ -24,6 +27,25 @@ from shared.telegram import (
 
 
 CST = timezone(timedelta(hours=8))
+
+
+class FakeTelegramResponse:
+    status_code = 200
+
+    def __init__(self, message_id: int):
+        self._message_id = message_id
+
+    def json(self) -> dict[str, object]:
+        return {"ok": True, "result": {"message_id": self._message_id}}
+
+
+class FakeTelegramSession:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def post(self, url: str, **kwargs: object) -> FakeTelegramResponse:
+        self.calls.append({"url": url, **kwargs})
+        return FakeTelegramResponse(700 + len(self.calls))
 
 
 class TelegramGatewayTests(unittest.TestCase):
@@ -143,6 +165,7 @@ class TelegramGatewayTests(unittest.TestCase):
             history = JsonStore(Path(tmp)).load(history_path, [])
 
         self.assertEqual(result.status, "dry_run")
+        self.assertFalse(result.signal_store_written)
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["dedup_key"], "launch:store-failure")
 
@@ -377,6 +400,308 @@ class TelegramGatewayTests(unittest.TestCase):
                 "missing_confirm_real_send",
             )
             create_mock.assert_not_called()
+
+    def test_altcoin_anomaly_topic_is_preconfigured_only_and_isolated(self) -> None:
+        with TemporaryDirectory() as tmp:
+            route_path = Path(tmp) / "topic_routes.json"
+            store = JsonStore(Path(tmp))
+            store.save(route_path, {
+                "routes": {
+                    "TG_ALTCOIN_CONTRACT_ANOMALY": {
+                        "name": "山寨合约异动",
+                        "topic_id": "88",
+                    },
+                    "TG_RADAR_SUMMARY": {
+                        "name": "资金摘要",
+                        "topic_id": "42",
+                    },
+                }
+            })
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_push_history_path=Path(tmp) / "push_history.json",
+                tg_topic_routes_path=route_path,
+                tg_topic_id="10",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_default_cooldown_sec=0,
+                tg_altcoin_contract_anomaly_topic_id="",
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(gateway, "_create_forum_topic") as create_mock,
+                patch.object(gateway, "_ensure_topic_intro") as intro_mock,
+                patch.object(gateway, "_send_real_message_ids") as send_mock,
+            ):
+                setup = gateway.setup_topic(
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    send=True,
+                    confirm_real_send=True,
+                )
+                send = gateway.send(
+                    "test",
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    "altcoin:missing-topic",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+                blocked_create = gateway._create_and_save_topic(
+                    "TG_ALTCOIN_CONTRACT_ANOMALY"
+                )
+
+            self.assertEqual(
+                TOPIC_TEMPLATE_NAMES["TG_ALTCOIN_CONTRACT_ANOMALY"],
+                "山寨合约异动",
+            )
+            self.assertIn(
+                "TG_ALTCOIN_CONTRACT_ANOMALY",
+                PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS,
+            )
+            self.assertNotIn(
+                "TG_ALTCOIN_CONTRACT_ANOMALY",
+                PRODUCTION_TOPIC_TEMPLATE_IDS,
+            )
+            self.assertEqual(setup, {
+                "status": "blocked",
+                "reason": "telegram_topic_not_preconfigured",
+            })
+            self.assertEqual(send.status, "blocked")
+            self.assertEqual(send.reason, "telegram_topic_not_configured")
+            self.assertEqual(gateway._topic_id_for_template("TG_ALTCOIN_CONTRACT_ANOMALY"), "")
+            self.assertEqual(gateway._topic_id_for_template("TG_RADAR_SUMMARY"), "42")
+            self.assertEqual(blocked_create, "")
+            create_mock.assert_not_called()
+            intro_mock.assert_not_called()
+            send_mock.assert_not_called()
+
+    def test_altcoin_anomaly_explicit_topic_can_publish_and_pin_intro(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_altcoin_contract_anomaly_topic_id="77",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with (
+                patch.object(gateway, "_create_forum_topic") as create_mock,
+                patch.object(
+                    gateway,
+                    "_ensure_topic_intro",
+                    return_value=True,
+                ) as intro_mock,
+            ):
+                result = gateway.setup_topic(
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["topic"], "reused")
+            self.assertTrue(result["pinned"])
+            create_mock.assert_not_called()
+            intro_mock.assert_called_once_with(
+                "TG_ALTCOIN_CONTRACT_ANOMALY",
+                "77",
+                require_pin=True,
+            )
+
+    def test_altcoin_anomaly_real_send_always_includes_preconfigured_thread(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-12345",
+                tg_use_topic=False,
+                tg_altcoin_contract_anomaly_topic_id="77",
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+
+            with patch(
+                "shared.telegram.requests.post",
+                side_effect=session.post,
+            ):
+                result = gateway.send(
+                    "test",
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    "altcoin:forced-thread",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertTrue(result.sent)
+            self.assertEqual(session.calls[0]["json"]["message_thread_id"], 77)
+
+    def test_altcoin_anomaly_invalid_preconfigured_topic_blocks_before_network(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_altcoin_contract_anomaly_topic_id="not-a-topic",
+                tg_default_cooldown_sec=0,
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with patch("shared.telegram.requests.post") as post_mock:
+                result = gateway.send(
+                    "test",
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    "altcoin:bad-thread",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(result.reason, "telegram_topic_not_preconfigured")
+            post_mock.assert_not_called()
+
+    def test_altcoin_anomaly_sent_outbox_is_permanent_dedup_within_retention(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = JsonStore(root)
+            settings = Settings(
+                data_dir=root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_altcoin_contract_anomaly_topic_id="77",
+                tg_default_cooldown_sec=0,
+                tg_outbox_quarantine_sec=60,
+            )
+            old_ts = utc_ts() - 3_600
+            store.save(settings.tg_outbox_path, [{
+                "delivery_id": "already-sent",
+                "ts": old_ts,
+                "updated_at": old_ts,
+                "template_id": "TG_ALTCOIN_CONTRACT_ANOMALY",
+                "dedup_key": "altcoin:permanent-sent",
+                "topic_id": "77",
+                "status": "sent",
+                "message_ids": [123],
+            }])
+            gateway = TelegramGateway(settings, store)
+
+            with patch.object(gateway, "_send_real_message_ids") as post_mock:
+                result = gateway.send(
+                    "same signal",
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    "altcoin:permanent-sent",
+                    send=True,
+                    confirm_real_send=True,
+                    cooldown_sec=0,
+                    parse_mode="HTML",
+                )
+
+            self.assertEqual(result.status, "skipped")
+            self.assertEqual(result.reason, "dedup_cooldown")
+            post_mock.assert_not_called()
+
+    def test_altcoin_anomaly_unknown_provider_effect_never_exits_quarantine(self) -> None:
+        for status in ("pending", "uncertain"):
+            with self.subTest(status=status), TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                store = JsonStore(root)
+                settings = Settings(
+                    data_dir=root,
+                    tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    tg_chat_id="-1001234567890",
+                    tg_altcoin_contract_anomaly_topic_id="77",
+                    tg_default_cooldown_sec=0,
+                    tg_outbox_quarantine_sec=60,
+                )
+                old_ts = utc_ts() - 3_600
+                store.save(settings.tg_outbox_path, [{
+                    "delivery_id": f"unknown-{status}",
+                    "ts": old_ts,
+                    "updated_at": old_ts,
+                    "template_id": "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    "dedup_key": f"altcoin:unknown-{status}",
+                    "topic_id": "77",
+                    "status": status,
+                }])
+                gateway = TelegramGateway(settings, store)
+
+                with patch.object(gateway, "_send_real_message_ids") as post_mock:
+                    result = gateway.send(
+                        "same signal",
+                        "TG_ALTCOIN_CONTRACT_ANOMALY",
+                        f"altcoin:unknown-{status}",
+                        send=True,
+                        confirm_real_send=True,
+                        cooldown_sec=0,
+                        parse_mode="HTML",
+                    )
+
+                self.assertEqual(result.status, "skipped")
+                self.assertEqual(result.reason, "delivery_quarantine")
+                self.assertEqual(
+                    store.load(settings.tg_outbox_path, [])[0]["status"],
+                    status,
+                )
+                post_mock.assert_not_called()
+
+    def test_altcoin_anomaly_topic_intro_and_pin_failure_are_explicit(self) -> None:
+        settings = Settings()
+        intro = topic_intro_message("TG_ALTCOIN_CONTRACT_ANOMALY", settings)
+
+        self.assertIn("【山寨合约异动｜说明】", intro)
+        self.assertIn("实时确认因子共6类", intro)
+        for label in (
+            "价格动量",
+            "成交量放大",
+            "主动买卖与CVD",
+            "OI变化",
+            "资金费率变化",
+            "多空爆仓",
+        ):
+            self.assertIn(label, intro)
+        self.assertIn("不代表综合分数、成功率或涨跌概率", intro)
+        self.assertIn("候选依据与实时确认分开展示", intro)
+
+        with TemporaryDirectory() as tmp:
+            configured = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_altcoin_contract_anomaly_topic_id="77",
+            )
+            gateway = TelegramGateway(configured, JsonStore(Path(tmp)))
+            with (
+                patch.object(gateway, "_send_real_message_ids") as send_mock,
+                patch.object(gateway, "_pin_message") as pin_mock,
+            ):
+                self.assertFalse(gateway._ensure_topic_intro(
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    "88",
+                    require_pin=True,
+                ))
+            send_mock.assert_not_called()
+            pin_mock.assert_not_called()
+            with patch.object(
+                gateway,
+                "_ensure_topic_intro",
+                return_value=False,
+            ):
+                result = gateway.setup_topic(
+                    "TG_ALTCOIN_CONTRACT_ANOMALY",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "telegram_topic_intro_failed")
+        self.assertNotIn("pinned", result)
 
     def test_configured_topic_overrides_saved_route(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -724,6 +1049,7 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(request["data"]["reply_to_message_id"], 111)
             self.assertTrue(request["data"]["allow_sending_without_reply"])
             self.assertNotIn("show_caption_above_media", request["data"])
+            self.assertNotIn("reply_markup", request["data"])
             self.assertEqual(request["files"]["photo"][1], png)
             self.assertEqual(request["files"]["photo"][2], "image/png")
             self.assertEqual(list(Path(tmp).glob("*.png")), [])

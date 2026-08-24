@@ -5,11 +5,14 @@ import json
 import sqlite3
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
+
+from shared.process_lock import ProcessFileLock
 
 
 REALTIME_FEATURE_SCHEMA_VERSION = 2
@@ -74,6 +77,478 @@ def binance_stream_subscriptions(symbols: list[str], *, limit: int = 200) -> lis
             break
     result.append("!forceOrder@arr")
     return result
+
+
+def _subscription_symbol(value: Any) -> str:
+    symbol = str(value or "").strip().upper()
+    return symbol if symbol.endswith("USDT") and len(symbol) > 4 else ""
+
+
+def _subscription_stream(value: Any) -> str:
+    stream = str(value or "").strip()
+    if stream.lower() == "!forceorder@arr":
+        return "!forceOrder@arr"
+    if not stream or any(character.isspace() for character in stream) or "@" not in stream:
+        return ""
+    symbol, separator, channel = stream.partition("@")
+    if not separator or not symbol or not channel:
+        return ""
+    canonical_channels = {
+        "aggtrade": "aggTrade",
+        "markprice": "markPrice",
+    }
+    return f"{symbol.lower()}@{canonical_channels.get(channel.lower(), channel)}"
+
+
+@dataclass(frozen=True)
+class BinanceSubscriptionPlan:
+    requested_base_symbols: tuple[str, ...]
+    requested_candidate_symbols: tuple[str, ...]
+    base_symbols: tuple[str, ...]
+    candidate_symbols: tuple[str, ...]
+    union_symbols: tuple[str, ...]
+    subscriptions: tuple[str, ...]
+    omitted_base_symbols: tuple[str, ...]
+    omitted_candidate_symbols: tuple[str, ...]
+    max_streams: int
+    expected_stream_count: int
+    capacity_degraded: bool
+    candidate_capacity_degraded: bool
+
+    @property
+    def actual_stream_count(self) -> int:
+        return len(self.subscriptions)
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "requested_base_symbol_count": len(self.requested_base_symbols),
+            "requested_candidate_symbol_count": len(self.requested_candidate_symbols),
+            "base_symbol_count": len(self.base_symbols),
+            "candidate_symbol_count": len(self.candidate_symbols),
+            "union_symbol_count": len(self.union_symbols),
+            "expected_stream_count": self.expected_stream_count,
+            "actual_stream_count": self.actual_stream_count,
+            "max_streams": self.max_streams,
+            "omitted_base_symbol_count": len(self.omitted_base_symbols),
+            "omitted_candidate_symbol_count": len(self.omitted_candidate_symbols),
+            "capacity_degraded": self.capacity_degraded,
+            "candidate_capacity_degraded": self.candidate_capacity_degraded,
+        }
+
+
+def build_binance_subscription_plan(
+    base_symbols: Iterable[Any],
+    candidate_symbols: Iterable[Any],
+    *,
+    max_streams: int,
+) -> BinanceSubscriptionPlan:
+    """Build one deterministic Binance stream plan with candidate-first capacity."""
+
+    requested_base: list[str] = []
+    seen_base: set[str] = set()
+    for value in base_symbols:
+        symbol = _subscription_symbol(value)
+        if symbol and symbol not in seen_base:
+            seen_base.add(symbol)
+            requested_base.append(symbol)
+
+    requested_candidates = sorted({
+        symbol
+        for value in candidate_symbols
+        if (symbol := _subscription_symbol(value))
+    })
+    requested_candidate_set = set(requested_candidates)
+    safe_max_streams = max(1, int(max_streams or 1))
+    remaining = safe_max_streams - 1  # The all-market liquidation stream is mandatory.
+
+    selected_candidates: list[str] = []
+    omitted_candidates: list[str] = []
+    for symbol in requested_candidates:
+        if remaining >= 2:
+            selected_candidates.append(symbol)
+            remaining -= 2
+        else:
+            omitted_candidates.append(symbol)
+
+    selected_base_only: list[str] = []
+    omitted_base: list[str] = []
+    for symbol in requested_base:
+        if symbol in selected_candidates:
+            continue
+        if remaining >= 1:
+            selected_base_only.append(symbol)
+            remaining -= 1
+        else:
+            omitted_base.append(symbol)
+
+    selected_union = sorted(set(selected_candidates) | set(selected_base_only))
+    selected_base = tuple(
+        symbol for symbol in requested_base if symbol in set(selected_union)
+    )
+    agg_trade_streams = [f"{symbol.lower()}@aggTrade" for symbol in selected_union]
+    mark_price_streams = [f"{symbol.lower()}@markPrice" for symbol in selected_candidates]
+    subscriptions = tuple(agg_trade_streams + mark_price_streams + ["!forceOrder@arr"])
+    expected_stream_count = (
+        1
+        + len(set(requested_base) | requested_candidate_set)
+        + len(requested_candidates)
+    )
+    capacity_degraded = len(subscriptions) < expected_stream_count
+    return BinanceSubscriptionPlan(
+        requested_base_symbols=tuple(requested_base),
+        requested_candidate_symbols=tuple(requested_candidates),
+        base_symbols=selected_base,
+        candidate_symbols=tuple(selected_candidates),
+        union_symbols=tuple(selected_union),
+        subscriptions=subscriptions,
+        omitted_base_symbols=tuple(omitted_base),
+        omitted_candidate_symbols=tuple(omitted_candidates),
+        max_streams=safe_max_streams,
+        expected_stream_count=expected_stream_count,
+        capacity_degraded=capacity_degraded,
+        candidate_capacity_degraded=bool(omitted_candidates),
+    )
+
+
+@dataclass(frozen=True)
+class SubscriptionCommand:
+    request_id: int
+    method: str
+    streams: tuple[str, ...]
+    generation: int
+    sent_monotonic: float
+
+    def payload(self) -> dict[str, Any]:
+        return {"method": self.method, "params": list(self.streams), "id": self.request_id}
+
+
+@dataclass(frozen=True)
+class SubscriptionAck:
+    request_id: int | None
+    status: str
+    method: str = ""
+    streams: tuple[str, ...] = ()
+    error: str = ""
+    generation: int = 0
+
+
+class SubscriptionLedger:
+    """Thread-safe desired/active subscription state driven by Binance ACKs."""
+
+    def __init__(
+        self,
+        *,
+        batch_size: int = 50,
+        min_interval_sec: float = 0.25,
+        ack_timeout_sec: float = 10.0,
+        protected_streams: Iterable[str] = ("!forceOrder@arr",),
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        self.batch_size = max(1, int(batch_size or 1))
+        self.min_interval_sec = max(0.0, float(min_interval_sec or 0.0))
+        self.ack_timeout_sec = max(0.001, float(ack_timeout_sec or 0.001))
+        self._clock = monotonic or time.monotonic
+        self._protected = frozenset(
+            stream for value in protected_streams if (stream := _subscription_stream(value))
+        )
+        self._desired: set[str] = set(self._protected)
+        self._active: set[str] = set()
+        self._stale_actual: set[str] = set()
+        self._pending: dict[int, SubscriptionCommand] = {}
+        self._completed_ids: set[int] = set()
+        self._completed_order: deque[int] = deque()
+        self._next_request_id = 1
+        self._generation = 0
+        self._last_command_monotonic: float | None = None
+        self._subscribe_success = 0
+        self._subscribe_failure = 0
+        self._unsubscribe_success = 0
+        self._unsubscribe_failure = 0
+        self._ack_timeouts = 0
+        self._duplicate_acks = 0
+        self._unknown_acks = 0
+        self._invalid_acks = 0
+        self._stale_acks = 0
+        self._lock = threading.RLock()
+
+    @property
+    def desired_subscriptions(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._desired)
+
+    @property
+    def active_subscriptions(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._active)
+
+    @property
+    def pending_subscribe(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(
+                stream
+                for command in self._pending.values()
+                if command.method == "SUBSCRIBE"
+                for stream in command.streams
+            )
+
+    @property
+    def pending_unsubscribe(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(
+                stream
+                for command in self._pending.values()
+                if command.method == "UNSUBSCRIBE"
+                for stream in command.streams
+            )
+
+    @property
+    def pending_requests(self) -> dict[int, SubscriptionCommand]:
+        with self._lock:
+            return dict(self._pending)
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def set_desired(self, streams: Iterable[Any]) -> dict[str, Any]:
+        normalized = {
+            stream for value in streams if (stream := _subscription_stream(value))
+        } | set(self._protected)
+        with self._lock:
+            previous = set(self._desired)
+            self._desired = normalized
+            changed = previous != normalized
+            if changed:
+                self._generation += 1
+            return {
+                "changed": changed,
+                "added": sorted(normalized - previous),
+                "removed": sorted(previous - normalized),
+                "desired": sorted(normalized),
+                "generation": self._generation,
+            }
+
+    def reset_connection(self) -> int:
+        with self._lock:
+            for request_id in tuple(self._pending):
+                self._remember_completed(request_id)
+            self._active.clear()
+            self._stale_actual.clear()
+            self._pending.clear()
+            self._generation += 1
+            self._last_command_monotonic = None
+            return self._generation
+
+    def invalidate_active(self, streams: Iterable[Any]) -> tuple[str, ...]:
+        """Require a fresh ACK for streams whose candidate epoch was retired."""
+
+        normalized = {
+            stream for value in streams if (stream := _subscription_stream(value))
+        }
+        with self._lock:
+            invalidated = tuple(sorted(self._active & normalized))
+            self._active.difference_update(invalidated)
+            self._stale_actual.update(invalidated)
+            return invalidated
+
+    def next_command(self, *, now_monotonic: float | None = None) -> SubscriptionCommand | None:
+        now = self._clock() if now_monotonic is None else float(now_monotonic)
+        with self._lock:
+            if (
+                self._last_command_monotonic is not None
+                and now - self._last_command_monotonic < self.min_interval_sec
+            ):
+                return None
+            pending_subscribe = {
+                stream
+                for command in self._pending.values()
+                if command.method == "SUBSCRIBE"
+                for stream in command.streams
+            }
+            pending_unsubscribe = {
+                stream
+                for command in self._pending.values()
+                if command.method == "UNSUBSCRIBE"
+                for stream in command.streams
+            }
+            unsubscribe = sorted(
+                (self._active | self._stale_actual)
+                - self._desired
+                - pending_unsubscribe
+                - set(self._protected)
+            )
+            if unsubscribe:
+                method = "UNSUBSCRIBE"
+                selected = tuple(unsubscribe[: self.batch_size])
+            else:
+                subscribe = sorted(
+                    self._desired - self._active - pending_subscribe
+                )
+                if not subscribe:
+                    return None
+                method = "SUBSCRIBE"
+                selected = tuple(subscribe[: self.batch_size])
+            request_id = self._next_request_id
+            self._next_request_id += 1
+            command = SubscriptionCommand(
+                request_id=request_id,
+                method=method,
+                streams=selected,
+                generation=self._generation,
+                sent_monotonic=now,
+            )
+            self._pending[request_id] = command
+            self._last_command_monotonic = now
+            return command
+
+    def handle_ack(self, payload: Mapping[str, Any]) -> SubscriptionAck:
+        raw_request_id = payload.get("id") if isinstance(payload, Mapping) else None
+        if (
+            isinstance(raw_request_id, bool)
+            or not isinstance(raw_request_id, int)
+            or raw_request_id <= 0
+        ):
+            with self._lock:
+                self._invalid_acks += 1
+            return SubscriptionAck(None, "invalid")
+        request_id = int(raw_request_id)
+        with self._lock:
+            if request_id in self._completed_ids:
+                self._duplicate_acks += 1
+                return SubscriptionAck(request_id, "duplicate")
+            command = self._pending.pop(request_id, None)
+            if command is None:
+                self._unknown_acks += 1
+                return SubscriptionAck(request_id, "unknown")
+            success = (
+                "result" in payload
+                and payload.get("result") is None
+                and "code" not in payload
+            )
+            if success:
+                stale_generation = command.generation != self._generation
+                if stale_generation:
+                    if command.method == "SUBSCRIBE":
+                        self._stale_actual.update(command.streams)
+                    else:
+                        self._stale_actual.difference_update(command.streams)
+                        self._active.difference_update(command.streams)
+                        self._active.update(self._protected & set(command.streams))
+                    self._stale_acks += 1
+                    status = "stale"
+                elif command.method == "SUBSCRIBE":
+                    self._active.update(command.streams)
+                    self._stale_actual.difference_update(command.streams)
+                    self._subscribe_success += 1
+                    status = "success"
+                else:
+                    self._active.difference_update(command.streams)
+                    self._stale_actual.difference_update(command.streams)
+                    self._active.update(self._protected & set(command.streams))
+                    self._unsubscribe_success += 1
+                    status = "success"
+                error = ""
+            else:
+                if command.method == "SUBSCRIBE":
+                    self._subscribe_failure += 1
+                else:
+                    self._unsubscribe_failure += 1
+                status = "failure"
+                code = payload.get("code")
+                message = str(payload.get("msg") or "subscription command rejected")
+                error = f"{code}:{message}"[:300] if code is not None else message[:300]
+            self._remember_completed(request_id)
+            return SubscriptionAck(
+                request_id,
+                status,
+                method=command.method,
+                streams=command.streams,
+                error=error,
+                generation=command.generation,
+            )
+
+    def mark_send_failed(self, request_id: int, error: Any = "send_failed") -> SubscriptionAck:
+        with self._lock:
+            command = self._pending.pop(int(request_id), None)
+            if command is None:
+                return SubscriptionAck(int(request_id), "unknown")
+            if command.method == "SUBSCRIBE":
+                self._subscribe_failure += 1
+            else:
+                self._unsubscribe_failure += 1
+            self._remember_completed(command.request_id)
+            return SubscriptionAck(
+                command.request_id,
+                "failure",
+                method=command.method,
+                streams=command.streams,
+                error=f"{type(error).__name__}: {error}"[:300],
+                generation=command.generation,
+            )
+
+    def expire_timeouts(
+        self,
+        *,
+        now_monotonic: float | None = None,
+    ) -> list[SubscriptionCommand]:
+        now = self._clock() if now_monotonic is None else float(now_monotonic)
+        with self._lock:
+            expired = [
+                command
+                for command in self._pending.values()
+                if now - command.sent_monotonic >= self.ack_timeout_sec
+            ]
+            expired.sort(key=lambda command: command.request_id)
+            for command in expired:
+                self._pending.pop(command.request_id, None)
+                self._remember_completed(command.request_id)
+                self._ack_timeouts += 1
+                if command.method == "SUBSCRIBE":
+                    self._subscribe_failure += 1
+                else:
+                    self._unsubscribe_failure += 1
+            return expired
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            pending_subscribe = sum(
+                len(command.streams)
+                for command in self._pending.values()
+                if command.method == "SUBSCRIBE"
+            )
+            pending_unsubscribe = sum(
+                len(command.streams)
+                for command in self._pending.values()
+                if command.method == "UNSUBSCRIBE"
+            )
+            return {
+                "desired_subscription_count": len(self._desired),
+                "active_subscription_count": len(self._active),
+                "stale_actual_subscription_count": len(self._stale_actual),
+                "pending_subscribe_count": pending_subscribe,
+                "pending_unsubscribe_count": pending_unsubscribe,
+                "pending_request_count": len(self._pending),
+                "subscribe_success": self._subscribe_success,
+                "subscribe_failure": self._subscribe_failure,
+                "unsubscribe_success": self._unsubscribe_success,
+                "unsubscribe_failure": self._unsubscribe_failure,
+                "ack_timeouts": self._ack_timeouts,
+                "duplicate_acks": self._duplicate_acks,
+                "unknown_acks": self._unknown_acks,
+                "invalid_acks": self._invalid_acks,
+                "stale_acks": self._stale_acks,
+                "subscription_generation": self._generation,
+            }
+
+    def _remember_completed(self, request_id: int) -> None:
+        if request_id in self._completed_ids:
+            return
+        if len(self._completed_order) >= 4096:
+            oldest = self._completed_order.popleft()
+            self._completed_ids.discard(oldest)
+        self._completed_order.append(request_id)
+        self._completed_ids.add(request_id)
 
 
 def _iso_seconds(value: int) -> str:
@@ -190,6 +665,235 @@ class MarketEvent:
     quantity: float
     notional_usd: float
     position_side: str = ""
+
+
+@dataclass(frozen=True)
+class MarkPriceUpdate:
+    symbol: str
+    mark_price: float
+    funding_rate: float
+    next_funding_time_ms: int
+    event_time_ms: int
+    exchange: str = "binance"
+    market: str = "futures"
+    source: str = "binance_ws_mark_price"
+
+
+def parse_binance_mark_price_update(payload: Any) -> MarkPriceUpdate | None:
+    source = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+    if not isinstance(source, dict) or str(source.get("e") or "") != "markPriceUpdate":
+        return None
+    symbol = _subscription_symbol(source.get("s"))
+    mark_price = _number(source.get("p"))
+    funding_rate = _number(source.get("r"))
+    event_time_ms = _timestamp_ms(source.get("E"))
+    next_funding_time_ms = _timestamp_ms(source.get("T"))
+    if (
+        not symbol
+        or mark_price is None
+        or mark_price <= 0
+        or funding_rate is None
+        or not event_time_ms
+        or not next_funding_time_ms
+    ):
+        return None
+    return MarkPriceUpdate(
+        symbol=symbol,
+        mark_price=mark_price,
+        funding_rate=funding_rate,
+        next_funding_time_ms=next_funding_time_ms,
+        event_time_ms=event_time_ms,
+    )
+
+
+class MarkPriceBook:
+    """Bounded mark/funding history with closed-window funding deltas."""
+
+    def __init__(self, *, max_history_per_symbol: int = 2_048) -> None:
+        self._latest: dict[str, MarkPriceUpdate] = {}
+        self._latest_epochs: dict[str, str] = {}
+        self._history: dict[str, deque[tuple[MarkPriceUpdate, str]]] = {}
+        self._max_history_per_symbol = max(16, int(max_history_per_symbol))
+        self._accepted_updates = 0
+        self._duplicate_updates = 0
+        self._out_of_order_updates = 0
+        self._invalid_updates = 0
+        self._lock = threading.RLock()
+
+    def update(
+        self,
+        value: MarkPriceUpdate | None,
+        *,
+        subscription_epoch: str = "",
+    ) -> bool:
+        if not self._valid(value):
+            with self._lock:
+                self._invalid_updates += 1
+            return False
+        assert value is not None
+        with self._lock:
+            previous = self._latest.get(value.symbol)
+            if previous is not None and value.event_time_ms <= previous.event_time_ms:
+                if value == previous:
+                    self._duplicate_updates += 1
+                else:
+                    self._out_of_order_updates += 1
+                return False
+            self._latest[value.symbol] = value
+            epoch = str(subscription_epoch or "")
+            self._latest_epochs[value.symbol] = epoch
+            history = self._history.setdefault(
+                value.symbol,
+                deque(maxlen=self._max_history_per_symbol),
+            )
+            history.append((value, epoch))
+            self._accepted_updates += 1
+            return True
+
+    def latest(self, symbol: str) -> MarkPriceUpdate | None:
+        normalized = _subscription_symbol(symbol)
+        with self._lock:
+            return self._latest.get(normalized)
+
+    def snapshot(self, symbol: str) -> dict[str, Any] | None:
+        normalized = _subscription_symbol(symbol)
+        with self._lock:
+            update = self._latest.get(normalized)
+            if update is None:
+                return None
+            return {
+                "symbol": update.symbol,
+                "mark_price": update.mark_price,
+                "funding_rate": update.funding_rate,
+                "next_funding_time_ms": update.next_funding_time_ms,
+                "event_time_ms": update.event_time_ms,
+                "subscription_epoch": self._latest_epochs.get(normalized, ""),
+                "exchange": update.exchange,
+                "market": update.market,
+                "source": update.source,
+            }
+
+    def snapshot_window(
+        self,
+        symbol: str,
+        *,
+        window_end_ms: int,
+        window_sec: int = 300,
+        subscription_epoch: str = "",
+        epoch_started_ms: int = 0,
+        max_gap_ms: int = 15_000,
+    ) -> dict[str, Any] | None:
+        """Return one complete, closed funding window or an explicit partial row."""
+
+        normalized = _subscription_symbol(symbol)
+        end_ms = int(window_end_ms)
+        duration_ms = max(1, int(window_sec)) * 1_000
+        start_ms = end_ms - duration_ms
+        safe_gap = max(1, int(max_gap_ms))
+        wanted_epoch = str(subscription_epoch or "")
+        with self._lock:
+            history = list(self._history.get(normalized, ()))
+        eligible = [
+            (update, epoch)
+            for update, epoch in history
+            if (not wanted_epoch or epoch == wanted_epoch)
+            and update.event_time_ms >= max(1, int(epoch_started_ms or 0))
+            and start_ms - safe_gap <= update.event_time_ms <= end_ms
+        ]
+        eligible.sort(key=lambda item: item[0].event_time_ms)
+
+        start_candidates = [item for item in eligible if item[0].event_time_ms <= start_ms]
+        if start_candidates:
+            start_item = start_candidates[-1]
+        else:
+            after_start = [item for item in eligible if item[0].event_time_ms > start_ms]
+            start_item = after_start[0] if after_start else None
+        end_candidates = [item for item in eligible if item[0].event_time_ms <= end_ms]
+        end_item = end_candidates[-1] if end_candidates else None
+
+        quality = "complete"
+        if start_item is None or end_item is None:
+            quality = "insufficient_history"
+        elif (
+            abs(start_item[0].event_time_ms - start_ms) > safe_gap
+            or end_ms - end_item[0].event_time_ms > safe_gap
+            or end_item[0].event_time_ms <= start_item[0].event_time_ms
+        ):
+            quality = "insufficient_history"
+        else:
+            sequence = [
+                item
+                for item in eligible
+                if start_item[0].event_time_ms <= item[0].event_time_ms <= end_item[0].event_time_ms
+            ]
+            if any(
+                current[0].event_time_ms - previous[0].event_time_ms > safe_gap
+                for previous, current in zip(sequence, sequence[1:])
+            ):
+                quality = "stale"
+        if quality == "complete" and safe_gap >= duration_ms:
+            quality = "stale"
+
+        endpoint = end_item[0] if end_item is not None else None
+        output: dict[str, Any] = {
+            "symbol": normalized,
+            "mark_price": endpoint.mark_price if endpoint is not None else None,
+            "funding_rate": endpoint.funding_rate if endpoint is not None else None,
+            "funding_rate_start_5m": None,
+            "funding_rate_end_5m": endpoint.funding_rate if endpoint is not None else None,
+            "funding_rate_change_5m": None,
+            "funding_rate_changed_5m": False,
+            "funding_window_start_ms": start_ms,
+            "funding_window_end_ms": end_ms,
+            "funding_window_start_event_time_ms": (
+                start_item[0].event_time_ms if start_item is not None else None
+            ),
+            "funding_window_end_event_time_ms": (
+                endpoint.event_time_ms if endpoint is not None else None
+            ),
+            "funding_window_quality": quality,
+            "next_funding_time_ms": (
+                endpoint.next_funding_time_ms if endpoint is not None else None
+            ),
+            "event_time_ms": endpoint.event_time_ms if endpoint is not None else None,
+            "subscription_epoch": wanted_epoch,
+            "exchange": endpoint.exchange if endpoint is not None else "binance",
+            "market": endpoint.market if endpoint is not None else "futures",
+            "source": endpoint.source if endpoint is not None else "binance_ws_mark_price",
+        }
+        if quality == "complete" and start_item is not None and endpoint is not None:
+            change = endpoint.funding_rate - start_item[0].funding_rate
+            output.update({
+                "funding_rate_start_5m": start_item[0].funding_rate,
+                "funding_rate_change_5m": change,
+                "funding_rate_changed_5m": change != 0,
+            })
+        return output
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "symbol_count": len(self._latest),
+                "history_entry_count": sum(len(rows) for rows in self._history.values()),
+                "accepted_updates": self._accepted_updates,
+                "duplicate_updates": self._duplicate_updates,
+                "out_of_order_updates": self._out_of_order_updates,
+                "invalid_updates": self._invalid_updates,
+            }
+
+    @staticmethod
+    def _valid(value: MarkPriceUpdate | None) -> bool:
+        return bool(
+            isinstance(value, MarkPriceUpdate)
+            and _subscription_symbol(value.symbol) == value.symbol
+            and value.mark_price > 0
+            and math.isfinite(value.mark_price)
+            and math.isfinite(value.funding_rate)
+            and value.event_time_ms > 0
+            and value.next_funding_time_ms > 0
+            and value.exchange == "binance"
+            and value.market == "futures"
+        )
 
 
 def parse_binance_market_event(payload: Any, *, market: str = "futures") -> MarketEvent | None:
@@ -708,8 +1412,24 @@ class BinanceRealtimeMarketService:
         *,
         store: RealtimeFeatureStore | None = None,
         websocket_app_factory: Any = None,
+        realtime_controller: Any = None,
+        event_sink: Any = None,
     ):
         self.settings = settings
+        p2_gate_enabled = bool(
+            getattr(settings, "altcoin_contract_anomaly_enable", False)
+            and getattr(settings, "altcoin_contract_anomaly_realtime_enable", False)
+        )
+        if realtime_controller is not None and not p2_gate_enabled:
+            raise ValueError("explicit P2 controller requires both feature gates")
+        if event_sink is not None and realtime_controller is None:
+            raise ValueError("explicit realtime event sink requires a controller")
+        if event_sink is not None and not callable(getattr(event_sink, "submit", None)):
+            raise ValueError("explicit realtime event sink requires submit(events)")
+        # P2 is deliberately an explicit bounded-session dependency.  The
+        # long-running market-stream service must stay on its legacy path even
+        # when both environment switches happen to be enabled.
+        self._p2_enabled = realtime_controller is not None
         self.store = store or RealtimeFeatureStore(settings.realtime_features_db_path)
         self.pipeline = RealtimeMarketPipeline(
             self.store,
@@ -733,6 +1453,59 @@ class BinanceRealtimeMarketService:
         self._connection_cache_until = 0.0
         self._connected = threading.Event()
         self._last_receive_mono = 0.0
+        self._p2_controller: Any = realtime_controller if self._p2_enabled else None
+        self._p2_event_sink: Any = event_sink if self._p2_enabled else None
+        self._p2_event_sink_started = False
+        self._p2_event_sink_ready = False
+        self._p2_event_sink_batches = 0
+        self._p2_event_sink_events = 0
+        self._p2_event_sink_failures = 0
+        self._p2_event_sink_rejections = 0
+        self._p2_event_sink_last_error = ""
+        self._p2_ledger: SubscriptionLedger | None = None
+        self._p2_mark_prices: MarkPriceBook | None = None
+        self._p2_plan: BinanceSubscriptionPlan | None = None
+        self._p2_base_symbols: tuple[str, ...] = ()
+        self._p2_manifest_degraded = False
+        self._p2_last_applied_manifest_hash = ""
+        self._p2_next_manifest_poll_mono = 0.0
+        self._p2_next_evaluate_mono = 0.0
+        self._p2_last_market_receive_ms = 0
+        self._p2_last_market_receive_mono = 0.0
+        self._p2_agg_trade_messages = 0
+        self._p2_force_order_messages = 0
+        self._p2_mark_price_messages = 0
+        self._p2_mark_price_rejected = 0
+        self._p2_mark_price_symbols: set[str] = set()
+        self._p2_candidate_epochs: dict[str, dict[str, Any]] = {}
+        self._p2_epoch_counter = 0
+        self._p2_session_token = f"{time.time_ns():x}"
+        self._p2_metrics_lock = threading.RLock()
+        self._p2_closed_buckets = 0
+        self._p2_evaluation_errors = 0
+        self._p2_runner_shutdown_timeouts = 0
+        if self._p2_enabled:
+            self._p2_ledger = SubscriptionLedger(
+                batch_size=int(getattr(
+                    settings,
+                    "altcoin_contract_anomaly_subscription_batch_size",
+                    50,
+                ) or 50),
+                min_interval_sec=float(getattr(
+                    settings,
+                    "altcoin_contract_anomaly_subscription_min_interval_sec",
+                    1.0,
+                ) or 0.0),
+                ack_timeout_sec=float(getattr(
+                    settings,
+                    "altcoin_contract_anomaly_subscription_ack_timeout_sec",
+                    10,
+                ) or 10),
+            )
+            candidate_book = getattr(self._p2_controller, "mark_price_book", None)
+            self._p2_mark_prices = (
+                candidate_book if isinstance(candidate_book, MarkPriceBook) else MarkPriceBook()
+            )
 
     def _factory(self) -> Any:
         if self.websocket_app_factory is not None:
@@ -768,12 +1541,342 @@ class BinanceRealtimeMarketService:
         self._connection_cache_until = now + refresh_sec
         return loaded
 
+    def _apply_p2_subscription_plan(self, base_symbols: Iterable[Any]) -> BinanceSubscriptionPlan | None:
+        if not self._p2_enabled or self._p2_ledger is None or self._p2_controller is None:
+            return None
+        self._p2_base_symbols = tuple(
+            symbol for value in base_symbols if (symbol := _subscription_symbol(value))
+        )
+        previous_candidates = set(self._p2_plan.candidate_symbols) if self._p2_plan else set()
+        plan = build_binance_subscription_plan(
+            self._p2_base_symbols,
+            tuple(getattr(self._p2_controller, "candidate_symbols", ()) or ()),
+            max_streams=int(getattr(
+                self.settings,
+                "altcoin_contract_anomaly_max_streams",
+                300,
+            ) or 300),
+        )
+        self._p2_plan = plan
+        self._p2_ledger.set_desired(plan.subscriptions)
+        current_candidates = set(plan.candidate_symbols)
+        removed = previous_candidates - current_candidates
+        with self._p2_metrics_lock:
+            for symbol in removed:
+                self._p2_candidate_epochs.pop(symbol, None)
+        reintroduced = current_candidates - previous_candidates
+        if reintroduced:
+            self._p2_ledger.invalidate_active(
+                stream
+                for symbol in reintroduced
+                for stream in (
+                    f"{symbol.lower()}@aggTrade",
+                    f"{symbol.lower()}@markPrice",
+                )
+            )
+        self._refresh_candidate_epochs(now_ms=int(time.time() * 1000))
+        return plan
+
+    def _refresh_candidate_epochs(self, *, now_ms: int) -> None:
+        if not self._p2_enabled or self._p2_ledger is None:
+            return
+        requested = set(self._p2_plan.candidate_symbols) if self._p2_plan else set()
+        active = set(self._p2_ledger.active_subscriptions)
+        force_active = "!forceOrder@arr" in active
+        with self._p2_metrics_lock:
+            for symbol in tuple(self._p2_candidate_epochs):
+                streams_ready = (
+                    f"{symbol.lower()}@aggTrade" in active
+                    and f"{symbol.lower()}@markPrice" in active
+                    and force_active
+                )
+                if symbol not in requested or not streams_ready:
+                    self._p2_candidate_epochs.pop(symbol, None)
+            if not force_active:
+                return
+            clock_skew_ms = 5_000
+            for symbol in sorted(requested):
+                if symbol in self._p2_candidate_epochs:
+                    continue
+                if not (
+                    f"{symbol.lower()}@aggTrade" in active
+                    and f"{symbol.lower()}@markPrice" in active
+                ):
+                    continue
+                self._p2_epoch_counter += 1
+                activated = max(1, int(now_ms))
+                safe_after = activated + clock_skew_ms
+                eligible_1m = ((safe_after + 59_999) // 60_000) * 60_000
+                eligible_5m = ((safe_after + 299_999) // 300_000) * 300_000
+                self._p2_candidate_epochs[symbol] = {
+                    "epoch_id": (
+                        f"{self._p2_session_token}:"
+                        f"{self._p2_ledger.generation}:{self._p2_epoch_counter}"
+                    ),
+                    "activated_at_ms": activated,
+                    "eligible_1m_bucket_start_ms": eligible_1m,
+                    "eligible_5m_boundary_ms": eligible_5m,
+                    "subscription_generation": self._p2_ledger.generation,
+                    "last_agg_trade_event_ms": 0,
+                    "last_mark_price_event_ms": 0,
+                }
+
+    def _poll_p2_manifest(
+        self,
+        *,
+        now_ts: float,
+        now_monotonic: float,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        if not self._p2_enabled or self._p2_controller is None:
+            return {"status": "disabled", "changed": False}
+        if not force and now_monotonic < self._p2_next_manifest_poll_mono:
+            return {"status": "not_due", "changed": False}
+        poll_sec = max(1, int(getattr(
+            self.settings,
+            "altcoin_contract_anomaly_manifest_poll_sec",
+            5,
+        ) or 5))
+        self._p2_next_manifest_poll_mono = now_monotonic + poll_sec
+        try:
+            result = self._p2_controller.poll_manifest(now_ts=now_ts)
+            result = dict(result) if isinstance(result, Mapping) else {
+                "status": "manifest_degraded",
+                "reason": "manifest poll returned an invalid result",
+                "changed": False,
+            }
+        except Exception as exc:
+            self._p2_manifest_degraded = True
+            self.last_error = f"manifest_poll:{type(exc).__name__}"
+            return {
+                "status": "manifest_degraded",
+                "reason": self.last_error,
+                "changed": False,
+            }
+        status = str(result.get("status") or "manifest_degraded")
+        self._p2_manifest_degraded = status not in {"valid_changed", "valid_unchanged"}
+        if not self._p2_manifest_degraded:
+            try:
+                controller_stats = self._p2_controller.stats()
+            except Exception:
+                controller_stats = {}
+            if isinstance(controller_stats, Mapping):
+                self._p2_last_applied_manifest_hash = str(
+                    controller_stats.get("manifest_hash") or ""
+                )
+        # Invalid manifests retain the controller's last valid candidates. Rebuilding
+        # the pure plan is safe because unchanged desired streams create no command.
+        self._apply_p2_subscription_plan(self._p2_base_symbols)
+        return result
+
+    def _send_next_p2_control(
+        self,
+        ws: Any,
+        *,
+        now_monotonic: float | None = None,
+    ) -> SubscriptionCommand | None:
+        if not self._p2_enabled or self._p2_ledger is None or not self._connected.is_set():
+            return None
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        expired = self._p2_ledger.expire_timeouts(now_monotonic=now)
+        if expired:
+            self.last_error = f"subscription_ack_timeout:count={len(expired)}"[:300]
+        command = self._p2_ledger.next_command(now_monotonic=now)
+        if command is None:
+            return None
+        try:
+            ws.send(json.dumps(command.payload(), separators=(",", ":")))
+        except Exception as exc:
+            self._p2_ledger.mark_send_failed(command.request_id, exc)
+            self.last_error = f"subscription_send:{type(exc).__name__}"
+            return None
+        return command
+
+    def _record_p2_market_data(
+        self,
+        event_time_ms: int,
+        *,
+        symbol: str = "",
+        event_kind: str = "",
+    ) -> None:
+        if not self._p2_enabled or event_time_ms <= self._p2_last_market_receive_ms:
+            pass
+        else:
+            self._p2_last_market_receive_ms = int(event_time_ms)
+            self._p2_last_market_receive_mono = time.monotonic()
+        normalized = _subscription_symbol(symbol)
+        if not normalized:
+            return
+        with self._p2_metrics_lock:
+            epoch = self._p2_candidate_epochs.get(normalized)
+            if not epoch or int(event_time_ms) < int(epoch["activated_at_ms"]):
+                return
+            if event_kind == "trade":
+                epoch["last_agg_trade_event_ms"] = max(
+                    int(epoch.get("last_agg_trade_event_ms") or 0),
+                    int(event_time_ms),
+                )
+            elif event_kind == "mark_price":
+                epoch["last_mark_price_event_ms"] = max(
+                    int(epoch.get("last_mark_price_event_ms") or 0),
+                    int(event_time_ms),
+                )
+
+    def _p2_subscription_status(self) -> dict[str, Any]:
+        if not self._p2_enabled or self._p2_ledger is None:
+            return {}
+        active = set(self._p2_ledger.active_subscriptions)
+        requested_candidates = tuple(sorted({
+            symbol
+            for value in (getattr(self._p2_controller, "candidate_symbols", ()) or ())
+            if (symbol := _subscription_symbol(value))
+        }))
+        active_candidates = []
+        for value in requested_candidates:
+            symbol = value
+            if (
+                f"{symbol.lower()}@aggTrade" in active
+                and f"{symbol.lower()}@markPrice" in active
+            ):
+                active_candidates.append(symbol)
+        force_active = "!forceOrder@arr" in active
+        candidate_capacity_degraded = bool(
+            self._p2_plan and self._p2_plan.candidate_capacity_degraded
+        )
+        capacity_degraded = bool(
+            self._p2_plan and self._p2_plan.capacity_degraded
+        )
+        with self._p2_metrics_lock:
+            candidate_epochs = {
+                symbol: dict(value)
+                for symbol, value in self._p2_candidate_epochs.items()
+                if symbol in requested_candidates
+            }
+        candidate_coverage_complete = (
+            self._connected.is_set()
+            and not candidate_capacity_degraded
+            and force_active
+            and set(requested_candidates).issubset(active_candidates)
+            and set(requested_candidates).issubset(candidate_epochs)
+        )
+        manifest_ready = bool(
+            getattr(self._p2_controller, "manifest_event_ready", False)
+        )
+        return {
+            "connected": self._connected.is_set(),
+            "connection_state": "connected" if self._connected.is_set() else "disconnected",
+            # Deliberately excludes ACK/PONG arrival time.
+            "last_receive_ms": self._p2_last_market_receive_ms,
+            "last_market_receive_ms": self._p2_last_market_receive_ms,
+            "active_subscriptions": sorted(active),
+            "active_candidate_symbols": sorted(active_candidates),
+            "candidate_epochs": candidate_epochs,
+            "candidate_coverage_complete": candidate_coverage_complete,
+            "force_order_active": force_active,
+            "capacity_degraded": capacity_degraded,
+            "candidate_capacity_degraded": candidate_capacity_degraded,
+            "manifest_degraded": self._p2_manifest_degraded or not manifest_ready,
+            "subscription_generation": self._p2_ledger.generation,
+        }
+
+    def _evaluate_p2(self, *, now_ts: float, now_monotonic: float) -> list[dict[str, Any]]:
+        if not self._p2_enabled or self._p2_controller is None:
+            return []
+        if now_monotonic < self._p2_next_evaluate_mono:
+            return []
+        interval = max(1, int(getattr(self.settings, "realtime_market_bucket_sec", 60) or 60))
+        self._p2_next_evaluate_mono = now_monotonic + interval
+        # Production events are committed by the controller before evaluate()
+        # returns.  Never advance that state when the durable sink failed to
+        # start, otherwise the notification could be lost permanently.
+        if self._p2_event_sink is not None and not self._p2_event_sink_ready:
+            self._p2_event_sink_rejections += 1
+            self._p2_event_sink_last_error = "evaluate:sink_not_ready"
+            self.last_error = "altcoin_event_sink:evaluate:sink_not_ready"
+            return []
+        try:
+            events = self._p2_controller.evaluate(
+                self._p2_subscription_status(),
+                now_ts=now_ts,
+            )
+            return [dict(event) for event in events if isinstance(event, Mapping)]
+        except Exception as exc:
+            self._p2_evaluation_errors += 1
+            self.last_error = f"altcoin_evaluate:{type(exc).__name__}"
+            return []
+
+    def _start_p2_event_sink(self) -> None:
+        if self._p2_event_sink is None or self._p2_event_sink_started:
+            return
+        starter = getattr(self._p2_event_sink, "start", None)
+        try:
+            if callable(starter):
+                starter()
+        except Exception as exc:
+            self._p2_event_sink_failures += 1
+            self._p2_event_sink_last_error = f"start:{type(exc).__name__}"
+            self.last_error = f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+            self._p2_event_sink_ready = False
+            return
+        self._p2_event_sink_started = True
+        self._p2_event_sink_ready = True
+
+    def _stop_p2_event_sink(self) -> None:
+        if self._p2_event_sink is None:
+            return
+        stopper = getattr(self._p2_event_sink, "stop", None)
+        try:
+            if self._p2_event_sink_started and callable(stopper):
+                stopper()
+        except Exception as exc:
+            self._p2_event_sink_failures += 1
+            self._p2_event_sink_last_error = f"stop:{type(exc).__name__}"
+            self.last_error = f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+        finally:
+            self._p2_event_sink_started = False
+            self._p2_event_sink_ready = False
+
+    def _submit_p2_events(self, events: list[dict[str, Any]]) -> None:
+        if not events or self._p2_event_sink is None or not self._p2_event_sink_ready:
+            return
+        batch = [dict(event) for event in events]
+        try:
+            # submit() must durably admit the batch without performing
+            # Telegram or any other network delivery inline.
+            accepted = self._p2_event_sink.submit(batch)
+        except Exception as exc:
+            self._p2_event_sink_failures += 1
+            self._p2_event_sink_last_error = f"submit:{type(exc).__name__}"
+            self.last_error = f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+            return
+        if accepted is False:
+            self._p2_event_sink_rejections += 1
+            self._p2_event_sink_last_error = "submit:rejected"
+            self.last_error = "altcoin_event_sink:submit:rejected"
+            return
+        self._p2_event_sink_batches += 1
+        self._p2_event_sink_events += len(batch)
+
     def _subscription_payload(self, subscriptions: list[Any]) -> dict[str, Any]:
         payload = {"method": "SUBSCRIBE", "params": subscriptions, "id": self._subscription_id}
         self._subscription_id += 1
         return payload
 
     def _handle_control(self, payload: dict[str, Any]) -> bool:
+        if self._p2_enabled and self._p2_ledger is not None:
+            if "id" not in payload or ("result" not in payload and "code" not in payload):
+                return False
+            self.control_messages += 1
+            ack = self._p2_ledger.handle_ack(payload)
+            if ack.status == "success":
+                self.subscription_acks += 1
+                self._refresh_candidate_epochs(now_ms=int(time.time() * 1000))
+            elif ack.status == "stale":
+                self.last_error = "subscription_ack:stale_generation"
+                self._refresh_candidate_epochs(now_ms=int(time.time() * 1000))
+            elif ack.status == "failure":
+                self.last_error = "subscription_ack:failure"
+            return True
         if "result" not in payload or "id" not in payload:
             return False
         self.control_messages += 1
@@ -793,6 +1896,14 @@ class BinanceRealtimeMarketService:
         self.last_open_ms = int(time.time() * 1000)
         self._last_receive_mono = time.monotonic()
         self._connected.set()
+        if self._p2_enabled and self._p2_ledger is not None:
+            self._p2_last_market_receive_ms = 0
+            self._p2_last_market_receive_mono = time.monotonic()
+            with self._p2_metrics_lock:
+                self._p2_candidate_epochs.clear()
+            self._p2_ledger.reset_connection()
+            self._send_next_p2_control(ws)
+            return
         ws.send(json.dumps(self._subscription_payload(subscriptions), separators=(",", ":")))
 
     def _on_message(self, _ws: Any, message: str | bytes) -> None:
@@ -811,20 +1922,73 @@ class BinanceRealtimeMarketService:
             return
         if self._handle_control(control):
             return
+        if self._p2_enabled and self._p2_controller is not None and self._p2_mark_prices is not None:
+            mark_price = parse_binance_mark_price_update(control)
+            if mark_price is not None:
+                self._p2_mark_price_messages += 1
+                with self._p2_metrics_lock:
+                    epoch = dict(self._p2_candidate_epochs.get(mark_price.symbol) or {})
+                if (
+                    not epoch
+                    or mark_price.event_time_ms
+                    <= int(epoch.get("last_mark_price_event_ms") or 0)
+                ):
+                    self._p2_mark_price_rejected += 1
+                    return
+                try:
+                    try:
+                        accepted = bool(self._p2_controller.handle_mark_price(
+                            mark_price,
+                            subscription_epoch=str(epoch.get("epoch_id") or ""),
+                        ))
+                    except TypeError:
+                        accepted = bool(self._p2_controller.handle_mark_price(mark_price))
+                except Exception as exc:
+                    accepted = False
+                    self.last_error = f"mark_price:{type(exc).__name__}"
+                if accepted:
+                    self._record_p2_market_data(
+                        mark_price.event_time_ms,
+                        symbol=mark_price.symbol,
+                        event_kind="mark_price",
+                    )
+                    with self._p2_metrics_lock:
+                        self._p2_mark_price_symbols.add(mark_price.symbol)
+                else:
+                    self._p2_mark_price_rejected += 1
+                return
         for event in self._events_from_payload(control):
+            if self._p2_enabled:
+                self._record_p2_market_data(
+                    event.event_time_ms,
+                    symbol=event.symbol,
+                    event_kind=event.event_type,
+                )
+                if event.event_type == "trade":
+                    self._p2_agg_trade_messages += 1
+                elif event.event_type == "liquidation":
+                    self._p2_force_order_messages += 1
             self.pipeline.handle_event(event)
 
     def _on_error(self, _ws: Any, error: Any) -> None:
         self.connection_errors += 1
-        self.last_error = f"{type(error).__name__}: {error}"[:300]
+        self.last_error = (
+            f"websocket:{type(error).__name__}"
+            if self._p2_enabled
+            else f"{type(error).__name__}: {error}"[:300]
+        )
 
     def _on_close(self, _ws: Any, status_code: Any, message: Any) -> None:
         self._connected.clear()
         if status_code not in (None, 1000):
-            self.last_error = f"closed:{status_code}:{message}"[:300]
+            self.last_error = (
+                f"closed:{status_code}"
+                if self._p2_enabled
+                else f"closed:{status_code}:{message}"[:300]
+            )
 
     def stats(self) -> dict[str, Any]:
-        return {
+        output = {
             "service": self.service_name,
             "symbol_count": self.symbol_count,
             "connection_attempts": self.connection_attempts,
@@ -837,8 +2001,232 @@ class BinanceRealtimeMarketService:
             "last_receive_ms": self.last_receive_ms,
             **self.pipeline.stats(),
         }
+        if not self._p2_enabled or self._p2_ledger is None:
+            return output
+        try:
+            controller_stats = self._p2_controller.stats() if self._p2_controller is not None else {}
+        except Exception as exc:
+            controller_stats = {}
+            self.last_error = f"altcoin_stats:{type(exc).__name__}"
+        if not isinstance(controller_stats, Mapping):
+            controller_stats = {}
+        plan_stats = self._p2_plan.stats() if self._p2_plan is not None else {}
+        ledger_stats = self._p2_ledger.stats()
+        subscription_status = self._p2_subscription_status()
+        active_candidates = list(subscription_status.get("active_candidate_symbols") or [])
+        requested_candidates = tuple(sorted({
+            symbol
+            for value in (getattr(self._p2_controller, "candidate_symbols", ()) or ())
+            if (symbol := _subscription_symbol(value))
+        }))
+        oi_stats = controller_stats.get("oi")
+        oi_stats = dict(oi_stats) if isinstance(oi_stats, Mapping) else {}
+        feature_stats = controller_stats.get("features")
+        feature_stats = dict(feature_stats) if isinstance(feature_stats, Mapping) else {}
+        skip_reasons = controller_stats.get("data_quality_skip_reasons")
+        skip_reasons = dict(skip_reasons) if isinstance(skip_reasons, Mapping) else {}
+        manifest_age = _number(controller_stats.get("manifest_age_sec"))
+        if manifest_age is not None and manifest_age < 0:
+            manifest_age = None
+        event_sink_stats: dict[str, Any] = {}
+        if self._p2_event_sink is not None:
+            sink_stats_method = getattr(self._p2_event_sink, "stats", None)
+            if callable(sink_stats_method):
+                try:
+                    raw_sink_stats = sink_stats_method()
+                    if isinstance(raw_sink_stats, Mapping):
+                        event_sink_stats = dict(raw_sink_stats)
+                except Exception as exc:
+                    self._p2_event_sink_failures += 1
+                    self._p2_event_sink_last_error = f"stats:{type(exc).__name__}"
+                    self.last_error = (
+                        f"altcoin_event_sink:{self._p2_event_sink_last_error}"
+                    )
+        with self._p2_metrics_lock:
+            mark_price_data_symbols = sorted(
+                symbol
+                for symbol in requested_candidates
+                if (
+                    symbol in self._p2_candidate_epochs
+                    and int(
+                        self._p2_candidate_epochs[symbol].get(
+                            "last_mark_price_event_ms"
+                        )
+                        or 0
+                    )
+                    >= int(
+                        self._p2_candidate_epochs[symbol].get("activated_at_ms")
+                        or 0
+                    )
+                    > 0
+                )
+            )
+        output.update({
+            "last_error": self.last_error,
+            "altcoin_contract_anomaly_realtime_enabled": True,
+            "connection_state": subscription_status.get("connection_state"),
+            "last_market_receive_ms": self._p2_last_market_receive_ms,
+            "manifest_hash": str(controller_stats.get("manifest_hash") or ""),
+            "manifest_snapshot_hash": str(controller_stats.get("manifest_snapshot_hash") or ""),
+            "manifest_age_sec": manifest_age,
+            "last_applied_manifest_hash": self._p2_last_applied_manifest_hash,
+            "manifest_event_ready": bool(controller_stats.get("manifest_event_ready")),
+            "manifest_degraded": bool(subscription_status.get("manifest_degraded")),
+            "manifest_polls": int(controller_stats.get("manifest_polls") or 0),
+            "manifest_failures": int(controller_stats.get("manifest_failures") or 0),
+            "base_symbol_count": len(self._p2_base_symbols),
+            "candidate_count": len(requested_candidates),
+            "union_symbol_count": int(plan_stats.get("union_symbol_count") or 0),
+            "expected_stream_count": int(plan_stats.get("expected_stream_count") or 0),
+            "desired_stream_count": int(ledger_stats["desired_subscription_count"]),
+            "active_stream_count": int(ledger_stats["active_subscription_count"]),
+            "pending_subscribe_count": int(ledger_stats["pending_subscribe_count"]),
+            "pending_unsubscribe_count": int(ledger_stats["pending_unsubscribe_count"]),
+            "subscribe_success": int(ledger_stats["subscribe_success"]),
+            "subscribe_failure": int(ledger_stats["subscribe_failure"]),
+            "unsubscribe_success": int(ledger_stats["unsubscribe_success"]),
+            "unsubscribe_failure": int(ledger_stats["unsubscribe_failure"]),
+            "ack_timeouts": int(ledger_stats["ack_timeouts"]),
+            "subscription_generation": int(ledger_stats["subscription_generation"]),
+            "candidate_epochs": subscription_status.get("candidate_epochs", {}),
+            "capacity_degraded": bool(subscription_status.get("capacity_degraded")),
+            "candidate_capacity_degraded": bool(
+                subscription_status.get("candidate_capacity_degraded")
+            ),
+            "base_capacity_trimmed": bool(
+                self._p2_plan
+                and self._p2_plan.capacity_degraded
+                and not self._p2_plan.candidate_capacity_degraded
+            ),
+            "candidate_coverage_complete": bool(
+                subscription_status.get("candidate_coverage_complete")
+            ),
+            "active_candidate_count": len(active_candidates),
+            "candidate_epoch_count": len(
+                subscription_status.get("candidate_epochs") or {}
+            ),
+            "candidate_epoch_coverage_ratio": (
+                len(subscription_status.get("candidate_epochs") or {})
+                / len(requested_candidates)
+                if requested_candidates else 1.0
+            ),
+            "mark_price_coverage_ratio": (
+                len(active_candidates) / len(requested_candidates)
+                if requested_candidates else 1.0
+            ),
+            "mark_price_data_symbol_count": len(mark_price_data_symbols),
+            "mark_price_data_coverage_ratio": (
+                len(mark_price_data_symbols) / len(requested_candidates)
+                if requested_candidates else 1.0
+            ),
+            "force_order_subscription_count": sum(
+                stream == "!forceOrder@arr"
+                for stream in self._p2_ledger.desired_subscriptions
+            ),
+            "force_order_active": bool(subscription_status.get("force_order_active")),
+            "active_subscriptions": subscription_status.get("active_subscriptions", []),
+            "mark_price_messages": self._p2_mark_price_messages,
+            "mark_price_rejected": self._p2_mark_price_rejected,
+            "agg_trade_messages": self._p2_agg_trade_messages,
+            "force_order_messages": self._p2_force_order_messages,
+            "closed_bucket_count": self._p2_closed_buckets,
+            "feature_evaluations": int(controller_stats.get("feature_evaluations") or 0),
+            "last_evaluation_candidate_count": int(
+                controller_stats.get("last_evaluation_candidate_count") or 0
+            ),
+            "last_evaluation_complete_count": int(
+                controller_stats.get("last_evaluation_complete_count") or 0
+            ),
+            "last_evaluation_epoch_complete_count": int(
+                controller_stats.get("last_evaluation_epoch_complete_count") or 0
+            ),
+            "last_evaluation_funding_complete_count": int(
+                controller_stats.get("last_evaluation_funding_complete_count") or 0
+            ),
+            "aligned_evaluation_rounds": int(
+                controller_stats.get("aligned_evaluation_rounds") or 0
+            ),
+            "non_aligned_evaluation_skips": int(
+                controller_stats.get("non_aligned_evaluation_skips") or 0
+            ),
+            "last_aligned_evaluation_at": str(
+                controller_stats.get("last_aligned_evaluation_at") or ""
+            ),
+            "last_evaluation_complete_ratio": _number(
+                controller_stats.get("last_evaluation_complete_ratio")
+            ),
+            "feature_coverage": feature_stats,
+            "data_quality_skips": int(controller_stats.get("data_quality_skips") or 0),
+            "data_quality_skip_reasons": skip_reasons,
+            "event_counts": dict(controller_stats.get("events") or {}),
+            "last_event_at": str(controller_stats.get("last_event_at") or ""),
+            "evaluation_errors": self._p2_evaluation_errors,
+            "runner_shutdown_timeouts": self._p2_runner_shutdown_timeouts,
+            "event_sink_configured": self._p2_event_sink is not None,
+            "event_sink_ready": self._p2_event_sink_ready,
+            "event_sink_batches": self._p2_event_sink_batches,
+            "event_sink_events": self._p2_event_sink_events,
+            "event_sink_failures": self._p2_event_sink_failures,
+            "event_sink_rejections": self._p2_event_sink_rejections,
+            "event_sink_last_error": self._p2_event_sink_last_error,
+            "event_sink": event_sink_stats,
+            "oi_candidate_count": int(oi_stats.get("candidate_count") or 0),
+            "oi_requests": int(oi_stats.get("requests") or 0),
+            "oi_cache_hits": int(oi_stats.get("cache_hits") or 0),
+            "oi_successes": int(oi_stats.get("successes") or 0),
+            "oi_failures": int(oi_stats.get("failures") or 0),
+            "oi_budget_used": int(oi_stats.get("budget_used") or 0),
+            "oi_budget_limit": int(oi_stats.get("budget_limit") or 0),
+            "oi_budget_mode": str(oi_stats.get("budget_mode") or ""),
+            "oi_budget_window_sec": int(
+                oi_stats.get("budget_window_sec") or 0
+            ),
+            "oi_budget_window_started_at": str(
+                oi_stats.get("budget_window_started_at") or ""
+            ),
+            "oi_budget_window_used": int(
+                oi_stats.get("budget_window_used") or 0
+            ),
+            "oi_budget_window_resets": int(
+                oi_stats.get("budget_window_resets") or 0
+            ),
+            "oi_budget_exhausted": int(oi_stats.get("budget_exhausted") or 0),
+            "oi_rate_limit_blocked": int(
+                oi_stats.get("rate_limit_blocked") or 0
+            ),
+            "oi_rate_limit_latched": bool(
+                oi_stats.get("rate_limit_latched")
+            ),
+            "oi_rate_limit_latched_until": str(
+                oi_stats.get("rate_limit_latched_until") or ""
+            ),
+            "oi_rate_limit_latch_resets": int(
+                oi_stats.get("rate_limit_latch_resets") or 0
+            ),
+            "oi_http_429": int(oi_stats.get("http_429") or 0),
+            "oi_http_418": int(oi_stats.get("http_418") or 0),
+            "oi_refresh_rounds": int(oi_stats.get("refresh_rounds") or 0),
+            "oi_last_round": dict(oi_stats.get("last_round") or {}),
+        })
+        return output
+
+    def recent_events(self) -> list[dict[str, Any]]:
+        if not self._p2_enabled or self._p2_controller is None:
+            return []
+        try:
+            events = getattr(self._p2_controller, "recent_events", [])
+            return [dict(event) for event in events if isinstance(event, Mapping)]
+        except Exception:
+            return []
 
     def run(self, stop_event: threading.Event | None = None) -> None:
+        self._start_p2_event_sink()
+        try:
+            self._run_market_loop(stop_event)
+        finally:
+            self._stop_p2_event_sink()
+
+    def _run_market_loop(self, stop_event: threading.Event | None = None) -> None:
         stop = stop_event or threading.Event()
         reconnect_delay = max(1, int(getattr(self.settings, "realtime_market_reconnect_sec", 5) or 5))
         flush_interval = max(1, int(getattr(self.settings, "realtime_market_flush_interval_sec", 1) or 1))
@@ -851,7 +2239,11 @@ class BinanceRealtimeMarketService:
                 symbols, subscriptions, context = self._connection_definition()
             except Exception as exc:
                 self.connection_errors += 1
-                self.last_error = f"symbol_load:{type(exc).__name__}: {exc}"[:300]
+                self.last_error = (
+                    f"symbol_load:{type(exc).__name__}"
+                    if self._p2_enabled
+                    else f"symbol_load:{type(exc).__name__}: {exc}"[:300]
+                )
                 stop.wait(max(30, reconnect_delay))
                 continue
             if not symbols:
@@ -859,6 +2251,14 @@ class BinanceRealtimeMarketService:
                 self.last_error = "symbol_load:empty"
                 stop.wait(max(30, reconnect_delay))
                 continue
+            if self._p2_enabled:
+                self._p2_base_symbols = tuple(symbols)
+                self._apply_p2_subscription_plan(symbols)
+                self._poll_p2_manifest(
+                    now_ts=time.time(),
+                    now_monotonic=time.monotonic(),
+                    force=True,
+                )
             self.symbol_count = len(symbols)
             self._connection_context = context
             self.connection_attempts += 1
@@ -866,6 +2266,9 @@ class BinanceRealtimeMarketService:
             errors_before = self.connection_errors
             self._connected.clear()
             self._last_receive_mono = 0.0
+            if self._p2_enabled:
+                self._p2_last_market_receive_ms = 0
+                self._p2_last_market_receive_mono = 0.0
             factory = self._factory()
             ws = factory(
                 self._websocket_url(),
@@ -884,9 +2287,19 @@ class BinanceRealtimeMarketService:
             connect_deadline = time.monotonic() + connect_timeout
             last_keepalive = 0.0
             while runner.is_alive() and not stop.wait(flush_interval):
-                self.pipeline.flush()
+                written = self.pipeline.flush()
+                if self._p2_enabled:
+                    self._p2_closed_buckets += written
                 now = time.time()
                 now_mono = time.monotonic()
+                if self._p2_enabled:
+                    self._poll_p2_manifest(
+                        now_ts=now,
+                        now_monotonic=now_mono,
+                    )
+                    self._send_next_p2_control(ws, now_monotonic=now_mono)
+                    events = self._evaluate_p2(now_ts=now, now_monotonic=now_mono)
+                    self._submit_p2_events(events)
                 keepalive = self._keepalive_payload()
                 if (
                     keepalive is not None
@@ -908,7 +2321,12 @@ class BinanceRealtimeMarketService:
                     except Exception:
                         pass
                     break
-                if self._connected.is_set() and self._last_receive_mono and now_mono - self._last_receive_mono >= idle_timeout:
+                idle_reference = (
+                    self._p2_last_market_receive_mono
+                    if self._p2_enabled
+                    else self._last_receive_mono
+                )
+                if self._connected.is_set() and idle_reference and now_mono - idle_reference >= idle_timeout:
                     self.connection_errors += 1
                     self.last_error = "stream_idle_timeout"
                     try:
@@ -934,13 +2352,182 @@ class BinanceRealtimeMarketService:
             except Exception:
                 pass
             runner.join(timeout=5)
-            self.pipeline.flush()
+            if self._p2_enabled and runner.is_alive():
+                self._p2_runner_shutdown_timeouts += 1
+                self.connection_errors += 1
+                self.last_error = "websocket_runner_shutdown_timeout"
+                raise RuntimeError("websocket_runner_shutdown_timeout")
+            written = self.pipeline.flush()
+            if self._p2_enabled:
+                self._p2_closed_buckets += written
             if not stop.is_set():
                 stop.wait(reconnect_delay)
 
 
-def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> int:
-    services = [BinanceRealtimeMarketService(settings)]
+def _run_realtime_market_session_unlocked(
+    settings: Any,
+    *,
+    duration_sec: float,
+    service: BinanceRealtimeMarketService | None = None,
+) -> dict[str, Any]:
+    """Run one bounded, no-output realtime session and return structured results."""
+
+    duration = float(duration_sec)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("duration_sec must be a finite positive number")
+    market_service = service or BinanceRealtimeMarketService(settings)
+    stop = threading.Event()
+    failures: list[str] = []
+    interrupted = False
+    live_stats: dict[str, Any] | None = None
+    started_at = time.time()
+    started_mono = time.monotonic()
+
+    def capture_live_stats() -> dict[str, Any] | None:
+        try:
+            value = market_service.stats()
+        except Exception:
+            return None
+        return dict(value) if isinstance(value, Mapping) else None
+
+    def run_service() -> None:
+        try:
+            market_service.run(stop)
+            if not stop.is_set():
+                failures.append("binance_realtime_market:unexpected_exit")
+                stop.set()
+        except Exception as exc:
+            failures.append(f"binance_realtime_market:{type(exc).__name__}")
+            stop.set()
+
+    worker = threading.Thread(
+        target=run_service,
+        name="altcoin-anomaly-realtime-session",
+        daemon=True,
+    )
+    worker_started = False
+    try:
+        worker.start()
+        worker_started = True
+        deadline = started_mono + duration
+        while worker.is_alive() and not stop.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                live_stats = capture_live_stats()
+                stop.set()
+                break
+            stop.wait(min(0.25, remaining))
+    except KeyboardInterrupt:
+        interrupted = True
+        live_stats = capture_live_stats()
+        stop.set()
+    except Exception as exc:
+        failures.append(f"binance_realtime_market:session:{type(exc).__name__}")
+        stop.set()
+    finally:
+        if live_stats is None and worker_started and worker.is_alive():
+            live_stats = capture_live_stats()
+        stop.set()
+        if worker_started:
+            worker.join(timeout=15)
+        if worker_started and worker.is_alive():
+            failures.append("binance_realtime_market:shutdown_timeout")
+    ended_at = time.time()
+    try:
+        shutdown_stats = market_service.stats()
+    except Exception as exc:
+        shutdown_stats = {}
+        failures.append(f"binance_realtime_market:stats:{type(exc).__name__}")
+    # Post-shutdown counters are authoritative because the service may finish
+    # one final flush/evaluation after the deadline snapshot. Only connection
+    # health is taken from immediately before the intentional close.
+    stats = dict(shutdown_stats)
+    if live_stats is not None:
+        health_keys = (
+            "connection_state",
+            "candidate_coverage_complete",
+            "active_candidate_count",
+            "candidate_epoch_count",
+            "candidate_epoch_coverage_ratio",
+            "mark_price_coverage_ratio",
+            "mark_price_data_symbol_count",
+            "mark_price_data_coverage_ratio",
+            "force_order_active",
+            "active_stream_count",
+            "last_market_receive_ms",
+            "event_sink_ready",
+        )
+        for key in health_keys:
+            if key in live_stats:
+                stats[key] = live_stats[key]
+        stats["connection_state_at_stop"] = live_stats.get("connection_state")
+        stats["candidate_coverage_complete_at_stop"] = bool(
+            live_stats.get("candidate_coverage_complete")
+        )
+    try:
+        events = market_service.recent_events()
+    except Exception as exc:
+        events = []
+        failures.append(f"binance_realtime_market:events:{type(exc).__name__}")
+    return {
+        "schema_version": 1,
+        "dry_run": True,
+        "started_at": datetime.fromtimestamp(started_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "ended_at": datetime.fromtimestamp(ended_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "duration_sec_requested": duration,
+        "duration_sec_actual": round(max(0.0, time.monotonic() - started_mono), 3),
+        "interrupted": interrupted,
+        "ok": not failures,
+        "failures": failures,
+        "stats": stats,
+        "events": events,
+    }
+
+
+def run_realtime_market_session(
+    settings: Any,
+    *,
+    duration_sec: float,
+    service: BinanceRealtimeMarketService | None = None,
+    process_lock: ProcessFileLock | None = None,
+) -> dict[str, Any]:
+    duration = float(duration_sec)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("duration_sec must be a finite positive number")
+    release_process_lock = bool(process_lock is not None and not process_lock.acquired)
+    if process_lock is not None and not process_lock.acquire():
+        now = time.time()
+        timestamp = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
+        return {
+            "schema_version": 1,
+            "dry_run": True,
+            "started_at": timestamp,
+            "ended_at": timestamp,
+            "duration_sec_requested": duration,
+            "duration_sec_actual": 0.0,
+            "interrupted": False,
+            "ok": False,
+            "failures": ["realtime_process_lock:busy"],
+            "stats": {},
+            "events": [],
+        }
+    try:
+        return _run_realtime_market_session_unlocked(
+            settings,
+            duration_sec=duration,
+            service=service,
+        )
+    finally:
+        if process_lock is not None and release_process_lock:
+            process_lock.release()
+
+
+def _run_realtime_market_service_unlocked(
+    market_service: BinanceRealtimeMarketService,
+    *,
+    duration_sec: float,
+) -> int:
+    services = [market_service]
     stop = threading.Event()
     failures: list[str] = []
     deadline = time.monotonic() + max(0.0, float(duration_sec or 0)) if duration_sec else 0.0
@@ -989,17 +2576,65 @@ def run_realtime_market_service(settings: Any, *, duration_sec: float = 0) -> in
     return 1 if failures else 0
 
 
+def run_realtime_market_service(
+    settings: Any,
+    *,
+    duration_sec: float = 0,
+    service: BinanceRealtimeMarketService | None = None,
+    realtime_controller: Any = None,
+    event_sink: Any = None,
+    process_lock: ProcessFileLock | None = None,
+) -> int:
+    if service is not None and (realtime_controller is not None or event_sink is not None):
+        raise ValueError("service cannot be combined with controller or event sink injection")
+    release_process_lock = bool(process_lock is not None and not process_lock.acquired)
+    if process_lock is not None and not process_lock.acquire():
+        print(json.dumps({
+            "service": "binance_realtime_market",
+            "failures": ["realtime_process_lock:busy"],
+            "exchanges": [],
+        }, ensure_ascii=False))
+        return 1
+    try:
+        market_service = service
+        if market_service is None:
+            if realtime_controller is None and event_sink is None:
+                market_service = BinanceRealtimeMarketService(settings)
+            else:
+                market_service = BinanceRealtimeMarketService(
+                    settings,
+                    realtime_controller=realtime_controller,
+                    event_sink=event_sink,
+                )
+        return _run_realtime_market_service_unlocked(
+            market_service,
+            duration_sec=duration_sec,
+        )
+    finally:
+        if process_lock is not None and release_process_lock:
+            process_lock.release()
+
+
 __all__ = [
+    "BinanceSubscriptionPlan",
+    "MarkPriceBook",
+    "MarkPriceUpdate",
     "MarketEvent",
     "REALTIME_FEATURE_SCHEMA_VERSION",
     "RealtimeFeatureAggregator",
     "RealtimeFeatureStore",
     "RealtimeMarketPipeline",
     "BinanceRealtimeMarketService",
+    "SubscriptionAck",
+    "SubscriptionCommand",
+    "SubscriptionLedger",
     "binance_stream_subscriptions",
+    "build_binance_subscription_plan",
     "build_realtime_radar_boards",
+    "parse_binance_mark_price_update",
     "parse_binance_market_event",
     "load_binance_realtime_symbols",
+    "run_realtime_market_session",
     "run_realtime_market_service",
     "select_realtime_symbols",
 ]
