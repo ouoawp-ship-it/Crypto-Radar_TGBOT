@@ -492,11 +492,27 @@ def write_runtime_status(
     previous_diagnostics = payload.get("diagnostics")
     incoming_diagnostics = details.get("diagnostics")
     payload.update(details)
+    pulse_status_update = bool(
+        "pulse_cycle_status" in details
+        or isinstance(incoming_diagnostics, dict)
+        and "pulse" in incoming_diagnostics
+    )
+    if pulse_status_update:
+        for legacy_key in (
+            "launch_pushes",
+            "launch_scan_limit",
+            "launch_cycle_status",
+            "launch_error_code",
+            "launch_interval_sec",
+        ):
+            payload.pop(legacy_key, None)
     if merge_loop and isinstance(previous_diagnostics, dict) and isinstance(
         incoming_diagnostics, dict
     ):
         merged_diagnostics = dict(previous_diagnostics)
         merged_diagnostics.update(incoming_diagnostics)
+        if pulse_status_update:
+            merged_diagnostics.pop("launch", None)
         payload["diagnostics"] = merged_diagnostics
     try:
         store.save(status_path, payload)

@@ -717,7 +717,15 @@ class MainCommandTests(unittest.TestCase):
                 task="loop",
                 last_summary_at="summary-time",
                 summary_push="dry_run",
-                diagnostics={"summary": {"status": "ok"}},
+                launch_pushes=[{"status": "sent"}],
+                launch_scan_limit=80,
+                launch_cycle_status="ok",
+                launch_error_code="",
+                launch_interval_sec=180,
+                diagnostics={
+                    "summary": {"status": "ok"},
+                    "launch": {"status": "legacy"},
+                },
             )
             main.write_runtime_status(
                 settings,
@@ -726,8 +734,8 @@ class MainCommandTests(unittest.TestCase):
                 "running",
                 task="loop",
                 last_launch_at="launch-time",
-                launch_pushes=[{"status": "dry_run"}],
-                diagnostics={"launch": {"status": "ok"}},
+                pulse_cycle_status="ok",
+                diagnostics={"pulse": {"status": "ok"}},
             )
             saved = store.load(settings.runtime_status_path, {})
 
@@ -735,7 +743,16 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(saved["summary_push"], "dry_run")
         self.assertEqual(saved["last_launch_at"], "launch-time")
         self.assertEqual(saved["diagnostics"]["summary"]["status"], "ok")
-        self.assertEqual(saved["diagnostics"]["launch"]["status"], "ok")
+        self.assertEqual(saved["diagnostics"]["pulse"]["status"], "ok")
+        self.assertNotIn("launch", saved["diagnostics"])
+        for legacy_key in (
+            "launch_pushes",
+            "launch_scan_limit",
+            "launch_cycle_status",
+            "launch_error_code",
+            "launch_interval_sec",
+        ):
+            self.assertNotIn(legacy_key, saved)
 
     def test_live_loop_heartbeat_preserves_radar_schedule_fields(self) -> None:
         with TemporaryDirectory() as tmp:
