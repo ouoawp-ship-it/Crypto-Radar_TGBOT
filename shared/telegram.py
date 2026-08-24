@@ -182,6 +182,7 @@ def classify_telegram_response(response: Any) -> tuple[str, int | None, int | No
         patterns = (
             (("message thread not found", "thread not found"), "telegram_topic_not_found"),
             (("topic_closed", "topic is closed"), "telegram_topic_closed"),
+            (("topic_not_modified", "topic is not modified"), "telegram_topic_not_modified"),
             (("chat not found",), "telegram_chat_not_found"),
             (("bot is not a member", "bot was kicked"), "telegram_bot_not_member"),
             (("not enough rights", "forbidden to send", "have no rights"), "telegram_send_permission_denied"),
@@ -1230,11 +1231,25 @@ class TelegramGateway:
             topic_status = "created"
         if not topic_id:
             return {"status": "failed", "reason": "telegram_topic_setup_failed"}
+        rename_ok = True
+        if topic_status == "reused" and template_id == "TG_LAUNCH_ALERT":
+            rename_ok = self._rename_forum_topic(
+                topic_id,
+                TOPIC_TEMPLATE_NAMES[template_id],
+            )
         if not self._ensure_topic_intro(template_id, topic_id, require_pin=True):
             return {
                 "status": "failed",
                 "reason": "telegram_topic_intro_failed",
                 "topic": topic_status,
+            }
+        if not rename_ok:
+            return {
+                "status": "failed",
+                "reason": "telegram_topic_rename_failed",
+                "topic": topic_status,
+                "intro": "published",
+                "pinned": True,
             }
         return {
             "status": "ok",
@@ -1314,6 +1329,44 @@ class TelegramGateway:
             return ""
         topic_id = result.get("message_thread_id")
         return str(topic_id or "")
+
+    def _rename_forum_topic(self, topic_id: str, name: str) -> bool:
+        try:
+            thread_id = int(topic_id)
+        except (TypeError, ValueError):
+            return False
+        if thread_id <= 0 or not name:
+            return False
+        url = f"https://api.telegram.org/bot{self.settings.tg_bot_token}/editForumTopic"
+        payload: dict[str, Any] = {
+            "chat_id": self.settings.tg_chat_id,
+            "message_thread_id": thread_id,
+            "name": name,
+        }
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                timeout=self.settings.tg_push_timeout_sec,
+            )
+        except requests.exceptions.RequestException as exc:
+            print(
+                "[telegram] editForumTopic failed "
+                f"error={classify_telegram_network_error(exc)}",
+                file=sys.stderr,
+            )
+            return False
+        if response.status_code != 200:
+            error_class, _error_code, _retry_after = classify_telegram_response(response)
+            if error_class == "telegram_topic_not_modified":
+                return True
+            print(
+                "[telegram] editForumTopic failed "
+                f"status={response.status_code} error={error_class}",
+                file=sys.stderr,
+            )
+            return False
+        return True
 
     def _ensure_topic_intro(
         self,

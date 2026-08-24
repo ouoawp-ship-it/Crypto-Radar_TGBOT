@@ -67,6 +67,7 @@ class TelegramSafeClassificationTests(unittest.TestCase):
             (400, "Bad Request: not enough rights to send text messages", "telegram_send_permission_denied"),
             (400, "Bad Request: message thread not found", "telegram_topic_not_found"),
             (400, "Bad Request: TOPIC_CLOSED", "telegram_topic_closed"),
+            (400, "Bad Request: TOPIC_NOT_MODIFIED", "telegram_topic_not_modified"),
             (400, "Bad Request: can't parse entities", "telegram_parse_error"),
             (400, "Bad Request: message is too long", "telegram_message_too_long"),
             (400, "Bad Request: reply message not found", "telegram_reply_target_not_found"),
@@ -440,12 +441,31 @@ class TelegramSafeFallbackTests(unittest.TestCase):
                 redirect_stderr(stderr),
             ):
                 self.assertEqual(gateway._create_forum_topic("safe"), "")
+                self.assertFalse(gateway._rename_forum_topic("1", "safe"))
                 self.assertFalse(gateway._pin_message(1))
                 self.assertFalse(gateway._delete_message(1))
             output = stderr.getvalue()
             self.assertNotIn(secret, output)
             self.assertNotIn("Bad Request", output)
-            self.assertEqual(output.count("telegram_chat_not_found"), 3)
+            self.assertEqual(output.count("telegram_chat_not_found"), 4)
+
+    def test_topic_rename_treats_already_current_name_as_success(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = self.make_gateway(Path(tmp))
+            response = FakeResponse(
+                400,
+                description="Bad Request: TOPIC_NOT_MODIFIED",
+            )
+            stderr = StringIO()
+
+            with (
+                patch("shared.telegram.requests.post", return_value=response),
+                redirect_stderr(stderr),
+            ):
+                renamed = gateway._rename_forum_topic("12", "脉冲雷达")
+
+            self.assertTrue(renamed)
+            self.assertEqual(stderr.getvalue(), "")
 
 
 if __name__ == "__main__":

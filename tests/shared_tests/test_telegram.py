@@ -401,6 +401,97 @@ class TelegramGatewayTests(unittest.TestCase):
             )
             create_mock.assert_not_called()
 
+    def test_pulse_topic_setup_renames_reused_topic_before_refreshing_intro(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_launch_alert_topic_id="12",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with (
+                patch.object(
+                    gateway,
+                    "_rename_forum_topic",
+                    return_value=True,
+                ) as rename_mock,
+                patch.object(
+                    gateway,
+                    "_ensure_topic_intro",
+                    return_value=True,
+                ) as intro_mock,
+            ):
+                result = gateway.setup_topic(
+                    "TG_LAUNCH_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["topic"], "reused")
+            rename_mock.assert_called_once_with("12", "脉冲雷达")
+            intro_mock.assert_called_once_with(
+                "TG_LAUNCH_ALERT",
+                "12",
+                require_pin=True,
+            )
+
+    def test_pulse_topic_setup_reports_rename_failure_after_refreshing_intro(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_launch_alert_topic_id="12",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+
+            with (
+                patch.object(gateway, "_rename_forum_topic", return_value=False),
+                patch.object(
+                    gateway,
+                    "_ensure_topic_intro",
+                    return_value=True,
+                ) as intro_mock,
+            ):
+                result = gateway.setup_topic(
+                    "TG_LAUNCH_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["reason"], "telegram_topic_rename_failed")
+            self.assertEqual(result["intro"], "published")
+            self.assertTrue(result["pinned"])
+            intro_mock.assert_called_once()
+
+    def test_rename_forum_topic_uses_existing_thread_and_pulse_name(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            session = FakeTelegramSession()
+
+            with patch("shared.telegram.requests.post", side_effect=session.post):
+                renamed = gateway._rename_forum_topic("12", "脉冲雷达")
+
+            self.assertTrue(renamed)
+            self.assertTrue(str(session.calls[0]["url"]).endswith("/editForumTopic"))
+            self.assertEqual(
+                session.calls[0]["json"],
+                {
+                    "chat_id": "-1001234567890",
+                    "message_thread_id": 12,
+                    "name": "脉冲雷达",
+                },
+            )
+
     def test_altcoin_anomaly_topic_is_preconfigured_only_and_isolated(self) -> None:
         with TemporaryDirectory() as tmp:
             route_path = Path(tmp) / "topic_routes.json"
