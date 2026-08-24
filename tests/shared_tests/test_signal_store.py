@@ -69,7 +69,7 @@ class SignalEventStoreTests(unittest.TestCase):
 
         self.assertEqual(count, 2)
         self.assertEqual({item["symbol"] for item in items}, {"BTCUSDT", "ETHUSDT"})
-        self.assertTrue(all(item["module"] == "launch" for item in items))
+        self.assertTrue(all(item["module"] == "pulse" for item in items))
         self.assertTrue(all(item["message_ids"] == [101, 102] for item in items))
 
     def test_prune_applies_age_and_row_limits(self) -> None:

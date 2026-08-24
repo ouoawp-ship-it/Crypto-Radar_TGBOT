@@ -10,7 +10,6 @@ from tempfile import TemporaryDirectory
 
 from config import Settings
 from runtime.health import runtime_health_checks
-from radars.launch_warning.lifecycle import LaunchLifecycleStore
 from shared.storage import JsonStore
 
 
@@ -126,43 +125,39 @@ class RuntimeHealthTests(unittest.TestCase):
         self.assertEqual(effectiveness["status"], "warn")
         self.assertEqual(effectiveness["metrics"]["overdue_pending"], 1)
 
-    def test_launch_outcome_health_reports_current_rule_readiness(self) -> None:
+    def test_pulse_review_health_reports_completed_records(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings = self.make_settings(root)
-            settings = Settings(**{
-                **settings.__dict__,
-                "launch_lifecycle_v2_enable": True,
-                "launch_outcome_v2_enable": True,
-                "launch_outcome_min_samples": 20,
-            })
-            LaunchLifecycleStore(
-                settings.signal_events_db_path,
-                outcome_enabled=True,
-            ).refresh_outcomes(evaluated_at=10_000)
+            store = JsonStore(root)
+            store.save(root / "review_signals.json", [{
+                "radar": "alert",
+                "ts": 1000,
+                "outcomes": {"3600": {}, "14400": {}},
+            }])
 
-            checks = runtime_health_checks(settings, JsonStore(root), now_ts=10_000)
+            checks = runtime_health_checks(settings, store, now_ts=10_000)
 
-        outcome = next(item for item in checks if item["name"] == "launch_outcomes")
+        outcome = next(item for item in checks if item["name"] == "pulse_reviews")
         self.assertEqual(outcome["status"], "ok")
-        self.assertEqual(outcome["metrics"]["same_rule_samples"], 0)
-        self.assertFalse(outcome["metrics"]["rates_available"])
+        self.assertEqual(outcome["metrics"]["completed"], 1)
 
-    def test_launch_outcome_health_blocks_missing_lifecycle_dependency(self) -> None:
+    def test_pulse_review_health_warns_for_overdue_windows(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings = self.make_settings(root)
-            settings = Settings(**{
-                **settings.__dict__,
-                "launch_lifecycle_v2_enable": False,
-                "launch_outcome_v2_enable": True,
-            })
+            store = JsonStore(root)
+            store.save(root / "review_signals.json", [{
+                "radar": "alert",
+                "ts": 1000,
+                "outcomes": {},
+            }])
 
-            checks = runtime_health_checks(settings, JsonStore(root), now_ts=10_000)
+            checks = runtime_health_checks(settings, store, now_ts=20_000)
 
-        outcome = next(item for item in checks if item["name"] == "launch_outcomes")
-        self.assertEqual(outcome["status"], "fail")
-        self.assertIn("LAUNCH_LIFECYCLE_V2_ENABLE", outcome["detail"])
+        outcome = next(item for item in checks if item["name"] == "pulse_reviews")
+        self.assertEqual(outcome["status"], "warn")
+        self.assertEqual(outcome["metrics"]["overdue_windows"], 2)
 
     def test_database_backup_is_ready_after_restore_verified_manifest(self) -> None:
         with TemporaryDirectory() as tmp:

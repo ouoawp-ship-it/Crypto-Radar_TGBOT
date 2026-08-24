@@ -228,8 +228,8 @@ class FundingSourceTests(unittest.TestCase):
     def test_snapshot_normalizes_five_exchange_funding(self) -> None:
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE", "OKX", "BYBIT", "BITGET", "GATE"),
-            launch_funding_history_limit=3,
+            funding_alert_exchanges=("BINANCE", "OKX", "BYBIT", "BITGET", "GATE"),
+            funding_alert_history_limit=3,
         )
         rows = MultiExchangeFundingClient(settings, FakeHttp()).snapshot("BTCUSDT")  # type: ignore[arg-type]
 
@@ -247,7 +247,7 @@ class FundingSourceTests(unittest.TestCase):
         http = BatchHttp(delay_sec=0.02)
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE", "OKX", "BYBIT", "BITGET", "GATE"),
+            funding_alert_exchanges=("BINANCE", "OKX", "BYBIT", "BITGET", "GATE"),
             funding_scan_concurrency=6,
             funding_max_symbols_per_batch=120,
         )
@@ -273,7 +273,7 @@ class FundingSourceTests(unittest.TestCase):
         http = BatchHttp(delay_sec=0)
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE",),
+            funding_alert_exchanges=("BINANCE",),
             funding_max_symbols_per_batch=2,
         )
         client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
@@ -287,7 +287,7 @@ class FundingSourceTests(unittest.TestCase):
         http = FakeHttp()
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BITGET",),
+            funding_alert_exchanges=("BITGET",),
         )
         client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
 
@@ -313,7 +313,7 @@ class FundingSourceTests(unittest.TestCase):
         http = FakeHttp()
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("GATE",),
+            funding_alert_exchanges=("GATE",),
         )
         client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
 
@@ -337,7 +337,7 @@ class FundingSourceTests(unittest.TestCase):
         http = BatchHttp(delay_sec=0, fail_exchange="OKX")
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE", "OKX"),
+            funding_alert_exchanges=("BINANCE", "OKX"),
             funding_request_timeout_sec=3,
         )
         client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
@@ -354,7 +354,7 @@ class FundingSourceTests(unittest.TestCase):
         http = BatchHttp(delay_sec=0.07)
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE",),
+            funding_alert_exchanges=("BINANCE",),
             funding_request_timeout_sec=0.1,  # type: ignore[arg-type]
         )
         client = MultiExchangeFundingClient(settings, http)  # type: ignore[arg-type]
@@ -370,7 +370,7 @@ class FundingSourceTests(unittest.TestCase):
         http = BatchHttp(delay_sec=0, fail_exchange="BYBIT")
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE", "OKX", "BYBIT"),
+            funding_alert_exchanges=("BINANCE", "OKX", "BYBIT"),
         )
 
         rows = MultiExchangeFundingClient(settings, http).snapshot("BTCUSDT", include_history=False)  # type: ignore[arg-type]
@@ -380,7 +380,7 @@ class FundingSourceTests(unittest.TestCase):
     def test_snapshot_batch_reuses_http_cache(self) -> None:
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE",),
+            funding_alert_exchanges=("BINANCE",),
             http_cache_enable=True,
             http_cache_ttl_sec=60,
         )
@@ -398,7 +398,7 @@ class FundingSourceTests(unittest.TestCase):
     def test_sync_snapshot_remains_usable_inside_event_loop(self) -> None:
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE",),
+            funding_alert_exchanges=("BINANCE",),
         )
         client = MultiExchangeFundingClient(settings, BatchHttp(delay_sec=0))  # type: ignore[arg-type]
 
@@ -412,7 +412,7 @@ class FundingSourceTests(unittest.TestCase):
     def test_sync_batch_inside_event_loop_points_to_async_api(self) -> None:
         settings = Settings(
             data_dir=Path("."),
-            launch_funding_exchanges=("BINANCE",),
+            funding_alert_exchanges=("BINANCE",),
         )
         client = MultiExchangeFundingClient(settings, BatchHttp(delay_sec=0))  # type: ignore[arg-type]
 

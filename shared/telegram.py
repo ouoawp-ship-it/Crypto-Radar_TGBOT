@@ -258,7 +258,7 @@ def plain_fallback(text: str) -> str:
 
 TOPIC_TEMPLATE_NAMES = {
     "TG_RADAR_SUMMARY": "资金摘要",
-    "TG_LAUNCH_ALERT": "启动预警",
+    "TG_LAUNCH_ALERT": "脉冲雷达",
     "TG_ANNOUNCEMENT_ALERT": "公告风险",
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
@@ -274,10 +274,9 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 )
 
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
-LAUNCH_FUSION_TOPIC_INTRO_VERSION = "2026-08-05-launch-fusion-v1"
-LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION = "2026-08-08-launch-stage-timing-v5"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
+    "TG_LAUNCH_ALERT": "2026-08-24-pulse-radar-v1",
 }
 
 
@@ -285,23 +284,6 @@ def topic_intro_version(
     template_id: str,
     settings: Settings | None = None,
 ) -> str:
-    if (
-        template_id == "TG_LAUNCH_ALERT"
-        and settings is not None
-        and getattr(settings, "launch_directional_enable", False)
-        and settings.launch_fusion_enable
-        and settings.launch_lifecycle_v2_enable
-        and settings.launch_message_package_v2_enable
-    ):
-        return LAUNCH_DIRECTIONAL_TOPIC_INTRO_VERSION
-    if (
-        template_id == "TG_LAUNCH_ALERT"
-        and settings is not None
-        and settings.launch_fusion_enable
-        and settings.launch_lifecycle_v2_enable
-        and settings.launch_message_package_v2_enable
-    ):
-        return LAUNCH_FUSION_TOPIC_INTRO_VERSION
     return TOPIC_INTRO_VERSIONS.get(
         template_id,
         DEFAULT_TOPIC_INTRO_VERSION,
@@ -337,7 +319,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         f"- 默认每{seconds_cn(settings.radar_summary_min_interval_sec)}检查并发送一次资金摘要。",
         f"- 资金摘要会在收线后延迟{seconds_cn(settings.radar_summary_close_delay_sec)}抓取上一完整统计窗口，避免使用未收完的数据。",
         f"- 发送上限：{daily_text}，避免大段榜单刷屏。",
-        "- 适合当作阶段性市场总览；启动瞬间由“启动预警”负责。",
+        "- 适合当作阶段性市场总览；短周期异动由“脉冲雷达”负责。",
         "",
         "阅读方式：",
         "1. 先看“值得关注”，这是本轮浓缩结论。",
@@ -368,107 +350,28 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "如果摘要因长度被拆成多条消息，会保留最新一轮的全部分段。",
         ])
     if template_id == "TG_LAUNCH_ALERT":
-        if (
-            getattr(settings, "launch_directional_enable", False)
-            and settings.launch_fusion_enable
-            and settings.launch_lifecycle_v2_enable
-            and settings.launch_message_package_v2_enable
-        ):
-            from radars.launch_warning.directional_formatter import (
-                launch_directional_topic_intro,
-            )
-
-            return launch_directional_topic_intro()
-        if (
-            settings.launch_fusion_enable
-            and settings.launch_lifecycle_v2_enable
-            and settings.launch_message_package_v2_enable
-        ):
-            return "\n".join([
-            "📌 <b>启动预警雷达使用说明</b>",
-            "",
-            "这里负责从全市场币安合约中寻找刚出现的启动异动，并持续跟踪到确认、降温或失效。第一次信号单独发送；同一币种后续更新会回复上一条，所有成功消息都保留。",
-            "",
-            "<b>新版运行逻辑</b>",
-            "1. 15分钟负责尽早发现；必须使用连续、完整收线且与持仓量时间严格对齐的数据。",
-            "2. 1小时负责独立确认；分数达到确认线但1小时未确认时，仍只显示“等待确认”。",
-            "3. 4小时提供趋势背景；24小时价格使用币安滚动行情，24小时持仓量使用97个连续闭合15分钟点严格计算。",
-            "4. 价格、持仓量、成交量、现货主动成交和合约主动成交分组计分，同一证据不会重复加分。",
-            "5. 不同资产类别、流动性和近期波动使用不同门槛；未知类别使用更保守门槛。",
-            "",
-            "<b>价格与持仓量怎么看</b>",
-            "- 价格涨、持仓增：可能有新增仓位推动。",
-            "- 价格涨、持仓减：更像空头回补，属于持续上涨的反证。",
-            "- 价格跌、持仓增：可能有新增空头推动。",
-            "- 价格跌、持仓减：更像多头止损或去杠杆。",
-            "以上都是候选解释，不是确定结论。",
-            "",
-            "<b>候选与推送</b>",
-            f"- 每轮最多扫描{settings.launch_scan_limit}个，但会保留活跃币并按高、中、低流动性轮换，避免小币长期排不到。",
-            f"- 规则分达到{settings.launch_min_score_push}分才开启一轮公开跟踪；规则分不是上涨概率。",
-            f"- 同一阶段的普通变化至少间隔{seconds_cn(settings.launch_same_stage_min_interval_sec)}才更新；确认、降温和失效会立即更新。",
-            "- 数据不完整只记录降级原因，不会升级阶段，也不会覆盖上一张完整卡片。",
-            "",
-            "<b>图表与生命周期</b>",
-            "- 主图使用已完整收线的1小时行情；15分钟只负责触发和早期观察。",
-            "- 图中的1、2、3…是本轮重要更新顺序；数字前带“<”表示事件早于当前图表范围。",
-            "- 连续两个完整窗口低于观察线，或确认后连续两次跌回有效突破位，本轮才结束。",
-            "- 新卡发送并保存成功后成为下一次回复目标；旧卡和完整跟踪过程不会自动删除。",
-            "",
-            "<b>数据和链接</b>",
-            "- 价格、K线、持仓量和费率来自 Binance USDⓈ-M Futures；合约主动资金直接取同一闭合15分钟K线，现货主动资金对本轮候选有界补取同窗K线。",
-            "- 没有币安现货交易对、历史不足或币安接口暂不可用时，会写明原因；不会用0或旧窗口冒充完整数据。",
-            "- 点击币种打开 CoinGlass；点击代码复制交易对；点击 TV 打开 TradingView。",
-            "- 缺失显示“缺数据”，不会显示成0。历史结果只用于复盘，不会自动改参数。",
-            "",
-            "本雷达只做规则观察，不自动交易，不构成投资建议。",
-            ])
         return "\n".join([
-        "📌 <b>启动预警使用说明</b>",
+        "📌 <b>脉冲雷达使用说明</b>",
         "",
-        "这里跟踪币种从“出现异动”到“确认启动”或“信号失效”的过程。第一次信号单独发送；同一币种出现重要更新时，会直接回复该币上一条成功消息，形成完整跟踪链。",
+        "这里由新的脉冲雷达直接接管原启动预警话题，不再运行旧启动评分模型。",
         "",
-        "<b>先看什么</b>",
-        "1. 先看“当前阶段”，再看“相对首次”和“相对上次”，判断价格、OI、资金费率和主动成交是否继续增强。",
-        "2. 提前预警：刚出现异动，继续观察；启动确认：价格、OI、成交等因素进一步共振；启动瞬间：短线波动最强，不代表适合追高。",
-        "3. 点击币种打开 CoinGlass；点击代码可复制交易对；点击 TV 打开 TradingView。",
+        "<b>15分钟异动提醒</b>",
+        "- 使用完整闭合的5分钟数据，计算15分钟价格、持仓量和主动成交资金流。",
+        "- 信号分为健康上涨、假强背离、空头回补、健康下跌、假弱承接和恐慌杀多。",
+        "- 首次触发立即提醒；同一事件只有升级或方向反转才再次发送，最多3次。",
         "",
-        "<b>图表怎么看</b>",
-        "- 图中的 1、2、3…是本轮已经发布过的事件顺序；数字前带“<”表示该事件早于当前图表范围。",
-        "- 主图使用 Binance 合约已经完整收线的 1 小时行情，15 分钟行情只负责触发确认。",
-        "- 价格和 OI 的变化会分别与本轮首次信号、上一次成功推送的数据比较。",
+        "<b>2小时持仓价格背离</b>",
+        "- 每2小时汇总持仓变化、价格变化与两者背离度。",
+        "- 分类展示建仓、回调压力、强势突破、恐慌抛售、多头共振和极端背离。",
         "",
-        "<b>分数怎么计算（最高130分）</b>",
-        "- 15分钟价格上涨≥4%：+25分；1小时价格上涨≥5%：+15分。",
-        "- 最新收盘价突破前序约4小时最高价：+25分。",
-        "- 最新15分钟成交额达到前序完整窗口均值的2倍：+20分。",
-        "- 15分钟 OI 增长≥3%：+15分；1小时 OI 增长≥6%：+15分。",
-        "- 资金暗流：1小时 OI 增长≥3%，同时1小时价格在 -2%～+2% 之间：+15分。",
-        f"- 阶段图例：<{settings.launch_watch_score} 未触发；"
-        f"{settings.launch_watch_score}-{settings.launch_primed_score - 1} 提前观察；"
-        f"{settings.launch_primed_score}-{settings.launch_breakout_score - 1} 提前预警；"
-        f"{settings.launch_breakout_score}-{settings.launch_launched_score - 1} 启动确认；"
-        f"≥{settings.launch_launched_score} 启动瞬间。",
-        "- 资金费率极端或结算周期变化只作为拥挤风险提示，目前不直接加分。",
+        "<b>复盘与安全</b>",
+        "- 只有真实发送成功才写入跟随状态和复盘记录；dry-run不会消耗信号。",
+        "- 1小时、4小时和2小时复盘分别在对应窗口到期后回填，不使用未来数据。",
+        "- 真实发送必须同时开启 --send 与 --confirm-real-send；部分发送失败会清理残缺消息。",
         "",
-        "<b>多久检查一次</b>",
-        f"- BOT 默认每{seconds_cn(180)}检查一次市场，但不是使用 3 分钟K线。",
-        f"- 所有判断只使用完整收线的 15 分钟K线，并在收线后延迟{seconds_cn(settings.launch_close_delay_sec)}读取，避免使用尚未结束的数据。",
-        "- 同一根 15 分钟K线期间即使检查多次，未达到阶段变化或重要替换条件时也只会内部记录，不会重复推送。",
-        "",
-        "<b>什么时候结束、消息如何保留</b>",
-        "- 连续两根完整15分钟K线低于观察阈值，或连续两根收盘价跌破本轮有效突破位，本轮信号才会确认失效。",
-        "- 确认失效后本轮结束；历史信号和失效消息都继续保留。",
-        "- 新消息发送并保存成功后，会成为该币下一次更新的回复目标。",
-        "- 如果上一条被人工删除，机器人会安全改为独立发送，不影响新一轮跟踪。",
-        "",
-        "<b>数据来源</b>",
-        "- K线、价格、OI和资金费率来自 Binance USDⓈ-M Futures 原生接口。",
-        "- 主动成交方向来自 Binance Spot + Futures 已闭合窗口。",
-        "- 结果评估只使用已记录的15分钟收盘价，不使用盘中最高价或最低价。",
-        "",
-        "数据确认仅代表 Binance 市场；不构成投资建议。",
+        "数据来自 Binance Spot + USDⓈ-M Futures 已闭合窗口；仅供预警参考，不构成投资建议。",
         ])
+
     if template_id == "TG_ANNOUNCEMENT_ALERT":
         ttl_days = max(1, int(settings.announcement_default_ttl_days))
         return "\n".join([
@@ -481,7 +384,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- 只读取 Binance 官方公告，不读取社交传言。",
         "- 只推送识别出币种且仍在有效期内的新公告。",
         f"- 未写明日期的公告默认按约 {ttl_days} 天有效；已发送记录最长保留约14天用于去重。",
-        "- 公告也会作为启动预警的辅助证据，但不参与启动分数。",
+        "- 公告独立推送，不参与脉冲雷达分类。",
         "- 本雷达失败不会停止其他四个雷达。",
         "",
         "<b>链接说明</b>",
@@ -540,7 +443,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         return "\n".join([
         "📌 <b>资金费率警报话题说明</b>",
         "",
-        "这里专门跟踪 Binance USDⓈ-M Futures 的异常资金费率，不和启动雷达、资金流雷达混在一起。",
+        "这里专门跟踪 Binance USDⓈ-M Futures 的异常资金费率，不和脉冲雷达、资金流雷达混在一起。",
         "重点观察极负/极正费率、结算周期变化，以及资金费率与价格、OI、主动成交之间的关系。",
         "",
         "<b>扫描与推送</b>",
@@ -1051,7 +954,7 @@ class TelegramGateway:
                     response = requests.post(
                         url,
                         data=dict(payload),
-                        files={"photo": ("launch-chart.png", photo, "image/png")},
+                        files={"photo": ("telegram-card.png", photo, "image/png")},
                         timeout=self.settings.tg_push_timeout_sec,
                     )
                     self._record_http_response(diagnostics, response)
@@ -1400,44 +1303,6 @@ class TelegramGateway:
     def delete_messages(self, message_ids: list[int]) -> int:
         return len(self.delete_messages_detailed(message_ids)["deleted_ids"])
 
-    @staticmethod
-    def _latest_launch_topic_message_ids(
-        history: list[dict[str, Any]],
-    ) -> list[int]:
-        launch_records = [
-            record
-            for record in history
-            if isinstance(record, dict)
-            and record.get("template_id") == "TG_LAUNCH_ALERT"
-            and record.get("status") == "sent"
-            and not record.get("lifecycle_deleted")
-        ]
-        for _index, record in sorted(
-            enumerate(launch_records),
-            key=lambda item: (int(item[1].get("ts") or 0), item[0]),
-            reverse=True,
-        ):
-            message_ids = [
-                int(message_id)
-                for message_id in (record.get("message_ids") or [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            ]
-            deleted_ids = {
-                int(message_id)
-                for message_id in (record.get("deleted_message_ids") or [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            }
-            latest_ids = [
-                message_id
-                for message_id in message_ids
-                if message_id not in deleted_ids
-            ]
-            if latest_ids:
-                return latest_ids
-        return []
-
-    def latest_launch_topic_message_ids(self) -> list[int]:
-        return self._latest_launch_topic_message_ids(self._load_history())
 
     def _latest_topic_cleanup_plan(
         self,
@@ -1461,7 +1326,7 @@ class TelegramGateway:
 
         cutoff = utc_ts() - max(
             1,
-            int(self.settings.launch_message_cleanup_max_age_sec),
+            int(self.settings.topic_message_cleanup_max_age_sec),
         )
         deletable_ids: list[int] = []
         undeletable_ids: list[int] = []
@@ -1555,85 +1420,6 @@ class TelegramGateway:
                 file=sys.stderr,
             )
 
-    def launch_topic_cleanup_candidates(
-        self,
-        *,
-        keep_message_ids: list[int] | None = None,
-    ) -> list[int]:
-        return self.launch_topic_cleanup_plan(
-            keep_message_ids=keep_message_ids,
-        )["deletable_ids"]
-
-    def launch_topic_cleanup_plan(
-        self,
-        *,
-        keep_message_ids: list[int] | None = None,
-    ) -> dict[str, list[int]]:
-        history = self._load_history()
-        explicit_keep = bool(keep_message_ids)
-        protected = {
-            int(message_id)
-            for message_id in (keep_message_ids or [])
-            if isinstance(message_id, int) or str(message_id).isdigit()
-        }
-        intro_key = self._topic_intro_key(
-            "TG_LAUNCH_ALERT",
-            self._topic_id_for_template("TG_LAUNCH_ALERT"),
-        )
-        intro = self._topic_intro_record(intro_key)
-        intro_message_id = intro.get("message_id")
-        if isinstance(intro_message_id, int) or str(intro_message_id or "").isdigit():
-            protected.add(int(intro_message_id))
-
-        launch_records = [
-            record
-            for record in history
-            if isinstance(record, dict)
-            and record.get("template_id") == "TG_LAUNCH_ALERT"
-            and record.get("status") == "sent"
-        ]
-        if not explicit_keep:
-            protected.update(self._latest_launch_topic_message_ids(history))
-
-        cutoff = utc_ts() - max(
-            1,
-            int(self.settings.launch_message_cleanup_max_age_sec),
-        )
-        deletable_ids: list[int] = []
-        undeletable_ids: list[int] = []
-        planned_ids: set[int] = set()
-        for record in launch_records:
-            deleted_ids = {
-                int(message_id)
-                for message_id in (record.get("deleted_message_ids") or [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            }
-            unavailable_ids = {
-                int(message_id)
-                for message_id in (record.get("undeletable_message_ids") or [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            }
-            destination = (
-                deletable_ids
-                if int(record.get("ts") or 0) >= cutoff
-                else undeletable_ids
-            )
-            for message_id in record.get("message_ids") or []:
-                if not (isinstance(message_id, int) or str(message_id).isdigit()):
-                    continue
-                normalized = int(message_id)
-                if (
-                    normalized not in protected
-                    and normalized not in deleted_ids
-                    and normalized not in unavailable_ids
-                    and normalized not in planned_ids
-                ):
-                    destination.append(normalized)
-                    planned_ids.add(normalized)
-        return {
-            "deletable_ids": deletable_ids,
-            "undeletable_ids": undeletable_ids,
-        }
 
     def mark_history_messages_undeletable(
         self,
@@ -1684,7 +1470,7 @@ class TelegramGateway:
         self,
         message_ids: list[int],
         *,
-        reason: str = "launch_signal_expired",
+        reason: str = "telegram_message_delete",
     ) -> dict[str, list[int]]:
         normalized_ids = list(dict.fromkeys(
             int(message_id)
@@ -1740,7 +1526,7 @@ class TelegramGateway:
                     "deleted_message_ids": deleted_for_record,
                     "lifecycle_deleted": bool(record_message_ids) and record_message_ids <= set(deleted_for_record),
                     "lifecycle_deleted_at": now_ts,
-                    "lifecycle_delete_reason": str(reason or "launch_signal_expired"),
+                    "lifecycle_delete_reason": str(reason or "telegram_message_delete"),
                 })
             return updated
 

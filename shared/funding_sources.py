@@ -344,7 +344,7 @@ class MultiExchangeFundingClient:
         }
 
     def _enabled_exchanges(self) -> tuple[str, ...]:
-        values = getattr(self.settings, "launch_funding_exchanges", DEFAULT_FUNDING_EXCHANGES)
+        values = self.settings.funding_alert_exchanges
         result: list[str] = []
         for item in values or DEFAULT_FUNDING_EXCHANGES:
             name = canonical_exchange_name(item)
@@ -520,7 +520,7 @@ class MultiExchangeFundingClient:
         )
 
     def _binance_history(self, display_symbol: str) -> list[dict[str, Any]]:
-        limit = max(3, int(self.settings.launch_funding_history_limit))
+        limit = max(3, int(self.settings.funding_alert_history_limit))
         data = self._get_json(
             "Binance",
             f"{self.settings.binance_fapi_base_url.rstrip('/')}/fapi/v1/fundingRate",
@@ -556,7 +556,7 @@ class MultiExchangeFundingClient:
         )
 
     def _okx_history(self, display_symbol: str) -> list[dict[str, Any]]:
-        limit = max(3, int(self.settings.launch_funding_history_limit))
+        limit = max(3, int(self.settings.funding_alert_history_limit))
         data = self._get_json(
             "OKX",
             "https://www.okx.com/api/v5/public/funding-rate-history",
@@ -592,7 +592,7 @@ class MultiExchangeFundingClient:
         )
 
     def _bybit_history(self, display_symbol: str) -> list[dict[str, Any]]:
-        limit = max(3, int(self.settings.launch_funding_history_limit))
+        limit = max(3, int(self.settings.funding_alert_history_limit))
         data = self._get_json(
             "Bybit",
             "https://api.bybit.com/v5/market/funding/history",
@@ -623,7 +623,7 @@ class MultiExchangeFundingClient:
         )
 
     def _bitget_history(self, display_symbol: str) -> list[dict[str, Any]]:
-        limit = max(3, int(self.settings.launch_funding_history_limit))
+        limit = max(3, int(self.settings.funding_alert_history_limit))
         data = self._get_json(
             "Bitget",
             "https://api.bitget.com/api/v2/mix/market/history-fund-rate",
@@ -653,7 +653,7 @@ class MultiExchangeFundingClient:
         )
 
     def _gate_history(self, display_symbol: str) -> list[dict[str, Any]]:
-        limit = max(3, int(self.settings.launch_funding_history_limit))
+        limit = max(3, int(self.settings.funding_alert_history_limit))
         data = self._get_json(
             "Gate",
             "https://api.gateio.ws/api/v4/futures/usdt/funding_rate",

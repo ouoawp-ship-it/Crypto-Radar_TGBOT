@@ -45,11 +45,7 @@ class ConfigManagerTests(unittest.TestCase):
             status["MAIN_BOT_REAL_SEND_ACK"], "not_configured"
         )
         self.assertEqual(status["TG_BOT_TOKEN"], "not_configured")
-        self.assertFalse(status["LAUNCH_FUSION_ENABLE"])
-        self.assertEqual(
-            status["LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC"],
-            "1800",
-        )
+        self.assertTrue(status["PULSE_RADAR_ENABLE"])
 
     def test_non_allowlisted_key_is_rejected(self) -> None:
         with self.assertRaises(ConfigManagerError):
@@ -178,28 +174,17 @@ class ConfigManagerTests(unittest.TestCase):
         with self.assertRaises(ConfigManagerError):
             self.manager.set("MAIN_BOT_REAL_SEND", "yes")
 
-    def test_launch_fusion_config_is_allowlisted_and_bounded(self) -> None:
-        enabled = self.manager.set("LAUNCH_FUSION_ENABLE", "true")
-        interval = self.manager.set(
+    def test_retired_launch_algorithm_and_ai_keys_are_rejected(self) -> None:
+        for key in (
+            "LAUNCH_FUSION_ENABLE",
+            "LAUNCH_DIRECTIONAL_ENABLE",
+            "LAUNCH_AI_INTERPRETER_ENABLE",
             "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
-            "1800",
-        )
-
-        self.assertTrue(enabled["value"])
-        self.assertEqual(interval["value"], "1800")
-        checks = self.manager.validate()["checks"]
-        self.assertTrue(checks["launch_fusion_enable"])
-        self.assertEqual(
-            checks["launch_same_stage_min_interval_sec"],
-            1800,
-        )
-        for invalid in ("899", "7201", "not-a-number"):
-            with self.subTest(invalid=invalid):
+            "AI_API_KEY",
+        ):
+            with self.subTest(key=key):
                 with self.assertRaises(ConfigManagerError):
-                    self.manager.set(
-                        "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
-                        invalid,
-                    )
+                    self.manager.set(key, "true")
 
     @unittest.skipIf(os.name == "nt", "POSIX permission bits required")
     def test_environment_file_permission_is_600(self) -> None:
@@ -215,6 +200,8 @@ class MainOnlyMenuTests(unittest.TestCase):
             "五雷达状态",
             "radar-status",
             "MAIN_BOT_DELIVERY_MODE",
+            "PULSE_RADAR_ENABLE",
+            "脉冲雷达",
         ):
             self.assertIn(expected, text)
         for removed in (
@@ -223,6 +210,11 @@ class MainOnlyMenuTests(unittest.TestCase):
             "链上活动雷达",
             "OAR_AI_ENABLE",
             "ONCHAIN_BASE_HTTP_RPC_URL",
+            "LAUNCH_ALERT_ENABLE",
+            "LAUNCH_DIRECTIONAL_ENABLE",
+            "LAUNCH_AI_INTERPRETER_ENABLE",
+            "设置 AI API Key",
+            "启动预警",
         ):
             self.assertNotIn(removed, text)
 

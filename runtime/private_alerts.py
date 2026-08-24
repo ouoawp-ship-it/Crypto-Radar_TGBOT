@@ -26,7 +26,7 @@ _DATA_EVENTS = {
 _QUOTA_EVENT = "quota:global_hourly"
 _EVENT_LABELS = {
     _RUNTIME_EVENT: "主 BOT：未运行或心跳已过期",
-    "radar:launch_alert": "启动预警：运行异常或计划周期逾期",
+    "radar:launch_alert": "脉冲雷达：运行异常或计划周期逾期",
     "radar:radar_summary": "资金摘要：运行异常或计划周期逾期",
     "radar:funding_alert": "资金费率警报：运行异常或计划周期逾期",
     "radar:flow_radar": "五因子资金流：运行异常或计划周期逾期",

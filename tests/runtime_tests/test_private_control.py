@@ -46,24 +46,15 @@ class FakeConfigManager:
     def __init__(
         self,
         *,
-        ai_ready: bool = True,
-        directional_enabled: bool = False,
-        fusion_enabled: bool = True,
         fail_set: bool = False,
     ):
         self.values: dict[str, object] = {
-            "LAUNCH_FUSION_ENABLE": fusion_enabled,
-            "LAUNCH_DIRECTIONAL_ENABLE": directional_enabled,
-            "LAUNCH_AI_INTERPRETER_ENABLE": False,
             "TG_PRIVATE_CONTROL_ALERT_ENABLE": False,
-            "LAUNCH_ALERT_ENABLE": True,
+            "PULSE_RADAR_ENABLE": True,
             "RADAR_SUMMARY_ENABLE": True,
             "FUNDING_ALERT_ENABLE": True,
             "FLOW_RADAR_ENABLE": True,
             "ANNOUNCEMENT_RISK_ENABLE": True,
-            "AI_API_KEY": "configured" if ai_ready else "not_configured",
-            "AI_BASE_URL": "configured" if ai_ready else "not_configured",
-            "AI_MODEL": "fake-model" if ai_ready else "not_configured",
         }
         self.fail_set = fail_set
         self.set_calls: list[tuple[str, str]] = []
@@ -147,8 +138,8 @@ class PrivateControlTests(unittest.TestCase):
             manager = FakeConfigManager()
             session = FakeSession(
                 FakeResponse(body={"ok": True, "result": [
-                    update(41, "开启方向雷达"),
-                    update(44, "确认开启方向雷达"),
+                    update(41, "关闭脉冲雷达"),
+                    update(44, "确认关闭脉冲雷达"),
                 ]})
             )
             service = self.service(root, session=session, manager=manager)
@@ -203,17 +194,17 @@ class PrivateControlTests(unittest.TestCase):
 
             status = service.handle_update(update(1, "📡 雷达状态"))
             feature_menu = service.handle_update(update(2, "🧩 功能开关"))
-            first = service.handle_update(update(3, "🧭 开启方向"))
-            second = service.handle_update(update(4, "确认开启方向雷达"))
+            first = service.handle_update(update(3, "🚨 开启提醒"))
+            second = service.handle_update(update(4, "确认开启故障提醒"))
 
         self.assertEqual(status.command, "radar_status")
         self.assertEqual(feature_menu.command, "feature_switches_menu")
-        self.assertIn("方向分析", feature_menu.text)
-        self.assertIn("确认开启方向雷达", first.text)
+        self.assertIn("故障提醒", feature_menu.text)
+        self.assertIn("确认开启故障提醒", first.text)
         self.assertEqual(second.command, "configuration_updated")
         self.assertEqual(
             manager.set_calls,
-            [("LAUNCH_DIRECTIONAL_ENABLE", "true")],
+            [("TG_PRIVATE_CONTROL_ALERT_ENABLE", "true")],
         )
 
     def test_group_other_user_bot_and_forward_are_ignored(self) -> None:
@@ -281,7 +272,7 @@ class PrivateControlTests(unittest.TestCase):
             ]
 
         combined = "\n".join(texts)
-        self.assertIn("启动预警：运行中 · 安全演练", combined)
+        self.assertIn("脉冲雷达：运行中 · 安全演练", combined)
         self.assertIn("提醒：1", combined)
         self.assertIn("剩余：13", combined)
         self.assertIn("机器人：已配置", combined)
@@ -290,24 +281,38 @@ class PrivateControlTests(unittest.TestCase):
         self.assertNotIn("888", combined)
         self.assertNotIn("999", combined)
 
-    def test_directional_toggle_requires_exact_second_confirmation(self) -> None:
+    def test_pulse_toggle_requires_exact_second_confirmation(self) -> None:
         with TemporaryDirectory() as tmp:
             manager = FakeConfigManager()
             service = self.service(Path(tmp), session=FakeSession(), manager=manager)
 
-            first = service.handle_update(update(1, "开启方向雷达"))
-            wrong = service.handle_update(update(2, "确认打开方向雷达"))
+            first = service.handle_update(update(1, "关闭脉冲雷达"))
+            wrong = service.handle_update(update(2, "确认关闭旧启动雷达"))
             calls_before_confirmation = list(manager.set_calls)
-            second = service.handle_update(update(3, "确认开启方向雷达"))
+            second = service.handle_update(update(3, "确认关闭脉冲雷达"))
 
-        self.assertIn("确认开启方向雷达", first.text)
+        self.assertIn("确认关闭脉冲雷达", first.text)
         self.assertEqual(calls_before_confirmation, [])
         self.assertIn("不支持", wrong.text)
         self.assertEqual(second.command, "configuration_updated")
         self.assertEqual(
             manager.set_calls,
-            [("LAUNCH_DIRECTIONAL_ENABLE", "true")],
+            [("PULSE_RADAR_ENABLE", "false")],
         )
+
+    def test_retired_launch_direction_and_ai_commands_are_unsupported(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = FakeConfigManager()
+            service = self.service(Path(tmp), session=FakeSession(), manager=manager)
+
+            replies = [
+                service.handle_update(update(1, "开启方向雷达")),
+                service.handle_update(update(2, "开启AI解读")),
+                service.handle_update(update(3, "AI设置")),
+            ]
+
+        self.assertTrue(all(reply.command == "unsupported" for reply in replies))
+        self.assertEqual(manager.set_calls, [])
 
     def test_confirmation_is_one_time_and_expires(self) -> None:
         now = [1_000.0]
@@ -319,50 +324,14 @@ class PrivateControlTests(unittest.TestCase):
                 manager=manager,
                 clock=lambda: now[0],
             )
-            service.handle_update(update(1, "关闭方向雷达"))
+            service.handle_update(update(1, "关闭脉冲雷达"))
             now[0] += 121
-            expired = service.handle_update(update(2, "确认关闭方向雷达"))
-            repeated = service.handle_update(update(3, "确认关闭方向雷达"))
+            expired = service.handle_update(update(2, "确认关闭脉冲雷达"))
+            repeated = service.handle_update(update(3, "确认关闭脉冲雷达"))
 
         self.assertEqual(expired.command, "confirmation_invalid")
         self.assertEqual(repeated.command, "confirmation_invalid")
         self.assertEqual(manager.set_calls, [])
-
-    def test_ai_enable_is_refused_until_configuration_is_complete(self) -> None:
-        with TemporaryDirectory() as tmp:
-            manager = FakeConfigManager(
-                ai_ready=False,
-                directional_enabled=True,
-            )
-            service = self.service(Path(tmp), session=FakeSession(), manager=manager)
-
-            reply = service.handle_update(update(1, "开启AI解读"))
-            confirmation = service.handle_update(update(2, "确认开启AI解读"))
-
-        self.assertEqual(reply.command, "ai_not_ready")
-        self.assertEqual(confirmation.command, "confirmation_invalid")
-        self.assertEqual(manager.set_calls, [])
-
-    def test_ai_toggle_uses_only_allowlisted_fixed_key(self) -> None:
-        with TemporaryDirectory() as tmp:
-            manager = FakeConfigManager(
-                ai_ready=True,
-                directional_enabled=True,
-            )
-            service = self.service(Path(tmp), session=FakeSession(), manager=manager)
-            service.handle_update(update(1, "开启AI解读"))
-            reply = service.handle_update(update(2, "确认开启AI解读"))
-            unsupported = service.handle_update(
-                update(3, "set MAIN_BOT_DELIVERY_MODE=real; rm -rf /")
-            )
-
-        self.assertEqual(reply.command, "configuration_updated")
-        self.assertEqual(unsupported.command, "unsupported")
-        self.assertEqual(
-            manager.set_calls,
-            [("LAUNCH_AI_INTERPRETER_ENABLE", "true")],
-        )
-        self.assertTrue(all("REAL" not in key for key, _ in manager.set_calls))
 
     def test_runtime_detail_views_are_fixed_bounded_readers(self) -> None:
         secret = "123456:private-secret"
@@ -402,7 +371,7 @@ class PrivateControlTests(unittest.TestCase):
 
     def test_each_radar_switch_requires_exact_confirmation(self) -> None:
         cases = (
-            ("关闭启动预警", "确认关闭启动预警", "LAUNCH_ALERT_ENABLE"),
+            ("关闭脉冲雷达", "确认关闭脉冲雷达", "PULSE_RADAR_ENABLE"),
             ("关闭资金摘要", "确认关闭资金摘要", "RADAR_SUMMARY_ENABLE"),
             (
                 "关闭资金费率警报",
@@ -445,35 +414,12 @@ class PrivateControlTests(unittest.TestCase):
         )
         self.assertTrue(all("REAL" not in key for key, _ in manager.set_calls))
 
-    def test_ai_enable_requires_directional_radar_first(self) -> None:
-        with TemporaryDirectory() as tmp:
-            manager = FakeConfigManager(ai_ready=True)
-            service = self.service(Path(tmp), session=FakeSession(), manager=manager)
-
-            reply = service.handle_update(update(1, "开启AI解读"))
-
-        self.assertEqual(reply.command, "directional_not_enabled")
-        self.assertEqual(manager.set_calls, [])
-
-    def test_directional_enable_requires_fusion_foundation(self) -> None:
-        with TemporaryDirectory() as tmp:
-            manager = FakeConfigManager(fusion_enabled=False)
-            service = self.service(Path(tmp), session=FakeSession(), manager=manager)
-
-            reply = service.handle_update(update(1, "开启方向雷达"))
-
-        self.assertEqual(
-            reply.command,
-            "directional_prerequisite_not_ready",
-        )
-        self.assertEqual(manager.set_calls, [])
-
     def test_config_manager_failure_is_sanitized(self) -> None:
         with TemporaryDirectory() as tmp:
             manager = FakeConfigManager(fail_set=True)
             service = self.service(Path(tmp), session=FakeSession(), manager=manager)
-            service.handle_update(update(1, "关闭AI解读"))
-            reply = service.handle_update(update(2, "确认关闭AI解读"))
+            service.handle_update(update(1, "关闭公告风险"))
+            reply = service.handle_update(update(2, "确认关闭公告风险"))
 
         self.assertEqual(reply.command, "configuration_update_failed")
         self.assertNotIn("secret provider error", reply.text)

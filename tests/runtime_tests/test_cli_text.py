@@ -69,7 +69,7 @@ class PushResultChineseTextTests(unittest.TestCase):
 
     def test_index_and_note_use_chinese_sentence(self) -> None:
         rendered = format_push_result_cn(
-            "启动预警推送",
+            "脉冲雷达推送",
             "skipped",
             "chart_unavailable",
             index=2,
@@ -78,7 +78,7 @@ class PushResultChineseTextTests(unittest.TestCase):
 
         self.assertEqual(
             rendered,
-            "启动预警推送（第2条）：已跳过"
+            "脉冲雷达推送（第2条）：已跳过"
             "（图表暂时无法生成；旧卡片已保留）",
         )
 

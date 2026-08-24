@@ -9,7 +9,6 @@ import re
 import stat
 import sys
 import tempfile
-from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -29,56 +28,36 @@ ALLOWLIST = {
     "MAIN_BOT_DELIVERY_MODE": "oi",
     "MAIN_BOT_REAL_SEND": "oi",
     "MAIN_BOT_REAL_SEND_ACK": "oi",
-    "LAUNCH_FUSION_ENABLE": "oi",
-    "LAUNCH_ALERT_ENABLE": "oi",
+    "PULSE_RADAR_ENABLE": "oi",
     "RADAR_SUMMARY_ENABLE": "oi",
     "FUNDING_ALERT_ENABLE": "oi",
     "FLOW_RADAR_ENABLE": "oi",
     "ANNOUNCEMENT_RISK_ENABLE": "oi",
-    "LAUNCH_DIRECTIONAL_ENABLE": "oi",
-    "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "oi",
-    "LAUNCH_AI_INTERPRETER_ENABLE": "oi",
-    "AI_API_KEY": "oi",
-    "AI_BASE_URL": "oi",
-    "AI_MODEL": "oi",
-    "AI_TIMEOUT_SEC": "oi",
-    "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "oi",
 }
 SECRET_KEYS = {
     "TG_BOT_TOKEN",
-    "AI_API_KEY",
 }
 SENSITIVE_KEYS = SECRET_KEYS | {
     "TG_CHAT_ID",
     "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
     "MAIN_BOT_REAL_SEND_ACK",
-    "AI_BASE_URL",
-    "AI_MODEL",
 }
 BOOLEAN_KEYS = {
     "MAIN_BOT_REAL_SEND",
     "TG_PRIVATE_CONTROL_ENABLE",
     "TG_PRIVATE_CONTROL_ALERT_ENABLE",
-    "LAUNCH_ALERT_ENABLE",
+    "PULSE_RADAR_ENABLE",
     "RADAR_SUMMARY_ENABLE",
     "FUNDING_ALERT_ENABLE",
     "FLOW_RADAR_ENABLE",
     "ANNOUNCEMENT_RISK_ENABLE",
-    "LAUNCH_FUSION_ENABLE",
-    "LAUNCH_DIRECTIONAL_ENABLE",
-    "LAUNCH_AI_INTERPRETER_ENABLE",
 }
 INTEGER_RANGES: dict[str, tuple[int, int]] = {
-    "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": (900, 7200),
-    "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": (1, 6),
-    "AI_TIMEOUT_SEC": (5, 180),
     "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": (300, 86400),
 }
 DECIMAL_RANGES: dict[str, tuple[float, float]] = {}
 BACKUP_LIMIT = 30
 MAIN_BOT_REAL_SEND_ACK_PHRASE = "发送真实主BOT提醒"
-AI_OPERATOR_PROMPT_FILE = Path("config/.launch_ai_prompt")
-AI_OPERATOR_PROMPT_MAX_CHARS = 3500
 
 
 class ConfigManagerError(ValueError):
@@ -194,17 +173,11 @@ class ConfigManager:
             "TG_PRIVATE_CONTROL_ENABLE": "false",
             "TG_PRIVATE_CONTROL_ALERT_ENABLE": "false",
             "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": "3600",
-            "LAUNCH_ALERT_ENABLE": "true",
+            "PULSE_RADAR_ENABLE": "true",
             "RADAR_SUMMARY_ENABLE": "true",
             "FUNDING_ALERT_ENABLE": "true",
             "FLOW_RADAR_ENABLE": "true",
             "ANNOUNCEMENT_RISK_ENABLE": "true",
-            "LAUNCH_FUSION_ENABLE": "false",
-            "LAUNCH_DIRECTIONAL_ENABLE": "false",
-            "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "6",
-            "LAUNCH_AI_INTERPRETER_ENABLE": "false",
-            "AI_TIMEOUT_SEC": "60",
-            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "1800",
         }
         status = {
             key: _redacted(
@@ -213,74 +186,7 @@ class ConfigManager:
             )
             for key in sorted(ALLOWLIST)
         }
-        status["AI_OPERATOR_PROMPT"] = self.ai_prompt_status()
         return status
-
-    def ai_prompt_status(self) -> str:
-        path = self.base_dir / AI_OPERATOR_PROMPT_FILE
-        if not path.is_file() or path.is_symlink():
-            return "default"
-        try:
-            if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) != 0o600:
-                return "invalid"
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            return "invalid"
-        prompt = content.strip()
-        if not prompt:
-            return "default"
-        if "\x00" in prompt or len(prompt) > AI_OPERATOR_PROMPT_MAX_CHARS:
-            return "invalid"
-        return "configured"
-
-    def set_ai_prompt(self, value: str) -> dict[str, object]:
-        prompt = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
-        if not prompt:
-            raise ConfigManagerError("AI operator prompt must not be empty")
-        if "\x00" in prompt or len(prompt) > AI_OPERATOR_PROMPT_MAX_CHARS:
-            raise ConfigManagerError("AI operator prompt is invalid")
-        return self._write_ai_prompt(prompt + "\n", status="configured")
-
-    def clear_ai_prompt(self) -> dict[str, object]:
-        return self._write_ai_prompt("", status="default")
-
-    def _write_ai_prompt(
-        self,
-        content: str,
-        *,
-        status: str,
-    ) -> dict[str, object]:
-        self._require_current_layout()
-        path = self.base_dir / AI_OPERATOR_PROMPT_FILE
-        if path.is_symlink():
-            raise ConfigManagerError("AI operator prompt must not be a symbolic link")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _chmod_700(path.parent)
-        _require_mode(path.parent, 0o700)
-        with _file_lock(path):
-            existed = path.exists()
-            original = path.read_bytes() if existed else b""
-            backup = self._backup(path, original) if existed else None
-            try:
-                self._atomic_write(path, content)
-                saved = path.read_text(encoding="utf-8")
-                if saved != content:
-                    raise ConfigManagerError("AI operator prompt verification failed")
-            except Exception:
-                if existed:
-                    self._atomic_write_bytes(path, original)
-                else:
-                    path.unlink(missing_ok=True)
-                raise
-            _chmod_600(path)
-            _chmod_600(path.with_name(f"{path.name}.lock"))
-            _require_mode(path, 0o600)
-            _require_mode(path.with_name(f"{path.name}.lock"), 0o600)
-        return {
-            "status": "ok",
-            "value": status,
-            "backup_created": backup is not None,
-        }
 
     def set(self, key: str, value: str) -> dict[str, object]:
         self._validate_value(key, value)
@@ -497,19 +403,6 @@ class ConfigManager:
             raise ConfigManagerError(
                 "MAIN_BOT_REAL_SEND_ACK must be empty or the fixed phrase"
             )
-        if key == "AI_BASE_URL" and value:
-            self._validate_ai_base_url(value)
-        if key == "AI_API_KEY" and value:
-            if (
-                len(value) > 512
-                or len(value) < 8
-                or any(character.isspace() for character in value)
-                or any(ord(character) < 32 for character in value)
-            ):
-                raise ConfigManagerError("AI_API_KEY has an invalid format")
-        if key == "AI_MODEL" and value:
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
-                raise ConfigManagerError("AI_MODEL has an invalid format")
         if key == "TG_PRIVATE_CONTROL_ADMIN_USER_ID" and value:
             self._validate_private_control_admin_id(value)
 
@@ -522,32 +415,6 @@ class ConfigManager:
         if int(value) > 9_223_372_036_854_775_807:
             raise ConfigManagerError(
                 "TG_PRIVATE_CONTROL_ADMIN_USER_ID is out of range"
-            )
-
-    @staticmethod
-    def _validate_ai_base_url(value: str) -> None:
-        if (
-            len(value) > 2048
-            or any(character.isspace() for character in value)
-            or any(ord(character) < 32 for character in value)
-        ):
-            raise ConfigManagerError("AI_BASE_URL must be a valid HTTPS URL")
-        try:
-            parsed = urlsplit(value)
-            port = parsed.port
-        except ValueError as exc:
-            raise ConfigManagerError("AI_BASE_URL must be a valid HTTPS URL") from exc
-        if (
-            parsed.scheme.lower() != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-            or port is not None and not 1 <= port <= 65535
-        ):
-            raise ConfigManagerError(
-                "AI_BASE_URL must use HTTPS without credentials, query, or fragment"
             )
 
     def _read_env(self, filename: str) -> dict[str, str]:
@@ -607,7 +474,7 @@ class ConfigManager:
 
         radar_switches: dict[str, bool] = {}
         for key in (
-            "LAUNCH_ALERT_ENABLE",
+            "PULSE_RADAR_ENABLE",
             "RADAR_SUMMARY_ENABLE",
             "FUNDING_ALERT_ENABLE",
             "FLOW_RADAR_ENABLE",
@@ -657,52 +524,8 @@ class ConfigManager:
             raise ConfigManagerError(
                 "main_bot_dry_run_gate_inconsistent"
             )
-        launch_fusion = values.get(
-            "LAUNCH_FUSION_ENABLE",
-            "false",
-        ).strip().lower()
-        if launch_fusion not in {"true", "false"}:
-            raise ConfigManagerError(
-                "LAUNCH_FUSION_ENABLE must be true or false"
-            )
-        raw_same_stage_interval = values.get(
-            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
-            "1800",
-        ).strip()
-        try:
-            same_stage_interval = int(raw_same_stage_interval)
-        except ValueError as exc:
-            raise ConfigManagerError(
-                "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC must be an integer"
-            ) from exc
-        minimum, maximum = INTEGER_RANGES[
-            "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC"
-        ]
-        if not minimum <= same_stage_interval <= maximum:
-            raise ConfigManagerError(
-                "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC must be in "
-                f"[{minimum}, {maximum}]"
-            )
-        directional_enable = values.get(
-            "LAUNCH_DIRECTIONAL_ENABLE",
-            "false",
-        ).strip().lower()
-        if directional_enable not in {"true", "false"}:
-            raise ConfigManagerError(
-                "LAUNCH_DIRECTIONAL_ENABLE must be true or false"
-            )
-        ai_interpreter_enable = values.get(
-            "LAUNCH_AI_INTERPRETER_ENABLE",
-            "false",
-        ).strip().lower()
-        if ai_interpreter_enable not in {"true", "false"}:
-            raise ConfigManagerError(
-                "LAUNCH_AI_INTERPRETER_ENABLE must be true or false"
-            )
         bounded_integers: dict[str, int] = {}
         for key, default in (
-            ("LAUNCH_DIRECTIONAL_MAX_CANDIDATES", "6"),
-            ("AI_TIMEOUT_SEC", "60"),
             ("TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC", "3600"),
         ):
             raw_value = values.get(key, default).strip()
@@ -716,9 +539,6 @@ class ConfigManager:
                     f"{key} must be in [{minimum}, {maximum}]"
                 )
             bounded_integers[key] = amount
-        ai_base_url = values.get("AI_BASE_URL", "").strip()
-        if ai_base_url:
-            self._validate_ai_base_url(ai_base_url)
         return {
             "telegram_bot_token": (
                 "configured" if token else "not_configured"
@@ -747,23 +567,6 @@ class ConfigManager:
             "main_bot_real_send_ack": (
                 "configured" if main_bot_ack else "not_configured"
             ),
-            "launch_fusion_enable": launch_fusion == "true",
-            "launch_directional_enable": directional_enable == "true",
-            "launch_directional_max_candidates": bounded_integers[
-                "LAUNCH_DIRECTIONAL_MAX_CANDIDATES"
-            ],
-            "launch_ai_interpreter_enable": ai_interpreter_enable == "true",
-            "ai_api_key": (
-                "configured" if values.get("AI_API_KEY", "").strip()
-                else "not_configured"
-            ),
-            "ai_base_url": "configured" if ai_base_url else "not_configured",
-            "ai_model": (
-                "configured" if values.get("AI_MODEL", "").strip()
-                else "not_configured"
-            ),
-            "ai_timeout_sec": bounded_integers["AI_TIMEOUT_SEC"],
-            "launch_same_stage_min_interval_sec": same_stage_interval,
         }
 
     def _backup(self, path: Path, content: bytes) -> Path:
@@ -781,10 +584,7 @@ class ConfigManager:
             raise ConfigManagerError(
                 "invalid environment backup target"
             ) from exc
-        if relative not in {
-            *ENV_FILES.values(),
-            AI_OPERATOR_PROMPT_FILE.as_posix(),
-        }:
+        if relative not in set(ENV_FILES.values()):
             raise ConfigManagerError("invalid environment backup target")
         backups = sorted(
             path.parent.glob(f"{path.name}.bak.*"),

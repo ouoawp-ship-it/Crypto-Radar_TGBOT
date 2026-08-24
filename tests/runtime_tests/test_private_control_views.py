@@ -54,7 +54,7 @@ class PrivateControlViewsTests(unittest.TestCase):
                     """,
                     (
                         1_700_000_000 + index,
-                        "launch",
+                        "pulse",
                         "TG_LAUNCH_ALERT",
                         f"ASSET{index:02d}USDT",
                         "breakout",
@@ -87,7 +87,7 @@ class PrivateControlViewsTests(unittest.TestCase):
         self.assertEqual(len(rows), MAX_VIEW_ITEMS)
         self.assertIn("ASSET09USDT", text)
         self.assertNotIn("ASSET00USDT", text)
-        self.assertIn("突破确认", text)
+        self.assertIn("强势突破", text)
         self.assertIn("79分", text)
         self.assertNotIn(SECRET, text)
         self.assertNotIn("dedup", text)
@@ -290,7 +290,7 @@ class PrivateControlViewsTests(unittest.TestCase):
 
         rows = [line for line in text.splitlines() if line.startswith("• ")]
         self.assertEqual(len(rows), MAX_VIEW_ITEMS)
-        self.assertIn("启动预警：最近一轮未正常完成", text)
+        self.assertIn("脉冲雷达：最近一轮未正常完成", text)
         self.assertIn("资金摘要：已经超过计划运行时间", text)
         self.assertIn("主循环没有正常更新", text)
         self.assertNotIn(SECRET, text)

@@ -1,1 +1,0 @@
-"""Launch-warning radar."""

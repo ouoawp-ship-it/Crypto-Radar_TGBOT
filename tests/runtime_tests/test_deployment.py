@@ -45,25 +45,6 @@ class GitIgnoreHardeningTests(unittest.TestCase):
         self.assertFalse(is_ignored(".env.oi.example"))
 
 
-class LaunchRuntimeDiagnosticsTests(unittest.TestCase):
-    def test_lifecycle_diagnostics_are_preserved_for_runtime_status(self) -> None:
-        launch = {
-            "diagnostics": {
-                "binance_confirmation": {"confirmed": 80},
-                "lifecycle_v2": {"status": "shadow", "recorded": 1},
-            }
-        }
-
-        diagnostics = main.launch_runtime_diagnostics(launch)
-
-        self.assertEqual(diagnostics["lifecycle_v2"]["status"], "shadow")
-        self.assertEqual(diagnostics["lifecycle_v2"]["recorded"], 1)
-        self.assertIsNot(diagnostics, launch["diagnostics"])
-
-    def test_missing_launch_diagnostics_returns_empty_mapping(self) -> None:
-        self.assertEqual(main.launch_runtime_diagnostics({}), {})
-
-
 def load_sync_module():
     path = ROOT / "scripts" / "sync_env.py"
     spec = importlib.util.spec_from_file_location("sync_env", path)
@@ -212,6 +193,35 @@ class EnvSyncTests(unittest.TestCase):
                 "TG_ANNOUNCEMENT_ALERT_TOPIC_ID=13",
                 env.read_text(encoding="utf-8"),
             )
+
+    def test_sync_migrates_old_launch_switch_to_pulse_and_removes_old_keys(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "LAUNCH_ALERT_ENABLE=false\n"
+                "LAUNCH_SCAN_LIMIT=80\n"
+                "LAUNCH_FUSION_ENABLE=true\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "PULSE_RADAR_ENABLE=true\n"
+                "SIMPLE_ALERT_SCAN_LIMIT=120\n"
+                "DIVERGENCE_SCAN_LIMIT=200\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("PULSE_RADAR_ENABLE=false", text)
+        self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=80", text)
+        self.assertIn("DIVERGENCE_SCAN_LIMIT=200", text)
+        self.assertNotIn("LAUNCH_", text)
+        self.assertIn("LAUNCH_ALERT_ENABLE", result["removed"])
+        self.assertIn("LAUNCH_SCAN_LIMIT", result["removed"])
+        self.assertIn("LAUNCH_FUSION_ENABLE", result["removed"])
 
     def test_sync_backs_up_and_atomically_replaces_environment_file(self) -> None:
         module = load_sync_module()
@@ -392,56 +402,10 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("database-backup", command_action.choices)
 
 
-class LaunchReportTests(unittest.TestCase):
-    def test_launch_alert_pressure_allows_two_symbol_candidates_per_scan(self) -> None:
-        self.assertTrue(main.launch_alert_pressure_within_limit(104, 100))
-        self.assertTrue(main.launch_alert_pressure_within_limit(200, 100))
-
-    def test_launch_alert_pressure_still_blocks_excessive_candidate_volume(self) -> None:
-        self.assertFalse(main.launch_alert_pressure_within_limit(201, 100))
-
-    def test_current_launch_pressure_counts_distinct_actionable_symbols(self) -> None:
-        with TemporaryDirectory() as tmp:
-            state_path = Path(tmp) / "launch_state.json"
-            settings = Settings(
-                base_dir=Path(tmp),
-                data_dir=Path(tmp),
-                launch_state_path=state_path,
-                launch_min_score_push=60,
-            )
-            store = JsonStore(Path(tmp))
-            store.save(state_path, {
-                "BTCUSDT": {"stage": "primed", "score": 60},
-                "ETHUSDT": {"stage": "breakout", "score": 75},
-                "SOLUSDT": {"stage": "watching", "score": 55},
-                "XRPUSDT": {"stage": "cooling", "score": 80},
-            })
-
-            self.assertEqual(
-                main.current_launch_alert_candidate_count(settings, store),
-                2,
-            )
-
-    def test_current_launch_pressure_fails_closed_without_valid_state(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                base_dir=Path(tmp),
-                data_dir=Path(tmp),
-                launch_state_path=Path(tmp) / "missing.json",
-            )
-
-            self.assertIsNone(
-                main.current_launch_alert_candidate_count(
-                    settings,
-                    JsonStore(Path(tmp)),
-                )
-            )
-
-    def test_readiness_uses_current_candidates_for_message_packages(self) -> None:
+class PulseReadinessTests(unittest.TestCase):
+    def test_readiness_accepts_direct_pulse_configuration(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            state_path = root / "launch_state.json"
-            history_path = root / "launch_watch_history.json"
             settings = Settings(
                 base_dir=root,
                 data_dir=root,
@@ -452,26 +416,8 @@ class LaunchReportTests(unittest.TestCase):
                 tg_announcement_alert_topic_id="15",
                 tg_flow_radar_topic_id="13",
                 tg_topic_routes_path=root / "topic_routes.json",
-                launch_state_path=state_path,
-                launch_watch_history_path=history_path,
-                launch_message_package_v2_enable=True,
-                launch_min_score_push=60,
             )
             store = JsonStore(root)
-            store.save(state_path, {
-                "BTCUSDT": {"stage": "primed", "score": 60},
-                "ETHUSDT": {"stage": "breakout", "score": 75},
-            })
-            store.save(history_path, [
-                {
-                    "alert_count": 8,
-                    "scanned": 80,
-                    "top_score": 75,
-                    "buckets": {"primed": 2},
-                    "top_symbols": ["BTCUSDT", "ETHUSDT"],
-                }
-                for _ in range(5)
-            ])
             store.save(settings.tg_topic_routes_path, {
                 "routes": {
                     "TG_FUNDING_ALERT": {"topic_id": "14"},
@@ -483,13 +429,13 @@ class LaunchReportTests(unittest.TestCase):
                     code = main.print_readiness(settings, store)
 
             self.assertEqual(code, 0)
-            self.assertIn("当前独立有效候选 2 / 2", output.getvalue())
-            self.assertIn("dry-run 会重复记录", output.getvalue())
+            self.assertIn("脉冲雷达已启用", output.getvalue())
+            self.assertIn("脉冲扫描上限 15m=120，2h=200", output.getvalue())
+            self.assertNotIn("shadow", output.getvalue().lower())
 
     def test_readiness_fails_when_a_production_topic_is_missing(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            history_path = root / "launch_watch_history.json"
             settings = Settings(
                 base_dir=root,
                 data_dir=root,
@@ -500,19 +446,8 @@ class LaunchReportTests(unittest.TestCase):
                 tg_announcement_alert_topic_id="14",
                 tg_flow_radar_topic_id="13",
                 tg_topic_routes_path=root / "topic_routes.json",
-                launch_watch_history_path=history_path,
             )
             store = JsonStore(root)
-            store.save(history_path, [
-                {
-                    "alert_count": 0,
-                    "scanned": 80,
-                    "top_score": 0,
-                    "buckets": {},
-                    "top_symbols": [],
-                }
-                for _ in range(5)
-            ])
 
             with patch.object(main, "runtime_health_checks", return_value=[]):
                 with redirect_stdout(StringIO()) as output:
@@ -523,45 +458,6 @@ class LaunchReportTests(unittest.TestCase):
             self.assertIn("⏳ 待处理 资金费率警报专属话题", text)
             self.assertIn("资金费率警报专属话题未配置", text)
             self.assertNotIn("telegram_topic_test_message", text)
-
-    def test_launch_report_summarizes_scores_and_buckets(self) -> None:
-        settings = Settings(base_dir=Path("."), data_dir=Path("data"))
-        report = main.build_launch_report(
-            [
-                {
-                    "top_score": 20,
-                    "scanned": 2,
-                    "alert_count": 0,
-                    "buckets": {"idle": 2, "watching": 0},
-                    "top_symbols": ["BTCUSDT", "ETHUSDT"],
-                },
-                {
-                    "top_score": 60,
-                    "scanned": 2,
-                    "alert_count": 1,
-                    "buckets": {"idle": 1, "primed": 1},
-                    "top_symbols": ["ETHUSDT", "BTCUSDT"],
-                },
-            ],
-            settings,
-        )
-
-        self.assertEqual(report["records"], 2)
-        self.assertEqual(report["total_scanned"], 4)
-        self.assertEqual(report["total_alerts"], 1)
-        self.assertEqual(report["max_top_score"], 60)
-        self.assertEqual(report["avg_top_score"], 40)
-        self.assertEqual(report["buckets"]["primed"], 1)
-        self.assertEqual(report["top_symbols"][0], ("BTCUSDT", 2))
-
-    def test_launch_report_ignores_excluded_symbols(self) -> None:
-        settings = Settings(excluded_base_assets=("XAU", "XAG"))
-        report = main.build_launch_report(
-            [{"top_score": 10, "scanned": 3, "alert_count": 0, "buckets": {}, "top_symbols": ["XAUUSDT", "BTCUSDT"]}],
-            settings,
-        )
-
-        self.assertEqual(report["top_symbols"], [("BTCUSDT", 1)])
 
 
 class MainCommandTests(unittest.TestCase):
@@ -577,9 +473,6 @@ class MainCommandTests(unittest.TestCase):
             runtime_status_path=Path(tmp) / "runtime_status.json",
             radar_state_path=Path(tmp) / "radar_state.json",
             funding_snapshot_path=Path(tmp) / "funding_snapshot.json",
-            launch_state_path=Path(tmp) / "launch_state.json",
-            launch_watchlist_path=Path(tmp) / "launch_watchlist.json",
-            launch_watch_history_path=Path(tmp) / "launch_watch_history.json",
             divergence_state_path=Path(tmp) / "oi_divergence_state.json",
             divergence_cooldown_path=Path(tmp) / "oi_divergence_cooldown.json",
         )
@@ -957,12 +850,13 @@ class MainCommandTests(unittest.TestCase):
 
     def test_make_runtime_for_args_applies_scan_limit_overrides(self) -> None:
         with TemporaryDirectory() as tmp:
-            args = argparse.Namespace(radar_scan_limit=4, launch_scan_limit=3, flow_scan_limit=2, funding_scan_limit=5)
+            args = argparse.Namespace(radar_scan_limit=4, pulse_scan_limit=3, flow_scan_limit=2, funding_scan_limit=5)
             with patch.object(main, "make_runtime", side_effect=lambda: self.make_runtime(tmp)):
                 settings, _store, _engine, _gateway = main.make_runtime_for_args(args)
 
         self.assertEqual(settings.radar_scan_limit, 4)
-        self.assertEqual(settings.launch_scan_limit, 3)
+        self.assertEqual(settings.pulse_simple_scan_limit, 3)
+        self.assertEqual(settings.pulse_divergence_scan_limit, 3)
         self.assertEqual(settings.flow_scan_limit, 2)
         self.assertEqual(settings.funding_alert_scan_limit, 5)
 

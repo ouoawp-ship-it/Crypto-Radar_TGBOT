@@ -10,8 +10,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 ENV_FILE = CONFIG_DIR / ".env.oi"
 LEGACY_ENV_FILE = BASE_DIR / ".env.oi"
-AI_OPERATOR_PROMPT_FILE = CONFIG_DIR / ".launch_ai_prompt"
-AI_OPERATOR_PROMPT_MAX_CHARS = 3500
 
 
 def active_env_file() -> Path:
@@ -39,21 +37,6 @@ def load_env_file(path: Path | None = None) -> dict[str, str]:
         if current is None or (current.strip() == "" and value.strip()):
             os.environ[key] = value
     return env
-
-
-def load_ai_operator_prompt(path: Path | None = None) -> str:
-    prompt_path = path or AI_OPERATOR_PROMPT_FILE
-    try:
-        if not prompt_path.is_file() or prompt_path.is_symlink():
-            return ""
-        if os.name == "posix" and (prompt_path.stat().st_mode & 0o777) != 0o600:
-            return ""
-        prompt = prompt_path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
-        return ""
-    if not prompt or "\x00" in prompt or len(prompt) > AI_OPERATOR_PROMPT_MAX_CHARS:
-        return ""
-    return prompt
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -308,52 +291,10 @@ class Settings:
     funding_history_budget: int = 25
     fuse_seconds: int = 15 * 60
 
-    launch_scan_limit: int = 80
-    launch_alert_enable: bool = True
-    launch_funding_exchanges: tuple[str, ...] = ("BINANCE",)
-    launch_funding_history_limit: int = 4
-    launch_state_path: Path = BASE_DIR / "data" / "launch_state.json"
-    launch_watchlist_path: Path = BASE_DIR / "data" / "launch_watchlist.json"
-    launch_watch_history_path: Path = BASE_DIR / "data" / "launch_watch_history.json"
-    launch_watch_history_limit: int = 500
-    launch_min_score_push: int = 60
-    launch_watch_score: int = 45
-    launch_primed_score: int = 60
-    launch_breakout_score: int = 75
-    launch_launched_score: int = 90
-    launch_close_delay_sec: int = 60
-    launch_stage_cooldown_sec: int = 6 * 3600
-    launch_invalidation_grace_sec: int = 30 * 60
-    launch_lifecycle_v2_enable: bool = False
-    launch_lifecycle_invalid_windows: int = 2
-    launch_message_package_v2_enable: bool = False
-    launch_price_action_v3_enable: bool = False
-    launch_pa_box_lookback: int = 16
-    launch_pa_max_box_range_pct: float = 12.0
-    launch_pa_min_body_ratio: float = 0.45
-    launch_pa_wick_body_ratio: float = 1.5
-    launch_chart_v2_enable: bool = False
-    launch_outcome_v2_enable: bool = False
-    launch_outcome_follow_through_pct: float = 3.0
-    launch_outcome_min_samples: int = 20
-    launch_fusion_enable: bool = False
-    launch_directional_enable: bool = False
-    launch_directional_max_candidates: int = 6
-    launch_ai_interpreter_enable: bool = False
-    ai_api_key: str = ""
-    ai_base_url: str = ""
-    ai_model: str = ""
-    ai_operator_prompt: str = ""
-    ai_timeout_sec: int = 60
-    launch_same_stage_min_interval_sec: int = 30 * 60
-    launch_package_score_delta: int = 15
-    launch_package_price_delta_pct: float = 3.0
-    launch_package_oi_delta_pct: float = 5.0
-    launch_message_cleanup_enable: bool = False
-    launch_message_cleanup_max_age_sec: int = 47 * 3600
-    launch_message_cleanup_limit: int = 20
-    launch_state_ttl_sec: int = 48 * 3600
-    launch_failed_ttl_sec: int = 24 * 3600
+    pulse_simple_scan_limit: int = 120
+    pulse_divergence_scan_limit: int = 200
+    pulse_radar_enable: bool = True
+    topic_message_cleanup_max_age_sec: int = 47 * 3600
 
     announcement_state_path: Path = BASE_DIR / "data" / "announcement_state.json"
     announcement_risk_enable: bool = True
@@ -395,6 +336,27 @@ class Settings:
                 return False
             raise ValueError("invalid reloadable boolean configuration")
 
+        def reloadable_bool_alias(
+            name: str,
+            legacy_name: str,
+            default: bool,
+        ) -> bool:
+            raw = file_env.get(name)
+            if raw is None:
+                raw = file_env.get(legacy_name)
+            if raw is None:
+                raw = os.getenv(name)
+            if raw is None:
+                raw = os.getenv(legacy_name)
+            if raw is None or not raw.strip():
+                return default
+            normalized = raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError("invalid reloadable boolean configuration")
+
         def reloadable_bounded_int(
             name: str,
             default: int,
@@ -404,6 +366,32 @@ class Settings:
             raw = file_env.get(name)
             if raw is None:
                 return env_bounded_int(name, default, minimum, maximum)
+            try:
+                value = int(raw)
+            except ValueError as exc:
+                raise ValueError(
+                    "invalid reloadable integer configuration"
+                ) from exc
+            if not minimum <= value <= maximum:
+                raise ValueError("reloadable integer configuration out of range")
+            return value
+
+        def reloadable_bounded_int_alias(
+            name: str,
+            legacy_name: str,
+            default: int,
+            minimum: int,
+            maximum: int,
+        ) -> int:
+            raw = file_env.get(name)
+            if raw is None:
+                raw = file_env.get(legacy_name)
+            if raw is None:
+                raw = os.getenv(name)
+            if raw is None:
+                raw = os.getenv(legacy_name)
+            if raw is None or not raw.strip():
+                return default
             try:
                 value = int(raw)
             except ValueError as exc:
@@ -714,80 +702,29 @@ class Settings:
             kline_budget=env_int("KLINE_REQUEST_BUDGET", 120),
             funding_history_budget=env_int("FUNDING_HISTORY_REQUEST_BUDGET", 25),
             fuse_seconds=env_int("DATA_SOURCE_FUSE_SECONDS", 15 * 60),
-            launch_scan_limit=env_int("LAUNCH_SCAN_LIMIT", 80),
-            launch_alert_enable=reloadable_bool("LAUNCH_ALERT_ENABLE", True),
-            launch_funding_exchanges=env_csv("LAUNCH_FUNDING_EXCHANGES", ("BINANCE",)),
-            launch_funding_history_limit=env_int("LAUNCH_FUNDING_HISTORY_LIMIT", 4),
-            launch_state_path=data_path(data_dir, "LAUNCH_STATE_FILE", "launch_state.json"),
-            launch_watchlist_path=data_path(data_dir, "LAUNCH_WATCHLIST_FILE", "launch_watchlist.json"),
-            launch_watch_history_path=data_path(data_dir, "LAUNCH_WATCH_HISTORY_FILE", "launch_watch_history.json"),
-            launch_watch_history_limit=env_int("LAUNCH_WATCH_HISTORY_LIMIT", 500),
-            launch_min_score_push=env_int("LAUNCH_MIN_SCORE_PUSH", 60),
-            launch_watch_score=env_int("LAUNCH_WATCH_SCORE", 45),
-            launch_primed_score=env_int("LAUNCH_PRIMED_SCORE", 60),
-            launch_breakout_score=env_int("LAUNCH_BREAKOUT_SCORE", 75),
-            launch_launched_score=env_int("LAUNCH_LAUNCHED_SCORE", 90),
-            launch_close_delay_sec=env_int("LAUNCH_CLOSE_DELAY_SEC", 60),
-            launch_stage_cooldown_sec=env_int("LAUNCH_STAGE_COOLDOWN_SEC", 6 * 3600),
-            launch_invalidation_grace_sec=env_int("LAUNCH_INVALIDATION_GRACE_SEC", 30 * 60),
-            launch_lifecycle_v2_enable=env_bool("LAUNCH_LIFECYCLE_V2_ENABLE", False),
-            launch_lifecycle_invalid_windows=env_int("LAUNCH_LIFECYCLE_INVALID_WINDOWS", 2),
-            launch_message_package_v2_enable=env_bool("LAUNCH_MESSAGE_PACKAGE_V2_ENABLE", False),
-            launch_price_action_v3_enable=env_bool("LAUNCH_PRICE_ACTION_V3_ENABLE", False),
-            launch_pa_box_lookback=env_int("LAUNCH_PA_BOX_LOOKBACK", 16),
-            launch_pa_max_box_range_pct=env_float("LAUNCH_PA_MAX_BOX_RANGE_PCT", 12.0),
-            launch_pa_min_body_ratio=env_float("LAUNCH_PA_MIN_BODY_RATIO", 0.45),
-            launch_pa_wick_body_ratio=env_float("LAUNCH_PA_WICK_BODY_RATIO", 1.5),
-            launch_chart_v2_enable=env_bool("LAUNCH_CHART_V2_ENABLE", False),
-            launch_outcome_v2_enable=env_bool("LAUNCH_OUTCOME_V2_ENABLE", False),
-            launch_outcome_follow_through_pct=env_float("LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT", 3.0),
-            launch_outcome_min_samples=env_int("LAUNCH_OUTCOME_MIN_SAMPLES", 20),
-            launch_fusion_enable=env_bool("LAUNCH_FUSION_ENABLE", False),
-            launch_directional_enable=reloadable_bool(
-                "LAUNCH_DIRECTIONAL_ENABLE",
-                False,
-            ),
-            launch_directional_max_candidates=env_bounded_int(
-                "LAUNCH_DIRECTIONAL_MAX_CANDIDATES",
-                6,
+            pulse_simple_scan_limit=reloadable_bounded_int_alias(
+                "SIMPLE_ALERT_SCAN_LIMIT",
+                "LAUNCH_SCAN_LIMIT",
+                120,
                 1,
-                6,
+                1000,
             ),
-            launch_ai_interpreter_enable=reloadable_bool(
-                "LAUNCH_AI_INTERPRETER_ENABLE",
-                False,
+            pulse_divergence_scan_limit=reloadable_bounded_int_alias(
+                "DIVERGENCE_SCAN_LIMIT",
+                "LAUNCH_SCAN_LIMIT",
+                200,
+                1,
+                1000,
             ),
-            ai_api_key=file_env.get(
-                "AI_API_KEY",
-                os.getenv("AI_API_KEY", ""),
-            ).strip(),
-            ai_base_url=file_env.get(
-                "AI_BASE_URL",
-                os.getenv("AI_BASE_URL", ""),
-            ).strip().rstrip("/"),
-            ai_model=file_env.get(
-                "AI_MODEL",
-                os.getenv("AI_MODEL", ""),
-            ).strip(),
-            ai_operator_prompt=load_ai_operator_prompt(),
-            ai_timeout_sec=env_bounded_int(
-                "AI_TIMEOUT_SEC",
-                60,
-                5,
-                180,
+            pulse_radar_enable=reloadable_bool_alias(
+                "PULSE_RADAR_ENABLE",
+                "LAUNCH_ALERT_ENABLE",
+                True,
             ),
-            launch_same_stage_min_interval_sec=env_int(
-                "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC",
-                30 * 60,
+            topic_message_cleanup_max_age_sec=env_int(
+                "TOPIC_MESSAGE_CLEANUP_MAX_AGE_SEC",
+                env_int("LAUNCH_MESSAGE_CLEANUP_MAX_AGE_SEC", 47 * 3600),
             ),
-            launch_package_score_delta=env_int("LAUNCH_PACKAGE_SCORE_DELTA", 15),
-            launch_package_price_delta_pct=env_float("LAUNCH_PACKAGE_PRICE_DELTA_PCT", 3.0),
-            launch_package_oi_delta_pct=env_float("LAUNCH_PACKAGE_OI_DELTA_PCT", 5.0),
-            launch_message_cleanup_enable=env_bool("LAUNCH_MESSAGE_CLEANUP_ENABLE", False),
-            launch_message_cleanup_max_age_sec=env_int("LAUNCH_MESSAGE_CLEANUP_MAX_AGE_SEC", 47 * 3600),
-            launch_message_cleanup_limit=env_int("LAUNCH_MESSAGE_CLEANUP_LIMIT", 20),
-            launch_state_ttl_sec=env_int("LAUNCH_STATE_TTL_SEC", 48 * 3600),
-            launch_failed_ttl_sec=env_int("LAUNCH_FAILED_TTL_SEC", 24 * 3600),
             announcement_state_path=data_path(data_dir, "ANNOUNCEMENT_STATE_FILE", "announcement_state.json"),
             announcement_risk_enable=reloadable_bool(
                 "ANNOUNCEMENT_RISK_ENABLE",
@@ -951,7 +888,7 @@ class Settings:
                 "top_n": self.radar_top_n,
                 "summary_min_interval_sec": self.radar_summary_min_interval_sec,
                 "summary_max_daily_push": self.radar_summary_max_daily_push,
-                "accumulation_quality_evidence": "launch_supporting_only",
+                "accumulation_quality_evidence": "summary_diagnostic_only",
             },
             "flow_radar": {
                 "enabled": self.flow_radar_enable,
@@ -993,69 +930,23 @@ class Settings:
                 "flip_oi_min_growth_pct": self.funding_flip_oi_min_growth_pct,
                 "flip_oi_state_file": str(self.funding_flip_oi_state_path),
             },
-            "launch": {
-                "enabled": self.launch_alert_enable,
-                "scan_limit": self.launch_scan_limit,
-                "funding_exchanges": list(self.launch_funding_exchanges),
-                "funding_history_limit": self.launch_funding_history_limit,
-                "min_score_push": self.launch_min_score_push,
-                "thresholds": {
-                    "watching": self.launch_watch_score,
-                    "primed": self.launch_primed_score,
-                    "breakout": self.launch_breakout_score,
-                    "launched": self.launch_launched_score,
-                },
-                "stage_cooldown_sec": self.launch_stage_cooldown_sec,
-                "invalidation_grace_sec": self.launch_invalidation_grace_sec,
-                "lifecycle_v2_enable": self.launch_lifecycle_v2_enable,
-                "lifecycle_invalid_windows": self.launch_lifecycle_invalid_windows,
-                "message_package_v2_enable": self.launch_message_package_v2_enable,
-                "price_action_v3_enable": self.launch_price_action_v3_enable,
-                "price_action": {
-                    "box_lookback": self.launch_pa_box_lookback,
-                    "max_box_range_pct": self.launch_pa_max_box_range_pct,
-                    "min_body_ratio": self.launch_pa_min_body_ratio,
-                    "wick_body_ratio": self.launch_pa_wick_body_ratio,
-                    "follow_up_timeframes": ["1h", "4h"],
-                },
-                "chart_v2_enable": self.launch_chart_v2_enable,
-                "outcome_v2_enable": self.launch_outcome_v2_enable,
-                "outcome_follow_through_pct": self.launch_outcome_follow_through_pct,
-                "outcome_min_samples": self.launch_outcome_min_samples,
-                "fusion_enable": self.launch_fusion_enable,
-                "fusion_active": bool(
-                    self.launch_fusion_enable
-                    and self.launch_lifecycle_v2_enable
-                    and self.launch_message_package_v2_enable
+            "pulse": {
+                "enabled": self.pulse_radar_enable,
+                "simple_scan_limit": self.pulse_simple_scan_limit,
+                "divergence_scan_limit": self.pulse_divergence_scan_limit,
+                "simple_interval_sec": 15 * 60,
+                "divergence_interval_sec": 2 * 3600,
+                "simple_state_file": str(
+                    self.data_dir / "simple_alert_state.json"
                 ),
-                "directional_enable": self.launch_directional_enable,
-                "directional_max_candidates": self.launch_directional_max_candidates,
-                "directional_active": bool(
-                    self.launch_directional_enable
-                    and self.launch_fusion_enable
-                    and self.launch_lifecycle_v2_enable
-                    and self.launch_message_package_v2_enable
-                ),
-                "ai_interpreter_enable": self.launch_ai_interpreter_enable,
-                "ai_interpreter_configured": bool(
-                    self.ai_api_key and self.ai_base_url and self.ai_model
-                ),
-                "ai_timeout_sec": self.ai_timeout_sec,
-                "same_stage_min_interval_sec": self.launch_same_stage_min_interval_sec,
-                "package_score_delta": self.launch_package_score_delta,
-                "package_price_delta_pct": self.launch_package_price_delta_pct,
-                "package_oi_delta_pct": self.launch_package_oi_delta_pct,
-                "message_cleanup_enable": self.launch_message_cleanup_enable,
-                "message_cleanup_max_age_sec": self.launch_message_cleanup_max_age_sec,
-                "message_cleanup_limit": self.launch_message_cleanup_limit,
-                "state_ttl_sec": self.launch_state_ttl_sec,
-                "failed_ttl_sec": self.launch_failed_ttl_sec,
-                "watch_history_limit": self.launch_watch_history_limit,
+                "review_file": str(self.data_dir / "review_signals.json"),
+                "telegram_template": "TG_LAUNCH_ALERT",
+                "legacy_launch_warning_available": False,
             },
             "announcement_risk": {
                 "enabled": self.announcement_risk_enable,
                 "page_size": self.announcement_page_size,
                 "standalone_push": True,
-                "launch_supporting_evidence": True,
+                "pulse_classification_input": False,
             },
         }

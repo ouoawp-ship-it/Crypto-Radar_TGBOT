@@ -21,6 +21,7 @@ SIGNAL_STORE_SCHEMA_VERSION = 6
 ACTIVE_SIGNAL_MODULES = (
     "funding",
     "flow",
+    "pulse",
     "launch",
     "announcement",
     "summary",
@@ -142,8 +143,8 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "primary_data_source", "oi_source_agreement_score", "oi_binance_1h",
     "predicted_funding_pct", "funding_acceleration_pct",
     "last_price", "price_24h_pct", "primary_kind", "signal_direction",
-    "evaluation_eligible", "launch_message_package_v2", "launch_cycle_id",
-    "launch_cycle_no", "launch_observation_id",
+    "divergence",
+    "evaluation_eligible",
     "module", "template_id",
 })
 
@@ -274,7 +275,7 @@ def _module_for_template(template_id: str) -> str:
     if "FLOW" in value:
         return "flow"
     if "LAUNCH" in value:
-        return "launch"
+        return "pulse"
     if "ANNOUNCEMENT" in value:
         return "announcement"
     if "SUMMARY" in value or "RADAR" in value:
@@ -603,7 +604,7 @@ class SignalEventStore:
             }
             if structured_mode:
                 facts = _structured_payload(record)
-                if module in {"flow", "launch", "funding"}:
+                if module in {"flow", "pulse", "launch", "funding"}:
                     facts.setdefault("evaluation_eligible", True)
                 payload["facts"] = facts
             quality_status = "ready" if structured_mode and normalized_symbol else "degraded"
@@ -676,137 +677,12 @@ class SignalEventStore:
                 )
         return len(rows)
 
-    def launch_message_cleanup_candidates(
-        self,
-        *,
-        symbol: str,
-        cycle_started_at: int,
-        now_ts: int,
-        max_age_sec: int,
-    ) -> dict[str, Any]:
-        """Return still-actionable Telegram message IDs for one launch cycle."""
-
-        normalized_symbol = str(symbol or "").strip().upper()
-        cutoff = int(now_ts) - max(1, int(max_age_sec))
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, ts, message_ids_json, payload_json
-                FROM signals
-                WHERE module = 'launch'
-                  AND symbol = ?
-                  AND sent = 1
-                  AND status = 'sent'
-                  AND ts >= ?
-                ORDER BY ts ASC, id ASC
-                """,
-                (normalized_symbol, max(0, int(cycle_started_at))),
-            ).fetchall()
-
-        candidates: dict[int, int] = {}
-        for row in rows:
-            message_ids = _safe_json_loads(str(row["message_ids_json"] or "[]"), [])
-            payload = _safe_json_loads(str(row["payload_json"] or "{}"), {})
-            cleanup = payload.get("telegram_cleanup", {}) if isinstance(payload, dict) else {}
-            completed = {
-                int(message_id)
-                for key in ("deleted_message_ids", "undeletable_message_ids")
-                for message_id in ((cleanup.get(key) or []) if isinstance(cleanup, dict) else [])
-                if isinstance(message_id, int) or str(message_id).isdigit()
-            }
-            for message_id in message_ids if isinstance(message_ids, list) else []:
-                if not (isinstance(message_id, int) or str(message_id).isdigit()):
-                    continue
-                normalized_id = int(message_id)
-                if normalized_id not in completed:
-                    candidates[normalized_id] = int(row["ts"])
-
-        deletable_ids = sorted(
-            message_id for message_id, sent_at in candidates.items() if sent_at >= cutoff
-        )
-        undeletable_ids = sorted(
-            message_id for message_id, sent_at in candidates.items() if sent_at < cutoff
-        )
-        return {
-            "row_count": len(rows),
-            "deletable_ids": deletable_ids,
-            "undeletable_ids": undeletable_ids,
-        }
-
-    def mark_launch_message_cleanup(
-        self,
-        *,
-        symbol: str,
-        cycle_started_at: int,
-        message_ids: list[int],
-        outcome: str,
-        now_ts: int,
-    ) -> int:
-        """Audit Telegram cleanup without changing signal delivery/evaluation status."""
-
-        if outcome not in {"deleted", "undeletable"}:
-            raise ValueError("outcome must be deleted or undeletable")
-        normalized_ids = {
-            int(message_id)
-            for message_id in message_ids
-            if isinstance(message_id, int) or str(message_id).isdigit()
-        }
-        if not normalized_ids:
-            return 0
-
-        normalized_symbol = str(symbol or "").strip().upper()
-        target_key = "deleted_message_ids" if outcome == "deleted" else "undeletable_message_ids"
-        updated = 0
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, message_ids_json, payload_json
-                FROM signals
-                WHERE module = 'launch'
-                  AND symbol = ?
-                  AND sent = 1
-                  AND status = 'sent'
-                  AND ts >= ?
-                """,
-                (normalized_symbol, max(0, int(cycle_started_at))),
-            ).fetchall()
-            for row in rows:
-                row_message_ids = {
-                    int(message_id)
-                    for message_id in _safe_json_loads(str(row["message_ids_json"] or "[]"), [])
-                    if isinstance(message_id, int) or str(message_id).isdigit()
-                }
-                matched = sorted(row_message_ids & normalized_ids)
-                if not matched:
-                    continue
-                payload = _safe_json_loads(str(row["payload_json"] or "{}"), {})
-                if not isinstance(payload, dict):
-                    payload = {}
-                cleanup = payload.get("telegram_cleanup", {})
-                if not isinstance(cleanup, dict):
-                    cleanup = {}
-                existing = {
-                    int(message_id)
-                    for message_id in (cleanup.get(target_key) or [])
-                    if isinstance(message_id, int) or str(message_id).isdigit()
-                }
-                cleanup[target_key] = sorted(existing | set(matched))
-                cleanup["reason"] = "launch_signal_expired"
-                cleanup["updated_at"] = int(now_ts)
-                payload["telegram_cleanup"] = cleanup
-                conn.execute(
-                    "UPDATE signals SET payload_json = ? WHERE id = ?",
-                    (_json_dumps(payload), int(row["id"])),
-                )
-                updated += 1
-        return updated
 
     def prune(self, *, before_ts: int, max_rows: int) -> dict[str, int]:
         """Bound persistent signal history without blocking the live writer for long."""
 
         cutoff = max(0, int(before_ts))
         row_limit = max(1, int(max_rows))
-        launch_cycles_expired = 0
         with self.connect() as conn:
             before = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
             expired_cursor = conn.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
@@ -822,22 +698,6 @@ class SignalEventStore:
             )
             overflow = max(0, int(overflow_cursor.rowcount))
             after = int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0])
-            lifecycle_table = conn.execute(
-                """
-                SELECT 1 FROM sqlite_master
-                WHERE type = 'table' AND name = 'launch_lifecycle_cycles'
-                """
-            ).fetchone()
-            if lifecycle_table is not None:
-                lifecycle_cursor = conn.execute(
-                    """
-                    DELETE FROM launch_lifecycle_cycles
-                    WHERE status != 'active'
-                      AND COALESCE(ended_at, last_window_end) < ?
-                    """,
-                    (cutoff,),
-                )
-                launch_cycles_expired = max(0, int(lifecycle_cursor.rowcount))
             conn.execute("PRAGMA optimize")
 
         checkpointed = 0
@@ -853,7 +713,6 @@ class SignalEventStore:
             "after": after,
             "expired": expired,
             "overflow": overflow,
-            "launch_cycles_expired": launch_cycles_expired,
             "checkpoint_pages": checkpointed,
         }
 

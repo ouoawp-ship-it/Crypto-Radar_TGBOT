@@ -29,6 +29,14 @@ class SignalEffectivenessTests(unittest.TestCase):
             "long",
         )
         self.assertEqual(
+            infer_signal_direction("pulse", {"signal_direction": "short"}),
+            "short",
+        )
+        self.assertEqual(
+            infer_signal_direction("pulse", {"category": "extreme"}),
+            "",
+        )
+        self.assertEqual(
             infer_signal_direction("funding", {"primary_kind": "multi_negative"}),
             "long",
         )
@@ -194,6 +202,8 @@ class SignalEffectivenessTests(unittest.TestCase):
                 structured_records=[{
                     "symbol": "SOLUSDT",
                     "stage": "breakout",
+                    "category": "breakout",
+                    "signal_direction": "long",
                     "score": 91,
                     "price": 50,
                     "quality_gate": "allow",

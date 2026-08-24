@@ -19,7 +19,6 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
             base_dir=root,
             data_dir=root,
             runtime_status_path=root / "runtime_status.json",
-            launch_watch_history_path=root / "launch_history.json",
             flow_candidate_state_path=root / "flow_candidates.json",
             funding_alert_state_path=root / "funding_alert.json",
             health_runtime_max_age_sec=600,
@@ -61,7 +60,7 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
                 "summary_push": "dry_run",
                 "last_launch_at": stamp,
                 "next_launch_at": "soon",
-                "launch_pushes": [{"status": "dry_run"}],
+                "pulse_cycle_status": "ok",
                 "last_flow_at": stamp,
                 "next_flow_at": "later",
                 "flow_push": "dry_run",
@@ -74,12 +73,13 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
                 "announcement_risk_candidate_count": 1,
                 "announcement_risk_scanned_count": 25,
                 "radar_scan_limit": 120,
+                "diagnostics": {"pulse": {"simple": {"scanned": 80}}},
             })
-            store.save(settings.launch_watch_history_path, [{
-                "updated_at": stamp,
-                "scanned": 80,
-                "alert_count": 3,
-            }])
+            store.save(settings.data_dir / "simple_alert_state.json", {
+                "BTCUSDT": {"template": "health_up"},
+                "ETHUSDT": {"template": "false_strong"},
+                "SOLUSDT": {"template": "health_down"},
+            })
             store.save(settings.flow_candidate_state_path, {
                 "updated_at": stamp,
                 "total_candidates": 147,

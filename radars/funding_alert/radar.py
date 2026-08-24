@@ -280,11 +280,7 @@ class FundingAlertEngine:
 
         state = self._load_state()
         candidates = self._candidate_items(source)
-        funding_settings = replace(
-            self.settings,
-            launch_funding_exchanges=self.settings.funding_alert_exchanges,
-            launch_funding_history_limit=self.settings.funding_alert_history_limit,
-        )
+        funding_settings = self.settings
         client = MultiExchangeFundingClient(funding_settings, http)
         now_ts = int(time.time())
         alerts: list[dict[str, Any]] = []
@@ -758,7 +754,7 @@ class FundingAlertEngine:
             return alerts
 
         history_client = MultiExchangeFundingClient(
-            replace(funding_settings, launch_funding_exchanges=("BINANCE",)),
+            replace(funding_settings, funding_alert_exchanges=("BINANCE",)),
             http,
         )
         history_rows = history_client.snapshot_many(symbols, include_history=True)

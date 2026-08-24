@@ -22,7 +22,7 @@ class PrivateControlSettingsTests(unittest.TestCase):
         )
         self.assertFalse(settings.tg_private_control_alert_enable)
         self.assertEqual(settings.tg_private_control_alert_cooldown_sec, 3600)
-        self.assertTrue(settings.launch_alert_enable)
+        self.assertTrue(settings.pulse_radar_enable)
         self.assertTrue(settings.radar_summary_enable)
         self.assertTrue(settings.funding_alert_enable)
         self.assertTrue(settings.flow_radar_enable)
@@ -51,7 +51,7 @@ class PrivateControlSettingsTests(unittest.TestCase):
 
     def test_file_backed_switches_override_stale_process_environment(self) -> None:
         file_values = {
-            "LAUNCH_ALERT_ENABLE": "false",
+            "PULSE_RADAR_ENABLE": "false",
             "RADAR_SUMMARY_ENABLE": "false",
             "FUNDING_ALERT_ENABLE": "false",
             "FLOW_RADAR_ENABLE": "false",
@@ -67,13 +67,29 @@ class PrivateControlSettingsTests(unittest.TestCase):
         ):
             settings = Settings.load()
 
-        self.assertFalse(settings.launch_alert_enable)
+        self.assertFalse(settings.pulse_radar_enable)
         self.assertFalse(settings.radar_summary_enable)
         self.assertFalse(settings.funding_alert_enable)
         self.assertFalse(settings.flow_radar_enable)
         self.assertFalse(settings.announcement_risk_enable)
         self.assertTrue(settings.tg_private_control_alert_enable)
         self.assertEqual(settings.tg_private_control_alert_cooldown_sec, 7200)
+
+    def test_new_pulse_switch_takes_precedence_over_legacy_alias(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"PULSE_RADAR_ENABLE": "true", "LAUNCH_ALERT_ENABLE": "invalid"},
+            clear=True,
+        ), patch(
+            "config.settings.load_env_file",
+            return_value={
+                "PULSE_RADAR_ENABLE": "false",
+                "LAUNCH_ALERT_ENABLE": "invalid",
+            },
+        ):
+            settings = Settings.load()
+
+        self.assertFalse(settings.pulse_radar_enable)
 
 
 class PrivateControlConfigManagerTests(unittest.TestCase):
@@ -95,7 +111,7 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             "not_configured",
         )
         self.assertFalse(status["TG_PRIVATE_CONTROL_ALERT_ENABLE"])
-        self.assertTrue(status["LAUNCH_ALERT_ENABLE"])
+        self.assertTrue(status["PULSE_RADAR_ENABLE"])
         self.assertTrue(status["RADAR_SUMMARY_ENABLE"])
         self.assertTrue(status["FUNDING_ALERT_ENABLE"])
         self.assertTrue(status["FLOW_RADAR_ENABLE"])
@@ -179,7 +195,7 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
 
     def test_five_radar_switches_are_atomic_allowlisted_booleans(self) -> None:
         keys = (
-            "LAUNCH_ALERT_ENABLE",
+            "PULSE_RADAR_ENABLE",
             "RADAR_SUMMARY_ENABLE",
             "FUNDING_ALERT_ENABLE",
             "FLOW_RADAR_ENABLE",
@@ -196,11 +212,11 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_radar_switch_rolls_back(self) -> None:
-        self.manager.set("LAUNCH_ALERT_ENABLE", "true")
+        self.manager.set("PULSE_RADAR_ENABLE", "true")
         path = self.root / "config" / ".env.oi"
         before = path.read_bytes()
         with self.assertRaises(ConfigManagerError):
-            self.manager.set("LAUNCH_ALERT_ENABLE", "sometimes")
+            self.manager.set("PULSE_RADAR_ENABLE", "sometimes")
         self.assertEqual(path.read_bytes(), before)
 
 

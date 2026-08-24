@@ -14,11 +14,11 @@ _RUNNING_STATUSES = {
     "announcement_risk_failed",
     "flow_failed",
     "funding_alert_failed",
-    "launch_failed",
+    "pulse_failed",
 }
 
-_RUNTIME_MODES = {"loop", "daemon", "live", "once", "trial", "observe"}
-_RUNTIME_TASKS = {"loop", "once", "trial", "observe"}
+_RUNTIME_MODES = {"loop", "daemon", "live", "once", "pulse"}
+_RUNTIME_TASKS = {"loop", "once", "pulse"}
 
 
 def _as_mapping(value: object) -> Mapping[str, object]:
@@ -88,21 +88,6 @@ def _safe_error_code(value: object) -> str:
     return text if all(
         char.isalnum() or char in {"_", "-", "."} for char in text
     ) else ""
-
-
-def _launch_push_status(rows: object, candidate_count: int) -> str:
-    items = rows if isinstance(rows, list) else []
-    statuses = [
-        _safe_push_status(row.get("status"))
-        for row in items
-        if isinstance(row, Mapping)
-    ]
-    for status in ("sent", "partial", "failed", "dry_run", "blocked"):
-        if status in statuses:
-            return status
-    if statuses:
-        return statuses[-1]
-    return "no_candidates" if candidate_count == 0 else "not_recorded"
 
 
 def _radar_state(
@@ -216,11 +201,13 @@ def build_market_radar_runtime_status(
         min(300, settings.health_runtime_max_age_sec // 3),
     )
 
-    launch_history = store.load(settings.launch_watch_history_path, [])
-    launch_latest: Mapping[str, object] = {}
-    if isinstance(launch_history, list) and launch_history:
-        launch_latest = _as_mapping(launch_history[-1])
-    launch_candidates = _nonnegative_int(launch_latest.get("alert_count"))
+    pulse_state = _as_mapping(
+        store.load(settings.data_dir / "simple_alert_state.json", {})
+    )
+    pulse_candidates = len(pulse_state)
+    runtime_diagnostics = _as_mapping(runtime.get("diagnostics"))
+    pulse_diagnostics = _as_mapping(runtime_diagnostics.get("pulse"))
+    pulse_simple = _as_mapping(pulse_diagnostics.get("simple"))
 
     flow_state = _as_mapping(
         store.load(settings.flow_candidate_state_path, {})
@@ -239,30 +226,24 @@ def build_market_radar_runtime_status(
     radars = {
         "launch_alert": _radar_state(
             enabled=bool(
-                settings.launch_alert_enable
+                settings.pulse_radar_enable
                 and not bool(runtime.get("no_launch"))
             ),
             disabled_reason=(
                 "disabled_by_config"
-                if not settings.launch_alert_enable
+                if not settings.pulse_radar_enable
                 else "disabled_by_runtime_flag"
             ),
             runtime_active=runtime_active,
             runtime_status=runtime_status,
-            failure_status="launch_failed",
-            cycle_status=runtime.get("launch_cycle_status"),
-            error_code=runtime.get("launch_error_code"),
-            last_run_at=(
-                runtime.get("last_launch_at")
-                or launch_latest.get("updated_at")
-                or launch_latest.get("ts")
-            ),
+            failure_status="pulse_failed",
+            cycle_status=runtime.get("pulse_cycle_status"),
+            error_code=runtime.get("pulse_error_code"),
+            last_run_at=runtime.get("last_launch_at"),
             next_run_at=runtime.get("next_launch_at"),
-            last_push_status=_launch_push_status(
-                runtime.get("launch_pushes"), launch_candidates
-            ),
-            candidate_count=launch_candidates,
-            scanned_count=_nonnegative_int(launch_latest.get("scanned")),
+            last_push_status=runtime.get("pulse_cycle_status"),
+            candidate_count=pulse_candidates,
+            scanned_count=_nonnegative_int(pulse_simple.get("scanned")),
             real_send=real_send,
             current_ts=current,
             schedule_grace_sec=schedule_grace_sec,

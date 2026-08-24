@@ -47,7 +47,7 @@ class RadarSwitchTests(unittest.TestCase):
 
     def test_each_config_switch_is_independent(self) -> None:
         fields = {
-            "launch_alert_enable": "launch_alert",
+            "pulse_radar_enable": "launch_alert",
             "radar_summary_enable": "radar_summary",
             "funding_alert_enable": "funding_alert",
             "flow_radar_enable": "flow_radar",
@@ -89,7 +89,7 @@ class RadarSwitchTests(unittest.TestCase):
             settings = Settings(
                 base_dir=root,
                 data_dir=root,
-                launch_alert_enable=False,
+                pulse_radar_enable=False,
                 radar_summary_enable=False,
                 funding_alert_enable=False,
                 flow_radar_enable=False,
@@ -103,8 +103,8 @@ class RadarSwitchTests(unittest.TestCase):
                     "updated_at": 1000,
                     "mode": "loop",
                     "task": "loop",
-                    "status": "launch_failed",
-                    "launch_cycle_status": "failed",
+                    "status": "pulse_failed",
+                    "pulse_cycle_status": "failed",
                     "real_send": False,
                 },
             )
@@ -131,7 +131,7 @@ class RadarSwitchTests(unittest.TestCase):
         source = source_factory.return_value
         persist.return_value = {"status": "ok", "rows": 5}
         settings = Settings(
-            launch_alert_enable=False,
+            pulse_radar_enable=False,
             radar_summary_enable=False,
             funding_alert_enable=False,
             flow_radar_enable=False,
@@ -168,7 +168,7 @@ class RadarSwitchTests(unittest.TestCase):
         self,
         _load: Mock,
     ) -> None:
-        current = Settings(launch_alert_enable=True)
+        current = Settings(pulse_radar_enable=True)
 
         loaded, error = reload_loop_settings(current, args())
 

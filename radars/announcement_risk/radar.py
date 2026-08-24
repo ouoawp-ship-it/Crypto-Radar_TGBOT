@@ -87,7 +87,7 @@ class AnnouncementRiskRadar(RadarComponent):
             if alert:
                 classified.append(alert)
 
-        evidence = self._store_launch_evidence(classified, len(articles))
+        evidence = self._store_announcement_evidence(classified, len(articles))
         state = self.store.load(self.settings.announcement_state_path, {})
         seen = state.get("seen", {}) if isinstance(state, dict) else {}
         if not isinstance(seen, dict):
@@ -107,15 +107,15 @@ class AnnouncementRiskRadar(RadarComponent):
             "evidence": evidence,
         }
 
-    def refresh_launch_announcement_evidence(
+    def refresh_announcement_evidence(
         self,
         source: BinanceDataSource,
     ) -> dict[str, Any]:
-        """Refresh launch evidence without coupling it to launch scoring."""
+        """Refresh the local announcement index without sending alerts."""
 
         return dict(self.build_announcement_alerts(source).get("evidence") or {})
 
-    def _store_launch_evidence(
+    def _store_announcement_evidence(
         self,
         alerts: list[dict[str, Any]],
         articles_scanned: int,
@@ -252,7 +252,7 @@ class AnnouncementRiskRadar(RadarComponent):
             f"{tg_bold('判断')}: 先进入观察，等待资金面确认",
             f"{tg_bold('官方原文')}: <a href=\"{url}\">Binance 公告</a>",
             "",
-            "说明：公告只作事件线索，不直接构成启动信号。",
+            "说明：公告只作事件线索，不直接构成交易信号。",
         ])
 
     def _format_announcement_symbol_links(

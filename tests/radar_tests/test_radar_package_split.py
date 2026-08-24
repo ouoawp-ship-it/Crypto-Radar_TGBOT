@@ -22,7 +22,7 @@ RADAR_MODULES = {
     "radars.announcement_risk.radar": "AnnouncementRiskRadar",
     "radars.capital_flow.radar": "FlowRadarEngine",
     "radars.funding_alert.radar": "FundingAlertEngine",
-    "radars.launch_warning.radar": "LaunchWarningRadar",
+    "radars.pulse.radar": "PulseRadar",
     "radars.market_summary.radar": "MarketSummaryRadar",
 }
 

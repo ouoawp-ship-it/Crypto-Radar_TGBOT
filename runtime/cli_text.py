@@ -37,14 +37,11 @@ _CHECK_NAME_TEXT = {
     "telegram_bot_token": "Telegram 机器人密钥",
     "telegram_chat_id": "Telegram 群 ID",
     "telegram_topic_radar_summary": "资金摘要专属话题",
-    "telegram_topic_launch_alert": "启动预警专属话题",
+    "telegram_topic_launch_alert": "脉冲雷达专属话题",
     "telegram_topic_announcement_alert": "公告风险专属话题",
     "telegram_topic_flow_radar": "五因子资金流专属话题",
     "telegram_topic_funding_alert": "资金费率警报专属话题",
     "runtime_health": "核心运行状态",
-    "observe_history": "启动观察历史",
-    "launch_alert_pressure": "启动候选压力",
-    "history_file": "启动观察历史文件",
 }
 
 

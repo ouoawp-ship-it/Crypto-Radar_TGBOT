@@ -3,21 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 from radars.announcement_risk.radar import AnnouncementRiskRadar
-from radars.launch_warning.radar import LaunchWarningRadar
 from radars.market_summary.radar import MarketSummaryRadar
+from radars.pulse.radar import PulseRadar
 from shared.binance_data import BinanceDataSource
 
 
-class RadarEngine(MarketSummaryRadar, AnnouncementRiskRadar, LaunchWarningRadar):
+class RadarEngine(MarketSummaryRadar, AnnouncementRiskRadar, PulseRadar):
     """Compatibility orchestrator over independently testable radar engines."""
 
     def run_once(
         self,
-        include_launch: bool = True,
         include_announcements: bool = True,
     ) -> dict[str, Any]:
         summary_source = BinanceDataSource(self.settings)
-        launch_source = BinanceDataSource(self.settings)
         announcement_source = BinanceDataSource(self.settings)
         try:
             summary = self.build_money_radar_summary(summary_source)
@@ -36,19 +34,12 @@ class RadarEngine(MarketSummaryRadar, AnnouncementRiskRadar, LaunchWarningRadar)
                     },
                 }
             )
-            launch = self.build_launch_alerts(launch_source) if include_launch else {
-                "template_id": "TG_LAUNCH_ALERT",
-                "messages": [],
-                "alerts": [],
-            }
             return {
                 "summary": summary,
-                "launch": launch,
                 "announcements": announcements,
                 "announcement_evidence": announcements.get("evidence", {}),
                 "diagnostics": {
                     "summary": summary_source.diagnostics(),
-                    "launch": launch_source.diagnostics() if include_launch else {},
                     "announcements": (
                         announcement_source.diagnostics()
                         if include_announcements
@@ -58,5 +49,4 @@ class RadarEngine(MarketSummaryRadar, AnnouncementRiskRadar, LaunchWarningRadar)
             }
         finally:
             summary_source.close()
-            launch_source.close()
             announcement_source.close()

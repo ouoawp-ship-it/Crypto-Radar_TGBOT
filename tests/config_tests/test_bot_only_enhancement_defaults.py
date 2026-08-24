@@ -9,13 +9,15 @@ from config import BASE_DIR, Settings
 
 
 class BotOnlyEnhancementDefaultTests(unittest.TestCase):
-    def test_all_new_enrichments_default_to_disabled(self) -> None:
+    def test_pulse_is_the_only_active_replacement_for_launch_alerts(self) -> None:
         settings = Settings()
         self.assertFalse(settings.funding_flip_oi_enable)
-        self.assertFalse(settings.launch_outcome_v2_enable)
-        self.assertFalse(settings.launch_fusion_enable)
-        self.assertEqual(settings.launch_same_stage_min_interval_sec, 1800)
-        self.assertFalse(settings.redacted_status()["launch"]["fusion_active"])
+        status = settings.redacted_status()
+        self.assertTrue(status["pulse"]["enabled"])
+        self.assertEqual(status["pulse"]["simple_scan_limit"], 120)
+        self.assertEqual(status["pulse"]["divergence_scan_limit"], 200)
+        self.assertFalse(status["pulse"]["legacy_launch_warning_available"])
+        self.assertNotIn("launch", status)
 
     def test_retired_configuration_is_absent_from_settings_and_status(self) -> None:
         settings = Settings()
@@ -35,6 +37,17 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
             "accumulation_quality_v2_enable",
             "tg_auto_create_topics",
             "tg_topic_intro_enable",
+            "launch_state_path",
+            "launch_watchlist_path",
+            "launch_watch_history_path",
+            "launch_funding_exchanges",
+            "launch_funding_history_limit",
+            "launch_lifecycle_v2_enable",
+            "launch_message_package_v2_enable",
+            "launch_fusion_enable",
+            "launch_directional_enable",
+            "launch_ai_interpreter_enable",
+            "ai_api_key",
         ):
             self.assertFalse(hasattr(settings, field_name), field_name)
 
@@ -42,14 +55,14 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
         self.assertNotIn("signal_events_file", status["bot_data"])
         self.assertNotIn("legacy_candidate_pool_ignored", status["flow_radar"])
         self.assertNotIn("reply_chain_enable", status["funding_alert"])
-        self.assertNotIn("multi_exchange_funding_enable", status["launch"])
+        self.assertNotIn("multi_exchange_funding_enable", status["pulse"])
         self.assertNotIn("derivatives_validation", status)
         self.assertNotIn("heat_context_enable", status["radar"])
         self.assertNotIn("model_comparison_enable", status["flow_radar"])
         self.assertNotIn("enrichment_enable", status["announcement_risk"])
         self.assertTrue(status["announcement_risk"]["standalone_push"])
-        self.assertTrue(status["announcement_risk"]["launch_supporting_evidence"])
-        self.assertNotIn("smc_v4_enable", status["launch"])
+        self.assertFalse(status["announcement_risk"]["pulse_classification_input"])
+        self.assertNotIn("smc_v4_enable", status["pulse"])
 
     def test_custom_data_directory_contains_every_default_runtime_path(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -68,8 +81,8 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
 
     def test_default_and_explicit_external_runtime_paths_are_preserved(self) -> None:
         self.assertEqual(
-            Settings().launch_state_path,
-            BASE_DIR / "data" / "launch_state.json",
+            Settings().data_dir / "simple_alert_state.json",
+            BASE_DIR / "data" / "simple_alert_state.json",
         )
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

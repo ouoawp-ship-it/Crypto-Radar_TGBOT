@@ -19,12 +19,13 @@ _MAX_JSON_BYTES = 4 * 1024 * 1024
 _CST = timezone(timedelta(hours=8))
 
 _RADAR_LABELS = {
-    "TG_LAUNCH_ALERT": "启动预警",
+    "TG_LAUNCH_ALERT": "脉冲雷达",
     "TG_RADAR_SUMMARY": "资金摘要",
     "TG_FUNDING_ALERT": "资金费率警报",
     "TG_FLOW_RADAR": "五因子资金流",
     "TG_ANNOUNCEMENT_ALERT": "公告风险",
-    "launch": "启动预警",
+    "launch": "脉冲雷达",
+    "pulse": "脉冲雷达",
     "summary": "资金摘要",
     "funding": "资金费率警报",
     "flow": "五因子资金流",
@@ -68,14 +69,18 @@ _REASON_LABELS = {
     "chart_generation_failed": "图表生成失败",
 }
 _STAGE_LABELS = {
-    "idle": "等待观察",
-    "watching": "观察中",
-    "primed": "启动准备",
-    "breakout": "突破确认",
-    "launched": "启动加速",
-    "risk": "风险阶段",
-    "cooling": "降温观察",
-    "failed": "本轮结束",
+    "health_up": "健康上涨",
+    "false_strong": "假强背离",
+    "short_covering": "空头回补",
+    "health_down": "健康下跌",
+    "false_weak": "假弱承接",
+    "panic_dump": "恐慌杀多",
+    "build": "庄家建仓",
+    "pressure": "回调压力",
+    "breakout": "强势突破",
+    "panic": "恐慌抛售",
+    "resonance": "多头共振",
+    "extreme": "极端背离",
     "first_seen": "首次异动",
     "active": "持续活跃",
     "crowding_intensifying": "拥挤加剧",
@@ -104,7 +109,7 @@ _HEALTH_EXPLANATIONS = {
     "market_snapshots_freshness": "市场快照超过新鲜度要求。",
     "realtime_features_freshness": "实时行情数据缺失或已经过期。",
     "signal_effectiveness": "信号结果追踪尚未就绪或存在积压。",
-    "launch_outcomes": "启动周期结果评估尚未就绪或存在积压。",
+    "pulse_reviews": "脉冲复盘尚未生成，或存在已到期但未完成的窗口。",
     "database_backup": "数据库备份尚未就绪或未通过恢复校验。",
     "disk_space": "数据盘可用空间低于安全阈值。",
     "upstream_sources": "上游数据源最近一次观测处于降级状态。",
@@ -440,7 +445,7 @@ def render_fault_explanations(
                 else ""
             )
             label = {
-                "launch_alert": "启动预警",
+                "launch_alert": "脉冲雷达",
                 "radar_summary": "资金摘要",
                 "funding_alert": "资金费率警报",
                 "flow_radar": "五因子资金流",

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings
-from radars.launch_warning.lifecycle import LaunchLifecycleStore, OUTCOME_EVALUATION_VERSION
 from shared.storage import JsonStore
 
 
@@ -276,90 +275,60 @@ def _signal_effectiveness_check(settings: Settings, now: int) -> dict[str, Any]:
     return _check("signal_effectiveness", "ok", "P2 信号结果追踪运行正常", **metrics)
 
 
-def _launch_outcome_check(settings: Settings) -> dict[str, Any]:
-    if not settings.launch_outcome_v2_enable:
-        return _check("launch_outcomes", "ok", "P2.4 启动周期结果评估未启用")
-    if not settings.launch_lifecycle_v2_enable:
-        return _check(
-            "launch_outcomes",
-            "fail",
-            "P2.4 已启用，但 LAUNCH_LIFECYCLE_V2_ENABLE 未启用",
-        )
-    path = settings.signal_events_db_path
+def _pulse_review_check(
+    settings: Settings,
+    store: JsonStore,
+    now: int,
+) -> dict[str, Any]:
+    if not settings.pulse_radar_enable:
+        return _check("pulse_reviews", "ok", "脉冲雷达未启用")
+    path = settings.data_dir / "review_signals.json"
     if not path.exists():
-        return _check("launch_outcomes", "warn", "P2.4 启动周期结果库尚未生成")
-    store = LaunchLifecycleStore(
-        path,
-        watch_score=settings.launch_watch_score,
-        start_score=settings.launch_min_score_push,
-        invalid_windows_required=settings.launch_lifecycle_invalid_windows,
-        outcome_enabled=True,
-        outcome_follow_through_pct=settings.launch_outcome_follow_through_pct,
-        outcome_min_samples=settings.launch_outcome_min_samples,
-        breakout_score=settings.launch_breakout_score,
-        launched_score=settings.launch_launched_score,
-    )
-    try:
-        uri = f"file:{path.resolve().as_posix()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
-            table = conn.execute(
-                """
-                SELECT 1 FROM sqlite_master
-                WHERE type = 'table' AND name = 'launch_lifecycle_outcomes'
-                """
-            ).fetchone()
-            if table is None:
-                return _check("launch_outcomes", "warn", "P2.4 结果表尚未初始化")
-            completed, evaluated, backlog = conn.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM launch_lifecycle_cycles WHERE status = 'failed'),
-                    (SELECT COUNT(*) FROM launch_lifecycle_outcomes WHERE rule_key = ?),
-                    (
-                        SELECT COUNT(*)
-                        FROM launch_lifecycle_cycles AS cycle
-                        LEFT JOIN launch_lifecycle_outcomes AS outcome
-                          ON outcome.cycle_id = cycle.id
-                         AND outcome.evaluation_version = ?
-                         AND outcome.rule_key = cycle.outcome_rule_key
-                        WHERE cycle.status = 'failed'
-                          AND (
-                            cycle.outcome_rule_key = ''
-                            OR outcome.cycle_id IS NULL
-                          )
-                    )
-                """,
-                (
-                    store.outcome_rule_key,
-                    OUTCOME_EVALUATION_VERSION,
-                ),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        return _check(
-            "launch_outcomes",
-            "warn",
-            f"P2.4 启动周期结果无法读取：{type(exc).__name__}",
+        return _check("pulse_reviews", "warn", "脉冲复盘记录尚未生成")
+    records = store.load(path, [])
+    if not isinstance(records, list):
+        return _check("pulse_reviews", "warn", "脉冲复盘记录格式无效")
+
+    completed = 0
+    overdue = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        windows = (
+            (7200,)
+            if str(record.get("radar") or "alert") == "divergence"
+            else (3600, 14400)
         )
+        outcomes = record.get("outcomes") or {}
+        if not isinstance(outcomes, dict):
+            outcomes = {}
+        present = {
+            int(key)
+            for key in outcomes
+            if str(key).isdigit()
+        }
+        if all(window in present for window in windows):
+            completed += 1
+        ts = int(record.get("ts") or 0)
+        overdue += sum(
+            1
+            for window in windows
+            if ts + window + 1800 <= now and window not in present
+        )
+
     metrics = {
-        "completed_cycles": int(completed or 0),
-        "same_rule_samples": int(evaluated or 0),
-        "evaluation_backlog": int(backlog or 0),
-        "minimum_samples": store.outcome_min_samples,
-        "rates_available": int(evaluated or 0) >= store.outcome_min_samples,
+        "records": len(records),
+        "completed": completed,
+        "overdue_windows": overdue,
     }
-    if metrics["evaluation_backlog"]:
+    if overdue:
         return _check(
-            "launch_outcomes",
+            "pulse_reviews",
             "warn",
-            f"存在 {metrics['evaluation_backlog']} 个已结束周期尚未按当前口径评估",
+            f"存在 {overdue} 个到期窗口超过30分钟仍未回填",
             **metrics,
         )
-    return _check(
-        "launch_outcomes",
-        "ok",
-        "P2.4 启动周期结果评估正常",
-        **metrics,
-    )
+    return _check("pulse_reviews", "ok", "脉冲复盘运行正常", **metrics)
 
 
 def runtime_health_checks(
@@ -377,7 +346,7 @@ def runtime_health_checks(
         _market_snapshot_check(settings, now),
         _realtime_check(settings, now),
         _signal_effectiveness_check(settings, now),
-        _launch_outcome_check(settings),
+        _pulse_review_check(settings, store, now),
         _database_backup_check(settings, now),
         _disk_check(settings),
     ]

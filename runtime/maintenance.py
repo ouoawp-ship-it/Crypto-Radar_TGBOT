@@ -85,108 +85,6 @@ def _prune_json_list_by_ts(
     return {"path": str(path), "before": before, "after": len(retained), "changed": changed}
 
 
-def _compact_launch_history(
-    store: JsonStore,
-    path: Path,
-    limit: int,
-) -> dict[str, Any]:
-    records = store.load(path, [])
-    if not isinstance(records, list):
-        return {
-            "path": str(path),
-            "before": 0,
-            "after": 0,
-            "changed": False,
-            "reason": "not_list",
-        }
-    before_count = len(records)
-    before_bytes = path.stat().st_size if path.exists() else 0
-    compacted: list[Any] = []
-    compacted_items = 0
-    transient = {
-        "chart_png_bytes",
-        "launch_lifecycle",
-        "launch_package",
-        "price_action_analysis",
-    }
-    for record in records:
-        if not isinstance(record, dict):
-            compacted.append(record)
-            continue
-        next_record = dict(record)
-        items = record.get("items")
-        if isinstance(items, list):
-            next_items: list[Any] = []
-            for item in items:
-                if not isinstance(item, dict):
-                    next_items.append(item)
-                    continue
-                next_item = {
-                    key: value
-                    for key, value in item.items()
-                    if key not in transient
-                }
-                if len(next_item) != len(item):
-                    compacted_items += 1
-                next_items.append(next_item)
-            next_record["items"] = next_items
-        compacted.append(next_record)
-    if limit > 0 and len(compacted) > limit:
-        compacted = compacted[-limit:]
-    changed = compacted_items > 0 or len(compacted) != before_count
-    if changed:
-        store.save(path, compacted)
-    after_bytes = path.stat().st_size if path.exists() else 0
-    return {
-        "path": str(path),
-        "before": before_count,
-        "after": len(compacted),
-        "changed": changed,
-        "compacted_items": compacted_items,
-        "before_bytes": before_bytes,
-        "after_bytes": after_bytes,
-        "freed_bytes": max(0, before_bytes - after_bytes),
-    }
-
-
-def _compact_launch_state(
-    settings: Settings,
-    store: JsonStore,
-) -> dict[str, Any]:
-    from radars.common import compact_launch_state_records
-
-    state = store.load(settings.launch_state_path, {})
-    if not isinstance(state, dict):
-        return {
-            "path": str(settings.launch_state_path),
-            "records": 0,
-            "changed": False,
-            "reason": "not_dict",
-        }
-    before_bytes = (
-        settings.launch_state_path.stat().st_size
-        if settings.launch_state_path.exists()
-        else 0
-    )
-    compacted, changed_records = compact_launch_state_records(state)
-    if changed_records:
-        store.save(settings.launch_state_path, compacted)
-    after_bytes = (
-        settings.launch_state_path.stat().st_size
-        if settings.launch_state_path.exists()
-        else 0
-    )
-    return {
-        "path": str(settings.launch_state_path),
-        "records": len(compacted),
-        "changed": changed_records > 0,
-        "compacted_records": changed_records,
-        "before_bytes": before_bytes,
-        "after_bytes": after_bytes,
-        "freed_bytes": max(0, before_bytes - after_bytes),
-    }
-
-
 def cleanup_generated_root_artifacts(base_dir: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "base_dir": str(base_dir),
@@ -274,11 +172,6 @@ def cleanup_runtime_artifacts(
             max(1, int(settings.tg_push_history_retention_days)),
             ACTIVE_SIGNAL_TEMPLATE_IDS,
         ),
-        _compact_launch_history(
-            store,
-            settings.launch_watch_history_path,
-            max(1, int(settings.launch_watch_history_limit)),
-        ),
         _prune_json_list_by_ts(
             store,
             settings.tg_outbox_path,
@@ -297,8 +190,6 @@ def cleanup_runtime_artifacts(
     except (OSError, ValueError, sqlite3.Error) as exc:
         signal_database = {"status": "failed", "error": type(exc).__name__}
     generated_root_artifacts = cleanup_generated_root_artifacts(settings.base_dir)
-    launch_state_compaction = _compact_launch_state(settings, store)
-
     result = {
         "enabled": settings.cleanup_enable,
         "skipped": False,
@@ -308,7 +199,6 @@ def cleanup_runtime_artifacts(
         "pruned": pruned,
         "signal_database": signal_database,
         "generated_root_artifacts": generated_root_artifacts,
-        "launch_state_compaction": launch_state_compaction,
     }
     store.save(settings.cleanup_state_path, {
         "last_run_ts": now,

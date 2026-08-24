@@ -151,7 +151,7 @@ P1 没有触碰以下生产边界：
 - Binance WebSocket 连接和订阅；
 - CoinGlass 退役配置；
 - Telegram 人工建话题、双发送门和缺路由失败关闭逻辑；
-- 现有 funding alert、资金流和启动预警状态。
+- 现有 funding alert、资金流和脉冲雷达状态。
 
 停止 P1 只需不再执行 `altcoin-anomaly`；保持
 `ALTCOIN_CONTRACT_ANOMALY_ENABLE=false`。独立缓存和候选快照可先备份留作审计，

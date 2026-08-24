@@ -89,20 +89,11 @@ labels = {
     "MAIN_BOT_DELIVERY_MODE": "主 BOT 发送模式",
     "MAIN_BOT_REAL_SEND": "主 BOT 真实发送",
     "MAIN_BOT_REAL_SEND_ACK": "主 BOT 真实发送确认",
-    "LAUNCH_FUSION_ENABLE": "启动预警融合版",
-    "LAUNCH_ALERT_ENABLE": "启动预警自动运行",
+    "PULSE_RADAR_ENABLE": "脉冲雷达自动运行",
     "RADAR_SUMMARY_ENABLE": "资金摘要自动运行",
     "FUNDING_ALERT_ENABLE": "资金费率警报自动运行",
     "FLOW_RADAR_ENABLE": "五因子资金流自动运行",
     "ANNOUNCEMENT_RISK_ENABLE": "公告风险自动运行",
-    "LAUNCH_DIRECTIONAL_ENABLE": "多周期方向雷达",
-    "LAUNCH_DIRECTIONAL_MAX_CANDIDATES": "每轮深度候选数",
-    "LAUNCH_AI_INTERPRETER_ENABLE": "AI 白话解读",
-    "AI_API_KEY": "AI 密钥",
-    "AI_BASE_URL": "AI 接口地址",
-    "AI_MODEL": "AI 模型",
-    "AI_TIMEOUT_SEC": "AI 超时秒数",
-    "LAUNCH_SAME_STAGE_MIN_INTERVAL_SEC": "同阶段最短间隔秒数",
 }
 values = json.load(sys.stdin)
 translations = {
@@ -307,17 +298,10 @@ api_menu() {
   while true; do
     menu_header
     cat <<'EOF'
-API、Token 与密钥
+Telegram 配置
 1. 查看脱敏配置状态
 2. 设置 Telegram Bot Token
 3. 设置 Telegram Chat ID
-4. 设置 AI API Key
-5. 设置 AI 接口地址
-6. 设置 AI 模型
-7. 设置 AI 超时秒数
-8. 设置多周期方向雷达开关
-9. 设置 AI 白话解读开关
-10. 设置每轮深度候选数量
 0. 返回
 EOF
     IFS= read -r choice
@@ -325,13 +309,6 @@ EOF
       1) show_config_status_cn; pause_menu ;;
       2) config_set TG_BOT_TOKEN; pause_menu ;;
       3) config_set TG_CHAT_ID; pause_menu ;;
-      4) config_set AI_API_KEY; pause_menu ;;
-      5) config_set AI_BASE_URL; pause_menu ;;
-      6) config_set AI_MODEL; pause_menu ;;
-      7) config_set AI_TIMEOUT_SEC; pause_menu ;;
-      8) config_set LAUNCH_DIRECTIONAL_ENABLE; pause_menu ;;
-      9) config_set LAUNCH_AI_INTERPRETER_ENABLE; pause_menu ;;
-      10) config_set LAUNCH_DIRECTIONAL_MAX_CANDIDATES; pause_menu ;;
       0) return ;;
     esac
   done
@@ -375,7 +352,7 @@ private_control_menu() {
 0. 返回
 
 说明：这里只绑定管理员和管理独立服务。
-AI 解读配置可在管理员私聊中完成；真实发送、部署回滚和完整诊断仍保留在 FinalShell。
+真实发送、部署回滚和完整诊断仍保留在 FinalShell。
 EOF
     IFS= read -r choice
     case "$choice" in
@@ -422,7 +399,7 @@ telegram_topic_setup_menu() {
     cat <<'EOF'
 手工话题与置顶说明
 1. 资金摘要
-2. 启动预警
+2. 脉冲雷达
 3. 公告风险
 4. 测试消息
 5. 资金流雷达
@@ -527,7 +504,7 @@ interactive_menu() {
 1. 总览与健康检查
 2. 服务管理
 3. 检查更新与版本
-4. API、Token 与密钥
+4. Telegram 配置
 5. Telegram 设置与测试
 6. 数据库、备份与清理
 7. 日志与故障诊断

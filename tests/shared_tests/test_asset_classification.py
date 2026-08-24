@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
+from radars.pulse.simple_alert import _asset_tier
 from shared.asset_classification import (
     classify_binance_instrument,
     is_stable_crypto_asset,
 )
-from config import Settings
-from runtime.radar_engine import RadarEngine
-from shared.storage import JsonStore
 
 
 class AssetClassificationTests(unittest.TestCase):
@@ -81,96 +77,11 @@ class AssetClassificationTests(unittest.TestCase):
         self.assertEqual(stock["asset_category_source"], "binance_exchange_info")
         self.assertEqual(tokenized["instrument_type"], "tokenized_equity")
 
-    def test_launch_message_displays_asset_category_without_changing_metrics(self) -> None:
-        with TemporaryDirectory() as tmp:
-            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
-            item = {
-                "symbol": "SPYUSDT",
-                "coin": "SPY",
-                "asset_category_label": "传统金融 · 指数ETF · 标普500",
-                "score": 80,
-                "stage": "breakout",
-                "previous_stage": "primed",
-                "appear_count": 2,
-                "mcap": 0,
-                "mcap_source": "",
-                "quote_volume": 1_000_000,
-                "funding_pct": 0,
-                "funding_interval_hours": 0,
-                "price_15m": 1.25,
-                "price_1h": 2.5,
-                "oi_15m": 1.5,
-                "oi_1h": 3.0,
-                "volume_ratio": 2.0,
-                "breakout": True,
-            }
-
-            text = engine._format_launch_alert(item)
-
-            self.assertIn("品类: 传统金融 · 指数ETF · 标普500", text)
-            self.assertIn("15m价格: +1.2%", text)
-            self.assertIn("1h价格: +2.5%", text)
-
-    def test_launch_candidate_uses_exchange_metadata_classification(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                radar_min_quote_volume=1,
-                launch_lifecycle_v2_enable=False,
-                launch_message_package_v2_enable=False,
-                launch_chart_v2_enable=False,
-            )
-            engine = RadarEngine(settings, JsonStore(Path(tmp)))
-
-            def fake_analyze(_source: object, item: dict[str, object]) -> dict[str, object]:
-                return {
-                    **item,
-                    "score": 95,
-                    "price_15m": 5.0,
-                    "price_1h": 8.0,
-                    "oi_15m": 4.0,
-                    "oi_1h": 8.0,
-                    "volume_ratio": 2.5,
-                    "breakout": True,
-                    "reasons": ["测试"],
-                }
-
-            class Source:
-                @staticmethod
-                def usdt_perp_symbols() -> list[dict[str, object]]:
-                    return [{
-                        "symbol": "SPYUSDT",
-                        "baseAsset": "SPY",
-                        "underlyingType": "ETF",
-                    }]
-
-                @staticmethod
-                def ticker_24h() -> list[dict[str, str]]:
-                    return [{
-                        "symbol": "SPYUSDT",
-                        "quoteVolume": "10000000",
-                        "priceChangePercent": "1",
-                        "lastPrice": "700",
-                    }]
-
-                @staticmethod
-                def premium_index() -> list[dict[str, str]]:
-                    return []
-
-                @staticmethod
-                def market_caps() -> dict[str, float]:
-                    return {}
-
-            engine._analyze_launch_symbol = fake_analyze  # type: ignore[method-assign]
-
-            result = engine.build_launch_alerts(Source())  # type: ignore[arg-type]
-
-            self.assertEqual(result["alerts"][0]["asset_class"], "etf_index")
-            self.assertEqual(
-                result["alerts"][0]["asset_category_label"],
-                "传统金融 · 指数ETF · 标普500",
-            )
-            self.assertIn("品类: 传统金融 · 指数ETF · 标普500", result["messages"][0])
+    def test_pulse_threshold_tiers_use_shared_asset_classification(self) -> None:
+        self.assertEqual(_asset_tier("BTCUSDT"), "core")
+        self.assertEqual(_asset_tier("SOLUSDT"), "large")
+        self.assertEqual(_asset_tier("TESTUSDT"), "alt")
+        self.assertEqual(_asset_tier("SPYUSDT"), "unknown")
 
 
 if __name__ == "__main__":

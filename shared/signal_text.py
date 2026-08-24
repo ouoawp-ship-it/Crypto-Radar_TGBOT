@@ -5,7 +5,7 @@ from html import unescape
 
 
 TEMPLATE_LABELS = {
-    "TG_LAUNCH_ALERT": "启动雷达",
+    "TG_LAUNCH_ALERT": "脉冲雷达",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
     "TG_RADAR_SUMMARY": "资金摘要",

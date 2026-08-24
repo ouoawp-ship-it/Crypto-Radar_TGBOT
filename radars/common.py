@@ -46,62 +46,10 @@ CHAIN_SYMBOL_TOKEN_NAMES = {
     "TON": {"toncoin"},
 }
 CST = timezone(timedelta(hours=8))
-LAUNCH_SUPPORTING_EVIDENCE_MAX_AGE_SEC = 8 * 60 * 60
-_LAUNCH_STATE_TRANSIENT_KEYS = frozenset({
-    "chart_png_bytes",
-    "launch_lifecycle",
-    "launch_package",
-    "price_action_analysis",
-    "multi_timeframe",
-    "directional_trade_plans",
-    "directional_facts",
-    "spot_cvd_1h",
-    "futures_cvd_1h",
-})
-_LAUNCH_END_REASON_TEXT = {
-    "two_windows_below_watch_score": (
-        "连续两个15分钟闭合窗口低于观察阈值，本轮启动跟踪结束"
-    ),
-    "two_closes_below_breakout": (
-        "连续两根15分钟K线收盘跌破本轮有效突破位，本轮启动跟踪结束"
-    ),
-    "two_closes_below_invalidation": "连续两个完整窗口收盘跌破看涨失效位，本轮观察结束",
-    "two_closes_above_invalidation": "连续两个完整窗口收盘升破看跌失效位，本轮观察结束",
-    "direction_changed": "完整数据转为相反方向，先结束旧方向周期",
-}
-
-
-def compact_launch_state_records(
-    state: dict[str, Any],
-) -> tuple[dict[str, Any], int]:
-    """Drop rebuildable launch-analysis payloads from durable JSON state."""
-
-    compacted: dict[str, Any] = {}
-    changed = 0
-    for symbol, value in state.items():
-        if not isinstance(value, dict):
-            compacted[symbol] = value
-            continue
-        record = {
-            key: item
-            for key, item in value.items()
-            if key not in _LAUNCH_STATE_TRANSIENT_KEYS
-        }
-        if len(record) != len(value):
-            changed += 1
-        compacted[symbol] = record
-    return compacted, changed
 
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
     return datetime.now(CST).strftime(fmt)
-
-
-def launch_end_reason_text(reason: Any) -> str:
-    return _LAUNCH_END_REASON_TEXT.get(
-        str(reason or ""),
-        "启动条件已失效，本轮启动跟踪结束",
-    )
 
 
 def tg_escape(value: Any) -> str:
@@ -114,20 +62,6 @@ def tg_bold(value: Any) -> str:
 
 def tg_quote(title: str) -> str:
     return f"<blockquote><b>{tg_escape(title)}</b></blockquote>"
-
-
-def launch_funds_direction(spot_active_net_usd: Any, futures_active_net_usd: Any) -> str:
-    spot = to_float(spot_active_net_usd)
-    futures = to_float(futures_active_net_usd)
-    if spot == 0 or futures == 0:
-        return "unknown"
-    if spot > 0 and futures > 0:
-        return "both_buy"
-    if spot < 0 and futures < 0:
-        return "both_sell"
-    if spot > 0 > futures:
-        return "divergence_spot_buy_futures_sell"
-    return "divergence_spot_sell_futures_buy"
 
 
 def seconds_text(seconds: int) -> str:

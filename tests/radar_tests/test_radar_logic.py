@@ -9,13 +9,11 @@ from tempfile import TemporaryDirectory
 from config import Settings
 from radars.common import (
     CST,
-    compact_launch_state_records,
     funding_interval_transition,
     score_funding,
     score_mcap,
 )
 from runtime.radar_engine import RadarEngine
-from shared.signal_store import SignalEventStore
 from shared.storage import JsonStore
 from shared.time_windows import closed_window
 
@@ -44,63 +42,6 @@ class _FakeAnnouncementSource:
 
     def usdt_perp_symbols(self) -> list[dict[str, str]]:
         return [{"symbol": f"{base}USDT"} for base in self._contract_bases]
-
-
-class LaunchPersistenceTests(unittest.TestCase):
-    def test_watch_history_excludes_rebuildable_lifecycle_payload(self) -> None:
-        record = RadarEngine._launch_watch_record(
-            {
-                "symbol": "TESTUSDT",
-                "coin": "TEST",
-                "score": 75,
-                "closed_price": 1.0,
-                "closed_oi_usd": 2.0,
-                "closed_quote_volume": 3.0,
-                "price_15m": 1.0,
-                "price_1h": 2.0,
-                "oi_15m": 3.0,
-                "oi_1h": 4.0,
-                "volume_ratio": 2.5,
-                "breakout": True,
-                "quote_volume": 1_000_000,
-                "mcap": 5_000_000,
-                "launch_lifecycle": {
-                    "publication": {
-                        "checkpoints": [{"price_action": {"details": "x" * 100_000}}],
-                    },
-                },
-            },
-            123,
-        )
-
-        self.assertNotIn("launch_lifecycle", record)
-        self.assertEqual(record["symbol"], "TESTUSDT")
-        self.assertEqual(record["score"], 75)
-
-    def test_durable_launch_state_excludes_rebuildable_analysis(self) -> None:
-        compacted, changed = compact_launch_state_records(
-            {
-                "TESTUSDT": {
-                    "stage": "breakout",
-                    "score": 75,
-                    "message_ids": [123],
-                    "launch_lifecycle": {"cycle_id": 1},
-                    "launch_package": {"checkpoints": [1, 2]},
-                    "price_action_analysis": {"details": {"large": "x" * 1000}},
-                    "chart_png_bytes": b"png",
-                },
-            },
-        )
-
-        self.assertEqual(changed, 1)
-        self.assertEqual(
-            compacted["TESTUSDT"],
-            {
-                "stage": "breakout",
-                "score": 75,
-                "message_ids": [123],
-            },
-        )
 
 
 class RadarAnnouncementTests(unittest.TestCase):
@@ -137,7 +78,7 @@ class RadarAnnouncementTests(unittest.TestCase):
                 ["REX", "PHY"],
             )
 
-            result = engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            result = engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
             state = engine.store.load(engine.settings.announcement_state_path, {})
 
             self.assertEqual(result["standalone_pushes"], 0)
@@ -156,7 +97,7 @@ class RadarAnnouncementTests(unittest.TestCase):
                 [],
             )
 
-            result = engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            result = engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
 
             self.assertEqual(result["evidence_count"], 0)
 
@@ -172,7 +113,7 @@ class RadarAnnouncementTests(unittest.TestCase):
                 ["ABC"],
             )
 
-            result = engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            result = engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
             state = engine.store.load(engine.settings.announcement_state_path, {})
 
             self.assertEqual(result["evidence_count"], 1)
@@ -198,7 +139,7 @@ class RadarAnnouncementTests(unittest.TestCase):
                 ["ABC"],
             )
 
-            result = engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            result = engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
             state = engine.store.load(settings.announcement_state_path, {})
 
             self.assertEqual(result["evidence_count"], 1)
@@ -252,7 +193,7 @@ class RadarAnnouncementTests(unittest.TestCase):
                 engine.settings.announcement_state_path,
                 {"seen": {"legacy": {"message_ids": [123]}}},
             )
-            engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
             saved = store.load(engine.settings.announcement_state_path, {})
             self.assertEqual(saved["seen"]["legacy"]["message_ids"], [123])
             self.assertEqual(
@@ -273,183 +214,9 @@ class RadarAnnouncementTests(unittest.TestCase):
                 ["OLD"],
             )
 
-            result = engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            result = engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
 
             self.assertEqual(result["evidence_count"], 0)
-
-    def test_launch_supporting_evidence_expires_and_never_changes_score(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            now_ts = int(time.time())
-            settings = Settings(
-                data_dir=root,
-                announcement_state_path=root / "announcement_state.json",
-                accumulation_quality_diagnostics_path=root / "accumulation.json",
-            )
-            store = JsonStore(root)
-            engine = RadarEngine(settings, store)
-            store.save(settings.announcement_state_path, {
-                "evidence_updated_at": now_ts,
-                "evidence_by_symbol": {
-                    "ABCUSDT": [{
-                        "kind": "opportunity",
-                        "title": "Binance Will List ABC",
-                        "expires_at": now_ts + 60,
-                    }],
-                },
-            })
-            store.save(settings.accumulation_quality_diagnostics_path, {
-                "schema_version": 1,
-                "scans": [{
-                    "scan_completed_at": now_ts,
-                    "results": [{
-                        "symbol": "ABCUSDT",
-                        "eligible": True,
-                        "reason_text": "通过收筹质量门禁",
-                    }],
-                }],
-            })
-
-            announcements = engine._load_launch_announcement_evidence(now_ts=now_ts)
-            accumulation = engine._load_launch_accumulation_evidence(now_ts=now_ts)
-            item = {
-                "score": 70,
-                "announcement_evidence": announcements["ABCUSDT"],
-                "accumulation_quality_evidence": accumulation["ABCUSDT"],
-            }
-            text = "\n".join(engine._launch_supporting_evidence_lines(item))
-
-            self.assertEqual(item["score"], 70)
-            self.assertIn("辅助证据，不参与打分", text)
-            self.assertEqual(
-                engine._load_launch_announcement_evidence(now_ts=now_ts + 9 * 3600),
-                {},
-            )
-            self.assertEqual(
-                engine._load_launch_accumulation_evidence(now_ts=now_ts + 9 * 3600),
-                {},
-            )
-
-            store.save(settings.announcement_state_path, {
-                "evidence_updated_at": now_ts + 60,
-                "evidence_by_symbol": {
-                    "ABCUSDT": [{"expires_at": now_ts + 120}],
-                },
-            })
-            store.save(settings.accumulation_quality_diagnostics_path, {
-                "scans": [{
-                    "scan_completed_at": now_ts + 60,
-                    "results": [{"symbol": "ABCUSDT", "eligible": True}],
-                }],
-            })
-            self.assertEqual(
-                engine._load_launch_announcement_evidence(now_ts=now_ts),
-                {},
-            )
-            self.assertEqual(
-                engine._load_launch_accumulation_evidence(now_ts=now_ts),
-                {},
-            )
-
-    def test_launch_build_uses_local_supporting_evidence_without_scoring_or_http(self) -> None:
-        def run_build(*, with_evidence: bool) -> tuple[int, str, int, dict[str, object]]:
-            with TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                settings = Settings(
-                    data_dir=root,
-                    radar_min_quote_volume=1,
-                    launch_scan_limit=1,
-                    launch_state_path=root / "launch_state.json",
-                    launch_watchlist_path=root / "launch_watchlist.json",
-                    launch_watch_history_path=root / "launch_watch_history.json",
-                    announcement_state_path=root / "announcement_state.json",
-                    accumulation_quality_diagnostics_path=root / "accumulation.json",
-                )
-                store = JsonStore(root)
-                now_ts = int(time.time())
-                if with_evidence:
-                    store.save(settings.announcement_state_path, {
-                        "evidence_updated_at": now_ts,
-                        "evidence_by_symbol": {
-                            "ABCUSDT": [{
-                                "kind": "opportunity",
-                                "title": "Binance Will List ABC",
-                                "expires_at": now_ts + 3600,
-                            }],
-                        },
-                    })
-                    store.save(settings.accumulation_quality_diagnostics_path, {
-                        "scans": [{
-                            "scan_completed_at": now_ts,
-                            "results": [{
-                                "symbol": "ABCUSDT",
-                                "eligible": True,
-                                "reason_text": "辅助观察通过",
-                            }],
-                        }],
-                    })
-
-                class Source:
-                    announcement_calls = 0
-
-                    @staticmethod
-                    def usdt_perp_symbols() -> list[dict[str, str]]:
-                        return [{"symbol": "ABCUSDT"}]
-
-                    @staticmethod
-                    def ticker_24h() -> list[dict[str, str]]:
-                        return [{
-                            "symbol": "ABCUSDT",
-                            "quoteVolume": "1000000",
-                            "priceChangePercent": "2",
-                            "lastPrice": "1",
-                        }]
-
-                    @staticmethod
-                    def premium_index() -> list[dict[str, str]]:
-                        return [{"symbol": "ABCUSDT", "lastFundingRate": "0"}]
-
-                    @staticmethod
-                    def market_caps() -> dict[str, float]:
-                        return {"ABC": 10_000_000}
-
-                    def announcements(self, page_size: int = 20) -> list[dict[str, object]]:
-                        self.announcement_calls += 1
-                        raise AssertionError("launch hot path must not fetch announcements")
-
-                source = Source()
-                engine = RadarEngine(settings, store)
-                engine._analyze_launch_symbol = lambda _source, item: {  # type: ignore[method-assign]
-                    **item,
-                    "score": 70,
-                    "price_15m": 1.0,
-                    "price_1h": 2.0,
-                    "oi_15m": 1.5,
-                    "oi_1h": 2.5,
-                    "volume_ratio": 2.0,
-                    "breakout": False,
-                    "reasons": ["固定测试分数"],
-                    "window_end_ts": now_ts,
-                }
-
-                result = engine.build_launch_alerts(source)  # type: ignore[arg-type]
-                alert = result["alerts"][0]
-                return (
-                    int(alert["score"]),
-                    str(alert["stage"]),
-                    source.announcement_calls,
-                    dict(result["diagnostics"]["lifecycle_v2"]["supporting_evidence"]),
-                )
-
-        without_evidence = run_build(with_evidence=False)
-        with_evidence = run_build(with_evidence=True)
-
-        self.assertEqual(with_evidence[:2], without_evidence[:2])
-        self.assertEqual(with_evidence[:2], (70, "primed"))
-        self.assertEqual(with_evidence[2], 0)
-        self.assertEqual(with_evidence[3]["score_effect"], "none")
-        self.assertEqual(with_evidence[3]["accumulation_symbols"], 1)
-        self.assertEqual(with_evidence[3]["announcement_symbols"], 1)
 
     def test_announcement_refresh_failure_preserves_previous_evidence(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -466,7 +233,7 @@ class RadarAnnouncementTests(unittest.TestCase):
             engine = RadarEngine(settings, store)
             source = _FakeAnnouncementSource([], [])
 
-            result = engine.refresh_launch_announcement_evidence(source)  # type: ignore[arg-type]
+            result = engine.refresh_announcement_evidence(source)  # type: ignore[arg-type]
             state = store.load(settings.announcement_state_path, {})
 
             self.assertEqual(result["status"], "degraded")
@@ -474,27 +241,6 @@ class RadarAnnouncementTests(unittest.TestCase):
 
 
 class RadarScoringTests(unittest.TestCase):
-    def test_launch_stage_thresholds(self) -> None:
-        self.assertEqual(RadarEngine.launch_stage_for_score(44), "idle")
-        self.assertEqual(RadarEngine.launch_stage_for_score(45), "watching")
-        self.assertEqual(RadarEngine.launch_stage_for_score(60), "primed")
-        self.assertEqual(RadarEngine.launch_stage_for_score(75), "breakout")
-        self.assertEqual(RadarEngine.launch_stage_for_score(90), "launched")
-
-    def test_launch_stage_thresholds_are_configurable(self) -> None:
-        self.assertEqual(
-            RadarEngine.launch_stage_for_score(70, watching=30, primed=50, breakout=70, launched=85),
-            "breakout",
-        )
-        self.assertEqual(
-            RadarEngine.launch_stage_for_score(84, watching=30, primed=50, breakout=70, launched=85),
-            "breakout",
-        )
-        self.assertEqual(
-            RadarEngine.launch_stage_for_score(85, watching=30, primed=50, breakout=70, launched=85),
-            "launched",
-        )
-
     def test_negative_funding_scores_higher(self) -> None:
         self.assertGreater(score_funding(-0.5), score_funding(-0.01))
         self.assertEqual(score_funding(0.01), 0)
@@ -592,42 +338,7 @@ class RadarScoringTests(unittest.TestCase):
             self.assertNotIn("📖 图例", text)
             self.assertNotIn("负费率 = 空头拥挤，可能形成反向燃料", text)
 
-    def test_launch_alert_translates_state_and_explains_score(self) -> None:
-        with TemporaryDirectory() as tmp:
-            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
-            text = engine._format_launch_alert({
-                "symbol": "TESTUSDT",
-                "coin": "TEST",
-                "stage": "primed",
-                "previous_stage": "idle",
-                "score": 63,
-                "appear_count": 2,
-                "price_15m": 4.5,
-                "price_1h": 6.0,
-                "oi_15m": 3.2,
-                "oi_1h": 6.8,
-                "volume_ratio": 2.4,
-                "quote_volume": 55_000_000,
-                "mcap": 123_000_000,
-                "mcap_source": "CoinPaprika",
-                "breakout": False,
-                "funding_pct": -2.0,
-                "funding_interval_hours": 1,
-                "funding_interval_transition": "2026-07-01 16:00:00 4H结算一次 → 2026-07-01 17:00:00 1H结算一次",
-            })
-
-            self.assertIn("状态</b>: 未触发 -> 提前预警", text)
-            self.assertIn("<blockquote><b>市场概况</b></blockquote>", text)
-            self.assertIn("市值: $123M（低市值，来源 CoinPaprika）", text)
-            self.assertIn("流动性: $55M/24h（中流动性）", text)
-            self.assertIn("资金费率: -2.000%/1H（极负）", text)
-            self.assertIn("结算周期: 2026-07-01 16:00:00 4H结算一次 → 2026-07-01 17:00:00 1H结算一次", text)
-            self.assertNotIn("分数图例", text)
-            self.assertNotIn("数据与计算口径", text)
-            self.assertNotIn("跌回突破位则启动失败", text)
-            self.assertRegex(text, r"\d{2}-\d{2} \d{2}:\d{2} CST")
-
-    def test_launch_signal_uses_binance_native_confirmation(self) -> None:
+    def test_signal_uses_binance_native_confirmation(self) -> None:
         item = {
             "score": 95,
             "oi_1h": 8.0,
@@ -689,317 +400,6 @@ class RadarScoringTests(unittest.TestCase):
         self.assertTrue(ready)
         self.assertEqual(latest["sumOpenInterestValue"], "132")
         self.assertAlmostEqual(change, 20.0)
-
-    def test_launch_alert_formats_multi_exchange_funding(self) -> None:
-        with TemporaryDirectory() as tmp:
-            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
-            text = engine._format_launch_alert({
-                "symbol": "TESTUSDT",
-                "coin": "TEST",
-                "stage": "primed",
-                "previous_stage": "idle",
-                "score": 63,
-                "appear_count": 2,
-                "price_15m": 4.5,
-                "price_1h": 6.0,
-                "oi_15m": 3.2,
-                "oi_1h": 6.8,
-                "volume_ratio": 2.4,
-                "quote_volume": 55_000_000,
-                "mcap": 123_000_000,
-                "mcap_source": "CoinPaprika",
-                "breakout": False,
-                "funding_pct": -2.0,
-                "funding_interval_hours": 1,
-                "funding_exchanges": [
-                    {
-                        "exchange": "Binance",
-                        "funding_pct": -2.0,
-                        "interval_hours": 1,
-                        "previous_interval_hours": 4,
-                        "current_interval_hours": 1,
-                        "last_funding_time": "2026-07-01 16:00:00",
-                        "next_funding_time": "2026-07-01 17:00:00",
-                        "extreme_label": "极负",
-                        "funding_interval_transition": (
-                            "2026-07-01 16:00:00 4H结算一次 → "
-                            "2026-07-01 17:00:00 1H结算一次"
-                        ),
-                    },
-                    {
-                        "exchange": "OKX",
-                        "funding_pct": 0.01,
-                        "interval_hours": 8,
-                        "last_funding_time": "2026-07-01 16:00:00",
-                        "next_funding_time": "2026-07-02 00:00:00",
-                    },
-                ],
-            })
-
-            self.assertIn("<blockquote><b>多交易所资金费率</b></blockquote>", text)
-            self.assertIn("<pre>交易所", text)
-            self.assertIn("费率/周期", text)
-            self.assertIn("上次结算", text)
-            self.assertIn("本次周期", text)
-            self.assertIn("Binance", text)
-            self.assertIn("-2.000%/1H", text)
-            self.assertIn("4H→1H", text)
-            self.assertIn("OKX", text)
-            self.assertIn("+0.010%/8H", text)
-            self.assertIn("Binance周期: 2026-07-01 16:00:00 4H结算一次", text)
-
-    def test_launch_alert_replies_to_previous_symbol_message(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(data_dir=Path(tmp), radar_min_quote_volume=1)
-            store = JsonStore(Path(tmp))
-            store.save(settings.launch_state_path, {
-                "TESTUSDT": {
-                    "stage": "primed",
-                    "last_message_id": 123,
-                    "last_pushed": 0,
-                    "last_seen": int(time.time()),
-                    "appear_count": 1,
-                }
-            })
-            engine = RadarEngine(settings, store)
-
-            def fake_analyze(_source: object, item: dict[str, object]) -> dict[str, object]:
-                return {
-                    **item,
-                    "score": 95,
-                    "price_15m": 5.0,
-                    "price_1h": 8.0,
-                    "oi_15m": 4.0,
-                    "oi_1h": 8.0,
-                    "volume_ratio": 2.5,
-                    "breakout": True,
-                    "reasons": ["测试"],
-                }
-
-            class Source:
-                @staticmethod
-                def ticker_24h() -> list[dict[str, str]]:
-                    return [{
-                        "symbol": "TESTUSDT",
-                        "quoteVolume": "10000000",
-                        "priceChangePercent": "10",
-                        "lastPrice": "1",
-                    }]
-
-                @staticmethod
-                def market_caps() -> dict[str, float]:
-                    return {"TEST": 2_500_000_000}
-
-            engine._analyze_launch_symbol = fake_analyze  # type: ignore[method-assign]
-
-            result = engine.build_launch_alerts(Source())  # type: ignore[arg-type]
-
-            self.assertEqual(result["alerts"][0]["reply_to_message_id"], 123)
-            self.assertEqual(result["alerts"][0]["mcap"], 2_500_000_000)
-            self.assertEqual(result["alerts"][0]["mcap_source"], "Binance")
-            self.assertEqual(result["alerts"][0]["market_cap_tier"], "中市值")
-            self.assertEqual(result["alerts"][0]["liquidity_tier"], "低流动性")
-
-    def test_launch_alert_uses_coinpaprika_market_cap_fallback(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                radar_min_quote_volume=1,
-                launch_state_path=Path(tmp) / "launch_state.json",
-                launch_watchlist_path=Path(tmp) / "launch_watchlist.json",
-                launch_watch_history_path=Path(tmp) / "launch_watch_history.json",
-            )
-            engine = RadarEngine(settings, JsonStore(Path(tmp)))
-
-            def fake_analyze(_source: object, item: dict[str, object]) -> dict[str, object]:
-                return {
-                    **item,
-                    "score": 95,
-                    "price_15m": 5.0,
-                    "price_1h": 8.0,
-                    "oi_15m": 4.0,
-                    "oi_1h": 8.0,
-                    "volume_ratio": 2.5,
-                    "breakout": True,
-                    "reasons": ["测试"],
-                }
-
-            class Source:
-                @staticmethod
-                def ticker_24h() -> list[dict[str, str]]:
-                    return [{
-                        "symbol": "TESTUSDT",
-                        "quoteVolume": "65000000",
-                        "priceChangePercent": "10",
-                        "lastPrice": "1",
-                    }]
-
-                @staticmethod
-                def market_caps() -> dict[str, float]:
-                    return {}
-
-                @staticmethod
-                def coinpaprika_market_caps() -> dict[str, float]:
-                    return {"TEST": 123_000_000}
-
-            engine._analyze_launch_symbol = fake_analyze  # type: ignore[method-assign]
-
-            result = engine.build_launch_alerts(Source())  # type: ignore[arg-type]
-
-            alert = result["alerts"][0]
-            self.assertEqual(alert["mcap"], 123_000_000)
-            self.assertEqual(alert["mcap_source"], "CoinPaprika")
-            self.assertEqual(alert["market_cap_tier"], "低市值")
-            self.assertIn("市值: $123M（低市值，来源 CoinPaprika）", result["messages"][0])
-
-    def test_mark_launch_pushed_stores_message_id_for_reply_chain(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(data_dir=Path(tmp))
-            store = JsonStore(Path(tmp))
-            store.save(settings.launch_state_path, {"TESTUSDT": {"stage": "launched"}})
-            engine = RadarEngine(settings, store)
-
-            engine.mark_launch_pushed([{
-                "symbol": "TESTUSDT",
-                "stage": "launched",
-                "message_ids": [456],
-            }])
-
-            state = store.load(settings.launch_state_path, {})
-            self.assertEqual(state["TESTUSDT"]["last_message_id"], 456)
-            self.assertEqual(state["TESTUSDT"]["last_message_ids"], [456])
-
-    def test_launch_signal_requires_cooling_period_before_failure(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                launch_invalidation_grace_sec=1800,
-            )
-            engine = RadarEngine(settings, JsonStore(Path(tmp)))
-            active = {
-                "stage": "breakout",
-                "first_seen": 100,
-                "last_seen": 100,
-                "last_active_at": 100,
-            }
-
-            cooling = engine._inactive_launch_record(
-                active,
-                1000,
-                fail_reason="launch_score_fell",
-            )
-            failed = engine._inactive_launch_record(
-                cooling,
-                2799,
-                fail_reason="launch_score_fell",
-            )
-            expired = engine._inactive_launch_record(
-                failed,
-                2800,
-                fail_reason="launch_score_fell",
-            )
-
-            self.assertEqual(cooling["stage"], "cooling")
-            self.assertEqual(failed["stage"], "cooling")
-            self.assertEqual(expired["stage"], "failed")
-            self.assertNotIn("delete_pending", expired)
-            self.assertTrue(expired["message_cleanup_complete"])
-
-    def test_mark_launch_pushed_accumulates_cycle_message_ids(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                launch_state_path=Path(tmp) / "launch_state.json",
-            )
-            store = JsonStore(Path(tmp))
-            store.save(settings.launch_state_path, {
-                "TESTUSDT": {
-                    "stage": "breakout",
-                    "message_ids": [100],
-                    "last_message_ids": [100],
-                },
-            })
-            engine = RadarEngine(settings, store)
-
-            engine.mark_launch_pushed([{
-                "symbol": "TESTUSDT",
-                "stage": "launched",
-                "message_ids": [101, 102],
-            }])
-
-            state = store.load(settings.launch_state_path, {})
-            self.assertEqual(state["TESTUSDT"]["message_ids"], [100, 101, 102])
-            self.assertEqual(state["TESTUSDT"]["last_message_ids"], [101, 102])
-
-    def test_failed_launch_cleanup_is_noop_and_retains_history_and_signal_sample(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                launch_state_path=Path(tmp) / "launch_state.json",
-                signal_events_db_path=Path(tmp) / "signals.db",
-                launch_message_cleanup_max_age_sec=10_000,
-            )
-            store = JsonStore(Path(tmp))
-            SignalEventStore(settings.signal_events_db_path).append_from_push(
-                template_id="TG_LAUNCH_ALERT",
-                dedup_key="launch:TESTUSDT:breakout",
-                status="sent",
-                sent=True,
-                text="TESTUSDT",
-                ts=1000,
-                message_ids=[101, 102],
-                structured_records=[{"symbol": "TESTUSDT", "stage": "breakout", "score": 80}],
-            )
-            store.save(settings.launch_state_path, {
-                "TESTUSDT": {
-                    "stage": "failed",
-                    "first_seen": 900,
-                    "failed_at": 1500,
-                    "last_seen": 1500,
-                    "last_pushed": 1000,
-                    "message_ids": [101, 102],
-                    "delete_pending": True,
-                },
-            })
-            engine = RadarEngine(settings, store)
-            attempted: list[int] = []
-
-            cleanup = engine.cleanup_failed_launch_messages(
-                lambda ids: (
-                    attempted.extend(ids)
-                    or {"deleted_ids": list(ids), "failed_ids": []}
-                ),
-                now_ts=2000,
-            )
-
-            self.assertEqual(attempted, [])
-            self.assertFalse(cleanup["enabled"])
-            self.assertEqual(cleanup["mode"], "retain_history_reply_chain")
-            self.assertEqual(cleanup["deleted_messages"], 0)
-            self.assertEqual(cleanup["pending_signals"], 0)
-            state = store.load(settings.launch_state_path, {})
-            self.assertEqual(state["TESTUSDT"]["message_ids"], [101, 102])
-            sample = SignalEventStore(settings.signal_events_db_path).list_signals(limit=1)["items"][0]
-            self.assertEqual(sample["status"], "sent")
-            self.assertTrue(sample["sent"])
-            self.assertNotIn("telegram_cleanup", sample["payload"])
-
-    def test_risk_announcement_is_supporting_evidence_only(self) -> None:
-        with TemporaryDirectory() as tmp:
-            engine = RadarEngine(Settings(data_dir=Path(tmp)), JsonStore(Path(tmp)))
-            lines = engine._launch_supporting_evidence_lines({
-                "announcement_evidence": [{
-                    "kind": "risk",
-                    "title": "Binance Will Delist TEST",
-                    "url": "https://www.binance.com/example",
-                }],
-            })
-            text = "\n".join(lines)
-
-            self.assertIn("官方公告: 风险", text)
-            self.assertIn("辅助证据，不参与打分", text)
-            self.assertNotIn("暂停新增观察", text)
-
 
 if __name__ == "__main__":
     unittest.main()

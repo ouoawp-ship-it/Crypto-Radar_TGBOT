@@ -4,18 +4,18 @@ from __future__ import annotations
 泡泡抓币：精简版加密监控工具。
 
 核心功能：
-- 公告风险：低频解析 Binance 官方上新/下架等事件，独立推送并供启动预警引用。
+- 公告风险：低频解析 Binance 官方上新/下架等事件并独立推送。
 - 费率/OI 异动扫描：负费率、资金费率趋势、持仓变化、价格变化、成交量变化。
 - 热度做多雷达：按涨幅、成交量、OI、资金费率筛选短线动量。
 - 庄家收筹/埋伏池：低市值、横盘、OI 暗流、负费率燃料的综合评分。
-- BN 行情启动预警：15m/1h 价格、OI、成交量、短周期突破分层提醒。
-- OI/价格背离扫描：识别建仓背离、多头共振、极端背离等状态。
+- 脉冲雷达：15分钟价格、OI、CVD 六分类异动提醒。
+- 2小时背离：识别建仓、回调压力、突破、恐慌、共振和极端背离。
 
 默认推送周期：
 - 资金雷达汇总：6 小时一次，每天最多 4 次；收线后延迟抓上一完整窗口。
-- 启动雷达提醒：3 分钟检查一次，按最近完整 15m 收线窗口判断。
-- 公告风险：独立低频运行；作为启动辅助证据时不参与启动分数。
-- 同币同阶段启动提醒：默认 6 小时冷却。
+- 脉冲异动提醒：每个完整15分钟窗口运行一次；背离分析每2小时运行一次。
+- 公告风险：独立低频运行，不参与脉冲雷达分类。
+- 同币脉冲事件：2小时内只在升级或反转时更新，最多3次。
 """
 
 import argparse
@@ -43,6 +43,8 @@ from radars.funding_alert.radar import FundingAlertEngine
 from .maintenance import cleanup_runtime_artifacts
 from .cli_text import check_name_text, format_push_result_cn
 from radars.market_summary.radar import MarketSummaryRadar
+from radars.pulse.divergence import DivergenceConfig
+from radars.pulse.simple_alert import SimpleAlertConfig
 from .radar_engine import RadarEngine
 from .diagnostics import build_market_radar_runtime_status
 from .signal_effectiveness import SignalOutcomeTracker
@@ -59,23 +61,23 @@ from shared.time_windows import next_closed_window_epoch
 PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 
 保留功能：
-- 公告风险：独立提醒 Binance 官方上新/下架事件，同时只作启动预警辅助证据、不参与打分。
+- 公告风险：独立提醒 Binance 官方上新/下架事件。
 - 费率/OI 异动扫描：资金费率、持仓、价格、成交量、数据质量。
 - 热度做多雷达：涨幅、成交量、OI、资金费率综合筛选短线动量。
 - 庄家收筹/埋伏池：低市值、横盘、OI 暗流、负费率燃料综合评分。
-- BN 行情启动预警：15m/1h 价格、OI、成交量、短周期突破分层提醒。
-- OI/价格背离扫描：建仓背离、多头共振、极端背离、信号持续/增强/消失。
+- 脉冲雷达：15分钟价格、OI、CVD 六分类异动提醒。
+- 2小时背离：建仓、回调压力、强势突破、恐慌、多头共振和极端背离。
 
 推送内容：
 - 资金雷达汇总：负费率榜、综合榜、埋伏榜、动量池、新币池、值得关注、图例、数据质量。
-- 启动雷达提醒：币种、阶段、分数、价格变化、OI 变化、成交量放大、触发原因。
-- 启动预警辅助证据：最近的 Binance 官方公告与吸筹质量，不改变原触发分数。
+- 脉冲提醒：币种、价格与OI多窗口变化、量能、CVD、多空比和组合结论。
+- 背离汇总：每2小时按持仓变化、价格变化和背离度分类。
 - Telegram 测试消息：只在手动执行 telegram-test --send --confirm-real-send 时发送。
 
 默认周期：
 - 资金雷达汇总：6 小时一次，每天最多 4 次；可用 --interval 或 RADAR_SUMMARY_MIN_INTERVAL_SEC 调整。
-- 启动雷达扫描：3 分钟检查一次，按最近完整 15m 收线窗口判断；可用 --launch-interval 调整。
-- 启动同币同阶段冷却：6 小时，可用 LAUNCH_STAGE_COOLDOWN_SEC 调整。
+- 脉冲雷达：每15分钟完整收线后运行；2小时背离按完整窗口运行。
+- 同币事件默认跟随2小时，只在升级或反转时更新，最多3次。
 - 自动清理：1 小时检查一次，可用 CLEANUP_INTERVAL_SEC 调整。
 
 安全规则：
@@ -87,169 +89,80 @@ PROJECT_ABOUT = """泡泡抓币：精简版加密监控工具
 PLACEHOLDER_WORDS = ("your", "token", "chat_id", "bot_token", "填写", "填入", "请输入", "xxx", "example")
 
 
-def launch_runtime_diagnostics(launch: dict[str, object]) -> dict[str, object]:
-    diagnostics = launch.get("diagnostics")
-    return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
 
-def push_launch_messages(
-    settings: Settings,
+def run_pulse_cycle(
     engine: RadarEngine,
     gateway: TelegramGateway,
-    launch: dict[str, object],
     args: argparse.Namespace,
-) -> tuple[list[dict[str, object]], dict[str, object]]:
-    real_send = bool(args.send and args.confirm_real_send)
-    cleanup_diagnostics: dict[str, object] = {
-        "enabled": False,
-        "mode": "retain_history_reply_chain",
-        "retried_packages": 0,
-        "deleted_messages": 0,
-        "failed_deletions": 0,
-        "topic_history_deleted": 0,
-        "topic_history_delete_failures": 0,
-        "topic_history_undeletable": 0,
-        "charts_sent": 0,
-        "chart_failures": 0,
-        "protected_latest_messages": 0,
-    }
+    *,
+    include_simple: bool = True,
+    include_divergence: bool = True,
+    maintain_reviews: bool = True,
+) -> dict[str, object]:
+    diagnostics: dict[str, object] = {}
+    failures: list[str] = []
+    scan_limit = getattr(args, "pulse_scan_limit", None)
 
-    messages = list(launch.get("messages") or [])
-    alerts = list(launch.get("alerts") or [])
-    pushes: list[dict[str, object]] = []
-    sent_alerts: list[dict[str, object]] = []
-    topic_deleted_message_ids: list[int] = []
-    for idx, message in enumerate(messages, start=1):
-        alert = alerts[idx - 1]
-        is_package = bool(alert.get("launch_message_package_v2"))
-        chart_required = bool(is_package and settings.launch_chart_v2_enable)
-        lifecycle = alert.get("launch_lifecycle")
-        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
-        dedup_key = (
-            f"launch-package:{int(lifecycle.get('cycle_id') or 0)}:"
-            f"{int(lifecycle.get('observation_id') or 0)}"
-            if is_package
-            else f"launch:{alert['symbol']}:{alert['stage']}"
-        )
-        push_record: dict[str, object] = {
-            "symbol": str(alert.get("symbol", "")),
-            "stage": str(alert.get("stage", "")),
-            "reply_target_configured": bool(
-                int(alert.get("reply_to_message_id", 0) or 0)
-            ),
-            "package_v2": is_package,
-            "chart_v2": chart_required,
-        }
-        chart_bytes = alert.get("chart_png_bytes")
-        if chart_required and not isinstance(chart_bytes, bytes):
-            push_record["status"] = "skipped"
-            push_record["reason"] = str(alert.get("chart_error") or "chart_unavailable")
-            cleanup_diagnostics["chart_failures"] = int(
-                cleanup_diagnostics["chart_failures"]
-            ) + 1
-            print(format_push_result_cn(
-                "启动预警推送",
-                "skipped",
-                str(push_record["reason"]),
-                index=idx,
-                note="旧卡片已保留",
-            ))
-            pushes.append(push_record)
-            continue
+    if include_simple:
+        try:
+            simple = engine.run_simple_pulse(
+                gateway,
+                send=args.send,
+                confirm_real_send=args.confirm_real_send,
+                scan_limit=scan_limit,
+            )
+            diagnostics["simple"] = simple
+            if any(
+                str(push.get("status") or "") in {"failed", "partial"}
+                for push in simple.get("pushes", [])
+                if isinstance(push, dict)
+            ):
+                failures.append("simple_delivery")
+        except Exception as exc:
+            failures.append("simple")
+            diagnostics["simple"] = {
+                "status": "failed",
+                "error": type(exc).__name__,
+            }
 
-        signal_record = {
-            key: value
-            for key, value in alert.items()
-            if key != "chart_png_bytes"
-        }
-        if is_package:
-            signal_record.update({
-                "evaluation_eligible": False,
-                "launch_message_package_v2": True,
-                "launch_cycle_id": int(lifecycle.get("cycle_id") or 0),
-                "launch_cycle_no": int(lifecycle.get("cycle_no") or 0),
-                "launch_observation_id": int(lifecycle.get("observation_id") or 0),
-            })
-        push = gateway.send(
-            str(message),
-            "TG_LAUNCH_ALERT",
-            dedup_key,
+    if include_divergence:
+        try:
+            divergence = engine.run_divergence_pulse(
+                gateway,
+                send=args.send,
+                confirm_real_send=args.confirm_real_send,
+                scan_limit=scan_limit,
+            )
+            diagnostics["divergence"] = divergence
+            push = divergence.get("push") or {}
+            if isinstance(push, dict) and push.get("status") in {
+                "failed",
+                "partial",
+            }:
+                failures.append("divergence_delivery")
+        except Exception as exc:
+            failures.append("divergence")
+            diagnostics["divergence"] = {
+                "status": "failed",
+                "error": type(exc).__name__,
+            }
+
+    if maintain_reviews:
+        review = engine.maintain_pulse_reviews(
+            gateway,
             send=args.send,
             confirm_real_send=args.confirm_real_send,
-            cooldown_sec=0 if is_package else settings.launch_stage_cooldown_sec,
-            parse_mode="HTML",
-            reply_to_message_id=(
-                int(alert.get("reply_to_message_id", 0) or 0) or None
-            ),
-            signal_records=[signal_record],
-            photo=chart_bytes if chart_required else None,
-            enrich_market_context=not is_package,
         )
-        print(format_push_result_cn(
-            "启动预警推送",
-            push.status,
-            push.reason,
-            index=idx,
-        ))
-        push_record["status"] = push.status
-        push_record["reason"] = push.reason
-        if push.status == "sent":
-            new_message_ids = list(push.message_ids or [])
-            if chart_required:
-                alert.pop("chart_png_bytes", None)
-                chart_bytes = None
-                push_record["photo_status"] = push.status
-                push_record["photo_reason"] = push.reason
-                cleanup_diagnostics["charts_sent"] = int(
-                    cleanup_diagnostics["charts_sent"]
-                ) + 1
-            alert["message_ids"] = new_message_ids
-            if is_package:
-                commit = engine.commit_launch_package(
-                    alert,
-                    new_message_ids,
-                )
-                push_record["package_commit"] = str(commit.get("status") or "")
-                if commit.get("status") not in {"committed", "idempotent"}:
-                    rollback = gateway.delete_messages_detailed(
-                        new_message_ids,
-                        reason="launch_package_commit_rollback",
-                    )
-                    push_record["status"] = "package_commit_failed"
-                    push_record["rollback_deleted"] = len(
-                        rollback.get("deleted_ids") or []
-                    )
-                    push_record["rollback_failures"] = len(
-                        rollback.get("failed_ids") or []
-                    )
-                    pushes.append(push_record)
-                    continue
-                push_record["previous_messages_retained"] = True
-            sent_alerts.append(alert)
-        elif is_package and push.message_ids and real_send:
-            rollback = gateway.delete_messages_detailed(
-                list(push.message_ids),
-                reason="launch_package_send_rollback",
-            )
-            push_record["rollback_deleted"] = len(
-                rollback.get("deleted_ids") or []
-            )
-            push_record["rollback_failures"] = len(
-                rollback.get("failed_ids") or []
-            )
-        if chart_required and push.status == "failed":
-            cleanup_diagnostics["chart_failures"] = int(
-                cleanup_diagnostics["chart_failures"]
-            ) + 1
-        if chart_required:
-            alert.pop("chart_png_bytes", None)
-        pushes.append(push_record)
-    engine.mark_launch_pushed(sent_alerts)
-    reconciliation = engine.reconcile_launch_topic_messages(
-        deleted_ids=topic_deleted_message_ids,
-    )
-    cleanup_diagnostics["topic_state_reconciliation"] = reconciliation
-    return pushes, cleanup_diagnostics
+        diagnostics["review"] = review
+        if review.get("status") == "degraded":
+            failures.append("review")
+
+    diagnostics["status"] = "degraded" if failures else "ok"
+    diagnostics["failed_components"] = failures
+    return diagnostics
+
+
 
 
 def _clean_config_value(value: str) -> str:
@@ -326,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "market-stream", "runtime-status", "radar-status", "cleanup", "watchlist", "launch-history", "launch-report", "once", "trial", "observe", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -339,18 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--apply", action="store_true", help="用于 signal-repair：应用修复（默认仅审计）")
     parser.add_argument("--force-cleanup", action="store_true", help="用于 cleanup：忽略清理间隔，立即执行")
-    parser.add_argument("--top", type=int, default=12, help="用于 watchlist/报告：显示前 N 个候选")
-    parser.add_argument("--records", type=int, default=100, help="用于 launch-report：统计最近 N 轮")
-    parser.add_argument("--cycles", type=int, default=3, help="用于 trial：试跑轮数")
-    parser.add_argument("--duration-minutes", type=int, default=360, help="用于 observe：观察总时长分钟数")
     parser.add_argument("--stream-duration-minutes", type=float, default=0, help="用于 market-stream 本地验收；0 表示常驻运行")
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数")
-    parser.add_argument("--launch-interval", type=int, default=180, help="loop/daemon 的启动雷达间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
-    parser.add_argument("--launch-scan-limit", type=int, default=None, help="临时覆盖启动雷达扫描上限")
+    parser.add_argument("--pulse-scan-limit", dest="pulse_scan_limit", type=int, default=None, help="临时覆盖脉冲雷达扫描上限")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
     parser.add_argument("--funding-scan-limit", type=int, default=None, help="临时覆盖资金费率警报扫描上限")
-    parser.add_argument("--no-launch", action="store_true", help="本轮不运行启动雷达")
+    parser.add_argument("--no-pulse", dest="no_launch", action="store_true", help="本轮不运行脉冲雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不运行公告风险雷达")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
     parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
@@ -386,13 +294,14 @@ def make_runtime() -> tuple[Settings, JsonStore, RadarEngine, TelegramGateway]:
 def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
     updates: dict[str, object] = {}
     radar_scan_limit = getattr(args, "radar_scan_limit", None)
-    launch_scan_limit = getattr(args, "launch_scan_limit", None)
+    pulse_scan_limit = getattr(args, "pulse_scan_limit", None)
     flow_scan_limit = getattr(args, "flow_scan_limit", None)
     funding_scan_limit = getattr(args, "funding_scan_limit", None)
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
-    if launch_scan_limit is not None:
-        updates["launch_scan_limit"] = max(0, int(launch_scan_limit))
+    if pulse_scan_limit is not None:
+        updates["pulse_simple_scan_limit"] = max(1, int(pulse_scan_limit))
+        updates["pulse_divergence_scan_limit"] = max(1, int(pulse_scan_limit))
     if flow_scan_limit is not None:
         updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
     if funding_scan_limit is not None:
@@ -415,7 +324,7 @@ def effective_radar_switches(
 
     return {
         "launch_alert": bool(
-            settings.launch_alert_enable and not bool(args.no_launch)
+            settings.pulse_radar_enable and not bool(args.no_launch)
         ),
         "radar_summary": bool(settings.radar_summary_enable),
         "funding_alert": bool(
@@ -498,9 +407,8 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.funding_snapshot_path,
         settings.funding_alert_state_path,
         settings.announcement_state_path,
-        settings.launch_state_path,
-        settings.launch_watchlist_path,
-        settings.launch_watch_history_path,
+        settings.data_dir / "simple_alert_state.json",
+        settings.data_dir / "review_signals.json",
         settings.divergence_state_path,
         settings.divergence_cooldown_path,
         settings.cleanup_state_path,
@@ -1274,65 +1182,17 @@ def push_funding_alert(
     return push_status, result["diagnostics"]
 
 
-def launch_alert_pressure_within_limit(total_alerts: int, records: int) -> bool:
-    """Allow multiple symbol candidates per scan without treating them as sent messages."""
-
-    return max(0, int(total_alerts)) <= max(1, max(0, int(records)) * 2)
-
-
-def current_launch_alert_candidate_count(
-    settings: Settings,
-    store: JsonStore,
-) -> int | None:
-    """Count distinct currently actionable launch symbols for readiness."""
-
-    if not settings.launch_state_path.exists():
-        return None
-    state = store.load(settings.launch_state_path, None)
-    if not isinstance(state, dict):
-        return None
-    actionable_stages = {"primed", "breakout", "launched"}
-    return sum(
-        1
-        for record in state.values()
-        if isinstance(record, dict)
-        and str(record.get("stage") or "") in actionable_stages
-        and isinstance(record.get("score"), (int, float))
-        and int(record["score"]) >= settings.launch_min_score_push
-    )
 
 
 def print_readiness(settings: Settings, store: JsonStore) -> int:
-    records = store.load(settings.launch_watch_history_path, [])
-    record_count = len(records) if isinstance(records, list) else 0
-    report = build_launch_report(records[-100:] if isinstance(records, list) else [], settings)
-    pressure_total = int(report.get("total_alerts", 0) or 0)
-    pressure_records = int(report.get("records", 0) or 0)
-    pressure_ok = launch_alert_pressure_within_limit(
-        pressure_total,
-        pressure_records,
-    )
-    pressure_message = (
-        f"最近推送候选 {pressure_total} / {pressure_records} 轮"
-        "（上限每轮 2 个候选；不等于实际推送）"
-    )
-    if settings.launch_message_package_v2_enable:
-        current_candidates = current_launch_alert_candidate_count(settings, store)
-        if current_candidates is not None:
-            pressure_ok = launch_alert_pressure_within_limit(
-                current_candidates,
-                1,
-            )
-            pressure_message = (
-                f"当前独立有效候选 {current_candidates} / 2；"
-                f"历史候选 {pressure_total} / {pressure_records} 轮"
-                "（dry-run 会重复记录尚未成功发布的同一事件）"
-            )
     runtime_health = [
         item for item in runtime_health_checks(settings, store)
         if item.get("name") != "runtime_status"
     ]
-    health_failures = [item for item in runtime_health if item.get("status") == "fail"]
+    health_failures = [
+        item for item in runtime_health
+        if item.get("status") == "fail"
+    ]
     checks = [
         *telegram_config_checks(settings),
         *telegram_topic_route_checks(settings, store),
@@ -1341,29 +1201,41 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
             not health_failures,
             "BOT 核心数据健康"
             if not health_failures
-            else "；".join(str(item.get("detail") or "") for item in health_failures),
+            else "；".join(
+                str(item.get("detail") or "")
+                for item in health_failures
+            ),
         ),
-        ("observe_history", record_count >= 5, f"启动观察历史 {record_count} 轮"),
         (
-            "launch_alert_pressure",
-            pressure_ok,
-            pressure_message,
+            "pulse_enabled",
+            bool(settings.pulse_radar_enable),
+            "脉冲雷达已启用"
+            if settings.pulse_radar_enable
+            else "脉冲雷达未启用",
         ),
-        ("history_file", settings.launch_watch_history_path.exists(), "启动观察历史文件存在" if settings.launch_watch_history_path.exists() else "启动观察历史文件不存在"),
+        (
+            "pulse_scan_limit",
+            (
+                int(settings.pulse_simple_scan_limit) > 0
+                and int(settings.pulse_divergence_scan_limit) > 0
+            ),
+            (
+                f"脉冲扫描上限 15m={int(settings.pulse_simple_scan_limit)}，"
+                f"2h={int(settings.pulse_divergence_scan_limit)}"
+            ),
+        ),
     ]
     passed = sum(1 for _name, ok, _message in checks if ok)
     print(f"真实推送准备度: {passed}/{len(checks)}")
     for name, ok, message in checks:
         mark = "✅ 已通过" if ok else "⏳ 待处理"
         print(f"- {mark} {check_name_text(name)}：{message}")
-    print("")
-    print(format_launch_report(settings, store, 100, 8, records=records))
     if passed == len(checks):
         print("")
-        print("下一步：可以在中文菜单中执行一次真实 Telegram 测试。")
+        print("准备检查通过；真实发送仍需要 --send --confirm-real-send。")
         return 0
     print("")
-    print("下一步：继续使用安全演练模式观察，或补齐缺少的 Telegram 配置。")
+    print("真实发送保持阻止，请先处理以上未通过项目。")
     return 1
 
 
@@ -1418,202 +1290,6 @@ def bootstrap_live_market_snapshot(
             source.close()
 
 
-def print_watchlist(settings: Settings, store: JsonStore, top_n: int) -> None:
-    data = store.load(settings.launch_watchlist_path, {})
-    if not isinstance(data, dict) or not data.get("items"):
-        print("暂无启动候选记录。先运行：python main.py once")
-        return
-    items = data.get("items", [])
-    if not isinstance(items, list):
-        print("启动候选记录格式异常。")
-        return
-    print(f"启动候选观察表 | 更新时间: {data.get('updated_at', 'unknown')} | 数量: {data.get('count', len(items))}")
-    for idx, item in enumerate(items[:max(1, top_n)], start=1):
-        reasons = "；".join(item.get("reasons") or []) or "无触发项"
-        print(
-            f"{idx:02d}. {item.get('symbol', ''):<12} "
-            f"{int(item.get('score', 0)):>3}分 | "
-            f"15m价{float(item.get('price_15m', 0)):+.2f}% | "
-            f"1h价{float(item.get('price_1h', 0)):+.2f}% | "
-            f"15m OI{float(item.get('oi_15m', 0)):+.2f}% | "
-            f"1h OI{float(item.get('oi_1h', 0)):+.2f}% | "
-            f"量{float(item.get('volume_ratio', 0)):.2f}x | {reasons}"
-        )
-
-
-def print_launch_history(settings: Settings, store: JsonStore, top_n: int) -> None:
-    records = store.load(settings.launch_watch_history_path, [])
-    if not isinstance(records, list) or not records:
-        print("暂无启动观察历史。先运行：python main.py trial --cycles 1")
-        return
-    selected = records[-max(1, top_n):]
-    print(f"启动观察历史 | 总记录: {len(records)} | 最近: {len(selected)}")
-    for idx, record in enumerate(selected, start=1):
-        if not isinstance(record, dict):
-            continue
-        buckets = record.get("buckets") if isinstance(record.get("buckets"), dict) else {}
-        top_symbols = ", ".join(record.get("top_symbols", [])[:5]) if isinstance(record.get("top_symbols"), list) else ""
-        print(
-            f"{idx:02d}. {record.get('updated_at', 'unknown')} | "
-            f"扫描{int(record.get('scanned', 0))} | "
-            f"最高{int(record.get('top_score', 0))}分 | "
-            f"推送候选{int(record.get('alert_count', 0))} | "
-            f"观察{int(buckets.get('watching', 0))}/预警{int(buckets.get('primed', 0))}/确认{int(buckets.get('breakout', 0))}/瞬间{int(buckets.get('launched', 0))} | "
-            f"{top_symbols}"
-        )
-
-
-def build_launch_report(records: list[dict[str, object]], settings: Settings) -> dict[str, object]:
-    valid = [record for record in records if isinstance(record, dict)]
-    top_scores = [int(record.get("top_score", 0) or 0) for record in valid]
-    total_scanned = sum(int(record.get("scanned", 0) or 0) for record in valid)
-    total_alerts = sum(int(record.get("alert_count", 0) or 0) for record in valid)
-    bucket_totals: Counter[str] = Counter()
-    symbol_counts: Counter[str] = Counter()
-    for record in valid:
-        buckets = record.get("buckets")
-        if isinstance(buckets, dict):
-            for key, value in buckets.items():
-                bucket_totals[str(key)] += int(value or 0)
-        top_symbols = record.get("top_symbols")
-        if isinstance(top_symbols, list):
-            symbol_counts.update(
-                str(symbol) for symbol in top_symbols
-                if symbol and not is_excluded_symbol(str(symbol), settings)
-            )
-
-    max_top_score = max(top_scores) if top_scores else 0
-    avg_top_score = round(sum(top_scores) / len(top_scores), 2) if top_scores else 0
-    suggestion = "样本不足，先继续 dry-run。"
-    if len(valid) >= 5:
-        active_count = (
-            bucket_totals.get("watching", 0)
-            + bucket_totals.get("primed", 0)
-            + bucket_totals.get("breakout", 0)
-            + bucket_totals.get("launched", 0)
-        )
-        if total_alerts >= len(valid):
-            suggestion = "推送候选偏多，先提高 LAUNCH_MIN_SCORE_PUSH 或 LAUNCH_PRIMED_SCORE。"
-        elif max_top_score < settings.launch_watch_score:
-            suggestion = "近期最高分低于观察线，市场暂时没有明显启动形态，阈值无需下调。"
-        elif active_count > 0 and total_alerts == 0:
-            suggestion = "已有观察级信号但未到推送线，适合继续 dry-run 观察，不急开真实推送。"
-        else:
-            suggestion = "当前阈值暂时可保持，继续积累样本。"
-
-    return {
-        "records": len(valid),
-        "total_scanned": total_scanned,
-        "total_alerts": total_alerts,
-        "max_top_score": max_top_score,
-        "avg_top_score": avg_top_score,
-        "buckets": dict(bucket_totals),
-        "top_symbols": symbol_counts.most_common(10),
-        "suggestion": suggestion,
-    }
-
-
-def is_excluded_symbol(symbol: str, settings: Settings) -> bool:
-    coin = symbol.upper()
-    if coin.endswith("USDT"):
-        coin = coin[:-4]
-    return coin in set(settings.excluded_base_assets)
-
-
-def print_launch_report(settings: Settings, store: JsonStore, record_limit: int, top_n: int) -> None:
-    print(format_launch_report(settings, store, record_limit, top_n))
-
-
-def format_launch_report(
-    settings: Settings,
-    store: JsonStore,
-    record_limit: int,
-    top_n: int,
-    *,
-    records: list[Any] | None = None,
-) -> str:
-    records = (
-        store.load(settings.launch_watch_history_path, [])
-        if records is None
-        else records
-    )
-    if not isinstance(records, list) or not records:
-        return "暂无启动观察历史。先运行：python main.py trial --cycles 1"
-    selected = records[-max(1, record_limit):]
-    report = build_launch_report(selected, settings)
-    buckets = report["buckets"] if isinstance(report["buckets"], dict) else {}
-    lines = [
-        f"启动历史分析 | 最近{report['records']}轮",
-        f"扫描合计: {report['total_scanned']} | 推送候选: {report['total_alerts']}",
-        f"最高分: {report['max_top_score']} | 平均最高分: {report['avg_top_score']}",
-        (
-            "阶段合计: "
-            f"观察{int(buckets.get('watching', 0))} / "
-            f"预警{int(buckets.get('primed', 0))} / "
-            f"确认{int(buckets.get('breakout', 0))} / "
-            f"瞬间{int(buckets.get('launched', 0))}"
-        ),
-    ]
-    symbols = report["top_symbols"] if isinstance(report["top_symbols"], list) else []
-    if symbols:
-        shown = "，".join(f"{symbol}({count})" for symbol, count in symbols[:max(1, top_n)])
-        lines.append(f"高频候选: {shown}")
-    lines.append(f"建议: {report['suggestion']}")
-    return "\n".join(lines)
-
-
-def format_observe_report(
-    settings: Settings,
-    store: JsonStore,
-    record_limit: int,
-    top_n: int,
-    *,
-    started_at: str,
-    cycles: int,
-    failures: int,
-    status: str,
-    last_error: str = "",
-) -> str:
-    lines = [
-        "启动 dry-run 观察报告",
-        f"状态: {status}",
-        f"开始: {started_at}",
-        f"更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"已跑轮数: {cycles} | 错误次数: {failures}",
-        "模式: dry-run，不真实发送 Telegram",
-    ]
-    if last_error:
-        lines.append(f"最近错误: {last_error}")
-    lines.extend(["", format_launch_report(settings, store, record_limit, top_n)])
-    return "\n".join(lines)
-
-
-def save_observe_report(
-    settings: Settings,
-    store: JsonStore,
-    record_limit: int,
-    top_n: int,
-    *,
-    started_at: str,
-    cycles: int,
-    failures: int,
-    status: str,
-    last_error: str = "",
-) -> Path:
-    report_text = format_observe_report(
-        settings,
-        store,
-        record_limit,
-        top_n,
-        started_at=started_at,
-        cycles=cycles,
-        failures=failures,
-        status=status,
-        last_error=last_error,
-    )
-    report_path = settings.data_dir / "launch_observe_report.txt"
-    report_path.write_text(report_text + "\n", encoding="utf-8")
-    return report_path
 
 
 def refresh_shared_market_snapshot(
@@ -1663,22 +1339,13 @@ def run_once(
             getattr(args, "no_funding_alert", False)
         ),
         radar_scan_limit=settings.radar_scan_limit,
-        launch_scan_limit=settings.launch_scan_limit,
+        pulse_simple_scan_limit=settings.pulse_simple_scan_limit,
+        pulse_divergence_scan_limit=settings.pulse_divergence_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
     )
     result = engine.run_once(
-        include_launch=not args.no_launch,
         include_announcements=not args.no_announcements,
     )
-    if not args.no_launch:
-        launch_delete_callback = (
-            gateway.delete_messages_detailed
-            if args.send and args.confirm_real_send
-            else None
-        )
-        result["diagnostics"]["launch_lifecycle_cleanup"] = (
-            engine.cleanup_failed_launch_messages(launch_delete_callback)
-        )
 
     summary = result["summary"]
     push = gateway.send(
@@ -1709,16 +1376,14 @@ def run_once(
             args,
         )
 
-    launch_pushes: list[dict[str, str]] = []
+    pulse_diagnostics: dict[str, object] = {"status": "skipped"}
     if not args.no_launch:
-        launch_pushes, package_cleanup = push_launch_messages(
-            settings,
+        pulse_diagnostics = run_pulse_cycle(
             engine,
             gateway,
-            result["launch"],
             args,
         )
-        result["diagnostics"]["launch_package_cleanup"] = package_cleanup
+        result["diagnostics"]["pulse"] = pulse_diagnostics
 
     diagnostics = dict(result["diagnostics"])
     flow_push_status = "skipped"
@@ -1748,7 +1413,8 @@ def run_once(
         "summary_cycle_status": "ok",
         "summary_error_code": "",
         "radar_scan_limit": settings.radar_scan_limit,
-        "launch_scan_limit": settings.launch_scan_limit,
+        "pulse_simple_scan_limit": settings.pulse_simple_scan_limit,
+        "pulse_divergence_scan_limit": settings.pulse_divergence_scan_limit,
         "flow_scan_limit": settings.flow_scan_limit,
         "funding_alert_scan_limit": settings.funding_alert_scan_limit,
         "last_error": "",
@@ -1766,9 +1432,10 @@ def run_once(
         "diagnostics": diagnostics,
     }
     if not args.no_launch:
-        runtime_details["launch_pushes"] = launch_pushes
-        runtime_details["launch_cycle_status"] = "ok"
-        runtime_details["launch_error_code"] = ""
+        runtime_details["pulse_cycle_status"] = pulse_diagnostics.get("status")
+        runtime_details["pulse_failed_components"] = pulse_diagnostics.get(
+            "failed_components", []
+        )
     if not args.no_flow:
         runtime_details["flow_push"] = flow_push_status
         runtime_details["flow_cycle_status"] = "ok"
@@ -1806,6 +1473,7 @@ def run_loop(args: argparse.Namespace) -> int:
     announcement_interval = summary_interval
     next_announcement = next_summary
     next_launch = 0.0
+    next_divergence = 0.0
     next_market_snapshot = 0.0
     next_signal_effectiveness = load_signal_effectiveness_next_run_at(
         settings,
@@ -1832,7 +1500,7 @@ def run_loop(args: argparse.Namespace) -> int:
         task="loop",
         real_send=bool(args.send and args.confirm_real_send),
         interval_sec=summary_interval,
-        launch_interval_sec=max(60, args.launch_interval),
+        pulse_interval_sec=15 * 60,
         flow_interval_sec=max(60, settings.flow_interval_sec),
         funding_alert_interval_sec=max(60, settings.funding_alert_interval_sec),
         summary_close_delay_sec=settings.radar_summary_close_delay_sec,
@@ -1845,7 +1513,8 @@ def run_loop(args: argparse.Namespace) -> int:
         next_market_snapshot_at="",
         **runtime_flags,
         radar_scan_limit=settings.radar_scan_limit,
-        launch_scan_limit=settings.launch_scan_limit,
+        pulse_simple_scan_limit=settings.pulse_simple_scan_limit,
+        pulse_divergence_scan_limit=settings.pulse_divergence_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
         funding_alert_scan_limit=settings.funding_alert_scan_limit,
         last_error="",
@@ -2149,7 +1818,12 @@ def run_loop(args: argparse.Namespace) -> int:
                 last_error="",
             )
         if not switches["launch_alert"] and now >= next_launch:
-            next_launch = time.time() + max(60, args.launch_interval)
+            simple_cfg = SimpleAlertConfig.from_env(settings)
+            next_launch = next_closed_window_epoch(
+                time.time(),
+                interval_sec=15 * 60,
+                delay_sec=simple_cfg.close_delay_sec,
+            )
             write_runtime_status(
                 settings,
                 store,
@@ -2165,29 +1839,34 @@ def run_loop(args: argparse.Namespace) -> int:
         if switches["launch_alert"] and now >= next_launch:
             launch_ok = True
             launch_error_code = ""
-            launch_pushes: list[dict[str, str]] = []
             launch_diag: dict[str, object] = {}
-            source: BinanceDataSource | None = None
             try:
                 _local_store, engine, gateway = make_runtime_from_settings(
                     settings
                 )
-                source = BinanceDataSource(settings)
-                launch = engine.build_launch_alerts(source)
-                launch_diag.update(launch_runtime_diagnostics(launch))
-                launch_delete_callback = (
-                    gateway.delete_messages_detailed
-                    if args.send and args.confirm_real_send
-                    else None
-                )
-                launch_diag["lifecycle_cleanup"] = engine.cleanup_failed_launch_messages(
-                    launch_delete_callback
-                )
-                if snapshot_due:
-                    launch_diag["market_snapshot"] = refresh_shared_market_snapshot(
-                        settings,
-                        source=source,
+                include_divergence = now >= next_divergence
+                launch_diag.update(run_pulse_cycle(
+                    engine,
+                    gateway,
+                    args,
+                    include_divergence=include_divergence,
+                ))
+                launch_ok = launch_diag.get("status") == "ok"
+                if not launch_ok:
+                    failed = launch_diag.get("failed_components") or []
+                    launch_error_code = (
+                        "pulse_components_failed:"
+                        + ",".join(str(item) for item in failed)
                     )
+                if include_divergence:
+                    divergence_cfg = DivergenceConfig.from_env(settings)
+                    next_divergence = next_closed_window_epoch(
+                        time.time(),
+                        interval_sec=divergence_cfg.interval_sec,
+                        delay_sec=divergence_cfg.close_delay_sec,
+                    )
+                if snapshot_due:
+                    launch_diag["market_snapshot"] = refresh_shared_market_snapshot(settings)
                     next_market_snapshot = time.time() + max(
                         60,
                         int(settings.market_snapshot_interval_sec),
@@ -2195,32 +1874,25 @@ def run_loop(args: argparse.Namespace) -> int:
                 launch_diag["signal_effectiveness"] = dict(
                     signal_effectiveness_diag
                 )
-                launch_pushes, package_cleanup = push_launch_messages(
-                    settings,
-                    engine,
-                    gateway,
-                    launch,
-                    args,
-                )
-                launch_diag["package_cleanup"] = package_cleanup
-                launch_diag["binance"] = source.diagnostics()
-                print(json.dumps({"launch": launch_diag}, ensure_ascii=False, indent=2))
+                print(json.dumps({"pulse": launch_diag}, ensure_ascii=False, indent=2))
             except Exception as exc:
                 launch_ok = False
                 launch_error_code = type(exc).__name__
                 print(
-                    f"[loop] launch failed: {launch_error_code}",
+                    f"[loop] pulse failed: {launch_error_code}",
                     file=sys.stderr,
                 )
-            finally:
-                if source is not None:
-                    source.close()
-            next_launch = time.time() + max(60, args.launch_interval)
+            simple_cfg = SimpleAlertConfig.from_env(settings)
+            next_launch = next_closed_window_epoch(
+                time.time(),
+                interval_sec=15 * 60,
+                delay_sec=simple_cfg.close_delay_sec,
+            )
             write_runtime_status(
                 settings,
                 store,
                 mode,
-                "running" if launch_ok else "launch_failed",
+                "running" if launch_ok else "pulse_failed",
                 task="loop",
                 real_send=bool(args.send and args.confirm_real_send),
                 last_launch_at=timestamp_from_epoch(time.time()),
@@ -2230,10 +1902,9 @@ def run_loop(args: argparse.Namespace) -> int:
                     if next_market_snapshot > 0
                     else ""
                 ),
-                launch_pushes=launch_pushes,
-                launch_cycle_status="ok" if launch_ok else "failed",
-                launch_error_code=launch_error_code,
-                diagnostics={"launch": launch_diag},
+                pulse_cycle_status="ok" if launch_ok else "failed",
+                pulse_error_code=launch_error_code,
+                diagnostics={"pulse": launch_diag},
                 settings_reload_error=settings_reload_error,
                 **runtime_flags,
                 last_error="",
@@ -2255,244 +1926,6 @@ def run_loop(args: argparse.Namespace) -> int:
         time.sleep(3)
 
 
-def run_trial(
-    args: argparse.Namespace,
-    *,
-    refresh_effectiveness: bool = True,
-) -> int:
-    cycles = max(1, args.cycles)
-    wait_sec = max(30, args.launch_interval)
-    settings, store, _engine, _gateway = make_runtime_for_args(args)
-    mode = command_mode(args)
-    write_runtime_status(
-        settings,
-        store,
-        mode,
-        "running",
-        task="trial",
-        cycle=0,
-        cycles=cycles,
-        real_send=bool(args.send and args.confirm_real_send),
-        launch_scan_limit=settings.launch_scan_limit,
-    )
-    for cycle in range(1, cycles + 1):
-        print(f"[trial] launch cycle {cycle}/{cycles}")
-        settings, store, engine, gateway = make_runtime_for_args(args)
-        source = BinanceDataSource(settings)
-        launch = engine.build_launch_alerts(source)
-        launch_delete_callback = (
-            gateway.delete_messages_detailed
-            if args.send and args.confirm_real_send
-            else None
-        )
-        launch_cleanup = engine.cleanup_failed_launch_messages(launch_delete_callback)
-        try:
-            market_snapshot = persist_market_batch(settings, source=source)
-        except Exception as exc:
-            market_snapshot = {"status": "failed", "error": type(exc).__name__}
-        if refresh_effectiveness and cycle == 1:
-            try:
-                signal_effectiveness = refresh_signal_effectiveness(settings)
-            except (OSError, sqlite3.Error, ValueError) as exc:
-                signal_effectiveness = {
-                    "status": "failed",
-                    "error": type(exc).__name__,
-                }
-        else:
-            signal_effectiveness = {
-                "status": "skipped",
-                "reason": "first_cycle_only",
-            }
-        launch_pushes, package_cleanup = push_launch_messages(
-            settings,
-            engine,
-            gateway,
-            launch,
-            args,
-        )
-        diagnostics = {
-            **launch_runtime_diagnostics(launch),
-            "binance": source.diagnostics(),
-            "lifecycle_cleanup": launch_cleanup,
-            "package_cleanup": package_cleanup,
-            "market_snapshot": market_snapshot,
-            "signal_effectiveness": signal_effectiveness,
-        }
-        source.close()
-        print(json.dumps({
-            "watchlist_count": launch.get("watchlist_count", 0),
-            "diagnostics": diagnostics,
-        }, ensure_ascii=False, indent=2))
-        write_runtime_status(
-            settings,
-            store,
-            mode,
-            "running" if cycle < cycles else "completed",
-            task="trial",
-            cycle=cycle,
-            cycles=cycles,
-            watchlist_count=launch.get("watchlist_count", 0),
-            launch_pushes=launch_pushes,
-            diagnostics=diagnostics,
-            real_send=bool(args.send and args.confirm_real_send),
-            launch_scan_limit=settings.launch_scan_limit,
-        )
-        if cycle < cycles:
-            time.sleep(wait_sec)
-    return 0
-
-
-def run_observe(args: argparse.Namespace) -> int:
-    settings, store, _engine, _gateway = make_runtime_for_args(args)
-    duration_sec = max(0, args.duration_minutes) * 60
-    wait_sec = max(60, args.launch_interval)
-    deadline = time.time() + duration_sec
-    cycle = 0
-    failures = 0
-    last_error = ""
-    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if args.send or args.confirm_real_send:
-        print("[observe] 强制 dry-run：已忽略 --send / --confirm-real-send")
-    print(
-        f"[observe] dry-run 启动观察开始 | 时长{max(0, args.duration_minutes)}分钟 | "
-        f"启动间隔{wait_sec}秒 | 扫描上限{settings.launch_scan_limit}"
-    )
-    status = "running"
-    write_runtime_status(
-        settings,
-        store,
-        command_mode(args),
-        status,
-        task="observe",
-        started_at=started_at,
-        cycles=cycle,
-        failures=failures,
-        real_send=False,
-        duration_minutes=max(0, args.duration_minutes),
-        launch_scan_limit=settings.launch_scan_limit,
-    )
-    try:
-        while True:
-            cycle += 1
-            print(f"[observe] launch cycle {cycle}")
-            cycle_args = argparse.Namespace(**{
-                **vars(args),
-                "send": False,
-                "confirm_real_send": False,
-                "cycles": 1,
-                "launch_interval": wait_sec,
-            })
-            try:
-                run_trial(
-                    cycle_args,
-                    refresh_effectiveness=cycle == 1,
-                )
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                failures += 1
-                last_error = f"{type(exc).__name__}: {exc}"
-                print(f"[observe] cycle failed: {last_error}", file=sys.stderr)
-            report_path = save_observe_report(
-                settings,
-                store,
-                args.records,
-                args.top,
-                started_at=started_at,
-                cycles=cycle,
-                failures=failures,
-                status=status,
-                last_error=last_error,
-            )
-            print(f"[observe] 中间报告已保存: {report_path}")
-            write_runtime_status(
-                settings,
-                store,
-                command_mode(args),
-                status,
-                task="observe",
-                started_at=started_at,
-                cycles=cycle,
-                failures=failures,
-                last_error=last_error,
-                report_path=str(report_path),
-                real_send=False,
-                launch_scan_limit=settings.launch_scan_limit,
-            )
-            if duration_sec <= 0 or time.time() >= deadline:
-                break
-            sleep_for = min(wait_sec, max(0, deadline - time.time()))
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-    except KeyboardInterrupt:
-        status = "interrupted"
-        report_path = save_observe_report(
-            settings,
-            store,
-            args.records,
-            args.top,
-            started_at=started_at,
-            cycles=cycle,
-            failures=failures,
-            status=status,
-            last_error=last_error,
-        )
-        print(f"[observe] 已中断，报告已保存: {report_path}")
-        write_runtime_status(
-            settings,
-            store,
-            command_mode(args),
-            status,
-            task="observe",
-            started_at=started_at,
-            cycles=cycle,
-            failures=failures,
-            last_error=last_error,
-            report_path=str(report_path),
-            real_send=False,
-            launch_scan_limit=settings.launch_scan_limit,
-        )
-        return 130
-
-    status = "completed"
-    report_path = save_observe_report(
-        settings,
-        store,
-        args.records,
-        args.top,
-        started_at=started_at,
-        cycles=cycle,
-        failures=failures,
-        status=status,
-        last_error=last_error,
-    )
-    print(format_observe_report(
-        settings,
-        store,
-        args.records,
-        args.top,
-        started_at=started_at,
-        cycles=cycle,
-        failures=failures,
-        status=status,
-        last_error=last_error,
-    ))
-    print(f"[observe] 报告已保存: {report_path}")
-    write_runtime_status(
-        settings,
-        store,
-        command_mode(args),
-        status,
-        task="observe",
-        started_at=started_at,
-        cycles=cycle,
-        failures=failures,
-        last_error=last_error,
-        report_path=str(report_path),
-        real_send=False,
-        launch_scan_limit=settings.launch_scan_limit,
-    )
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2562,15 +1995,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "radar-status":
         print_radar_status(settings, store)
         return 0
-    if args.command == "watchlist":
-        print_watchlist(settings, store, args.top)
-        return 0
-    if args.command == "launch-history":
-        print_launch_history(settings, store, args.top)
-        return 0
-    if args.command == "launch-report":
-        print_launch_report(settings, store, args.records, args.top)
-        return 0
     if args.command == "signal-repair":
         report = SignalEventStore(settings.signal_events_db_path).repair_legacy_signals(apply=args.apply)
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -2578,16 +2002,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "signal-effectiveness":
         print_signal_effectiveness(settings)
         return 0
+    if args.command == "pulse":
+        if args.send and args.confirm_real_send:
+            gate = require_real_send_gate(settings, store, args)
+            if gate != 0:
+                return gate
+        _pulse_store, pulse_engine, pulse_gateway = make_runtime_for_args(args)[1:]
+        pulse = run_pulse_cycle(pulse_engine, pulse_gateway, args)
+        print(json.dumps({"pulse": pulse}, ensure_ascii=False, indent=2))
+        return 0 if pulse.get("status") == "ok" else 1
     if args.command == "once":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)
             if gate != 0:
                 return gate
         return run_once(args)
-    if args.command == "trial":
-        return run_trial(args)
-    if args.command == "observe":
-        return run_observe(args)
     if args.command == "live":
         if args.send and args.confirm_real_send:
             bootstrap = bootstrap_live_market_snapshot(settings, store)

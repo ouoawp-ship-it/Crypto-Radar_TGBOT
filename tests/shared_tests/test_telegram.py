@@ -13,6 +13,7 @@ from shared.signal_store import SignalEventStore
 from shared.storage import JsonStore
 from shared.telegram import (
     DEFAULT_TOPIC_INTRO_VERSION,
+    TOPIC_INTRO_VERSIONS,
     TelegramGateway,
     intro_hash,
     plain_fallback,
@@ -40,7 +41,10 @@ class TelegramGatewayTests(unittest.TestCase):
             with self.subTest(template_id=template_id):
                 self.assertEqual(
                     topic_intro_version(template_id),
-                    DEFAULT_TOPIC_INTRO_VERSION,
+                    TOPIC_INTRO_VERSIONS.get(
+                        template_id,
+                        DEFAULT_TOPIC_INTRO_VERSION,
+                    ),
                 )
 
     def test_detailed_delete_audits_history_and_releases_dedup(self) -> None:
@@ -157,7 +161,7 @@ class TelegramGatewayTests(unittest.TestCase):
 
             with redirect_stdout(StringIO()):
                 gateway.send(
-                    "🚀 启动雷达 [GWEI](https://www.coinglass.com/tv/zh/Binance_GWEIUSDT)\n分数: 90",
+                    "🚀 脉冲雷达 [GWEI](https://www.coinglass.com/tv/zh/Binance_GWEIUSDT)\n分数: 90",
                     "TG_LAUNCH_ALERT",
                     "launch:GWEI",
                     send=False,
@@ -167,7 +171,7 @@ class TelegramGatewayTests(unittest.TestCase):
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["symbol"], "GWEIUSDT")
-        self.assertEqual(events[0]["signal_type"], "启动雷达")
+        self.assertEqual(events[0]["signal_type"], "脉冲雷达")
         self.assertFalse(legacy_events_path.exists())
 
     def test_signal_push_forwards_structured_engine_record_to_sqlite(self) -> None:
@@ -700,7 +704,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 result = gateway.send(
                     caption,
                     "TG_LAUNCH_ALERT",
-                    "launch-package:1:2",
+                    "pulse-photo:1:2",
                     send=True,
                     confirm_real_send=True,
                     cooldown_sec=0,
@@ -761,7 +765,7 @@ class TelegramGatewayTests(unittest.TestCase):
             ) as post_mock:
                 ok, message_ids = gateway._send_real_photo_bytes(
                     b"\x89PNG\r\n\x1a\nphoto",
-                    caption="launch",
+                    caption="pulse",
                     parse_mode="HTML",
                     topic_id="12",
                     reply_to_message_id=111,
@@ -788,7 +792,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 result = gateway.send(
                     "TEST",
                     "TG_LAUNCH_ALERT",
-                    "launch-package:1:2",
+                    "pulse-photo:1:2",
                     send=True,
                     confirm_real_send=True,
                     photo=b"not-an-image",
@@ -810,7 +814,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 result = gateway.send(
                     "A" * 1025,
                     "TG_LAUNCH_ALERT",
-                    "launch-package:1:2",
+                    "pulse-photo:1:2",
                     send=True,
                     confirm_real_send=True,
                     photo=b"\x89PNG\r\n\x1a\nmemory-only",
@@ -820,85 +824,55 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(result.reason, "caption_too_long")
             post_mock.assert_not_called()
 
-    def test_launch_topic_intro_holds_static_chart_and_lifecycle_guidance(self) -> None:
+    def test_pulse_topic_intro_explains_direct_replacement_and_safety(self) -> None:
         with TemporaryDirectory() as tmp:
             intro = topic_intro_message(
                 "TG_LAUNCH_ALERT",
                 Settings(data_dir=Path(tmp)),
             )
 
-            self.assertIn("第一次信号单独发送", intro)
-            self.assertIn("同一币种出现重要更新时", intro)
-            self.assertNotIn("整个话题只保留本说明和最新一条", intro)
-            self.assertIn("点击代码可复制交易对", intro)
-            self.assertIn("图中的 1、2、3…是本轮已经发布过的事件顺序", intro)
-            self.assertNotIn("E1、E2", intro)
-            self.assertIn("主图使用 Binance 合约已经完整收线的 1 小时行情", intro)
-            self.assertIn("15 分钟行情只负责触发确认", intro)
-            self.assertIn("分数怎么计算（最高130分）", intro)
-            self.assertIn("15分钟价格上涨≥4%：+25分", intro)
-            self.assertIn("资金暗流：1小时 OI 增长≥3%", intro)
-            self.assertIn("60-74 提前预警", intro)
-            self.assertIn("资金费率极端或结算周期变化只作为拥挤风险提示", intro)
-            self.assertIn("不是使用 3 分钟K线", intro)
-            self.assertIn("所有判断只使用完整收线的 15 分钟K线", intro)
-            self.assertIn("历史信号和失效消息都继续保留", intro)
-            self.assertIn("会成为该币下一次更新的回复目标", intro)
-            self.assertIn("上一条被人工删除", intro)
-            self.assertNotIn("删除同一币种的上一条消息", intro)
+            for phrase in (
+                "脉冲雷达使用说明",
+                "直接接管原启动预警话题",
+                "不再运行旧启动评分模型",
+                "15分钟异动提醒",
+                "完整闭合的5分钟数据",
+                "2小时持仓价格背离",
+                "只有真实发送成功才写入跟随状态和复盘记录",
+                "dry-run不会消耗信号",
+                "不使用未来数据",
+                "--send 与 --confirm-real-send",
+                "部分发送失败会清理残缺消息",
+            ):
+                self.assertIn(phrase, intro)
+            self.assertNotIn("最高130分", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
-    def test_launch_fusion_topic_intro_explains_new_confirmation_and_rotation(self) -> None:
+    def test_pulse_scan_limit_does_not_change_topic_intro(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(
                 data_dir=Path(tmp),
-                launch_fusion_enable=True,
-                launch_lifecycle_v2_enable=True,
-                launch_message_package_v2_enable=True,
-                launch_scan_limit=80,
-                launch_same_stage_min_interval_sec=1800,
+                pulse_simple_scan_limit=42,
+                pulse_divergence_scan_limit=42,
             )
             intro = topic_intro_message(
                 "TG_LAUNCH_ALERT",
                 settings,
             )
 
-            for phrase in (
-                "15分钟负责尽早发现",
-                "1小时负责独立确认",
-                "4小时提供趋势背景",
-                "24小时持仓量使用97个连续闭合15分钟点严格计算",
-                "同一证据不会重复加分",
-                "按高、中、低流动性轮换",
-                "规则分不是上涨概率",
-                "数据不完整只记录降级原因",
-                "所有成功消息都保留",
-                "不会自动删除",
-                "缺失显示“缺数据”",
-                "不会用0或旧窗口冒充完整数据",
-                "不自动交易",
-            ):
-                self.assertIn(phrase, intro)
+            self.assertEqual(
+                intro,
+                topic_intro_message(
+                    "TG_LAUNCH_ALERT",
+                    Settings(data_dir=Path(tmp)),
+                ),
+            )
+            self.assertIn("不再运行旧启动评分模型", intro)
             self.assertNotIn("最高130分", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
-            self.assertNotEqual(
-                topic_intro_version("TG_LAUNCH_ALERT", settings),
-                DEFAULT_TOPIC_INTRO_VERSION,
-            )
-
-    def test_incomplete_launch_fusion_dependencies_keep_legacy_intro(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                launch_fusion_enable=True,
-            )
-
-            intro = topic_intro_message("TG_LAUNCH_ALERT", settings)
-
-            self.assertIn("分数怎么计算（最高130分）", intro)
             self.assertEqual(
                 topic_intro_version("TG_LAUNCH_ALERT", settings),
-                DEFAULT_TOPIC_INTRO_VERSION,
+                TOPIC_INTRO_VERSIONS["TG_LAUNCH_ALERT"],
             )
 
     def test_remaining_alert_topic_intros_hold_static_guidance(self) -> None:
@@ -968,85 +942,6 @@ class TelegramGatewayTests(unittest.TestCase):
                 self.assertIn(line, intro)
             self.assertNotIn("新闻、社交情报或 CoinGlass/Coinalyze", intro)
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
-
-    def test_launch_topic_cleanup_candidates_keep_latest_and_intro(self) -> None:
-        with TemporaryDirectory() as tmp:
-            route_path = Path(tmp) / "topic_routes.json"
-            history_path = Path(tmp) / "push_history.json"
-            store = JsonStore(Path(tmp))
-            store.save(route_path, {
-                "intros": {
-                    "TG_LAUNCH_ALERT:12": {
-                        "template_id": "TG_LAUNCH_ALERT",
-                        "topic_id": "12",
-                        "message_id": 50,
-                    }
-                }
-            })
-            store.save(history_path, [
-                {
-                    "template_id": "TG_LAUNCH_ALERT",
-                    "status": "sent",
-                    "message_ids": [50, 70],
-                    "ts": utc_ts(),
-                },
-                {
-                    "template_id": "TG_LAUNCH_ALERT",
-                    "status": "sent",
-                    "message_ids": [71],
-                    "deleted_message_ids": [71],
-                    "ts": utc_ts(),
-                },
-                {
-                    "template_id": "TG_LAUNCH_ALERT",
-                    "status": "sent",
-                    "message_ids": [72],
-                    "ts": utc_ts(),
-                },
-                {
-                    "template_id": "TG_LAUNCH_ALERT",
-                    "status": "sent",
-                    "message_ids": [69],
-                    "ts": 1,
-                },
-                {
-                    "template_id": "TG_FUNDING_ALERT",
-                    "status": "sent",
-                    "message_ids": [73],
-                    "ts": utc_ts(),
-                },
-            ])
-            gateway = TelegramGateway(
-                Settings(
-                    data_dir=Path(tmp),
-                    tg_push_history_path=history_path,
-                    tg_topic_routes_path=route_path,
-                    tg_launch_alert_topic_id="12",
-                ),
-                store,
-            )
-
-            self.assertEqual(
-                gateway.launch_topic_cleanup_candidates(),
-                [70],
-            )
-            self.assertEqual(gateway.latest_launch_topic_message_ids(), [72])
-            self.assertEqual(
-                gateway.launch_topic_cleanup_candidates(keep_message_ids=[72]),
-                [70],
-            )
-            plan = gateway.launch_topic_cleanup_plan(keep_message_ids=[72])
-            self.assertEqual(plan["deletable_ids"], [70])
-            self.assertEqual(plan["undeletable_ids"], [69])
-            gateway.mark_history_messages_undeletable([69])
-            history = store.load(history_path, [])
-            self.assertEqual(history[3]["undeletable_message_ids"], [69])
-            self.assertEqual(
-                gateway.launch_topic_cleanup_plan(keep_message_ids=[72])[
-                    "undeletable_ids"
-                ],
-                [],
-            )
 
     def test_normal_send_never_auto_creates_or_publishes_intro(self) -> None:
         with TemporaryDirectory() as tmp:

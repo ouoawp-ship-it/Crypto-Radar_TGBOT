@@ -4,14 +4,14 @@
 
 ## 核心功能
 
-- 启动预警：基于价格、OI、成交量、资金费率与突破结构识别启动阶段。
+- 脉冲雷达：15 分钟价格/OI/CVD 六分类异动提醒，加上每 2 小时持仓价格背离汇总。
 - 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
-- 公告风险：独立解析 Binance 官方上新、下架和活动公告；同时只作为启动预警辅助证据，不参与启动打分。
+- 公告风险：独立解析并推送 Binance 官方上新、下架和活动公告，不参与脉冲雷达分类。
 - 山寨合约异动雷达 P1：按可信 CMC-ID、Binance 单交易所 OI/市值和资金费率生成一次性候选池、JSON 与 Telegram 文本预览；默认不调度、不发送。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
-- 启动信号生命周期：15分钟完整收线负责触发，1小时主图负责看结构；启动预警从观察、预警、确认、启动进入降温期。第一次信号单独发送，同币后续更新回复上一条成功消息，历史卡片不自动删除。每个完整周期只计一个结果样本，记录最高/最低收盘变动、OI 区间、阶段耗时和结束收益；同口径样本不足 20 轮时不展示比例。
+- 脉冲跟随与复盘：同币首次触发立即发送，2 小时内只在强度升级或分类反转时再发，最多 3 次；15 分钟信号回填 1h/4h 结果，2 小时背离回填 2h 结果并回复原卡片。
 - 推送安全：默认 dry-run，真实发送必须同时提供 `--send --confirm-real-send`，并经过 readiness 门禁、去重、冷却、限流和重试。
 
 方向信号和 Telegram 市场数据确认统一以 Binance 原生公开行情为事实源：现货使用 Binance Spot，合约使用 Binance USDⓈ-M Futures。价格、OI、主动成交净额和费率只允许使用实时数据或已闭合窗口，推送会明确显示来源、窗口覆盖和计算口径。
@@ -48,31 +48,19 @@ TG_BOT_TOKEN=123456:...
 TG_CHAT_ID=-1001234567890
 ```
 
-启动预警话题始终保留置顶说明和全部成功历史消息。同一币种的第一次信号单独发送，后续更新回复上一条；若回复目标已被人工删除，会安全降级为独立发送。旧清理配置仅为兼容旧环境保留，运行时不再自动删除启动消息：
+脉冲雷达直接使用原预警话题，因此服务器原有的
+`TG_LAUNCH_ALERT_TOPIC_ID` 不需要改话题号。旧启动预警代码、评分、生命周期和
+切换入口已经移除，不存在切回旧雷达的开关。主要配置如下：
 
 ```dotenv
-LAUNCH_INVALIDATION_GRACE_SEC=1800
-LAUNCH_LIFECYCLE_V2_ENABLE=false
-LAUNCH_LIFECYCLE_INVALID_WINDOWS=2
-LAUNCH_MESSAGE_PACKAGE_V2_ENABLE=false
-LAUNCH_PRICE_ACTION_V3_ENABLE=false
-LAUNCH_PA_BOX_LOOKBACK=16
-LAUNCH_PA_MAX_BOX_RANGE_PCT=12
-LAUNCH_PA_MIN_BODY_RATIO=0.45
-LAUNCH_PA_WICK_BODY_RATIO=1.5
-LAUNCH_CHART_V2_ENABLE=false
-LAUNCH_OUTCOME_V2_ENABLE=false
-LAUNCH_OUTCOME_FOLLOW_THROUGH_PCT=3.0
-LAUNCH_OUTCOME_MIN_SAMPLES=20
-LAUNCH_PACKAGE_SCORE_DELTA=15
-LAUNCH_PACKAGE_PRICE_DELTA_PCT=3.0
-LAUNCH_PACKAGE_OI_DELTA_PCT=5.0
-LAUNCH_MESSAGE_CLEANUP_ENABLE=false
-LAUNCH_MESSAGE_CLEANUP_MAX_AGE_SEC=169200
-LAUNCH_MESSAGE_CLEANUP_LIMIT=20
+PULSE_RADAR_ENABLE=true
+SIMPLE_ALERT_SCAN_LIMIT=120
+DIVERGENCE_SCAN_LIMIT=200
 ```
 
-`LAUNCH_MESSAGE_CLEANUP_*` 仅用于读取旧配置和旧数据库，不再触发 Telegram 删除请求。只有“本次新卡部分发送”或“新卡状态提交失败”时，才会回滚本次尚未完成的新消息；此前已经成功的启动消息始终保留。
+Dry-run 不写入脉冲跟随状态、复盘记录或回复状态。只有真实发送成功后才提交这些
+状态；若一张新卡分段发送到一半失败，只撤回本次未完整发送的新消息，不会删除
+此前成功的历史消息。
 
 常用命令：
 
@@ -86,6 +74,7 @@ python main.py telegram-test
 python main.py telegram-topic-setup --topic-template TG_RADAR_SUMMARY --send --confirm-real-send
 python main.py private-control
 python main.py once
+python main.py pulse
 python main.py announcement-risk
 python main.py flow-radar
 python main.py funding-alert

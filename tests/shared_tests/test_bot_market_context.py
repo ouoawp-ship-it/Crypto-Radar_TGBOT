@@ -102,12 +102,12 @@ class BotMarketContextTests(unittest.TestCase):
             RealtimeFeatureStore(path).replace_many(rows)
             text = enrich_telegram_with_market_context(
                 SimpleNamespace(realtime_features_db_path=path),
-                "🚀 原启动预警",
+                "🚀 脉冲雷达",
                 "TG_LAUNCH_ALERT",
                 [{"symbol": "BTCUSDT"}],
                 now_ts=1_200,
             )
-        self.assertTrue(text.startswith("🚀 原启动预警"))
+        self.assertTrue(text.startswith("🚀 脉冲雷达"))
         self.assertIn("BOT Binance 原生数据确认", text)
         self.assertIn("5m合约主动净占比", text)
         self.assertIn("启动加速 偏多", text)
@@ -131,7 +131,7 @@ class BotMarketContextTests(unittest.TestCase):
             RealtimeFeatureStore(path).replace_many(rows)
             text = enrich_telegram_with_market_context(
                 SimpleNamespace(realtime_features_db_path=path),
-                "启动预警",
+                "脉冲雷达",
                 "TG_LAUNCH_ALERT",
                 [{"symbol": "BTCUSDT"}],
                 now_ts=1_200,

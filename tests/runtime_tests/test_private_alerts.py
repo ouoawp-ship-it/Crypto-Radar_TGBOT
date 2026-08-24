@@ -143,7 +143,7 @@ class PrivateAlertEvaluatorTests(unittest.TestCase):
         message = sender.messages[0]
         for expected in (
             "泡泡雷达主动故障提醒",
-            "启动预警：运行异常或计划周期逾期",
+            "脉冲雷达：运行异常或计划周期逾期",
             "五因子资金流：运行异常或计划周期逾期",
             "市场快照：数据过期或不可用",
             "真实推送额度：最近一小时额度已用完",
@@ -181,7 +181,7 @@ class PrivateAlertEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(result["active_incidents"], 1)
         self.assertIn("主 BOT：未运行或心跳已过期", sender.messages[0])
-        self.assertNotIn("启动预警：", sender.messages[0])
+        self.assertNotIn("脉冲雷达：", sender.messages[0])
         self.assertNotIn("真实推送额度", sender.messages[0])
 
     def test_warning_disabled_waiting_and_unknown_events_are_ignored(self) -> None:
