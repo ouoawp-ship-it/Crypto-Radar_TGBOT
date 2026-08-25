@@ -6,6 +6,7 @@ from unittest.mock import patch
 from radars.pulse.simple_alert import (
     SIGNAL_DIRECTIONS,
     SimpleAlertConfig,
+    _bold_italic_serif,
     _follow_action,
     _format_card,
     _series_pct,
@@ -126,6 +127,16 @@ class FollowActionTests(unittest.TestCase):
 
 
 class FormatCardTests(unittest.TestCase):
+    def test_pair_uses_bold_italic_serif_without_changing_digits(self) -> None:
+        self.assertEqual(
+            _bold_italic_serif("STORJ/USDT"),
+            "𝑺𝑻𝑶𝑹𝑱/𝑼𝑺𝑫𝑻",
+        )
+        self.assertEqual(
+            _bold_italic_serif("1000PEPE/USDT"),
+            "1000𝑷𝑬𝑷𝑬/𝑼𝑺𝑫𝑻",
+        )
+
     def test_card_contains_fields_and_no_double_sign(self) -> None:
         cfg = SimpleAlertConfig()
         item = {
@@ -163,9 +174,10 @@ class FormatCardTests(unittest.TestCase):
         self.assertIn("tradingview.com/chart", text)
         self.assertIn("coinglass.com/tv/zh", text)
         self.assertIn(
-            "<b>CETUS/USDT</b> (<code>CETUS</code>) 🟢 上涨 31.11% ↗️",
+            "𝑪𝑬𝑻𝑼𝑺/𝑼𝑺𝑫𝑻 (<code>CETUS</code>) 🟢 上涨 31.11% ↗️",
             text,
         )
+        self.assertNotIn("<b>CETUS/USDT</b>", text)
         self.assertNotIn("📋<code>CETUS</code>", text)
         self.assertIn("⏰ 提醒时间: 1970-01-01 08:00:00 (北京时间)", text)
         self.assertNotIn("(UTC+8)", text)

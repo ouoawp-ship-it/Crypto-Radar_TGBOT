@@ -810,9 +810,23 @@ def _html_safe(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _bold_italic_serif(text: str) -> str:
+    styled: list[str] = []
+    for char in text:
+        if "A" <= char <= "Z":
+            styled.append(chr(0x1D468 + ord(char) - ord("A")))
+        elif "a" <= char <= "z":
+            styled.append(chr(0x1D482 + ord(char) - ord("a")))
+        else:
+            styled.append(char)
+    return "".join(styled)
+
+
 def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) -> str:
     symbol = str(item["symbol"])
-    base = html.escape(str(item["base"]))
+    raw_base = str(item["base"])
+    base = html.escape(raw_base)
+    display_pair = html.escape(_bold_italic_serif(f"{raw_base}/USDT"))
     template = str(item["template"])
     meta = TEMPLATE_META[template]
     price_map = item["price_map"]
@@ -874,7 +888,7 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
     lines = [
         f"{meta['icon']} {meta['title']} (第{count}次) {meta['icon']}",
         "",
-        f"<b>{base}/USDT</b> (<code>{base}</code>) {meta['color']} {meta['direction']} "
+        f"{display_pair} (<code>{base}</code>) {meta['color']} {meta['direction']} "
         f"{abs(trigger_metric or 0.0):.2f}% {meta['arrow']}",
         "",
         f"🔗 <a href='{tv_url}'>𝑻𝒓𝒂𝒅𝒊𝒏𝒈𝑽𝒊𝒆𝒘</a> | <a href='{cg_url}'>𝑪𝒐𝒊𝒏𝒈𝒍𝒂𝒔𝒔</a>",
