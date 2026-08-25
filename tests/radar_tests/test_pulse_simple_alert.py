@@ -14,6 +14,7 @@ from radars.pulse.simple_alert import (
     _preview_url,
     classify_template,
 )
+from shared.telegram import plain_fallback
 
 
 class ClassifyTemplateTests(unittest.TestCase):
@@ -181,6 +182,7 @@ class FormatCardTests(unittest.TestCase):
         self.assertNotIn("📋<code>CETUS</code>", text)
         self.assertIn("⏰ 提醒时间: 1970-01-01 08:00:00 (北京时间)", text)
         self.assertNotIn("(UTC+8)", text)
+        self.assertLessEqual(len(plain_fallback(text)), 1024)
 
 
     def test_card_marks_missing_spot(self) -> None:

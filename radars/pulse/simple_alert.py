@@ -60,8 +60,12 @@ from shared.asset_classification import (  # noqa: E402
     is_stable_crypto_asset,
 )
 from shared.binance_data import BinanceDataSource  # noqa: E402
+from radars.pulse.chart import (  # noqa: E402
+    DISPLAY_CANDLE_LIMIT,
+    render_pulse_chart_png,
+)
 from shared.storage import JsonStore  # noqa: E402
-from shared.telegram import TelegramGateway  # noqa: E402
+from shared.telegram import TelegramGateway, plain_fallback  # noqa: E402
 from shared.time_windows import CST, closed_window  # noqa: E402
 
 TEMPLATE_ID = "TG_LAUNCH_ALERT"
@@ -925,6 +929,108 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
     return "\n".join(lines)
 
 
+def _pulse_chart_category(item: Mapping[str, Any]) -> str:
+    return {
+        "core": "核心主流",
+        "large": "主流加密",
+        "alt": "山寨币",
+    }.get(str(item.get("tier") or ""), "未分类")
+
+
+def _pulse_chart_checkpoints(
+    state: Mapping[str, Any],
+    symbol: str,
+    count: int,
+    current_close_ts: int,
+) -> list[dict[str, Any]]:
+    record = state.get(symbol)
+    existing = record if isinstance(record, Mapping) else {}
+    numbered: list[tuple[int, int]] = []
+    if count >= 2:
+        first_ts = int(existing.get("event_start_ts", 0) or 0)
+        if first_ts > 0:
+            numbered.append((1, first_ts))
+    if count >= 3:
+        previous_ts = int(existing.get("last_sent_ts", 0) or 0)
+        if previous_ts > 0:
+            numbered.append((count - 1, previous_ts))
+    numbered.append((max(1, count), current_close_ts))
+    return [
+        {
+            "checkpoint_no": checkpoint_no,
+            "window_end_ts": min(timestamp, current_close_ts),
+            "stage": "",
+        }
+        for checkpoint_no, timestamp in numbered
+    ]
+
+
+def _render_pulse_chart(
+    source: BinanceDataSource,
+    item: Mapping[str, Any],
+    state: Mapping[str, Any],
+    count: int,
+    window_end_ms: int,
+) -> bytes | None:
+    """Build the optional 1h chart after a pulse has passed its send gate."""
+
+    try:
+        rows = source.klines(
+            str(item.get("symbol") or ""),
+            interval="1h",
+            limit=DISPLAY_CANDLE_LIMIT + 1,
+            end_time=window_end_ms - 1,
+        )
+        candles: list[dict[str, float | int]] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 8:
+                continue
+            close_ms = _number(row[6])
+            open_price = _number(row[1])
+            high_price = _number(row[2])
+            low_price = _number(row[3])
+            close_price = _number(row[4])
+            quote_volume = _number(row[7])
+            if (
+                close_ms is None
+                or int(close_ms) >= window_end_ms
+                or open_price is None
+                or high_price is None
+                or low_price is None
+                or close_price is None
+            ):
+                continue
+            candles.append({
+                "close_ts": int(close_ms) // 1000 + 1,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "quote_volume": max(0.0, quote_volume or 0.0),
+            })
+        if len(candles) < 5:
+            return None
+        current_close_ts = max(int(candle["close_ts"]) for candle in candles)
+        return render_pulse_chart_png(
+            symbol=str(item.get("symbol") or ""),
+            candles=candles,
+            checkpoints=_pulse_chart_checkpoints(
+                state,
+                str(item.get("symbol") or ""),
+                count,
+                current_close_ts,
+            ),
+            cycle_no=count,
+            asset_category=_pulse_chart_category(item),
+            width=1080,
+            height=720,
+        )
+    except Exception:
+        # The chart is presentation-only; market or rendering failures retain
+        # the existing text alert instead of consuming the pulse signal.
+        return None
+
+
 def _state_path(cfg: SimpleAlertConfig, settings: Settings) -> Path:
     return cfg.state_path or settings.data_dir / "simple_alert_state.json"
 
@@ -1068,6 +1174,17 @@ def run_cycle(
                 continue
             count, template = action
             text = _format_card(item, count, cfg)
+            chart_png = (
+                _render_pulse_chart(
+                    source,
+                    item,
+                    state,
+                    count,
+                    window.end_ms,
+                )
+                if len(plain_fallback(text)) <= 1024
+                else None
+            )
             dedup_key = f"simple-alert:{item['symbol']}:{window.end_ms}:{template}:{count}"
             result = gateway.send(
                 text,
@@ -1090,6 +1207,7 @@ def run_cycle(
                     "quality_gate": "allow",
                     "primary_data_source": "binance_native",
                 }],
+                photo=chart_png,
                 enrich_market_context=False,
             )
             if result.sent:
@@ -1105,6 +1223,7 @@ def run_cycle(
                 "count": count,
                 "status": result.status,
                 "reason": result.reason,
+                "chart_status": "ready" if chart_png is not None else "unavailable",
             })
             if result.sent and result.message_ids:
                 review_items.append({

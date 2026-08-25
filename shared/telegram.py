@@ -283,7 +283,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
-    "TG_LAUNCH_ALERT": "2026-08-24-pulse-radar-v1",
+    "TG_LAUNCH_ALERT": "2026-08-25-pulse-radar-chart-v2",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -388,6 +388,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- 使用完整闭合的5分钟数据，计算15分钟价格、持仓量和主动成交资金流。",
         "- 信号分为健康上涨、假强背离、空头回补、健康下跌、假弱承接和恐慌杀多。",
         "- 首次触发立即提醒；同一事件只有升级或方向反转才再次发送，最多3次。",
+        "- 提醒附带最近120根1小时已收线K线和成交量图；图表不可用时仍发送完整文字。",
         "",
         "<b>2小时持仓价格背离</b>",
         "- 每2小时汇总持仓变化、价格变化与两者背离度。",

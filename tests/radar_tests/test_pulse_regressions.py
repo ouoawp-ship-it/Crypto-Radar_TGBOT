@@ -123,6 +123,71 @@ class PulseRegressionTests(unittest.TestCase):
 
             self.assertFalse((root / "pulse_state.json").exists())
 
+    def test_simple_alert_attaches_chart_to_the_existing_single_delivery(self) -> None:
+        chart = b"\x89PNG\r\n\x1a\npulse-chart"
+
+        class Source:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            @staticmethod
+            def market_caps() -> dict[str, float]:
+                return {}
+
+            @staticmethod
+            def diagnostics() -> dict[str, object]:
+                return {}
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        class Gateway:
+            calls: list[dict[str, object]] = []
+
+            @classmethod
+            def send(cls, *_args, **kwargs):
+                cls.calls.append(dict(kwargs))
+                return SimpleNamespace(
+                    sent=False,
+                    status="dry_run",
+                    reason="send_flag_not_set",
+                    message_ids=[],
+                )
+
+        item = {
+            "symbol": "ABCUSDT",
+            "base": "ABC",
+            "template": "health_up",
+            "price_map": {3: 10.0},
+            "oi_map": {3: 12.0},
+            "current_price": 1.0,
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(data_dir=root)
+            cfg = SimpleAlertConfig(state_path=root / "pulse_state.json")
+            with (
+                patch("radars.pulse.simple_alert.BinanceDataSource", Source),
+                patch("radars.pulse.simple_alert._candidate_pool", return_value=["ABCUSDT"]),
+                patch("radars.pulse.simple_alert._analyze_symbol", return_value=item),
+                patch("radars.pulse.simple_alert._long_short_ratio", return_value=None),
+                patch("radars.pulse.simple_alert._format_card", return_value="pulse"),
+                patch("radars.pulse.simple_alert._render_pulse_chart", return_value=chart),
+                redirect_stdout(StringIO()),
+            ):
+                run_cycle(
+                    settings,
+                    Gateway(),  # type: ignore[arg-type]
+                    cfg,
+                    send=False,
+                    confirm_real_send=False,
+                    now_ts=1000,
+                )
+
+        self.assertEqual(len(Gateway.calls), 1)
+        self.assertEqual(Gateway.calls[0]["photo"], chart)
+
     def test_divergence_analyzes_each_candidate_once(self) -> None:
         class MainSource:
             @staticmethod
