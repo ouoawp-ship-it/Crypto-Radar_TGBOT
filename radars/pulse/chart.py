@@ -10,35 +10,11 @@ from .chart_font_zh import (
     GLYPH_HEIGHT,
     GLYPH_WIDTH,
     glyph_alpha,
-    missing_glyphs,
 )
 
 
 CST = timezone(timedelta(hours=8))
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-
-CHART_CATEGORY_LABELS = {
-    "USD-M PERP": "永续合约",
-    "GOLD": "黄金",
-    "SILVER": "白银",
-    "PLATINUM": "铂金",
-    "PALLADIUM": "钯金",
-    "CRUDE OIL": "原油",
-    "NAT GAS": "天然气",
-    "COPPER": "铜",
-    "ETF INDEX": "指数基金",
-    "LEVERAGED ETF": "杠杆基金",
-    "EQUITY": "股票",
-    "TOKENIZED STOCK": "股票代币",
-    "STOCK TOKEN": "股票代币",
-    "ETF": "指数基金",
-    "COMMODITY": "大宗商品",
-    "FOREX": "外汇",
-    "CRYPTO INDEX": "加密指数",
-    "CRYPTO CORE": "核心主流",
-    "CRYPTO MAJOR": "主流加密",
-    "CRYPTO ALT": "山寨币",
-}
 
 CHART_STATUS_LABELS = {
     "breakout_15m": "15分钟突破",
@@ -61,15 +37,21 @@ CHART_CONFIRMATION_LABELS = {
 }
 
 CHART_COLORS = {
-    "background": (9, 12, 16),
-    "header": (15, 20, 27),
-    "panel": (12, 17, 23),
-    "grid": (31, 39, 49),
-    "ink": (232, 237, 243),
-    "muted": (132, 146, 166),
-    "rising": (35, 196, 131),
-    "falling": (239, 83, 80),
-    "accent": (86, 205, 220),
+    "background": (19, 23, 34),
+    "header": (19, 23, 34),
+    "panel": (19, 23, 34),
+    "grid": (28, 33, 44),
+    "separator": (180, 185, 195),
+    "ink": (214, 218, 226),
+    "muted": (91, 98, 114),
+    "rising": (38, 166, 154),
+    "falling": (242, 54, 69),
+    "price_rising": (38, 166, 154),
+    "price_falling": (218, 222, 229),
+    "accent": (38, 166, 154),
+    "oi": (38, 166, 154),
+    "extreme": (31, 64, 114),
+    "price_badge": (238, 240, 245),
 }
 
 
@@ -250,7 +232,12 @@ class Canvas:
                 width += 4
                 continue
             glyph = glyph_alpha(character)
-            width += (glyph[1] if glyph is not None else 9) + 1
+            if glyph is not None:
+                width += glyph[1] + 1
+            elif character.upper() in FONT_5X7:
+                width += 6
+            else:
+                width += 10
         return max(0, width - 1)
 
     def ui_text(
@@ -267,6 +254,10 @@ class Canvas:
                 continue
             glyph = glyph_alpha(character)
             if glyph is None:
+                if character.upper() in FONT_5X7:
+                    self.text(cursor, y + 4, character, color, scale=1)
+                    cursor += 6
+                    continue
                 self.line(cursor, y + 2, cursor + 8, y + 2, color)
                 self.line(cursor, y + 12, cursor + 8, y + 12, color)
                 self.line(cursor, y + 2, cursor, y + 12, color)
@@ -294,13 +285,6 @@ def _number(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return result if result == result else 0.0
-
-
-def _chart_category_label(value: Any) -> str:
-    raw = str(value or "").strip()
-    if raw and not missing_glyphs(raw):
-        return raw
-    return CHART_CATEGORY_LABELS.get(raw.upper(), "未分类")
 
 
 def _png_chunk(kind: bytes, payload: bytes) -> bytes:
@@ -351,8 +335,9 @@ def _format_volume(value: float) -> str:
     return f"{amount:.0f}"
 
 
-def _footer_text(candle_count: int) -> str:
-    return f"币安 · 最近{max(0, int(candle_count))}根1小时已收线K线"
+def _format_signed_amount(value: float) -> str:
+    amount = float(value)
+    return f"{'+' if amount >= 0 else '-'}{_format_volume(abs(amount))}"
 
 
 def _dotted_horizontal(
@@ -391,26 +376,73 @@ def render_pulse_chart_png(
     cycle_no: int,
     price_action: Mapping[str, Any] | None = None,
     asset_category: str = "",
+    signal_change_pct: float | None = None,
+    signal_oi_change_pct: float | None = None,
     width: int = 960,
     height: int = 540,
 ) -> bytes:
-    """Render a compact closed-candle Binance 1h chart in memory."""
+    """Render closed Binance 1h context with an optional closed 15m tail."""
 
-    normalized = sorted(
-        [
-            {
-                "close_ts": int(_number(item.get("close_ts"))),
-                "open": _number(item.get("open")),
-                "high": _number(item.get("high")),
-                "low": _number(item.get("low")),
-                "close": _number(item.get("close")),
-                "quote_volume": max(0.0, _number(item.get("quote_volume"))),
-            }
-            for item in candles
-            if isinstance(item, Mapping)
-        ],
-        key=lambda item: item["close_ts"],
-    )
+    normalized: list[dict[str, float | int | str | bool]] = []
+    for item in candles:
+        if not isinstance(item, Mapping):
+            continue
+        oi_close = max(
+            0.0,
+            _number(item.get("oi_close") or item.get("oi_value")),
+        )
+        oi_open = max(0.0, _number(item.get("oi_open") or oi_close))
+        oi_high = max(
+            oi_open,
+            oi_close,
+            _number(item.get("oi_high")),
+        )
+        raw_oi_low = max(0.0, _number(item.get("oi_low")))
+        oi_low = (
+            min(oi_open, oi_close, raw_oi_low)
+            if raw_oi_low > 0
+            else min(oi_open, oi_close)
+        )
+        cvd_delta = _number(item.get("cvd_delta"))
+        cvd_has_ohlc = all(
+            item.get(key) is not None
+            for key in ("cvd_open", "cvd_high", "cvd_low", "cvd_close")
+        )
+        cvd_open = _number(item.get("cvd_open"))
+        cvd_close = _number(item.get("cvd_close"))
+        cvd_high = max(
+            cvd_open,
+            cvd_close,
+            _number(item.get("cvd_high")),
+        )
+        cvd_low = min(
+            cvd_open,
+            cvd_close,
+            _number(item.get("cvd_low")),
+        )
+        normalized.append({
+            "close_ts": int(_number(item.get("close_ts"))),
+            "open": _number(item.get("open")),
+            "high": _number(item.get("high")),
+            "low": _number(item.get("low")),
+            "close": _number(item.get("close")),
+            "quote_volume": max(0.0, _number(item.get("quote_volume"))),
+            "oi_open": oi_open,
+            "oi_high": oi_high,
+            "oi_low": oi_low,
+            "oi_close": oi_close,
+            "oi_value": oi_close,
+            "cvd_delta": cvd_delta,
+            "cvd_has_ohlc": cvd_has_ohlc,
+            "cvd_open": cvd_open,
+            "cvd_high": cvd_high,
+            "cvd_low": cvd_low,
+            "cvd_close": cvd_close,
+            "timeframe": (
+                "15m" if str(item.get("timeframe") or "") == "15m" else "1h"
+            ),
+        })
+    normalized.sort(key=lambda item: item["close_ts"])
     normalized = [
         item
         for item in normalized
@@ -474,22 +506,23 @@ def render_pulse_chart_png(
 
     colors = CHART_COLORS
     canvas = Canvas(width, height, colors["background"])
-    compact_header = width < 900 or height < 600
-    spacious_layout = width >= 1000 and height >= 640
-    header_bottom = 96 if spacious_layout else (82 if height >= 460 else 74)
-    canvas.rect(0, 0, width - 1, header_bottom, colors["header"])
-    event_top = header_bottom + 5
-    event_bottom = event_top + (28 if spacious_layout else 22)
-    canvas.rect(0, event_top, width - 1, event_bottom, colors["panel"])
-    plot_left = 52 if spacious_layout else 44
-    plot_right = width - (70 if spacious_layout else 62)
-    candle_right = plot_right
-    price_top = event_bottom + 8
-    volume_bottom = height - 56
-    volume_top = height - (112 if height >= 500 else 100)
-    price_bottom = volume_top - 14
-    time_axis_y = height - 40
-    footer_y = height - 18
+    wide_layout = width >= 1000 and height >= 600
+    plot_left = 10 if wide_layout else 8
+    plot_right = width - (126 if wide_layout else 84)
+    candle_right = plot_left + round(
+        (plot_right - plot_left) * (0.70 if wide_layout else 0.88)
+    )
+    price_top = 7
+    indicator_bottom = height - (30 if wide_layout else 26)
+    indicator_height = 94 if height >= 640 else (68 if height >= 500 else 48)
+    indicator_gap = 1
+    cvd_bottom = indicator_bottom
+    cvd_top = cvd_bottom - indicator_height
+    oi_bottom = cvd_top - indicator_gap
+    oi_top = oi_bottom - indicator_height
+    price_bottom = oi_top - indicator_gap
+    time_axis_y = height - 17
+    event_top = price_top + 17
     if price_bottom - price_top < 70:
         raise ValueError("chart height leaves no readable price area")
 
@@ -498,125 +531,60 @@ def render_pulse_chart_png(
         if latest["open"] > 0
         else 0.0
     )
-    change_color = (
-        colors["rising"] if candle_change >= 0 else colors["falling"]
+    display_change = (
+        candle_change
+        if signal_change_pct is None
+        else _number(signal_change_pct)
     )
-    header_symbol = str(symbol or "UNKNOWN").upper()[:(12 if compact_header else 18)]
+    change_color = (
+        colors["price_rising"]
+        if display_change >= 0
+        else colors["price_falling"]
+    )
+    header_symbol = str(symbol or "UNKNOWN").upper()[:18]
     status = str(price_action_state.get("status") or "")
     status_label = CHART_STATUS_LABELS.get(status)
-    data_header_text = "1小时已收线 · 15分钟触发参考"
-    current_text = f"{_format_price(latest['close'])} {candle_change:+.2f}%"
+    latest_time_label = datetime.fromtimestamp(last_close_ts, CST).strftime("%H:%M")
     ohlc_text = (
         f"开 {_format_price(latest['open'])}  高 {_format_price(latest['high'])}  "
         f"低 {_format_price(latest['low'])}  收 {_format_price(latest['close'])}"
     )
-    category_label = _chart_category_label(asset_category or "USD-M PERP")
     checkpoint_count = sum(
         1
         for checkpoint in checkpoints
         if isinstance(checkpoint, Mapping)
         and 0 < int(_number(checkpoint.get("window_end_ts"))) <= last_close_ts
     )
-    if spacious_layout:
-        canvas.text(20, 14, header_symbol, colors["ink"], scale=3)
-        symbol_width = len(header_symbol) * 18
-        canvas.ui_text(
-            min(width // 3, 30 + symbol_width),
-            16,
-            category_label,
-            colors["accent"],
-        )
-        current_width = len(current_text) * 12
+    meta_text = f"{header_symbol}  1小时 / 15分钟  BINANCE"
+    info_y = price_top + 3
+    canvas.ui_text(plot_left + 6, info_y, meta_text, colors["muted"])
+    ohlc_x = plot_left + 18 + canvas.ui_text_width(meta_text)
+    if wide_layout:
+        canvas.ui_text(ohlc_x, info_y, ohlc_text, colors["ink"])
+        change_text = f"{display_change:+.2f}%"
         canvas.text(
-            width - current_width - 22,
-            16,
-            current_text,
-            change_color,
-            scale=2,
-        )
-        state_text = (
-            f"第 {max(1, int(cycle_no))} 轮 · 事件 {checkpoint_count}"
-            + (f" · {status_label}" if status_label else "")
-        )
-        canvas.ui_text(20, 48, state_text, colors["muted"])
-        detail_text = f"{ohlc_text}  成交量 {_format_volume(latest['quote_volume'])}  · 已收线"
-        canvas.ui_text(20, 72, detail_text, change_color)
-        canvas.ui_text(
-            width - canvas.ui_text_width(data_header_text) - 20,
-            48,
-            data_header_text,
-            colors["accent"],
-        )
-    elif compact_header:
-        canvas.text(16, 8, header_symbol, colors["ink"], scale=1)
-        current_width = len(current_text) * 6
-        current_group_x = max(
-            16 + len(header_symbol) * 6 + 12,
-            width - current_width - 12,
-        )
-        canvas.text(
-            current_group_x,
-            8,
-            current_text,
+            ohlc_x + canvas.ui_text_width(ohlc_text) + 12,
+            info_y + 4,
+            change_text,
             change_color,
             scale=1,
         )
-        canvas.ui_text(16, 25, category_label, colors["accent"])
-        cycle_x = max(102, 28 + canvas.ui_text_width(category_label))
-        canvas.ui_text(cycle_x, 25, f"第 {max(1, int(cycle_no))} 轮", colors["muted"])
-        event_x = cycle_x + 92
-        canvas.ui_text(event_x, 25, f"事件 {checkpoint_count}", colors["muted"])
-        canvas.ui_text(16, 44, data_header_text, colors["accent"])
-        if status_label:
-            status_text = f"形态 {status_label}"
-            status_x = width - canvas.ui_text_width(status_text) - 12
-            canvas.ui_text(max(238, status_x), 44, status_text, (86, 205, 220))
-        compact_ohlc = (
-            ohlc_text
-            if width >= 640
-            else f"开 {_format_price(latest['open'])}  收 {_format_price(latest['close'])}"
-        )
-        if header_bottom >= 82:
-            canvas.ui_text(16, 63, compact_ohlc, change_color)
-    else:
-        canvas.text(24, 14, header_symbol, colors["ink"], scale=2)
-        meta_x = max(190, min(250, width // 6))
-        canvas.ui_text(meta_x, 7, category_label, colors["accent"])
-        canvas.ui_text(meta_x, 27, data_header_text, colors["muted"])
-        cycle_x = meta_x + 220
-        canvas.ui_text(
-            cycle_x,
-            7,
-            f"第 {max(1, int(cycle_no))} 轮",
-            colors["muted"],
-        )
-        event_x = cycle_x + 100
-        canvas.ui_text(event_x, 7, f"事件 {checkpoint_count}", colors["muted"])
-        if status_label:
-            canvas.ui_text(cycle_x, 27, f"形态 {status_label}", (86, 205, 220))
-        current_width = len(current_text) * 12
-        current_group_x = max(
-            event_x + 90,
-            width - current_width - 24,
-        )
-        canvas.text(
-            current_group_x,
-            17,
-            current_text,
-            change_color,
-            scale=2,
-        )
-        canvas.ui_text(24, 47, "真实数据 · 仅使用已收线K线", colors["accent"])
-        ohlc_x = max(300, width - canvas.ui_text_width(ohlc_text) - 20)
-        canvas.ui_text(ohlc_x, 47, ohlc_text, change_color)
+    state_text = (
+        f"第 {max(1, int(cycle_no))} 轮  事件 {checkpoint_count}  "
+        f"已收线 {latest_time_label} UTC+8"
+        + (f"  {status_label}" if status_label else "")
+    )
+    state_x = plot_right - canvas.ui_text_width(state_text) - 4
+    if state_x > ohlc_x + 180:
+        canvas.ui_text(state_x, info_y, state_text, colors["accent"])
 
+    canvas.line(0, oi_top, width - 1, oi_top, colors["separator"])
+    canvas.line(0, cvd_top, width - 1, cvd_top, colors["separator"])
+    canvas.line(0, cvd_bottom, width - 1, cvd_bottom, colors["separator"])
     for index in range(5):
         y = price_top + round((price_bottom - price_top) * index / 4)
         canvas.line(plot_left, y, plot_right, y, colors["grid"])
-    grid_columns = 4
-    for index in range(grid_columns):
-        x = plot_left + round((candle_right - plot_left) * index / (grid_columns - 1))
-        canvas.line(x, price_top, x, volume_bottom, colors["grid"])
+    grid_columns = 6 if wide_layout else 4
 
     reference_prices: list[float] = []
     if trigger_visible:
@@ -624,11 +592,11 @@ def render_pulse_chart_png(
     if key_level_visible:
         reference_prices.append(key_level)
     reference_prices = [value for value in reference_prices if value > 0]
-    lowest = min([item["low"] for item in visible] + reference_prices)
-    highest = max([item["high"] for item in visible] + reference_prices)
-    span = max(highest - lowest, highest * 0.001)
-    lowest -= span * 0.07
-    highest += span * 0.07
+    raw_lowest = min([item["low"] for item in visible] + reference_prices)
+    raw_highest = max([item["high"] for item in visible] + reference_prices)
+    span = max(raw_highest - raw_lowest, raw_highest * 0.001)
+    lowest = raw_lowest - span * 0.07
+    highest = raw_highest + span * 0.07
     span = highest - lowest
 
     def price_y(value: float) -> int:
@@ -637,12 +605,33 @@ def render_pulse_chart_png(
 
     candle_count = len(visible)
     slot = (candle_right - plot_left) / max(1, candle_count)
-    body_half = max(1, min(4, round(slot * 0.42)))
-    max_volume = max(item["quote_volume"] for item in visible) or 1.0
+    body_half = max(1, min(3, round(slot * 0.34)))
     x_positions = [
         plot_left + round((index + 0.5) * slot)
         for index in range(candle_count)
     ]
+
+    tail_start_index = next(
+        (
+            index
+            for index, candle in enumerate(visible)
+            if candle["timeframe"] == "15m"
+        ),
+        None,
+    )
+    if tail_start_index is not None and tail_start_index > 0:
+        tail_boundary_x = round(
+            (x_positions[tail_start_index - 1] + x_positions[tail_start_index]) / 2
+        )
+        _dotted_vertical(
+            canvas,
+            tail_boundary_x,
+            price_top,
+            indicator_bottom,
+            (35, 92, 91),
+            dot=3,
+            gap=6,
+        )
 
     def nearest_index(timestamp: int) -> int:
         if timestamp <= first_close_ts:
@@ -720,12 +709,12 @@ def render_pulse_chart_png(
                 colors["background"],
             )
         )
-        _dotted_vertical(canvas, x, price_top, volume_bottom, guide_color, gap=6)
+        _dotted_vertical(canvas, x, price_top, indicator_bottom, guide_color, gap=6)
 
     for index, candle in enumerate(visible):
         x = x_positions[index]
         up = candle["close"] >= candle["open"]
-        color = colors["rising"] if up else colors["falling"]
+        color = colors["price_rising"] if up else colors["price_falling"]
         canvas.line(x, price_y(candle["high"]), x, price_y(candle["low"]), color)
         open_y = price_y(candle["open"])
         close_y = price_y(candle["close"])
@@ -736,16 +725,255 @@ def render_pulse_chart_png(
             max(min(open_y, close_y) + 1, max(open_y, close_y)),
             color,
         )
-        volume_height = round(
-            candle["quote_volume"] / max_volume * (volume_bottom - volume_top)
+
+    oi_candles = [
+        (
+            index,
+            candle["oi_open"],
+            candle["oi_high"],
+            candle["oi_low"],
+            candle["oi_close"],
         )
+        for index, candle in enumerate(visible)
+        if min(
+            candle["oi_open"],
+            candle["oi_high"],
+            candle["oi_low"],
+            candle["oi_close"],
+        ) > 0
+        and candle["oi_high"] >= candle["oi_low"]
+    ]
+    latest_oi_y = oi_bottom
+    oi_low = 0.0
+    oi_high = 0.0
+    if oi_candles:
+        oi_low = min(low for _index, _open, _high, low, _close in oi_candles)
+        oi_high = max(high for _index, _open, high, _low, _close in oi_candles)
+        oi_span = max(oi_high - oi_low, oi_high * 0.001, 1.0)
+
+        def oi_y(value: float) -> int:
+            ratio = (oi_high - value) / oi_span
+            return oi_top + 18 + round(
+                ratio * max(1, oi_bottom - oi_top - 22)
+            )
+
+        oi_body_half = max(1, min(2, body_half))
+        for index, open_value, high_value, low_value, close_value in oi_candles:
+            x = x_positions[index]
+            color = (
+                colors["rising"]
+                if close_value >= open_value
+                else colors["falling"]
+            )
+            open_y = oi_y(open_value)
+            high_y = oi_y(high_value)
+            low_y = oi_y(low_value)
+            close_y = oi_y(close_value)
+            canvas.line(x, high_y, x, low_y, color)
+            canvas.rect(
+                x - oi_body_half,
+                min(open_y, close_y),
+                x + oi_body_half,
+                max(min(open_y, close_y) + 1, max(open_y, close_y)),
+                color,
+            )
+        latest_oi_y = oi_y(oi_candles[-1][4])
+
+    cvd_candles: list[tuple[int, float, float, float, float]] = []
+    running_cvd = 0.0
+    for index, candle in enumerate(visible):
+        if candle["cvd_has_ohlc"]:
+            open_value = float(candle["cvd_open"])
+            high_value = float(candle["cvd_high"])
+            low_value = float(candle["cvd_low"])
+            close_value = float(candle["cvd_close"])
+        else:
+            open_value = running_cvd
+            close_value = open_value + float(candle["cvd_delta"])
+            high_value = max(open_value, close_value)
+            low_value = min(open_value, close_value)
+        cvd_candles.append((
+            index,
+            open_value,
+            high_value,
+            low_value,
+            close_value,
+        ))
+        running_cvd = close_value
+    cvd_low = min([value[3] for value in cvd_candles] + [0.0])
+    cvd_high = max([value[2] for value in cvd_candles] + [0.0])
+    cvd_span = max(cvd_high - cvd_low, max(abs(cvd_high), abs(cvd_low)) * 0.001, 1.0)
+
+    def cvd_y(value: float) -> int:
+        ratio = (cvd_high - value) / cvd_span
+        return cvd_top + 18 + round(
+            ratio * max(1, cvd_bottom - cvd_top - 22)
+        )
+
+    cvd_zero_y = cvd_y(0.0)
+    _dotted_horizontal(
+        canvas,
+        plot_left,
+        plot_right,
+        cvd_zero_y,
+        colors["grid"],
+        dot=2,
+        gap=4,
+    )
+    cvd_body_half = max(1, min(2, body_half))
+    for index, open_value, high_value, low_value, close_value in cvd_candles:
+        x = x_positions[index]
+        color = (
+            colors["rising"]
+            if close_value >= open_value
+            else colors["falling"]
+        )
+        open_y = cvd_y(open_value)
+        high_y = cvd_y(high_value)
+        low_y = cvd_y(low_value)
+        close_y = cvd_y(close_value)
+        canvas.line(x, high_y, x, low_y, color)
         canvas.rect(
-            x - body_half,
-            volume_bottom - volume_height,
-            x + body_half,
-            volume_bottom,
-            (28, 112, 82) if up else (116, 49, 53),
+            x - cvd_body_half,
+            min(open_y, close_y),
+            x + cvd_body_half,
+            max(min(open_y, close_y) + 1, max(open_y, close_y)),
+            color,
         )
+
+    latest_oi_open = oi_candles[-1][1] if oi_candles else 0.0
+    latest_oi_high = oi_candles[-1][2] if oi_candles else 0.0
+    latest_oi_low = oi_candles[-1][3] if oi_candles else 0.0
+    latest_oi = oi_candles[-1][4] if oi_candles else 0.0
+    oi_change = (
+        0.0
+        if signal_oi_change_pct is None
+        else _number(signal_oi_change_pct)
+    )
+    oi_name = "OI KLINE"
+    oi_label = (
+        f"O {_format_volume(latest_oi_open)} "
+        f"H {_format_volume(latest_oi_high)} "
+        f"L {_format_volume(latest_oi_low)} "
+        f"C {_format_volume(latest_oi)}"
+    )
+    oi_change_label = f"{oi_change:+.2f}%"
+    latest_cvd_open = cvd_candles[-1][1]
+    latest_cvd_high = cvd_candles[-1][2]
+    latest_cvd_low = cvd_candles[-1][3]
+    latest_cvd = cvd_candles[-1][4]
+    cvd_name = "CVD KLINE"
+    cvd_label = (
+        f"O {_format_signed_amount(latest_cvd_open)} "
+        f"H {_format_signed_amount(latest_cvd_high)} "
+        f"L {_format_signed_amount(latest_cvd_low)} "
+        f"C {_format_signed_amount(latest_cvd)}"
+    )
+    oi_label_x = plot_left + 8
+    cvd_label_x = plot_left + 8
+    label_y_offset = 7
+    canvas.text(oi_label_x, oi_top + label_y_offset, oi_name, colors["muted"], scale=1)
+    oi_values_x = oi_label_x + (len(oi_name) + 2) * 6
+    canvas.text(
+        oi_values_x,
+        oi_top + label_y_offset,
+        oi_label,
+        colors["rising"] if latest_oi >= latest_oi_open else colors["falling"],
+        scale=1,
+    )
+    canvas.text(
+        oi_values_x + (len(oi_label) + 2) * 6,
+        oi_top + label_y_offset,
+        oi_change_label,
+        colors["rising"] if oi_change >= 0 else colors["falling"],
+        scale=1,
+    )
+    canvas.text(
+        cvd_label_x,
+        cvd_top + label_y_offset,
+        cvd_name,
+        colors["muted"],
+        scale=1,
+    )
+    canvas.text(
+        cvd_label_x + (len(cvd_name) + 2) * 6,
+        cvd_top + label_y_offset,
+        cvd_label,
+        colors["rising"] if latest_cvd >= latest_cvd_open else colors["falling"],
+        scale=1,
+    )
+
+    if oi_candles:
+        oi_badge = f"OI {_format_volume(latest_oi)}"
+        oi_badge_color = (
+            colors["rising"] if latest_oi >= latest_oi_open else colors["falling"]
+        )
+        oi_badge_width = max(48, len(oi_badge) * 6 + 8)
+        canvas.text(
+            plot_right + 7,
+            oi_top + 2,
+            _format_volume(oi_high),
+            colors["muted"],
+            scale=1,
+        )
+        canvas.text(
+            plot_right + 7,
+            oi_bottom - 8,
+            _format_volume(oi_low),
+            colors["muted"],
+            scale=1,
+        )
+        oi_badge_y = min(max(latest_oi_y, oi_top + 10), oi_bottom - 10)
+        canvas.rect(
+            plot_right,
+            oi_badge_y - 8,
+            min(width - 1, plot_right + oi_badge_width),
+            oi_badge_y + 8,
+            oi_badge_color,
+        )
+        canvas.text(
+            plot_right + 4,
+            oi_badge_y - 4,
+            oi_badge,
+            (255, 255, 255),
+            scale=1,
+        )
+
+    latest_cvd_y = cvd_y(latest_cvd)
+    latest_cvd_color = (
+        colors["rising"] if latest_cvd >= latest_cvd_open else colors["falling"]
+    )
+    cvd_badge = f"CVD {_format_signed_amount(latest_cvd)}"
+    cvd_badge_width = max(48, len(cvd_badge) * 6 + 8)
+    canvas.text(
+        plot_right + 7,
+        cvd_top + 2,
+        _format_signed_amount(cvd_high),
+        colors["muted"],
+        scale=1,
+    )
+    canvas.text(
+        plot_right + 7,
+        cvd_bottom - 8,
+        _format_signed_amount(cvd_low),
+        colors["muted"],
+        scale=1,
+    )
+    cvd_badge_y = min(max(latest_cvd_y, cvd_top + 10), cvd_bottom - 10)
+    canvas.rect(
+        plot_right,
+        cvd_badge_y - 8,
+        min(width - 1, plot_right + cvd_badge_width),
+        cvd_badge_y + 8,
+        latest_cvd_color,
+    )
+    canvas.text(
+        plot_right + 4,
+        cvd_badge_y - 4,
+        cvd_badge,
+        (255, 255, 255),
+        scale=1,
+    )
 
     # Trigger facts are redrawn after candles so the original 15-minute
     # context stays readable.
@@ -832,39 +1060,72 @@ def render_pulse_chart_png(
         y = price_top + round((price_bottom - price_top) * index / 4) - 5
         canvas.text(plot_right + 7, y, _format_price(value), colors["muted"], scale=1)
 
-    for index in range(grid_columns):
-        candle_index = round((candle_count - 1) * index / (grid_columns - 1))
-        timestamp = visible[candle_index]["close_ts"]
-        label = datetime.fromtimestamp(timestamp, CST).strftime("%m-%d %H:%M")
-        x = x_positions[candle_index]
-        label_x = min(max(plot_left, x - len(label) * 3), candle_right - 67)
-        canvas.text(label_x, time_axis_y, label, colors["muted"], scale=1)
+    for label, value in (("最高", raw_highest), ("最低", raw_lowest)):
+        badge_text = f"{label} {_format_price(value)}"
+        badge_width = canvas.ui_text_width(badge_text) + 8
+        badge_y = price_y(value)
+        canvas.rect(
+            plot_right,
+            badge_y - 7,
+            min(width - 1, plot_right + badge_width),
+            badge_y + 7,
+            colors["extreme"],
+        )
+        canvas.ui_text(
+            plot_right + 4,
+            badge_y - 7,
+            badge_text,
+            (235, 239, 247),
+        )
 
-    footer = _footer_text(candle_count)
-    canvas.ui_text(
-        width // 2 - canvas.ui_text_width(footer) // 2,
-        footer_y - 2,
-        footer,
-        (82, 94, 112),
-    )
+    visible_time_span = max(1, last_close_ts - first_close_ts)
+    data_pixel_span = max(1, candle_right - plot_left)
+    for index in range(grid_columns):
+        x = plot_left + round((plot_right - plot_left) * index / (grid_columns - 1))
+        timestamp = first_close_ts + round(
+            (x - plot_left) / data_pixel_span * visible_time_span
+        )
+        label = datetime.fromtimestamp(timestamp, CST).strftime("%m-%d")
+        label_x = min(max(plot_left, x - len(label) * 3), plot_right - 31)
+        canvas.text(label_x, time_axis_y, label, colors["muted"], scale=1)
 
     # The live price badge is always the final visual layer so axis labels or
     # other annotations cannot obscure it.
     current_price = latest["close"]
     current_y = price_y(current_price)
-    _dotted_horizontal(canvas, plot_left, plot_right, current_y, change_color)
-    price_label = _format_price(current_price)
-    time_label = datetime.fromtimestamp(last_close_ts, CST).strftime("%H:%M")
+    _dotted_horizontal(
+        canvas,
+        plot_left,
+        plot_right,
+        current_y,
+        (184, 190, 201),
+        dot=1,
+        gap=3,
+    )
+    price_label = f"{header_symbol}  {_format_price(current_price)}"
+    time_label = latest_time_label
     label_width = max(54, max(len(price_label), len(time_label)) * 6 + 8)
     canvas.rect(
         plot_right,
         current_y - 11,
         min(width - 1, plot_right + label_width),
         current_y + 12,
-        change_color,
+        colors["price_badge"],
     )
-    canvas.text(plot_right + 4, current_y - 8, price_label, (255, 255, 255), scale=1)
-    canvas.text(plot_right + 4, current_y + 2, time_label, (255, 255, 255), scale=1)
+    canvas.text(
+        plot_right + 4,
+        current_y - 8,
+        price_label,
+        colors["background"],
+        scale=1,
+    )
+    canvas.text(
+        plot_right + 4,
+        current_y + 2,
+        time_label,
+        colors["background"],
+        scale=1,
+    )
     return _encode_png(canvas)
 
 

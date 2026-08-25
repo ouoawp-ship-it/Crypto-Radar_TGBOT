@@ -16,6 +16,7 @@ MARKET_STREAM_MEMORY_MAX="${MARKET_STREAM_MEMORY_MAX:-256M}"
 AUTO_CONFIRM="${AUTO_CONFIRM:-0}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
 CHECK_ONLY=0
+REFRESH_PULSE_TOPIC_INTRO=0
 
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -27,9 +28,10 @@ run_root() {
 
 usage() {
   cat <<'EOF'
-用法: bash scripts/update_server.sh [--check] [--yes]
+用法: bash scripts/update_server.sh [--check] [--yes] [--refresh-pulse-topic-intro]
   --check  只检查 GitHub 是否有更新
   --yes    无交互执行安全 fast-forward 更新
+  --refresh-pulse-topic-intro  更新后按版本刷新并置顶现有脉冲雷达说明
 EOF
 }
 
@@ -37,6 +39,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --check|check) CHECK_ONLY=1 ;;
     -y|--yes) AUTO_CONFIRM=1 ;;
+    --refresh-pulse-topic-intro) REFRESH_PULSE_TOPIC_INTRO=1 ;;
     -h|--help|help) usage; exit 0 ;;
     *) printf '未知参数: %s\n' "$1" >&2; usage; exit 2 ;;
   esac
@@ -181,6 +184,14 @@ run_stable_check() {
   fi
 }
 
+refresh_pulse_topic_intro() {
+  [ "$REFRESH_PULSE_TOPIC_INTRO" = "1" ] || return 0
+  .venv/bin/python main.py telegram-topic-refresh \
+    --topic-template TG_LAUNCH_ALERT \
+    --send --confirm-real-send
+  printf 'pulse_topic_intro_refresh=complete\n'
+}
+
 cd "$APP_DIR"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   printf '检测到未提交的已跟踪文件修改，拒绝自动更新。\n' >&2
@@ -206,7 +217,11 @@ else
   git pull --ff-only "$REMOTE" "$BRANCH"
   if [ "${PAOPAO_UPDATE_REEXEC:-0}" != "1" ]; then
     export PAOPAO_UPDATE_REEXEC=1
-    exec bash "${APP_DIR}/scripts/update_server.sh" --yes
+    reexec_args=(--yes)
+    if [ "$REFRESH_PULSE_TOPIC_INTRO" = "1" ]; then
+      reexec_args+=(--refresh-pulse-topic-intro)
+    fi
+    exec bash "${APP_DIR}/scripts/update_server.sh" "${reexec_args[@]}"
   fi
 fi
 
@@ -221,4 +236,5 @@ retire_legacy_services
 install_runtime_services
 .venv/bin/python scripts/migrate_config_layout.py \
   --base-dir "$APP_DIR" --finalize --owner-user "$SERVICE_USER"
+refresh_pulse_topic_intro
 printf 'BOT-only 更新完成: %s\n' "$(git rev-parse --short HEAD)"

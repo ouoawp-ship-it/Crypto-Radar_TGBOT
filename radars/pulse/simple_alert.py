@@ -185,6 +185,7 @@ _TIER_LABELS = {
 }
 
 _LSR_CACHE: dict[str, tuple[float, float | None]] = {}
+PULSE_CHART_KLINE_RESERVE = 40
 
 
 def _env_float(name: str, default: float) -> float:
@@ -203,7 +204,7 @@ def _env_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class SimpleAlertConfig:
-    scan_limit: int = 120
+    scan_limit: int = 80
     fixed_top: int = 30
     rotation_slots: int = 10
     ticker_filter_pct: float = 2.0
@@ -225,7 +226,13 @@ class SimpleAlertConfig:
     @classmethod
     def from_env(cls, settings: Settings) -> "SimpleAlertConfig":
         return cls(
-            scan_limit=max(1, _env_int("SIMPLE_ALERT_SCAN_LIMIT", 120)),
+            scan_limit=max(
+                1,
+                _env_int(
+                    "SIMPLE_ALERT_SCAN_LIMIT",
+                    int(settings.pulse_simple_scan_limit),
+                ),
+            ),
             fixed_top=max(0, _env_int("SIMPLE_ALERT_FIXED_TOP", 30)),
             rotation_slots=max(0, _env_int("SIMPLE_ALERT_ROTATION_SLOTS", 10)),
             ticker_filter_pct=max(0.0, _env_float("SIMPLE_ALERT_TICKER_FILTER_PCT", 2.0)),
@@ -576,80 +583,6 @@ def _analyze_symbol(
     }
 
 
-def _preview_url(cmc_map: Mapping[str, Any], base: str) -> str | None:
-    """用 CMC ID 拼 logo 直链；缺失时退回 CMC 币种页（og 图可预览）。"""
-    info = cmc_map.get(str(base or "").upper())
-    if not isinstance(info, Mapping):
-        return None
-    try:
-        cmc_id = int(info.get("cmc_id") or 0)
-    except (TypeError, ValueError):
-        cmc_id = 0
-    if cmc_id > 0:
-        return f"https://s2.coinmarketcap.com/static/img/coins/128x128/{cmc_id}.png"
-    slug = str(info.get("slug") or "")
-    if slug:
-        return f"https://coinmarketcap.com/currencies/{slug}/"
-    return None
-
-
-_COINGECKO_LOGO_CACHE: dict[str, tuple[float, str | None]] = {}
-
-
-def _coingecko_logo_url(
-    source: BinanceDataSource,
-    base: str,
-    *,
-    expected_slug: str = "",
-) -> str | None:
-    """查 CoinGecko 高清 large 图，按 CMC slug 校验防错配；失败返回 None。缓存 24 小时。"""
-    key = str(base or "").strip().upper()
-    if not key:
-        return None
-    now = time.time()
-    cached = _COINGECKO_LOGO_CACHE.get(key)
-    if cached is not None and now - cached[0] < 86400:
-        return cached[1]
-    url: str | None = None
-    try:
-        data = source.http.get_json(
-            "https://api.coingecko.com/api/v3/search",
-            {"query": base},
-            cache_key=f"cglogo:search:{key}",
-            quality_key="coingeckoLogo",
-            timeout=8,
-            retries=1,
-            cache=False,
-        )
-        candidates: list[str] = []
-        coins = data.get("coins") if isinstance(data, dict) else None
-        for coin in coins if isinstance(coins, list) else []:
-            if isinstance(coin, Mapping) and str(coin.get("symbol") or "").upper() == key:
-                candidates.append(str(coin.get("id") or ""))
-        coin_id = ""
-        if expected_slug:
-            coin_id = next((cid for cid in candidates if cid == expected_slug), "")
-        elif candidates:
-            coin_id = candidates[0]
-        if coin_id:
-            detail = source.http.get_json(
-                f"https://api.coingecko.com/api/v3/coins/{coin_id}",
-                cache_key=f"cglogo:detail:{key}",
-                quality_key="coingeckoLogo",
-                timeout=8,
-                retries=1,
-                cache=False,
-            )
-            image = (detail.get("image") or {}) if isinstance(detail, dict) else {}
-            url = str(image.get("large") or "") or None
-    except Exception:
-        url = None
-    _COINGECKO_LOGO_CACHE[key] = (now, url)
-    if len(_COINGECKO_LOGO_CACHE) > 200:
-        _COINGECKO_LOGO_CACHE.clear()
-    return url
-
-
 def _long_short_ratio(
     source: BinanceDataSource,
     symbol: str,
@@ -941,7 +874,7 @@ def _pulse_chart_checkpoints(
     state: Mapping[str, Any],
     symbol: str,
     count: int,
-    current_close_ts: int,
+    signal_close_ts: int,
 ) -> list[dict[str, Any]]:
     record = state.get(symbol)
     existing = record if isinstance(record, Mapping) else {}
@@ -954,11 +887,11 @@ def _pulse_chart_checkpoints(
         previous_ts = int(existing.get("last_sent_ts", 0) or 0)
         if previous_ts > 0:
             numbered.append((count - 1, previous_ts))
-    numbered.append((max(1, count), current_close_ts))
+    numbered.append((max(1, count), signal_close_ts))
     return [
         {
             "checkpoint_no": checkpoint_no,
-            "window_end_ts": min(timestamp, current_close_ts),
+            "window_end_ts": timestamp,
             "stage": "",
         }
         for checkpoint_no, timestamp in numbered
@@ -972,18 +905,19 @@ def _render_pulse_chart(
     count: int,
     window_end_ms: int,
 ) -> bytes | None:
-    """Build the optional 1h chart after a pulse has passed its send gate."""
+    """Build closed 1h context plus the current hour's closed 15m tail."""
 
     try:
-        rows = source.klines(
+        signal_close_ts = int(window_end_ms // 1000)
+        quarter_rows = source.klines(
             str(item.get("symbol") or ""),
-            interval="1h",
-            limit=DISPLAY_CANDLE_LIMIT + 1,
+            interval="15m",
+            limit=DISPLAY_CANDLE_LIMIT * 4 + 4,
             end_time=window_end_ms - 1,
         )
-        candles: list[dict[str, float | int]] = []
-        for row in rows:
-            if not isinstance(row, (list, tuple)) or len(row) < 8:
+        quarter_candles: list[dict[str, float | int]] = []
+        for row in quarter_rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 11:
                 continue
             close_ms = _number(row[6])
             open_price = _number(row[1])
@@ -991,26 +925,157 @@ def _render_pulse_chart(
             low_price = _number(row[3])
             close_price = _number(row[4])
             quote_volume = _number(row[7])
+            taker_buy_quote = _number(row[10])
             if (
-                close_ms is None
-                or int(close_ms) >= window_end_ms
-                or open_price is None
-                or high_price is None
-                or low_price is None
-                or close_price is None
+                int(close_ms) >= window_end_ms
+                or min(open_price, high_price, low_price, close_price) <= 0
+                or high_price < low_price
+                or quote_volume < 0
+                or taker_buy_quote < 0
+                or taker_buy_quote > quote_volume
             ):
                 continue
-            candles.append({
+            quarter_candles.append({
                 "close_ts": int(close_ms) // 1000 + 1,
                 "open": open_price,
                 "high": high_price,
                 "low": low_price,
                 "close": close_price,
-                "quote_volume": max(0.0, quote_volume or 0.0),
+                "quote_volume": quote_volume,
+                "cvd_delta": 2.0 * taker_buy_quote - quote_volume,
             })
-        if len(candles) < 5:
+        quarter_candles.sort(key=lambda value: int(value["close_ts"]))
+        if len(quarter_candles) < 20:
             return None
-        current_close_ts = max(int(candle["close_ts"]) for candle in candles)
+        if int(quarter_candles[-1]["close_ts"]) < signal_close_ts:
+            return None
+
+        hourly_groups: dict[int, list[dict[str, float | int]]] = {}
+        for quarter in quarter_candles:
+            close_ts = int(quarter["close_ts"])
+            hour_end_ts = ((close_ts + 60 * 60 - 1) // (60 * 60)) * (60 * 60)
+            hourly_groups.setdefault(hour_end_ts, []).append(quarter)
+
+        candles: list[dict[str, Any]] = []
+        complete_hour_ends: list[int] = []
+        for hour_end_ts, group in sorted(hourly_groups.items()):
+            ordered = sorted(group, key=lambda value: int(value["close_ts"]))
+            expected_closes = [hour_end_ts - offset for offset in (45 * 60, 30 * 60, 15 * 60, 0)]
+            if [int(value["close_ts"]) for value in ordered] != expected_closes:
+                continue
+            deltas = [_number(value["cvd_delta"]) for value in ordered]
+            candles.append({
+                "close_ts": hour_end_ts,
+                "open": _number(ordered[0]["open"]),
+                "high": max(_number(value["high"]) for value in ordered),
+                "low": min(_number(value["low"]) for value in ordered),
+                "close": _number(ordered[-1]["close"]),
+                "quote_volume": sum(_number(value["quote_volume"]) for value in ordered),
+                "cvd_delta": sum(deltas),
+                "cvd_parts": deltas,
+                "timeframe": "1h",
+            })
+            complete_hour_ends.append(hour_end_ts)
+        if len(complete_hour_ends) < 5:
+            return None
+        latest_hourly_close_ts = max(complete_hour_ends)
+        for quarter in quarter_candles:
+            if int(quarter["close_ts"]) <= latest_hourly_close_ts:
+                continue
+            candles.append({
+                **quarter,
+                "cvd_parts": [_number(quarter["cvd_delta"])],
+                "timeframe": "15m",
+            })
+        if max(int(candle["close_ts"]) for candle in candles) < signal_close_ts:
+            return None
+        candles = sorted(
+            candles,
+            key=lambda value: int(value["close_ts"]),
+        )[-DISPLAY_CANDLE_LIMIT:]
+        running_cvd = 0.0
+        for candle in candles:
+            cvd_path = [running_cvd]
+            for delta in candle.pop("cvd_parts", [candle.get("cvd_delta", 0.0)]):
+                running_cvd += _number(delta)
+                cvd_path.append(running_cvd)
+            candle["cvd_open"] = cvd_path[0]
+            candle["cvd_high"] = max(cvd_path)
+            candle["cvd_low"] = min(cvd_path)
+            candle["cvd_close"] = cvd_path[-1]
+        first_chart_start_ts = min(
+            int(candle["close_ts"])
+            - (15 * 60 if candle.get("timeframe") == "15m" else 60 * 60)
+            for candle in candles
+        )
+        oi_rows = source.open_interest_hist(
+            str(item.get("symbol") or ""),
+            period="15m",
+            limit=DISPLAY_CANDLE_LIMIT * 4 + 4,
+            start_time=max(0, first_chart_start_ts - 15 * 60) * 1000,
+            end_time=window_end_ms,
+        )
+        oi_points = sorted(
+            (
+                (int(_number(row.get("timestamp"))) // 1000, _number(row.get("sumOpenInterestValue")))
+                for row in oi_rows
+                if isinstance(row, Mapping)
+                and _number(row.get("timestamp")) > 0
+                and _number(row.get("sumOpenInterestValue")) > 0
+            ),
+            key=lambda point: point[0],
+        )
+        for candle in candles:
+            close_ts = int(candle["close_ts"])
+            duration_sec = 15 * 60 if candle.get("timeframe") == "15m" else 60 * 60
+            start_ts = close_ts - duration_sec
+            baseline = next(
+                (
+                    point
+                    for point in reversed(oi_points)
+                    if point[0] <= start_ts
+                ),
+                None,
+            )
+            samples: list[tuple[int, float]] = []
+            if baseline is not None and start_ts - baseline[0] <= 15 * 60:
+                samples.append(baseline)
+            samples.extend(
+                point
+                for point in oi_points
+                if start_ts < point[0] <= close_ts
+            )
+            if not samples:
+                continue
+            values = [point[1] for point in samples]
+            candle["oi_open"] = values[0]
+            candle["oi_high"] = max(values)
+            candle["oi_low"] = min(values)
+            candle["oi_close"] = values[-1]
+            candle["oi_value"] = values[-1]
+        current_oi = _number(item.get("current_oi_usd"))
+        if current_oi > 0:
+            latest_candle = max(candles, key=lambda value: int(value["close_ts"]))
+            previous_close = next(
+                (
+                    _number(candle.get("oi_close"))
+                    for candle in reversed(candles[:-1])
+                    if _number(candle.get("oi_close")) > 0
+                ),
+                current_oi,
+            )
+            oi_open = _number(latest_candle.get("oi_open")) or previous_close
+            oi_high = _number(latest_candle.get("oi_high")) or oi_open
+            oi_low = _number(latest_candle.get("oi_low")) or oi_open
+            latest_candle["oi_open"] = oi_open
+            latest_candle["oi_high"] = max(oi_high, oi_open, current_oi)
+            latest_candle["oi_low"] = min(oi_low, oi_open, current_oi)
+            latest_candle["oi_close"] = current_oi
+            latest_candle["oi_value"] = current_oi
+        if sum(1 for candle in candles if _number(candle.get("oi_close")) > 0) < 2:
+            return None
+        price_map = item.get("price_map")
+        oi_map = item.get("oi_map")
         return render_pulse_chart_png(
             symbol=str(item.get("symbol") or ""),
             candles=candles,
@@ -1018,11 +1083,17 @@ def _render_pulse_chart(
                 state,
                 str(item.get("symbol") or ""),
                 count,
-                current_close_ts,
+                signal_close_ts,
             ),
             cycle_no=count,
             asset_category=_pulse_chart_category(item),
-            width=1080,
+            signal_change_pct=(
+                price_map.get(3) if isinstance(price_map, Mapping) else None
+            ),
+            signal_oi_change_pct=(
+                oi_map.get(3) if isinstance(oi_map, Mapping) else None
+            ),
+            width=1440,
             height=720,
         )
     except Exception:
@@ -1141,8 +1212,13 @@ def run_cycle(
     window = closed_window(interval_sec=900, delay_sec=cfg.close_delay_sec)
     store = JsonStore(settings.data_dir)
     state = _load_state(store, _state_path(cfg, settings))
+    effective_scan_limit = max(1, scan_limit or cfg.scan_limit)
     source = BinanceDataSource(
-        settings, oi_hist_budget=max(settings.oi_hist_budget, cfg.scan_limit + 40)
+        settings,
+        oi_hist_budget=max(
+            settings.oi_hist_budget,
+            effective_scan_limit + PULSE_CHART_KLINE_RESERVE,
+        ),
     )
     diagnostics: dict[str, Any] = {}
     try:
@@ -1151,7 +1227,7 @@ def run_cycle(
         except Exception:
             market_caps = {}
         pool = _candidate_pool(
-            source, cfg, max(1, scan_limit or cfg.scan_limit),
+            source, cfg, effective_scan_limit,
             window_index=int(window.end_ms // _15M_MS),
         )
         analyzed: list[dict[str, Any]] = []
@@ -1247,7 +1323,9 @@ def run_cycle(
                 print(f"[review] record failed {type(exc).__name__}", file=sys.stderr)
         diagnostics = {
             "window_end": window.end.strftime("%Y-%m-%d %H:%M:%S"),
-            "scan_limit": max(1, scan_limit or cfg.scan_limit),
+            "scan_limit": effective_scan_limit,
+            "kline_budget": int(settings.kline_budget),
+            "chart_kline_reserve": PULSE_CHART_KLINE_RESERVE,
             "scanned": len(pool),
             "triggered": len(analyzed),
             "pushes": pushes,
@@ -1304,7 +1382,7 @@ def _send_test_push(
     send: bool,
     confirm_real_send: bool,
 ) -> int:
-    """推送一张内置示例卡片，用于验证 token/chat 链路。"""
+    """推送一张示例卡片，并复用正式提醒的 K 线图发送链路。"""
     cfg = SimpleAlertConfig.from_env(settings)
     item = {
         "symbol": "CETUSUSDT",
@@ -1327,24 +1405,23 @@ def _send_test_push(
         "tv_url": "https://www.tradingview.com/chart/?symbol=BINANCE:CETUSUSDT",
         "cg_url": "https://www.coinglass.com/tv/zh/Binance_CETUSUSDT",
     }
-    preview_url = None
-    preview_source = None
+    chart_png: bytes | None = None
+    source: BinanceDataSource | None = None
     try:
-        preview_source = BinanceDataSource(settings)
-        marketing = preview_source.marketing_symbols() or []
-        cmc_map = {}
-        for row in marketing:
-            if isinstance(row, Mapping):
-                base = str(row.get("base_asset") or "").upper()
-                cmc_map[base] = {"cmc_id": row.get("cmc_id"), "slug": row.get("slug")}
-        cetus_info = cmc_map.get("CETUS") if isinstance(cmc_map, dict) else None
-        cetus_slug = str(cetus_info.get("slug") or "") if isinstance(cetus_info, Mapping) else ""
-        preview_url = _coingecko_logo_url(preview_source, "CETUS", expected_slug=cetus_slug) or _preview_url(cmc_map, "CETUS")
+        source = BinanceDataSource(settings)
+        window = closed_window(interval_sec=900, delay_sec=cfg.close_delay_sec)
+        chart_png = _render_pulse_chart(
+            source,
+            item,
+            {},
+            1,
+            window.end_ms,
+        )
     except Exception:
-        preview_url = None
+        chart_png = None
     finally:
-        if preview_source is not None:
-            preview_source.close()
+        if source is not None:
+            source.close()
 
     text = _format_card(item, 1, cfg)
     result = gateway.send(
@@ -1355,9 +1432,11 @@ def _send_test_push(
         confirm_real_send=confirm_real_send,
         cooldown_sec=0,
         parse_mode="HTML",
-        link_preview_url=preview_url,
+        photo=chart_png,
+        enrich_market_context=False,
     )
-    print(f"测试推送状态: {result.status} ({result.reason})")
+    chart_status = "K线图已生成" if chart_png is not None else "K线图不可用，已降级为文字"
+    print(f"测试推送状态: {result.status} ({result.reason})；{chart_status}")
     return 0 if result.sent else 1
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1396,6 +1475,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "PULSE_CHART_KLINE_RESERVE",
     "SimpleAlertConfig",
     "SIGNAL_DIRECTIONS",
     "TEMPLATE_ID",

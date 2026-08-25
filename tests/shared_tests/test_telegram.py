@@ -1254,12 +1254,16 @@ class TelegramGatewayTests(unittest.TestCase):
                 "不再运行旧启动评分模型",
                 "15分钟异动提醒",
                 "完整闭合的5分钟数据",
+                "默认每轮细算80个候选",
                 "最近120根1小时已收线K线和成交量图",
                 "图表不可用时仍发送完整文字",
                 "2小时持仓价格背离",
+                "成交额靠前的200个合约",
                 "只有真实发送成功才写入跟随状态和复盘记录",
                 "dry-run不会消耗信号",
                 "不使用未来数据",
+                "pulse-review-report",
+                "不会自动刷榜",
                 "--send 与 --confirm-real-send",
                 "部分发送失败会清理残缺消息",
             ):
@@ -1495,6 +1499,61 @@ class TelegramGatewayTests(unittest.TestCase):
             self.assertEqual(history[0]["deleted_message_ids"], [101])
             self.assertTrue(history[0]["lifecycle_deleted"])
             self.assertNotIn("deleted_message_ids", history[1])
+
+    def test_topic_refresh_reuses_existing_route_without_creating_topic(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+                tg_launch_alert_topic_id="12",
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with (
+                patch.object(gateway, "_create_forum_topic") as create_mock,
+                patch.object(gateway, "_rename_forum_topic", return_value=True) as rename_mock,
+                patch.object(gateway, "_ensure_topic_intro", return_value=True) as intro_mock,
+            ):
+                result = gateway.refresh_topic_intro(
+                    "TG_LAUNCH_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["intro"], "current_or_refreshed")
+            create_mock.assert_not_called()
+            rename_mock.assert_called_once_with("12", "脉冲雷达")
+            intro_mock.assert_called_once_with(
+                "TG_LAUNCH_ALERT",
+                "12",
+                require_pin=True,
+            )
+
+    def test_topic_refresh_blocks_when_existing_route_is_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp))
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                tg_chat_id="-1001234567890",
+            )
+            gateway = TelegramGateway(settings, store)
+
+            with patch.object(gateway, "_create_forum_topic") as create_mock:
+                result = gateway.refresh_topic_intro(
+                    "TG_LAUNCH_ALERT",
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+            self.assertEqual(result["status"], "blocked")
+            self.assertEqual(result["reason"], "telegram_topic_not_configured")
+            create_mock.assert_not_called()
 
     def test_summary_replacement_keeps_previous_when_new_delivery_fails(self) -> None:
         with TemporaryDirectory() as tmp:

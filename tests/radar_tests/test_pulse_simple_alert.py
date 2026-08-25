@@ -1,23 +1,32 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+from config import Settings
 from radars.pulse.simple_alert import (
     SIGNAL_DIRECTIONS,
     SimpleAlertConfig,
     _bold_italic_serif,
     _follow_action,
     _format_card,
+    _send_test_push,
     _series_pct,
     _volume_emoji,
-    _preview_url,
     classify_template,
 )
 from shared.telegram import plain_fallback
 
 
 class ClassifyTemplateTests(unittest.TestCase):
+    def test_default_scan_limit_preserves_chart_budget(self) -> None:
+        self.assertEqual(SimpleAlertConfig().scan_limit, 80)
+
     def test_six_templates(self) -> None:
         cases = [
             ((7.0, 31.0, 47000.0), "health_up"),
@@ -223,19 +232,48 @@ class VolumeEmojiTests(unittest.TestCase):
                 self.assertEqual(_volume_emoji(value), expected)
 
 
-class PreviewUrlTests(unittest.TestCase):
-    def test_preview_url(self) -> None:
-        cmc_map = {"CETUS": {"cmc_id": 123, "slug": "cetus"}}
-        self.assertEqual(
-            _preview_url(cmc_map, "cetus"),
-            "https://s2.coinmarketcap.com/static/img/coins/128x128/123.png",
+class TestPushTests(unittest.TestCase):
+    def test_test_push_reuses_current_chart_delivery_path(self) -> None:
+        chart = b"\x89PNG\r\n\x1a\npulse-test"
+        source = SimpleNamespace(close=MagicMock())
+        gateway = MagicMock()
+        gateway.send.return_value = SimpleNamespace(
+            status="sent",
+            reason="telegram_photo_api",
+            sent=True,
         )
-        cmc_map2 = {"CETUS": {"cmc_id": None, "slug": "cetus"}}
-        self.assertEqual(
-            _preview_url(cmc_map2, "CETUS"),
-            "https://coinmarketcap.com/currencies/cetus/",
-        )
-        self.assertIsNone(_preview_url({}, "X"))
+
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            with (
+                patch(
+                    "radars.pulse.simple_alert.BinanceDataSource",
+                    return_value=source,
+                ),
+                patch(
+                    "radars.pulse.simple_alert._render_pulse_chart",
+                    return_value=chart,
+                ) as render_mock,
+                patch(
+                    "radars.pulse.simple_alert.closed_window",
+                    return_value=SimpleNamespace(end_ms=1_700_000_000_000),
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                code = _send_test_push(
+                    settings,
+                    gateway,
+                    send=True,
+                    confirm_real_send=True,
+                )
+
+        self.assertEqual(code, 0)
+        source.close.assert_called_once_with()
+        render_mock.assert_called_once()
+        kwargs = gateway.send.call_args.kwargs
+        self.assertEqual(kwargs["photo"], chart)
+        self.assertFalse(kwargs["enrich_market_context"])
+        self.assertNotIn("link_preview_url", kwargs)
 
 
 if __name__ == "__main__":

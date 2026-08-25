@@ -42,6 +42,9 @@ _CHECK_NAME_TEXT = {
     "telegram_topic_flow_radar": "五因子资金流专属话题",
     "telegram_topic_funding_alert": "资金费率警报专属话题",
     "runtime_health": "核心运行状态",
+    "pulse_enabled": "脉冲雷达开关",
+    "pulse_scan_limit": "脉冲扫描范围",
+    "pulse_kline_budget": "脉冲图表请求余量",
 }
 
 

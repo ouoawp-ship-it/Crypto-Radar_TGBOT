@@ -359,7 +359,7 @@ class Settings:
     funding_history_budget: int = 25
     fuse_seconds: int = 15 * 60
 
-    pulse_simple_scan_limit: int = 120
+    pulse_simple_scan_limit: int = 80
     pulse_divergence_scan_limit: int = 200
     pulse_radar_enable: bool = True
     topic_message_cleanup_max_age_sec: int = 47 * 3600
@@ -1041,7 +1041,7 @@ class Settings:
             pulse_simple_scan_limit=reloadable_bounded_int_alias(
                 "SIMPLE_ALERT_SCAN_LIMIT",
                 "LAUNCH_SCAN_LIMIT",
-                120,
+                80,
                 1,
                 1000,
             ),

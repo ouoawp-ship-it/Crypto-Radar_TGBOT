@@ -49,6 +49,10 @@ class AltcoinAnomalyFinalDeploymentTests(unittest.TestCase):
         self.assertNotIn("git reset --hard", script)
         self.assertNotIn("git clean", script)
         self.assertNotIn("--force", script)
+        self.assertIn("--refresh-pulse-topic-intro", script)
+        self.assertIn("telegram-topic-refresh", script)
+        self.assertIn("--send --confirm-real-send", script)
+        self.assertIn("pulse_topic_intro_refresh_requires_deploy_mode", script)
 
     def test_release_backup_and_rollback_cover_runtime_boundaries(self) -> None:
         script = self.read("scripts/deploy_tag.sh")

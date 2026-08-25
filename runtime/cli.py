@@ -43,7 +43,11 @@ from .maintenance import cleanup_runtime_artifacts
 from .cli_text import check_name_text, format_push_result_cn
 from radars.market_summary.radar import MarketSummaryRadar
 from radars.pulse.divergence import DivergenceConfig
-from radars.pulse.simple_alert import SimpleAlertConfig
+from radars.pulse.review_store import build_review_report, format_review_report
+from radars.pulse.simple_alert import (
+    PULSE_CHART_KLINE_RESERVE,
+    SimpleAlertConfig,
+)
 from .radar_engine import RadarEngine
 from .diagnostics import build_market_radar_runtime_status
 from .signal_effectiveness import SignalOutcomeTracker
@@ -258,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "telegram-test", "telegram-topic-setup", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "pulse-review-report", "telegram-test", "telegram-topic-setup", "telegram-topic-refresh", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -267,7 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--topic-template",
         choices=sorted(TOPIC_TEMPLATE_NAMES),
         default=None,
-        help="用于 telegram-topic-setup：选择要手工创建/修复的话题",
+        help="用于 telegram-topic-setup/refresh：选择要创建、修复或刷新的话题",
     )
     parser.add_argument("--apply", action="store_true", help="用于 signal-repair：应用修复（默认仅审计）")
     parser.add_argument("--force-cleanup", action="store_true", help="用于 cleanup：忽略清理间隔，立即执行")
@@ -280,6 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
     parser.add_argument("--pulse-scan-limit", dest="pulse_scan_limit", type=int, default=None, help="临时覆盖脉冲雷达扫描上限")
+    parser.add_argument("--review-days", type=int, default=7, help="用于 pulse-review-report：统计最近天数，默认 7 天")
+    parser.add_argument("--review-top", type=int, default=5, help="用于 pulse-review-report：本周涨幅榜数量，默认 5")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
     parser.add_argument("--funding-scan-limit", type=int, default=None, help="临时覆盖资金费率警报扫描上限")
     parser.add_argument("--no-pulse", dest="no_launch", action="store_true", help="本轮不运行脉冲雷达")
@@ -1042,6 +1048,22 @@ def run_telegram_topic_setup(args: argparse.Namespace) -> int:
     return 1
 
 
+def run_telegram_topic_refresh(args: argparse.Namespace) -> int:
+    settings, store, _engine, _gateway = make_runtime_for_args(args)
+    gateway = TelegramGateway(settings, store)
+    result = gateway.refresh_topic_intro(
+        str(args.topic_template or ""),
+        send=bool(args.send),
+        confirm_real_send=bool(args.confirm_real_send),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result.get("status") == "ok":
+        return 0
+    if result.get("status") == "blocked":
+        return 2
+    return 1
+
+
 def deliver_announcement_risk(
     engine: AnnouncementRiskRadar,
     gateway: TelegramGateway,
@@ -1263,6 +1285,10 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
         item for item in runtime_health
         if item.get("status") == "fail"
     ]
+    pulse_simple_scan_limit = int(settings.pulse_simple_scan_limit)
+    pulse_kline_required = (
+        pulse_simple_scan_limit + PULSE_CHART_KLINE_RESERVE
+    )
     blocking_checks = [
         *telegram_config_checks(settings),
         *telegram_topic_route_checks(settings, store),
@@ -1292,6 +1318,15 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
             (
                 f"脉冲扫描上限 15m={int(settings.pulse_simple_scan_limit)}，"
                 f"2h={int(settings.pulse_divergence_scan_limit)}"
+            ),
+        ),
+        (
+            "pulse_kline_budget",
+            int(settings.kline_budget) >= pulse_kline_required,
+            (
+                f"K线请求预算 {int(settings.kline_budget)}；"
+                f"15m扫描 {pulse_simple_scan_limit} + "
+                f"图表预留 {PULSE_CHART_KLINE_RESERVE} = {pulse_kline_required}"
             ),
         ),
     ]
@@ -2077,6 +2112,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_telegram_test(args)
     if args.command == "telegram-topic-setup":
         return run_telegram_topic_setup(args)
+    if args.command == "telegram-topic-refresh":
+        return run_telegram_topic_refresh(args)
     if args.command == "announcement-risk":
         if args.send and args.confirm_real_send:
             gate = require_real_send_gate(settings, store, args)
@@ -2107,6 +2144,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.get("status") == "ok" or args.apply else 1
     if args.command == "signal-effectiveness":
         print_signal_effectiveness(settings)
+        return 0
+    if args.command == "pulse-review-report":
+        report = build_review_report(
+            settings,
+            days=max(1, int(args.review_days)),
+            top=max(1, int(args.review_top)),
+        )
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(format_review_report(report))
         return 0
     if args.command == "pulse":
         if args.send and args.confirm_real_send:

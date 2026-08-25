@@ -283,7 +283,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
-    "TG_LAUNCH_ALERT": "2026-08-25-pulse-radar-chart-v2",
+    "TG_LAUNCH_ALERT": "2026-08-25-pulse-radar-ops-v3",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -386,17 +386,20 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "<b>15分钟异动提醒</b>",
         "- 使用完整闭合的5分钟数据，计算15分钟价格、持仓量和主动成交资金流。",
+        "- 默认每轮细算80个候选，并为触发后的K线图额外保留请求额度。",
         "- 信号分为健康上涨、假强背离、空头回补、健康下跌、假弱承接和恐慌杀多。",
         "- 首次触发立即提醒；同一事件只有升级或方向反转才再次发送，最多3次。",
         "- 提醒附带最近120根1小时已收线K线和成交量图；图表不可用时仍发送完整文字。",
         "",
         "<b>2小时持仓价格背离</b>",
         "- 每2小时汇总持仓变化、价格变化与两者背离度。",
+        "- 全市场行情先做成交额过滤，再深入分析成交额靠前的200个合约。",
         "- 分类展示建仓、回调压力、强势突破、恐慌抛售、多头共振和极端背离。",
         "",
         "<b>复盘与安全</b>",
         "- 只有真实发送成功才写入跟随状态和复盘记录；dry-run不会消耗信号。",
         "- 1小时、4小时和2小时复盘分别在对应窗口到期后回填，不使用未来数据。",
+        "- 手动执行 pulse-review-report 可查看真实样本数、各窗口命中率和本周TOP 5；不会自动刷榜。",
         "- 真实发送必须同时开启 --send 与 --confirm-real-send；部分发送失败会清理残缺消息。",
         "",
         "数据来自 Binance Spot + USDⓈ-M Futures 已闭合窗口；仅供预警参考，不构成投资建议。",
@@ -1258,6 +1261,56 @@ class TelegramGateway:
             "template_id": template_id,
             "topic": topic_status,
             "intro": "published",
+            "pinned": True,
+        }
+
+    def refresh_topic_intro(
+        self,
+        template_id: str,
+        *,
+        send: bool,
+        confirm_real_send: bool,
+    ) -> dict[str, Any]:
+        """Refresh one existing topic introduction without creating a topic."""
+
+        if template_id not in TOPIC_TEMPLATE_NAMES:
+            return {"status": "blocked", "reason": "telegram_topic_template_invalid"}
+        if not send:
+            return {"status": "blocked", "reason": "send_flag_not_set"}
+        if not confirm_real_send:
+            return {"status": "blocked", "reason": "missing_confirm_real_send"}
+        if not self.settings.tg_bot_token or not self.settings.tg_chat_id:
+            return {"status": "blocked", "reason": "telegram_not_configured"}
+        topic_id = self._topic_id_for_template(template_id)
+        if not topic_id:
+            return {
+                "status": "blocked",
+                "reason": "telegram_topic_not_configured",
+            }
+        rename_ok = True
+        if template_id == "TG_LAUNCH_ALERT":
+            rename_ok = self._rename_forum_topic(
+                topic_id,
+                TOPIC_TEMPLATE_NAMES[template_id],
+            )
+        if not self._ensure_topic_intro(template_id, topic_id, require_pin=True):
+            return {
+                "status": "failed",
+                "reason": "telegram_topic_intro_failed",
+            }
+        if not rename_ok:
+            return {
+                "status": "failed",
+                "reason": "telegram_topic_rename_failed",
+                "intro": "current_or_refreshed",
+                "pinned": True,
+            }
+        return {
+            "status": "ok",
+            "reason": "telegram_topic_intro_refresh_complete",
+            "template_id": template_id,
+            "topic": "reused",
+            "intro": "current_or_refreshed",
             "pinned": True,
         }
 

@@ -14,7 +14,7 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
         self.assertFalse(settings.funding_flip_oi_enable)
         status = settings.redacted_status()
         self.assertTrue(status["pulse"]["enabled"])
-        self.assertEqual(status["pulse"]["simple_scan_limit"], 120)
+        self.assertEqual(status["pulse"]["simple_scan_limit"], 80)
         self.assertEqual(status["pulse"]["divergence_scan_limit"], 200)
         self.assertFalse(status["pulse"]["legacy_launch_warning_available"])
         self.assertNotIn("launch", status)

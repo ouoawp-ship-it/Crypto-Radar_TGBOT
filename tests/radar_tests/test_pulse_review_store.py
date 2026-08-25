@@ -138,6 +138,71 @@ class ReviewStoreTests(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in top], ["BBUSDT", "AAUSDT"])
         self.assertEqual(top[0]["pct"], 12.0)
 
+    def test_manual_report_uses_real_samples_and_mature_windows(self) -> None:
+        now = int(time.time())
+        review_store.save_records(self.settings, [
+            _record(
+                "AAUSDT",
+                "health_up",
+                ts=now,
+                outcomes={
+                    "3600": {"price": 1.03, "pct": 3.0},
+                    "14400": {"price": 0.98, "pct": -2.0},
+                },
+            ),
+            _record(
+                "BBUSDT",
+                "panic",
+                radar="divergence",
+                ts=now,
+                outcomes={"7200": {"price": 0.95, "pct": -5.0}},
+            ),
+        ])
+
+        report = review_store.build_review_report(
+            self.settings,
+            now_ts=now,
+            days=7,
+            top=5,
+        )
+        text = review_store.format_review_report(report)
+
+        self.assertEqual(report["records"], 2)
+        self.assertEqual(report["completed_records"], 2)
+        self.assertEqual(report["pending_records"], 0)
+        self.assertEqual(report["evaluated_samples"], 3)
+        self.assertEqual(report["hits"], 2)
+        self.assertEqual(report["hit_rate_pct"], 66.7)
+        self.assertEqual(report["sample_status"], "accumulating")
+        self.assertIn("可判定样本: 3", text)
+        self.assertIn("方向命中率: 66.7%", text)
+        self.assertIn("样本积累中", text)
+        self.assertIn("15分钟异动 1h: 1/1", text)
+        self.assertIn("15分钟异动 4h: 0/1", text)
+        self.assertIn("2小时背离 2h: 1/1", text)
+        self.assertIn("本周后续涨幅 TOP 5", text)
+
+    def test_manual_report_does_not_count_pending_windows(self) -> None:
+        now = int(time.time())
+        review_store.save_records(self.settings, [
+            _record(
+                "AAUSDT",
+                "health_up",
+                ts=now,
+                outcomes={"3600": {"price": 1.03, "pct": 3.0}},
+            ),
+        ])
+
+        report = review_store.build_review_report(
+            self.settings,
+            now_ts=now,
+        )
+
+        self.assertEqual(report["records"], 1)
+        self.assertEqual(report["completed_records"], 0)
+        self.assertEqual(report["pending_records"], 1)
+        self.assertEqual(report["evaluated_samples"], 1)
+
     def test_send_replies_marks_only_on_real_send(self) -> None:
         record = _record(
             "AAUSDT", "health_up",

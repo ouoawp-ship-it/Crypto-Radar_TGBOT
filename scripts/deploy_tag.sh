@@ -25,6 +25,7 @@ ROLLBACK_READY=0
 SESSION_DIR=""
 CREATED_BACKUP=""
 EXIT_HANDLER_ACTIVE=0
+REFRESH_PULSE_TOPIC_INTRO=0
 
 umask 077
 
@@ -41,13 +42,14 @@ usage() {
   cat <<'EOF'
 用法：
   bash scripts/deploy_tag.sh --check-tag vX.Y.Z
-  bash scripts/deploy_tag.sh --tag vX.Y.Z [--yes]
+  bash scripts/deploy_tag.sh --tag vX.Y.Z [--yes] [--refresh-pulse-topic-intro]
   bash scripts/deploy_tag.sh --rollback /absolute/backup/set [--yes]
 
 --check-tag  只验证远端正式 Tag，不切换代码、不停止服务
 --tag        备份当前生产状态后部署指定正式 Tag
 --rollback   从指定发布备份恢复代码、配置、状态、数据库和 systemd 定义
 --yes        跳过交互确认
+--refresh-pulse-topic-intro  部署后按版本刷新并置顶现有脉冲雷达说明
 EOF
 }
 
@@ -78,6 +80,10 @@ while [ "$#" -gt 0 ]; do
       AUTO_CONFIRM=1
       shift
       ;;
+    --refresh-pulse-topic-intro)
+      REFRESH_PULSE_TOPIC_INTRO=1
+      shift
+      ;;
     -h|--help|help)
       usage
       exit 0
@@ -91,6 +97,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$MODE" ] || { usage; exit 2; }
+if [ "$REFRESH_PULSE_TOPIC_INTRO" = "1" ] && [ "$MODE" != "deploy" ]; then
+  fail "pulse_topic_intro_refresh_requires_deploy_mode"
+fi
 
 validate_unit_name() {
   [[ "$1" =~ ^[A-Za-z0-9_.@-]+$ ]] || fail "systemd_unit_name_invalid"
@@ -442,6 +451,14 @@ wait_for_deployed_runtime() {
   done
 }
 
+refresh_pulse_topic_intro() {
+  [ "$REFRESH_PULSE_TOPIC_INTRO" = "1" ] || return 0
+  "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" telegram-topic-refresh \
+    --topic-template TG_LAUNCH_ALERT \
+    --send --confirm-real-send
+  printf 'release_pulse_topic_intro_refresh=complete\n'
+}
+
 deploy_tag() {
   local tag="$1" commit="$2"
   SESSION_DIR="$(mktemp -d)"
@@ -460,6 +477,7 @@ deploy_tag() {
     printf 'release_readiness_skipped=services_previously_inactive\n'
   fi
   ROLLBACK_READY=0
+  refresh_pulse_topic_intro
   printf 'deployed_tag=%s\n' "$tag"
   printf 'deployed_commit=%s\n' "$commit"
 }

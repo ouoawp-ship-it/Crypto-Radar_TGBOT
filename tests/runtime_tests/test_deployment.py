@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import runtime.cli as main
 from config import Settings
+from radars.pulse import review_store
 from runtime.radar_engine import RadarEngine
 from shared.storage import JsonStore
 from shared.telegram import PushResult, TelegramGateway
@@ -232,6 +233,28 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("LAUNCH_SCAN_LIMIT", result["removed"])
         self.assertIn("LAUNCH_FUSION_ENABLE", result["removed"])
 
+    def test_sync_reduces_old_default_scan_limit_to_preserve_chart_budget(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "SIMPLE_ALERT_SCAN_LIMIT=120\n"
+                "KLINE_REQUEST_BUDGET=120\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "SIMPLE_ALERT_SCAN_LIMIT=80\n"
+                "KLINE_REQUEST_BUDGET=120\n",
+                encoding="utf-8",
+            )
+
+            module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=80", text)
+        self.assertIn("KLINE_REQUEST_BUDGET=120", text)
+
     def test_sync_backs_up_and_atomically_replaces_environment_file(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:
@@ -402,6 +425,9 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn('if [ "$code" -ge 2 ]', script)
         self.assertIn("bot_stable_check_attention_non_blocking", script)
         self.assertIn("retire_legacy_services", script)
+        self.assertIn("--refresh-pulse-topic-intro", script)
+        self.assertIn("telegram-topic-refresh", script)
+        self.assertIn("--send --confirm-real-send", script)
 
     def test_update_script_reexecutes_after_pull_to_load_new_deployment_logic(self) -> None:
         script = (ROOT / "scripts" / "update_server.sh").read_text(encoding="utf-8")
@@ -409,7 +435,12 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         pull_index = script.index('git pull --ff-only "$REMOTE" "$BRANCH"')
         reexec_index = script.index("export PAOPAO_UPDATE_REEXEC=1")
         self.assertGreater(reexec_index, pull_index)
-        self.assertIn('exec bash "${APP_DIR}/scripts/update_server.sh" --yes', script)
+        self.assertIn('reexec_args=(--yes)', script)
+        self.assertIn('reexec_args+=(--refresh-pulse-topic-intro)', script)
+        self.assertIn(
+            'exec bash "${APP_DIR}/scripts/update_server.sh" "${reexec_args[@]}"',
+            script,
+        )
 
     def test_cli_no_longer_exposes_web_or_ai_commands(self) -> None:
         parser = main.build_parser()
@@ -422,6 +453,8 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertNotIn("provider-check", command_action.choices)
         self.assertNotIn("migrate-state", command_action.choices)
         self.assertIn("database-backup", command_action.choices)
+        self.assertIn("pulse-review-report", command_action.choices)
+        self.assertIn("telegram-topic-refresh", command_action.choices)
 
 
 class PulseReadinessTests(unittest.TestCase):
@@ -452,8 +485,42 @@ class PulseReadinessTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("脉冲雷达已启用", output.getvalue())
-            self.assertIn("脉冲扫描上限 15m=120，2h=200", output.getvalue())
+            self.assertIn("脉冲扫描上限 15m=80，2h=200", output.getvalue())
+            self.assertIn(
+                "K线请求预算 120；15m扫描 80 + 图表预留 40 = 120",
+                output.getvalue(),
+            )
             self.assertNotIn("shadow", output.getvalue().lower())
+
+    def test_readiness_blocks_scan_limit_that_consumes_chart_reserve(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                base_dir=root,
+                data_dir=root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_launch_alert_topic_id="12",
+                tg_announcement_alert_topic_id="15",
+                tg_flow_radar_topic_id="13",
+                tg_funding_alert_topic_id="14",
+                tg_topic_routes_path=root / "topic_routes.json",
+                pulse_simple_scan_limit=100,
+                kline_budget=120,
+            )
+            store = JsonStore(root)
+
+            with patch.object(main, "runtime_health_checks", return_value=[]):
+                with redirect_stdout(StringIO()) as output:
+                    code = main.print_readiness(settings, store)
+
+            self.assertEqual(code, 1)
+            self.assertIn("⏳ 待处理 脉冲图表请求余量", output.getvalue())
+            self.assertIn(
+                "K线请求预算 120；15m扫描 100 + 图表预留 40 = 140",
+                output.getvalue(),
+            )
 
     def test_readiness_fails_when_a_production_topic_is_missing(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -591,6 +658,74 @@ class MainCommandTests(unittest.TestCase):
 
             create_mock.assert_not_called()
             send_mock.assert_not_called()
+
+    def test_telegram_topic_refresh_cli_requires_both_real_send_flags(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = self.make_runtime(tmp, configured=True)
+            with (
+                patch.object(main, "make_runtime", return_value=runtime),
+                patch.object(main, "make_runtime_for_args", return_value=runtime),
+                patch.object(TelegramGateway, "_create_forum_topic") as create_mock,
+                patch.object(TelegramGateway, "_send_real_message_ids") as send_mock,
+            ):
+                for argv, reason in (
+                    (
+                        [
+                            "telegram-topic-refresh",
+                            "--topic-template",
+                            "TG_LAUNCH_ALERT",
+                        ],
+                        "send_flag_not_set",
+                    ),
+                    (
+                        [
+                            "telegram-topic-refresh",
+                            "--topic-template",
+                            "TG_LAUNCH_ALERT",
+                            "--send",
+                        ],
+                        "missing_confirm_real_send",
+                    ),
+                ):
+                    with self.subTest(argv=argv):
+                        with redirect_stdout(StringIO()) as output:
+                            code = main.main(argv)
+                        self.assertEqual(code, 2)
+                        self.assertIn(reason, output.getvalue())
+
+            create_mock.assert_not_called()
+            send_mock.assert_not_called()
+
+    def test_pulse_review_report_is_read_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = self.make_runtime(tmp)
+            settings, _store, _engine, gateway = runtime
+            now = int(datetime.now().timestamp())
+            review_store.save_records(settings, [{
+                "id": "AAUSDT-health_up-alert",
+                "radar": "alert",
+                "template": "health_up",
+                "symbol": "AAUSDT",
+                "price": 1.0,
+                "ts": now,
+                "message_id": 123,
+                "outcomes": {
+                    "3600": {"price": 1.03, "pct": 3.0},
+                    "14400": {"price": 1.05, "pct": 5.0},
+                },
+                "reply_sent": True,
+            }])
+            with (
+                patch.object(main, "make_runtime", return_value=runtime),
+                patch.object(gateway, "send") as send_mock,
+                redirect_stdout(StringIO()) as output,
+            ):
+                code = main.main(["pulse-review-report"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("脉冲雷达复盘报告", output.getvalue())
+        self.assertIn("可判定样本: 2", output.getvalue())
+        send_mock.assert_not_called()
 
     def test_readiness_reports_wait_when_history_missing(self) -> None:
         with TemporaryDirectory() as tmp:

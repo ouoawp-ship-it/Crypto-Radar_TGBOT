@@ -4,7 +4,7 @@
 
 ## 核心功能
 
-- 脉冲雷达：15 分钟价格/OI/CVD 六分类异动提醒，加上每 2 小时持仓价格背离汇总。
+- 脉冲雷达：15 分钟价格/OI/CVD 六分类异动提醒，加上每 2 小时对成交额前 200 个合约的持仓价格背离汇总。
 - 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
@@ -54,9 +54,13 @@ TG_CHAT_ID=-1001234567890
 
 ```dotenv
 PULSE_RADAR_ENABLE=true
-SIMPLE_ALERT_SCAN_LIMIT=120
+SIMPLE_ALERT_SCAN_LIMIT=80
 DIVERGENCE_SCAN_LIMIT=200
+KLINE_REQUEST_BUDGET=120
 ```
+
+15 分钟默认细算 80 个候选，并在 120 次 K 线请求预算中保留 40 次给触发后的
+1 小时图表。`readiness` 会阻止“扫描数量 + 图表预留”超过 K 线预算的真实发送。
 
 Dry-run 不写入脉冲跟随状态、复盘记录或回复状态。只有真实发送成功后才提交这些
 状态；若一张新卡分段发送到一半失败，只撤回本次未完整发送的新消息，不会删除
@@ -72,9 +76,12 @@ python main.py stable-check
 python main.py database-backup
 python main.py telegram-test
 python main.py telegram-topic-setup --topic-template TG_RADAR_SUMMARY --send --confirm-real-send
+python main.py telegram-topic-refresh --topic-template TG_LAUNCH_ALERT --send --confirm-real-send
 python main.py private-control
 python main.py once
 python main.py pulse
+python main.py pulse-review-report
+python main.py pulse-review-report --review-days 30 --review-top 10 --json
 python main.py announcement-risk
 python main.py flow-radar
 python main.py funding-alert
@@ -89,6 +96,18 @@ python main.py live --send --confirm-real-send
 普通推送不会自动建话题或刷新置顶说明。创建/修复话题必须通过中文菜单或
 `telegram-topic-setup` 明确执行；任一核心雷达缺少专属话题时，真实发送会
 安全阻断，不会退回群主界面。
+
+`telegram-topic-refresh` 只刷新已经存在的话题，不会创建新话题；说明版本和
+正文都未变化时不会重复发送。服务器更新脚本只有显式增加
+`--refresh-pulse-topic-intro` 才会执行这项真实 Telegram 操作，内部仍同时使用
+`--send --confirm-real-send`。`pulse-review-report` 只读取已回填的本地复盘数据，
+显示真实样本数、各窗口命中率和本周 TOP 榜，不访问 Telegram，也不会自动刷榜。
+
+脉冲示例卡片可单独验证当前正式的“K线图 + 文案”链路：
+
+```text
+python -m radars.pulse.simple_alert --test-push --send --confirm-real-send
+```
 
 主 BOT 的 systemd 服务默认使用安全 Dry-run：
 
@@ -126,10 +145,10 @@ Final 的生产开关、固定话题、消息语义、systemd、正式 Tag 发�
 ```bash
 bash scripts/install_server.sh
 bash scripts/update_server.sh --check
-bash scripts/update_server.sh --yes
+bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
 bash scripts/deploy_tag.sh --check-tag v2.0.1
-bash scripts/deploy_tag.sh --tag v2.0.1 --yes
+bash scripts/deploy_tag.sh --tag v2.0.1 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

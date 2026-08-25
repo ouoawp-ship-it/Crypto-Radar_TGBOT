@@ -230,6 +230,11 @@ LEGACY_ALIASES = {
 }
 
 MANAGED_MIGRATIONS = {
+    "SIMPLE_ALERT_SCAN_LIMIT": {
+        "old": {"", "120"},
+        "new": "80",
+        "note": "脉冲扫描为 K 线图生成预留 40 次请求预算",
+    },
     "SIGNAL_EVENTS_LIMIT": {
         "old": {"", "5000"},
         "new": "20000",

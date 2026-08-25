@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from config.settings import Settings  # noqa: E402
 from shared.binance_data import BinanceDataSource  # noqa: E402
 from shared.storage import JsonStore  # noqa: E402
+from shared.time_windows import CST  # noqa: E402
 
 REVIEW_FILE = "review_signals.json"
 MAX_RECORDS = 5000
@@ -363,13 +365,12 @@ def week_top_gainers(
 ) -> list[dict[str, Any]]:
     """本周（周一 00:00 起）涨幅最好的信号币，按后续涨幅排序。"""
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
-    local = time.localtime(now_ts)
-    week_start = int(time.mktime((
-        local.tm_year,
-        local.tm_mon,
-        local.tm_mday - local.tm_wday,
-        0, 0, 0, 0, 0, -1,
-    )))
+    now_local = datetime.fromtimestamp(now_ts, tz=CST)
+    week_start = int(
+        (now_local - timedelta(days=now_local.weekday()))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .timestamp()
+    )
     by_symbol: dict[str, dict[str, Any]] = {}
     for record in load_records(settings):
         if not isinstance(record, dict):
@@ -394,10 +395,203 @@ def week_top_gainers(
     return ranked[:top]
 
 
+def build_review_report(
+    settings: Settings,
+    *,
+    now_ts: int | None = None,
+    days: int = 7,
+    top: int = 5,
+) -> dict[str, Any]:
+    """Build a read-only report from outcomes that have already been backfilled."""
+
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    days = min(365, max(1, int(days)))
+    top = min(20, max(1, int(top)))
+    start_ts = now_ts - days * 86400
+    records = [
+        record
+        for record in load_records(settings)
+        if isinstance(record, dict)
+        and start_ts <= int(record.get("ts") or 0) <= now_ts
+    ]
+    window_stats: dict[tuple[str, int], dict[str, Any]] = {}
+    template_stats: dict[tuple[str, str], dict[str, Any]] = {}
+    evaluated_samples = 0
+    hits = 0
+
+    for record in records:
+        radar = str(record.get("radar") or "alert")
+        template = str(record.get("template") or "")
+        outcomes = record.get("outcomes") or {}
+        if not isinstance(outcomes, Mapping):
+            continue
+        for window in WINDOWS.get(radar, (3600,)):
+            outcome = outcomes.get(str(window), outcomes.get(window))
+            if not isinstance(outcome, Mapping):
+                continue
+            try:
+                pct = float(outcome.get("pct"))
+            except (TypeError, ValueError):
+                continue
+            hit = template_hit(template, pct)
+            if hit is None:
+                continue
+            evaluated_samples += 1
+            hits += int(hit)
+            for stats, key in (
+                (window_stats, (radar, window)),
+                (template_stats, (radar, template)),
+            ):
+                row = stats.setdefault(
+                    key,
+                    {"samples": 0, "hits": 0, "pct_total": 0.0},
+                )
+                row["samples"] += 1
+                row["hits"] += int(hit)
+                row["pct_total"] += pct
+
+    def finalized_rows(
+        grouped: Mapping[tuple[str, Any], Mapping[str, Any]],
+        *,
+        key_name: str,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for (radar, key), values in grouped.items():
+            samples = int(values.get("samples") or 0)
+            row = {
+                "radar": radar,
+                key_name: key,
+                "samples": samples,
+                "hits": int(values.get("hits") or 0),
+                "hit_rate_pct": round(
+                    int(values.get("hits") or 0) * 100.0 / samples,
+                    1,
+                ),
+                "avg_pct": round(float(values.get("pct_total") or 0.0) / samples, 2),
+            }
+            if key_name == "template":
+                row["label"] = template_label(str(key))
+            rows.append(row)
+        if key_name == "window":
+            return sorted(
+                rows,
+                key=lambda row: (str(row["radar"]), int(row["window"])),
+            )
+        return sorted(
+            rows,
+            key=lambda row: (str(row["radar"]), str(row["template"])),
+        )
+
+    return {
+        "status": "ok",
+        "generated_at_ts": now_ts,
+        "period_days": days,
+        "period_start_ts": start_ts,
+        "period_end_ts": now_ts,
+        "records": len(records),
+        "completed_records": sum(1 for record in records if _review_complete(record)),
+        "pending_records": sum(1 for record in records if not _review_complete(record)),
+        "evaluated_samples": evaluated_samples,
+        "hits": hits,
+        "hit_rate_pct": (
+            round(hits * 100.0 / evaluated_samples, 1)
+            if evaluated_samples
+            else None
+        ),
+        "sample_status": "sufficient" if evaluated_samples >= 20 else "accumulating",
+        "top_limit": top,
+        "by_window": finalized_rows(window_stats, key_name="window"),
+        "by_template": finalized_rows(template_stats, key_name="template"),
+        "week_top_gainers": week_top_gainers(settings, now_ts=now_ts, top=top),
+    }
+
+
+def format_review_report(report: Mapping[str, Any]) -> str:
+    """Format a manual terminal report without sending Telegram messages."""
+
+    def timestamp_text(value: Any) -> str:
+        return datetime.fromtimestamp(int(value or 0), tz=CST).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    samples = int(report.get("evaluated_samples") or 0)
+    rate = report.get("hit_rate_pct")
+    rate_text = f"{float(rate):.1f}%" if rate is not None else "暂无可判定样本"
+    sample_note = "样本已达到基础展示门槛" if samples >= 20 else "样本积累中，暂不代表稳定胜率"
+    lines = [
+        "脉冲雷达复盘报告",
+        (
+            f"统计区间（北京时间）: {timestamp_text(report.get('period_start_ts'))}"
+            f" 至 {timestamp_text(report.get('period_end_ts'))}"
+        ),
+        (
+            f"信号记录: {int(report.get('records') or 0)}；"
+            f"已完成: {int(report.get('completed_records') or 0)}；"
+            f"待回填: {int(report.get('pending_records') or 0)}"
+        ),
+        (
+            f"可判定样本: {samples}；命中: {int(report.get('hits') or 0)}；"
+            f"方向命中率: {rate_text}（{sample_note}）"
+        ),
+        "说明: 样本按“信号 × 已成熟窗口”统计，未到期或缺失窗口不计入命中率。",
+        "",
+        "按复盘窗口:",
+    ]
+    radar_labels = {"alert": "15分钟异动", "divergence": "2小时背离"}
+    window_rows = report.get("by_window") or []
+    if not window_rows:
+        lines.append("- 暂无已成熟样本")
+    for row in window_rows if isinstance(window_rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        lines.append(
+            f"- {radar_labels.get(str(row.get('radar') or ''), str(row.get('radar') or ''))} "
+            f"{window_label(int(row.get('window') or 0))}: "
+            f"{int(row.get('hits') or 0)}/{int(row.get('samples') or 0)}，"
+            f"命中率 {float(row.get('hit_rate_pct') or 0.0):.1f}%"
+        )
+
+    lines.extend(["", "按信号分类:"])
+    template_rows = report.get("by_template") or []
+    if not template_rows:
+        lines.append("- 暂无已成熟样本")
+    for row in template_rows if isinstance(template_rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        lines.append(
+            f"- {row.get('label') or row.get('template')}: "
+            f"{int(row.get('hits') or 0)}/{int(row.get('samples') or 0)}，"
+            f"命中率 {float(row.get('hit_rate_pct') or 0.0):.1f}%，"
+            f"平均后续涨跌 {float(row.get('avg_pct') or 0.0):+.2f}%"
+        )
+
+    lines.extend([
+        "",
+        (
+            f"本周后续涨幅 TOP {int(report.get('top_limit') or 5)}"
+            "（北京时间周一 00:00 起）:"
+        ),
+    ])
+    top_rows = report.get("week_top_gainers") or []
+    if not top_rows:
+        lines.append("- 暂无已成熟样本")
+    for index, row in enumerate(top_rows if isinstance(top_rows, list) else [], start=1):
+        if not isinstance(row, Mapping):
+            continue
+        lines.append(
+            f"{index}. {row.get('symbol')} "
+            f"{float(row.get('pct') or 0.0):+.2f}% "
+            f"({window_label(int(row.get('window') or 0))})"
+        )
+    return "\n".join(lines)
+
+
 __all__ = [
     "backfill_outcomes",
     "best_outcome",
+    "build_review_report",
     "format_grouped_reply",
+    "format_review_report",
     "format_review_reply",
     "load_records",
     "record_signals",

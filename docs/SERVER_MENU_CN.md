@@ -123,8 +123,11 @@ Telegram 话题和置顶说明仅允许手工创建或修复。普通雷达推�
 ```bash
 bash scripts/install_server.sh
 bash scripts/update_server.sh --check
-bash scripts/update_server.sh --yes
+bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 ```
+
+最后一个选项只在明确需要按版本刷新现有“脉冲雷达”置顶说明时使用；它不会
+创建缺失的话题，真实发送仍经过双门禁。
 
 正式版本不得由菜单或普通分支更新代替 Tag 发布。确认对应 Tag 的 GitHub
 Actions 成功后，使用 `scripts/deploy_tag.sh --check-tag/--tag`；部署备份和

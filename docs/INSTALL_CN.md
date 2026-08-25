@@ -87,13 +87,22 @@ paopao telegram-test
   --send --confirm-real-send
 ```
 
+只刷新已经存在的脉冲雷达说明时使用 `telegram-topic-refresh`。它按说明版本和
+正文去重，不会创建新话题：
+
+```bash
+.venv/bin/python main.py telegram-topic-refresh \
+  --topic-template TG_LAUNCH_ALERT \
+  --send --confirm-real-send
+```
+
 缺少某个核心雷达的专属话题时，真实推送会安全阻断，不会发到群主界面。
 
 ## 更新
 
 ```bash
 bash scripts/update_server.sh --check
-bash scripts/update_server.sh --yes
+bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 ```
 
 上述入口继续用于 `main` 的普通 fast-forward 维护。正式生产发布只允许使用已
@@ -101,8 +110,11 @@ bash scripts/update_server.sh --yes
 
 ```bash
 bash scripts/deploy_tag.sh --check-tag v2.0.1
-bash scripts/deploy_tag.sh --tag v2.0.1 --yes
+bash scripts/deploy_tag.sh --tag v2.0.1 --yes --refresh-pulse-topic-intro
 ```
+
+`--refresh-pulse-topic-intro` 是显式真实 Telegram 操作；省略时更新脚本不会
+刷新置顶说明。执行时脚本内部仍同时提供两重真实发送确认。
 
 该入口会在停服后备份私有配置、运行状态、数据库和 systemd 定义；部署失败
 自动回滚。它不会打印或用示例值覆盖服务器密钥。完整门禁和人工回滚命令见

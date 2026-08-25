@@ -17,6 +17,10 @@ class PushResultChineseTextTests(unittest.TestCase):
             "资金费率警报专属话题",
         )
         self.assertEqual(check_name_text("runtime_health"), "核心运行状态")
+        self.assertEqual(
+            check_name_text("pulse_kline_budget"),
+            "脉冲图表请求余量",
+        )
         self.assertEqual(check_name_text("new_internal_check"), "其他检查项")
 
     def test_all_delivery_statuses_have_plain_chinese_labels(self) -> None:
