@@ -47,6 +47,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -61,7 +62,7 @@ from shared.asset_classification import (  # noqa: E402
 from shared.binance_data import BinanceDataSource  # noqa: E402
 from shared.storage import JsonStore  # noqa: E402
 from shared.telegram import TelegramGateway  # noqa: E402
-from shared.time_windows import closed_window  # noqa: E402
+from shared.time_windows import CST, closed_window  # noqa: E402
 
 TEMPLATE_ID = "TG_LAUNCH_ALERT"
 
@@ -878,7 +879,7 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
         "",
         f"🔗 <a href='{tv_url}'>𝑻𝒓𝒂𝒅𝒊𝒏𝒈𝑽𝒊𝒆𝒘</a> | <a href='{cg_url}'>𝑪𝒐𝒊𝒏𝒈𝒍𝒂𝒔𝒔</a>",
         "",
-        f"⏰ 提醒时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} (UTC+8)",
+        f"⏰ 提醒时间: {datetime.fromtimestamp(time.time(), CST).strftime('%Y-%m-%d %H:%M:%S')} (北京时间)",
         "━━━━━━━━━━━━━━━━━━━━",
         "<pre>💰 基础信息",
         f"当前价格: {_fmt_price(item.get('current_price'))}",

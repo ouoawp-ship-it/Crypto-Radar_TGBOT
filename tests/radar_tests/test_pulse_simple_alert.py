@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from radars.pulse.simple_alert import (
     SIGNAL_DIRECTIONS,
@@ -146,7 +147,8 @@ class FormatCardTests(unittest.TestCase):
             "market_cap": 16600000.0,
             "long_short_ratio": 2.15,
         }
-        text = _format_card(item, 1, cfg)
+        with patch("radars.pulse.simple_alert.time.time", return_value=0):
+            text = _format_card(item, 1, cfg)
         self.assertIn("健康上涨提醒 (第1次)", text)
         self.assertIn("上涨 31.11% ↗️", text)
         self.assertIn("市值", text)
@@ -165,6 +167,8 @@ class FormatCardTests(unittest.TestCase):
             text,
         )
         self.assertNotIn("📋<code>CETUS</code>", text)
+        self.assertIn("⏰ 提醒时间: 1970-01-01 08:00:00 (北京时间)", text)
+        self.assertNotIn("(UTC+8)", text)
 
 
     def test_card_marks_missing_spot(self) -> None:
